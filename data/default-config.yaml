@@ -1,0 +1,234 @@
+# VENTURE default configuration
+#
+# This file is compiled into the venture binary, so a fresh install works
+# with no configuration at all. `venture --generate-config` writes a copy of
+# it that you can edit.
+#
+# Configuration is resolved in this order, later sources overriding earlier
+# ones field by field:
+#
+#   1. these built-in defaults
+#   2. /etc/venture/config.yaml
+#   3. $XDG_CONFIG_HOME/venture/config.yaml
+#   4. the file named by --config
+#   5. the compiled C configuration (see config.c), which runs last and can
+#      compute values rather than state them
+#   6. VENTURE_* environment variables
+#   7. command-line options
+#
+# Anything secret -- API keys, the session secret, database passwords --
+# should come from the environment or from a file referenced by path, never
+# from this file. Every such setting has a *_env or *_file counterpart.
+
+server:
+  # Address to bind. Leave as loopback unless you have put authentication
+  # and TLS in front of it: this API can move money figures around.
+  bind_address: "127.0.0.1"
+  port: 8747
+
+  # The externally-visible base URL, used to build absolute links in
+  # newsletters and webhooks. Leave empty to derive it from the request.
+  base_url: ""
+
+  # Optional TLS. When both are set the server speaks HTTPS directly.
+  tls_certificate: ""
+  tls_private_key: ""
+
+  # Requests larger than this are rejected outright, which bounds the memory
+  # a single upload can consume.
+  max_request_size_mb: 32
+
+  # Seconds a request may run before it is abandoned.
+  request_timeout: 60
+
+database:
+  # sqlite:///absolute/path.db, sqlite://relative/path.db, sqlite://:memory:
+  # postgres://user@host/dbname   (password from the environment, see below)
+  #
+  # The default keeps the database beside the rest of the runtime state, so
+  # a fresh run needs no setup and no server.
+  uri: "sqlite://venture.db"
+
+  # Environment variable holding the database password, for backends that
+  # need one. Never put the password itself in this file.
+  password_env: "VENTURE_DB_PASSWORD"
+
+  # Connections held open. SQLite ignores this; PostgreSQL uses it.
+  pool_size: 4
+
+  # Apply pending schema migrations automatically at startup. Safe for a
+  # single-operator install; turn it off if you want to run migrations as a
+  # deliberate, separate step.
+  auto_migrate: true
+
+  # Seconds to wait for a lock before giving up.
+  busy_timeout: 5
+
+security:
+  # Require authentication for every request. Turning this off is only
+  # sensible for a throwaway local instance -- with it off, anything that
+  # can reach the port can read and change your financial records.
+  require_auth: true
+
+  # Environment variable holding the secret used to sign session cookies.
+  # If it is unset, a random secret is generated at startup, which means
+  # sessions do not survive a restart.
+  session_secret_env: "VENTURE_SESSION_SECRET"
+
+  # How long a browser session stays valid, in seconds. Default is 14 days.
+  session_lifetime: 1209600
+
+  # Mark the session cookie Secure. Required when served over HTTPS;
+  # prevents the cookie working at all over plain HTTP.
+  cookie_secure: false
+
+  # Number of PBKDF2 iterations for password hashing. Raise it on faster
+  # hardware; existing hashes record the count they were made with, so
+  # changing this does not invalidate them.
+  password_iterations: 210000
+
+  # Shortest password accepted when one is set or changed.
+  #
+  # Eight suits the usual case: a single operator, bound to loopback, behind
+  # whatever already guards the machine. Set it to 1 to turn the check off
+  # entirely. Raise it if you ever put this on a network -- at that point the
+  # password is the only thing between a stranger and your books.
+  password_min_length: 8
+
+  # Reject more than this many failed logins from one address per minute.
+  login_rate_limit: 10
+
+locale:
+  # The currency assumed when an amount does not name one.
+  default_currency: "USD"
+
+  # IANA timezone used to interpret dates and to bucket reports by day.
+  timezone: "America/New_York"
+
+  # The month a fiscal year starts in, 1-12. January for most people; set it
+  # to match whatever your accountant uses.
+  fiscal_year_start_month: 1
+
+ai:
+  # AI is a first-class participant: it answers questions about the data,
+  # drafts records, and runs scheduled workflows. It is on by default but
+  # inert until a provider has credentials.
+  enabled: true
+
+  # claude | openai | gemini | grok | ollama | claude-code | opencode
+  provider: "claude"
+  model: "claude-sonnet-5"
+
+  # Environment variable holding the API key. Left empty, the provider's own
+  # conventional variable is used (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...).
+  api_key_env: ""
+
+  # How much authority tool calls have:
+  #   read_only       query and report, never mutate
+  #   confirm_writes  mutations are staged and must be approved  (default)
+  #   autonomous      mutations apply immediately
+  #
+  # confirm_writes is the default deliberately. A hallucinated tool call
+  # that rewrites an expense is a tax problem, not a UI annoyance.
+  policy: "confirm_writes"
+
+  # Tools that may run without confirmation even under confirm_writes.
+  # These are all read-only.
+  auto_approve_tools:
+    - "venture_query"
+    - "venture_get"
+    - "venture_report"
+    - "venture_list_types"
+    - "venture_search"
+
+  # Seconds a staged mutation waits for a decision before expiring.
+  confirmation_ttl: 3600
+
+  max_tokens: 4096
+
+  # Seconds a single tool call may run.
+  tool_timeout: 30
+
+  # Turns the tool-use loop may take before it is cut off.
+  max_turns: 12
+
+  # Appended to the built-in system prompt. Put house rules here: which
+  # entity is the default, how you name things, what never to touch.
+  system_prompt_extra: ""
+
+  # Record every AI request and response. Costs disk; worth it the first
+  # time you need to know why a number changed.
+  log_conversations: true
+
+automation:
+  # Scheduled automations, driven by an embedded podomation engine.
+  enabled: true
+
+  # The DSL file describing pods and bindings. Relative paths resolve
+  # against the state directory.
+  pods_file: "automations.pod"
+
+  # Extra directories to load podomation modules from. The modules VENTURE
+  # ships with are found automatically.
+  module_paths: []
+
+  # Seconds to allow in-flight automations to finish during shutdown.
+  graceful_shutdown_timeout: 10
+
+  # Persist engine state across restarts so a daily automation does not fire
+  # twice because the process bounced.
+  persist_state: true
+
+plugins:
+  enabled: true
+
+  # Directories scanned for native .so plugins. The build tree and the
+  # install prefix are searched automatically.
+  paths: []
+
+  # Compile and load .c plugins on demand via crispy. This runs a compiler
+  # over files in the plugin directories, so only enable it if you trust
+  # what is in them -- which, for a personal install, you do.
+  allow_crispy: true
+
+  # Directories scanned for YAML venture-type definitions. These add new
+  # kinds of venture with their own fields, metrics and report columns
+  # without any code at all.
+  venture_type_paths: []
+
+  # Plugins that must load successfully or startup fails. Everything else
+  # is best-effort and logs a warning.
+  required: []
+
+ui:
+  # system | light | dark. "system" follows the browser's preference and
+  # still lets the theme toggle override it.
+  theme: "system"
+
+  # Accent colour used for primary actions and highlights.
+  accent: "#4f7cff"
+
+  # Rows per page in list views.
+  page_size: 50
+
+  # Show the AI chat dock at the bottom of every page.
+  chat_dock: true
+
+  # Start the chat dock expanded rather than collapsed.
+  chat_dock_expanded: false
+
+  # Title shown in the header and the browser tab.
+  title: "VENTURE"
+
+logging:
+  # error | warning | info | debug
+  level: "info"
+
+  # Empty means stderr, which is what you want under systemd.
+  file: ""
+
+  # text | json. JSON if you are shipping these somewhere that parses them.
+  format: "text"
+
+  # Log every request line.
+  access_log: true

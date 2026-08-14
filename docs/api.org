@@ -1,0 +1,138 @@
+#+title: The VENTURE REST API
+#+description: The generated API, filtering and error handling
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-08-14]
+#+updated: [2026-08-14]
+#+version: 0.1.0
+
+* REST API
+
+Base path =/api/v1=. Everything is JSON. The API is generated from the record
+registry, so a plugin's record type is a first-class resource the moment it
+registers — there is no routing to add.
+
+* Authentication
+
+Either a bearer token or a browser session cookie.
+
+#+begin_src sh
+curl -H "Authorization: Bearer $VENTURE_TOKEN" localhost:8747/api/v1/sale
+#+end_src
+
+Mint a token with =POST /api/v1/tokens= while holding a session. The plaintext
+is returned exactly once; only its hash is stored.
+
+* Endpoints
+
+| Method   | Path                                | Purpose                              |
+|----------+-------------------------------------+--------------------------------------|
+| =GET=    | =/api/v1/health=                    | liveness, version, backend, AI state |
+| =GET=    | =/api/v1/schema=                    | every record type and its fields     |
+| =GET=    | =/api/v1/schema/:type=              | one record type                      |
+| =GET=    | =/api/v1/:type=                     | list, filtered                       |
+| =POST=   | =/api/v1/:type=                     | create                               |
+| =GET=    | =/api/v1/:type/:id=                 | fetch one                            |
+| =PUT=    | =/api/v1/:type/:id=                 | replace                              |
+| =PATCH=  | =/api/v1/:type/:id=                 | update named fields only             |
+| =DELETE= | =/api/v1/:type/:id=                 | soft delete                          |
+| =GET=    | =/api/v1/reports=                   | list reports                         |
+| =GET=    | =/api/v1/reports/:name=             | run one; =?format=csv= for CSV       |
+| =POST=   | =/api/v1/tokens=                    | mint an API token                    |
+| =GET=    | =/api/v1/confirmations=             | AI changes awaiting approval         |
+| =POST=   | =/api/v1/confirmations/:id/approve= | apply a staged change                |
+| =POST=   | =/api/v1/confirmations/:id/reject=  | discard one                          |
+| =GET=    | =/api/v1/settings=                  | the resolved configuration           |
+| =GET=    | =/api/v1/plugins=                   | what loaded, and from where          |
+| =GET=    | =/api/v1/venture-types=             | declarative venture types            |
+| =GET=    | =/api/v1/venture-types/:name=       | one of them, with its fields         |
+| =GET=    | =/api/v1/automations=               | engine state and its pods            |
+
+Both singular and plural type names work, so =/api/v1/sale= and =/api/v1/sales=
+are the same resource.
+
+** Settings
+
+=/api/v1/settings= describes every setting: its section, key, resolved
+value, type, the one-line explanation of what it does, and the environment
+variable that overrides it. It answers "what is this server actually
+using", which layered configuration otherwise makes a guessing game.
+
+Credentials are redacted. No secret is stored in a setting — the =*_env=
+settings hold a variable's name, not its value — but a database URI can
+carry a password if one was spelled out, and that is masked. For settings
+that name a secret's variable, a =secret_present= boolean says whether it is
+set, never what it contains.
+
+The same data renders at =/settings= in the web UI. Both are read-only:
+configuration is layered, so a value written through the API could be
+silently overridden by a later layer, and the page would then be showing
+something the server is not using.
+
+* Filtering
+
+=field=value= is equality; =field__op=value= names an operator.
+
+#+begin_src sh
+?status__eq=active
+?occurred_at__gte=2026-01-01&occurred_at__lt=2026-04-01
+?status__in=active,paused
+?name__ilike=%etsy%
+?deleted_at__not_null=1
+?period=this_quarter&period_field=occurred_at
+?search=lovelace
+?order=-occurred_at&limit=20&offset=40
+#+end_src
+
+Operators: =eq ne lt lte gt gte like ilike in not_in is_null not_null between=.
+
+Periods accept the same vocabulary everywhere in VENTURE: =today=,
+=yesterday=, =this_week=, =this_month=, =last_month=, =this_quarter=, =ytd=,
+=mtd=, =qtd=, =fy=, =fy_2026=, =last_30_days=, =2026=, =2026-03=, =2026-Q2=,
+=2026-01-01..2026-03-31=, =all=.
+
+A field name that is not a real property of the record type is refused, with
+the available fields listed. No caller-supplied string ever reaches the SQL as
+text.
+
+* Bodies
+
+=PATCH= applies only the members present; anything omitted is left alone.
+Money accepts several forms — ~"12.34"~, ~"$12.34"~, ~"12.34 EUR"~, or the
+object form ~{"amount": 1234, "currency": "USD", "exponent": 2}~. Dates accept
+ISO 8601 or =YYYY-MM-DD=. Enumerations accept their nick in any case, with
+hyphens or underscores.
+
+Responses always carry both the exact value and a formatted twin, so a
+consumer that does not understand minor units still reports the right figure:
+
+#+begin_src json
+"gross": { "amount": 1499, "currency": "USD", "exponent": 2,
+           "formatted": "14.99 USD" }
+#+end_src
+
+Fields flagged sensitive — password hashes, token secrets, tax identifiers —
+are omitted entirely rather than nulled, so a client cannot tell "unset" from
+"withheld".
+
+* Errors
+
+One shape for every failure:
+
+#+begin_src json
+{ "error": "validation", "message": "Code: is required", "code": 5 }
+#+end_src
+
+| Slug                       | HTTP | Meaning                              |
+|----------------------------+------+--------------------------------------|
+| =invalid_argument=         |  400 | unusable input                       |
+| =unauthenticated=          |  401 | no valid credentials                 |
+| =permission_denied=        |  403 | insufficient role                    |
+| =not_found=                |  404 | no such record or route              |
+| =already_exists=, =conflict= | 409 | uniqueness, or a stale version       |
+| =validation=, =balance=    |  422 | semantically wrong                   |
+| =ai_confirmation_required= |  202 | staged, awaiting approval            |
+| =unsupported=              |  501 | not in this build                    |
+
+A =409= from a write means someone else changed the record since you loaded
+it. Reload, reapply, retry — do not force it.

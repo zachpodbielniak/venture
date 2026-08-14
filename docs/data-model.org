@@ -1,0 +1,231 @@
+#+title: The VENTURE data model
+#+description: The record types and how to add one
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-08-14]
+#+updated: [2026-08-14]
+#+version: 0.1.0
+
+* Data model
+
+Every record derives from =VentureEntity= and carries the same spine:
+
+| Field             | Purpose                                              |
+|-------------------+------------------------------------------------------|
+| =id=              | surrogate primary key; zero until first saved        |
+| =uuid=            | stable external identifier, safe to expose           |
+| =organization_id= | owning entity; scopes every query                    |
+| =created_at=      | when the record first existed                        |
+| =updated_at=      | when it last changed                                 |
+| =version=         | optimistic concurrency counter                       |
+| =deleted_at=      | soft deletion; the row is never removed              |
+| =attributes=      | free-form JSON for one-off information               |
+
+* The types
+
+** Structure
+
+- *organization* — a business or personal entity. Legal form drives tax
+  treatment; personal bookkeeping lives alongside the businesses without
+  mixing into their reports.
+- *venture* — one thing you are doing. Its kind is a registry key, not an
+  enum, so a new kind needs no rebuild.
+
+** Catalogue
+
+- *product* — with both =category= and =genre=, because a book's category on
+  a store is rarely the genre you actually think in.
+- *inventory_item* — reorder point, lead time, carrying cost.
+- *inventory_txn* — a signed movement. Quantity on hand is their sum, never a
+  stored field.
+
+** Revenue
+
+- *sale* — gross, discount, shipping in and out, fees, tax collected and
+  remitted, refunds. =external_id= is indexed so re-importing a marketplace
+  export cannot duplicate sales.
+
+** Money
+
+- *expense* — with a deductibility and a business-use percentage.
+- *account* — a chart of accounts; five classes.
+- *ledger_entry* — double-entry lines grouped by =transaction_id=.
+- *tax_category* — default deductibility per category.
+
+** Relations
+
+- *contact*, *interaction*, *deal* — the CRM. A deal's weighted value is its
+  value times probability, with a closed outcome overriding the stored
+  probability.
+
+** Growth
+
+- *campaign*, *newsletter*, *subscriber*, *post*.
+
+** Thinking
+
+- *idea* — scored as opportunity × confidence ÷ effort, so a cheap idea of
+  moderate promise outranks an expensive one of high promise. That is usually
+  the right answer when the binding constraint is your own time.
+- *research_note*, *task*, *document*.
+
+** Access
+
+- *user*, *api_token*, *audit_entry*.
+
+* Adding a record type
+
+In a header:
+
+#+begin_src C
+VENTURE_DECLARE_ENTITY(VentureWidget, venture_widget, WIDGET)
+#+end_src
+
+In a source file:
+
+#+begin_src C
+static const VentureFieldDecl venture_widget_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "What it is called"),
+	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_MONEY("price", "Price", "What it sells for"),
+	VENTURE_FIELD_ENUM("status", "Status", NULL,
+	                   venture_task_status_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED)
+};
+
+VENTURE_DEFINE_ENTITY(VentureWidget, venture_widget, venture_widget_fields)
+#+end_src
+
+Then register it. That is the entire type: table, REST resource, JSON and
+YAML, web list view, AI tools, audit diffs and CLI subcommands all follow.
+
+** Field kinds
+
+=string= =text= =integer= =double= =money= =boolean= =date= =datetime= =enum=
+=reference= =json=
+
+** Column flags
+
+| Flag           | Effect                                                 |
+|----------------+--------------------------------------------------------|
+| =NOT_NULL=     | required; an empty string does not satisfy it          |
+| =UNIQUE=       | uniqueness constraint                                  |
+| =INDEXED=      | an index                                               |
+| =IMMUTABLE=    | settable on insert, never on update                    |
+| =SENSITIVE=    | never serialised to an API response, log, export or AI |
+| =SEARCHABLE=   | included in free-text search                           |
+| =TRANSIENT=    | computed; never persisted                              |
+
+* Schema evolution
+
+Adding a field is a non-event: the column appears on next startup, existing
+rows get NULL, nothing is migrated by hand.
+
+Removing or retyping a field is deliberately *not* automatic. Both destroy
+data, and doing either silently on startup because someone renamed a field
+would be indefensible. Those stay a deliberate migration.
+
+* Entities
+
+An entity is a business or a personal sphere you keep books for: "my side
+business", "my personal stuff", an LLC, a trust. Every record belongs to
+exactly one, and the entity picker at the top of the sidebar decides what you
+are looking at.
+
+Create one from the picker's *+ New entity*, or at =/e/organization/new=.
+The legal form drives which tax treatment applies, so a personal entity and
+an LLC are not the same thing to the tax report.
+
+** Everything is scoped to the selected entity
+
+Lists, the dashboard and reports all follow the picker. *All entities* shows
+the portfolio at once, which is what you want for a net position and not what
+you want when filing anything.
+
+Every form carries an *Entity* select, defaulted to whichever entity is
+selected. It is the field most likely to be wrong and least likely to be
+noticed: a sale filed against the wrong business is a tax problem discovered
+months later.
+
+** Entities nest
+
+An entity can name a parent, so "my side business" can hold the LLC that
+trades under it. Selecting the parent rolls up everything beneath it, to any
+depth; selecting the child shows only its own.
+
+The picker indents children under their parent. A record still belongs to
+exactly one entity — the hierarchy decides what is *shown* together, never
+what a record is filed against, so a roll-up can never quietly move anything.
+
+An entity whose parent has been deleted still appears at the top level rather
+than vanishing, because the list is the only place you could fix it from.
+
+** Managing them
+
+=/entities= is the dedicated page: every entity with its legal form, its
+parent, how many records it holds and which one is the default. Add one, make
+another the default, or delete one. Admin or owner.
+
+Deleting is refused, with a reason, when it would leave something broken:
+
+| Refused when            | Because                                            |
+|-------------------------+----------------------------------------------------|
+| it is the only entity   | everything has to belong to something              |
+| it is the default       | the default is where unattributed records land     |
+| it holds other entities | they would be left pointing at something gone      |
+
+When the entity still holds records, the delete form asks where they should
+go rather than refusing outright — "fold my personal things into the
+business" is the actual reason people delete an entity. The move and the
+deletion happen in one transaction, and each moved record is audited
+individually, so the log shows what moved rather than records quietly
+changing hands.
+
+The deletion is soft, like every other one here: the entity is hidden and
+kept, because last year's figures still refer to it.
+
+If you delete the entity you were looking at, the picker falls back to *All
+entities* — otherwise the browser would keep asking for a scope that no
+longer exists and show nothing, with no clue why.
+
+* Adding and editing records
+
+Every record type has a working form, reachable from *New* on its list page
+and *Edit* on each row. Fields, their controls, their order and which are
+required all come from the type's field table — the same metadata the
+database schema, the REST API and the AI tools are built from.
+
+That is what makes it worth the indirection: a record type gains a full form
+the moment it is registered, including one that arrives from a plugin, with
+nobody writing HTML for it.
+
+| Field kind  | Control                                          |
+|-------------+--------------------------------------------------|
+| string      | a text box                                       |
+| text        | a text area                                      |
+| money       | a text box taking =12.34= or =12.34 USD=         |
+| integer     | a number box                                     |
+| boolean     | a checkbox                                       |
+| date        | a date picker                                    |
+| enum        | a select of the declared values                  |
+| reference   | a select of the records it can point at          |
+
+The control follows the kind the field table *declared*, not one recomputed
+from its C type. That distinction is load-bearing: a long text field and a
+short string field are both =G_TYPE_STRING=, so a recomputed kind turns every
+Notes field into a one-line box. Field order is carried the same way, because
+GObject returns properties in its own order rather than the declared one —
+without it a list's first columns are whichever fields sort early, which in
+practice meant seven empty ones.
+
+A reference picker lists every candidate rather than a page of them: a picker
+that silently omits the record you are looking for is worse than a long list,
+and these tables are small by nature.
+
+Sensitive fields — a tax identifier, a password hash — are never rendered
+into a form. That is what the flag means, and a form is exactly where a
+value would otherwise be echoed back to the browser.
+
+Deleting is soft and says so: the record is hidden and kept, because a
+deleted sale is still part of last quarter's figures.

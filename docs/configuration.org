@@ -1,0 +1,230 @@
+#+title: Configuring VENTURE
+#+description: Settings, layering and the compiled C configuration
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-08-14]
+#+updated: [2026-08-14]
+#+version: 0.1.0
+
+* Configuration
+
+#+begin_src sh
+venture --generate-config > ~/.config/venture/config.yaml
+#+end_src
+
+* Layering
+
+Applied in order, each overriding the last field by field:
+
+1. defaults compiled into the binary
+2. =/etc/venture/config.yaml=
+3. =$XDG_CONFIG_HOME/venture/config.yaml=
+4. the file named by =--config=
+5. a compiled =config.c= beside whichever file was loaded last
+6. =VENTURE_*= environment variables
+7. command-line options
+
+An unknown key is a warning, not an error — it is usually a setting from
+another version, and refusing to start over one would be worse than carrying
+on without it.
+
+* Secrets
+
+Secrets never live in the configuration. Every secret setting names an
+environment variable instead, so a config file can be committed to a dotfiles
+repository without thinking about it.
+
+| Setting                        | Reads                     |
+|--------------------------------+---------------------------|
+| =security.session_secret_env=  | the session signing secret |
+| =database.password_env=        | the database password      |
+| =ai.api_key_env=               | the provider API key       |
+
+Without a session secret one is generated at startup — secure, but sessions
+end at every restart. The server says so rather than leaving you to guess.
+
+** The database password
+
+The connection URI is written without one:
+
+#+begin_src yaml
+database:
+  uri: "postgres://venture@db.internal/venture"
+  password_env: "VENTURE_DB_PASSWORD"
+#+end_src
+
+At startup VENTURE reads that variable and splices the value into the URI's
+authority, URI-escaping it first — =openssl rand -base64= produces =/= and
+=+= routinely, and both are structural in a URI.
+
+This keeps the password out of the configuration file, out of =podman
+inspect= output, and out of anything you might paste into a bug report. A
+password already spelled out in the URI wins, so an explicit choice is never
+overridden by a stray variable in the environment. SQLite URIs are left
+alone: there is no authority to rewrite and mangling the path would break a
+working default.
+
+* Users, roles and passwords
+
+There is no default password. On first start VENTURE creates the =owner=
+account with a random one and prints it once:
+
+#+begin_src bash
+podman logs venture-dev | grep -A3 'owner account'
+#+end_src
+
+It is stored hashed, so it cannot be recovered afterwards. Lost it before
+saving it? Delete the state directory and start again, or pass
+=--owner-password= on a first run.
+
+** Changing your own password
+
+=/account=. It asks for the current password as well as the new one, even
+though the session already proves who you are — that is what stops somebody
+who walked up to an unlocked browser from locking you out of your own books.
+
+** Signing out
+
+The *Sign out* button is at the bottom of the sidebar, under the name of
+whoever is signed in.
+
+It ends the session on the server, not just in the browser. Session cookies
+are signed rather than stored, so clearing the browser's copy is all a logout
+can do on its own — anyone still holding a copy would stay signed in until it
+expired. Signing out records a cut-off on the account and every session
+issued before it is refused, which is what makes signing out on a shared
+machine mean something.
+
+That covers every session the account has open, not only the one that asked.
+When the reason for signing out is that somebody else may have the cookie,
+that is the useful behaviour.
+
+** Managing users
+
+=/users=, owner only. Add an account with a username, role and password;
+change a role; deactivate somebody; reset a password without knowing the old
+one, which is the point of a reset.
+
+A deactivated account fails authentication before the password is even
+compared, so deactivating is the way to remove access without deleting the
+history that references the account.
+
+** Roles
+
+| Role      | May                                                        |
+|-----------+------------------------------------------------------------|
+| =owner=   | everything, including managing users and reading settings   |
+| =admin=   | all data and settings; not user management                  |
+| =editor=  | read and write business data                               |
+| =viewer=  | read only                                                  |
+| =service= | a non-human integration account                            |
+
+Accounts and API tokens are administered by owners only, everywhere: the
+=/users= page, =/e/user=, =/e/api_token= and their API equivalents all
+require it. An editor able to add a user with =role: owner= — even one with
+no password yet — would be a way to grant themselves access.
+
+Only an owner may set a password, whether creating an account or changing an
+existing one.
+
+** The last owner
+
+VENTURE refuses to demote or deactivate the only active owner. There is no
+recovery from an install nobody can administer short of editing the database
+by hand, and the mistake is one click. Promote somebody else first.
+
+** Password policy
+
+Length only, from =security.password_min_length=, eight by default. Set it
+to =1= to turn the check off entirely.
+
+Eight suits what this normally is: one operator, bound to loopback, behind
+whatever already guards the machine. Raise it if you ever expose the port —
+at that point the password is the only thing between a stranger and your
+books, and the configuration validator's refusal to run without
+authentication on a non-loopback address is the other half of that.
+
+Length only, because composition rules — a digit, a symbol, mixed case — push
+people towards short passwords they mangle to satisfy a checker. Length is
+measured in characters rather than bytes, so a passphrase of accented
+characters is not let through early for being non-ASCII.
+
+** From the command line
+
+A password is not an ordinary field: it is marked sensitive, so it never
+appears in a response. It is accepted on write, and applied:
+
+#+begin_src bash
+venturectl create user username=alice display_name=Alice role=editor password='a long enough one'
+#+end_src
+
+Without this, that command would report success and produce an account that
+could never log in. A new account is active unless =active=false= is given,
+for the same reason.
+
+* Environment variables
+
+Any setting can be overridden. The name is the property uppercased with
+underscores: =VENTURE_SERVER_PORT=, =VENTURE_AI_MODEL=,
+=VENTURE_DATABASE_URI=. List settings take a comma-separated value.
+
+* Validation
+
+Checked before anything is opened, so a mistake is reported in a second
+rather than after a database has been created in the wrong place.
+
+The one hard rule: =security.require_auth: false= with a non-loopback
+=server.bind_address= is refused. This API reads and rewrites financial
+records and drives an AI that can do the same; serving it to a network with
+no authentication is not a configuration choice.
+
+Also refused: half-configured TLS (which would silently serve plain HTTP), a
+port out of range, an unrecognised database scheme, a =postgres://= URI in a
+build without libpq, a malformed currency, a fiscal month outside 1–12.
+
+* Compiled C configuration
+
+Some configuration is a decision, not a value. Put a =config.c= beside your
+=config.yaml= and it is compiled with crispy at startup — cached by content
+hash, so it costs a compile only after an edit — and its =venture_configure()=
+runs last among the files:
+
+#+begin_src C
+#include <venture/venture.h>
+
+gboolean
+venture_configure(VentureConfig *config, GError **error)
+{
+	/* The production database on the server, a scratch one everywhere
+	 * else, so one configuration works on every machine. */
+	if (0 == g_strcmp0(g_get_host_name(), "workshop"))
+		venture_config_set_database_uri(config,
+			"postgres://venture@localhost/venture");
+
+	/* An unattended run has nobody to approve a staged write. */
+	if (NULL != g_getenv("VENTURE_UNATTENDED"))
+		venture_config_set_ai_policy(config, VENTURE_AI_POLICY_AUTONOMOUS);
+
+	return TRUE;
+}
+#+end_src
+
+Return =FALSE= with =error= set to abort startup.
+
+#+begin_src sh
+venture --generate-c-config > ~/.config/venture/config.c
+#+end_src
+
+* Sections
+
+- *server* — bind address, port, TLS, request limits
+- *database* — URI, pool size, automatic migration
+- *security* — authentication, sessions, password iterations, rate limit
+- *locale* — currency, timezone, fiscal year start
+- *ai* — provider, model, policy, auto-approved tools, prompt extras
+- *automation* — the pods file, module paths, shutdown timeout
+- *plugins* — paths, crispy, declarative venture types
+- *ui* — theme, accent, page size, chat dock
+- *logging* — level, file, format
+
+Every setting is documented inline in the generated file.

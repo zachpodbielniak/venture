@@ -1,0 +1,89 @@
+#+title: Money and accounting in VENTURE
+#+description: Exact arithmetic, allocation, deductibility and the ledger
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-08-14]
+#+updated: [2026-08-14]
+#+version: 0.1.0
+
+* Money
+
+** Never a double
+
+Binary floating point cannot represent 0.10. A bookkeeping system that cannot represent a dime is not a bookkeeping system.
+
+=VentureMoney= stores an exact integer count of minor units, the ISO 4217 code, and the number of minor-unit digits that currency uses:
+
+#+begin_src C
+{ .amount = 123, .currency = "USD", .exponent = 2 }   /* $1.23 */
+{ .amount = 100, .currency = "JPY", .exponent = 0 }   /* ¥100  */
+#+end_src
+
+Carrying the exponent per value means JPY (no minor unit) and the four-digit exponents used for unit pricing work without global configuration. Treating JPY as two-decimal would inflate every yen figure by a factor of a hundred.
+
+** Rounding is half to even
+
+Always rounding a half away from zero biases a long series of roundings upward, which over a year of sales-tax lines is real money. =venture_money_multiply_rational()= rounds half to even, so the bias cancels:
+
+#+begin_src C
+2.5 -> 2      3.5 -> 4      -2.5 -> -2
+#+end_src
+
+Rounding happens once, at the end. A tax rate is applied as =amount * numerator / denominator=, not by converting to a ratio and scaling — that would round twice and drift.
+
+** Splitting preserves the total
+
+Five cents split three ways cannot be equal. What it must be is three parts that add back to five cents:
+
+#+begin_src C
+venture_money_allocate_evenly(five_cents, 3, NULL);  /* 2, 2, 1 */
+#+end_src
+
+Remainder minor units go to the largest ratios first, deterministically, because these amounts become ledger lines and must not change between runs. Use this whenever money is divided: apportioning shipping across line items, splitting a shared expense between entities, computing an average sale.
+
+** Mixed currencies fail loudly
+
+There is no exchange rate in the type. =venture_money_add()= on USD and EUR returns =NULL= with an error rather than guessing. Reports that aggregate across records group by currency and report the majority one, with a note, rather than folding them together.
+
+** Overflow is detected
+
+Every operation checks. A monetary addition that would wrap returns an error instead of a negative balance that looks legitimate.
+
+* Accounting
+
+** Net, not gross
+
+=venture_sale_get_net()= is what the P&L counts as revenue:
+
+#+begin_src
+net = gross + shipping_collected
+    - discount - fees - shipping_cost - refunded - tax_remitted
+#+end_src
+
+Gross includes money that was never yours. Sales tax collected is a liability, not income.
+
+** Deductibility
+
+=venture_expense_get_deductible_amount()= is deliberately conservative:
+
+| Deductibility | Deductible amount              |
+|---------------+--------------------------------|
+| =full=        | the whole amount               |
+| =partial=     | business-use percent of it     |
+| =capital=     | zero — depreciated, not expensed |
+| =none=        | zero                           |
+| =review=      | zero                           |
+
+=review= counting as zero is the important one: an imported expense that nobody has classified must never quietly inflate a deduction. The tax report says how many are waiting and what they total, so the figure is never presented as more complete than it is.
+
+The seeded tax categories follow the same principle — travel defaults to =review=, home office and vehicle to =partial= at zero percent. The categories that are actually contentious are exactly the ones where a confident default would do the operator a disservice.
+
+** The ledger balances or nothing is written
+
+=venture_database_save_ledger_transaction()= takes the lines of one transaction, totals the debits and credits, and refuses the whole set with =VENTURE_ERROR_BALANCE= if they differ. A half-posted transaction leaves the books wrong in a way nothing downstream can detect, which is far worse than an error the operator can see.
+
+=venture_account_kind_is_debit_normal()= encodes the one fact the rest of the ledger needs: assets and expenses grow with debits; liabilities, equity and income grow with credits.
+
+** Inventory is derived, never stored
+
+Quantity on hand is the sum of the signed =inventory_txn= rows, not a mutable field. The stock level is therefore auditable, reconstructable at any past date, and cannot drift out of step with its own history. The inventory report bounds transactions by the period's end but not its start, because stock on hand is a running balance rather than a movement within a window.

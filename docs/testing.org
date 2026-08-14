@@ -1,0 +1,97 @@
+#+title: Testing VENTURE
+#+description: Running the suite and what it guarantees
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-08-14]
+#+updated: [2026-08-14]
+#+version: 0.1.0
+
+* Testing
+
+#+begin_src sh
+make DEBUG=1 test                    # everything
+make DEBUG=1 test-one T=test-money   # one binary, verbosely
+make DEBUG=1 test-valgrind           # under valgrind, if installed
+#+end_src
+
+Every test runs against a private in-memory SQLite database, so the suite needs no external service and cannot leave state behind. Set =VENTURE_TEST_DB= to a =postgres://= URI to run the database tests against PostgreSQL instead.
+
+The whole tree builds with =-Werror= and a wide warning set in =gnu89=. A warning is a latent bug; there are none.
+
+* What the suite pins down
+
+** =test-money=
+
+The cases correspond to ways a naive money implementation loses real money: floating point that cannot hold a dime, rounding that biases upward, a split that drops a cent, a zero-decimal currency inflated a hundredfold, silent overflow, and a tolerant parser that must still reject garbage.
+
+** =test-entity=
+
+The base class is generic, so a bug in it is a bug in every record type at once. These pin down that declarative fields really store values, that JSON round-trips, that an absent member leaves a field alone (which is what gives PATCH semantics), that sensitive fields are omitted rather than nulled, that a diff redacts them, and that the derived money figures — net, deductible, weighted, ROI, idea score — are computed the way the reports expect.
+
+** =test-config=
+
+Most importantly, that the YAML document compiled into the binary actually parses and maps onto every property. Without that test the shipped defaults could silently diverge from the C table and nobody would notice until a setting failed to take effect.
+
+Also that validation refuses a non-loopback bind address with authentication off. That combination is not a configuration choice.
+
+** =test-database=
+
+Round-tripping through both backends, optimistic concurrency detecting a lost update, soft deletion hiding but keeping, the audit trail recording the prompt behind an AI change, the ledger refusing an unbalanced transaction, and the schema gaining a column without a hand-written migration.
+
+Two tests exist specifically to prove injection is impossible: a filter naming a field that does not exist is refused, and a hostile *value* is bound as a parameter and simply matches nothing — with the table still there afterwards.
+
+** =test-report=
+
+The arithmetic against known data, not merely that reports run. Also that an unreviewed expense counts as zero in the tax report and that the report says so, that CSV export defuses spreadsheet formula injection, and that HTML export escapes its content.
+
+** =test-auth=
+
+The tests where a failure is a security hole. That the three login failure modes — wrong password, unknown user, deactivated account — are textually identical, so the form cannot be used to enumerate accounts. That a token stores only a hash. That password hashes are salted and the iteration count is floored. That comparison is constant time.
+
+** =test-plugin=
+
+The claim under test is that an extension is indistinguishable from a
+built-in. The example plugin is loaded for real, and its record type is then
+expected to have a table, a registry entry and a round-trip through the
+database, while its report is expected to appear in the same registry every
+consumer reads. =make test= builds the plugins first so this cannot silently
+skip.
+
+Also that one broken plugin or venture type is skipped rather than taking the
+server down with it, that a plugin named in =plugins.required= is fatal when
+missing, and that loading the same file twice registers it once — two
+configured directories can overlap.
+
+The crispy path is exercised for real: a =.c= file is written to a plugin
+directory, compiled on demand, loaded, and its report generated. The probe
+plugin deliberately uses the reporting engine, which is only visible with
+=VENTURE_SERVER_BUILD= defined — a regression in the flags the crispy host
+passes would otherwise surface as a baffling failure in somebody's own
+plugin instead of here. That is not hypothetical: the flags were wrong until
+this test was written.
+
+For automation: the handlers are exercised through
+=venture_automation_invoke()=, including that a handler's writes are audited
+as the automation rather than as whoever was logged in, and that an audit
+entry never raises an event — the check that stops a rule that writes from
+triggering itself forever.
+
+** =test-entity=, on generated surfaces
+
+That the declared field order and the declared field kind both survive into
+the spec every generated surface reads. Neither can be recovered from the
+GObject property: properties come back in their own order, and a long text
+field is the same C type as a short string one. Both were lost at some point,
+and neither looked like an ordering or declaration problem — one showed up as
+a list of empty columns, the other as a Notes box one line tall.
+
+* Adding tests
+
+One file per subsystem, =tests/test-<area>.c=, picked up automatically by the Makefile's wildcard. Use the fixture pattern for anything needing a database:
+
+#+begin_src C
+g_test_add("/area/behaviour", Fixture, NULL,
+           fixture_set_up, test_behaviour, fixture_tear_down);
+#+end_src
+
+Write the test around the behaviour that matters rather than the function that implements it, and say in a comment what breaks if it regresses. Several tests in this suite exist because a plausible implementation would have been wrong in a way that only shows up in a tax return.

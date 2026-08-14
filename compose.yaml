@@ -1,0 +1,118 @@
+# compose.yaml - VENTURE, for working on it locally
+#
+# Copyright (C) 2026 Zach Podbielniak
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+#   podman-compose up --build
+#   xdg-open http://127.0.0.1:8747
+#
+# After changing the code, bring it down first:
+#
+#   podman-compose down && podman-compose up --build -d
+#
+# `up --build` on its own rebuilds the image and moves the tag, but does not
+# recreate a container that is already running -- so the old container keeps
+# serving the old binary and the change looks like it never happened.
+#
+# This file is for a laptop, not a server. It builds from the working tree
+# rather than pulling a published image, binds loopback only, and keeps
+# everything it writes in ./compose-data/ where you can read it, diff it,
+# and delete it. See compose.deploy.yaml for the other shape.
+#
+# The state directory is a bind mount rather than a named volume on purpose:
+# when a report is wrong, the first useful thing is to open the SQLite file
+# with the same tools you would use on any other file.
+#
+#   sqlite3 compose-data/state/venture.db .tables
+#
+# Reset everything:
+#
+#   podman-compose down && rm -rf compose-data/state/*
+
+services:
+  venture:
+    build:
+      context: .
+      containerfile: Containerfile
+      args:
+        # Debug carries the assertions and the symbols. On a local instance
+        # a crash you can read a backtrace from is worth more than the
+        # speed you lose.
+        BUILD_TYPE: debug
+        # Crispy plugins compile on demand, which needs a compiler in the
+        # image. On locally because plugins/scripts/ is mounted below and
+        # editing a report without a rebuild is the point of them.
+        WITH_CRISPY: 1
+    image: quay.io/zachpodbielniak/venture:dev
+
+    # A fixed name, so `podman logs venture-dev` and `podman exec` work
+    # without looking anything up.
+    container_name: venture-dev
+
+    # Loopback only. Not a formality: this API answers questions about your
+    # income, and a laptop joins networks you do not control.
+    ports:
+      - "127.0.0.1:8747:8747"
+
+    environment:
+      VENTURE_STATE_DIR: /var/lib/venture
+      VENTURE_DATABASE_URI: sqlite:///var/lib/venture/venture.db
+      VENTURE_SERVER_BIND_ADDRESS: 0.0.0.0
+      VENTURE_SERVER_PORT: 8747
+
+      # Left on even locally. The whole authorisation model -- API tokens,
+      # the audit actor, the AI write confirmations -- only means anything
+      # with authentication on, so testing with it off tests something
+      # other than what you ship. The bootstrap password is printed once in
+      # the log on first start:
+      #
+      #   podman logs venture-dev | grep -A3 'owner account'
+      VENTURE_SECURITY_REQUIRE_AUTH: "true"
+
+      # A fixed secret so sessions survive `podman-compose restart` and you
+      # are not logging in again every few minutes. Fine here precisely
+      # because this instance holds nothing real.
+      VENTURE_SESSION_SECRET: local-development-not-a-secret
+
+      VENTURE_PLUGINS_ENABLED: "true"
+      VENTURE_PLUGINS_ALLOW_CRISPY: "true"
+      VENTURE_PLUGINS_PATHS: /srv/plugins
+      VENTURE_PLUGINS_VENTURE_TYPE_PATHS: /srv/venture-types
+
+      VENTURE_LOGGING_LEVEL: debug
+
+      # AI is off unless you export a key before bringing this up. It stays
+      # unset rather than empty so the provider's own variable is not
+      # shadowed by a blank one.
+      VENTURE_AI_ENABLED: "${VENTURE_AI_ENABLED:-false}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+
+    volumes:
+      # Everything the server writes: the database, the automation state,
+      # the crispy cache, the AI conversation log. The automation rules are
+      # ./compose-data/state/automations.pod on the host -- edit and
+      # restart to reload them.
+      #
+      # `U` makes podman chown the directory to the uid the container runs
+      # as. Without it a rootless bind mount arrives owned by a subuid the
+      # container user cannot write to, and the server dies on its first
+      # attempt to open the database. `Z` is the SELinux relabel, which
+      # Fedora needs and which is why this is not just `:rw`.
+      - ./compose-data/state:/var/lib/venture:Z,U
+
+      # Crispy sources, read-only in the container. Edit one on the host and
+      # restart -- the compiled object is cached by content hash, so an
+      # untouched file costs a lookup rather than a compile.
+      - ./plugins/scripts:/srv/plugins:ro,Z
+
+      # YAML venture types, likewise. These need no compiler at all.
+      - ./data/venture-types:/srv/venture-types:ro,Z
+
+    healthcheck:
+      test: ["CMD", "venturectl", "--server", "http://127.0.0.1:8747", "health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+    restart: unless-stopped

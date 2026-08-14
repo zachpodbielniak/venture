@@ -1,0 +1,131 @@
+#+title: AI in VENTURE
+#+description: Tools, the confirmation policy and the audit trail
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-08-14]
+#+updated: [2026-08-14]
+#+version: 0.1.0
+
+* AI
+
+The AI is a participant, not a bolt-on. It reads the same repository the web
+UI and the CLI use — same validation, same concurrency checks, same soft
+deletion, same audit trail. What differs is authority.
+
+* Setup
+
+#+begin_src yaml
+ai:
+  enabled: true
+  provider: "claude"          # claude openai gemini grok ollama claude-code opencode
+  model: "claude-sonnet-5"
+  policy: "confirm_writes"    # read_only | confirm_writes | autonomous
+#+end_src
+
+The key comes from the provider's conventional environment variable
+(=ANTHROPIC_API_KEY=, =OPENAI_API_KEY=, ...) or from whichever variable
+=ai.api_key_env= names. It never lives in the configuration file.
+
+With no key the server still runs; the chat dock says AI is not configured
+rather than silently doing nothing.
+
+* Tools
+
+| Tool                  | Authority                                  |
+|-----------------------+--------------------------------------------|
+| =venture_list_types=  | read — the record types and their fields   |
+| =venture_query=       | read — filtered records                    |
+| =venture_report=      | read — any report                          |
+| =venture_create=      | staged unless the policy is autonomous     |
+| =venture_update=      | staged unless the policy is autonomous     |
+| =venture_delete=      | always staged, whatever the policy         |
+
+Under =read_only= the mutating tools are not registered at all, rather than
+registered and refused. A model cannot misuse a capability it was never told
+about, and refusing calls it believes it has just wastes turns.
+
+* Why writes are staged
+
+The default is =confirm_writes= because the failure mode it prevents is not a
+UI annoyance. A model that misreads "the etsy fees were wrong last month" and
+rewrites forty expense records has created a tax problem, and nothing
+downstream would notice.
+
+A mutating tool call therefore does not mutate. It builds the record with the
+change already applied *in memory*, computes a field-by-field diff, and
+returns a tool result that says plainly:
+
+#+begin_src json
+{
+  "status": "awaiting_approval",
+  "confirmation_id": "a3f9c118",
+  "summary": "Update expense \"Cover art\"",
+  "diff": { "amount": { "from": "250.00 USD", "to": "260.00 USD" } },
+  "note": "Nothing has been changed yet. ..."
+}
+#+end_src
+
+Approval applies the staged object, so approving cannot produce a different
+outcome from the diff that was shown. The system prompt tells the model the
+policy explicitly — a model that knows writes are staged behaves far better
+than one that discovers it by having a call refused.
+
+Deletion stages even under =autonomous=. Every other AI action produces a
+value a person can eyeball afterwards; removing a record is the one where
+noticing late is materially worse.
+
+Staged changes expire after =ai.confirmation_ttl= seconds. One that has sat
+unapproved for an hour almost certainly refers to a conversation the operator
+has moved on from.
+
+* Approving
+
+In the chat dock, or over the API:
+
+#+begin_src sh
+curl -H "Authorization: Bearer $VENTURE_TOKEN" \
+     localhost:8747/api/v1/confirmations
+
+curl -X POST -H "Authorization: Bearer $VENTURE_TOKEN" \
+     localhost:8747/api/v1/confirmations/a3f9c118/approve
+#+end_src
+
+Approving requires the editor role — exactly the authority an editor has, and
+exactly what a viewer must not have.
+
+* The audit trail
+
+Every AI-originated mutation records the actor kind =ai=, the model, the diff,
+and *the prompt that caused it*. That last field is why "why did this number
+change" is answerable months later.
+
+#+begin_src sh
+venturectl list audit_entry actor_kind__eq=ai order=-occurred_at
+#+end_src
+
+A rejection is audited too: knowing what the AI proposed and was denied is as
+useful as knowing what it did.
+
+* What the model is protected from
+
+- Sensitive fields are withheld from tool results exactly as from an API
+  response, so a password hash or tax identifier never enters its context.
+- Query results are capped regardless of the requested limit; a model that
+  asks for every row would blow its own context and learn nothing.
+- Filters go through the same closed operator set as every other caller, so a
+  hallucinated filter is an error message rather than SQL.
+- An unknown record type or report returns the list of valid ones, turning a
+  dead end into a usable next step.
+
+* House rules
+
+=ai.system_prompt_extra= is appended to the system prompt and is the cheapest
+place to teach it your conventions:
+
+#+begin_src yaml
+ai:
+  system_prompt_extra: >
+    Amounts are US dollars unless stated otherwise. When asked about "the
+    business", assume the default organization. Never modify an expense that
+    has already been included in a filed tax report.
+#+end_src

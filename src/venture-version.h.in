@@ -1,0 +1,131 @@
+/*
+ * venture-version.h - Compile-time and run-time version information
+ *
+ * Copyright (C) 2026 Zach Podbielniak
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * This file is generated from venture-version.h.in by the build system.
+ * Do not edit it directly; edit the .in template instead.
+ */
+
+#ifndef VENTURE_VERSION_H
+#define VENTURE_VERSION_H
+
+#if !defined(VENTURE_INSIDE) && !defined(VENTURE_COMPILATION)
+#error "Only <venture.h> can be included directly."
+#endif
+
+#include <glib.h>
+
+G_BEGIN_DECLS
+
+/**
+ * VENTURE_VERSION_MAJOR_S:
+ *
+ * The major version of VENTURE this header was generated for.
+ */
+#define VENTURE_VERSION_MAJOR_S (@VENTURE_VERSION_MAJOR@)
+
+/**
+ * VENTURE_VERSION_MINOR_S:
+ *
+ * The minor version of VENTURE this header was generated for.
+ */
+#define VENTURE_VERSION_MINOR_S (@VENTURE_VERSION_MINOR@)
+
+/**
+ * VENTURE_VERSION_MICRO_S:
+ *
+ * The micro version of VENTURE this header was generated for.
+ */
+#define VENTURE_VERSION_MICRO_S (@VENTURE_VERSION_MICRO@)
+
+/**
+ * VENTURE_VERSION_S:
+ *
+ * The full version of VENTURE as a string, e.g. "0.1.0".
+ */
+#define VENTURE_VERSION_S "@VENTURE_VERSION@"
+
+/**
+ * VENTURE_API_VERSION_S:
+ *
+ * The API version, used for the pkg-config name, the installed header
+ * directory and the REST API prefix.
+ */
+#define VENTURE_API_VERSION_S "@VENTURE_API_VERSION@"
+
+/**
+ * VENTURE_CHECK_VERSION:
+ * @major: required major version
+ * @minor: required minor version
+ * @micro: required micro version
+ *
+ * Compile-time version check.
+ *
+ * Returns: %TRUE if the VENTURE headers are at least the given version
+ */
+#define VENTURE_CHECK_VERSION(major, minor, micro)                    \
+	(VENTURE_VERSION_MAJOR_S > (major) ||                             \
+	 (VENTURE_VERSION_MAJOR_S == (major) &&                           \
+	  VENTURE_VERSION_MINOR_S > (minor)) ||                           \
+	 (VENTURE_VERSION_MAJOR_S == (major) &&                           \
+	  VENTURE_VERSION_MINOR_S == (minor) &&                           \
+	  VENTURE_VERSION_MICRO_S >= (micro)))
+
+/**
+ * venture_get_version_string:
+ *
+ * Retrieves the version of the VENTURE library actually linked into the
+ * process, which may differ from %VENTURE_VERSION_S if the headers and the
+ * library are out of step.
+ *
+ * Returns: (transfer none): the version string, e.g. "0.1.0"
+ */
+const gchar *
+venture_get_version_string(void);
+
+/**
+ * venture_get_version_major:
+ *
+ * Returns: the major version of the linked VENTURE library
+ */
+guint
+venture_get_version_major(void);
+
+/**
+ * venture_get_version_minor:
+ *
+ * Returns: the minor version of the linked VENTURE library
+ */
+guint
+venture_get_version_minor(void);
+
+/**
+ * venture_get_version_micro:
+ *
+ * Returns: the micro version of the linked VENTURE library
+ */
+guint
+venture_get_version_micro(void);
+
+/**
+ * venture_check_version:
+ * @major: required major version
+ * @minor: required minor version
+ * @micro: required micro version
+ *
+ * Run-time version check against the linked library.
+ *
+ * Returns: %TRUE if the linked library is at least the given version
+ */
+gboolean
+venture_check_version(
+	guint	major,
+	guint	minor,
+	guint	micro
+);
+
+G_END_DECLS
+
+#endif /* VENTURE_VERSION_H */

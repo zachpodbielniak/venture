@@ -1,0 +1,205 @@
+#+title: Extending VENTURE
+#+description: Plugins, crispy scripts and declarative venture types
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-08-14]
+#+updated: [2026-08-14]
+#+version: 0.1.0
+
+* Extending VENTURE
+
+Four mechanisms, in ascending order of effort.
+
+All four are loaded by =VenturePluginManager= at startup, from the
+directories named by =plugins.paths= and =plugins.venture_type_paths=, plus
+the compiled-in =VENTURE_PLUGINDIR=. It dispatches on the file's extension:
+=.so= is a native plugin, =.c= is a crispy script, =.yaml= is a venture type.
+
+A plugin that fails to load is skipped with a warning rather than stopping
+the server, because one broken extension should not cost you access to your
+data. The exception is anything named in =plugins.required=: that list exists
+precisely to say "this install is wrong without it", and a failure there is
+fatal.
+
+For development, =VENTURE_PLUGIN_PATH= and =VENTURE_VENTURE_TYPE_PATH= add
+directories without editing the configuration; =make run= sets both to the
+build tree.
+
+* 1. A declarative venture type
+
+A new kind of venture — its fields, metrics and report columns — is a YAML
+file in a directory named by =plugins.venture_type_paths=. No code, no
+rebuild, no restart beyond the next one.
+
+#+begin_src yaml
+name: etsy
+label: Etsy shop
+description: A print-on-demand or handmade storefront
+
+fields:
+  shop_name:     string
+  listing_fee:   money
+  section:
+    type: string
+    label: Shop section
+    indexed: true
+  material:
+    type: enum
+    choices: [wood, acrylic, paper, metal]
+
+metrics:
+  - listings_active
+  - revenue_per_listing
+#+end_src
+
+* 2. A crispy script
+
+Drop a =.c= file into a plugin directory. crispy compiles it on demand and
+caches the result by content hash, so it costs a compile only after an edit.
+The compiled object resolves =venture_*= against the running executable, so
+the full API is available with no link line to get right.
+
+#+begin_src C
+#include <venture/venture.h>
+
+gboolean venture_plugin_register(VentureContext *context, GError **error);
+
+gboolean
+venture_plugin_register(VentureContext *context, GError **error)
+{
+	venture_report_registry_add(
+		venture_context_get_report_registry(context),
+		VENTURE_REPORT(venture_func_report_new(
+			"royalties", "Royalty statement",
+			"Per-title royalties for the period", my_royalty_report)));
+
+	return TRUE;
+}
+#+end_src
+
+A complete, working one is in [[file:../plugins/scripts/royalties.c][=plugins/scripts/royalties.c=]] — royalties by genre,
+around 250 lines with the comments. Copy it into a plugin directory to see
+the mechanism work:
+
+#+begin_src bash
+cp plugins/scripts/royalties.c ~/.local/share/venture/plugins/
+#+end_src
+
+Declare the entry points as well as defining them. The tree builds with
+=-Wmissing-declarations=, and so should you; a plugin is one translation unit
+with no header of its own, so nothing else declares them.
+
+The compiled object is cached by content hash under =<state_dir>/crispy-cache=.
+An unchanged source costs a lookup on the next start rather than a compile —
+in the region of 50ms against 250ms here. Editing the file produces a new
+hash and a new object; touching it without changing it does not.
+
+Compile errors are reported as plugin load failures, naming the file, so a
+typo shows up as a skipped plugin with gcc's message rather than a mystery.
+
+Set =plugins.allow_crispy: false= to turn this off. It runs a compiler over
+files in the plugin directories, so enable it only where you trust what is in
+them — which, for a personal install, you do.
+
+* 3. A native plugin
+
+A compiled =.so= in =plugins.paths=, loaded with GModule. Same entry point,
+same API; use it when you want a build step and a Makefile of your own.
+
+Plugins are never unloaded. A loaded object may have registered a GType, and
+pulling the code out from under a live type crashes on next use.
+
+* 4. A record type in C
+
+The most powerful and still small. See [[file:data-model.org][the data model]] — a field table and a
+registration is the whole type, and it becomes a database table, a REST
+resource, a web view, an AI tool and a set of CLI subcommands at once.
+
+* Automations
+
+Scheduled work is described in podomation's DSL, in the file named by
+=automation.pods_file=:
+
+#+begin_src
+pod nightly = cron->new("0 2 * * *");
+nightly->on_tick => venture->report("pnl", "yesterday")
+    | log->write_info("Yesterday: {pipe->summary}");
+
+pod restock = timer->new(3600000);
+restock->on_tick => venture->low_stock()
+    | ntfy->send("Restock needed: {pipe->count} items\n{pipe->detail}");
+
+pod watch = venture->new();
+watch->on_created => venture->count("sale");
+#+end_src
+
+The engine is embedded in the server process, so an automation sees the same
+database and the same validation as everything else. =VentureDatabase= emits
+=entity-saved= and =entity-deleted=, which is how "when a sale is recorded, do
+X" works without the write path knowing automations exist.
+
+** The =venture= pod module
+
+Registered in-process rather than loaded as a =.so=, because it needs the
+=VentureContext= and an out-of-process module could not be handed one.
+
+Events, raised on any record change: =on_created=, =on_updated=,
+=on_deleted=.
+
+*An automation's own writes do not raise events.* Otherwise the obvious rule
+
+#+begin_src
+watch->on_created => venture->create("research_note", "title=seen");
+#+end_src
+
+creates a record, which raises =on_created=, which creates a record, until
+the disk is full. There is no useful depth limit to pick instead — one level
+of cascade is as arbitrary as ten — and a rule that genuinely needs to chain
+can call the next step in its own pipeline, where the author can see it.
+Audit entries never raise events either, for the same reason.
+
+Handlers:
+
+| Handler      | Arguments                       | What it answers                       |
+|--------------+---------------------------------+---------------------------------------|
+| =query=      | type, then =field=value= pairs  | how many records match                |
+| =count=      | type, then =field=value= pairs  | the same, read as a count             |
+| =report=     | report name, period             | a rendered report                     |
+| =create=     | type, then =field=value= pairs  | writes a record                       |
+| =low_stock=  | —                               | items at or below their reorder point |
+
+Fields are written as =field=value=, the same syntax =venturectl= and the
+REST API take, with the same =field__operator=value= filters:
+
+#+begin_src
+venture->create("idea", "title=A pop-up shop", "status=researching");
+venture->query("sale", "channel=etsy", "gross__gte=50");
+#+end_src
+
+*Not JSON*, even though the API takes JSON here. podomation's DSL
+interpolates =\{...\}= inside string literals, so every brace in a JSON
+argument reads as a variable reference and the rule fails to interpolate
+rather than doing anything. A JSON argument is still accepted if it starts
+with a brace — for callers that are not the DSL — but from a rule, use pairs.
+
+Every handler answers in the same shape — =count=, =summary=, =detail= — so a
+downstream pipe stage can read =\{pipe->count\}= without knowing which
+handler produced it. Writes are audited as =VENTURE_ACTOR_KIND_AUTOMATION=,
+so reviewing the log later answers "did I do this, or did a rule?".
+
+=venture_automation_invoke()= runs a handler immediately, as though an event
+had triggered it. It exists because the alternative way to find out what a
+rule will do is to wait for its trigger and read the log afterwards.
+
+* What extensions get for free
+
+Anything registered through these mechanisms is indistinguishable from a
+built-in to every consumer:
+
+- record types get a table, REST CRUD, serialisation, a list view, AI tools,
+  audit diffs and CLI subcommands
+- reports appear in the CLI, the web UI, the API and the AI's report tool
+- both are covered by the same validation, concurrency and audit guarantees
+
+That is the point of deriving everything from property metadata rather than
+writing it out: there is no second path for extensions to fall short on.

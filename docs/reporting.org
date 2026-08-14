@@ -1,0 +1,105 @@
+#+title: Reporting in VENTURE
+#+description: The built-in reports and how to write one
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-08-14]
+#+updated: [2026-08-14]
+#+version: 0.1.0
+
+* Reporting
+
+A report turns a period and some options into headline metrics and a table of
+rows. =VentureReportResult= is the single shape every report produces, which
+is what lets the web UI, the CLI, the AI and the CSV exporter render any
+report — including one a plugin added this morning — without knowing anything
+about it.
+
+* The built-in reports
+
+| Name         | Answers                                                      |
+|--------------+--------------------------------------------------------------|
+| =pnl=        | revenue, expenses, profit; deductible shown separately       |
+| =ventures=   | sales, revenue, expenses and profit per venture              |
+| =categories= | sales grouped by a product field; genre by default           |
+| =inventory=  | quantity on hand and carrying value; reorder flags           |
+| =tax=        | expenses by category with deductible amounts                 |
+| =campaigns=  | spend, attributed revenue, return                            |
+| =pipeline=   | open deals by stage, probability-weighted                    |
+| =monthly=    | revenue, expenses and profit month by month                  |
+| =ideas=      | ideas ranked by opportunity and confidence against effort    |
+
+#+begin_src sh
+venturectl report                       # list them
+venturectl report pnl this_quarter
+venturectl report categories fy         # by genre over the fiscal year
+curl '.../api/v1/reports/tax?period=2026&format=csv'
+#+end_src
+
+=categories= takes =group_by=, so the same report answers "how did each genre
+do", "how did each format do" and "how did each product do".
+
+* Design notes
+
+Reports aggregate in C wherever money is involved. A =SUM= over mixed
+currencies would produce a confidently wrong number, so totals track the
+currency of the records and exclude — rather than convert — the minority ones.
+
+A figure is never presented as more complete than it is. The P&L shows the
+deductible total beside the cash total and says why they differ; the tax
+report counts unreviewed expenses as zero and says how many are waiting.
+
+Metrics carry a direction. =venture_metric_set_higher_is_better(metric, FALSE)=
+on a cost or an awaiting-review count means the UI colours a rise red rather
+than green.
+
+Every output format comes from one structure, so a report is written once and
+appears correctly in the browser, the terminal, a CSV export and an org file.
+CSV escaping defuses a leading =​== that a spreadsheet would otherwise execute
+as a formula; HTML output escapes its content.
+
+* Writing one
+
+A report is a function:
+
+#+begin_src C
+static VentureReportResult *
+my_report(VentureContext    *context,
+          VentureDateRange  *period,
+          JsonObject        *options,
+          GError           **error)
+{
+	g_autoptr(VentureReportResult) result = NULL;
+
+	result = venture_report_result_new("My report", period);
+
+	venture_report_result_add_metric(result,
+		venture_metric_new_money("total", "Total", amount));
+
+	venture_report_result_add_column(result, "name", "Name",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "value", "Value",
+	                                 VENTURE_REPORT_COLUMN_MONEY);
+
+	venture_report_result_begin_row(result);
+	venture_report_result_set_text(result, "name", "A row");
+	venture_report_result_set_money(result, "value", amount);
+
+	return g_steal_pointer(&result);
+}
+#+end_src
+
+Register it:
+
+#+begin_src C
+venture_report_registry_add(registry,
+	VENTURE_REPORT(venture_func_report_new("mine", "My report",
+	                                       "What it answers", my_report)));
+#+end_src
+
+It now appears in the CLI, the web UI, the REST API and the AI's report tool.
+
+A plugin needing state can subclass =VentureReport= instead and override
+=generate=; both end up in the same registry and are indistinguishable to
+every consumer. Registering a name that already exists replaces it, so a
+plugin can deliberately override a built-in with a better version for its
+data.

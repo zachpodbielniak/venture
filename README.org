@@ -1,0 +1,194 @@
+#+title: VENTURE
+#+description: An ERP/CRM hybrid in C for running a portfolio of business ventures
+#+authors: Zach Podbielniak
+#+categories: projects
+#+created: [2026-08-14]
+#+updated: [2026-08-14]
+#+version: 0.1.0
+
+* VENTURE
+
+VENTURE is an ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of small business ventures rather than one company. It tracks ventures and their performance, inventory, contacts and deals, expenses, tax write-offs and P&L across multiple entities — businesses and personal alike — with AI as a first-class participant.
+
+It is built for one operator running several things at once: a book imprint, an Etsy shop, a newsletter, whatever comes next. The design assumption throughout is that adding a new kind of venture should cost a field table, not a project.
+
+** Two binaries
+
+| Binary       | What it is                                                      |
+|--------------+-----------------------------------------------------------------|
+| =venture=    | The server. REST API, HTMX web UI, reporting, AI                 |
+| =venturectl= | The CLI. Drives the server over its REST API                     |
+
+Both link every vendored dependency statically, so neither has a runtime dependency on =libyaml-glib.so=, =libhtmx-glib.so=, =libai-glib.so=, =liborm-glib.so=, =libpodomation.so= or =libcrispy.so=. Only true system libraries stay dynamic.
+
+Either can be built alone. =make venturectl= works on a machine that cannot build the server at all — no libpq, no sqlite headers, no readline — because the CLI links only =libventure-core.a= and yaml-glib.
+
+** Building
+
+#+begin_src sh
+git submodule update --init --recursive
+make DEBUG=1              # debug build into build/debug
+make                      # release build into build/release
+make test                 # GTest suite
+make run                  # run the server against a scratch SQLite database
+#+end_src
+
+See =make help= for the full target list and =make show-config= for the resolved configuration.
+
+*** Fedora build dependencies
+
+=make list-deps= prints the package names to layer into an image build:
+
+#+begin_src
+gcc make pkgconf-pkg-config glib2-devel libyaml-devel json-glib-devel
+libsoup3-devel libxml2-devel sqlite-devel libpq-devel readline-devel
+gobject-introspection-devel
+#+end_src
+
+Plus =libetpan-devel= and =libgudev-devel=, which podomation's mail and
+device modules need. They are easy to miss: podomation resolves its whole
+dependency set in one =pkg-config= call, so a single missing package empties
+the flags and the build fails on a missing =glib.h=.
+
+*** Containers
+
+#+begin_src sh
+podman-compose up --build                        # local, SQLite, loopback
+podman-compose -f compose.deploy.yaml up -d      # example: PostgreSQL
+#+end_src
+
+The image is =quay.io/zachpodbielniak/venture=, built from
+[[file:Containerfile][Containerfile]] on =registry.fedoraproject.org/fedora:44=. See
+[[file:docs/containers.org][the container documentation]] for what the two compose files differ on and why.
+
+** Dependencies
+
+All are git submodules under =deps/= and are treated as the canonical copies. Several of them vendor each other. The build deliberately does *not* redirect their sub-dependency paths: =ar t= confirms no dependency's archive embeds another's objects, so each carries unresolved references that this tree's single canonical copy satisfies at link time.
+
+| Dependency  | Role                                                        |
+|-------------+-------------------------------------------------------------|
+| =yaml-glib= | YAML parsing and generation for GObject                     |
+| =htmx-glib= | HTMX-powered web application framework                      |
+| =ai-glib=   | AI providers with tool-call support                         |
+| =orm-glib=  | ORM and serialization; SQLite and PostgreSQL dialects       |
+| =podomation=| Event-driven automation engine, embedded in the server       |
+| =crispy=    | Runtime C scripting, used for compiled config and plugins   |
+
+** Design
+
+*** Everything derives from GObject properties
+
+=VentureEntity= is the abstract base every persisted record derives from. Define a subclass, install GObject properties, register it, and you automatically get a database table, REST CRUD, JSON and YAML serialisation, a web form, AI tools, audit records and CLI subcommands — without writing SQL, a route, a serialiser or a tool definition.
+
+Per-property persistence hints (=primary_key=, =indexed=, =unique=, =immutable=, =sensitive=, =searchable=, =transient=) are attached with =venture_entity_class_set_column_flags()=. Foreign keys are declared with =venture_entity_class_set_reference()=. That metadata is what the schema builder, the form renderer, the AI schema generator and the audit diff all read.
+
+*** Money is never a double
+
+=VentureMoney= stores an exact integer count of minor units alongside the ISO 4217 code and that currency's exponent. Every operation checks for overflow; rounding, where unavoidable, is half to even; =venture_money_allocate()= splits an amount so the parts sum back to the original exactly. Arithmetic across currencies is refused rather than guessed.
+
+*** Extending it
+
+Adding a record type in C is a field table and a registration, and it becomes
+a table, a REST resource, a web view, AI tools and CLI subcommands at once.
+See [[file:docs/data-model.org][the data model]].
+
+There are four ways in, in increasing order of power: a YAML venture type
+(no code), a podomation rule (a DSL), a crispy =.c= script compiled on
+demand, and a native =.so= plugin. All four are loaded by
+=VenturePluginManager= from the same configured directories. See
+[[file:docs/extending.org][extending]].
+
+*** Multiple entities, nested
+
+An entity is a business or a personal sphere you keep books for. Every record
+belongs to exactly one, and an entity may name a parent, so "my side
+business" can hold the LLC trading under it. The picker in the sidebar scopes
+the whole UI; selecting a parent rolls up everything beneath it. The
+hierarchy decides what is shown together, never what a record is filed
+against.
+
+*** Every record type has a form
+
+Lists, forms, controls, field order and validation all come from the type's
+field table — the same metadata behind the schema, the REST API and the AI
+tools. A record type gains a working form the moment it is registered,
+including one from a plugin.
+
+What the table declares is carried through rather than recomputed. A kind
+derived from the C type cannot tell a long text field from a short string
+one, and GObject returns properties in its own order rather than the declared
+one; losing either turns a Notes box into a one-line input or a list's first
+columns into empty ones.
+
+*** AI has authority, but bounded
+
+AI tool calls read freely. Anything that would change a record is staged as a =VentureAiConfirmation= carrying a diff, and applies only after approval. Every applied mutation is audited with the prompt that caused it. The policy is configurable per install and per tool; the default is =confirm_writes=, because a hallucinated tool call that rewrites an expense is a tax problem rather than a UI annoyance.
+
+** Layout
+
+#+begin_src
+src/
+  venture.h            umbrella header; the only one to include
+  boxed/               VentureMoney, VentureDateRange, VentureMetric,
+                       VentureFieldSpec
+  interfaces/          VentureSerializable, VentureReportable,
+                       VentureToolProvider
+  model/               VentureEntity and every record type
+  config/              YAML + compiled C configuration
+  db/                  orm-glib layer, repository, query, migrations
+  report/              reporting engine
+  ai/                  provider wiring, tools, sessions, confirmations
+  automation/          embedded podomation engine
+  plugin/              plugin host
+  web/                 REST API and HTMX UI
+  util/                JSON, string and time helpers
+  cli/                 venturectl
+modules/               out-of-process podomation modules; the `venture`
+                       module itself is in src/automation, because it
+                       needs the context
+plugins/example/       a worked native plugin, built by `make plugins`
+plugins/scripts/       worked crispy plugins, never built -- the server
+                       compiles them on demand
+data/venture-types/    declarative venture type definitions
+docs/                  org-mode documentation
+tests/                 GTest suite
+Containerfile          two-stage image build on fedora:44
+compose.yaml           local: builds from the tree, SQLite, loopback
+compose.deploy.yaml    example deployment: PostgreSQL, named volumes
+#+end_src
+
+** Status
+
+Working and covered by tests:
+
+- the build system, both binaries, static linking of all six dependencies
+- =VentureMoney= and the boxed types
+- =VentureEntity=, the 24 record types, the registry
+- configuration, including the compiled C configuration via crispy
+- the database layer over orm-glib, the query builder, schema derivation
+- the reporting engine and nine built-in reports
+- authentication, sessions, API tokens, the REST API, the HTMX UI
+- the AI service, its tools and the write-confirmation policy
+- =venturectl=
+- =VenturePluginManager= and all four extension mechanisms: native =.so=
+  plugins, crispy =.c= scripts, podomation rules and YAML venture types
+- =VentureAutomation=: the embedded podomation engine, VENTURE's =venture=
+  pod module and its record-change events
+- multiple entities, nested, with per-entity scoping and roll-up
+- generated create and edit forms for every record type
+- users, roles, password changes and session invalidation on sign-out
+- a container image and two compose files
+
+Known limits, as opposed to missing pieces:
+
+- The suite runs against SQLite by default. PostgreSQL is exercised by
+  bringing up =compose.deploy.yaml=; point =VENTURE_TEST_DB= at an instance
+  to run the suite against that dialect too.
+- Newsletter and blog *outreach* is modelled — contacts, campaigns,
+  segments — but nothing sends mail. That is deliberate: sending is an
+  integration, and which provider comes first is a decision that has not
+  been made.
+
+** Licence
+
+AGPLv3 or later. See [[file:LICENSE][LICENSE]].

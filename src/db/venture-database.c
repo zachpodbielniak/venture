@@ -1,0 +1,1569 @@
+/*
+ * venture-database.c - Storage and record persistence
+ *
+ * Copyright (C) 2026 Zach Podbielniak
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ */
+
+#include "venture.h"
+
+#include <string.h>
+
+/*
+ * The schema version this build expects. Bumped when a change needs more
+ * than the automatic column addition the schema layer performs -- a data
+ * backfill, a rename, a constraint that existing rows would violate.
+ */
+#define VENTURE_DATABASE_SCHEMA_VERSION (1)
+
+struct _VentureDatabase
+{
+	GObject parent_instance;
+
+	OrmEngine		*engine;
+	OrmConnection		*connection;
+	OrmTransaction		*transaction;
+	VentureDatabaseBackend	 backend;
+	gchar			*uri;
+
+	/*
+	 * Serialises every operation. SQLite admits one writer at a time
+	 * regardless, and for a single-operator system one connection behind
+	 * a mutex is both simpler and easier to reason about than a pool --
+	 * there is no interleaving to get wrong.
+	 */
+	GRecMutex		 lock;
+};
+
+enum
+{
+	SIGNAL_ENTITY_SAVED,
+	SIGNAL_ENTITY_DELETED,
+	SIGNAL_AUDIT,
+	N_SIGNALS
+};
+
+static guint venture_database_signals[N_SIGNALS] = { 0 };
+
+G_DEFINE_FINAL_TYPE(VentureDatabase, venture_database, G_TYPE_OBJECT)
+
+static void
+venture_database_finalize(GObject *object)
+{
+	VentureDatabase *self;
+
+	self = VENTURE_DATABASE(object);
+
+	g_clear_object(&self->transaction);
+
+	if (NULL != self->connection)
+	{
+		orm_connection_close(self->connection);
+		g_clear_object(&self->connection);
+	}
+
+	g_clear_object(&self->engine);
+	g_clear_pointer(&self->uri, g_free);
+	g_rec_mutex_clear(&self->lock);
+
+	G_OBJECT_CLASS(venture_database_parent_class)->finalize(object);
+}
+
+static void
+venture_database_class_init(VentureDatabaseClass *klass)
+{
+	G_OBJECT_CLASS(klass)->finalize = venture_database_finalize;
+
+	/**
+	 * VentureDatabase::entity-saved:
+	 * @self: the database
+	 * @entity: the record that was written
+	 * @created: %TRUE if it was inserted rather than updated
+	 *
+	 * Emitted after a successful write. The automation engine listens for
+	 * this to fire record-change events, which is how "when a sale is
+	 * recorded, do X" works without the write path knowing about
+	 * automations at all.
+	 */
+	venture_database_signals[SIGNAL_ENTITY_SAVED] =
+		g_signal_new("entity-saved", G_TYPE_FROM_CLASS(klass),
+		             G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+		             G_TYPE_NONE, 2, VENTURE_TYPE_ENTITY, G_TYPE_BOOLEAN);
+
+	/**
+	 * VentureDatabase::entity-deleted:
+	 * @self: the database
+	 * @entity: the record that was removed
+	 */
+	venture_database_signals[SIGNAL_ENTITY_DELETED] =
+		g_signal_new("entity-deleted", G_TYPE_FROM_CLASS(klass),
+		             G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+		             G_TYPE_NONE, 1, VENTURE_TYPE_ENTITY);
+
+	/**
+	 * VentureDatabase::audit:
+	 * @self: the database
+	 * @entry: the audit record just written
+	 */
+	venture_database_signals[SIGNAL_AUDIT] =
+		g_signal_new("audit", G_TYPE_FROM_CLASS(klass),
+		             G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+		             G_TYPE_NONE, 1, VENTURE_TYPE_ENTITY);
+}
+
+static void
+venture_database_init(VentureDatabase *self)
+{
+	/* Recursive, because a write inside a transaction re-enters through
+	 * the same lock and a plain mutex would deadlock on itself. */
+	g_rec_mutex_init(&self->lock);
+}
+
+/* --- Opening ------------------------------------------------------------- */
+
+VentureDatabase *
+venture_database_new(
+	const gchar	 *uri,
+	GError		**error
+){
+	g_autoptr(VentureDatabase) self = NULL;
+	g_autoptr(GError) local_error = NULL;
+	g_autofree gchar *safe_uri = NULL;
+
+	g_return_val_if_fail(NULL != uri, NULL);
+
+	self = g_object_new(VENTURE_TYPE_DATABASE, NULL);
+	self->uri = g_strdup(uri);
+
+	/*
+	 * Every message below names the URI, and a connection failure is
+	 * precisely when someone copies that message into a bug report or a
+	 * chat window. The password must not travel with it.
+	 */
+	safe_uri = venture_string_redact_uri(uri);
+
+	if (g_str_has_prefix(uri, "sqlite://"))
+	{
+		const gchar *path;
+
+		self->backend = VENTURE_DATABASE_BACKEND_SQLITE;
+		path = uri + strlen("sqlite://");
+
+		/* Create the containing directory rather than failing on a
+		 * fresh install where only the parent exists. */
+		if ((0 != g_strcmp0(path, ":memory:")) && g_path_is_absolute(path))
+		{
+			g_autofree gchar *directory = NULL;
+
+			directory = g_path_get_dirname(path);
+			g_mkdir_with_parents(directory, 0700);
+		}
+
+		self->engine = orm_engine_new_sqlite(path, &local_error);
+	}
+	else
+	{
+		self->backend = VENTURE_DATABASE_BACKEND_POSTGRES;
+		self->engine = orm_engine_new(uri, &local_error);
+	}
+
+	if (NULL == self->engine)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+		            "Cannot open %s: %s", safe_uri,
+		            (NULL != local_error) ? local_error->message
+		                                  : "unknown failure");
+		return NULL;
+	}
+
+	self->connection = orm_engine_connect(self->engine, &local_error);
+
+	if (NULL == self->connection)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+		            "Cannot connect to %s: %s", safe_uri,
+		            (NULL != local_error) ? local_error->message
+		                                  : "unknown failure");
+		return NULL;
+	}
+
+	if (VENTURE_DATABASE_BACKEND_SQLITE == self->backend)
+	{
+		/* Write-ahead logging lets a reader run while a write is in
+		 * flight, which matters because the web UI polls while an
+		 * import or an automation is writing. Foreign keys are off by
+		 * default in SQLite and have to be asked for. */
+		orm_connection_execute(self->connection, "PRAGMA journal_mode=WAL",
+		                       NULL);
+		orm_connection_execute(self->connection, "PRAGMA foreign_keys=ON",
+		                       NULL);
+		orm_connection_execute(self->connection, "PRAGMA synchronous=NORMAL",
+		                       NULL);
+	}
+
+	return g_steal_pointer(&self);
+}
+
+/*
+ * Inserts the password from the environment into @uri's authority, so that
+ * `postgres://venture@host/db` becomes `postgres://venture:secret@host/db`.
+ *
+ * Returns: (transfer full) (nullable): the rewritten URI, or %NULL if there
+ *   is nothing to do -- no variable named, nothing in it, or a password
+ *   already present
+ */
+static gchar *
+venture_database_uri_apply_password(
+	const gchar	*uri,
+	VentureConfig	*config
+){
+	g_autofree gchar *variable = NULL;
+	g_autofree gchar *escaped = NULL;
+	const gchar *password;
+	const gchar *scheme_end;
+	const gchar *authority;
+	const gchar *at;
+
+	g_object_get(config, "database-password-env", &variable, NULL);
+
+	if (venture_string_is_empty(variable))
+		return NULL;
+
+	password = g_getenv(variable);
+
+	if (venture_string_is_empty(password))
+		return NULL;
+
+	scheme_end = strstr(uri, "://");
+
+	if (NULL == scheme_end)
+		return NULL;
+
+	authority = scheme_end + 3;
+	at = strchr(authority, '@');
+
+	/* No userinfo at all: there is no user to attach a password to, and
+	 * inventing one would connect as somebody unexpected. */
+	if (NULL == at)
+		return NULL;
+
+	/* A colon before the @ means a password is already spelled out. */
+	if (NULL != memchr(authority, ':', (gsize)(at - authority)))
+		return NULL;
+
+	/* The password may contain characters that are not legal in a URI --
+	 * `openssl rand -base64` happily produces `/` and `+`. */
+	escaped = g_uri_escape_string(password, NULL, FALSE);
+
+	return g_strdup_printf("%.*s:%s%s",
+	                       (int)(at - uri), uri, escaped, at);
+}
+
+gchar *
+venture_database_build_uri(VentureConfig *config)
+{
+	g_autofree gchar *uri = NULL;
+	const gchar *configured;
+
+	g_return_val_if_fail(VENTURE_IS_CONFIG(config), NULL);
+
+	configured = venture_config_get_database_uri(config);
+
+	/* A relative SQLite path is resolved against the state directory, so
+	 * the default configuration works from any working directory. */
+	if (g_str_has_prefix(configured, "sqlite://"))
+	{
+		const gchar *path;
+
+		path = configured + strlen("sqlite://");
+
+		if ((0 != g_strcmp0(path, ":memory:")) && !g_path_is_absolute(path))
+		{
+			g_autofree gchar *resolved = NULL;
+
+			resolved = venture_config_resolve_path(config, path);
+			uri = g_strconcat("sqlite://", resolved, NULL);
+		}
+	}
+
+	if (NULL == uri)
+		uri = g_strdup(configured);
+
+	/*
+	 * The password comes from the environment variable named by
+	 * database.password_env, never from the configuration file. This is
+	 * the whole point of that setting: a URI in a file that is in git
+	 * must not carry a credential, and a URI in `podman inspect` output
+	 * must not either.
+	 *
+	 * A password already present in the URI wins, so someone who
+	 * deliberately spelled one out is not overridden by a stray variable
+	 * in their environment.
+	 */
+	if (!g_str_has_prefix(uri, "sqlite://"))
+	{
+		g_autofree gchar *with_password = NULL;
+
+		with_password = venture_database_uri_apply_password(uri, config);
+
+		if (NULL != with_password)
+		{
+			g_free(uri);
+			uri = g_steal_pointer(&with_password);
+		}
+	}
+
+	return g_steal_pointer(&uri);
+}
+
+VentureDatabase *
+venture_database_new_for_config(
+	VentureConfig	 *config,
+	GError		**error
+){
+	g_autofree gchar *uri = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_CONFIG(config), NULL);
+
+	uri = venture_database_build_uri(config);
+
+	return venture_database_new(uri, error);
+}
+
+VentureDatabaseBackend
+venture_database_get_backend(VentureDatabase *self)
+{
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self),
+	                     VENTURE_DATABASE_BACKEND_SQLITE);
+
+	return self->backend;
+}
+
+OrmConnection *
+venture_database_get_connection(VentureDatabase *self)
+{
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), NULL);
+
+	return self->connection;
+}
+
+static OrmDialectType
+venture_database_dialect(VentureDatabase *self)
+{
+	return (VENTURE_DATABASE_BACKEND_POSTGRES == self->backend)
+		? ORM_DIALECT_POSTGRES : ORM_DIALECT_SQLITE;
+}
+
+/* --- Raw access ---------------------------------------------------------- */
+
+gboolean
+venture_database_execute(
+	VentureDatabase	 *self,
+	const gchar	 *sql,
+	GList		 *params,
+	GError		**error
+){
+	g_autoptr(GError) local_error = NULL;
+	gboolean ok;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
+	g_return_val_if_fail(NULL != sql, FALSE);
+
+	g_rec_mutex_lock(&self->lock);
+
+	ok = (NULL != params)
+		? orm_connection_execute_with_params(self->connection, sql,
+		                                     params, &local_error)
+		: orm_connection_execute(self->connection, sql, &local_error);
+
+	g_rec_mutex_unlock(&self->lock);
+
+	if (!ok)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+		            "%s", (NULL != local_error) ? local_error->message
+		                                        : "statement failed");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+OrmResult *
+venture_database_query_raw(
+	VentureDatabase	 *self,
+	const gchar	 *sql,
+	GList		 *params,
+	GError		**error
+){
+	g_autoptr(GError) local_error = NULL;
+	OrmResult *result;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), NULL);
+	g_return_val_if_fail(NULL != sql, NULL);
+
+	g_rec_mutex_lock(&self->lock);
+
+	result = (NULL != params)
+		? orm_connection_query_with_params(self->connection, sql, params,
+		                                   &local_error)
+		: orm_connection_query(self->connection, sql, &local_error);
+
+	g_rec_mutex_unlock(&self->lock);
+
+	if (NULL == result)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+		            "%s", (NULL != local_error) ? local_error->message
+		                                        : "query failed");
+		return NULL;
+	}
+
+	return result;
+}
+
+/* --- Transactions -------------------------------------------------------- */
+
+gboolean
+venture_database_begin(
+	VentureDatabase	 *self,
+	GError		**error
+){
+	g_autoptr(GError) local_error = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
+
+	g_rec_mutex_lock(&self->lock);
+
+	if (NULL != self->transaction)
+	{
+		/* Nested transactions are not attempted. The recursive lock
+		 * means the caller already holds it, and treating this as a
+		 * no-op keeps the outermost commit in charge. */
+		return TRUE;
+	}
+
+	self->transaction = orm_connection_begin_transaction(self->connection,
+	                                                     &local_error);
+
+	if (NULL == self->transaction)
+	{
+		g_rec_mutex_unlock(&self->lock);
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+		            "Cannot begin a transaction: %s",
+		            (NULL != local_error) ? local_error->message : "failed");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+gboolean
+venture_database_commit(
+	VentureDatabase	 *self,
+	GError		**error
+){
+	g_autoptr(GError) local_error = NULL;
+	gboolean ok;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
+
+	if (NULL == self->transaction)
+		return TRUE;
+
+	ok = orm_transaction_commit(self->transaction, &local_error);
+	g_clear_object(&self->transaction);
+	g_rec_mutex_unlock(&self->lock);
+
+	if (!ok)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+		            "Cannot commit: %s",
+		            (NULL != local_error) ? local_error->message : "failed");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+void
+venture_database_rollback(VentureDatabase *self)
+{
+	g_return_if_fail(VENTURE_IS_DATABASE(self));
+
+	if (NULL == self->transaction)
+		return;
+
+	orm_transaction_rollback(self->transaction, NULL);
+	g_clear_object(&self->transaction);
+	g_rec_mutex_unlock(&self->lock);
+}
+
+/* --- Audit --------------------------------------------------------------- */
+
+/*
+ * Writes the audit record for a change.
+ *
+ * Audit failures are logged but never propagated: refusing a legitimate save
+ * because the audit insert failed would be the wrong trade. The signal fires
+ * regardless so an automation still sees the change.
+ */
+static void
+venture_database_record_audit(
+	VentureDatabase		*self,
+	VentureAuditAction	 action,
+	VentureEntity		*target,
+	JsonNode		*diff,
+	const VentureActor	*actor
+){
+	g_autoptr(VentureAuditEntry) entry = NULL;
+	g_autoptr(GError) local_error = NULL;
+
+	/* An audit record about an audit record would recurse forever. */
+	if (VENTURE_IS_AUDIT_ENTRY(target))
+		return;
+
+	entry = venture_audit_entry_new_for_change(action,
+		(NULL != actor) ? actor->kind : VENTURE_ACTOR_KIND_SYSTEM,
+		(NULL != actor) ? actor->name : NULL,
+		target, diff);
+
+	if ((NULL != actor) && (NULL != actor->prompt))
+		g_object_set(entry, "prompt", actor->prompt, NULL);
+
+	if ((NULL != actor) && (NULL != actor->request_id))
+		g_object_set(entry, "request-id", actor->request_id, NULL);
+
+	g_object_set(entry, "source", "database", NULL);
+
+	if (!venture_database_save(self, VENTURE_ENTITY(entry), NULL,
+	                           &local_error))
+	{
+		g_warning("Cannot record an audit entry for %s: %s",
+		          venture_entity_get_entity_name(target),
+		          local_error->message);
+		return;
+	}
+
+	g_signal_emit(self, venture_database_signals[SIGNAL_AUDIT], 0, entry);
+}
+
+/* --- Writing ------------------------------------------------------------- */
+
+static gboolean
+venture_database_insert(
+	VentureDatabase	 *self,
+	VentureEntity	 *entity,
+	GError		**error
+){
+	g_autoptr(GPtrArray) columns = NULL;
+	g_autoptr(GString) sql = NULL;
+	g_autofree gchar *table = NULL;
+	GList *values = NULL;
+	OrmDialectType dialect;
+	gboolean ok;
+	guint i;
+
+	dialect = venture_database_dialect(self);
+	venture_schema_bind_entity(entity, &columns, &values, FALSE);
+
+	table = venture_schema_quote_identifier(
+		venture_entity_get_table_name(entity));
+
+	sql = g_string_new(NULL);
+	g_string_append_printf(sql, "INSERT INTO %s (", table);
+
+	for (i = 0; i < columns->len; i++)
+	{
+		g_autofree gchar *quoted = NULL;
+
+		if (i > 0)
+			g_string_append(sql, ", ");
+
+		quoted = venture_schema_quote_identifier(
+			g_ptr_array_index(columns, i));
+		g_string_append(sql, quoted);
+	}
+
+	g_string_append(sql, ") VALUES (");
+
+	for (i = 0; i < columns->len; i++)
+	{
+		if (i > 0)
+			g_string_append(sql, ", ");
+
+		if (ORM_DIALECT_POSTGRES == dialect)
+			g_string_append_printf(sql, "$%u", i + 1);
+		else
+			g_string_append_c(sql, '?');
+	}
+
+	g_string_append_c(sql, ')');
+
+	/* PostgreSQL will not report a rowid, so the generated key is asked
+	 * for as part of the statement. */
+	if (ORM_DIALECT_POSTGRES == dialect)
+		g_string_append(sql, " RETURNING \"id\"");
+
+	if (ORM_DIALECT_POSTGRES == dialect)
+	{
+		g_autoptr(OrmResult) result = NULL;
+
+		result = venture_database_query_raw(self, sql->str, values, error);
+
+		if (NULL != result)
+		{
+			if (orm_result_next(result))
+			{
+				venture_entity_set_id(entity,
+					orm_row_get_integer(orm_result_get_row(result), 0));
+			}
+
+			ok = TRUE;
+		}
+		else
+		{
+			ok = FALSE;
+		}
+	}
+	else
+	{
+		ok = venture_database_execute(self, sql->str, values, error);
+
+		if (ok)
+		{
+			venture_entity_set_id(entity,
+				orm_connection_get_last_insert_rowid(self->connection));
+		}
+	}
+
+	g_list_free_full(values, (GDestroyNotify)orm_value_free);
+
+	return ok;
+}
+
+static gboolean
+venture_database_update(
+	VentureDatabase	 *self,
+	VentureEntity	 *entity,
+	gint64		  expected_version,
+	GError		**error
+){
+	g_autoptr(GPtrArray) columns = NULL;
+	g_autoptr(GString) sql = NULL;
+	g_autofree gchar *table = NULL;
+	GList *values = NULL;
+	OrmDialectType dialect;
+	gboolean ok;
+	gint changes;
+	guint i;
+	guint placeholder;
+
+	dialect = venture_database_dialect(self);
+	venture_schema_bind_entity(entity, &columns, &values, FALSE);
+
+	table = venture_schema_quote_identifier(
+		venture_entity_get_table_name(entity));
+
+	sql = g_string_new(NULL);
+	g_string_append_printf(sql, "UPDATE %s SET ", table);
+
+	placeholder = 1;
+
+	for (i = 0; i < columns->len; i++)
+	{
+		g_autofree gchar *quoted = NULL;
+
+		if (i > 0)
+			g_string_append(sql, ", ");
+
+		quoted = venture_schema_quote_identifier(
+			g_ptr_array_index(columns, i));
+
+		if (ORM_DIALECT_POSTGRES == dialect)
+			g_string_append_printf(sql, "%s = $%u", quoted, placeholder);
+		else
+			g_string_append_printf(sql, "%s = ?", quoted);
+
+		placeholder++;
+	}
+
+	/*
+	 * The WHERE clause carries the version the caller last saw. If
+	 * another writer has changed the row since, no row matches and the
+	 * update affects nothing -- which is how a conflict is detected
+	 * without locking the row for the duration of an edit.
+	 */
+	if (ORM_DIALECT_POSTGRES == dialect)
+	{
+		g_string_append_printf(sql, " WHERE \"id\" = $%u AND \"version\" = $%u",
+		                       placeholder, placeholder + 1);
+	}
+	else
+	{
+		g_string_append(sql, " WHERE \"id\" = ? AND \"version\" = ?");
+	}
+
+	values = g_list_append(values,
+		orm_value_new_integer(venture_entity_get_id(entity)));
+	values = g_list_append(values, orm_value_new_integer(expected_version));
+
+	ok = venture_database_execute(self, sql->str, values, error);
+	changes = orm_connection_get_changes(self->connection);
+
+	g_list_free_full(values, (GDestroyNotify)orm_value_free);
+
+	if (!ok)
+		return FALSE;
+
+	if (0 == changes)
+	{
+		g_autofree gchar *label = NULL;
+
+		label = venture_entity_get_display_name(entity);
+
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+		            "%s was changed by someone else since you loaded it. "
+		            "Reload and reapply your change.", label);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+gboolean
+venture_database_save(
+	VentureDatabase		 *self,
+	VentureEntity		 *entity,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	g_autoptr(VentureEntity) previous = NULL;
+	g_autoptr(JsonNode) diff = NULL;
+	gint64 expected_version;
+	gboolean created;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
+	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+
+	/* Validation happens before anything is written, never after: a
+	 * half-written invalid record is worse than a rejected one. */
+	if (!venture_entity_validate(entity, error))
+		return FALSE;
+
+	if (!venture_entity_before_save(entity, error))
+		return FALSE;
+
+	created = !venture_entity_is_persisted(entity);
+
+	g_rec_mutex_lock(&self->lock);
+
+	if (!created)
+	{
+		/* Fetch the stored row first, both to detect a conflict and to
+		 * produce a diff for the audit trail. */
+		previous = venture_database_get(self, G_OBJECT_TYPE(entity),
+		                                venture_entity_get_id(entity), NULL);
+
+		if (NULL == previous)
+		{
+			g_rec_mutex_unlock(&self->lock);
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			            "%s #%" G_GINT64_FORMAT " no longer exists",
+			            venture_entity_get_entity_name(entity),
+			            venture_entity_get_id(entity));
+			return FALSE;
+		}
+
+		diff = venture_entity_diff(previous, entity);
+
+		/* Nothing actually changed, so there is nothing to write and
+		 * nothing worth auditing. */
+		if (0 == json_object_get_size(json_node_get_object(diff)))
+		{
+			g_rec_mutex_unlock(&self->lock);
+			return TRUE;
+		}
+	}
+
+	expected_version = venture_entity_get_version(entity);
+	venture_entity_touch(entity);
+
+	if (created)
+	{
+		if (!venture_database_insert(self, entity, error))
+		{
+			g_rec_mutex_unlock(&self->lock);
+			return FALSE;
+		}
+	}
+	else
+	{
+		if (!venture_database_update(self, entity, expected_version, error))
+		{
+			g_rec_mutex_unlock(&self->lock);
+			return FALSE;
+		}
+	}
+
+	g_rec_mutex_unlock(&self->lock);
+
+	venture_database_record_audit(self,
+		created ? VENTURE_AUDIT_ACTION_CREATE : VENTURE_AUDIT_ACTION_UPDATE,
+		entity, diff, actor);
+
+	g_signal_emit(self, venture_database_signals[SIGNAL_ENTITY_SAVED], 0,
+	              entity, created);
+
+	return TRUE;
+}
+
+/* --- Reading ------------------------------------------------------------- */
+
+/*
+ * Runs a statement and materialises the rows as records.
+ */
+static GPtrArray *
+venture_database_fetch(
+	VentureDatabase	 *self,
+	GType		  entity_type,
+	const gchar	 *sql,
+	GList		 *params,
+	GError		**error
+){
+	g_autoptr(OrmResult) result = NULL;
+	g_autoptr(GPtrArray) entities = NULL;
+
+	result = venture_database_query_raw(self, sql, params, error);
+
+	if (NULL == result)
+		return NULL;
+
+	entities = g_ptr_array_new_with_free_func(g_object_unref);
+
+	while (orm_result_next(result))
+	{
+		VentureEntity *entity;
+
+		entity = g_object_new(entity_type, NULL);
+		venture_schema_populate_entity(entity, orm_result_get_row(result));
+		g_ptr_array_add(entities, entity);
+	}
+
+	return g_steal_pointer(&entities);
+}
+
+VentureEntity *
+venture_database_get(
+	VentureDatabase	 *self,
+	GType		  entity_type,
+	gint64		  id,
+	GError		**error
+){
+	g_autoptr(VentureEntity) prototype = NULL;
+	g_autoptr(GPtrArray) entities = NULL;
+	g_autofree gchar *sql = NULL;
+	g_autofree gchar *table = NULL;
+	GList *params = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), NULL);
+	g_return_val_if_fail(g_type_is_a(entity_type, VENTURE_TYPE_ENTITY), NULL);
+
+	prototype = g_object_new(entity_type, NULL);
+	table = venture_schema_quote_identifier(
+		venture_entity_get_table_name(prototype));
+
+	sql = g_strdup_printf("SELECT * FROM %s WHERE \"id\" = %s", table,
+		(VENTURE_DATABASE_BACKEND_POSTGRES == self->backend) ? "$1" : "?");
+
+	params = g_list_append(params, orm_value_new_integer(id));
+	entities = venture_database_fetch(self, entity_type, sql, params, error);
+	g_list_free_full(params, (GDestroyNotify)orm_value_free);
+
+	if ((NULL == entities) || (0 == entities->len))
+		return NULL;
+
+	return g_object_ref(g_ptr_array_index(entities, 0));
+}
+
+VentureEntity *
+venture_database_get_by_uuid(
+	VentureDatabase	 *self,
+	GType		  entity_type,
+	const gchar	 *uuid,
+	GError		**error
+){
+	g_autoptr(VentureEntity) prototype = NULL;
+	g_autoptr(GPtrArray) entities = NULL;
+	g_autofree gchar *sql = NULL;
+	g_autofree gchar *table = NULL;
+	GList *params = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), NULL);
+	g_return_val_if_fail(NULL != uuid, NULL);
+
+	prototype = g_object_new(entity_type, NULL);
+	table = venture_schema_quote_identifier(
+		venture_entity_get_table_name(prototype));
+
+	sql = g_strdup_printf("SELECT * FROM %s WHERE \"uuid\" = %s", table,
+		(VENTURE_DATABASE_BACKEND_POSTGRES == self->backend) ? "$1" : "?");
+
+	params = g_list_append(params, orm_value_new_string(uuid));
+	entities = venture_database_fetch(self, entity_type, sql, params, error);
+	g_list_free_full(params, (GDestroyNotify)orm_value_free);
+
+	if ((NULL == entities) || (0 == entities->len))
+		return NULL;
+
+	return g_object_ref(g_ptr_array_index(entities, 0));
+}
+
+GPtrArray *
+venture_database_find(
+	VentureDatabase	 *self,
+	VentureQuery	 *query,
+	GError		**error
+){
+	g_autofree gchar *sql = NULL;
+	GPtrArray *entities;
+	GList *params = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), NULL);
+	g_return_val_if_fail(VENTURE_IS_QUERY(query), NULL);
+
+	sql = venture_query_to_sql(query, venture_database_dialect(self), FALSE,
+	                           &params);
+	entities = venture_database_fetch(self,
+		venture_query_get_entity_type(query), sql, params, error);
+	g_list_free_full(params, (GDestroyNotify)orm_value_free);
+
+	return entities;
+}
+
+VentureEntity *
+venture_database_find_one(
+	VentureDatabase	 *self,
+	VentureQuery	 *query,
+	GError		**error
+){
+	g_autoptr(GPtrArray) entities = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), NULL);
+	g_return_val_if_fail(VENTURE_IS_QUERY(query), NULL);
+
+	venture_query_set_limit(query, 1);
+	entities = venture_database_find(self, query, error);
+
+	if ((NULL == entities) || (0 == entities->len))
+		return NULL;
+
+	return g_object_ref(g_ptr_array_index(entities, 0));
+}
+
+gint64
+venture_database_count(
+	VentureDatabase	 *self,
+	VentureQuery	 *query,
+	GError		**error
+){
+	g_autoptr(OrmResult) result = NULL;
+	g_autofree gchar *sql = NULL;
+	GList *params = NULL;
+	gint64 count;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), -1);
+	g_return_val_if_fail(VENTURE_IS_QUERY(query), -1);
+
+	sql = venture_query_to_sql(query, venture_database_dialect(self), TRUE,
+	                           &params);
+	result = venture_database_query_raw(self, sql, params, error);
+	g_list_free_full(params, (GDestroyNotify)orm_value_free);
+
+	if (NULL == result)
+		return -1;
+
+	count = orm_result_next(result)
+		? orm_row_get_integer(orm_result_get_row(result), 0)
+		: 0;
+
+	return count;
+}
+
+/* --- Deleting ------------------------------------------------------------ */
+
+gboolean
+venture_database_delete(
+	VentureDatabase		 *self,
+	VentureEntity		 *entity,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	g_autoptr(GDateTime) now = NULL;
+	gint64 expected_version;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
+	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+
+	if (!venture_entity_is_persisted(entity))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		                    "That record has never been saved");
+		return FALSE;
+	}
+
+	if (venture_entity_is_deleted(entity))
+		return TRUE;
+
+	/*
+	 * Soft deletion, always. An expense that appeared in a filed return
+	 * has to stay reconstructable, and a report over a past period must
+	 * still produce the number it produced then.
+	 */
+	now = venture_time_now();
+	g_object_set(entity, "deleted-at", now, NULL);
+
+	/* Bump the version before writing, not after: the UPDATE writes every
+	 * column including this one, so touching afterwards would leave the
+	 * object one ahead of the row and make the next save look like a
+	 * conflict with itself. */
+	expected_version = venture_entity_get_version(entity);
+	venture_entity_touch(entity);
+
+	if (!venture_database_update(self, entity, expected_version, error))
+		return FALSE;
+
+	venture_database_record_audit(self, VENTURE_AUDIT_ACTION_DELETE, entity,
+	                              NULL, actor);
+
+	g_signal_emit(self, venture_database_signals[SIGNAL_ENTITY_DELETED], 0,
+	              entity);
+
+	return TRUE;
+}
+
+gboolean
+venture_database_restore(
+	VentureDatabase		 *self,
+	VentureEntity		 *entity,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	gint64 expected_version;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
+	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+
+	if (!venture_entity_is_deleted(entity))
+		return TRUE;
+
+	g_object_set(entity, "deleted-at", NULL, NULL);
+
+	expected_version = venture_entity_get_version(entity);
+	venture_entity_touch(entity);
+
+	if (!venture_database_update(self, entity, expected_version, error))
+		return FALSE;
+
+	venture_database_record_audit(self, VENTURE_AUDIT_ACTION_UPDATE, entity,
+	                              NULL, actor);
+
+	return TRUE;
+}
+
+gboolean
+venture_database_purge(
+	VentureDatabase		 *self,
+	VentureEntity		 *entity,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	g_autofree gchar *sql = NULL;
+	g_autofree gchar *table = NULL;
+	GList *params = NULL;
+	gboolean ok;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
+	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+
+	if (!venture_entity_is_persisted(entity))
+		return TRUE;
+
+	/* Audited before the row goes, since afterwards there is nothing left
+	 * to describe. */
+	venture_database_record_audit(self, VENTURE_AUDIT_ACTION_DELETE, entity,
+	                              NULL, actor);
+
+	table = venture_schema_quote_identifier(
+		venture_entity_get_table_name(entity));
+	sql = g_strdup_printf("DELETE FROM %s WHERE \"id\" = %s", table,
+		(VENTURE_DATABASE_BACKEND_POSTGRES == self->backend) ? "$1" : "?");
+
+	params = g_list_append(params,
+		orm_value_new_integer(venture_entity_get_id(entity)));
+	ok = venture_database_execute(self, sql, params, error);
+	g_list_free_full(params, (GDestroyNotify)orm_value_free);
+
+	if (ok)
+		venture_entity_set_id(entity, 0);
+
+	return ok;
+}
+
+/* --- Ledger -------------------------------------------------------------- */
+
+gboolean
+venture_database_save_ledger_transaction(
+	VentureDatabase		 *self,
+	GPtrArray		 *entries,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	g_autoptr(VentureMoney) debits = NULL;
+	g_autoptr(VentureMoney) credits = NULL;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
+	g_return_val_if_fail(NULL != entries, FALSE);
+
+	if (0 == entries->len)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "A ledger transaction needs at least one line");
+		return FALSE;
+	}
+
+	debits = venture_money_new_zero(NULL);
+	credits = venture_money_new_zero(NULL);
+
+	for (i = 0; i < entries->len; i++)
+	{
+		g_autoptr(VentureMoney) amount = NULL;
+		g_autoptr(VentureMoney) total = NULL;
+		VentureEntity *entry;
+		VentureLedgerSide side;
+
+		entry = g_ptr_array_index(entries, i);
+
+		if (!VENTURE_IS_LEDGER_ENTRY(entry))
+		{
+			g_set_error_literal(error, VENTURE_ERROR,
+			                    VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "A ledger transaction may only contain "
+			                    "ledger entries");
+			return FALSE;
+		}
+
+		g_object_get(entry, "amount", &amount, "side", &side, NULL);
+
+		if (NULL == amount)
+			continue;
+
+		if (VENTURE_LEDGER_SIDE_DEBIT == side)
+		{
+			total = venture_money_add(debits, amount, error);
+
+			if (NULL == total)
+				return FALSE;
+
+			g_clear_pointer(&debits, venture_money_free);
+			debits = g_steal_pointer(&total);
+		}
+		else
+		{
+			total = venture_money_add(credits, amount, error);
+
+			if (NULL == total)
+				return FALSE;
+
+			g_clear_pointer(&credits, venture_money_free);
+			credits = g_steal_pointer(&total);
+		}
+	}
+
+	/*
+	 * Refuse the whole set rather than write part of it. A half-posted
+	 * transaction leaves the books wrong in a way nothing downstream can
+	 * detect, which is far worse than an error the operator can see.
+	 */
+	if (!venture_money_equal(debits, credits))
+	{
+		g_autofree gchar *debit_text = NULL;
+		g_autofree gchar *credit_text = NULL;
+
+		debit_text = venture_money_to_string(debits);
+		credit_text = venture_money_to_string(credits);
+
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_BALANCE,
+		            "This transaction does not balance: debits total %s "
+		            "but credits total %s", debit_text, credit_text);
+		return FALSE;
+	}
+
+	if (!venture_database_begin(self, error))
+		return FALSE;
+
+	for (i = 0; i < entries->len; i++)
+	{
+		if (!venture_database_save(self, g_ptr_array_index(entries, i),
+		                           actor, error))
+		{
+			venture_database_rollback(self);
+			return FALSE;
+		}
+	}
+
+	return venture_database_commit(self, error);
+}
+
+/* --- Aggregation --------------------------------------------------------- */
+
+VentureMoney *
+venture_database_sum_money(
+	VentureDatabase	 *self,
+	VentureQuery	 *query,
+	const gchar	 *field,
+	GError		**error
+){
+	g_autoptr(OrmResult) result = NULL;
+	g_autofree gchar *base_sql = NULL;
+	g_autofree gchar *sql = NULL;
+	g_autofree gchar *amount_column = NULL;
+	g_autofree gchar *currency_column = NULL;
+	g_autofree gchar *column_base = NULL;
+	const gchar *where;
+	GList *params = NULL;
+	VentureMoney *total = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), NULL);
+	g_return_val_if_fail(VENTURE_IS_QUERY(query), NULL);
+	g_return_val_if_fail(NULL != field, NULL);
+
+	column_base = venture_entity_property_to_column(field);
+	amount_column = g_strconcat(column_base,
+		VENTURE_SCHEMA_MONEY_AMOUNT_SUFFIX, NULL);
+	currency_column = g_strconcat(column_base,
+		VENTURE_SCHEMA_MONEY_CURRENCY_SUFFIX, NULL);
+
+	/* Reuse the query compiler for the WHERE clause so filters, scoping
+	 * and soft deletion behave identically to a normal fetch, then splice
+	 * the aggregate over the top. */
+	base_sql = venture_query_to_sql(query, venture_database_dialect(self),
+	                                TRUE, &params);
+	where = strstr(base_sql, " WHERE ");
+
+	{
+		g_autoptr(VentureEntity) prototype = NULL;
+		g_autofree gchar *table = NULL;
+		g_autofree gchar *quoted_amount = NULL;
+		g_autofree gchar *quoted_currency = NULL;
+
+		prototype = g_object_new(venture_query_get_entity_type(query), NULL);
+		table = venture_schema_quote_identifier(
+			venture_entity_get_table_name(prototype));
+		quoted_amount = venture_schema_quote_identifier(amount_column);
+		quoted_currency = venture_schema_quote_identifier(currency_column);
+
+		/*
+		 * Grouped by currency and ordered by row count, so the first
+		 * row is the currency most records are in. Adding across
+		 * currencies without a rate would produce a confidently wrong
+		 * number, so the minority ones are reported separately rather
+		 * than folded in.
+		 */
+		sql = g_strdup_printf(
+			"SELECT SUM(%s), %s, MAX(%s), COUNT(*) FROM %s%s "
+			"GROUP BY %s ORDER BY COUNT(*) DESC",
+			quoted_amount, quoted_currency,
+			venture_schema_quote_identifier(
+				g_strconcat(column_base,
+				            VENTURE_SCHEMA_MONEY_EXPONENT_SUFFIX,
+				            NULL)),
+			table,
+			(NULL != where) ? where : "",
+			quoted_currency);
+	}
+
+	result = venture_database_query_raw(self, sql, params, error);
+	g_list_free_full(params, (GDestroyNotify)orm_value_free);
+
+	if (NULL == result)
+		return NULL;
+
+	if (orm_result_next(result))
+	{
+		OrmRow *row;
+
+		row = orm_result_get_row(result);
+
+		if (!orm_row_is_null(row, 0))
+		{
+			total = venture_money_new(orm_row_get_integer(row, 0),
+			                          orm_row_get_string(row, 1),
+			                          (guint8)orm_row_get_integer(row, 2));
+		}
+	}
+
+	/* An empty set totals to zero rather than to an error: a month with
+	 * no sales should report 0.00. */
+	if (NULL == total)
+		total = venture_money_new_zero(NULL);
+
+	return total;
+}
+
+/* --- Migration and seeding ----------------------------------------------- */
+
+gint64
+venture_database_get_schema_version(VentureDatabase *self)
+{
+	g_autoptr(OrmResult) result = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), 0);
+
+	result = venture_database_query_raw(self,
+		"SELECT version FROM venture_schema_version LIMIT 1", NULL, NULL);
+
+	if ((NULL == result) || !orm_result_next(result))
+		return 0;
+
+	return orm_row_get_integer(orm_result_get_row(result), 0);
+}
+
+/*
+ * Creates the row a fresh install needs, if the table is empty. Returns the
+ * identifier of the record, whether it was just made or already existed.
+ */
+static gint64
+venture_database_seed_default_organization(
+	VentureDatabase	 *self,
+	GError		**error
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureEntity) existing = NULL;
+	g_autoptr(VentureOrganization) organization = NULL;
+
+	query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
+	existing = venture_database_find_one(self, query, NULL);
+
+	if (NULL != existing)
+		return venture_entity_get_id(existing);
+
+	organization = venture_organization_new();
+	g_object_set(organization,
+	             "name", "Default",
+	             "slug", "default",
+	             "kind", VENTURE_ORGANIZATION_KIND_SOLE_PROPRIETOR,
+	             "default-currency", venture_money_get_default_currency(),
+	             "fiscal-year-start-month", (gint64)1,
+	             "is-default", TRUE,
+	             "active", TRUE,
+	             NULL);
+
+	if (!venture_database_save(self, VENTURE_ENTITY(organization), NULL, error))
+		return 0;
+
+	return venture_entity_get_id(VENTURE_ENTITY(organization));
+}
+
+/*
+ * A minimal chart of accounts. Enough to post a sale and an expense without
+ * the operator having to invent an accounting structure before recording
+ * anything, and conventional enough that an accountant will recognise it.
+ */
+static gboolean
+venture_database_seed_accounts(
+	VentureDatabase	 *self,
+	gint64		  organization_id,
+	GError		**error
+){
+	static const struct
+	{
+		const gchar		*code;
+		const gchar		*name;
+		VentureAccountKind	 kind;
+	} accounts[] = {
+		{ "1000", "Cash",                  VENTURE_ACCOUNT_KIND_ASSET },
+		{ "1100", "Accounts receivable",   VENTURE_ACCOUNT_KIND_ASSET },
+		{ "1200", "Inventory",             VENTURE_ACCOUNT_KIND_ASSET },
+		{ "2000", "Accounts payable",      VENTURE_ACCOUNT_KIND_LIABILITY },
+		{ "2100", "Sales tax payable",     VENTURE_ACCOUNT_KIND_LIABILITY },
+		{ "3000", "Owner's equity",        VENTURE_ACCOUNT_KIND_EQUITY },
+		{ "3100", "Owner's draw",          VENTURE_ACCOUNT_KIND_EQUITY },
+		{ "4000", "Sales",                 VENTURE_ACCOUNT_KIND_INCOME },
+		{ "4100", "Shipping income",       VENTURE_ACCOUNT_KIND_INCOME },
+		{ "5000", "Cost of goods sold",    VENTURE_ACCOUNT_KIND_EXPENSE },
+		{ "6000", "Platform fees",         VENTURE_ACCOUNT_KIND_EXPENSE },
+		{ "6100", "Shipping expense",      VENTURE_ACCOUNT_KIND_EXPENSE },
+		{ "6200", "Advertising",           VENTURE_ACCOUNT_KIND_EXPENSE },
+		{ "6300", "Software and services", VENTURE_ACCOUNT_KIND_EXPENSE },
+		{ "6400", "Supplies",              VENTURE_ACCOUNT_KIND_EXPENSE },
+		{ "6500", "Professional fees",     VENTURE_ACCOUNT_KIND_EXPENSE },
+		{ "6600", "Home office",           VENTURE_ACCOUNT_KIND_EXPENSE },
+		{ "6700", "Travel",                VENTURE_ACCOUNT_KIND_EXPENSE }
+	};
+	g_autoptr(VentureQuery) query = NULL;
+	gint64 existing;
+	gsize i;
+
+	query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	existing = venture_database_count(self, query, NULL);
+
+	/* Seeding is only for a genuinely empty install; re-running must not
+	 * resurrect accounts the operator deliberately removed. */
+	if (existing > 0)
+		return TRUE;
+
+	for (i = 0; i < G_N_ELEMENTS(accounts); i++)
+	{
+		g_autoptr(VentureAccount) account = NULL;
+
+		account = venture_account_new();
+		g_object_set(account,
+		             "code", accounts[i].code,
+		             "name", accounts[i].name,
+		             "kind", accounts[i].kind,
+		             "active", TRUE,
+		             NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(account),
+		                                   organization_id);
+
+		if (!venture_database_save(self, VENTURE_ENTITY(account), NULL, error))
+			return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ * Common deduction categories. Every one defaults to REVIEW rather than a
+ * deduction percentage, because the categories that are actually
+ * contentious -- meals, home office, vehicle -- are exactly the ones where a
+ * confident default would be doing the operator a disservice.
+ */
+static gboolean
+venture_database_seed_tax_categories(
+	VentureDatabase	 *self,
+	gint64		  organization_id,
+	GError		**error
+){
+	static const struct
+	{
+		const gchar		*code;
+		const gchar		*name;
+		VentureDeductibility	 deductibility;
+		gint64			 business_use;
+	} categories[] = {
+		{ "ADVERTISING", "Advertising and promotion",
+		  VENTURE_DEDUCTIBILITY_FULL, 100 },
+		{ "SUPPLIES", "Supplies and materials",
+		  VENTURE_DEDUCTIBILITY_FULL, 100 },
+		{ "SOFTWARE", "Software and subscriptions",
+		  VENTURE_DEDUCTIBILITY_FULL, 100 },
+		{ "FEES", "Platform and payment fees",
+		  VENTURE_DEDUCTIBILITY_FULL, 100 },
+		{ "SHIPPING", "Shipping and postage",
+		  VENTURE_DEDUCTIBILITY_FULL, 100 },
+		{ "PROFESSIONAL", "Professional services",
+		  VENTURE_DEDUCTIBILITY_FULL, 100 },
+		{ "EDUCATION", "Education and training",
+		  VENTURE_DEDUCTIBILITY_FULL, 100 },
+		{ "HOME_OFFICE", "Home office",
+		  VENTURE_DEDUCTIBILITY_PARTIAL, 0 },
+		{ "VEHICLE", "Vehicle and mileage",
+		  VENTURE_DEDUCTIBILITY_PARTIAL, 0 },
+		{ "MEALS", "Meals",
+		  VENTURE_DEDUCTIBILITY_PARTIAL, 50 },
+		{ "TRAVEL", "Travel",
+		  VENTURE_DEDUCTIBILITY_REVIEW, 0 },
+		{ "EQUIPMENT", "Equipment",
+		  VENTURE_DEDUCTIBILITY_CAPITAL, 0 },
+		{ "PERSONAL", "Personal, not deductible",
+		  VENTURE_DEDUCTIBILITY_NONE, 0 }
+	};
+	g_autoptr(VentureQuery) query = NULL;
+	gint64 existing;
+	gsize i;
+
+	query = venture_query_new(VENTURE_TYPE_TAX_CATEGORY);
+	existing = venture_database_count(self, query, NULL);
+
+	if (existing > 0)
+		return TRUE;
+
+	for (i = 0; i < G_N_ELEMENTS(categories); i++)
+	{
+		g_autoptr(VentureTaxCategory) category = NULL;
+
+		category = venture_tax_category_new();
+		g_object_set(category,
+		             "code", categories[i].code,
+		             "name", categories[i].name,
+		             "deductibility", categories[i].deductibility,
+		             "default-business-use-percent", categories[i].business_use,
+		             NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(category),
+		                                   organization_id);
+
+		if (!venture_database_save(self, VENTURE_ENTITY(category), NULL,
+		                           error))
+			return FALSE;
+	}
+
+	return TRUE;
+}
+
+gboolean
+venture_database_migrate(
+	VentureDatabase		 *self,
+	VentureEntityRegistry	 *registry,
+	GError			**error
+){
+	gint64 organization_id;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
+	g_return_val_if_fail(VENTURE_IS_ENTITY_REGISTRY(registry), FALSE);
+
+	g_rec_mutex_lock(&self->lock);
+
+	if (!venture_schema_create_all(self->connection, registry, error))
+	{
+		g_rec_mutex_unlock(&self->lock);
+		return FALSE;
+	}
+
+	if (!orm_connection_execute(self->connection,
+		"CREATE TABLE IF NOT EXISTS venture_schema_version ("
+		"version INTEGER NOT NULL)", error))
+	{
+		g_rec_mutex_unlock(&self->lock);
+		return FALSE;
+	}
+
+	g_rec_mutex_unlock(&self->lock);
+
+	if (0 == venture_database_get_schema_version(self))
+	{
+		g_autofree gchar *sql = NULL;
+
+		sql = g_strdup_printf(
+			"INSERT INTO venture_schema_version (version) VALUES (%d)",
+			VENTURE_DATABASE_SCHEMA_VERSION);
+
+		if (!venture_database_execute(self, sql, NULL, error))
+			return FALSE;
+	}
+
+	organization_id = venture_database_seed_default_organization(self, error);
+
+	if (0 == organization_id)
+		return FALSE;
+
+	if (!venture_database_seed_accounts(self, organization_id, error))
+		return FALSE;
+
+	if (!venture_database_seed_tax_categories(self, organization_id, error))
+		return FALSE;
+
+	return TRUE;
+}

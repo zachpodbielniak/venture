@@ -1,0 +1,39 @@
+#+title: Out-of-process podomation modules
+#+description: Why this directory is empty, and when to put something in it
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-08-14]
+#+updated: [2026-08-14]
+#+version: 0.1.0
+
+* Why this is empty
+
+VENTURE's own pod module -- =venture=, with its =query=, =count=, =report=,
+=create= and =low_stock= handlers and its =on_created= / =on_updated= /
+=on_deleted= events -- is *not* here. It is defined in
+[[file:../src/automation/venture-automation.c][=src/automation/venture-automation.c=]] and registered in-process.
+
+That is deliberate. The module needs a =VentureContext= to reach the
+database, the registries and the configuration. A module loaded from a =.so=
+by podomation's module manager is constructed by the manager, which has no
+way to hand it one. Registering an already-built instance is the hook that
+makes the context available, and it only works from inside the process.
+
+* When to put something here
+
+For a module that needs *no* VENTURE state: a notifier, a transport, an
+integration with some outside service. Anything that takes its configuration
+from the DSL call itself rather than from VENTURE.
+
+Each subdirectory becomes one shared object:
+
+#+begin_src
+modules/ntfy/*.c  ->  build/<type>/pod-modules/libpod-module-ntfy.so
+#+end_src
+
+The naming matches podomation's own convention, so its module manager picks
+them up from any directory listed in =automation.module_paths=. =make run=
+adds the build tree via =VENTURE_POD_MODULE_PATH=.
+
+If what you are writing does need VENTURE's state, add it to the =venture=
+module's handlers instead -- see [[file:../docs/extending.org][extending]].

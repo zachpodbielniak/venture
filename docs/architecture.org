@@ -1,0 +1,104 @@
+#+title: VENTURE architecture
+#+description: How the pieces fit together and why
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-08-14]
+#+updated: [2026-08-14]
+#+version: 0.1.0
+
+* Architecture
+
+** The central idea
+
+There is no schema file, no route table, no serialiser and no form template. All of it is derived from GObject property metadata.
+
+A record type declares its fields:
+
+#+begin_src C
+static const VentureFieldDecl venture_sale_fields[] = {
+	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_MONEY("gross", "Gross", "Item total before anything else"),
+	VENTURE_FIELD("occurred-at", "Sold", NULL, VENTURE_FIELD_KIND_DATETIME,
+	              VENTURE_COLUMN_FLAG_INDEXED)
+};
+
+VENTURE_DEFINE_ENTITY(VentureSale, venture_sale, venture_sale_fields)
+#+end_src
+
+From that declaration alone, VENTURE produces:
+
+| Consumer          | What it derives                                        |
+|-------------------+--------------------------------------------------------|
+| =src/db/schema=   | =CREATE TABLE=, column types, constraints, indexes      |
+| =src/db/query=    | the filterable field vocabulary                         |
+| =src/web=         | REST CRUD at =/api/v1/sale=, and a list view            |
+| =VentureSerializable= | JSON and YAML that round-trip                       |
+| =src/ai=          | the tool schema the model is shown                      |
+| =VentureEntity=   | validation, the audit diff, the display name, search    |
+| =venturectl=      | =list=, =get=, =create=, =update=, =delete= subcommands |
+
+A plugin that registers a record type gets all of it. That is the whole extensibility story, and it is why the core has no list of record types anywhere except the registry.
+
+** Layers
+
+#+begin_src
+  venture (server)            venturectl (client)
+        |                            |
+        +--- web/ ---+               +--- HTTP ---+
+        |            |                            |
+     ai/  report/  automation/  plugin/           |
+        \     |         |          /              |
+         +----+----+----+---------+               |
+                   |                              |
+                 db/  <- orm-glib -> SQLite/Postgres
+                   |                              |
+              model/ + boxed/ + interfaces/  <----+
+                   |
+              config/ + util/
+#+end_src
+
+=libventure-core.a= is everything from =model/= down. =libventure.a= adds the rest. =venturectl= links only the former, which is why =make venturectl= works on a machine with no libpq, no sqlite headers and no readline.
+
+** Why the AI writes through confirmations
+
+The AI's tools reach the same repository the web UI and the CLI use — not a parallel, laxer path. Validation, optimistic concurrency, soft deletion and auditing all apply identically.
+
+What differs is authority. Under the default =confirm_writes= policy, a mutating tool call does not mutate. It stages a =VentureAiConfirmation= holding the record with the change already applied in memory, plus a field-by-field diff, and returns a tool result telling the model plainly that nothing has happened yet. Approval applies the staged object — so approving cannot produce a different outcome from the diff that was shown.
+
+Deletion stages even under =autonomous=. Every other AI action produces a value a person can eyeball afterwards; removing a record is the one where noticing late is materially worse.
+
+** Why money is three columns
+
+A =VentureMoney= property becomes =<name>_amount=, =<name>_currency= and =<name>_exponent=. A single text column would be tidier and would make =SELECT SUM(...)= impossible, which for a system whose purpose is totalling money is the wrong trade every time.
+
+Reports still aggregate in C wherever currency correctness matters, because summing across currencies without a rate would produce a confidently wrong number. =venture_database_sum_money()= groups by currency and reports the majority one rather than folding them together.
+
+** Why the query builder exists
+
+Three of its four callers cannot be trusted with SQL text: a REST client sends query parameters, the CLI passes flags through, and the AI writes filters from a natural-language request.
+
+So none of them contribute SQL. A filter names a field, an operator from a closed enumeration, and values. Field names are resolved against the record type's real properties and then quoted; operators map to fixed fragments; values are always bound parameters. There is no path by which caller input reaches the statement as text, which makes injection structurally impossible rather than merely unlikely.
+
+** Concurrency
+
+One connection behind a recursive mutex. SQLite admits one writer at a time regardless, and for a single-operator system the simplicity is worth more than the concurrency a pool would buy.
+
+Lost updates are prevented at the record level instead: every entity carries a version, an update's =WHERE= clause names the version the caller last saw, and a mismatch affects no rows and raises =VENTURE_ERROR_CONFLICT=.
+
+** Dependencies
+
+All are git submodules under =deps/= and are treated as the canonical copies. Several vendor each other; the build deliberately does not redirect their sub-dependency paths, because =ar t= confirms none of their archives embeds another's objects. Each archive carries unresolved references that our single canonical copy satisfies at final link time.
+
+| Dependency   | Used for                                            |
+|--------------+-----------------------------------------------------|
+| =yaml-glib=  | configuration, YAML export                          |
+| =htmx-glib=  | the HTTP server, routing, HTMX responses            |
+| =orm-glib=   | the SQL connection, dialects, parameter binding     |
+| =ai-glib=    | providers and the tool-use loop                     |
+| =crispy=     | compiling the C configuration and crispy plugins    |
+| =podomation= | the embedded automation engine                      |
+
+** Fixes made upstream
+
+=orm_value_get_boolean()= asserted that the stored value was =ORM_VALUE_BOOLEAN=. SQLite has no boolean storage class, so every boolean column read back as an integer and tripped the assertion — no boolean field could be loaded on the default backend. It now accepts an integer, and PostgreSQL's =t=/=f= text form as well. The fix is in =deps/orm-glib=.

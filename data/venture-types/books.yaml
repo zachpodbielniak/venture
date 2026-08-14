@@ -1,0 +1,51 @@
+# A book imprint: self-published or small-press titles.
+#
+# The extra fields here are stored on the venture's attribute bag and are
+# validated against these declarations, so "required" and "choices" mean
+# something even though no column was added.
+
+name: books
+label: Book imprint
+description: Self-published or small-press titles sold through retailers
+
+fields:
+  imprint:
+    type: string
+    label: Imprint name
+    help: The name that appears on the copyright page
+    indexed: true
+    order: 10
+
+  primary_retailer:
+    type: enum
+    label: Primary retailer
+    choices: [kdp, ingramspark, draft2digital, kobo, direct]
+    order: 20
+
+  royalty_rate:
+    type: double
+    label: Royalty rate
+    help: Your share as a percentage, e.g. 70 for KDP's 70% tier
+    min: 0
+    max: 100
+    order: 30
+
+  isbn_block:
+    type: string
+    label: ISBN block
+    help: The prefix of the ISBN range you own, if you bought a block
+    order: 40
+
+  editor:
+    type: string
+    label: Editor
+    order: 50
+
+metrics:
+  - revenue
+  - units_sold
+  - revenue_per_title
+
+report_columns:
+  - genre
+  - format

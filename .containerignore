@@ -1,0 +1,21 @@
+# Keep the build context small and the layer cache honest.
+#
+# build/ is the big one: shipping a host build tree into the context both
+# slows every build and risks the builder picking up objects compiled
+# against the host's headers rather than the image's.
+
+build/
+deps/*/build/
+compose-data/
+.git/
+.gitignore
+.containerignore
+*.o
+*.a
+*.so
+compile_commands.json
+core
+core.*
+vgcore.*
+tags
+TAGS

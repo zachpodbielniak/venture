@@ -1,0 +1,100 @@
+#+title: venturectl
+#+description: The VENTURE command line client
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-08-14]
+#+updated: [2026-08-14]
+#+version: 0.1.0
+
+* venturectl
+
+Drives the server over its REST API. It deliberately does not open the
+database: one writer, one set of validation rules, one audit trail.
+
+It links only =libventure-core.a= and yaml-glib, so =make venturectl= works on
+a machine that cannot build the server at all.
+
+* Setup
+
+#+begin_src sh
+export VENTURE_SERVER=http://127.0.0.1:8747   # the default
+export VENTURE_TOKEN=vk_...                    # from POST /api/v1/tokens
+#+end_src
+
+The token is read from the environment rather than a flag because a flag is
+visible in the process list. Keep it in =~/.bashrc-secrets=.
+
+* Commands
+
+#+begin_src sh
+venturectl types [TYPE]                  # list types, or describe one
+venturectl list TYPE [key=value ...]     # list records, filtered
+venturectl get TYPE ID                   # fetch one
+venturectl create TYPE field=value ...   # create
+venturectl update TYPE ID field=value    # change named fields
+venturectl delete TYPE ID                # soft delete
+venturectl report [NAME] [PERIOD]        # list reports, or run one
+venturectl health                        # is the server up
+#+end_src
+
+* Examples
+
+#+begin_src sh
+venturectl types sale
+venturectl list sale period=this_month limit=10
+venturectl list expense deductibility__eq=review
+venturectl list venture status__in=active,paused order=-created_at
+
+venturectl create expense description='Cover art' amount=250.00 \
+                  venture_id=3 occurred_at=2026-03-14 \
+                  category=supplies deductibility=full
+
+venturectl update venture 3 status=paused
+venturectl report pnl this_quarter
+venturectl report categories fy        # by genre, over the fiscal year
+#+end_src
+
+* Output
+
+A terminal gets an aligned table; a pipe gets JSON, so this works with no
+flag:
+
+#+begin_src sh
+venturectl list sale | jq '.records[].gross.formatted'
+venturectl -f yaml get venture 1 >> ~/Documents/notes/00_inbox/venture.org
+#+end_src
+
+=--format= takes =table=, =json= or =yaml=. =--quiet= drops the totals line.
+
+* Exit codes
+
+Distinct so a script can branch:
+
+| Code | Meaning              |
+|------+----------------------|
+|    0 | success              |
+|    1 | general failure      |
+|    2 | usage                |
+|    3 | not found            |
+|    4 | conflict             |
+|    5 | authentication       |
+|    6 | unsupported          |
+|    7 | network or timeout   |
+|    8 | validation           |
+
+#+begin_src sh
+if ! venturectl get venture "$id" >/dev/null 2>&1; then
+	case $? in
+		3) echo "no such venture" ;;
+		5) echo "check VENTURE_TOKEN" ;;
+		7) echo "server unreachable" ;;
+	esac
+fi
+#+end_src
+
+* Using it with an AI
+
+The interface is deliberately machine-friendly: =venturectl types= enumerates
+what exists, =venturectl types TYPE= describes a type's fields, and JSON is
+the default when output is piped. An agent can discover the whole data model
+without documentation.

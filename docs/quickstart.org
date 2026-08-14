@@ -1,0 +1,135 @@
+#+title: VENTURE quickstart
+#+description: Build it, run it, record your first sale
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-08-14]
+#+updated: [2026-08-14]
+#+version: 0.1.0
+
+* Quickstart
+
+** Build
+
+#+begin_src sh
+git submodule update --init --recursive
+make DEBUG=1
+#+end_src
+
+Output lands in =build/debug/=. A release build (=make=) lands in =build/release/=.
+
+On Fedora, =make list-deps= prints the packages to layer into an image build:
+
+#+begin_src
+gcc make pkgconf-pkg-config glib2-devel libyaml-devel json-glib-devel
+libsoup3-devel libxml2-devel sqlite-devel libpq-devel readline-devel
+gobject-introspection-devel
+#+end_src
+
+** First run
+
+#+begin_src sh
+./build/debug/venture --state-dir ~/.local/share/venture
+#+end_src
+
+On a fresh database this creates the schema, seeds a default organisation, a chart of accounts and a set of tax categories, then prints an owner password once:
+
+#+begin_src
+  Created the owner account.
+  Username: owner
+  Password: ffda5449ded6106ab817d6ec
+
+  This is shown once. Save it now.
+
+VENTURE 0.1.0 listening on http://127.0.0.1:8747
+#+end_src
+
+Pass =--owner-password= to choose it yourself.
+
+** Mint a token for the CLI
+
+#+begin_src sh
+# Sign in and keep the session cookie
+COOKIE=$(curl -s -i -X POST -d 'username=owner&password=YOURPASSWORD' \
+  localhost:8747/login | grep -oP 'Set-Cookie: \K[^;]+')
+
+# Mint a token; it is shown exactly once
+curl -s -X POST -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+  -d '{"name":"laptop"}' localhost:8747/api/v1/tokens
+#+end_src
+
+#+begin_src sh
+export VENTURE_TOKEN=vk_...
+export VENTURE_SERVER=http://127.0.0.1:8747
+#+end_src
+
+Put those in =~/.bashrc-secrets= rather than =~/.bashrc=.
+
+** Record something
+
+#+begin_src sh
+venturectl create venture name='Book imprint' slug=books \
+                          venture_type=books status=active
+
+venturectl create product venture_id=1 name='Starfall' \
+                          genre=science-fiction list_price=14.99
+
+venturectl create sale venture_id=1 product_id=1 quantity=1 \
+                       gross=14.99 fees=2.10 occurred_at=2026-08-14
+
+venturectl create expense venture_id=1 description='Cover art' \
+                          amount=250.00 category=supplies \
+                          deductibility=full occurred_at=2026-08-01
+#+end_src
+
+** Look at it
+
+#+begin_src sh
+venturectl report pnl this_month
+venturectl report categories this_year     # by genre
+venturectl list sale period=this_month
+venturectl types expense                   # every field of a record type
+#+end_src
+
+Or open http://127.0.0.1:8747 in a browser.
+
+** Ask about it
+
+With an API key in the environment for your provider, the chat dock at the
+bottom of every page answers questions and drafts changes. Changes are staged
+for approval, not applied:
+
+#+begin_src sh
+export ANTHROPIC_API_KEY=sk-...
+./build/debug/venture --state-dir ~/.local/share/venture
+#+end_src
+
+** Run it as a service
+
+#+begin_src sh
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/venture.service <<'EOF'
+[Unit]
+Description=VENTURE
+After=network.target
+
+[Service]
+ExecStart=%h/.local/bin/venture --state-dir %h/.local/share/venture
+Environment=VENTURE_SESSION_SECRET=CHANGE-ME
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user enable --now venture
+#+end_src
+
+Set =VENTURE_SESSION_SECRET= to something persistent, or sessions end at every restart.
+
+** Tests
+
+#+begin_src sh
+make DEBUG=1 test
+make DEBUG=1 test-one T=test-money
+make DEBUG=1 test-valgrind
+#+end_src

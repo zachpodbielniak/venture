@@ -1,0 +1,280 @@
+#+title: Running VENTURE in a container
+#+description: The Containerfile, the two compose files, and what each is for
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-08-14]
+#+updated: [2026-08-14]
+#+version: 0.1.0
+
+* Running VENTURE in a container
+
+Three files, and the differences between them are the point:
+
+| File                    | For                                              |
+|-------------------------+--------------------------------------------------|
+| =Containerfile=         | building the image                               |
+| =compose.yaml=          | a laptop: builds from the tree, SQLite, loopback  |
+| =compose.deploy.yaml=   | a server: published image, PostgreSQL, secrets    |
+
+Podman throughout. There is no Dockerfile and no =docker-compose.yml=.
+
+* Quick start, locally
+
+#+begin_src bash
+git submodule update --init --recursive
+podman-compose up --build
+#+end_src
+
+Then read the bootstrap password out of the log -- it is printed once, on the
+first start, and never again:
+
+#+begin_src bash
+podman logs venture-dev | grep -A3 'owner account'
+#+end_src
+
+and open [[http://127.0.0.1:8747][http://127.0.0.1:8747]].
+
+Everything the server writes lands in =./compose-data/state/=, which is
+gitignored. When a report looks wrong, the database is an ordinary file you
+can open with ordinary tools:
+
+#+begin_src bash
+sqlite3 compose-data/state/venture.db .tables
+#+end_src
+
+Start over by deleting it:
+
+#+begin_src bash
+podman-compose down && podman unshare rm -rf compose-data/state
+#+end_src
+
+=podman unshare= is needed because the files belong to a uid inside the
+container's user namespace, not to you.
+
+** After changing the code
+
+=podman-compose up --build= is not enough on its own.
+
+It rebuilds the image and moves the =:dev= tag to the new one, but it will
+not recreate a container that is already running. The old container keeps
+running the old image, and the change appears not to have happened — the
+symptom is a page that still 404s, or a fix that still misbehaves, after a
+rebuild you watched succeed.
+
+Bring it down first:
+
+#+begin_src bash
+podman-compose down && podman-compose up --build -d
+#+end_src
+
+To check whether a running container is stale, compare the image it is on
+against what the tag now points to. If they differ, the container is old:
+
+#+begin_src bash
+podman inspect venture-dev --format '{{.Image}}'
+#+end_src
+
+#+begin_src bash
+podman images --no-trunc --format '{{.ID}}' quay.io/zachpodbielniak/venture:dev
+#+end_src
+
+** What the local file mounts
+
+- =./compose-data/state= → =/var/lib/venture=, read-write. The database, the
+  automation state (=automations.pod= lives here), the crispy cache, the AI
+  conversation log.
+- =./plugins/scripts= → =/srv/plugins=, read-only. Crispy =.c= plugins,
+  compiled on demand inside the container.
+- =./data/venture-types= → =/srv/venture-types=, read-only. YAML venture
+  types.
+
+Editing a crispy plugin or a venture type and restarting is enough; no
+rebuild. An unchanged =.c= file costs a cache lookup rather than a compile.
+
+* Building the image
+
+#+begin_src bash
+podman build -t quay.io/zachpodbielniak/venture:latest .
+#+end_src
+
+Two stages. The builder installs the toolchain, compiles VENTURE and its six
+vendored dependencies, runs the test suite, and installs into a staging tree.
+The runtime stage copies that tree onto a fresh Fedora with only the shared
+libraries. The compiler never reaches the final image unless you ask for it.
+
+** Build arguments
+
+| Argument         | Default   | Effect                                        |
+|------------------+-----------+-----------------------------------------------|
+| =BUILD_TYPE=     | =release= | =debug= for assertions and symbols            |
+| =RUN_TESTS=      | =1=       | =0= skips the suite; do not ship that         |
+| =WITH_CRISPY=    | =0=       | =1= puts a compiler in the runtime image      |
+| =FEDORA_VERSION= | =44=      | base image tag                                |
+
+** Build the image with a healthcheck
+
+#+begin_src bash
+podman build --format docker -t quay.io/zachpodbielniak/venture:latest .
+#+end_src
+
+Podman writes OCI images by default and the OCI spec has no healthcheck
+field, so a =HEALTHCHECK= line is silently dropped unless you ask for the
+docker format. Both compose files declare the check themselves, so this only
+matters for =podman run= without compose.
+
+** Crispy plugins in a container
+
+=WITH_CRISPY=1= adds gcc and the development headers to the runtime image, so
+=.c= plugins compile on demand exactly as they do outside one. It roughly
+doubles the image size, and it is worth understanding what it enables: the
+container gains the ability to compile and execute code from its plugin
+directory. A writable mounted plugin directory becomes a code-execution path.
+
+The local compose file turns it on, because editing a report without a
+rebuild is the whole point of crispy. The deployment file leaves it off and
+sets =plugins.allow_crispy: false= to match -- otherwise a =.c= file in a
+plugin directory warns at every start.
+
+Native =.so= plugins, YAML venture types and podomation rules need no
+compiler and work either way.
+
+*** What makes this work
+
+VENTURE's public headers include =<orm.h>= and =<htmx-glib.h>=, so a plugin
+that includes =<venture/venture.h>= needs those too. =make install= puts
+every vendored dependency's headers under =$INCLUDEDIR/venture-deps/<name>/=
+and the crispy host adds one include path per dependency. Each keeps its own
+directory because several of them have a =src/core/= and a =src/types/=, and
+one flat path would resolve the wrong one.
+
+Build and install must use the same =PREFIX=. Several paths -- the plugin
+directory, the pod-module directory, the include directory crispy compiles
+against -- are baked into the binary at compile time. Building with the
+default and installing somewhere else produces a binary that looks for its
+plugins in a directory nothing was installed to. The Containerfile sets
+=PREFIX=/usr= once and uses it for both.
+
+* Deploying
+
+#+begin_src bash
+cp compose.env.example compose.env
+chmod 600 compose.env
+$EDITOR compose.env
+podman-compose -f compose.deploy.yaml up -d
+#+end_src
+
+Two secrets are required and compose refuses to start without them:
+
+#+begin_src bash
+openssl rand -base64 24    # VENTURE_DB_PASSWORD
+openssl rand -hex 32       # VENTURE_SESSION_SECRET
+#+end_src
+
+The session secret should stay stable -- changing it logs everyone out.
+
+** What the deployment file does differently
+
+| Local                    | Deployment                       | Why                                            |
+|--------------------------+----------------------------------+------------------------------------------------|
+| builds from the tree     | pulls a pinned tag               | a server runs a built, tested artifact         |
+| SQLite                   | PostgreSQL                       | concurrent writers, a real backup story        |
+| bind mounts              | named volumes                    | managed by podman, not scattered in a checkout |
+| a fixed dummy secret     | secrets from =compose.env=       | that file is in git; this one is not           |
+| crispy on                | crispy off                       | no compiler in the runtime image               |
+| =debug=                  | =release=                        | speed over assertions                          |
+
+The image tag is pinned to a version rather than =latest=, so a restart is
+never a surprise upgrade at a time you did not pick.
+
+** The database password
+
+It is never written into the connection URI in the compose file. The URI is
+=postgres://venture@database/venture= -- no password -- and the password
+comes from the variable named by =database.password_env=, which VENTURE reads
+at startup and splices into the URI itself.
+
+That keeps it out of the compose file, out of =podman inspect= output, and
+out of anything you might paste into a bug report. A password already spelled
+out in the URI wins, so this cannot override a deliberate choice.
+
+** What this deliberately leaves to you
+
+*TLS.* The compose file publishes on =127.0.0.1= and expects a reverse proxy
+in front of it terminating TLS. VENTURE can also speak HTTPS directly:
+uncomment the TLS block and mount a certificate and key. Both must be set --
+venture refuses to start with one and not the other, because half a TLS
+configuration is a plaintext server that looks encrypted.
+
+Whichever you pick, pick one. =cookie_secure= is =true= in the deployment
+file, which means the session cookie is not sent over plain HTTP at all and
+nobody can log in. That is the failure mode you want.
+
+*Backups.* A named volume is not a backup.
+
+#+begin_src bash
+podman exec venture-db pg_dump -U venture venture | zstd -o venture-$(date +%F).sql.zst
+#+end_src
+
+somewhere off the host, on a schedule. The state volume holds the automation
+state and the AI conversation log, which are smaller but still yours.
+
+*Updates.* Pull the new tag, change the pin, bring it up. Migrations run at
+startup; =database.auto_migrate: false= turns that into a deliberate separate
+step with =venture --migrate=.
+
+* Under podman specifically
+
+** Rootless bind mounts
+
+The local compose file mounts the state directory =:Z,U=.
+
+- =Z= relabels for SELinux, which Fedora requires.
+- =U= makes podman chown the directory to the uid the container runs as.
+  Without it a rootless bind mount arrives owned by a subuid the container
+  user cannot write to, and the server dies on its first attempt to open the
+  database.
+
+The image runs as uid 8747, deliberately above 1000 so it does not collide
+with the first human user on the host.
+
+** Quadlets
+
+For a machine that should start VENTURE at boot, a quadlet is a better fit
+than compose. =podman-compose= is for interactive use; systemd is for
+services. Generate a starting point from a running container:
+
+#+begin_src bash
+podman generate systemd --new --files --name venture
+#+end_src
+
+and convert it into =~/.config/containers/systemd/venture.container=.
+
+* Packages
+
+Anything that needs to build VENTURE outside a container needs these Fedora
+packages. =make list-deps= prints the same list for Fedora, Debian and Arch.
+
+Build:
+
+#+begin_src
+gcc make pkgconf-pkg-config
+glib2-devel libyaml-devel json-glib-devel libsoup3-devel
+libxml2-devel sqlite-devel libpq-devel readline-devel
+gobject-introspection-devel
+libetpan-devel libgudev-devel
+#+end_src
+
+The last two are podomation's, not VENTURE's -- its mail and device modules
+need them. They matter more than they look: podomation resolves its whole
+dependency set in a single =pkg-config= call, so one missing package empties
+the flags entirely and the build fails on a missing =glib.h=, which points
+nowhere near the actual cause.
+
+Runtime, if you are installing rather than containerising:
+
+#+begin_src
+glib2 libyaml json-glib libsoup3 libxml2 sqlite-libs libpq readline
+#+end_src
+
+The six vendored dependencies are linked statically and appear in neither
+list.

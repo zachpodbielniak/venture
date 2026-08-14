@@ -1,0 +1,107 @@
+/*
+ * venture.h - Umbrella header for VENTURE
+ *
+ * Copyright (C) 2026 Zach Podbielniak
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * This is the only header a consumer should include:
+ *
+ *   #include <venture/venture.h>
+ *
+ * Every other header refuses to be included on its own, which keeps the
+ * public surface a single, versioned entry point.
+ *
+ * The header serves two audiences with slightly different needs:
+ *
+ *   - venturectl and anything else linking libventure-core.a sees the type
+ *     system, the boxed types, the interfaces, the domain model, the config
+ *     loader and the utilities. That is enough to build, validate and
+ *     serialise records without a database.
+ *
+ *   - the server, its plugins and its podomation modules additionally see
+ *     the database, reporting, AI, automation, plugin and web subsystems.
+ *     Those are gated behind VENTURE_SERVER_BUILD, which the build system
+ *     defines for the server object tree and for anything compiled against
+ *     it.
+ */
+
+#ifndef VENTURE_H
+#define VENTURE_H
+
+/*
+ * VENTURE_INSIDE tells the individual headers that they are being pulled in
+ * through the umbrella rather than directly. It is undefined again at the
+ * bottom so a later direct include still trips the guard.
+ */
+#define VENTURE_INSIDE
+
+#include <glib.h>
+#include <glib-object.h>
+#include <gio/gio.h>
+
+/* --- Foundation ---------------------------------------------------------- */
+
+#include "venture-version.h"
+#include "venture-types.h"
+#include "venture-enums.h"
+#include "venture-error.h"
+
+/* --- Boxed value types --------------------------------------------------- */
+
+#include "boxed/venture-money.h"
+#include "boxed/venture-date-range.h"
+#include "boxed/venture-metric.h"
+#include "boxed/venture-field-spec.h"
+
+/* --- Interfaces ---------------------------------------------------------- */
+
+#include "interfaces/venture-serializable.h"
+
+/* --- Utilities ----------------------------------------------------------- */
+
+#include "util/venture-string-util.h"
+#include "util/venture-time-util.h"
+#include "util/venture-json-util.h"
+
+/* --- Domain model -------------------------------------------------------- */
+
+#include "model/venture-entity.h"
+#include "model/venture-entity-macros.h"
+#include "model/venture-records.h"
+#include "model/venture-venture-type.h"
+#include "model/venture-entity-registry.h"
+
+/* --- Configuration ------------------------------------------------------- */
+
+#include "config/venture-config.h"
+
+/* --- Server-only subsystems ---------------------------------------------- */
+
+#ifdef VENTURE_SERVER_BUILD
+
+#include "plugin/venture-crispy-host.h"
+#include "plugin/venture-plugin-manager.h"
+
+#include "automation/venture-automation.h"
+
+#include "db/venture-schema.h"
+#include "db/venture-query.h"
+#include "db/venture-database.h"
+
+#include "report/venture-report.h"
+
+#include "core/venture-context.h"
+
+/* Auth comes before the AI service, which names VentureAuthPrincipal in its
+ * signatures, and before the web server, which uses both. */
+#include "web/venture-auth.h"
+
+#include "ai/venture-ai-service.h"
+
+#include "web/venture-web-server.h"
+
+#endif /* VENTURE_SERVER_BUILD */
+
+#undef VENTURE_INSIDE
+
+#endif /* VENTURE_H */

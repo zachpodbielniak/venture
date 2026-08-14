@@ -1,0 +1,36 @@
+# A paid or free newsletter.
+
+name: newsletter
+label: Newsletter
+description: A paid or free newsletter with a subscriber list
+
+fields:
+  platform:
+    type: enum
+    label: Platform
+    choices: [self_hosted, buttondown, ghost, substack, listmonk]
+    order: 10
+
+  cadence:
+    type: enum
+    label: Cadence
+    choices: [daily, weekly, fortnightly, monthly, irregular]
+    order: 20
+
+  paid_tier_price:
+    type: money
+    label: Paid tier price
+    order: 30
+
+  free_to_paid_target:
+    type: double
+    label: Free-to-paid target
+    help: The conversion percentage you are aiming at
+    min: 0
+    max: 100
+    order: 40
+
+metrics:
+  - subscribers
+  - revenue
+  - churn_rate

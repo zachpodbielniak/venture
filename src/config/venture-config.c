@@ -1,0 +1,1327 @@
+/*
+ * venture-config.c - Layered configuration
+ *
+ * Copyright (C) 2026 Zach Podbielniak
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * The properties are installed from a table rather than written out, for the
+ * same reason the record types are: one declaration drives the property, the
+ * YAML mapping, the environment variable name and the generated
+ * documentation, so they cannot drift apart.
+ */
+
+#include "venture.h"
+
+#include <yaml-glib.h>
+
+#ifdef VENTURE_SERVER_BUILD
+#include "plugin/venture-crispy-host.h"
+#endif
+
+#include "venture-default-config.h"
+
+/*
+ * One configuration setting.
+ *
+ * @section and @key together give the YAML path; @name is the GObject
+ * property, always "<section>-<key>" with underscores turned into hyphens.
+ * Keeping the two forms in one row is what stops a rename in the YAML from
+ * quietly losing a setting.
+ */
+typedef struct
+{
+	const gchar	*name;
+	const gchar	*section;
+	const gchar	*key;
+	GType		 value_type;
+	GType		(*enum_type_func) (void);
+	const gchar	*default_string;
+	gint64		 default_int;
+	gboolean	 default_bool;
+	const gchar	*blurb;
+} VentureConfigSetting;
+
+#define VC_STR(name, section, key, fallback, blurb) \
+	{ name, section, key, G_TYPE_STRING, NULL, fallback, 0, FALSE, blurb }
+#define VC_INT(name, section, key, fallback, blurb) \
+	{ name, section, key, G_TYPE_INT64, NULL, NULL, fallback, FALSE, blurb }
+#define VC_BOOL(name, section, key, fallback, blurb) \
+	{ name, section, key, G_TYPE_BOOLEAN, NULL, NULL, 0, fallback, blurb }
+#define VC_ENUM(name, section, key, type_func, blurb) \
+	{ name, section, key, G_TYPE_INVALID, type_func, NULL, 0, FALSE, blurb }
+/*
+ * G_TYPE_STRV is a function call rather than a constant, so it cannot appear
+ * in a static initialiser. G_TYPE_BOXED is a constant and no setting is a
+ * plain boxed value, which makes it an unambiguous marker for "string list";
+ * the real G_TYPE_STRV is used when the property is actually installed.
+ */
+#define VC_STRV(name, section, key, blurb) \
+	{ name, section, key, G_TYPE_BOXED, NULL, NULL, 0, FALSE, blurb }
+
+static const VentureConfigSetting venture_config_settings[] = {
+	VC_STR ("server-bind-address", "server", "bind_address", "127.0.0.1",
+	        "Address to listen on"),
+	VC_INT ("server-port", "server", "port", 8747, "Port to listen on"),
+	VC_STR ("server-base-url", "server", "base_url", "",
+	        "Externally visible base URL"),
+	VC_STR ("server-tls-certificate", "server", "tls_certificate", "",
+	        "PEM certificate; enables HTTPS when set with a key"),
+	VC_STR ("server-tls-private-key", "server", "tls_private_key", "",
+	        "PEM private key"),
+	VC_INT ("server-max-request-size-mb", "server", "max_request_size_mb", 32,
+	        "Largest request body accepted, in megabytes"),
+	VC_INT ("server-request-timeout", "server", "request_timeout", 60,
+	        "Seconds a request may run"),
+
+	VC_STR ("database-uri", "database", "uri", "sqlite://venture.db",
+	        "Connection URI"),
+	VC_STR ("database-password-env", "database", "password_env",
+	        "VENTURE_DB_PASSWORD", "Environment variable holding the password"),
+	VC_INT ("database-pool-size", "database", "pool_size", 4,
+	        "Connections held open"),
+	VC_BOOL("database-auto-migrate", "database", "auto_migrate", TRUE,
+	        "Apply pending migrations at startup"),
+	VC_INT ("database-busy-timeout", "database", "busy_timeout", 5,
+	        "Seconds to wait for a lock"),
+
+	VC_BOOL("security-require-auth", "security", "require_auth", TRUE,
+	        "Require authentication for every request"),
+	VC_STR ("security-session-secret-env", "security", "session_secret_env",
+	        "VENTURE_SESSION_SECRET",
+	        "Environment variable holding the session signing secret"),
+	VC_INT ("security-session-lifetime", "security", "session_lifetime",
+	        1209600, "Seconds a browser session stays valid"),
+	VC_BOOL("security-cookie-secure", "security", "cookie_secure", FALSE,
+	        "Mark the session cookie Secure"),
+	VC_INT ("security-password-iterations", "security", "password_iterations",
+	        210000, "PBKDF2 iterations"),
+	VC_INT ("security-password-min-length", "security", "password_min_length",
+	        8, "Shortest password accepted when one is set or changed"),
+	VC_INT ("security-login-rate-limit", "security", "login_rate_limit", 10,
+	        "Failed logins allowed per address per minute"),
+
+	VC_STR ("locale-default-currency", "locale", "default_currency", "USD",
+	        "Currency assumed when an amount does not name one"),
+	VC_STR ("locale-timezone", "locale", "timezone", "America/New_York",
+	        "IANA timezone used for dates and report buckets"),
+	VC_INT ("locale-fiscal-year-start-month", "locale",
+	        "fiscal_year_start_month", 1, "Month the fiscal year begins"),
+
+	VC_BOOL("ai-enabled", "ai", "enabled", TRUE, "Enable AI features"),
+	VC_STR ("ai-provider", "ai", "provider", "claude", "AI provider"),
+	VC_STR ("ai-model", "ai", "model", "claude-sonnet-5", "Model identifier"),
+	VC_STR ("ai-api-key-env", "ai", "api_key_env", "",
+	        "Environment variable holding the API key"),
+	VC_ENUM("ai-policy", "ai", "policy", venture_ai_policy_get_type,
+	        "How much authority AI tool calls have"),
+	VC_STRV("ai-auto-approve-tools", "ai", "auto_approve_tools",
+	        "Tools that may run without confirmation"),
+	VC_INT ("ai-confirmation-ttl", "ai", "confirmation_ttl", 3600,
+	        "Seconds a staged mutation waits for a decision"),
+	VC_INT ("ai-max-tokens", "ai", "max_tokens", 4096, "Response token limit"),
+	VC_INT ("ai-tool-timeout", "ai", "tool_timeout", 30,
+	        "Seconds a single tool call may run"),
+	VC_INT ("ai-max-turns", "ai", "max_turns", 12,
+	        "Turns the tool-use loop may take"),
+	VC_STR ("ai-system-prompt-extra", "ai", "system_prompt_extra", "",
+	        "Appended to the built-in system prompt"),
+	VC_BOOL("ai-log-conversations", "ai", "log_conversations", TRUE,
+	        "Record every AI request and response"),
+
+	VC_BOOL("automation-enabled", "automation", "enabled", TRUE,
+	        "Enable scheduled automations"),
+	VC_STR ("automation-pods-file", "automation", "pods_file",
+	        "automations.pod", "The podomation DSL file"),
+	VC_STRV("automation-module-paths", "automation", "module_paths",
+	        "Extra podomation module directories"),
+	VC_INT ("automation-graceful-shutdown-timeout", "automation",
+	        "graceful_shutdown_timeout", 10,
+	        "Seconds to let automations finish during shutdown"),
+	VC_BOOL("automation-persist-state", "automation", "persist_state", TRUE,
+	        "Persist engine state across restarts"),
+
+	VC_BOOL("plugins-enabled", "plugins", "enabled", TRUE, "Enable plugins"),
+	VC_STRV("plugins-paths", "plugins", "paths", "Native plugin directories"),
+	VC_BOOL("plugins-allow-crispy", "plugins", "allow_crispy", TRUE,
+	        "Compile and load .c plugins on demand"),
+	VC_STRV("plugins-venture-type-paths", "plugins", "venture_type_paths",
+	        "Directories of declarative venture-type definitions"),
+	VC_STRV("plugins-required", "plugins", "required",
+	        "Plugins that must load or startup fails"),
+
+	VC_STR ("ui-theme", "ui", "theme", "system", "system, light or dark"),
+	VC_STR ("ui-accent", "ui", "accent", "#4f7cff", "Accent colour"),
+	VC_INT ("ui-page-size", "ui", "page_size", 50, "Rows per page"),
+	VC_BOOL("ui-chat-dock", "ui", "chat_dock", TRUE, "Show the AI chat dock"),
+	VC_BOOL("ui-chat-dock-expanded", "ui", "chat_dock_expanded", FALSE,
+	        "Start the chat dock expanded"),
+	VC_STR ("ui-title", "ui", "title", "VENTURE", "Title shown in the header"),
+
+	VC_STR ("logging-level", "logging", "level", "info",
+	        "error, warning, info or debug"),
+	VC_STR ("logging-file", "logging", "file", "",
+	        "Log file; empty means stderr"),
+	VC_STR ("logging-format", "logging", "format", "text", "text or json"),
+	VC_BOOL("logging-access-log", "logging", "access_log", TRUE,
+	        "Log every request line"),
+
+	/* Not part of the YAML document: set from --state-dir or derived. */
+	VC_STR ("state-dir", NULL, NULL, "", "Directory holding runtime state")
+};
+
+#define VENTURE_CONFIG_N_SETTINGS G_N_ELEMENTS(venture_config_settings)
+#define VENTURE_CONFIG_PROP_BASE (1)
+
+struct _VentureConfig
+{
+	GObject parent_instance;
+
+	/* property name -> GValue, in the same generic style the record
+	 * types use. */
+	GHashTable	*values;
+
+	gchar		*resolved_state_dir;
+	gchar		*loaded_from;
+};
+
+static GParamSpec *venture_config_properties[VENTURE_CONFIG_N_SETTINGS + 1];
+
+G_DEFINE_FINAL_TYPE(VentureConfig, venture_config, G_TYPE_OBJECT)
+
+/* --- Property plumbing --------------------------------------------------- */
+
+static void
+venture_config_free_value(gpointer data)
+{
+	GValue *value;
+
+	value = data;
+
+	g_value_unset(value);
+	g_free(value);
+}
+
+static void
+venture_config_get_property(
+	GObject		*object,
+	guint		 prop_id,
+	GValue		*value,
+	GParamSpec	*pspec
+){
+	VentureConfig *self;
+	const GValue *stored;
+
+	self = VENTURE_CONFIG(object);
+	stored = g_hash_table_lookup(self->values, pspec->name);
+
+	if (NULL != stored)
+	{
+		g_value_copy(stored, value);
+		return;
+	}
+
+	(void)prop_id;
+}
+
+static void
+venture_config_set_property(
+	GObject		*object,
+	guint		 prop_id,
+	const GValue	*value,
+	GParamSpec	*pspec
+){
+	VentureConfig *self;
+	GValue *stored;
+
+	self = VENTURE_CONFIG(object);
+
+	stored = g_new0(GValue, 1);
+	g_value_init(stored, pspec->value_type);
+	g_value_copy(value, stored);
+
+	g_hash_table_insert(self->values, g_strdup(pspec->name), stored);
+
+	(void)prop_id;
+}
+
+static void
+venture_config_finalize(GObject *object)
+{
+	VentureConfig *self;
+
+	self = VENTURE_CONFIG(object);
+
+	g_clear_pointer(&self->values, g_hash_table_unref);
+	g_clear_pointer(&self->resolved_state_dir, g_free);
+	g_clear_pointer(&self->loaded_from, g_free);
+
+	G_OBJECT_CLASS(venture_config_parent_class)->finalize(object);
+}
+
+static void
+venture_config_class_init(VentureConfigClass *klass)
+{
+	GObjectClass *object_class;
+	gsize i;
+
+	object_class = G_OBJECT_CLASS(klass);
+	object_class->get_property = venture_config_get_property;
+	object_class->set_property = venture_config_set_property;
+	object_class->finalize = venture_config_finalize;
+
+	for (i = 0; i < VENTURE_CONFIG_N_SETTINGS; i++)
+	{
+		const VentureConfigSetting *setting;
+		GParamSpec *pspec;
+
+		setting = &venture_config_settings[i];
+
+		if (NULL != setting->enum_type_func)
+		{
+			pspec = g_param_spec_enum(setting->name, setting->name,
+			                          setting->blurb,
+			                          setting->enum_type_func(), 0,
+			                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+		}
+		else if (G_TYPE_STRING == setting->value_type)
+		{
+			pspec = g_param_spec_string(setting->name, setting->name,
+			                            setting->blurb,
+			                            setting->default_string,
+			                            G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+		}
+		else if (G_TYPE_INT64 == setting->value_type)
+		{
+			pspec = g_param_spec_int64(setting->name, setting->name,
+			                           setting->blurb,
+			                           G_MININT64, G_MAXINT64,
+			                           setting->default_int,
+			                           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+		}
+		else if (G_TYPE_BOOLEAN == setting->value_type)
+		{
+			pspec = g_param_spec_boolean(setting->name, setting->name,
+			                             setting->blurb,
+			                             setting->default_bool,
+			                             G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+		}
+		else
+		{
+			pspec = g_param_spec_boxed(setting->name, setting->name,
+			                           setting->blurb, G_TYPE_STRV,
+			                           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+		}
+
+		venture_config_properties[i] = pspec;
+		g_object_class_install_property(object_class,
+		                                (guint)(VENTURE_CONFIG_PROP_BASE + i),
+		                                pspec);
+	}
+}
+
+static void
+venture_config_init(VentureConfig *self)
+{
+	gsize i;
+
+	self->values = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+	                                     venture_config_free_value);
+
+	/* Seed every setting with its declared default, so a getter never has
+	 * to distinguish "unset" from "default" and the YAML writer can emit a
+	 * complete document. */
+	for (i = 0; i < VENTURE_CONFIG_N_SETTINGS; i++)
+	{
+		const VentureConfigSetting *setting;
+		GValue value = G_VALUE_INIT;
+
+		setting = &venture_config_settings[i];
+
+		if (NULL != setting->enum_type_func)
+		{
+			g_value_init(&value, setting->enum_type_func());
+			/* The zero value of every configuration enum is its
+			 * intended default, which for the AI policy is the
+			 * most restrictive one. */
+			g_value_set_enum(&value, 0);
+		}
+		else if (G_TYPE_STRING == setting->value_type)
+		{
+			g_value_init(&value, G_TYPE_STRING);
+			g_value_set_string(&value, setting->default_string);
+		}
+		else if (G_TYPE_INT64 == setting->value_type)
+		{
+			g_value_init(&value, G_TYPE_INT64);
+			g_value_set_int64(&value, setting->default_int);
+		}
+		else if (G_TYPE_BOOLEAN == setting->value_type)
+		{
+			g_value_init(&value, G_TYPE_BOOLEAN);
+			g_value_set_boolean(&value, setting->default_bool);
+		}
+		else
+		{
+			g_value_init(&value, G_TYPE_STRV);
+			g_value_set_boxed(&value, NULL);
+		}
+
+		g_object_set_property(G_OBJECT(self), setting->name, &value);
+		g_value_unset(&value);
+	}
+
+	/* The AI policy defaults to staging writes for approval rather than
+	 * to the zero value, which would be read-only and make the assistant
+	 * useless for anything but questions. */
+	g_object_set(self, "ai-policy", VENTURE_AI_POLICY_CONFIRM_WRITES, NULL);
+}
+
+VentureConfig *
+venture_config_new(void)
+{
+	return g_object_new(VENTURE_TYPE_CONFIG, NULL);
+}
+
+/* --- YAML --------------------------------------------------------------- */
+
+static const VentureConfigSetting *
+venture_config_find_setting(
+	const gchar	*section,
+	const gchar	*key
+){
+	gsize i;
+
+	for (i = 0; i < VENTURE_CONFIG_N_SETTINGS; i++)
+	{
+		const VentureConfigSetting *setting;
+
+		setting = &venture_config_settings[i];
+
+		if (NULL == setting->section)
+			continue;
+
+		if ((0 == g_strcmp0(setting->section, section)) &&
+		    (0 == g_strcmp0(setting->key, key)))
+			return setting;
+	}
+
+	return NULL;
+}
+
+/*
+ * Applies one section of the parsed document. Unknown keys are collected
+ * rather than ignored: a setting that silently does nothing because of a
+ * typo is the most confusing configuration failure there is, and the whole
+ * point of enumerating settings is to be able to catch it.
+ */
+static void
+venture_config_apply_section(
+	VentureConfig	*self,
+	const gchar	*section,
+	JsonObject	*object,
+	GPtrArray	*unknown
+){
+	g_autoptr(GList) members = NULL;
+	GList *iter;
+
+	members = json_object_get_members(object);
+
+	for (iter = members; NULL != iter; iter = iter->next)
+	{
+		const VentureConfigSetting *setting;
+		g_auto(GValue) value = G_VALUE_INIT;
+		g_autoptr(GError) local_error = NULL;
+		GParamSpec *pspec;
+		JsonNode *node;
+
+		setting = venture_config_find_setting(section, iter->data);
+
+		if (NULL == setting)
+		{
+			g_ptr_array_add(unknown,
+			                g_strdup_printf("%s.%s", section,
+			                                (const gchar *)iter->data));
+			continue;
+		}
+
+		pspec = g_object_class_find_property(
+			G_OBJECT_GET_CLASS(self), setting->name);
+		node = json_object_get_member(object, iter->data);
+
+		if (!venture_json_value_from_node(node, pspec->value_type,
+		                                  &value, &local_error))
+		{
+			g_warning("Ignoring %s.%s: %s", section,
+			          (const gchar *)iter->data, local_error->message);
+			continue;
+		}
+
+		g_object_set_property(G_OBJECT(self), setting->name, &value);
+	}
+}
+
+gboolean
+venture_config_apply_yaml_string(
+	VentureConfig	 *self,
+	const gchar	 *yaml,
+	GError		**error
+){
+	g_autoptr(YamlParser) parser = NULL;
+	g_autoptr(JsonNode) root = NULL;
+	g_autoptr(GError) local_error = NULL;
+	g_autoptr(GPtrArray) unknown = NULL;
+	g_autoptr(GList) sections = NULL;
+	YamlNode *yaml_root;
+	JsonObject *object;
+	GList *iter;
+
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self), FALSE);
+	g_return_val_if_fail(NULL != yaml, FALSE);
+
+	parser = yaml_parser_new();
+
+	if (!yaml_parser_load_from_data(parser, yaml, -1, &local_error))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		            "Invalid YAML: %s", local_error->message);
+		return FALSE;
+	}
+
+	yaml_root = yaml_parser_get_root(parser);
+
+	/* An empty document is valid and simply changes nothing. */
+	if ((NULL == yaml_root) || yaml_node_is_null(yaml_root))
+		return TRUE;
+
+	/* Converting to JSON lets the same tolerant value decoder handle both
+	 * formats, so "8747" and 8747 mean the same thing in either. */
+	root = yaml_node_to_json_node(yaml_root);
+
+	if ((NULL == root) || !JSON_NODE_HOLDS_OBJECT(root))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "The configuration must be a mapping of sections");
+		return FALSE;
+	}
+
+	object = json_node_get_object(root);
+	sections = json_object_get_members(object);
+	unknown = g_ptr_array_new_with_free_func(g_free);
+
+	for (iter = sections; NULL != iter; iter = iter->next)
+	{
+		JsonNode *section_node;
+
+		section_node = json_object_get_member(object, iter->data);
+
+		if (!JSON_NODE_HOLDS_OBJECT(section_node))
+		{
+			g_ptr_array_add(unknown, g_strdup(iter->data));
+			continue;
+		}
+
+		venture_config_apply_section(self, iter->data,
+		                             json_node_get_object(section_node),
+		                             unknown);
+	}
+
+	if (unknown->len > 0)
+	{
+		g_autofree gchar *list = NULL;
+
+		g_ptr_array_add(unknown, NULL);
+		list = g_strjoinv(", ", (gchar **)unknown->pdata);
+
+		/* A warning rather than an error: an unknown key is usually a
+		 * setting from a newer or older version, and refusing to start
+		 * over one would be worse than carrying on without it. */
+		g_warning("Ignoring unknown configuration settings: %s", list);
+	}
+
+	return TRUE;
+}
+
+gboolean
+venture_config_apply_yaml_file(
+	VentureConfig	 *self,
+	const gchar	 *path,
+	GError		**error
+){
+	g_autofree gchar *contents = NULL;
+	g_autoptr(GError) local_error = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self), FALSE);
+	g_return_val_if_fail(NULL != path, FALSE);
+
+	if (!g_file_get_contents(path, &contents, NULL, &local_error))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		            "Cannot read %s: %s", path, local_error->message);
+		return FALSE;
+	}
+
+	if (!venture_config_apply_yaml_string(self, contents, error))
+	{
+		g_prefix_error(error, "%s: ", path);
+		return FALSE;
+	}
+
+	g_free(self->loaded_from);
+	self->loaded_from = g_strdup(path);
+
+	return TRUE;
+}
+
+/* --- Environment --------------------------------------------------------- */
+
+void
+venture_config_apply_environment(VentureConfig *self)
+{
+	gsize i;
+
+	g_return_if_fail(VENTURE_IS_CONFIG(self));
+
+	for (i = 0; i < VENTURE_CONFIG_N_SETTINGS; i++)
+	{
+		const VentureConfigSetting *setting;
+		g_autofree gchar *variable = NULL;
+		g_autofree gchar *upper = NULL;
+		g_auto(GValue) value = G_VALUE_INIT;
+		g_autoptr(GError) local_error = NULL;
+		g_autoptr(JsonNode) node = NULL;
+		GParamSpec *pspec;
+		const gchar *text;
+
+		setting = &venture_config_settings[i];
+
+		upper = g_ascii_strup(setting->name, -1);
+		g_strdelimit(upper, "-", '_');
+		variable = g_strdup_printf("VENTURE_%s", upper);
+
+		text = g_getenv(variable);
+
+		if (NULL == text)
+			continue;
+
+		pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(self),
+		                                     setting->name);
+
+		/* A list-valued setting takes a comma-separated environment
+		 * value, which is the only sane encoding for one variable. */
+		if (G_TYPE_STRV == pspec->value_type)
+		{
+			g_auto(GStrv) parts = NULL;
+
+			parts = g_strsplit(text, ",", -1);
+			g_object_set(self, setting->name, parts, NULL);
+			continue;
+		}
+
+		node = json_node_init_string(json_node_alloc(), text);
+
+		if (!venture_json_value_from_node(node, pspec->value_type,
+		                                  &value, &local_error))
+		{
+			g_warning("Ignoring %s: %s", variable, local_error->message);
+			continue;
+		}
+
+		g_object_set_property(G_OBJECT(self), setting->name, &value);
+	}
+}
+
+/* --- Compiled C configuration -------------------------------------------- */
+
+gboolean
+venture_config_apply_c_config(
+	VentureConfig	 *self,
+	const gchar	 *path,
+	GError		**error
+){
+#ifdef VENTURE_SERVER_BUILD
+	g_autoptr(VentureCrispyHost) host = NULL;
+	g_autofree gchar *cache_dir = NULL;
+	VentureConfigureFunc configure = NULL;
+	gpointer symbol = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self), FALSE);
+	g_return_val_if_fail(NULL != path, FALSE);
+
+	if (!g_file_test(path, G_FILE_TEST_EXISTS))
+		return TRUE;
+
+	cache_dir = g_build_filename(venture_config_get_state_dir(self),
+	                             "crispy-cache", NULL);
+	host = venture_crispy_host_new(cache_dir, error);
+
+	if (NULL == host)
+		return FALSE;
+
+	if (!venture_crispy_host_lookup(host, path, "venture_configure",
+	                                &symbol, NULL, error))
+		return FALSE;
+
+	configure = (VentureConfigureFunc)symbol;
+
+	if (!configure(self, error))
+	{
+		if ((NULL != error) && (NULL == *error))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			            "%s: venture_configure() refused to continue "
+			            "without saying why", path);
+		}
+
+		return FALSE;
+	}
+
+	return TRUE;
+#else
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self), FALSE);
+
+	/* libventure-core.a has no compiler dependency; a CLI-only build
+	 * simply has no compiled configuration. */
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED,
+	                    "This build has no support for compiled C configuration");
+	(void)path;
+
+	return FALSE;
+#endif
+}
+
+/* --- Loading ------------------------------------------------------------- */
+
+VentureConfig *
+venture_config_load(
+	const gchar	 *explicit_path,
+	GError		**error
+){
+	g_autoptr(VentureConfig) self = NULL;
+	g_autofree gchar *user_path = NULL;
+	g_autofree gchar *user_c_path = NULL;
+	const gchar *system_path = VENTURE_SYSCONFDIR "/venture/config.yaml";
+
+	self = venture_config_new();
+
+	/* The compiled defaults are applied as YAML rather than assumed, so
+	 * the shipped document is exercised on every single startup and
+	 * cannot rot into something that no longer parses. */
+	if (!venture_config_apply_yaml_string(self, venture_default_yaml_config,
+	                                      error))
+	{
+		g_prefix_error(error, "built-in defaults: ");
+		return NULL;
+	}
+
+	if (g_file_test(system_path, G_FILE_TEST_EXISTS))
+	{
+		if (!venture_config_apply_yaml_file(self, system_path, error))
+			return NULL;
+	}
+
+	user_path = g_build_filename(g_get_user_config_dir(), "venture",
+	                             "config.yaml", NULL);
+
+	if (g_file_test(user_path, G_FILE_TEST_EXISTS))
+	{
+		if (!venture_config_apply_yaml_file(self, user_path, error))
+			return NULL;
+	}
+
+	if (NULL != explicit_path)
+	{
+		/* A file named explicitly must exist. Silently carrying on with
+		 * defaults because of a mistyped path is exactly the failure
+		 * that wastes an afternoon. */
+		if (!venture_config_apply_yaml_file(self, explicit_path, error))
+			return NULL;
+	}
+
+	/* The compiled configuration sits beside whichever YAML file was
+	 * loaded last, so the pair travels together. */
+	{
+		g_autofree gchar *directory = NULL;
+
+		directory = (NULL != self->loaded_from)
+			? g_path_get_dirname(self->loaded_from)
+			: g_build_filename(g_get_user_config_dir(), "venture", NULL);
+
+		user_c_path = g_build_filename(directory, "config.c", NULL);
+	}
+
+	if (g_file_test(user_c_path, G_FILE_TEST_EXISTS))
+	{
+		if (!venture_config_apply_c_config(self, user_c_path, error))
+			return NULL;
+	}
+
+	venture_config_apply_environment(self);
+
+	/* Apply the currency now so that every VentureMoney created from here
+	 * on defaults correctly, including during migration and seeding. */
+	{
+		g_autofree gchar *currency = NULL;
+
+		g_object_get(self, "locale-default-currency", &currency, NULL);
+
+		if (venture_currency_is_valid(currency))
+			venture_money_set_default_currency(currency);
+	}
+
+	return g_steal_pointer(&self);
+}
+
+/* --- Validation ---------------------------------------------------------- */
+
+gboolean
+venture_config_validate(
+	VentureConfig	 *self,
+	GError		**error
+){
+	g_autofree gchar *bind_address = NULL;
+	g_autofree gchar *uri = NULL;
+	g_autofree gchar *certificate = NULL;
+	g_autofree gchar *key = NULL;
+	g_autofree gchar *currency = NULL;
+	gint64 port;
+	gint64 fiscal_month;
+	gboolean require_auth;
+
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self), FALSE);
+
+	g_object_get(self,
+	             "server-bind-address", &bind_address,
+	             "server-port", &port,
+	             "server-tls-certificate", &certificate,
+	             "server-tls-private-key", &key,
+	             "database-uri", &uri,
+	             "security-require-auth", &require_auth,
+	             "locale-default-currency", &currency,
+	             "locale-fiscal-year-start-month", &fiscal_month,
+	             NULL);
+
+	if ((port < 1) || (port > 65535))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		            "server.port must be between 1 and 65535, not %"
+		            G_GINT64_FORMAT, port);
+		return FALSE;
+	}
+
+	/*
+	 * Refusing to serve unauthenticated on a non-loopback address is the
+	 * one hard rule here. This API can read and rewrite financial records
+	 * and drive an AI that can do the same; exposing it to a network with
+	 * no authentication is not a configuration choice, it is an accident.
+	 */
+	if (!require_auth &&
+	    (0 != g_strcmp0(bind_address, "127.0.0.1")) &&
+	    (0 != g_strcmp0(bind_address, "::1")) &&
+	    (0 != g_strcmp0(bind_address, "localhost")))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		            "security.require_auth is off while server.bind_address "
+		            "is \"%s\". Anything that can reach that address could "
+		            "read and change your records. Either bind to 127.0.0.1 "
+		            "or turn authentication on.",
+		            bind_address);
+		return FALSE;
+	}
+
+	/* Half-configured TLS would silently fall back to plain HTTP, which
+	 * is the opposite of what someone setting one of these two wanted. */
+	if (venture_string_is_empty(certificate) != venture_string_is_empty(key))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "server.tls_certificate and server.tls_private_key "
+		                    "must be set together");
+		return FALSE;
+	}
+
+	if (venture_string_is_empty(uri))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "database.uri is required");
+		return FALSE;
+	}
+
+	if (!g_str_has_prefix(uri, "sqlite://") &&
+	    !g_str_has_prefix(uri, "postgres://") &&
+	    !g_str_has_prefix(uri, "postgresql://"))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		            "database.uri must begin with sqlite:// or postgres://, "
+		            "not \"%s\"", uri);
+		return FALSE;
+	}
+
+#ifndef VENTURE_HAVE_POSTGRES
+	if (g_str_has_prefix(uri, "postgres"))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED,
+		                    "This build has no PostgreSQL support. Rebuild "
+		                    "with libpq installed, or use a sqlite:// URI.");
+		return FALSE;
+	}
+#endif
+
+	if (!venture_currency_is_valid(currency))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		            "locale.default_currency must be a three-letter ISO 4217 "
+		            "code, not \"%s\"", currency);
+		return FALSE;
+	}
+
+	if ((fiscal_month < 1) || (fiscal_month > 12))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		            "locale.fiscal_year_start_month must be 1 to 12, not %"
+		            G_GINT64_FORMAT, fiscal_month);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/* --- Serialisation ------------------------------------------------------- */
+
+gchar *
+venture_config_to_yaml(
+	VentureConfig	*self,
+	gboolean	 include_defaults
+){
+	g_autoptr(GString) yaml = NULL;
+	const gchar *current_section = NULL;
+	gsize i;
+
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self), NULL);
+
+	yaml = g_string_new("# VENTURE configuration\n");
+
+	for (i = 0; i < VENTURE_CONFIG_N_SETTINGS; i++)
+	{
+		const VentureConfigSetting *setting;
+		g_auto(GValue) value = G_VALUE_INIT;
+		GParamSpec *pspec;
+
+		setting = &venture_config_settings[i];
+
+		if (NULL == setting->section)
+			continue;
+
+		pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(self),
+		                                     setting->name);
+
+		g_value_init(&value, pspec->value_type);
+		g_object_get_property(G_OBJECT(self), setting->name, &value);
+
+		if (!include_defaults &&
+		    g_param_value_defaults(pspec, &value))
+			continue;
+
+		if (0 != g_strcmp0(current_section, setting->section))
+		{
+			g_string_append_printf(yaml, "\n%s:\n", setting->section);
+			current_section = setting->section;
+		}
+
+		if (G_TYPE_STRV == pspec->value_type)
+		{
+			const gchar * const *items;
+			gsize item;
+
+			items = g_value_get_boxed(&value);
+
+			if ((NULL == items) || (NULL == items[0]))
+			{
+				g_string_append_printf(yaml, "  %s: []\n", setting->key);
+				continue;
+			}
+
+			g_string_append_printf(yaml, "  %s:\n", setting->key);
+
+			for (item = 0; NULL != items[item]; item++)
+			{
+				g_string_append_printf(yaml, "    - \"%s\"\n",
+				                       items[item]);
+			}
+
+			continue;
+		}
+
+		if (G_TYPE_BOOLEAN == pspec->value_type)
+		{
+			g_string_append_printf(yaml, "  %s: %s\n", setting->key,
+			                       g_value_get_boolean(&value)
+			                               ? "true" : "false");
+			continue;
+		}
+
+		if (G_TYPE_INT64 == pspec->value_type)
+		{
+			g_string_append_printf(yaml, "  %s: %" G_GINT64_FORMAT "\n",
+			                       setting->key, g_value_get_int64(&value));
+			continue;
+		}
+
+		if (G_TYPE_IS_ENUM(pspec->value_type))
+		{
+			g_string_append_printf(yaml, "  %s: \"%s\"\n", setting->key,
+			                       venture_enum_to_nick(pspec->value_type,
+			                                            g_value_get_enum(&value)));
+			continue;
+		}
+
+		g_string_append_printf(yaml, "  %s: \"%s\"\n", setting->key,
+		                       (NULL != g_value_get_string(&value))
+		                               ? g_value_get_string(&value) : "");
+	}
+
+	return g_string_free(g_steal_pointer(&yaml), FALSE);
+}
+
+JsonNode *
+venture_config_describe(VentureConfig *self)
+{
+	g_autoptr(JsonBuilder) builder = NULL;
+	gsize i;
+
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self), NULL);
+
+	builder = json_builder_new();
+	json_builder_begin_array(builder);
+
+	for (i = 0; i < VENTURE_CONFIG_N_SETTINGS; i++)
+	{
+		const VentureConfigSetting *setting;
+		g_auto(GValue) value = G_VALUE_INIT;
+		GParamSpec *pspec;
+
+		setting = &venture_config_settings[i];
+
+		pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(self),
+		                                     setting->name);
+
+		if (NULL == pspec)
+			continue;
+
+		json_builder_begin_object(builder);
+
+		json_builder_set_member_name(builder, "name");
+		json_builder_add_string_value(builder, setting->name);
+
+		json_builder_set_member_name(builder, "section");
+		json_builder_add_string_value(builder,
+			(NULL != setting->section) ? setting->section : "");
+
+		json_builder_set_member_name(builder, "key");
+		json_builder_add_string_value(builder,
+			(NULL != setting->key) ? setting->key : setting->name);
+
+		json_builder_set_member_name(builder, "help");
+		json_builder_add_string_value(builder,
+			(NULL != setting->blurb) ? setting->blurb : "");
+
+		/*
+		 * The environment variable that would override this one. Shown
+		 * because the commonest configuration question on a running
+		 * server is "which knob do I turn from a compose file".
+		 */
+		{
+			g_autofree gchar *upper = NULL;
+			g_autofree gchar *variable = NULL;
+
+			upper = g_ascii_strup(setting->name, -1);
+			g_strdelimit(upper, "-", '_');
+			variable = g_strdup_printf("VENTURE_%s", upper);
+
+			json_builder_set_member_name(builder, "env");
+			json_builder_add_string_value(builder, variable);
+		}
+
+		g_value_init(&value, pspec->value_type);
+		g_object_get_property(G_OBJECT(self), setting->name, &value);
+
+		json_builder_set_member_name(builder, "value");
+
+		if (G_TYPE_STRING == pspec->value_type)
+		{
+			const gchar *text;
+
+			text = g_value_get_string(&value);
+
+			if (0 == g_strcmp0(setting->name, "database-uri"))
+			{
+				g_autofree gchar *redacted = NULL;
+
+				redacted = venture_string_redact_uri(text);
+				json_builder_add_string_value(builder, redacted);
+			}
+			else
+			{
+				json_builder_add_string_value(builder,
+					(NULL != text) ? text : "");
+			}
+
+			json_builder_set_member_name(builder, "type");
+			json_builder_add_string_value(builder, "string");
+		}
+		else if (G_TYPE_INT64 == pspec->value_type)
+		{
+			json_builder_add_int_value(builder, g_value_get_int64(&value));
+			json_builder_set_member_name(builder, "type");
+			json_builder_add_string_value(builder, "integer");
+		}
+		else if (G_TYPE_BOOLEAN == pspec->value_type)
+		{
+			json_builder_add_boolean_value(builder,
+			                               g_value_get_boolean(&value));
+			json_builder_set_member_name(builder, "type");
+			json_builder_add_string_value(builder, "boolean");
+		}
+		else if (G_TYPE_STRV == pspec->value_type)
+		{
+			g_auto(GStrv) items = NULL;
+			gsize j;
+
+			items = g_value_dup_boxed(&value);
+
+			json_builder_begin_array(builder);
+
+			for (j = 0; (NULL != items) && (NULL != items[j]); j++)
+				json_builder_add_string_value(builder, items[j]);
+
+			json_builder_end_array(builder);
+
+			json_builder_set_member_name(builder, "type");
+			json_builder_add_string_value(builder, "list");
+		}
+		else if (G_TYPE_IS_ENUM(pspec->value_type))
+		{
+			json_builder_add_string_value(builder,
+				venture_enum_to_nick(pspec->value_type,
+				                     g_value_get_enum(&value)));
+
+			json_builder_set_member_name(builder, "type");
+			json_builder_add_string_value(builder, "enum");
+		}
+		else
+		{
+			json_builder_add_null_value(builder);
+			json_builder_set_member_name(builder, "type");
+			json_builder_add_string_value(builder, "unknown");
+		}
+
+		/*
+		 * A setting whose name ends in _env holds the NAME of an
+		 * environment variable. Reporting whether that variable is
+		 * actually set -- never its value -- answers "is the secret
+		 * present" without disclosing anything.
+		 */
+		if (g_str_has_suffix(setting->name, "-env") &&
+		    (G_TYPE_STRING == pspec->value_type))
+		{
+			const gchar *variable;
+
+			variable = g_value_get_string(&value);
+
+			json_builder_set_member_name(builder, "secret_present");
+			json_builder_add_boolean_value(builder,
+				(!venture_string_is_empty(variable)) &&
+				(NULL != g_getenv(variable)));
+		}
+
+		json_builder_end_object(builder);
+	}
+
+	json_builder_end_array(builder);
+
+	return json_builder_get_root(builder);
+}
+
+const gchar *
+venture_config_get_loaded_from(VentureConfig *self)
+{
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self), NULL);
+
+	return self->loaded_from;
+}
+
+const gchar *
+venture_config_get_default_yaml(void)
+{
+	return venture_default_yaml_config;
+}
+
+const gchar *
+venture_config_get_default_c_config(void)
+{
+	return venture_default_c_config;
+}
+
+/* --- Accessors ----------------------------------------------------------- */
+
+const gchar *
+venture_config_get_secret(
+	VentureConfig	*self,
+	const gchar	*env_property
+){
+	g_autofree gchar *variable = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self), NULL);
+	g_return_val_if_fail(NULL != env_property, NULL);
+
+	g_object_get(self, env_property, &variable, NULL);
+
+	if (venture_string_is_empty(variable))
+		return NULL;
+
+	return g_getenv(variable);
+}
+
+const gchar *
+venture_config_get_state_dir(VentureConfig *self)
+{
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self), NULL);
+
+	if (NULL != self->resolved_state_dir)
+		return self->resolved_state_dir;
+
+	{
+		g_autofree gchar *configured = NULL;
+
+		g_object_get(self, "state-dir", &configured, NULL);
+
+		self->resolved_state_dir = venture_string_is_empty(configured)
+			? g_build_filename(g_get_user_data_dir(), "venture", NULL)
+			: g_strdup(configured);
+	}
+
+	/* Created on first use rather than at startup, so a command that
+	 * never touches state -- `venture --version` -- leaves no trace. */
+	if (0 != g_mkdir_with_parents(self->resolved_state_dir, 0700))
+	{
+		g_warning("Cannot create the state directory %s",
+		          self->resolved_state_dir);
+	}
+
+	return self->resolved_state_dir;
+}
+
+gchar *
+venture_config_resolve_path(
+	VentureConfig	*self,
+	const gchar	*path
+){
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self), NULL);
+	g_return_val_if_fail(NULL != path, NULL);
+
+	if (g_path_is_absolute(path))
+		return g_strdup(path);
+
+	return g_build_filename(venture_config_get_state_dir(self), path, NULL);
+}
+
+const gchar *
+venture_config_get_database_uri(VentureConfig *self)
+{
+	const GValue *stored;
+
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self), NULL);
+
+	/* Returned without copying, which is safe because the value lives in
+	 * the configuration's own table for as long as the object does. */
+	stored = g_hash_table_lookup(self->values, "database-uri");
+
+	return (NULL != stored) ? g_value_get_string(stored) : NULL;
+}
+
+void
+venture_config_set_database_uri(
+	VentureConfig	*self,
+	const gchar	*uri
+){
+	g_return_if_fail(VENTURE_IS_CONFIG(self));
+
+	g_object_set(self, "database-uri", uri, NULL);
+}
+
+VentureDatabaseBackend
+venture_config_get_database_backend(VentureConfig *self)
+{
+	const gchar *uri;
+
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self),
+	                     VENTURE_DATABASE_BACKEND_SQLITE);
+
+	uri = venture_config_get_database_uri(self);
+
+	if ((NULL != uri) && g_str_has_prefix(uri, "postgres"))
+		return VENTURE_DATABASE_BACKEND_POSTGRES;
+
+	return VENTURE_DATABASE_BACKEND_SQLITE;
+}
+
+VentureAiPolicy
+venture_config_get_ai_policy(VentureConfig *self)
+{
+	VentureAiPolicy policy;
+
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self),
+	                     VENTURE_AI_POLICY_READ_ONLY);
+
+	g_object_get(self, "ai-policy", &policy, NULL);
+
+	return policy;
+}
+
+void
+venture_config_set_ai_policy(
+	VentureConfig	*self,
+	VentureAiPolicy	 policy
+){
+	g_return_if_fail(VENTURE_IS_CONFIG(self));
+
+	g_object_set(self, "ai-policy", policy, NULL);
+}
+
+void
+venture_config_set_ai_system_prompt_extra(
+	VentureConfig	*self,
+	const gchar	*text
+){
+	g_return_if_fail(VENTURE_IS_CONFIG(self));
+
+	g_object_set(self, "ai-system-prompt-extra", text, NULL);
+}
+
+gboolean
+venture_config_is_tool_auto_approved(
+	VentureConfig	*self,
+	const gchar	*tool_name
+){
+	g_auto(GStrv) tools = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self), FALSE);
+	g_return_val_if_fail(NULL != tool_name, FALSE);
+
+	g_object_get(self, "ai-auto-approve-tools", &tools, NULL);
+
+	if (NULL == tools)
+		return FALSE;
+
+	return g_strv_contains((const gchar * const *)tools, tool_name);
+}
+
+GTimeZone *
+venture_config_get_timezone(VentureConfig *self)
+{
+	g_autofree gchar *name = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self), NULL);
+
+	g_object_get(self, "locale-timezone", &name, NULL);
+
+	return venture_time_get_timezone(name);
+}

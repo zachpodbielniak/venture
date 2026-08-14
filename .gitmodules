@@ -1,0 +1,18 @@
+[submodule "deps/htmx-glib"]
+	path = deps/htmx-glib
+	url = git@git-ssh.podbielniak.com:zachpodbielniak/htmx-glib.git
+[submodule "deps/ai-glib"]
+	path = deps/ai-glib
+	url = git@git-ssh.podbielniak.com:zachpodbielniak/ai-glib.git
+[submodule "deps/yaml-glib"]
+	path = deps/yaml-glib
+	url = git@gitlab.com:copyleft-games/yaml-glib.git
+[submodule "deps/crispy"]
+	path = deps/crispy
+	url = git@git-ssh.podbielniak.com:zachpodbielniak/crispy.git
+[submodule "deps/podomation"]
+	path = deps/podomation
+	url = git@git-ssh.podbielniak.com:zachpodbielniak/podomation.git
+[submodule "deps/orm-glib"]
+	path = deps/orm-glib
+	url = git@git-ssh.podbielniak.com:zachpodbielniak/orm-glib.git

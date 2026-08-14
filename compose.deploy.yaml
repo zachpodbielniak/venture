@@ -1,0 +1,187 @@
+# compose.deploy.yaml - VENTURE, deployment example
+#
+# Copyright (C) 2026 Zach Podbielniak
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+#   cp compose.env.example compose.env
+#   $EDITOR compose.env                     # set the two secrets
+#   podman-compose -f compose.deploy.yaml up -d
+#
+# An example, not a turnkey production system. It is a real, working shape --
+# PostgreSQL, a published image, secrets from the environment, named volumes,
+# an ordered startup -- and the things it deliberately leaves to you are
+# called out in comments rather than papered over.
+#
+# What this does NOT do, and what you must decide:
+#
+#   - TLS. venture speaks HTTPS directly if given a certificate and key
+#     (see the commented block below), but most deployments put it behind a
+#     reverse proxy that already terminates TLS and renews certificates.
+#     Whichever you choose, do choose one: the session cookie carries a
+#     login, and over plain HTTP it crosses the network in the clear.
+#
+#   - Backups. A named volume is not a backup. `pg_dump` on a schedule,
+#     somewhere off this host.
+#
+#   - Updates. The image tag below is pinned to a version rather than
+#     `latest`, so that a restart is never a surprise upgrade.
+#
+# Differences from compose.yaml, all deliberate:
+#
+#   image not build         a server should run a built, tested artifact
+#   PostgreSQL not SQLite   concurrent writers and a real backup story
+#   named volumes           managed by podman, not scattered in a checkout
+#   secrets from env        never in this file, which is in git
+#   crispy off              no compiler in the runtime image
+#   127.0.0.1 published     a proxy is expected in front
+
+services:
+  database:
+    image: docker.io/library/postgres:17-alpine
+    container_name: venture-db
+
+    environment:
+      POSTGRES_DB: venture
+      POSTGRES_USER: venture
+      # Read from compose.env, which is not in git. Compose fails loudly if
+      # it is unset rather than starting an unprotected database.
+      POSTGRES_PASSWORD: ${VENTURE_DB_PASSWORD:?set VENTURE_DB_PASSWORD in compose.env}
+
+      # Checksums cost a little write throughput and turn silent corruption
+      # into a loud error. For financial records that is the right trade.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+
+    volumes:
+      - venture-db:/var/lib/postgresql/data
+
+    # Not published. The database is reachable only from the compose
+    # network, so it never needs a host port and never should have one.
+    expose:
+      - "5432"
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U venture -d venture"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+    restart: unless-stopped
+
+  venture:
+    # Pinned. `latest` on a server means the next restart is an upgrade you
+    # did not schedule, at a time you did not pick.
+    image: quay.io/zachpodbielniak/venture:0.1.0
+    container_name: venture
+
+    depends_on:
+      database:
+        # Waits for pg_isready, not merely for the container to exist.
+        # Without this the first start races the database's own
+        # initialisation and the migration fails on a refused connection.
+        condition: service_healthy
+
+    environment:
+      VENTURE_STATE_DIR: /var/lib/venture
+
+      # The password comes from VENTURE_DB_PASSWORD via database.password_env
+      # rather than being interpolated into this URI, so it stays out of
+      # `podman inspect` output and out of this file.
+      VENTURE_DATABASE_URI: postgres://venture@database/venture
+      VENTURE_DB_PASSWORD: ${VENTURE_DB_PASSWORD:?set VENTURE_DB_PASSWORD in compose.env}
+      VENTURE_DATABASE_POOL_SIZE: "8"
+
+      VENTURE_SERVER_BIND_ADDRESS: 0.0.0.0
+      VENTURE_SERVER_PORT: 8747
+
+      # The externally visible URL, used to build absolute links in
+      # newsletters and webhooks. Set it to what a browser actually types.
+      VENTURE_SERVER_BASE_URL: ${VENTURE_BASE_URL:-https://venture.example.com}
+
+      VENTURE_SECURITY_REQUIRE_AUTH: "true"
+
+      # A fixed secret, so sessions survive a restart or a redeploy.
+      # Generate once with `openssl rand -hex 32` and keep it: changing it
+      # logs everyone out.
+      VENTURE_SESSION_SECRET: ${VENTURE_SESSION_SECRET:?set VENTURE_SESSION_SECRET in compose.env}
+
+      # Requires HTTPS. Leave this true and terminate TLS somewhere, or the
+      # cookie will not be sent at all and nobody can log in -- which is the
+      # failure mode you want, rather than a login cookie over plain HTTP.
+      VENTURE_SECURITY_COOKIE_SECURE: "true"
+
+      VENTURE_LOCALE_TIMEZONE: ${VENTURE_TIMEZONE:-America/New_York}
+      VENTURE_LOCALE_DEFAULT_CURRENCY: ${VENTURE_CURRENCY:-USD}
+
+      # No compiler in the runtime image, so a .c file in a plugin
+      # directory would warn at every start. Native .so plugins, YAML
+      # venture types and podomation rules all still work.
+      #
+      # To allow crispy here, rebuild the image with WITH_CRISPY=1 and
+      # understand what you are enabling: the container gains the ability
+      # to compile and run code from its plugin directory.
+      VENTURE_PLUGINS_ENABLED: "true"
+      VENTURE_PLUGINS_ALLOW_CRISPY: "false"
+      VENTURE_PLUGINS_PATHS: /srv/plugins
+      VENTURE_PLUGINS_VENTURE_TYPE_PATHS: /srv/venture-types
+
+      VENTURE_AUTOMATION_ENABLED: "true"
+
+      VENTURE_LOGGING_LEVEL: ${VENTURE_LOG_LEVEL:-info}
+      VENTURE_LOGGING_FORMAT: json
+
+      # AI stays inert until a key is present. The policy is left at its
+      # default of confirm_writes: on an instance holding real figures,
+      # a mutation an AI proposed should be one a person approved.
+      VENTURE_AI_ENABLED: ${VENTURE_AI_ENABLED:-false}
+      VENTURE_AI_POLICY: confirm_writes
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+
+    volumes:
+      # Automation state, the AI conversation log, any uploads. The
+      # database is in PostgreSQL, so this is much smaller than in the
+      # local file -- but it is still state, and it still wants backing up.
+      - venture-state:/var/lib/venture
+
+      # Read-only extension directories. Point these at wherever you keep
+      # your own plugins and venture types.
+      - ./deploy/plugins:/srv/plugins:ro,Z
+      - ./deploy/venture-types:/srv/venture-types:ro,Z
+
+      # Uncomment with the TLS block below to serve HTTPS directly.
+      # - ./deploy/tls:/etc/venture/tls:ro,Z
+
+    # Published on loopback, for a reverse proxy on this host to forward to.
+    # Change to "8747:8747" only if this host is not reachable from anywhere
+    # you would not want it reachable from.
+    ports:
+      - "127.0.0.1:8747:8747"
+
+    # Serving HTTPS directly, instead of behind a proxy. Both must be set;
+    # venture refuses to start with one and not the other, because half a
+    # TLS configuration is a plaintext server that looks encrypted.
+    #
+    # environment:
+    #   VENTURE_SERVER_TLS_CERTIFICATE: /etc/venture/tls/fullchain.pem
+    #   VENTURE_SERVER_TLS_PRIVATE_KEY: /etc/venture/tls/privkey.pem
+
+    healthcheck:
+      test: ["CMD", "venturectl", "--server", "http://127.0.0.1:8747", "health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+    restart: unless-stopped
+
+    # A modest ceiling, so a runaway report cannot take the host down with
+    # it. Raise it if you have a lot of data; the reporting engine holds a
+    # result set in memory while it renders.
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+volumes:
+  venture-db:
+  venture-state:

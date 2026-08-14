@@ -1,0 +1,45 @@
+# An Etsy shop: handmade, print-on-demand or digital downloads.
+
+name: etsy
+label: Etsy shop
+description: A handmade, print-on-demand or digital-download storefront
+
+fields:
+  shop_name:
+    type: string
+    label: Shop name
+    required: true
+    indexed: true
+    order: 10
+
+  shop_section:
+    type: string
+    label: Default section
+    order: 20
+
+  fulfilment:
+    type: enum
+    label: Fulfilment
+    choices: [handmade, print_on_demand, digital_download, dropship]
+    order: 30
+
+  listing_fee:
+    type: money
+    label: Listing fee
+    help: What Etsy charges per listing, for margin calculations
+    order: 40
+
+  primary_material:
+    type: enum
+    label: Primary material
+    choices: [wood, acrylic, paper, metal, fabric, digital]
+    order: 50
+
+metrics:
+  - revenue
+  - units_sold
+  - listing_fee_total
+
+report_columns:
+  - category
+  - format
