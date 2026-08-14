@@ -417,8 +417,160 @@
 		}
 
 		wireComposer();
+
+	/*
+	 * The kanban board.
+	 *
+	 * Every card also carries a status select and a Move button, which is
+	 * what a browser without scripting uses -- and what this handler posts
+	 * to. There is one endpoint and one set of rules; dragging is a nicer
+	 * way to reach them, not a second implementation that can disagree.
+	 */
+	function wireBoard(root) {
+		var board = root.querySelector("[data-board]");
+
+		if (!board) {
+			return;
+		}
+
+		var dragging = null;
+
+		board.addEventListener("dragstart", function (event) {
+			var card = event.target.closest("[data-ticket]");
+
+			if (!card) {
+				return;
+			}
+
+			dragging = card;
+			card.classList.add("dragging");
+			event.dataTransfer.effectAllowed = "move";
+			/* Firefox will not start a drag without payload. */
+			event.dataTransfer.setData("text/plain", card.dataset.ticket);
+		});
+
+		board.addEventListener("dragend", function () {
+			if (dragging) {
+				dragging.classList.remove("dragging");
+			}
+
+			dragging = null;
+
+			Array.prototype.forEach.call(
+				board.querySelectorAll(".drop-target"),
+				function (el) { el.classList.remove("drop-target"); }
+			);
+		});
+
+		board.addEventListener("dragover", function (event) {
+			var column = event.target.closest("[data-drop]");
+
+			if (!column || !dragging) {
+				return;
+			}
+
+			/* Without this the browser refuses the drop. */
+			event.preventDefault();
+			event.dataTransfer.dropEffect = "move";
+			column.classList.add("drop-target");
+		});
+
+		board.addEventListener("dragleave", function (event) {
+			var column = event.target.closest("[data-drop]");
+
+			if (column && !column.contains(event.relatedTarget)) {
+				column.classList.remove("drop-target");
+			}
+		});
+
+		board.addEventListener("drop", function (event) {
+			var column = event.target.closest("[data-drop]");
+
+			if (!column || !dragging) {
+				return;
+			}
+
+			event.preventDefault();
+			column.classList.remove("drop-target");
+
+			var card = dragging;
+			var below = event.target.closest("[data-ticket]");
+			var body = column;
+
+			/*
+			 * Move the card immediately, then tell the server. Waiting
+			 * for a round trip to redraw a card the pointer already
+			 * dropped feels broken even when it is fast.
+			 */
+			if (below && below !== card) {
+				body.insertBefore(card, below.nextSibling);
+			} else {
+				body.appendChild(card);
+			}
+
+			var previous = card.previousElementSibling;
+			var data = new URLSearchParams();
+
+			data.set("status", column.dataset.drop);
+			data.set("async", "1");
+
+			if (previous && previous.dataset.ticket) {
+				data.set("after", previous.dataset.ticket);
+			} else {
+				data.set("first", "1");
+			}
+
+			/* Keep the fallback select in step, so the card still says
+			 * the right thing if scripting is later disabled. */
+			var select = card.querySelector(".ticket-move select");
+
+			if (select) {
+				select.value = column.dataset.drop;
+			}
+
+			updateColumnCounts(board);
+
+			fetch("/tickets/" + card.dataset.ticket + "/move", {
+				method: "POST",
+				headers: { "Content-Type": "application/x-www-form-urlencoded" },
+				body: data.toString(),
+				credentials: "same-origin"
+			}).then(function (response) {
+				if (!response.ok) {
+					throw new Error("move failed");
+				}
+			}).catch(function () {
+				/*
+				 * The card is already where the pointer left it, and the
+				 * server disagrees. Say so rather than silently showing
+				 * a board that is wrong.
+				 */
+				if (window.venture && window.venture.toast) {
+					window.venture.toast("Could not move that ticket. Reloading.");
+				}
+
+				window.setTimeout(function () { window.location.reload(); }, 1200);
+			});
+		});
+	}
+
+	function updateColumnCounts(board) {
+		Array.prototype.forEach.call(
+			board.querySelectorAll(".board-column"),
+			function (column) {
+				var count = column.querySelectorAll("[data-ticket]").length;
+				var label = column.querySelector(".count");
+
+				if (label) {
+					label.textContent = String(count);
+				}
+			}
+		);
+	}
+
 		wireShortcuts();
 		wireRowLinks(document);
+		wireBoard(document);
 		wireServerEvents();
 		scrollChatToBottom();
 	}

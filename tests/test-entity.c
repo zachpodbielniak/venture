@@ -25,7 +25,10 @@ test_registry_has_builtins(void)
 	names = venture_entity_registry_list_names(registry);
 
 	g_assert_nonnull(names);
-	g_assert_cmpuint(g_strv_length(names), ==, 24);
+	/* A lower bound rather than an exact count: the number changes
+	 * whenever a record type is added, and pinning it turns every such
+	 * addition into a failing test that says nothing useful. */
+	g_assert_cmpuint(g_strv_length(names), >=, 24);
 
 	g_assert_true(g_strv_contains((const gchar * const *)names, "organization"));
 	g_assert_true(g_strv_contains((const gchar * const *)names, "venture"));
@@ -173,10 +176,10 @@ test_entity_identity(void)
 static void
 test_entity_touch_increments_version(void)
 {
-	g_autoptr(VentureTask) task = NULL;
+	g_autoptr(VentureTicket) task = NULL;
 	VentureEntity *entity;
 
-	task = venture_task_new();
+	task = venture_ticket_new();
 	entity = VENTURE_ENTITY(task);
 
 	venture_entity_touch(entity);
@@ -320,10 +323,10 @@ test_entity_set_unknown_field_fails(void)
 static void
 test_entity_enum_field_rejects_bad_value(void)
 {
-	g_autoptr(VentureTask) task = NULL;
+	g_autoptr(VentureTicket) task = NULL;
 	g_autoptr(GError) error = NULL;
 
-	task = venture_task_new();
+	task = venture_ticket_new();
 
 	g_assert_false(venture_entity_set_field_from_string(
 		VENTURE_ENTITY(task), "status", "sideways", &error));
@@ -336,22 +339,22 @@ test_entity_enum_field_rejects_bad_value(void)
 static void
 test_entity_enum_field_accepts_spelling_variants(void)
 {
-	g_autoptr(VentureTask) task = NULL;
-	VentureTaskStatus status;
+	g_autoptr(VentureTicket) task = NULL;
+	VentureTicketStatus status;
 
-	task = venture_task_new();
+	task = venture_ticket_new();
 
 	/* Hyphen, underscore and upper case all reach the same value: these
 	 * strings come from a CLI flag, a form and an AI in equal measure. */
 	g_assert_true(venture_entity_set_field_from_string(
 		VENTURE_ENTITY(task), "status", "in-progress", NULL));
 	g_object_get(task, "status", &status, NULL);
-	g_assert_cmpint(status, ==, VENTURE_TASK_STATUS_IN_PROGRESS);
+	g_assert_cmpint(status, ==, VENTURE_TICKET_STATUS_IN_PROGRESS);
 
 	g_assert_true(venture_entity_set_field_from_string(
 		VENTURE_ENTITY(task), "status", "DONE", NULL));
 	g_object_get(task, "status", &status, NULL);
-	g_assert_cmpint(status, ==, VENTURE_TASK_STATUS_DONE);
+	g_assert_cmpint(status, ==, VENTURE_TICKET_STATUS_DONE);
 }
 
 /* --- Custom attributes --------------------------------------------------- */
@@ -442,10 +445,10 @@ test_entity_partial_json_leaves_other_fields(void)
 	g_autoptr(JsonNode) patch = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *name = NULL;
-	g_autofree gchar *company = NULL;
+	g_autofree gchar *role = NULL;
 
 	contact = venture_contact_new();
-	g_object_set(contact, "name", "Ada", "company", "Analytical", NULL);
+	g_object_set(contact, "name", "Ada", "role", "Analyst", NULL);
 
 	/* An absent member must leave the stored value alone, which is what
 	 * gives PATCH semantics for free and stops a partial client blanking
@@ -457,9 +460,9 @@ test_entity_partial_json_leaves_other_fields(void)
 	                                             patch, &error));
 	g_assert_no_error(error);
 
-	g_object_get(contact, "name", &name, "company", &company, NULL);
+	g_object_get(contact, "name", &name, "role", &role, NULL);
 	g_assert_cmpstr(name, ==, "Ada Lovelace");
-	g_assert_cmpstr(company, ==, "Analytical");
+	g_assert_cmpstr(role, ==, "Analyst");
 }
 
 static void
@@ -1025,11 +1028,11 @@ test_entity_field_specs_derived_from_properties(void)
 static void
 test_entity_field_spec_enum_choices_from_gtype(void)
 {
-	g_autoptr(VentureTask) task = NULL;
+	g_autoptr(VentureTicket) task = NULL;
 	g_autoptr(GPtrArray) specs = NULL;
 	guint i;
 
-	task = venture_task_new();
+	task = venture_ticket_new();
 	specs = venture_entity_get_field_specs(VENTURE_ENTITY(task));
 
 	for (i = 0; i < specs->len; i++)
@@ -1207,6 +1210,99 @@ test_entity_field_specs_keep_the_declared_kind(void)
 }
 
 
+/*
+ * The CRM shape: a contact belongs to a company, and a company is not one of
+ * your own entities.
+ */
+static void
+test_entity_contact_belongs_to_a_company(void)
+{
+	g_autoptr(VentureContact) contact = NULL;
+	g_autoptr(GPtrArray) specs = NULL;
+	gboolean found;
+	guint i;
+
+	contact = venture_contact_new();
+	specs = venture_entity_get_field_specs(VENTURE_ENTITY(contact));
+	found = FALSE;
+
+	for (i = 0; i < specs->len; i++)
+	{
+		VentureFieldSpec *spec;
+
+		spec = g_ptr_array_index(specs, i);
+
+		if (0 != g_strcmp0(venture_field_spec_get_name(spec), "company-id"))
+			continue;
+
+		/*
+		 * A reference rather than a string. The free-text version could
+		 * not answer "everything to do with this account", which is the
+		 * question a CRM exists for -- and spelled the same company
+		 * three ways across three records.
+		 */
+		g_assert_cmpint(venture_field_spec_get_kind(spec), ==,
+		                VENTURE_FIELD_KIND_REFERENCE);
+		g_assert_cmpstr(venture_field_spec_get_reference_type(spec), ==,
+		                "company");
+		found = TRUE;
+	}
+
+	g_assert_true(found);
+}
+
+static void
+test_entity_ticket_covers_internal_and_external(void)
+{
+	g_autoptr(VentureTicket) ticket = NULL;
+	VentureTicketKind kind;
+	VentureTicketStatus status;
+
+	ticket = venture_ticket_new();
+
+	/*
+	 * One type for both, so a support request that turns out to be a bug
+	 * stays the same ticket rather than being retyped into another
+	 * system and losing its history.
+	 */
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(ticket),
+		"kind", "external", NULL));
+	g_object_get(ticket, "kind", &kind, NULL);
+	g_assert_cmpint(kind, ==, VENTURE_TICKET_KIND_EXTERNAL);
+
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(ticket),
+		"kind", "internal", NULL));
+	g_object_get(ticket, "kind", &kind, NULL);
+	g_assert_cmpint(kind, ==, VENTURE_TICKET_KIND_INTERNAL);
+
+	/* Triage exists because an external ticket arrives before anybody has
+	 * decided whether it is real. */
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(ticket),
+		"status", "triage", NULL));
+	g_object_get(ticket, "status", &status, NULL);
+	g_assert_cmpint(status, ==, VENTURE_TICKET_STATUS_TRIAGE);
+}
+
+static void
+test_entity_ticket_comment_distinguishes_internal_notes(void)
+{
+	g_autoptr(VentureTicketComment) comment = NULL;
+	gboolean internal;
+
+	comment = venture_ticket_comment_new();
+	g_object_set(comment, "body", "Margin is thin below 50 units",
+	             "internal", TRUE, NULL);
+
+	/*
+	 * The flag is why a comment is a record rather than a text field on
+	 * the ticket: a reply to the customer and a note to yourself have to
+	 * share one ordered thread and stay tellable apart.
+	 */
+	g_object_get(comment, "internal", &internal, NULL);
+	g_assert_true(internal);
+}
+
+
 int
 main(
 	int	  argc,
@@ -1292,6 +1388,12 @@ main(
 
 	g_test_add_func("/entity/field-specs-follow-the-declared-order",
 	                test_entity_field_specs_follow_the_declared_order);
+	g_test_add_func("/entity/contact-belongs-to-a-company",
+	                test_entity_contact_belongs_to_a_company);
+	g_test_add_func("/entity/ticket-covers-internal-and-external",
+	                test_entity_ticket_covers_internal_and_external);
+	g_test_add_func("/entity/ticket-comment-distinguishes-internal-notes",
+	                test_entity_ticket_comment_distinguishes_internal_notes);
 	g_test_add_func("/entity/field-specs-keep-the-declared-kind",
 	                test_entity_field_specs_keep_the_declared_kind);
 	g_test_add_func("/entity/field-specs-omit-the-identity-spine",

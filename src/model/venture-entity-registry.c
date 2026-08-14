@@ -441,7 +441,9 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 
 		venture_idea_get_type,
 		venture_research_note_get_type,
-		venture_task_get_type,
+		venture_ticket_get_type,
+		venture_ticket_comment_get_type,
+		venture_company_get_type,
 		venture_document_get_type,
 
 		venture_user_get_type,

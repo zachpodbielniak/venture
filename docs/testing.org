@@ -85,6 +85,14 @@ field is the same C type as a short string one. Both were lost at some point,
 and neither looked like an ordering or declaration problem — one showed up as
 a list of empty columns, the other as a Notes box one line tall.
 
+** =test-entity=, on the CRM and ticket shape
+
+That a contact points at a company by reference rather than naming one in
+text — the free-text version could not answer "everything to do with this
+account" and spelled the same company three ways. That one ticket type
+carries both internal work and external requests. That a comment's internal
+flag survives, since it is the reason a comment is a record at all.
+
 * Adding tests
 
 One file per subsystem, =tests/test-<area>.c=, picked up automatically by the Makefile's wildcard. Use the fixture pattern for anything needing a database:

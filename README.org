@@ -120,6 +120,22 @@ one, and GObject returns properties in its own order rather than the declared
 one; losing either turns a Notes box into a one-line input or a list's first
 columns into empty ones.
 
+*** A CRM that is actually relational
+
+Companies are the outside businesses you deal with; entities are the ones you
+are. Contacts belong to companies by reference, and deals, interactions and
+tickets carry both. Every record has a detail page listing everything that
+points at it, derived from the reference metadata rather than written per
+type — so a plugin's record type appears there for free.
+
+*** One ticket system, internal and external
+
+A project task and a support request are the same shape, so they are the same
+record with a =kind=. Comments carry an internal flag, so a reply to the
+customer and a note to yourself share one thread and stay tellable apart.
+=/tickets= is a kanban board with drag and drop, and a per-card form that
+does the same thing without scripting.
+
 *** AI has authority, but bounded
 
 AI tool calls read freely. Anything that would change a record is staged as a =VentureAiConfirmation= carrying a diff, and applies only after approval. Every applied mutation is audited with the prompt that caused it. The policy is configurable per install and per tool; the default is =confirm_writes=, because a hallucinated tool call that rewrites an expense is a tax problem rather than a UI annoyance.
@@ -174,6 +190,9 @@ Working and covered by tests:
   plugins, crispy =.c= scripts, podomation rules and YAML venture types
 - =VentureAutomation=: the embedded podomation engine, VENTURE's =venture=
   pod module and its record-change events
+- a relational CRM: companies, contacts, deals, interactions, and a detail
+  page per record listing everything that references it
+- ticketing, internal and external, with a kanban board and a list view
 - multiple entities, nested, with per-entity scoping and roll-up
 - generated create and edit forms for every record type
 - users, roles, password changes and session invalidation on sign-out

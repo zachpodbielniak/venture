@@ -527,15 +527,60 @@ VENTURE_DEFINE_ENTITY(VentureTaxCategory, venture_tax_category,
  * Relations
  * ========================================================================== */
 
+/*
+ * An outside business you deal with: a customer, a supplier, a marketplace
+ * you sell on, a partner.
+ *
+ * Distinct from #VentureOrganization, which is one of *your* entities. That
+ * distinction is easy to blur and expensive to blur: one of them appears on
+ * your tax return and the other does not.
+ */
+static const VentureFieldDecl venture_company_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "What you call them"),
+	VENTURE_FIELD_ENUM("kind", "Relationship", "What they are to you",
+	                   venture_company_kind_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("legal-name", "Legal name", "As registered, if it differs",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD("industry", "Industry", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("website", "Website", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("email", "Email", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD("phone", "Phone", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("venture-id", "Venture",
+	                  "The venture this relationship belongs to", "venture",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	/* Their identifier on whatever platform you met them through, so a
+	 * marketplace buyer can be matched back to an order. */
+	VENTURE_FIELD("external-id", "External ID", NULL,
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("source", "Source", "How you found each other",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_MONEY("lifetime-value", "Lifetime value",
+	                    "What they have been worth so far"),
+	VENTURE_FIELD("tags", "Tags", "Comma separated",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD_TEXT("address", "Address", NULL),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
+	              VENTURE_COLUMN_FLAG_INDEXED)
+};
+
+VENTURE_DEFINE_ENTITY(VentureCompany, venture_company, venture_company_fields)
+
 static const VentureFieldDecl venture_contact_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", NULL),
 	VENTURE_FIELD("email", "Email", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("phone", "Phone", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_SEARCHABLE),
-	VENTURE_FIELD("company", "Company", NULL, VENTURE_FIELD_KIND_STRING,
-	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE),
-	VENTURE_FIELD("role", "Role", NULL, VENTURE_FIELD_KIND_STRING,
+	VENTURE_FIELD_REF("company-id", "Company", NULL, "company",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("role", "Role", "Their job title there",
+	              VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture",
 	                  VENTURE_COLUMN_FLAG_NONE),
@@ -562,6 +607,8 @@ VENTURE_DEFINE_ENTITY(VentureContact, venture_contact, venture_contact_fields)
 static const VentureFieldDecl venture_interaction_fields[] = {
 	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact",
 	                  VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("company-id", "Company", NULL, "company",
+	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_ENUM("kind", "Kind", NULL,
 	                   venture_interaction_kind_get_type,
 	                   VENTURE_COLUMN_FLAG_INDEXED),
@@ -585,6 +632,10 @@ VENTURE_DEFINE_ENTITY(VentureInteraction, venture_interaction,
 static const VentureFieldDecl venture_deal_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", NULL),
 	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	/* The account as well as the person: people move, accounts persist,
+	 * and the pipeline is usually read by account. */
+	VENTURE_FIELD_REF("company-id", "Company", NULL, "company",
 	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture",
 	                  VENTURE_COLUMN_FLAG_NONE),
@@ -854,32 +905,86 @@ static const VentureFieldDecl venture_research_note_fields[] = {
 VENTURE_DEFINE_ENTITY(VentureResearchNote, venture_research_note,
                       venture_research_note_fields)
 
-static const VentureFieldDecl venture_task_fields[] = {
+/*
+ * A ticket: something to do, in a state, assigned to somebody.
+ *
+ * One type covers internal project tasks and external support requests
+ * because the work is the same shape. What differs is who raised it and who
+ * may read the replies, and those are a field and a flag rather than two
+ * systems to keep in step -- which matters when a support ticket turns out
+ * to be a bug, and the bug is the work.
+ */
+static const VentureFieldDecl venture_ticket_fields[] = {
 	VENTURE_FIELD_NAME("title", "Title", NULL),
-	VENTURE_FIELD_TEXT("description", "Description", NULL),
+	VENTURE_FIELD_ENUM("kind", "Kind", "Internal work, or somebody else's request",
+	                   venture_ticket_kind_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_ENUM("status", "Status", NULL,
-	                   venture_task_status_get_type,
+	                   venture_ticket_status_get_type,
 	                   VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_ENUM("priority", "Priority", NULL,
 	                   venture_priority_get_type,
 	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("description", "Description", NULL),
+	VENTURE_FIELD("assignee", "Assignee", "Who is doing it",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	/* Who asked. Set for an external ticket, empty for your own work. */
+	VENTURE_FIELD_REF("contact-id", "Raised by", NULL, "contact",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("company-id", "Company", NULL, "company",
+	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture",
 	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("idea-id", "Idea", NULL, "idea",
 	                  VENTURE_COLUMN_FLAG_NONE),
+	/* A ticket can hang off another, so an epic and its pieces, or a bug
+	 * split out of a support request, stay connected. */
+	VENTURE_FIELD_REF("parent-id", "Part of", NULL, "ticket",
+	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("due-at", "Due", NULL, VENTURE_FIELD_KIND_DATETIME,
 	              VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD("completed-at", "Completed", NULL,
+	VENTURE_FIELD("resolved-at", "Resolved", NULL,
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("assignee", "Assignee", NULL, VENTURE_FIELD_KIND_STRING,
-	              VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD("tags", "Tags", NULL, VENTURE_FIELD_KIND_STRING,
-	              VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("estimate-hours", "Estimate", "Hours",
-	              VENTURE_FIELD_KIND_DOUBLE, VENTURE_COLUMN_FLAG_NONE)
+	              VENTURE_FIELD_KIND_DOUBLE, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("tags", "Tags", "Comma separated",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
+	/*
+	 * Position within its board column. Kept as a sparse double so a card
+	 * dropped between two others is placed by halving the gap, without
+	 * renumbering the column on every move.
+	 */
+	VENTURE_FIELD("board-order", "Board order", NULL,
+	              VENTURE_FIELD_KIND_DOUBLE, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("resolution", "Resolution",
+	                   "What was actually done about it")
 };
 
-VENTURE_DEFINE_ENTITY(VentureTask, venture_task, venture_task_fields)
+VENTURE_DEFINE_ENTITY(VentureTicket, venture_ticket, venture_ticket_fields)
+
+/*
+ * One message on a ticket.
+ *
+ * The internal flag is the whole reason this is a record rather than a text
+ * field on the ticket: a reply to the person who raised it and a note to
+ * yourself have to live in the same thread, in order, and be
+ * distinguishable at a glance.
+ */
+static const VentureFieldDecl venture_ticket_comment_fields[] = {
+	VENTURE_FIELD_REF("ticket-id", "Ticket", NULL, "ticket",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_TEXT("body", "Comment", NULL),
+	VENTURE_FIELD("author", "Author", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("internal", "Internal note",
+	              "Not shown to whoever raised the ticket",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("occurred-at", "When", NULL, VENTURE_FIELD_KIND_DATETIME,
+	              VENTURE_COLUMN_FLAG_INDEXED)
+};
+
+VENTURE_DEFINE_ENTITY(VentureTicketComment, venture_ticket_comment,
+                      venture_ticket_comment_fields)
 
 static const VentureFieldDecl venture_document_fields[] = {
 	VENTURE_FIELD_NAME("title", "Title", NULL),

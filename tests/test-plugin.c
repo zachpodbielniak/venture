@@ -827,7 +827,7 @@ test_web_navigation_links_all_resolve(
 ){
 	static const gchar *const fixed_pages[] = {
 		"/", "/reports", "/settings", "/account", "/users", "/entities",
-		"/login", "/logout", NULL
+		"/tickets", "/login", "/logout", NULL
 	};
 	const VentureWebNavLink *links;
 	gsize i;

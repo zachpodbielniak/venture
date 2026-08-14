@@ -269,13 +269,14 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/e/expense",        "Expenses",    "\xe2\x86\x98", "Money" },
 	{ "/e/account",        "Accounts",    "\xe2\x8a\x9e", NULL },
 	{ "/e/tax_category",   "Tax",         "\xc2\xa7",     NULL },
-	{ "/e/contact",        "Contacts",    "\xe2\x97\x8b", "Relations" },
+	{ "/e/company",        "Companies",   "\xe2\x96\xa2", "Relations" },
+	{ "/e/contact",        "Contacts",    "\xe2\x97\x8b", NULL },
 	{ "/e/deal",           "Deals",       "\xe2\x86\x92", NULL },
 	{ "/e/campaign",       "Campaigns",   "\xe2\x97\x8e", "Growth" },
 	{ "/e/newsletter",     "Newsletters", "\xe2\x9c\x89", NULL },
 	{ "/e/post",           "Posts",       "\xe2\x96\xa5", NULL },
 	{ "/e/idea",           "Ideas",       "\xe2\x97\x87", "Thinking" },
-	{ "/e/task",           "Tasks",       "\xe2\x9c\x93", NULL },
+	{ "/tickets",          "Tickets",     "\xe2\x9c\x93", NULL },
 	{ "/e/research_note",  "Research",    "\xe2\x96\xa3", NULL },
 	{ "/entities",         "Entities",    "\xe2\x97\xa7", "System" },
 	{ "/account",          "Your account","\xe2\x97\x8f", NULL },
@@ -1365,7 +1366,7 @@ venture_web_ui_list(
 		g_string_append_printf(content,
 			"<td class=\"row-actions\">"
 			"<a class=\"btn btn-sm\" href=\"/e/%s/%" G_GINT64_FORMAT
-			"/edit\">Edit</a></td>",
+			"\">Open</a></td>",
 			type_name, venture_entity_get_id(record));
 
 		g_string_append(content, "</tr>");
@@ -2678,6 +2679,904 @@ venture_web_append_entity_picker(
 	g_string_append(html, "<a class=\"entity-option entity-add\" "
 	                      "href=\"/entities\">Manage entities</a>");
 	g_string_append(html, "</div></details></div>");
+}
+
+/* --- Record detail ------------------------------------------------------- */
+
+/*
+ * Renders one field's value for reading rather than editing.
+ */
+static void
+venture_web_append_detail_value(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record,
+	VentureFieldSpec	*spec
+){
+	g_auto(GValue) value = G_VALUE_INIT;
+	const gchar *name;
+
+	name = venture_field_spec_get_name(spec);
+
+	if (!venture_entity_get_field(record, name, &value))
+	{
+		g_string_append(content, "<span class=\"muted\">—</span>");
+		return;
+	}
+
+	if (G_VALUE_HOLDS(&value, VENTURE_TYPE_MONEY))
+	{
+		const VentureMoney *money;
+		g_autofree gchar *text = NULL;
+
+		money = g_value_get_boxed(&value);
+		text = (NULL != money)
+			? venture_money_to_display_string(money, TRUE) : NULL;
+
+		if (venture_string_is_empty(text))
+			g_string_append(content, "<span class=\"muted\">—</span>");
+		else
+			venture_html_escape_append(content, text);
+	}
+	else if (G_VALUE_HOLDS(&value, G_TYPE_DATE_TIME))
+	{
+		GDateTime *when;
+
+		when = g_value_get_boxed(&value);
+
+		if (NULL == when)
+		{
+			g_string_append(content, "<span class=\"muted\">—</span>");
+		}
+		else
+		{
+			g_autofree gchar *text = NULL;
+
+			text = g_date_time_format(when, "%Y-%m-%d");
+			venture_html_escape_append(content, text);
+		}
+	}
+	else if (G_VALUE_HOLDS_BOOLEAN(&value))
+	{
+		g_string_append(content, g_value_get_boolean(&value) ? "yes" : "no");
+	}
+	else if (G_VALUE_HOLDS_ENUM(&value))
+	{
+		venture_html_escape_append(content,
+			venture_enum_to_nick(G_VALUE_TYPE(&value),
+			                     g_value_get_enum(&value)));
+	}
+	else if (VENTURE_FIELD_KIND_REFERENCE == venture_field_spec_get_kind(spec))
+	{
+		gint64 id;
+
+		id = G_VALUE_HOLDS_INT64(&value) ? g_value_get_int64(&value) : 0;
+
+		if (0 == id)
+		{
+			g_string_append(content, "<span class=\"muted\">—</span>");
+		}
+		else
+		{
+			g_autoptr(VentureEntity) target = NULL;
+			const gchar *type_name;
+			GType target_type;
+
+			type_name = venture_field_spec_get_reference_type(spec);
+			target_type = venture_entity_registry_lookup(
+				venture_context_get_entity_registry(self->context), type_name);
+
+			if (G_TYPE_INVALID != target_type)
+			{
+				target = venture_database_get(
+					venture_context_get_database(self->context), target_type,
+					id, NULL);
+			}
+
+			/* A link, because the whole value of a reference is being
+			 * able to follow it. */
+			if (NULL != target)
+			{
+				g_autofree gchar *label = NULL;
+
+				label = venture_entity_get_display_name(target);
+
+				g_string_append_printf(content,
+					"<a href=\"/e/%s/%" G_GINT64_FORMAT "\">", type_name, id);
+				venture_html_escape_append(content, label);
+				g_string_append(content, "</a>");
+			}
+			else
+			{
+				g_string_append_printf(content,
+					"<span class=\"muted\">#%" G_GINT64_FORMAT " (missing)"
+					"</span>", id);
+			}
+		}
+	}
+	else if (G_VALUE_HOLDS_STRING(&value))
+	{
+		const gchar *text;
+
+		text = g_value_get_string(&value);
+
+		if (venture_string_is_empty(text))
+			g_string_append(content, "<span class=\"muted\">—</span>");
+		else
+			venture_html_escape_append(content, text);
+	}
+	else
+	{
+		g_autoptr(JsonNode) node = NULL;
+		g_autofree gchar *text = NULL;
+
+		node = venture_json_node_from_value(&value);
+		text = venture_json_to_string(node, FALSE);
+
+		if ((NULL == text) || (0 == g_strcmp0(text, "null")))
+			g_string_append(content, "<span class=\"muted\">—</span>");
+		else
+			venture_html_escape_append(content, text);
+	}
+}
+
+/*
+ * Lists the records that point at this one.
+ *
+ * Derived from the reference metadata rather than written out per type, so
+ * a company page grows a Tickets section the moment a ticket gains a company
+ * field -- and a plugin's record type appears here for free. This is what
+ * turns a set of tables into a CRM: the point of a contact is everything
+ * attached to them.
+ */
+static void
+venture_web_append_related(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autofree GType *types = NULL;
+	const gchar *own_name;
+	guint n_types;
+	guint i;
+
+	own_name = venture_entity_get_entity_name(record);
+	types = venture_entity_registry_list_types(
+		venture_context_get_entity_registry(self->context), &n_types);
+
+	for (i = 0; i < n_types; i++)
+	{
+		g_autoptr(VentureEntity) prototype = NULL;
+		g_autoptr(GPtrArray) specs = NULL;
+		guint j;
+
+		if (VENTURE_TYPE_AUDIT_ENTRY == types[i])
+			continue;
+
+		prototype = g_object_new(types[i], NULL);
+		specs = venture_entity_get_field_specs(prototype);
+
+		for (j = 0; j < specs->len; j++)
+		{
+			g_autoptr(VentureQuery) query = NULL;
+			g_autoptr(GPtrArray) related = NULL;
+			VentureFieldSpec *spec;
+			const gchar *related_name;
+			guint k;
+
+			spec = g_ptr_array_index(specs, j);
+
+			if (VENTURE_FIELD_KIND_REFERENCE !=
+			    venture_field_spec_get_kind(spec))
+				continue;
+
+			if (0 != g_strcmp0(venture_field_spec_get_reference_type(spec),
+			                   own_name))
+				continue;
+
+			query = venture_query_new(types[i]);
+			venture_query_set_limit(query, 50);
+
+			if (!venture_query_add_filter_int(query,
+				venture_field_spec_get_name(spec), VENTURE_FILTER_OP_EQ,
+				venture_entity_get_id(record), NULL))
+				continue;
+
+			related = venture_database_find(
+				venture_context_get_database(self->context), query, NULL);
+
+			if ((NULL == related) || (0 == related->len))
+				continue;
+
+			related_name = venture_entity_get_entity_name(prototype);
+
+			g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
+			                         "<h2>");
+			venture_html_escape_append(content, related_name);
+
+			/* Named by the field, because a type can point at the same
+			 * target twice -- a ticket has both a parent ticket and
+			 * child tickets. */
+			g_string_append(content, " <span class=\"muted\">by ");
+			venture_html_escape_append(content,
+			                           venture_field_spec_get_label(spec));
+			g_string_append_printf(content, "</span> <span class=\"count\">%u"
+			                                "</span></h2><ul class=\"related\">",
+			                       related->len);
+
+			for (k = 0; k < related->len; k++)
+			{
+				g_autofree gchar *label = NULL;
+				VentureEntity *item;
+
+				item = g_ptr_array_index(related, k);
+				label = venture_entity_get_display_name(item);
+
+				g_string_append_printf(content,
+					"<li><a href=\"/e/%s/%" G_GINT64_FORMAT "\">",
+					related_name, venture_entity_get_id(item));
+				venture_html_escape_append(content, label);
+				g_string_append(content, "</a></li>");
+			}
+
+			g_string_append_printf(content,
+				"</ul><a class=\"btn btn-sm\" href=\"/e/%s/new\">"
+				"Add %s</a></div></div>", related_name, related_name);
+		}
+	}
+}
+
+static HtmxResponse *
+venture_web_ui_detail(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(GPtrArray) specs = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autofree gchar *title = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *redirect;
+	GType entity_type;
+	const gchar *type_name;
+	gint64 id;
+	guint i;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_web_resolve_type(self, params, &entity_type, &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_require_for_type(self, principal, entity_type,
+	                                  VENTURE_USER_ROLE_VIEWER, &error))
+		return venture_web_error_response(error);
+
+	type_name = g_hash_table_lookup(params, "type");
+	id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+
+	record = venture_database_get(venture_context_get_database(self->context),
+	                              entity_type, id, &error);
+
+	if (NULL == record)
+		return venture_web_error_response(error);
+
+	specs = venture_entity_get_field_specs(record);
+	g_ptr_array_sort_values(specs, venture_field_spec_compare_display_order);
+
+	title = venture_entity_get_display_name(record);
+
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+	                       "<h1>");
+	venture_html_escape_append(content, title);
+	g_string_append(content, "</h1><span class=\"subtitle\">");
+	venture_html_escape_append(content, type_name);
+	g_string_append(content, "</span></div><div class=\"page-actions\">");
+	g_string_append_printf(content,
+		"<a class=\"btn btn-primary\" href=\"/e/%s/%" G_GINT64_FORMAT
+		"/edit\">Edit</a> <a class=\"btn\" href=\"/e/%s\">All %s</a>",
+		type_name, id, type_name, type_name);
+	g_string_append(content, "</div></div>");
+
+	g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
+	                         "<dl class=\"detail detail-grid\">");
+
+	for (i = 0; i < specs->len; i++)
+	{
+		VentureFieldSpec *spec;
+
+		spec = g_ptr_array_index(specs, i);
+
+		/* A sensitive value is not shown for reading either. */
+		if (0 != (venture_field_spec_get_flags(spec) &
+		          VENTURE_COLUMN_FLAG_SENSITIVE))
+			continue;
+
+		g_string_append(content, "<dt>");
+		venture_html_escape_append(content, venture_field_spec_get_label(spec));
+		g_string_append(content, "</dt><dd>");
+		venture_web_append_detail_value(self, content, record, spec);
+		g_string_append(content, "</dd>");
+	}
+
+	g_string_append(content, "</dl></div></div>");
+
+	venture_web_append_related(self, content, record);
+
+	return venture_web_html_response(
+		venture_web_page(self, request, NULL, title, content->str), 200);
+}
+
+/* --- Tickets ------------------------------------------------------------- */
+
+/*
+ * The board's columns, in the order work moves through them.
+ *
+ * Cancelled is deliberately absent: it is an outcome rather than a stage,
+ * and a column nobody drags into is a column that only takes up room. A
+ * cancelled ticket is still reachable from the list view.
+ */
+static const VentureTicketStatus venture_web_board_columns[] = {
+	VENTURE_TICKET_STATUS_TRIAGE,
+	VENTURE_TICKET_STATUS_TODO,
+	VENTURE_TICKET_STATUS_IN_PROGRESS,
+	VENTURE_TICKET_STATUS_BLOCKED,
+	VENTURE_TICKET_STATUS_REVIEW,
+	VENTURE_TICKET_STATUS_DONE
+};
+
+/*
+ * Builds the query behind both ticket views, applying whichever filters the
+ * URL carries so that the board and the list always agree about what they
+ * are showing.
+ */
+static VentureQuery *
+venture_web_ticket_query(
+	VentureWebServer	 *self,
+	HtmxRequest		 *request,
+	GError			**error
+){
+	g_autoptr(VentureQuery) query = NULL;
+	const gchar *kind;
+	const gchar *assignee;
+	const gchar *venture;
+
+	query = venture_query_new(VENTURE_TYPE_TICKET);
+	venture_query_set_limit(query, 0);
+	venture_web_scope_to_active_organization(self, request, query);
+
+	kind = htmx_request_get_query_param(request, "kind");
+
+	if (!venture_string_is_empty(kind) && (0 != g_strcmp0(kind, "all")))
+	{
+		if (!venture_query_add_filter_string(query, "kind",
+		                                     VENTURE_FILTER_OP_EQ, kind,
+		                                     error))
+			return NULL;
+	}
+
+	assignee = htmx_request_get_query_param(request, "assignee");
+
+	if (!venture_string_is_empty(assignee))
+	{
+		if (!venture_query_add_filter_string(query, "assignee",
+		                                     VENTURE_FILTER_OP_EQ, assignee,
+		                                     error))
+			return NULL;
+	}
+
+	venture = htmx_request_get_query_param(request, "venture_id");
+
+	if (!venture_string_is_empty(venture))
+	{
+		if (!venture_query_add_filter_int(query, "venture-id",
+		                                  VENTURE_FILTER_OP_EQ,
+		                                  g_ascii_strtoll(venture, NULL, 10),
+		                                  error))
+			return NULL;
+	}
+
+	return g_steal_pointer(&query);
+}
+
+/*
+ * Renders one card. Everything on it answers a question you would otherwise
+ * open the ticket to ask: who has it, when it is due, who asked.
+ */
+static void
+venture_web_append_ticket_card(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*ticket
+){
+	g_autofree gchar *title = NULL;
+	g_autofree gchar *assignee = NULL;
+	g_autofree gchar *tags = NULL;
+	g_autoptr(GDateTime) due = NULL;
+	VentureTicketKind kind;
+	VenturePriority priority;
+	gint64 id;
+
+	id = venture_entity_get_id(ticket);
+
+	g_object_get(ticket, "title", &title, "assignee", &assignee,
+	             "kind", &kind, "priority", &priority, "due-at", &due,
+	             "tags", &tags, NULL);
+
+	g_string_append_printf(content,
+		"<article class=\"card ticket-card priority-%s\" draggable=\"true\" "
+		"data-ticket=\"%" G_GINT64_FORMAT "\">",
+		venture_enum_to_nick(VENTURE_TYPE_PRIORITY, (gint)priority), id);
+
+	g_string_append_printf(content,
+		"<a class=\"ticket-title\" href=\"/e/ticket/%" G_GINT64_FORMAT "\">",
+		id);
+	venture_html_escape_append(content, title);
+	g_string_append(content, "</a>");
+
+	g_string_append(content, "<div class=\"ticket-meta\">");
+
+	g_string_append_printf(content, "<span class=\"badge kind-%s\">%s</span>",
+		venture_enum_to_nick(VENTURE_TYPE_TICKET_KIND, (gint)kind),
+		(VENTURE_TICKET_KIND_EXTERNAL == kind) ? "support" : "internal");
+
+	if (!venture_string_is_empty(assignee))
+	{
+		g_string_append(content, "<span class=\"ticket-assignee\">");
+		venture_html_escape_append(content, assignee);
+		g_string_append(content, "</span>");
+	}
+
+	if (NULL != due)
+	{
+		g_autoptr(GDateTime) now = NULL;
+		g_autofree gchar *when = NULL;
+		gboolean overdue;
+
+		now = venture_time_now();
+		overdue = (g_date_time_compare(due, now) < 0);
+		when = g_date_time_format(due, "%d %b");
+
+		/* Overdue is called out rather than left to be worked out from a
+		 * date, because the whole point of a due date is noticing. */
+		g_string_append_printf(content, "<span class=\"ticket-due%s\">",
+		                       overdue ? " overdue" : "");
+		venture_html_escape_append(content, when);
+		g_string_append(content, "</span>");
+	}
+
+	g_string_append(content, "</div>");
+
+	if (!venture_string_is_empty(tags))
+	{
+		g_auto(GStrv) parts = NULL;
+		gsize i;
+
+		parts = g_strsplit(tags, ",", -1);
+
+		g_string_append(content, "<div class=\"ticket-tags\">");
+
+		for (i = 0; NULL != parts[i]; i++)
+		{
+			g_autofree gchar *tag = NULL;
+
+			tag = g_strstrip(g_strdup(parts[i]));
+
+			if (venture_string_is_empty(tag))
+				continue;
+
+			g_string_append(content, "<span class=\"tag\">");
+			venture_html_escape_append(content, tag);
+			g_string_append(content, "</span>");
+		}
+
+		g_string_append(content, "</div>");
+	}
+
+	/*
+	 * A form per card, so the board works with scripting off. The drag
+	 * handler posts the same endpoint; this is the fallback, not a
+	 * duplicate implementation.
+	 */
+	g_string_append_printf(content,
+		"<form method=\"post\" action=\"/tickets/%" G_GINT64_FORMAT "/move\" "
+		"class=\"ticket-move\"><select name=\"status\">", id);
+
+	{
+		gsize i;
+		VentureTicketStatus current;
+
+		g_object_get(ticket, "status", &current, NULL);
+
+		for (i = 0; i < G_N_ELEMENTS(venture_web_board_columns); i++)
+		{
+			const gchar *nick;
+
+			nick = venture_enum_to_nick(VENTURE_TYPE_TICKET_STATUS,
+			                            (gint)venture_web_board_columns[i]);
+
+			g_string_append_printf(content, "<option value=\"%s\"%s>", nick,
+				(venture_web_board_columns[i] == current) ? " selected" : "");
+			venture_html_escape_append(content, nick);
+			g_string_append(content, "</option>");
+		}
+	}
+
+	g_string_append(content, "</select>"
+	                         "<button class=\"btn btn-sm\" type=\"submit\">"
+	                         "Move</button></form>");
+
+	g_string_append(content, "</article>");
+}
+
+static HtmxResponse *
+venture_web_ui_tickets(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) tickets = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *redirect;
+	const gchar *view;
+	const gchar *kind;
+	gboolean board;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	query = venture_web_ticket_query(self, request, &error);
+
+	if (NULL == query)
+		return venture_web_error_response(error);
+
+	/* Sorted by board position, so the columns render in the order cards
+	 * were left in rather than by identifier. */
+	venture_query_add_order(query, "board-order", VENTURE_SORT_ASCENDING, NULL);
+
+	tickets = venture_database_find(venture_context_get_database(self->context),
+	                                query, &error);
+
+	if (NULL == tickets)
+		return venture_web_error_response(error);
+
+	view = htmx_request_get_query_param(request, "view");
+	kind = htmx_request_get_query_param(request, "kind");
+	board = (0 != g_strcmp0(view, "list"));
+
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+	                       "<h1>Tickets</h1><span class=\"subtitle\">");
+	g_string_append_printf(content, "%u open item%s", tickets->len,
+	                       (1 == tickets->len) ? "" : "s");
+	g_string_append(content, "</span></div><div class=\"page-actions\">");
+
+	/* The filters, as links rather than a form: each is a URL you can
+	 * bookmark, which is what people actually want from a saved view. */
+	{
+		static const struct
+		{
+			const gchar *value;
+			const gchar *label;
+		} kinds[] = {
+			{ "all",      "All" },
+			{ "internal", "Internal" },
+			{ "external", "Support" }
+		};
+		gsize i;
+
+		g_string_append(content, "<div class=\"segmented\">");
+
+		for (i = 0; i < G_N_ELEMENTS(kinds); i++)
+		{
+			gboolean active;
+
+			active = (0 == g_strcmp0(kinds[i].value, "all"))
+				? (venture_string_is_empty(kind) ||
+				   (0 == g_strcmp0(kind, "all")))
+				: (0 == g_strcmp0(kind, kinds[i].value));
+
+			g_string_append_printf(content,
+				"<a class=\"seg%s\" href=\"/tickets?kind=%s&view=%s\">%s</a>",
+				active ? " active" : "", kinds[i].value,
+				board ? "board" : "list", kinds[i].label);
+		}
+
+		g_string_append(content, "</div>");
+	}
+
+	g_string_append_printf(content,
+		"<div class=\"segmented\">"
+		"<a class=\"seg%s\" href=\"/tickets?view=board&kind=%s\">Board</a>"
+		"<a class=\"seg%s\" href=\"/tickets?view=list&kind=%s\">List</a>"
+		"</div>",
+		board ? " active" : "", venture_string_is_empty(kind) ? "all" : kind,
+		board ? "" : " active", venture_string_is_empty(kind) ? "all" : kind);
+
+	g_string_append(content,
+		"<a class=\"btn btn-primary\" href=\"/e/ticket/new\">New ticket</a>");
+	g_string_append(content, "</div></div>");
+
+	if (board)
+	{
+		gsize column;
+
+		g_string_append(content, "<div class=\"board\" data-board>");
+
+		for (column = 0; column < G_N_ELEMENTS(venture_web_board_columns); column++)
+		{
+			const gchar *nick;
+			guint count;
+			guint i;
+
+			nick = venture_enum_to_nick(VENTURE_TYPE_TICKET_STATUS,
+			                            (gint)venture_web_board_columns[column]);
+			count = 0;
+
+			for (i = 0; i < tickets->len; i++)
+			{
+				VentureTicketStatus status;
+
+				g_object_get(g_ptr_array_index(tickets, i), "status", &status,
+				             NULL);
+
+				if (status == venture_web_board_columns[column])
+					count++;
+			}
+
+			g_string_append_printf(content,
+				"<section class=\"board-column\" data-status=\"%s\">"
+				"<header class=\"board-column-head\"><span>", nick);
+			venture_html_escape_append(content, nick);
+			g_string_append_printf(content,
+				"</span><span class=\"count\">%u</span></header>"
+				"<div class=\"board-column-body\" data-drop=\"%s\">",
+				count, nick);
+
+			for (i = 0; i < tickets->len; i++)
+			{
+				VentureEntity *ticket;
+				VentureTicketStatus status;
+
+				ticket = g_ptr_array_index(tickets, i);
+				g_object_get(ticket, "status", &status, NULL);
+
+				if (status != venture_web_board_columns[column])
+					continue;
+
+				venture_web_append_ticket_card(self, content, ticket);
+			}
+
+			g_string_append(content, "</div></section>");
+		}
+
+		g_string_append(content, "</div>");
+	}
+	else
+	{
+		guint i;
+
+		g_string_append(content, "<div class=\"card\"><div class=\"table-wrap\">"
+		                         "<table class=\"data\"><thead><tr>"
+		                         "<th>Title</th><th>Kind</th><th>Status</th>"
+		                         "<th>Priority</th><th>Assignee</th>"
+		                         "<th>Due</th>"
+		                         "<th class=\"row-actions\"></th>"
+		                         "</tr></thead><tbody>");
+
+		for (i = 0; i < tickets->len; i++)
+		{
+			g_autofree gchar *title = NULL;
+			g_autofree gchar *assignee = NULL;
+			g_autoptr(GDateTime) due = NULL;
+			VentureEntity *ticket;
+			VentureTicketKind ticket_kind;
+			VentureTicketStatus status;
+			VenturePriority priority;
+
+			ticket = g_ptr_array_index(tickets, i);
+
+			g_object_get(ticket, "title", &title, "assignee", &assignee,
+			             "kind", &ticket_kind, "status", &status,
+			             "priority", &priority, "due-at", &due, NULL);
+
+			g_string_append_printf(content,
+				"<tr><td><a href=\"/e/ticket/%" G_GINT64_FORMAT "\">",
+				venture_entity_get_id(ticket));
+			venture_html_escape_append(content, title);
+			g_string_append(content, "</a></td><td>");
+			venture_html_escape_append(content,
+				venture_enum_to_nick(VENTURE_TYPE_TICKET_KIND,
+				                     (gint)ticket_kind));
+			g_string_append(content, "</td><td>");
+			venture_html_escape_append(content,
+				venture_enum_to_nick(VENTURE_TYPE_TICKET_STATUS,
+				                     (gint)status));
+			g_string_append(content, "</td><td>");
+			venture_html_escape_append(content,
+				venture_enum_to_nick(VENTURE_TYPE_PRIORITY, (gint)priority));
+			g_string_append(content, "</td><td>");
+			venture_html_escape_append(content, assignee);
+			g_string_append(content, "</td><td>");
+
+			if (NULL != due)
+			{
+				g_autofree gchar *when = NULL;
+
+				when = g_date_time_format(due, "%Y-%m-%d");
+				venture_html_escape_append(content, when);
+			}
+
+			g_string_append_printf(content,
+				"</td><td class=\"row-actions\">"
+				"<a class=\"btn btn-sm\" href=\"/e/ticket/%" G_GINT64_FORMAT
+				"/edit\">Edit</a></td></tr>",
+				venture_entity_get_id(ticket));
+		}
+
+		g_string_append(content, "</tbody></table></div></div>");
+	}
+
+	return venture_web_html_response(
+		venture_web_page(self, request, "/tickets", "Tickets", content->str),
+		200);
+}
+
+/*
+ * Moves a ticket to another column, and optionally to a position within it.
+ *
+ * Shared by the drag handler and the per-card fallback form, so the two
+ * cannot drift apart. Answers JSON to a scripted caller and a redirect to a
+ * browser that posted a form.
+ */
+static HtmxResponse *
+venture_web_ui_ticket_move(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) ticket = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	HtmxResponse *redirect;
+	const gchar *status_nick;
+	const gchar *after;
+	gint status_value;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	ticket = venture_database_get(venture_context_get_database(self->context),
+	                              VENTURE_TYPE_TICKET,
+	                              g_ascii_strtoll(g_hash_table_lookup(params,
+	                                                                  "id"),
+	                                              NULL, 10),
+	                              &error);
+
+	if (NULL == ticket)
+		return venture_web_error_response(error);
+
+	status_nick = htmx_request_get_form_value(request, "status");
+
+	if (!venture_enum_from_nick(VENTURE_TYPE_TICKET_STATUS, status_nick,
+	                            &status_value))
+	{
+		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "\"%s\" is not a ticket status", status_nick);
+		return venture_web_error_response(error);
+	}
+
+	g_object_set(ticket, "status", (VentureTicketStatus)status_value, NULL);
+
+	/*
+	 * Reaching a terminal state stamps the resolution time, so "how long
+	 * did that take" is answerable without reading the audit log. Moving
+	 * back out of one clears it again -- a ticket that was reopened was
+	 * not resolved.
+	 */
+	if ((VENTURE_TICKET_STATUS_DONE == (VentureTicketStatus)status_value) ||
+	    (VENTURE_TICKET_STATUS_CANCELLED == (VentureTicketStatus)status_value))
+	{
+		g_autoptr(GDateTime) resolved = NULL;
+
+		g_object_get(ticket, "resolved-at", &resolved, NULL);
+
+		if (NULL == resolved)
+		{
+			g_autoptr(GDateTime) now = NULL;
+
+			now = venture_time_now();
+			g_object_set(ticket, "resolved-at", now, NULL);
+		}
+	}
+	else
+	{
+		g_object_set(ticket, "resolved-at", NULL, NULL);
+	}
+
+	/*
+	 * Position: dropped after a given card, so it lands halfway between
+	 * that card and the next. Sparse doubles mean a move rewrites one row
+	 * rather than renumbering the column.
+	 */
+	after = htmx_request_get_form_value(request, "after");
+
+	if (!venture_string_is_empty(after))
+	{
+		g_autoptr(VentureEntity) neighbour = NULL;
+
+		neighbour = venture_database_get(
+			venture_context_get_database(self->context), VENTURE_TYPE_TICKET,
+			g_ascii_strtoll(after, NULL, 10), NULL);
+
+		if (NULL != neighbour)
+		{
+			gdouble position;
+
+			g_object_get(neighbour, "board-order", &position, NULL);
+			g_object_set(ticket, "board-order", position + 1.0, NULL);
+		}
+	}
+	else if (NULL != htmx_request_get_form_value(request, "first"))
+	{
+		g_object_set(ticket, "board-order", -1.0, NULL);
+	}
+
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           ticket, &actor, &error))
+		return venture_web_error_response(error);
+
+	/* A scripted move wants an answer, not a page. */
+	if (NULL != htmx_request_get_form_value(request, "async"))
+	{
+		g_autoptr(JsonBuilder) builder = NULL;
+
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "status");
+		json_builder_add_string_value(builder, status_nick);
+		json_builder_end_object(builder);
+
+		return venture_web_json_response(json_builder_get_root(builder), 200);
+	}
+
+	return venture_web_redirect_to("/tickets");
 }
 
 /* --- Entity management --------------------------------------------------- */
@@ -4805,6 +5704,9 @@ venture_web_server_new(
 	htmx_router_get(router, "/reports", venture_web_ui_reports, self);
 	htmx_router_get(router, "/settings", venture_web_ui_settings, self);
 	htmx_router_get(router, "/entity/:id", venture_web_ui_switch_entity, self);
+	htmx_router_get(router, "/tickets", venture_web_ui_tickets, self);
+	htmx_router_post(router, "/tickets/:id/move", venture_web_ui_ticket_move,
+	                 self);
 	htmx_router_get(router, "/entities", venture_web_ui_entities, self);
 	htmx_router_post(router, "/entities", venture_web_ui_entities_create, self);
 	htmx_router_post(router, "/entities/:id/default",
@@ -4824,6 +5726,7 @@ venture_web_server_new(
 	htmx_router_get(router, "/e/:type", venture_web_ui_list, self);
 	htmx_router_get(router, "/e/:type/new", venture_web_ui_form, self);
 	htmx_router_post(router, "/e/:type", venture_web_ui_save, self);
+	htmx_router_get(router, "/e/:type/:id", venture_web_ui_detail, self);
 	htmx_router_get(router, "/e/:type/:id/edit", venture_web_ui_form, self);
 	htmx_router_post(router, "/e/:type/:id", venture_web_ui_save, self);
 	htmx_router_post(router, "/e/:type/:id/delete", venture_web_ui_delete,

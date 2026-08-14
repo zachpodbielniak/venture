@@ -763,6 +763,10 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/reports/pnl"),
 	                 ==, SOUP_STATUS_FOUND);
 
+	/* The ticket board, which is a page like any other. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/tickets"),
+	                 ==, SOUP_STATUS_FOUND);
+
 	/*
 	 * The account and user-management pages, which are reached by POST as
 	 * well. An anonymous POST that fell through to the handler would be a

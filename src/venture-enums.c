@@ -191,18 +191,44 @@ VENTURE_DEFINE_ENUM_TYPE(venture_interaction_kind_get_type,
 
 /* --- Work tracking ------------------------------------------------------- */
 
-static const GEnumValue venture_task_status_values[] = {
-	VE(VENTURE_TASK_STATUS_TODO,        "todo"),
-	VE(VENTURE_TASK_STATUS_IN_PROGRESS, "in_progress"),
-	VE(VENTURE_TASK_STATUS_BLOCKED,     "blocked"),
-	VE(VENTURE_TASK_STATUS_DONE,        "done"),
-	VE(VENTURE_TASK_STATUS_CANCELLED,   "cancelled"),
+static const GEnumValue venture_ticket_status_values[] = {
+	VE(VENTURE_TICKET_STATUS_TRIAGE,      "triage"),
+	VE(VENTURE_TICKET_STATUS_TODO,        "todo"),
+	VE(VENTURE_TICKET_STATUS_IN_PROGRESS, "in_progress"),
+	VE(VENTURE_TICKET_STATUS_BLOCKED,     "blocked"),
+	VE(VENTURE_TICKET_STATUS_REVIEW,      "review"),
+	VE(VENTURE_TICKET_STATUS_DONE,        "done"),
+	VE(VENTURE_TICKET_STATUS_CANCELLED,   "cancelled"),
 	VE_END
 };
 
-VENTURE_DEFINE_ENUM_TYPE(venture_task_status_get_type,
-                         "VentureTaskStatus",
-                         venture_task_status_values)
+VENTURE_DEFINE_ENUM_TYPE(venture_ticket_status_get_type,
+                         "VentureTicketStatus",
+                         venture_ticket_status_values)
+
+static const GEnumValue venture_ticket_kind_values[] = {
+	VE(VENTURE_TICKET_KIND_INTERNAL, "internal"),
+	VE(VENTURE_TICKET_KIND_EXTERNAL, "external"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_ticket_kind_get_type,
+                         "VentureTicketKind",
+                         venture_ticket_kind_values)
+
+static const GEnumValue venture_company_kind_values[] = {
+	VE(VENTURE_COMPANY_KIND_CUSTOMER, "customer"),
+	VE(VENTURE_COMPANY_KIND_PROSPECT, "prospect"),
+	VE(VENTURE_COMPANY_KIND_SUPPLIER, "supplier"),
+	VE(VENTURE_COMPANY_KIND_PLATFORM, "platform"),
+	VE(VENTURE_COMPANY_KIND_PARTNER,  "partner"),
+	VE(VENTURE_COMPANY_KIND_OTHER,    "other"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_company_kind_get_type,
+                         "VentureCompanyKind",
+                         venture_company_kind_values)
 
 static const GEnumValue venture_priority_values[] = {
 	VE(VENTURE_PRIORITY_LOW,    "low"),

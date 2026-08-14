@@ -189,23 +189,75 @@ typedef enum
 
 /**
  * VentureTaskStatus:
- * @VENTURE_TASK_STATUS_TODO: not started
- * @VENTURE_TASK_STATUS_IN_PROGRESS: being worked on
- * @VENTURE_TASK_STATUS_BLOCKED: waiting on something external
- * @VENTURE_TASK_STATUS_DONE: complete
- * @VENTURE_TASK_STATUS_CANCELLED: abandoned
+ * @VENTURE_TICKET_STATUS_TRIAGE: arrived, not yet sorted
+ * @VENTURE_TICKET_STATUS_TODO: accepted, not started
+ * @VENTURE_TICKET_STATUS_IN_PROGRESS: being worked on
+ * @VENTURE_TICKET_STATUS_BLOCKED: waiting on somebody else
+ * @VENTURE_TICKET_STATUS_REVIEW: done, awaiting a check
+ * @VENTURE_TICKET_STATUS_DONE: finished
+ * @VENTURE_TICKET_STATUS_CANCELLED: abandoned or rejected
  *
- * The state of a task. These deliberately mirror the org-mode workflow
- * keywords so tasks round-trip cleanly to and from an org file.
+ * The state of a ticket, internal or external.
+ *
+ * These deliberately mirror the org-mode workflow keywords so that work
+ * round-trips cleanly to and from an org file, and they are the columns of
+ * the board. Triage exists because an external ticket arrives before anybody
+ * has decided whether it is real; blocked means waiting on somebody else,
+ * which for a support ticket is usually the person who raised it.
  */
 typedef enum
 {
-	VENTURE_TASK_STATUS_TODO = 0,
-	VENTURE_TASK_STATUS_IN_PROGRESS,
-	VENTURE_TASK_STATUS_BLOCKED,
-	VENTURE_TASK_STATUS_DONE,
-	VENTURE_TASK_STATUS_CANCELLED
-} VentureTaskStatus;
+	VENTURE_TICKET_STATUS_TRIAGE = 0,
+	VENTURE_TICKET_STATUS_TODO,
+	VENTURE_TICKET_STATUS_IN_PROGRESS,
+	VENTURE_TICKET_STATUS_BLOCKED,
+	VENTURE_TICKET_STATUS_REVIEW,
+	VENTURE_TICKET_STATUS_DONE,
+	VENTURE_TICKET_STATUS_CANCELLED
+} VentureTicketStatus;
+
+/**
+ * VentureTicketKind:
+ * @VENTURE_TICKET_KIND_INTERNAL: your own work -- a project task
+ * @VENTURE_TICKET_KIND_EXTERNAL: somebody else's problem -- a support request
+ *
+ * What a ticket is for.
+ *
+ * One type covers both because the work is the same shape: something to do,
+ * in a state, assigned to somebody, with a thread of comments. The
+ * difference is who raised it and who may see the replies, and both are
+ * fields rather than separate systems to keep in step.
+ */
+typedef enum
+{
+	VENTURE_TICKET_KIND_INTERNAL = 0,
+	VENTURE_TICKET_KIND_EXTERNAL
+} VentureTicketKind;
+
+/**
+ * VentureCompanyKind:
+ * @VENTURE_COMPANY_KIND_CUSTOMER: buys from you
+ * @VENTURE_COMPANY_KIND_PROSPECT: might buy from you
+ * @VENTURE_COMPANY_KIND_SUPPLIER: you buy from them
+ * @VENTURE_COMPANY_KIND_PLATFORM: a marketplace or storefront you sell on
+ * @VENTURE_COMPANY_KIND_PARTNER: you work with them
+ * @VENTURE_COMPANY_KIND_OTHER: none of the above
+ *
+ * What an outside business is to you.
+ *
+ * Distinct from #VentureOrganizationKind, which is the legal form of one of
+ * *your* entities. A company here is somebody you deal with; an
+ * organisation is somebody you are.
+ */
+typedef enum
+{
+	VENTURE_COMPANY_KIND_CUSTOMER = 0,
+	VENTURE_COMPANY_KIND_PROSPECT,
+	VENTURE_COMPANY_KIND_SUPPLIER,
+	VENTURE_COMPANY_KIND_PLATFORM,
+	VENTURE_COMPANY_KIND_PARTNER,
+	VENTURE_COMPANY_KIND_OTHER
+} VentureCompanyKind;
 
 /**
  * VenturePriority:
@@ -638,7 +690,9 @@ typedef enum
 #define VENTURE_TYPE_INVENTORY_TXN_KIND		(venture_inventory_txn_kind_get_type())
 #define VENTURE_TYPE_DEAL_STAGE			(venture_deal_stage_get_type())
 #define VENTURE_TYPE_INTERACTION_KIND		(venture_interaction_kind_get_type())
-#define VENTURE_TYPE_TASK_STATUS		(venture_task_status_get_type())
+#define VENTURE_TYPE_TICKET_STATUS		(venture_ticket_status_get_type())
+#define VENTURE_TYPE_TICKET_KIND		(venture_ticket_kind_get_type())
+#define VENTURE_TYPE_COMPANY_KIND		(venture_company_kind_get_type())
 #define VENTURE_TYPE_PRIORITY			(venture_priority_get_type())
 #define VENTURE_TYPE_IDEA_STATUS		(venture_idea_status_get_type())
 #define VENTURE_TYPE_CAMPAIGN_STATUS		(venture_campaign_status_get_type())
@@ -666,7 +720,9 @@ GType venture_ledger_side_get_type		(void) G_GNUC_CONST;
 GType venture_inventory_txn_kind_get_type	(void) G_GNUC_CONST;
 GType venture_deal_stage_get_type		(void) G_GNUC_CONST;
 GType venture_interaction_kind_get_type		(void) G_GNUC_CONST;
-GType venture_task_status_get_type		(void) G_GNUC_CONST;
+GType venture_ticket_status_get_type		(void) G_GNUC_CONST;
+GType venture_ticket_kind_get_type		(void) G_GNUC_CONST;
+GType venture_company_kind_get_type		(void) G_GNUC_CONST;
 GType venture_priority_get_type			(void) G_GNUC_CONST;
 GType venture_idea_status_get_type		(void) G_GNUC_CONST;
 GType venture_campaign_status_get_type		(void) G_GNUC_CONST;

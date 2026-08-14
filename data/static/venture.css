@@ -1151,3 +1151,193 @@ td.row-actions, th.row-actions { text-align: right; white-space: nowrap; }
 	color: var(--text-muted);
 	font-size: 13px;
 }
+
+/* ---------------------------------------------------------------------------
+ * The ticket board
+ * ------------------------------------------------------------------------ */
+
+/*
+ * Columns scroll sideways rather than wrapping: a board that reflows into
+ * two rows stops being a board.
+ */
+.board {
+	display: grid;
+	grid-auto-flow: column;
+	grid-auto-columns: minmax(260px, 1fr);
+	gap: var(--space-4);
+	overflow-x: auto;
+	padding-bottom: var(--space-3);
+	align-items: start;
+}
+
+.board-column {
+	background: var(--surface-sunken);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	display: flex;
+	flex-direction: column;
+	min-height: 120px;
+}
+
+.board-column-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: var(--space-3) var(--space-4);
+	font-size: 12px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--text-muted);
+	border-bottom: 1px solid var(--border);
+}
+
+.board-column-head .count {
+	background: var(--surface);
+	border-radius: var(--radius-pill);
+	padding: 1px 8px;
+	font-size: 11px;
+	letter-spacing: 0;
+}
+
+.board-column-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-3);
+	padding: var(--space-3);
+	min-height: 60px;
+	transition: background var(--transition);
+}
+
+/* Where the card will land, while a drag is in flight. */
+.board-column-body.drop-target {
+	background: var(--accent-soft);
+	box-shadow: inset 0 0 0 1px var(--accent);
+	border-radius: var(--radius);
+}
+
+.ticket-card {
+	padding: var(--space-3);
+	cursor: grab;
+	border-left: 3px solid transparent;
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-2);
+}
+
+.ticket-card:active { cursor: grabbing; }
+.ticket-card.dragging { opacity: 0.5; }
+
+/* Priority reads off the left edge, so the urgent ones are findable
+ * without reading a word of any card. */
+.ticket-card.priority-urgent { border-left-color: var(--negative); }
+.ticket-card.priority-high { border-left-color: var(--warning); }
+.ticket-card.priority-normal { border-left-color: var(--border-strong); }
+.ticket-card.priority-low { border-left-color: transparent; }
+
+.ticket-title {
+	font-weight: 600;
+	font-size: 13.5px;
+	color: var(--text);
+	text-decoration: none;
+	line-height: 1.35;
+}
+
+.ticket-title:hover { color: var(--accent); }
+
+.ticket-meta {
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	flex-wrap: wrap;
+	font-size: 11.5px;
+	color: var(--text-muted);
+}
+
+.badge.kind-external { background: var(--info-soft); color: var(--info); }
+.badge.kind-internal { background: var(--surface-sunken); color: var(--text-muted); }
+
+.ticket-due.overdue { color: var(--negative); font-weight: 600; }
+
+.ticket-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.tag {
+	font-size: 11px;
+	padding: 1px 7px;
+	border-radius: var(--radius-pill);
+	background: var(--surface-sunken);
+	color: var(--text-muted);
+}
+
+/*
+ * The no-script fallback. Present in the markup and out of the way until
+ * the card is hovered or focused, so keyboard users can still reach it.
+ */
+.ticket-move {
+	display: flex;
+	gap: var(--space-2);
+	margin: 0;
+	opacity: 0;
+	max-height: 0;
+	overflow: hidden;
+	transition: opacity var(--transition);
+}
+
+.ticket-card:hover .ticket-move,
+.ticket-card:focus-within .ticket-move {
+	opacity: 1;
+	max-height: 60px;
+}
+
+.ticket-move select { font-size: 12px; padding: 4px 8px; }
+
+/* A segmented control for the view and kind filters. */
+.segmented {
+	display: inline-flex;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	overflow: hidden;
+}
+
+.segmented .seg {
+	padding: 5px 12px;
+	font-size: 13px;
+	color: var(--text-muted);
+	text-decoration: none;
+	background: var(--surface);
+}
+
+.segmented .seg + .seg { border-left: 1px solid var(--border); }
+.segmented .seg:hover { background: var(--surface-hover); }
+.segmented .seg.active { background: var(--accent); color: var(--accent-contrast); }
+
+/* Two columns of label/value on a record's detail page. */
+dl.detail-grid {
+	grid-template-columns: max-content 1fr max-content 1fr;
+	gap: var(--space-3) var(--space-4);
+}
+
+@media (max-width: 900px) {
+	dl.detail-grid { grid-template-columns: max-content 1fr; }
+}
+
+ul.related {
+	list-style: none;
+	margin: 0 0 var(--space-4);
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-1);
+}
+
+ul.related li { padding: var(--space-2) 0; border-bottom: 1px solid var(--border); }
+ul.related li:last-child { border-bottom: none; }
+
+.card-body h2 .count {
+	background: var(--surface-sunken);
+	border-radius: var(--radius-pill);
+	padding: 1px 8px;
+	font-size: 12px;
+	color: var(--text-muted);
+	font-weight: 600;
+}

@@ -114,6 +114,9 @@ VENTURE_DECLARE_ENTITY(VentureTaxCategory, venture_tax_category, TAX_CATEGORY)
 
 /* --- Relations ----------------------------------------------------------- */
 
+#define VENTURE_TYPE_COMPANY (venture_company_get_type())
+VENTURE_DECLARE_ENTITY(VentureCompany, venture_company, COMPANY)
+
 #define VENTURE_TYPE_CONTACT (venture_contact_get_type())
 VENTURE_DECLARE_ENTITY(VentureContact, venture_contact, CONTACT)
 
@@ -190,8 +193,12 @@ venture_idea_get_score(VentureIdea *self);
 #define VENTURE_TYPE_RESEARCH_NOTE (venture_research_note_get_type())
 VENTURE_DECLARE_ENTITY(VentureResearchNote, venture_research_note, RESEARCH_NOTE)
 
-#define VENTURE_TYPE_TASK (venture_task_get_type())
-VENTURE_DECLARE_ENTITY(VentureTask, venture_task, TASK)
+#define VENTURE_TYPE_TICKET (venture_ticket_get_type())
+VENTURE_DECLARE_ENTITY(VentureTicket, venture_ticket, TICKET)
+
+#define VENTURE_TYPE_TICKET_COMMENT (venture_ticket_comment_get_type())
+VENTURE_DECLARE_ENTITY(VentureTicketComment, venture_ticket_comment,
+                       TICKET_COMMENT)
 
 #define VENTURE_TYPE_DOCUMENT (venture_document_get_type())
 VENTURE_DECLARE_ENTITY(VentureDocument, venture_document, DOCUMENT)

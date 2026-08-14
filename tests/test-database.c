@@ -503,7 +503,7 @@ test_database_query_search(
 
 	contact = venture_contact_new();
 	g_object_set(contact, "name", "Ada Lovelace",
-	             "company", "Analytical Engines", NULL);
+	             "role", "Analyst", NULL);
 	venture_entity_set_organization_id(VENTURE_ENTITY(contact),
 	                                   fixture->organization_id);
 	g_assert_true(venture_database_save(fixture->database,

@@ -126,6 +126,88 @@ Removing or retyping a field is deliberately *not* automatic. Both destroy
 data, and doing either silently on startup because someone renamed a field
 would be indefensible. Those stay a deliberate migration.
 
+* CRM: companies, contacts, deals
+
+*Companies* are the outside businesses you deal with — customers, prospects,
+suppliers, the marketplaces you sell on, partners. Distinct from *entities*,
+which are the businesses you *are*. That distinction is easy to blur and
+expensive to blur: one of them appears on your tax return.
+
+A contact belongs to a company by reference rather than by name. The
+free-text version could not answer "everything to do with this account",
+which is the question a CRM exists for, and it spelled the same company three
+ways across three records.
+
+Deals and interactions carry a company as well as a contact, because people
+move and accounts persist, and the pipeline is usually read by account.
+
+** Every record has a detail page
+
+=/e/<type>/<id>= shows a record's fields and, beneath them, *every record
+that points at it* — a company's contacts, deals, tickets and interactions;
+a contact's deals and tickets; a ticket's comments.
+
+Those sections are derived from the reference metadata, not written out per
+type. A company page grows a Tickets section the moment a ticket gains a
+company field, and a record type that arrives from a plugin appears here for
+free. Each section is labelled by the field that points back, because a type
+can reference the same target twice — a ticket has both a parent and
+children.
+
+References render as links, so following a relationship is a click rather
+than a search.
+
+* Tickets
+
+One record covers internal work and external support, because the work is
+the same shape: something to do, in a state, assigned to somebody, with a
+thread of comments. What differs is who raised it and who may read the
+replies, and those are a field and a flag rather than two systems to keep in
+step — which matters on the day a support request turns out to be a bug, and
+the bug is the work.
+
+| Field       | For                                                     |
+|-------------+---------------------------------------------------------|
+| =kind=      | =internal= (your work) or =external= (somebody's request) |
+| =contact_id= | who raised it, for an external ticket                   |
+| =company_id= | the account it came from                               |
+| =parent_id= | a ticket this one is part of, so epics and split-out bugs stay connected |
+| =resolution= | what was actually done about it                        |
+
+Comments are their own records with an =internal= flag: a reply to the
+customer and a note to yourself live in one ordered thread and stay tellable
+apart.
+
+** The board
+
+=/tickets= is a kanban board grouped by status. Drag a card to move it;
+column counts update as you go, and the position is remembered so a column
+stays in the order you left it.
+
+Cancelled is deliberately not a column — it is an outcome rather than a
+stage, and a column nobody drags into only takes up room. Cancelled tickets
+are still in the list view.
+
+Every card also carries a status select and a *Move* button. That is not a
+duplicate implementation: it is what a browser with scripting disabled uses,
+and it posts the same endpoint the drag handler does, so the two cannot
+disagree about what moving means.
+
+Moving into =done= or =cancelled= stamps the resolution time, so "how long
+did that take" is answerable without reading the audit log. Moving back out
+clears it — a ticket that was reopened was not resolved.
+
+Priority reads off the left edge of each card, so the urgent ones are
+findable without reading a word.
+
+** Views and filters
+
+=/tickets?view=board= and =?view=list=, filtered by =kind=, =assignee= and
+=venture_id=. The filters are links rather than a form, so any view you want
+to keep is a URL you can bookmark.
+
+Everything is scoped to the selected entity, like the rest of the UI.
+
 * Entities
 
 An entity is a business or a personal sphere you keep books for: "my side
