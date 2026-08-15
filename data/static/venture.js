@@ -289,7 +289,19 @@
 					var log = document.getElementById("chat-log");
 
 					if (text !== "" && log) {
-						appendUserEcho(log, text);
+						/* The echo names the attachments the same
+						 * way the stored transcript will, so the
+						 * optimistic render and next week's replay
+						 * are identical. */
+						var echo = text;
+
+						pendingAttachments().forEach(function (chip) {
+							echo += "\n[Attached: " + chip.dataset.name
+								+ " (document #" + chip.dataset.docId
+								+ ")]";
+						});
+
+						appendUserEcho(log, echo);
 						appendTyping(log);
 						scrollChatToBottom();
 					}
@@ -297,6 +309,7 @@
 					window.setTimeout(function () {
 						textarea.value = "";
 						textarea.style.height = "auto";
+						clearAttachments();
 					}, 0);
 				});
 			}
@@ -355,6 +368,135 @@
 	function clearTyping() {
 		document.querySelectorAll(".typing-row").forEach(function (el) {
 			el.remove();
+		});
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* Chat attachments                                                    */
+	/* ------------------------------------------------------------------ */
+
+	function attachIdsInput() {
+		return document.getElementById("chat-attach-ids");
+	}
+
+	function pendingAttachments() {
+		return Array.prototype.slice.call(
+			document.querySelectorAll("#chat-attachments .attach-chip"));
+	}
+
+	function syncAttachIds() {
+		var input = attachIdsInput();
+
+		if (input) {
+			input.value = pendingAttachments().map(function (chip) {
+				return chip.dataset.docId;
+			}).join(",");
+		}
+	}
+
+	function addAttachChip(id, name, textChars) {
+		var box = document.getElementById("chat-attachments");
+		var chip = document.createElement("span");
+		var label = document.createElement("span");
+		var remove = document.createElement("button");
+
+		if (!box) {
+			return;
+		}
+
+		chip.className = "attach-chip";
+		chip.dataset.docId = String(id);
+		chip.dataset.name = name;
+
+		label.className = "attach-name";
+		label.textContent = name;
+		chip.appendChild(label);
+
+		/* A file whose text could not be extracted still attaches -- the
+		 * record is kept -- but the operator should know the model will
+		 * not be able to read it. */
+		if (!textChars) {
+			var warn = document.createElement("span");
+
+			warn.className = "attach-warn";
+			warn.textContent = "no text";
+			warn.title = "No text could be extracted; the AI cannot "
+				+ "read this file's contents";
+			chip.appendChild(warn);
+		}
+
+		remove.type = "button";
+		remove.className = "attach-remove";
+		remove.textContent = "×";
+		remove.title = "Remove attachment";
+		remove.addEventListener("click", function () {
+			chip.remove();
+			syncAttachIds();
+		});
+		chip.appendChild(remove);
+
+		box.appendChild(chip);
+		syncAttachIds();
+	}
+
+	function clearAttachments() {
+		var box = document.getElementById("chat-attachments");
+
+		if (box) {
+			box.innerHTML = "";
+		}
+
+		syncAttachIds();
+	}
+
+	function uploadAttachment(file) {
+		var data = new FormData();
+
+		data.append("file", file, file.name);
+
+		return window.fetch("/ui/chat/upload", {
+			method: "POST",
+			body: data,
+			credentials: "same-origin"
+		}).then(function (response) {
+			if (!response.ok) {
+				return response.json().then(function (body) {
+					throw new Error((body && body.error &&
+						body.error.message) || "upload failed");
+				}, function () {
+					throw new Error("upload failed ("
+						+ response.status + ")");
+				});
+			}
+
+			return response.json();
+		}).then(function (body) {
+			addAttachChip(body.id, body.name, body.text_chars);
+		}).catch(function (failure) {
+			toast("Could not attach " + file.name + ": "
+				+ failure.message, "negative", 6000);
+		});
+	}
+
+	function wireAttachments() {
+		var button = document.querySelector("[data-ai-attach]");
+		var input = document.getElementById("chat-attach-file");
+
+		if (!button || !input || button.ventureWired) {
+			return;
+		}
+
+		button.ventureWired = true;
+
+		button.addEventListener("click", function () {
+			input.click();
+		});
+
+		input.addEventListener("change", function () {
+			Array.prototype.forEach.call(input.files, uploadAttachment);
+			/* Selecting the same file again later must re-trigger
+			 * change. */
+			input.value = "";
 		});
 	}
 
@@ -733,6 +875,7 @@
 		resumeThread();
 		wireComposer();
 		wirePanelResize();
+		wireAttachments();
 
 	/*
 	 * The kanban board.

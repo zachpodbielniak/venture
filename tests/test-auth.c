@@ -799,6 +799,54 @@ server_fixture_request(
 }
 
 /*
+ * Like server_fixture_request(), but the body is raw bytes under an
+ * explicit Content-Type -- which is what a multipart upload is.
+ */
+static guint
+server_fixture_post_raw(
+	ServerFixture	 *fixture,
+	const gchar	 *path,
+	const gchar	 *cookie,
+	const gchar	 *content_type,
+	GBytes		 *body,
+	gchar		**out_body
+){
+	g_autoptr(SoupMessage) message = NULL;
+	g_autofree gchar *url = NULL;
+	RequestResult outcome = { FALSE, NULL, NULL };
+
+	url = g_strdup_printf("http://127.0.0.1:%u%s", fixture->port, path);
+	message = soup_message_new("POST", url);
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+
+	if (NULL != cookie)
+		soup_message_headers_append(
+			soup_message_get_request_headers(message), "Cookie",
+			cookie);
+
+	soup_message_set_request_body_from_bytes(message, content_type, body);
+
+	soup_session_send_and_read_async(fixture->session, message,
+	                                 G_PRIORITY_DEFAULT, NULL,
+	                                 server_fixture_request_done, &outcome);
+
+	while (!outcome.done)
+		g_main_context_iteration(NULL, TRUE);
+
+	if (NULL != outcome.error)
+		g_error("POST %s: %s", path, outcome.error->message);
+
+	if (NULL != out_body)
+		*out_body = g_strndup(g_bytes_get_data(outcome.body, NULL),
+		                      g_bytes_get_size(outcome.body));
+
+	g_clear_pointer(&outcome.body, g_bytes_unref);
+	g_clear_error(&outcome.error);
+
+	return soup_message_get_status(message);
+}
+
+/*
  * Creates an active account directly in the fixture's database, so a test
  * can sign in over HTTP as somebody specific.
  */
@@ -946,6 +994,10 @@ test_auth_api_refuses_anonymous_requests(
 	                                        NULL, "message=hi", NULL, NULL),
 	                 ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+	                                        "/ui/chat/upload", NULL, "x",
+	                                        NULL, NULL),
+	                 ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 	                                        "/ui/chat/thread/1/delete",
 	                                        NULL, "", NULL, NULL),
 	                 ==, SOUP_STATUS_UNAUTHORIZED);
@@ -1040,6 +1092,94 @@ test_auth_chat_threads_are_scoped_per_user(
 	                 ==, SOUP_STATUS_FORBIDDEN);
 }
 
+/*
+ * The audit log is written by the audit system as a side effect of the
+ * writes it documents, and by nothing else. A POST that succeeded would let
+ * an editor plant "someone else did this" rows -- an editable trail proves
+ * nothing -- so the refusal must hold for every role, including the owner.
+ */
+static void
+test_auth_audit_log_refuses_writes(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+
+	server_fixture_create_user(fixture, "carol", "c-long-password",
+	                           VENTURE_USER_ROLE_OWNER, NULL);
+	cookie = server_fixture_login(fixture, "carol", "c-long-password");
+
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/audit_entry", cookie,
+		"actor=mallory&action=update", NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+
+	/* Rewriting or deleting history is the same forgery. */
+	g_assert_cmpuint(server_fixture_request(fixture, "PUT",
+		"/api/v1/audit_entry/1", cookie, "actor=mallory", NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "DELETE",
+		"/api/v1/audit_entry/1", cookie, NULL, NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+}
+
+/*
+ * An uploaded file becomes a document record carrying its extracted text.
+ * The payload here contains NUL bytes on purpose: multipart parsing of
+ * binary data is exactly what regressed once, in a way a text-only test
+ * cannot catch -- the parse "succeeded" with zero files.
+ */
+static void
+test_auth_chat_upload_round_trip(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	static const gchar head[] =
+		"--TESTBND\r\n"
+		"Content-Disposition: form-data; name=\"file\"; "
+		"filename=\"note.txt\"\r\n"
+		"Content-Type: text/plain\r\n"
+		"\r\n"
+		"Amount due: $145.50 USD"
+		"\r\n--TESTBND\r\n"
+		"Content-Disposition: form-data; name=\"file2\"; "
+		"filename=\"blob.bin\"\r\n"
+		"Content-Type: application/octet-stream\r\n"
+		"\r\n";
+	static const guchar binary[] = { 0x00, 0x01, 0xff, 0x00, 0x7f };
+	static const gchar tail[] = "\r\n--TESTBND--\r\n";
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *response = NULL;
+	g_autofree gchar *document = NULL;
+	g_autoptr(GBytes) body = NULL;
+	GByteArray *raw;
+
+	server_fixture_create_user(fixture, "dave", "d-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	cookie = server_fixture_login(fixture, "dave", "d-long-password");
+
+	raw = g_byte_array_new();
+	g_byte_array_append(raw, (const guchar *)head, strlen(head));
+	g_byte_array_append(raw, binary, sizeof(binary));
+	g_byte_array_append(raw, (const guchar *)tail, strlen(tail));
+	body = g_byte_array_free_to_bytes(raw);
+
+	g_assert_cmpuint(server_fixture_post_raw(fixture, "/ui/chat/upload",
+		cookie, "multipart/form-data; boundary=TESTBND", body,
+		&response),
+		==, SOUP_STATUS_CREATED);
+
+	/* The first file is the one taken, and its text was extracted. */
+	g_assert_nonnull(strstr(response, "\"name\" : \"note.txt\""));
+	g_assert_nonnull(strstr(response, "\"text_chars\" : 23"));
+
+	/* And it is now an ordinary document record, text included. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/api/v1/document/1", cookie, NULL, &document, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(document, "Amount due: $145.50 USD"));
+}
+
 static void
 test_auth_health_stays_public(
 	ServerFixture	*fixture,
@@ -1117,6 +1257,12 @@ main(
 	g_test_add("/auth/chat-threads-are-scoped-per-user", ServerFixture, NULL,
 	           server_fixture_set_up,
 	           test_auth_chat_threads_are_scoped_per_user,
+	           server_fixture_tear_down);
+	g_test_add("/auth/audit-log-refuses-writes", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_audit_log_refuses_writes,
+	           server_fixture_tear_down);
+	g_test_add("/auth/chat-upload-round-trip", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_chat_upload_round_trip,
 	           server_fixture_tear_down);
 
 #undef ADD

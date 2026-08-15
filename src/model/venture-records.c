@@ -1006,7 +1006,16 @@ static const VentureFieldDecl venture_document_fields[] = {
 	VENTURE_FIELD("size-bytes", "Size", NULL, VENTURE_FIELD_KIND_INTEGER,
 	              VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("hash", "Checksum", NULL, VENTURE_FIELD_KIND_STRING,
-	              VENTURE_COLUMN_FLAG_INDEXED)
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	/*
+	 * The document's text, pulled out at upload time -- from the PDF, or
+	 * verbatim for a text file. Stored rather than re-extracted because
+	 * it is what makes a filed invoice searchable, and what the AI reads
+	 * when a conversation about an attachment resumes next week: the
+	 * model re-fetches the document record, not the file.
+	 */
+	VENTURE_FIELD_TEXT("extracted-text", "Extracted text",
+	                   "Text content pulled from the file at upload")
 };
 
 VENTURE_DEFINE_ENTITY(VentureDocument, venture_document,

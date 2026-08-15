@@ -270,6 +270,47 @@ venture_ai_tool_input(AiToolUse *tool_use)
 
 /* --- Read tools ---------------------------------------------------------- */
 
+/*
+ * Whether the model may read a record type at all.
+ *
+ * Accounts and API tokens are access control; chat threads and messages are
+ * other people's conversations with this very assistant. None of them are
+ * business data, and "the AI can read who can log in and what everyone has
+ * been asking it" is not a capability anyone meant to grant by enabling a
+ * finance assistant. The sensitive-field mechanism is not enough here: it
+ * hides the password hash, not the fact that an account named alice exists
+ * or what she asked about the books.
+ */
+static gboolean
+venture_ai_type_is_readable(GType entity_type)
+{
+	return (VENTURE_TYPE_USER != entity_type) &&
+	       (VENTURE_TYPE_API_TOKEN != entity_type) &&
+	       (VENTURE_TYPE_CHAT_THREAD != entity_type) &&
+	       (VENTURE_TYPE_CHAT_MESSAGE != entity_type);
+}
+
+/*
+ * Whether the model may stage a change to a record type. Everything
+ * unreadable, plus the audit log: the trail is the record of what the AI
+ * did, so an AI able to write it -- even through an approval -- could
+ * launder its own history. The audit system is the only writer.
+ */
+static gboolean
+venture_ai_type_is_writable(GType entity_type)
+{
+	return venture_ai_type_is_readable(entity_type) &&
+	       (VENTURE_TYPE_AUDIT_ENTRY != entity_type);
+}
+
+static gchar *
+venture_ai_tool_type_refused(const gchar *type_name)
+{
+	return venture_ai_tool_error(
+		"\"%s\" is not available to the assistant. Accounts, tokens and "
+		"chat history are administered by people.", type_name);
+}
+
 static gchar *
 venture_ai_tool_list_types(
 	AiToolUse	 *tool_use,
@@ -278,11 +319,39 @@ venture_ai_tool_list_types(
 	gpointer	  user_data
 ){
 	VentureAiService *self;
+	VentureEntityRegistry *registry;
+	g_autoptr(JsonBuilder) builder = NULL;
 	g_autoptr(JsonNode) node = NULL;
+	g_auto(GStrv) names = NULL;
+	gsize i;
 
 	self = user_data;
-	node = venture_entity_registry_describe_all(
-		venture_context_get_entity_registry(self->context));
+	registry = venture_context_get_entity_registry(self->context);
+	names = venture_entity_registry_list_names(registry);
+
+	/* The gated types are omitted from the catalogue, not merely refused
+	 * later: a model that cannot see a capability does not waste turns
+	 * trying it. */
+	builder = json_builder_new();
+	json_builder_begin_array(builder);
+
+	for (i = 0; NULL != names[i]; i++)
+	{
+		g_autoptr(JsonNode) description = NULL;
+
+		if (!venture_ai_type_is_readable(
+			venture_entity_registry_lookup(registry, names[i])))
+			continue;
+
+		description = venture_entity_registry_describe(registry, names[i]);
+
+		if (NULL != description)
+			json_builder_add_value(builder,
+			                       g_steal_pointer(&description));
+	}
+
+	json_builder_end_array(builder);
+	node = json_builder_get_root(builder);
 
 	return venture_ai_tool_result(node);
 }
@@ -321,6 +390,9 @@ venture_ai_tool_query(
 
 	if (NULL == query)
 		return venture_ai_tool_error("%s", local_error->message);
+
+	if (!venture_ai_type_is_readable(venture_query_get_entity_type(query)))
+		return venture_ai_tool_type_refused(type_name);
 
 	if (!venture_query_apply_json(query, ai_tool_use_get_input(tool_use),
 	                              &local_error))
@@ -555,6 +627,10 @@ venture_ai_tool_create(
 	if (NULL == type_name)
 		return venture_ai_tool_error("A \"type\" is required");
 
+	if (!venture_ai_type_is_writable(venture_entity_registry_lookup(
+		venture_context_get_entity_registry(self->context), type_name)))
+		return venture_ai_tool_type_refused(type_name);
+
 	record = venture_entity_registry_create(
 		venture_context_get_entity_registry(self->context), type_name,
 		&local_error);
@@ -638,6 +714,9 @@ venture_ai_tool_update(
 	if (G_TYPE_INVALID == entity_type)
 		return venture_ai_tool_error("There is no record type called \"%s\"",
 		                             type_name);
+
+	if (!venture_ai_type_is_writable(entity_type))
+		return venture_ai_tool_type_refused(type_name);
 
 	record = venture_database_get(venture_context_get_database(self->context),
 	                              entity_type, id, &local_error);
@@ -724,6 +803,9 @@ venture_ai_tool_delete(
 		return venture_ai_tool_error("There is no record type called \"%s\"",
 		                             type_name);
 
+	if (!venture_ai_type_is_writable(entity_type))
+		return venture_ai_tool_type_refused(type_name);
+
 	record = venture_database_get(venture_context_get_database(self->context),
 	                              entity_type, id, &local_error);
 
@@ -744,6 +826,233 @@ venture_ai_tool_delete(
 	 */
 	return venture_ai_stage_change(self, "venture_delete", record, NULL,
 	                               TRUE, summary);
+}
+
+/* --- Read tools beyond the query ------------------------------------------ */
+
+/*
+ * One record, whole. venture_query answers "which records"; this answers
+ * "everything about that one", which is what the model needs after a search
+ * hit or before proposing an update -- and it is how an attached document's
+ * extracted text is re-read when a conversation resumes.
+ */
+static gchar *
+venture_ai_tool_get(
+	AiToolUse	 *tool_use,
+	GCancellable	 *cancellable,
+	GError		**error,
+	gpointer	  user_data
+){
+	VentureAiService *self;
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) local_error = NULL;
+	JsonObject *input;
+	GType entity_type;
+	const gchar *type_name;
+	gint64 id;
+
+	self = user_data;
+	input = venture_ai_tool_input(tool_use);
+
+	if (NULL == input)
+		return venture_ai_tool_error("The arguments must be an object");
+
+	type_name = venture_json_object_get_string(input, "type", NULL);
+	id = venture_json_object_get_int(input, "id", 0);
+
+	if ((NULL == type_name) || (0 == id))
+		return venture_ai_tool_error("A \"type\" and an \"id\" are required");
+
+	entity_type = venture_entity_registry_lookup(
+		venture_context_get_entity_registry(self->context), type_name);
+
+	if (G_TYPE_INVALID == entity_type)
+		return venture_ai_tool_error("There is no record type called \"%s\"",
+		                             type_name);
+
+	if (!venture_ai_type_is_readable(entity_type))
+		return venture_ai_tool_type_refused(type_name);
+
+	record = venture_database_get(venture_context_get_database(self->context),
+	                              entity_type, id, &local_error);
+
+	if (NULL == record)
+		return venture_ai_tool_error("There is no %s with id %" G_GINT64_FORMAT,
+		                             type_name, id);
+
+	node = venture_serializable_to_json(VENTURE_SERIALIZABLE(record), FALSE);
+
+	return venture_ai_tool_result(node);
+}
+
+/*
+ * How many, without the rows. "How many unreviewed expenses" should cost a
+ * count, not fifty serialised records the model then counts itself --
+ * wrongly, past the query cap.
+ */
+static gchar *
+venture_ai_tool_count(
+	AiToolUse	 *tool_use,
+	GCancellable	 *cancellable,
+	GError		**error,
+	gpointer	  user_data
+){
+	VentureAiService *self;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) local_error = NULL;
+	JsonObject *input;
+	const gchar *type_name;
+	gint64 total;
+
+	self = user_data;
+	input = venture_ai_tool_input(tool_use);
+
+	if (NULL == input)
+		return venture_ai_tool_error("The arguments must be an object");
+
+	type_name = venture_json_object_get_string(input, "type", NULL);
+
+	if (NULL == type_name)
+		return venture_ai_tool_error("A \"type\" is required");
+
+	query = venture_query_new_for_name(
+		venture_context_get_entity_registry(self->context), type_name,
+		&local_error);
+
+	if (NULL == query)
+		return venture_ai_tool_error("%s", local_error->message);
+
+	if (!venture_ai_type_is_readable(venture_query_get_entity_type(query)))
+		return venture_ai_tool_type_refused(type_name);
+
+	if (!venture_query_apply_json(query, ai_tool_use_get_input(tool_use),
+	                              &local_error))
+		return venture_ai_tool_error("%s", local_error->message);
+
+	venture_query_set_organization(query,
+		venture_context_get_default_organization_id(self->context));
+
+	total = venture_database_count(venture_context_get_database(self->context),
+	                               query, &local_error);
+
+	if (total < 0)
+		return venture_ai_tool_error("%s", local_error->message);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "count");
+	json_builder_add_int_value(builder, total);
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_ai_tool_result(node);
+}
+
+/*
+ * Free text across every readable type at once -- the same sweep the /search
+ * page does. This is how "the Miller invoice" becomes a record id without
+ * the model guessing which of eight types it lives in.
+ */
+static gchar *
+venture_ai_tool_search(
+	AiToolUse	 *tool_use,
+	GCancellable	 *cancellable,
+	GError		**error,
+	gpointer	  user_data
+){
+	VentureAiService *self;
+	VentureEntityRegistry *registry;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_auto(GStrv) names = NULL;
+	JsonObject *input;
+	const gchar *text;
+	gsize i;
+
+	self = user_data;
+	input = venture_ai_tool_input(tool_use);
+
+	if (NULL == input)
+		return venture_ai_tool_error("The arguments must be an object");
+
+	text = venture_json_object_get_string(input, "q", NULL);
+
+	if (venture_string_is_empty(text))
+		return venture_ai_tool_error("A \"q\" to search for is required");
+
+	registry = venture_context_get_entity_registry(self->context);
+	names = venture_entity_registry_list_names(registry);
+
+	builder = json_builder_new();
+	json_builder_begin_array(builder);
+
+	for (i = 0; NULL != names[i]; i++)
+	{
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) records = NULL;
+		GType entity_type;
+		gint64 total;
+		guint j;
+
+		entity_type = venture_entity_registry_lookup(registry, names[i]);
+
+		if ((G_TYPE_INVALID == entity_type) ||
+		    !venture_ai_type_is_readable(entity_type) ||
+		    (VENTURE_TYPE_AUDIT_ENTRY == entity_type))
+			continue;
+
+		query = venture_query_new(entity_type);
+		venture_query_set_search(query, text);
+		venture_query_set_organization(query,
+			venture_context_get_default_organization_id(self->context));
+		venture_query_set_limit(query, 5);
+
+		records = venture_database_find(
+			venture_context_get_database(self->context), query, NULL);
+
+		if ((NULL == records) || (0 == records->len))
+			continue;
+
+		total = venture_database_count(
+			venture_context_get_database(self->context), query, NULL);
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "type");
+		json_builder_add_string_value(builder, names[i]);
+		json_builder_set_member_name(builder, "total");
+		json_builder_add_int_value(builder,
+			(total > 0) ? total : (gint64)records->len);
+		json_builder_set_member_name(builder, "hits");
+		json_builder_begin_array(builder);
+
+		for (j = 0; j < records->len; j++)
+		{
+			VentureEntity *record;
+			g_autofree gchar *label = NULL;
+
+			record = g_ptr_array_index(records, j);
+			label = venture_entity_get_display_name(record);
+
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "id");
+			json_builder_add_int_value(builder,
+			                           venture_entity_get_id(record));
+			json_builder_set_member_name(builder, "name");
+			json_builder_add_string_value(builder, label);
+			json_builder_end_object(builder);
+		}
+
+		json_builder_end_array(builder);
+		json_builder_end_object(builder);
+	}
+
+	json_builder_end_array(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_ai_tool_result(node);
 }
 
 /* --- Tool registration --------------------------------------------------- */
@@ -772,6 +1081,9 @@ venture_ai_service_register_tools(VentureAiService *self)
 	g_autoptr(AiTool) list_types = NULL;
 	g_autoptr(AiTool) query = NULL;
 	g_autoptr(AiTool) report = NULL;
+	g_autoptr(AiTool) get = NULL;
+	g_autoptr(AiTool) count = NULL;
+	g_autoptr(AiTool) search = NULL;
 
 	list_types = venture_ai_make_tool(self, "venture_list_types",
 		"List every record type in this VENTURE instance with its fields, "
@@ -811,12 +1123,45 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"For the categories report, the product field to group by; "
 		"defaults to genre", FALSE);
 
+	get = venture_ai_make_tool(self, "venture_get",
+		"Fetch one record in full by type and id. Use this after a search "
+		"hit, before proposing an update, and to read the extracted text "
+		"of an attached document.");
+	ai_tool_add_parameter(get, "type", "string", "The record type", TRUE);
+	ai_tool_add_parameter(get, "id", "integer", "The record's numeric id",
+	                      TRUE);
+
+	count = venture_ai_make_tool(self, "venture_count",
+		"Count records matching filters without fetching them. Prefer this "
+		"over venture_query whenever the answer is a number: it is exact, "
+		"while a query is capped and counting its rows undercounts.");
+	ai_tool_add_parameter(count, "type", "string", "The record type", TRUE);
+	ai_tool_add_parameter(count, "filters", "array",
+		"Filters, each {\"field\":..., \"op\":..., \"value\":...}", FALSE);
+	ai_tool_add_parameter(count, "period", "string",
+		"Restrict to a period, e.g. this_month", FALSE);
+	ai_tool_add_parameter(count, "search", "string",
+		"Free text matched against the type's searchable fields", FALSE);
+
+	search = venture_ai_make_tool(self, "venture_search",
+		"Search every record type at once by free text. Use this when you "
+		"know a name but not which type it is -- a company, a product, a "
+		"ticket title. Returns ids to pass to venture_get.");
+	ai_tool_add_parameter(search, "q", "string", "The text to search for",
+	                      TRUE);
+
 	ai_tool_executor_register_callback(self->executor, list_types,
 		venture_ai_tool_list_types, self, NULL);
 	ai_tool_executor_register_callback(self->executor, query,
 		venture_ai_tool_query, self, NULL);
 	ai_tool_executor_register_callback(self->executor, report,
 		venture_ai_tool_report, self, NULL);
+	ai_tool_executor_register_callback(self->executor, get,
+		venture_ai_tool_get, self, NULL);
+	ai_tool_executor_register_callback(self->executor, count,
+		venture_ai_tool_count, self, NULL);
+	ai_tool_executor_register_callback(self->executor, search,
+		venture_ai_tool_search, self, NULL);
 
 	/*
 	 * Under a read-only policy the mutation tools are not registered at
@@ -909,7 +1254,15 @@ venture_ai_service_build_prompt(VentureAiService *self)
 		 * told the format produces better output than one guessing. */
 		"Replies are rendered as simple markdown: paragraphs, '- ' bullet "
 		"lists, numbered lists, **bold** and `code`. Use those and nothing "
-		"else -- no HTML tags, no HTML entities, no tables.\n\n");
+		"else -- no HTML tags, no HTML entities, no tables.\n\n"
+		"The operator can attach files. An attached file's text arrives "
+		"inline in the message, and the file is stored as a document "
+		"record whose number the message names -- re-read it later with "
+		"venture_get on type document. When an attachment is an invoice or "
+		"a receipt, extract the date, the amount and currency, who it was "
+		"paid to and what for, then stage the matching expense or sale "
+		"with venture_create, citing the document id in the memo. Say "
+		"which values you read from the file and which you inferred.\n\n");
 
 	if (VENTURE_AI_POLICY_READ_ONLY == self->policy)
 	{

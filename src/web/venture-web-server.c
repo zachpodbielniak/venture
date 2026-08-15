@@ -14,6 +14,10 @@
 
 #include <string.h>
 
+#ifdef VENTURE_HAVE_POPPLER
+#include <poppler.h>
+#endif
+
 #include "venture-assets.h"
 
 struct _VentureWebServer
@@ -208,6 +212,34 @@ venture_web_require_for_type(
 		needed = VENTURE_USER_ROLE_OWNER;
 
 	return venture_auth_require(self->auth, principal, needed, error);
+}
+
+/*
+ * Whether a record type accepts writes through the generic surfaces at all.
+ *
+ * The audit log does not, for anybody. It is the record of what happened,
+ * written only by the audit system itself as a side effect of the writes it
+ * documents; a POST /api/v1/audit_entry that worked would let any editor
+ * plant "someone else did this" rows, and an editable trail proves
+ * nothing. Reading stays open -- the trail is only useful read.
+ *
+ * Returns: %TRUE if the type may be written
+ */
+static gboolean
+venture_web_type_accepts_writes(
+	GType	  entity_type,
+	GError	**error
+){
+	if (VENTURE_TYPE_AUDIT_ENTRY == entity_type)
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_PERMISSION_DENIED,
+		                    "The audit log is written by the system as "
+		                    "changes happen; it cannot be edited");
+		return FALSE;
+	}
+
+	return TRUE;
 }
 
 /*
@@ -500,11 +532,25 @@ venture_web_page(
 		}
 
 		g_string_append(html, "</div>");
+		/* Pending attachments appear here as removable chips before the
+		 * message they will ride along with is sent. */
+		g_string_append(html, "<div class=\"chat-attachments\" "
+		                      "id=\"chat-attachments\"></div>");
+
 		g_string_append(html,
 			"<form class=\"chat-input\" hx-post=\"/ui/chat\" "
 			"hx-target=\"#chat-log\" hx-swap=\"beforeend\">"
 			"<input type=\"hidden\" id=\"chat-thread\" name=\"thread\" "
 			"value=\"\">"
+			"<input type=\"hidden\" id=\"chat-attach-ids\" "
+			"name=\"attachments\" value=\"\">"
+			"<input type=\"file\" id=\"chat-attach-file\" multiple "
+			"class=\"hidden\" "
+			"accept=\".pdf,.txt,.md,.org,.csv,.json,.yaml,.yml,"
+			"application/pdf,text/plain,text/csv,application/json\">"
+			"<button type=\"button\" class=\"btn btn-ghost chat-attach\" "
+			"data-ai-attach title=\"Attach a file\">"
+			"\xf0\x9f\x93\x8e</button>"
 			"<textarea name=\"message\" rows=\"1\" "
 			"placeholder=\"Ask about your ventures, or describe a change\">"
 			"</textarea>"
@@ -857,6 +903,9 @@ venture_web_api_create(
 	                                  VENTURE_USER_ROLE_VIEWER, &error))
 		return venture_web_error_response(error);
 
+	if (!venture_web_type_accepts_writes(entity_type, &error))
+		return venture_web_error_response(error);
+
 	record = g_object_new(entity_type, NULL);
 
 	return venture_web_api_write(self, request, record, principal, TRUE);
@@ -887,6 +936,9 @@ venture_web_api_update(
 
 	if (!venture_web_require_for_type(self, principal, entity_type,
 	                                  VENTURE_USER_ROLE_VIEWER, &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_type_accepts_writes(entity_type, &error))
 		return venture_web_error_response(error);
 
 	id_text = g_hash_table_lookup(params, "id");
@@ -936,6 +988,9 @@ venture_web_api_delete(
 
 	if (!venture_web_require_for_type(self, principal, entity_type,
 	                                  VENTURE_USER_ROLE_VIEWER, &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_type_accepts_writes(entity_type, &error))
 		return venture_web_error_response(error);
 
 	id_text = g_hash_table_lookup(params, "id");
@@ -3209,6 +3264,9 @@ venture_web_ui_save(
 	                                  VENTURE_USER_ROLE_EDITOR, &error))
 		return venture_web_error_response(error);
 
+	if (!venture_web_type_accepts_writes(entity_type, &error))
+		return venture_web_error_response(error);
+
 	type_name = g_hash_table_lookup(params, "type");
 	id_text = g_hash_table_lookup(params, "id");
 	id = (NULL != id_text) ? g_ascii_strtoll(id_text, NULL, 10) : 0;
@@ -3272,6 +3330,9 @@ venture_web_ui_delete(
 
 	if (!venture_web_require_for_type(self, principal, entity_type,
 	                                  VENTURE_USER_ROLE_EDITOR, &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_type_accepts_writes(entity_type, &error))
 		return venture_web_error_response(error);
 
 	type_name = g_hash_table_lookup(params, "type");
@@ -6890,6 +6951,356 @@ venture_web_ui_chat_thread_delete(
 	}
 }
 
+/* --- Chat attachments ----------------------------------------------------- */
+
+/*
+ * How much of an attachment's text rides along in one model message. The
+ * full text is stored on the document record, so nothing is lost -- the
+ * model is told it was cut and can venture_get the document for the rest.
+ */
+#define VENTURE_WEB_ATTACHMENT_TEXT_LIMIT (24000)
+
+/* Uploads above this are refused outright. */
+#define VENTURE_WEB_ATTACHMENT_MAX_BYTES (15 * 1024 * 1024)
+
+/*
+ * Pulls readable text out of an uploaded file.
+ *
+ * PDFs go through poppler when the build has it; anything that announces
+ * itself as text -- including JSON, CSV and YAML, which is what exports and
+ * invoices actually arrive as -- is taken verbatim if it is valid UTF-8.
+ * Everything else yields %NULL, which is stored as "no text" rather than
+ * treated as an error: the file itself is still kept.
+ *
+ * Returns: (transfer full) (nullable): the text, or %NULL
+ */
+static gchar *
+venture_web_extract_text(
+	const gchar	*content_type,
+	const gchar	*filename,
+	GBytes		*data
+){
+	gboolean looks_pdf;
+	gboolean looks_text;
+
+	looks_pdf = ((NULL != content_type) &&
+	             g_str_has_prefix(content_type, "application/pdf")) ||
+	            ((NULL != filename) &&
+	             g_str_has_suffix(filename, ".pdf"));
+
+	looks_text = ((NULL != content_type) &&
+	              (g_str_has_prefix(content_type, "text/") ||
+	               g_str_has_prefix(content_type, "application/json") ||
+	               g_str_has_prefix(content_type, "application/csv") ||
+	               g_str_has_prefix(content_type, "application/x-yaml") ||
+	               g_str_has_prefix(content_type, "application/yaml"))) ||
+	             ((NULL != filename) &&
+	              (g_str_has_suffix(filename, ".txt") ||
+	               g_str_has_suffix(filename, ".md") ||
+	               g_str_has_suffix(filename, ".org") ||
+	               g_str_has_suffix(filename, ".csv") ||
+	               g_str_has_suffix(filename, ".json") ||
+	               g_str_has_suffix(filename, ".yaml") ||
+	               g_str_has_suffix(filename, ".yml")));
+
+	if (looks_pdf)
+	{
+#ifdef VENTURE_HAVE_POPPLER
+		g_autoptr(PopplerDocument) document = NULL;
+		g_autoptr(GString) text = NULL;
+		gint pages;
+		gint i;
+
+		document = poppler_document_new_from_bytes(data, NULL, NULL);
+
+		if (NULL == document)
+			return NULL;
+
+		text = g_string_new(NULL);
+		pages = poppler_document_get_n_pages(document);
+
+		for (i = 0; i < pages; i++)
+		{
+			g_autoptr(PopplerPage) page = NULL;
+			g_autofree gchar *page_text = NULL;
+
+			page = poppler_document_get_page(document, i);
+
+			if (NULL == page)
+				continue;
+
+			page_text = poppler_page_get_text(page);
+
+			if (venture_string_is_empty(page_text))
+				continue;
+
+			if (0 != text->len)
+				g_string_append(text, "\n\n");
+
+			g_string_append(text, page_text);
+		}
+
+		if (0 == text->len)
+			return NULL;
+
+		return g_string_free(g_steal_pointer(&text), FALSE);
+#else
+		/* Built without poppler: the PDF is stored, its text is not.
+		 * The chat message says so instead of silently attaching an
+		 * empty context. */
+		return NULL;
+#endif
+	}
+
+	if (looks_text)
+	{
+		const gchar *bytes;
+		gsize length;
+
+		bytes = g_bytes_get_data(data, &length);
+
+		if ((NULL == bytes) || (0 == length) ||
+		    !g_utf8_validate(bytes, (gssize)length, NULL))
+			return NULL;
+
+		return g_strndup(bytes, length);
+	}
+
+	return NULL;
+}
+
+/*
+ * POST /ui/chat/upload - one file in, one document record out.
+ *
+ * The file lands under the state directory and becomes an ordinary document
+ * record carrying its extracted text, so an uploaded invoice is not a blob
+ * in a chat -- it is a searchable record the whole system can see, that a
+ * conversation happens to reference.
+ */
+static HtmxResponse *
+venture_web_ui_chat_upload(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GPtrArray) files = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	HtmxUploadedFile *file;
+	VentureActor actor;
+
+	self = user_data;
+	principal = venture_auth_authenticate(self->auth, request);
+
+	/* An upload creates a document record, which is a write. */
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	files = htmx_uploaded_file_parse_multipart(
+		htmx_request_get_content_type(request),
+		htmx_request_get_body_bytes(request), NULL, &error);
+
+	if ((NULL == files) || (0 == files->len))
+	{
+		if (NULL == error)
+			g_set_error_literal(&error, VENTURE_ERROR,
+			                    VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "No file arrived");
+		return venture_web_error_response(error);
+	}
+
+	file = g_ptr_array_index(files, 0);
+
+	if (htmx_uploaded_file_get_size(file) > VENTURE_WEB_ATTACHMENT_MAX_BYTES)
+	{
+		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "That file is over the %d MB attachment limit",
+		            VENTURE_WEB_ATTACHMENT_MAX_BYTES / (1024 * 1024));
+		return venture_web_error_response(error);
+	}
+
+	{
+		g_autoptr(VentureDocument) document = NULL;
+		g_autofree gchar *directory = NULL;
+		g_autofree gchar *safe_name = NULL;
+		g_autofree gchar *token = NULL;
+		g_autofree gchar *stored_name = NULL;
+		g_autofree gchar *path = NULL;
+		g_autofree gchar *checksum = NULL;
+		g_autofree gchar *extracted = NULL;
+		const gchar *filename;
+		GBytes *data;
+
+		filename = htmx_uploaded_file_get_filename(file);
+
+		if (venture_string_is_empty(filename))
+			filename = "attachment";
+
+		/* The stored name is the original with everything that could
+		 * traverse a path or confuse a shell squeezed out, prefixed
+		 * with a random token so two "invoice.pdf"s never collide. */
+		safe_name = g_strcanon(g_strdup(filename),
+			"abcdefghijklmnopqrstuvwxyz"
+			"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-", '_');
+		token = venture_generate_token(8);
+		stored_name = g_strdup_printf("%s_%s", token, safe_name);
+
+		directory = g_build_filename(
+			venture_config_get_state_dir(
+				venture_context_get_config(self->context)),
+			"attachments", NULL);
+
+		if (0 != g_mkdir_with_parents(directory, 0700))
+		{
+			g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+			            "Cannot create %s", directory);
+			return venture_web_error_response(error);
+		}
+
+		path = g_build_filename(directory, stored_name, NULL);
+
+		if (!htmx_uploaded_file_save(file, path, &error))
+			return venture_web_error_response(error);
+
+		data = htmx_uploaded_file_get_data(file);
+		checksum = g_compute_checksum_for_bytes(G_CHECKSUM_SHA256, data);
+		extracted = venture_web_extract_text(
+			htmx_uploaded_file_get_content_type(file), filename, data);
+
+		document = venture_document_new();
+		g_object_set(document,
+		             "title", filename,
+		             "kind", "attachment",
+		             "path", path,
+		             "mime-type",
+		             htmx_uploaded_file_get_content_type(file),
+		             "size-bytes",
+		             (gint64)htmx_uploaded_file_get_size(file),
+		             "hash", checksum,
+		             "extracted-text", extracted,
+		             NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(document),
+			venture_context_get_default_organization_id(self->context));
+
+		venture_auth_to_actor(principal, &actor);
+
+		if (!venture_database_save(
+			venture_context_get_database(self->context),
+			VENTURE_ENTITY(document), &actor, &error))
+			return venture_web_error_response(error);
+
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+
+		json_builder_set_member_name(builder, "id");
+		json_builder_add_int_value(builder,
+			venture_entity_get_id(VENTURE_ENTITY(document)));
+
+		json_builder_set_member_name(builder, "name");
+		json_builder_add_string_value(builder, filename);
+
+		json_builder_set_member_name(builder, "size");
+		json_builder_add_int_value(builder,
+			(gint64)htmx_uploaded_file_get_size(file));
+
+		/* Whether any text came out, so the client can warn about an
+		 * attachment the model will not actually be able to read. */
+		json_builder_set_member_name(builder, "text_chars");
+		json_builder_add_int_value(builder, (NULL != extracted)
+			? (gint64)g_utf8_strlen(extracted, -1) : 0);
+
+		json_builder_end_object(builder);
+		node = json_builder_get_root(builder);
+
+		return venture_web_json_response(node, 201);
+	}
+}
+
+/*
+ * Resolves the "attachments" form field into stored documents, appending
+ * their text to what the model sees and a short reference to what the
+ * transcript keeps. The two deliberately differ: the transcript names the
+ * document; the document carries the text; and a resumed conversation
+ * re-reads it through venture_get rather than replaying kilobytes of
+ * invoice into every later turn.
+ */
+static gboolean
+venture_web_chat_attach(
+	VentureWebServer	 *self,
+	const gchar		 *attachments,
+	GString			 *model_text,
+	GString			 *stored_text,
+	GError			**error
+){
+	g_auto(GStrv) ids = NULL;
+	gsize i;
+
+	if (venture_string_is_empty(attachments))
+		return TRUE;
+
+	ids = g_strsplit(attachments, ",", -1);
+
+	for (i = 0; NULL != ids[i]; i++)
+	{
+		g_autoptr(VentureEntity) record = NULL;
+		g_autofree gchar *title = NULL;
+		g_autofree gchar *text = NULL;
+		gint64 id;
+
+		id = g_ascii_strtoll(g_strstrip(ids[i]), NULL, 10);
+
+		if (0 == id)
+			continue;
+
+		record = venture_database_get(
+			venture_context_get_database(self->context),
+			VENTURE_TYPE_DOCUMENT, id, error);
+
+		if (NULL == record)
+			return FALSE;
+
+		g_object_get(record, "title", &title,
+		             "extracted-text", &text, NULL);
+
+		g_string_append_printf(stored_text,
+			"\n[Attached: %s (document #%" G_GINT64_FORMAT ")]",
+			(NULL != title) ? title : "file", id);
+
+		g_string_append_printf(model_text,
+			"\n\n--- Attached file: %s (document #%" G_GINT64_FORMAT
+			") ---\n",
+			(NULL != title) ? title : "file", id);
+
+		if (venture_string_is_empty(text))
+		{
+			g_string_append(model_text,
+				"[No text could be extracted from this file.]");
+		}
+		else if (strlen(text) > VENTURE_WEB_ATTACHMENT_TEXT_LIMIT)
+		{
+			g_autofree gchar *cut = NULL;
+
+			cut = venture_truncate(text,
+			                       VENTURE_WEB_ATTACHMENT_TEXT_LIMIT);
+			g_string_append(model_text, cut);
+			g_string_append_printf(model_text,
+				"\n[Truncated. The full text is on document #%"
+				G_GINT64_FORMAT "; fetch it with venture_get if "
+				"you need the rest.]", id);
+		}
+		else
+		{
+			g_string_append(model_text, text);
+		}
+	}
+
+	return TRUE;
+}
+
 /*
  * POST /ui/chat - one exchange, persisted on both sides.
  */
@@ -6904,6 +7315,8 @@ venture_web_ui_chat(
 	g_autoptr(VentureChatThread) thread = NULL;
 	g_autoptr(GPtrArray) history = NULL;
 	g_autoptr(GString) html = NULL;
+	g_autoptr(GString) stored_text = NULL;
+	g_autoptr(GString) model_text = NULL;
 	g_autoptr(GDateTime) now = NULL;
 	g_autoptr(GError) error = NULL;
 	VentureActor actor;
@@ -6981,6 +7394,18 @@ venture_web_ui_chat(
 
 	thread_id = venture_entity_get_id(VENTURE_ENTITY(thread));
 
+	/*
+	 * Attachments: the transcript keeps a one-line reference per file,
+	 * the model gets the extracted text appended to this turn only.
+	 */
+	stored_text = g_string_new(message);
+	model_text = g_string_new(message);
+
+	if (!venture_web_chat_attach(self,
+		htmx_request_get_form_value(request, "attachments"),
+		model_text, stored_text, &error))
+		return venture_web_error_response(error);
+
 	/* Fetched before the new question is stored, so the model is not
 	 * shown the question twice. */
 	history = venture_web_chat_get_messages(self, thread_id, &error);
@@ -6994,7 +7419,7 @@ venture_web_ui_chat(
 		stored = venture_chat_message_new();
 		g_object_set(stored, "thread-id", thread_id,
 		             "role", VENTURE_CHAT_ROLE_USER,
-		             "body", message, NULL);
+		             "body", stored_text->str, NULL);
 		venture_entity_set_organization_id(VENTURE_ENTITY(stored),
 			venture_context_get_default_organization_id(self->context));
 
@@ -7009,7 +7434,7 @@ venture_web_ui_chat(
 
 		answer = venture_ai_service_answer_in_thread(
 			venture_context_get_ai_service(self->context), history,
-			message, principal, &error);
+			model_text->str, principal, &error);
 
 		if (NULL == answer)
 		{
@@ -7489,6 +7914,8 @@ venture_web_server_new(
 	                self);
 	htmx_router_post(router, "/ui/chat/thread/:id/delete",
 	                 venture_web_ui_chat_thread_delete, self);
+	htmx_router_post(router, "/ui/chat/upload", venture_web_ui_chat_upload,
+	                 self);
 
 	/* API */
 	htmx_router_get(router, "/api/v1/health", venture_web_api_health, self);

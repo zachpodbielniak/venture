@@ -1100,6 +1100,57 @@ body.ai-resizing { user-select: none; cursor: ew-resize; }
 .confirm-diff .del { color: var(--negative); }
 .confirm-actions { display: flex; gap: var(--space-2); }
 
+/* Pending attachments, shown between the log and the composer. */
+.chat-attachments {
+	flex: none;
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--space-2);
+	padding: 0 var(--space-4);
+}
+
+.chat-attachments:not(:empty) { padding-bottom: var(--space-2); }
+
+.attach-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--space-2);
+	max-width: 100%;
+	padding: 3px 8px;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	background: var(--surface-sunken);
+	font-size: 12px;
+}
+
+.attach-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	max-width: 220px;
+}
+
+.attach-warn {
+	color: var(--warning);
+	font-size: 11px;
+	flex: none;
+}
+
+.attach-remove {
+	border: none;
+	background: none;
+	color: var(--text-faint);
+	cursor: pointer;
+	font: inherit;
+	font-size: 13px;
+	flex: none;
+	padding: 0 2px;
+}
+
+.attach-remove:hover { color: var(--negative); }
+
+.chat-attach { flex: none; padding: 6px 10px; }
+
 .chat-input {
 	display: flex;
 	gap: var(--space-2);

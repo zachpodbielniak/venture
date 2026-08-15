@@ -205,6 +205,11 @@ Working and covered by tests:
 - global search across every registered record type (=Ctrl+K=)
 - persistent, per-user AI conversations in a floating panel, resumable
   across sessions
+- chat file attachments: an uploaded PDF or text file becomes a document
+  record with its text extracted, readable by the AI — attach an invoice,
+  have the expense staged for approval
+- AI tool surface: query, get, count, global search and reports, with
+  accounts, tokens and chat history walled off from the model entirely
 - a dashboard with open-ticket counts, the weighted deal pipeline and an
   activity feed from the audit trail
 - users, roles, password changes and session invalidation on sign-out

@@ -276,9 +276,13 @@ Build:
 gcc make pkgconf-pkg-config
 glib2-devel libyaml-devel json-glib-devel libsoup3-devel
 libxml2-devel sqlite-devel libpq-devel readline-devel
-gobject-introspection-devel
+gobject-introspection-devel poppler-glib-devel
 libetpan-devel libgudev-devel
 #+end_src
+
+=poppler-glib-devel= is optional the way =libpq-devel= is: without it the
+server builds and runs, and an attached PDF is stored but reports that its
+text could not be extracted.
 
 The last two are podomation's, not VENTURE's -- its mail and device modules
 need them. They matter more than they look: podomation resolves its whole
@@ -289,7 +293,8 @@ nowhere near the actual cause.
 Runtime, if you are installing rather than containerising:
 
 #+begin_src
-glib2 libyaml json-glib libsoup3 libxml2 sqlite-libs libpq readline
+glib2 libyaml json-glib libsoup3 libxml2 sqlite-libs libpq poppler-glib
+readline
 #+end_src
 
 The six vendored dependencies are linked statically and appear in neither

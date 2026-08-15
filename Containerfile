@@ -52,6 +52,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         libpq-devel \
         readline-devel \
         gobject-introspection-devel \
+        poppler-glib-devel \
         libetpan-devel \
         libgudev-devel \
     && dnf clean all \
@@ -152,6 +153,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         libxml2 \
         sqlite-libs \
         libpq \
+        poppler-glib \
         readline \
         ca-certificates \
         tzdata \

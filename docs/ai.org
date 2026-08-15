@@ -57,6 +57,35 @@ The ☰ button lists previous conversations, newest activity first; =+= starts
 a fresh one; each row has a delete button, and deletion is soft like every
 other delete here.
 
+** Attachments
+
+The paperclip attaches files to a message — PDFs, plain text, CSV, JSON,
+YAML, org. Each upload immediately becomes an ordinary =document= record:
+the file itself lands under the state directory, and its text — extracted
+by poppler for PDFs, taken verbatim for text — is stored on the record's
+=extracted-text= field, which also makes every filed invoice full-text
+searchable.
+
+The model sees the extracted text inline in the message it arrives with;
+the stored transcript keeps only a one-line reference naming the document.
+A resumed conversation does not replay kilobytes of invoice into every
+turn — the model re-reads the document with =venture_get= when it needs
+it.
+
+The intended loop: attach an invoice, say "book this". The system prompt
+tells the model to pull the date, amount, currency and counterparty out of
+the attachment and stage the matching expense with the document id in the
+memo — staged, so the figures it read are shown to you as a diff before
+anything is written.
+
+A chip marked /no text/ means extraction found nothing (a scanned image
+PDF, a binary format): the file is stored all the same, but the model
+cannot read its contents. There is no OCR.
+
+Uploads require the editor role, are capped at 15 MB, and the attachment
+text offered to the model is capped per file — the tail of a very long
+document is a =venture_get= away rather than silently absent.
+
 ** Who can read a conversation
 
 The thread's owner, and nobody else. The chat routes refuse to serve a
@@ -69,18 +98,35 @@ properties.
 
 * Tools
 
-| Tool                  | Authority                                  |
-|-----------------------+--------------------------------------------|
-| =venture_list_types=  | read — the record types and their fields   |
-| =venture_query=       | read — filtered records                    |
-| =venture_report=      | read — any report                          |
-| =venture_create=      | staged unless the policy is autonomous     |
-| =venture_update=      | staged unless the policy is autonomous     |
-| =venture_delete=      | always staged, whatever the policy         |
+| Tool                  | Authority                                    |
+|-----------------------+----------------------------------------------|
+| =venture_list_types=  | read — the record types and their fields     |
+| =venture_query=       | read — filtered records                      |
+| =venture_get=         | read — one record, whole                     |
+| =venture_count=       | read — exact counts, uncapped                |
+| =venture_search=      | read — free text across every type at once   |
+| =venture_report=      | read — any report                            |
+| =venture_create=      | staged unless the policy is autonomous       |
+| =venture_update=      | staged unless the policy is autonomous       |
+| =venture_delete=      | always staged, whatever the policy           |
 
 Under =read_only= the mutating tools are not registered at all, rather than
 registered and refused. A model cannot misuse a capability it was never told
 about, and refusing calls it believes it has just wastes turns.
+
+** What no tool reaches
+
+Accounts, API tokens and chat history are invisible to the model: absent
+from =venture_list_types=, refused by every read tool, refused by every
+write tool. The sensitive-field mechanism is not enough there — it hides
+the password hash, not the fact that an account named alice exists or what
+she has been asking the assistant about the books.
+
+The audit log is readable — "why did this number change" is a fair
+question — but no tool can write it, whatever the policy. The trail is the
+record of what the AI did; a model able to write it, even through an
+approval, could launder its own history. The same refusal holds for every
+human caller of the generic API: the audit system is the only writer.
 
 * Why writes are staged
 
