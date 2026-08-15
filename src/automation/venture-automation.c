@@ -768,37 +768,28 @@ venture_automation_on_entity_deleted(
 	                                     "on_deleted", entity);
 }
 
-VentureAutomation *
-venture_automation_new(
-	VentureContext	 *context,
-	GError		**error
+/*
+ * Builds a fresh engine with every module registered: the venture module as
+ * a live instance, podomation's own from disk. Shared by construction and
+ * reload, because a reload IS a reconstruction -- pods hold state, and the
+ * only honest way to unload a rule is to rebuild the world without it.
+ *
+ * Returns: %TRUE on success
+ */
+static gboolean
+venture_automation_build_engine(
+	VentureAutomation	 *self,
+	GError			**error
 ){
-	g_autoptr(VentureAutomation) self = NULL;
 	g_auto(GStrv) module_paths = NULL;
 	VenturePodModule *module;
-	VentureDatabase *database;
 	PodModuleManager *modules;
-	gboolean enabled;
 	gsize i;
 
-	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+	g_object_get(venture_context_get_config(self->context),
+	             "automation-module-paths", &module_paths, NULL);
 
-	g_object_get(venture_context_get_config(context),
-	             "automation-enabled", &enabled,
-	             "automation-module-paths", &module_paths,
-	             NULL);
-
-	if (!enabled)
-	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
-		                    "Automation is disabled in configuration");
-		return NULL;
-	}
-
-	self = g_object_new(VENTURE_TYPE_AUTOMATION, NULL);
-	self->context = g_object_ref(context);
 	self->engine = pod_engine_new();
-
 	modules = pod_engine_get_module_manager(self->engine);
 
 	/*
@@ -813,14 +804,15 @@ venture_automation_new(
 	 * freed memory.
 	 */
 	module = g_object_new(VENTURE_TYPE_POD_MODULE, NULL);
-	module->context = context;
+	module->context = self->context;
 
 	if (!pod_module_manager_register(modules, POD_MODULE(module)))
 	{
 		g_object_unref(module);
+		g_clear_object(&self->engine);
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_AUTOMATION,
 		                    "Cannot register the venture automation module");
-		return NULL;
+		return FALSE;
 	}
 
 	/* podomation's own modules -- timer, cron, log, http, notifications --
@@ -849,7 +841,39 @@ venture_automation_new(
 	for (i = 0; (NULL != module_paths) && (NULL != module_paths[i]); i++)
 		pod_module_manager_load_from_directory(modules, module_paths[i]);
 
-	/* Record changes become events. */
+	return TRUE;
+}
+
+VentureAutomation *
+venture_automation_new(
+	VentureContext	 *context,
+	GError		**error
+){
+	g_autoptr(VentureAutomation) self = NULL;
+	VentureDatabase *database;
+	gboolean enabled;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+
+	g_object_get(venture_context_get_config(context),
+	             "automation-enabled", &enabled, NULL);
+
+	if (!enabled)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "Automation is disabled in configuration");
+		return NULL;
+	}
+
+	self = g_object_new(VENTURE_TYPE_AUTOMATION, NULL);
+	self->context = g_object_ref(context);
+
+	if (!venture_automation_build_engine(self, error))
+		return NULL;
+
+	/* Record changes become events. These outlive any one engine: they
+	 * reference the automation object, so a reload swaps the engine
+	 * underneath them without re-wiring. */
 	database = venture_context_get_database(context);
 	self->saved_handler = g_signal_connect(database, "entity-saved",
 		G_CALLBACK(venture_automation_on_entity_saved), self);
@@ -857,6 +881,109 @@ venture_automation_new(
 		G_CALLBACK(venture_automation_on_entity_deleted), self);
 
 	return g_steal_pointer(&self);
+}
+
+gboolean
+venture_automation_reload(
+	VentureAutomation	 *self,
+	GError			**error
+){
+	g_return_val_if_fail(VENTURE_IS_AUTOMATION(self), FALSE);
+
+	/*
+	 * A reload is a rebuild, not a re-parse: pods hold timers, counters
+	 * and circuit-breaker state, and parsing new rules into a running
+	 * engine would stack them beside the old ones. Tearing the engine
+	 * down and rebuilding from the file is the only path where what runs
+	 * afterwards is exactly what the file says.
+	 */
+	venture_automation_stop(self);
+	g_clear_object(&self->engine);
+
+	if (!venture_automation_build_engine(self, error))
+		return FALSE;
+
+	return venture_automation_start(self, error);
+}
+
+gboolean
+venture_automation_validate_dsl(
+	const gchar	 *dsl,
+	gchar		**out_message
+){
+	g_autoptr(PodDslParser) parser = NULL;
+	g_autoptr(GError) error = NULL;
+	PodDslProgram *program;
+
+	g_return_val_if_fail(NULL != dsl, FALSE);
+
+	/*
+	 * A fresh parser with no engine behind it: validation must never
+	 * disturb what is running, and a syntax check does not need modules
+	 * resolved -- an unknown module name surfaces at load, with the
+	 * running rules still intact.
+	 */
+	parser = pod_dsl_parser_new();
+	program = pod_dsl_parser_parse(parser, dsl, &error);
+
+	if (NULL == program)
+	{
+		if (NULL != out_message)
+			*out_message = g_strdup((NULL != error)
+				? error->message : "unparseable");
+		return FALSE;
+	}
+
+	pod_dsl_program_free(program);
+
+	if (NULL != out_message)
+		*out_message = NULL;
+
+	return TRUE;
+}
+
+/**
+ * venture_automation_describe_modules:
+ * @self: a #VentureAutomation
+ *
+ * Returns: (transfer full): a JSON array of the loaded pod modules, each
+ *   with its name and description -- the reference the rules editor shows
+ */
+JsonNode *
+venture_automation_describe_modules(VentureAutomation *self)
+{
+	g_autoptr(JsonBuilder) builder = NULL;
+	GList *modules;
+	GList *l;
+
+	g_return_val_if_fail(VENTURE_IS_AUTOMATION(self), NULL);
+
+	modules = pod_module_manager_list_modules(
+		pod_engine_get_module_manager(self->engine));
+
+	builder = json_builder_new();
+	json_builder_begin_array(builder);
+
+	for (l = modules; NULL != l; l = l->next)
+	{
+		PodModule *module;
+
+		module = l->data;
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "name");
+		json_builder_add_string_value(builder,
+		                              pod_module_get_name(module));
+		json_builder_set_member_name(builder, "description");
+		json_builder_add_string_value(builder,
+		                              pod_module_get_description(module));
+		json_builder_end_object(builder);
+	}
+
+	json_builder_end_array(builder);
+	g_list_free(modules);
+
+	return json_builder_get_root(builder);
 }
 
 gboolean

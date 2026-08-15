@@ -80,13 +80,16 @@
 #ifdef VENTURE_SERVER_BUILD
 
 #include "plugin/venture-crispy-host.h"
-#include "plugin/venture-plugin-manager.h"
 
-#include "automation/venture-automation.h"
-
+/* The database comes before the plugin manager, whose configuration API
+ * names VentureActor in its signatures. */
 #include "db/venture-schema.h"
 #include "db/venture-query.h"
 #include "db/venture-database.h"
+
+#include "plugin/venture-plugin-manager.h"
+
+#include "automation/venture-automation.h"
 
 #include "report/venture-report.h"
 

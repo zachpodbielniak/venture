@@ -602,6 +602,142 @@
 	}
 
 	/* ------------------------------------------------------------------ */
+	/* The automation rules editor                                         */
+	/* ------------------------------------------------------------------ */
+
+	/*
+	 * Line numbers and as-you-type diagnostics for the pod DSL. The
+	 * diagnostics come from the server's real parser -- the same one that
+	 * loads the file -- so an error shown here is an error that would
+	 * have broken the reload, caught while it is still a keystroke away
+	 * from fixed.
+	 */
+	function wirePodEditor() {
+		var form = document.querySelector("[data-pod-editor]");
+
+		if (!form || form.ventureEditorWired) {
+			return;
+		}
+
+		form.ventureEditorWired = true;
+
+		var textarea = form.querySelector("textarea.code-input");
+		var gutter = form.querySelector(".code-gutter");
+		var status = document.getElementById("pod-diagnostics");
+		var url = status && status.dataset.validateUrl;
+		var timer = null;
+
+		function renumber() {
+			if (!gutter) {
+				return;
+			}
+
+			var count = textarea.value.split("\n").length;
+			var numbers = [];
+
+			for (var i = 1; i <= count; i++) {
+				numbers.push(i);
+			}
+
+			gutter.textContent = numbers.join("\n");
+		}
+
+		function markLine(line) {
+			/* The gutter is plain text; the marked line becomes the
+			 * one element in it. */
+			if (!gutter || !line) {
+				return;
+			}
+
+			var count = textarea.value.split("\n").length;
+			var html = "";
+
+			for (var i = 1; i <= count; i++) {
+				html += (i === line)
+					? "<span class=\"bad-line\">" + i + "</span>\n"
+					: i + "\n";
+			}
+
+			gutter.innerHTML = html;
+		}
+
+		function validate() {
+			if (!url || !status) {
+				return;
+			}
+
+			var data = new URLSearchParams();
+
+			data.set("source", textarea.value);
+
+			window.fetch(url, {
+				method: "POST",
+				headers: { "Content-Type":
+					"application/x-www-form-urlencoded" },
+				body: data.toString(),
+				credentials: "same-origin"
+			}).then(function (response) {
+				return response.json();
+			}).then(function (body) {
+				if (body.ok) {
+					status.textContent = "✓ Parses cleanly.";
+					status.className = "editor-status ok";
+					renumber();
+				} else {
+					status.textContent = body.message
+						|| "Does not parse.";
+					status.className = "editor-status bad";
+
+					var match = /line\s+(\d+)/i.exec(
+						body.message || "");
+
+					if (match) {
+						markLine(parseInt(match[1], 10));
+					}
+				}
+			}).catch(function () {
+				/* Validation is advice; losing it must not make
+				 * the editor feel broken. */
+			});
+		}
+
+		textarea.addEventListener("input", function () {
+			renumber();
+			window.clearTimeout(timer);
+			timer = window.setTimeout(validate, 700);
+		});
+
+		textarea.addEventListener("scroll", function () {
+			if (gutter) {
+				gutter.scrollTop = textarea.scrollTop;
+			}
+		});
+
+		/* Tab inserts a tab; losing focus to the next button is not
+		 * what anybody editing code means by it. */
+		textarea.addEventListener("keydown", function (event) {
+			if (event.key === "Tab") {
+				event.preventDefault();
+
+				var start = textarea.selectionStart;
+				var end = textarea.selectionEnd;
+
+				textarea.value = textarea.value.slice(0, start)
+					+ "\t" + textarea.value.slice(end);
+				textarea.selectionStart = start + 1;
+				textarea.selectionEnd = start + 1;
+				renumber();
+			}
+		});
+
+		renumber();
+
+		if (textarea.value.trim() !== "") {
+			validate();
+		}
+	}
+
+	/* ------------------------------------------------------------------ */
 	/* Keyboard shortcuts                                                  */
 	/* ------------------------------------------------------------------ */
 
@@ -876,6 +1012,7 @@
 		wireComposer();
 		wirePanelResize();
 		wireAttachments();
+		wirePodEditor();
 
 	/*
 	 * The kanban board.

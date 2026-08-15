@@ -203,6 +203,33 @@ VENTURE_DECLARE_ENTITY(VentureTicketComment, venture_ticket_comment,
 #define VENTURE_TYPE_DOCUMENT (venture_document_get_type())
 VENTURE_DECLARE_ENTITY(VentureDocument, venture_document, DOCUMENT)
 
+#define VENTURE_TYPE_INVOICE (venture_invoice_get_type())
+VENTURE_DECLARE_ENTITY(VentureInvoice, venture_invoice, INVOICE)
+
+#define VENTURE_TYPE_INVOICE_LINE (venture_invoice_line_get_type())
+VENTURE_DECLARE_ENTITY(VentureInvoiceLine, venture_invoice_line, INVOICE_LINE)
+
+/**
+ * venture_invoice_line_get_amount:
+ * @self: a #VentureInvoiceLine
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Quantity times unit price, multiplied as an exact rational and rounded
+ * half to even -- computed rather than stored, so it cannot disagree with
+ * its factors.
+ *
+ * Returns: (transfer full) (nullable): the line amount
+ */
+VentureMoney *
+venture_invoice_line_get_amount(
+	VentureInvoiceLine	 *self,
+	GError			**error
+);
+
+#define VENTURE_TYPE_PLUGIN_CONFIG (venture_plugin_config_get_type())
+VENTURE_DECLARE_ENTITY(VenturePluginConfig, venture_plugin_config,
+                       PLUGIN_CONFIG)
+
 /* --- AI conversations ----------------------------------------------------- */
 
 #define VENTURE_TYPE_CHAT_THREAD (venture_chat_thread_get_type())

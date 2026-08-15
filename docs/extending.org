@@ -191,6 +191,44 @@ so reviewing the log later answers "did I do this, or did a rule?".
 had triggered it. It exists because the alternative way to find out what a
 rule will do is to wait for its trigger and read the log afterwards.
 
+* Plugin configuration at runtime
+
+A plugin gets settings without inventing storage: the =/plugins= page shows
+every loaded plugin with a YAML editor, and what it saves lands on a
+=plugin_config= record — audited like any other write, admin-gated, and
+validated as YAML before anything is stored.
+
+The plugin's side is two calls:
+
+#+begin_src C
+static void
+on_config_changed(VenturePluginManager *manager, const gchar *name,
+                  gpointer user_data)
+{
+	g_autoptr(JsonNode) config = NULL;
+
+	if (0 != g_strcmp0(name, "myplugin.c"))
+		return;
+
+	config = venture_plugin_manager_get_config(manager, "myplugin.c");
+	rate = venture_plugin_config_get_double(config, "rate_percent", 70.0);
+}
+
+/* in venture_plugin_register(): */
+manager = venture_context_get_plugin_manager(context);
+on_config_changed(manager, "myplugin.c", NULL);   /* initial read */
+g_signal_connect(manager, "config-changed",
+                 G_CALLBACK(on_config_changed), NULL);
+#+end_src
+
+The signal fires the moment the page saves, so the plugin follows its
+settings live — no restart, no polling. =plugins/scripts/royalties.c= is the
+worked example: set =rate_percent: 65= on the /plugins page and the very
+next royalties report uses it.
+
+Secrets do not belong in plugin configuration, for the same reason they do
+not belong in =config.yaml=: name an environment variable there instead.
+
 * What extensions get for free
 
 Anything registered through these mechanisms is indistinguishable from a

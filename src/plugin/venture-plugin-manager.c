@@ -8,6 +8,7 @@
 #include "venture.h"
 
 #include <string.h>
+#include <yaml-glib.h>
 
 typedef struct
 {
@@ -60,10 +61,34 @@ venture_plugin_manager_finalize(GObject *object)
 	G_OBJECT_CLASS(venture_plugin_manager_parent_class)->finalize(object);
 }
 
+enum
+{
+	SIGNAL_CONFIG_CHANGED,
+	N_SIGNALS
+};
+
+static guint venture_plugin_manager_signals[N_SIGNALS];
+
 static void
 venture_plugin_manager_class_init(VenturePluginManagerClass *klass)
 {
 	G_OBJECT_CLASS(klass)->finalize = venture_plugin_manager_finalize;
+
+	/**
+	 * VenturePluginManager::config-changed:
+	 * @self: the manager
+	 * @plugin_name: whose configuration changed
+	 *
+	 * Raised after a plugin's configuration is stored. A plugin that
+	 * connects here and re-reads its configuration follows the settings
+	 * page live, without a restart -- which is the entire point of
+	 * configuration being a record rather than a file read once.
+	 */
+	venture_plugin_manager_signals[SIGNAL_CONFIG_CHANGED] =
+		g_signal_new("config-changed",
+		             VENTURE_TYPE_PLUGIN_MANAGER,
+		             G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+		             G_TYPE_NONE, 1, G_TYPE_STRING);
 }
 
 static void
@@ -556,4 +581,203 @@ venture_plugin_manager_list(VenturePluginManager *self)
 	json_builder_end_array(builder);
 
 	return json_builder_get_root(builder);
+}
+
+/* ==========================================================================
+ * Plugin configuration
+ * ========================================================================== */
+
+/*
+ * Finds the configuration record for @plugin_name, if one exists.
+ *
+ * Returns: (transfer full) (nullable): the record, or %NULL
+ */
+static VentureEntity *
+venture_plugin_manager_find_config(
+	VenturePluginManager	*self,
+	const gchar		*plugin_name
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) records = NULL;
+
+	query = venture_query_new(VENTURE_TYPE_PLUGIN_CONFIG);
+
+	if (!venture_query_add_filter_string(query, "name",
+	                                     VENTURE_FILTER_OP_EQ, plugin_name,
+	                                     NULL))
+		return NULL;
+
+	venture_query_set_limit(query, 1);
+
+	records = venture_database_find(
+		venture_context_get_database(self->context), query, NULL);
+
+	if ((NULL == records) || (0 == records->len))
+		return NULL;
+
+	return g_object_ref(g_ptr_array_index(records, 0));
+}
+
+gchar *
+venture_plugin_manager_get_config_text(
+	VenturePluginManager	*self,
+	const gchar		*plugin_name
+){
+	g_autoptr(VentureEntity) record = NULL;
+	gchar *text;
+
+	g_return_val_if_fail(VENTURE_IS_PLUGIN_MANAGER(self), NULL);
+	g_return_val_if_fail(NULL != plugin_name, NULL);
+
+	record = venture_plugin_manager_find_config(self, plugin_name);
+
+	if (NULL == record)
+		return NULL;
+
+	g_object_get(record, "config", &text, NULL);
+
+	return text;
+}
+
+JsonNode *
+venture_plugin_manager_get_config(
+	VenturePluginManager	*self,
+	const gchar		*plugin_name
+){
+	g_autofree gchar *text = NULL;
+	g_autoptr(YamlParser) parser = NULL;
+	YamlNode *root;
+
+	g_return_val_if_fail(VENTURE_IS_PLUGIN_MANAGER(self), NULL);
+
+	text = venture_plugin_manager_get_config_text(self, plugin_name);
+
+	if (venture_string_is_empty(text))
+		return NULL;
+
+	parser = yaml_parser_new();
+
+	if (!yaml_parser_load_from_data(parser, text, -1, NULL))
+		return NULL;
+
+	root = yaml_parser_get_root(parser);
+
+	return (NULL != root) ? yaml_node_to_json_node(root) : NULL;
+}
+
+gboolean
+venture_plugin_manager_set_config(
+	VenturePluginManager	 *self,
+	const gchar		 *plugin_name,
+	const gchar		 *yaml,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(GError) local_error = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_PLUGIN_MANAGER(self), FALSE);
+	g_return_val_if_fail(NULL != plugin_name, FALSE);
+
+	if (NULL == yaml)
+		yaml = "";
+
+	/*
+	 * Refuse YAML that does not parse before anything is stored. The
+	 * plugin re-reads on the change signal, and handing a running plugin
+	 * settings it cannot parse turns a typo on the settings page into a
+	 * runtime failure somewhere far from the typo.
+	 */
+	if ('\0' != *yaml)
+	{
+		g_autoptr(YamlParser) parser = NULL;
+
+		parser = yaml_parser_new();
+
+		if (!yaml_parser_load_from_data(parser, yaml, -1, &local_error))
+		{
+			g_set_error(error, VENTURE_ERROR,
+			            VENTURE_ERROR_INVALID_ARGUMENT,
+			            "That is not valid YAML: %s",
+			            (NULL != local_error)
+			                ? local_error->message : "unparseable");
+			return FALSE;
+		}
+	}
+
+	record = venture_plugin_manager_find_config(self, plugin_name);
+
+	if (NULL == record)
+	{
+		record = VENTURE_ENTITY(venture_plugin_config_new());
+		g_object_set(record, "name", plugin_name, NULL);
+		venture_entity_set_organization_id(record,
+			venture_context_get_default_organization_id(self->context));
+	}
+
+	g_object_set(record, "config", yaml, NULL);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           record, actor, error))
+		return FALSE;
+
+	g_signal_emit(self,
+	              venture_plugin_manager_signals[SIGNAL_CONFIG_CHANGED], 0,
+	              plugin_name);
+
+	return TRUE;
+}
+
+gchar *
+venture_plugin_config_get_string(
+	JsonNode	*config,
+	const gchar	*key,
+	const gchar	*fallback
+){
+	JsonObject *object;
+	JsonNode *member;
+
+	g_return_val_if_fail(NULL != key, NULL);
+
+	if ((NULL == config) || !JSON_NODE_HOLDS_OBJECT(config))
+		return g_strdup(fallback);
+
+	object = json_node_get_object(config);
+
+	if (!json_object_has_member(object, key))
+		return g_strdup(fallback);
+
+	member = json_object_get_member(object, key);
+
+	if (!JSON_NODE_HOLDS_VALUE(member))
+		return g_strdup(fallback);
+
+	return g_strdup(json_node_get_string(member));
+}
+
+gdouble
+venture_plugin_config_get_double(
+	JsonNode	*config,
+	const gchar	*key,
+	gdouble		 fallback
+){
+	JsonObject *object;
+	JsonNode *member;
+
+	g_return_val_if_fail(NULL != key, fallback);
+
+	if ((NULL == config) || !JSON_NODE_HOLDS_OBJECT(config))
+		return fallback;
+
+	object = json_node_get_object(config);
+
+	if (!json_object_has_member(object, key))
+		return fallback;
+
+	member = json_object_get_member(object, key);
+
+	if (!JSON_NODE_HOLDS_VALUE(member))
+		return fallback;
+
+	return json_node_get_double(member);
 }

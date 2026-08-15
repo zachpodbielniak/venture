@@ -100,6 +100,13 @@ Or open http://127.0.0.1:8747 in a browser. Worth knowing there:
   via the Export button.
 - The dashboard shows open tickets by status, the weighted deal pipeline,
   and the latest audit-trail activity alongside the report cards.
+- Every list has Import as well as Export: CSV in, all-or-nothing, with the
+  Template button giving the exact headers.
+- =/e/invoice= is invoicing: lines with exact money arithmetic, a printable
+  view, and marking paid records the sale automatically.
+- =/automations= edits the automation rules with live parser diagnostics;
+  =/plugins= configures loaded plugins, and plugins follow the changes
+  without a restart.
 - =?= shows the keyboard shortcuts.
 
 ** Ask about it

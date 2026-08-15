@@ -740,6 +740,134 @@ table.data tfoot td {
 }
 
 /* ==========================================================================
+   The code editor (automation rules, plugin configuration)
+   ========================================================================== */
+
+.code-editor {
+	display: flex;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--surface-sunken);
+	overflow: hidden;
+}
+
+.code-gutter {
+	flex: none;
+	min-width: 40px;
+	margin: 0;
+	padding: var(--space-3) var(--space-2);
+	text-align: right;
+	color: var(--text-faint);
+	background: var(--surface);
+	border-right: 1px solid var(--border);
+	font-family: var(--font-mono);
+	font-size: 13px;
+	line-height: 1.5;
+	overflow: hidden;
+	user-select: none;
+}
+
+.code-gutter .bad-line {
+	color: var(--negative);
+	font-weight: 700;
+}
+
+.code-input {
+	font-family: var(--font-mono);
+	font-size: 13px;
+	line-height: 1.5;
+	tab-size: 4;
+	white-space: pre;
+	overflow-wrap: normal;
+	overflow-x: auto;
+}
+
+.code-editor .code-input {
+	flex: 1;
+	min-height: 320px;
+	border: none;
+	border-radius: 0;
+	background: transparent;
+	resize: vertical;
+}
+
+.editor-status {
+	margin-top: var(--space-2);
+	font-size: 12px;
+	color: var(--text-muted);
+	font-family: var(--font-mono);
+	white-space: pre-wrap;
+}
+
+.editor-status.ok { color: var(--positive); }
+.editor-status.bad { color: var(--negative); }
+
+.editor-actions {
+	display: flex;
+	align-items: center;
+	gap: var(--space-3);
+	margin-top: var(--space-3);
+}
+
+/* ==========================================================================
+   Automations and plugins
+   ========================================================================== */
+
+.pod-list { list-style: none; margin: 0; padding: var(--space-2) 0; }
+.pod-list li {
+	padding: var(--space-2) var(--space-4);
+	border-bottom: 1px solid var(--border);
+	font-size: 13px;
+}
+.pod-list li:last-child { border-bottom: none; }
+.pod-name { font-family: var(--font-mono); font-weight: 620; }
+
+.module-reference dt {
+	margin-top: var(--space-2);
+	font-weight: 620;
+}
+.module-reference dd {
+	margin: 2px 0 var(--space-2);
+	color: var(--text-muted);
+	font-size: 13px;
+}
+
+.plugin-card { margin-bottom: var(--space-4); }
+.plugin-card .card-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: var(--space-3) var(--space-4);
+	border-bottom: 1px solid var(--border);
+}
+.plugin-card .card-head h2 { font-size: 13px; margin: 0;
+                             font-family: var(--font-mono); }
+.plugin-card textarea { width: 100%; }
+
+.badge {
+	display: inline-block;
+	padding: 2px 10px;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	font-size: 11px;
+	color: var(--text-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+/* ==========================================================================
+   Invoices
+   ========================================================================== */
+
+.invoice-actions {
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	flex-wrap: wrap;
+}
+.invoice-actions form { display: inline; }
+
+/* ==========================================================================
    The ticket comment composer
    ========================================================================== */
 

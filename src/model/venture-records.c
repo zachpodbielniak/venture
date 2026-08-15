@@ -1022,6 +1022,129 @@ VENTURE_DEFINE_ENTITY(VentureDocument, venture_document,
                       venture_document_fields)
 
 /* ==========================================================================
+ * Invoicing
+ * ========================================================================== */
+
+/*
+ * An invoice: a claim on somebody else's money, with a paper trail.
+ *
+ * Distinct from a sale on purpose. A sale records money that arrived; an
+ * invoice records money that is owed, and the day it is paid the revenue
+ * becomes a sale -- created by the mark-paid transition, so the books and
+ * the invoicing can never quietly disagree about what was actually earned.
+ */
+static const VentureFieldDecl venture_invoice_fields[] = {
+	VENTURE_FIELD("number", "Number", "Yours to allocate; INV-2026-001 "
+	              "style works",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE |
+	              VENTURE_COLUMN_FLAG_INDEXED |
+	              VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD_ENUM("status", "Status", NULL,
+	                   venture_invoice_status_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("company-id", "Bill to", NULL, "company",
+	                  VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("contact-id", "Attention of", NULL, "contact",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture",
+	                  VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("issued-at", "Issued", NULL, VENTURE_FIELD_KIND_DATETIME,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("due-at", "Due", NULL, VENTURE_FIELD_KIND_DATETIME,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("paid-at", "Paid", NULL, VENTURE_FIELD_KIND_DATETIME,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("terms", "Terms", "Payment terms shown on the "
+	                   "printed invoice"),
+	VENTURE_FIELD_TEXT("notes", "Notes", "Internal; never printed")
+};
+
+VENTURE_DEFINE_ENTITY(VentureInvoice, venture_invoice, venture_invoice_fields)
+
+/*
+ * One line of an invoice. The amount is quantity times unit price, computed
+ * -- never stored, because a stored product of two stored factors is a
+ * third copy of the truth waiting to disagree with the other two.
+ */
+static const VentureFieldDecl venture_invoice_line_fields[] = {
+	VENTURE_FIELD_REF("invoice-id", "Invoice", NULL, "invoice",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL |
+	                  VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("description", "Description", NULL,
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NOT_NULL |
+	              VENTURE_COLUMN_FLAG_SEARCHABLE),
+	/* Thousandths, so 2.5 hours and 0.125 of a day are exact. */
+	VENTURE_FIELD("quantity", "Quantity", "Up to three decimal places",
+	              VENTURE_FIELD_KIND_DOUBLE, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("unit-price", "Unit price", NULL),
+	VENTURE_FIELD("position", "Position", "Order on the invoice",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
+};
+
+VENTURE_DEFINE_ENTITY(VentureInvoiceLine, venture_invoice_line,
+                      venture_invoice_line_fields)
+
+VentureMoney *
+venture_invoice_line_get_amount(
+	VentureInvoiceLine	 *self,
+	GError			**error
+){
+	g_autoptr(VentureMoney) unit_price = NULL;
+	gdouble quantity;
+	gint64 thousandths;
+
+	g_return_val_if_fail(VENTURE_IS_INVOICE_LINE(self), NULL);
+
+	g_object_get(self, "quantity", &quantity,
+	             "unit-price", &unit_price, NULL);
+
+	if (NULL == unit_price)
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_VALIDATION,
+		                    "The line has no unit price");
+		return NULL;
+	}
+
+	/*
+	 * The quantity multiplies as the exact rational n/1000, rounded half
+	 * to even once -- the same discipline as every other money
+	 * computation here. Multiplying by the double directly would let
+	 * 0.1 + binary representation error into an invoice total.
+	 */
+	thousandths = (gint64)(quantity * 1000.0 +
+	                       ((quantity >= 0.0) ? 0.5 : -0.5));
+
+	return venture_money_multiply_rational(unit_price, thousandths, 1000,
+	                                       error);
+}
+
+/*
+ * One plugin's runtime configuration, as YAML.
+ *
+ * A record rather than a file so that changing it is an audited, ordinary
+ * write -- and so the plugin manager can raise a signal the moment it
+ * changes, which is what lets a running plugin pick up new settings without
+ * a restart. Secrets do not belong here: like the server's own
+ * configuration, a plugin setting that is secret should name an environment
+ * variable instead.
+ */
+static const VentureFieldDecl venture_plugin_config_fields[] = {
+	VENTURE_FIELD("name", "Plugin", "The plugin's name, as the plugin "
+	              "list shows it", VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE |
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("config", "Configuration", "YAML, whatever shape "
+	                   "the plugin documents"),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+};
+
+VENTURE_DEFINE_ENTITY(VenturePluginConfig, venture_plugin_config,
+                      venture_plugin_config_fields)
+
+/* ==========================================================================
  * AI conversations
  * ========================================================================== */
 

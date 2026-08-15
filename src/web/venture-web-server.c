@@ -211,6 +211,11 @@ venture_web_require_for_type(
 	    (VENTURE_TYPE_CHAT_MESSAGE == entity_type))
 		needed = VENTURE_USER_ROLE_OWNER;
 
+	/* Plugin configuration steers loaded code; that is system
+	 * administration, not data entry. */
+	if (VENTURE_TYPE_PLUGIN_CONFIG == entity_type)
+		needed = VENTURE_USER_ROLE_ADMIN;
+
 	return venture_auth_require(self->auth, principal, needed, error);
 }
 
@@ -308,6 +313,7 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/reports",          "Reports",     "\xe2\x96\xa4", NULL },
 	{ "/e/venture",        "Ventures",    "\xe2\x97\x86", "Business" },
 	{ "/e/sale",           "Sales",       "\xe2\x86\x97", NULL },
+	{ "/e/invoice",        "Invoices",    "\xe2\x96\xa4", NULL },
 	{ "/e/product",        "Products",    "\xe2\x96\xa1", NULL },
 	{ "/e/inventory_item", "Inventory",   "\xe2\x96\xa6", NULL },
 	{ "/e/expense",        "Expenses",    "\xe2\x86\x98", "Money" },
@@ -323,6 +329,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/tickets",          "Tickets",     "\xe2\x9c\x93", NULL },
 	{ "/e/research_note",  "Research",    "\xe2\x96\xa3", NULL },
 	{ "/entities",         "Entities",    "\xe2\x97\xa7", "System" },
+	{ "/automations",      "Automations", "\xe2\x9a\xa1", NULL },
+	{ "/plugins",          "Plugins",     "\xe2\x97\x88", NULL },
 	{ "/account",          "Your account","\xe2\x97\x8f", NULL },
 	{ "/users",            "Users",       "\xe2\x97\x8b", NULL },
 	{ "/settings",         "Settings",    "\xe2\x9a\x99", NULL },
@@ -1608,6 +1616,1005 @@ venture_web_not_found_middleware(
 	}
 }
 
+/* --- Automations ----------------------------------------------------------- */
+
+/*
+ * The configured pods file, resolved the same way the automation engine
+ * resolves it at start -- so the file the editor shows is the file the
+ * engine loads, not a lookalike.
+ *
+ * Returns: (transfer full): the path
+ */
+static gchar *
+venture_web_pods_file_path(VentureWebServer *self)
+{
+	g_autofree gchar *configured = NULL;
+
+	g_object_get(venture_context_get_config(self->context),
+	             "automation-pods-file", &configured, NULL);
+
+	return venture_config_resolve_path(
+		venture_context_get_config(self->context), configured);
+}
+
+/*
+ * GET /automations - the engine, its pods, and the rules editor.
+ *
+ * The editor's diagnostics come from the same parser that loads the file
+ * (see /automations/validate), which is the property that makes them worth
+ * having: what validates here loads there, and the line numbers agree.
+ */
+static HtmxResponse *
+venture_web_ui_automations(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *source = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureAutomation *automation;
+	HtmxResponse *redirect;
+	const gchar *notice;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	/* Rules run code -- inline crispy and bash included -- so even
+	 * reading them is administration, not data entry. */
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	                          &error))
+		return venture_web_error_response(error);
+
+	automation = venture_context_get_automation(self->context);
+	path = venture_web_pods_file_path(self);
+	g_file_get_contents(path, &source, NULL, NULL);
+	notice = htmx_request_get_query_param(request, "notice");
+
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+	                       "<h1>Automations</h1><span class=\"subtitle\">");
+
+	if (NULL == automation)
+	{
+		g_string_append(content, "Engine disabled in configuration");
+	}
+	else
+	{
+		g_string_append_printf(content, "%s \xc2\xb7 %u pod%s loaded",
+			venture_automation_is_running(automation)
+				? "Running" : "Stopped",
+			venture_automation_get_pod_count(automation),
+			(1 == venture_automation_get_pod_count(automation))
+				? "" : "s");
+	}
+
+	g_string_append(content, "</span></div><div class=\"page-actions\">");
+
+	if (NULL != automation)
+		g_string_append(content,
+			"<form method=\"post\" action=\"/automations/reload\" "
+			"style=\"display:inline\">"
+			"<button class=\"btn\" type=\"submit\" "
+			"title=\"Rebuild the engine from the file on disk\">"
+			"Reload</button></form>");
+
+	g_string_append(content, "</div></div>");
+
+	if (0 == g_strcmp0(notice, "saved"))
+		g_string_append(content, "<div class=\"notice positive\">"
+		                         "Saved and reloaded. The rules running "
+		                         "now are the rules below.</div>");
+	else if (0 == g_strcmp0(notice, "reloaded"))
+		g_string_append(content, "<div class=\"notice positive\">"
+		                         "Engine rebuilt from the file on disk."
+		                         "</div>");
+
+	/* The pods actually loaded, from the engine's own accounting. */
+	if (NULL != automation)
+	{
+		g_autoptr(JsonNode) described = NULL;
+		JsonArray *pods = NULL;
+
+		described = venture_automation_describe(automation);
+
+		if ((NULL != described) && JSON_NODE_HOLDS_OBJECT(described) &&
+		    json_object_has_member(json_node_get_object(described), "pods"))
+			pods = json_object_get_array_member(
+				json_node_get_object(described), "pods");
+
+		if ((NULL != pods) && (json_array_get_length(pods) > 0))
+		{
+			guint i;
+
+			g_string_append(content,
+				"<div class=\"card\"><div class=\"card-head\">"
+				"<h2>Loaded pods</h2></div>"
+				"<ul class=\"pod-list\">");
+
+			for (i = 0; i < json_array_get_length(pods); i++)
+			{
+				g_string_append(content,
+					"<li><span class=\"pod-name\">");
+				venture_html_escape_append(content,
+					json_array_get_string_element(pods, i));
+				g_string_append(content, "</span></li>");
+			}
+
+			g_string_append(content, "</ul></div>");
+		}
+	}
+
+	/* The editor. A plain form POST, so saving works with scripting off;
+	 * the gutter, idle validation and error markers are progressive. */
+	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
+	                         "<h2>Rules</h2><span class=\"muted\">");
+	venture_html_escape_append(content, path);
+	g_string_append(content, "</span></div><div class=\"card-body\">");
+
+	g_string_append(content,
+		"<form method=\"post\" action=\"/automations/save\" "
+		"data-pod-editor>"
+		"<div class=\"code-editor\">"
+		"<pre class=\"code-gutter\" aria-hidden=\"true\"></pre>"
+		"<textarea name=\"source\" class=\"code-input\" spellcheck=\"false\" "
+		"placeholder=\"pod &quot;monthly-hosting&quot; {\n"
+		"    on cron.schedule(&quot;0 9 1 * *&quot;) {\n"
+		"        venture.create(&quot;expense&quot;, ...)\n    }\n}\">");
+
+	if (NULL != source)
+		venture_html_escape_append(content, source);
+
+	g_string_append(content,
+		"</textarea></div>"
+		"<div class=\"editor-status\" id=\"pod-diagnostics\" "
+		"data-validate-url=\"/automations/validate\">"
+		"Diagnostics appear as you type.</div>"
+		"<div class=\"editor-actions\">"
+		"<button class=\"btn btn-primary\" type=\"submit\">"
+		"Save and reload</button>"
+		"<span class=\"muted\">Refused unless it parses; the running "
+		"rules are never replaced with something broken.</span>"
+		"</div></form></div></div>");
+
+	/* The reference: what the rules can actually call, from the live
+	 * module manager rather than a list that drifts. */
+	if (NULL != automation)
+	{
+		g_autoptr(JsonNode) modules = NULL;
+
+		modules = venture_automation_describe_modules(automation);
+
+		g_string_append(content,
+			"<div class=\"card\"><div class=\"card-head\">"
+			"<h2>Module reference</h2></div>"
+			"<div class=\"card-body\"><dl class=\"module-reference\">");
+
+		if ((NULL != modules) && JSON_NODE_HOLDS_ARRAY(modules))
+		{
+			JsonArray *list;
+			guint i;
+
+			list = json_node_get_array(modules);
+
+			for (i = 0; i < json_array_get_length(list); i++)
+			{
+				JsonObject *module;
+
+				module = json_array_get_object_element(list, i);
+
+				g_string_append(content, "<dt><code>");
+				venture_html_escape_append(content,
+					venture_json_object_get_string(module,
+						"name", ""));
+				g_string_append(content, "</code></dt><dd>");
+				venture_html_escape_append(content,
+					venture_json_object_get_string(module,
+						"description", ""));
+				g_string_append(content, "</dd>");
+			}
+		}
+
+		g_string_append(content,
+			"</dl><p class=\"muted\">The <code>venture</code> module "
+			"raises <code>on_created</code>, <code>on_updated</code> "
+			"and <code>on_deleted</code> for every record change, and "
+			"its handlers can query, report, create, update and delete "
+			"records. Everything an automation writes is audited as "
+			"the automation actor. Worked examples -- recurring "
+			"expenses included -- ship in "
+			"<code>data/examples/automations.pod</code>.</p>"
+			"</div></div>");
+	}
+
+	return venture_web_html_response(
+		venture_web_page(self, request, "/automations", "Automations",
+		                 content->str), 200);
+}
+
+/*
+ * POST /automations/validate - diagnostics for the editor, as JSON.
+ */
+static HtmxResponse *
+venture_web_ui_automations_validate(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *message = NULL;
+	g_autoptr(GError) error = NULL;
+	const gchar *source;
+	gboolean ok;
+
+	self = user_data;
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	                          &error))
+		return venture_web_error_response(error);
+
+	source = htmx_request_get_form_value(request, "source");
+	ok = venture_automation_validate_dsl((NULL != source) ? source : "",
+	                                     &message);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "ok");
+	json_builder_add_boolean_value(builder, ok);
+
+	if (!ok)
+	{
+		json_builder_set_member_name(builder, "message");
+		json_builder_add_string_value(builder, message);
+	}
+
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * POST /automations/save - validate, write, rebuild.
+ *
+ * The order is the guarantee: nothing reaches the file until it parses, so
+ * the engine is never rebuilt against garbage and a typo cannot take the
+ * running rules down.
+ */
+static HtmxResponse *
+venture_web_ui_automations_save(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autofree gchar *message = NULL;
+	g_autofree gchar *path = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureAutomation *automation;
+	HtmxResponse *redirect;
+	const gchar *source;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	/* Rules execute code on the server; writing them is the owner's. */
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	source = htmx_request_get_form_value(request, "source");
+
+	if (NULL == source)
+		source = "";
+
+	if (!venture_automation_validate_dsl(source, &message))
+	{
+		g_autoptr(GString) body = NULL;
+
+		body = g_string_new("<div class=\"notice negative\">"
+		                    "Not saved: ");
+		venture_html_escape_append(body, message);
+		g_string_append(body, "</div><p><a class=\"btn\" "
+		                      "href=\"/automations\">Back to the editor"
+		                      "</a></p>");
+
+		return venture_web_html_response(
+			venture_web_page(self, request, "/automations",
+			                 "Automations", body->str), 422);
+	}
+
+	path = venture_web_pods_file_path(self);
+
+	{
+		g_autofree gchar *directory = NULL;
+
+		directory = g_path_get_dirname(path);
+		g_mkdir_with_parents(directory, 0700);
+	}
+
+	if (!g_file_set_contents(path, source, -1, &error))
+		return venture_web_error_response(error);
+
+	automation = venture_context_get_automation(self->context);
+
+	if (NULL != automation)
+	{
+		if (!venture_automation_reload(automation, &error))
+			return venture_web_error_response(error);
+	}
+
+	return venture_web_redirect_to("/automations?notice=saved");
+}
+
+/*
+ * POST /automations/reload - rebuild from the file on disk, for the file
+ * edited outside the browser.
+ */
+static HtmxResponse *
+venture_web_ui_automations_reload(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureAutomation *automation;
+	HtmxResponse *redirect;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	automation = venture_context_get_automation(self->context);
+
+	if (NULL == automation)
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "Automation is disabled in configuration");
+		return venture_web_error_response(error);
+	}
+
+	if (!venture_automation_reload(automation, &error))
+		return venture_web_error_response(error);
+
+	return venture_web_redirect_to("/automations?notice=reloaded");
+}
+
+/* --- Invoices -------------------------------------------------------------- */
+
+/* Defined beside the detail page, which also renders invoices. */
+static GPtrArray *
+venture_web_invoice_lines(
+	VentureWebServer	 *self,
+	gint64			  invoice_id,
+	GError			**error
+);
+
+static VentureMoney *
+venture_web_invoice_total(
+	GPtrArray	 *lines,
+	GError		**error
+);
+
+/*
+ * POST /invoices/:id/status - one transition of the invoice lifecycle.
+ *
+ * The interesting one is paid. Paying an invoice is the moment owed money
+ * becomes earned money, so the transition creates the sale itself -- gross
+ * from the invoice total, venture from the invoice, memo naming the number.
+ * Wired here rather than left to discipline, because the alternative is an
+ * invoicing system and a set of books that quietly disagree about revenue.
+ */
+static HtmxResponse *
+venture_web_ui_invoice_status(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	VentureInvoiceStatus status;
+	VentureInvoiceStatus target;
+	HtmxResponse *redirect;
+	VentureActor actor;
+	const gchar *to;
+	gint64 id;
+	gint value;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	record = venture_database_get(venture_context_get_database(self->context),
+	                              VENTURE_TYPE_INVOICE, id, &error);
+
+	if (NULL == record)
+		return venture_web_error_response(error);
+
+	to = htmx_request_get_form_value(request, "to");
+
+	if (!venture_enum_from_nick(VENTURE_TYPE_INVOICE_STATUS, to, &value))
+	{
+		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "\"%s\" is not an invoice status", to);
+		return venture_web_error_response(error);
+	}
+
+	target = (VentureInvoiceStatus)value;
+	g_object_get(record, "status", &status, NULL);
+
+	/*
+	 * The lifecycle is a line, not a graph: draft -> sent -> paid, with
+	 * void an exit from anywhere unpaid. Paid is terminal -- un-paying
+	 * an invoice would strand the sale the payment created.
+	 */
+	{
+		gboolean allowed;
+
+		allowed =
+			((VENTURE_INVOICE_STATUS_DRAFT == status) &&
+			 (VENTURE_INVOICE_STATUS_SENT == target)) ||
+			((VENTURE_INVOICE_STATUS_SENT == status) &&
+			 (VENTURE_INVOICE_STATUS_PAID == target)) ||
+			(((VENTURE_INVOICE_STATUS_DRAFT == status) ||
+			  (VENTURE_INVOICE_STATUS_SENT == status)) &&
+			 (VENTURE_INVOICE_STATUS_VOID == target));
+
+		if (!allowed)
+		{
+			g_set_error(&error, VENTURE_ERROR,
+			            VENTURE_ERROR_VALIDATION,
+			            "An invoice cannot go from %s to %s",
+			            venture_enum_to_nick(
+			                VENTURE_TYPE_INVOICE_STATUS, (gint)status),
+			            venture_enum_to_nick(
+			                VENTURE_TYPE_INVOICE_STATUS, (gint)target));
+			return venture_web_error_response(error);
+		}
+	}
+
+	now = venture_time_now();
+	venture_auth_to_actor(principal, &actor);
+
+	g_object_set(record, "status", target, NULL);
+
+	if (VENTURE_INVOICE_STATUS_SENT == target)
+	{
+		g_autoptr(GDateTime) issued = NULL;
+
+		/* Sending stamps the issue date unless one was set by hand. */
+		g_object_get(record, "issued-at", &issued, NULL);
+
+		if (NULL == issued)
+			g_object_set(record, "issued-at", now, NULL);
+	}
+
+	if (VENTURE_INVOICE_STATUS_PAID == target)
+		g_object_set(record, "paid-at", now, NULL);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           record, &actor, &error))
+		return venture_web_error_response(error);
+
+	/* The revenue, recorded the moment it becomes real. */
+	if (VENTURE_INVOICE_STATUS_PAID == target)
+	{
+		g_autoptr(GPtrArray) lines = NULL;
+		g_autoptr(VentureMoney) total = NULL;
+
+		lines = venture_web_invoice_lines(self, id, NULL);
+		total = venture_web_invoice_total(lines, &error);
+
+		if ((NULL == total) && (NULL != error))
+			return venture_web_error_response(error);
+
+		if (NULL != total)
+		{
+			g_autoptr(VentureSale) sale = NULL;
+			g_autofree gchar *number = NULL;
+			g_autofree gchar *memo = NULL;
+			gint64 venture_id;
+
+			g_object_get(record, "number", &number,
+			             "venture-id", &venture_id, NULL);
+			memo = g_strdup_printf("Invoice %s", number);
+
+			sale = venture_sale_new();
+			g_object_set(sale,
+			             "venture-id", venture_id,
+			             "gross", total,
+			             "occurred-at", now,
+			             "channel", "invoice",
+			             "external-id", number,
+			             "notes", memo,
+			             NULL);
+			venture_entity_set_organization_id(VENTURE_ENTITY(sale),
+				venture_entity_get_organization_id(record));
+
+			if (!venture_database_save(
+				venture_context_get_database(self->context),
+				VENTURE_ENTITY(sale), &actor, &error))
+				return venture_web_error_response(error);
+		}
+	}
+
+	destination = g_strdup_printf("/e/invoice/%" G_GINT64_FORMAT, id);
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * GET /invoices/:id/print - the invoice as a clean printable page: no
+ * chrome, no sidebar, just the document. The browser's print dialog is the
+ * PDF generator; it is already installed everywhere.
+ */
+static HtmxResponse *
+venture_web_ui_invoice_print(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(GPtrArray) lines = NULL;
+	g_autoptr(GString) html = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *number = NULL;
+	g_autofree gchar *terms = NULL;
+	g_autofree gchar *ui_title = NULL;
+	g_autoptr(GDateTime) issued = NULL;
+	g_autoptr(GDateTime) due = NULL;
+	VentureInvoiceStatus status;
+	HtmxResponse *redirect;
+	gint64 company_id;
+	gint64 id;
+	guint i;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	record = venture_database_get(venture_context_get_database(self->context),
+	                              VENTURE_TYPE_INVOICE, id, &error);
+
+	if (NULL == record)
+		return venture_web_error_response(error);
+
+	lines = venture_web_invoice_lines(self, id, &error);
+
+	if (NULL == lines)
+		return venture_web_error_response(error);
+
+	g_object_get(record, "number", &number, "status", &status,
+	             "issued-at", &issued, "due-at", &due,
+	             "terms", &terms, "company-id", &company_id, NULL);
+	g_object_get(venture_context_get_config(self->context),
+	             "ui-title", &ui_title, NULL);
+
+	html = g_string_new(
+		"<!doctype html><html lang=\"en\"><head>"
+		"<meta charset=\"utf-8\"><title>Invoice ");
+	venture_html_escape_append(html, number);
+	g_string_append(html,
+		"</title><style>"
+		"body{font:14px/1.5 system-ui,sans-serif;color:#111;"
+		"max-width:720px;margin:40px auto;padding:0 20px}"
+		"h1{font-size:22px;margin:0 0 4px}"
+		".head{display:flex;justify-content:space-between;"
+		"align-items:baseline;margin-bottom:28px}"
+		".meta{color:#555;font-size:13px}"
+		"table{width:100%;border-collapse:collapse;margin:20px 0}"
+		"th,td{text-align:left;padding:8px 10px;"
+		"border-bottom:1px solid #ddd}"
+		".num{text-align:right}"
+		"tfoot td{border-bottom:none;font-weight:700}"
+		".status{display:inline-block;padding:2px 10px;"
+		"border:1px solid #999;border-radius:999px;font-size:12px;"
+		"text-transform:uppercase;letter-spacing:0.06em}"
+		".terms{color:#555;font-size:13px;margin-top:24px;"
+		"white-space:pre-wrap}"
+		"@media print{body{margin:0 auto}}"
+		"</style></head><body>");
+
+	g_string_append(html, "<div class=\"head\"><div><h1>Invoice ");
+	venture_html_escape_append(html, number);
+	g_string_append(html, "</h1><div class=\"meta\">");
+	venture_html_escape_append(html, ui_title);
+	g_string_append(html, "</div></div><span class=\"status\">");
+	venture_html_escape_append(html,
+		venture_enum_to_nick(VENTURE_TYPE_INVOICE_STATUS, (gint)status));
+	g_string_append(html, "</span></div>");
+
+	g_string_append(html, "<div class=\"meta\">");
+
+	if (company_id > 0)
+	{
+		g_autoptr(VentureEntity) company = NULL;
+
+		company = venture_database_get(
+			venture_context_get_database(self->context),
+			VENTURE_TYPE_COMPANY, company_id, NULL);
+
+		if (NULL != company)
+		{
+			g_autofree gchar *label = NULL;
+
+			label = venture_entity_get_display_name(company);
+			g_string_append(html, "Billed to: <strong>");
+			venture_html_escape_append(html, label);
+			g_string_append(html, "</strong><br>");
+		}
+	}
+
+	if (NULL != issued)
+	{
+		g_autofree gchar *when = NULL;
+
+		when = venture_time_to_date_string(issued,
+			venture_context_get_timezone(self->context));
+		g_string_append(html, "Issued: ");
+		venture_html_escape_append(html, when);
+		g_string_append(html, "<br>");
+	}
+
+	if (NULL != due)
+	{
+		g_autofree gchar *when = NULL;
+
+		when = venture_time_to_date_string(due,
+			venture_context_get_timezone(self->context));
+		g_string_append(html, "Due: ");
+		venture_html_escape_append(html, when);
+	}
+
+	g_string_append(html, "</div>");
+
+	g_string_append(html, "<table><thead><tr><th>Description</th>"
+	                      "<th class=\"num\">Qty</th>"
+	                      "<th class=\"num\">Unit</th>"
+	                      "<th class=\"num\">Amount</th></tr></thead><tbody>");
+
+	for (i = 0; i < lines->len; i++)
+	{
+		VentureInvoiceLine *line;
+		g_autofree gchar *description = NULL;
+		g_autoptr(VentureMoney) unit_price = NULL;
+		g_autoptr(VentureMoney) amount = NULL;
+		gdouble quantity;
+
+		line = g_ptr_array_index(lines, i);
+		g_object_get(line, "description", &description,
+		             "quantity", &quantity,
+		             "unit-price", &unit_price, NULL);
+		amount = venture_invoice_line_get_amount(line, NULL);
+
+		g_string_append(html, "<tr><td>");
+		venture_html_escape_append(html, description);
+		g_string_append_printf(html,
+			"</td><td class=\"num\">%g</td><td class=\"num\">",
+			quantity);
+
+		if (NULL != unit_price)
+		{
+			g_autofree gchar *text = NULL;
+
+			text = venture_money_to_display_string(unit_price, TRUE);
+			venture_html_escape_append(html, text);
+		}
+
+		g_string_append(html, "</td><td class=\"num\">");
+
+		if (NULL != amount)
+		{
+			g_autofree gchar *text = NULL;
+
+			text = venture_money_to_display_string(amount, TRUE);
+			venture_html_escape_append(html, text);
+		}
+
+		g_string_append(html, "</td></tr>");
+	}
+
+	g_string_append(html, "</tbody><tfoot><tr>"
+	                      "<td colspan=\"3\" class=\"num\">Total</td>"
+	                      "<td class=\"num\">");
+
+	{
+		g_autoptr(VentureMoney) total = NULL;
+
+		total = venture_web_invoice_total(lines, NULL);
+
+		if (NULL != total)
+		{
+			g_autofree gchar *text = NULL;
+
+			text = venture_money_to_display_string(total, TRUE);
+			venture_html_escape_append(html, text);
+		}
+	}
+
+	g_string_append(html, "</td></tr></tfoot></table>");
+
+	if (!venture_string_is_empty(terms))
+	{
+		g_string_append(html, "<div class=\"terms\">");
+		venture_html_escape_append(html, terms);
+		g_string_append(html, "</div>");
+	}
+
+	g_string_append(html, "<script>window.print&&window.print()</script>"
+	                      "</body></html>");
+
+	return venture_web_html_response(
+		g_string_free(g_steal_pointer(&html), FALSE), 200);
+}
+
+/* --- Plugins --------------------------------------------------------------- */
+
+/*
+ * GET /plugins - what is loaded, and each plugin's configuration.
+ *
+ * The configuration is YAML in a record, and saving it raises the plugin
+ * manager's config-changed signal -- so a plugin that listens follows this
+ * page live, without a restart. That loop is the point of the page: a
+ * plugin whose settings live in a file it read once can only be
+ * reconfigured by bouncing the server.
+ */
+static HtmxResponse *
+venture_web_ui_plugins(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autoptr(JsonNode) list = NULL;
+	g_autoptr(GError) error = NULL;
+	VenturePluginManager *manager;
+	HtmxResponse *redirect;
+	const gchar *notice;
+	JsonArray *plugins;
+	guint i;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	                          &error))
+		return venture_web_error_response(error);
+
+	manager = venture_context_get_plugin_manager(self->context);
+	notice = htmx_request_get_query_param(request, "notice");
+
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+	                       "<h1>Plugins</h1><span class=\"subtitle\">");
+
+	if (NULL == manager)
+	{
+		g_string_append(content, "Plugins disabled in configuration"
+		                         "</span></div></div>");
+		return venture_web_html_response(
+			venture_web_page(self, request, "/plugins", "Plugins",
+			                 content->str), 200);
+	}
+
+	g_string_append_printf(content, "%u loaded",
+	                       venture_plugin_manager_get_count(manager));
+	g_string_append(content, "</span></div></div>");
+
+	if (0 == g_strcmp0(notice, "saved"))
+		g_string_append(content, "<div class=\"notice positive\">"
+		                         "Saved. The plugin was signalled and has "
+		                         "the new configuration now.</div>");
+
+	list = venture_plugin_manager_list(manager);
+	plugins = JSON_NODE_HOLDS_ARRAY(list)
+		? json_node_get_array(list) : NULL;
+
+	if ((NULL == plugins) || (0 == json_array_get_length(plugins)))
+		g_string_append(content, "<div class=\"empty\">"
+		                         "<span class=\"empty-icon\">\xe2\x97\x8b</span>"
+		                         "<h3>No plugins loaded</h3>"
+		                         "<p class=\"muted\">Drop a .so or a crispy "
+		                         ".c file into a configured plugin directory "
+		                         "and restart.</p></div>");
+
+	for (i = 0; (NULL != plugins) && (i < json_array_get_length(plugins));
+	     i++)
+	{
+		JsonObject *plugin;
+		g_autofree gchar *config_text = NULL;
+		const gchar *name;
+
+		plugin = json_array_get_object_element(plugins, i);
+		name = venture_json_object_get_string(plugin, "name", "unknown");
+		config_text = venture_plugin_manager_get_config_text(manager,
+		                                                     name);
+
+		g_string_append(content, "<div class=\"card plugin-card\">"
+		                         "<div class=\"card-head\"><h2>");
+		venture_html_escape_append(content, name);
+		g_string_append(content, "</h2><span class=\"badge\">");
+		venture_html_escape_append(content,
+			venture_json_object_get_string(plugin, "kind", ""));
+		g_string_append(content, "</span></div><div class=\"card-body\">");
+
+		{
+			const gchar *description;
+
+			description = venture_json_object_get_string(plugin,
+				"description", NULL);
+
+			if (NULL != description)
+			{
+				g_string_append(content, "<p class=\"muted\">");
+				venture_html_escape_append(content, description);
+				g_string_append(content, "</p>");
+			}
+		}
+
+		g_string_append(content, "<form method=\"post\" "
+		                         "action=\"/plugins/config\">"
+		                         "<input type=\"hidden\" name=\"plugin\" "
+		                         "value=\"");
+		venture_html_escape_append(content, name);
+		g_string_append(content, "\"><textarea name=\"config\" rows=\"6\" "
+		                         "class=\"code-input\" spellcheck=\"false\" "
+		                         "placeholder=\"# YAML, whatever shape this "
+		                         "plugin documents\">");
+
+		if (NULL != config_text)
+			venture_html_escape_append(content, config_text);
+
+		g_string_append(content,
+			"</textarea>"
+			"<div class=\"editor-actions\">"
+			"<button class=\"btn btn-primary\" type=\"submit\">"
+			"Save</button>"
+			"<span class=\"muted\">Secrets belong in environment "
+			"variables -- name the variable here instead.</span>"
+			"</div></form></div></div>");
+	}
+
+	return venture_web_html_response(
+		venture_web_page(self, request, "/plugins", "Plugins",
+		                 content->str), 200);
+}
+
+/*
+ * POST /plugins/config - store one plugin's YAML and signal it.
+ */
+static HtmxResponse *
+venture_web_ui_plugins_config(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GError) error = NULL;
+	VenturePluginManager *manager;
+	HtmxResponse *redirect;
+	VentureActor actor;
+	const gchar *plugin;
+	const gchar *config;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	                          &error))
+		return venture_web_error_response(error);
+
+	manager = venture_context_get_plugin_manager(self->context);
+
+	if (NULL == manager)
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "Plugins are disabled in configuration");
+		return venture_web_error_response(error);
+	}
+
+	plugin = htmx_request_get_form_value(request, "plugin");
+	config = htmx_request_get_form_value(request, "config");
+
+	if (venture_string_is_empty(plugin))
+	{
+		g_set_error_literal(&error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Which plugin?");
+		return venture_web_error_response(error);
+	}
+
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_plugin_manager_set_config(manager, plugin,
+	                                       (NULL != config) ? config : "",
+	                                       &actor, &error))
+	{
+		g_autoptr(GString) body = NULL;
+
+		body = g_string_new("<div class=\"notice negative\">");
+		venture_html_escape_append(body, error->message);
+		g_string_append(body, "</div><p><a class=\"btn\" "
+		                      "href=\"/plugins\">Back</a></p>");
+
+		return venture_web_html_response(
+			venture_web_page(self, request, "/plugins", "Plugins",
+			                 body->str), 422);
+	}
+
+	return venture_web_redirect_to("/plugins?notice=saved");
+}
+
 /* --- Global search -------------------------------------------------------- */
 
 /*
@@ -2036,6 +3043,585 @@ venture_web_ui_export(
 	return response;
 }
 
+/* --- CSV import ------------------------------------------------------------ */
+
+/*
+ * An RFC 4180 CSV parser: quoted fields, embedded commas, embedded quotes
+ * doubled, embedded newlines inside quotes, and both line endings. Written
+ * here rather than pulled in as a dependency because the format fits in a
+ * page and the failure modes of a half-matching library do not.
+ *
+ * Returns: (transfer full): rows, each a %NULL-terminated GStrv
+ */
+static GPtrArray *
+venture_web_csv_parse(
+	const gchar	*data,
+	gsize		 length
+){
+	GPtrArray *rows;
+	GPtrArray *row;
+	GString *field;
+	gboolean quoted;
+	gsize i;
+
+	rows = g_ptr_array_new_with_free_func((GDestroyNotify)g_strfreev);
+	row = g_ptr_array_new();
+	field = g_string_new(NULL);
+	quoted = FALSE;
+
+	for (i = 0; i < length; i++)
+	{
+		gchar c;
+
+		c = data[i];
+
+		if (quoted)
+		{
+			if ('"' == c)
+			{
+				/* A doubled quote is a literal one. */
+				if ((i + 1 < length) && ('"' == data[i + 1]))
+				{
+					g_string_append_c(field, '"');
+					i++;
+				}
+				else
+				{
+					quoted = FALSE;
+				}
+			}
+			else
+			{
+				g_string_append_c(field, c);
+			}
+
+			continue;
+		}
+
+		if (('"' == c) && (0 == field->len))
+		{
+			quoted = TRUE;
+		}
+		else if (',' == c)
+		{
+			g_ptr_array_add(row, g_string_free(field, FALSE));
+			field = g_string_new(NULL);
+		}
+		else if (('\n' == c) || ('\r' == c))
+		{
+			if (('\r' == c) && (i + 1 < length) &&
+			    ('\n' == data[i + 1]))
+				i++;
+
+			g_ptr_array_add(row, g_string_free(field, FALSE));
+			field = g_string_new(NULL);
+
+			/* A blank line is not a row of empty strings. */
+			if ((1 != row->len) ||
+			    ('\0' != *(gchar *)g_ptr_array_index(row, 0)))
+			{
+				g_ptr_array_add(row, NULL);
+				g_ptr_array_add(rows,
+					g_ptr_array_free(row, FALSE));
+			}
+			else
+			{
+				g_free(g_ptr_array_index(row, 0));
+				g_ptr_array_unref(row);
+			}
+
+			row = g_ptr_array_new();
+		}
+		else
+		{
+			g_string_append_c(field, c);
+		}
+	}
+
+	/* A last row with no trailing newline. */
+	if ((field->len > 0) || (row->len > 0))
+	{
+		g_ptr_array_add(row, g_string_free(field, FALSE));
+		g_ptr_array_add(row, NULL);
+		g_ptr_array_add(rows, g_ptr_array_free(row, FALSE));
+	}
+	else
+	{
+		g_string_free(field, TRUE);
+		g_ptr_array_unref(row);
+	}
+
+	return rows;
+}
+
+/*
+ * Matches one CSV header against a type's fields, tolerantly: case does not
+ * matter, and space, dash and underscore are the same character -- so the
+ * file VENTURE exported ("Unit price") and the file a spreadsheet saved
+ * ("unit_price") both map without anybody editing headers.
+ *
+ * Returns: (transfer none) (nullable): the matching spec, or %NULL
+ */
+static VentureFieldSpec *
+venture_web_csv_match_header(
+	GPtrArray	*specs,
+	const gchar	*header
+){
+	g_autofree gchar *wanted = NULL;
+	guint i;
+
+	wanted = g_ascii_strdown(header, -1);
+	g_strdelimit(wanted, " _", '-');
+	g_strstrip(wanted);
+
+	for (i = 0; i < specs->len; i++)
+	{
+		VentureFieldSpec *spec;
+		g_autofree gchar *name = NULL;
+		g_autofree gchar *label = NULL;
+
+		spec = g_ptr_array_index(specs, i);
+
+		name = g_ascii_strdown(venture_field_spec_get_name(spec), -1);
+		g_strdelimit(name, " _", '-');
+
+		label = g_ascii_strdown(venture_field_spec_get_label(spec), -1);
+		g_strdelimit(label, " _", '-');
+
+		if ((0 == g_strcmp0(wanted, name)) ||
+		    (0 == g_strcmp0(wanted, label)))
+			return spec;
+	}
+
+	return NULL;
+}
+
+/*
+ * Builds the typed JSON value one CSV cell becomes, according to what the
+ * field declared itself to be. The declaration decides -- the same principle
+ * as everywhere else; a CSV of strings would otherwise import every number
+ * as text and fail late.
+ */
+static JsonNode *
+venture_web_csv_cell_to_json(
+	VentureFieldSpec	*spec,
+	const gchar		*cell
+){
+	JsonNode *node;
+
+	switch (venture_field_spec_get_kind(spec))
+	{
+	case VENTURE_FIELD_KIND_INTEGER:
+	case VENTURE_FIELD_KIND_REFERENCE:
+		node = json_node_new(JSON_NODE_VALUE);
+		json_node_set_int(node, g_ascii_strtoll(cell, NULL, 10));
+		return node;
+
+	case VENTURE_FIELD_KIND_DOUBLE:
+		node = json_node_new(JSON_NODE_VALUE);
+		json_node_set_double(node, g_ascii_strtod(cell, NULL));
+		return node;
+
+	case VENTURE_FIELD_KIND_BOOLEAN:
+		node = json_node_new(JSON_NODE_VALUE);
+		json_node_set_boolean(node,
+			(0 == g_ascii_strcasecmp(cell, "yes")) ||
+			(0 == g_ascii_strcasecmp(cell, "true")) ||
+			(0 == g_strcmp0(cell, "1")));
+		return node;
+
+	default:
+		/* Strings, text, money, dates, enums: the serialiser already
+		 * accepts these as strings, with its own validation. */
+		node = json_node_new(JSON_NODE_VALUE);
+		json_node_set_string(node, cell);
+		return node;
+	}
+}
+
+/*
+ * GET /e/:type/import - the upload form and a template link.
+ */
+static HtmxResponse *
+venture_web_ui_import_form(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *redirect;
+	GType entity_type;
+	const gchar *type_name;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_web_resolve_type(self, params, &entity_type, &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_require_for_type(self, principal, entity_type,
+	                                  VENTURE_USER_ROLE_EDITOR, &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_type_accepts_writes(entity_type, &error))
+		return venture_web_error_response(error);
+
+	type_name = g_hash_table_lookup(params, "type");
+
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+	                       "<h1>Import ");
+	venture_html_escape_append(content, type_name);
+	g_string_append_printf(content,
+		"</h1><span class=\"subtitle\">CSV in, records out</span></div>"
+		"<div class=\"page-actions\">"
+		"<a class=\"btn\" href=\"/e/%s/import/template\">Template</a>"
+		"<a class=\"btn\" href=\"/e/%s\">Back</a></div></div>",
+		type_name, type_name);
+
+	g_string_append_printf(content,
+		"<div class=\"card\"><div class=\"card-body\">"
+		"<p>Headers may be field names or their labels -- the Template "
+		"button gives you the exact set, and a file exported from the "
+		"list page re-imports as-is. Unknown columns are ignored; empty "
+		"cells leave the field at its default.</p>"
+		"<p>Nothing is imported unless <strong>every</strong> row "
+		"validates: an import is all-or-nothing, so a typo on row 40 "
+		"never leaves you with 39 half-trusted records.</p>"
+		"<form method=\"post\" action=\"/e/%s/import\" "
+		"enctype=\"multipart/form-data\">"
+		"<input type=\"file\" name=\"file\" accept=\".csv,text/csv\" "
+		"required> "
+		"<button class=\"btn btn-primary\" type=\"submit\">Import"
+		"</button></form></div></div>", type_name);
+
+	return venture_web_html_response(
+		venture_web_page(self, request, NULL, "Import", content->str),
+		200);
+}
+
+/*
+ * GET /e/:type/import/template - the header row, ready to fill in.
+ */
+static HtmxResponse *
+venture_web_ui_import_template(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GPtrArray) specs = NULL;
+	g_autoptr(GString) csv = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *disposition = NULL;
+	VentureEntity *prototype;
+	HtmxResponse *response;
+	GType entity_type;
+	const gchar *type_name;
+	guint i;
+	guint written;
+
+	self = user_data;
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_resolve_type(self, params, &entity_type, &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_require_for_type(self, principal, entity_type,
+	                                  VENTURE_USER_ROLE_EDITOR, &error))
+		return venture_web_error_response(error);
+
+	type_name = g_hash_table_lookup(params, "type");
+	prototype = venture_entity_registry_get_prototype(
+		venture_context_get_entity_registry(self->context), type_name);
+
+	specs = venture_entity_get_field_specs(prototype);
+	g_ptr_array_sort_values(specs, venture_field_spec_compare_display_order);
+
+	csv = g_string_new(NULL);
+	written = 0;
+
+	for (i = 0; i < specs->len; i++)
+	{
+		VentureFieldSpec *spec;
+
+		spec = g_ptr_array_index(specs, i);
+
+		if (0 != (venture_field_spec_get_flags(spec) &
+		          (VENTURE_COLUMN_FLAG_SENSITIVE |
+		           VENTURE_COLUMN_FLAG_TRANSIENT)))
+			continue;
+
+		if (written > 0)
+			g_string_append_c(csv, ',');
+
+		g_string_append(csv, venture_field_spec_get_name(spec));
+		written++;
+	}
+
+	g_string_append(csv, "\r\n");
+
+	response = htmx_response_new_with_content(csv->str);
+	htmx_response_set_content_type(response, "text/csv; charset=utf-8");
+	htmx_response_set_status(response, 200);
+	disposition = g_strdup_printf("attachment; filename=\"%s-template.csv\"",
+	                              type_name);
+	htmx_response_add_header(response, "Content-Disposition", disposition);
+
+	return response;
+}
+
+/*
+ * POST /e/:type/import - the file, all of it or none of it.
+ *
+ * Every row is built and validated before anything is saved: an import
+ * where row 40 fails after 39 saved is a state nobody asked for and nobody
+ * can cleanly undo. What survives validation is then saved through the
+ * ordinary path, so every imported record is audited like any other write.
+ */
+static HtmxResponse *
+venture_web_ui_import(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GPtrArray) files = NULL;
+	g_autoptr(GPtrArray) specs = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GPtrArray) built = NULL;
+	g_autoptr(GPtrArray) columns = NULL;
+	g_autoptr(GString) errors = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureEntity *prototype;
+	HtmxResponse *redirect;
+	GType entity_type;
+	const gchar *type_name;
+	VentureActor actor;
+	guint error_count;
+	guint i;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_web_resolve_type(self, params, &entity_type, &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_require_for_type(self, principal, entity_type,
+	                                  VENTURE_USER_ROLE_EDITOR, &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_type_accepts_writes(entity_type, &error))
+		return venture_web_error_response(error);
+
+	type_name = g_hash_table_lookup(params, "type");
+
+	files = htmx_uploaded_file_parse_multipart(
+		htmx_request_get_content_type(request),
+		htmx_request_get_body_bytes(request), NULL, &error);
+
+	if ((NULL == files) || (0 == files->len))
+	{
+		if (NULL == error)
+			g_set_error_literal(&error, VENTURE_ERROR,
+			                    VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "No file arrived");
+		return venture_web_error_response(error);
+	}
+
+	{
+		GBytes *data;
+		const gchar *bytes;
+		gsize length;
+
+		data = htmx_uploaded_file_get_data(g_ptr_array_index(files, 0));
+		bytes = g_bytes_get_data(data, &length);
+
+		if ((NULL == bytes) || (0 == length) ||
+		    !g_utf8_validate(bytes, (gssize)length, NULL))
+		{
+			g_set_error_literal(&error, VENTURE_ERROR,
+			                    VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "The file is empty or not UTF-8 text");
+			return venture_web_error_response(error);
+		}
+
+		rows = venture_web_csv_parse(bytes, length);
+	}
+
+	if (rows->len < 2)
+	{
+		g_set_error_literal(&error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "The file has a header but no rows");
+		return venture_web_error_response(error);
+	}
+
+	if (rows->len > 5001)
+	{
+		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "%u rows is over the 5000-row limit; split the file",
+		            rows->len - 1);
+		return venture_web_error_response(error);
+	}
+
+	prototype = venture_entity_registry_get_prototype(
+		venture_context_get_entity_registry(self->context), type_name);
+	specs = venture_entity_get_field_specs(prototype);
+
+	/* Header -> spec, once. NULL entries are ignored columns. */
+	columns = g_ptr_array_new();
+
+	{
+		gchar **header;
+
+		header = g_ptr_array_index(rows, 0);
+
+		for (i = 0; NULL != header[i]; i++)
+			g_ptr_array_add(columns,
+				venture_web_csv_match_header(specs, header[i]));
+	}
+
+	/* Build and validate everything before saving anything. */
+	built = g_ptr_array_new_with_free_func(g_object_unref);
+	errors = g_string_new(NULL);
+	error_count = 0;
+
+	for (i = 1; i < rows->len; i++)
+	{
+		g_autoptr(VentureEntity) record = NULL;
+		g_autoptr(JsonBuilder) builder = NULL;
+		g_autoptr(JsonNode) values = NULL;
+		g_autoptr(GError) row_error = NULL;
+		gchar **cells;
+		guint c;
+
+		cells = g_ptr_array_index(rows, i);
+
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+
+		for (c = 0; (NULL != cells[c]) && (c < columns->len); c++)
+		{
+			VentureFieldSpec *spec;
+
+			spec = g_ptr_array_index(columns, c);
+
+			if ((NULL == spec) ||
+			    venture_string_is_empty(cells[c]))
+				continue;
+
+			if (0 != (venture_field_spec_get_flags(spec) &
+			          VENTURE_COLUMN_FLAG_TRANSIENT))
+				continue;
+
+			json_builder_set_member_name(builder,
+				venture_field_spec_get_name(spec));
+			json_builder_add_value(builder,
+				venture_web_csv_cell_to_json(spec, cells[c]));
+		}
+
+		json_builder_end_object(builder);
+		values = json_builder_get_root(builder);
+
+		record = venture_entity_registry_create(
+			venture_context_get_entity_registry(self->context),
+			type_name, &row_error);
+
+		if ((NULL != record) &&
+		    venture_serializable_from_json(VENTURE_SERIALIZABLE(record),
+		                                   values, &row_error))
+		{
+			venture_entity_set_organization_id(record,
+				venture_context_get_default_organization_id(
+					self->context));
+
+			if (venture_entity_validate(record, &row_error))
+			{
+				g_ptr_array_add(built,
+				                g_steal_pointer(&record));
+				continue;
+			}
+		}
+
+		error_count++;
+
+		if (error_count <= 20)
+		{
+			g_string_append_printf(errors,
+				"<li>Row %u: ", i + 1);
+			venture_html_escape_append(errors,
+				(NULL != row_error) ? row_error->message
+				                    : "unusable");
+			g_string_append(errors, "</li>");
+		}
+	}
+
+	content = g_string_new(NULL);
+
+	if (error_count > 0)
+	{
+		g_string_append_printf(content,
+			"<div class=\"notice negative\">Nothing was imported: "
+			"%u row%s failed validation.</div><ul>",
+			error_count, (1 == error_count) ? "" : "s");
+		g_string_append(content, errors->str);
+
+		if (error_count > 20)
+			g_string_append_printf(content,
+				"<li>\xe2\x80\xa6 and %u more</li>",
+				error_count - 20);
+
+		g_string_append_printf(content,
+			"</ul><p><a class=\"btn\" href=\"/e/%s/import\">"
+			"Try again</a></p>", type_name);
+
+		return venture_web_html_response(
+			venture_web_page(self, request, NULL, "Import",
+			                 content->str), 422);
+	}
+
+	venture_auth_to_actor(principal, &actor);
+
+	for (i = 0; i < built->len; i++)
+	{
+		if (!venture_database_save(
+			venture_context_get_database(self->context),
+			g_ptr_array_index(built, i), &actor, &error))
+			return venture_web_error_response(error);
+	}
+
+	g_string_append_printf(content,
+		"<div class=\"notice positive\">Imported %u record%s.</div>"
+		"<p><a class=\"btn btn-primary\" href=\"/e/%s\">See them</a></p>",
+		built->len, (1 == built->len) ? "" : "s", type_name);
+
+	return venture_web_html_response(
+		venture_web_page(self, request, NULL, "Import", content->str),
+		200);
+}
+
 /*
  * Renders a record list. The columns come from the type's field specs, so a
  * plugin's record type gets a usable list view with no UI code.
@@ -2175,6 +3761,10 @@ venture_web_ui_list(
 			"<a class=\"btn\" href=\"/e/%s/export%s\" "
 			"title=\"Download this view as CSV\">Export</a>",
 			type_name, suffix);
+		g_string_append_printf(content,
+			"<a class=\"btn\" href=\"/e/%s/import\" "
+			"title=\"Create records from a CSV\">Import</a>",
+			type_name);
 	}
 
 	g_string_append_printf(content,
@@ -3944,6 +5534,220 @@ venture_web_append_related(
 	}
 }
 
+/*
+ * The lines of one invoice, in printed order.
+ *
+ * Returns: (transfer full) (nullable): the lines
+ */
+static GPtrArray *
+venture_web_invoice_lines(
+	VentureWebServer	 *self,
+	gint64			  invoice_id,
+	GError			**error
+){
+	g_autoptr(VentureQuery) query = NULL;
+
+	query = venture_query_new(VENTURE_TYPE_INVOICE_LINE);
+
+	if (!venture_query_add_filter_int(query, "invoice-id",
+	                                  VENTURE_FILTER_OP_EQ, invoice_id,
+	                                  error))
+		return NULL;
+
+	venture_query_add_order(query, "position", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_set_limit(query, 500);
+
+	return venture_database_find(venture_context_get_database(self->context),
+	                             query, error);
+}
+
+/*
+ * Sums the lines. Same-currency enforcement comes free from the money
+ * layer: the first mixed-currency addition refuses, and the caller reports
+ * that instead of a wrong total.
+ *
+ * Returns: (transfer full) (nullable): the total, or %NULL -- with @error
+ *   set for a real failure, unset for an invoice with no priced lines
+ */
+static VentureMoney *
+venture_web_invoice_total(
+	GPtrArray	 *lines,
+	GError		**error
+){
+	g_autoptr(VentureMoney) total = NULL;
+	guint i;
+
+	for (i = 0; (NULL != lines) && (i < lines->len); i++)
+	{
+		g_autoptr(VentureMoney) amount = NULL;
+
+		amount = venture_invoice_line_get_amount(
+			g_ptr_array_index(lines, i), NULL);
+
+		if (NULL == amount)
+			continue;
+
+		if (NULL == total)
+		{
+			total = g_steal_pointer(&amount);
+		}
+		else
+		{
+			VentureMoney *sum;
+
+			sum = venture_money_add(total, amount, error);
+
+			if (NULL == sum)
+				return NULL;
+
+			g_clear_pointer(&total, venture_money_free);
+			total = sum;
+		}
+	}
+
+	return g_steal_pointer(&total);
+}
+
+/*
+ * The invoice-specific block on the generic detail page: lines, total, and
+ * the transitions the current status allows.
+ */
+static void
+venture_web_append_invoice_block(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autoptr(GPtrArray) lines = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureInvoiceStatus status;
+	gint64 id;
+	guint i;
+
+	id = venture_entity_get_id(record);
+	g_object_get(record, "status", &status, NULL);
+	lines = venture_web_invoice_lines(self, id, &error);
+
+	g_string_append(content, "<div class=\"card invoice-block\">"
+	                         "<div class=\"card-head\"><h2>Lines</h2>");
+	g_string_append_printf(content,
+		"<a class=\"btn btn-sm\" href=\"/e/invoice_line/new\">Add line"
+		"</a></div>");
+
+	g_string_append(content, "<div class=\"table-wrap\">"
+	                         "<table class=\"data\"><thead><tr>"
+	                         "<th>Description</th><th class=\"num\">Qty</th>"
+	                         "<th class=\"num\">Unit</th>"
+	                         "<th class=\"num\">Amount</th></tr></thead>"
+	                         "<tbody>");
+
+	for (i = 0; (NULL != lines) && (i < lines->len); i++)
+	{
+		VentureInvoiceLine *line;
+		g_autofree gchar *description = NULL;
+		g_autoptr(VentureMoney) unit_price = NULL;
+		g_autoptr(VentureMoney) amount = NULL;
+		gdouble quantity;
+
+		line = g_ptr_array_index(lines, i);
+		g_object_get(line, "description", &description,
+		             "quantity", &quantity,
+		             "unit-price", &unit_price, NULL);
+		amount = venture_invoice_line_get_amount(line, NULL);
+
+		g_string_append(content, "<tr><td>");
+		venture_html_escape_append(content, description);
+		g_string_append_printf(content,
+			"</td><td class=\"num\">%g</td><td class=\"num\">",
+			quantity);
+
+		if (NULL != unit_price)
+		{
+			g_autofree gchar *text = NULL;
+
+			text = venture_money_to_display_string(unit_price, TRUE);
+			venture_html_escape_append(content, text);
+		}
+
+		g_string_append(content, "</td><td class=\"num\">");
+
+		if (NULL != amount)
+		{
+			g_autofree gchar *text = NULL;
+
+			text = venture_money_to_display_string(amount, TRUE);
+			venture_html_escape_append(content, text);
+		}
+
+		g_string_append(content, "</td></tr>");
+	}
+
+	g_string_append(content, "</tbody><tfoot><tr>"
+	                         "<td colspan=\"3\" class=\"num\">"
+	                         "<strong>Total</strong></td>"
+	                         "<td class=\"num\"><strong>");
+
+	{
+		g_autoptr(VentureMoney) total = NULL;
+		g_autoptr(GError) sum_error = NULL;
+
+		total = venture_web_invoice_total(lines, &sum_error);
+
+		if (NULL != total)
+		{
+			g_autofree gchar *text = NULL;
+
+			text = venture_money_to_display_string(total, TRUE);
+			venture_html_escape_append(content, text);
+		}
+		else if (NULL != sum_error)
+		{
+			/* Mixed currencies: any single figure is wrong. */
+			g_string_append(content, "\xe2\x80\x94");
+		}
+		else
+		{
+			g_string_append(content, "0");
+		}
+	}
+
+	g_string_append(content, "</strong></td></tr></tfoot></table></div>");
+
+	/* The transitions this status allows, each a form so nothing here
+	 * depends on scripting. */
+	g_string_append(content, "<div class=\"card-body invoice-actions\">");
+
+	g_string_append_printf(content,
+		"<a class=\"btn\" href=\"/invoices/%" G_GINT64_FORMAT
+		"/print\" target=\"_blank\">Print</a>", id);
+
+	if (VENTURE_INVOICE_STATUS_DRAFT == status)
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
+			"/status\"><input type=\"hidden\" name=\"to\" value=\"sent\">"
+			"<button class=\"btn btn-primary\" type=\"submit\">"
+			"Mark sent</button></form>", id);
+
+	if (VENTURE_INVOICE_STATUS_SENT == status)
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
+			"/status\"><input type=\"hidden\" name=\"to\" value=\"paid\">"
+			"<button class=\"btn btn-primary\" type=\"submit\" "
+			"title=\"Stamps payment and records the revenue as a sale\">"
+			"Mark paid</button></form>", id);
+
+	if ((VENTURE_INVOICE_STATUS_DRAFT == status) ||
+	    (VENTURE_INVOICE_STATUS_SENT == status))
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
+			"/status\"><input type=\"hidden\" name=\"to\" value=\"void\">"
+			"<button class=\"btn\" type=\"submit\">Void</button></form>",
+			id);
+
+	g_string_append(content, "</div></div>");
+}
+
 static HtmxResponse *
 venture_web_ui_detail(
 	HtmxRequest	*request,
@@ -4029,6 +5833,12 @@ venture_web_ui_detail(
 	g_string_append(content, "</dl></div></div>");
 
 	venture_web_append_related(self, content, record);
+
+	/* An invoice's lines and total, with the actions its status allows.
+	 * The other type-specific block, for the same reason as the ticket
+	 * composer below: an invoice without its total is a list of hints. */
+	if (VENTURE_TYPE_INVOICE == entity_type)
+		venture_web_append_invoice_block(self, content, record);
 
 	/*
 	 * A ticket's comments are a conversation, and a conversation needs
@@ -7870,6 +9680,20 @@ venture_web_server_new(
 	/* UI */
 	htmx_router_get(router, "/", venture_web_ui_dashboard, self);
 	htmx_router_get(router, "/search", venture_web_ui_search, self);
+	htmx_router_get(router, "/automations", venture_web_ui_automations, self);
+	htmx_router_post(router, "/automations/validate",
+	                 venture_web_ui_automations_validate, self);
+	htmx_router_post(router, "/automations/save",
+	                 venture_web_ui_automations_save, self);
+	htmx_router_post(router, "/automations/reload",
+	                 venture_web_ui_automations_reload, self);
+	htmx_router_get(router, "/plugins", venture_web_ui_plugins, self);
+	htmx_router_post(router, "/plugins/config",
+	                 venture_web_ui_plugins_config, self);
+	htmx_router_post(router, "/invoices/:id/status",
+	                 venture_web_ui_invoice_status, self);
+	htmx_router_get(router, "/invoices/:id/print",
+	                 venture_web_ui_invoice_print, self);
 	htmx_router_get(router, "/reports", venture_web_ui_reports, self);
 	htmx_router_get(router, "/settings", venture_web_ui_settings, self);
 	htmx_router_get(router, "/entity/:id", venture_web_ui_switch_entity, self);
@@ -7897,6 +9721,11 @@ venture_web_server_new(
 	htmx_router_get(router, "/e/:type", venture_web_ui_list, self);
 	/* Before /e/:type/:id, or "export" would be parsed as a record id. */
 	htmx_router_get(router, "/e/:type/export", venture_web_ui_export, self);
+	htmx_router_get(router, "/e/:type/import", venture_web_ui_import_form,
+	                self);
+	htmx_router_get(router, "/e/:type/import/template",
+	                venture_web_ui_import_template, self);
+	htmx_router_post(router, "/e/:type/import", venture_web_ui_import, self);
 	htmx_router_get(router, "/e/:type/new", venture_web_ui_form, self);
 	htmx_router_post(router, "/e/:type", venture_web_ui_save, self);
 	htmx_router_get(router, "/e/:type/:id", venture_web_ui_detail, self);

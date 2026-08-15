@@ -235,6 +235,27 @@ typedef enum
 } VentureTicketKind;
 
 /**
+ * VentureInvoiceStatus:
+ * @VENTURE_INVOICE_STATUS_DRAFT: being written; not yet a claim on anybody
+ * @VENTURE_INVOICE_STATUS_SENT: issued to the customer and awaiting payment
+ * @VENTURE_INVOICE_STATUS_PAID: settled; the revenue is real
+ * @VENTURE_INVOICE_STATUS_VOID: cancelled without payment
+ *
+ * Where an invoice stands.
+ *
+ * Overdue is deliberately not a status: it is a fact derived from due-at
+ * and the clock, and a stored copy of a derivable fact is a copy that goes
+ * stale. The UI computes it at render time.
+ */
+typedef enum
+{
+	VENTURE_INVOICE_STATUS_DRAFT = 0,
+	VENTURE_INVOICE_STATUS_SENT,
+	VENTURE_INVOICE_STATUS_PAID,
+	VENTURE_INVOICE_STATUS_VOID
+} VentureInvoiceStatus;
+
+/**
  * VentureChatRole:
  * @VENTURE_CHAT_ROLE_USER: the operator typed it
  * @VENTURE_CHAT_ROLE_ASSISTANT: the model replied with it
@@ -710,6 +731,7 @@ typedef enum
 #define VENTURE_TYPE_INTERACTION_KIND		(venture_interaction_kind_get_type())
 #define VENTURE_TYPE_TICKET_STATUS		(venture_ticket_status_get_type())
 #define VENTURE_TYPE_TICKET_KIND		(venture_ticket_kind_get_type())
+#define VENTURE_TYPE_INVOICE_STATUS		(venture_invoice_status_get_type())
 #define VENTURE_TYPE_CHAT_ROLE			(venture_chat_role_get_type())
 #define VENTURE_TYPE_COMPANY_KIND		(venture_company_kind_get_type())
 #define VENTURE_TYPE_PRIORITY			(venture_priority_get_type())
@@ -741,6 +763,7 @@ GType venture_deal_stage_get_type		(void) G_GNUC_CONST;
 GType venture_interaction_kind_get_type		(void) G_GNUC_CONST;
 GType venture_ticket_status_get_type		(void) G_GNUC_CONST;
 GType venture_ticket_kind_get_type		(void) G_GNUC_CONST;
+GType venture_invoice_status_get_type		(void) G_GNUC_CONST;
 GType venture_chat_role_get_type		(void) G_GNUC_CONST;
 GType venture_company_kind_get_type		(void) G_GNUC_CONST;
 GType venture_priority_get_type			(void) G_GNUC_CONST;

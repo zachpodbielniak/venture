@@ -1,0 +1,34 @@
+# automations.pod - worked examples for VENTURE's automation engine
+#
+# Copyright (C) 2026 Zach Podbielniak
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Copy what you need into your rules -- the Automations page edits the live
+# file and validates before saving -- and adjust the values. Everything an
+# automation writes is audited as the automation actor, so the trail always
+# shows which rule did what.
+
+# --------------------------------------------------------------------------
+# Recurring expense: the classic subscription.
+#
+# Hosting bills on the 1st of every month whether you remember it or not;
+# this makes the books agree. Cron format: minute hour day month weekday.
+# --------------------------------------------------------------------------
+pod monthly_hosting = cron_event->new("0 9 1 * *");
+monthly_hosting->on_schedule => venture->create("expense",
+	"description=VPS hosting", "vendor=Hosting Co", "amount=12.00",
+	"category=software");
+
+# --------------------------------------------------------------------------
+# React to records changing: the venture module raises on_created,
+# on_updated and on_deleted for every record write, from every surface --
+# the web UI, the API, the CLI, the AI.
+# --------------------------------------------------------------------------
+pod sale_log = venture->new();
+sale_log->on_created => log->write_info("A record was created");
+
+# --------------------------------------------------------------------------
+# A nightly count, to taste: point it at any registered type.
+# --------------------------------------------------------------------------
+pod nightly = cron_event->new("0 2 * * *");
+nightly->on_schedule => venture->count("ticket");

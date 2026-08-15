@@ -183,7 +183,7 @@ Working and covered by tests:
 
 - the build system, both binaries, static linking of all six dependencies
 - =VentureMoney= and the boxed types
-- =VentureEntity=, the record types (28 built in), the registry
+- =VentureEntity=, the record types (31 built in), the registry
 - configuration, including the compiled C configuration via crispy
 - the database layer over orm-glib, the query builder, schema derivation
 - the reporting engine and nine built-in reports
@@ -212,6 +212,13 @@ Working and covered by tests:
   accounts, tokens and chat history walled off from the model entirely
 - a dashboard with open-ticket counts, the weighted deal pipeline and an
   activity feed from the audit trail
+- invoicing: lines with exact rational money arithmetic, draft → sent →
+  paid lifecycle, a printable view, and paid invoices recording their sale
+- CSV import for every record type, all-or-nothing with per-row errors
+- an Automations page editing the pod rules with live diagnostics from the
+  real parser, and hot reload
+- a Plugins page with per-plugin YAML configuration that running plugins
+  pick up via a change signal, no restart
 - users, roles, password changes and session invalidation on sign-out
 - a container image and two compose files
 

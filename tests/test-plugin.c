@@ -827,7 +827,8 @@ test_web_navigation_links_all_resolve(
 ){
 	static const gchar *const fixed_pages[] = {
 		"/", "/reports", "/settings", "/account", "/users", "/entities",
-		"/tickets", "/login", "/logout", NULL
+		"/tickets", "/login", "/logout", "/search", "/automations",
+		"/plugins", NULL
 	};
 	const VentureWebNavLink *links;
 	gsize i;
@@ -1331,6 +1332,161 @@ test_automation_ignores_audit_entries(
 	                                     VENTURE_ENTITY(entry));
 }
 
+/* --- Plugin configuration ------------------------------------------------- */
+
+static void
+plugin_config_note_change(
+	VenturePluginManager	*manager,
+	const gchar		*plugin_name,
+	gpointer		 user_data
+){
+	gchar **seen;
+
+	seen = user_data;
+	g_free(*seen);
+	*seen = g_strdup(plugin_name);
+}
+
+/*
+ * The whole point of configuration-as-record: store YAML, read it back
+ * parsed, and be told the moment it changes. Without the signal a plugin
+ * reads its settings once and the /plugins page is a lie until restart.
+ */
+static void
+test_plugin_config_round_trip_and_signal(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VenturePluginManager) manager = NULL;
+	g_autoptr(JsonNode) config = NULL;
+	g_autofree gchar *seen = NULL;
+	g_autofree gchar *text = NULL;
+	g_autofree gchar *name = NULL;
+	g_autoptr(GError) error = NULL;
+	gdouble rate;
+
+	manager = venture_plugin_manager_new(fixture->context);
+	g_signal_connect(manager, "config-changed",
+	                 G_CALLBACK(plugin_config_note_change), &seen);
+
+	g_assert_true(venture_plugin_manager_set_config(manager,
+		"royalties.c", "rate_percent: 65.5\nlabel: paperback\n", NULL,
+		&error));
+	g_assert_no_error(error);
+
+	/* The signal named the right plugin. */
+	g_assert_cmpstr(seen, ==, "royalties.c");
+
+	/* The text survives verbatim for the editor... */
+	text = venture_plugin_manager_get_config_text(manager, "royalties.c");
+	g_assert_nonnull(strstr(text, "rate_percent: 65.5"));
+
+	/* ...and the parsed view gives typed values. */
+	config = venture_plugin_manager_get_config(manager, "royalties.c");
+	g_assert_nonnull(config);
+
+	rate = venture_plugin_config_get_double(config, "rate_percent", 0.0);
+	g_assert_cmpfloat(rate, ==, 65.5);
+
+	name = venture_plugin_config_get_string(config, "label", "none");
+	g_assert_cmpstr(name, ==, "paperback");
+
+	/* Absent keys fall back rather than fail. */
+	g_assert_cmpfloat(venture_plugin_config_get_double(config, "missing",
+	                                                   7.0), ==, 7.0);
+
+	/* Saving again updates the same record rather than stacking a
+	 * second, and an unconfigured plugin reads as NULL, not empty. */
+	g_assert_true(venture_plugin_manager_set_config(manager,
+		"royalties.c", "rate_percent: 50\n", NULL, NULL));
+	g_clear_pointer(&text, g_free);
+	text = venture_plugin_manager_get_config_text(manager, "royalties.c");
+	g_assert_null(strstr(text, "65.5"));
+	g_assert_null(venture_plugin_manager_get_config(manager, "other.so"));
+}
+
+static void
+test_plugin_config_refuses_bad_yaml(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VenturePluginManager) manager = NULL;
+	g_autoptr(GError) error = NULL;
+
+	manager = venture_plugin_manager_new(fixture->context);
+
+	/* Refused before storage: a running plugin must never be signalled
+	 * into re-reading settings it cannot parse. */
+	g_assert_false(venture_plugin_manager_set_config(manager, "x.c",
+		"key: [unclosed", NULL, &error));
+	g_assert_nonnull(error);
+	g_assert_null(venture_plugin_manager_get_config_text(manager, "x.c"));
+}
+
+/* --- Automation validation and reload ------------------------------------- */
+
+static void
+test_automation_validate_dsl(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *message = NULL;
+
+	/* Valid source: no message. */
+	g_assert_true(venture_automation_validate_dsl(
+		"pod nightly = venture->new();\n"
+		"nightly->on_created => venture->count(\"sale\");\n", &message));
+	g_assert_null(message);
+
+	/* Broken source: a message worth showing in an editor. */
+	g_assert_false(venture_automation_validate_dsl(
+		"pod broken = venture->new(;\n", &message));
+	g_assert_nonnull(message);
+	g_assert_cmpuint(strlen(message), >, 0);
+}
+
+/*
+ * A reload must end with exactly the rules the file now holds -- not the
+ * old rules, not both generations at once. Both generations at once is the
+ * bug that doubles every automation side effect.
+ */
+static void
+test_automation_reload_rebuilds(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureAutomation) automation = NULL;
+	g_autofree gchar *pods_file = NULL;
+	g_autoptr(GError) error = NULL;
+
+	/* The automation reads its rules from the configured pods file. */
+	pods_file = g_build_filename(fixture->plugin_dir, "rules.pod", NULL);
+	g_object_set(fixture->config, "automation-pods-file", pods_file, NULL);
+
+	g_assert_true(g_file_set_contents(pods_file,
+		"pod one = venture->new();\n"
+		"one->on_created => venture->count(\"sale\");\n", -1, NULL));
+
+	automation = venture_automation_new(fixture->context, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_automation_start(automation, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_automation_get_pod_count(automation), ==, 1);
+
+	/* The file grows a second pod; the reload must show exactly two. */
+	g_assert_true(g_file_set_contents(pods_file,
+		"pod one = venture->new();\n"
+		"one->on_created => venture->count(\"sale\");\n"
+		"pod two = venture->new();\n"
+		"two->on_deleted => venture->count(\"expense\");\n", -1, NULL));
+
+	g_assert_true(venture_automation_reload(automation, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_automation_get_pod_count(automation), ==, 2);
+
+	venture_automation_stop(automation);
+}
+
 int
 main(
 	int	  argc,
@@ -1408,6 +1564,14 @@ main(
 	ADD("/automation/does-not-cascade", test_automation_does_not_cascade);
 	ADD("/automation/ignores-audit-entries",
 	    test_automation_ignores_audit_entries);
+
+	ADD("/plugin/config-round-trip-and-signal",
+	    test_plugin_config_round_trip_and_signal);
+	ADD("/plugin/config-refuses-bad-yaml",
+	    test_plugin_config_refuses_bad_yaml);
+
+	ADD("/automation/validate-dsl", test_automation_validate_dsl);
+	ADD("/automation/reload-rebuilds", test_automation_reload_rebuilds);
 
 #undef ADD
 

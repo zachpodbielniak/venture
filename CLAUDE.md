@@ -83,6 +83,17 @@ first seven columns were empty.
   on the caller's `user-id` and report NOT_FOUND (never FORBIDDEN) on a
   mismatch, and `chat_thread`/`chat_message` stay owner-only in
   `venture_web_require_for_type()`. `tests/test-auth.c` pins this.
+- **The JSON wire format uses underscores.** Properties are `invoice-id` in
+  C and `invoice_id` on the wire; a POST body with dashed keys is silently
+  ignored field by field — the record saves and the values just aren't
+  there.
+- **An automation reload is a rebuild.** Never parse new rules into a
+  running engine: pods hold timer and breaker state, and stacking a second
+  generation beside the first doubles every side effect.
+- **`make DEBUG=1 test` does not relink the server binary.** After editing
+  `data/static/*` verify `build/debug/venture` is newer than
+  `build/debug/venture-assets.h`, or the browser serves last hour's JS
+  while the tests pass against this hour's.
 
 ## Dependencies
 

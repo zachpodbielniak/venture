@@ -23,14 +23,56 @@
 #include <venture/venture.h>
 
 /*
- * The share of gross that reaches you. A real royalty rate depends on the
- * retailer, the price band and the format, so this is where a per-venture
- * figure would come from in earnest -- but a script that answers roughly
- * the right question today beats a schema change that answers it exactly
- * next month.
+ * The share of gross that reaches you. Configurable from the /plugins page:
+ * set `rate_percent: 65` there and the very next report run uses it -- no
+ * restart, no recompile. The default matches a common ebook royalty.
+ *
+ * Stored as an exact rational (percent times a hundred, over ten thousand)
+ * rather than a double, because the money layer multiplies rationally and
+ * rounds once; 65.5% of $3.99 must not drift.
  */
-#define ROYALTY_NUMERATOR   (70)
-#define ROYALTY_DENOMINATOR (100)
+static gint64 royalties_rate_numerator   = 7000;
+static gint64 royalties_rate_denominator = 10000;
+
+/*
+ * Reads the rate from this plugin's stored configuration. Called once at
+ * registration and again whenever the /plugins page saves -- which is what
+ * the config-changed signal is for.
+ */
+static void
+royalties_read_config(VenturePluginManager *manager)
+{
+	g_autoptr(JsonNode) config = NULL;
+	gdouble percent;
+
+	if (NULL == manager)
+		return;
+
+	config = venture_plugin_manager_get_config(manager, "royalties.c");
+	percent = venture_plugin_config_get_double(config, "rate_percent", 70.0);
+
+	/* A rate outside (0, 100] is a typo, not a business model. */
+	if ((percent <= 0.0) || (percent > 100.0))
+	{
+		g_warning("royalties: rate_percent %.2f is outside (0, 100]; "
+		          "keeping the previous rate", percent);
+		return;
+	}
+
+	royalties_rate_numerator = (gint64)(percent * 100.0 + 0.5);
+	royalties_rate_denominator = 10000;
+}
+
+static void
+royalties_on_config_changed(
+	VenturePluginManager	*manager,
+	const gchar		*plugin_name,
+	gpointer		 user_data
+){
+	/* One signal serves every plugin; only our own name is ours. */
+	if (0 == g_strcmp0(plugin_name, "royalties.c"))
+		royalties_read_config(manager);
+}
 
 /*
  * One genre's running totals. Kept in a hash table keyed by genre so the
@@ -194,8 +236,10 @@ royalties_report(
 		 * three-cent sale is not a number floating point can hold,
 		 * and a royalty statement is a figure someone is paid on.
 		 */
-		royalty = venture_money_multiply_rational(gross, ROYALTY_NUMERATOR,
-		                                         ROYALTY_DENOMINATOR, error);
+		royalty = venture_money_multiply_rational(gross,
+		                                         royalties_rate_numerator,
+		                                         royalties_rate_denominator,
+		                                         error);
 
 		if (NULL == royalty)
 			return NULL;
@@ -268,7 +312,8 @@ venture_plugin_info(void);
 const gchar *
 venture_plugin_info(void)
 {
-	return "Royalties by genre, at a 70% rate (compiled on demand)";
+	return "Royalties by genre; rate_percent configurable at /plugins "
+	       "(compiled on demand)";
 }
 
 /**
@@ -291,12 +336,29 @@ venture_plugin_register(
 	VentureContext	 *context,
 	GError		**error
 ){
+	VenturePluginManager *manager;
+
 	venture_report_registry_add(
 		venture_context_get_report_registry(context),
 		VENTURE_REPORT(venture_func_report_new(
 			"royalties", "Royalties by genre",
-			"Per-genre royalties for the period, at a 70% rate",
+			"Per-genre royalties for the period, at the configured "
+			"rate",
 			royalties_report)));
+
+	/*
+	 * Runtime configuration: read the stored settings now, and follow
+	 * the /plugins page from here on. The signal fires for every
+	 * plugin's save; the handler ignores names that are not ours.
+	 */
+	manager = venture_context_get_plugin_manager(context);
+
+	if (NULL != manager)
+	{
+		royalties_read_config(manager);
+		g_signal_connect(manager, "config-changed",
+		                 G_CALLBACK(royalties_on_config_changed), NULL);
+	}
 
 	return TRUE;
 }

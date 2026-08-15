@@ -216,6 +216,18 @@ VENTURE_DEFINE_ENUM_TYPE(venture_ticket_kind_get_type,
                          "VentureTicketKind",
                          venture_ticket_kind_values)
 
+static const GEnumValue venture_invoice_status_values[] = {
+	VE(VENTURE_INVOICE_STATUS_DRAFT, "draft"),
+	VE(VENTURE_INVOICE_STATUS_SENT,  "sent"),
+	VE(VENTURE_INVOICE_STATUS_PAID,  "paid"),
+	VE(VENTURE_INVOICE_STATUS_VOID,  "void"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_invoice_status_get_type,
+                         "VentureInvoiceStatus",
+                         venture_invoice_status_values)
+
 static const GEnumValue venture_chat_role_values[] = {
 	VE(VENTURE_CHAT_ROLE_USER,      "user"),
 	VE(VENTURE_CHAT_ROLE_ASSISTANT, "assistant"),

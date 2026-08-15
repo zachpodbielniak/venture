@@ -1007,6 +1007,204 @@ test_auth_api_refuses_anonymous_requests(
 	                                        "/tickets/1/comment", NULL,
 	                                        "body=hi", NULL, NULL),
 	                 ==, SOUP_STATUS_FOUND);
+
+	/* The round-four surfaces: automations, plugin config, invoices,
+	 * import. Pages redirect; fragments and files 401. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/automations/save", NULL, "source=", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/automations/validate", NULL, "source=", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/automations/reload", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/plugins/config", NULL, "plugin=x", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/invoices/1/status", NULL, "to=sent", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+		"/invoices/1/print"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+		"/e/sale/import"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+		"/e/sale/import/template"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/e/sale/import", NULL, "x", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+}
+
+/*
+ * The invoice lifecycle over HTTP, including the transition that matters:
+ * marking paid must create the sale, with the invoice total as gross. If
+ * this regresses, invoicing and the books quietly diverge -- the exact
+ * disagreement the wiring exists to make impossible.
+ */
+static void
+test_auth_invoice_paid_creates_the_sale(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *body = NULL;
+	guint status;
+
+	server_fixture_create_user(fixture, "erin", "e-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	cookie = server_fixture_login(fixture, "erin", "e-long-password");
+
+	/* An invoice with two lines: 2 x $100.00 and 1 x $49.99. */
+	{
+		g_autoptr(VentureInvoice) invoice = NULL;
+		g_autoptr(VentureInvoiceLine) first = NULL;
+		g_autoptr(VentureInvoiceLine) second = NULL;
+		g_autoptr(VentureMoney) hundred = NULL;
+		g_autoptr(VentureMoney) fifty = NULL;
+
+		invoice = venture_invoice_new();
+		g_object_set(invoice, "number", "INV-1",
+		             "status", VENTURE_INVOICE_STATUS_DRAFT, NULL);
+		g_assert_true(venture_database_save(fixture->database,
+			VENTURE_ENTITY(invoice), NULL, NULL));
+
+		hundred = venture_money_new(10000, "USD", 2);
+		first = venture_invoice_line_new();
+		g_object_set(first, "invoice-id",
+		             venture_entity_get_id(VENTURE_ENTITY(invoice)),
+		             "description", "consulting", "quantity", 2.0,
+		             "unit-price", hundred, NULL);
+		g_assert_true(venture_database_save(fixture->database,
+			VENTURE_ENTITY(first), NULL, NULL));
+
+		fifty = venture_money_new(4999, "USD", 2);
+		second = venture_invoice_line_new();
+		g_object_set(second, "invoice-id",
+		             venture_entity_get_id(VENTURE_ENTITY(invoice)),
+		             "description", "rush fee", "quantity", 1.0,
+		             "unit-price", fifty, NULL);
+		g_assert_true(venture_database_save(fixture->database,
+			VENTURE_ENTITY(second), NULL, NULL));
+	}
+
+	/* Draft cannot jump straight to paid. */
+	status = server_fixture_request(fixture, "POST", "/invoices/1/status",
+	                                cookie, "to=paid", NULL, NULL);
+	g_assert_cmpuint(status, ==, 422);
+
+	/* Draft -> sent -> paid. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/invoices/1/status", cookie, "to=sent", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/invoices/1/status", cookie, "to=paid", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+
+	/* The revenue exists now: one sale, $249.99 gross, named after the
+	 * invoice. */
+	{
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) sales = NULL;
+		g_autoptr(VentureMoney) gross = NULL;
+		g_autofree gchar *external = NULL;
+
+		query = venture_query_new(VENTURE_TYPE_SALE);
+		sales = venture_database_find(fixture->database, query, NULL);
+
+		g_assert_nonnull(sales);
+		g_assert_cmpuint(sales->len, ==, 1);
+
+		g_object_get(g_ptr_array_index(sales, 0),
+		             "gross", &gross, "external-id", &external, NULL);
+		g_assert_nonnull(gross);
+		g_assert_cmpint(venture_money_get_amount(gross), ==, 24999);
+		g_assert_cmpstr(external, ==, "INV-1");
+	}
+
+	/* Paid is terminal. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/invoices/1/status", cookie, "to=void", NULL, NULL),
+		==, 422);
+
+	/* And the printable view renders the number and the total. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/invoices/1/print", cookie, NULL, &body, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(body, "INV-1"));
+	g_assert_nonnull(strstr(body, "249.99"));
+}
+
+/*
+ * CSV import over HTTP: all-or-nothing is the property under test. A file
+ * with one bad row must import nothing -- 39 records that arrived beside a
+ * validation failure are 39 records nobody meant to trust.
+ */
+static void
+test_auth_csv_import_is_all_or_nothing(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	static const gchar good_csv[] =
+		"--CSVBND\r\n"
+		"Content-Disposition: form-data; name=\"file\"; "
+		"filename=\"companies.csv\"\r\n"
+		"Content-Type: text/csv\r\n"
+		"\r\n"
+		"name,kind,industry\r\n"
+		"\"Acme, Inc\",customer,publishing\r\n"
+		"Beta LLC,supplier,print\r\n"
+		"\r\n--CSVBND--\r\n";
+	static const gchar bad_csv[] =
+		"--CSVBND\r\n"
+		"Content-Disposition: form-data; name=\"file\"; "
+		"filename=\"companies.csv\"\r\n"
+		"Content-Type: text/csv\r\n"
+		"\r\n"
+		"name,kind\r\n"
+		"Gamma Co,customer\r\n"
+		"Delta Co,not-a-kind\r\n"
+		"\r\n--CSVBND--\r\n";
+	g_autofree gchar *cookie = NULL;
+	g_autoptr(GBytes) good = NULL;
+	g_autoptr(GBytes) bad = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+
+	server_fixture_create_user(fixture, "frank", "f-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	cookie = server_fixture_login(fixture, "frank", "f-long-password");
+
+	good = g_bytes_new_static(good_csv, strlen(good_csv));
+	bad = g_bytes_new_static(bad_csv, strlen(bad_csv));
+
+	/* The good file: both rows land, quoted comma intact. */
+	{
+		g_autofree gchar *body = NULL;
+
+		g_assert_cmpuint(server_fixture_post_raw(fixture,
+			"/e/company/import", cookie,
+			"multipart/form-data; boundary=CSVBND", good, &body),
+			==, SOUP_STATUS_OK);
+		g_assert_nonnull(strstr(body, "Imported 2 records"));
+	}
+
+	query = venture_query_new(VENTURE_TYPE_COMPANY);
+	g_assert_cmpint(venture_database_count(fixture->database, query, NULL),
+	                ==, 2);
+
+	/* The bad file: one row has an enum typo, so NEITHER row lands. */
+	{
+		g_autofree gchar *body = NULL;
+
+		g_assert_cmpuint(server_fixture_post_raw(fixture,
+			"/e/company/import", cookie,
+			"multipart/form-data; boundary=CSVBND", bad, &body),
+			==, 422);
+		g_assert_nonnull(strstr(body, "Nothing was imported"));
+	}
+
+	g_assert_cmpint(venture_database_count(fixture->database, query, NULL),
+	                ==, 2);
 }
 
 /*
@@ -1263,6 +1461,14 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/chat-upload-round-trip", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_chat_upload_round_trip,
+	           server_fixture_tear_down);
+	g_test_add("/auth/invoice-paid-creates-the-sale", ServerFixture, NULL,
+	           server_fixture_set_up,
+	           test_auth_invoice_paid_creates_the_sale,
+	           server_fixture_tear_down);
+	g_test_add("/auth/csv-import-is-all-or-nothing", ServerFixture, NULL,
+	           server_fixture_set_up,
+	           test_auth_csv_import_is_all_or_nothing,
 	           server_fixture_tear_down);
 
 #undef ADD

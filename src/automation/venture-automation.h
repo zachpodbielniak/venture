@@ -83,6 +83,50 @@ venture_automation_start(
 );
 
 /**
+ * venture_automation_reload:
+ * @self: a #VentureAutomation
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Tears the engine down and rebuilds it from the configured pods file. A
+ * reload is a rebuild rather than a re-parse: pods hold timers and state,
+ * and the only path where what runs afterwards is exactly what the file
+ * says is to start from nothing.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+venture_automation_reload(
+	VentureAutomation	 *self,
+	GError			**error
+);
+
+/**
+ * venture_automation_validate_dsl:
+ * @dsl: pod DSL source text
+ * @out_message: (out) (optional) (transfer full): the parse error, or %NULL
+ *
+ * Checks that @dsl parses, without touching any running engine. This is the
+ * rules editor's diagnostics: the message comes from the same parser that
+ * will load the file, so what validates here loads there.
+ *
+ * Returns: %TRUE if the source parses
+ */
+gboolean
+venture_automation_validate_dsl(
+	const gchar	 *dsl,
+	gchar		**out_message
+);
+
+/**
+ * venture_automation_describe_modules:
+ * @self: a #VentureAutomation
+ *
+ * Returns: (transfer full): a JSON array naming every loaded pod module
+ */
+JsonNode *
+venture_automation_describe_modules(VentureAutomation *self);
+
+/**
  * venture_automation_stop:
  * @self: a #VentureAutomation
  *

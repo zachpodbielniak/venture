@@ -275,6 +275,49 @@ test_database_chat_round_trip(
 	}
 }
 
+/*
+ * 2.5 x $19.99 is $49.975, which does not exist. The line amount must be
+ * $49.98 by one half-to-even rounding of the exact rational -- not $49.97
+ * from a truncated double, and not a stored third copy of the number that
+ * could disagree with quantity and unit price later.
+ */
+static void
+test_database_invoice_line_amount(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureInvoiceLine) line = NULL;
+	g_autoptr(VentureMoney) unit_price = NULL;
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autoptr(GError) error = NULL;
+
+	line = venture_invoice_line_new();
+	unit_price = venture_money_new(1999, "USD", 2);
+	g_object_set(line, "description", "editing, hourly",
+	             "quantity", 2.5,
+	             "unit-price", unit_price, NULL);
+
+	amount = venture_invoice_line_get_amount(line, &error);
+
+	g_assert_no_error(error);
+	g_assert_nonnull(amount);
+	g_assert_cmpint(venture_money_get_amount(amount), ==, 4998);
+
+	/* A whole quantity stays exact. */
+	g_object_set(line, "quantity", 3.0, NULL);
+	g_clear_pointer(&amount, venture_money_free);
+	amount = venture_invoice_line_get_amount(line, NULL);
+	g_assert_cmpint(venture_money_get_amount(amount), ==, 5997);
+
+	/* No unit price is an error, not a zero: a zero would total as if
+	 * the line were free, which is a claim, not an absence. */
+	g_object_set(line, "unit-price", NULL, NULL);
+	g_clear_pointer(&amount, venture_money_free);
+	amount = venture_invoice_line_get_amount(line, &error);
+	g_assert_null(amount);
+	g_assert_nonnull(error);
+}
+
 static void
 test_database_money_round_trip(
 	Fixture		*fixture,
@@ -1472,6 +1515,7 @@ main(
 
 	ADD("/database/save-and-get", test_database_save_and_get);
 	ADD("/database/chat-round-trip", test_database_chat_round_trip);
+	ADD("/database/invoice-line-amount", test_database_invoice_line_amount);
 	ADD("/database/money-round-trip", test_database_money_round_trip);
 	ADD("/database/null-money-stays-null", test_database_null_money_stays_null);
 	ADD("/database/timestamp-round-trip", test_database_timestamp_round_trip);

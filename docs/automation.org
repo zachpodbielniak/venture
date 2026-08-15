@@ -1,0 +1,77 @@
+#+title: Automating VENTURE
+#+description: The embedded podomation engine, the rules editor, and the venture module
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-08-15]
+#+updated: [2026-08-15]
+#+version: 0.1.0
+
+* Automation
+
+VENTURE embeds [[https://gitlab.com/podomation][podomation]] as its automation engine. Rules are pods in
+podomation's DSL, living in one file — =automations.pod= under the state
+directory by default, =automation.pods_file= to move it — and the =venture=
+module makes record changes into events and record operations into handlers.
+
+* The Automations page
+
+=/automations= is the whole loop in one place:
+
+- *Status and pods.* Whether the engine runs and which pods loaded, from the
+  engine's own accounting.
+- *The rules editor.* Edits the live file with line numbers and diagnostics
+  as you type. The diagnostics come from the same parser that loads the
+  file — an error shown in the editor is exactly the error that would have
+  broken the reload, with the offending line marked.
+- *Save and reload.* Saving validates first and is refused if the source
+  does not parse, so the running rules are never replaced with something
+  broken. A successful save rebuilds the engine immediately.
+- *The module reference.* Every loaded pod module, from live introspection
+  rather than a list that drifts.
+
+Viewing requires the admin role. Saving and reloading require owner: rules
+execute code on the server — inline crispy and bash included — and that is
+beyond data entry.
+
+** Reload is a rebuild
+
+A reload tears the engine down and rebuilds it from the file. Pods hold
+timers, counters and circuit-breaker state, and parsing new rules into a
+running engine would stack them beside the old ones — the bug that doubles
+every automation side effect. Rebuilding from nothing is the only path where
+what runs afterwards is exactly what the file says.
+
+* The venture module
+
+- *Events:* =on_created=, =on_updated= and =on_deleted= fire for every
+  record change from every surface — web, API, CLI, AI.
+- *Handlers:* query, count, report, create, update, delete — the same
+  repository everything else uses.
+- *Audit:* everything an automation writes is audited as the automation
+  actor, so the trail always distinguishes a rule's change from a person's
+  or the AI's.
+- Audit entries never raise events, which is what stops a rule that writes
+  from triggering itself forever.
+
+* Worked examples
+
+=data/examples/automations.pod= in the source tree, including the one that
+matters for a business: the recurring expense.
+
+#+begin_src
+pod monthly_hosting = cron_event->new("0 9 1 * *");
+monthly_hosting->on_schedule => venture->create("expense",
+        "description=VPS hosting", "vendor=Hosting Co", "amount=12.00",
+        "category=software");
+#+end_src
+
+Hosting bills on the 1st whether you remember it or not; this makes the
+books agree. The same shape covers subscriptions, retainers invoiced
+monthly, and any other transaction that recurs on a clock rather than an
+event.
+
+* From the command line
+
+The file is ordinary text; the page is a convenience, not a gatekeeper.
+Edit it in cmacs, then either restart or press Reload on the page — the
+reload button exists precisely for the file edited outside the browser.
