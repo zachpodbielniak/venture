@@ -6378,6 +6378,192 @@ venture_web_chat_get_messages(
 	                             query, error);
 }
 
+/*
+ * Decodes the five standard HTML entities a model may have emitted.
+ *
+ * Some models -- Grok reliably -- escape punctuation as if their reply were
+ * going straight into a page, so "P&L" arrives as "P&amp;L". The stored
+ * body is whatever the model said; this runs at render time, before the
+ * real escaping, so "&amp;" displays as the "&" the model meant while an
+ * actual "<script>" in the decoded text is still neutralised a step later.
+ * "&amp;" is decoded last: "&amp;lt;" means a literal "&lt;", and decoding
+ * ampersands first would turn it into a "<" instead.
+ *
+ * Returns: (transfer full): the decoded text
+ */
+static gchar *
+venture_web_chat_decode_entities(const gchar *text)
+{
+	GString *out;
+
+	out = g_string_new(text);
+	g_string_replace(out, "&lt;", "<", 0);
+	g_string_replace(out, "&gt;", ">", 0);
+	g_string_replace(out, "&quot;", "\"", 0);
+	g_string_replace(out, "&#39;", "'", 0);
+	g_string_replace(out, "&amp;", "&", 0);
+
+	return g_string_free(out, FALSE);
+}
+
+/*
+ * Renders an assistant reply as the small markdown chat replies actually
+ * use: paragraphs, line breaks, "- " and "1." lists, **bold**, `code`, and
+ * "#" headings as bold lines.
+ *
+ * The pipeline order is the security property: decode the entities the
+ * model emitted, escape *everything* for real, then apply formatting to the
+ * escaped text. Markdown syntax carries no HTML characters, so the regexes
+ * work unchanged on escaped text, and nothing the model says can smuggle
+ * markup past the escape.
+ */
+static void
+venture_web_chat_append_rich(
+	GString		*html,
+	const gchar	*body
+){
+	static gsize initialized = 0;
+	static GRegex *bold_regex = NULL;
+	static GRegex *code_regex = NULL;
+	g_autofree gchar *decoded = NULL;
+	g_autoptr(GString) escaped = NULL;
+	g_autofree gchar *with_bold = NULL;
+	g_autofree gchar *formatted = NULL;
+	g_auto(GStrv) blocks = NULL;
+	gsize b;
+
+	if (g_once_init_enter(&initialized))
+	{
+		bold_regex = g_regex_new("\\*\\*([^*\\n]+)\\*\\*", 0, 0, NULL);
+		code_regex = g_regex_new("`([^`\\n]+)`", 0, 0, NULL);
+		g_once_init_leave(&initialized, 1);
+	}
+
+	decoded = venture_web_chat_decode_entities(body);
+
+	escaped = g_string_new(NULL);
+	venture_html_escape_append(escaped, decoded);
+
+	with_bold = g_regex_replace(bold_regex, escaped->str, -1, 0,
+	                            "<strong>\\1</strong>", 0, NULL);
+	formatted = g_regex_replace(code_regex, with_bold, -1, 0,
+	                            "<code>\\1</code>", 0, NULL);
+
+	/* Blank lines separate blocks; within a block, consecutive list lines
+	 * group into one list and everything else joins with line breaks. */
+	blocks = g_strsplit(formatted, "\n\n", -1);
+
+	for (b = 0; NULL != blocks[b]; b++)
+	{
+		g_auto(GStrv) lines = NULL;
+		gsize i;
+
+		if ('\0' == *g_strstrip(blocks[b]))
+			continue;
+
+		lines = g_strsplit(blocks[b], "\n", -1);
+		i = 0;
+
+		while (NULL != lines[i])
+		{
+			const gchar *line;
+
+			line = g_strstrip(lines[i]);
+
+			if ('\0' == *line)
+			{
+				i++;
+			}
+			else if (g_str_has_prefix(line, "- ") ||
+			         g_str_has_prefix(line, "* "))
+			{
+				g_string_append(html, "<ul>");
+
+				while ((NULL != lines[i]) &&
+				       (g_str_has_prefix(g_strstrip(lines[i]), "- ") ||
+				        g_str_has_prefix(g_strstrip(lines[i]), "* ")))
+				{
+					g_string_append(html, "<li>");
+					g_string_append(html,
+					                g_strstrip(lines[i]) + 2);
+					g_string_append(html, "</li>");
+					i++;
+				}
+
+				g_string_append(html, "</ul>");
+			}
+			else if (g_ascii_isdigit(line[0]) &&
+			         (NULL != strstr(line, ". ")) &&
+			         ((gsize)(strstr(line, ". ") - line) <= 3))
+			{
+				g_string_append(html, "<ol>");
+
+				while (NULL != lines[i])
+				{
+					const gchar *item;
+					const gchar *dot;
+
+					item = g_strstrip(lines[i]);
+					dot = (g_ascii_isdigit(item[0]))
+						? strstr(item, ". ") : NULL;
+
+					if ((NULL == dot) ||
+					    ((gsize)(dot - item) > 3))
+						break;
+
+					g_string_append(html, "<li>");
+					g_string_append(html, dot + 2);
+					g_string_append(html, "</li>");
+					i++;
+				}
+
+				g_string_append(html, "</ol>");
+			}
+			else if ('#' == line[0])
+			{
+				/* A heading is a bold line; a chat bubble has no
+				 * business with an actual <h3>. */
+				while ('#' == *line)
+					line++;
+
+				g_string_append(html, "<p><strong>");
+				g_string_append(html, g_strstrip((gchar *)line));
+				g_string_append(html, "</strong></p>");
+				i++;
+			}
+			else
+			{
+				gboolean first;
+
+				g_string_append(html, "<p>");
+				first = TRUE;
+
+				while (NULL != lines[i])
+				{
+					const gchar *text;
+
+					text = g_strstrip(lines[i]);
+
+					if (('\0' == *text) ||
+					    g_str_has_prefix(text, "- ") ||
+					    g_str_has_prefix(text, "* ") ||
+					    ('#' == *text))
+						break;
+
+					if (!first)
+						g_string_append(html, "<br>");
+
+					g_string_append(html, text);
+					first = FALSE;
+					i++;
+				}
+
+				g_string_append(html, "</p>");
+			}
+		}
+	}
+}
+
 static void
 venture_web_chat_append_message(
 	GString		*html,
@@ -6385,14 +6571,22 @@ venture_web_chat_append_message(
 	const gchar	*body
 ){
 	if (VENTURE_CHAT_ROLE_ASSISTANT == role)
+	{
 		g_string_append(html, "<div class=\"msg ai\">"
 		                      "<span class=\"msg-avatar\">\xe2\x9c\xa6</span>"
-		                      "<div class=\"msg-content\"><p>");
-	else
-		g_string_append(html, "<div class=\"msg user\">"
-		                      "<span class=\"msg-avatar\">You</span>"
-		                      "<div class=\"msg-content\"><p>");
+		                      "<div class=\"msg-content\">");
+		venture_web_chat_append_rich(html, body);
+		g_string_append(html, "</div></div>");
+		return;
+	}
 
+	/* The operator's own words are shown verbatim -- escaped, with the
+	 * line breaks they typed preserved by the stylesheet rather than
+	 * markup, so the server render and the client's optimistic echo agree
+	 * to the byte. */
+	g_string_append(html, "<div class=\"msg user\">"
+	                      "<span class=\"msg-avatar\">You</span>"
+	                      "<div class=\"msg-content\"><p>");
 	venture_html_escape_append(html, body);
 	g_string_append(html, "</p></div></div>");
 }
@@ -6725,12 +6919,16 @@ venture_web_ui_chat(
 	if (venture_string_is_empty(message))
 		return venture_web_html_response(g_strdup(""), 200);
 
+	/*
+	 * The response deliberately does not echo the question back. The
+	 * client already showed it the moment Send was pressed -- a message
+	 * that only appears once the model answers makes every send feel
+	 * dropped -- and echoing it here again would double it.
+	 */
 	if (NULL == venture_context_get_ai_service(self->context))
 	{
 		/* Nothing is persisted: a transcript of questions nothing
 		 * answered is not a conversation worth resuming. */
-		venture_web_chat_append_message(html, VENTURE_CHAT_ROLE_USER,
-		                               message);
 		g_string_append(html, "<div class=\"msg ai\">"
 		                      "<span class=\"msg-avatar\">\xe2\x9c\xa6</span>"
 		                      "<div class=\"msg-content\">"
@@ -6799,8 +6997,6 @@ venture_web_ui_chat(
 			VENTURE_ENTITY(stored), &actor, &error))
 			return venture_web_error_response(error);
 	}
-
-	venture_web_chat_append_message(html, VENTURE_CHAT_ROLE_USER, message);
 
 	{
 		g_autofree gchar *answer = NULL;

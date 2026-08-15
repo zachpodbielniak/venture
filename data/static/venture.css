@@ -1019,12 +1019,30 @@ body.ai-open .ai-fab { display: none; }
 .msg.ai .msg-avatar { background: linear-gradient(140deg, var(--accent),
                       var(--info)); color: #fff; }
 .msg-content { flex: 1; min-width: 0; }
-.msg-content p:last-child { margin-bottom: 0; }
+.msg-content p { margin: 0 0 var(--space-2); }
+.msg-content p:last-child, .msg-content ul:last-child,
+.msg-content ol:last-child { margin-bottom: 0; }
+.msg-content ul, .msg-content ol {
+	margin: 0 0 var(--space-2);
+	padding-left: var(--space-5);
+}
+.msg-content li { margin: 2px 0; }
+.msg-content code {
+	font-family: var(--font-mono);
+	font-size: 12px;
+	background: var(--surface-sunken);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 1px 5px;
+}
 .msg.user .msg-content {
 	background: var(--accent-soft);
 	border-radius: var(--radius);
 	padding: var(--space-2) var(--space-3);
 }
+/* The operator's line breaks come from the stylesheet, not markup, so the
+   client's optimistic echo (textContent) and the server's render agree. */
+.msg.user .msg-content p { white-space: pre-wrap; }
 
 /* A tool call the AI made, shown inline so it is never invisible what it
    actually did. */

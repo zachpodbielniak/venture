@@ -268,11 +268,15 @@
 		});
 
 		/*
-		 * Clear the box once the request is on its way. The hx runtime
-		 * serialises the form synchronously inside the submit event, so
-		 * a zero timeout is after serialisation but before the reply --
-		 * the composer is ready for the next question while the model
-		 * thinks about this one.
+		 * On send: echo the question into the log immediately with a
+		 * typing indicator after it, and clear the box. Waiting for the
+		 * server to echo it back made every send feel dropped until the
+		 * model finished -- the reply renders both sides, but the
+		 * operator's half must not wait on the model's half.
+		 *
+		 * The hx runtime serialises the form synchronously inside the
+		 * submit event, so the zero timeout runs after serialisation
+		 * but before the reply.
 		 */
 		{
 			var form = textarea.closest("form");
@@ -280,6 +284,15 @@
 			if (form && !form.ventureClearWired) {
 				form.ventureClearWired = true;
 				form.addEventListener("submit", function () {
+					var text = textarea.value.trim();
+					var log = document.getElementById("chat-log");
+
+					if (text !== "" && log) {
+						appendUserEcho(log, text);
+						appendTyping(log);
+						scrollChatToBottom();
+					}
+
 					window.setTimeout(function () {
 						textarea.value = "";
 						textarea.style.height = "auto";
@@ -299,6 +312,48 @@
 						{ bubbles: true, cancelable: true }));
 				}
 			}
+		});
+	}
+
+	/*
+	 * Built with textContent, never innerHTML: this is the one place user
+	 * text enters the DOM without going through the server's escaping. The
+	 * markup mirrors the server's transcript render exactly, so the echo
+	 * and the stored replay are indistinguishable.
+	 */
+	function appendUserEcho(log, text) {
+		var row = document.createElement("div");
+		var avatar = document.createElement("span");
+		var content = document.createElement("div");
+		var p = document.createElement("p");
+
+		row.className = "msg user";
+		avatar.className = "msg-avatar";
+		avatar.textContent = "You";
+		content.className = "msg-content";
+		p.textContent = text;
+
+		content.appendChild(p);
+		row.appendChild(avatar);
+		row.appendChild(content);
+		log.appendChild(row);
+	}
+
+	function appendTyping(log) {
+		var row = document.createElement("div");
+
+		row.className = "msg ai typing-row";
+		row.innerHTML = "<span class=\"msg-avatar\">✦</span>"
+			+ "<div class=\"msg-content\"><span class=\"typing\">"
+			+ "<span></span><span></span><span></span></span></div>";
+		log.appendChild(row);
+	}
+
+	/* The reply -- or the failure -- has arrived; the dots have done
+	 * their job. */
+	function clearTyping() {
+		document.querySelectorAll(".typing-row").forEach(function (el) {
+			el.remove();
 		});
 	}
 
@@ -489,6 +544,7 @@
 		document.body.addEventListener("htmx:afterSwap", function (event) {
 			wireRowLinks(event.detail && event.detail.target);
 			wireComposer();
+			clearTyping();
 
 			/* The server may have OOB-swapped the hidden thread field;
 			 * whatever it says now is the conversation to resume. */
@@ -506,6 +562,8 @@
 		document.body.addEventListener("htmx:responseError", function (event) {
 			var status = event.detail && event.detail.status;
 
+			clearTyping();
+
 			/* A 422 carries field-level validation messages that the
 			 * server has already rendered into the form, so it should not
 			 * also raise a toast. Anything else is worth surfacing. */
@@ -515,6 +573,7 @@
 		});
 
 		document.body.addEventListener("htmx:sendError", function () {
+			clearTyping();
 			toast("Cannot reach the server", "negative", 6000);
 		});
 	}

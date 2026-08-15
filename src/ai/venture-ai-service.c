@@ -903,7 +903,13 @@ venture_ai_service_build_prompt(VentureAiService *self)
 		"correctly, so prefer a report over adding up query results.\n\n"
 		"Be exact about money. Never estimate a figure you could look up, "
 		"and never present a gross amount as revenue: net is what reaches "
-		"the bank.\n\n");
+		"the bank.\n\n"
+		/* Grok in particular writes HTML entities into chat replies
+		 * without this; the renderer decodes them anyway, but a model
+		 * told the format produces better output than one guessing. */
+		"Replies are rendered as simple markdown: paragraphs, '- ' bullet "
+		"lists, numbered lists, **bold** and `code`. Use those and nothing "
+		"else -- no HTML tags, no HTML entities, no tables.\n\n");
 
 	if (VENTURE_AI_POLICY_READ_ONLY == self->policy)
 	{
