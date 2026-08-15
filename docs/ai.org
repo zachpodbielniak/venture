@@ -82,6 +82,49 @@ A chip marked /no text/ means extraction found nothing (a scanned image
 PDF, a binary format): the file is stored all the same, but the model
 cannot read its contents. There is no OCR.
 
+** Screenshots
+
+PNG, JPEG, WebP and GIF attachments are handed to the model *as images*,
+not as extracted text — so a vision-capable model reads the picture. Paste
+one straight into the composer: a screen capture lands on the clipboard,
+and making you save it to a file first was a step worth deleting. Chips for
+images show a thumbnail rather than a /no text/ warning.
+
+The use this was built for: screenshot an advertising dashboard — Amazon
+Ads, Etsy, Meta — say "file this", and the campaign is staged with the
+figures read off the image. The system prompt tells the model to read every
+value it can (name, status, budget, spend, impressions, clicks,
+conversions, dates), stage *one record per campaign shown*, and search
+first so re-uploading next week's screenshot updates the campaign rather
+than duplicating it. It is also told never to guess a figure it cannot
+read: a blank spend column is recoverable, an invented one is not.
+
+Whether a model reads every field is a property of the model, not of
+VENTURE. Check the staged values before approving — that is what the card
+is for.
+
+Images ride on the turn they are attached to. The stored transcript names
+the documents instead, so a long conversation does not re-send every
+screenshot with every later question.
+
+Providers: images reach Claude as Anthropic image blocks and OpenAI, Grok
+and other Chat Completions providers as =image_url= parts. Ollama has no
+image path in ai-glib yet, so a local model will not see attachments.
+
+* Approving a staged change
+
+Staged writes appear in the panel as a card: what will change, field by
+field, with *Apply* and *Discard*. Money renders as money and the identity
+spine is left out, because an approval nobody reads is the same as no
+approval at all.
+
+Cards for changes still waiting reappear when the conversation is resumed,
+so a staged change is never stranded by closing the panel. Restaging an
+identical change — models do retry when a tool answers /awaiting_approval/
+rather than /ok/ — updates the existing card instead of adding a second:
+three cards for one campaign would mean approving all three creates three
+records.
+
 Uploads require the editor role, are capped at 15 MB, and the attachment
 text offered to the model is capped per file — the tail of a very long
 document is a =venture_get= away rather than silently absent.

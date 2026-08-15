@@ -208,6 +208,11 @@ Working and covered by tests:
 - chat file attachments: an uploaded PDF or text file becomes a document
   record with its text extracted, readable by the AI — attach an invoice,
   have the expense staged for approval
+- screenshots: paste or attach an image and a vision model reads it —
+  screenshot an Amazon Ads dashboard, say "file this", approve the staged
+  campaign
+- staged AI writes are approved in the panel: a field-by-field card with
+  Apply and Discard, money rendered as money
 - AI tool surface: query, get, count, global search and reports, with
   accounts, tokens and chat history walled off from the model entirely
 - a dashboard with open-ticket counts, the weighted deal pipeline and an

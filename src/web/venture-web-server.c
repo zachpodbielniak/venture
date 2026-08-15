@@ -555,9 +555,12 @@ venture_web_page(
 			"<input type=\"file\" id=\"chat-attach-file\" multiple "
 			"class=\"hidden\" "
 			"accept=\".pdf,.txt,.md,.org,.csv,.json,.yaml,.yml,"
-			"application/pdf,text/plain,text/csv,application/json\">"
+			".png,.jpg,.jpeg,.webp,.gif,"
+			"application/pdf,text/plain,text/csv,application/json,"
+			"image/png,image/jpeg,image/webp,image/gif\">"
 			"<button type=\"button\" class=\"btn btn-ghost chat-attach\" "
-			"data-ai-attach title=\"Attach a file\">"
+			"data-ai-attach "
+			"title=\"Attach a file or screenshot (or just paste one)\">"
 			"\xf0\x9f\x93\x8e</button>"
 			"<textarea name=\"message\" rows=\"1\" "
 			"placeholder=\"Ask about your ventures, or describe a change\">"
@@ -8191,6 +8194,15 @@ venture_web_api_health(
 
 /* --- Chat ---------------------------------------------------------------- */
 
+/* Defined with the rest of the staged-change UI, below. */
+static void
+venture_web_chat_append_confirmations(
+	VentureWebServer	*self,
+	GString			*html,
+	GHashTable		*already_seen
+);
+
+
 /*
  * Loads a chat thread only if it belongs to the caller.
  *
@@ -8679,6 +8691,16 @@ venture_web_ui_chat_thread(
 		venture_web_chat_append_message(html, role, body);
 	}
 
+	/*
+	 * Anything still waiting for a decision, at the end of the replayed
+	 * transcript. A staged change whose conversation was closed before it
+	 * was approved is otherwise unreachable until it expires -- the
+	 * operator would see the AI say "waiting for approval" with nothing
+	 * to approve. This is a fresh render of the log, so nothing is
+	 * duplicated by showing them again here.
+	 */
+	venture_web_chat_append_confirmations(self, html, NULL);
+
 	g_object_get(thread, "title", &title, NULL);
 	venture_web_chat_append_thread_input(html, thread_id);
 	venture_web_chat_append_title(html,
@@ -8772,6 +8794,56 @@ venture_web_ui_chat_thread_delete(
 
 /* Uploads above this are refused outright. */
 #define VENTURE_WEB_ATTACHMENT_MAX_BYTES (15 * 1024 * 1024)
+
+/*
+ * Whether a MIME type or filename names an image a vision model can read.
+ *
+ * The list is deliberately short: these four are what every vision-capable
+ * provider accepts. A TIFF or a PSD would upload and then fail at the
+ * provider, which is a worse experience than being told here.
+ *
+ * Returns: (transfer none) (nullable): the canonical MIME type, or %NULL
+ */
+static const gchar *
+venture_web_image_mime_type(
+	const gchar	*content_type,
+	const gchar	*filename
+){
+	static const struct
+	{
+		const gchar *mime;
+		const gchar *suffix;
+	} kinds[] = {
+		{ "image/png",  ".png"  },
+		{ "image/jpeg", ".jpg"  },
+		{ "image/jpeg", ".jpeg" },
+		{ "image/webp", ".webp" },
+		{ "image/gif",  ".gif"  }
+	};
+	gsize i;
+
+	for (i = 0; i < G_N_ELEMENTS(kinds); i++)
+	{
+		if ((NULL != content_type) &&
+		    g_str_has_prefix(content_type, kinds[i].mime))
+			return kinds[i].mime;
+	}
+
+	for (i = 0; i < G_N_ELEMENTS(kinds); i++)
+	{
+		g_autofree gchar *lower = NULL;
+
+		if (NULL == filename)
+			break;
+
+		lower = g_ascii_strdown(filename, -1);
+
+		if (g_str_has_suffix(lower, kinds[i].suffix))
+			return kinds[i].mime;
+	}
+
+	return NULL;
+}
 
 /*
  * Pulls readable text out of an uploaded file.
@@ -8942,6 +9014,7 @@ venture_web_ui_chat_upload(
 		g_autofree gchar *path = NULL;
 		g_autofree gchar *checksum = NULL;
 		g_autofree gchar *extracted = NULL;
+		const gchar *image_mime;
 		const gchar *filename;
 		GBytes *data;
 
@@ -8981,10 +9054,14 @@ venture_web_ui_chat_upload(
 		extracted = venture_web_extract_text(
 			htmx_uploaded_file_get_content_type(file), filename, data);
 
+		image_mime = venture_web_image_mime_type(
+			htmx_uploaded_file_get_content_type(file), filename);
+
 		document = venture_document_new();
 		g_object_set(document,
 		             "title", filename,
-		             "kind", "attachment",
+		             "kind", (NULL != image_mime) ? "screenshot"
+		                                          : "attachment",
 		             "path", path,
 		             "mime-type",
 		             htmx_uploaded_file_get_content_type(file),
@@ -9018,10 +9095,14 @@ venture_web_ui_chat_upload(
 			(gint64)htmx_uploaded_file_get_size(file));
 
 		/* Whether any text came out, so the client can warn about an
-		 * attachment the model will not actually be able to read. */
+		 * attachment the model will not actually be able to read. An
+		 * image needs no text: the model reads the picture. */
 		json_builder_set_member_name(builder, "text_chars");
 		json_builder_add_int_value(builder, (NULL != extracted)
 			? (gint64)g_utf8_strlen(extracted, -1) : 0);
+
+		json_builder_set_member_name(builder, "is_image");
+		json_builder_add_boolean_value(builder, NULL != image_mime);
 
 		json_builder_end_object(builder);
 		node = json_builder_get_root(builder);
@@ -9044,6 +9125,8 @@ venture_web_chat_attach(
 	const gchar		 *attachments,
 	GString			 *model_text,
 	GString			 *stored_text,
+	GPtrArray		 *images,
+	GPtrArray		 *image_types,
 	GError			**error
 ){
 	g_auto(GStrv) ids = NULL;
@@ -9059,6 +9142,8 @@ venture_web_chat_attach(
 		g_autoptr(VentureEntity) record = NULL;
 		g_autofree gchar *title = NULL;
 		g_autofree gchar *text = NULL;
+		g_autofree gchar *mime_type = NULL;
+		g_autofree gchar *path = NULL;
 		gint64 id;
 
 		id = g_ascii_strtoll(g_strstrip(ids[i]), NULL, 10);
@@ -9074,11 +9159,54 @@ venture_web_chat_attach(
 			return FALSE;
 
 		g_object_get(record, "title", &title,
-		             "extracted-text", &text, NULL);
+		             "extracted-text", &text,
+		             "mime-type", &mime_type,
+		             "path", &path, NULL);
 
 		g_string_append_printf(stored_text,
 			"\n[Attached: %s (document #%" G_GINT64_FORMAT ")]",
 			(NULL != title) ? title : "file", id);
+
+		/*
+		 * An image is handed to the model as an image, not described in
+		 * text. The message still names it so the model can say which
+		 * screenshot a figure came from, and so the stored transcript
+		 * and the pictures agree about order.
+		 */
+		if ((NULL != images) &&
+		    (NULL != venture_web_image_mime_type(mime_type, title)))
+		{
+			g_autoptr(GBytes) bytes = NULL;
+			g_autofree gchar *contents = NULL;
+			gsize length = 0;
+
+			if ((NULL != path) &&
+			    g_file_get_contents(path, &contents, &length, NULL))
+			{
+				bytes = g_bytes_new_take(g_steal_pointer(&contents),
+				                         length);
+				g_ptr_array_add(images, g_bytes_ref(bytes));
+				g_ptr_array_add(image_types, g_strdup(
+					venture_web_image_mime_type(mime_type,
+					                            title)));
+
+				g_string_append_printf(model_text,
+					"\n\n[Image %u: %s (document #%"
+					G_GINT64_FORMAT ")]",
+					images->len,
+					(NULL != title) ? title : "screenshot",
+					id);
+				continue;
+			}
+
+			/* The record exists but the file is gone: say so
+			 * rather than answering about an image nobody sent. */
+			g_string_append_printf(model_text,
+				"\n\n[Image %s (document #%" G_GINT64_FORMAT
+				") could not be read from disk.]",
+				(NULL != title) ? title : "attachment", id);
+			continue;
+		}
 
 		g_string_append_printf(model_text,
 			"\n\n--- Attached file: %s (document #%" G_GINT64_FORMAT
@@ -9111,6 +9239,292 @@ venture_web_chat_attach(
 	return TRUE;
 }
 
+/* --- Staged changes, in the panel ------------------------------------------ */
+
+/*
+ * Whether a serialised field is bookkeeping rather than a value anybody
+ * decides about.
+ *
+ * Returns: %TRUE if the field should stay out of a human-facing diff
+ */
+static gboolean
+venture_web_field_is_machinery(const gchar *name)
+{
+	static const gchar *const machinery[] = {
+		"type", "id", "uuid", "organization_id", "created_at",
+		"updated_at", "deleted_at", "version", "display_name",
+		"attributes", NULL
+	};
+
+	return g_strv_contains(machinery, name);
+}
+
+/*
+ * Renders one JSON value the way a person reads it rather than the way it
+ * serialises: money as an amount and a currency, strings unquoted, and a
+ * nested object as something short rather than a wall of braces.
+ *
+ * Returns: (transfer full): the display text
+ */
+static gchar *
+venture_web_json_to_display(JsonNode *value)
+{
+	if (JSON_NODE_HOLDS_VALUE(value))
+	{
+		GType held;
+
+		held = json_node_get_value_type(value);
+
+		if (G_TYPE_STRING == held)
+			return g_strdup(json_node_get_string(value));
+
+		if (G_TYPE_BOOLEAN == held)
+			return g_strdup(json_node_get_boolean(value)
+				? "yes" : "no");
+	}
+
+	/* Money serialises as an object; show it as money. */
+	if (JSON_NODE_HOLDS_OBJECT(value))
+	{
+		JsonObject *object;
+
+		object = json_node_get_object(value);
+
+		if (json_object_has_member(object, "amount") &&
+		    json_object_has_member(object, "currency"))
+		{
+			g_autoptr(VentureMoney) money = NULL;
+
+			money = venture_money_new(
+				venture_json_object_get_int(object, "amount", 0),
+				venture_json_object_get_string(object,
+					"currency", "USD"),
+				(guint)venture_json_object_get_int(object,
+					"exponent", 2));
+
+			if (NULL != money)
+				return venture_money_to_display_string(money,
+				                                       TRUE);
+		}
+	}
+
+	return venture_json_to_string(value, FALSE);
+}
+
+/*
+ * Renders every pending confirmation as a card with its diff and the two
+ * buttons that decide it.
+ *
+ * Until this existed the write-confirmation policy had no browser at all:
+ * the AI would stage a change, announce it, and the only way to apply it
+ * was a curl against /api/v1/confirmations. A staged write nobody can
+ * approve is a feature that reads as a bug.
+ */
+static void
+venture_web_chat_append_confirmations(
+	VentureWebServer	*self,
+	GString			*html,
+	GHashTable		*already_seen
+){
+	g_autoptr(GPtrArray) pending = NULL;
+	VentureAiService *service;
+	guint i;
+
+	service = venture_context_get_ai_service(self->context);
+
+	if (NULL == service)
+		return;
+
+	pending = venture_ai_service_list_pending(service);
+
+	for (i = 0; (NULL != pending) && (i < pending->len); i++)
+	{
+		VentureAiConfirmation *confirmation;
+		JsonNode *diff;
+		const gchar *id;
+
+		confirmation = g_ptr_array_index(pending, i);
+		id = venture_ai_confirmation_get_id(confirmation);
+
+		/*
+		 * Only what this turn staged. Rendering everything pending
+		 * would repeat a card the log already shows, and two cards
+		 * with one id is worse than cosmetic: the decided card is
+		 * removed by id, so clicking the second would delete the
+		 * first and leave the one just decided sitting there.
+		 */
+		if ((NULL != already_seen) &&
+		    g_hash_table_contains(already_seen, id))
+			continue;
+
+		g_string_append(html, "<div class=\"confirm-card\" "
+		                      "id=\"confirm-");
+		venture_html_escape_append(html, id);
+		g_string_append(html, "\"><h4>Waiting for your approval</h4><p>");
+		venture_html_escape_append(html,
+			venture_ai_confirmation_get_summary(confirmation));
+		g_string_append(html, "</p>");
+
+		/* The field-by-field change, so approving is a decision about
+		 * values rather than about a sentence describing them. */
+		diff = venture_ai_confirmation_get_diff(confirmation);
+
+		if ((NULL != diff) && JSON_NODE_HOLDS_OBJECT(diff))
+		{
+			JsonObject *object;
+			GList *members;
+			GList *m;
+			guint shown;
+
+			object = json_node_get_object(diff);
+			members = json_object_get_members(object);
+			shown = 0;
+
+			g_string_append(html, "<div class=\"confirm-diff\">");
+
+			for (m = members; NULL != m; m = m->next)
+			{
+				g_autofree gchar *rendered = NULL;
+				JsonNode *value;
+
+				/*
+				 * Only the fields a person is actually deciding
+				 * about. The identity spine and the timestamps
+				 * are machinery: shown here they bury the two
+				 * lines that matter under eight that never
+				 * differ, and an approval nobody reads is the
+				 * same as no approval at all.
+				 */
+				if (venture_web_field_is_machinery(m->data))
+					continue;
+
+				value = json_object_get_member(object, m->data);
+
+				/* An unset field is not a change. */
+				if ((NULL == value) || JSON_NODE_HOLDS_NULL(value))
+					continue;
+
+				rendered = venture_web_json_to_display(value);
+
+				if (venture_string_is_empty(rendered))
+					continue;
+
+				g_string_append(html, "<div><span class=\"add\">");
+				venture_html_escape_append(html, m->data);
+				g_string_append(html, "</span>: ");
+				venture_html_escape_append(html, rendered);
+				g_string_append(html, "</div>");
+				shown++;
+			}
+
+			if (0 == shown)
+				g_string_append(html, "<div class=\"muted\">"
+				                      "No field values</div>");
+
+			g_string_append(html, "</div>");
+			g_list_free(members);
+		}
+
+		g_string_append(html, "<div class=\"confirm-actions\">");
+		g_string_append_printf(html,
+			"<button class=\"btn btn-primary btn-sm\" type=\"button\" "
+			"hx-post=\"/ui/chat/confirm/%s/approve\" "
+			"hx-target=\"#chat-log\" hx-swap=\"beforeend\">"
+			"Apply</button>"
+			"<button class=\"btn btn-sm\" type=\"button\" "
+			"hx-post=\"/ui/chat/confirm/%s/reject\" "
+			"hx-target=\"#chat-log\" hx-swap=\"beforeend\">"
+			"Discard</button></div></div>", id, id);
+	}
+}
+
+/*
+ * POST /ui/chat/confirm/:id/{approve,reject} - decide one staged change.
+ */
+static HtmxResponse *
+venture_web_ui_chat_decide(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data,
+	gboolean	 approve
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GString) html = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureAiService *service;
+	const gchar *id;
+	gboolean decided;
+
+	self = user_data;
+	principal = venture_auth_authenticate(self->auth, request);
+
+	/* Applying a staged write is a write; deciding is the editor's. */
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	service = venture_context_get_ai_service(self->context);
+
+	if (NULL == service)
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "AI is not configured on this instance");
+		return venture_web_error_response(error);
+	}
+
+	id = g_hash_table_lookup(params, "id");
+	decided = approve
+		? venture_ai_service_approve(service, id, principal, &error)
+		: venture_ai_service_reject(service, id, principal, &error);
+
+	html = g_string_new("<div class=\"msg ai\">"
+	                    "<span class=\"msg-avatar\">\xe2\x9c\xa6</span>"
+	                    "<div class=\"msg-content\">");
+
+	if (!decided)
+	{
+		g_string_append(html, "<div class=\"notice negative\">");
+		venture_html_escape_append(html, error->message);
+		g_string_append(html, "</div>");
+	}
+	else
+	{
+		g_string_append_printf(html, "<div class=\"notice %s\">%s</div>",
+			approve ? "positive" : "info",
+			approve ? "Applied and recorded in the audit log."
+			        : "Discarded. Nothing was changed.");
+	}
+
+	/* The card the buttons lived in is gone -- the confirmation is no
+	 * longer pending -- so remove it out of band rather than leaving a
+	 * decided change looking like it still needs deciding. */
+	g_string_append_printf(html,
+		"</div></div><div id=\"confirm-%s\" hx-swap-oob=\"delete\"></div>",
+		(NULL != id) ? id : "");
+
+	return venture_web_html_response(
+		g_string_free(g_steal_pointer(&html), FALSE), 200);
+}
+
+static HtmxResponse *
+venture_web_ui_chat_approve(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	return venture_web_ui_chat_decide(request, params, user_data, TRUE);
+}
+
+static HtmxResponse *
+venture_web_ui_chat_reject(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	return venture_web_ui_chat_decide(request, params, user_data, FALSE);
+}
+
 /*
  * POST /ui/chat - one exchange, persisted on both sides.
  */
@@ -9127,6 +9541,9 @@ venture_web_ui_chat(
 	g_autoptr(GString) html = NULL;
 	g_autoptr(GString) stored_text = NULL;
 	g_autoptr(GString) model_text = NULL;
+	g_autoptr(GPtrArray) images = NULL;
+	g_autoptr(GPtrArray) image_types = NULL;
+	g_autoptr(GHashTable) staged_before = NULL;
 	g_autoptr(GDateTime) now = NULL;
 	g_autoptr(GError) error = NULL;
 	VentureActor actor;
@@ -9210,11 +9627,35 @@ venture_web_ui_chat(
 	 */
 	stored_text = g_string_new(message);
 	model_text = g_string_new(message);
+	images = g_ptr_array_new_with_free_func((GDestroyNotify)g_bytes_unref);
+	image_types = g_ptr_array_new_with_free_func(g_free);
 
 	if (!venture_web_chat_attach(self,
 		htmx_request_get_form_value(request, "attachments"),
-		model_text, stored_text, &error))
+		model_text, stored_text, images, image_types, &error))
 		return venture_web_error_response(error);
+
+	/* answer_with_images wants a NULL-terminated array of types. */
+	g_ptr_array_add(image_types, NULL);
+
+	/* What was already waiting before this turn, so the reply shows the
+	 * changes this turn staged rather than every one outstanding. */
+	staged_before = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+	                                      NULL);
+
+	if (NULL != venture_context_get_ai_service(self->context))
+	{
+		g_autoptr(GPtrArray) already = NULL;
+		guint p;
+
+		already = venture_ai_service_list_pending(
+			venture_context_get_ai_service(self->context));
+
+		for (p = 0; (NULL != already) && (p < already->len); p++)
+			g_hash_table_add(staged_before, g_strdup(
+				venture_ai_confirmation_get_id(
+					g_ptr_array_index(already, p))));
+	}
 
 	/* Fetched before the new question is stored, so the model is not
 	 * shown the question twice. */
@@ -9242,9 +9683,11 @@ venture_web_ui_chat(
 	{
 		g_autofree gchar *answer = NULL;
 
-		answer = venture_ai_service_answer_in_thread(
+		answer = venture_ai_service_answer_with_images(
 			venture_context_get_ai_service(self->context), history,
-			model_text->str, principal, &error);
+			model_text->str, images,
+			(const gchar *const *)image_types->pdata, principal,
+			&error);
 
 		if (NULL == answer)
 		{
@@ -9276,6 +9719,11 @@ venture_web_ui_chat(
 
 			venture_web_chat_append_message(html,
 				VENTURE_CHAT_ROLE_ASSISTANT, answer);
+
+			/* Anything the turn staged, with the buttons that
+			 * decide it. */
+			venture_web_chat_append_confirmations(self, html,
+			                                      staged_before);
 		}
 	}
 
@@ -9745,6 +10193,10 @@ venture_web_server_new(
 	                 venture_web_ui_chat_thread_delete, self);
 	htmx_router_post(router, "/ui/chat/upload", venture_web_ui_chat_upload,
 	                 self);
+	htmx_router_post(router, "/ui/chat/confirm/:id/approve",
+	                 venture_web_ui_chat_approve, self);
+	htmx_router_post(router, "/ui/chat/confirm/:id/reject",
+	                 venture_web_ui_chat_reject, self);
 
 	/* API */
 	htmx_router_get(router, "/api/v1/health", venture_web_api_health, self);

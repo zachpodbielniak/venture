@@ -158,6 +158,42 @@ venture_ai_service_answer_in_thread(
 );
 
 /**
+ * venture_ai_service_answer_with_images:
+ * @self: a #VentureAiService
+ * @history: (nullable) (element-type VentureChatMessage): the conversation
+ *   so far, oldest first
+ * @message: what the operator asked
+ * @images: (nullable) (element-type GBytes): images attached to this turn,
+ *   in the order they were attached
+ * @mime_types: (nullable) (array zero-terminated=1): the MIME type of each
+ *   image, parallel to @images
+ * @principal: (nullable): who is asking, for the audit trail
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Like venture_ai_service_answer_in_thread(), but the model is also shown
+ * the attached images. This is what turns "here are screenshots of the
+ * campaign setup" into staged records: a vision-capable model reads the
+ * figures off the picture and calls the ordinary create tool with them,
+ * under the ordinary confirmation policy.
+ *
+ * Images are attached to this turn only. The stored transcript names the
+ * documents instead, so a long conversation does not re-upload every
+ * screenshot on every later question.
+ *
+ * Returns: (transfer full) (nullable): the reply, or %NULL on error
+ */
+gchar *
+venture_ai_service_answer_with_images(
+	VentureAiService	 *self,
+	GPtrArray		 *history,
+	const gchar		 *message,
+	GPtrArray		 *images,
+	const gchar *const	 *mime_types,
+	VentureAuthPrincipal	 *principal,
+	GError			**error
+);
+
+/**
  * venture_ai_service_get_policy:
  * @self: a #VentureAiService
  *

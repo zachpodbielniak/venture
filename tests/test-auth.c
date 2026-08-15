@@ -1034,6 +1034,84 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/e/sale/import", NULL, "x", NULL, NULL),
 		==, SOUP_STATUS_FOUND);
+
+	/*
+	 * Deciding a staged AI write applies it to the books. Anonymous must
+	 * not reach either verdict -- an unauthenticated approve is a way to
+	 * commit a change nobody with an account ever saw.
+	 */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/ui/chat/confirm/abc123/approve", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/ui/chat/confirm/abc123/reject", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+}
+
+/*
+ * An uploaded screenshot must be recognised as an image: stored with no
+ * extracted text, flagged so the client shows a thumbnail instead of a "no
+ * text" warning, and kept as a document the model can be handed later.
+ *
+ * The flag is the load-bearing part. Treated as an ordinary attachment, a
+ * screenshot reaches the model as "[No text could be extracted]" -- so it
+ * answers about a picture it was never shown, which reads as the model
+ * hallucinating rather than as a plumbing bug.
+ */
+static void
+test_auth_screenshot_upload_is_an_image(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	/* A one-pixel PNG, complete with the NUL bytes that make it a real
+	 * binary payload rather than text wearing a .png suffix. */
+	static const guchar png[] = {
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00,
+		0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01,
+		0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+		0x15, 0xc4, 0x89
+	};
+	static const gchar head[] =
+		"--IMGBND\r\n"
+		"Content-Disposition: form-data; name=\"file\"; "
+		"filename=\"campaign.png\"\r\n"
+		"Content-Type: image/png\r\n"
+		"\r\n";
+	static const gchar tail[] = "\r\n--IMGBND--\r\n";
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *response = NULL;
+	g_autofree gchar *document = NULL;
+	g_autoptr(GBytes) body = NULL;
+	GByteArray *raw;
+
+	server_fixture_create_user(fixture, "grace", "g-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	cookie = server_fixture_login(fixture, "grace", "g-long-password");
+
+	raw = g_byte_array_new();
+	g_byte_array_append(raw, (const guchar *)head, strlen(head));
+	g_byte_array_append(raw, png, sizeof(png));
+	g_byte_array_append(raw, (const guchar *)tail, strlen(tail));
+	body = g_byte_array_free_to_bytes(raw);
+
+	g_assert_cmpuint(server_fixture_post_raw(fixture, "/ui/chat/upload",
+		cookie, "multipart/form-data; boundary=IMGBND", body,
+		&response),
+		==, SOUP_STATUS_CREATED);
+
+	/* Flagged an image, and no text was invented for it. */
+	g_assert_nonnull(strstr(response, "\"is_image\" : true"));
+	g_assert_nonnull(strstr(response, "\"text_chars\" : 0"));
+
+	/* Stored as a document, distinguishable from a text attachment. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/api/v1/document/1", cookie, NULL, &document, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(document, "\"kind\" : \"screenshot\""));
+	g_assert_nonnull(strstr(document, "campaign.png"));
+
+	/* The bytes survived the multipart parse intact. */
+	g_assert_nonnull(strstr(document, "\"size_bytes\" : 33"));
 }
 
 /*
@@ -1469,6 +1547,10 @@ main(
 	g_test_add("/auth/csv-import-is-all-or-nothing", ServerFixture, NULL,
 	           server_fixture_set_up,
 	           test_auth_csv_import_is_all_or_nothing,
+	           server_fixture_tear_down);
+	g_test_add("/auth/screenshot-upload-is-an-image", ServerFixture, NULL,
+	           server_fixture_set_up,
+	           test_auth_screenshot_upload_is_an_image,
 	           server_fixture_tear_down);
 
 #undef ADD

@@ -107,6 +107,8 @@ Or open http://127.0.0.1:8747 in a browser. Worth knowing there:
 - =/automations= edits the automation rules with live parser diagnostics;
   =/plugins= configures loaded plugins, and plugins follow the changes
   without a restart.
+- The AI panel takes attachments and screenshots — paste an ad dashboard
+  and it stages the campaign for approval.
 - =?= shows the keyboard shortcuts.
 
 ** Ask about it

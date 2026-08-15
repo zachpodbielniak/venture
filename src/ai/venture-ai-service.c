@@ -520,6 +520,68 @@ venture_ai_stage_change(
 	g_autoptr(GDateTime) now = NULL;
 	VentureAiConfirmation *confirmation;
 
+	/*
+	 * A staged change that is already waiting is not staged twice.
+	 *
+	 * Models retry: a tool that answers "awaiting_approval" rather than
+	 * "ok" reads to some of them as a failure worth another go, and the
+	 * operator then faces three identical cards for one campaign and has
+	 * to work out whether approving all three creates three records. It
+	 * would. Returning the existing confirmation makes the retry a no-op
+	 * and keeps the count of cards equal to the count of changes.
+	 */
+	{
+		GHashTableIter iter;
+		gpointer value;
+
+		g_hash_table_iter_init(&iter, self->pending);
+
+		while (g_hash_table_iter_next(&iter, NULL, &value))
+		{
+			VentureAiConfirmation *existing;
+
+			existing = value;
+
+			if (VENTURE_CONFIRMATION_STATE_PENDING != existing->state)
+				continue;
+
+			if (0 != g_strcmp0(existing->tool_name, tool_name))
+				continue;
+
+			if (0 != g_strcmp0(existing->summary, summary))
+				continue;
+
+			/*
+			 * Same tool, same summary, and the same field values:
+			 * the model asked for a change it has already asked
+			 * for. Replace the staged object so the newest attempt
+			 * wins -- a retry usually carries more of the fields,
+			 * not fewer -- but keep the one card.
+			 */
+			g_set_object(&existing->staged, staged);
+			g_clear_pointer(&existing->diff, json_node_unref);
+			existing->diff = (NULL != diff) ? json_node_ref(diff)
+			                               : NULL;
+
+			builder = json_builder_new();
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "status");
+			json_builder_add_string_value(builder,
+			                              "awaiting_approval");
+			json_builder_set_member_name(builder, "confirmation_id");
+			json_builder_add_string_value(builder, existing->id);
+			json_builder_set_member_name(builder, "note");
+			json_builder_add_string_value(builder,
+				"This change was already staged; it is still "
+				"waiting for the operator. Do not call the tool "
+				"again -- tell them it is waiting.");
+			json_builder_end_object(builder);
+			node = json_builder_get_root(builder);
+
+			return venture_ai_tool_result(node);
+		}
+	}
+
 	confirmation = g_object_new(VENTURE_TYPE_AI_CONFIRMATION, NULL);
 	confirmation->id = venture_generate_token(8);
 	confirmation->summary = g_strdup(summary);
@@ -1262,7 +1324,29 @@ venture_ai_service_build_prompt(VentureAiService *self)
 		"a receipt, extract the date, the amount and currency, who it was "
 		"paid to and what for, then stage the matching expense or sale "
 		"with venture_create, citing the document id in the memo. Say "
-		"which values you read from the file and which you inferred.\n\n");
+		"which values you read from the file and which you inferred.\n\n"
+		/*
+		 * The screenshot workflow. Stated concretely because the failure
+		 * mode of a vague instruction is a model that describes the
+		 * picture instead of filing it -- and because the useful default
+		 * is one record per screenshot, not one record for the batch.
+		 */
+		"Screenshots work the same way, read directly. The common case is "
+		"a dashboard from an advertising platform -- Amazon Ads, Etsy, "
+		"Meta -- so when you are shown one: call venture_list_types to "
+		"see what a campaign record holds, read every figure you can off "
+		"the image (name, status, budget, spend, impressions, clicks, "
+		"conversions, dates), and stage one venture_create per campaign "
+		"shown. Several screenshots of the same campaign are one record, "
+		"not several; a screenshot listing several campaigns is one "
+		"record each.\n\n"
+		"Two rules when reading an image. Never guess a number you cannot "
+		"actually read -- leave the field out and say you left it out, "
+		"because a plausible invented figure in a spend column is worse "
+		"than a blank one. And check whether the record already exists "
+		"with venture_search before creating it, so re-uploading last "
+		"week's screenshot updates the campaign rather than duplicating "
+		"it.\n\n");
 
 	if (VENTURE_AI_POLICY_READ_ONLY == self->policy)
 	{
@@ -1393,15 +1477,18 @@ venture_ai_service_new(
 /* --- Answering ----------------------------------------------------------- */
 
 gchar *
-venture_ai_service_answer_in_thread(
+venture_ai_service_answer_with_images(
 	VentureAiService	 *self,
 	GPtrArray		 *history,
 	const gchar		 *message,
+	GPtrArray		 *images,
+	const gchar *const	 *mime_types,
 	VentureAuthPrincipal	 *principal,
 	GError			**error
 ){
 	g_autoptr(GError) local_error = NULL;
 	g_autofree gchar *reply = NULL;
+	AiMessage *question;
 	GList *messages = NULL;
 	guint i;
 
@@ -1445,7 +1532,32 @@ venture_ai_service_answer_in_thread(
 				: ai_message_new_user(body));
 	}
 
-	messages = g_list_append(messages, ai_message_new_user(message));
+	/*
+	 * The images ride on this turn's question rather than as separate
+	 * messages: a screenshot means nothing without the sentence that
+	 * says what to do with it, and providers pair them by message.
+	 */
+	question = ai_message_new_user(message);
+
+	for (i = 0; (NULL != images) && (i < images->len); i++)
+	{
+		g_autoptr(AiImageContent) content = NULL;
+		const gchar *mime_type = NULL;
+
+		if (NULL != mime_types)
+			mime_type = mime_types[i];
+
+		content = ai_image_content_new_from_bytes(
+			g_ptr_array_index(images, i), mime_type);
+
+		if (NULL == content)
+			continue;
+
+		ai_message_add_content_block(question,
+			AI_CONTENT_BLOCK(g_object_ref(content)));
+	}
+
+	messages = g_list_append(messages, question);
 
 	reply = ai_tool_executor_run(self->executor, self->provider, messages,
 	                             self->system_prompt, self->max_tokens, NULL,
@@ -1463,6 +1575,19 @@ venture_ai_service_answer_in_thread(
 	}
 
 	return g_steal_pointer(&reply);
+}
+
+gchar *
+venture_ai_service_answer_in_thread(
+	VentureAiService	 *self,
+	GPtrArray		 *history,
+	const gchar		 *message,
+	VentureAuthPrincipal	 *principal,
+	GError			**error
+){
+	return venture_ai_service_answer_with_images(self, history, message,
+	                                             NULL, NULL, principal,
+	                                             error);
 }
 
 gchar *

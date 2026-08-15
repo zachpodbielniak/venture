@@ -394,7 +394,7 @@
 		}
 	}
 
-	function addAttachChip(id, name, textChars) {
+	function addAttachChip(id, name, textChars, isImage, file) {
 		var box = document.getElementById("chat-attachments");
 		var chip = document.createElement("span");
 		var label = document.createElement("span");
@@ -408,14 +408,34 @@
 		chip.dataset.docId = String(id);
 		chip.dataset.name = name;
 
+		/*
+		 * A thumbnail from the local file, not a round trip: the bytes
+		 * are already in the browser, and a screenshot you can see is
+		 * how you notice you attached the wrong window.
+		 */
+		if (isImage && file && window.URL && window.URL.createObjectURL) {
+			var thumb = document.createElement("img");
+
+			thumb.className = "attach-thumb";
+			thumb.alt = "";
+			thumb.src = window.URL.createObjectURL(file);
+			thumb.addEventListener("load", function () {
+				window.URL.revokeObjectURL(thumb.src);
+			});
+			chip.appendChild(thumb);
+		}
+
 		label.className = "attach-name";
 		label.textContent = name;
 		chip.appendChild(label);
 
-		/* A file whose text could not be extracted still attaches -- the
+		/*
+		 * A file whose text could not be extracted still attaches -- the
 		 * record is kept -- but the operator should know the model will
-		 * not be able to read it. */
-		if (!textChars) {
+		 * not be able to read it. An image needs no text: the model
+		 * reads the picture itself.
+		 */
+		if (!textChars && !isImage) {
 			var warn = document.createElement("span");
 
 			warn.className = "attach-warn";
@@ -471,7 +491,8 @@
 
 			return response.json();
 		}).then(function (body) {
-			addAttachChip(body.id, body.name, body.text_chars);
+			addAttachChip(body.id, body.name, body.text_chars,
+			              body.is_image, file);
 		}).catch(function (failure) {
 			toast("Could not attach " + file.name + ": "
 				+ failure.message, "negative", 6000);
@@ -498,6 +519,48 @@
 			 * change. */
 			input.value = "";
 		});
+
+		/*
+		 * Paste a screenshot straight into the composer. A screen
+		 * capture lands on the clipboard, not on disk, and making the
+		 * operator save it to a file first just to attach it is the
+		 * step worth removing.
+		 */
+		{
+			var composer = document.querySelector(".chat-input textarea");
+
+			if (composer) {
+				composer.addEventListener("paste", function (event) {
+					var items = event.clipboardData
+						&& event.clipboardData.items;
+					var i;
+
+					if (!items) {
+						return;
+					}
+
+					for (i = 0; i < items.length; i++) {
+						if (items[i].kind !== "file"
+						    || items[i].type.indexOf("image/") !== 0) {
+							continue;
+						}
+
+						var file = items[i].getAsFile();
+
+						if (file) {
+							/* Pasted captures are all named
+							 * "image.png"; the time tells them
+							 * apart in the document list. */
+							event.preventDefault();
+							uploadAttachment(new File([file],
+								"pasted-" + Date.now() + "."
+								+ (file.type.split("/")[1] || "png"),
+								{ type: file.type }));
+						}
+					}
+				});
+			}
+		}
 	}
 
 	/*

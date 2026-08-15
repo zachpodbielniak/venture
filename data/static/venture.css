@@ -1258,6 +1258,15 @@ body.ai-resizing { user-select: none; cursor: ew-resize; }
 	max-width: 220px;
 }
 
+.attach-thumb {
+	width: 28px;
+	height: 28px;
+	object-fit: cover;
+	border-radius: var(--radius-sm);
+	border: 1px solid var(--border);
+	flex: none;
+}
+
 .attach-warn {
 	color: var(--warning);
 	font-size: 11px;
