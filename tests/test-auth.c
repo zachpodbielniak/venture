@@ -738,6 +738,120 @@ server_fixture_get_anonymous(
 	return soup_message_get_status(message);
 }
 
+/*
+ * Requests @path with an optional Cookie header and an optional form POST
+ * body, returning the status and optionally the body text.
+ */
+static guint
+server_fixture_request(
+	ServerFixture	 *fixture,
+	const gchar	 *method,
+	const gchar	 *path,
+	const gchar	 *cookie,
+	const gchar	 *form_body,
+	gchar		**out_body,
+	gchar		**out_set_cookie
+){
+	g_autoptr(SoupMessage) message = NULL;
+	g_autofree gchar *url = NULL;
+	RequestResult outcome = { FALSE, NULL, NULL };
+
+	url = g_strdup_printf("http://127.0.0.1:%u%s", fixture->port, path);
+	message = soup_message_new(method, url);
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+
+	if (NULL != cookie)
+		soup_message_headers_append(
+			soup_message_get_request_headers(message), "Cookie",
+			cookie);
+
+	if (NULL != form_body)
+	{
+		g_autoptr(GBytes) bytes = NULL;
+
+		bytes = g_bytes_new(form_body, strlen(form_body));
+		soup_message_set_request_body_from_bytes(message,
+			"application/x-www-form-urlencoded", bytes);
+	}
+
+	soup_session_send_and_read_async(fixture->session, message,
+	                                 G_PRIORITY_DEFAULT, NULL,
+	                                 server_fixture_request_done, &outcome);
+
+	while (!outcome.done)
+		g_main_context_iteration(NULL, TRUE);
+
+	if (NULL != outcome.error)
+		g_error("%s %s: %s", method, path, outcome.error->message);
+
+	if (NULL != out_body)
+		*out_body = g_strndup(g_bytes_get_data(outcome.body, NULL),
+		                      g_bytes_get_size(outcome.body));
+
+	if (NULL != out_set_cookie)
+		*out_set_cookie = g_strdup(soup_message_headers_get_one(
+			soup_message_get_response_headers(message), "Set-Cookie"));
+
+	g_clear_pointer(&outcome.body, g_bytes_unref);
+	g_clear_error(&outcome.error);
+
+	return soup_message_get_status(message);
+}
+
+/*
+ * Creates an active account directly in the fixture's database, so a test
+ * can sign in over HTTP as somebody specific.
+ */
+static void
+server_fixture_create_user(
+	ServerFixture	*fixture,
+	const gchar	*username,
+	const gchar	*password,
+	VentureUserRole	 role,
+	gint64		*out_id
+){
+	g_autoptr(VentureUser) user = NULL;
+
+	user = venture_user_new();
+	g_object_set(user, "username", username, "role", role, "active", TRUE,
+	             NULL);
+	g_assert_true(venture_user_set_password(user, password, 100000, NULL));
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(user), NULL, NULL));
+
+	if (NULL != out_id)
+		*out_id = venture_entity_get_id(VENTURE_ENTITY(user));
+}
+
+/*
+ * Signs in over HTTP and returns the session cookie, name=value only.
+ */
+static gchar *
+server_fixture_login(
+	ServerFixture	*fixture,
+	const gchar	*username,
+	const gchar	*password
+){
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *set_cookie = NULL;
+	gchar *semicolon;
+	guint status;
+
+	body = g_strdup_printf("username=%s&password=%s", username, password);
+	status = server_fixture_request(fixture, "POST", "/login", NULL, body,
+	                                NULL, &set_cookie);
+
+	g_assert_cmpuint(status, ==, SOUP_STATUS_FOUND);
+	g_assert_nonnull(set_cookie);
+
+	semicolon = strchr(set_cookie, ';');
+
+	if (NULL != semicolon)
+		*semicolon = '\0';
+
+	return g_steal_pointer(&set_cookie);
+}
+
 static void
 test_auth_pages_refuse_anonymous_requests(
 	ServerFixture	*fixture,
@@ -776,6 +890,20 @@ test_auth_pages_refuse_anonymous_requests(
 	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/users"),
 	                 ==, SOUP_STATUS_FOUND);
+
+	/* Global search reaches every record type at once, which makes it the
+	 * single worst page to leave unauthenticated. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/search"),
+	                 ==, SOUP_STATUS_FOUND);
+
+	/*
+	 * An unknown path redirects rather than 404s while anonymous: whether
+	 * a page exists is not information for people without a session, and
+	 * a 404/302 split would let one map the route table from outside.
+	 */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+	                                              "/no-such-page-anywhere"),
+	                 ==, SOUP_STATUS_FOUND);
 }
 
 static void
@@ -794,6 +922,12 @@ test_auth_api_refuses_anonymous_requests(
 		"/api/v1/venture-types",
 		"/api/v1/automations",
 		"/api/v1/confirmations",
+		/* The CSV export carries the same rows as the table did. */
+		"/e/sale/export",
+		/* The chat fragments: transcripts of what the operator asked
+		 * about their own finances. */
+		"/ui/chat/threads",
+		"/ui/chat/thread/1",
 		NULL
 	};
 	gsize i;
@@ -806,6 +940,104 @@ test_auth_api_refuses_anonymous_requests(
 
 		g_assert_cmpuint(status, ==, SOUP_STATUS_UNAUTHORIZED);
 	}
+
+	/* The chat POSTs, which write records. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/ui/chat",
+	                                        NULL, "message=hi", NULL, NULL),
+	                 ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+	                                        "/ui/chat/thread/1/delete",
+	                                        NULL, "", NULL, NULL),
+	                 ==, SOUP_STATUS_UNAUTHORIZED);
+
+	/* The comment composer redirects to login like the page it sits on. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+	                                        "/tickets/1/comment", NULL,
+	                                        "body=hi", NULL, NULL),
+	                 ==, SOUP_STATUS_FOUND);
+}
+
+/*
+ * A conversation belongs to the account that had it. Without this property,
+ * any signed-in editor could read what the owner has been asking the AI
+ * about the books -- and the mismatch case must be indistinguishable from a
+ * thread that does not exist, or sequential thread ids would confirm which
+ * conversations are real.
+ */
+static void
+test_auth_chat_threads_are_scoped_per_user(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *alice_cookie = NULL;
+	g_autofree gchar *bob_cookie = NULL;
+	g_autofree gchar *alice_body = NULL;
+	g_autofree gchar *bob_list = NULL;
+	g_autofree gchar *path = NULL;
+	gint64 alice_id;
+	gint64 bob_id;
+	gint64 thread_id;
+
+	server_fixture_create_user(fixture, "alice", "a-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, &alice_id);
+	server_fixture_create_user(fixture, "bob", "b-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, &bob_id);
+
+	/* Alice's conversation, planted directly in the database. */
+	{
+		g_autoptr(VentureChatThread) thread = NULL;
+		g_autoptr(VentureChatMessage) message = NULL;
+
+		thread = venture_chat_thread_new();
+		g_object_set(thread, "title", "alices private numbers",
+		             "user-id", alice_id, NULL);
+		g_assert_true(venture_database_save(fixture->database,
+			VENTURE_ENTITY(thread), NULL, NULL));
+		thread_id = venture_entity_get_id(VENTURE_ENTITY(thread));
+
+		message = venture_chat_message_new();
+		g_object_set(message, "thread-id", thread_id,
+		             "role", VENTURE_CHAT_ROLE_USER,
+		             "body", "how much did I make", NULL);
+		g_assert_true(venture_database_save(fixture->database,
+			VENTURE_ENTITY(message), NULL, NULL));
+	}
+
+	alice_cookie = server_fixture_login(fixture, "alice", "a-long-password");
+	bob_cookie = server_fixture_login(fixture, "bob", "b-long-password");
+
+	path = g_strdup_printf("/ui/chat/thread/%" G_GINT64_FORMAT, thread_id);
+
+	/* Alice reads her own transcript. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path,
+	                                        alice_cookie, NULL, &alice_body,
+	                                        NULL),
+	                 ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(alice_body, "how much did I make"));
+
+	/* Bob gets NOT_FOUND, not FORBIDDEN: indistinguishable from a thread
+	 * that was never created. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path,
+	                                        bob_cookie, NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_NOT_FOUND);
+
+	/* And Bob's resume list does not mention it. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+	                                        "/ui/chat/threads", bob_cookie,
+	                                        NULL, &bob_list, NULL),
+	                 ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(bob_list, "alices private numbers"));
+
+	/* The generic surfaces are owner-only, so an editor cannot reach the
+	 * table the scoping protects by walking around the chat routes. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+	                                        "/api/v1/chat_thread",
+	                                        bob_cookie, NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+	                                        "/api/v1/chat_message",
+	                                        bob_cookie, NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
 }
 
 static void
@@ -881,6 +1113,10 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/health-stays-public", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_health_stays_public,
+	           server_fixture_tear_down);
+	g_test_add("/auth/chat-threads-are-scoped-per-user", ServerFixture, NULL,
+	           server_fixture_set_up,
+	           test_auth_chat_threads_are_scoped_per_user,
 	           server_fixture_tear_down);
 
 #undef ADD

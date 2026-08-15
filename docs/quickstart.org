@@ -90,13 +90,26 @@ venturectl list sale period=this_month
 venturectl types expense                   # every field of a record type
 #+end_src
 
-Or open http://127.0.0.1:8747 in a browser.
+Or open http://127.0.0.1:8747 in a browser. Worth knowing there:
+
+- =Ctrl+K= focuses the search box in the sidebar; =/search= sweeps every
+  record type at once, honouring each type's searchable fields and the
+  active entity's scope.
+- Every list paginates, sorts by clicking a column header (again to
+  reverse), and exports the current view — same search, same sort — as CSV
+  via the Export button.
+- The dashboard shows open tickets by status, the weighted deal pipeline,
+  and the latest audit-trail activity alongside the report cards.
+- =?= shows the keyboard shortcuts.
 
 ** Ask about it
 
-With an API key in the environment for your provider, the chat dock at the
-bottom of every page answers questions and drafts changes. Changes are staged
-for approval, not applied:
+With an API key in the environment for your provider, the *Ask VENTURE*
+launcher at the bottom right of every page opens the AI panel (=Ctrl+/=). It
+answers questions and drafts changes; changes are staged for approval, not
+applied. Conversations are stored server-side, so the panel resumes where
+you left off — even in a different browser — and the ☰ button lists earlier
+ones:
 
 #+begin_src sh
 export ANTHROPIC_API_KEY=sk-...

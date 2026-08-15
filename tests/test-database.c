@@ -198,6 +198,83 @@ test_database_save_and_get(
 	g_assert_cmpint(status, ==, VENTURE_VENTURE_STATUS_ACTIVE);
 }
 
+/*
+ * A stored conversation is replayed to the model when its thread resumes, so
+ * the transcript must come back exactly as written and in the order it was
+ * said. If the role enum did not survive the round trip, a resumed thread
+ * would replay the assistant's words as the user's -- which does not crash
+ * anything, it just quietly makes every resumed conversation nonsense.
+ */
+static void
+test_database_chat_round_trip(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureChatThread) thread = NULL;
+	g_autoptr(GPtrArray) messages = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GError) error = NULL;
+	static const struct
+	{
+		VentureChatRole	 role;
+		const gchar	*body;
+	} lines[] = {
+		{ VENTURE_CHAT_ROLE_USER,      "how were sales in march" },
+		{ VENTURE_CHAT_ROLE_ASSISTANT, "March grossed $1,240."   },
+		{ VENTURE_CHAT_ROLE_USER,      "and the fees on that"    }
+	};
+	gsize i;
+
+	thread = venture_chat_thread_new();
+	g_object_set(thread, "title", "march numbers", "user-id", (gint64)7,
+	             NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(thread),
+	                                   fixture->organization_id);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(thread), NULL, &error));
+	g_assert_no_error(error);
+
+	for (i = 0; i < G_N_ELEMENTS(lines); i++)
+	{
+		g_autoptr(VentureChatMessage) message = NULL;
+
+		message = venture_chat_message_new();
+		g_object_set(message,
+		             "thread-id",
+		             venture_entity_get_id(VENTURE_ENTITY(thread)),
+		             "role", lines[i].role,
+		             "body", lines[i].body,
+		             NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(message),
+		                                   fixture->organization_id);
+		g_assert_true(venture_database_save(fixture->database,
+		                                    VENTURE_ENTITY(message), NULL,
+		                                    &error));
+		g_assert_no_error(error);
+	}
+
+	query = venture_query_new(VENTURE_TYPE_CHAT_MESSAGE);
+	g_assert_true(venture_query_add_filter_int(query, "thread-id",
+		VENTURE_FILTER_OP_EQ,
+		venture_entity_get_id(VENTURE_ENTITY(thread)), NULL));
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+
+	messages = venture_database_find(fixture->database, query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(messages->len, ==, G_N_ELEMENTS(lines));
+
+	for (i = 0; i < messages->len; i++)
+	{
+		g_autofree gchar *body = NULL;
+		VentureChatRole role;
+
+		g_object_get(g_ptr_array_index(messages, i),
+		             "role", &role, "body", &body, NULL);
+		g_assert_cmpint(role, ==, lines[i].role);
+		g_assert_cmpstr(body, ==, lines[i].body);
+	}
+}
+
 static void
 test_database_money_round_trip(
 	Fixture		*fixture,
@@ -1394,6 +1471,7 @@ main(
 	    test_database_seeds_tax_categories_conservatively);
 
 	ADD("/database/save-and-get", test_database_save_and_get);
+	ADD("/database/chat-round-trip", test_database_chat_round_trip);
 	ADD("/database/money-round-trip", test_database_money_round_trip);
 	ADD("/database/null-money-stays-null", test_database_null_money_stays_null);
 	ADD("/database/timestamp-round-trip", test_database_timestamp_round_trip);

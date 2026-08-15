@@ -133,6 +133,31 @@ venture_ai_service_answer(
 );
 
 /**
+ * venture_ai_service_answer_in_thread:
+ * @self: a #VentureAiService
+ * @history: (nullable) (element-type VentureChatMessage): the conversation so
+ *   far, oldest first; the new question must not be included
+ * @message: what the operator asked
+ * @principal: (nullable): who is asking, for the audit trail
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Like venture_ai_service_answer(), but the model sees the whole thread
+ * before the new question, which is what makes a resumed conversation a
+ * conversation. Tool exchanges from earlier turns are not replayed; a tool
+ * result is a snapshot, and the model re-reads rather than trusting one.
+ *
+ * Returns: (transfer full) (nullable): the reply, or %NULL on error
+ */
+gchar *
+venture_ai_service_answer_in_thread(
+	VentureAiService	 *self,
+	GPtrArray		 *history,
+	const gchar		 *message,
+	VentureAuthPrincipal	 *principal,
+	GError			**error
+);
+
+/**
  * venture_ai_service_get_policy:
  * @self: a #VentureAiService
  *

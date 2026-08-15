@@ -26,8 +26,46 @@ The key comes from the provider's conventional environment variable
 (=ANTHROPIC_API_KEY=, =OPENAI_API_KEY=, ...) or from whichever variable
 =ai.api_key_env= names. It never lives in the configuration file.
 
-With no key the server still runs; the chat dock says AI is not configured
+With no key the server still runs; the AI panel says AI is not configured
 rather than silently doing nothing.
+
+* The panel
+
+The assistant lives in a floating launcher at the bottom right of every
+page. Clicking it — or =Ctrl+/= — slides a panel in from the right; =Esc= or
+its close button hides it again. The panel overlays the page rather than
+reflowing it, so opening the assistant never disturbs the table you were
+reading.
+
+** Conversations persist
+
+Every exchange is stored as ordinary records — a =chat_thread= and its
+=chat_message= rows — through the same repository as everything else. That
+buys three things at once:
+
+- *Resume.* The panel remembers which conversation was active (the thread id
+  lives in =localStorage=; the transcript lives on the server) and replays it
+  on the next page load, the next day, or another machine.
+- *History.* When a thread continues, the model is shown the whole stored
+  transcript before the new question, so "and the fees on that?" means
+  something. Earlier tool exchanges are deliberately not replayed — a tool
+  result is a snapshot, and the model re-reads rather than trusting one.
+- *A record.* What you asked the thing with write access to your books is
+  itself worth keeping.
+
+The ☰ button lists previous conversations, newest activity first; =+= starts
+a fresh one; each row has a delete button, and deletion is soft like every
+other delete here.
+
+** Who can read a conversation
+
+The thread's owner, and nobody else. The chat routes refuse to serve a
+thread whose =user-id= is not the caller's — reporting /not found/ rather
+than /forbidden/, so sequential thread ids confirm nothing. The generic
+=/e/chat_thread= and =/api/v1/chat_message= surfaces are owner-only: an
+editor must not be able to read what a colleague has been asking about the
+books by walking around the chat routes. =tests/test-auth.c= pins both
+properties.
 
 * Tools
 
@@ -80,7 +118,7 @@ has moved on from.
 
 * Approving
 
-In the chat dock, or over the API:
+In the AI panel, or over the API:
 
 #+begin_src sh
 curl -H "Authorization: Bearer $VENTURE_TOKEN" \

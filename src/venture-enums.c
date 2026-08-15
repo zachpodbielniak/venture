@@ -216,6 +216,16 @@ VENTURE_DEFINE_ENUM_TYPE(venture_ticket_kind_get_type,
                          "VentureTicketKind",
                          venture_ticket_kind_values)
 
+static const GEnumValue venture_chat_role_values[] = {
+	VE(VENTURE_CHAT_ROLE_USER,      "user"),
+	VE(VENTURE_CHAT_ROLE_ASSISTANT, "assistant"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_chat_role_get_type,
+                         "VentureChatRole",
+                         venture_chat_role_values)
+
 static const GEnumValue venture_company_kind_values[] = {
 	VE(VENTURE_COMPANY_KIND_CUSTOMER, "customer"),
 	VE(VENTURE_COMPANY_KIND_PROSPECT, "prospect"),

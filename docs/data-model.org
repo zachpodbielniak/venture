@@ -67,7 +67,20 @@ Every record derives from =VentureEntity= and carries the same spine:
 - *idea* — scored as opportunity × confidence ÷ effort, so a cheap idea of
   moderate promise outranks an expensive one of high promise. That is usually
   the right answer when the binding constraint is your own time.
-- *research_note*, *task*, *document*.
+- *research_note*, *document*.
+
+** Work
+
+- *ticket*, *ticket_comment* — internal tasks and external support requests,
+  one shape. See the ticket section below.
+
+** Conversations
+
+- *chat_thread*, *chat_message* — AI conversations, stored as ordinary
+  records so a thread survives restarts and resumes anywhere. Scoped to the
+  account that had them: the chat routes serve only the caller's own
+  threads, and the generic record surfaces for these two types are
+  owner-only.
 
 ** Access
 

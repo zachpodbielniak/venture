@@ -203,6 +203,14 @@ VENTURE_DECLARE_ENTITY(VentureTicketComment, venture_ticket_comment,
 #define VENTURE_TYPE_DOCUMENT (venture_document_get_type())
 VENTURE_DECLARE_ENTITY(VentureDocument, venture_document, DOCUMENT)
 
+/* --- AI conversations ----------------------------------------------------- */
+
+#define VENTURE_TYPE_CHAT_THREAD (venture_chat_thread_get_type())
+VENTURE_DECLARE_ENTITY(VentureChatThread, venture_chat_thread, CHAT_THREAD)
+
+#define VENTURE_TYPE_CHAT_MESSAGE (venture_chat_message_get_type())
+VENTURE_DECLARE_ENTITY(VentureChatMessage, venture_chat_message, CHAT_MESSAGE)
+
 /* --- Access -------------------------------------------------------------- */
 
 #define VENTURE_TYPE_USER (venture_user_get_type())

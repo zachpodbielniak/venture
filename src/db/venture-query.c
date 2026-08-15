@@ -714,6 +714,16 @@ venture_query_apply_query_string(
 			continue;
 		}
 
+		/*
+		 * The web UI's spelling of offset. It cannot be translated here
+		 * -- the page size is not decided until the caller has applied
+		 * its default limit -- so it is reserved and the web layer does
+		 * the arithmetic. Left unreserved, ?page=2 would be read as a
+		 * filter on a "page" field and refuse the whole request.
+		 */
+		if (0 == g_strcmp0(name, "page"))
+			continue;
+
 		if (0 == g_strcmp0(name, "search"))
 		{
 			venture_query_set_search(self, text);

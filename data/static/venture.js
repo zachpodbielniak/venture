@@ -4,17 +4,19 @@
  * Copyright (C) 2026 Zach Podbielniak
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * Everything here is presentation: theme, the chat dock, toasts, keyboard
+ * Everything here is presentation: theme, the AI panel, toasts, keyboard
  * shortcuts, small table conveniences. All data movement goes through hx-*
  * attributes rendered by the server, so this file never builds a URL or
- * knows a route.
+ * knows a route -- the one exception is resuming the AI thread named in
+ * localStorage, whose URL the server rendered in the first place.
  */
 
 (function (window, document) {
 	"use strict";
 
 	var STORAGE_THEME = "venture.theme";
-	var STORAGE_DOCK = "venture.dock.open";
+	var STORAGE_PANEL = "venture.ai.open";
+	var STORAGE_THREAD = "venture.ai.thread";
 
 	/* ------------------------------------------------------------------ */
 	/* Theme                                                               */
@@ -106,43 +108,54 @@
 	}
 
 	/* ------------------------------------------------------------------ */
-	/* AI chat dock                                                        */
+	/* The AI panel                                                        */
 	/* ------------------------------------------------------------------ */
 
-	function dock() {
-		return document.querySelector(".dock");
+	function panel() {
+		return document.querySelector(".ai-panel");
 	}
 
-	function setDockOpen(open) {
-		var el = dock();
+	function setPanelOpen(open) {
+		var el = panel();
 
 		if (!el) {
 			return;
 		}
 
 		el.classList.toggle("open", open);
+		document.body.classList.toggle("ai-open", open);
 
 		try {
-			window.localStorage.setItem(STORAGE_DOCK, open ? "1" : "0");
+			window.localStorage.setItem(STORAGE_PANEL, open ? "1" : "0");
 		} catch (e) {
-			/* Not persisting the dock state is not worth failing over. */
+			/* Not persisting the panel state is not worth failing over. */
 		}
 
 		if (open) {
 			var input = el.querySelector(".chat-input textarea");
 
 			if (input) {
+				/* While the slide-in transition runs the panel is
+				 * still visibility:hidden, and focusing a hidden
+				 * element silently does nothing. Try now for the
+				 * reduced-motion case, and again when the
+				 * transition lands for everybody else. */
 				input.focus();
+				window.setTimeout(function () {
+					if (el.classList.contains("open")) {
+						input.focus();
+					}
+				}, 220);
 			}
 
 			scrollChatToBottom();
 		}
 	}
 
-	function toggleDock() {
-		var el = dock();
+	function togglePanel() {
+		var el = panel();
 
-		setDockOpen(el ? !el.classList.contains("open") : true);
+		setPanelOpen(el ? !el.classList.contains("open") : true);
 	}
 
 	function scrollChatToBottom() {
@@ -150,6 +163,88 @@
 
 		if (log) {
 			log.scrollTop = log.scrollHeight;
+		}
+	}
+
+	function threadInput() {
+		return document.getElementById("chat-thread");
+	}
+
+	function storedThread() {
+		try {
+			return window.localStorage.getItem(STORAGE_THREAD) || "";
+		} catch (e) {
+			return "";
+		}
+	}
+
+	function rememberThread(id) {
+		try {
+			if (id) {
+				window.localStorage.setItem(STORAGE_THREAD, id);
+			} else {
+				window.localStorage.removeItem(STORAGE_THREAD);
+			}
+		} catch (e) {
+			/* The conversation still works; it just will not resume. */
+		}
+	}
+
+	/*
+	 * The server names the active thread by out-of-band-swapping the hidden
+	 * #chat-thread input. Mirroring that value into localStorage after every
+	 * swap is what lets the next page load -- or next week's session -- pick
+	 * the conversation back up.
+	 */
+	function syncThreadFromInput() {
+		var input = threadInput();
+
+		if (input) {
+			rememberThread(input.value);
+		}
+	}
+
+	/*
+	 * On page load, replay whichever conversation was active. The transcript
+	 * request is an ordinary hx GET, so the response's OOB input also
+	 * restores the hidden field and the panel title.
+	 */
+	function resumeThread() {
+		var id = storedThread();
+		var input = threadInput();
+
+		if (!id || !input || !window.htmx) {
+			return;
+		}
+
+		input.value = id;
+		window.htmx.ajax("GET", "/ui/chat/thread/" + encodeURIComponent(id),
+			"#chat-log");
+	}
+
+	function startNewThread() {
+		var input = threadInput();
+		var log = document.getElementById("chat-log");
+		var title = document.getElementById("ai-panel-title");
+
+		if (input) {
+			input.value = "";
+		}
+
+		rememberThread("");
+
+		if (log) {
+			log.innerHTML = "";
+		}
+
+		if (title) {
+			title.textContent = "Ask VENTURE";
+		}
+
+		var composer = document.querySelector(".chat-input textarea");
+
+		if (composer) {
+			composer.focus();
 		}
 	}
 
@@ -171,6 +266,27 @@
 			textarea.style.height = "auto";
 			textarea.style.height = textarea.scrollHeight + "px";
 		});
+
+		/*
+		 * Clear the box once the request is on its way. The hx runtime
+		 * serialises the form synchronously inside the submit event, so
+		 * a zero timeout is after serialisation but before the reply --
+		 * the composer is ready for the next question while the model
+		 * thinks about this one.
+		 */
+		{
+			var form = textarea.closest("form");
+
+			if (form && !form.ventureClearWired) {
+				form.ventureClearWired = true;
+				form.addEventListener("submit", function () {
+					window.setTimeout(function () {
+						textarea.value = "";
+						textarea.style.height = "auto";
+					}, 0);
+				});
+			}
+		}
 
 		textarea.addEventListener("keydown", function (event) {
 			if (event.key === "Enter" && !event.shiftKey) {
@@ -200,7 +316,7 @@
 	function wireShortcuts() {
 		document.addEventListener("keydown", function (event) {
 			/* Escape always works, including from inside the composer, so
-			 * there is a reliable way out of the dock. */
+			 * there is a reliable way out of the panel. */
 			if (event.key === "Escape") {
 				var open = document.querySelector(".modal-backdrop");
 
@@ -209,16 +325,30 @@
 					return;
 				}
 
-				if (dock() && dock().classList.contains("open")) {
-					setDockOpen(false);
+				if (panel() && panel().classList.contains("open")) {
+					setPanelOpen(false);
 					return;
 				}
 			}
 
-			/* Ctrl+/ toggles the dock from anywhere, typing or not. */
+			/* Ctrl+/ toggles the panel from anywhere, typing or not. */
 			if (event.key === "/" && (event.ctrlKey || event.metaKey)) {
 				event.preventDefault();
-				toggleDock();
+				togglePanel();
+				return;
+			}
+
+			/* Ctrl+K goes to search from anywhere, like every other tool
+			 * with a command bar. */
+			if (event.key === "k" && (event.ctrlKey || event.metaKey)) {
+				var global = document.querySelector("[data-global-search]");
+
+				if (global) {
+					event.preventDefault();
+					global.focus();
+					global.select();
+				}
+
 				return;
 			}
 
@@ -227,7 +357,8 @@
 			}
 
 			if (event.key === "/") {
-				var search = document.querySelector("[data-search-input]");
+				var search = document.querySelector("[data-search-input]")
+					|| document.querySelector("[data-global-search]");
 
 				if (search) {
 					event.preventDefault();
@@ -253,9 +384,10 @@
 	function showShortcuts() {
 		var rows = [
 			["/", "Focus search"],
-			["Ctrl + /", "Toggle the AI dock"],
+			["Ctrl + K", "Global search"],
+			["Ctrl + /", "Toggle the AI panel"],
 			["t", "Cycle theme"],
-			["Esc", "Close dialog or dock"],
+			["Esc", "Close dialog or panel"],
 			["?", "This list"]
 		];
 
@@ -346,8 +478,8 @@
 
 		document.body.addEventListener("venture:confirmation", function (event) {
 			toast((event.detail.summary || "A change is waiting for approval")
-			      + " — open the AI dock to review", "warning", 8000);
-			setDockOpen(true);
+			      + " — review it in the AI panel", "warning", 8000);
+			setPanelOpen(true);
 		});
 
 		document.body.addEventListener("venture:refresh", function () {
@@ -357,6 +489,10 @@
 		document.body.addEventListener("htmx:afterSwap", function (event) {
 			wireRowLinks(event.detail && event.detail.target);
 			wireComposer();
+
+			/* The server may have OOB-swapped the hidden thread field;
+			 * whatever it says now is the conversation to resume. */
+			syncThreadFromInput();
 
 			if (event.target.closest && event.target.closest(".chat-log")) {
 				scrollChatToBottom();
@@ -400,22 +536,40 @@
 			});
 		});
 
-		document.querySelectorAll(".dock-bar").forEach(function (el) {
-			el.addEventListener("click", function (event) {
-				if (!event.target.closest("button:not([data-dock-toggle])")) {
-					toggleDock();
-				}
+		document.querySelectorAll("[data-ai-toggle]").forEach(function (el) {
+			el.addEventListener("click", togglePanel);
+		});
+
+		document.querySelectorAll("[data-ai-close]").forEach(function (el) {
+			el.addEventListener("click", function () {
+				setPanelOpen(false);
 			});
 		});
 
+		document.querySelectorAll("[data-ai-new]").forEach(function (el) {
+			el.addEventListener("click", startNewThread);
+		});
+
 		try {
-			if (window.localStorage.getItem(STORAGE_DOCK) === "1") {
-				setDockOpen(true);
+			var stored = window.localStorage.getItem(STORAGE_PANEL);
+
+			if (stored === "1") {
+				setPanelOpen(true);
+			} else if (stored === "0" && panel()
+			           && panel().classList.contains("open")) {
+				/* The server rendered it open (ui.chat_dock_expanded)
+				 * but this browser last chose to close it. */
+				setPanelOpen(false);
+			} else if (panel() && panel().classList.contains("open")) {
+				/* Rendered open with no stored preference: make the
+				 * body class agree so the launcher hides. */
+				document.body.classList.add("ai-open");
 			}
 		} catch (e) {
-			/* No stored preference; leave the dock as the server rendered it. */
+			/* No stored preference; leave the panel as rendered. */
 		}
 
+		resumeThread();
 		wireComposer();
 
 	/*
@@ -579,7 +733,7 @@
 		toast: toast,
 		openModal: openModal,
 		setTheme: setTheme,
-		toggleDock: toggleDock,
+		togglePanel: togglePanel,
 		scrollChatToBottom: scrollChatToBottom
 	};
 

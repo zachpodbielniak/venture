@@ -71,8 +71,6 @@
 	--space-7: 48px;
 
 	--sidebar-width: 236px;
-	--dock-height: 52px;
-	--dock-height-open: min(60vh, 560px);
 
 	--font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
 	        Arial, "Noto Sans", sans-serif;
@@ -206,8 +204,7 @@ hr {
 .app {
 	display: grid;
 	grid-template-columns: var(--sidebar-width) 1fr;
-	grid-template-rows: 1fr auto;
-	grid-template-areas: "sidebar main" "dock dock";
+	grid-template-areas: "sidebar main";
 	min-height: 100vh;
 }
 
@@ -237,7 +234,7 @@ hr {
 .main {
 	grid-area: main;
 	padding: var(--space-5) var(--space-6);
-	padding-bottom: calc(var(--dock-height) + var(--space-6));
+	padding-bottom: var(--space-6);
 	max-width: 1440px;
 	width: 100%;
 }
@@ -718,7 +715,7 @@ table.data tfoot td {
               display: flex; justify-content: flex-end; gap: var(--space-2); }
 
 /* Toasts, used for background confirmations and automation notices. */
-.toasts { position: fixed; bottom: calc(var(--dock-height) + var(--space-4));
+.toasts { position: fixed; bottom: var(--space-4);
           right: var(--space-5); display: flex; flex-direction: column-reverse;
           gap: var(--space-2); z-index: 300; }
 .toast {
@@ -743,58 +740,266 @@ table.data tfoot td {
 }
 
 /* ==========================================================================
-   AI chat dock
+   The ticket comment composer
    ========================================================================== */
 
-.dock {
-	grid-area: dock;
-	position: fixed;
-	left: 0;
-	right: 0;
-	bottom: 0;
-	z-index: 150;
-	background: var(--surface-raised);
-	border-top: 1px solid var(--border);
-	box-shadow: var(--shadow-lg);
-	display: flex;
-	flex-direction: column;
-	height: var(--dock-height);
-	transition: height var(--transition);
+.comment-composer { margin-top: var(--space-4); }
+.comment-composer .card-head {
+	padding: var(--space-3) var(--space-4);
+	border-bottom: 1px solid var(--border);
 }
-
-.dock.open { height: var(--dock-height-open); }
-
-.dock-bar {
+.comment-composer .card-head h2 { font-size: 13px; margin: 0; }
+.comment-composer textarea { width: 100%; }
+.comment-actions {
 	display: flex;
 	align-items: center;
+	justify-content: space-between;
 	gap: var(--space-3);
-	padding: 0 var(--space-5);
-	height: var(--dock-height);
-	flex: none;
-	cursor: pointer;
-	user-select: none;
+	margin-top: var(--space-3);
+}
+.comment-actions .checkbox {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--space-2);
+	color: var(--text-muted);
+	font-size: 12px;
 }
 
-.dock-bar .spark {
+/* ==========================================================================
+   Dashboard widgets
+   ========================================================================== */
+
+.dash-grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: var(--space-4);
+	align-items: start;
+}
+
+.dash-grid .dash-wide { grid-column: 1 / -1; }
+
+.dash-card .card-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: var(--space-3) var(--space-4);
+	border-bottom: 1px solid var(--border);
+}
+
+.dash-card .card-head h2 { font-size: 13px; margin: 0; }
+
+.stat-row { display: flex; gap: var(--space-5); flex-wrap: wrap; }
+
+.stat { display: flex; flex-direction: column; gap: 2px; }
+.stat-value { font-size: 22px; font-weight: 700; font-variant-numeric:
+              tabular-nums; }
+.stat-label { color: var(--text-muted); font-size: 12px; }
+
+.activity { list-style: none; margin: 0; padding: var(--space-2) 0; }
+.activity li {
+	padding: var(--space-2) var(--space-4);
+	font-size: 13px;
+	border-bottom: 1px solid var(--border);
+}
+.activity li:last-child { border-bottom: none; }
+.activity-actor { font-weight: 620; }
+.activity-when { color: var(--text-faint); font-size: 11px; margin-left:
+                 var(--space-2); }
+
+@media (max-width: 900px) {
+	.dash-grid { grid-template-columns: 1fr; }
+}
+
+/* ==========================================================================
+   List chrome: sortable headers, the pager
+   ========================================================================== */
+
+.data th a.th-sort { color: inherit; display: inline-block; }
+.data th a.th-sort:hover { color: var(--accent); }
+.data th.sorted a.th-sort { color: var(--accent); }
+
+.pager {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: var(--space-3);
+	padding: var(--space-3);
+	border-top: 1px solid var(--border);
+}
+
+.pager-state { color: var(--text-muted); font-size: 12px; }
+
+/* ==========================================================================
+   Search
+   ========================================================================== */
+
+.sidebar-search { flex: none; }
+.sidebar-search input { width: 100%; font-size: 13px; }
+
+.search-form { margin-bottom: var(--space-4); }
+
+.search-group { margin-bottom: var(--space-4); }
+.search-group .card-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: var(--space-3) var(--space-4);
+	border-bottom: 1px solid var(--border);
+}
+.search-group .card-head h2 { font-size: 13px; text-transform: capitalize;
+                              margin: 0; }
+.search-hits { list-style: none; margin: 0; padding: var(--space-2) 0; }
+.search-hits li a {
+	display: block;
+	padding: var(--space-2) var(--space-4);
+	color: var(--text);
+}
+.search-hits li a:hover { background: var(--surface-sunken);
+                          color: var(--accent); }
+
+/* ==========================================================================
+   The AI surface: a floating launcher, and the panel it opens
+   ========================================================================== */
+
+/*
+ * The launcher floats bottom-right rather than living in the chrome so it is
+ * reachable from any scroll position, and it hides while the panel is open
+ * -- the panel's close button is the same affordance, and two buttons that
+ * both mean "toggle the assistant" is one too many.
+ */
+.ai-fab {
+	position: fixed;
+	right: var(--space-5);
+	bottom: var(--space-5);
+	z-index: 150;
+	display: inline-flex;
+	align-items: center;
+	gap: var(--space-2);
+	padding: 10px 16px;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	background: var(--surface-raised);
+	box-shadow: var(--shadow-lg);
+	cursor: pointer;
+	font: inherit;
+	font-size: 13px;
+	font-weight: 620;
+	color: var(--text);
+	transition: transform var(--transition), box-shadow var(--transition);
+}
+
+.ai-fab:hover { transform: translateY(-1px); box-shadow: var(--shadow-lg); }
+
+.ai-fab .spark, .ai-panel-head .spark {
 	width: 22px; height: 22px; border-radius: 50%;
 	background: linear-gradient(140deg, var(--accent), var(--info));
 	display: grid; place-items: center; color: #fff; font-size: 11px;
 	flex: none;
 }
 
-.dock-bar .dock-title { font-weight: 620; font-size: 13px; }
-.dock-bar .dock-hint { color: var(--text-faint); font-size: 12px;
-                       margin-left: auto; }
+body.ai-open .ai-fab { display: none; }
 
-.dock-body {
-	flex: 1;
+/*
+ * The panel slides in from the right and overlays the content rather than
+ * squeezing it: reflowing a data table every time the assistant opens makes
+ * the whole page feel unstable, and the conversation is a sidebar to the
+ * work, not a competitor for its space.
+ */
+.ai-panel {
+	position: fixed;
+	top: 0;
+	right: 0;
+	bottom: 0;
+	z-index: 160;
+	width: min(420px, 100vw);
+	background: var(--surface-raised);
+	border-left: 1px solid var(--border);
+	box-shadow: var(--shadow-lg);
 	display: flex;
 	flex-direction: column;
-	min-height: 0;
-	border-top: 1px solid var(--border);
+	transform: translateX(100%);
+	visibility: hidden;
+	transition: transform var(--transition), visibility var(--transition);
 }
 
-.dock:not(.open) .dock-body { display: none; }
+.ai-panel.open { transform: none; visibility: visible; }
+
+.ai-panel-head {
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	padding: var(--space-3) var(--space-4);
+	border-bottom: 1px solid var(--border);
+	flex: none;
+}
+
+.ai-panel-title {
+	font-weight: 620;
+	font-size: 13px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	min-width: 0;
+	flex: 1;
+}
+
+.ai-panel-actions { display: flex; gap: var(--space-1); flex: none; }
+
+.ai-panel-body {
+	flex: 1;
+	min-height: 0;
+	border-top: none;
+}
+
+/* The resume list */
+.thread-list { display: flex; flex-direction: column; gap: var(--space-1); }
+
+.thread-item { display: flex; align-items: stretch; gap: var(--space-1); }
+
+.thread-open {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: var(--space-2);
+	padding: var(--space-2) var(--space-3);
+	border: 1px solid transparent;
+	border-radius: var(--radius);
+	background: none;
+	cursor: pointer;
+	font: inherit;
+	font-size: 13px;
+	color: var(--text);
+	text-align: left;
+}
+
+.thread-open:hover { background: var(--surface-sunken);
+                     border-color: var(--border); }
+
+.thread-title {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.thread-when { color: var(--text-faint); font-size: 11px; flex: none; }
+
+.thread-delete {
+	flex: none;
+	width: 28px;
+	border: none;
+	border-radius: var(--radius);
+	background: none;
+	color: var(--text-faint);
+	cursor: pointer;
+	font: inherit;
+	font-size: 14px;
+}
+
+.thread-delete:hover { background: var(--negative-soft);
+                       color: var(--negative); }
 
 .chat-log {
 	flex: 1;
@@ -932,7 +1137,7 @@ table.data tfoot td {
 
 @media (max-width: 900px) {
 	.app { grid-template-columns: 1fr;
-	       grid-template-areas: "sidebar" "main" "dock"; }
+	       grid-template-areas: "sidebar" "main"; }
 
 	.sidebar {
 		position: static;
@@ -949,12 +1154,15 @@ table.data tfoot td {
 	.nav { flex-direction: row; gap: var(--space-1); }
 	.nav-section, .nav-item .count, .sidebar-footer { display: none; }
 	.main { padding: var(--space-4); padding-bottom:
-	        calc(var(--dock-height) + var(--space-5)); }
-	:root { --dock-height-open: 78vh; }
+	        calc(var(--space-5) + 56px); }
+
+	/* On a phone the panel is the screen. */
+	.ai-panel { width: 100vw; }
 }
 
 @media print {
-	.sidebar, .dock, .page-actions, .toasts { display: none !important; }
+	.sidebar, .ai-panel, .ai-fab, .page-actions, .toasts {
+		display: none !important; }
 	.app { grid-template-columns: 1fr; }
 	.main { padding: 0; }
 	.card { border: 1px solid #ccc; box-shadow: none; }

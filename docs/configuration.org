@@ -224,7 +224,8 @@ venture --generate-c-config > ~/.config/venture/config.c
 - *ai* — provider, model, policy, auto-approved tools, prompt extras
 - *automation* — the pods file, module paths, shutdown timeout
 - *plugins* — paths, crispy, declarative venture types
-- *ui* — theme, accent, page size, chat dock
+- *ui* — theme, accent, page size, the AI panel (=ui.chat_dock= gates the
+  launcher and panel entirely; =ui.chat_dock_expanded= starts the panel open)
 - *logging* — level, file, format
 
 Every setting is documented inline in the generated file.

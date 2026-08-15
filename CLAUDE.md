@@ -74,6 +74,15 @@ first seven columns were empty.
   data entry.
 - **Style inputs by exclusion, not enumeration.** Listing which `type=`
   values get themed is how the login form's username box ended up unstyled.
+- **Query-string names are either reserved or filters.** `search`, `order`,
+  `limit`, `offset`, `page` are reserved in `venture_query_apply_query_string`;
+  anything else is parsed as a field filter and refused if the field does not
+  exist. A new UI parameter that is not reserved there breaks every list page
+  with "no field named X".
+- **Chat threads are per-user, not per-entity.** The chat routes must filter
+  on the caller's `user-id` and report NOT_FOUND (never FORBIDDEN) on a
+  mismatch, and `chat_thread`/`chat_message` stay owner-only in
+  `venture_web_require_for_type()`. `tests/test-auth.c` pins this.
 
 ## Dependencies
 

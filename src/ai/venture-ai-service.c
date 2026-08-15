@@ -1034,16 +1034,17 @@ venture_ai_service_new(
 /* --- Answering ----------------------------------------------------------- */
 
 gchar *
-venture_ai_service_answer(
+venture_ai_service_answer_in_thread(
 	VentureAiService	 *self,
+	GPtrArray		 *history,
 	const gchar		 *message,
 	VentureAuthPrincipal	 *principal,
 	GError			**error
 ){
-	g_autoptr(AiMessage) user_message = NULL;
 	g_autoptr(GError) local_error = NULL;
 	g_autofree gchar *reply = NULL;
 	GList *messages = NULL;
+	guint i;
 
 	g_return_val_if_fail(VENTURE_IS_AI_SERVICE(self), NULL);
 
@@ -1059,14 +1060,39 @@ venture_ai_service_answer(
 	self->current_prompt = g_strdup(message);
 	self->current_principal = principal;
 
-	user_message = ai_message_new_user(message);
-	messages = g_list_append(NULL, user_message);
+	/*
+	 * The stored transcript is replayed ahead of the new question, oldest
+	 * first, so a resumed thread picks up mid-conversation rather than the
+	 * model meeting "what about the other one?" with no idea what the one
+	 * was. Tool exchanges are deliberately not replayed: their results
+	 * were true when they ran, and a stale record read is worse context
+	 * than no record at all -- the model can just call the tool again.
+	 */
+	for (i = 0; (NULL != history) && (i < history->len); i++)
+	{
+		VentureChatMessage *stored;
+		g_autofree gchar *body = NULL;
+		VentureChatRole role;
+
+		stored = g_ptr_array_index(history, i);
+		g_object_get(stored, "role", &role, "body", &body, NULL);
+
+		if (venture_string_is_empty(body))
+			continue;
+
+		messages = g_list_append(messages,
+			(VENTURE_CHAT_ROLE_ASSISTANT == role)
+				? ai_message_new_assistant(body)
+				: ai_message_new_user(body));
+	}
+
+	messages = g_list_append(messages, ai_message_new_user(message));
 
 	reply = ai_tool_executor_run(self->executor, self->provider, messages,
 	                             self->system_prompt, self->max_tokens, NULL,
 	                             &local_error);
 
-	g_list_free(messages);
+	g_list_free_full(messages, g_object_unref);
 	self->current_principal = NULL;
 
 	if (NULL == reply)
@@ -1078,6 +1104,17 @@ venture_ai_service_answer(
 	}
 
 	return g_steal_pointer(&reply);
+}
+
+gchar *
+venture_ai_service_answer(
+	VentureAiService	 *self,
+	const gchar		 *message,
+	VentureAuthPrincipal	 *principal,
+	GError			**error
+){
+	return venture_ai_service_answer_in_thread(self, NULL, message,
+	                                           principal, error);
 }
 
 /* --- Confirmations ------------------------------------------------------- */

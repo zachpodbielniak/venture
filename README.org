@@ -140,6 +140,10 @@ does the same thing without scripting.
 
 AI tool calls read freely. Anything that would change a record is staged as a =VentureAiConfirmation= carrying a diff, and applies only after approval. Every applied mutation is audited with the prompt that caused it. The policy is configurable per install and per tool; the default is =confirm_writes=, because a hallucinated tool call that rewrites an expense is a tax problem rather than a UI annoyance.
 
+*** Conversations are records
+
+The assistant lives in a floating launcher that opens a right-hand panel (=Ctrl+/=). Each conversation is a =chat_thread= with =chat_message= rows — stored through the same repository as everything else, so a thread resumes across page loads, restarts and machines, and the model is shown the stored transcript when a thread continues. Threads are scoped to the account that had them: the chat routes 404 on anybody else's thread, and the generic surfaces for the chat types are owner-only.
+
 ** Layout
 
 #+begin_src
@@ -179,7 +183,7 @@ Working and covered by tests:
 
 - the build system, both binaries, static linking of all six dependencies
 - =VentureMoney= and the boxed types
-- =VentureEntity=, the 24 record types, the registry
+- =VentureEntity=, the record types (28 built in), the registry
 - configuration, including the compiled C configuration via crispy
 - the database layer over orm-glib, the query builder, schema derivation
 - the reporting engine and nine built-in reports
@@ -192,9 +196,17 @@ Working and covered by tests:
   pod module and its record-change events
 - a relational CRM: companies, contacts, deals, interactions, and a detail
   page per record listing everything that references it
-- ticketing, internal and external, with a kanban board and a list view
+- ticketing, internal and external, with a kanban board, a list view and an
+  inline comment composer on the ticket page
 - multiple entities, nested, with per-entity scoping and roll-up
 - generated create and edit forms for every record type
+- list views with pagination, sortable columns and CSV export of the
+  current filter
+- global search across every registered record type (=Ctrl+K=)
+- persistent, per-user AI conversations in a floating panel, resumable
+  across sessions
+- a dashboard with open-ticket counts, the weighted deal pipeline and an
+  activity feed from the audit trail
 - users, roles, password changes and session invalidation on sign-out
 - a container image and two compose files
 

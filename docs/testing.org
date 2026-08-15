@@ -85,6 +85,23 @@ field is the same C type as a short string one. Both were lost at some point,
 and neither looked like an ordering or declaration problem — one showed up as
 a list of empty columns, the other as a Notes box one line tall.
 
+** =test-auth=, on chat conversations
+
+That a stored conversation is readable only by the account that had it: the
+other account gets /not found/ — indistinguishable from a thread that never
+existed, which matters because thread ids are sequential — and its resume
+list does not mention the thread. Also that the generic =/api/v1/chat_*=
+surfaces are owner-only, so the scoping cannot be walked around, and that
+every chat route refuses anonymous callers.
+
+** =test-database=, on the chat transcript
+
+That messages come back in insertion order with the role enum intact. A
+transcript is replayed to the model when a thread resumes; if the role did
+not survive, a resumed conversation would replay the assistant's words as
+the user's — nothing crashes, the conversation just quietly becomes
+nonsense.
+
 ** =test-entity=, on the CRM and ticket shape
 
 That a contact points at a company by reference rather than naming one in

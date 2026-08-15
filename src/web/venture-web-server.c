@@ -195,6 +195,18 @@ venture_web_require_for_type(
 	    (VENTURE_TYPE_API_TOKEN == entity_type))
 		needed = VENTURE_USER_ROLE_OWNER;
 
+	/*
+	 * Chat threads are personal, not business data: an editor listing
+	 * /api/v1/chat_message would be reading every colleague's private
+	 * conversations. The chat UI reaches them through its own routes,
+	 * which filter to the caller's own user-id; the generic surface is
+	 * owner-only so the one person who administers the install can still
+	 * inspect or export them.
+	 */
+	if ((VENTURE_TYPE_CHAT_THREAD == entity_type) ||
+	    (VENTURE_TYPE_CHAT_MESSAGE == entity_type))
+		needed = VENTURE_USER_ROLE_OWNER;
+
 	return venture_auth_require(self->auth, principal, needed, error);
 }
 
@@ -354,6 +366,17 @@ venture_web_page(
 
 	venture_web_append_entity_picker(self, request, html, active);
 
+	/*
+	 * One box that reaches everything. A GET form, so a search is a URL --
+	 * shareable, bookmarkable, and reachable with scripting disabled;
+	 * Ctrl+K only focuses it.
+	 */
+	g_string_append(html,
+		"<form class=\"sidebar-search\" action=\"/search\" method=\"get\">"
+		"<input type=\"search\" name=\"q\" placeholder=\"Search\xe2\x80\xa6\" "
+		"data-global-search title=\"Search everything (Ctrl+K)\">"
+		"</form>");
+
 	{
 		const VentureWebNavLink *links;
 		gsize i;
@@ -421,17 +444,45 @@ venture_web_page(
 	g_string_append(html, content);
 	g_string_append(html, "</main>");
 
-	/* AI dock */
+	/*
+	 * The AI surface: a floating launcher, and a right-hand panel it
+	 * opens. The panel is rendered on every page rather than fetched on
+	 * demand so that opening it costs nothing and a mid-conversation
+	 * navigation does not lose the input box; the transcript inside it is
+	 * what the client fills in, from whichever thread localStorage says
+	 * was active. dock_expanded carries its old meaning forward: start
+	 * with the panel open.
+	 */
 	if (chat_dock)
 	{
-		g_string_append_printf(html, "<section class=\"dock%s\">",
+		g_string_append(html,
+			"<button type=\"button\" class=\"ai-fab\" data-ai-toggle "
+			"title=\"Ask VENTURE (Ctrl+/)\">"
+			"<span class=\"spark\">\xe2\x9c\xa6</span>"
+			"<span class=\"ai-fab-label\">Ask VENTURE</span></button>");
+
+		g_string_append_printf(html, "<aside class=\"ai-panel%s\" "
+		                       "data-ai-panel aria-label=\"AI assistant\">",
 		                       dock_expanded ? " open" : "");
-		g_string_append(html, "<div class=\"dock-bar\">"
-		                      "<span class=\"spark\">\xe2\x9c\xa6</span>"
-		                      "<span class=\"dock-title\">Ask VENTURE</span>"
-		                      "<span class=\"dock-hint\">Ctrl + /</span></div>");
-		g_string_append(html, "<div class=\"dock-body\">");
-		g_string_append(html, "<div class=\"chat-log\" id=\"chat-log\">");
+
+		g_string_append(html,
+			"<div class=\"ai-panel-head\">"
+			"<span class=\"spark\">\xe2\x9c\xa6</span>"
+			"<span class=\"ai-panel-title\" id=\"ai-panel-title\">"
+			"Ask VENTURE</span>"
+			"<div class=\"ai-panel-actions\">"
+			"<button type=\"button\" class=\"btn btn-ghost btn-sm\" "
+			"data-ai-threads title=\"Previous conversations\" "
+			"hx-get=\"/ui/chat/threads\" hx-target=\"#chat-log\" "
+			"hx-swap=\"innerHTML\">\xe2\x98\xb0</button>"
+			"<button type=\"button\" class=\"btn btn-ghost btn-sm\" "
+			"data-ai-new title=\"New conversation\">+</button>"
+			"<button type=\"button\" class=\"btn btn-ghost btn-sm\" "
+			"data-ai-close title=\"Hide (Esc)\">\xc3\x97</button>"
+			"</div></div>");
+
+		g_string_append(html, "<div class=\"ai-panel-body chat-log\" "
+		                      "id=\"chat-log\">");
 
 		if (NULL == venture_context_get_ai_service(self->context))
 		{
@@ -446,12 +497,14 @@ venture_web_page(
 		g_string_append(html,
 			"<form class=\"chat-input\" hx-post=\"/ui/chat\" "
 			"hx-target=\"#chat-log\" hx-swap=\"beforeend\">"
+			"<input type=\"hidden\" id=\"chat-thread\" name=\"thread\" "
+			"value=\"\">"
 			"<textarea name=\"message\" rows=\"1\" "
 			"placeholder=\"Ask about your ventures, or describe a change\">"
 			"</textarea>"
 			"<button class=\"btn btn-primary\" type=\"submit\">Send</button>"
 			"</form>");
-		g_string_append(html, "</div></section>");
+		g_string_append(html, "</aside>");
 	}
 
 	g_string_append(html, "</div>");
@@ -1131,8 +1184,795 @@ venture_web_ui_dashboard(
 		g_string_append(content, "<div style=\"height:16px\"></div>");
 	}
 
+	g_string_append(content, "<div class=\"dash-grid\">");
+
+	/*
+	 * What needs doing. Counts per status rather than a ticket list: the
+	 * dashboard's job is "is anything on fire", and the board is one
+	 * click away for the detail.
+	 */
+	{
+		static const VentureTicketStatus open_statuses[] = {
+			VENTURE_TICKET_STATUS_TRIAGE,
+			VENTURE_TICKET_STATUS_TODO,
+			VENTURE_TICKET_STATUS_IN_PROGRESS,
+			VENTURE_TICKET_STATUS_BLOCKED,
+			VENTURE_TICKET_STATUS_REVIEW
+		};
+		gint64 open_total;
+		gsize s;
+
+		open_total = 0;
+
+		g_string_append(content, "<div class=\"card dash-card\">"
+		                         "<div class=\"card-head\"><h2>Tickets"
+		                         "</h2><a class=\"btn btn-sm\" "
+		                         "href=\"/tickets\">Board</a></div>"
+		                         "<div class=\"card-body\">"
+		                         "<div class=\"stat-row\">");
+
+		for (s = 0; s < G_N_ELEMENTS(open_statuses); s++)
+		{
+			g_autoptr(VentureQuery) query = NULL;
+			gint64 count;
+
+			query = venture_query_new(VENTURE_TYPE_TICKET);
+
+			if (!venture_query_add_filter_int(query, "status",
+			                                  VENTURE_FILTER_OP_EQ,
+			                                  (gint64)open_statuses[s],
+			                                  NULL))
+				continue;
+
+			venture_web_scope_to_active_organization(self, request,
+			                                         query);
+
+			count = venture_database_count(
+				venture_context_get_database(self->context), query,
+				NULL);
+
+			if (count < 0)
+				continue;
+
+			open_total += count;
+
+			g_string_append(content, "<div class=\"stat\">"
+			                         "<span class=\"stat-value\">");
+			g_string_append_printf(content, "%" G_GINT64_FORMAT,
+			                       count);
+			g_string_append(content, "</span>"
+			                         "<span class=\"stat-label\">");
+			venture_html_escape_append(content,
+				venture_enum_to_nick(VENTURE_TYPE_TICKET_STATUS,
+				                     (gint)open_statuses[s]));
+			g_string_append(content, "</span></div>");
+		}
+
+		g_string_append(content, "</div>");
+
+		if (0 == open_total)
+			g_string_append(content, "<p class=\"muted\">Nothing "
+			                         "open. Either impressive or "
+			                         "suspicious.</p>");
+
+		g_string_append(content, "</div></div>");
+	}
+
+	/*
+	 * The pipeline: every open deal, weighted by its probability. Summed
+	 * here rather than in SQL because money summation must refuse mixed
+	 * currencies, and the report engine's rules apply in C.
+	 */
+	{
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) deals = NULL;
+		g_autoptr(VentureMoney) pipeline = NULL;
+		gboolean mixed;
+		guint open_deals;
+		guint d;
+
+		query = venture_query_new(VENTURE_TYPE_DEAL);
+		venture_web_scope_to_active_organization(self, request, query);
+		venture_query_set_limit(query, 1000);
+
+		deals = venture_database_find(
+			venture_context_get_database(self->context), query, NULL);
+
+		mixed = FALSE;
+		open_deals = 0;
+
+		for (d = 0; (NULL != deals) && (d < deals->len); d++)
+		{
+			VentureDeal *deal;
+			g_autoptr(VentureMoney) weighted = NULL;
+			VentureDealStage stage;
+
+			deal = g_ptr_array_index(deals, d);
+			g_object_get(deal, "stage", &stage, NULL);
+
+			if ((VENTURE_DEAL_STAGE_WON == stage) ||
+			    (VENTURE_DEAL_STAGE_LOST == stage))
+				continue;
+
+			open_deals++;
+			weighted = venture_deal_get_weighted_value(deal, NULL);
+
+			if (NULL == weighted)
+				continue;
+
+			if (NULL == pipeline)
+			{
+				pipeline = g_steal_pointer(&weighted);
+			}
+			else
+			{
+				VentureMoney *sum;
+
+				sum = venture_money_add(pipeline, weighted, NULL);
+
+				if (NULL == sum)
+				{
+					/* Two currencies in one pipeline: any
+					 * single figure would be wrong, so no
+					 * figure is shown. */
+					mixed = TRUE;
+					break;
+				}
+
+				g_clear_pointer(&pipeline, venture_money_free);
+				pipeline = sum;
+			}
+		}
+
+		g_string_append(content, "<div class=\"card dash-card\">"
+		                         "<div class=\"card-head\"><h2>Pipeline"
+		                         "</h2><a class=\"btn btn-sm\" "
+		                         "href=\"/e/deal\">Deals</a></div>"
+		                         "<div class=\"card-body\">"
+		                         "<div class=\"stat-row\">");
+
+		g_string_append(content, "<div class=\"stat\">"
+		                         "<span class=\"stat-value\">");
+		g_string_append_printf(content, "%u", open_deals);
+		g_string_append(content, "</span><span class=\"stat-label\">"
+		                         "open</span></div>");
+
+		g_string_append(content, "<div class=\"stat\">"
+		                         "<span class=\"stat-value\">");
+
+		if (mixed)
+		{
+			g_string_append(content, "\xe2\x80\x94");
+		}
+		else if (NULL != pipeline)
+		{
+			g_autofree gchar *text = NULL;
+
+			text = venture_money_to_display_string(pipeline, TRUE);
+			venture_html_escape_append(content, text);
+		}
+		else
+		{
+			g_string_append(content, "0");
+		}
+
+		g_string_append(content, "</span><span class=\"stat-label\">"
+		                         "weighted</span></div>");
+		g_string_append(content, "</div>");
+
+		if (mixed)
+			g_string_append(content, "<p class=\"muted\">Deals in "
+			                         "more than one currency; a single "
+			                         "total would be wrong.</p>");
+
+		g_string_append(content, "</div></div>");
+	}
+
+	/*
+	 * What just happened, from the audit trail -- which already records
+	 * every write from every surface, so this feed is free and cannot
+	 * disagree with the truth.
+	 */
+	{
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) entries = NULL;
+		guint e;
+
+		query = venture_query_new(VENTURE_TYPE_AUDIT_ENTRY);
+		venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING,
+		                        NULL);
+		venture_query_set_limit(query, 8);
+
+		entries = venture_database_find(
+			venture_context_get_database(self->context), query, NULL);
+
+		g_string_append(content, "<div class=\"card dash-card dash-wide\">"
+		                         "<div class=\"card-head\"><h2>Recent "
+		                         "activity</h2><a class=\"btn btn-sm\" "
+		                         "href=\"/e/audit_entry\">Audit log</a>"
+		                         "</div><ul class=\"activity\">");
+
+		for (e = 0; (NULL != entries) && (e < entries->len); e++)
+		{
+			VentureEntity *entry;
+			g_autofree gchar *actor = NULL;
+			g_autofree gchar *target_type = NULL;
+			g_autofree gchar *target_label = NULL;
+			g_autoptr(GDateTime) occurred = NULL;
+			VentureAuditAction action;
+			gint64 target_id;
+
+			entry = g_ptr_array_index(entries, e);
+			g_object_get(entry,
+			             "actor", &actor,
+			             "action", &action,
+			             "target-type", &target_type,
+			             "target-id", &target_id,
+			             "target-label", &target_label,
+			             "occurred-at", &occurred,
+			             NULL);
+
+			g_string_append(content, "<li><span class=\"activity-actor\">");
+			venture_html_escape_append(content,
+				venture_string_is_empty(actor) ? "someone" : actor);
+			g_string_append(content, "</span> ");
+			venture_html_escape_append(content,
+				venture_enum_to_nick(VENTURE_TYPE_AUDIT_ACTION,
+				                     (gint)action));
+			g_string_append(content, " ");
+
+			if (!venture_string_is_empty(target_type) &&
+			    (target_id > 0))
+			{
+				g_string_append_printf(content,
+					"<a href=\"/e/%s/%" G_GINT64_FORMAT "\">",
+					target_type, target_id);
+				venture_html_escape_append(content,
+					!venture_string_is_empty(target_label)
+						? target_label : target_type);
+				g_string_append(content, "</a>");
+			}
+			else
+			{
+				venture_html_escape_append(content,
+					!venture_string_is_empty(target_label)
+						? target_label : "something");
+			}
+
+			if (NULL != occurred)
+			{
+				g_autofree gchar *when = NULL;
+
+				when = venture_time_to_date_string(occurred,
+					venture_context_get_timezone(self->context));
+
+				if (NULL != when)
+				{
+					g_string_append(content,
+						" <span class=\"activity-when\">");
+					venture_html_escape_append(content, when);
+					g_string_append(content, "</span>");
+				}
+			}
+
+			g_string_append(content, "</li>");
+		}
+
+		if ((NULL == entries) || (0 == entries->len))
+			g_string_append(content, "<li class=\"muted\">Nothing has "
+			                         "happened yet.</li>");
+
+		g_string_append(content, "</ul></div>");
+	}
+
+	g_string_append(content, "</div>");
+
 	return venture_web_html_response(
 		venture_web_page(self, request, "/", "Dashboard", content->str), 200);
+}
+
+/* --- The 404 -------------------------------------------------------------- */
+
+/*
+ * The terminal not-found handler, as middleware: the router has no
+ * unmatched-route hook, so this calls the rest of the pipeline and takes
+ * over only when nothing else produced a response.
+ *
+ * API paths get the same JSON error shape as every other API failure;
+ * browser paths get a page in the normal chrome, because a bare-text 404
+ * with no navigation is a dead end where a wrong URL should be a wrong
+ * turn. Anonymous browsers are redirected to the login page instead --
+ * whether a path exists is not information for people without a session.
+ */
+static void
+venture_web_not_found_middleware(
+	HtmxContext		*context,
+	HtmxMiddlewareNext	 next,
+	gpointer		 next_data,
+	gpointer		 user_data
+){
+	VentureWebServer *self;
+	HtmxRequest *request;
+	const gchar *path;
+
+	self = user_data;
+
+	next(context, next_data);
+
+	if (NULL != htmx_context_get_response(context))
+		return;
+
+	request = htmx_context_get_request(context);
+	path = htmx_request_get_path(request);
+
+	if (g_str_has_prefix(path, "/api/"))
+	{
+		g_autoptr(GError) error = NULL;
+
+		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "No route %s", path);
+		htmx_context_set_response(context,
+		                          venture_web_error_response(error));
+		return;
+	}
+
+	{
+		HtmxResponse *redirect;
+
+		redirect = venture_web_ui_require_session(self, request);
+
+		if (NULL != redirect)
+		{
+			htmx_context_set_response(context, redirect);
+			return;
+		}
+	}
+
+	{
+		g_autoptr(GString) body = NULL;
+
+		body = g_string_new("<div class=\"empty\">"
+			"<span class=\"empty-icon\">\xe2\x97\x8b</span>"
+			"<h3>There is no page at ");
+		venture_html_escape_append(body, path);
+		g_string_append(body,
+			"</h3><p class=\"muted\">Either the link is stale or the "
+			"address is mistyped.</p>"
+			"<p><a class=\"btn btn-primary\" href=\"/\">Dashboard</a> "
+			"<a class=\"btn\" href=\"/search\">Search</a></p></div>");
+
+		htmx_context_set_response(context, venture_web_html_response(
+			venture_web_page(self, request, NULL, "Not found",
+			                 body->str), 404));
+	}
+}
+
+/* --- Global search -------------------------------------------------------- */
+
+/*
+ * GET /search?q= - one query across every record type.
+ *
+ * This sweeps the registry rather than consulting a per-type list of what is
+ * searchable, so a plugin's record type is findable the moment it registers
+ * -- the same property the REST routes and the forms have. Which fields
+ * match is decided by each type's own SEARCHABLE flags, in the query layer,
+ * where it is also decided for the per-list search boxes.
+ */
+static HtmxResponse *
+venture_web_ui_search(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GString) content = NULL;
+	g_auto(GStrv) names = NULL;
+	HtmxResponse *redirect;
+	const gchar *q;
+	guint groups;
+	gsize i;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+	q = htmx_request_get_query_param(request, "q");
+
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+	                       "<h1>Search</h1><span class=\"subtitle\">");
+
+	if (!venture_string_is_empty(q))
+	{
+		g_string_append(content, "Results for \xe2\x80\x9c");
+		venture_html_escape_append(content, q);
+		g_string_append(content, "\xe2\x80\x9d");
+	}
+	else
+	{
+		g_string_append(content, "Every record type, one box");
+	}
+
+	g_string_append(content, "</span></div></div>");
+
+	g_string_append(content,
+		"<form class=\"card search-form\" action=\"/search\" method=\"get\">"
+		"<div class=\"card-body\" style=\"display:flex;gap:8px\">"
+		"<input type=\"search\" name=\"q\" data-search-input "
+		"placeholder=\"Search everything\" autofocus value=\"");
+
+	if (NULL != q)
+		venture_html_escape_append(content, q);
+
+	g_string_append(content,
+		"\" style=\"flex:1\">"
+		"<button class=\"btn btn-primary\" type=\"submit\">Search</button>"
+		"</div></form>");
+
+	groups = 0;
+
+	if (!venture_string_is_empty(q))
+	{
+		names = venture_entity_registry_list_names(
+			venture_context_get_entity_registry(self->context));
+
+		for (i = 0; NULL != names[i]; i++)
+		{
+			g_autoptr(VentureQuery) query = NULL;
+			g_autoptr(GPtrArray) records = NULL;
+			GType entity_type;
+			gint64 total;
+			guint j;
+
+			entity_type = venture_entity_registry_lookup(
+				venture_context_get_entity_registry(self->context),
+				names[i]);
+
+			if (G_TYPE_INVALID == entity_type)
+				continue;
+
+			/*
+			 * The same per-type gate as every other route: whoever
+			 * cannot list a type cannot search it either. Chat
+			 * threads and the access tables fall out of results for
+			 * an editor exactly as they fall out of /e/.
+			 */
+			if (!venture_web_require_for_type(self, principal,
+			                                  entity_type,
+			                                  VENTURE_USER_ROLE_VIEWER,
+			                                  NULL))
+				continue;
+
+			/* The audit log matches nearly any term through its diff
+			 * text, which buries the actual records. It has its own
+			 * page. */
+			if (VENTURE_TYPE_AUDIT_ENTRY == entity_type)
+				continue;
+
+			query = venture_query_new(entity_type);
+			venture_query_set_search(query, q);
+			venture_web_scope_to_active_organization(self, request,
+			                                         query);
+			venture_query_set_limit(query, 5);
+
+			records = venture_database_find(
+				venture_context_get_database(self->context), query,
+				NULL);
+
+			if ((NULL == records) || (0 == records->len))
+				continue;
+
+			total = venture_database_count(
+				venture_context_get_database(self->context), query,
+				NULL);
+
+			groups++;
+
+			g_string_append(content, "<div class=\"card search-group\">"
+			                         "<div class=\"card-head\"><h2>");
+			venture_html_escape_append(content, names[i]);
+			{
+				g_autofree gchar *escaped = NULL;
+
+				escaped = g_uri_escape_string(q, NULL, FALSE);
+				g_string_append_printf(content,
+					"</h2><a class=\"btn btn-sm\" "
+					"href=\"/e/%s?search=%s\">"
+					"All %" G_GINT64_FORMAT "</a></div>",
+					names[i], escaped,
+					(total > 0) ? total : (gint64)records->len);
+			}
+
+			g_string_append(content, "<ul class=\"search-hits\">");
+
+			for (j = 0; j < records->len; j++)
+			{
+				VentureEntity *record;
+				g_autofree gchar *label = NULL;
+
+				record = g_ptr_array_index(records, j);
+				label = venture_entity_get_display_name(record);
+
+				g_string_append_printf(content,
+					"<li><a href=\"/e/%s/%" G_GINT64_FORMAT "\">",
+					names[i],
+					venture_entity_get_id(record));
+				venture_html_escape_append(content, label);
+				g_string_append(content, "</a></li>");
+			}
+
+			g_string_append(content, "</ul></div>");
+		}
+
+		if (0 == groups)
+			g_string_append(content, "<div class=\"empty\">"
+			                         "<span class=\"empty-icon\">\xe2\x97\x8b</span>"
+			                         "<h3>Nothing matched</h3>"
+			                         "<p class=\"muted\">Only fields marked "
+			                         "searchable are looked at, and only in "
+			                         "the active entity's scope.</p></div>");
+	}
+
+	return venture_web_html_response(
+		venture_web_page(self, request, "/search", "Search", content->str),
+		200);
+}
+
+/*
+ * Rebuilds a list URL's query-string so its links preserve each other's
+ * state: sorting a column keeps the search, paging keeps the sort, and so
+ * on. @order overrides the current order ("" drops it, %NULL keeps it);
+ * @page below 2 drops the parameter, because page one is the URL with no
+ * page at all.
+ *
+ * Returns: (transfer full): the query-string, starting with "?", or ""
+ */
+static gchar *
+venture_web_list_query_string(
+	HtmxRequest	*request,
+	const gchar	*order,
+	gint64		 page
+){
+	GString *out;
+	const gchar *search;
+	gchar separator;
+
+	out = g_string_new(NULL);
+	separator = '?';
+	search = htmx_request_get_query_param(request, "search");
+
+	if (NULL == order)
+		order = htmx_request_get_query_param(request, "order");
+
+	if (!venture_string_is_empty(search))
+	{
+		g_autofree gchar *escaped = NULL;
+
+		escaped = g_uri_escape_string(search, NULL, FALSE);
+		g_string_append_printf(out, "%csearch=%s", separator, escaped);
+		separator = '&';
+	}
+
+	if (!venture_string_is_empty(order))
+	{
+		g_autofree gchar *escaped = NULL;
+
+		escaped = g_uri_escape_string(order, NULL, FALSE);
+		g_string_append_printf(out, "%corder=%s", separator, escaped);
+		separator = '&';
+	}
+
+	if (page > 1)
+		g_string_append_printf(out, "%cpage=%" G_GINT64_FORMAT,
+		                       separator, page);
+
+	return g_string_free(out, FALSE);
+}
+
+/*
+ * Formats one field of one record as plain text, the way the list shows it
+ * but without truncation. Shared by the table cells' CSV export.
+ *
+ * Returns: (transfer full): the text, possibly empty, never %NULL
+ */
+static gchar *
+venture_web_field_to_text(
+	VentureWebServer	*self,
+	VentureEntity		*record,
+	VentureFieldSpec	*spec
+){
+	g_auto(GValue) value = G_VALUE_INIT;
+
+	if (!venture_entity_get_field(record, venture_field_spec_get_name(spec),
+	                              &value))
+		return g_strdup("");
+
+	if (G_VALUE_HOLDS(&value, VENTURE_TYPE_MONEY))
+	{
+		const VentureMoney *money;
+
+		money = g_value_get_boxed(&value);
+		return (NULL != money)
+			? venture_money_to_display_string(money, TRUE)
+			: g_strdup("");
+	}
+
+	if (G_VALUE_HOLDS(&value, G_TYPE_DATE_TIME))
+	{
+		gchar *text;
+
+		text = venture_time_to_date_string(g_value_get_boxed(&value),
+			venture_context_get_timezone(self->context));
+
+		return (NULL != text) ? text : g_strdup("");
+	}
+
+	if (G_VALUE_HOLDS_STRING(&value))
+	{
+		const gchar *text;
+
+		text = g_value_get_string(&value);
+		return g_strdup((NULL != text) ? text : "");
+	}
+
+	if (G_VALUE_HOLDS_ENUM(&value))
+	{
+		const gchar *nick;
+
+		nick = venture_enum_to_nick(G_VALUE_TYPE(&value),
+		                            g_value_get_enum(&value));
+		return g_strdup((NULL != nick) ? nick : "");
+	}
+
+	if (G_VALUE_HOLDS_BOOLEAN(&value))
+		return g_strdup(g_value_get_boolean(&value) ? "yes" : "");
+
+	{
+		g_autoptr(JsonNode) node = NULL;
+		gchar *text;
+
+		node = venture_json_node_from_value(&value);
+		text = venture_json_to_string(node, FALSE);
+
+		if (0 == g_strcmp0(text, "null"))
+		{
+			g_free(text);
+			return g_strdup("");
+		}
+
+		return text;
+	}
+}
+
+/*
+ * GET /e/:type/export - the current view of a list, as CSV.
+ *
+ * "Current view" is the point: the same search, sort and entity scope the
+ * table had, so the file that downloads is the table you were looking at
+ * rather than a surprise full dump. Sensitive fields are excluded the same
+ * way they are excluded everywhere, and cells are defused against
+ * spreadsheet formula injection exactly as report exports are.
+ */
+static HtmxResponse *
+venture_web_ui_export(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) records = NULL;
+	g_autoptr(GPtrArray) specs = NULL;
+	g_autoptr(GString) csv = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *disposition = NULL;
+	VentureEntity *prototype;
+	HtmxResponse *response;
+	GType entity_type;
+	const gchar *type_name;
+	guint i;
+	guint j;
+
+	self = user_data;
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_resolve_type(self, params, &entity_type, &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_require_for_type(self, principal, entity_type,
+	                                  VENTURE_USER_ROLE_VIEWER, &error))
+		return venture_web_error_response(error);
+
+	query = venture_web_build_query(self, entity_type, request, &error);
+
+	if (NULL == query)
+		return venture_web_error_response(error);
+
+	/* The whole filtered set, not the visible page. Capped all the same:
+	 * an export endpoint with no ceiling is a memory-exhaustion lever. */
+	venture_query_set_offset(query, 0);
+	venture_query_set_limit(query, 10000);
+
+	records = venture_database_find(venture_context_get_database(self->context),
+	                                query, &error);
+
+	if (NULL == records)
+		return venture_web_error_response(error);
+
+	type_name = g_hash_table_lookup(params, "type");
+	prototype = venture_entity_registry_get_prototype(
+		venture_context_get_entity_registry(self->context), type_name);
+
+	specs = venture_entity_get_field_specs(prototype);
+	g_ptr_array_sort_values(specs, venture_field_spec_compare_display_order);
+
+	csv = g_string_new("id");
+
+	for (i = 0; i < specs->len; i++)
+	{
+		VentureFieldSpec *spec;
+		g_autofree gchar *escaped = NULL;
+
+		spec = g_ptr_array_index(specs, i);
+
+		if (0 != (venture_field_spec_get_flags(spec) &
+		          VENTURE_COLUMN_FLAG_SENSITIVE))
+			continue;
+
+		escaped = venture_csv_escape(venture_field_spec_get_label(spec));
+		g_string_append_c(csv, ',');
+		g_string_append(csv, escaped);
+	}
+
+	g_string_append(csv, "\r\n");
+
+	for (j = 0; j < records->len; j++)
+	{
+		VentureEntity *record;
+
+		record = g_ptr_array_index(records, j);
+		g_string_append_printf(csv, "%" G_GINT64_FORMAT,
+		                       venture_entity_get_id(record));
+
+		for (i = 0; i < specs->len; i++)
+		{
+			VentureFieldSpec *spec;
+			g_autofree gchar *text = NULL;
+			g_autofree gchar *escaped = NULL;
+
+			spec = g_ptr_array_index(specs, i);
+
+			if (0 != (venture_field_spec_get_flags(spec) &
+			          VENTURE_COLUMN_FLAG_SENSITIVE))
+				continue;
+
+			text = venture_web_field_to_text(self, record, spec);
+			escaped = venture_csv_escape(text);
+			g_string_append_c(csv, ',');
+			g_string_append(csv, escaped);
+		}
+
+		g_string_append(csv, "\r\n");
+	}
+
+	response = htmx_response_new_with_content(csv->str);
+	htmx_response_set_content_type(response, "text/csv; charset=utf-8");
+	htmx_response_set_status(response, 200);
+
+	disposition = g_strdup_printf("attachment; filename=\"%s.csv\"",
+	                              type_name);
+	htmx_response_add_header(response, "Content-Disposition", disposition);
+
+	return response;
 }
 
 /*
@@ -1155,7 +1995,11 @@ venture_web_ui_list(
 	VentureEntity *prototype;
 	GType entity_type;
 	const gchar *type_name;
+	const gchar *current_order;
 	g_autofree gchar *path = NULL;
+	gint64 total;
+	gint64 page;
+	gint64 page_size;
 	guint shown;
 	guint i;
 	guint j;
@@ -1205,6 +2049,24 @@ venture_web_ui_list(
 			venture_web_page(self, request, NULL, "Bad request", body), 400);
 	}
 
+	/* ?page= is the human-facing spelling of offset. */
+	{
+		const gchar *page_param;
+
+		page_param = htmx_request_get_query_param(request, "page");
+		page = (NULL != page_param)
+			? g_ascii_strtoll(page_param, NULL, 10) : 1;
+
+		if (page < 1)
+			page = 1;
+
+		page_size = (gint64)venture_query_get_limit(query);
+
+		if ((page > 1) && (page_size > 0))
+			venture_query_set_offset(query,
+				(guint)((page - 1) * page_size));
+	}
+
 	records = venture_database_find(venture_context_get_database(self->context),
 	                                query, &error);
 
@@ -1218,6 +2080,14 @@ venture_web_ui_list(
 			venture_web_page(self, request, NULL, "Error", body), 500);
 	}
 
+	/* The whole filtered set, not this page of it: "Page 2 of 9" and the
+	 * subtitle's count both need the real number. */
+	total = venture_database_count(venture_context_get_database(self->context),
+	                               query, NULL);
+
+	if (total < 0)
+		total = (gint64)records->len;
+
 	specs = venture_entity_get_field_specs(prototype);
 	g_ptr_array_sort_values(specs, venture_field_spec_compare_display_order);
 
@@ -1228,13 +2098,24 @@ venture_web_ui_list(
 	                         "<h1>");
 	venture_html_escape_append(content, type_name);
 	g_string_append(content, "</h1><span class=\"subtitle\">");
-	g_string_append_printf(content, "%u record%s", records->len,
-	                       (1 == records->len) ? "" : "s");
+	g_string_append_printf(content, "%" G_GINT64_FORMAT " record%s", total,
+	                       (1 == total) ? "" : "s");
 	g_string_append(content, "</span></div><div class=\"page-actions\">");
 	g_string_append_printf(content,
 		"<input type=\"search\" name=\"search\" placeholder=\"Search\" "
 		"data-search-input hx-get=\"%s\" hx-trigger=\"keyup changed delay:300ms\" "
 		"hx-target=\"body\" style=\"width:220px\">", path);
+
+	{
+		g_autofree gchar *suffix = NULL;
+
+		suffix = venture_web_list_query_string(request, NULL, 0);
+		g_string_append_printf(content,
+			"<a class=\"btn\" href=\"/e/%s/export%s\" "
+			"title=\"Download this view as CSV\">Export</a>",
+			type_name, suffix);
+	}
+
 	g_string_append_printf(content,
 		"<a class=\"btn btn-primary\" href=\"/e/%s/new\">New</a>", type_name);
 	g_string_append(content, "</div></div>");
@@ -1243,10 +2124,16 @@ venture_web_ui_list(
 	                         "<table class=\"data\"><thead><tr>");
 
 	shown = 0;
+	current_order = htmx_request_get_query_param(request, "order");
 
 	for (i = 0; i < specs->len; i++)
 	{
 		VentureFieldSpec *spec;
+		const gchar *field_name;
+		g_autofree gchar *descending = NULL;
+		g_autofree gchar *suffix = NULL;
+		gboolean sorted_asc;
+		gboolean sorted_desc;
 
 		spec = g_ptr_array_index(specs, i);
 
@@ -1255,9 +2142,32 @@ venture_web_ui_list(
 		if (!venture_field_spec_get_show_in_list(spec) || (shown >= 7))
 			continue;
 
-		g_string_append(content, "<th>");
+		/*
+		 * Each header is a link that sorts by its column, and clicking
+		 * the column already sorted flips the direction. The state
+		 * lives in the URL, so a sorted view survives reload and can
+		 * be sent to somebody.
+		 */
+		field_name = venture_field_spec_get_name(spec);
+		descending = g_strdup_printf("-%s", field_name);
+		sorted_asc = (0 == g_strcmp0(current_order, field_name));
+		sorted_desc = (0 == g_strcmp0(current_order, descending));
+
+		suffix = venture_web_list_query_string(request,
+			sorted_asc ? descending : field_name, 0);
+
+		g_string_append_printf(content,
+			"<th%s><a class=\"th-sort\" href=\"/e/%s%s\">",
+			(sorted_asc || sorted_desc) ? " class=\"sorted\"" : "",
+			type_name, suffix);
 		venture_html_escape_append(content, venture_field_spec_get_label(spec));
-		g_string_append(content, "</th>");
+
+		if (sorted_asc)
+			g_string_append(content, " \xe2\x96\xb2");
+		else if (sorted_desc)
+			g_string_append(content, " \xe2\x96\xbc");
+
+		g_string_append(content, "</a></th>");
 		shown++;
 	}
 
@@ -1381,6 +2291,47 @@ venture_web_ui_list(
 		                         "<h3>Nothing here yet</h3>"
 		                         "<p class=\"muted\">Records you add will "
 		                         "appear in this list.</p></div>");
+	}
+
+	/* The pager appears only once there is somewhere to go. */
+	if ((page_size > 0) && (total > page_size))
+	{
+		gint64 pages;
+
+		pages = (total + page_size - 1) / page_size;
+
+		g_string_append(content, "<div class=\"pager\">");
+
+		if (page > 1)
+		{
+			g_autofree gchar *suffix = NULL;
+
+			suffix = venture_web_list_query_string(request, NULL,
+			                                       page - 1);
+			g_string_append_printf(content,
+				"<a class=\"btn btn-sm\" href=\"/e/%s%s\">"
+				"\xe2\x80\xb9 Prev</a>",
+				type_name,
+				(NULL != suffix) ? suffix : "");
+		}
+
+		g_string_append_printf(content,
+			"<span class=\"pager-state\">Page %" G_GINT64_FORMAT
+			" of %" G_GINT64_FORMAT "</span>", page, pages);
+
+		if (page < pages)
+		{
+			g_autofree gchar *suffix = NULL;
+
+			suffix = venture_web_list_query_string(request, NULL,
+			                                       page + 1);
+			g_string_append_printf(content,
+				"<a class=\"btn btn-sm\" href=\"/e/%s%s\">"
+				"Next \xe2\x80\xba</a>",
+				type_name, suffix);
+		}
+
+		g_string_append(content, "</div>");
 	}
 
 	g_string_append(content, "</div>");
@@ -3012,8 +3963,117 @@ venture_web_ui_detail(
 
 	venture_web_append_related(self, content, record);
 
+	/*
+	 * A ticket's comments are a conversation, and a conversation needs
+	 * its reply box on the same page. The related-records section above
+	 * already lists the thread; this is the one place the generic detail
+	 * page knows a specific type, because "click New, pick the ticket
+	 * you were just looking at, type, save" is not how anybody comments.
+	 */
+	if (VENTURE_TYPE_TICKET == entity_type)
+	{
+		g_string_append(content,
+			"<div class=\"card comment-composer\">"
+			"<div class=\"card-head\"><h2>Add a comment</h2></div>"
+			"<div class=\"card-body\">");
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/tickets/%" G_GINT64_FORMAT
+			"/comment\">", id);
+		g_string_append(content,
+			"<textarea name=\"body\" rows=\"3\" required "
+			"placeholder=\"What happened?\"></textarea>"
+			"<div class=\"comment-actions\">"
+			"<label class=\"checkbox\">"
+			"<input type=\"checkbox\" name=\"internal\" value=\"1\"> "
+			"Internal note (not shown to whoever raised it)</label>"
+			"<button class=\"btn btn-primary\" type=\"submit\">"
+			"Comment</button></div></form></div></div>");
+	}
+
 	return venture_web_html_response(
 		venture_web_page(self, request, NULL, title, content->str), 200);
+}
+
+/*
+ * POST /tickets/:id/comment - the composer above.
+ *
+ * The author comes from the session rather than a form field, because "who
+ * said this" is an audit fact, not an input.
+ */
+static HtmxResponse *
+venture_web_ui_ticket_comment(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) ticket = NULL;
+	g_autoptr(VentureTicketComment) comment = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	VentureActor actor;
+	HtmxResponse *redirect;
+	const gchar *body;
+	const gchar *internal;
+	gint64 ticket_id;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	ticket_id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+
+	/* The ticket must exist; a comment on a deleted ticket is a write
+	 * nobody can ever read. */
+	ticket = venture_database_get(venture_context_get_database(self->context),
+	                              VENTURE_TYPE_TICKET, ticket_id, &error);
+
+	if (NULL == ticket)
+		return venture_web_error_response(error);
+
+	body = htmx_request_get_form_value(request, "body");
+
+	if (venture_string_is_empty(body))
+	{
+		g_set_error_literal(&error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "A comment needs a body");
+		return venture_web_error_response(error);
+	}
+
+	internal = htmx_request_get_form_value(request, "internal");
+	now = venture_time_now();
+	venture_auth_to_actor(principal, &actor);
+
+	comment = venture_ticket_comment_new();
+	g_object_set(comment,
+	             "ticket-id", ticket_id,
+	             "body", body,
+	             "author", principal->name,
+	             "internal", !venture_string_is_empty(internal),
+	             "occurred-at", now,
+	             NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(comment),
+		venture_entity_get_organization_id(ticket));
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           VENTURE_ENTITY(comment), &actor, &error))
+		return venture_web_error_response(error);
+
+	destination = g_strdup_printf("/e/ticket/%" G_GINT64_FORMAT, ticket_id);
+
+	return venture_web_redirect_to(destination);
 }
 
 /* --- Tickets ------------------------------------------------------------- */
@@ -5254,8 +6314,225 @@ venture_web_api_health(
 
 /* --- Chat ---------------------------------------------------------------- */
 
+/*
+ * Loads a chat thread only if it belongs to the caller.
+ *
+ * The mismatch case reports NOT_FOUND rather than FORBIDDEN on purpose:
+ * "that thread exists but is not yours" confirms the identifier is live,
+ * and thread ids are sequential.
+ *
+ * Returns: (transfer full) (nullable): the thread, or %NULL
+ */
+static VentureChatThread *
+venture_web_chat_get_thread(
+	VentureWebServer	 *self,
+	VentureAuthPrincipal	 *principal,
+	gint64			  thread_id,
+	GError			**error
+){
+	g_autoptr(VentureEntity) record = NULL;
+	gint64 owner;
+
+	record = venture_database_get(venture_context_get_database(self->context),
+	                              VENTURE_TYPE_CHAT_THREAD, thread_id, error);
+
+	if (NULL == record)
+		return NULL;
+
+	g_object_get(record, "user-id", &owner, NULL);
+
+	if (owner != principal->user_id)
+	{
+		g_clear_object(&record);
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "No chat thread %" G_GINT64_FORMAT, thread_id);
+		return NULL;
+	}
+
+	return VENTURE_CHAT_THREAD(g_steal_pointer(&record));
+}
+
+/*
+ * The messages of one thread, oldest first. Insertion order, not timestamp
+ * order: two messages written in the same clock tick must still come back in
+ * the order they were said.
+ */
+static GPtrArray *
+venture_web_chat_get_messages(
+	VentureWebServer	 *self,
+	gint64			  thread_id,
+	GError			**error
+){
+	g_autoptr(VentureQuery) query = NULL;
+
+	query = venture_query_new(VENTURE_TYPE_CHAT_MESSAGE);
+
+	if (!venture_query_add_filter_int(query, "thread-id",
+	                                  VENTURE_FILTER_OP_EQ, thread_id, error))
+		return NULL;
+
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_set_limit(query, 500);
+
+	return venture_database_find(venture_context_get_database(self->context),
+	                             query, error);
+}
+
+static void
+venture_web_chat_append_message(
+	GString		*html,
+	VentureChatRole	 role,
+	const gchar	*body
+){
+	if (VENTURE_CHAT_ROLE_ASSISTANT == role)
+		g_string_append(html, "<div class=\"msg ai\">"
+		                      "<span class=\"msg-avatar\">\xe2\x9c\xa6</span>"
+		                      "<div class=\"msg-content\"><p>");
+	else
+		g_string_append(html, "<div class=\"msg user\">"
+		                      "<span class=\"msg-avatar\">You</span>"
+		                      "<div class=\"msg-content\"><p>");
+
+	venture_html_escape_append(html, body);
+	g_string_append(html, "</p></div></div>");
+}
+
+/*
+ * The hidden form field naming the active thread, swapped out-of-band so a
+ * reply lands in whichever conversation the panel now shows. The client
+ * mirrors this value into localStorage, which is what makes a conversation
+ * resume after the tab is long gone.
+ */
+static void
+venture_web_chat_append_thread_input(
+	GString		*html,
+	gint64		 thread_id
+){
+	if (thread_id > 0)
+		g_string_append_printf(html,
+			"<input type=\"hidden\" id=\"chat-thread\" name=\"thread\" "
+			"value=\"%" G_GINT64_FORMAT "\" hx-swap-oob=\"true\">",
+			thread_id);
+	else
+		/* An empty value, so the client also forgets the thread it was
+		 * resuming -- this is the delete path. */
+		g_string_append(html,
+			"<input type=\"hidden\" id=\"chat-thread\" name=\"thread\" "
+			"value=\"\" hx-swap-oob=\"true\">");
+}
+
+/* Swaps the panel heading to the active conversation's title. */
+static void
+venture_web_chat_append_title(
+	GString		*html,
+	const gchar	*title
+){
+	g_string_append(html, "<span class=\"ai-panel-title\" "
+	                      "id=\"ai-panel-title\" hx-swap-oob=\"true\">");
+	venture_html_escape_append(html, title);
+	g_string_append(html, "</span>");
+}
+
+/*
+ * Renders the resume list into @html.
+ *
+ * Returns: %TRUE on success
+ */
+static gboolean
+venture_web_chat_render_threads(
+	VentureWebServer	 *self,
+	VentureAuthPrincipal	 *principal,
+	GString			 *html,
+	GError			**error
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) threads = NULL;
+	guint i;
+
+	query = venture_query_new(VENTURE_TYPE_CHAT_THREAD);
+
+	if (!venture_query_add_filter_int(query, "user-id", VENTURE_FILTER_OP_EQ,
+	                                  principal->user_id, error))
+		return FALSE;
+
+	venture_query_add_order(query, "last-activity-at",
+	                        VENTURE_SORT_DESCENDING, NULL);
+	venture_query_set_limit(query, 50);
+
+	threads = venture_database_find(venture_context_get_database(self->context),
+	                                query, error);
+
+	if (NULL == threads)
+		return FALSE;
+
+	g_string_append(html, "<div class=\"thread-list\">");
+
+	if (0 == threads->len)
+		g_string_append(html, "<div class=\"empty\">"
+		                      "<h3>No conversations yet</h3>"
+		                      "<p class=\"muted\">Ask something below to start "
+		                      "one.</p></div>");
+
+	for (i = 0; i < threads->len; i++)
+	{
+		VentureEntity *thread;
+		g_autofree gchar *title = NULL;
+		g_autoptr(GDateTime) last = NULL;
+		gint64 id;
+
+		thread = g_ptr_array_index(threads, i);
+		id = venture_entity_get_id(thread);
+		g_object_get(thread, "title", &title,
+		             "last-activity-at", &last, NULL);
+
+		g_string_append(html, "<div class=\"thread-item\">");
+		g_string_append_printf(html,
+			"<button type=\"button\" class=\"thread-open\" "
+			"data-thread-id=\"%" G_GINT64_FORMAT "\" "
+			"hx-get=\"/ui/chat/thread/%" G_GINT64_FORMAT "\" "
+			"hx-target=\"#chat-log\" hx-swap=\"innerHTML\">", id, id);
+		g_string_append(html, "<span class=\"thread-title\">");
+		venture_html_escape_append(html,
+			venture_string_is_empty(title) ? "Untitled" : title);
+		g_string_append(html, "</span>");
+
+		if (NULL != last)
+		{
+			g_autofree gchar *when = NULL;
+
+			when = venture_time_to_date_string(last,
+				venture_context_get_timezone(self->context));
+
+			if (NULL != when)
+			{
+				g_string_append(html, "<span class=\"thread-when\">");
+				venture_html_escape_append(html, when);
+				g_string_append(html, "</span>");
+			}
+		}
+
+		g_string_append(html, "</button>");
+		g_string_append_printf(html,
+			"<button type=\"button\" class=\"thread-delete\" "
+			"title=\"Delete conversation\" "
+			"hx-post=\"/ui/chat/thread/%" G_GINT64_FORMAT "/delete\" "
+			"hx-confirm=\"Delete this conversation?\" "
+			"hx-target=\"#chat-log\" hx-swap=\"innerHTML\">"
+			"\xc3\x97</button>", id);
+		g_string_append(html, "</div>");
+	}
+
+	g_string_append(html, "</div>");
+	venture_web_chat_append_title(html, "Conversations");
+
+	return TRUE;
+}
+
+/*
+ * GET /ui/chat/threads - the resume list.
+ */
 static HtmxResponse *
-venture_web_ui_chat(
+venture_web_ui_chat_threads(
 	HtmxRequest	*request,
 	GHashTable	*params,
 	gpointer	 user_data
@@ -5264,7 +6541,176 @@ venture_web_ui_chat(
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
 	g_autoptr(GString) html = NULL;
 	g_autoptr(GError) error = NULL;
+
+	self = user_data;
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	html = g_string_new(NULL);
+
+	if (!venture_web_chat_render_threads(self, principal, html, &error))
+		return venture_web_error_response(error);
+
+	return venture_web_html_response(
+		g_string_free(g_steal_pointer(&html), FALSE), 200);
+}
+
+/*
+ * GET /ui/chat/thread/:id - one transcript, replayed into the panel.
+ */
+static HtmxResponse *
+venture_web_ui_chat_thread(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureChatThread) thread = NULL;
+	g_autoptr(GPtrArray) messages = NULL;
+	g_autoptr(GString) html = NULL;
+	g_autofree gchar *title = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 thread_id;
+	guint i;
+
+	self = user_data;
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	thread_id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	thread = venture_web_chat_get_thread(self, principal, thread_id, &error);
+
+	if (NULL == thread)
+		return venture_web_error_response(error);
+
+	messages = venture_web_chat_get_messages(self, thread_id, &error);
+
+	if (NULL == messages)
+		return venture_web_error_response(error);
+
+	html = g_string_new(NULL);
+
+	for (i = 0; i < messages->len; i++)
+	{
+		VentureEntity *message;
+		g_autofree gchar *body = NULL;
+		VentureChatRole role;
+
+		message = g_ptr_array_index(messages, i);
+		g_object_get(message, "role", &role, "body", &body, NULL);
+		venture_web_chat_append_message(html, role, body);
+	}
+
+	g_object_get(thread, "title", &title, NULL);
+	venture_web_chat_append_thread_input(html, thread_id);
+	venture_web_chat_append_title(html,
+		venture_string_is_empty(title) ? "Untitled" : title);
+
+	return venture_web_html_response(
+		g_string_free(g_steal_pointer(&html), FALSE), 200);
+}
+
+/*
+ * POST /ui/chat/thread/:id/delete - forget a conversation.
+ *
+ * Soft, like every other delete here, and the messages go with the thread:
+ * a transcript whose thread is gone would be unreachable but still turn up
+ * in an owner's export, which is exactly the half-deleted state that erodes
+ * trust in a delete button.
+ */
+static HtmxResponse *
+venture_web_ui_chat_thread_delete(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureChatThread) thread = NULL;
+	g_autoptr(GPtrArray) messages = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	gint64 thread_id;
+	guint i;
+
+	self = user_data;
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	thread_id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	thread = venture_web_chat_get_thread(self, principal, thread_id, &error);
+
+	if (NULL == thread)
+		return venture_web_error_response(error);
+
+	messages = venture_web_chat_get_messages(self, thread_id, &error);
+
+	if (NULL == messages)
+		return venture_web_error_response(error);
+
+	venture_auth_to_actor(principal, &actor);
+
+	for (i = 0; i < messages->len; i++)
+	{
+		if (!venture_database_delete(
+			venture_context_get_database(self->context),
+			g_ptr_array_index(messages, i), &actor, &error))
+			return venture_web_error_response(error);
+	}
+
+	if (!venture_database_delete(venture_context_get_database(self->context),
+	                             VENTURE_ENTITY(thread), &actor, &error))
+		return venture_web_error_response(error);
+
+	/* The panel goes back to the resume list, minus this thread, and the
+	 * hidden thread field is cleared in case it named the one just
+	 * deleted -- otherwise the next question would try to continue it. */
+	{
+		g_autoptr(GString) html = NULL;
+
+		html = g_string_new(NULL);
+
+		if (!venture_web_chat_render_threads(self, principal, html, &error))
+			return venture_web_error_response(error);
+
+		venture_web_chat_append_thread_input(html, 0);
+
+		return venture_web_html_response(
+			g_string_free(g_steal_pointer(&html), FALSE), 200);
+	}
+}
+
+/*
+ * POST /ui/chat - one exchange, persisted on both sides.
+ */
+static HtmxResponse *
+venture_web_ui_chat(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureChatThread) thread = NULL;
+	g_autoptr(GPtrArray) history = NULL;
+	g_autoptr(GString) html = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
 	const gchar *message;
+	const gchar *thread_param;
+	gboolean fresh_thread;
+	gint64 thread_id;
 
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
@@ -5276,16 +6722,15 @@ venture_web_ui_chat(
 	message = htmx_request_get_form_value(request, "message");
 	html = g_string_new(NULL);
 
-	/* The question is echoed immediately so the transcript reads as a
-	 * conversation rather than answers appearing from nowhere. */
-	g_string_append(html, "<div class=\"msg user\">"
-	                      "<span class=\"msg-avatar\">You</span>"
-	                      "<div class=\"msg-content\">");
-	venture_html_escape_append(html, message);
-	g_string_append(html, "</div></div>");
+	if (venture_string_is_empty(message))
+		return venture_web_html_response(g_strdup(""), 200);
 
 	if (NULL == venture_context_get_ai_service(self->context))
 	{
+		/* Nothing is persisted: a transcript of questions nothing
+		 * answered is not a conversation worth resuming. */
+		venture_web_chat_append_message(html, VENTURE_CHAT_ROLE_USER,
+		                               message);
 		g_string_append(html, "<div class=\"msg ai\">"
 		                      "<span class=\"msg-avatar\">\xe2\x9c\xa6</span>"
 		                      "<div class=\"msg-content\">"
@@ -5296,32 +6741,124 @@ venture_web_ui_chat(
 			g_string_free(g_steal_pointer(&html), FALSE), 200);
 	}
 
-	/* The AI service answers; the dock renders whatever it returns. */
+	venture_auth_to_actor(principal, &actor);
+	now = venture_time_now();
+
+	/* Resume the named thread, or open one titled after the question. */
+	thread_param = htmx_request_get_form_value(request, "thread");
+	fresh_thread = venture_string_is_empty(thread_param);
+
+	if (!fresh_thread)
+	{
+		thread = venture_web_chat_get_thread(self, principal,
+			g_ascii_strtoll(thread_param, NULL, 10), &error);
+
+		if (NULL == thread)
+			return venture_web_error_response(error);
+	}
+	else
+	{
+		g_autofree gchar *title = NULL;
+
+		title = venture_truncate(message, 60);
+
+		thread = venture_chat_thread_new();
+		g_object_set(thread, "title", title,
+		             "user-id", principal->user_id,
+		             "last-activity-at", now, NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(thread),
+			venture_context_get_default_organization_id(self->context));
+
+		if (!venture_database_save(
+			venture_context_get_database(self->context),
+			VENTURE_ENTITY(thread), &actor, &error))
+			return venture_web_error_response(error);
+	}
+
+	thread_id = venture_entity_get_id(VENTURE_ENTITY(thread));
+
+	/* Fetched before the new question is stored, so the model is not
+	 * shown the question twice. */
+	history = venture_web_chat_get_messages(self, thread_id, &error);
+
+	if (NULL == history)
+		return venture_web_error_response(error);
+
+	{
+		g_autoptr(VentureChatMessage) stored = NULL;
+
+		stored = venture_chat_message_new();
+		g_object_set(stored, "thread-id", thread_id,
+		             "role", VENTURE_CHAT_ROLE_USER,
+		             "body", message, NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(stored),
+			venture_context_get_default_organization_id(self->context));
+
+		if (!venture_database_save(
+			venture_context_get_database(self->context),
+			VENTURE_ENTITY(stored), &actor, &error))
+			return venture_web_error_response(error);
+	}
+
+	venture_web_chat_append_message(html, VENTURE_CHAT_ROLE_USER, message);
+
 	{
 		g_autofree gchar *answer = NULL;
 
-		answer = venture_ai_service_answer(
-			venture_context_get_ai_service(self->context), message,
-			principal, &error);
-
-		g_string_append(html, "<div class=\"msg ai\">"
-		                      "<span class=\"msg-avatar\">\xe2\x9c\xa6</span>"
-		                      "<div class=\"msg-content\">");
+		answer = venture_ai_service_answer_in_thread(
+			venture_context_get_ai_service(self->context), history,
+			message, principal, &error);
 
 		if (NULL == answer)
 		{
-			g_string_append(html, "<div class=\"notice negative\">");
+			/* The question stays stored -- resuming the thread and
+			 * asking again is the recovery -- but a provider error
+			 * is not part of the conversation. */
+			g_string_append(html, "<div class=\"msg ai\">"
+			                      "<span class=\"msg-avatar\">\xe2\x9c\xa6</span>"
+			                      "<div class=\"msg-content\">"
+			                      "<div class=\"notice negative\">");
 			venture_html_escape_append(html, error->message);
-			g_string_append(html, "</div>");
+			g_string_append(html, "</div></div></div>");
 		}
 		else
 		{
-			g_string_append(html, "<p>");
-			venture_html_escape_append(html, answer);
-			g_string_append(html, "</p>");
-		}
+			g_autoptr(VentureChatMessage) stored = NULL;
 
-		g_string_append(html, "</div></div>");
+			stored = venture_chat_message_new();
+			g_object_set(stored, "thread-id", thread_id,
+			             "role", VENTURE_CHAT_ROLE_ASSISTANT,
+			             "body", answer, NULL);
+			venture_entity_set_organization_id(VENTURE_ENTITY(stored),
+				venture_context_get_default_organization_id(self->context));
+
+			if (!venture_database_save(
+				venture_context_get_database(self->context),
+				VENTURE_ENTITY(stored), &actor, &error))
+				return venture_web_error_response(error);
+
+			venture_web_chat_append_message(html,
+				VENTURE_CHAT_ROLE_ASSISTANT, answer);
+		}
+	}
+
+	g_object_set(thread, "last-activity-at", now, NULL);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           VENTURE_ENTITY(thread), &actor, NULL))
+	{
+		/* Only the resume list's ordering suffers; the exchange itself
+		 * is already stored. Not worth failing the reply over. */
+	}
+
+	venture_web_chat_append_thread_input(html, thread_id);
+
+	if (fresh_thread)
+	{
+		g_autofree gchar *title = NULL;
+
+		g_object_get(thread, "title", &title, NULL);
+		venture_web_chat_append_title(html, title);
 	}
 
 	return venture_web_html_response(
@@ -5699,14 +7236,21 @@ venture_web_server_new(
 	self->server = htmx_server_new_with_config(config);
 	router = htmx_server_get_router(self->server);
 
+	/* The catch-all 404, wrapped around every route below. */
+	htmx_server_use(self->server, venture_web_not_found_middleware, self,
+	                NULL);
+
 	/* UI */
 	htmx_router_get(router, "/", venture_web_ui_dashboard, self);
+	htmx_router_get(router, "/search", venture_web_ui_search, self);
 	htmx_router_get(router, "/reports", venture_web_ui_reports, self);
 	htmx_router_get(router, "/settings", venture_web_ui_settings, self);
 	htmx_router_get(router, "/entity/:id", venture_web_ui_switch_entity, self);
 	htmx_router_get(router, "/tickets", venture_web_ui_tickets, self);
 	htmx_router_post(router, "/tickets/:id/move", venture_web_ui_ticket_move,
 	                 self);
+	htmx_router_post(router, "/tickets/:id/comment",
+	                 venture_web_ui_ticket_comment, self);
 	htmx_router_get(router, "/entities", venture_web_ui_entities, self);
 	htmx_router_post(router, "/entities", venture_web_ui_entities_create, self);
 	htmx_router_post(router, "/entities/:id/default",
@@ -5724,6 +7268,8 @@ venture_web_server_new(
 	                 venture_web_ui_users_password, self);
 	htmx_router_get(router, "/reports/:name", venture_web_ui_report, self);
 	htmx_router_get(router, "/e/:type", venture_web_ui_list, self);
+	/* Before /e/:type/:id, or "export" would be parsed as a record id. */
+	htmx_router_get(router, "/e/:type/export", venture_web_ui_export, self);
 	htmx_router_get(router, "/e/:type/new", venture_web_ui_form, self);
 	htmx_router_post(router, "/e/:type", venture_web_ui_save, self);
 	htmx_router_get(router, "/e/:type/:id", venture_web_ui_detail, self);
@@ -5735,6 +7281,12 @@ venture_web_server_new(
 	htmx_router_post(router, "/login", venture_web_ui_login_submit, self);
 	htmx_router_get(router, "/logout", venture_web_ui_logout, self);
 	htmx_router_post(router, "/ui/chat", venture_web_ui_chat, self);
+	htmx_router_get(router, "/ui/chat/threads", venture_web_ui_chat_threads,
+	                self);
+	htmx_router_get(router, "/ui/chat/thread/:id", venture_web_ui_chat_thread,
+	                self);
+	htmx_router_post(router, "/ui/chat/thread/:id/delete",
+	                 venture_web_ui_chat_thread_delete, self);
 
 	/* API */
 	htmx_router_get(router, "/api/v1/health", venture_web_api_health, self);

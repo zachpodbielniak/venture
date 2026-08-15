@@ -235,6 +235,24 @@ typedef enum
 } VentureTicketKind;
 
 /**
+ * VentureChatRole:
+ * @VENTURE_CHAT_ROLE_USER: the operator typed it
+ * @VENTURE_CHAT_ROLE_ASSISTANT: the model replied with it
+ *
+ * Who said a line in an AI conversation.
+ *
+ * An enum rather than a free string because the transcript is replayed to
+ * the model when a conversation resumes, and a misspelled role would turn a
+ * stored reply into something the provider rejects -- days after it was
+ * written, in a thread that used to work.
+ */
+typedef enum
+{
+	VENTURE_CHAT_ROLE_USER = 0,
+	VENTURE_CHAT_ROLE_ASSISTANT
+} VentureChatRole;
+
+/**
  * VentureCompanyKind:
  * @VENTURE_COMPANY_KIND_CUSTOMER: buys from you
  * @VENTURE_COMPANY_KIND_PROSPECT: might buy from you
@@ -692,6 +710,7 @@ typedef enum
 #define VENTURE_TYPE_INTERACTION_KIND		(venture_interaction_kind_get_type())
 #define VENTURE_TYPE_TICKET_STATUS		(venture_ticket_status_get_type())
 #define VENTURE_TYPE_TICKET_KIND		(venture_ticket_kind_get_type())
+#define VENTURE_TYPE_CHAT_ROLE			(venture_chat_role_get_type())
 #define VENTURE_TYPE_COMPANY_KIND		(venture_company_kind_get_type())
 #define VENTURE_TYPE_PRIORITY			(venture_priority_get_type())
 #define VENTURE_TYPE_IDEA_STATUS		(venture_idea_status_get_type())
@@ -722,6 +741,7 @@ GType venture_deal_stage_get_type		(void) G_GNUC_CONST;
 GType venture_interaction_kind_get_type		(void) G_GNUC_CONST;
 GType venture_ticket_status_get_type		(void) G_GNUC_CONST;
 GType venture_ticket_kind_get_type		(void) G_GNUC_CONST;
+GType venture_chat_role_get_type		(void) G_GNUC_CONST;
 GType venture_company_kind_get_type		(void) G_GNUC_CONST;
 GType venture_priority_get_type			(void) G_GNUC_CONST;
 GType venture_idea_status_get_type		(void) G_GNUC_CONST;

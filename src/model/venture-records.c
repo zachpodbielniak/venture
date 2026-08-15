@@ -1013,6 +1013,56 @@ VENTURE_DEFINE_ENTITY(VentureDocument, venture_document,
                       venture_document_fields)
 
 /* ==========================================================================
+ * AI conversations
+ * ========================================================================== */
+
+/*
+ * One AI conversation, owned by one account.
+ *
+ * Stored as records rather than browser state so a conversation survives a
+ * restart, a different machine, and next Tuesday -- the panel's resume list
+ * is just a query. The user-id is what scopes it: chat is addressed to a
+ * person, not to a business entity, and the dedicated chat routes refuse to
+ * serve a thread whose user-id is not the caller's.
+ */
+static const VentureFieldDecl venture_chat_thread_fields[] = {
+	VENTURE_FIELD_NAME("title", "Title",
+	                   "Taken from the first message unless renamed"),
+	VENTURE_FIELD_REF("user-id", "User", NULL, "user",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL |
+	                  VENTURE_COLUMN_FLAG_INDEXED),
+	/*
+	 * Denormalised from the newest message so the resume list can be one
+	 * query ordered by this column, rather than a per-thread subquery for
+	 * "when did it last say anything".
+	 */
+	VENTURE_FIELD("last-activity-at", "Last activity", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED)
+};
+
+VENTURE_DEFINE_ENTITY(VentureChatThread, venture_chat_thread,
+                      venture_chat_thread_fields)
+
+/*
+ * One line of a conversation, either side.
+ *
+ * The body is what the operator saw, and it is also what is replayed to the
+ * provider when the thread resumes -- so the stored transcript is the
+ * context, not a paraphrase of it.
+ */
+static const VentureFieldDecl venture_chat_message_fields[] = {
+	VENTURE_FIELD_REF("thread-id", "Thread", NULL, "chat_thread",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL |
+	                  VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_ENUM("role", "Role", NULL, venture_chat_role_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("body", "Message", NULL)
+};
+
+VENTURE_DEFINE_ENTITY(VentureChatMessage, venture_chat_message,
+                      venture_chat_message_fields)
+
+/* ==========================================================================
  * Access
  * ========================================================================== */
 
