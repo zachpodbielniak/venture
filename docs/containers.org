@@ -34,6 +34,22 @@ podman logs venture-dev | grep -A3 'owner account'
 
 and open [[http://127.0.0.1:8747][http://127.0.0.1:8747]].
 
+** AI in the local stack
+
+The local compose file wires the assistant for Grok: AI is enabled, the
+provider defaults to =grok= with =grok-4.6=, and =XAI_API_KEY= is passed
+through from the host environment. With no key exported the server still
+runs and the panel says AI is not configured. Every value is a host
+override, not an edit:
+
+#+begin_src bash
+export VENTURE_AI_PROVIDER=ollama VENTURE_AI_MODEL=gemma4:12b
+make compose-up
+#+end_src
+
+(For ollama inside the container, also export an =OLLAMA_HOST= the container
+can reach, such as =http://host.containers.internal:11434=.)
+
 Everything the server writes lands in =./compose-data/state/=, which is
 gitignored. When a report looks wrong, the database is an ordinary file you
 can open with ordinary tools:

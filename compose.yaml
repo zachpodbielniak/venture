@@ -81,10 +81,16 @@ services:
 
       VENTURE_LOGGING_LEVEL: debug
 
-      # AI is off unless you export a key before bringing this up. It stays
-      # unset rather than empty so the provider's own variable is not
-      # shadowed by a blank one.
-      VENTURE_AI_ENABLED: "${VENTURE_AI_ENABLED:-false}"
+      # AI, wired for Grok. On by default here because the provider key
+      # comes from the host environment anyway -- with no key exported the
+      # service just reports itself unconfigured and the panel says so.
+      # Every value is overridable from the host environment, so switching
+      # to another provider is `export VENTURE_AI_PROVIDER=ollama` rather
+      # than an edit.
+      VENTURE_AI_ENABLED: "${VENTURE_AI_ENABLED:-true}"
+      VENTURE_AI_PROVIDER: "${VENTURE_AI_PROVIDER:-grok}"
+      VENTURE_AI_MODEL: "${VENTURE_AI_MODEL:-grok-4.6}"
+      XAI_API_KEY: "${XAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
 
     volumes:
