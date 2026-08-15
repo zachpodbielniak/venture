@@ -194,6 +194,29 @@ venture_ai_service_answer_with_images(
 );
 
 /**
+ * venture_ai_url_is_fetchable:
+ * @url: the address the model asked for
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Whether @url may be fetched by the AI's page-fetching tool: http or
+ * https only, and no host resolving to a loopback, link-local, site-local,
+ * multicast or carrier-grade-NAT address.
+ *
+ * Public because it is a security boundary and therefore deserves a test
+ * that does not depend on a model's willingness to attempt the request.
+ * The model picks the address, and a page it reads can suggest the next
+ * one; without this check, "summarise this link" is a route to the cloud
+ * metadata endpoint or the database port on the container network.
+ *
+ * Returns: %TRUE if the address may be fetched
+ */
+gboolean
+venture_ai_url_is_fetchable(
+	const gchar	 *url,
+	GError		**error
+);
+
+/**
  * venture_ai_service_get_policy:
  * @self: a #VentureAiService
  *

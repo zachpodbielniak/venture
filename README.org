@@ -209,8 +209,10 @@ Working and covered by tests:
   record with its text extracted, readable by the AI — attach an invoice,
   have the expense staged for approval
 - screenshots: paste or attach an image and a vision model reads it —
-  screenshot an Amazon Ads dashboard, say "file this", approve the staged
-  campaign
+  screenshot an Amazon Ads dashboard or a KDP bookshelf, say "file this",
+  approve the staged campaign or product
+- links: give it a product URL and =venture_fetch_url= fills the record in
+  from the page, with the address checked against private ranges first
 - staged AI writes are approved in the panel: a field-by-field card with
   Apply and Discard, money rendered as money
 - AI tool surface: query, get, count, global search and reports, with

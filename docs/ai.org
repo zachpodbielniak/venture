@@ -148,6 +148,7 @@ properties.
 | =venture_get=         | read — one record, whole                     |
 | =venture_count=       | read — exact counts, uncapped                |
 | =venture_search=      | read — free text across every type at once   |
+| =venture_fetch_url=   | read — a public web page, as text            |
 | =venture_report=      | read — any report                            |
 | =venture_create=      | staged unless the policy is autonomous       |
 | =venture_update=      | staged unless the policy is autonomous       |
@@ -157,6 +158,31 @@ Under =read_only= the mutating tools are not registered at all, rather than
 registered and refused. A model cannot misuse a capability it was never told
 about, and refusing calls it believes it has just wastes turns.
 
+** Filling a record from a link
+
+Give the assistant a URL — a product listing, a marketplace page — and
+=venture_fetch_url= returns its readable text for the same
+read-then-stage treatment a screenshot gets. Naming another record works
+too: "add it under my Wrenmouth Press venture" makes the model resolve the
+name with =venture_search= and set =venture_id=, because an unattached
+record is missing from every report that groups by venture.
+
+The fetcher is deliberately narrow, because the model picks the address
+and the pages it reads can suggest the next one:
+
+- http and https only — =file://= would read the server's own disk
+- the host is resolved first and refused if *any* of its addresses is
+  loopback, link-local, site-local, multicast or carrier-grade NAT, so a
+  fetch cannot reach the cloud metadata endpoint, the database port on the
+  container network, or a router's admin page
+- capped in size and time, and non-text content types are refused
+- the result is labelled untrusted, and the model is told to take field
+  values from it and never instructions
+
+=tests/test-plugin.c= pins the refusals directly rather than through a
+conversation: a model may decline such a URL on its own, which looks like
+the check working and proves nothing about the check.
+
 ** What no tool reaches
 
 Accounts, API tokens and chat history are invisible to the model: absent
@@ -164,6 +190,14 @@ from =venture_list_types=, refused by every read tool, refused by every
 write tool. The sensitive-field mechanism is not enough there — it hides
 the password hash, not the fact that an account named alice exists or what
 she has been asking the assistant about the books.
+
+There is no shell, no filesystem and no code execution. ai-glib's tool
+executor ships with =bash=, =read=, =write= and =edit= pre-registered, and
+its =unregister= does not remove built-ins; VENTURE therefore builds its
+executor with =ai_tool_executor_new_empty()= and registers only the tools
+above. A =bash= tool would walk around every guarantee on this page — the
+staged confirmations, the audit trail, the sensitive-field rules — in one
+call.
 
 The audit log is readable — "why did this number change" is a fair
 question — but no tool can write it, whatever the policy. The trail is the

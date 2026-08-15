@@ -83,6 +83,11 @@ first seven columns were empty.
   on the caller's `user-id` and report NOT_FOUND (never FORBIDDEN) on a
   mismatch, and `chat_thread`/`chat_message` stay owner-only in
   `venture_web_require_for_type()`. `tests/test-auth.c` pins this.
+- **The AI executor must be built empty.** `ai_tool_executor_new()`
+  pre-registers `bash`, `read`, `write`, `edit`, `glob`, `grep`, `ls` and
+  `web_fetch`, and `ai_tool_executor_unregister()` cannot remove a built-in.
+  Use `ai_tool_executor_new_empty()`; a `bash` tool bypasses the staged
+  confirmations, the audit trail and the sensitive-field rules in one call.
 - **The JSON wire format uses underscores.** Properties are `invoice-id` in
   C and `invoice_id` on the wire; a POST body with dashed keys is silently
   ignored field by field — the record saves and the values just aren't

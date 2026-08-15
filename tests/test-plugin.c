@@ -1423,6 +1423,64 @@ test_plugin_config_refuses_bad_yaml(
 	g_assert_null(venture_plugin_manager_get_config_text(manager, "x.c"));
 }
 
+/* --- The AI's page fetcher ------------------------------------------------ */
+
+/*
+ * The SSRF boundary. The model chooses the address, and the pages it reads
+ * can suggest the next one, so "fetch this listing" must never become a
+ * request to the cloud metadata endpoint, a container-network database
+ * port, a router admin page, or the server's own disk.
+ *
+ * Tested directly rather than through a conversation: a model may refuse
+ * such a URL on its own, which looks like the check working and proves
+ * nothing about the check.
+ */
+static void
+test_ai_fetch_refuses_private_addresses(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	static const gchar *const refused[] = {
+		/* Loopback, by literal and by name. */
+		"http://127.0.0.1/settings",
+		"http://localhost:8747/api/v1/settings",
+		"http://[::1]/",
+		/* The cloud metadata endpoint: link-local, and the single
+		 * most valuable target for an SSRF in a hosted deployment. */
+		"http://169.254.169.254/latest/meta-data/",
+		/* Private ranges -- the database and everything else on the
+		 * container or office network. */
+		"http://10.0.0.5:5432/",
+		"http://192.168.1.1/admin",
+		"http://172.16.4.4/",
+		/* Carrier-grade NAT, which no GLib predicate covers. */
+		"http://100.64.0.1/",
+		/* Not the web at all. */
+		"file:///etc/passwd",
+		"gopher://example.com/",
+		"ftp://example.com/secrets",
+		NULL
+	};
+	gsize i;
+
+	for (i = 0; NULL != refused[i]; i++)
+	{
+		g_autoptr(GError) error = NULL;
+
+		g_assert_false(venture_ai_url_is_fetchable(refused[i], &error));
+		g_assert_nonnull(error);
+	}
+
+	/* Malformed input is refused rather than crashing or guessing. */
+	{
+		g_autoptr(GError) error = NULL;
+
+		g_assert_false(venture_ai_url_is_fetchable("", &error));
+		g_assert_false(venture_ai_url_is_fetchable("http://", NULL));
+		g_assert_false(venture_ai_url_is_fetchable("not a url", NULL));
+	}
+}
+
 /* --- Automation validation and reload ------------------------------------- */
 
 static void
@@ -1569,6 +1627,9 @@ main(
 	    test_plugin_config_round_trip_and_signal);
 	ADD("/plugin/config-refuses-bad-yaml",
 	    test_plugin_config_refuses_bad_yaml);
+
+	ADD("/ai/fetch-refuses-private-addresses",
+	    test_ai_fetch_refuses_private_addresses);
 
 	ADD("/automation/validate-dsl", test_automation_validate_dsl);
 	ADD("/automation/reload-rebuilds", test_automation_reload_rebuilds);
