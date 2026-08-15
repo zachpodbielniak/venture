@@ -465,6 +465,12 @@ venture_web_page(
 		                       "data-ai-panel aria-label=\"AI assistant\">",
 		                       dock_expanded ? " open" : "");
 
+		/* The grab edge. Dragging it resizes the panel; double-click
+		 * puts the default width back. */
+		g_string_append(html,
+			"<div class=\"ai-panel-resizer\" data-ai-resize "
+			"title=\"Drag to resize\"></div>");
+
 		g_string_append(html,
 			"<div class=\"ai-panel-head\">"
 			"<span class=\"spark\">\xe2\x9c\xa6</span>"

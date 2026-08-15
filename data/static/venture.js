@@ -17,6 +17,7 @@
 	var STORAGE_THEME = "venture.theme";
 	var STORAGE_PANEL = "venture.ai.open";
 	var STORAGE_THREAD = "venture.ai.thread";
+	var STORAGE_WIDTH = "venture.ai.width";
 
 	/* ------------------------------------------------------------------ */
 	/* Theme                                                               */
@@ -357,6 +358,107 @@
 		});
 	}
 
+	/*
+	 * The panel's width is measured from the right screen edge, so it is
+	 * simply the window width minus the pointer's X. Clamped so it can
+	 * neither collapse below a usable conversation nor swallow the page.
+	 */
+	function clampPanelWidth(width) {
+		var max = Math.round(window.innerWidth * 0.85);
+
+		return Math.max(320, Math.min(width, max));
+	}
+
+	function applyPanelWidth(width) {
+		var el = panel();
+
+		if (el) {
+			el.style.width = clampPanelWidth(width) + "px";
+		}
+	}
+
+	function wirePanelResize() {
+		var handle = document.querySelector("[data-ai-resize]");
+		var el = panel();
+
+		if (!handle || !el || handle.ventureWired) {
+			return;
+		}
+
+		handle.ventureWired = true;
+
+		/* A stored width from an earlier session, reclamped because the
+		 * window it was chosen in may have been wider than this one. */
+		try {
+			var stored = parseInt(
+				window.localStorage.getItem(STORAGE_WIDTH), 10);
+
+			if (stored > 0) {
+				applyPanelWidth(stored);
+			}
+		} catch (e) {
+			/* Default width it is. */
+		}
+
+		handle.addEventListener("pointerdown", function (event) {
+			event.preventDefault();
+
+			/* Capture keeps the drag alive when the pointer outruns
+			 * the six-pixel handle, but a drag must survive capture
+			 * being refused -- it just gets twitchier. */
+			try {
+				handle.setPointerCapture(event.pointerId);
+			} catch (e) {
+				/* Carry on uncaptured. */
+			}
+
+			el.classList.add("resizing");
+			document.body.classList.add("ai-resizing");
+		});
+
+		handle.addEventListener("pointermove", function (event) {
+			if (!el.classList.contains("resizing")) {
+				return;
+			}
+
+			applyPanelWidth(window.innerWidth - event.clientX);
+		});
+
+		handle.addEventListener("pointerup", function (event) {
+			if (!el.classList.contains("resizing")) {
+				return;
+			}
+
+			try {
+				handle.releasePointerCapture(event.pointerId);
+			} catch (e) {
+				/* Was never captured. */
+			}
+
+			el.classList.remove("resizing");
+			document.body.classList.remove("ai-resizing");
+
+			try {
+				window.localStorage.setItem(STORAGE_WIDTH,
+					String(parseInt(el.style.width, 10)));
+			} catch (e) {
+				/* The width holds for this page; it just will not
+				 * persist. */
+			}
+		});
+
+		/* Double-click puts the default back and forgets the override. */
+		handle.addEventListener("dblclick", function () {
+			el.style.width = "";
+
+			try {
+				window.localStorage.removeItem(STORAGE_WIDTH);
+			} catch (e) {
+				/* Nothing stored to forget. */
+			}
+		});
+	}
+
 	/* ------------------------------------------------------------------ */
 	/* Keyboard shortcuts                                                  */
 	/* ------------------------------------------------------------------ */
@@ -630,6 +732,7 @@
 
 		resumeThread();
 		wireComposer();
+		wirePanelResize();
 
 	/*
 	 * The kanban board.

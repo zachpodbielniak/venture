@@ -924,6 +924,26 @@ body.ai-open .ai-fab { display: none; }
 
 .ai-panel.open { transform: none; visibility: visible; }
 
+/* Mid-drag the width must track the pointer, not animate after it. */
+.ai-panel.resizing { transition: none; }
+
+.ai-panel-resizer {
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	width: 6px;
+	cursor: ew-resize;
+	z-index: 1;
+}
+
+.ai-panel-resizer:hover, .ai-panel.resizing .ai-panel-resizer {
+	background: var(--accent);
+	opacity: 0.35;
+}
+
+body.ai-resizing { user-select: none; cursor: ew-resize; }
+
 .ai-panel-head {
 	display: flex;
 	align-items: center;
@@ -1174,8 +1194,10 @@ body.ai-open .ai-fab { display: none; }
 	.main { padding: var(--space-4); padding-bottom:
 	        calc(var(--space-5) + 56px); }
 
-	/* On a phone the panel is the screen. */
-	.ai-panel { width: 100vw; }
+	/* On a phone the panel is the screen; there is nothing to resize
+	 * and the grab edge would only steal swipes. */
+	.ai-panel { width: 100vw !important; }
+	.ai-panel-resizer { display: none; }
 }
 
 @media print {
