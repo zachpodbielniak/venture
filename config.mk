@@ -321,7 +321,20 @@ HTMX_GLIB_SUBMAKE :=
 AI_GLIB_SUBMAKE :=
 CRISPY_SUBMAKE :=
 ORM_GLIB_SUBMAKE := ENABLE_SQLITE=$(SQLITE) ENABLE_POSTGRES=$(POSTGRES_AVAILABLE)
-PODOMATION_SUBMAKE :=
+#
+# Which of podomation's modules to build and install.
+#
+# Not all of them: the full set's build dependencies are the union of every
+# module's -- libssh2, bluez, libvirt -- which an ERP has no business
+# carrying. These are the general-purpose ones automation rules actually
+# use, and they need nothing VENTURE does not already link.
+#
+# Adding one means adding its dependency to the Containerfile and to
+# FEDORA_DEPS; check what it includes first.
+VENTURE_POD_MODULES := cron timer log http webhook ntfy exec_pipe \
+                       aggregate state_store engine
+
+PODOMATION_SUBMAKE := MODULES="$(VENTURE_POD_MODULES)"
 
 # Archive link order matters for static libraries: a library must appear
 # AFTER everything that references it. venture -> podomation -> crispy,
