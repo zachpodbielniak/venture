@@ -428,9 +428,19 @@ install-plugins:
 		if [ -f "$$p" ]; then $(INSTALL_DATA) "$$p" $(DESTDIR)$(PLUGINDIR)/; fi \
 	done
 
-install-pod-modules:
+#
+# Both VENTURE's own pod modules and podomation's.
+#
+# Podomation's modules -- cron_event, timer, log, http and the rest -- are
+# the vocabulary automation rules are written in: a rule saying
+# `cron_event->new("0 9 1 * *")` cannot load without them, and the shipped
+# example in data/examples/automations.pod is exactly that rule. They used
+# to be built only by `make run`, so an installed VENTURE could parse that
+# example and then refuse to load it, reporting an unknown source module.
+install-pod-modules: dep-podomation-modules
 	$(MKDIR_P) $(DESTDIR)$(PODMODULEDIR)
-	@for m in $(OUTDIR)/pod-modules/*.so; do \
+	@for m in $(OUTDIR)/pod-modules/*.so \
+	          $(PODOMATION_DIR)/build/$(BUILD_TYPE)/modules/*.so; do \
 		if [ -f "$$m" ]; then $(INSTALL_DATA) "$$m" $(DESTDIR)$(PODMODULEDIR)/; fi \
 	done
 

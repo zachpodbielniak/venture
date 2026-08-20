@@ -14,7 +14,7 @@
 # Hosting bills on the 1st of every month whether you remember it or not;
 # this makes the books agree. Cron format: minute hour day month weekday.
 # --------------------------------------------------------------------------
-pod monthly_hosting = cron_event->new("0 9 1 * *");
+pod monthly_hosting = cron->new("0 9 1 * *");
 monthly_hosting->on_schedule => venture->create("expense",
 	"description=VPS hosting", "vendor=Hosting Co", "amount=12.00",
 	"category=software");
@@ -30,5 +30,5 @@ sale_log->on_created => log->write_info("A record was created");
 # --------------------------------------------------------------------------
 # A nightly count, to taste: point it at any registered type.
 # --------------------------------------------------------------------------
-pod nightly = cron_event->new("0 2 * * *");
+pod nightly = cron->new("0 2 * * *");
 nightly->on_schedule => venture->count("ticket");

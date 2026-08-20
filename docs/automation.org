@@ -41,6 +41,20 @@ running engine would stack them beside the old ones — the bug that doubles
 every automation side effect. Rebuilding from nothing is the only path where
 what runs afterwards is exactly what the file says.
 
+* Modules
+
+The rules' vocabulary comes from podomation's modules -- =cron=, =timer=,
+=log=, =http=, =ntfy= and around a hundred more -- plus VENTURE's own
+=venture= module. They are installed alongside the server, and the
+Automations page lists what is actually loaded rather than what the
+documentation claims.
+
+Check that list before writing a rule against a module name from
+elsewhere: podomation's own documentation calls the cron module
+=cron_event=, but the module registers itself as =cron=, and a rule using
+the documented name parses cleanly and then refuses to load with "unknown
+source module".
+
 * The venture module
 
 - *Events:* =on_created=, =on_updated= and =on_deleted= fire for every
@@ -59,7 +73,7 @@ what runs afterwards is exactly what the file says.
 matters for a business: the recurring expense.
 
 #+begin_src
-pod monthly_hosting = cron_event->new("0 9 1 * *");
+pod monthly_hosting = cron->new("0 9 1 * *");
 monthly_hosting->on_schedule => venture->create("expense",
         "description=VPS hosting", "vendor=Hosting Co", "amount=12.00",
         "category=software");

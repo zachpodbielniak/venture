@@ -145,6 +145,12 @@ LABEL org.opencontainers.image.title="VENTURE" \
 # serve the deployment compose file, and a PostgreSQL deployment failing on
 # a missing shared library at startup is a bad way to find out.
 #
+# libetpan and libgudev are podomation's: every one of its pod modules links
+# the whole dependency set (it resolves them in a single pkg-config call),
+# so without these the automation modules install fine and then fail to
+# dlopen -- and a rule using cron_event reports an unknown module rather
+# than a missing library.
+#
 RUN dnf install -y --setopt=install_weak_deps=False \
         glib2 \
         libyaml \
@@ -155,6 +161,8 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         libpq \
         poppler-glib \
         readline \
+        libetpan \
+        libgudev \
         ca-certificates \
         tzdata \
     && dnf clean all \
