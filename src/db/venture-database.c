@@ -1271,9 +1271,19 @@ venture_database_sum_money(
 		 * number, so the minority ones are reported separately rather
 		 * than folded in.
 		 */
+		/*
+		 * The SUM is cast back to an integer explicitly.
+		 *
+		 * SQLite returns SUM(integer) as an integer, but PostgreSQL
+		 * widens SUM(bigint) to numeric -- so the typed accessor below
+		 * asserted on PostgreSQL while every SQLite run passed. Money
+		 * is integer minor units on both, and the cast says so once
+		 * rather than making the reader of every total wonder which
+		 * backend produced it.
+		 */
 		sql = g_strdup_printf(
-			"SELECT SUM(%s), %s, MAX(%s), COUNT(*) FROM %s%s "
-			"GROUP BY %s ORDER BY COUNT(*) DESC",
+			"SELECT CAST(SUM(%s) AS BIGINT), %s, MAX(%s), COUNT(*) "
+			"FROM %s%s GROUP BY %s ORDER BY COUNT(*) DESC",
 			quoted_amount, quoted_currency,
 			venture_schema_quote_identifier(
 				g_strconcat(column_base,

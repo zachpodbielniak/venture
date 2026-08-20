@@ -36,6 +36,26 @@ fixture_set_up(
 	g_assert_no_error(error);
 	g_assert_nonnull(fixture->database);
 
+	/*
+	 * Every test starts from an empty database.
+	 *
+	 * With the default sqlite://:memory: that is free -- each connection
+	 * is its own database. An external VENTURE_TEST_DB is one shared
+	 * database for the whole run, so without this the tests interfere:
+	 * several of them create a venture with the slug "books", the column
+	 * is UNIQUE, and the second one to run fails a save for reasons that
+	 * have nothing to do with what it is testing. The suite passed on
+	 * SQLite and died on PostgreSQL at the ninth test.
+	 */
+	if (NULL != uri)
+	{
+		g_assert_true(orm_connection_execute(
+			venture_database_get_connection(fixture->database),
+			"DROP SCHEMA public CASCADE; CREATE SCHEMA public;",
+			&error));
+		g_assert_no_error(error);
+	}
+
 	fixture->registry = venture_entity_registry_get_default();
 
 	g_assert_true(venture_database_migrate(fixture->database,

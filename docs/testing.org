@@ -14,7 +14,16 @@ make DEBUG=1 test-one T=test-money   # one binary, verbosely
 make DEBUG=1 test-valgrind           # under valgrind, if installed
 #+end_src
 
-Every test runs against a private in-memory SQLite database, so the suite needs no external service and cannot leave state behind. Set =VENTURE_TEST_DB= to a =postgres://= URI to run the database tests against PostgreSQL instead.
+Every test runs against a private in-memory SQLite database, so the suite needs no external service and cannot leave state behind. Set =VENTURE_TEST_DB= to a =postgres://= URI to run the database tests against PostgreSQL instead:
+
+#+begin_src sh
+podman run -d --rm --name pg -e POSTGRES_PASSWORD=t -e POSTGRES_USER=venture \
+    -e POSTGRES_DB=venture -p 127.0.0.1:55432:5432 postgres:16-alpine
+VENTURE_TEST_DB=postgres://venture:t@127.0.0.1:55432/venture \
+    ./build/debug/tests/test-database
+#+end_src
+
+Each test drops and recreates the schema before it runs. An external database is one shared database for the whole run, and several tests create a venture with the slug "books" -- a UNIQUE column -- so without that reset the second one fails for a reason that has nothing to do with what it tests. Worth knowing what that hid: the PostgreSQL run used to stop at the ninth test, and the money-summation bug behind it went unnoticed because SQLite returns =SUM()= as an integer while PostgreSQL widens it to numeric.
 
 The whole tree builds with =-Werror= and a wide warning set in =gnu89=. A warning is a latent bug; there are none.
 

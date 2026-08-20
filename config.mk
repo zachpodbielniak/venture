@@ -258,13 +258,15 @@ CRISPY_DIR := $(DEPS_DIR)/crispy
 PODOMATION_DIR := $(DEPS_DIR)/podomation
 ORM_GLIB_DIR := $(DEPS_DIR)/orm-glib
 
-# Most deps split their output by build type; orm-glib does not.
+# Every dep splits its output by build type. orm-glib did not until
+# v0.2.0; the flat build/liborm-glib-0.1.a it used to produce is why a dep
+# bump could silently link a stale archive -- see clean-deps in rules.mk.
 YAML_GLIB_LIB := $(YAML_GLIB_DIR)/build/$(BUILD_TYPE)/libyaml-glib-1.0.a
 HTMX_GLIB_LIB := $(HTMX_GLIB_DIR)/build/$(BUILD_TYPE)/libhtmx-glib-1.0.a
 AI_GLIB_LIB := $(AI_GLIB_DIR)/build/$(BUILD_TYPE)/libai-glib-1.0.a
 CRISPY_LIB := $(CRISPY_DIR)/build/$(BUILD_TYPE)/libcrispy.a
 PODOMATION_LIB := $(PODOMATION_DIR)/build/$(BUILD_TYPE)/libpodomation-1.0.a
-ORM_GLIB_LIB := $(ORM_GLIB_DIR)/build/liborm-glib-0.1.a
+ORM_GLIB_LIB := $(ORM_GLIB_DIR)/build/$(BUILD_TYPE)/liborm-glib-0.2.a
 
 # Include paths for the vendored headers. Each library gates its internal
 # headers behind an "only the umbrella header may be included" guard, so we

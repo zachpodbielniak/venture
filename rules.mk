@@ -134,7 +134,14 @@ $(OUTDIR)/tests/test-%: $(OBJDIR)/tests/test-%.o $(OUTDIR)/$(LIB_STATIC) $(VENDO
 # ---------------------------------------------------------------------------
 
 # Native plugins: plugins/<name>/*.c -> $(OUTDIR)/plugins/<name>.so
-$(OUTDIR)/plugins/%.so: plugins/%/*.c | $(OUTDIR)/plugins
+#
+# The vendored libraries are order-only prerequisites because a plugin
+# includes <venture/venture.h>, which reaches <htmx-glib.h> and <orm.h>,
+# and those pull in version headers each dependency generates into its own
+# build tree. Without this the plugin can be compiled before the library
+# that writes the header it needs -- which only shows up on a fully clean
+# parallel build, where nothing left over is standing in for it.
+$(OUTDIR)/plugins/%.so: plugins/%/*.c | $(OUTDIR)/plugins $(VENDOR_LIBS_SERVER)
 	@$(MKDIR_P) $(dir $@)
 	@echo "  LD[plug] $@"
 	$(Q)$(CC) $(PLUGIN_CFLAGS) $(PLUGIN_LDFLAGS) -o $@ $^
@@ -314,14 +321,26 @@ clean:
 	rm -rf $(BUILDDIR)/$(BUILD_TYPE)
 	rm -f src/venture-version.h
 
-clean-all:
+clean-all: clean-deps
 	rm -rf $(BUILDDIR)
 	rm -f src/venture-version.h
 
+#
+# Remove each dependency's build tree outright rather than calling its own
+# clean target.
+#
+# A dep's clean only removes the build type it was invoked for, so
+# `clean-deps` without DEBUG=1 would leave the debug tree standing. Worse,
+# a dep that changes its output layout or soname between versions leaves
+# the old artifact behind, and since a fresh `git checkout` gives objects
+# the same mtime as their sources, make considers them current and
+# re-archives them: the link then fails on a symbol that exists in neither
+# version, or -- far worse -- succeeds against half-stale objects. That is
+# exactly what an orm-glib bump did.
 clean-deps:
 	$(Q)for d in $(YAML_GLIB_DIR) $(HTMX_GLIB_DIR) $(AI_GLIB_DIR) \
 	             $(CRISPY_DIR) $(PODOMATION_DIR) $(ORM_GLIB_DIR); do \
-		$(MAKE) --no-print-directory -C $$d clean 2>/dev/null || true; \
+		rm -rf $$d/build; \
 	done
 
 # ---------------------------------------------------------------------------

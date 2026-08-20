@@ -95,6 +95,17 @@ first seven columns were empty.
 - **An automation reload is a rebuild.** Never parse new rules into a
   running engine: pods hold timer and breaker state, and stacking a second
   generation beside the first doubles every side effect.
+- **A dep bump needs `make clean-all`, not `make clean`.** Dependencies
+  change their output layout and soname between versions (orm-glib went
+  flat `build/liborm-glib-0.1.a` to `build/$(BUILD_TYPE)/liborm-glib-0.2.a`).
+  A `git checkout` gives objects the same mtime as their sources, so make
+  thinks stale ones are current and re-archives them: the link fails on a
+  symbol in neither version, or worse, succeeds against half-stale objects.
+  `clean-all` now removes every dep build tree for this reason.
+- **SQL that aggregates must say what type it wants.** SQLite returns
+  `SUM(integer)` as an integer; PostgreSQL widens it to numeric, and the
+  typed accessor asserts. Cast aggregates explicitly — `CAST(SUM(x) AS
+  BIGINT)` — or the SQLite suite passes while PostgreSQL dies.
 - **`make DEBUG=1 test` does not relink the server binary.** After editing
   `data/static/*` verify `build/debug/venture` is newer than
   `build/debug/venture-assets.h`, or the browser serves last hour's JS
