@@ -71,6 +71,16 @@ A repository can also carry its own *Clone URL*, used exactly as given. That is 
 
 Then, on the forge's own page:
 
+Or from a script, which is the same routes underneath:
+
+#+begin_src bash
+printf '%s' "$FORGE_TOKEN" | venturectl forge set-token 1
+venturectl forge verify 1
+printf '' | venturectl -f json forge set-secret 1 | jq -r '.secret'
+#+end_src
+
+The value is read from standard input and there is no flag to put it in argv: a command line is visible to every process through =/proc= and lands in shell history. Both routes are owner-only, like the pages they mirror.
+
 1. *Set token.* The token box is not on the ordinary edit form and never will be: a sensitive field is not rendered with its value and not applied by the generated save, which is the whole meaning of the flag. This is its own control for that reason. Leaving the box empty keeps the existing token rather than clearing it — an accidentally blank field must not silently disconnect a forge.
 2. *Verify the token.* This asks the forge which account the token belongs to and stores the answer. It is not cosmetic: that login is the webhook loop guard. Until it is set, VENTURE cannot tell an issue it filed itself from one somebody else opened, and the page says so.
 3. *Set or generate the webhook secret*, if you want inbound events. Leave the box blank and VENTURE generates one from the system CSPRNG, which is better than one you invented.

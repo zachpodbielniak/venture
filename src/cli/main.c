@@ -19,6 +19,7 @@
 #include "venture.h"
 
 #include <libsoup/soup.h>
+#include <stdio.h>
 #include <yaml-glib.h>
 
 #include <stdlib.h>
@@ -599,6 +600,149 @@ venture_cli_command_restore(
 	return 0;
 }
 
+/*
+ * Reads a secret from standard input.
+ *
+ * Not from argv, and there is no flag to put one there. A command line is
+ * visible to every process on the host through /proc and lands in the
+ * shell's history file; a secret that has been in either is a secret that
+ * has to be rotated. Standard input goes to this process and nowhere else.
+ *
+ *   printf '%s' "$TOKEN" | venturectl forge set-token 1
+ *   venturectl forge set-token 1 < token.txt
+ *
+ * A trailing newline is stripped, because every way of producing one of
+ * these adds it and no forge token ends in whitespace.
+ */
+static gchar *
+venture_cli_read_secret(GError **error)
+{
+	g_autoptr(GString) buffer = NULL;
+	gchar chunk[1024];
+	gsize got;
+
+	buffer = g_string_new(NULL);
+
+	while (0 < (got = fread(chunk, 1, sizeof(chunk), stdin)))
+		g_string_append_len(buffer, chunk, (gssize)got);
+
+	if (ferror(stdin))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+		                    "Could not read the secret from standard input");
+		return NULL;
+	}
+
+	while ((buffer->len > 0) &&
+	       (('\n' == buffer->str[buffer->len - 1]) ||
+	        ('\r' == buffer->str[buffer->len - 1])))
+		g_string_truncate(buffer, buffer->len - 1);
+
+	return g_string_free(g_steal_pointer(&buffer), FALSE);
+}
+
+/*
+ * venturectl forge set-token|set-secret|verify ID
+ *
+ * The one command group that is not generic over record types, and it earns
+ * the exception: a credential is not a field with a flag on it. Each kind
+ * has its own correct way of being set -- a password must be hashed, a
+ * forge token must not be -- so a generic "write this sensitive field"
+ * command would be a way to get one of them wrong.
+ */
+static gint
+venture_cli_command_forge(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *path = NULL;
+	const gchar *action;
+	const gchar *id;
+
+	action = (NULL != args[1]) ? args[1] : NULL;
+	id = (NULL != args[1]) ? args[2] : NULL;
+
+	if ((NULL == action) || (NULL == id))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Usage: venturectl forge set-token|set-secret|"
+		                    "verify <id>\n"
+		                    "       set-token and set-secret read the value "
+		                    "from standard input");
+		return -1;
+	}
+
+	if (0 == g_strcmp0(action, "verify"))
+	{
+		path = g_strdup_printf("/api/v1/forge/%s/verify", id);
+		node = venture_cli_request(cli, "POST", path, NULL, error);
+
+		if (NULL == node)
+			return -1;
+
+		venture_cli_output(cli, node);
+
+		return 0;
+	}
+
+	if ((0 != g_strcmp0(action, "set-token")) &&
+	    (0 != g_strcmp0(action, "set-secret")))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "\"%s\" is not a forge action. Try set-token, set-secret "
+		            "or verify.", action);
+		return -1;
+	}
+
+	secret = venture_cli_read_secret(error);
+
+	if (NULL == secret)
+		return -1;
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+
+	if (0 == g_strcmp0(action, "set-token"))
+	{
+		if ('\0' == secret[0])
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			                    "Nothing arrived on standard input. Pipe the "
+			                    "token in, or redirect a file.");
+			return -1;
+		}
+
+		json_builder_set_member_name(builder, "token");
+		json_builder_add_string_value(builder, secret);
+		path = g_strdup_printf("/api/v1/forge/%s/token", id);
+	}
+	else
+	{
+		/* An empty secret is meaningful here: it asks the server to
+		 * generate one, which it returns once. */
+		json_builder_set_member_name(builder, "secret");
+		json_builder_add_string_value(builder, secret);
+		path = g_strdup_printf("/api/v1/forge/%s/webhook-secret", id);
+	}
+
+	json_builder_end_object(builder);
+	body = json_builder_get_root(builder);
+
+	node = venture_cli_request(cli, "POST", path, body, error);
+
+	if (NULL == node)
+		return -1;
+
+	venture_cli_output(cli, node);
+
+	return 0;
+}
+
 static gint
 venture_cli_command_report(
 	VentureCli	 *cli,
@@ -858,6 +1002,9 @@ main(
 		"  update TYPE ID field=value   change a record\n"
 		"  delete TYPE ID               delete a record (recoverable)\n"
 		"  restore TYPE ID              bring a deleted record back\n"
+		"  forge set-token ID           set a forge's access token (stdin)\n"
+		"  forge set-secret ID          set or generate its webhook secret\n"
+		"  forge verify ID              record which account the token is\n"
 		"  report [NAME] [PERIOD]       list reports, or run one\n"
 		"  health                       check the server is up\n"
 		"\n"
@@ -869,6 +1016,7 @@ main(
 		"                     venture_id=3 occurred_at=2026-03-14\n"
 		"  venturectl update venture 3 status=paused\n"
 		"  venturectl report pnl this_quarter\n"
+		"  printf '%s' \"$FORGE_TOKEN\" | venturectl forge set-token 1\n"
 		"  venturectl -f json list sale | jq '.records[].gross.formatted'\n"
 		"\n"
 		"Filters use field__operator=value. Operators: eq ne lt lte gt gte\n"
@@ -957,6 +1105,8 @@ main(
 		result = venture_cli_command_update(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "delete"))
 		result = venture_cli_command_delete(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "forge"))
+		result = venture_cli_command_forge(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "restore"))
 		result = venture_cli_command_restore(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "report"))

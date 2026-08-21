@@ -11438,6 +11438,314 @@ venture_web_ui_ticket_runs(
 }
 
 
+
+/*
+ * The credential routes, in their API form.
+ *
+ * Deliberately forge-specific rather than a generic "set any sensitive
+ * field on any type" endpoint. That generic version would let a caller
+ * write user.password-hash directly -- a raw hash, bypassing the hashing
+ * that makes storing one safe at all. A credential is not a field with a
+ * flag on it; each one has its own way of being set correctly, and this is
+ * the forge's.
+ *
+ * Owner-only, matching the UI route and the REST route for the record
+ * itself: an editor who could set the token could also point base-url at a
+ * host they control, and the pair of those is "send this credential
+ * somewhere I can read it".
+ */
+static VentureForge *
+venture_web_api_forge_for_credential(
+	VentureWebServer	 *self,
+	HtmxRequest		 *request,
+	GHashTable		 *params,
+	HtmxResponse		**out_denied,
+	GError			**error
+){
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) record = NULL;
+	const gchar *id_text;
+
+	*out_denied = venture_web_api_require(self, request,
+	                                     VENTURE_USER_ROLE_OWNER);
+
+	if (NULL != *out_denied)
+		return NULL;
+
+	(void)principal;
+
+	id_text = g_hash_table_lookup(params, "id");
+	record = venture_database_get(venture_context_get_database(self->context),
+	                              VENTURE_TYPE_FORGE,
+	                              (NULL != id_text)
+	                                      ? g_ascii_strtoll(id_text, NULL, 10)
+	                                      : 0,
+	                              error);
+
+	if (NULL == record)
+	{
+		if ((NULL != error) && (NULL == *error))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			            "No such forge: %s",
+			            (NULL != id_text) ? id_text : "");
+		}
+
+		return NULL;
+	}
+
+	return VENTURE_FORGE(g_steal_pointer(&record));
+}
+
+/* Reads a single string member out of a JSON request body. */
+static gchar *
+venture_web_api_body_string(
+	HtmxRequest	*request,
+	const gchar	*member
+){
+	g_autoptr(JsonParser) parser = NULL;
+	GBytes *body;
+	gconstpointer data;
+	gsize length = 0;
+	JsonNode *root;
+
+	body = htmx_request_get_body_bytes(request);
+
+	if (NULL == body)
+		return NULL;
+
+	data = g_bytes_get_data(body, &length);
+
+	if ((NULL == data) || (0 == length))
+		return NULL;
+
+	parser = json_parser_new();
+
+	if (!json_parser_load_from_data(parser, data, (gssize)length, NULL))
+		return NULL;
+
+	root = json_parser_get_root(parser);
+
+	if ((NULL == root) || (JSON_NODE_OBJECT != json_node_get_node_type(root)))
+		return NULL;
+
+	return g_strdup(venture_json_object_get_string(json_node_get_object(root),
+	                                               member, NULL));
+}
+
+/*
+ * POST /api/v1/forge/:id/token - set the access token from a script.
+ */
+static HtmxResponse *
+venture_web_api_forge_token(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureForge) forge = NULL;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *token = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	HtmxResponse *denied = NULL;
+	VentureActor actor;
+
+	forge = venture_web_api_forge_for_credential(self, request, params,
+	                                             &denied, &error);
+
+	if (NULL != denied)
+		return denied;
+
+	if (NULL == forge)
+		return venture_web_error_response(error);
+
+	token = venture_web_api_body_string(request, "token");
+
+	/*
+	 * An empty token is refused rather than treated as "leave it alone".
+	 * The UI form has that behaviour because a blank box is usually a
+	 * mistake; a script that sent an empty string meant to send
+	 * something and its variable was unset, and silently succeeding
+	 * there leaves a forge that will fail every later call for reasons
+	 * nobody can trace back to here.
+	 */
+	if (venture_string_is_empty(token))
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "A \"token\" is required and may not be empty");
+		return venture_web_error_response(error);
+	}
+
+	now = g_date_time_new_now_utc();
+	g_object_set(forge, "token", token, "token-set-at", now, NULL);
+
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           VENTURE_ENTITY(forge), &actor, &error))
+		return venture_web_error_response(error);
+
+	/* The value is never echoed, only the fact and the time. */
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "forge_id");
+	json_builder_add_int_value(builder,
+	                           venture_entity_get_id(VENTURE_ENTITY(forge)));
+	json_builder_set_member_name(builder, "token_set");
+	json_builder_add_boolean_value(builder, TRUE);
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(g_steal_pointer(&node), 200);
+}
+
+/*
+ * POST /api/v1/forge/:id/webhook-secret - set or generate it.
+ *
+ * An absent or empty secret generates one and returns it. This is the only
+ * response in VENTURE that carries a credential, and it does so for the same
+ * reason minting an API token does: the value has to reach the operator
+ * once, to be pasted into the forge, and it is never recoverable
+ * afterwards.
+ */
+static HtmxResponse *
+venture_web_api_forge_secret(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureForge) forge = NULL;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *generated = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	HtmxResponse *denied = NULL;
+	VentureActor actor;
+	gboolean was_generated = FALSE;
+
+	forge = venture_web_api_forge_for_credential(self, request, params,
+	                                             &denied, &error);
+
+	if (NULL != denied)
+		return denied;
+
+	if (NULL == forge)
+		return venture_web_error_response(error);
+
+	secret = venture_web_api_body_string(request, "secret");
+
+	if (venture_string_is_empty(secret))
+	{
+		generated = venture_generate_token(32);
+		g_clear_pointer(&secret, g_free);
+		secret = g_strdup(generated);
+		was_generated = TRUE;
+	}
+
+	now = g_date_time_new_now_utc();
+	g_object_set(forge, "webhook-secret", secret,
+	             "webhook-secret-set-at", now, NULL);
+
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           VENTURE_ENTITY(forge), &actor, &error))
+		return venture_web_error_response(error);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "forge_id");
+	json_builder_add_int_value(builder,
+	                           venture_entity_get_id(VENTURE_ENTITY(forge)));
+	json_builder_set_member_name(builder, "secret_set");
+	json_builder_add_boolean_value(builder, TRUE);
+
+	/* Returned only when VENTURE chose it, and only this once. A secret
+	 * the caller supplied is one they already have. */
+	if (was_generated)
+	{
+		json_builder_set_member_name(builder, "secret");
+		json_builder_add_string_value(builder, secret);
+	}
+
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(g_steal_pointer(&node), 200);
+}
+
+/*
+ * POST /api/v1/forge/:id/verify - ask the forge who the token belongs to.
+ */
+static HtmxResponse *
+venture_web_api_forge_verify(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureForge) forge = NULL;
+	g_autoptr(VentureForgeClient) client = NULL;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *login = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	HtmxResponse *denied = NULL;
+	VentureActor actor;
+
+	forge = venture_web_api_forge_for_credential(self, request, params,
+	                                             &denied, &error);
+
+	if (NULL != denied)
+		return denied;
+
+	if (NULL == forge)
+		return venture_web_error_response(error);
+
+	client = venture_web_forge_client(self, forge, &error);
+
+	if (NULL == client)
+		return venture_web_error_response(error);
+
+	login = venture_forge_client_whoami(client, &error);
+
+	if (NULL == login)
+		return venture_web_error_response(error);
+
+	now = g_date_time_new_now_utc();
+	g_object_set(forge, "bot-username", login, "verified-at", now, NULL);
+
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           VENTURE_ENTITY(forge), &actor, &error))
+		return venture_web_error_response(error);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "forge_id");
+	json_builder_add_int_value(builder,
+	                           venture_entity_get_id(VENTURE_ENTITY(forge)));
+	json_builder_set_member_name(builder, "bot_username");
+	json_builder_add_string_value(builder, login);
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(g_steal_pointer(&node), 200);
+}
+
 /*
  * POST /api/v1/:type/:id/restore - bring a soft-deleted record back.
  *
@@ -12046,6 +12354,20 @@ venture_web_server_new(
 	 * One set of handlers serves every record type. A plugin registering
 	 * a type gets all five of these immediately, with no routing to add.
 	 */
+	/*
+	 * The forge credential routes, in their API form so a deployment can
+	 * be scripted. Named for the type rather than generic across types:
+	 * a generic "set a sensitive field" endpoint would let a caller
+	 * write a raw password hash, which is precisely what hashing exists
+	 * to prevent.
+	 */
+	htmx_router_post(router, "/api/v1/forge/:id/token",
+	                 venture_web_api_forge_token, self);
+	htmx_router_post(router, "/api/v1/forge/:id/webhook-secret",
+	                 venture_web_api_forge_secret, self);
+	htmx_router_post(router, "/api/v1/forge/:id/verify",
+	                 venture_web_api_forge_verify, self);
+
 	/* Before the generic record routes, so "restore" is not read as an
 	 * id. */
 	htmx_router_post(router, "/api/v1/:type/:id/restore",

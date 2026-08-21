@@ -1097,6 +1097,21 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/hooks/forge/1", NULL, "{}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
+
+	/*
+	 * The scriptable credential routes. These exist so a deployment can
+	 * be automated, which means they are reachable with nothing but a
+	 * token -- so they are the ones worth checking hardest.
+	 */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/forge/1/token", NULL, "{\"token\":\"x\"}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/forge/1/webhook-secret", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/forge/1/verify", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/ui/chat/confirm/abc123/reject", NULL, "", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
@@ -1580,6 +1595,22 @@ test_auth_forge_records_are_owner_only(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/forges/1/token",
 	                                        editor, "token=stolen", NULL, NULL),
 	                 ==, SOUP_STATUS_FORBIDDEN);
+
+	/*
+	 * Nor the scriptable credential routes. Adding an API form of
+	 * something that was owner-only in the UI is exactly how a role
+	 * check gets left behind.
+	 */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/forge/1/token", editor, "{\"token\":\"stolen\"}", NULL,
+		NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/forge/1/webhook-secret", editor, "{}", NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/forge/1/verify", editor, "", NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
 
 	/* An ordinary repository is ordinary data, so an editor keeps it. */
 	g_assert_cmpuint(server_fixture_request(fixture, "GET",

@@ -63,6 +63,9 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `update TYPE ID field=value ...` | change a record |
 | `delete TYPE ID` | soft delete — the row stays, stamped |
 | `restore TYPE ID` | clear that stamp |
+| `forge set-token ID` | set a forge's access token, read from stdin |
+| `forge set-secret ID` | set or generate its webhook secret |
+| `forge verify ID` | record which account the token belongs to |
 | `report [NAME] [PERIOD]` | list reports, or run one |
 | `health` | is the server up |
 
@@ -113,15 +116,39 @@ venturectl create ticket title="It crashes" issue_type=bug repo_id="$REPO"
 **Sensitive fields are never accepted from a payload.** A forge access
 token, a webhook secret, a password hash — naming one in `create` or
 `update` is ignored, not an error, and the rest of the payload still
-applies. These have their own routes because setting a credential should be
-a deliberate act:
+applies.
 
-- forge token and webhook secret: the forge's page in the web UI
-- a user's password: the account page
+Each credential has its own way of being set correctly, which is why there
+is no generic "write this sensitive field" command: a password must be
+hashed, a forge token must not be, and one command for both would be a way
+to get one of them wrong.
 
-So `venturectl` can create a forge and everything about it *except* the
-credential, and the last step is a human in a browser. That is the intended
-shape.
+For a forge, use the `forge` subcommand — the one part of `venturectl` that
+is not generic over types, and the exception earns itself:
+
+```bash
+printf '%s' "$FORGE_TOKEN" | venturectl forge set-token 1
+venturectl forge set-token 1 < token.txt
+
+printf '' | venturectl forge set-secret 1    # generates one, returns it once
+printf '%s' "$SECRET" | venturectl forge set-secret 1
+
+venturectl forge verify 1                    # records the bot account
+```
+
+**The value comes from standard input, and there is no flag to put it in
+argv.** A command line is visible to every process on the host through
+`/proc` and lands in shell history; a secret that has been in either has to
+be rotated. An empty token is refused rather than treated as "leave it
+alone" — a script that sent an empty string meant to send something and its
+variable was unset.
+
+`forge verify` is not optional if you want webhooks: it records which
+account the token belongs to, and that is the loop guard. Without it VENTURE
+cannot tell an issue it filed itself from one somebody else opened.
+
+A user's password still has no CLI path and is set on the account page.
+Setting a hash directly is what hashing exists to prevent.
 
 **Audit entries and run records refuse writes entirely**, for everybody.
 They are the record of what happened.
@@ -139,13 +166,17 @@ venturectl create forge name="Home" kind=forgejo \
     clone_base_url=git@git-ssh.example.com \
     active=true
 
-# 2. Set the token in the web UI: /e/forge/<id> → Credentials → Set token,
-#    then Verify the token. Verifying stores the bot account, which is the
-#    webhook loop guard — without it VENTURE cannot tell its own issues
-#    from anybody else's.
+# 2. The credentials, from a script
+FORGE=$(venturectl -f json list forge name__eq=Home | jq -r '.records[0].id')
+printf '%s' "$FORGE_TOKEN" | venturectl forge set-token "$FORGE"
+venturectl forge verify "$FORGE"
+
+# Generate a webhook secret and keep it — it is shown once, and you paste
+# it into the forge's webhook settings.
+SECRET=$(printf '' | venturectl -f json forge set-secret "$FORGE" \
+         | jq -r '.secret')
 
 # 3. A repository
-FORGE=$(venturectl -f json list forge name__eq=Home | jq -r '.records[0].id')
 venturectl create forge_repo name=owner/project forge_id="$FORGE" \
     default_branch=main branch_prefix=venture/ \
     push_issues=true accept_issues=true active=true
