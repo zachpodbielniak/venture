@@ -552,6 +552,131 @@ test_database_query_filters(
 	g_assert_cmpuint(results->len, ==, 1);
 }
 
+/*
+ * Counting by an enum column.
+ *
+ * Enum columns store their nick, not their ordinal, so "how many tickets are
+ * todo" is a comparison against the text 'todo'. Asking whether that text
+ * equals the number 1 is a valid query that can never match: no error, no
+ * crash, just zero rows for ever.
+ *
+ * That is what the dashboard's open-ticket figures did. Five counters, all
+ * confidently zero on every install, which reads exactly like a quiet week
+ * rather than like a bug -- it was reported as "is this only counting
+ * customer tickets?", which is how long it survives.
+ *
+ * If this regresses, the count comes back zero while the board beside it
+ * still lists the tickets.
+ */
+static void
+test_database_counts_by_enum_column(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	static const VentureTicketStatus statuses[] = {
+		VENTURE_TICKET_STATUS_TODO,
+		VENTURE_TICKET_STATUS_TODO,
+		VENTURE_TICKET_STATUS_IN_PROGRESS,
+		VENTURE_TICKET_STATUS_DONE
+	};
+	g_autoptr(VentureQuery) by_nick = NULL;
+	g_autoptr(VentureQuery) by_ordinal = NULL;
+	gsize i;
+
+	for (i = 0; i < G_N_ELEMENTS(statuses); i++)
+	{
+		g_autoptr(VentureTicket) ticket = NULL;
+		g_autofree gchar *title = NULL;
+		g_autoptr(GError) error = NULL;
+
+		title = g_strdup_printf("ticket %" G_GSIZE_FORMAT, i);
+
+		ticket = venture_ticket_new();
+		g_object_set(ticket, "title", title, "status", statuses[i], NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(ticket),
+		                                   fixture->organization_id);
+
+		g_assert_true(venture_database_save(fixture->database,
+		                                    VENTURE_ENTITY(ticket), NULL,
+		                                    &error));
+		g_assert_no_error(error);
+	}
+
+	/* The spelling the board uses, and the one that always worked. */
+	by_nick = venture_query_new(VENTURE_TYPE_TICKET);
+	g_assert_true(venture_query_add_filter_string(by_nick, "status",
+		VENTURE_FILTER_OP_EQ, "todo", NULL));
+	g_assert_cmpint(venture_database_count(fixture->database, by_nick, NULL),
+	                ==, 2);
+
+	/*
+	 * And the spelling the dashboard used. It reads as obviously correct,
+	 * which is the whole problem, so the query layer translates the
+	 * ordinal to its nick rather than printing it as a number.
+	 */
+	by_ordinal = venture_query_new(VENTURE_TYPE_TICKET);
+	g_assert_true(venture_query_add_filter_int(by_ordinal, "status",
+		VENTURE_FILTER_OP_EQ, (gint64)VENTURE_TICKET_STATUS_TODO, NULL));
+	g_assert_cmpint(venture_database_count(fixture->database, by_ordinal,
+	                                       NULL), ==, 2);
+}
+
+/*
+ * An ordinal outside the enum is a real mistake, so it says so rather than
+ * quietly filtering on a number that matches nothing. This is the one case
+ * the translation above must not paper over.
+ */
+static void
+test_database_rejects_an_ordinal_outside_the_enum(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GError) error = NULL;
+
+	query = venture_query_new(VENTURE_TYPE_TICKET);
+
+	g_assert_false(venture_query_add_filter_int(query, "status",
+		VENTURE_FILTER_OP_EQ, 9999, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+}
+
+/*
+ * The translation is for enum columns only: an id is a number and must stay
+ * one. Getting this backwards would break every reference filter in the
+ * product at once.
+ */
+static void
+test_database_integer_columns_stay_numeric(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureVenture) venture = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureTicket) ticket = NULL;
+	g_autoptr(GError) error = NULL;
+
+	venture = create_venture(fixture, "filter-by-id");
+
+	ticket = venture_ticket_new();
+	g_object_set(ticket,
+	             "title", "attached",
+	             "venture-id", venture_entity_get_id(VENTURE_ENTITY(venture)),
+	             NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(ticket),
+	                                   fixture->organization_id);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(ticket), NULL, &error));
+	g_assert_no_error(error);
+
+	query = venture_query_new(VENTURE_TYPE_TICKET);
+	g_assert_true(venture_query_add_filter_int(query, "venture-id",
+		VENTURE_FILTER_OP_EQ,
+		venture_entity_get_id(VENTURE_ENTITY(venture)), NULL));
+	g_assert_cmpint(venture_database_count(fixture->database, query, NULL),
+	                ==, 1);
+}
+
 static void
 test_database_query_rejects_unknown_field(
 	Fixture		*fixture,
@@ -1697,6 +1822,12 @@ main(
 	ADD("/database/validation-blocks-save", test_database_validation_blocks_save);
 
 	ADD("/database/query-filters", test_database_query_filters);
+	ADD("/database/counts-by-enum-column",
+	    test_database_counts_by_enum_column);
+	ADD("/database/rejects-an-ordinal-outside-the-enum",
+	    test_database_rejects_an_ordinal_outside_the_enum);
+	ADD("/database/integer-columns-stay-numeric",
+	    test_database_integer_columns_stay_numeric);
 	ADD("/database/query-rejects-unknown-field",
 	    test_database_query_rejects_unknown_field);
 	ADD("/database/query-value-is-never-interpolated",

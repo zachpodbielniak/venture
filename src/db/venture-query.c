@@ -318,6 +318,56 @@ venture_query_add_filter_int(
 	GError		**error
 ){
 	g_autofree gchar *text = NULL;
+	g_autofree gchar *column = NULL;
+	GType value_type;
+
+	g_return_val_if_fail(VENTURE_IS_QUERY(self), FALSE);
+	g_return_val_if_fail(NULL != field, FALSE);
+
+	if (!venture_query_resolve_field(self, field, &column, &value_type, error))
+		return FALSE;
+
+	/*
+	 * An enum column stores its nick, so an ordinal has to become one
+	 * here rather than be printed as a number.
+	 *
+	 * This function is a convenience wrapper that formatted the integer
+	 * and handed it to the string filter, which meant asking the database
+	 * whether the text 'todo' equals 1. That is not an error and not a
+	 * crash -- it is a valid comparison that never matches, so a counter
+	 * built on it reads zero for ever. The dashboard's five open-ticket
+	 * figures did exactly that on every install, and "nothing open" is
+	 * indistinguishable from a quiet week.
+	 *
+	 * Translating rather than refusing, because refusing does not
+	 * actually help: every caller of this writes `if (!add_filter_int(...))
+	 * continue;`, so a returned error is swallowed and the count is still
+	 * zero. The caller should not have to know the storage encoding of a
+	 * column it named by property.
+	 */
+	if (G_TYPE_IS_ENUM(value_type))
+	{
+		g_autoptr(GEnumClass) enum_class = NULL;
+		GEnumValue *entry;
+
+		enum_class = g_type_class_ref(value_type);
+		entry = g_enum_get_value(enum_class, (gint)value);
+
+		/* An ordinal with no matching member is a genuine mistake and
+		 * says so, rather than silently filtering on a number. */
+		if (NULL == entry)
+		{
+			g_set_error(error, VENTURE_ERROR,
+			            VENTURE_ERROR_INVALID_ARGUMENT,
+			            "%" G_GINT64_FORMAT " is not a valid %s for "
+			            "\"%s\"", value, g_type_name(value_type),
+			            field);
+			return FALSE;
+		}
+
+		return venture_query_add_filter_string(self, field, op,
+		                                       entry->value_nick, error);
+	}
 
 	text = g_strdup_printf("%" G_GINT64_FORMAT, value);
 

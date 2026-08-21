@@ -1641,14 +1641,34 @@ venture_web_ui_dashboard(
 		for (s = 0; s < G_N_ELEMENTS(open_statuses); s++)
 		{
 			g_autoptr(VentureQuery) query = NULL;
+			const gchar *nick;
 			gint64 count;
 
 			query = venture_query_new(VENTURE_TYPE_TICKET);
 
-			if (!venture_query_add_filter_int(query, "status",
-			                                  VENTURE_FILTER_OP_EQ,
-			                                  (gint64)open_statuses[s],
-			                                  NULL))
+			/*
+			 * Filtered by nick, the same way the board does it.
+			 *
+			 * These counters used to pass the ordinal to
+			 * venture_query_add_filter_int(), which printed it as a
+			 * number and asked the database whether the text 'todo'
+			 * equals 1 -- a valid comparison that never matches. All
+			 * five read zero on every install, and a dashboard
+			 * reporting "nothing open" looks like a quiet week rather
+			 * than a bug.
+			 *
+			 * The query layer now translates an ordinal on an enum
+			 * column, so either spelling works. This one stays
+			 * explicit because it is the same spelling the board and
+			 * the list filters use, and one encoding of a status in
+			 * the codebase is easier to keep right than two.
+			 */
+			nick = venture_enum_to_nick(VENTURE_TYPE_TICKET_STATUS,
+			                            (gint)open_statuses[s]);
+
+			if (!venture_query_add_filter_string(query, "status",
+			                                     VENTURE_FILTER_OP_EQ,
+			                                     nick, NULL))
 				continue;
 
 			venture_web_scope_to_active_organization(self, request,
@@ -1669,9 +1689,12 @@ venture_web_ui_dashboard(
 			                       count);
 			g_string_append(content, "</span>"
 			                         "<span class=\"stat-label\">");
-			venture_html_escape_append(content,
-				venture_enum_to_nick(VENTURE_TYPE_TICKET_STATUS,
-				                     (gint)open_statuses[s]));
+			{
+				g_autofree gchar *label = NULL;
+
+				label = venture_web_label_from_name(nick);
+				venture_html_escape_append(content, label);
+			}
 			g_string_append(content, "</span></div>");
 		}
 
