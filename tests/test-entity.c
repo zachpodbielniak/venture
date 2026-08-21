@@ -493,6 +493,58 @@ test_entity_sensitive_fields_withheld(void)
 	                                     "password_hash"));
 }
 
+
+/*
+ * A sensitive field cannot be set from a JSON payload.
+ *
+ * What breaks if this regresses: the flag keeps these values out of every
+ * response, export, form and AI tool, which reads as a one-way barrier.
+ * Accepting one back through a POST body makes it a write-only barrier
+ * instead -- so `POST /api/v1/forge {"token": "..."}` would set a credential
+ * through the same generic surface that deliberately refuses to show it, and
+ * `PUT /api/v1/user/1 {"password_hash": "$..."}` would set a password hash
+ * directly. Both have their own route precisely so that setting a credential
+ * is a deliberate act with its own authorisation.
+ */
+static void
+test_entity_sensitive_fields_refused_from_json(void)
+{
+	g_autoptr(VentureUser) user = NULL;
+	g_autoptr(JsonParser) parser = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *hash = NULL;
+	g_autofree gchar *username = NULL;
+	static const gchar *const payload =
+		"{\"username\":\"zach\",\"password_hash\":\"$planted$\"}";
+
+	user = venture_user_new();
+
+	parser = json_parser_new();
+	g_assert_true(json_parser_load_from_data(parser, payload, -1, &error));
+	g_assert_no_error(error);
+
+	g_assert_true(venture_serializable_from_json(VENTURE_SERIALIZABLE(user),
+	                                             json_parser_get_root(parser),
+	                                             &error));
+	g_assert_no_error(error);
+
+	/* The ordinary field was taken... */
+	g_object_get(user, "username", &username, "password-hash", &hash, NULL);
+	g_assert_cmpstr(username, ==, "zach");
+
+	/* ...and the sensitive one was not. */
+	g_assert_cmpstr(hash, !=, "$planted$");
+
+	/* The proper path still works, or the assertion above would pass
+	 * against a type that simply cannot hold a password. Active matters:
+	 * a deactivated account fails authentication before the hash is even
+	 * compared. */
+	g_object_set(user, "active", TRUE, NULL);
+	g_assert_true(venture_user_set_password(user, "correct horse", 100000,
+	                                        NULL));
+	g_assert_true(venture_user_check_password(user, "correct horse"));
+}
+
 static void
 test_entity_yaml_export(void)
 {
@@ -1348,6 +1400,8 @@ main(
 	                test_entity_partial_json_leaves_other_fields);
 	g_test_add_func("/entity/sensitive-fields-withheld",
 	                test_entity_sensitive_fields_withheld);
+	g_test_add_func("/entity/sensitive-fields-refused-from-json",
+	                test_entity_sensitive_fields_refused_from_json);
 	g_test_add_func("/entity/yaml-export", test_entity_yaml_export);
 
 	g_test_add_func("/entity/diff-reports-changes", test_entity_diff_reports_changes);

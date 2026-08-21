@@ -961,6 +961,25 @@ venture_entity_serializable_from_json(
 		if (0 == g_strcmp0(properties[i]->name, "attributes"))
 			continue;
 
+		/*
+		 * A sensitive field is never accepted from a payload.
+		 *
+		 * The flag already keeps these values out of every response,
+		 * every export, every form and the AI. Letting one back in
+		 * through a POST body makes that one-way barrier a
+		 * write-only one, which is not what any caller reading the
+		 * flag would assume -- and the generic surfaces are exactly
+		 * where the assumption gets made. A password is set through
+		 * the account page, a forge token through the forge page:
+		 * each has a route of its own precisely so that setting a
+		 * credential is a deliberate act with its own authorisation,
+		 * rather than a member somebody added to a JSON object.
+		 */
+		if (0 != (venture_entity_class_get_column_flags(klass,
+		                                                properties[i]->name) &
+		          VENTURE_COLUMN_FLAG_SENSITIVE))
+			continue;
+
 		member = venture_entity_property_to_column(properties[i]->name);
 
 		/* An absent member leaves the current value alone. That makes
