@@ -343,37 +343,338 @@ venture_web_scope_to_active_organization(
 	VentureQuery		*query
 );
 
+/*
+ * Every sidebar icon, drawn at one stroke weight.
+ *
+ * These were assorted geometric Unicode glyphs -- a black circle beside a
+ * white one beside a section sign -- which meant three problems at once.
+ * Whichever font happened to supply each glyph decided its optical weight
+ * and its advance width, so no two rows lined up; several were duplicated
+ * across unrelated entries because the glyph repertoire ran out; and the
+ * row height moved with the operator's font settings.
+ *
+ * Inline SVG at a fixed viewBox fixes all three, and the shared wrapper is
+ * what guarantees a single stroke weight: an icon cannot pick its own.
+ * They inherit currentColor, so the nav's hover and active states apply to
+ * the icon without a second rule.
+ */
+#define VENTURE_ICON(body) \
+	"<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" " \
+	"stroke-width=\"1.75\" stroke-linecap=\"round\" " \
+	"stroke-linejoin=\"round\" aria-hidden=\"true\" " \
+	"focusable=\"false\">" body "</svg>"
+
+/*
+ * Turns a machine name into a display label: "in_progress" reads "In
+ * progress", "research_note" reads "Research note".
+ *
+ * Only ever for text a person reads. The same nick is also a data-status
+ * attribute the board posts back, a CSS class suffix on a ticket card and a
+ * form option value, and humanising it in those places would break the
+ * behaviour rather than the typography -- so this is applied at the point of
+ * display and never to the value itself.
+ *
+ * Returns: (transfer full): the label
+ */
+/*
+ * The assistant's mark. Defined once because it is emitted from four
+ * places in this file and echoed by venture.js when the client renders
+ * a message optimistically -- if those disagree, the avatar visibly
+ * changes the moment the server's copy of the same message arrives.
+ */
+#define VENTURE_SPARK \
+	"<svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M12 2.5l1.9 6.1 6.1 1.9-6.1 1.9-1.9 6.1-1.9-6.1L4 10.5l6.1-1.9L12 2.5z\"/></svg>"
+
+static gchar *
+venture_web_label_from_name(const gchar *name)
+{
+	gchar *label;
+	gchar *cursor;
+
+	if (venture_string_is_empty(name))
+		return g_strdup("");
+
+	label = g_strdup(name);
+
+	for (cursor = label; '\0' != *cursor; cursor++)
+	{
+		if (('_' == *cursor) || ('-' == *cursor))
+			*cursor = ' ';
+	}
+
+	/* ASCII only, deliberately: these are property and enum nicks, which
+	 * the type system already constrains to [a-z0-9_-]. g_utf8_strup on
+	 * the first character would drag in locale rules for no gain, and in
+	 * a Turkish locale it would produce a dotted capital I. */
+	if (g_ascii_islower(label[0]))
+		label[0] = g_ascii_toupper(label[0]);
+
+	return label;
+}
+
 static const VentureWebNavLink venture_web_nav_links[] = {
-	{ "/",                 "Dashboard",   "\xe2\x97\x89", "Overview" },
-	{ "/reports",          "Reports",     "\xe2\x96\xa4", NULL },
-	{ "/e/venture",        "Ventures",    "\xe2\x97\x86", "Business" },
-	{ "/e/sale",           "Sales",       "\xe2\x86\x97", NULL },
-	{ "/e/invoice",        "Invoices",    "\xe2\x96\xa4", NULL },
-	{ "/e/product",        "Products",    "\xe2\x96\xa1", NULL },
-	{ "/e/inventory_item", "Inventory",   "\xe2\x96\xa6", NULL },
-	{ "/e/expense",        "Expenses",    "\xe2\x86\x98", "Money" },
-	{ "/e/account",        "Accounts",    "\xe2\x8a\x9e", NULL },
-	{ "/e/tax_category",   "Tax",         "\xc2\xa7",     NULL },
-	{ "/e/company",        "Companies",   "\xe2\x96\xa2", "Relations" },
-	{ "/e/contact",        "Contacts",    "\xe2\x97\x8b", NULL },
-	{ "/e/deal",           "Deals",       "\xe2\x86\x92", NULL },
-	{ "/e/campaign",       "Campaigns",   "\xe2\x97\x8e", "Growth" },
-	{ "/e/newsletter",     "Newsletters", "\xe2\x9c\x89", NULL },
-	{ "/e/post",           "Posts",       "\xe2\x96\xa5", NULL },
-	{ "/e/idea",           "Ideas",       "\xe2\x97\x87", "Thinking" },
-	{ "/tickets",          "Tickets",     "\xe2\x9c\x93", NULL },
-	{ "/e/research_note",  "Research",    "\xe2\x96\xa3", NULL },
-	{ "/e/forge_repo",     "Repositories","\xe2\x97\x88", "Code" },
-	{ "/e/forge_rule",     "Agent rules", "\xe2\x9a\xa1", NULL },
-	{ "/e/forge_run",      "Runs",        "\xe2\x96\xb6", NULL },
-	{ "/entities",         "Entities",    "\xe2\x97\xa7", "System" },
-	{ "/automations",      "Automations", "\xe2\x9a\xa1", NULL },
-	{ "/plugins",          "Plugins",     "\xe2\x97\x88", NULL },
-	{ "/account",          "Your account","\xe2\x97\x8f", NULL },
-	{ "/users",            "Users",       "\xe2\x97\x8b", NULL },
-	{ "/settings",         "Settings",    "\xe2\x9a\x99", NULL },
-	{ "/e/forge",          "Forges",      "\xe2\x8a\x9e", NULL },
-	{ "/e/audit_entry",    "Audit log",   "\xe2\x97\x8b", NULL },
+	{
+		"/", "Dashboard",
+		VENTURE_ICON(
+			"<rect x=\"3\" y=\"3\" width=\"7\" height=\"7\" rx=\"1.5\"/>"
+			"<rect x=\"14\" y=\"3\" width=\"7\" height=\"7\" rx=\"1.5\"/>"
+			"<rect x=\"3\" y=\"14\" width=\"7\" height=\"7\" rx=\"1.5\"/>"
+			"<rect x=\"14\" y=\"14\" width=\"7\" height=\"7\" rx=\"1.5\"/>"
+		),
+		"Overview"
+	},
+	{
+		"/reports", "Reports",
+		VENTURE_ICON(
+			"<path d=\"M3 20h18\"/><path d=\"M6 20v-6\"/>"
+			"<path d=\"M12 20V5\"/><path d=\"M18 20v-9\"/>"
+		),
+		NULL
+	},
+	{
+		"/e/venture", "Ventures",
+		VENTURE_ICON(
+			"<rect x=\"3\" y=\"7\" width=\"18\" height=\"13\" rx=\"2\"/>"
+			"<path d=\"M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2\"/>"
+			"<path d=\"M3 12h18\"/>"
+		),
+		"Business"
+	},
+	{
+		"/e/sale", "Sales",
+		VENTURE_ICON(
+			"<path d=\"M3 17l6-6 4 4 8-8\"/><path d=\"M15 7h6v6\"/>"
+		),
+		NULL
+	},
+	{
+		"/e/invoice", "Invoices",
+		VENTURE_ICON(
+			"<path d=\"M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z\"/>"
+			"<path d=\"M14 3v5h5\"/><path d=\"M9 13h6\"/>"
+			"<path d=\"M9 17h4\"/>"
+		),
+		NULL
+	},
+	{
+		"/e/product", "Products",
+		VENTURE_ICON(
+			"<path d=\"M21 8l-9-5-9 5 9 5 9-5z\"/>"
+			"<path d=\"M3 8v8l9 5 9-5V8\"/><path d=\"M12 13v8\"/>"
+		),
+		NULL
+	},
+	{
+		"/e/inventory_item", "Inventory",
+		VENTURE_ICON(
+			"<path d=\"M12 2.5L3 7.5l9 5 9-5-9-5z\"/>"
+			"<path d=\"M3 12l9 5 9-5\"/><path d=\"M3 16.5l9 5 9-5\"/>"
+		),
+		NULL
+	},
+	{
+		"/e/expense", "Expenses",
+		VENTURE_ICON(
+			"<path d=\"M3 7l6 6 4-4 8 8\"/><path d=\"M15 17h6v-6\"/>"
+		),
+		"Money"
+	},
+	{
+		"/e/account", "Accounts",
+		VENTURE_ICON(
+			"<path d=\"M3 21h18\"/><path d=\"M5 21V10\"/>"
+			"<path d=\"M9 21V10\"/><path d=\"M15 21V10\"/>"
+			"<path d=\"M19 21V10\"/><path d=\"M12 3L3 8h18l-9-5z\"/>"
+		),
+		NULL
+	},
+	{
+		"/e/tax_category", "Tax",
+		VENTURE_ICON(
+			"<path d=\"M19 5L5 19\"/>"
+			"<circle cx=\"7.5\" cy=\"7.5\" r=\"2.5\"/>"
+			"<circle cx=\"16.5\" cy=\"16.5\" r=\"2.5\"/>"
+		),
+		NULL
+	},
+	{
+		"/e/company", "Companies",
+		VENTURE_ICON(
+			"<path d=\"M3 21h18\"/>"
+			"<path d=\"M5 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16\"/>"
+			"<path d=\"M15 21V11h4a2 2 0 0 1 2 2v8\"/>"
+			"<path d=\"M9 7h2\"/><path d=\"M9 11h2\"/>"
+			"<path d=\"M9 15h2\"/>"
+		),
+		"Relations"
+	},
+	{
+		"/e/contact", "Contacts",
+		VENTURE_ICON(
+			"<path d=\"M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2\"/>"
+			"<circle cx=\"12\" cy=\"7\" r=\"4\"/>"
+		),
+		NULL
+	},
+	{
+		"/e/deal", "Deals",
+		VENTURE_ICON(
+			"<path d=\"M4 8h13\"/><path d=\"M14 5l3 3-3 3\"/>"
+			"<path d=\"M20 16H7\"/><path d=\"M10 13l-3 3 3 3\"/>"
+		),
+		NULL
+	},
+	{
+		"/e/campaign", "Campaigns",
+		VENTURE_ICON(
+			"<path d=\"M4 10v4a1 1 0 0 0 1 1h2l5 4V5L7 9H5a1 1 0 0 0-1 1z\"/>"
+			"<path d=\"M16.5 9.5a3.5 3.5 0 0 1 0 5\"/>"
+			"<path d=\"M19.5 7a7 7 0 0 1 0 10\"/>"
+		),
+		"Growth"
+	},
+	{
+		"/e/newsletter", "Newsletters",
+		VENTURE_ICON(
+			"<rect x=\"3\" y=\"5\" width=\"18\" height=\"14\" rx=\"2\"/>"
+			"<path d=\"M3.5 7l8.5 6 8.5-6\"/>"
+		),
+		NULL
+	},
+	{
+		"/e/post", "Posts",
+		VENTURE_ICON(
+			"<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\"/>"
+			"<path d=\"M7 9h10\"/><path d=\"M7 13h10\"/>"
+			"<path d=\"M7 17h6\"/>"
+		),
+		NULL
+	},
+	{
+		"/e/idea", "Ideas",
+		VENTURE_ICON(
+			"<path d=\"M9 18h6\"/><path d=\"M10 21h4\"/>"
+			"<path d=\"M12 3a6 6 0 0 0-3.5 10.9c.6.5.9 1.2.9 1.9V16h5.2v-.2c0-.7.3-1.4.9-1.9A6 6 0 0 0 12 3z\"/>"
+		),
+		"Thinking"
+	},
+	{
+		"/tickets", "Tickets",
+		VENTURE_ICON(
+			"<rect x=\"3\" y=\"3\" width=\"18\" height=\"18\" rx=\"2\"/>"
+			"<path d=\"M8 12l3 3 5-6\"/>"
+		),
+		NULL
+	},
+	{
+		"/e/research_note", "Research",
+		VENTURE_ICON(
+			"<circle cx=\"11\" cy=\"11\" r=\"7\"/>"
+			"<path d=\"M20 20l-3.9-3.9\"/>"
+		),
+		NULL
+	},
+	{
+		"/e/forge_repo", "Repositories",
+		VENTURE_ICON(
+			"<circle cx=\"7\" cy=\"5\" r=\"2\"/>"
+			"<circle cx=\"7\" cy=\"19\" r=\"2\"/>"
+			"<circle cx=\"17\" cy=\"9\" r=\"2\"/><path d=\"M7 7v10\"/>"
+			"<path d=\"M17 11v1a4 4 0 0 1-4 4H7\"/>"
+		),
+		"Code"
+	},
+	{
+		"/e/forge_rule", "Agent rules",
+		VENTURE_ICON(
+			"<path d=\"M4 6h10\"/><path d=\"M18 6h2\"/>"
+			"<circle cx=\"16\" cy=\"6\" r=\"2\"/><path d=\"M4 12h2\"/>"
+			"<path d=\"M10 12h10\"/>"
+			"<circle cx=\"8\" cy=\"12\" r=\"2\"/><path d=\"M4 18h8\"/>"
+			"<path d=\"M16 18h4\"/>"
+			"<circle cx=\"14\" cy=\"18\" r=\"2\"/>"
+		),
+		NULL
+	},
+	{
+		"/e/forge_run", "Runs",
+		VENTURE_ICON(
+			"<circle cx=\"12\" cy=\"12\" r=\"9\"/>"
+			"<path d=\"M10 8.5l6 3.5-6 3.5z\"/>"
+		),
+		NULL
+	},
+	{
+		"/entities", "Entities",
+		VENTURE_ICON(
+			"<rect x=\"9\" y=\"3\" width=\"6\" height=\"5\" rx=\"1.5\"/>"
+			"<rect x=\"2\" y=\"16\" width=\"6\" height=\"5\" rx=\"1.5\"/>"
+			"<rect x=\"16\" y=\"16\" width=\"6\" height=\"5\" rx=\"1.5\"/>"
+			"<path d=\"M12 8v4\"/>"
+			"<path d=\"M5 16v-2a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v2\"/>"
+		),
+		"System"
+	},
+	{
+		"/automations", "Automations",
+		VENTURE_ICON(
+			"<path d=\"M13 2L4 14h7l-1 8 9-12h-7l1-8z\"/>"
+		),
+		NULL
+	},
+	{
+		"/plugins", "Plugins",
+		VENTURE_ICON(
+			"<path d=\"M9 2v6\"/><path d=\"M15 2v6\"/>"
+			"<path d=\"M6 8h12v3a6 6 0 0 1-12 0V8z\"/>"
+			"<path d=\"M12 17v5\"/>"
+		),
+		NULL
+	},
+	{
+		"/account", "Your account",
+		VENTURE_ICON(
+			"<circle cx=\"12\" cy=\"12\" r=\"9\"/>"
+			"<circle cx=\"12\" cy=\"10\" r=\"3\"/>"
+			"<path d=\"M6.5 19a6 6 0 0 1 11 0\"/>"
+		),
+		NULL
+	},
+	{
+		"/users", "Users",
+		VENTURE_ICON(
+			"<path d=\"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2\"/>"
+			"<circle cx=\"9\" cy=\"7\" r=\"4\"/>"
+			"<path d=\"M22 21v-2a4 4 0 0 0-3-3.9\"/>"
+			"<path d=\"M16 3.1a4 4 0 0 1 0 7.8\"/>"
+		),
+		NULL
+	},
+	{
+		"/settings", "Settings",
+		VENTURE_ICON(
+			"<circle cx=\"12\" cy=\"12\" r=\"3\"/>"
+			"<path d=\"M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.3 7.1l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 2.9-1.2V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0 1.2 2.9H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z\"/>"
+		),
+		NULL
+	},
+	{
+		"/e/forge", "Forges",
+		VENTURE_ICON(
+			"<rect x=\"3\" y=\"4\" width=\"18\" height=\"7\" rx=\"2\"/>"
+			"<rect x=\"3\" y=\"13\" width=\"18\" height=\"7\" rx=\"2\"/>"
+			"<path d=\"M7 7.5h.01\"/><path d=\"M7 16.5h.01\"/>"
+		),
+		NULL
+	},
+	{
+		"/e/audit_entry", "Audit log",
+		VENTURE_ICON(
+			"<path d=\"M3.5 12a8.5 8.5 0 1 0 2.5-6\"/>"
+			"<path d=\"M3 3v5h5\"/><path d=\"M12 8v4.5l3 1.5\"/>"
+		),
+		NULL
+	},
 	{ NULL, NULL, NULL, NULL }
 };
 
@@ -428,9 +729,18 @@ venture_web_page(
 	g_string_append(html, venture_asset_venture_css);
 	g_string_append(html, "</style>");
 
-	/* The configured accent overrides the stylesheet's default without
-	 * needing the stylesheet regenerated. */
-	g_string_append(html, "<style>:root{--accent:");
+	/*
+	 * The configured accent overrides the stylesheet's default without
+	 * needing the stylesheet regenerated.
+	 *
+	 * It sets --accent-config rather than --accent: the stylesheet mixes
+	 * every accent value -- the link colour, its hover, the soft wash --
+	 * out of that one hue, and the dark palette lightens it for a dark
+	 * ground. Setting --accent here directly would be outranked by the
+	 * dark theme's own :root[data-theme="dark"] rule, so the configured
+	 * colour would apply in light mode and silently disappear in dark.
+	 */
+	g_string_append(html, "<style>:root{--accent-config:");
 	venture_html_escape_append(html, accent);
 	g_string_append(html, ";}</style>");
 
@@ -537,7 +847,10 @@ venture_web_page(
 		g_string_append(html,
 			"<button type=\"button\" class=\"ai-fab\" data-ai-toggle "
 			"title=\"Ask VENTURE (Ctrl+/)\">"
-			"<span class=\"spark\">\xe2\x9c\xa6</span>"
+			"<span class=\"spark\">"
+			"<svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\" focusable=\"false\">"
+			"<path d=\"M12 2.5l1.9 6.1 6.1 1.9-6.1 1.9-1.9 6.1-1.9-6.1L4 10.5l6.1-1.9L12 2.5z\"/></svg>"
+			"</span>"
 			"<span class=\"ai-fab-label\">Ask VENTURE</span></button>");
 
 		g_string_append_printf(html, "<aside class=\"ai-panel%s\" "
@@ -552,7 +865,10 @@ venture_web_page(
 
 		g_string_append(html,
 			"<div class=\"ai-panel-head\">"
-			"<span class=\"spark\">\xe2\x9c\xa6</span>"
+			"<span class=\"spark\">"
+			"<svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\" focusable=\"false\">"
+			"<path d=\"M12 2.5l1.9 6.1 6.1 1.9-6.1 1.9-1.9 6.1-1.9-6.1L4 10.5l6.1-1.9L12 2.5z\"/></svg>"
+			"</span>"
 			"<span class=\"ai-panel-title\" id=\"ai-panel-title\">"
 			"Ask VENTURE</span>"
 			"<div class=\"ai-panel-actions\">"
@@ -1292,7 +1608,7 @@ venture_web_ui_dashboard(
 		rendered = venture_report_result_render(result,
 			VENTURE_OUTPUT_FORMAT_HTML);
 		g_string_append(content, rendered);
-		g_string_append(content, "<div style=\"height:16px\"></div>");
+		g_string_append(content, "<div class=\"mb-4\"></div>");
 	}
 
 	g_string_append(content, "<div class=\"dash-grid\">");
@@ -1643,7 +1959,12 @@ venture_web_not_found_middleware(
 		g_autoptr(GString) body = NULL;
 
 		body = g_string_new("<div class=\"empty\">"
-			"<span class=\"empty-icon\">\xe2\x97\x8b</span>"
+			"<span class=\"empty-icon\">"
+						 VENTURE_ICON(
+							"<path d=\"M3 13h4l2 3h6l2-3h4\"/>"
+							"<path d=\"M5.5 6h13l2.5 7v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5L5.5 6z\"/>"
+						 )
+						 "</span>"
 			"<h3>There is no page at ");
 		venture_html_escape_append(body, path);
 		g_string_append(body,
@@ -1743,8 +2064,7 @@ venture_web_ui_automations(
 
 	if (NULL != automation)
 		g_string_append(content,
-			"<form method=\"post\" action=\"/automations/reload\" "
-			"style=\"display:inline\">"
+			"<form method=\"post\" action=\"/automations/reload\">"
 			"<button class=\"btn\" type=\"submit\" "
 			"title=\"Rebuild the engine from the file on disk\">"
 			"Reload</button></form>");
@@ -2517,7 +2837,12 @@ venture_web_ui_plugins(
 
 	if ((NULL == plugins) || (0 == json_array_get_length(plugins)))
 		g_string_append(content, "<div class=\"empty\">"
-		                         "<span class=\"empty-icon\">\xe2\x97\x8b</span>"
+		                         "<span class=\"empty-icon\">"
+						 VENTURE_ICON(
+							"<path d=\"M3 13h4l2 3h6l2-3h4\"/>"
+							"<path d=\"M5.5 6h13l2.5 7v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5L5.5 6z\"/>"
+						 )
+						 "</span>"
 		                         "<h3>No plugins loaded</h3>"
 		                         "<p class=\"muted\">Drop a .so or a crispy "
 		                         ".c file into a configured plugin directory "
@@ -2711,7 +3036,7 @@ venture_web_ui_search(
 
 	g_string_append(content,
 		"<form class=\"card search-form\" action=\"/search\" method=\"get\">"
-		"<div class=\"card-body\" style=\"display:flex;gap:8px\">"
+		"<div class=\"card-body\">"
 		"<input type=\"search\" name=\"q\" data-search-input "
 		"placeholder=\"Search everything\" autofocus value=\"");
 
@@ -2719,7 +3044,7 @@ venture_web_ui_search(
 		venture_html_escape_append(content, q);
 
 	g_string_append(content,
-		"\" style=\"flex:1\">"
+		"\">"
 		"<button class=\"btn btn-primary\" type=\"submit\">Search</button>"
 		"</div></form>");
 
@@ -2820,7 +3145,12 @@ venture_web_ui_search(
 
 		if (0 == groups)
 			g_string_append(content, "<div class=\"empty\">"
-			                         "<span class=\"empty-icon\">\xe2\x97\x8b</span>"
+			                         "<span class=\"empty-icon\">"
+						 VENTURE_ICON(
+							"<path d=\"M3 13h4l2 3h6l2-3h4\"/>"
+							"<path d=\"M5.5 6h13l2.5 7v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5L5.5 6z\"/>"
+						 )
+						 "</span>"
 			                         "<h3>Nothing matched</h3>"
 			                         "<p class=\"muted\">Only fields marked "
 			                         "searchable are looked at, and only in "
@@ -3785,7 +4115,12 @@ venture_web_ui_list(
 
 	g_string_append(content, "<div class=\"page-head\"><div class=\"page-title\">"
 	                         "<h1>");
-	venture_html_escape_append(content, type_name);
+	{
+		g_autofree gchar *heading = NULL;
+
+		heading = venture_web_label_from_name(type_name);
+		venture_html_escape_append(content, heading);
+	}
 	g_string_append(content, "</h1><span class=\"subtitle\">");
 	g_string_append_printf(content, "%" G_GINT64_FORMAT " record%s", total,
 	                       (1 == total) ? "" : "s");
@@ -3793,7 +4128,7 @@ venture_web_ui_list(
 	g_string_append_printf(content,
 		"<input type=\"search\" name=\"search\" placeholder=\"Search\" "
 		"data-search-input hx-get=\"%s\" hx-trigger=\"keyup changed delay:300ms\" "
-		"hx-target=\"body\" style=\"width:220px\">", path);
+		"hx-target=\"body\">", path);
 
 	{
 		g_autofree gchar *suffix = NULL;
@@ -3980,7 +4315,12 @@ venture_web_ui_list(
 	if (0 == records->len)
 	{
 		g_string_append(content, "<div class=\"empty\">"
-		                         "<span class=\"empty-icon\">\xe2\x97\x8b</span>"
+		                         "<span class=\"empty-icon\">"
+						 VENTURE_ICON(
+							"<path d=\"M3 13h4l2 3h6l2-3h4\"/>"
+							"<path d=\"M5.5 6h13l2.5 7v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5L5.5 6z\"/>"
+						 )
+						 "</span>"
 		                         "<h3>Nothing here yet</h3>"
 		                         "<p class=\"muted\">Records you add will "
 		                         "appear in this list.</p></div>");
@@ -4190,6 +4530,74 @@ venture_web_ui_report(
 
 /* --- Login --------------------------------------------------------------- */
 
+/*
+ * The sign-in shell, shared by the form and the failure page.
+ *
+ * Those were two copies of the same hand-styled markup, and they had already
+ * drifted: the failure page dropped the lang attribute and the viewport meta,
+ * so a failed login rendered zoomed out on a phone. Both also hard-coded
+ * their layout in style attributes, which put a second, invisible set of
+ * design decisions outside the stylesheet.
+ *
+ * The theme script is the same one the main shell emits, for the same
+ * reason: without it a dark-theme operator gets a white page at sign-in and
+ * a dark one immediately after.
+ *
+ * Returns: (transfer full): the complete document
+ */
+static gchar *
+venture_web_auth_page(
+	VentureWebServer	*self,
+	const gchar		*body
+){
+	g_autoptr(GString) html = NULL;
+	g_autofree gchar *ui_title = NULL;
+	g_autofree gchar *accent = NULL;
+
+	g_object_get(venture_context_get_config(self->context),
+	             "ui-title", &ui_title,
+	             "ui-accent", &accent,
+	             NULL);
+
+	html = g_string_new("<!doctype html><html lang=\"en\"><head>"
+	                    "<meta charset=\"utf-8\">"
+	                    "<meta name=\"viewport\" content=\"width=device-width, "
+	                    "initial-scale=1\"><title>Sign in");
+	g_string_append(html, " &middot; ");
+	venture_html_escape_append(html, ui_title);
+	g_string_append(html, "</title>");
+
+	g_string_append(html,
+		"<script>(function(){try{var t=localStorage.getItem('venture.theme');"
+		"if(t==='light'||t==='dark')document.documentElement"
+		".setAttribute('data-theme',t);}catch(e){}})();</script>");
+
+	g_string_append(html, "<style>");
+	g_string_append(html, venture_asset_venture_css);
+	g_string_append(html, "</style>");
+
+	g_string_append(html, "<style>:root{--accent-config:");
+	venture_html_escape_append(html, accent);
+	g_string_append(html, ";}</style>");
+
+	g_string_append(html, "</head><body><main class=\"auth\">"
+	                      "<div class=\"auth-inner\">");
+
+	/* The masthead: the mark, the install's name, and what this page is
+	 * for. The name is the operator's, so it is escaped. */
+	g_string_append(html, "<div class=\"auth-mast\">"
+	                      "<span class=\"brand-mark\">V</span>"
+	                      "<h1>");
+	venture_html_escape_append(html, ui_title);
+	g_string_append(html, "</h1></div>");
+
+	g_string_append(html, body);
+
+	g_string_append(html, "</div></main></body></html>");
+
+	return g_string_free(g_steal_pointer(&html), FALSE);
+}
+
 static HtmxResponse *
 venture_web_ui_login_form(
 	HtmxRequest	*request,
@@ -4197,28 +4605,12 @@ venture_web_ui_login_form(
 	gpointer	 user_data
 ){
 	VentureWebServer *self;
-	g_autoptr(GString) html = NULL;
-	g_autofree gchar *ui_title = NULL;
+	g_autofree gchar *html = NULL;
 
 	self = user_data;
-	g_object_get(venture_context_get_config(self->context), "ui-title",
-	             &ui_title, NULL);
 
-	html = g_string_new("<!doctype html><html lang=\"en\"><head>"
-	                    "<meta charset=\"utf-8\">"
-	                    "<meta name=\"viewport\" content=\"width=device-width, "
-	                    "initial-scale=1\"><title>Sign in</title><style>");
-	g_string_append(html, venture_asset_venture_css);
-	g_string_append(html, "</style></head><body>");
-	g_string_append(html, "<div style=\"display:grid;place-items:center;"
-	                      "min-height:100vh;padding:24px\">"
-	                      "<div class=\"card\" style=\"width:min(380px,100%)\">"
-	                      "<div class=\"card-body\">");
-	g_string_append(html, "<h1 style=\"margin-bottom:20px\">");
-	venture_html_escape_append(html, ui_title);
-	g_string_append(html, "</h1>");
-	g_string_append(html,
-		"<form method=\"post\" action=\"/login\">"
+	html = venture_web_auth_page(self,
+		"<form class=\"auth-form\" method=\"post\" action=\"/login\">"
 		"<div class=\"field\"><label for=\"u\">Username</label>"
 		"<input id=\"u\" type=\"text\" name=\"username\" "
 		"autocomplete=\"username\" autofocus>"
@@ -4226,12 +4618,10 @@ venture_web_ui_login_form(
 		"<div class=\"field\"><label for=\"p\">Password</label>"
 		"<input id=\"p\" name=\"password\" type=\"password\" "
 		"autocomplete=\"current-password\"></div>"
-		"<button class=\"btn btn-primary btn-lg\" style=\"width:100%\" "
-		"type=\"submit\">Sign in</button></form>");
-	g_string_append(html, "</div></div></div></body></html>");
+		"<button class=\"btn btn-primary btn-lg\" type=\"submit\">"
+		"Sign in</button></form>");
 
-	return venture_web_html_response(g_string_free(g_steal_pointer(&html),
-	                                               FALSE), 200);
+	return venture_web_html_response(g_steal_pointer(&html), 200);
 }
 
 static HtmxResponse *
@@ -4252,24 +4642,26 @@ venture_web_ui_login_submit(
 	                        htmx_request_get_form_value(request, "password"),
 	                        &cookie, &error))
 	{
-		g_autoptr(GString) html = NULL;
+		g_autoptr(GString) body = NULL;
+		g_autofree gchar *html = NULL;
 
-		html = g_string_new("<!doctype html><html><head><meta charset=\"utf-8\">"
-		                    "<title>Sign in</title><style>");
-		g_string_append(html, venture_asset_venture_css);
-		g_string_append(html, "</style></head><body>"
-		                      "<div style=\"display:grid;place-items:center;"
-		                      "min-height:100vh;padding:24px\">"
-		                      "<div class=\"card\" style=\"width:min(380px,100%)\">"
-		                      "<div class=\"card-body\">"
-		                      "<div class=\"notice negative\">");
-		venture_html_escape_append(html, error->message);
-		g_string_append(html, "</div>"
-		                      "<a class=\"btn\" href=\"/login\">Try again</a>"
-		                      "</div></div></div></body></html>");
+		body = g_string_new("<div class=\"auth-form\">"
+		                    "<div class=\"notice negative\">"
+		                    "<span class=\"notice-icon\">"
+		                    VENTURE_ICON(
+		                        "<circle cx=\"12\" cy=\"12\" r=\"9\"/>"
+		                        "<path d=\"M12 8v5\"/>"
+		                        "<path d=\"M12 16.5h.01\"/>"
+		                    )
+		                    "</span><span>");
+		venture_html_escape_append(body, error->message);
+		g_string_append(body, "</span></div>"
+		                      "<a class=\"btn btn-primary btn-lg\" "
+		                      "href=\"/login\">Try again</a></div>");
 
-		return venture_web_html_response(
-			g_string_free(g_steal_pointer(&html), FALSE), 401);
+		html = venture_web_auth_page(self, body->str);
+
+		return venture_web_html_response(g_steal_pointer(&html), 401);
 	}
 
 	response = htmx_response_new();
@@ -4431,11 +4823,20 @@ venture_web_append_form_field(
 		}
 	}
 
-	g_string_append(content, "<div class=\"field\"><label>");
+	/*
+	 * The label text and the required marker are wrapped together so they
+	 * share a line. Everything in a .field label is a flex child, so a
+	 * bare text node beside a <span> stacked into two rows -- the asterisk
+	 * ended up on a line of its own beneath the caption.
+	 */
+	g_string_append(content, "<div class=\"field\"><label>"
+	                         "<span class=\"field-label\">");
 	venture_html_escape_append(content, label);
 
 	if (required)
-		g_string_append(content, " <span class=\"required\">*</span>");
+		g_string_append(content, "<span class=\"required\">*</span>");
+
+	g_string_append(content, "</span>");
 
 	switch (kind)
 	{
@@ -4586,7 +4987,17 @@ venture_web_append_form_field(
 
 	g_string_append(content, "</label>");
 
-	if (!venture_string_is_empty(help))
+	/*
+	 * The blurb is suppressed when it only repeats the caption.
+	 *
+	 * Most field specs describe themselves -- "Title" is documented as
+	 * "Title" -- so a generated form printed every caption twice, once
+	 * above the control and once below it in a second style. Saying it
+	 * twice does not make it clearer, and on a twenty-field record it
+	 * doubles the height of the form for nothing.
+	 */
+	if (!venture_string_is_empty(help) &&
+	    (0 != g_ascii_strcasecmp(help, label)))
 	{
 		g_string_append(content, "<div class=\"field-help\">");
 		venture_html_escape_append(content, help);
@@ -7041,7 +7452,12 @@ venture_web_ui_tickets(
 			g_string_append_printf(content,
 				"<section class=\"board-column\" data-status=\"%s\">"
 				"<header class=\"board-column-head\"><span>", nick);
-			venture_html_escape_append(content, nick);
+			{
+				g_autofree gchar *heading = NULL;
+
+				heading = venture_web_label_from_name(nick);
+				venture_html_escape_append(content, heading);
+			}
 			g_string_append_printf(content,
 				"</span><span class=\"count\">%u</span></header>"
 				"<div class=\"board-column-body\" data-drop=\"%s\">",
@@ -9214,7 +9630,9 @@ venture_web_chat_append_message(
 	if (VENTURE_CHAT_ROLE_ASSISTANT == role)
 	{
 		g_string_append(html, "<div class=\"msg ai\">"
-		                      "<span class=\"msg-avatar\">\xe2\x9c\xa6</span>"
+		                      "<span class=\"msg-avatar\">"
+						 VENTURE_SPARK
+						 "</span>"
 		                      "<div class=\"msg-content\">");
 		venture_web_chat_append_rich(html, body);
 		g_string_append(html, "</div></div>");
@@ -10263,7 +10681,9 @@ venture_web_ui_chat_decide(
 		: venture_ai_service_reject(service, id, principal, &error);
 
 	html = g_string_new("<div class=\"msg ai\">"
-	                    "<span class=\"msg-avatar\">\xe2\x9c\xa6</span>"
+	                    "<span class=\"msg-avatar\">"
+						 VENTURE_SPARK
+						 "</span>"
 	                    "<div class=\"msg-content\">");
 
 	if (!decided)
@@ -10360,7 +10780,9 @@ venture_web_ui_chat(
 		/* Nothing is persisted: a transcript of questions nothing
 		 * answered is not a conversation worth resuming. */
 		g_string_append(html, "<div class=\"msg ai\">"
-		                      "<span class=\"msg-avatar\">\xe2\x9c\xa6</span>"
+		                      "<span class=\"msg-avatar\">"
+						 VENTURE_SPARK
+						 "</span>"
 		                      "<div class=\"msg-content\">"
 		                      "<div class=\"notice info\">AI is not configured "
 		                      "on this instance.</div></div></div>");
@@ -10479,7 +10901,9 @@ venture_web_ui_chat(
 			 * asking again is the recovery -- but a provider error
 			 * is not part of the conversation. */
 			g_string_append(html, "<div class=\"msg ai\">"
-			                      "<span class=\"msg-avatar\">\xe2\x9c\xa6</span>"
+			                      "<span class=\"msg-avatar\">"
+						 VENTURE_SPARK
+						 "</span>"
 			                      "<div class=\"msg-content\">"
 			                      "<div class=\"notice negative\">");
 			venture_html_escape_append(html, error->message);

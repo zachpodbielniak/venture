@@ -284,8 +284,11 @@ ui:
   # still lets the theme toggle override it.
   theme: "system"
 
-  # Accent colour used for primary actions and highlights.
-  accent: "#4f7cff"
+  # Accent colour. It tints links, the focus ring and the active nav row --
+  # primary buttons are near-black ink regardless, so this is a highlight
+  # colour rather than a brand fill. The dark theme lightens whatever is set
+  # here rather than substituting its own.
+  accent: "#1f6c9f"
 
   # Rows per page in list views.
   page_size: 50

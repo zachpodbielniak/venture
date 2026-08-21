@@ -184,7 +184,7 @@ static const VentureConfigSetting venture_config_settings[] = {
 	        "Plugins that must load or startup fails"),
 
 	VC_STR ("ui-theme", "ui", "theme", "system", "system, light or dark"),
-	VC_STR ("ui-accent", "ui", "accent", "#4f7cff", "Accent colour"),
+	VC_STR ("ui-accent", "ui", "accent", "#1f6c9f", "Accent colour"),
 	VC_INT ("ui-page-size", "ui", "page_size", 50, "Rows per page"),
 	VC_BOOL("ui-chat-dock", "ui", "chat_dock", TRUE, "Show the AI chat dock"),
 	VC_BOOL("ui-chat-dock-expanded", "ui", "chat_dock_expanded", FALSE,

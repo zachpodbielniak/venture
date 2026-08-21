@@ -19,6 +19,37 @@
 	var STORAGE_THREAD = "venture.ai.thread";
 	var STORAGE_WIDTH = "venture.ai.width";
 
+	/*
+	 * What gets a scroll-entry animation: whole content blocks only.
+	 *
+	 * Deliberately not table rows. Staggering a hundred rows makes a list
+	 * unreadable while it plays and, worse, makes it look empty to anyone
+	 * scanning it -- which is what a list page is for. Board columns are
+	 * in; the cards inside them are not, because a card can also arrive
+	 * mid-drag.
+	 */
+	/*
+	 * The assistant's mark, kept byte-identical to VENTURE_SPARK in
+	 * venture-web-server.c. This is the optimistic echo of a message the
+	 * server then re-renders; if the two disagree the avatar visibly
+	 * changes the moment the real response arrives.
+	 */
+	var SPARK_SVG = "<svg viewBox=\"0 0 24 24\" fill=\"currentColor\" "
+		+ "aria-hidden=\"true\" focusable=\"false\">"
+		+ "<path d=\"M12 2.5l1.9 6.1 6.1 1.9-6.1 1.9-1.9 6.1-1.9-6.1"
+		+ "L4 10.5l6.1-1.9L12 2.5z\"/></svg>";
+
+	var REVEAL_SELECTOR = [
+		".main > .card",
+		".main > .grid > .card",
+		".main > .grid > .stat",
+		".main > .bento > *",
+		".main > .dash-grid > .card",
+		".main > .dash-grid > .dash-card",
+		".main > .stat-row > .stat",
+		".main > .board > .board-column"
+	].join(",");
+
 	/* ------------------------------------------------------------------ */
 	/* Theme                                                               */
 	/* ------------------------------------------------------------------ */
@@ -357,7 +388,9 @@
 		var row = document.createElement("div");
 
 		row.className = "msg ai typing-row";
-		row.innerHTML = "<span class=\"msg-avatar\">✦</span>"
+		/* Must match VENTURE_SPARK in venture-web-server.c: this is the
+		 * optimistic echo, and the server re-renders the same message. */
+		row.innerHTML = "<span class=\"msg-avatar\">" + SPARK_SVG + "</span>"
 			+ "<div class=\"msg-content\"><span class=\"typing\">"
 			+ "<span></span><span></span><span></span></span></div>";
 		log.appendChild(row);
@@ -743,7 +776,10 @@
 				return response.json();
 			}).then(function (body) {
 				if (body.ok) {
-					status.textContent = "✓ Parses cleanly.";
+					/* .editor-status.ok already carries the colour; a dingbat
+					 * check on top of it renders in whatever font the browser
+					 * falls back to for U+2713, which is rarely this one. */
+					status.textContent = "Parses cleanly.";
 					status.className = "editor-status ok";
 					renumber();
 				} else {
@@ -889,9 +925,14 @@
 			["?", "This list"]
 		];
 
+		/* Each key gets its own <kbd>, so "Ctrl + K" renders as two
+		 * keycaps with a separator rather than one wide slab. */
 		var body = rows.map(function (row) {
-			return "<tr><td><code>" + row[0] + "</code></td><td>"
-				+ row[1] + "</td></tr>";
+			var keys = row[0].split(" + ").map(function (key) {
+				return "<kbd>" + key + "</kbd>";
+			}).join(" + ");
+
+			return "<tr><td>" + keys + "</td><td>" + row[1] + "</td></tr>";
 		}).join("");
 
 		openModal("Keyboard shortcuts",
@@ -1258,6 +1299,79 @@
 		});
 	}
 
+	/* ------------------------------------------------------------------ */
+	/* Scroll entry                                                        */
+	/* ------------------------------------------------------------------ */
+
+	/*
+	 * Content blocks settle into place as they scroll into view.
+	 *
+	 * The hidden state is opted into here rather than in the stylesheet:
+	 * .reveal-ready goes on <html> only once this runs, so a browser with
+	 * scripting off, or one where the script fails to parse, renders every
+	 * block visible instead of a permanently blank page. That failure mode
+	 * is the reason this pattern is usually a bad idea, and it is cheap to
+	 * avoid.
+	 *
+	 * IntersectionObserver rather than a scroll listener: a scroll handler
+	 * fires on every frame of every scroll for the life of the page, and
+	 * this needs to know one thing once per element.
+	 */
+	function wireReveal(root) {
+		var targets;
+		var observer;
+		var reduced;
+
+		if (!window.IntersectionObserver) {
+			return;
+		}
+
+		/* Honoured here as well as in the stylesheet: with motion off
+		 * there is nothing to observe, so do not pay for the observer. */
+		reduced = window.matchMedia
+			&& window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+		if (reduced) {
+			return;
+		}
+
+		targets = root.querySelectorAll(REVEAL_SELECTOR);
+
+		if (!targets.length) {
+			return;
+		}
+
+		document.documentElement.classList.add("reveal-ready");
+
+		observer = new IntersectionObserver(function (entries) {
+			entries.forEach(function (entry) {
+				if (!entry.isIntersecting) {
+					return;
+				}
+
+				entry.target.classList.add("revealed");
+
+				/* Once shown, stop watching it and drop the compositor
+				 * hint the transition needed. */
+				observer.unobserve(entry.target);
+				window.setTimeout(function () {
+					entry.target.classList.add("reveal-done");
+				}, 900);
+			});
+		}, { rootMargin: "0px 0px -8% 0px", threshold: 0.01 });
+
+		Array.prototype.forEach.call(targets, function (el, index) {
+			/*
+			 * The cascade is capped and restarts per group. Uncapped, the
+			 * twentieth card on a dense page waits 1.6s before appearing,
+			 * which reads as the page being broken rather than as motion.
+			 */
+			el.setAttribute("data-reveal", "");
+			el.style.setProperty("--reveal-index", String(index % 6));
+			observer.observe(el);
+		});
+	}
+
 	function updateColumnCounts(board) {
 		Array.prototype.forEach.call(
 			board.querySelectorAll(".board-column"),
@@ -1277,6 +1391,7 @@
 		wireRowLinks(document);
 		wireBoard(document);
 		wireServerEvents();
+		wireReveal(document);
 		scrollChatToBottom();
 	}
 

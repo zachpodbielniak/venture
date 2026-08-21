@@ -32,7 +32,7 @@ G_BEGIN_DECLS
  * VentureWebNavLink:
  * @path: the URL the entry links to
  * @label: the visible text
- * @icon: a UTF-8 glyph shown before the label
+ * @icon: inline SVG markup for the icon shown before the label
  * @section: (nullable): a heading to start a new group with
  *
  * One entry in the web UI's sidebar. Exposed so that the test suite can

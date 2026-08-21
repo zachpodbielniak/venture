@@ -229,3 +229,28 @@ venture --generate-c-config > ~/.config/venture/config.c
 - *logging* — level, file, format
 
 Every setting is documented inline in the generated file.
+
+** What =ui.accent= actually controls
+
+Less than the name suggests, and deliberately. The interface is warm
+monochrome: a bone canvas, white surfaces, one hairline grey for every
+border, and charcoal rather than black for text. Colour is spent only where
+it carries meaning.
+
+So the accent tints links, the focus ring, the active sidebar row and the
+text selection. It does *not* fill primary buttons — those are near-black
+ink in the light theme and near-white in the dark one, which is what keeps a
+page with a Save and a Cancel on it down to one dark rectangle.
+
+The value reaches the page as =--accent-config=, and every other accent
+value is mixed from it: the hover shade, the soft wash behind an active
+row, and the lightened form the dark theme needs against a dark ground. Set
+one hex colour and both themes follow. Setting =--accent= directly would not
+work — the dark palette's own rule is more specific than the one the server
+emits, so a configured colour would apply in light mode and silently vanish
+in dark.
+
+Status colours are not configurable. Positive, negative, warning and
+informational each have a fixed pastel fill and a matching ink, because
+those four have to stay distinguishable from one another and from whatever
+accent an operator picks.
