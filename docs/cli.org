@@ -9,10 +9,24 @@
 
 * For an AI agent
 
-=.claude/skills/venturectl/SKILL.md= is a skill file written for an agent
+=skills/venturectl/SKILL.md= is a skill file written for an agent
 driving this CLI: setup, the five traps that account for most mistakes, a
 worked forge configuration, and the exit codes to branch on. It is
 maintained alongside the code rather than as documentation about it.
+
+Install it for whichever agents you use:
+
+#+begin_src bash
+make install-skill
+#+end_src
+
+That symlinks it into =~/.claude/skills=, =~/.grok/skills= and
+=~/.agents/skills= — Claude Code, grok-build and opencode respectively.
+Symlinked rather than copied, so editing the working tree is immediately
+what every agent reads; a copy would drift the first time one was edited in
+place. Override =SKILL_DESTS= for a different set, and =make
+uninstall-skill= removes the links. Neither target will touch a real
+directory that happens to share the name.
 
 The habit it exists to instil is =venturectl describe TYPE= before writing
 anything. That prints every field in the spelling you must type, what each

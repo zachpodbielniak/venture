@@ -182,8 +182,15 @@ first seven columns were empty.
 as an argument. A record type added today already works, and no subcommand
 should ever be added per type.
 
-**The agent-facing guide is `.claude/skills/venturectl/SKILL.md`, and it is
-maintained with the code.** When a command, a flag, an exit code or one of
+**The agent-facing guide is `skills/venturectl/SKILL.md`, and it is
+maintained with the code.** It lives there rather than under `.claude/`
+because three different agents read it and none of them owns it;
+`.claude/skills/venturectl` is a symlink to it so Claude Code still finds it
+with the project open. `make install-skill` links it into
+`~/.claude/skills`, `~/.grok/skills` and `~/.agents/skills` — a symlink, not
+a copy, so editing the working tree is immediately what every agent reads.
+It only ever replaces a symlink; a real directory of the same name is
+reported and left alone. When a command, a flag, an exit code or one of
 its documented traps changes, change it there in the same commit. A skill
 that is confidently wrong is worse than none, because it gets followed. Its
 two ground truths — `venturectl --help` and `venturectl describe <type>` —

@@ -322,6 +322,29 @@ AI_GLIB_SUBMAKE :=
 CRISPY_SUBMAKE :=
 ORM_GLIB_SUBMAKE := ENABLE_SQLITE=$(SQLITE) ENABLE_POSTGRES=$(POSTGRES_AVAILABLE)
 #
+# ---------------------------------------------------------------------------
+# The agent skill
+# ---------------------------------------------------------------------------
+#
+# skills/venturectl is the canonical copy and is agent-agnostic on purpose:
+# three different coding agents read it, and none of them owns it. The
+# .claude/skills/ entry in this repository is a symlink to it so Claude Code
+# still discovers it when the project is open, without a second copy to keep
+# in step.
+#
+# `make install-skill` links it into each agent's user directory. These are
+# overridable so an agent that moves its directory, or a machine that puts
+# HOME somewhere unusual, needs no patch:
+#
+#   make install-skill SKILL_DESTS="$HOME/.claude/skills"
+#
+SKILL_NAME := venturectl
+SKILL_SRC := $(CURDIR)/skills/$(SKILL_NAME)
+
+SKILL_DESTS ?= $(HOME)/.claude/skills \
+               $(HOME)/.grok/skills \
+               $(HOME)/.agents/skills
+
 # Which of podomation's modules to build and install.
 #
 # Not all of them: the full set's build dependencies are the union of every

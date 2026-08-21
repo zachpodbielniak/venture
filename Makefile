@@ -355,6 +355,10 @@ help:
 	@echo "  compile-commands  Write compile_commands.json for clangd"
 	@echo "  run               Run the server from the build tree"
 	@echo "  print-VAR         Print the value of any make variable"
+	@echo ""
+	@echo "Agent skill:"
+	@echo "  install-skill     Symlink skills/venturectl into each agent's dir"
+	@echo "  uninstall-skill   Remove those symlinks"
 
 # ---------------------------------------------------------------------------
 # Header dependency tracking

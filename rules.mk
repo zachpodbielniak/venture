@@ -371,6 +371,50 @@ ifeq ($(BUILD_GIR),1)
 install: install-gir
 endif
 
+# ---------------------------------------------------------------------------
+# The agent skill
+# ---------------------------------------------------------------------------
+#
+# Symlinked rather than copied, so editing the skill in the working tree is
+# immediately what every agent reads. A copy would drift the first time one
+# was edited in place, and a stale skill is worse than none because it gets
+# followed.
+#
+# Only ever removes a symlink. A real file or directory at the destination
+# is left alone and reported: that is somebody's own skill of the same name,
+# and silently replacing it would be the one unrecoverable thing this target
+# could do.
+.PHONY: install-skill
+install-skill:
+	@if [ ! -f "$(SKILL_SRC)/SKILL.md" ]; then \
+		echo "No skill at $(SKILL_SRC)" >&2; \
+		exit 1; \
+	fi
+	@for dest in $(SKILL_DESTS); do \
+		link="$$dest/$(SKILL_NAME)"; \
+		$(MKDIR_P) "$$dest"; \
+		if [ -L "$$link" ]; then \
+			rm -f "$$link"; \
+		elif [ -e "$$link" ]; then \
+			echo "  skip     $$link (not a symlink -- move it aside first)"; \
+			continue; \
+		fi; \
+		ln -s "$(SKILL_SRC)" "$$link"; \
+		echo "  link     $$link"; \
+	done
+
+.PHONY: uninstall-skill
+uninstall-skill:
+	@for dest in $(SKILL_DESTS); do \
+		link="$$dest/$(SKILL_NAME)"; \
+		if [ -L "$$link" ]; then \
+			rm -f "$$link"; \
+			echo "  unlink   $$link"; \
+		elif [ -e "$$link" ]; then \
+			echo "  skip     $$link (not a symlink)"; \
+		fi; \
+	done
+
 install-bin: $(OUTDIR)/venture
 	$(MKDIR_P) $(DESTDIR)$(BINDIR)
 	$(INSTALL_PROGRAM) $(OUTDIR)/venture $(DESTDIR)$(BINDIR)/venture
