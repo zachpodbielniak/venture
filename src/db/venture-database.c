@@ -27,6 +27,21 @@ struct _VentureDatabase
 	gchar			*uri;
 
 	/*
+	 * How many begins are open, and which thread opened them.
+	 *
+	 * The lock is taken once per begin and released once per matching
+	 * commit or rollback, so the recursive count returns to zero when the
+	 * outermost pair closes. Both are needed: without the depth an inner
+	 * commit would commit the outer transaction, and without the owner a
+	 * commit issued with no begin would release a level this thread never
+	 * took. Either one leaks a level, which is invisible while everything
+	 * is single-threaded and a permanent, silent deadlock the first time
+	 * anything else touches the database.
+	 */
+	guint			 transaction_depth;
+	GThread			*transaction_owner;
+
+	/*
 	 * Serialises every operation. SQLite admits one writer at a time
 	 * regardless, and for a single-operator system one connection behind
 	 * a mutex is both simpler and easier to reason about than a pool --
@@ -435,19 +450,27 @@ venture_database_begin(
 
 	g_rec_mutex_lock(&self->lock);
 
-	if (NULL != self->transaction)
+	self->transaction_depth++;
+
+	if (self->transaction_depth > 1)
 	{
-		/* Nested transactions are not attempted. The recursive lock
-		 * means the caller already holds it, and treating this as a
-		 * no-op keeps the outermost commit in charge. */
+		/* Nested transactions are not attempted: a nested begin joins
+		 * the one already running so the outermost commit stays in
+		 * charge. The lock taken above is released by this begin's own
+		 * matching commit or rollback, which is what keeps the
+		 * recursive count balanced. */
 		return TRUE;
 	}
+
+	self->transaction_owner = g_thread_self();
 
 	self->transaction = orm_connection_begin_transaction(self->connection,
 	                                                     &local_error);
 
 	if (NULL == self->transaction)
 	{
+		self->transaction_depth--;
+		self->transaction_owner = NULL;
 		g_rec_mutex_unlock(&self->lock);
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
 		            "Cannot begin a transaction: %s",
@@ -468,11 +491,41 @@ venture_database_commit(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 
-	if (NULL == self->transaction)
+	/* A commit with no begin of its own does nothing. The owner check is
+	 * what makes that safe rather than merely quiet: another thread may
+	 * legitimately hold a transaction, and releasing a level on its
+	 * behalf would unlock a mutex this thread never took. */
+	if ((0 == self->transaction_depth) ||
+	    (g_thread_self() != self->transaction_owner))
 		return TRUE;
+
+	self->transaction_depth--;
+
+	if (self->transaction_depth > 0)
+	{
+		/* An inner commit. Only the outermost one decides. */
+		g_rec_mutex_unlock(&self->lock);
+		return TRUE;
+	}
+
+	/*
+	 * An inner level already rolled back, so there is nothing left to
+	 * commit and reporting success would be a lie: the caller would
+	 * carry on believing its writes landed. Once any level has rolled
+	 * back, the outermost commit fails.
+	 */
+	if (NULL == self->transaction)
+	{
+		self->transaction_owner = NULL;
+		g_rec_mutex_unlock(&self->lock);
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+		                    "The transaction was already rolled back");
+		return FALSE;
+	}
 
 	ok = orm_transaction_commit(self->transaction, &local_error);
 	g_clear_object(&self->transaction);
+	self->transaction_owner = NULL;
 	g_rec_mutex_unlock(&self->lock);
 
 	if (!ok)
@@ -491,11 +544,28 @@ venture_database_rollback(VentureDatabase *self)
 {
 	g_return_if_fail(VENTURE_IS_DATABASE(self));
 
-	if (NULL == self->transaction)
+	if ((0 == self->transaction_depth) ||
+	    (g_thread_self() != self->transaction_owner))
 		return;
 
-	orm_transaction_rollback(self->transaction, NULL);
-	g_clear_object(&self->transaction);
+	self->transaction_depth--;
+
+	/*
+	 * An inner rollback abandons the whole transaction rather than just
+	 * its own level -- a nested begin joined the outer one, so there is
+	 * nothing smaller to undo. The outer commit then finds no
+	 * transaction and returns without committing, which is the point:
+	 * once any level has rolled back, the outermost must not succeed.
+	 */
+	if (NULL != self->transaction)
+	{
+		orm_transaction_rollback(self->transaction, NULL);
+		g_clear_object(&self->transaction);
+	}
+
+	if (0 == self->transaction_depth)
+		self->transaction_owner = NULL;
+
 	g_rec_mutex_unlock(&self->lock);
 }
 

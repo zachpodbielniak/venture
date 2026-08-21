@@ -1165,6 +1165,156 @@ test_database_transaction_commit(
 	                ==, 1);
 }
 
+/*
+ * A nested begin/commit pair must leave the lock exactly as it found it.
+ *
+ * What breaks if this regresses: nothing visible, until something other than
+ * the main thread touches the database -- and then the server stops
+ * answering with no error and no CPU. venture_database_begin() used to take
+ * the recursive lock and return early on a nested call without releasing it,
+ * while commit released a level only when it had a transaction to close. The
+ * count never came back to zero. A GRecMutex lets the owning thread re-lock
+ * for free, so on one thread the leak is completely silent; this test makes
+ * it loud by handing the database to a second thread afterwards.
+ */
+typedef struct
+{
+	VentureDatabase	*database;
+	GAsyncQueue	*done;
+} LockProbe;
+
+static gpointer
+test_database_lock_prober(gpointer user_data)
+{
+	LockProbe *probe = user_data;
+	g_autoptr(VentureQuery) query = NULL;
+
+	/* Any operation will do; every one of them takes the lock. */
+	query = venture_query_new(VENTURE_TYPE_VENTURE);
+	venture_database_count(probe->database, query, NULL);
+
+	g_async_queue_push(probe->done, GINT_TO_POINTER(1));
+
+	return NULL;
+}
+
+static void
+test_database_nested_transaction_releases_the_lock(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GAsyncQueue) done = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureVenture) venture = NULL;
+	GThread *thread;
+	LockProbe probe;
+
+	g_assert_true(venture_database_begin(fixture->database, &error));
+	g_assert_no_error(error);
+
+	/* The nested pair: joins the running transaction, and must not leave
+	 * a lock level behind when it closes. */
+	g_assert_true(venture_database_begin(fixture->database, &error));
+	g_assert_no_error(error);
+
+	venture = venture_venture_new();
+	g_object_set(venture, "name", "nested", NULL);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(venture), NULL, &error));
+	g_assert_no_error(error);
+
+	g_assert_true(venture_database_commit(fixture->database, &error));
+	g_assert_no_error(error);
+
+	g_assert_true(venture_database_commit(fixture->database, &error));
+	g_assert_no_error(error);
+
+	query = venture_query_new(VENTURE_TYPE_VENTURE);
+	g_assert_cmpint(venture_database_count(fixture->database, query, NULL),
+	                ==, 1);
+
+	/*
+	 * The real assertion. If a level leaked, this thread still holds the
+	 * mutex and the prober never finishes. Popping with a deadline rather
+	 * than joining outright keeps that a failure instead of a hang -- a
+	 * test that hangs tells you far less than one that fails.
+	 */
+	done = g_async_queue_new();
+	probe.database = fixture->database;
+	probe.done = done;
+
+	thread = g_thread_new("lock-prober", test_database_lock_prober, &probe);
+
+	g_assert_nonnull(g_async_queue_timeout_pop(done, 5 * G_USEC_PER_SEC));
+
+	g_thread_join(thread);
+}
+
+/*
+ * A commit issued without a matching begin must not release a level.
+ *
+ * What breaks if this regresses: an unbalanced caller silently unlocks a
+ * mutex it never took, and the next thread to begin a transaction finds the
+ * database unguarded mid-write.
+ */
+static void
+test_database_unmatched_commit_is_a_no_op(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(GError) error = NULL;
+
+	g_assert_true(venture_database_commit(fixture->database, &error));
+	g_assert_no_error(error);
+
+	venture_database_rollback(fixture->database);
+
+	/* Still usable, and still able to open a transaction properly. */
+	g_assert_true(venture_database_begin(fixture->database, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_commit(fixture->database, &error));
+	g_assert_no_error(error);
+}
+
+/*
+ * A rollback at any depth loses the whole transaction, and the outermost
+ * commit must then fail rather than report success.
+ *
+ * What breaks if this regresses: a caller whose inner step failed and rolled
+ * back is told its outer commit succeeded, and carries on believing writes
+ * landed that were thrown away.
+ */
+static void
+test_database_inner_rollback_fails_the_outer_commit(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureVenture) venture = NULL;
+
+	g_assert_true(venture_database_begin(fixture->database, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_begin(fixture->database, &error));
+	g_assert_no_error(error);
+
+	venture = venture_venture_new();
+	g_object_set(venture, "name", "abandoned", NULL);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(venture), NULL, &error));
+	g_assert_no_error(error);
+
+	venture_database_rollback(fixture->database);
+
+	g_assert_false(venture_database_commit(fixture->database, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE);
+
+	query = venture_query_new(VENTURE_TYPE_VENTURE);
+	g_assert_cmpint(venture_database_count(fixture->database, query, NULL),
+	                ==, 0);
+}
+
 /* --- Schema evolution ---------------------------------------------------- */
 
 static void
@@ -1580,6 +1730,12 @@ main(
 
 	ADD("/database/transaction-rollback", test_database_transaction_rollback);
 	ADD("/database/transaction-commit", test_database_transaction_commit);
+	ADD("/database/nested-transaction-releases-the-lock",
+	    test_database_nested_transaction_releases_the_lock);
+	ADD("/database/unmatched-commit-is-a-no-op",
+	    test_database_unmatched_commit_is_a_no_op);
+	ADD("/database/inner-rollback-fails-the-outer-commit",
+	    test_database_inner_rollback_fails_the_outer_commit);
 
 	ADD("/database/adds-missing-columns", test_database_adds_missing_columns);
 
