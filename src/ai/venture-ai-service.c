@@ -93,6 +93,17 @@ venture_ai_confirmation_get_diff(VentureAiConfirmation *self)
 	return self->diff;
 }
 
+GType
+venture_ai_confirmation_get_entity_type(VentureAiConfirmation *self)
+{
+	g_return_val_if_fail(VENTURE_IS_AI_CONFIRMATION(self), G_TYPE_INVALID);
+
+	if (NULL == self->staged)
+		return G_TYPE_INVALID;
+
+	return G_OBJECT_TYPE(self->staged);
+}
+
 VentureConfirmationState
 venture_ai_confirmation_get_state(VentureAiConfirmation *self)
 {
@@ -287,19 +298,28 @@ venture_ai_type_is_readable(GType entity_type)
 	return (VENTURE_TYPE_USER != entity_type) &&
 	       (VENTURE_TYPE_API_TOKEN != entity_type) &&
 	       (VENTURE_TYPE_CHAT_THREAD != entity_type) &&
-	       (VENTURE_TYPE_CHAT_MESSAGE != entity_type) &&
-	       /* A forge row exists to hold a credential and to name the host
-	        * that credential is sent to. Neither is the assistant's
-	        * business, and listing them would tell it exactly where this
-	        * install's code lives. */
-	       (VENTURE_TYPE_FORGE != entity_type);
+	       (VENTURE_TYPE_CHAT_MESSAGE != entity_type);
 }
 
 /*
  * Whether the model may stage a change to a record type. Everything
  * unreadable, plus the audit log: the trail is the record of what the AI
  * did, so an AI able to write it -- even through an approval -- could
- * launder its own history. The audit system is the only writer.
+ * launder its own history. The audit system is the only writer. Run records
+ * go the same way and for the same reason.
+ *
+ * Forge records and forge rules are deliberately *not* on this list, so the
+ * assistant can help set the integration up -- which is most of the work of
+ * using it. Two things make that safe rather than reckless. Credentials
+ * cannot be written at all: venture_entity_serializable_from_json() refuses
+ * sensitive members, so a token or a webhook secret named in a tool call is
+ * ignored no matter who made the call. And under the default confirm_writes
+ * policy every change is staged for a person to approve, which is exactly
+ * the review a change to where this install sends its token deserves.
+ *
+ * An install running policy=autonomous has given that review away, for these
+ * types along with every other. That is the setting to think twice about,
+ * not this list.
  */
 static gboolean
 venture_ai_type_is_writable(GType entity_type)
@@ -307,16 +327,11 @@ venture_ai_type_is_writable(GType entity_type)
 	return venture_ai_type_is_readable(entity_type) &&
 	       (VENTURE_TYPE_AUDIT_ENTRY != entity_type) &&
 	       /*
-	        * ...and the forge rules, for a sharper version of the same
-	        * argument. A rule decides whether a model runs unattended,
-	        * on which runner, for how many turns and how far its output
-	        * goes. A model able to edit the rule governing it can widen
-	        * its own authority -- and unlike a staged record change,
-	        * the widening applies to every future run rather than to one
-	        * row. Rules are written by people. Run records are evidence,
-	        * for the same reason the audit log is.
+	        * A run record is evidence, for the same reason the audit log
+	        * is: it is what a runner did, written as it did it. Nobody
+	        * fills one out, so refusing it costs the assistant nothing
+	        * and keeps the record of what happened out of its reach.
 	        */
-	       (VENTURE_TYPE_FORGE_RULE != entity_type) &&
 	       (VENTURE_TYPE_FORGE_RUN != entity_type);
 }
 
@@ -2098,6 +2113,19 @@ venture_ai_service_list_pending(VentureAiService *self)
 	}
 
 	return pending;
+}
+
+VentureAiConfirmation *
+venture_ai_service_find(
+	VentureAiService	*self,
+	const gchar		*confirmation_id
+){
+	g_return_val_if_fail(VENTURE_IS_AI_SERVICE(self), NULL);
+
+	if (NULL == confirmation_id)
+		return NULL;
+
+	return g_hash_table_lookup(self->pending, confirmation_id);
 }
 
 gboolean

@@ -1603,6 +1603,73 @@ test_auth_forge_records_are_owner_only(
 	                 ==, SOUP_STATUS_FORBIDDEN);
 }
 
+/*
+ * The assistant can read and propose forge configuration; approving it still
+ * needs the role the direct route needs.
+ *
+ * What breaks if this regresses: the AI tool layer has its own type gate,
+ * separate from the web role gate. Opening forge records to the assistant --
+ * so it can help set the integration up, which is most of the work of using
+ * it -- means an editor could ask it to point base-url at a host they
+ * control and then approve the result. The REST route for a forge requires
+ * owner; if approving does not, staging launders the authorisation, which is
+ * the opposite of what staging is for.
+ *
+ * Credentials are a separate matter and are covered regardless: from_json
+ * refuses sensitive members, so no tool call can set a token at all.
+ */
+static void
+test_auth_approving_respects_the_records_own_role(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor = NULL;
+
+	(void)user_data;
+
+	server_fixture_create_user(fixture, "edna", "e-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "edna", "e-long-password");
+	g_assert_nonnull(editor);
+
+	/*
+	 * This fixture has no AI provider, so the route reports that before
+	 * it ever looks a confirmation up -- the guard's own branch cannot
+	 * be reached from here, and exercising it would need a live model.
+	 * What these three assertions pin is everything the guard rests on:
+	 * that an editor passes the blanket check (so the guard is what
+	 * stops them, not the check above it), that a viewer does not reach
+	 * it at all, and that the direct route still refuses the editor --
+	 * which is the fact the guard exists to preserve.
+	 */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/confirmations/nosuchid/approve", editor, "", NULL, NULL),
+		==, SOUP_STATUS_NOT_IMPLEMENTED);
+
+	/* A viewer must not reach it at all. */
+	{
+		g_autofree gchar *viewer = NULL;
+
+		server_fixture_create_user(fixture, "vic", "v-long-password",
+		                           VENTURE_USER_ROLE_VIEWER, NULL);
+		viewer = server_fixture_login(fixture, "vic", "v-long-password");
+
+		g_assert_cmpuint(server_fixture_request(fixture, "POST",
+			"/api/v1/confirmations/nosuchid/approve", viewer, "", NULL,
+			NULL),
+			==, SOUP_STATUS_FORBIDDEN);
+	}
+
+	/*
+	 * And the direct route the guard mirrors still refuses that editor,
+	 * which is the fact the guard exists to preserve.
+	 */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/forge",
+		editor, "{\"name\":\"theirs\",\"base_url\":\"https://attacker.example\"}",
+		NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+}
+
 int
 main(
 	int	  argc,
@@ -1657,6 +1724,10 @@ main(
 
 	           server_fixture_set_up, test_auth_forge_records_are_owner_only,
 
+	           server_fixture_tear_down);
+	g_test_add("/auth/approving-respects-the-records-own-role", ServerFixture,
+	           NULL, server_fixture_set_up,
+	           test_auth_approving_respects_the_records_own_role,
 	           server_fixture_tear_down);
 	g_test_add("/auth/api-refuses-anonymous-requests", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_api_refuses_anonymous_requests,

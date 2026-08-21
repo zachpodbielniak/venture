@@ -9865,6 +9865,38 @@ venture_web_ui_chat_decide(
 	}
 
 	id = g_hash_table_lookup(params, "id");
+
+	/*
+	 * And the role that record type demands in its own right.
+	 *
+	 * Approving is an editor's authority in general, but a forge names
+	 * the host this install sends its token to and a rule decides what
+	 * runs unattended -- the direct routes for those require owner and
+	 * admin. Without this check, a change the REST API refuses to an
+	 * editor could be made by asking the assistant for it and approving
+	 * the result. Staging would launder the authorisation, which is the
+	 * opposite of what staging is for.
+	 */
+	if (approve)
+	{
+		VentureAiConfirmation *pending;
+
+		pending = venture_ai_service_find(service, id);
+
+		if (NULL != pending)
+		{
+			GType staged_type;
+
+			staged_type = venture_ai_confirmation_get_entity_type(pending);
+
+			if ((G_TYPE_INVALID != staged_type) &&
+			    !venture_web_require_for_type(self, principal, staged_type,
+			                                  VENTURE_USER_ROLE_EDITOR,
+			                                  &error))
+				return venture_web_error_response(error);
+		}
+	}
+
 	decided = approve
 		? venture_ai_service_approve(service, id, principal, &error)
 		: venture_ai_service_reject(service, id, principal, &error);
@@ -10437,6 +10469,38 @@ venture_web_api_decide(
 	}
 
 	id = g_hash_table_lookup(params, "id");
+
+	/*
+	 * And the role that record type demands in its own right.
+	 *
+	 * Approving is an editor's authority in general, but a forge names
+	 * the host this install sends its token to and a rule decides what
+	 * runs unattended -- the direct routes for those require owner and
+	 * admin. Without this check, a change the REST API refuses to an
+	 * editor could be made by asking the assistant for it and approving
+	 * the result. Staging would launder the authorisation, which is the
+	 * opposite of what staging is for.
+	 */
+	if (approve)
+	{
+		VentureAiConfirmation *pending;
+
+		pending = venture_ai_service_find(ai, id);
+
+		if (NULL != pending)
+		{
+			GType staged_type;
+
+			staged_type = venture_ai_confirmation_get_entity_type(pending);
+
+			if ((G_TYPE_INVALID != staged_type) &&
+			    !venture_web_require_for_type(self, principal, staged_type,
+			                                  VENTURE_USER_ROLE_EDITOR,
+			                                  &error))
+				return venture_web_error_response(error);
+		}
+	}
+
 
 	ok = approve
 		? venture_ai_service_approve(ai, id, principal, &error)
@@ -11373,6 +11437,93 @@ venture_web_ui_ticket_runs(
 	return venture_web_html_response(g_strdup(content->str), 200);
 }
 
+
+/*
+ * POST /api/v1/:type/:id/restore - bring a soft-deleted record back.
+ *
+ * The counterpart to delete, which reports that the deletion "is
+ * recoverable" -- and until this existed, nothing could recover it. Nothing
+ * is ever really removed here: deletion stamps a time, so restoring is
+ * clearing that stamp rather than reconstructing anything.
+ *
+ * Finding the record needs a query that includes deleted rows, because
+ * venture_database_get() filters them out -- which is right for every other
+ * caller and exactly wrong for this one.
+ */
+static HtmxResponse *
+venture_web_api_restore(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) found = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureEntity *record;
+	VentureActor actor;
+	GType entity_type;
+	const gchar *id_text;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_resolve_type(self, params, &entity_type, &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_require_for_type(self, principal, entity_type,
+	                                  VENTURE_USER_ROLE_VIEWER, &error))
+		return venture_web_error_response(error);
+
+	/* A type that refuses writes refuses this one too: restoring an audit
+	 * entry or a run record is still editing the record of what
+	 * happened. */
+	if (!venture_web_type_accepts_writes(entity_type, &error))
+		return venture_web_error_response(error);
+
+	id_text = g_hash_table_lookup(params, "id");
+
+	query = venture_query_new(entity_type);
+	venture_query_set_include_deleted(query, TRUE);
+
+	if (!venture_query_add_filter_int(query, "id", VENTURE_FILTER_OP_EQ,
+	                                  g_ascii_strtoll(id_text, NULL, 10),
+	                                  &error))
+		return venture_web_error_response(error);
+
+	venture_query_set_limit(query, 1);
+
+	found = venture_database_find(venture_context_get_database(self->context),
+	                              query, &error);
+
+	if (NULL == found)
+		return venture_web_error_response(error);
+
+	if (0 == found->len)
+	{
+		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "No such record: %s", id_text);
+		return venture_web_error_response(error);
+	}
+
+	record = g_ptr_array_index(found, 0);
+
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_restore(venture_context_get_database(self->context),
+	                              record, &actor, &error))
+		return venture_web_error_response(error);
+
+	node = venture_serializable_to_json(VENTURE_SERIALIZABLE(record), FALSE);
+
+	return venture_web_json_response(g_steal_pointer(&node), 200);
+}
+
 /*
  * POST /hooks/forge/:id - inbound from a forge.
  *
@@ -11895,6 +12046,11 @@ venture_web_server_new(
 	 * One set of handlers serves every record type. A plugin registering
 	 * a type gets all five of these immediately, with no routing to add.
 	 */
+	/* Before the generic record routes, so "restore" is not read as an
+	 * id. */
+	htmx_router_post(router, "/api/v1/:type/:id/restore",
+	                 venture_web_api_restore, self);
+
 	htmx_router_get(router, "/api/v1/:type", venture_web_api_list, self);
 	htmx_router_post(router, "/api/v1/:type", venture_web_api_create, self);
 	htmx_router_get(router, "/api/v1/:type/:id", venture_web_api_get, self);

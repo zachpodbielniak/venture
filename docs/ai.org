@@ -205,7 +205,17 @@ record of what the AI did; a model able to write it, even through an
 approval, could launder its own history. The same refusal holds for every
 human caller of the generic API: the audit system is the only writer.
 
-Forge records are added to that list. The assistant cannot read a =forge= — the row exists to hold a credential and to name the host it is sent to — and cannot write a =forge_rule= or a =forge_run=. A model able to edit the rule governing it can widen its own authority, and that widening would apply to every future run rather than to one row.
+Forge records are deliberately *not* on that list. The assistant can read and propose changes to forges, repositories and rules, because helping set the integration up is most of the work of using it — "add my Forgejo, point it at these three repositories, and run on bugs only" is a reasonable thing to ask for.
+
+Three things make that safe rather than reckless:
+
+- *Credentials cannot be written at all.* Sensitive fields are refused from any payload, so a token or webhook secret named in a tool call is ignored no matter who made the call. Setting one is a human in a browser, on the forge's own page.
+- *Changes are staged.* Under the default =confirm_writes= policy a person approves each one, which is exactly the review a change to where this install sends its token deserves.
+- *Approving respects the record's own role.* A forge is owner-only and a rule is admin-only on the REST API; approving a staged change to one requires the same. Without that, staging would launder the authorisation — an editor could ask for a change the API refuses them and then approve it.
+
+An install running =policy: autonomous= has given the second of those away, for every type. That is the setting to weigh, not the type list.
+
+Run records stay unwritable, like the audit log: nobody fills one out, and it is the record of what a runner did.
 
 A coding agent is not the assistant. It runs on its own executor, in its own checkout, with no database tools at all. The in-process runner gets file tools VENTURE wrote that refuse any path resolving outside the checkout, and no shell; the CLI runner gets an empty executor and brings its own tools in a separate process. See [[file:forge.org][Git forges]].
 

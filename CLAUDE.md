@@ -175,6 +175,24 @@ first seven columns were empty.
   `build/debug/venture-assets.h`, or the browser serves last hour's JS
   while the tests pass against this hour's.
 
+## The CLI, and its skill
+
+`venturectl` is generic over record types: `list`, `get`, `create`,
+`update`, `delete`, `restore`, `describe`, `report`, `health`, with the type
+as an argument. A record type added today already works, and no subcommand
+should ever be added per type.
+
+**The agent-facing guide is `.claude/skills/venturectl/SKILL.md`, and it is
+maintained with the code.** When a command, a flag, an exit code or one of
+its documented traps changes, change it there in the same commit. A skill
+that is confidently wrong is worse than none, because it gets followed. Its
+two ground truths — `venturectl --help` and `venturectl describe <type>` —
+are generated from the source and cannot drift, so check against those.
+
+`describe` is the command that earns its keep: it prints field names in the
+wire spelling, what each reference points at, and what each enum accepts.
+Most CLI mistakes are a field name guessed rather than read.
+
 ## Dependencies
 
 Six git submodules under `deps/`, all linked statically, all treated as the

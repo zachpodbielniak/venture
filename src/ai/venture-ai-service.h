@@ -69,6 +69,23 @@ JsonNode *
 venture_ai_confirmation_get_diff(VentureAiConfirmation *self);
 
 /**
+ * venture_ai_confirmation_get_entity_type:
+ * @self: a #VentureAiConfirmation
+ *
+ * Retrieves the record type the staged change would write.
+ *
+ * Exposed so the approval route can require the same role the direct route
+ * for that type would. Without it, a change the REST API refuses to an
+ * editor could be made by asking the assistant for it and approving the
+ * result -- staging launders the authorisation, which is the opposite of
+ * what staging is for.
+ *
+ * Returns: the #GType, or %G_TYPE_INVALID for a change that writes no record
+ */
+GType
+venture_ai_confirmation_get_entity_type(VentureAiConfirmation *self);
+
+/**
  * venture_ai_confirmation_get_state:
  * @self: a #VentureAiConfirmation
  *
@@ -237,6 +254,22 @@ venture_ai_service_get_policy(VentureAiService *self);
  */
 GPtrArray *
 venture_ai_service_list_pending(VentureAiService *self);
+
+/**
+ * venture_ai_service_find:
+ * @self: a #VentureAiService
+ * @confirmation_id: the identifier from the staged change
+ *
+ * Looks a pending staged change up without deciding it, so a caller can
+ * check what it would write before allowing anybody to approve it.
+ *
+ * Returns: (transfer none) (nullable): the confirmation, or %NULL
+ */
+VentureAiConfirmation *
+venture_ai_service_find(
+	VentureAiService	*self,
+	const gchar		*confirmation_id
+);
 
 /**
  * venture_ai_service_approve:

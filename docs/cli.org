@@ -6,6 +6,19 @@
 #+updated: [2026-08-14]
 #+version: 0.1.0
 
+
+* For an AI agent
+
+=.claude/skills/venturectl/SKILL.md= is a skill file written for an agent
+driving this CLI: setup, the five traps that account for most mistakes, a
+worked forge configuration, and the exit codes to branch on. It is
+maintained alongside the code rather than as documentation about it.
+
+The habit it exists to instil is =venturectl describe TYPE= before writing
+anything. That prints every field in the spelling you must type, what each
+reference points at, and what each enum accepts — all generated from the
+source, so unlike prose it cannot drift.
+
 * venturectl
 
 Drives the server over its REST API. It deliberately does not open the
@@ -28,6 +41,8 @@ visible in the process list. Keep it in =~/.bashrc-secrets=.
 
 #+begin_src sh
 venturectl types [TYPE]                  # list types, or describe one
+venturectl describe TYPE                 # fields, references, enum choices
+venturectl restore TYPE ID               # undo a delete
 venturectl list TYPE [key=value ...]     # list records, filtered
 venturectl get TYPE ID                   # fetch one
 venturectl create TYPE field=value ...   # create

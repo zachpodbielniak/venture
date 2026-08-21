@@ -573,6 +573,33 @@ venture_cli_command_delete(
 }
 
 static gint
+venture_cli_command_restore(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *path = NULL;
+
+	if ((NULL == args) || (NULL == args[1]) || (NULL == args[2]))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Usage: venturectl restore <type> <id>");
+		return -1;
+	}
+
+	path = g_strdup_printf("/api/v1/%s/%s/restore", args[1], args[2]);
+	node = venture_cli_request(cli, "POST", path, NULL, error);
+
+	if (NULL == node)
+		return -1;
+
+	venture_cli_output(cli, node);
+
+	return 0;
+}
+
+static gint
 venture_cli_command_report(
 	VentureCli	 *cli,
 	gchar		**args,
@@ -668,14 +695,76 @@ venture_cli_command_types(
 		for (i = 0; i < json_array_get_length(fields); i++)
 		{
 			JsonObject *field;
+			g_autoptr(GString) detail = NULL;
+			g_autofree gchar *wire = NULL;
+			const gchar *name;
+			const gchar *type;
 
 			field = json_array_get_object_element(fields, i);
+			name = json_object_get_string_member(field, "name");
+			type = json_object_get_string_member(field, "type");
 
-			g_print("  %-26s %-10s%s\n",
-			        json_object_get_string_member(field, "name"),
-			        json_object_get_string_member(field, "type"),
-			        json_object_get_boolean_member(field, "required")
-			                ? "  required" : "");
+			/*
+			 * Printed in the spelling you have to type.
+			 *
+			 * Properties are `forge-id` in C and `forge_id` on the
+			 * wire, and this is the one place a person or an agent
+			 * looks up a field name before using it. Showing the C
+			 * spelling here sends them to write `forge-id=1`, which
+			 * the server ignores field by field -- the record saves
+			 * and the value simply is not there.
+			 */
+			wire = g_strdelimit(g_strdup(name), "-", '_');
+
+			detail = g_string_new(NULL);
+
+			if (json_object_get_boolean_member(field, "required"))
+				g_string_append(detail, " required");
+
+			/* What a reference points at. Without this the type says
+			 * "reference" and leaves you to guess which table. */
+			if (json_object_has_member(field, "references"))
+			{
+				g_string_append_printf(detail, " -> %s",
+					json_object_get_string_member(field, "references"));
+			}
+
+			/* And what an enum will actually accept. */
+			if (json_object_has_member(field, "choices"))
+			{
+				JsonArray *choices;
+				guint c;
+
+				choices = json_object_get_array_member(field, "choices");
+				g_string_append(detail, " [");
+
+				for (c = 0; c < json_array_get_length(choices); c++)
+				{
+					JsonObject *choice;
+
+					choice = json_array_get_object_element(choices, c);
+
+					if (c > 0)
+						g_string_append_c(detail, '|');
+
+					g_string_append(detail,
+						json_object_get_string_member(choice, "value"));
+				}
+
+				g_string_append_c(detail, ']');
+			}
+
+			g_print("  %-26s %-10s%s\n", wire, type, detail->str);
+
+			if (json_object_has_member(field, "help"))
+			{
+				const gchar *help;
+
+				help = json_object_get_string_member(field, "help");
+
+				if ((NULL != help) && ('\0' != help[0]))
+					g_print("  %-26s %s\n", "", help);
+			}
 		}
 
 		return 0;
@@ -761,11 +850,14 @@ main(
 	g_option_context_set_description(options,
 		"Commands:\n"
 		"  types [TYPE]                 list record types, or describe one\n"
+		"  describe TYPE                same as `types TYPE`: fields, references,\n"
+		"                               enum choices and what each one means\n"
 		"  list TYPE [key=value ...]    list records, filtered\n"
 		"  get TYPE ID                  fetch one record\n"
 		"  create TYPE field=value ...  create a record\n"
 		"  update TYPE ID field=value   change a record\n"
 		"  delete TYPE ID               delete a record (recoverable)\n"
+		"  restore TYPE ID              bring a deleted record back\n"
 		"  report [NAME] [PERIOD]       list reports, or run one\n"
 		"  health                       check the server is up\n"
 		"\n"
@@ -865,10 +957,13 @@ main(
 		result = venture_cli_command_update(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "delete"))
 		result = venture_cli_command_delete(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "restore"))
+		result = venture_cli_command_restore(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "report"))
 		result = venture_cli_command_report(&cli, args, &error);
 	else if ((0 == g_strcmp0(args[0], "types")) ||
-	         (0 == g_strcmp0(args[0], "schema")))
+	         (0 == g_strcmp0(args[0], "schema")) ||
+	         (0 == g_strcmp0(args[0], "describe")))
 		result = venture_cli_command_types(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "health"))
 		result = venture_cli_command_health(&cli, args, &error);
