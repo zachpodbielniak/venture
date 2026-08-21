@@ -5,6 +5,12 @@ business ventures. Read `README.org` first, then `docs/index.org`.
 
 ## Build and test
 
+A `Justfile` drives a local instance out of the build tree — `just start`,
+`just ctl …`, `just sql …`, `just reset`; `just` alone lists them. It only
+ever calls make, so there is one build system. It listens on 8748 because
+8747 is where a containerised instance lives, and quietly talking to that
+one instead is the failure worth designing out.
+
 ```sh
 make DEBUG=1                 # debug build into build/debug
 make DEBUG=1 test            # the whole GTest suite

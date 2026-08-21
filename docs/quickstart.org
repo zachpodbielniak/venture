@@ -6,6 +6,32 @@
 #+updated: [2026-08-14]
 #+version: 0.1.0
 
+
+* Running a local instance
+
+There is a =Justfile= for this, because it is a workflow rather than a build:
+
+#+begin_src bash
+just start          # build if needed, then run on 127.0.0.1:8748
+just status         # is it up
+just password       # the owner password, from the first-run log
+just ctl list ticket
+just sql "SELECT id, title FROM tickets"
+just logs           # follow
+just restart
+just stop
+just reset          # throw the database away and start over
+#+end_src
+
+Run =just= on its own for the grouped list.
+
+Port 8748, not the configured default of 8747: that is where a containerised instance from =compose.yaml= listens, and colliding with it would mean either failing to bind or — worse — talking to the container while you believe you are testing the build tree.
+
+The session secret is generated once into the state directory rather than at each startup, so a restart does not log you out. =just reset= removes it along with the database, since both belong to the instance being discarded.
+
+=just sql= is the reason to prefer this over =make compose-up=: when a report is wrong, opening the database with the same tools you would use on any other file is the first useful thing, and it works while the server is still running.
+
+make still builds. The Justfile only ever calls it.
 * Quickstart
 
 ** Build
