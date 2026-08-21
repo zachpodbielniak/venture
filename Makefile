@@ -69,7 +69,8 @@ SERVER_ONLY_SRCS := \
 	$(wildcard src/ai/*.c) \
 	$(wildcard src/automation/*.c) \
 	$(wildcard src/plugin/*.c) \
-	$(wildcard src/web/*.c)
+	$(wildcard src/web/*.c) \
+	$(wildcard src/forge/*.c)
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
@@ -94,6 +95,7 @@ PUBLIC_HDRS := \
 	$(wildcard src/automation/*.h) \
 	$(wildcard src/plugin/*.h) \
 	$(wildcard src/web/*.h) \
+	$(wildcard src/forge/*.h) \
 	$(wildcard src/util/*.h)
 
 TEST_SRCS := $(wildcard tests/test-*.c)
@@ -366,4 +368,5 @@ ifeq ($(filter clean clean-all clean-deps,$(MAKECMDGOALS)),)
 -include $(wildcard $(SERVER_OBJS:.o=.d))
 -include $(wildcard $(CLI_OBJS:.o=.d))
 -include $(wildcard $(MAIN_OBJ:.o=.d))
+-include $(wildcard $(TEST_OBJS:.o=.d))
 endif

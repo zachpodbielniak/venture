@@ -40,31 +40,39 @@ $(CORE_OBJS) $(CLI_OBJS): | $(VENDOR_LIBS_CLI)
 # Compilation
 # ---------------------------------------------------------------------------
 
+# Header dependencies are written as a side effect of the compile that
+# already reads those headers, rather than by a separate pass.
+#
+# The separate `%.d: %.c` rules this replaces were never reachable: nothing
+# depended on them and nothing generated them, so no .d file was ever
+# written and the -include in the Makefile matched nothing. The effect was
+# that editing a header rebuilt nothing at all -- `make` would report
+# success having relinked objects compiled against the previous version of
+# it. That is the same class of failure as a stale dependency tree, and it
+# is worse for being silent: a changed enum or struct layout produces a
+# binary in which half the objects disagree about it.
+#
+# -MP emits a phony target for each header so that deleting or renaming one
+# does not leave make unable to build anything at all.
+DEPFLAGS = -MMD -MP
+
 # Core objects (no database, no server, no AI).
 $(OBJDIR)/core/%.o: src/%.c | $(BUILDDIR)/include/venture
 	@$(MKDIR_P) $(@D)
 	@echo "  CC[core] $<"
-	$(Q)$(CC) $(CFLAGS_CORE) -c $< -o $@
-
-$(OBJDIR)/core/%.d: src/%.c | $(BUILDDIR)/include/venture
-	@$(MKDIR_P) $(@D)
-	$(Q)$(CC) $(CFLAGS_CORE) -MM -MT '$(@:.d=.o)' $< > $@
+	$(Q)$(CC) $(CFLAGS_CORE) $(DEPFLAGS) -c $< -o $@
 
 # Server objects (everything).
 $(OBJDIR)/server/%.o: src/%.c | $(BUILDDIR)/include/venture
 	@$(MKDIR_P) $(@D)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(CFLAGS) -c $< -o $@
-
-$(OBJDIR)/server/%.d: src/%.c | $(BUILDDIR)/include/venture
-	@$(MKDIR_P) $(@D)
-	$(Q)$(CC) $(CFLAGS) -MM -MT '$(@:.d=.o)' $< > $@
+	$(Q)$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 # Test objects.
 $(OBJDIR)/tests/%.o: tests/%.c | $(BUILDDIR)/include/venture
 	@$(MKDIR_P) $(@D)
 	@echo "  CC[test] $<"
-	$(Q)$(CC) $(TEST_CFLAGS) -c $< -o $@
+	$(Q)$(CC) $(TEST_CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 # ---------------------------------------------------------------------------
 # Archives
