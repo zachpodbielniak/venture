@@ -404,3 +404,52 @@ venture_forge_clone_url(
 
 	return g_strdup_printf("%s/%s/%s.git", trimmed, owner, repo);
 }
+
+gchar *
+venture_forge_web_url(
+	const gchar	*base_url,
+	const gchar	*full_name,
+	const gchar	*branch
+){
+	g_autofree gchar *owner = NULL;
+	g_autofree gchar *repo = NULL;
+	g_autofree gchar *owner_escaped = NULL;
+	g_autofree gchar *repo_escaped = NULL;
+	g_autofree gchar *trimmed = NULL;
+	gsize length;
+
+	if (venture_string_is_empty(base_url))
+		return NULL;
+
+	if (!venture_forge_repo_split(full_name, &owner, &repo))
+		return NULL;
+
+	trimmed = g_strdup(base_url);
+	length = strlen(trimmed);
+
+	while ((length > 0) && ('/' == trimmed[length - 1]))
+	{
+		trimmed[length - 1] = '\0';
+		length--;
+	}
+
+	owner_escaped = g_uri_escape_string(owner, NULL, FALSE);
+	repo_escaped = g_uri_escape_string(repo, NULL, FALSE);
+
+	if (venture_string_is_empty(branch))
+	{
+		return g_strdup_printf("%s/%s/%s", trimmed, owner_escaped,
+		                       repo_escaped);
+	}
+
+	{
+		g_autofree gchar *branch_escaped = NULL;
+
+		/* Slashes are kept: a branch called feature/thing is ordinary,
+		 * and the route wants those separators as separators. */
+		branch_escaped = g_uri_escape_string(branch, "/", FALSE);
+
+		return g_strdup_printf("%s/%s/%s/src/branch/%s", trimmed,
+		                       owner_escaped, repo_escaped, branch_escaped);
+	}
+}

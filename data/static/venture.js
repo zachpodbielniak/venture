@@ -940,6 +940,51 @@
 	 * inside the row -- otherwise a delete button would also open the
 	 * record it just removed.
 	 */
+	/*
+	 * Copy-to-clipboard buttons.
+	 *
+	 * Delegated from the document rather than wired per element, because
+	 * the run card and every other fragment re-renders itself on a poll
+	 * and per-element listeners would be lost on the first swap.
+	 *
+	 * The value lives in data-copy rather than in the button's text, so
+	 * the label can read "Copy" while the payload is a whole git command.
+	 * Whatever is copied is also rendered beside the button as selectable
+	 * text: the clipboard API needs a secure context and permission, and
+	 * over plain http on a LAN address it simply is not there. Falling
+	 * back to something a person can select by hand beats a button that
+	 * silently does nothing.
+	 */
+	function wireCopyButtons() {
+		document.addEventListener("click", function (event) {
+			var button = event.target.closest("[data-copy]");
+			var value;
+
+			if (!button) {
+				return;
+			}
+
+			event.preventDefault();
+			value = button.getAttribute("data-copy");
+
+			if (!value) {
+				return;
+			}
+
+			if (navigator.clipboard && navigator.clipboard.writeText) {
+				navigator.clipboard.writeText(value).then(function () {
+					toast("Copied", "ok");
+				}, function () {
+					toast("Could not copy; select it instead", "warn");
+				});
+
+				return;
+			}
+
+			toast("Select the text to copy it", "warn");
+		});
+	}
+
 	function wireRowLinks(root) {
 		(root || document).querySelectorAll("tr[data-href]").forEach(function (row) {
 			if (row.ventureRowWired) {
@@ -1228,6 +1273,7 @@
 	}
 
 		wireShortcuts();
+		wireCopyButtons();
 		wireRowLinks(document);
 		wireBoard(document);
 		wireServerEvents();

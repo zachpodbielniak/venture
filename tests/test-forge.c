@@ -1673,6 +1673,68 @@ test_forge_clone_url_refuses_without_a_base(void)
 	g_assert_null(bad_name);
 }
 
+/*
+ * The web URL comes from the base URL, not the clone base.
+ *
+ * What breaks if this regresses: the clone base is frequently an SSH host --
+ * git@git-ssh.example.com -- with no web server on it at all. Composing a
+ * browser link from it produces something that cannot be opened, and the
+ * failure is a dead link rather than an error anybody sees in a log.
+ */
+static void
+test_forge_web_url_uses_the_base_url(void)
+{
+	g_autofree gchar *repo = NULL;
+	g_autofree gchar *branch = NULL;
+	g_autofree gchar *trailing = NULL;
+
+	repo = venture_forge_web_url("https://git.podbielniak.com",
+	                             "zachpodbielniak/venture", NULL);
+	g_assert_cmpstr(repo, ==,
+	                "https://git.podbielniak.com/zachpodbielniak/venture");
+
+	branch = venture_forge_web_url("https://git.podbielniak.com",
+	                               "zachpodbielniak/venture",
+	                               "venture/bug/12-it-crashes");
+	g_assert_cmpstr(branch, ==,
+		"https://git.podbielniak.com/zachpodbielniak/venture"
+		"/src/branch/venture/bug/12-it-crashes");
+
+	/* A base written with a trailing slash must not double it. */
+	trailing = venture_forge_web_url("https://git.example.com/", "zach/venture",
+	                                 NULL);
+	g_assert_cmpstr(trailing, ==, "https://git.example.com/zach/venture");
+}
+
+/*
+ * A branch's slashes survive; everything else is escaped.
+ *
+ * What breaks if this regresses: `feature/thing` is an ordinary branch name
+ * and the forge's src/branch/ route wants those separators as separators.
+ * Escaping them to %2F produces a 404. Escaping nothing at all would let a
+ * branch containing a `?` or a `#` truncate the path.
+ */
+static void
+test_forge_web_url_escapes_but_keeps_slashes(void)
+{
+	g_autofree gchar *nested = NULL;
+	g_autofree gchar *awkward = NULL;
+	g_autofree gchar *no_base = NULL;
+
+	nested = venture_forge_web_url("https://git.example.com", "zach/venture",
+	                              "feature/deep/thing");
+	g_assert_nonnull(strstr(nested, "/src/branch/feature/deep/thing"));
+
+	/* A refname cannot contain ? or #, but the composer must not rely on
+	 * that -- it is handed values that came from a payload. */
+	awkward = venture_forge_web_url("https://git.example.com", "zach/venture",
+	                               "odd name");
+	g_assert_null(strstr(awkward, " "));
+
+	no_base = venture_forge_web_url(NULL, "zach/venture", NULL);
+	g_assert_null(no_base);
+}
+
 int
 main(
 	int	  argc,
@@ -1732,6 +1794,11 @@ main(
 	                test_forge_clone_url_separators);
 	g_test_add_func("/forge/clone-url-refuses-without-a-base",
 	                test_forge_clone_url_refuses_without_a_base);
+
+	g_test_add_func("/forge/web-url-uses-the-base-url",
+	                test_forge_web_url_uses_the_base_url);
+	g_test_add_func("/forge/web-url-escapes-but-keeps-slashes",
+	                test_forge_web_url_escapes_but_keeps_slashes);
 
 	g_test_add_func("/forge/client-refuses-a-bad-scheme",
 	                test_forge_client_refuses_a_bad_scheme);

@@ -145,6 +145,32 @@ venture_forge_clone_url(
 );
 
 /**
+ * venture_forge_web_url:
+ * @base_url: the forge's base URL
+ * @full_name: the repository as `owner/repo`
+ * @branch: (nullable): a branch to link to, or %NULL for the repository
+ *
+ * Composes the address a person would open in a browser.
+ *
+ * Built from the *base* URL rather than the clone base: the clone base is
+ * frequently an SSH host with no web server on it at all, so linking to it
+ * would produce something that cannot be opened.
+ *
+ * A branch name may legally contain a slash -- `feature/thing` is ordinary
+ * -- and Forgejo's `src/branch/` route expects those slashes intact, so they
+ * are preserved while everything else is escaped.
+ *
+ * Returns: (transfer full) (nullable): the URL, or %NULL if there is no base
+ *   or @full_name is malformed
+ */
+gchar *
+venture_forge_web_url(
+	const gchar	*base_url,
+	const gchar	*full_name,
+	const gchar	*branch
+);
+
+/**
  * venture_forge_repo_split:
  * @full_name: an `owner/repo` string
  * @out_owner: (out) (transfer full): return location for the owner

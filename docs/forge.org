@@ -63,6 +63,10 @@ Two shapes are accepted, and the difference matters:
 
 Leave it empty and the base URL is used, which is right when one host serves both.
 
+A repository's page carries an *Open* panel built from these two: a link to the repository on the forge, composed from the base URL, and the =git clone= command, composed from the clone base. The command is shown as selectable text as well as offered as a copy button — the clipboard API needs a secure context, and over plain http on a LAN address it is simply not there.
+
+A ticket with a branch gets the same treatment: the branch name links to it on the forge, and copies either as a bare name or as a =git switch= command.
+
 A repository can also carry its own *Clone URL*, used exactly as given. That is for the one repository that does not follow its forge's pattern — a mirror, or a path a proxy rewrites — so that discovering it later does not mean a second forge record differing in one field.
 
 Then, on the forge's own page:

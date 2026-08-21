@@ -5750,6 +5750,87 @@ venture_web_append_forge_block(
 }
 
 /*
+ * The open-and-clone panel on a repository's page.
+ *
+ * Two things a person wants from a repository record and cannot get from the
+ * fields themselves: the address to look at it, and the command to check it
+ * out. Both are composed rather than stored, so neither can disagree with
+ * the forge the repository belongs to.
+ */
+static void
+venture_web_append_repo_block(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autoptr(VentureEntity) forge = NULL;
+	g_autofree gchar *full_name = NULL;
+	g_autofree gchar *repo_clone_url = NULL;
+	g_autofree gchar *base_url = NULL;
+	g_autofree gchar *clone_base = NULL;
+	g_autofree gchar *web_url = NULL;
+	g_autofree gchar *clone_url = NULL;
+	g_autofree gchar *command = NULL;
+	gint64 forge_id = 0;
+
+	g_object_get(record, "name", &full_name, "forge-id", &forge_id,
+	             "clone-url", &repo_clone_url, NULL);
+
+	if (0 != forge_id)
+	{
+		forge = venture_database_get(venture_context_get_database(self->context),
+		                             VENTURE_TYPE_FORGE, forge_id, NULL);
+	}
+
+	if (NULL != forge)
+	{
+		g_object_get(forge, "base-url", &base_url, "clone-base-url",
+		             &clone_base, NULL);
+	}
+
+	web_url = venture_forge_web_url(base_url, full_name, NULL);
+	clone_url = venture_forge_clone_url(repo_clone_url, clone_base, base_url,
+	                                    full_name);
+
+	if ((NULL == web_url) && (NULL == clone_url))
+		return;
+
+	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
+	                         "<h2>Open</h2></div><div class=\"card-body\">");
+
+	if (NULL != web_url)
+	{
+		g_string_append(content, "<p><a class=\"btn btn-primary\" href=\"");
+		venture_html_escape_append(content, web_url);
+		g_string_append(content, "\" target=\"_blank\" rel=\"noreferrer\">"
+		                         "Open on the forge</a></p>");
+	}
+
+	if (NULL != clone_url)
+	{
+		command = g_strdup_printf("git clone %s", clone_url);
+
+		g_string_append(content, "<p><button class=\"btn\" type=\"button\" "
+		                         "data-copy=\"");
+		venture_html_escape_append(content, command);
+		g_string_append(content, "\">Copy the clone command</button></p>");
+
+		/*
+		 * Shown as well as copied. The clipboard API needs a secure
+		 * context, and this server is routinely reached over plain
+		 * http on a loopback or LAN address where it is unavailable --
+		 * so the button may do nothing, and a person still needs the
+		 * command.
+		 */
+		g_string_append(content, "<pre class=\"mono\">");
+		venture_html_escape_append(content, command);
+		g_string_append(content, "</pre>");
+	}
+
+	g_string_append(content, "</div></div>");
+}
+
+/*
  * The repository panel on a ticket's page.
  *
  * Only drawn when the ticket names a repository: a ticket about the books
@@ -5763,12 +5844,15 @@ venture_web_append_ticket_forge_block(
 	VentureEntity		*record
 ){
 	g_autoptr(VentureEntity) repo = NULL;
+	g_autoptr(VentureEntity) forge = NULL;
 	g_autoptr(VentureTicketLink) link = NULL;
 	g_autofree gchar *repo_name = NULL;
+	g_autofree gchar *forge_base_url = NULL;
 	g_autofree gchar *branch = NULL;
 	g_autofree gchar *issue_url = NULL;
 	gint64 ticket_id;
 	gint64 repo_id = 0;
+	gint64 forge_id = 0;
 	gint64 issue_number = 0;
 
 	g_object_get(record, "repo-id", &repo_id, NULL);
@@ -5784,7 +5868,16 @@ venture_web_append_ticket_forge_block(
 	if (NULL == repo)
 		return;
 
-	g_object_get(repo, "name", &repo_name, NULL);
+	g_object_get(repo, "name", &repo_name, "forge-id", &forge_id, NULL);
+
+	if (0 != forge_id)
+	{
+		forge = venture_database_get(venture_context_get_database(self->context),
+		                             VENTURE_TYPE_FORGE, forge_id, NULL);
+	}
+
+	if (NULL != forge)
+		g_object_get(forge, "base-url", &forge_base_url, NULL);
 
 	link = venture_web_forge_find_link(self, ticket_id, repo_id);
 
@@ -5803,9 +5896,51 @@ venture_web_append_ticket_forge_block(
 	g_string_append(content, "</dd><dt>Branch</dt><dd>");
 
 	if (venture_string_is_empty(branch))
+	{
 		g_string_append(content, "<span class=\"muted\">none yet</span>");
+	}
 	else
+	{
+		g_autofree gchar *branch_url = NULL;
+		g_autofree gchar *checkout = NULL;
+
+		branch_url = venture_forge_web_url(forge_base_url, repo_name, branch);
+
+		/*
+		 * The branch links to the forge and copies as a checkout
+		 * command, because those are the two things anybody does with
+		 * a branch name: look at it, or switch to it. Composed from
+		 * the base URL rather than the clone base -- the clone base is
+		 * often an SSH host with no web server on it.
+		 */
+		if (NULL != branch_url)
+		{
+			g_string_append(content, "<a href=\"");
+			venture_html_escape_append(content, branch_url);
+			g_string_append(content, "\" target=\"_blank\" "
+			                         "rel=\"noreferrer\"><code>");
+			venture_html_escape_append(content, branch);
+			g_string_append(content, "</code></a> ");
+		}
+		else
+		{
+			g_string_append(content, "<code>");
+			venture_html_escape_append(content, branch);
+			g_string_append(content, "</code> ");
+		}
+
+		checkout = g_strdup_printf("git switch %s", branch);
+
+		g_string_append(content, "<button class=\"btn btn-sm\" "
+		                         "type=\"button\" data-copy=\"");
 		venture_html_escape_append(content, branch);
+		g_string_append(content, "\">Copy name</button> ");
+
+		g_string_append(content, "<button class=\"btn btn-sm\" "
+		                         "type=\"button\" data-copy=\"");
+		venture_html_escape_append(content, checkout);
+		g_string_append(content, "\">Copy switch</button>");
+	}
 
 	g_string_append(content, "</dd><dt>Issue</dt><dd>");
 
@@ -6090,6 +6225,11 @@ venture_web_ui_detail(
 	/* A forge's credentials, which the generated form cannot show. */
 	if (VENTURE_TYPE_FORGE == entity_type)
 		venture_web_append_forge_block(self, content, record);
+
+	/* A repository's address and its clone command, both composed from
+	 * the forge rather than stored, so neither can drift from it. */
+	if (VENTURE_TYPE_FORGE_REPO == entity_type)
+		venture_web_append_repo_block(self, content, record);
 
 	/*
 	 * A ticket's comments are a conversation, and a conversation needs
