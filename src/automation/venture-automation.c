@@ -790,6 +790,28 @@ venture_automation_build_engine(
 	             "automation-module-paths", &module_paths, NULL);
 
 	self->engine = pod_engine_new();
+
+	/*
+	 * Handlers run synchronously, on the thread that dispatched them.
+	 *
+	 * podomation's default handler timeout is 30 seconds, and a non-zero
+	 * timeout selects a different dispatch path entirely: the engine
+	 * fires handle_event_async and then blocks in g_main_loop_run() on
+	 * the default context. VenturePodModule implements only the
+	 * synchronous handle_event, so podomation's default async wrapper
+	 * runs it on a GTask worker thread -- and that handler writes to the
+	 * database and reads the cascade guard, neither of which is safe off
+	 * the main thread. Worse, the nested main loop dispatches the next
+	 * HTTP request while the current one is still on the stack.
+	 *
+	 * Zero restores the direct call. The cost is that a wedged handler
+	 * has no deadline; the alternative was a data race and a re-entrant
+	 * request path, which is a far worse trade for a single-operator
+	 * server whose handlers are its own code.
+	 */
+	pod_config_set_handler_timeout_seconds(pod_engine_get_config(self->engine),
+	                                       0);
+
 	modules = pod_engine_get_module_manager(self->engine);
 
 	/*
