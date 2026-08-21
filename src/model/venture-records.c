@@ -957,7 +957,34 @@ static const VentureFieldDecl venture_ticket_fields[] = {
 	VENTURE_FIELD("board-order", "Board order", NULL,
 	              VENTURE_FIELD_KIND_DOUBLE, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("resolution", "Resolution",
-	                   "What was actually done about it")
+	                   "What was actually done about it"),
+	/*
+	 * What shape of work this is -- a different question from "kind".
+	 *
+	 * Kind says whose problem it is, which is what decides who may read
+	 * the replies. This says how big the piece is and therefore how it
+	 * should be approached, which is what a forge rule keys on. The two
+	 * are orthogonal: an external bug is both, and common.
+	 *
+	 * Appended rather than placed beside "kind" because field order is
+	 * display order, and the list view shows the first seven columns --
+	 * inserting here would silently push a column off every ticket list.
+	 */
+	VENTURE_FIELD_ENUM("issue-type", "Issue type",
+	                   "Epic, story, task, subtask, research or bug",
+	                   venture_issue_type_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	/*
+	 * Where this work belongs, chosen before anything has been pushed.
+	 *
+	 * The link record carries the issue number and the branch; this is
+	 * the intent, and it has to be separate because rule resolution
+	 * happens before a link exists -- the rule is what decides whether to
+	 * create the issue and the branch at all. Reading the repository off
+	 * the link would make the rule depend on the thing it decides.
+	 */
+	VENTURE_FIELD_REF("repo-id", "Repository", NULL, "forge_repo",
+	                  VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY(VentureTicket, venture_ticket, venture_ticket_fields)
@@ -985,6 +1012,345 @@ static const VentureFieldDecl venture_ticket_comment_fields[] = {
 
 VENTURE_DEFINE_ENTITY(VentureTicketComment, venture_ticket_comment,
                       venture_ticket_comment_fields)
+
+/*
+ * One forge server: a Forgejo or Gitea instance you have an account on.
+ *
+ * A record rather than configuration because there is more than one, because
+ * each carries a credential that has to be settable without a restart, and
+ * because a repository has to point at one. The token and the webhook secret
+ * are why this type is owner-only everywhere and invisible to the AI.
+ */
+static const VentureFieldDecl venture_forge_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "What you call this server"),
+	VENTURE_FIELD_ENUM("kind", "Software",
+	                   "Forgejo and Gitea speak the same API",
+	                   venture_forge_kind_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	/* The origin every request is built from, and the only host this
+	 * install will ever send its token to. No /api/v1 -- the client
+	 * appends that. */
+	VENTURE_FIELD("base-url", "Base URL", "https://git.example.com",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE |
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	/*
+	 * Where git clones from, when that is not where the API lives.
+	 *
+	 * These are routinely different hosts. A Forgejo behind a reverse
+	 * proxy answers its API on https://git.example.com while SSH goes
+	 * straight to the daemon at git@git-ssh.example.com, because the
+	 * proxy speaks HTTP and sshd does not. Deriving one from the other
+	 * guesses wrong for every install shaped like that.
+	 *
+	 * Accepts either form. "git@host" composes the scp-like
+	 * git@host:owner/repo.git; a URL composes <url>/owner/repo.git.
+	 * Empty falls back to the base URL, which is right for the simple
+	 * case where one host does both.
+	 */
+	VENTURE_FIELD("clone-base-url", "Clone base",
+	              "git@git-ssh.example.com, or empty to use the base URL",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	/*
+	 * Set through /forges/:id/token, never through the generated form: a
+	 * sensitive field is skipped both when the form is rendered and when
+	 * it is applied, so a value typed into a box that does not exist
+	 * could not be saved. The companion timestamp is what the page shows
+	 * instead of the value.
+	 */
+	VENTURE_FIELD("token", "Access token", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("token-set-at", "Token set", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("webhook-secret", "Webhook secret", NULL,
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("webhook-secret-set-at", "Secret set", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	/*
+	 * The login the access token belongs to, fetched from the forge
+	 * rather than typed. This is the webhook loop guard: an event whose
+	 * sender is this account was caused by VENTURE itself. Until it is
+	 * set, VENTURE cannot tell its own writes from anybody else's, which
+	 * is why the detail page warns while it is empty.
+	 */
+	VENTURE_FIELD("bot-username", "Bot account",
+	              "The account the token belongs to; its own events are ignored",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("verified-at", "Last verified",
+	              "When the token last authenticated",
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+};
+
+VENTURE_DEFINE_ENTITY(VentureForge, venture_forge, venture_forge_fields)
+
+/*
+ * One repository on one forge.
+ *
+ * "name" holds owner/repo verbatim rather than two columns, because that is
+ * the only key a webhook payload carries, it is what a person copies out of
+ * the address bar, and it is what the display-name resolver picks up -- so a
+ * related-records list reads "zach/venture" rather than "forge_repo #7".
+ * Neither half may contain a slash upstream, so splitting on the first one is
+ * exact.
+ */
+static const VentureFieldDecl venture_forge_repo_fields[] = {
+	VENTURE_FIELD_NAME("name", "Repository",
+	                   "owner/repo, exactly as the forge spells it"),
+	VENTURE_FIELD_REF("forge-id", "Forge", NULL, "forge",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("default-branch", "Default branch",
+	              "Branches are cut from this unless a rule says otherwise",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("branch-prefix", "Branch prefix",
+	              "Prepended to every branch VENTURE creates, e.g. venture/",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	/*
+	 * The exact URL to clone this one repository from.
+	 *
+	 * Almost always empty: the forge's clone base plus owner/repo is
+	 * right. It exists for the repository that does not follow its
+	 * forge's pattern -- a mirror, a repository reached through a
+	 * different host, a path a proxy rewrites -- because discovering
+	 * that after the fact should not mean adding a second forge record
+	 * that differs in one field.
+	 */
+	VENTURE_FIELD("clone-url", "Clone URL",
+	              "Empty: composed from the forge's clone base",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	/*
+	 * What this code is for, in business terms. Gives the venture page a
+	 * Repositories section for nothing, and -- more importantly -- is
+	 * what scopes a webhook-created ticket to the right organisation. A
+	 * webhook carries no session and no cookie, so without this the
+	 * ticket would fall through to the default organisation and vanish
+	 * from every list scoped to a specific entity.
+	 */
+	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("product-id", "Product", NULL, "product",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	/* A checkout the CLI runner works in. Empty disables the CLI runner
+	 * for this repository, which is the state in a container that was
+	 * built without the agent CLIs. */
+	VENTURE_FIELD("workspace-path", "Workspace",
+	              "Checkout the CLI runner works in; empty disables it here",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("push-issues", "File issues upstream",
+	              "Linking a ticket here opens a forge issue for it",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("accept-issues", "Accept issues from upstream",
+	              "A webhook issue becomes a ticket",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+};
+
+VENTURE_DEFINE_ENTITY(VentureForgeRepo, venture_forge_repo,
+                      venture_forge_repo_fields)
+
+/*
+ * What an AI may do about a ticket, decided per repository and per issue
+ * type -- because a bug is not a task. A bug wants a reproduction and a
+ * regression test; an epic wants breaking up and no code at all.
+ */
+static const VentureFieldDecl venture_forge_rule_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "What this rule is for"),
+	/* A repository rule. Leave empty and set the forge for a forge-wide
+	 * default. A rule with neither matches nothing, deliberately: a rule
+	 * that applied everywhere because a row was saved half-filled is the
+	 * failure that costs money. */
+	VENTURE_FIELD_REF("repo-id", "Repository",
+	                  "Leave empty for a forge-wide rule", "forge_repo",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("forge-id", "Forge",
+	                  "Set on a forge-wide rule; ignored when a repository "
+	                  "is named", "forge", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("issue-type", "Issue type", NULL,
+	                   venture_issue_type_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	/*
+	 * The catch-all switch.
+	 *
+	 * A GObject enum property has no null -- every enum is installed with
+	 * a default of zero -- so "leave the type blank to match everything"
+	 * is not expressible with the enum above. The alternative was a
+	 * second, parallel enum carrying an "any" value, which is exactly the
+	 * two-tables-to-keep-in-step drift this codebase avoids everywhere
+	 * else. A boolean is uglier to read and impossible to get wrong.
+	 */
+	VENTURE_FIELD("all-issue-types", "All issue types",
+	              "Ignore the issue type and apply to every ticket in scope",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
+	/* Off is a rule kept for reference: it never runs, and a broader rule
+	 * may then apply. Said here because this is where it is discovered. */
+	VENTURE_FIELD("enabled", "Enabled",
+	              "Off never runs; a broader rule may then apply",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_ENUM("runner", "Runner",
+	                   "The in-process agent, or a coding CLI in a checkout",
+	                   venture_forge_runner_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	/* Matched against the configured allow list by exact equality and
+	 * spawned with an explicit argv, never a shell. This field is
+	 * editable by anybody who can edit rules, and a rule that names a
+	 * binary to run is the shell tool the AI is denied, with a longer
+	 * fuse because it is persisted. */
+	VENTURE_FIELD("runner-command", "Command",
+	              "CLI runner only. Must be on the allowed list in settings",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("provider", "Provider",
+	              "Empty uses the provider from settings",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("model", "Model", "Empty uses the model from settings",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("prompt", "Prompt",
+	                   "Prepended to the ticket. This is where a bug and a "
+	                   "task actually differ"),
+	VENTURE_FIELD_ENUM("outcome", "On success",
+	                   "How far a successful run goes",
+	                   venture_forge_run_outcome_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_ENUM("trigger", "Trigger", "What starts a run",
+	                   venture_forge_trigger_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("branch-template", "Branch name",
+	              "{type}/{id}-{slug} by default", VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("base-branch", "Base branch",
+	              "Empty cuts from the repository's default branch",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("labels", "Labels",
+	              "Comma separated; applied to the forge issue",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("max-turns", "Turn limit", "0 uses the AI setting",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("timeout-seconds", "Timeout",
+	              "Seconds a run may take; 0 uses the setting",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	/* The runaway guard. A webhook that fires on every comment, a rule
+	 * that opens a draft pull request each time, and a model that
+	 * comments back is a loop with a monthly invoice attached. */
+	VENTURE_FIELD("max-runs-per-day", "Daily limit",
+	              "Runs this rule may start in a day; 0 is unlimited",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("require-approval", "Ask before running",
+	              "A run is queued and waits for a person to start it",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+};
+
+VENTURE_DEFINE_ENTITY(VentureForgeRule, venture_forge_rule,
+                      venture_forge_rule_fields)
+
+/*
+ * What ties a ticket to a repository: the issue upstream, the branch the
+ * work is on, and the pull request if one is open.
+ *
+ * One record rather than three fields on the ticket, because all three are
+ * states of the same link and a ticket can be worked in two repositories at
+ * once -- a fix in the library and a version bump in the application.
+ * Putting any of them on the ticket would force one repository and need a
+ * migration later. It is also exactly the row the webhook loop guard reads.
+ */
+static const VentureFieldDecl venture_ticket_link_fields[] = {
+	VENTURE_FIELD_REF("ticket-id", "Ticket", NULL, "ticket",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("repo-id", "Repository", NULL, "forge_repo",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL),
+	/* The number, not the forge's internal id: the number is what every
+	 * API path uses, what every webhook payload carries, and what a
+	 * person types. Zero means linked but not yet filed. */
+	VENTURE_FIELD("issue-number", "Issue", "The number upstream",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_INDEXED),
+	/* Stored and shown, never fetched. A URL out of a payload is data. */
+	VENTURE_FIELD("issue-url", "Issue URL", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("branch", "Branch", "The branch this work is on",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("pull-request-number", "Pull request", "0 until one opens",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("pull-request-url", "Pull request URL", NULL,
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	/* Which side raised it. Half the loop guard. */
+	VENTURE_FIELD_ENUM("origin", "Origin", NULL,
+	                   venture_forge_link_origin_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	/* The delivery id of the last event applied. A forge retries a
+	 * delivery it thinks failed; this is what makes the retry a no-op. */
+	VENTURE_FIELD("last-delivery-id", "Last delivery", NULL,
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("synced-at", "Last synced", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
+};
+
+VENTURE_DEFINE_ENTITY(VentureTicketLink, venture_ticket_link,
+                      venture_ticket_link_fields)
+
+/*
+ * One attempt by a runner at one ticket.
+ *
+ * Evidence, not configuration: what was asked, what came back, which branch
+ * and pull request it produced, and what it cost. Written by the runner as
+ * it goes, and refused writes through the generic surfaces for the same
+ * reason the audit log is -- an editable run record is one somebody can
+ * rewrite after the fact.
+ */
+static const VentureFieldDecl venture_forge_run_fields[] = {
+	VENTURE_FIELD_REF("ticket-id", "Ticket", NULL, "ticket",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("link-id", "Link", NULL, "ticket_link",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("rule-id", "Rule", "The rule that chose to run",
+	                  "forge_rule", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("state", "State", NULL,
+	                   venture_forge_run_state_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	/* Recorded as run, not looked up through the rule: a rule edited
+	 * afterwards must not rewrite what happened last week. */
+	VENTURE_FIELD_ENUM("runner", "Runner", NULL,
+	                   venture_forge_runner_get_type,
+	                   VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("outcome", "Outcome", NULL,
+	                   venture_forge_run_outcome_get_type,
+	                   VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("branch", "Branch", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("pull-request-number", "Pull request", NULL,
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("started-at", "Started", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("finished-at", "Finished", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("provider", "Provider", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("model", "Model", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("input-tokens", "Input tokens", NULL,
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("output-tokens", "Output tokens", NULL,
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("turns", "Turns", NULL, VENTURE_FIELD_KIND_INTEGER,
+	              VENTURE_COLUMN_FLAG_NONE),
+	/* Money, not a double -- and this is an ERP, so what the models cost
+	 * is a figure the books can eventually see rather than a line in a
+	 * log. Sub-cent runs are the norm, so the currency's exponent is
+	 * doing real work here. */
+	VENTURE_FIELD_MONEY("cost", "Cost", "What the provider charged"),
+	VENTURE_FIELD_TEXT("prompt", "Prompt",
+	                   "What the runner was actually asked, after the rule's "
+	                   "prompt and the ticket were composed"),
+	VENTURE_FIELD_TEXT("summary", "Summary", "What the run says it did"),
+	VENTURE_FIELD_TEXT("log", "Log", "Trimmed transcript or CLI output"),
+	VENTURE_FIELD_TEXT("failure-reason", "Error",
+	                   "Why it stopped, when it did")
+};
+
+VENTURE_DEFINE_ENTITY(VentureForgeRun, venture_forge_run,
+                      venture_forge_run_fields)
 
 static const VentureFieldDecl venture_document_fields[] = {
 	VENTURE_FIELD_NAME("title", "Title", NULL),

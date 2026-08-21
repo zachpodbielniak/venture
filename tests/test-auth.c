@@ -970,6 +970,15 @@ test_auth_api_refuses_anonymous_requests(
 		"/api/v1/venture-types",
 		"/api/v1/automations",
 		"/api/v1/confirmations",
+		/* The forge surfaces. A forge row names the host this
+		 * install's token is sent to; a rule decides what runs
+		 * unattended; a run says what it did and what it cost. */
+		"/api/v1/forge",
+		"/api/v1/forge_repo",
+		"/api/v1/forge_rule",
+		"/api/v1/forge_run",
+		"/api/v1/ticket_link",
+		"/e/forge/export",
 		/* The CSV export carries the same rows as the table did. */
 		"/e/sale/export",
 		/* The chat fragments: transcripts of what the operator asked
@@ -1042,6 +1051,51 @@ test_auth_api_refuses_anonymous_requests(
 	 */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/ui/chat/confirm/abc123/approve", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+
+	/*
+	 * The forge actions. Pages redirect to login like every other page
+	 * action; the credential routes are among them because they are
+	 * reached from the forge page.
+	 */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/forges/1/token", NULL, "token=x", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/forges/1/secret", NULL, "secret=x", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/forges/1/verify", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/tickets/1/link", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/tickets/1/branch", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/tickets/1/work", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/runs/1/cancel", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+
+	/* The run card is a fragment, so it 401s rather than redirecting --
+	 * the same rule the chat fragments follow. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+		"/tickets/1/runs"), ==, SOUP_STATUS_UNAUTHORIZED);
+
+	/*
+	 * And the one route that is deliberately not session-authenticated.
+	 *
+	 * It must refuse -- 401, because the caller is a forge that should
+	 * retry with a signature rather than a browser to be sent to a login
+	 * page. It is asserted here rather than left out precisely because
+	 * this sweep is an allowlist: a new unauthenticated route that nobody
+	 * adds is a route nobody is checking.
+	 */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/hooks/forge/1", NULL, "{}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/ui/chat/confirm/abc123/reject", NULL, "", NULL, NULL),
@@ -1475,6 +1529,80 @@ test_auth_health_stays_public(
 }
 
 
+/*
+ * A forge is owner-only, and a run record cannot be edited at all.
+ *
+ * What breaks if this regresses -- and it is a credential-theft chain, not a
+ * tidiness point: a forge row holds the access token and names the host that
+ * token is sent to. venture_entity_serializable_from_json() has no sensitive
+ * filter, so an editor who could PUT that row could rewrite base-url to a
+ * host they control and collect this install's token on the next call. The
+ * staged diff would show a bland URL change and the token itself as
+ * "redacted", so nothing would look wrong. Owner-only is what closes it.
+ *
+ * A run record is refused writes for everybody, like the audit log: it is
+ * what a runner did, and an editable one proves nothing.
+ */
+static void
+test_auth_forge_records_are_owner_only(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor = NULL;
+	g_autofree gchar *owner = NULL;
+
+	(void)user_data;
+
+	server_fixture_create_user(fixture, "eddie", "e-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "eddie", "e-long-password");
+	g_assert_nonnull(editor);
+
+	/* An editor may not read a forge... */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/forge",
+	                                        editor, NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+
+	/* ...and above all may not write one. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/forge",
+		editor,
+		"{\"name\":\"mine\",\"base_url\":\"https://attacker.example\"}",
+		NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+
+	/* A rule steers what runs unattended: admin, not editor. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+	                                        "/api/v1/forge_rule", editor,
+	                                        NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+
+	/* The credential routes are owner-only even for a logged-in editor. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/forges/1/token",
+	                                        editor, "token=stolen", NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+
+	/* An ordinary repository is ordinary data, so an editor keeps it. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+	                                        "/api/v1/forge_repo", editor,
+	                                        NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_OK);
+
+	/* And a run record refuses writes from the owner too. */
+	server_fixture_create_user(fixture, "olive", "o-long-password",
+	                           VENTURE_USER_ROLE_OWNER, NULL);
+	owner = server_fixture_login(fixture, "olive", "o-long-password");
+	g_assert_nonnull(owner);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/forge",
+	                                        owner, NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_OK);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+	                                        "/api/v1/forge_run", owner,
+	                                        "{\"ticket_id\":1}", NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+}
+
 int
 main(
 	int	  argc,
@@ -1523,6 +1651,12 @@ main(
 
 	g_test_add("/auth/pages-refuse-anonymous-requests", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_pages_refuse_anonymous_requests,
+	           server_fixture_tear_down);
+
+	g_test_add("/auth/forge-records-are-owner-only", ServerFixture, NULL,
+
+	           server_fixture_set_up, test_auth_forge_records_are_owner_only,
+
 	           server_fixture_tear_down);
 	g_test_add("/auth/api-refuses-anonymous-requests", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_api_refuses_anonymous_requests,

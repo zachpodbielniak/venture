@@ -235,6 +235,179 @@ typedef enum
 } VentureTicketKind;
 
 /**
+ * VentureIssueType:
+ * @VENTURE_ISSUE_TYPE_TASK: a unit of work somebody can just do
+ * @VENTURE_ISSUE_TYPE_SUBTASK: a piece of a task, split out to be shared
+ * @VENTURE_ISSUE_TYPE_STORY: a change described by what it gives somebody
+ * @VENTURE_ISSUE_TYPE_EPIC: a body of work that has to be broken up first
+ * @VENTURE_ISSUE_TYPE_BUG: something that already exists and is wrong
+ * @VENTURE_ISSUE_TYPE_RESEARCH: a question to answer, with no code expected
+ *
+ * What shape of work a ticket is.
+ *
+ * A different question from #VentureTicketKind, and the two are deliberately
+ * separate fields. Kind says whose problem it is -- your own project work or
+ * somebody else's support request -- which is what decides who may read the
+ * replies. This says how big the piece is and therefore how it should be
+ * approached, which is what the forge rules key on: a bug wants a
+ * reproduction and a regression test, an epic wants breaking up and no code
+ * at all. An external bug is both, and common.
+ *
+ * %VENTURE_ISSUE_TYPE_TASK is zero deliberately. This column is added to a
+ * table that already has rows; those rows get NULL, and a NULL enum column
+ * reads back as the property default, which is always the enum's zero value.
+ * Every ticket written before this field existed therefore becomes a task,
+ * which is what they were. Reordering this enumeration later is safe for
+ * storage -- values persist by nick -- but it silently retypes every
+ * historical ticket, so the first value is a one-time decision.
+ */
+typedef enum
+{
+	VENTURE_ISSUE_TYPE_TASK = 0,
+	VENTURE_ISSUE_TYPE_SUBTASK,
+	VENTURE_ISSUE_TYPE_STORY,
+	VENTURE_ISSUE_TYPE_EPIC,
+	VENTURE_ISSUE_TYPE_BUG,
+	VENTURE_ISSUE_TYPE_RESEARCH
+} VentureIssueType;
+
+/**
+ * VentureForgeKind:
+ * @VENTURE_FORGE_KIND_FORGEJO: Forgejo
+ * @VENTURE_FORGE_KIND_GITEA: Gitea, which speaks the same API
+ * @VENTURE_FORGE_KIND_GITHUB: GitHub
+ * @VENTURE_FORGE_KIND_GITLAB: GitLab
+ *
+ * Which software a forge runs.
+ *
+ * Forgejo and Gitea share API v1 and are served by one client. The other two
+ * are declared so the form can express what an operator actually has, and the
+ * client factory refuses them with %VENTURE_ERROR_NOT_SUPPORTED -- a clearer
+ * answer than a 404 from a GitHub URL addressed as though it were Forgejo.
+ */
+typedef enum
+{
+	VENTURE_FORGE_KIND_FORGEJO = 0,
+	VENTURE_FORGE_KIND_GITEA,
+	VENTURE_FORGE_KIND_GITHUB,
+	VENTURE_FORGE_KIND_GITLAB
+} VentureForgeKind;
+
+/**
+ * VentureForgeRunner:
+ * @VENTURE_FORGE_RUNNER_AGENT: an agent inside this process
+ * @VENTURE_FORGE_RUNNER_CLI: a coding CLI in a checkout
+ *
+ * What actually does the work.
+ *
+ * The agent runner needs no checkout and no subprocess, so it works
+ * everywhere including inside the shipped container image, which is why it is
+ * zero. It reaches the filesystem only through VENTURE's own confined file
+ * tools and has no shell, so it can edit a tree but cannot run its tests.
+ * The CLI runner spawns claude-code, opencode or grok-build in a workspace
+ * and can do both, at the cost of needing that binary present.
+ */
+typedef enum
+{
+	VENTURE_FORGE_RUNNER_AGENT = 0,
+	VENTURE_FORGE_RUNNER_CLI
+} VentureForgeRunner;
+
+/**
+ * VentureForgeRunOutcome:
+ * @VENTURE_FORGE_RUN_OUTCOME_DRAFT_PR: push the branch and open a draft
+ * @VENTURE_FORGE_RUN_OUTCOME_PUSH_BRANCH: push the branch and stop
+ * @VENTURE_FORGE_RUN_OUTCOME_LOCAL_BRANCH: commit locally and stop
+ * @VENTURE_FORGE_RUN_OUTCOME_NONE: change nothing anywhere
+ *
+ * How far a successful run goes.
+ *
+ * Unlike #VentureInvoiceStatus this order is not a progression -- it runs
+ * from most to least, because the first value is what a new rule gets and
+ * what the form offers first, and the decision was that a run should end at
+ * a draft pull request. Nothing here ever merges: a draft is a place to look
+ * at the work, which is the point.
+ */
+typedef enum
+{
+	VENTURE_FORGE_RUN_OUTCOME_DRAFT_PR = 0,
+	VENTURE_FORGE_RUN_OUTCOME_PUSH_BRANCH,
+	VENTURE_FORGE_RUN_OUTCOME_LOCAL_BRANCH,
+	VENTURE_FORGE_RUN_OUTCOME_NONE
+} VentureForgeRunOutcome;
+
+/**
+ * VentureForgeTrigger:
+ * @VENTURE_FORGE_TRIGGER_MANUAL: only when somebody presses the button
+ * @VENTURE_FORGE_TRIGGER_ON_CREATE: as soon as the ticket exists
+ * @VENTURE_FORGE_TRIGGER_ON_TODO: when it is accepted off triage
+ * @VENTURE_FORGE_TRIGGER_ON_IN_PROGRESS: when somebody starts it
+ *
+ * What starts a run.
+ *
+ * Manual is zero: a rule created by hand does nothing at all until somebody
+ * asks it to. That is the right default for the one feature here that spends
+ * money without being watched.
+ */
+typedef enum
+{
+	VENTURE_FORGE_TRIGGER_MANUAL = 0,
+	VENTURE_FORGE_TRIGGER_ON_CREATE,
+	VENTURE_FORGE_TRIGGER_ON_TODO,
+	VENTURE_FORGE_TRIGGER_ON_IN_PROGRESS
+} VentureForgeTrigger;
+
+/**
+ * VentureForgeRunState:
+ * @VENTURE_FORGE_RUN_STATE_QUEUED: accepted, waiting for a slot
+ * @VENTURE_FORGE_RUN_STATE_RUNNING: in progress
+ * @VENTURE_FORGE_RUN_STATE_SUCCEEDED: finished, and did what it said
+ * @VENTURE_FORGE_RUN_STATE_FAILED: tried and could not
+ * @VENTURE_FORGE_RUN_STATE_CANCELLED: stopped by a person
+ * @VENTURE_FORGE_RUN_STATE_REFUSED: never started
+ * @VENTURE_FORGE_RUN_STATE_INTERRUPTED: the server stopped mid-run
+ *
+ * Where a run stands.
+ *
+ * Refused is distinct from failed on purpose: refused means a daily limit or
+ * an approval gate stopped it before anything ran, failed means a runner
+ * tried and could not. Collapsing the two makes "why did nothing happen"
+ * unanswerable. Interrupted is likewise not failed -- nobody observed the
+ * outcome, so nothing may be concluded from it and nothing is retried
+ * automatically.
+ */
+typedef enum
+{
+	VENTURE_FORGE_RUN_STATE_QUEUED = 0,
+	VENTURE_FORGE_RUN_STATE_RUNNING,
+	VENTURE_FORGE_RUN_STATE_SUCCEEDED,
+	VENTURE_FORGE_RUN_STATE_FAILED,
+	VENTURE_FORGE_RUN_STATE_CANCELLED,
+	VENTURE_FORGE_RUN_STATE_REFUSED,
+	VENTURE_FORGE_RUN_STATE_INTERRUPTED
+} VentureForgeRunState;
+
+/**
+ * VentureForgeLinkOrigin:
+ * @VENTURE_FORGE_LINK_ORIGIN_FORGE: the issue was raised upstream
+ * @VENTURE_FORGE_LINK_ORIGIN_VENTURE: VENTURE filed it
+ *
+ * Which side raised the issue behind a link.
+ *
+ * Half of the webhook loop guard. %VENTURE_FORGE_LINK_ORIGIN_FORGE is zero
+ * rather than the other way round, and the choice is load-bearing: if a bug
+ * ever leaves origin unset on a row VENTURE created, a zero meaning VENTURE
+ * would make the loop guard suppress a real upstream ticket, which is silent
+ * data loss. A zero meaning FORGE makes VENTURE re-import its own issue
+ * instead -- noisy, visible, and fixable.
+ */
+typedef enum
+{
+	VENTURE_FORGE_LINK_ORIGIN_FORGE = 0,
+	VENTURE_FORGE_LINK_ORIGIN_VENTURE
+} VentureForgeLinkOrigin;
+
+/**
  * VentureInvoiceStatus:
  * @VENTURE_INVOICE_STATUS_DRAFT: being written; not yet a claim on anybody
  * @VENTURE_INVOICE_STATUS_SENT: issued to the customer and awaiting payment
@@ -731,6 +904,13 @@ typedef enum
 #define VENTURE_TYPE_INTERACTION_KIND		(venture_interaction_kind_get_type())
 #define VENTURE_TYPE_TICKET_STATUS		(venture_ticket_status_get_type())
 #define VENTURE_TYPE_TICKET_KIND		(venture_ticket_kind_get_type())
+#define VENTURE_TYPE_ISSUE_TYPE			(venture_issue_type_get_type())
+#define VENTURE_TYPE_FORGE_KIND			(venture_forge_kind_get_type())
+#define VENTURE_TYPE_FORGE_RUNNER		(venture_forge_runner_get_type())
+#define VENTURE_TYPE_FORGE_RUN_OUTCOME		(venture_forge_run_outcome_get_type())
+#define VENTURE_TYPE_FORGE_TRIGGER		(venture_forge_trigger_get_type())
+#define VENTURE_TYPE_FORGE_RUN_STATE		(venture_forge_run_state_get_type())
+#define VENTURE_TYPE_FORGE_LINK_ORIGIN		(venture_forge_link_origin_get_type())
 #define VENTURE_TYPE_INVOICE_STATUS		(venture_invoice_status_get_type())
 #define VENTURE_TYPE_CHAT_ROLE			(venture_chat_role_get_type())
 #define VENTURE_TYPE_COMPANY_KIND		(venture_company_kind_get_type())
@@ -763,6 +943,13 @@ GType venture_deal_stage_get_type		(void) G_GNUC_CONST;
 GType venture_interaction_kind_get_type		(void) G_GNUC_CONST;
 GType venture_ticket_status_get_type		(void) G_GNUC_CONST;
 GType venture_ticket_kind_get_type		(void) G_GNUC_CONST;
+GType venture_issue_type_get_type		(void) G_GNUC_CONST;
+GType venture_forge_kind_get_type		(void) G_GNUC_CONST;
+GType venture_forge_runner_get_type		(void) G_GNUC_CONST;
+GType venture_forge_run_outcome_get_type	(void) G_GNUC_CONST;
+GType venture_forge_trigger_get_type		(void) G_GNUC_CONST;
+GType venture_forge_run_state_get_type		(void) G_GNUC_CONST;
+GType venture_forge_link_origin_get_type	(void) G_GNUC_CONST;
 GType venture_invoice_status_get_type		(void) G_GNUC_CONST;
 GType venture_chat_role_get_type		(void) G_GNUC_CONST;
 GType venture_company_kind_get_type		(void) G_GNUC_CONST;

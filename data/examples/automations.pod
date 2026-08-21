@@ -32,3 +32,18 @@ sale_log->on_created => log->write_info("A record was created");
 # --------------------------------------------------------------------------
 pod nightly = cron->new("0 2 * * *");
 nightly->on_schedule => venture->count("ticket");
+
+# --------------------------------------------------------------------------
+# Forge integration: react to a ticket being filed.
+#
+# The rules themselves live in records, not here -- which repository, which
+# issue type, which runner, how far a run goes. This is only the trigger, so
+# that a rule with a `manual` trigger can still be started by an automation
+# when some other condition is met.
+#
+# Note what this does NOT do: the handler queues the run and returns. A pod
+# handler that waited for a coding agent would sit inside podomation's
+# dispatch for minutes, and that is not what the dispatch is for.
+# --------------------------------------------------------------------------
+pod ticket_watch = venture->new();
+ticket_watch->on_created => log->write_info("A record was created; a forge rule may pick it up");

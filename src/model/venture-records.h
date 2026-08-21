@@ -19,6 +19,7 @@
  *   Relations   Contact, Interaction, Deal
  *   Growth      Campaign, Newsletter, Subscriber, Post
  *   Thinking    Idea, ResearchNote, Task, Document
+ *   Code        Forge, ForgeRepo, ForgeRule, TicketLink, ForgeRun
  *   Access      User, ApiToken, AuditEntry
  *
  * Every one derives from #VentureEntity and therefore carries the same
@@ -202,6 +203,23 @@ VENTURE_DECLARE_ENTITY(VentureTicketComment, venture_ticket_comment,
 
 #define VENTURE_TYPE_DOCUMENT (venture_document_get_type())
 VENTURE_DECLARE_ENTITY(VentureDocument, venture_document, DOCUMENT)
+
+/* --- Forge integration ---------------------------------------------------- */
+
+#define VENTURE_TYPE_FORGE (venture_forge_get_type())
+VENTURE_DECLARE_ENTITY(VentureForge, venture_forge, FORGE)
+
+#define VENTURE_TYPE_FORGE_REPO (venture_forge_repo_get_type())
+VENTURE_DECLARE_ENTITY(VentureForgeRepo, venture_forge_repo, FORGE_REPO)
+
+#define VENTURE_TYPE_FORGE_RULE (venture_forge_rule_get_type())
+VENTURE_DECLARE_ENTITY(VentureForgeRule, venture_forge_rule, FORGE_RULE)
+
+#define VENTURE_TYPE_TICKET_LINK (venture_ticket_link_get_type())
+VENTURE_DECLARE_ENTITY(VentureTicketLink, venture_ticket_link, TICKET_LINK)
+
+#define VENTURE_TYPE_FORGE_RUN (venture_forge_run_get_type())
+VENTURE_DECLARE_ENTITY(VentureForgeRun, venture_forge_run, FORGE_RUN)
 
 #define VENTURE_TYPE_INVOICE (venture_invoice_get_type())
 VENTURE_DECLARE_ENTITY(VentureInvoice, venture_invoice, INVOICE)

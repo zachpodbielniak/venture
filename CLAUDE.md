@@ -79,15 +79,60 @@ first seven columns were empty.
   anything else is parsed as a field filter and refused if the field does not
   exist. A new UI parameter that is not reserved there breaks every list page
   with "no field named X".
+- **`ticket.kind` and `ticket.issue-type` answer different questions.** Kind
+  is internal/external — whose problem it is, which decides who may read the
+  replies. Issue type is epic/story/task/subtask/research/bug — what shape
+  the work is, which is what forge rules key on. An external bug is both.
+  Do not merge them. `VENTURE_ISSUE_TYPE_TASK` must stay the enum's zero
+  value: the column was added to a populated table, so every historical row
+  reads back as whatever is first.
 - **Chat threads are per-user, not per-entity.** The chat routes must filter
   on the caller's `user-id` and report NOT_FOUND (never FORBIDDEN) on a
   mismatch, and `chat_thread`/`chat_message` stay owner-only in
   `venture_web_require_for_type()`. `tests/test-auth.c` pins this.
 - **The AI executor must be built empty.** `ai_tool_executor_new()`
   pre-registers `bash`, `read`, `write`, `edit`, `glob`, `grep`, `ls` and
-  `web_fetch`, and `ai_tool_executor_unregister()` cannot remove a built-in.
-  Use `ai_tool_executor_new_empty()`; a `bash` tool bypasses the staged
-  confirmations, the audit trail and the sensitive-field rules in one call.
+  `web_fetch`. Use `ai_tool_executor_new_empty()`; a `bash` tool bypasses the
+  staged confirmations, the audit trail and the sensitive-field rules in one
+  call. (`ai_tool_executor_unregister()` *can* now remove a built-in —
+  `ai_tool_executor_execute()` checks `executor_offers_tool()` first, so the
+  allowlist is structural. Building empty is still the right default, but the
+  old claim that a built-in was unremovable is no longer true of the vendored
+  ai-glib.)
+- **ai-glib's file tools are not a sandbox.** `executor_resolve_path()`
+  returns an absolute path unchanged and never normalises `..`, and
+  `tool_bash` only sets a subprocess cwd. An in-process agent given them
+  could read `venture.db`, the config and `/proc/self/environ`. The coding
+  runner uses `venture_work_tools_register()` instead, which canonicalises
+  every path against the checkout — and compares against `root + "/"`, not
+  `root`, or a sibling named `<root>-evil` passes.
+- **The webhook is the only unauthenticated route, and the HMAC is its
+  guard.** `/hooks/forge/:id` has no session check by design. A forge with no
+  webhook secret set must be *refused*, not trusted — podomation's forgejo
+  module returns TRUE in that case, which is why VENTURE reimplements the
+  check rather than reusing it. Compare in constant time, hash
+  `htmx_request_get_body_bytes()` and never `htmx_request_get_body()` (a
+  `g_strndup`, so a NUL truncates the payload), and enforce the body size cap
+  here because `server.max_request_size_mb` has no consumer anywhere else.
+- **The forge client deliberately bypasses the AI's SSRF guard.**
+  `venture_ai_url_is_fetchable()` refuses loopback and site-local addresses,
+  which is exactly where a self-hosted Forgejo lives. What replaces it is
+  that no caller may choose a host: the origin is parsed once at
+  construction, redirects are disabled (a 302 would carry the Authorization
+  header to a host the *response* chose), and the final URI is compared back
+  against the pinned one.
+- **git runs through an argv array, never a command line.** Branch and
+  repository names reach this path from webhook payloads. A command line is
+  word-split, so a branch named `--upload-pack=...` becomes an option git
+  obeys. podomation's git module uses `g_spawn_command_line_sync`; do not
+  copy it. The push credential goes in the environment, never in argv, which
+  is world-readable through `/proc`.
+- **Coding runs get the only background thread, and it must not touch the
+  database.** Writing a record emits `entity-saved`, whose automation handler
+  enters podomation, which runs a nested main loop on the *default* context —
+  driving that from a second thread is a context-ownership failure, not
+  merely a data race. Progress crosses back as plain data and is applied on
+  the main thread.
 - **The JSON wire format uses underscores.** Properties are `invoice-id` in
   C and `invoice_id` on the wire; a POST body with dashed keys is silently
   ignored field by field — the record saves and the values just aren't
@@ -95,6 +140,25 @@ first seven columns were empty.
 - **An automation reload is a rebuild.** Never parse new rules into a
   running engine: pods hold timer and breaker state, and stacking a second
   generation beside the first doubles every side effect.
+- **Pod handlers must stay synchronous.** `pod_engine_new()` defaults
+  `handler_timeout_seconds` to 30, and any non-zero value selects a dispatch
+  path that runs the handler on a `GTask` worker thread while the caller
+  blocks in a nested `g_main_loop_run()` on the default context. VENTURE's
+  handler writes to the database and reads a non-atomic cascade guard.
+  `venture_automation_build_engine()` sets the timeout to 0 for this reason;
+  `tests/test-automation.c` pins it.
+- **Nested transactions must balance their lock.** `venture_database_begin()`
+  takes the recursive lock on every call and tracks depth plus owning thread;
+  commit and rollback each release one level. Returning early from a nested
+  begin without releasing — as it once did — leaks a level, which is
+  invisible on one thread and a permanent silent deadlock the moment anything
+  else touches the database.
+- **Header dependencies come from `-MMD`, not from a separate rule.** The
+  `%.d` rules that used to sit in `rules.mk` were unreachable, so no depfile
+  was ever written and the `-include` matched nothing: editing a header
+  rebuilt *nothing*. If a header change ever stops triggering a rebuild,
+  check `DEPFLAGS` is still on all three compile rules and that
+  `TEST_OBJS` is still in the `-include` list.
 - **A dep bump needs `make clean-all`, not `make clean`.** Dependencies
   change their output layout and soname between versions (orm-glib went
   flat `build/liborm-glib-0.1.a` to `build/$(BUILD_TYPE)/liborm-glib-0.2.a`).

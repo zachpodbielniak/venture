@@ -151,6 +151,14 @@ LABEL org.opencontainers.image.title="VENTURE" \
 # dlopen -- and a rule using cron_event reports an unknown module rather
 # than a missing library.
 #
+#
+# git and openssh-clients are here for the forge integration rather than for
+# the build: a coding run clones a repository into a scratch checkout and
+# pushes a branch back. Creating a branch does not need them -- that goes
+# through the forge's API -- so an install that only links tickets to
+# repositories would work without them. They are cheap enough not to make
+# that a build option.
+#
 RUN dnf install -y --setopt=install_weak_deps=False \
         glib2 \
         libyaml \
@@ -165,6 +173,8 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         libgudev \
         ca-certificates \
         tzdata \
+        git \
+        openssh-clients \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
@@ -193,6 +203,28 @@ RUN if [ "${WITH_CRISPY}" = "1" ]; then \
             libxml2-devel \
         && dnf clean all \
         && rm -rf /var/cache/dnf; \
+    fi
+
+#
+# Optional: a coding-agent CLI in the runtime image, for forge rules whose
+# runner is `cli`.
+#
+# Off by default, and for the same reason WITH_CRISPY is: it means the
+# container can execute code it fetched, which is the feature and also the
+# thing to think about before turning it on. The in-process `agent` runner
+# needs none of this -- it edits through tools that cannot leave the
+# checkout -- but it has no shell and so cannot run a project's tests. That
+# is the trade.
+#
+# The alternative is to leave this off and bind-mount the CLI you already
+# have; see docs/containers.org.
+#
+ARG WITH_AGENT_CLI=0
+RUN if [ "${WITH_AGENT_CLI}" = "1" ]; then \
+        dnf install -y --setopt=install_weak_deps=False nodejs npm \
+        && npm install -g @anthropic-ai/claude-code opencode-ai @vercel/grok-build \
+        && dnf clean all \
+        && rm -rf /var/cache/dnf /root/.npm; \
     fi
 
 COPY --from=builder /staging/ /

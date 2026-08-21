@@ -287,7 +287,12 @@ venture_ai_type_is_readable(GType entity_type)
 	return (VENTURE_TYPE_USER != entity_type) &&
 	       (VENTURE_TYPE_API_TOKEN != entity_type) &&
 	       (VENTURE_TYPE_CHAT_THREAD != entity_type) &&
-	       (VENTURE_TYPE_CHAT_MESSAGE != entity_type);
+	       (VENTURE_TYPE_CHAT_MESSAGE != entity_type) &&
+	       /* A forge row exists to hold a credential and to name the host
+	        * that credential is sent to. Neither is the assistant's
+	        * business, and listing them would tell it exactly where this
+	        * install's code lives. */
+	       (VENTURE_TYPE_FORGE != entity_type);
 }
 
 /*
@@ -300,7 +305,19 @@ static gboolean
 venture_ai_type_is_writable(GType entity_type)
 {
 	return venture_ai_type_is_readable(entity_type) &&
-	       (VENTURE_TYPE_AUDIT_ENTRY != entity_type);
+	       (VENTURE_TYPE_AUDIT_ENTRY != entity_type) &&
+	       /*
+	        * ...and the forge rules, for a sharper version of the same
+	        * argument. A rule decides whether a model runs unattended,
+	        * on which runner, for how many turns and how far its output
+	        * goes. A model able to edit the rule governing it can widen
+	        * its own authority -- and unlike a staged record change,
+	        * the widening applies to every future run rather than to one
+	        * row. Rules are written by people. Run records are evidence,
+	        * for the same reason the audit log is.
+	        */
+	       (VENTURE_TYPE_FORGE_RULE != entity_type) &&
+	       (VENTURE_TYPE_FORGE_RUN != entity_type);
 }
 
 static gchar *

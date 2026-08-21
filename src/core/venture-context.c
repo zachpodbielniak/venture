@@ -19,6 +19,7 @@ struct _VentureContext
 	VentureAiService	*ai;
 	VentureAutomation	*automation;
 	VenturePluginManager	*plugins;
+	VentureWorkService	*work;
 
 	GTimeZone		*timezone;
 	gint64			 default_organization_id;
@@ -40,6 +41,7 @@ venture_context_finalize(GObject *object)
 	g_clear_object(&self->ai);
 	g_clear_object(&self->automation);
 	g_clear_object(&self->plugins);
+	g_clear_object(&self->work);
 	g_clear_pointer(&self->timezone, g_time_zone_unref);
 
 	/* The entity registry is the process-wide default and is not owned. */
@@ -231,6 +233,24 @@ venture_context_get_automation(VentureContext *self)
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), NULL);
 
 	return self->automation;
+}
+
+void
+venture_context_set_work_service(
+	VentureContext		*self,
+	VentureWorkService	*service
+){
+	g_return_if_fail(VENTURE_IS_CONTEXT(self));
+
+	g_set_object(&self->work, service);
+}
+
+VentureWorkService *
+venture_context_get_work_service(VentureContext *self)
+{
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), NULL);
+
+	return self->work;
 }
 
 void

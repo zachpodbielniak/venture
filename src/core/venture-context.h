@@ -194,6 +194,30 @@ VentureAutomation *
 venture_context_get_automation(VentureContext *self);
 
 /**
+ * venture_context_set_work_service:
+ * @self: a #VentureContext
+ * @service: (nullable): the coding-run service
+ *
+ * Attaches the service that runs coding agents. Left unset when runs are
+ * turned off, which is the default -- in which case the run routes report
+ * that rather than failing at use.
+ */
+void
+venture_context_set_work_service(
+	VentureContext		*self,
+	VentureWorkService	*service
+);
+
+/**
+ * venture_context_get_work_service:
+ * @self: a #VentureContext
+ *
+ * Returns: (transfer none) (nullable): the service, or %NULL
+ */
+VentureWorkService *
+venture_context_get_work_service(VentureContext *self);
+
+/**
  * venture_context_set_plugin_manager:
  * @self: a #VentureContext
  * @manager: (nullable): the plugin host

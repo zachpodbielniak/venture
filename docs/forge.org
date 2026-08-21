@@ -1,0 +1,259 @@
+#+title: Git forges and AI-worked tickets
+#+description: Linking tickets to repositories, filing issues upstream, and letting an agent do the work
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-08-21]
+#+updated: [2026-08-21]
+#+version: 0.1.0
+
+* What this is
+
+VENTURE's tickets describe work. This connects that work to the code it is about: a ticket can name a repository on a git forge, carry the branch the work is on and the issue it corresponds to upstream, and — where you have opted in — be picked up by an AI agent that does the work on its own branch and opens a draft pull request.
+
+Forgejo is the forge that is implemented. Gitea works through the same client, because their API v1 is the same interface. GitHub and GitLab are declared so the form can express what you actually have, and are refused with a clear message rather than attempted.
+
+* The four concepts
+
+| Record        | What it is                                                              |
+|---------------+-------------------------------------------------------------------------|
+| =forge=       | one server you have an account on: its URL, its access token, its webhook secret |
+| =forge_repo=  | one repository on that server, as =owner/repo=                           |
+| =forge_rule=  | what may happen automatically, per repository and per issue type         |
+| =forge_run=   | one attempt by a runner at one ticket: what it did, what it cost, why it stopped |
+
+A fifth, =ticket_link=, joins a ticket to a repository and carries the issue number, the branch and the pull request. It is one record rather than three fields on the ticket because a ticket can be worked in two repositories at once — a fix in the library and a version bump in the application — and because it is exactly the row the webhook loop guards read.
+
+* Issue types
+
+Tickets gained an *issue type*: =epic=, =story=, =task=, =subtask=, =research= or =bug=.
+
+This is a different question from the ticket's *kind*, and the two are deliberately separate fields.
+
+- *Kind* says whose problem it is — your own project work, or somebody else's support request. It is what decides who may read the replies, and it drives whether a comment is internal.
+- *Issue type* says what shape the work is, and therefore how it should be approached. A bug wants a reproduction and a regression test; an epic wants breaking up and no code at all.
+
+They are orthogonal. An external bug is both, and common. The forge rules key on the issue type.
+
+Existing tickets all read as =task=, because that is what they were. The enumeration's first value is load-bearing for that reason: reordering it would silently retype every historical ticket.
+
+* Connecting a forge
+
+** Create the access token in Forgejo
+
+Settings → Applications → Generate New Token. It needs:
+
+- =read:repository= and =write:repository= — to look repositories up and create branches
+- =write:issue= — to file issues, comment, and open pull requests
+
+Give it nothing else. The token is the only credential VENTURE holds for that server, and its scope is the ceiling on what any rule can do.
+
+** Add the forge
+
+=/e/forge= → New. Name it whatever you call the server, choose Forgejo or Gitea, and give the base URL — the origin only, =https://git.example.com=, with no =/api/v1=.
+
+*Clone base* is separate, and usually needs setting. The API and git rarely live on the same host once a reverse proxy is involved: the proxy speaks HTTP, sshd does not. A typical pair looks like
+
+| Base URL   | =https://git.podbielniak.com=      |
+| Clone base | =git@git-ssh.podbielniak.com=      |
+
+Two shapes are accepted, and the difference matters:
+
+- =git@host= — an account and no scheme — composes the scp-like =git@host:owner/repo.git=. The separator is a colon; =git@host/owner/repo.git= is read by git as a path, not a host.
+- Anything with a scheme composes =<base>/owner/repo.git=, so =https://git.example.com= and =ssh://git@host= both work.
+
+Leave it empty and the base URL is used, which is right when one host serves both.
+
+A repository can also carry its own *Clone URL*, used exactly as given. That is for the one repository that does not follow its forge's pattern — a mirror, or a path a proxy rewrites — so that discovering it later does not mean a second forge record differing in one field.
+
+Then, on the forge's own page:
+
+1. *Set token.* The token box is not on the ordinary edit form and never will be: a sensitive field is not rendered with its value and not applied by the generated save, which is the whole meaning of the flag. This is its own control for that reason. Leaving the box empty keeps the existing token rather than clearing it — an accidentally blank field must not silently disconnect a forge.
+2. *Verify the token.* This asks the forge which account the token belongs to and stores the answer. It is not cosmetic: that login is the webhook loop guard. Until it is set, VENTURE cannot tell an issue it filed itself from one somebody else opened, and the page says so.
+3. *Set or generate the webhook secret*, if you want inbound events. Leave the box blank and VENTURE generates one from the system CSPRNG, which is better than one you invented.
+
+The forge record is owner-only, and so is every one of those three controls. That is not caution: an editor who could change the base URL could point this install's token at a host they control, and the audit entry would show nothing but a URL changing.
+
+** Add a repository
+
+=/e/forge_repo= → New. The name is =owner/repo= exactly as the forge spells it — that is what a webhook payload carries and what you copy out of the address bar.
+
+Set *Venture* to the business the code belongs to. This is what scopes a webhook-created ticket to the right organisation: a webhook carries no session, so without it a ticket would land in the default organisation and then be invisible on a board filtered to a specific entity.
+
+Two switches decide direction:
+
+- *File issues upstream* — linking a ticket here opens a forge issue for it.
+- *Accept issues from upstream* — a webhook issue becomes a ticket.
+
+* Rules
+
+A rule answers: for this repository, and this kind of issue, what may happen without me?
+
+** Resolution order
+
+Most specific first:
+
+1. the repository's rule for this issue type
+2. the repository's catch-all (=All issue types= on)
+3. the forge-wide rule for this issue type (a rule with a forge but no repository)
+4. the forge-wide catch-all
+5. nothing
+
+*Nothing is a legitimate answer.* A repository nobody enrolled does not acquire an AI because a rule elsewhere was written generously.
+
+Two things surprise people, so they are worth stating:
+
+- A rule that is *not enabled* is skipped and the search continues past it. Switching a rule off falls through to whatever broader rule exists.
+- To suppress work for one repository, create a rule that *is* enabled with the AI switched off. That stops the search at that repository.
+- A rule with neither a repository nor a forge matches nothing at all. A row saved half-filled that applied everywhere is the failure that costs money.
+
+Two rules with identical scope resolve to the lower id, every time, and log a warning naming both. Deterministic beats clever: the same ticket behaving differently on consecutive runs is far harder to diagnose than a consistent wrong answer.
+
+** Outcomes
+
+| Outcome        | What happens                                    |
+|----------------+-------------------------------------------------|
+| =draft_pr=     | commit, push the branch, open a *draft* pull request |
+| =push_branch=  | commit and push the branch, and stop            |
+| =local_branch= | commit in the checkout and stop                 |
+| =none=         | change nothing anywhere                         |
+
+Nothing here ever merges. A draft pull request is a place to look at the work, which is the point.
+
+** Runners
+
+| Runner  | Can edit | Can run your tests | Needs                        |
+|---------+----------+--------------------+------------------------------|
+| =agent= | yes      | *no*               | nothing beyond a model key   |
+| =cli=   | yes      | yes                | =claude-code=, =opencode= or =grok-build= on the host |
+
+The in-process =agent= runner uses file tools VENTURE wrote, confined to the run's checkout: every path is canonicalised and anything resolving outside is refused. It has *no shell*, and that is the honest cost of running inside the server's own process — ai-glib's built-in tools accept absolute paths unchanged and its =bash= tool is a shell with the server's uid and the server's environment, which is one =env= away from every provider key and the session secret.
+
+The =cli= runner spawns a coding CLI in the checkout. It can do both because it is a separate process with its own permission model, and the command it may spawn has to appear in =forge.cli_allowed_commands=. That list is not optional: a rule names its command, a rule is editable by anybody who can edit rules, and without the list that is arbitrary command execution with a longer fuse than the shell tool the assistant is denied.
+
+* The webhook
+
+=POST /hooks/forge/<id>= is the only route in VENTURE that does not require a session. It authenticates by verifying an HMAC-SHA256 over the request body against the forge's webhook secret.
+
+Three things about it are deliberate:
+
+- A forge with *no secret set is refused outright*, not trusted. An unconfigured forge would otherwise be an unauthenticated endpoint that creates records and can start an AI run.
+- An absent signature is a rejection, not "nothing to check".
+- The comparison is constant time. A check that returns as soon as two bytes differ leaks the digest to anybody who can measure the reply, and this endpoint is by definition reachable by whoever is guessing.
+
+** Setting it up in Forgejo
+
+Repository → Settings → Webhooks → Add Webhook → Forgejo.
+
+- *Target URL*: the address shown on the forge's page in VENTURE.
+- *Secret*: the one you set or generated.
+- *Trigger*: Issues, and Issue Comment if you want comments to come across.
+
+Anything else you send is acknowledged and ignored rather than rejected, because a forge disables a webhook that keeps erroring.
+
+** Loops
+
+VENTURE files an issue; the forge delivers a webhook for it; without care that becomes a second ticket for the issue VENTURE just created. Three guards:
+
+1. *The sender is VENTURE's own account.* This is why verifying the token matters. Exact, needs no stored state, and works in the window before the link row has the issue number written back.
+2. *The delivery has already been applied.* A forge retries a delivery it thinks failed, and a retry that re-applied its payload would reopen a ticket somebody had just closed.
+3. *The edit changes nothing.* Compared before the write, not after — a save with an empty diff reports success without writing, so "did anything change" is not available as a signal afterwards.
+
+A closed issue closes the ticket. An open one does *not* reopen it: somebody moved that ticket into review deliberately, and the forge does not get to move it back.
+
+* Three worked configurations
+
+** 1. Link only
+
+The safe starting point. Repositories and branches tracked by hand, no AI, no webhook.
+
+#+begin_src yaml
+forge:
+  enabled: true
+  webhooks_enabled: false
+  runs_enabled: false
+#+end_src
+
+Add a forge and a repository, set =File issues upstream= on, leave =Accept issues from upstream= off, and create no rules. Ticket pages gain a Code panel with *File upstream* and *Create the branch*.
+
+From the command line:
+
+#+begin_src bash
+venturectl create forge name="Home" kind=forgejo \
+    base_url=https://git.example.com \
+    clone_base_url=git@git-ssh.example.com
+venturectl create forge_repo name=zach/venture forge_id=1 default_branch=master \
+    branch_prefix=venture/ push_issues=true active=true
+#+end_src
+
+The token still has to be set through the forge's page: it is a sensitive field and the REST API will not accept it.
+
+** 2. Bugs worked automatically
+
+One forge-wide rule. Every bug on every repository of that forge gets an agent and a draft pull request; everything else is untouched.
+
+#+begin_src yaml
+forge:
+  enabled: true
+  webhooks_enabled: true
+  runs_enabled: true
+  run_concurrency: 1
+  run_timeout: 1800
+#+end_src
+
+#+begin_src bash
+venturectl create forge_rule name="Bugs, anywhere" forge_id=1 \
+    issue_type=bug all_issue_types=false enabled=true \
+    runner=agent outcome=draft_pr trigger=on_create \
+    max_turns=30 max_runs_per_day=10 \
+    prompt="Reproduce the bug first, then fix it. Add the test that would have caught it."
+#+end_src
+
+=max_runs_per_day= is the runaway guard. A webhook that fires on every comment, a rule that opens a draft pull request each time, and a model that comments back is a loop with a monthly invoice attached.
+
+** 3. One repository held to a stricter standard
+
+The forge-wide rule above, plus a narrower one on the repository that matters, showing precedence at work.
+
+#+begin_src bash
+venturectl create forge_rule name="Bugs in venture itself" repo_id=1 \
+    issue_type=bug all_issue_types=false enabled=true \
+    runner=cli runner_command=claude outcome=push_branch \
+    require_approval=true max_turns=60
+#+end_src
+
+A bug on repository 1 now resolves to this rule — CLI runner, no pull request, and a person has to start it. A bug anywhere else on the forge still gets rule 2.
+
+#+begin_src yaml
+forge:
+  cli_allowed_commands:
+    - "claude"
+#+end_src
+
+Without that list entry the rule refuses to run, which is the intended behaviour rather than an obstacle.
+
+* What the assistant can and cannot reach
+
+The chat assistant cannot see =forge= records at all. Its own tools refuse the type: a forge row exists to hold a credential and to name the host that credential is sent to, and listing them would tell it exactly where this install's code lives.
+
+It also cannot write =forge_rule= or =forge_run=. A model able to edit the rule governing it can widen its own authority, and unlike a staged record change that widening applies to every future run rather than to one row. Run records are refused writes for everybody, like the audit log: a run record is evidence.
+
+A coding agent is a separate thing from the chat assistant, on a separate executor, in a separate directory, with no access to the database at all.
+
+* Troubleshooting
+
+- *"That forge rejected this install's access token"* — the token is wrong, expired, or was revoked. Set it again on the forge page.
+- *"The access token is not allowed to …"* — the token exists but lacks a scope. Check =write:issue= for filing and commenting, =write:repository= for branches.
+- *A webhook does nothing.* Check the secret matches, that the repository has =Accept issues from upstream= on, and that the repository's name in VENTURE matches =owner/repo= exactly. Forgejo's own delivery log shows the response VENTURE gave.
+- *A webhook creates nothing and the delivery shows 401.* The forge has no webhook secret set. That is a refusal, not a misconfiguration to work around.
+- *Tickets appear but not on the board.* The repository has no Venture set, so its tickets landed in the default organisation. Set it and move them.
+- *"Coding runs are turned off in settings"* — =forge.runs_enabled= is false, which is the default.
+- *A run fails immediately with a git error* — =git= is missing from the runtime image, or the clone URL is not reachable from the server. Check the clone base: cloning from the API host is the usual mistake, and it fails minutes into a run rather than when you saved the forge.
+- *An SSH clone hangs or is refused* — the server needs a key the forge accepts, and =GIT_TERMINAL_PROMPT= is off so git fails rather than waiting for a passphrase. In a container that means mounting a key and a =known_hosts=. An HTTPS clone base avoids all of it: the access token is used, passed to git through an askpass helper so it never reaches the command line or =.git/config=.
+- *A CLI run refuses to start* — the command is not in =forge.cli_allowed_commands=, or the binary is not in the image. See [[file:containers.org][Containers]].
+- *A run says =interrupted=* — the server stopped while it was going. Nothing is resumed automatically, because nobody observed how far it got. Start a new one when you have looked at the branch.
+
+* Where things run
+
+A coding run takes minutes. Everything else in VENTURE takes milliseconds on one main loop, so runs get the only background thread in the program — with its own main context, and a rule that it never touches the database. Progress crosses back as plain data and is written to the run record on the main thread.
+
+Forge API calls are *not* on that thread: they happen inside the request that asked for them, bounded by =forge.request_timeout=. That is the same shape as the AI chat route and the invoice actions, and it is why the timeout is worth keeping short.

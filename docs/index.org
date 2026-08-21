@@ -21,6 +21,8 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:ai.org][AI]] — tools, the confirmation policy, and the audit trail
 - [[file:money.org][Money and accounting]] — exact arithmetic, allocation, deductibility, the ledger
 - [[file:reporting.org][Reporting]] — the built-in reports and how to write one
+- [[file:forge.org][Git forges]] — linking tickets to repositories, and letting an agent do the work
+- [[file:automation.org][Automation]] — scheduled rules, and the podomation engine
 - [[file:extending.org][Extending]] — plugins, crispy scripts, declarative venture types
 - [[file:containers.org][Containers]] — the Containerfile, local compose, and a deployment example
 - [[file:testing.org][Testing]] — running the suite, and what it guarantees

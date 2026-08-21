@@ -216,6 +216,91 @@ VENTURE_DEFINE_ENUM_TYPE(venture_ticket_kind_get_type,
                          "VentureTicketKind",
                          venture_ticket_kind_values)
 
+static const GEnumValue venture_issue_type_values[] = {
+	VE(VENTURE_ISSUE_TYPE_TASK,     "task"),
+	VE(VENTURE_ISSUE_TYPE_SUBTASK,  "subtask"),
+	VE(VENTURE_ISSUE_TYPE_STORY,    "story"),
+	VE(VENTURE_ISSUE_TYPE_EPIC,     "epic"),
+	VE(VENTURE_ISSUE_TYPE_BUG,      "bug"),
+	VE(VENTURE_ISSUE_TYPE_RESEARCH, "research"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_issue_type_get_type,
+                         "VentureIssueType",
+                         venture_issue_type_values)
+
+static const GEnumValue venture_forge_kind_values[] = {
+	VE(VENTURE_FORGE_KIND_FORGEJO, "forgejo"),
+	VE(VENTURE_FORGE_KIND_GITEA,   "gitea"),
+	VE(VENTURE_FORGE_KIND_GITHUB,  "github"),
+	VE(VENTURE_FORGE_KIND_GITLAB,  "gitlab"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_forge_kind_get_type,
+                         "VentureForgeKind",
+                         venture_forge_kind_values)
+
+static const GEnumValue venture_forge_runner_values[] = {
+	VE(VENTURE_FORGE_RUNNER_AGENT, "agent"),
+	VE(VENTURE_FORGE_RUNNER_CLI,   "cli"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_forge_runner_get_type,
+                         "VentureForgeRunner",
+                         venture_forge_runner_values)
+
+static const GEnumValue venture_forge_run_outcome_values[] = {
+	VE(VENTURE_FORGE_RUN_OUTCOME_DRAFT_PR,     "draft_pr"),
+	VE(VENTURE_FORGE_RUN_OUTCOME_PUSH_BRANCH,  "push_branch"),
+	VE(VENTURE_FORGE_RUN_OUTCOME_LOCAL_BRANCH, "local_branch"),
+	VE(VENTURE_FORGE_RUN_OUTCOME_NONE,         "none"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_forge_run_outcome_get_type,
+                         "VentureForgeRunOutcome",
+                         venture_forge_run_outcome_values)
+
+static const GEnumValue venture_forge_trigger_values[] = {
+	VE(VENTURE_FORGE_TRIGGER_MANUAL,         "manual"),
+	VE(VENTURE_FORGE_TRIGGER_ON_CREATE,      "on_create"),
+	VE(VENTURE_FORGE_TRIGGER_ON_TODO,        "on_todo"),
+	VE(VENTURE_FORGE_TRIGGER_ON_IN_PROGRESS, "on_in_progress"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_forge_trigger_get_type,
+                         "VentureForgeTrigger",
+                         venture_forge_trigger_values)
+
+static const GEnumValue venture_forge_run_state_values[] = {
+	VE(VENTURE_FORGE_RUN_STATE_QUEUED,      "queued"),
+	VE(VENTURE_FORGE_RUN_STATE_RUNNING,     "running"),
+	VE(VENTURE_FORGE_RUN_STATE_SUCCEEDED,   "succeeded"),
+	VE(VENTURE_FORGE_RUN_STATE_FAILED,      "failed"),
+	VE(VENTURE_FORGE_RUN_STATE_CANCELLED,   "cancelled"),
+	VE(VENTURE_FORGE_RUN_STATE_REFUSED,     "refused"),
+	VE(VENTURE_FORGE_RUN_STATE_INTERRUPTED, "interrupted"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_forge_run_state_get_type,
+                         "VentureForgeRunState",
+                         venture_forge_run_state_values)
+
+static const GEnumValue venture_forge_link_origin_values[] = {
+	VE(VENTURE_FORGE_LINK_ORIGIN_FORGE,   "forge"),
+	VE(VENTURE_FORGE_LINK_ORIGIN_VENTURE, "venture"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_forge_link_origin_get_type,
+                         "VentureForgeLinkOrigin",
+                         venture_forge_link_origin_values)
+
 static const GEnumValue venture_invoice_status_values[] = {
 	VE(VENTURE_INVOICE_STATUS_DRAFT, "draft"),
 	VE(VENTURE_INVOICE_STATUS_SENT,  "sent"),

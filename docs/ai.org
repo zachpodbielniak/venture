@@ -205,6 +205,10 @@ record of what the AI did; a model able to write it, even through an
 approval, could launder its own history. The same refusal holds for every
 human caller of the generic API: the audit system is the only writer.
 
+Forge records are added to that list. The assistant cannot read a =forge= — the row exists to hold a credential and to name the host it is sent to — and cannot write a =forge_rule= or a =forge_run=. A model able to edit the rule governing it can widen its own authority, and that widening would apply to every future run rather than to one row.
+
+A coding agent is not the assistant. It runs on its own executor, in its own checkout, with no database tools at all. The in-process runner gets file tools VENTURE wrote that refuse any path resolving outside the checkout, and no shell; the CLI runner gets an empty executor and brings its own tools in a separate process. See [[file:forge.org][Git forges]].
+
 * Why writes are staged
 
 The default is =confirm_writes= because the failure mode it prevents is not a

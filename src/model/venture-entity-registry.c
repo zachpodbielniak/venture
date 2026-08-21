@@ -449,6 +449,12 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_chat_thread_get_type,
 		venture_chat_message_get_type,
 
+		venture_forge_get_type,
+		venture_forge_repo_get_type,
+		venture_forge_rule_get_type,
+		venture_ticket_link_get_type,
+		venture_forge_run_get_type,
+
 		venture_invoice_get_type,
 		venture_invoice_line_get_type,
 

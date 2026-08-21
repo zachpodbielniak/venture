@@ -68,6 +68,19 @@ typedef struct _VentureUser			VentureUser;
 typedef struct _VentureApiToken			VentureApiToken;
 typedef struct _VentureAuditEntry		VentureAuditEntry;
 
+/* --- Forge integration ---------------------------------------------------- */
+
+/* Named ForgeRepo rather than Repository: VentureRepository is already taken
+ * below by the persistence layer, and one identifier meaning both "a git
+ * repository" and "the thing that talks to the database" would be a needless
+ * ambiguity in a codebase that has both. */
+typedef struct _VentureForge			VentureForge;
+typedef struct _VentureForgeRepo		VentureForgeRepo;
+typedef struct _VentureForgeRule		VentureForgeRule;
+typedef struct _VentureTicketLink		VentureTicketLink;
+typedef struct _VentureForgeRun			VentureForgeRun;
+typedef struct _VentureWorkService		VentureWorkService;
+
 /* --- Registries and infrastructure --------------------------------------- */
 
 typedef struct _VentureEntityRegistry		VentureEntityRegistry;

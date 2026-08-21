@@ -299,3 +299,35 @@ readline
 
 The six vendored dependencies are linked statically and appear in neither
 list.
+
+* Forge integration in a container
+
+The runtime image carries =git= and =openssh-clients= because a coding run clones a repository and pushes a branch. Creating a branch alone does not need them — that goes through the forge's API — so an install that only links tickets to repositories works either way.
+
+The coding-agent CLIs are *not* in the image by default. Two ways to get them:
+
+** Build them in
+
+#+begin_src bash
+podman build --build-arg WITH_AGENT_CLI=1 -t venture:agent .
+#+end_src
+
+Off by default for the same reason =WITH_CRISPY= is: it means the container can execute code it fetched. That is the feature and also the thing to weigh first.
+
+** Mount the one you already have
+
+Keeps the image small and the decision outside the build:
+
+#+begin_src yaml
+services:
+  venture:
+    volumes:
+      - /usr/local/bin/claude:/usr/local/bin/claude:ro,z
+      - ./compose-data/agent-home:/var/lib/venture/.agent:z
+    environment:
+      HOME: /var/lib/venture
+#+end_src
+
+=HOME= matters: the runtime user is created with =--no-create-home=, so git will not find a =.gitconfig= and an agent CLI will not find its configuration unless =HOME= points somewhere writable.
+
+Either way the command has to appear in =forge.cli_allowed_commands= before a rule may spawn it. The in-process =agent= runner needs none of this — but it has no shell, so it cannot run a project's tests. See [[file:forge.org][Git forges]].

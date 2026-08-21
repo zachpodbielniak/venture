@@ -179,6 +179,85 @@ automation:
   # twice because the process bounced.
   persist_state: true
 
+forge:
+  # Git forge integration: link tickets to repositories, file issues
+  # upstream, create branches, and -- if you turn runs on below -- let an AI
+  # do the work on a branch of its own.
+  #
+  # A forge is a record, not a setting, because there is usually more than
+  # one and each carries a credential that has to be settable without a
+  # restart. Add one at /e/forge; its access token and webhook secret are
+  # set on that page rather than here, and neither is ever shown again.
+  enabled: true
+
+  # Seconds an outbound call to a forge may take. These calls happen inside
+  # a request, so this is also the longest a button press can hang.
+  request_timeout: 30
+
+  # Accept inbound webhooks at /hooks/forge/<id>.
+  #
+  # That route is the only one in VENTURE that does not require a session.
+  # It authenticates by verifying an HMAC over the request body against the
+  # forge's webhook secret, and a forge with no secret set is refused
+  # outright rather than trusted. Turn this off if you do not expose the
+  # server to your forge.
+  webhooks_enabled: true
+
+  # Let rules start AI coding runs.
+  #
+  # Off by default, and deliberately the only part of this feature that is.
+  # Everything else -- linking tickets to repositories, filing issues,
+  # creating branches -- works with this off. This is the switch that lets
+  # something spend money and push code without being watched, so turning it
+  # on should be a decision rather than a default.
+  runs_enabled: false
+
+  # Coding runs in flight at once. Each one holds a checkout and a model
+  # conversation; more than a couple is rarely useful on one machine.
+  run_concurrency: 1
+
+  # Seconds a run may take before it is abandoned, and turns it may take
+  # before it is cut off. A rule can lower both; neither can be raised past
+  # what is set here.
+  run_timeout: 1800
+  run_max_turns: 40
+
+  # Where checkouts live, relative to the state directory. One directory per
+  # run, removed when the run finishes.
+  workspace_dir: "forge"
+
+  # Hours a finished run's checkout is kept before it is swept up.
+  workspace_retention_hours: 168
+
+  # Keep the checkout of a run that failed. The usual reason a run fails is
+  # something you want to look at, and the tree it left behind is the best
+  # evidence there is.
+  keep_failed_workspaces: true
+
+  # The git executable, and how long any single invocation may take. A
+  # clone of a large repository is the one that matters.
+  git_path: "git"
+  git_timeout: 600
+
+  # Recorded as the author on commits a run makes, so they are
+  # distinguishable from yours in the history rather than only in the audit
+  # log.
+  git_author_name: "VENTURE"
+  git_author_email: "venture@localhost"
+
+  # Commands the CLI runner may spawn. Exact matches only, never a prefix,
+  # and never through a shell.
+  #
+  # A rule names the command it wants to run, and a rule is editable by
+  # anybody who can edit rules. Without this list that is arbitrary command
+  # execution with a longer fuse than the shell tool the AI is denied.
+  # Empty means the CLI runner is unavailable, which is the default.
+  cli_allowed_commands: []
+
+  # Seconds between run-status refreshes in the browser. The run page polls
+  # a fragment; the fragment stops asking once the run has finished.
+  poll_interval: 3
+
 plugins:
   enabled: true
 

@@ -216,6 +216,25 @@ venture_web_require_for_type(
 	if (VENTURE_TYPE_PLUGIN_CONFIG == entity_type)
 		needed = VENTURE_USER_ROLE_ADMIN;
 
+	/*
+	 * A forge record holds an access token and a webhook secret. The
+	 * sensitive flag keeps both out of every response, but the row is
+	 * still what decides where a credential is sent: an editor who could
+	 * change base-url could point this install's token at a host they
+	 * control, and the staged diff would show nothing but a URL changing.
+	 * Same reasoning as user and api_token.
+	 */
+	if (VENTURE_TYPE_FORGE == entity_type)
+		needed = VENTURE_USER_ROLE_OWNER;
+
+	/*
+	 * A rule decides whether a model runs unattended, which runner it
+	 * gets, how many turns it may take and how far its output goes. That
+	 * is administration for the same reason plugin configuration is.
+	 */
+	if (VENTURE_TYPE_FORGE_RULE == entity_type)
+		needed = VENTURE_USER_ROLE_ADMIN;
+
 	return venture_auth_require(self->auth, principal, needed, error);
 }
 
@@ -241,6 +260,22 @@ venture_web_type_accepts_writes(
 		                    VENTURE_ERROR_PERMISSION_DENIED,
 		                    "The audit log is written by the system as "
 		                    "changes happen; it cannot be edited");
+		return FALSE;
+	}
+
+	/*
+	 * Nor does a run record. It is what a runner did, written as it did
+	 * it: the branch it produced, what it cost, why it stopped. An
+	 * editable one would let somebody rewrite the cost or the outcome
+	 * after the fact, and the entire value of the record is that it is
+	 * evidence. Same argument as the audit log, and reading stays open.
+	 */
+	if (VENTURE_TYPE_FORGE_RUN == entity_type)
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_PERMISSION_DENIED,
+		                    "A run record is written by the runner as it "
+		                    "works; it cannot be edited");
 		return FALSE;
 	}
 
@@ -328,12 +363,16 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/e/idea",           "Ideas",       "\xe2\x97\x87", "Thinking" },
 	{ "/tickets",          "Tickets",     "\xe2\x9c\x93", NULL },
 	{ "/e/research_note",  "Research",    "\xe2\x96\xa3", NULL },
+	{ "/e/forge_repo",     "Repositories","\xe2\x97\x88", "Code" },
+	{ "/e/forge_rule",     "Agent rules", "\xe2\x9a\xa1", NULL },
+	{ "/e/forge_run",      "Runs",        "\xe2\x96\xb6", NULL },
 	{ "/entities",         "Entities",    "\xe2\x97\xa7", "System" },
 	{ "/automations",      "Automations", "\xe2\x9a\xa1", NULL },
 	{ "/plugins",          "Plugins",     "\xe2\x97\x88", NULL },
 	{ "/account",          "Your account","\xe2\x97\x8f", NULL },
 	{ "/users",            "Users",       "\xe2\x97\x8b", NULL },
 	{ "/settings",         "Settings",    "\xe2\x9a\x99", NULL },
+	{ "/e/forge",          "Forges",      "\xe2\x8a\x9e", NULL },
 	{ "/e/audit_entry",    "Audit log",   "\xe2\x97\x8b", NULL },
 	{ NULL, NULL, NULL, NULL }
 };
@@ -5616,6 +5655,211 @@ venture_web_invoice_total(
  * The invoice-specific block on the generic detail page: lines, total, and
  * the transitions the current status allows.
  */
+/* Defined with the other forge handlers, further down; the detail page
+ * needs it before then. */
+static VentureTicketLink *
+venture_web_forge_find_link(
+	VentureWebServer	*self,
+	gint64			 ticket_id,
+	gint64			 repo_id
+);
+
+/*
+ * The credential panel on a forge's page.
+ *
+ * A sensitive field is not rendered by the generated form and not applied by
+ * the generated save, so without this panel a forge could be created and
+ * never given a token. What is shown is whether each secret is set and when,
+ * never a value -- the whole point of the flag.
+ */
+static void
+venture_web_append_forge_block(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autofree gchar *token = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *bot = NULL;
+	g_autoptr(GDateTime) token_at = NULL;
+	g_autoptr(GDateTime) secret_at = NULL;
+	gint64 id;
+
+	id = venture_entity_get_id(record);
+
+	g_object_get(record,
+	             "token", &token,
+	             "token-set-at", &token_at,
+	             "webhook-secret", &secret,
+	             "webhook-secret-set-at", &secret_at,
+	             "bot-username", &bot,
+	             NULL);
+
+	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
+	                         "<h2>Credentials</h2></div><div class=\"card-body\">");
+
+	/*
+	 * Until the bot account is known, VENTURE cannot tell an issue it
+	 * filed itself from one somebody else opened -- that comparison is
+	 * the webhook loop guard. Worth saying on the page rather than
+	 * leaving as a subtly missing field.
+	 */
+	if (venture_string_is_empty(bot))
+	{
+		g_string_append(content,
+			"<p class=\"notice\">Not verified yet. Until this forge's "
+			"account is known, events caused by VENTURE itself cannot be "
+			"told apart from anybody else's.</p>");
+	}
+
+	g_string_append_printf(content,
+		"<form method=\"post\" action=\"/forges/%" G_GINT64_FORMAT
+		"/token\"><label>Access token</label>"
+		"<input type=\"password\" name=\"token\" autocomplete=\"off\" "
+		"placeholder=\"%s\">"
+		"<button class=\"btn btn-primary\" type=\"submit\">Set token</button>"
+		"</form>", id,
+		venture_string_is_empty(token) ? "not set"
+		                              : "set -- leave blank to keep it");
+
+	g_string_append_printf(content,
+		"<form method=\"post\" action=\"/forges/%" G_GINT64_FORMAT
+		"/secret\"><label>Webhook secret</label>"
+		"<input type=\"password\" name=\"secret\" autocomplete=\"off\" "
+		"placeholder=\"%s\">"
+		"<button class=\"btn\" type=\"submit\">Set or generate</button>"
+		"</form>", id,
+		venture_string_is_empty(secret) ? "not set -- leave blank to generate"
+		                                : "set -- leave blank to regenerate");
+
+	g_string_append_printf(content,
+		"<form method=\"post\" action=\"/forges/%" G_GINT64_FORMAT
+		"/verify\"><button class=\"btn\" type=\"submit\">"
+		"Verify the token</button></form>", id);
+
+	/* The address to paste into the forge's webhook settings. Built from
+	 * the configured base URL where there is one, and from what this
+	 * server knows about itself otherwise. */
+	g_string_append(content, "<p class=\"help\">Webhook URL: <code>");
+	venture_html_escape_append(content,
+		venture_string_is_empty(self->base_url) ? "" : self->base_url);
+	g_string_append_printf(content, "/hooks/forge/%" G_GINT64_FORMAT
+	                                "</code></p>", id);
+
+	g_string_append(content, "</div></div>");
+}
+
+/*
+ * The repository panel on a ticket's page.
+ *
+ * Only drawn when the ticket names a repository: a ticket about the books
+ * has nothing to do with a branch, and an empty panel on every ticket would
+ * be noise.
+ */
+static void
+venture_web_append_ticket_forge_block(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autoptr(VentureEntity) repo = NULL;
+	g_autoptr(VentureTicketLink) link = NULL;
+	g_autofree gchar *repo_name = NULL;
+	g_autofree gchar *branch = NULL;
+	g_autofree gchar *issue_url = NULL;
+	gint64 ticket_id;
+	gint64 repo_id = 0;
+	gint64 issue_number = 0;
+
+	g_object_get(record, "repo-id", &repo_id, NULL);
+
+	if (0 == repo_id)
+		return;
+
+	ticket_id = venture_entity_get_id(record);
+
+	repo = venture_database_get(venture_context_get_database(self->context),
+	                            VENTURE_TYPE_FORGE_REPO, repo_id, NULL);
+
+	if (NULL == repo)
+		return;
+
+	g_object_get(repo, "name", &repo_name, NULL);
+
+	link = venture_web_forge_find_link(self, ticket_id, repo_id);
+
+	if (NULL != link)
+	{
+		g_object_get(link, "branch", &branch, "issue-number", &issue_number,
+		             "issue-url", &issue_url, NULL);
+	}
+
+	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
+	                         "<h2>Code</h2></div><div class=\"card-body\">");
+
+	g_string_append(content, "<dl class=\"detail detail-grid\"><dt>Repository"
+	                         "</dt><dd>");
+	venture_html_escape_append(content, repo_name);
+	g_string_append(content, "</dd><dt>Branch</dt><dd>");
+
+	if (venture_string_is_empty(branch))
+		g_string_append(content, "<span class=\"muted\">none yet</span>");
+	else
+		venture_html_escape_append(content, branch);
+
+	g_string_append(content, "</dd><dt>Issue</dt><dd>");
+
+	if (0 == issue_number)
+	{
+		g_string_append(content, "<span class=\"muted\">not filed</span>");
+	}
+	else if (!venture_string_is_empty(issue_url))
+	{
+		g_string_append(content, "<a href=\"");
+		venture_html_escape_append(content, issue_url);
+		g_string_append_printf(content, "\">#%" G_GINT64_FORMAT "</a>",
+		                       issue_number);
+	}
+	else
+	{
+		g_string_append_printf(content, "#%" G_GINT64_FORMAT, issue_number);
+	}
+
+	g_string_append(content, "</dd></dl>");
+
+	g_string_append_printf(content,
+		"<div class=\"page-actions\">"
+		"<form method=\"post\" action=\"/tickets/%" G_GINT64_FORMAT
+		"/link\"><button class=\"btn\" type=\"submit\">File upstream</button>"
+		"</form> "
+		"<form method=\"post\" action=\"/tickets/%" G_GINT64_FORMAT
+		"/branch\"><button class=\"btn\" type=\"submit\">Create the branch"
+		"</button></form> ", ticket_id, ticket_id);
+
+	/* Only offered when runs are configured. A button that always
+	 * answers "turned off in settings" teaches people to ignore it. */
+	if (NULL != venture_context_get_work_service(self->context))
+	{
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/tickets/%" G_GINT64_FORMAT
+			"/work\"><button class=\"btn btn-primary\" type=\"submit\">"
+			"Run the agent</button></form>", ticket_id);
+	}
+
+	g_string_append(content, "</div>");
+
+	/*
+	 * The run list, loaded once and then refreshed by the fragment
+	 * itself. Loading it here rather than inline keeps one renderer for
+	 * both the first paint and every poll.
+	 */
+	g_string_append_printf(content,
+		"<div hx-get=\"/tickets/%" G_GINT64_FORMAT "/runs\" "
+		"hx-trigger=\"load\" hx-swap=\"outerHTML\"></div>", ticket_id);
+
+	g_string_append(content, "</div></div>");
+}
+
 static void
 venture_web_append_invoice_block(
 	VentureWebServer	*self,
@@ -5843,6 +6087,10 @@ venture_web_ui_detail(
 	if (VENTURE_TYPE_INVOICE == entity_type)
 		venture_web_append_invoice_block(self, content, record);
 
+	/* A forge's credentials, which the generated form cannot show. */
+	if (VENTURE_TYPE_FORGE == entity_type)
+		venture_web_append_forge_block(self, content, record);
+
 	/*
 	 * A ticket's comments are a conversation, and a conversation needs
 	 * its reply box on the same page. The related-records section above
@@ -5850,6 +6098,9 @@ venture_web_ui_detail(
 	 * page knows a specific type, because "click New, pick the ticket
 	 * you were just looking at, type, save" is not how anybody comments.
 	 */
+	if (VENTURE_TYPE_TICKET == entity_type)
+		venture_web_append_ticket_forge_block(self, content, record);
+
 	if (VENTURE_TYPE_TICKET == entity_type)
 	{
 		g_string_append(content,
@@ -10088,6 +10339,1251 @@ venture_web_api_reject(
  * Construction
  * ========================================================================== */
 
+/* --- Forge integration ---------------------------------------------------- */
+
+/*
+ * Builds the client for a forge record.
+ *
+ * The token is read here and nowhere else. Everything above this point deals
+ * in forge ids; everything below deals in requests that already carry the
+ * credential, so there is no layer holding a token it does not immediately
+ * use.
+ */
+static VentureForgeClient *
+venture_web_forge_client(
+	VentureWebServer	 *self,
+	VentureForge		 *forge,
+	GError			**error
+){
+	gint64 timeout = 30;
+
+	g_object_get(venture_context_get_config(self->context),
+	             "forge-request-timeout", &timeout, NULL);
+
+	return venture_forge_client_for_forge(forge, (gint)timeout, error);
+}
+
+static VentureForge *
+venture_web_forge_load(
+	VentureWebServer	 *self,
+	GHashTable		 *params,
+	GError			**error
+){
+	g_autoptr(VentureEntity) record = NULL;
+	const gchar *raw;
+	gint64 id;
+
+	raw = g_hash_table_lookup(params, "id");
+	id = (NULL != raw) ? g_ascii_strtoll(raw, NULL, 10) : 0;
+
+	record = venture_database_get(venture_context_get_database(self->context),
+	                              VENTURE_TYPE_FORGE, id, error);
+
+	if (NULL == record)
+		return NULL;
+
+	return VENTURE_FORGE(g_steal_pointer(&record));
+}
+
+/*
+ * POST /forges/:id/token - set the access token.
+ *
+ * A route of its own for the same reason a password has one: the field is
+ * sensitive, so the generated form omits it and the generated save ignores
+ * it. A value typed into a box that does not exist cannot be saved. This is
+ * the box.
+ *
+ * Owner-only, and that is not caution. An editor who could set the token
+ * could also change base-url, and the pair of those is "send this
+ * credential to a host I control".
+ */
+static HtmxResponse *
+venture_web_ui_forge_token(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureForge) forge = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	HtmxResponse *redirect;
+	VentureActor actor;
+	const gchar *token;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	forge = venture_web_forge_load(self, params, &error);
+
+	if (NULL == forge)
+		return venture_web_redirect_to("/e/forge");
+
+	token = htmx_request_get_form_value(request, "token");
+
+	/*
+	 * An empty box leaves the existing token alone. Clearing a
+	 * credential is a deliberate act with its own control, because a
+	 * blank field submitted by accident must not silently disconnect a
+	 * forge and turn every later call into an authentication failure
+	 * nobody can explain.
+	 */
+	if (!venture_string_is_empty(token))
+	{
+		now = g_date_time_new_now_utc();
+		g_object_set(forge, "token", token, "token-set-at", now, NULL);
+
+		venture_auth_to_actor(principal, &actor);
+
+		if (!venture_database_save(venture_context_get_database(self->context),
+		                           VENTURE_ENTITY(forge), &actor, &error))
+			return venture_web_error_response(error);
+	}
+
+	destination = g_strdup_printf("/e/forge/%" G_GINT64_FORMAT,
+	                              venture_entity_get_id(VENTURE_ENTITY(forge)));
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * POST /forges/:id/secret - set or generate the webhook secret.
+ *
+ * Generating rather than typing is offered first because this secret is
+ * never remembered by a person: it is pasted into the forge once and then
+ * only ever compared. A generated one comes from the same source as an API
+ * token, which is the system CSPRNG rather than anything guessable.
+ */
+static HtmxResponse *
+venture_web_ui_forge_secret(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureForge) forge = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *generated = NULL;
+	g_autofree gchar *destination = NULL;
+	HtmxResponse *redirect;
+	VentureActor actor;
+	const gchar *secret;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	forge = venture_web_forge_load(self, params, &error);
+
+	if (NULL == forge)
+		return venture_web_redirect_to("/e/forge");
+
+	secret = htmx_request_get_form_value(request, "secret");
+
+	if (venture_string_is_empty(secret))
+	{
+		generated = venture_generate_token(32);
+		secret = generated;
+	}
+
+	now = g_date_time_new_now_utc();
+	g_object_set(forge, "webhook-secret", secret,
+	             "webhook-secret-set-at", now, NULL);
+
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           VENTURE_ENTITY(forge), &actor, &error))
+		return venture_web_error_response(error);
+
+	destination = g_strdup_printf("/e/forge/%" G_GINT64_FORMAT "?secret=%s",
+	                              venture_entity_get_id(VENTURE_ENTITY(forge)),
+	                              secret);
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * POST /forges/:id/verify - ask the forge who the token belongs to.
+ *
+ * The answer is stored as bot-username, and it is not cosmetic: it is the
+ * webhook loop guard. An event whose sender is this account was caused by
+ * VENTURE itself, and without the login there is no way to tell VENTURE's
+ * own issue from one somebody else opened.
+ */
+static HtmxResponse *
+venture_web_ui_forge_verify(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureForge) forge = NULL;
+	g_autoptr(VentureForgeClient) client = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *login = NULL;
+	g_autofree gchar *destination = NULL;
+	HtmxResponse *redirect;
+	VentureActor actor;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	forge = venture_web_forge_load(self, params, &error);
+
+	if (NULL == forge)
+		return venture_web_redirect_to("/e/forge");
+
+	client = venture_web_forge_client(self, forge, &error);
+
+	if (NULL == client)
+		return venture_web_error_response(error);
+
+	login = venture_forge_client_whoami(client, &error);
+
+	if (NULL == login)
+		return venture_web_error_response(error);
+
+	now = g_date_time_new_now_utc();
+	g_object_set(forge, "bot-username", login, "verified-at", now, NULL);
+
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           VENTURE_ENTITY(forge), &actor, &error))
+		return venture_web_error_response(error);
+
+	destination = g_strdup_printf("/e/forge/%" G_GINT64_FORMAT,
+	                              venture_entity_get_id(VENTURE_ENTITY(forge)));
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * Finds the link joining a ticket to a repository, if there is one.
+ */
+static VentureTicketLink *
+venture_web_forge_find_link(
+	VentureWebServer	*self,
+	gint64			 ticket_id,
+	gint64			 repo_id
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) links = NULL;
+
+	query = venture_query_new(VENTURE_TYPE_TICKET_LINK);
+
+	if (!venture_query_add_filter_int(query, "ticket-id", VENTURE_FILTER_OP_EQ,
+	                                  ticket_id, NULL))
+		return NULL;
+
+	if ((0 != repo_id) &&
+	    !venture_query_add_filter_int(query, "repo-id", VENTURE_FILTER_OP_EQ,
+	                                  repo_id, NULL))
+		return NULL;
+
+	venture_query_set_limit(query, 1);
+
+	links = venture_database_find(venture_context_get_database(self->context),
+	                              query, NULL);
+
+	if ((NULL == links) || (0 == links->len))
+		return NULL;
+
+	return VENTURE_TICKET_LINK(g_object_ref(g_ptr_array_index(links, 0)));
+}
+
+/*
+ * POST /tickets/:id/link - file this ticket as an issue upstream.
+ *
+ * The link row is written before the issue is created and updated after,
+ * rather than only once at the end. That ordering matters: the forge assigns
+ * the issue number, so between the request and the reply there is a window
+ * in which the forge has already delivered a webhook for an issue VENTURE
+ * has no record of. The row existing -- even with number 0 -- is not what
+ * closes that window; the sender check is. But it does mean a failure
+ * halfway leaves evidence rather than nothing.
+ */
+static HtmxResponse *
+venture_web_ui_ticket_link(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) ticket = NULL;
+	g_autoptr(VentureEntity) repo = NULL;
+	g_autoptr(VentureForge) forge = NULL;
+	g_autoptr(VentureForgeClient) client = NULL;
+	g_autoptr(VentureTicketLink) link = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *repo_name = NULL;
+	g_autofree gchar *title = NULL;
+	g_autofree gchar *description = NULL;
+	g_autofree gchar *issue_url = NULL;
+	g_autofree gchar *destination = NULL;
+	HtmxResponse *redirect;
+	VentureActor actor;
+	gint64 ticket_id;
+	gint64 repo_id = 0;
+	gint64 forge_id = 0;
+	gint64 number = 0;
+	gboolean push_issues = FALSE;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	ticket_id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	ticket = venture_database_get(venture_context_get_database(self->context),
+	                              VENTURE_TYPE_TICKET, ticket_id, &error);
+
+	if (NULL == ticket)
+		return venture_web_error_response(error);
+
+	destination = g_strdup_printf("/e/ticket/%" G_GINT64_FORMAT, ticket_id);
+
+	g_object_get(ticket, "repo-id", &repo_id, NULL);
+
+	if (0 == repo_id)
+		return venture_web_redirect_to(destination);
+
+	repo = venture_database_get(venture_context_get_database(self->context),
+	                            VENTURE_TYPE_FORGE_REPO, repo_id, &error);
+
+	if (NULL == repo)
+		return venture_web_error_response(error);
+
+	g_object_get(repo, "forge-id", &forge_id, "name", &repo_name,
+	             "push-issues", &push_issues, NULL);
+
+	link = venture_web_forge_find_link(self, ticket_id, repo_id);
+
+	if (NULL == link)
+	{
+		link = venture_ticket_link_new();
+		g_object_set(link,
+		             "ticket-id", ticket_id,
+		             "repo-id", repo_id,
+		             "origin", VENTURE_FORGE_LINK_ORIGIN_VENTURE,
+		             NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(link),
+			venture_entity_get_organization_id(ticket));
+	}
+
+	g_object_get(link, "issue-number", &number, NULL);
+
+	venture_auth_to_actor(principal, &actor);
+
+	/* Already filed, or the repository does not want issues pushed to it.
+	 * Either way the link is the deliverable. */
+	if ((0 != number) || !push_issues)
+	{
+		if (!venture_database_save(venture_context_get_database(self->context),
+		                           VENTURE_ENTITY(link), &actor, &error))
+			return venture_web_error_response(error);
+
+		return venture_web_redirect_to(destination);
+	}
+
+	forge = VENTURE_FORGE(venture_database_get(
+		venture_context_get_database(self->context), VENTURE_TYPE_FORGE,
+		forge_id, &error));
+
+	if (NULL == forge)
+		return venture_web_error_response(error);
+
+	client = venture_web_forge_client(self, forge, &error);
+
+	if (NULL == client)
+		return venture_web_error_response(error);
+
+	g_object_get(ticket, "title", &title, "description", &description, NULL);
+
+	if (!venture_forge_client_create_issue(client, repo_name, title,
+	                                       description, NULL, &number,
+	                                       &issue_url, &error))
+		return venture_web_error_response(error);
+
+	now = g_date_time_new_now_utc();
+	g_object_set(link,
+	             "issue-number", number,
+	             "issue-url", issue_url,
+	             "synced-at", now,
+	             NULL);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           VENTURE_ENTITY(link), &actor, &error))
+		return venture_web_error_response(error);
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * POST /tickets/:id/branch - cut the branch for this ticket.
+ *
+ * Through the forge's API rather than a checkout, deliberately. Creating a
+ * branch is one request; doing it with git would mean a clone, which is
+ * minutes of network and a working tree to clean up for something the forge
+ * will do atomically. It also means this works in a container that has no
+ * git at all.
+ */
+static HtmxResponse *
+venture_web_ui_ticket_branch(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) ticket = NULL;
+	g_autoptr(VentureEntity) repo = NULL;
+	g_autoptr(VentureForge) forge = NULL;
+	g_autoptr(VentureForgeClient) client = NULL;
+	g_autoptr(VentureForgeRule) rule = NULL;
+	g_autoptr(VentureTicketLink) link = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *repo_name = NULL;
+	g_autofree gchar *title = NULL;
+	g_autofree gchar *prefix = NULL;
+	g_autofree gchar *default_branch = NULL;
+	g_autofree gchar *rule_template = NULL;
+	g_autofree gchar *rule_base = NULL;
+	g_autofree gchar *branch = NULL;
+	g_autofree gchar *destination = NULL;
+	HtmxResponse *redirect;
+	VentureActor actor;
+	VentureIssueType issue_type = VENTURE_ISSUE_TYPE_TASK;
+	gint64 ticket_id;
+	gint64 repo_id = 0;
+	gint64 forge_id = 0;
+	gint64 number = 0;
+	gboolean exists = FALSE;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	ticket_id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	ticket = venture_database_get(venture_context_get_database(self->context),
+	                              VENTURE_TYPE_TICKET, ticket_id, &error);
+
+	if (NULL == ticket)
+		return venture_web_error_response(error);
+
+	destination = g_strdup_printf("/e/ticket/%" G_GINT64_FORMAT, ticket_id);
+
+	g_object_get(ticket, "repo-id", &repo_id, "issue-type", &issue_type,
+	             "title", &title, NULL);
+
+	if (0 == repo_id)
+		return venture_web_redirect_to(destination);
+
+	repo = venture_database_get(venture_context_get_database(self->context),
+	                            VENTURE_TYPE_FORGE_REPO, repo_id, &error);
+
+	if (NULL == repo)
+		return venture_web_error_response(error);
+
+	g_object_get(repo, "forge-id", &forge_id, "name", &repo_name,
+	             "branch-prefix", &prefix, "default-branch", &default_branch,
+	             NULL);
+
+	rule = venture_forge_rule_resolve(venture_context_get_database(self->context),
+	                                  repo_id, issue_type, NULL);
+
+	if (NULL != rule)
+	{
+		g_object_get(rule, "branch-template", &rule_template,
+		             "base-branch", &rule_base, NULL);
+	}
+
+	link = venture_web_forge_find_link(self, ticket_id, repo_id);
+
+	if (NULL != link)
+		g_object_get(link, "issue-number", &number, NULL);
+
+	branch = venture_forge_branch_name(rule_template, prefix, issue_type,
+	                                   ticket_id, number, title);
+
+	forge = VENTURE_FORGE(venture_database_get(
+		venture_context_get_database(self->context), VENTURE_TYPE_FORGE,
+		forge_id, &error));
+
+	if (NULL == forge)
+		return venture_web_error_response(error);
+
+	client = venture_web_forge_client(self, forge, &error);
+
+	if (NULL == client)
+		return venture_web_error_response(error);
+
+	if (!venture_forge_client_branch_exists(client, repo_name, branch,
+	                                        &exists, &error))
+		return venture_web_error_response(error);
+
+	if (!exists)
+	{
+		const gchar *base;
+
+		base = !venture_string_is_empty(rule_base) ? rule_base
+		                                           : default_branch;
+
+		if (!venture_forge_client_create_branch(client, repo_name, branch,
+		                                        base, &error))
+			return venture_web_error_response(error);
+	}
+
+	if (NULL == link)
+	{
+		link = venture_ticket_link_new();
+		g_object_set(link,
+		             "ticket-id", ticket_id,
+		             "repo-id", repo_id,
+		             "origin", VENTURE_FORGE_LINK_ORIGIN_VENTURE,
+		             NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(link),
+			venture_entity_get_organization_id(ticket));
+	}
+
+	now = g_date_time_new_now_utc();
+	g_object_set(link, "branch", branch, "synced-at", now, NULL);
+
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           VENTURE_ENTITY(link), &actor, &error))
+		return venture_web_error_response(error);
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * Maps an issue's labels onto an issue type.
+ *
+ * A forge that already labels things "bug" and "epic" works with no
+ * configuration at all, which is most of them. Anything unrecognised stays a
+ * task rather than guessing.
+ */
+static VentureIssueType
+venture_web_forge_type_from_labels(const GStrv labels)
+{
+	gsize i;
+
+	if (NULL == labels)
+		return VENTURE_ISSUE_TYPE_TASK;
+
+	for (i = 0; NULL != labels[i]; i++)
+	{
+		gint value;
+
+		if (venture_enum_from_nick(VENTURE_TYPE_ISSUE_TYPE, labels[i],
+		                           &value))
+			return (VentureIssueType)value;
+	}
+
+	return VENTURE_ISSUE_TYPE_TASK;
+}
+
+static VentureForgeRepo *
+venture_web_forge_repo_by_name(
+	VentureWebServer	*self,
+	gint64			 forge_id,
+	const gchar		*full_name
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) repos = NULL;
+
+	query = venture_query_new(VENTURE_TYPE_FORGE_REPO);
+
+	if (!venture_query_add_filter_int(query, "forge-id", VENTURE_FILTER_OP_EQ,
+	                                  forge_id, NULL))
+		return NULL;
+
+	if (!venture_query_add_filter_string(query, "name", VENTURE_FILTER_OP_EQ,
+	                                     full_name, NULL))
+		return NULL;
+
+	if (!venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL))
+		return NULL;
+
+	venture_query_set_limit(query, 1);
+
+	repos = venture_database_find(venture_context_get_database(self->context),
+	                              query, NULL);
+
+	if ((NULL == repos) || (0 == repos->len))
+		return NULL;
+
+	return VENTURE_FORGE_REPO(g_object_ref(g_ptr_array_index(repos, 0)));
+}
+
+static VentureTicketLink *
+venture_web_forge_link_by_issue(
+	VentureWebServer	*self,
+	gint64			 repo_id,
+	gint64			 issue_number
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) links = NULL;
+
+	query = venture_query_new(VENTURE_TYPE_TICKET_LINK);
+
+	if (!venture_query_add_filter_int(query, "repo-id", VENTURE_FILTER_OP_EQ,
+	                                  repo_id, NULL))
+		return NULL;
+
+	if (!venture_query_add_filter_int(query, "issue-number",
+	                                  VENTURE_FILTER_OP_EQ, issue_number, NULL))
+		return NULL;
+
+	venture_query_set_limit(query, 1);
+
+	links = venture_database_find(venture_context_get_database(self->context),
+	                              query, NULL);
+
+	if ((NULL == links) || (0 == links->len))
+		return NULL;
+
+	return VENTURE_TICKET_LINK(g_object_ref(g_ptr_array_index(links, 0)));
+}
+
+/* A bare status with no body, for the many events that are simply not ours. */
+static HtmxResponse *
+venture_web_forge_ack(guint status)
+{
+	HtmxResponse *response;
+
+	response = htmx_response_new();
+	htmx_response_set_status(response, (gint)status);
+
+	return response;
+}
+
+
+/*
+ * POST /tickets/:id/work - start a coding run.
+ *
+ * Queues and returns. The run has not started when the browser gets its
+ * redirect and will not have started for some time after -- which is the
+ * entire reason the work service owns a thread.
+ */
+static HtmxResponse *
+venture_web_ui_ticket_work(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	VentureWorkService *work;
+	HtmxResponse *redirect;
+	gint64 ticket_id;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	ticket_id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	destination = g_strdup_printf("/e/ticket/%" G_GINT64_FORMAT, ticket_id);
+
+	work = venture_context_get_work_service(self->context);
+
+	/* Turned off is the default. Reported rather than crashed into. */
+	if (NULL == work)
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "Coding runs are turned off in settings");
+		return venture_web_error_response(error);
+	}
+
+	if (0 == venture_work_service_start_for_ticket(work, ticket_id,
+	                                               principal->name, &error))
+		return venture_web_error_response(error);
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * POST /runs/:id/cancel - stop a run.
+ *
+ * Always allowed and always idempotent: somebody who wants a run stopped
+ * should not have to know how far it got, and a button that greys itself out
+ * on a run the browser merely believes has finished is a button that cannot
+ * stop the run that is still going.
+ */
+static HtmxResponse *
+venture_web_ui_run_cancel(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	VentureWorkService *work;
+	HtmxResponse *redirect;
+	gint64 run_id;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	run_id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+
+	work = venture_context_get_work_service(self->context);
+
+	if (NULL != work)
+		venture_work_service_cancel(work, run_id);
+
+	destination = g_strdup_printf("/e/forge_run/%" G_GINT64_FORMAT, run_id);
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * GET /tickets/:id/runs - the run card, polled.
+ *
+ * A fragment rather than a page, and it re-renders its own hx-trigger. Once
+ * the run reaches a terminal state the attribute is left out, so the
+ * fragment becomes inert HTML and the browser stops asking. Without that a
+ * tab left open overnight would poll a finished run until somebody closed
+ * it.
+ */
+static HtmxResponse *
+venture_web_ui_ticket_runs(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) runs = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *denied;
+	gint64 ticket_id;
+	gint64 interval = 3;
+	gboolean live = FALSE;
+
+	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+
+	if (NULL != denied)
+		return denied;
+
+	ticket_id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+
+	g_object_get(venture_context_get_config(self->context),
+	             "forge-poll-interval", &interval, NULL);
+
+	query = venture_query_new(VENTURE_TYPE_FORGE_RUN);
+
+	if (!venture_query_add_filter_int(query, "ticket-id", VENTURE_FILTER_OP_EQ,
+	                                  ticket_id, &error))
+		return venture_web_error_response(error);
+
+	venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, NULL);
+	venture_query_set_limit(query, 5);
+
+	runs = venture_database_find(venture_context_get_database(self->context),
+	                             query, &error);
+
+	if (NULL == runs)
+		return venture_web_error_response(error);
+
+	content = g_string_new(NULL);
+	g_string_append_printf(content, "<div id=\"ticket-runs-%" G_GINT64_FORMAT
+	                                "\"", ticket_id);
+
+	{
+		guint i;
+
+		for (i = 0; i < runs->len; i++)
+		{
+			VentureForgeRunState state;
+
+			g_object_get(g_ptr_array_index(runs, i), "state", &state, NULL);
+
+			if ((VENTURE_FORGE_RUN_STATE_QUEUED == state) ||
+			    (VENTURE_FORGE_RUN_STATE_RUNNING == state))
+				live = TRUE;
+		}
+	}
+
+	if (live)
+	{
+		g_string_append_printf(content,
+			" hx-get=\"/tickets/%" G_GINT64_FORMAT "/runs\""
+			" hx-trigger=\"every %" G_GINT64_FORMAT "s\""
+			" hx-swap=\"outerHTML\"", ticket_id, interval);
+	}
+
+	g_string_append(content, ">");
+
+	if (0 == runs->len)
+	{
+		g_string_append(content, "<p class=\"muted\">No runs yet.</p>");
+	}
+	else
+	{
+		guint i;
+
+		g_string_append(content, "<ul class=\"run-list\">");
+
+		for (i = 0; i < runs->len; i++)
+		{
+			VentureEntity *run = g_ptr_array_index(runs, i);
+			g_autofree gchar *branch = NULL;
+			g_autofree gchar *summary = NULL;
+			g_autofree gchar *failure = NULL;
+			VentureForgeRunState state;
+
+			g_object_get(run, "state", &state, "branch", &branch,
+			             "summary", &summary, "failure-reason", &failure,
+			             NULL);
+
+			g_string_append(content, "<li><span class=\"badge\">");
+			venture_html_escape_append(content,
+				venture_enum_to_nick(VENTURE_TYPE_FORGE_RUN_STATE, state));
+			g_string_append(content, "</span> ");
+
+			if (!venture_string_is_empty(branch))
+			{
+				g_string_append(content, "<code>");
+				venture_html_escape_append(content, branch);
+				g_string_append(content, "</code> ");
+			}
+
+			if (!venture_string_is_empty(failure))
+				venture_html_escape_append(content, failure);
+			else if (!venture_string_is_empty(summary))
+				venture_html_escape_append(content, summary);
+
+			g_string_append(content, "</li>");
+		}
+
+		g_string_append(content, "</ul>");
+	}
+
+	g_string_append(content, "</div>");
+
+	return venture_web_html_response(g_strdup(content->str), 200);
+}
+
+/*
+ * POST /hooks/forge/:id - inbound from a forge.
+ *
+ * The only route in VENTURE that does not require a session, because the
+ * caller is a forge and has neither a cookie nor a token. What replaces that
+ * is an HMAC over the request body keyed by a secret only this install and
+ * that forge know, and there is no path past it: every early return below
+ * the verification is a refusal.
+ *
+ * It lives under /hooks rather than /api because the not-found middleware
+ * turns an unknown /api path into a JSON 404, and /api is where a reader
+ * reasonably assumes venture_web_api_require() is somewhere above. This is a
+ * third surface and its path says so.
+ *
+ * The handler verifies, records, and returns. It does not do the work: a
+ * forge gives a webhook a few seconds before it calls the delivery failed
+ * and retries, and an AI run takes minutes.
+ */
+static HtmxResponse *
+venture_web_forge_webhook(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureForge) forge = NULL;
+	g_autoptr(VentureForgeClient) client = NULL;
+	g_autoptr(VentureForgeRepo) repo = NULL;
+	g_autoptr(VentureTicketLink) link = NULL;
+	g_autoptr(VentureEntity) ticket = NULL;
+	g_autoptr(JsonParser) parser = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *bot = NULL;
+	g_autofree gchar *existing_delivery = NULL;
+	g_autofree gchar *existing_title = NULL;
+	g_autofree gchar *existing_body = NULL;
+	VentureForgeEvent event;
+	VentureActor actor;
+	SoupMessageHeaders *headers;
+	GBytes *body;
+	gconstpointer data;
+	gsize length = 0;
+	gint64 max_bytes = 32;
+	gint64 repo_id;
+	gboolean accept_issues = FALSE;
+	gboolean enabled = FALSE;
+	gboolean created = FALSE;
+	const gchar *event_name;
+
+	memset(&event, 0, sizeof(event));
+
+	g_object_get(venture_context_get_config(self->context),
+	             "forge-webhooks-enabled", &enabled,
+	             "server-max-request-size-mb", &max_bytes, NULL);
+
+	if (!enabled)
+		return venture_web_forge_ack(SOUP_STATUS_NOT_FOUND);
+
+	forge = venture_web_forge_load(self, params, NULL);
+
+	/*
+	 * A forge that does not exist and a forge that does are answered the
+	 * same way. Distinguishing them would let anybody enumerate which
+	 * forge ids this install has, and the answer is 401 rather than 404
+	 * because the caller is a machine that should retry with a signature,
+	 * not a browser that should be sent to a login page.
+	 */
+	if (NULL == forge)
+		return venture_web_forge_ack(SOUP_STATUS_UNAUTHORIZED);
+
+	g_object_get(forge, "webhook-secret", &secret, "bot-username", &bot, NULL);
+
+	headers = soup_server_message_get_request_headers(
+		htmx_request_get_message(request));
+
+	/*
+	 * The raw bytes, not htmx_request_get_body().
+	 *
+	 * That accessor is a g_strndup, so a payload containing a NUL byte
+	 * would be truncated at it and the HMAC computed over a prefix --
+	 * failing for exactly those deliveries and succeeding for every
+	 * other, which is close to undiagnosable.
+	 */
+	body = htmx_request_get_body_bytes(request);
+
+	if (NULL != body)
+		data = g_bytes_get_data(body, &length);
+	else
+		data = NULL;
+
+	/*
+	 * The size cap is enforced here rather than assumed.
+	 * server.max_request_size_mb is declared in the configuration but
+	 * nothing in this tree reads it, so treating it as already applied
+	 * would leave this route -- the one an unauthenticated caller can
+	 * reach -- with no bound at all.
+	 */
+	if (length > (gsize)(max_bytes * 1024 * 1024))
+		return venture_web_forge_ack(SOUP_STATUS_REQUEST_ENTITY_TOO_LARGE);
+
+	client = venture_web_forge_client(self, forge, &error);
+
+	if (NULL == client)
+		return venture_web_forge_ack(SOUP_STATUS_UNAUTHORIZED);
+
+	/* Everything below this line has been proved to come from the forge. */
+	if (!venture_forge_client_verify_webhook(client, headers, body, secret,
+	                                         &error))
+	{
+		g_warning("venture_forge: refusing a webhook for forge #%"
+		          G_GINT64_FORMAT ": %s",
+		          venture_entity_get_id(VENTURE_ENTITY(forge)),
+		          (NULL != error) ? error->message : "unverified");
+
+		return venture_web_forge_ack(SOUP_STATUS_UNAUTHORIZED);
+	}
+
+	event_name = soup_message_headers_get_one(headers, "X-Forgejo-Event");
+
+	if (venture_string_is_empty(event_name))
+		event_name = soup_message_headers_get_one(headers, "X-Gitea-Event");
+
+	/*
+	 * Anything that is not an issue is acknowledged and dropped, not
+	 * rejected. A forge disables a webhook that keeps erroring, so a
+	 * repository configured to send every event would switch itself off.
+	 */
+	if ((0 != g_strcmp0(event_name, "issues")) &&
+	    (0 != g_strcmp0(event_name, "issue_comment")))
+		return venture_web_forge_ack(SOUP_STATUS_NO_CONTENT);
+
+	parser = json_parser_new();
+
+	if ((NULL == data) ||
+	    !json_parser_load_from_data(parser, data, (gssize)length, NULL))
+		return venture_web_forge_ack(SOUP_STATUS_BAD_REQUEST);
+
+	if (!venture_forge_client_parse_issue_event(client,
+	                                            json_parser_get_root(parser),
+	                                            headers, &event, &error))
+	{
+		venture_forge_event_clear(&event);
+		return venture_web_forge_ack(SOUP_STATUS_BAD_REQUEST);
+	}
+
+	/*
+	 * Loop guard one, and the important one: this event was caused by
+	 * VENTURE's own account.
+	 *
+	 * VENTURE files an issue, the forge delivers a webhook for it, and
+	 * without this the webhook would create a second ticket for the issue
+	 * VENTURE just created for the first. It is exact and needs no
+	 * stored state, which is what makes it work in the window before the
+	 * link row has the issue number written back to it.
+	 */
+	if (!venture_string_is_empty(bot) &&
+	    (0 == g_strcmp0(bot, event.sender)))
+	{
+		venture_forge_event_clear(&event);
+		return venture_web_forge_ack(SOUP_STATUS_NO_CONTENT);
+	}
+
+	repo = venture_web_forge_repo_by_name(self,
+		venture_entity_get_id(VENTURE_ENTITY(forge)), event.repo_full_name);
+
+	if (NULL == repo)
+	{
+		/* A repository nobody enrolled. Acknowledged so the forge does
+		 * not retry, ignored because there is nothing to attach to. */
+		venture_forge_event_clear(&event);
+		return venture_web_forge_ack(SOUP_STATUS_NO_CONTENT);
+	}
+
+	g_object_get(repo, "accept-issues", &accept_issues, NULL);
+	repo_id = venture_entity_get_id(VENTURE_ENTITY(repo));
+
+	if (!accept_issues)
+	{
+		venture_forge_event_clear(&event);
+		return venture_web_forge_ack(SOUP_STATUS_NO_CONTENT);
+	}
+
+	link = venture_web_forge_link_by_issue(self, repo_id, event.issue_number);
+
+	/*
+	 * Loop guard two: a delivery already applied.
+	 *
+	 * A forge retries a delivery it believes failed, and a retry that
+	 * re-applied its payload would reopen a ticket somebody had just
+	 * closed by hand.
+	 */
+	if (NULL != link)
+	{
+		g_object_get(link, "last-delivery-id", &existing_delivery, NULL);
+
+		if (!venture_string_is_empty(event.delivery_id) &&
+		    (0 == g_strcmp0(existing_delivery, event.delivery_id)))
+		{
+			venture_forge_event_clear(&event);
+			return venture_web_forge_ack(SOUP_STATUS_NO_CONTENT);
+		}
+	}
+
+	/* Attributed to the automation actor with the forge named, so a
+	 * ticket the forge raised is distinguishable in the audit log from
+	 * one a person typed. */
+	actor.kind = VENTURE_ACTOR_KIND_AUTOMATION;
+	actor.name = "forge";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+
+	now = g_date_time_new_now_utc();
+
+	if (NULL != link)
+	{
+		gint64 linked_ticket = 0;
+
+		g_object_get(link, "ticket-id", &linked_ticket, NULL);
+		ticket = venture_database_get(
+			venture_context_get_database(self->context), VENTURE_TYPE_TICKET,
+			linked_ticket, NULL);
+	}
+
+	if (NULL == ticket)
+	{
+		gint64 organization;
+
+		/*
+		 * The organisation comes from the repository, never from the
+		 * default.
+		 *
+		 * A webhook carries no session and therefore no active entity.
+		 * Falling through to the default organisation would file the
+		 * ticket against the wrong business on any install with more
+		 * than one -- and it would then be invisible on the board,
+		 * which reads as "the webhook did not work" rather than as a
+		 * scoping mistake.
+		 */
+		organization = venture_entity_get_organization_id(
+			VENTURE_ENTITY(repo));
+
+		ticket = VENTURE_ENTITY(venture_ticket_new());
+		venture_entity_set_organization_id(ticket, organization);
+
+		g_object_set(ticket,
+		             "kind", VENTURE_TICKET_KIND_EXTERNAL,
+		             "issue-type",
+		             venture_web_forge_type_from_labels(event.labels),
+		             "status", VENTURE_TICKET_STATUS_TRIAGE,
+		             "repo-id", repo_id,
+		             NULL);
+
+		created = TRUE;
+	}
+
+	g_object_get(ticket, "title", &existing_title, "description",
+	             &existing_body, NULL);
+
+	/*
+	 * Loop guard three: an edit that changes nothing.
+	 *
+	 * venture_database_save() returns success without writing when the
+	 * diff is empty, so "did the save change anything" is not available
+	 * as a signal after the fact. The comparison has to happen before the
+	 * write, or an edit VENTURE itself pushed comes back, gets re-applied
+	 * and is pushed again.
+	 */
+	if (!created &&
+	    (0 == g_strcmp0(existing_title, event.title)) &&
+	    (0 == g_strcmp0(existing_body, event.body)))
+	{
+		venture_forge_event_clear(&event);
+		return venture_web_forge_ack(SOUP_STATUS_NO_CONTENT);
+	}
+
+	g_object_set(ticket, "title", event.title, "description", event.body, NULL);
+
+	/*
+	 * A closed issue closes the ticket, but an open one does not reopen
+	 * it. Somebody moved that ticket into review or blocked deliberately,
+	 * and the forge does not get to move it back on the next edit.
+	 */
+	if (0 == g_strcmp0(event.state, "closed"))
+	{
+		g_object_set(ticket, "status", VENTURE_TICKET_STATUS_DONE,
+		             "resolved-at", now, NULL);
+	}
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           ticket, &actor, &error))
+	{
+		venture_forge_event_clear(&event);
+		return venture_web_forge_ack(SOUP_STATUS_INTERNAL_SERVER_ERROR);
+	}
+
+	if (NULL == link)
+	{
+		link = venture_ticket_link_new();
+		g_object_set(link,
+		             "ticket-id", venture_entity_get_id(ticket),
+		             "repo-id", repo_id,
+		             "issue-number", event.issue_number,
+		             "origin", VENTURE_FORGE_LINK_ORIGIN_FORGE,
+		             NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(link),
+			venture_entity_get_organization_id(ticket));
+	}
+
+	g_object_set(link,
+	             "issue-url", event.url,
+	             "last-delivery-id", event.delivery_id,
+	             "synced-at", now,
+	             NULL);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           VENTURE_ENTITY(link), &actor, &error))
+	{
+		venture_forge_event_clear(&event);
+		return venture_web_forge_ack(SOUP_STATUS_INTERNAL_SERVER_ERROR);
+	}
+
+	/* A comment upstream becomes a comment here, attributed to whoever
+	 * left it and visible to whoever raised the ticket. */
+	if ((0 == g_strcmp0(event_name, "issue_comment")) &&
+	    !venture_string_is_empty(event.comment_body))
+	{
+		g_autoptr(VentureTicketComment) comment = NULL;
+
+		comment = venture_ticket_comment_new();
+		venture_entity_set_organization_id(VENTURE_ENTITY(comment),
+			venture_entity_get_organization_id(ticket));
+		g_object_set(comment,
+		             "ticket-id", venture_entity_get_id(ticket),
+		             "body", event.comment_body,
+		             "author", event.sender,
+		             "internal", FALSE,
+		             "occurred-at", now,
+		             NULL);
+
+		venture_database_save(venture_context_get_database(self->context),
+		                      VENTURE_ENTITY(comment), &actor, NULL);
+	}
+
+	venture_forge_event_clear(&event);
+
+	/* Accepted, not completed. */
+	return venture_web_forge_ack(SOUP_STATUS_ACCEPTED);
+}
+
 VentureWebServer *
 venture_web_server_new(
 	VentureContext	 *context,
@@ -10148,6 +11644,35 @@ venture_web_server_new(
 	htmx_router_get(router, "/tickets", venture_web_ui_tickets, self);
 	htmx_router_post(router, "/tickets/:id/move", venture_web_ui_ticket_move,
 	                 self);
+	/* Forge actions on a ticket, with the other ticket actions so they
+	 * precede /e/:type/:id. */
+	htmx_router_post(router, "/tickets/:id/link", venture_web_ui_ticket_link,
+	                 self);
+	htmx_router_post(router, "/tickets/:id/branch",
+	                 venture_web_ui_ticket_branch, self);
+	htmx_router_post(router, "/tickets/:id/work", venture_web_ui_ticket_work,
+	                 self);
+	htmx_router_get(router, "/tickets/:id/runs", venture_web_ui_ticket_runs,
+	                self);
+	htmx_router_post(router, "/runs/:id/cancel", venture_web_ui_run_cancel,
+	                 self);
+
+	/* Credentials, the same shape as /users/:id/password. */
+	htmx_router_post(router, "/forges/:id/token", venture_web_ui_forge_token,
+	                 self);
+	htmx_router_post(router, "/forges/:id/secret", venture_web_ui_forge_secret,
+	                 self);
+	htmx_router_post(router, "/forges/:id/verify", venture_web_ui_forge_verify,
+	                 self);
+
+	/*
+	 * Inbound from a forge. The only route here that does not require a
+	 * session -- see the handler for what stands in for one, and why it
+	 * is not under /api.
+	 */
+	htmx_router_post(router, "/hooks/forge/:id", venture_web_forge_webhook,
+	                 self);
+
 	htmx_router_post(router, "/tickets/:id/comment",
 	                 venture_web_ui_ticket_comment, self);
 	htmx_router_get(router, "/entities", venture_web_ui_entities, self);

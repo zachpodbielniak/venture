@@ -97,6 +97,14 @@ Every record derives from =VentureEntity= and carries the same spine:
 
 - *user*, *api_token*, *audit_entry*.
 
+** Forge
+
+- *forge*, *forge_repo*, *forge_rule*, *ticket_link*, *forge_run*.
+
+A =forge= is a server you have an account on; it holds the access token and the webhook secret, and is owner-only everywhere for that reason. A =forge_repo= is one repository on it, named =owner/repo=. A =forge_rule= says what may happen automatically for a given repository and issue type. A =ticket_link= joins a ticket to a repository and carries the issue number, the branch and the pull request — one record rather than three fields on the ticket, because a ticket can be worked in two repositories at once. A =forge_run= is one attempt by a runner, and like the audit log it cannot be edited through the generic surfaces.
+
+Tickets gained two fields: =issue-type= (epic, story, task, subtask, research, bug) and =repo-id=. The issue type is a different question from the existing =kind=: kind says whose problem it is and decides who may read the replies, the issue type says what shape the work is. An external bug is both. See [[file:forge.org][Git forges]].
+
 * Adding a record type
 
 In a header:

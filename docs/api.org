@@ -69,6 +69,22 @@ configuration is layered, so a value written through the API could be
 silently overridden by a later layer, and the page would then be showing
 something the server is not using.
 
+* Forge endpoints
+
+| Method | Path                     | Role   |
+|--------+--------------------------+--------|
+| POST   | =/forges/:id/token=      | owner  |
+| POST   | =/forges/:id/secret=     | owner  |
+| POST   | =/forges/:id/verify=     | owner  |
+| POST   | =/tickets/:id/link=      | editor |
+| POST   | =/tickets/:id/branch=    | editor |
+| POST   | =/tickets/:id/work=      | editor |
+| GET    | =/tickets/:id/runs=      | viewer |
+| POST   | =/runs/:id/cancel=       | editor |
+| POST   | =/hooks/forge/:id=       | —      |
+
+=/hooks/forge/:id= is the one endpoint in VENTURE that does not require a session, because the caller is a forge and has neither a cookie nor a token. It authenticates by verifying an HMAC-SHA256 over the request body against that forge's webhook secret; a forge with no secret set is refused outright. See [[file:forge.org][Git forges]].
+
 * Filtering
 
 =field=value= is equality; =field__op=value= names an operator.

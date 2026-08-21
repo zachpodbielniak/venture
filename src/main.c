@@ -355,6 +355,28 @@ main(
 		}
 	}
 
+	{
+		g_autoptr(VentureWorkService) work = NULL;
+
+		work = venture_work_service_new(context, &error);
+
+		if (NULL == work)
+		{
+			/*
+			 * Turned off is the default and a normal state, like AI
+			 * and automation. Everything else about the forge
+			 * integration works without it; this is only the part
+			 * that spends money unattended.
+			 */
+			g_message("Coding runs are unavailable: %s", error->message);
+			g_clear_error(&error);
+		}
+		else
+		{
+			venture_context_set_work_service(context, work);
+		}
+	}
+
 	server = venture_web_server_new(context, &error);
 
 	if (NULL == server)
