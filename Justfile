@@ -37,6 +37,15 @@ log      := state + "/server.log"
 pidfile  := state + "/venture.pid"
 base_url := "http://127.0.0.1:" + port
 
+# Skips the confirmations on `reset`, for a script that means it:
+#
+#   just force=true reset
+#
+# A variable rather than a recipe parameter so the spelling matches every
+# other override here, and so `just reset` on its own can never be one
+# stray argument away from deleting anything.
+force := "false"
+
 # Everything the server needs to find its own plugins, venture types and pod
 # modules in the build tree rather than an installed copy. Mirrors what
 # `make run` sets, so the two behave the same.
@@ -258,12 +267,70 @@ migrate: build
 # and the minted token -- both belong to the database that is being thrown
 # away, and keeping either would mean the next start looked healthy while
 # authenticating against nothing.
+#
+# Asks twice, and says what is actually there before each. This is the only
+# recipe that destroys anything, and the local database is where a week of
+# poking at real figures lives -- there is no backup and no undo. A single
+# prompt next to a dozen harmless ones gets answered by reflex.
+#
+# `just force=true reset` skips both, for a script that means it.
 
-# Delete the database and start over. Stops the server first.
+# Delete the database and start over. Stops the server first. Asks twice.
 [group('db')]
 reset:
     #!/usr/bin/env bash
     set -euo pipefail
+
+    if [ ! -d '{{ state }}' ]; then
+        echo "Nothing to delete -- {{ state }} is not there."
+        exit 0
+    fi
+
+    # What is being thrown away, in the terms somebody would miss it in.
+    # A prompt that says "delete the database?" is answered yes; one that
+    # says "delete 47 tickets and 12 invoices?" gets read.
+    summary=""
+    if [ -f '{{ state }}/venture.db' ]; then
+        for t in tickets invoices sales expenses contacts forge_runs; do
+            n="$(sqlite3 '{{ state }}/venture.db' \
+                 "SELECT count(*) FROM $t" 2>/dev/null || echo 0)"
+            [ "$n" != "0" ] && summary="$summary  $n $t"
+        done
+    fi
+
+    echo "About to delete {{ state }}"
+    echo "  the database, the session secret and the minted token"
+    [ -n "$summary" ] && echo "  containing:$summary"
+    echo "  this cannot be undone, and there is no backup"
+    echo
+
+    if [ "{{ force }}" = "true" ]; then
+        echo "force=true -- not asking."
+    else
+        # Refused rather than assumed when there is nobody to ask. A
+        # destructive default in a pipeline is how a CI job eats a
+        # developer's database.
+        if [ ! -t 0 ]; then
+                echo "Not a terminal, so not deleting." >&2
+            echo "If you mean it: just force=true reset" >&2
+            exit 1
+        fi
+
+        read -r -p "Delete it? [y/N] " first || first=""
+        case "$first" in
+            [Yy]|[Yy][Ee][Ss]) ;;
+            *) echo "Left alone."; exit 0 ;;
+        esac
+
+        # The second prompt names the path again rather than asking the
+        # same question louder: the useful thing to re-read is *what* is
+        # being deleted, not whether you meant it.
+        read -r -p "Really delete {{ state }} and everything in it? [y/N] " second || second=""
+        case "$second" in
+            [Yy]|[Yy][Ee][Ss]) ;;
+            *) echo "Left alone."; exit 0 ;;
+        esac
+    fi
 
     just stop
     rm -rf '{{ state }}'
