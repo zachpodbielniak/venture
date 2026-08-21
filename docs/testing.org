@@ -119,6 +119,10 @@ account" and spelled the same company three ways. That one ticket type
 carries both internal work and external requests. That a comment's internal
 flag survives, since it is the reason a comment is a record at all.
 
+** =test-ticket-relation=
+
+That a ticket can point at any registered type, and that a pair which cannot mean anything is refused before it is written: an unknown type name, an id that is not there, the same pair twice, and a ticket related to itself. Also that the reverse lookup works, since a polymorphic pair is invisible to the machinery that finds records pointing at this one — and that a deleted subject leaves the relation still readable.
+
 ** =test-forge=
 
 Rule resolution in every direction, including that no rule means nothing runs and that a disabled rule falls through to a broader one. Branch names built from hostile titles are still legal git refnames and cannot be read as command-line flags. The Forgejo client refuses a non-http origin, refuses to follow a redirect (a redirect would carry this install's access token to a host the response chose), escapes repository names so they cannot walk out of the path, and maps status codes onto errors an operator can act on. Webhook signatures: correct, wrong, computed over a different body, absent, and — the one that matters — a forge with no secret configured, which must be refused rather than trusted.

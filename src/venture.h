@@ -94,6 +94,7 @@
 #include "report/venture-report.h"
 
 #include "core/venture-context.h"
+#include "core/venture-ticket-relation.h"
 
 /* Auth comes before the AI service, which names VentureAuthPrincipal in its
  * signatures, and before the web server, which uses both. */

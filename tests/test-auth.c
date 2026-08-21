@@ -978,6 +978,7 @@ test_auth_api_refuses_anonymous_requests(
 		"/api/v1/forge_rule",
 		"/api/v1/forge_run",
 		"/api/v1/ticket_link",
+		"/api/v1/ticket_relation",
 		"/e/forge/export",
 		/* The CSV export carries the same rows as the table did. */
 		"/e/sale/export",
@@ -1075,6 +1076,13 @@ test_auth_api_refuses_anonymous_requests(
 		==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/tickets/1/work", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/tickets/1/relate", NULL, "subject_type=invoice&subject_id=1",
+		NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/relations/1/delete", NULL, "", NULL, NULL),
 		==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/runs/1/cancel", NULL, "", NULL, NULL),

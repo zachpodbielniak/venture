@@ -86,6 +86,14 @@ first seven columns were empty.
   Do not merge them. `VENTURE_ISSUE_TYPE_TASK` must stay the enum's zero
   value: the column was added to a populated table, so every historical row
   reads back as whatever is first.
+- **A polymorphic subject buys nothing from the generic machinery.**
+  `ticket_relation` names its subject by type and id, so it gets no picker,
+  no reverse section from `venture_web_append_related()` and no rendered
+  link — each is written by hand. Create one only through
+  `venture_ticket_relation_create()`: nothing in the database stops a row
+  naming a type that was never registered. And a type with a panel of its
+  own must be skipped in the generic related-records walk, or the page shows
+  the same relationships twice, once uselessly.
 - **Chat threads are per-user, not per-entity.** The chat routes must filter
   on the caller's `user-id` and report NOT_FOUND (never FORBIDDEN) on a
   mismatch, and `chat_thread`/`chat_message` stay owner-only in

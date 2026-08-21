@@ -201,6 +201,10 @@ VENTURE_DECLARE_ENTITY(VentureTicket, venture_ticket, TICKET)
 VENTURE_DECLARE_ENTITY(VentureTicketComment, venture_ticket_comment,
                        TICKET_COMMENT)
 
+#define VENTURE_TYPE_TICKET_RELATION (venture_ticket_relation_get_type())
+VENTURE_DECLARE_ENTITY(VentureTicketRelation, venture_ticket_relation,
+                       TICKET_RELATION)
+
 #define VENTURE_TYPE_DOCUMENT (venture_document_get_type())
 VENTURE_DECLARE_ENTITY(VentureDocument, venture_document, DOCUMENT)
 

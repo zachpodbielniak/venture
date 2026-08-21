@@ -77,6 +77,7 @@ typedef struct _VentureAuditEntry		VentureAuditEntry;
 typedef struct _VentureForge			VentureForge;
 typedef struct _VentureForgeRepo		VentureForgeRepo;
 typedef struct _VentureForgeRule		VentureForgeRule;
+typedef struct _VentureTicketRelation		VentureTicketRelation;
 typedef struct _VentureTicketLink		VentureTicketLink;
 typedef struct _VentureForgeRun			VentureForgeRun;
 typedef struct _VentureWorkService		VentureWorkService;

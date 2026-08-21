@@ -1014,6 +1014,58 @@ VENTURE_DEFINE_ENTITY(VentureTicketComment, venture_ticket_comment,
                       venture_ticket_comment_fields)
 
 /*
+ * A ticket related to anything else in the system.
+ *
+ * The ticket already references the handful of things it is usually about
+ * -- a contact, a company, a venture, an idea, a repository -- as ordinary
+ * foreign keys, because those are the common cases and a real reference
+ * gets a picker in the form and a section on the target's page for free.
+ *
+ * This is for everything else. A ticket can be about an invoice whose total
+ * looks wrong, an expense that needs a receipt, a product that keeps being
+ * returned. Adding a field per type would mean the ticket table grew a
+ * column every time a record type was added, and nineteen of the twenty
+ * would be empty on any given row.
+ *
+ * So the subject is a type name and an id, the same shape the audit log
+ * uses for its target and for the same reason: the set of things that can
+ * be pointed at is the set of registered types, which is not known when the
+ * field table is written.
+ *
+ * The cost is real and worth stating. A polymorphic pair gets none of what
+ * a declared reference gets: no picker, no automatic reverse section, no
+ * rendered link. Every one of those is written by hand against this type,
+ * which is why the ordinary references above stay ordinary references
+ * rather than being folded in here.
+ *
+ * The label is denormalised deliberately. It is what the row displays as,
+ * so the list renders without resolving anything -- and it still reads
+ * correctly after the subject is deleted, which is exactly when somebody is
+ * trying to work out what a ticket was about.
+ */
+static const VentureFieldDecl venture_ticket_relation_fields[] = {
+	VENTURE_FIELD_REF("ticket-id", "Ticket", NULL, "ticket",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL),
+	/* The registered entity name, e.g. "invoice". Validated against the
+	 * registry rather than trusted: an unknown type here is a row that
+	 * can never resolve to anything. */
+	VENTURE_FIELD("subject-type", "Type", "Which kind of record",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("subject-id", "Record", "Its id",
+	              VENTURE_FIELD_KIND_INTEGER,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("subject-label", "Subject",
+	              "What it was called when it was linked",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD("note", "Why", "What the connection is",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
+};
+
+VENTURE_DEFINE_ENTITY(VentureTicketRelation, venture_ticket_relation,
+                      venture_ticket_relation_fields)
+
+/*
  * One forge server: a Forgejo or Gitea instance you have an account on.
  *
  * A record rather than configuration because there is more than one, because

@@ -5496,6 +5496,16 @@ venture_web_append_related(
 
 	for (i = 0; i < n_types; i++)
 	{
+		/*
+		 * Types with a panel of their own on this page are skipped, or
+		 * the page shows the same relationships twice -- once
+		 * usefully, and once as a list of "ticket_relation #1" links
+		 * that say nothing.
+		 */
+		if ((VENTURE_TYPE_TICKET_RELATION == types[i]) ||
+		    (VENTURE_TYPE_TICKET_LINK == types[i]))
+			continue;
+
 		g_autoptr(VentureEntity) prototype = NULL;
 		g_autoptr(GPtrArray) specs = NULL;
 		guint j;
@@ -5747,6 +5757,235 @@ venture_web_append_forge_block(
 	                                "</code></p>", id);
 
 	g_string_append(content, "</div></div>");
+}
+
+/*
+ * The "Related to" panel on a ticket.
+ *
+ * A polymorphic subject gets none of what a declared reference gets, so the
+ * link, the label and the picker are all written here. The picker is a type
+ * select and an id box rather than a searchable record picker: a picker
+ * would have to load every record of every type, which is the one thing the
+ * reference picker gets away with only because it knows its one type.
+ */
+static void
+venture_web_append_ticket_relations(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) relations = NULL;
+	g_auto(GStrv) type_names = NULL;
+	gint64 ticket_id;
+	guint i;
+
+	ticket_id = venture_entity_get_id(record);
+
+	query = venture_query_new(VENTURE_TYPE_TICKET_RELATION);
+
+	if (!venture_query_add_filter_int(query, "ticket-id",
+	                                  VENTURE_FILTER_OP_EQ, ticket_id, NULL))
+		return;
+
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_set_limit(query, 50);
+
+	relations = venture_database_find(venture_context_get_database(self->context),
+	                                  query, NULL);
+
+	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
+	                         "<h2>Related to</h2></div><div class=\"card-body\">");
+
+	if ((NULL == relations) || (0 == relations->len))
+	{
+		g_string_append(content, "<p class=\"muted\">Nothing yet.</p>");
+	}
+	else
+	{
+		g_string_append(content, "<ul class=\"relation-list\">");
+
+		for (i = 0; i < relations->len; i++)
+		{
+			VentureEntity *relation = g_ptr_array_index(relations, i);
+			g_autoptr(VentureEntity) subject = NULL;
+			g_autofree gchar *subject_type = NULL;
+			g_autofree gchar *label = NULL;
+			g_autofree gchar *note = NULL;
+			gint64 subject_id = 0;
+
+			g_object_get(relation, "subject-type", &subject_type,
+			             "subject-id", &subject_id,
+			             "subject-label", &label, "note", &note, NULL);
+
+			subject = venture_ticket_relation_resolve(
+				venture_context_get_database(self->context),
+				VENTURE_TICKET_RELATION(relation), NULL);
+
+			/*
+			 * venture_database_get() returns soft-deleted rows -- it
+			 * has to, or nothing could ever restore one. Here that
+			 * would render a deleted subject as an ordinary link, so
+			 * the stamp is checked rather than the lookup.
+			 */
+			if ((NULL != subject) && venture_entity_is_deleted(subject))
+				g_clear_object(&subject);
+
+			g_string_append(content, "<li><span class=\"badge\">");
+			venture_html_escape_append(content, subject_type);
+			g_string_append(content, "</span> ");
+
+			/*
+			 * Linked only while the subject is still there. A deleted
+			 * one keeps its label and loses its link, which is why
+			 * the label is stored rather than looked up -- the ticket
+			 * can still say what it was about.
+			 */
+			if (NULL != subject)
+			{
+				g_autofree gchar *fresh = NULL;
+
+				fresh = venture_entity_get_display_name(subject);
+
+				g_string_append_printf(content, "<a href=\"/e/%s/%"
+				                                G_GINT64_FORMAT "\">",
+				                       subject_type, subject_id);
+				venture_html_escape_append(content,
+					!venture_string_is_empty(fresh) ? fresh : label);
+				g_string_append(content, "</a>");
+			}
+			else
+			{
+				venture_html_escape_append(content, label);
+				g_string_append(content, " <span class=\"muted\">"
+				                         "(deleted)</span>");
+			}
+
+			if (!venture_string_is_empty(note))
+			{
+				g_string_append(content, " <span class=\"muted\">— ");
+				venture_html_escape_append(content, note);
+				g_string_append(content, "</span>");
+			}
+
+			g_string_append_printf(content,
+				" <form method=\"post\" action=\"/relations/%"
+				G_GINT64_FORMAT "/delete\" class=\"inline\">"
+				"<button class=\"btn btn-sm\" type=\"submit\">Remove</button>"
+				"</form></li>",
+				venture_entity_get_id(relation));
+		}
+
+		g_string_append(content, "</ul>");
+	}
+
+	/* The picker. Every registered type, so a plugin's type is offered
+	 * the moment it is loaded. */
+	type_names = venture_entity_registry_list_names(
+		venture_context_get_entity_registry(self->context));
+
+	g_string_append_printf(content,
+		"<form method=\"post\" action=\"/tickets/%" G_GINT64_FORMAT
+		"/relate\" class=\"relate-form\">", ticket_id);
+
+	g_string_append(content, "<select name=\"subject_type\" required>");
+
+	for (i = 0; NULL != type_names[i]; i++)
+	{
+		/* Offering the ticket's own relations or the audit log as a
+		 * subject is noise: nobody links a ticket to an audit row. */
+		if ((0 == g_strcmp0(type_names[i], "ticket_relation")) ||
+		    (0 == g_strcmp0(type_names[i], "audit_entry")))
+			continue;
+
+		g_string_append(content, "<option value=\"");
+		venture_html_escape_append(content, type_names[i]);
+		g_string_append(content, "\">");
+		venture_html_escape_append(content, type_names[i]);
+		g_string_append(content, "</option>");
+	}
+
+	g_string_append(content,
+		"</select> "
+		"<input type=\"number\" name=\"subject_id\" placeholder=\"id\" "
+		"min=\"1\" required> "
+		"<input type=\"text\" name=\"note\" placeholder=\"why (optional)\"> "
+		"<button class=\"btn\" type=\"submit\">Relate</button></form>");
+
+	g_string_append(content, "</div></div>");
+}
+
+/*
+ * The "Tickets about this" panel, on every other kind of record.
+ *
+ * venture_web_append_related() finds records pointing at this one by walking
+ * declared references, and a polymorphic pair is invisible to it. Without
+ * this the relation would only be visible from the ticket, which is half a
+ * link -- the useful direction is usually the other one: standing on an
+ * invoice and asking what is outstanding about it.
+ */
+static void
+venture_web_append_subject_tickets(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autoptr(GPtrArray) relations = NULL;
+	guint i;
+
+	relations = venture_ticket_relation_find_for_subject(
+		venture_context_get_database(self->context),
+		venture_entity_get_entity_name(record),
+		venture_entity_get_id(record), NULL);
+
+	if ((NULL == relations) || (0 == relations->len))
+		return;
+
+	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
+	                         "<h2>Tickets about this</h2></div>"
+	                         "<div class=\"card-body\"><ul class=\"relation-list\">");
+
+	for (i = 0; i < relations->len; i++)
+	{
+		VentureEntity *relation = g_ptr_array_index(relations, i);
+		g_autoptr(VentureEntity) ticket = NULL;
+		g_autofree gchar *note = NULL;
+		gint64 ticket_id = 0;
+
+		g_object_get(relation, "ticket-id", &ticket_id, "note", &note, NULL);
+
+		ticket = venture_database_get(venture_context_get_database(self->context),
+		                              VENTURE_TYPE_TICKET, ticket_id, NULL);
+
+		if (NULL == ticket)
+			continue;
+
+		{
+			g_autofree gchar *title = NULL;
+			VentureTicketStatus status;
+
+			g_object_get(ticket, "title", &title, "status", &status, NULL);
+
+			g_string_append_printf(content,
+				"<li><span class=\"badge\">%s</span> "
+				"<a href=\"/e/ticket/%" G_GINT64_FORMAT "\">",
+				venture_enum_to_nick(VENTURE_TYPE_TICKET_STATUS, status),
+				ticket_id);
+			venture_html_escape_append(content, title);
+			g_string_append(content, "</a>");
+
+			if (!venture_string_is_empty(note))
+			{
+				g_string_append(content, " <span class=\"muted\">— ");
+				venture_html_escape_append(content, note);
+				g_string_append(content, "</span>");
+			}
+
+			g_string_append(content, "</li>");
+		}
+	}
+
+	g_string_append(content, "</ul></div></div>");
 }
 
 /*
@@ -6232,6 +6471,15 @@ venture_web_ui_detail(
 		venture_web_append_repo_block(self, content, record);
 
 	/*
+	 * The other half of a polymorphic relation. On a ticket the panel
+	 * above already lists them, and the audit log is deliberately not
+	 * relatable, so both are skipped here.
+	 */
+	if ((VENTURE_TYPE_TICKET != entity_type) &&
+	    (VENTURE_TYPE_TICKET_RELATION != entity_type))
+		venture_web_append_subject_tickets(self, content, record);
+
+	/*
 	 * A ticket's comments are a conversation, and a conversation needs
 	 * its reply box on the same page. The related-records section above
 	 * already lists the thread; this is the one place the generic detail
@@ -6240,6 +6488,11 @@ venture_web_ui_detail(
 	 */
 	if (VENTURE_TYPE_TICKET == entity_type)
 		venture_web_append_ticket_forge_block(self, content, record);
+
+	/* What else this ticket is about, for the many tickets that are
+	 * about something other than code. */
+	if (VENTURE_TYPE_TICKET == entity_type)
+		venture_web_append_ticket_relations(self, content, record);
 
 	if (VENTURE_TYPE_TICKET == entity_type)
 	{
@@ -10934,6 +11187,120 @@ venture_web_forge_find_link(
 	return VENTURE_TICKET_LINK(g_object_ref(g_ptr_array_index(links, 0)));
 }
 
+
+/*
+ * POST /tickets/:id/relate - point a ticket at any other record.
+ *
+ * The type and id arrive as text from a form, so the work is all in
+ * refusing what cannot mean anything; venture_ticket_relation_create() does
+ * that and this route reports it.
+ */
+static HtmxResponse *
+venture_web_ui_ticket_relate(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureTicketRelation) relation = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	HtmxResponse *redirect;
+	VentureActor actor;
+	const gchar *subject_type;
+	const gchar *subject_id;
+	const gchar *note;
+	gint64 ticket_id;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	ticket_id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	destination = g_strdup_printf("/e/ticket/%" G_GINT64_FORMAT, ticket_id);
+
+	subject_type = htmx_request_get_form_value(request, "subject_type");
+	subject_id = htmx_request_get_form_value(request, "subject_id");
+	note = htmx_request_get_form_value(request, "note");
+
+	relation = venture_ticket_relation_create(
+		venture_context_get_database(self->context), ticket_id, subject_type,
+		(NULL != subject_id) ? g_ascii_strtoll(subject_id, NULL, 10) : 0,
+		note, &error);
+
+	if (NULL == relation)
+		return venture_web_error_response(error);
+
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           VENTURE_ENTITY(relation), &actor, &error))
+		return venture_web_error_response(error);
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * POST /relations/:id/delete - drop one.
+ *
+ * Its own route rather than the generic record delete, so the redirect goes
+ * back to the ticket the person was looking at rather than to a list of
+ * relations, which is not a page anybody wants.
+ */
+static HtmxResponse *
+venture_web_ui_relation_delete(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) relation = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	HtmxResponse *redirect;
+	VentureActor actor;
+	gint64 ticket_id = 0;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	relation = venture_database_get(venture_context_get_database(self->context),
+		VENTURE_TYPE_TICKET_RELATION,
+		g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10), &error);
+
+	if (NULL == relation)
+		return venture_web_error_response(error);
+
+	g_object_get(relation, "ticket-id", &ticket_id, NULL);
+
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_delete(venture_context_get_database(self->context),
+	                             relation, &actor, &error))
+		return venture_web_error_response(error);
+
+	destination = g_strdup_printf("/e/ticket/%" G_GINT64_FORMAT, ticket_id);
+
+	return venture_web_redirect_to(destination);
+}
+
 /*
  * POST /tickets/:id/link - file this ticket as an issue upstream.
  *
@@ -12353,6 +12720,10 @@ venture_web_server_new(
 	                 self);
 	/* Forge actions on a ticket, with the other ticket actions so they
 	 * precede /e/:type/:id. */
+	htmx_router_post(router, "/tickets/:id/relate",
+	                 venture_web_ui_ticket_relate, self);
+	htmx_router_post(router, "/relations/:id/delete",
+	                 venture_web_ui_relation_delete, self);
 	htmx_router_post(router, "/tickets/:id/link", venture_web_ui_ticket_link,
 	                 self);
 	htmx_router_post(router, "/tickets/:id/branch",

@@ -97,6 +97,18 @@ Every record derives from =VentureEntity= and carries the same spine:
 
 - *user*, *api_token*, *audit_entry*.
 
+** Relating a ticket to anything
+
+A ticket already references the handful of things it is usually about — a contact, a company, a venture, an idea, a repository — as ordinary foreign keys, because those are the common cases and a real reference gets a picker and a reverse section for free.
+
+*ticket_relation* is for everything else: an invoice whose total looks wrong, an expense missing a receipt, a product that keeps being returned. It names its subject by type and id rather than by a foreign key, the same shape the audit log uses for its target, because the set of things a ticket can be about is the set of registered types — which is not known when the field table is written and grows with every plugin.
+
+The cost is worth stating: a polymorphic pair gets none of what a declared reference gets. No picker, no automatic reverse section, no rendered link — each is written by hand against this one type. That is why the ordinary references stay ordinary references rather than being folded in.
+
+The subject label is stored rather than looked up. It is what the row displays as, and it still reads correctly once the subject has been deleted — which is exactly when somebody is working out what a ticket was about.
+
+Create one through =venture_ticket_relation_create()= rather than by writing the row: nothing in the database stops a relation naming a type that was never registered or an id that was never there, and that check happens there.
+
 ** Forge
 
 - *forge*, *forge_repo*, *forge_rule*, *ticket_link*, *forge_run*.
