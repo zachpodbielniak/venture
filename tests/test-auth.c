@@ -1701,6 +1701,131 @@ test_auth_approving_respects_the_records_own_role(
 		==, SOUP_STATUS_FORBIDDEN);
 }
 
+/*
+ * The board's filters compose, and every control preserves the others.
+ *
+ * What breaks if this regresses, and why it is worth a test: each control
+ * on the board is a plain link that has to rebuild the whole query string.
+ * Written out per link, adding a filter means remembering it in three
+ * places -- and the one that gets forgotten fails *silently*, by showing
+ * more tickets than you asked for. Nobody notices a board that is slightly
+ * too full. venture_web_ticket_url() exists so there is one place instead
+ * of three; this is what stops somebody inlining it again.
+ *
+ * The second half matters as much as the first: issue-type and kind are
+ * different questions -- what shape of work, and whose problem it is -- so
+ * "external bugs" has to be expressible. That pair is the one most worth
+ * looking at.
+ */
+static void
+test_auth_ticket_board_filters_compose(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *unfiltered = NULL;
+	g_autofree gchar *bugs = NULL;
+	g_autofree gchar *external_bugs = NULL;
+	g_autofree gchar *links = NULL;
+	static const struct
+	{
+		const gchar *title;
+		const gchar *issue_type;
+		const gchar *kind;
+	} seed[] = {
+		{ "Crash on save",     "bug",      "internal" },
+		{ "Add an export",     "story",    "internal" },
+		{ "Cannot log in",     "bug",      "external" },
+		{ "Look into caching", "research", "internal" }
+	};
+	gsize i;
+
+	(void)user_data;
+
+	server_fixture_create_user(fixture, "boardy", "b-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	cookie = server_fixture_login(fixture, "boardy", "b-long-password");
+	g_assert_nonnull(cookie);
+
+	for (i = 0; i < G_N_ELEMENTS(seed); i++)
+	{
+		g_autoptr(VentureTicket) ticket = NULL;
+		gint value = 0;
+
+		ticket = venture_ticket_new();
+		g_assert_true(venture_enum_from_nick(VENTURE_TYPE_ISSUE_TYPE,
+		                                     seed[i].issue_type, &value));
+		g_object_set(ticket, "title", seed[i].title, "issue-type", value,
+		             NULL);
+
+		g_assert_true(venture_enum_from_nick(VENTURE_TYPE_TICKET_KIND,
+		                                     seed[i].kind, &value));
+		g_object_set(ticket, "kind", value, NULL);
+
+		/*
+		 * Saved straight to the database, so the organisation the web
+		 * layer would have supplied has to be set here. Every list is
+		 * scoped to the active entity, and a record belonging to none
+		 * is filtered out of all of them.
+		 */
+		venture_entity_set_organization_id(VENTURE_ENTITY(ticket),
+			venture_context_get_default_organization_id(fixture->context));
+
+		g_assert_true(venture_database_save(fixture->database,
+		                                    VENTURE_ENTITY(ticket), NULL,
+		                                    NULL));
+	}
+
+	/* Everything, so the filtered cases below mean something. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/tickets?view=board", cookie, NULL, &unfiltered, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(unfiltered, "Crash on save"));
+	g_assert_nonnull(strstr(unfiltered, "Add an export"));
+	g_assert_nonnull(strstr(unfiltered, "Look into caching"));
+
+	/* One type. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/tickets?view=board&issue_type=bug", cookie, NULL, &bugs, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(bugs, "Crash on save"));
+	g_assert_nonnull(strstr(bugs, "Cannot log in"));
+	g_assert_null(strstr(bugs, "Add an export"));
+	g_assert_null(strstr(bugs, "Look into caching"));
+
+	/* Both at once. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/tickets?view=board&issue_type=bug&kind=external", cookie, NULL,
+		&external_bugs, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(external_bugs, "Cannot log in"));
+	g_assert_null(strstr(external_bugs, "Crash on save"));
+
+	/*
+	 * And the links on that page carry both filters onward. Asserted on
+	 * the rendered hrefs rather than by following them, because what
+	 * regresses is the URL a control builds, not the filtering it
+	 * arrives at.
+	 */
+	links = g_strdup(external_bugs);
+
+	/* A kind link keeps the issue type... */
+	g_assert_nonnull(strstr(links,
+		"/tickets?view=board&kind=internal&issue_type=bug"));
+	/* ...an issue-type link keeps the kind... */
+	g_assert_nonnull(strstr(links,
+		"/tickets?view=board&kind=external&issue_type=story"));
+	/* ...and switching view keeps both. */
+	g_assert_nonnull(strstr(links,
+		"/tickets?view=list&kind=external&issue_type=bug"));
+
+	/* "all" clears one without disturbing the other. */
+	g_assert_nonnull(strstr(links,
+		"/tickets?view=board&kind=external&issue_type=all"));
+	g_assert_nonnull(strstr(links,
+		"/tickets?view=board&kind=all&issue_type=bug"));
+}
+
 int
 main(
 	int	  argc,
@@ -1755,6 +1880,9 @@ main(
 
 	           server_fixture_set_up, test_auth_forge_records_are_owner_only,
 
+	           server_fixture_tear_down);
+	g_test_add("/auth/ticket-board-filters-compose", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_ticket_board_filters_compose,
 	           server_fixture_tear_down);
 	g_test_add("/auth/approving-respects-the-records-own-role", ServerFixture,
 	           NULL, server_fixture_set_up,

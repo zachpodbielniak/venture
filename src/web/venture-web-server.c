@@ -6378,6 +6378,7 @@ venture_web_ticket_query(
 ){
 	g_autoptr(VentureQuery) query = NULL;
 	const gchar *kind;
+	const gchar *issue_type;
 	const gchar *assignee;
 	const gchar *venture;
 
@@ -6402,6 +6403,25 @@ venture_web_ticket_query(
 		if (!venture_query_add_filter_string(query, "assignee",
 		                                     VENTURE_FILTER_OP_EQ, assignee,
 		                                     error))
+			return NULL;
+	}
+
+	/*
+	 * The board's filters are applied here rather than left to
+	 * venture_query_apply_query_string(), which is what the generic list
+	 * pages use. Both would work -- issue_type is a real column -- but
+	 * the board already builds its own query for kind and assignee, and
+	 * having two of its four filters arrive by different routes is how
+	 * one of them ends up quietly not applying.
+	 */
+	issue_type = htmx_request_get_query_param(request, "issue_type");
+
+	if (!venture_string_is_empty(issue_type) &&
+	    (0 != g_strcmp0(issue_type, "all")))
+	{
+		if (!venture_query_add_filter_string(query, "issue-type",
+		                                     VENTURE_FILTER_OP_EQ,
+		                                     issue_type, error))
 			return NULL;
 	}
 
@@ -6549,6 +6569,39 @@ venture_web_append_ticket_card(
 	g_string_append(content, "</article>");
 }
 
+/*
+ * Builds a board URL carrying every filter the page offers.
+ *
+ * A helper rather than three format strings, because each control has to
+ * preserve the others: picking an issue type must not silently drop the
+ * kind you already chose, and switching from board to list must keep both.
+ * Written out at each link, that is three places to remember a fourth
+ * filter -- and the one that gets forgotten fails silently, by showing more
+ * tickets than you asked for rather than by erroring.
+ */
+static gchar *
+venture_web_ticket_url(
+	const gchar	*kind,
+	const gchar	*issue_type,
+	gboolean	 board
+){
+	g_autoptr(GString) url = NULL;
+
+	url = g_string_new("/tickets?view=");
+	g_string_append(url, board ? "board" : "list");
+
+	g_string_append(url, "&kind=");
+	g_string_append_uri_escaped(url,
+		venture_string_is_empty(kind) ? "all" : kind, NULL, FALSE);
+
+	g_string_append(url, "&issue_type=");
+	g_string_append_uri_escaped(url,
+		venture_string_is_empty(issue_type) ? "all" : issue_type, NULL,
+		FALSE);
+
+	return g_string_free(g_steal_pointer(&url), FALSE);
+}
+
 static HtmxResponse *
 venture_web_ui_tickets(
 	HtmxRequest	*request,
@@ -6564,6 +6617,7 @@ venture_web_ui_tickets(
 	HtmxResponse *redirect;
 	const gchar *view;
 	const gchar *kind;
+	const gchar *issue_type;
 	gboolean board;
 
 	self = user_data;
@@ -6596,6 +6650,7 @@ venture_web_ui_tickets(
 
 	view = htmx_request_get_query_param(request, "view");
 	kind = htmx_request_get_query_param(request, "kind");
+	issue_type = htmx_request_get_query_param(request, "issue_type");
 	board = (0 != g_strcmp0(view, "list"));
 
 	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
@@ -6629,22 +6684,75 @@ venture_web_ui_tickets(
 				   (0 == g_strcmp0(kind, "all")))
 				: (0 == g_strcmp0(kind, kinds[i].value));
 
-			g_string_append_printf(content,
-				"<a class=\"seg%s\" href=\"/tickets?kind=%s&view=%s\">%s</a>",
-				active ? " active" : "", kinds[i].value,
-				board ? "board" : "list", kinds[i].label);
+			{
+				g_autofree gchar *url = NULL;
+
+				url = venture_web_ticket_url(kinds[i].value, issue_type,
+				                             board);
+
+				g_string_append_printf(content,
+					"<a class=\"seg%s\" href=\"%s\">%s</a>",
+					active ? " active" : "", url, kinds[i].label);
+			}
 		}
 
 		g_string_append(content, "</div>");
 	}
 
-	g_string_append_printf(content,
-		"<div class=\"segmented\">"
-		"<a class=\"seg%s\" href=\"/tickets?view=board&kind=%s\">Board</a>"
-		"<a class=\"seg%s\" href=\"/tickets?view=list&kind=%s\">List</a>"
-		"</div>",
-		board ? " active" : "", venture_string_is_empty(kind) ? "all" : kind,
-		board ? "" : " active", venture_string_is_empty(kind) ? "all" : kind);
+	/*
+	 * The issue type: what shape of work, as distinct from the kind
+	 * above, which is whose problem it is. Both filter at once, so
+	 * "external bugs" is expressible -- which is the pair most worth
+	 * looking at.
+	 */
+	{
+		g_autoptr(GEnumClass) types = NULL;
+		g_autofree gchar *all_url = NULL;
+		guint i;
+
+		types = g_type_class_ref(VENTURE_TYPE_ISSUE_TYPE);
+		all_url = venture_web_ticket_url(kind, "all", board);
+
+		g_string_append(content, "<div class=\"segmented\">");
+		g_string_append_printf(content,
+			"<a class=\"seg%s\" href=\"%s\">Any type</a>",
+			(venture_string_is_empty(issue_type) ||
+			 (0 == g_strcmp0(issue_type, "all"))) ? " active" : "",
+			all_url);
+
+		for (i = 0; i < types->n_values; i++)
+		{
+			g_autofree gchar *url = NULL;
+			const gchar *nick;
+
+			nick = types->values[i].value_nick;
+			url = venture_web_ticket_url(kind, nick, board);
+
+			g_string_append_printf(content,
+				"<a class=\"seg%s\" href=\"%s\">",
+				(0 == g_strcmp0(issue_type, nick)) ? " active" : "", url);
+			venture_html_escape_append(content, nick);
+			g_string_append(content, "</a>");
+		}
+
+		g_string_append(content, "</div>");
+	}
+
+	{
+		g_autofree gchar *board_url = NULL;
+		g_autofree gchar *list_url = NULL;
+
+		board_url = venture_web_ticket_url(kind, issue_type, TRUE);
+		list_url = venture_web_ticket_url(kind, issue_type, FALSE);
+
+		g_string_append_printf(content,
+			"<div class=\"segmented\">"
+			"<a class=\"seg%s\" href=\"%s\">Board</a>"
+			"<a class=\"seg%s\" href=\"%s\">List</a>"
+			"</div>",
+			board ? " active" : "", board_url,
+			board ? "" : " active", list_url);
+	}
 
 	g_string_append(content,
 		"<a class=\"btn btn-primary\" href=\"/e/ticket/new\">New ticket</a>");

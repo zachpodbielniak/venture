@@ -34,6 +34,8 @@ This is a different question from the ticket's *kind*, and the two are deliberat
 
 They are orthogonal. An external bug is both, and common. The forge rules key on the issue type.
 
+The board at =/tickets= filters on both at once, so "external bugs" — the pair most worth looking at — is a click. Each control preserves the others, and the list view keeps whatever the board had.
+
 Existing tickets all read as =task=, because that is what they were. The enumeration's first value is load-bearing for that reason: reordering it would silently retype every historical ticket.
 
 * Connecting a forge
