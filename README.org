@@ -185,9 +185,12 @@ Working and covered by tests:
 - =VentureMoney= and the boxed types
 - =VentureEntity=, the record types (31 built in), the registry
 - configuration, including the compiled C configuration via crispy
-- the database layer over orm-glib, the query builder, schema derivation
-- the reporting engine and nine built-in reports
-- authentication, sessions, API tokens, the REST API, the HTMX UI
+- the database layer over orm-glib, the query builder, schema derivation,
+  and reference integrity enforced at the save
+- the reporting engine and ten built-in reports, none of which will total
+  across currencies or leave an exclusion unmentioned
+- authentication with per-address login rate limiting, sessions, API
+  tokens, the REST API, the HTMX UI
 - the AI service, its tools and the write-confirmation policy
 - =venturectl=
 - =VenturePluginManager= and all four extension mechanisms: native =.so=

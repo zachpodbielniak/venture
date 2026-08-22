@@ -92,6 +92,14 @@ first seven columns were empty.
   Do not merge them. `VENTURE_ISSUE_TYPE_TASK` must stay the enum's zero
   value: the column was added to a populated table, so every historical row
   reads back as whatever is first.
+- **References are checked at the save, but only when written.** A save
+  that writes a reference field refuses a target that does not exist or is
+  soft-deleted; a field keeping the value it already had is left alone, so
+  records pointing at since-deleted rows stay editable. This is app-layer,
+  not SQL FK — `venture_schema.c` emits no FOREIGN KEY clauses, so the
+  `PRAGMA foreign_keys=ON` is inert by design. Tests must create real
+  referents (`create_organization()` in `tests/test-database.c`); a
+  fabricated id that used to save quietly now fails the save.
 - **A polymorphic subject buys nothing from the generic machinery.**
   `ticket_relation` names its subject by type and id, so it gets no picker,
   no reverse section from `venture_web_append_related()` and no rendered
