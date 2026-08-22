@@ -205,6 +205,118 @@ venture_cli_print_records(
 	}
 }
 
+/*
+ * One CSV cell from one JSON member. Money and anything else structured
+ * that carries a formatted twin prints that; other structures print as
+ * compact JSON, which a spreadsheet can at least hold without corrupting.
+ */
+static gchar *
+venture_cli_csv_cell(JsonNode *member)
+{
+	if ((NULL == member) || JSON_NODE_HOLDS_NULL(member))
+		return g_strdup("");
+
+	if (JSON_NODE_HOLDS_VALUE(member) &&
+	    (G_TYPE_STRING == json_node_get_value_type(member)))
+		return g_strdup(json_node_get_string(member));
+
+	if (JSON_NODE_HOLDS_OBJECT(member))
+	{
+		JsonObject *object;
+
+		object = json_node_get_object(member);
+
+		if (json_object_has_member(object, "formatted"))
+		{
+			return g_strdup(json_object_get_string_member(object,
+			                                              "formatted"));
+		}
+	}
+
+	return venture_json_to_string(member, FALSE);
+}
+
+/*
+ * Renders a response as CSV: a list's records as rows, a single record as
+ * one row. Columns come from the first record in wire order, so the header
+ * matches what `describe` documents. Unlike the table, nothing is truncated
+ * and every field appears -- CSV is for the spreadsheet, not the eye.
+ */
+static void
+venture_cli_print_csv(JsonNode *node)
+{
+	g_autoptr(JsonArray) wrapped = NULL;
+	g_autoptr(GList) members = NULL;
+	JsonArray *records;
+	JsonObject *root;
+	JsonObject *first;
+	GList *iter;
+	guint length;
+	guint j;
+
+	if (!JSON_NODE_HOLDS_OBJECT(node))
+	{
+		g_autofree gchar *text = NULL;
+
+		text = venture_json_to_string(node, TRUE);
+		g_print("%s\n", text);
+		return;
+	}
+
+	root = json_node_get_object(node);
+
+	if (json_object_has_member(root, "records"))
+	{
+		records = json_object_get_array_member(root, "records");
+	}
+	else
+	{
+		/* A single record becomes a one-row sheet with the same header
+		 * a list would have, so `get` and `list` outputs concatenate. */
+		wrapped = json_array_new();
+		json_array_add_object_element(wrapped, json_object_ref(root));
+		records = wrapped;
+	}
+
+	length = json_array_get_length(records);
+
+	if (0 == length)
+		return;
+
+	first = json_array_get_object_element(records, 0);
+	members = json_object_get_members(first);
+
+	for (iter = members; NULL != iter; iter = iter->next)
+	{
+		g_autofree gchar *escaped = NULL;
+
+		escaped = venture_csv_escape(iter->data);
+		g_print("%s%s", (iter == members) ? "" : ",", escaped);
+	}
+
+	g_print("\n");
+
+	for (j = 0; j < length; j++)
+	{
+		JsonObject *record;
+
+		record = json_array_get_object_element(records, j);
+
+		for (iter = members; NULL != iter; iter = iter->next)
+		{
+			g_autofree gchar *cell = NULL;
+			g_autofree gchar *escaped = NULL;
+
+			cell = venture_cli_csv_cell(
+				json_object_get_member(record, iter->data));
+			escaped = venture_csv_escape(cell);
+			g_print("%s%s", (iter == members) ? "" : ",", escaped);
+		}
+
+		g_print("\n");
+	}
+}
+
 static void
 venture_cli_output(
 	VentureCli	*cli,
@@ -220,6 +332,10 @@ venture_cli_output(
 		g_print("%s\n", text);
 		return;
 	}
+
+	case VENTURE_OUTPUT_FORMAT_CSV:
+		venture_cli_print_csv(node);
+		return;
 
 	case VENTURE_OUTPUT_FORMAT_YAML:
 	{
@@ -254,27 +370,23 @@ venture_cli_output(
 /* --- HTTP ---------------------------------------------------------------- */
 
 /*
- * Performs a request and decodes the response.
- *
- * A JSON error body is turned back into a real #GError with its original
- * code, so a failure deep in the server surfaces here with the same meaning
- * and the same exit status it would have had locally.
+ * Sends one request and returns the raw response body with its status.
+ * Everything both decoders need -- the URL check, the bearer token, the
+ * body encoding -- lives here once.
  */
-static JsonNode *
-venture_cli_request(
+static GBytes *
+venture_cli_send(
 	VentureCli	 *cli,
 	const gchar	 *method,
 	const gchar	 *path,
 	JsonNode	 *body,
+	guint		 *out_status,
 	GError		**error
 ){
 	g_autoptr(SoupMessage) message = NULL;
-	g_autoptr(GBytes) response = NULL;
 	g_autoptr(GError) local_error = NULL;
 	g_autofree gchar *url = NULL;
-	g_autofree gchar *text = NULL;
-	JsonNode *node;
-	guint status;
+	GBytes *response;
 
 	url = g_strconcat(cli->base_url, path, NULL);
 	message = soup_message_new(method, url);
@@ -317,11 +429,76 @@ venture_cli_request(
 		return NULL;
 	}
 
-	status = soup_message_get_status(message);
+	*out_status = soup_message_get_status(message);
+
+	return response;
+}
+
+/*
+ * Turns a JSON error body back into a real #GError with its original code,
+ * so a failure deep in the server surfaces here with the same meaning and
+ * the same exit status it would have had locally.
+ */
+static void
+venture_cli_error_from_body(
+	const gchar	 *text,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	JsonObject *object = NULL;
+	const gchar *slug;
+	const gchar *message_text;
+	VentureError code;
+
+	node = venture_json_parse(text, NULL);
+
+	if ((NULL != node) && JSON_NODE_HOLDS_OBJECT(node))
+		object = json_node_get_object(node);
+
+	slug = (NULL != object)
+		? venture_json_object_get_string(object, "error", NULL) : NULL;
+	message_text = (NULL != object)
+		? venture_json_object_get_string(object, "message", NULL) : NULL;
+
+	if ((NULL == slug) || !venture_error_from_slug(slug, &code))
+		code = VENTURE_ERROR_FAILED;
+
+	g_set_error(error, VENTURE_ERROR, code, "%s",
+	            (NULL != message_text) ? message_text
+	                                   : "the request failed");
+}
+
+/*
+ * Performs a request and decodes the JSON response.
+ */
+static JsonNode *
+venture_cli_request(
+	VentureCli	 *cli,
+	const gchar	 *method,
+	const gchar	 *path,
+	JsonNode	 *body,
+	GError		**error
+){
+	g_autoptr(GBytes) response = NULL;
+	g_autofree gchar *text = NULL;
+	JsonNode *node;
+	guint status;
+
+	response = venture_cli_send(cli, method, path, body, &status, error);
+
+	if (NULL == response)
+		return NULL;
+
 	text = g_strndup(g_bytes_get_data(response, NULL),
 	                 g_bytes_get_size(response));
 
-	node = venture_json_parse(text, &local_error);
+	if (status >= 400)
+	{
+		venture_cli_error_from_body(text, error);
+		return NULL;
+	}
+
+	node = venture_json_parse(text, NULL);
 
 	if (NULL == node)
 	{
@@ -331,33 +508,39 @@ venture_cli_request(
 		return NULL;
 	}
 
+	return node;
+}
+
+/*
+ * Fetches a path and returns the body untouched, for responses the server
+ * has already rendered -- a report's CSV comes back exactly as the web
+ * export would produce it. Failures still decode as JSON errors.
+ */
+static gchar *
+venture_cli_request_text(
+	VentureCli	 *cli,
+	const gchar	 *path,
+	GError		**error
+){
+	g_autoptr(GBytes) response = NULL;
+	g_autofree gchar *text = NULL;
+	guint status;
+
+	response = venture_cli_send(cli, "GET", path, NULL, &status, error);
+
+	if (NULL == response)
+		return NULL;
+
+	text = g_strndup(g_bytes_get_data(response, NULL),
+	                 g_bytes_get_size(response));
+
 	if (status >= 400)
 	{
-		VentureError code;
-		JsonObject *object;
-		const gchar *slug;
-		const gchar *message_text;
-
-		object = JSON_NODE_HOLDS_OBJECT(node) ? json_node_get_object(node)
-		                                      : NULL;
-		slug = (NULL != object)
-			? venture_json_object_get_string(object, "error", NULL) : NULL;
-		message_text = (NULL != object)
-			? venture_json_object_get_string(object, "message", NULL) : NULL;
-
-		if ((NULL == slug) || !venture_error_from_slug(slug, &code))
-			code = VENTURE_ERROR_FAILED;
-
-		g_set_error(error, VENTURE_ERROR, code, "%s",
-		            (NULL != message_text) ? message_text
-		                                   : "the request failed");
-
-		json_node_unref(node);
-
+		venture_cli_error_from_body(text, error);
 		return NULL;
 	}
 
-	return node;
+	return g_steal_pointer(&text);
 }
 
 /* --- Subcommands --------------------------------------------------------- */
@@ -465,13 +648,19 @@ venture_cli_command_get(
 	if (NULL == node)
 		return -1;
 
-	/* A single record has nothing to tabulate, so it always prints in
-	 * full. */
+	/* A single record has nothing to tabulate, so the table default
+	 * prints it in full as JSON. An explicitly requested format is
+	 * honoured: -f csv on a get produces a one-row sheet. */
+	if (VENTURE_OUTPUT_FORMAT_TABLE == cli->format)
 	{
 		g_autofree gchar *text = NULL;
 
 		text = venture_json_to_string(node, TRUE);
 		g_print("%s\n", text);
+	}
+	else
+	{
+		venture_cli_output(cli, node);
 	}
 
 	return 0;
@@ -790,6 +979,26 @@ venture_cli_command_report(
 		g_string_append_uri_escaped(path, args[2], NULL, FALSE);
 	}
 
+	/* The server already renders a report as CSV for the web export, so
+	 * -f csv passes the body through rather than re-deriving it here and
+	 * risking two renderings that disagree. */
+	if (VENTURE_OUTPUT_FORMAT_CSV == cli->format)
+	{
+		g_autofree gchar *text = NULL;
+
+		g_string_append(path, (NULL != args[2]) ? "&" : "?");
+		g_string_append(path, "format=csv");
+
+		text = venture_cli_request_text(cli, path->str, error);
+
+		if (NULL == text)
+			return -1;
+
+		g_print("%s", text);
+
+		return 0;
+	}
+
 	node = venture_cli_request(cli, "GET", path->str, NULL, error);
 
 	if (NULL == node)
@@ -977,7 +1186,7 @@ main(
 		{ "token", 't', 0, G_OPTION_ARG_STRING, &token,
 		  "API token; also read from VENTURE_TOKEN", "TOKEN" },
 		{ "format", 'f', 0, G_OPTION_ARG_STRING, &format,
-		  "Output as table, json or yaml", "FORMAT" },
+		  "Output as table, json, yaml or csv", "FORMAT" },
 		{ "quiet", 'q', 0, G_OPTION_ARG_NONE, &quiet,
 		  "Print only the data", NULL },
 		{ "version", 'V', 0, G_OPTION_ARG_NONE, &show_version,
@@ -1016,11 +1225,17 @@ main(
 		"                     venture_id=3 occurred_at=2026-03-14\n"
 		"  venturectl update venture 3 status=paused\n"
 		"  venturectl report pnl this_quarter\n"
+		"  venturectl -f csv report receivables > aging.csv\n"
 		"  printf '%s' \"$FORGE_TOKEN\" | venturectl forge set-token 1\n"
 		"  venturectl -f json list sale | jq '.records[].gross.formatted'\n"
 		"\n"
 		"Filters use field__operator=value. Operators: eq ne lt lte gt gte\n"
 		"like ilike in not_in is_null not_null between.\n"
+		"\n"
+		"Periods: today, yesterday, this_week, last_week, this_month,\n"
+		"last_month, this_quarter, last_quarter, this_year, last_year,\n"
+		"ytd, qtd, mtd, fy, fy_2026, last_30_days, 2026, 2026-03, 2026-Q2,\n"
+		"2026-03-14, 2026-01-01..2026-03-31, all.\n"
 		"\n"
 		"Output defaults to a table on a terminal and JSON when piped.\n"
 		"\n"
@@ -1086,7 +1301,7 @@ main(
 		                            &value))
 		{
 			g_printerr("venturectl: \"%s\" is not an output format. "
-			           "Use table, json or yaml.\n", format);
+			           "Use table, json, yaml or csv.\n", format);
 			return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 		}
 

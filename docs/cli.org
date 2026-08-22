@@ -84,7 +84,23 @@ venturectl create expense description='Cover art' amount=250.00 \
 venturectl update venture 3 status=paused
 venturectl report pnl this_quarter
 venturectl report categories fy        # by genre, over the fiscal year
+venturectl -f csv report receivables > aging.csv
 #+end_src
+
+* Periods
+
+Anywhere a period is accepted — a =report= argument, a =period== filter on a
+list — the full grammar is:
+
+| Form                     | Examples                                     |
+|--------------------------+----------------------------------------------|
+| named                    | =today=, =yesterday=, =this_week=, =last_week=, =this_month=, =last_month=, =this_quarter=, =last_quarter=, =this_year=, =last_year= |
+| to date                  | =ytd=, =qtd=, =mtd=                          |
+| fiscal year              | =fy= (current), =fy_2026=                    |
+| rolling                  | =last_30_days=, =last_90_days=               |
+| calendar                 | =2026=, =2026-03=, =2026-Q2=, =2026-03-14=   |
+| explicit range           | =2026-01-01..2026-03-31=                     |
+| everything               | =all=                                        |
 
 * Output
 
@@ -94,9 +110,18 @@ flag:
 #+begin_src sh
 venturectl list sale | jq '.records[].gross.formatted'
 venturectl -f yaml get venture 1 >> ~/Documents/notes/00_inbox/venture.org
+venturectl -f csv list expense period=fy > expenses.csv
 #+end_src
 
-=--format= takes =table=, =json= or =yaml=. =--quiet= drops the totals line.
+=--format= takes =table=, =json=, =yaml= or =csv=. =--quiet= drops the totals
+line.
+
+The table truncates and selects columns for the eye; CSV does neither — every
+field appears, in the wire spelling =describe= documents, with money printed
+as its formatted form. =-f csv report NAME= returns the server's own CSV
+rendering, byte-identical to the web export. Cells are escaped and a leading
+=​== is defused, so an export opens in a spreadsheet without executing
+anything.
 
 * Exit codes
 

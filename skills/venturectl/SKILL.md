@@ -69,8 +69,15 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `report [NAME] [PERIOD]` | list reports, or run one |
 | `health` | is the server up |
 
-Flags: `--server/-s`, `--token/-t`, `--format/-f table|json|yaml`,
+Flags: `--server/-s`, `--token/-t`, `--format/-f table|json|yaml|csv`,
 `--quiet/-q`.
+
+Periods, anywhere one is accepted (`report NAME PERIOD`, `period=` filters):
+named (`today`, `yesterday`, `this_week`, `last_week`, `this_month`,
+`last_month`, `this_quarter`, `last_quarter`, `this_year`, `last_year`),
+to-date (`ytd`, `qtd`, `mtd`), fiscal (`fy`, `fy_2026`), rolling
+(`last_30_days`), calendar (`2026`, `2026-03`, `2026-Q2`, `2026-03-14`),
+an explicit range (`2026-01-01..2026-03-31`), and `all`.
 
 ## Five traps, in the order they bite
 
@@ -102,6 +109,11 @@ REPO=$(venturectl -f json list forge_repo name__eq=zach/venture \
         | jq -r '.records[0].id')
 venturectl create ticket title="It crashes" issue_type=bug repo_id="$REPO"
 ```
+
+A guessed or stale id is refused, not saved: writing a reference to a row
+that does not exist (or is soft-deleted) fails validation (exit 8) with a
+message naming the field and the id. Restore the target first if it was
+deleted.
 
 **4. Enums are their nick, never a number.** `issue_type=bug`, not
 `issue_type=4`. `describe` lists them.
@@ -209,6 +221,12 @@ venturectl -f json list sale | jq -r '.records[] | "\(.id)\t\(.gross.formatted)"
 venturectl -f json get ticket 1 | jq -r '.title'
 venturectl -f json list forge_run state__eq=failed | jq -r '.records[].failure_reason'
 ```
+
+`-f csv` is for handing data to a spreadsheet or another tool: every field
+appears (nothing truncated like the table), the header uses the wire
+spelling `describe` documents, money prints as its formatted form, and
+`-f csv report NAME` returns the server's own CSV rendering. Cells are
+escaped and a leading `=` is defused.
 
 ## Exit codes
 
