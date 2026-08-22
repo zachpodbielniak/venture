@@ -193,6 +193,30 @@ create_venture(
 	return venture;
 }
 
+/*
+ * Creates a real organisation and returns its id. organization-id is a
+ * declared reference like any other, so the save path refuses a fabricated
+ * one -- a test that wants a second entity has to actually make one.
+ */
+static gint64
+create_organization(
+	VentureDatabase	 *database,
+	const gchar	 *name,
+	const gchar	 *slug
+){
+	g_autoptr(VentureOrganization) organization = NULL;
+
+	organization = venture_organization_new();
+	g_object_set(organization, "name", name, "slug", slug,
+	             "kind", VENTURE_ORGANIZATION_KIND_SOLE_PROPRIETOR,
+	             "active", TRUE, NULL);
+	g_assert_true(venture_database_save(database,
+	                                    VENTURE_ENTITY(organization), NULL,
+	                                    NULL));
+
+	return venture_entity_get_id(VENTURE_ENTITY(organization));
+}
+
 static void
 test_database_save_and_get(
 	Fixture		*fixture,
@@ -245,9 +269,25 @@ test_database_chat_round_trip(
 	};
 	gsize i;
 
-	thread = venture_chat_thread_new();
-	g_object_set(thread, "title", "march numbers", "user-id", (gint64)7,
-	             NULL);
+	/* A real account to own the thread: user-id is a declared reference,
+	 * and the save path refuses a fabricated one. */
+	{
+		g_autoptr(VentureUser) user = NULL;
+
+		user = venture_user_new();
+		g_object_set(user, "username", "asker",
+		             "role", VENTURE_USER_ROLE_VIEWER, "active", TRUE, NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(user),
+		                                   fixture->organization_id);
+		g_assert_true(venture_database_save(fixture->database,
+		                                    VENTURE_ENTITY(user), NULL, NULL));
+
+		thread = venture_chat_thread_new();
+		g_object_set(thread, "title", "march numbers",
+		             "user-id", venture_entity_get_id(VENTURE_ENTITY(user)),
+		             NULL);
+	}
+
 	venture_entity_set_organization_id(VENTURE_ENTITY(thread),
 	                                   fixture->organization_id);
 	g_assert_true(venture_database_save(fixture->database,
@@ -522,6 +562,93 @@ test_database_validation_blocks_save(
 	                                     VENTURE_ENTITY(account), NULL, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 	g_assert_false(venture_entity_is_persisted(VENTURE_ENTITY(account)));
+}
+
+static void
+test_database_refuses_dangling_reference(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureExpense) expense = NULL;
+	g_autoptr(GError) error = NULL;
+
+	expense = venture_expense_new();
+	g_object_set(expense, "description", "Cover art",
+	             "venture-id", (gint64)99999, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(expense),
+	                                   fixture->organization_id);
+
+	/* The field table declares venture-id a reference, and the save path
+	 * enforces it. Without this, the dangling row saves fine and turns up
+	 * later as a report quietly missing an expense -- which looks like a
+	 * data problem and is actually this bug. */
+	g_assert_false(venture_database_save(fixture->database,
+	                                     VENTURE_ENTITY(expense), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(g_strstr_len(error->message, -1, "venture"));
+	g_assert_false(venture_entity_is_persisted(VENTURE_ENTITY(expense)));
+}
+
+static void
+test_database_refuses_reference_to_deleted_row(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureVenture) venture = NULL;
+	g_autoptr(VentureExpense) expense = NULL;
+	g_autoptr(GError) error = NULL;
+
+	venture = create_venture(fixture, "closed-shop");
+	g_assert_true(venture_database_delete(fixture->database,
+	                                      VENTURE_ENTITY(venture), NULL, NULL));
+
+	expense = venture_expense_new();
+	g_object_set(expense, "description", "Late invoice",
+	             "venture-id",
+	             venture_entity_get_id(VENTURE_ENTITY(venture)), NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(expense),
+	                                   fixture->organization_id);
+
+	/* A soft-deleted row is recoverable, but new records must not file
+	 * themselves against it: restore the venture first, or the restore
+	 * button becomes the only thing keeping the books coherent. */
+	g_assert_false(venture_database_save(fixture->database,
+	                                     VENTURE_ENTITY(expense), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(g_strstr_len(error->message, -1, "deleted"));
+}
+
+static void
+test_database_keeps_old_reference_editable(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureVenture) venture = NULL;
+	g_autoptr(VentureExpense) expense = NULL;
+	g_autoptr(GError) error = NULL;
+
+	venture = create_venture(fixture, "was-open");
+
+	expense = venture_expense_new();
+	g_object_set(expense, "description", "Cover art",
+	             "venture-id",
+	             venture_entity_get_id(VENTURE_ENTITY(venture)), NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(expense),
+	                                   fixture->organization_id);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(expense), NULL, NULL));
+
+	g_assert_true(venture_database_delete(fixture->database,
+	                                      VENTURE_ENTITY(venture), NULL, NULL));
+
+	/* Only a reference being written is checked. The venture this expense
+	 * has always pointed at is gone, and correcting the description must
+	 * still work -- refusing every edit until the reference is fixed
+	 * would brick historical records. */
+	g_object_set(expense, "description", "Cover art, final invoice", NULL);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(expense), NULL, &error));
+	g_assert_no_error(error);
 }
 
 /* --- Querying ------------------------------------------------------------ */
@@ -835,7 +962,8 @@ test_database_query_organization_scope(
 
 	theirs = venture_venture_new();
 	g_object_set(theirs, "name", "theirs", NULL);
-	venture_entity_set_organization_id(VENTURE_ENTITY(theirs), 9999);
+	venture_entity_set_organization_id(VENTURE_ENTITY(theirs),
+		create_organization(fixture->database, "Theirs", "theirs"));
 	g_assert_true(venture_database_save(fixture->database,
 	                                    VENTURE_ENTITY(theirs), NULL, NULL));
 
@@ -1637,6 +1765,9 @@ test_database_organization_tree_rolls_up_children(void)
 	g_assert_true(venture_database_migrate(database,
 		venture_entity_registry_get_default(), &error));
 
+	tree[0] = create_organization(database, "Parent", "parent");
+	tree[1] = create_organization(database, "Child", "child");
+
 	/* One venture filed against each of two entities. */
 	{
 		g_autoptr(VentureVenture) parent_record = NULL;
@@ -1644,28 +1775,27 @@ test_database_organization_tree_rolls_up_children(void)
 
 		parent_record = venture_venture_new();
 		g_object_set(parent_record, "name", "Filed against the parent", NULL);
-		venture_entity_set_organization_id(VENTURE_ENTITY(parent_record), 10);
+		venture_entity_set_organization_id(VENTURE_ENTITY(parent_record),
+		                                   tree[0]);
 		g_assert_true(venture_database_save(database,
 			VENTURE_ENTITY(parent_record), NULL, &error));
 
 		child_record = venture_venture_new();
 		g_object_set(child_record, "name", "Filed against the child", NULL);
-		venture_entity_set_organization_id(VENTURE_ENTITY(child_record), 11);
+		venture_entity_set_organization_id(VENTURE_ENTITY(child_record),
+		                                   tree[1]);
 		g_assert_true(venture_database_save(database,
 			VENTURE_ENTITY(child_record), NULL, &error));
 	}
 
 	/* The parent alone sees only its own. */
 	query = venture_query_new(VENTURE_TYPE_VENTURE);
-	venture_query_set_organization(query, 10);
+	venture_query_set_organization(query, tree[0]);
 	g_assert_cmpint(venture_database_count(database, query, &error), ==, 1);
 
 	/* The parent plus its child sees both. */
 	{
 		g_autoptr(VentureQuery) rolled_up = NULL;
-
-		tree[0] = 10;
-		tree[1] = 11;
 
 		rolled_up = venture_query_new(VENTURE_TYPE_VENTURE);
 		venture_query_set_organization_tree(rolled_up, tree, 2);
@@ -1705,20 +1835,25 @@ test_database_moving_a_record_between_entities_persists(void)
 	g_autoptr(VentureVenture) venture = NULL;
 	g_autoptr(VentureEntity) reloaded = NULL;
 	g_autoptr(GError) error = NULL;
+	gint64 first;
+	gint64 second;
 
 	database = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(database,
 		venture_entity_registry_get_default(), &error));
 
+	first = create_organization(database, "First", "first");
+	second = create_organization(database, "Second", "second");
+
 	venture = venture_venture_new();
 	g_object_set(venture, "name", "Filed against the wrong entity", NULL);
-	venture_entity_set_organization_id(VENTURE_ENTITY(venture), 10);
+	venture_entity_set_organization_id(VENTURE_ENTITY(venture), first);
 
 	g_assert_true(venture_database_save(database, VENTURE_ENTITY(venture),
 	                                    NULL, &error));
 
-	venture_entity_set_organization_id(VENTURE_ENTITY(venture), 11);
+	venture_entity_set_organization_id(VENTURE_ENTITY(venture), second);
 
 	g_assert_true(venture_database_save(database, VENTURE_ENTITY(venture),
 	                                    NULL, &error));
@@ -1730,7 +1865,7 @@ test_database_moving_a_record_between_entities_persists(void)
 	                                &error);
 
 	g_assert_nonnull(reloaded);
-	g_assert_cmpint(venture_entity_get_organization_id(reloaded), ==, 11);
+	g_assert_cmpint(venture_entity_get_organization_id(reloaded), ==, second);
 }
 
 static void
@@ -1756,11 +1891,13 @@ test_database_moving_a_record_between_entities_is_audited(void)
 
 	venture = venture_venture_new();
 	g_object_set(venture, "name", "Moved", NULL);
-	venture_entity_set_organization_id(VENTURE_ENTITY(venture), 10);
+	venture_entity_set_organization_id(VENTURE_ENTITY(venture),
+		create_organization(database, "First", "first"));
 	g_assert_true(venture_database_save(database, VENTURE_ENTITY(venture),
 	                                    &actor, &error));
 
-	venture_entity_set_organization_id(VENTURE_ENTITY(venture), 11);
+	venture_entity_set_organization_id(VENTURE_ENTITY(venture),
+		create_organization(database, "Second", "second"));
 	g_assert_true(venture_database_save(database, VENTURE_ENTITY(venture),
 	                                    &actor, &error));
 
@@ -1820,6 +1957,12 @@ main(
 	ADD("/database/save-without-changes-is-noop",
 	    test_database_save_without_changes_is_noop);
 	ADD("/database/validation-blocks-save", test_database_validation_blocks_save);
+	ADD("/database/refuses-dangling-reference",
+	    test_database_refuses_dangling_reference);
+	ADD("/database/refuses-reference-to-deleted-row",
+	    test_database_refuses_reference_to_deleted_row);
+	ADD("/database/keeps-old-reference-editable",
+	    test_database_keeps_old_reference_editable);
 
 	ADD("/database/query-filters", test_database_query_filters);
 	ADD("/database/counts-by-enum-column",

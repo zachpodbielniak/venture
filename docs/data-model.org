@@ -201,6 +201,14 @@ children.
 References render as links, so following a relationship is a click rather
 than a search.
 
+References are enforced at the save: a reference being written must point at
+a row that exists and is not deleted, or the save is refused with a message
+naming the field and the missing id. Only what is being written is checked —
+a record that has long pointed at a since-deleted venture can still have its
+other fields corrected. The database layer enforces this itself rather than
+leaning on SQL foreign keys, so SQLite and PostgreSQL behave identically and
+the error is a validation error, not a constraint string.
+
 * Tickets
 
 One record covers internal work and external support, because the work is

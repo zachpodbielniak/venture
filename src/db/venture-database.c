@@ -801,6 +801,99 @@ venture_database_update(
 	return TRUE;
 }
 
+/*
+ * Refuses a save whose reference fields would point at rows that are not
+ * there. The declaration in the field table is the contract; without this,
+ * `create expense venture_id=99999` succeeds and the dangling row surfaces
+ * later as a report that quietly misses it.
+ *
+ * Only references being *written* are checked -- on an update, a field that
+ * still holds the value it held before is left alone. A record that has
+ * long pointed at a since-deleted venture can still have its notes
+ * corrected; what is refused is writing a dangling pointer, not keeping an
+ * old one.
+ */
+static gboolean
+venture_database_check_references(
+	VentureDatabase	 *self,
+	VentureEntity	 *entity,
+	VentureEntity	 *previous,
+	GError		**error
+){
+	VentureEntityClass *klass;
+	g_autofree GParamSpec **properties = NULL;
+	guint n_properties;
+	guint i;
+
+	klass = VENTURE_ENTITY_GET_CLASS(entity);
+	properties = venture_entity_class_list_persistent_properties(
+		klass, &n_properties);
+
+	for (i = 0; i < n_properties; i++)
+	{
+		g_autoptr(VentureEntity) target = NULL;
+		g_autofree gchar *column = NULL;
+		GParamSpec *pspec;
+		const gchar *target_name;
+		GType target_type;
+		gint64 target_id;
+
+		pspec = properties[i];
+		target_name = venture_entity_class_get_reference(klass,
+		                                                 pspec->name);
+
+		if (NULL == target_name)
+			continue;
+
+		if (G_TYPE_INT64 != G_PARAM_SPEC_VALUE_TYPE(pspec))
+			continue;
+
+		target_id = 0;
+		g_object_get(entity, pspec->name, &target_id, NULL);
+
+		/* An empty reference is not a dangling one; whether the field
+		 * may be empty is the NOT_NULL flag's question. */
+		if (0 == target_id)
+			continue;
+
+		if (NULL != previous)
+		{
+			gint64 previous_id;
+
+			previous_id = 0;
+			g_object_get(previous, pspec->name, &previous_id, NULL);
+
+			if (previous_id == target_id)
+				continue;
+		}
+
+		target_type = venture_entity_registry_lookup(
+			venture_entity_registry_get_default(), target_name);
+
+		/* A reference declared against a name nothing registered is a
+		 * bug in the declaration, not in the record being saved. */
+		if (G_TYPE_INVALID == target_type)
+			continue;
+
+		column = venture_entity_property_to_column(pspec->name);
+		target = venture_database_get(self, target_type, target_id, NULL);
+
+		if ((NULL == target) || venture_entity_is_deleted(target))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "%s.%s points at %s #%" G_GINT64_FORMAT
+			            ", which %s",
+			            venture_entity_get_entity_name(entity), column,
+			            target_name, target_id,
+			            (NULL == target) ? "does not exist"
+			                             : "has been deleted");
+			return FALSE;
+		}
+	}
+
+	return TRUE;
+}
+
 gboolean
 venture_database_save(
 	VentureDatabase		 *self,
@@ -854,6 +947,14 @@ venture_database_save(
 			g_rec_mutex_unlock(&self->lock);
 			return TRUE;
 		}
+	}
+
+	/* Inside the lock, so the row a reference was checked against cannot
+	 * vanish before the write that relies on it. */
+	if (!venture_database_check_references(self, entity, previous, error))
+	{
+		g_rec_mutex_unlock(&self->lock);
+		return FALSE;
 	}
 
 	expected_version = venture_entity_get_version(entity);
@@ -1487,7 +1588,13 @@ venture_database_seed_accounts(
 	gsize i;
 
 	query = venture_query_new(VENTURE_TYPE_ACCOUNT);
-	existing = venture_database_count(self, query, NULL);
+	existing = venture_database_count(self, query, error);
+
+	/* A failed count must stop the seed, not stand in for "none": treating
+	 * the error as an empty table would duplicate the whole chart of
+	 * accounts on the next successful start. */
+	if (existing < 0)
+		return FALSE;
 
 	/* Seeding is only for a genuinely empty install; re-running must not
 	 * resurrect accounts the operator deliberately removed. */
@@ -1566,7 +1673,10 @@ venture_database_seed_tax_categories(
 	gsize i;
 
 	query = venture_query_new(VENTURE_TYPE_TAX_CATEGORY);
-	existing = venture_database_count(self, query, NULL);
+	existing = venture_database_count(self, query, error);
+
+	if (existing < 0)
+		return FALSE;
 
 	if (existing > 0)
 		return TRUE;
