@@ -287,6 +287,27 @@ venture_report_result_set_note(
 	self->note = g_strdup(note);
 }
 
+void
+venture_report_result_append_note(
+	VentureReportResult	*self,
+	const gchar		*note
+){
+	gchar *combined;
+
+	g_return_if_fail(VENTURE_IS_REPORT_RESULT(self));
+	g_return_if_fail(NULL != note);
+
+	if (NULL == self->note)
+	{
+		self->note = g_strdup(note);
+		return;
+	}
+
+	combined = g_strdup_printf("%s\n%s", self->note, note);
+	g_free(self->note);
+	self->note = combined;
+}
+
 /* --- Rendering ----------------------------------------------------------- */
 
 /*
@@ -371,8 +392,15 @@ venture_report_render_table(VentureReportResult *self)
 		                       (NULL != change) ? change : "");
 	}
 
+	/* A result with no table can still carry a caveat, and dropping it
+	 * here would silence exactly the reports that most need one. */
 	if (0 == self->columns->len)
+	{
+		if (NULL != self->note)
+			g_string_append_printf(text, "\n%s\n", self->note);
+
 		return g_string_free(g_steal_pointer(&text), FALSE);
+	}
 
 	/* Two passes: measure every cell, then emit. Aligned columns are the
 	 * entire point of the table format. */

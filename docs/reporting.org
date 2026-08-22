@@ -27,6 +27,7 @@ about it.
 | =pipeline=   | open deals by stage, probability-weighted                    |
 | =monthly=    | revenue, expenses and profit month by month                  |
 | =ideas=      | ideas ranked by opportunity and confidence against effort    |
+| =receivables= | outstanding invoices bucketed by how far past due          |
 
 #+begin_src sh
 venturectl report                       # list them
@@ -41,8 +42,10 @@ do", "how did each format do" and "how did each product do".
 * Design notes
 
 Reports aggregate in C wherever money is involved. A =SUM= over mixed
-currencies would produce a confidently wrong number, so totals track the
-currency of the records and exclude — rather than convert — the minority ones.
+currencies would produce a confidently wrong number, so totals are carried in
+the majority currency of the records and exclude — rather than convert — the
+minority ones. An exclusion is never silent: any report whose totals had to
+leave amounts out says how many in a note attached to the result.
 
 A figure is never presented as more complete than it is. The P&L shows the
 deductible total beside the cash total and says why they differ; the tax

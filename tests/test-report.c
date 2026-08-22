@@ -224,12 +224,13 @@ test_report_registry_has_builtins(
 	registry = venture_context_get_report_registry(fixture->context);
 	reports = venture_report_registry_list(registry);
 
-	g_assert_cmpuint(reports->len, ==, 9);
+	g_assert_cmpuint(reports->len, ==, 10);
 
 	g_assert_nonnull(venture_report_registry_lookup(registry, "pnl"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "ventures"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "categories"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "tax"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "receivables"));
 	g_assert_null(venture_report_registry_lookup(registry, "nonesuch"));
 }
 
@@ -246,7 +247,7 @@ test_report_registry_describe(
 
 	g_assert_nonnull(description);
 	array = json_node_get_array(description);
-	g_assert_cmpuint(json_array_get_length(array), ==, 9);
+	g_assert_cmpuint(json_array_get_length(array), ==, 10);
 
 	/* The description is what the AI's report tool advertises, so every
 	 * report has to carry one. */
@@ -332,6 +333,80 @@ test_report_pnl_empty_period(
 	/* A period with nothing in it reports zero, not an error. */
 	g_assert_nonnull(revenue);
 	g_assert_true(venture_money_is_zero(venture_metric_get_money(revenue)));
+}
+
+static void
+test_report_pnl_totals_in_the_records_currency(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureReportResult) result = NULL;
+	VentureMetric *revenue;
+
+	/* Books kept entirely in EUR. The totals used to anchor on the
+	 * process default currency, so every one of these failed to add and
+	 * the P&L reported $0.00 revenue -- silently. If this regresses, an
+	 * all-foreign portfolio reads as earning nothing. */
+	add_sale(fixture, 0, "60.00 EUR", "7.50 EUR", 1);
+	add_sale(fixture, 0, "40.00 EUR", "5.00 EUR", 1);
+
+	result = run_report(fixture, "pnl", NULL);
+	revenue = find_metric(result, "revenue");
+
+	g_assert_nonnull(revenue);
+	g_assert_cmpstr(
+		venture_money_get_currency(venture_metric_get_money(revenue)),
+		==, "EUR");
+	g_assert_cmpint(venture_money_get_amount(venture_metric_get_money(revenue)),
+	                ==, 8750);
+}
+
+static void
+test_report_pnl_notes_excluded_currencies(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autofree gchar *rendered = NULL;
+	VentureMetric *revenue;
+
+	/* A EUR sale among USD ones cannot join the totals, and that used to
+	 * happen without a word: the out-parameter carrying the skip count
+	 * had NULL passed at every call site. The number being incomplete is
+	 * tolerable; the report not saying so is not. */
+	add_sale(fixture, 0, "60.00", "7.50", 1);
+	add_sale(fixture, 0, "40.00", "5.00", 1);
+	add_sale(fixture, 0, "10.00 EUR", NULL, 1);
+
+	result = run_report(fixture, "pnl", NULL);
+	revenue = find_metric(result, "revenue");
+
+	/* The USD total is exact, not polluted by a guessed conversion. */
+	g_assert_cmpint(venture_money_get_amount(venture_metric_get_money(revenue)),
+	                ==, 8750);
+
+	rendered = venture_report_result_render(result, VENTURE_OUTPUT_FORMAT_TABLE);
+	g_assert_nonnull(g_strstr_len(rendered, -1, "could not be included"));
+}
+
+static void
+test_report_result_append_note_keeps_both(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autofree gchar *rendered = NULL;
+
+	result = venture_report_result_new("Test", NULL);
+	venture_report_result_set_note(result, "first caveat");
+	venture_report_result_append_note(result, "second caveat");
+
+	rendered = venture_report_result_render(result, VENTURE_OUTPUT_FORMAT_TEXT);
+
+	/* A report can deserve two caveats at once, and the reader needs
+	 * both -- not whichever was attached last. */
+	g_assert_nonnull(g_strstr_len(rendered, -1, "first caveat"));
+	g_assert_nonnull(g_strstr_len(rendered, -1, "second caveat"));
 }
 
 /* --- Ventures ------------------------------------------------------------ */
@@ -599,6 +674,91 @@ test_report_pipeline_weights_by_probability(
 	g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 6);
 }
 
+/* --- Receivables aging --------------------------------------------------- */
+
+static gint64
+add_invoice(
+	Fixture			*fixture,
+	const gchar		*number,
+	VentureInvoiceStatus	 status,
+	gint			 due_in_days,
+	const gchar		*unit_price,
+	gdouble			 quantity
+){
+	g_autoptr(VentureInvoice) invoice = NULL;
+	g_autoptr(VentureInvoiceLine) line = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GDateTime) due = NULL;
+	gint64 invoice_id;
+
+	now = venture_time_now();
+	due = g_date_time_add_days(now, due_in_days);
+
+	invoice = venture_invoice_new();
+	g_object_set(invoice, "number", number, "status", status,
+	             "venture-id", fixture->venture_id, "due-at", due, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(invoice),
+	                                   fixture->organization_id);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(invoice), NULL, NULL));
+	invoice_id = venture_entity_get_id(VENTURE_ENTITY(invoice));
+
+	line = venture_invoice_line_new();
+	g_object_set(line, "invoice-id", invoice_id, "description", "Work",
+	             "quantity", quantity, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(line),
+	                                   fixture->organization_id);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(line),
+		"unit-price", unit_price, NULL));
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(line), NULL, NULL));
+
+	return invoice_id;
+}
+
+static void
+test_report_receivables_buckets_by_age(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autofree gchar *rendered = NULL;
+	VentureMetric *outstanding;
+	VentureMetric *overdue;
+
+	/* One invoice not yet due, one 45 days past due, and a paid one that
+	 * must not appear: settled history is not a receivable. */
+	add_invoice(fixture, "INV-1", VENTURE_INVOICE_STATUS_SENT, 10,
+	            "25.00", 4.0);
+	add_invoice(fixture, "INV-2", VENTURE_INVOICE_STATUS_SENT, -45,
+	            "20.00", 2.0);
+	add_invoice(fixture, "INV-3", VENTURE_INVOICE_STATUS_PAID, -45,
+	            "999.00", 1.0);
+
+	result = run_report(fixture, "receivables", NULL);
+
+	outstanding = find_metric(result, "outstanding");
+	overdue = find_metric(result, "overdue");
+
+	/* 100.00 current plus 40.00 overdue outstanding; only the 40.00 is
+	 * overdue. If the paid invoice leaks in, both figures jump by 999. */
+	g_assert_nonnull(outstanding);
+	g_assert_cmpint(
+		venture_money_get_amount(venture_metric_get_money(outstanding)),
+		==, 14000);
+	g_assert_cmpint(
+		venture_money_get_amount(venture_metric_get_money(overdue)),
+		==, 4000);
+
+	/* Every bucket renders, even empty ones, so the shape of the table is
+	 * stable enough to compare week over week. */
+	g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 6);
+
+	rendered = venture_report_result_render(result, VENTURE_OUTPUT_FORMAT_TABLE);
+	g_assert_nonnull(g_strstr_len(rendered, -1, "31-60 days"));
+	g_assert_nonnull(g_strstr_len(rendered, -1, "$40.00"));
+}
+
 /* --- Monthly series ------------------------------------------------------ */
 
 static void
@@ -805,6 +965,12 @@ main(
 	ADD("/report/pnl-arithmetic", test_report_pnl_arithmetic);
 	ADD("/report/pnl-separates-deductible", test_report_pnl_separates_deductible);
 	ADD("/report/pnl-empty-period", test_report_pnl_empty_period);
+	ADD("/report/pnl-totals-in-the-records-currency",
+	    test_report_pnl_totals_in_the_records_currency);
+	ADD("/report/pnl-notes-excluded-currencies",
+	    test_report_pnl_notes_excluded_currencies);
+	ADD("/report/result-append-note-keeps-both",
+	    test_report_result_append_note_keeps_both);
 
 	ADD("/report/ventures", test_report_ventures);
 
@@ -823,6 +989,9 @@ main(
 
 	ADD("/report/pipeline-weights-by-probability",
 	    test_report_pipeline_weights_by_probability);
+
+	ADD("/report/receivables-buckets-by-age",
+	    test_report_receivables_buckets_by_age);
 
 	ADD("/report/monthly-splits-period", test_report_monthly_splits_period);
 

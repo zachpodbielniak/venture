@@ -65,102 +65,248 @@ venture_report_scoped_query(
 }
 
 /*
- * Totals a money property across a set of records, skipping any in a
- * different currency from the first and reporting how many were skipped.
+ * Adds an amount into a running total, counting rather than hiding the
+ * additions that fail. A NULL total adopts the first amount's currency, the
+ * same anchoring every total in this file uses; a failed addition -- another
+ * currency, or overflow -- leaves the total alone and increments the
+ * caller's counter.
  *
  * Silently adding across currencies is the failure mode this exists to
  * prevent: the result would look authoritative and be wrong by whatever the
- * exchange rate happens to be.
+ * exchange rate happens to be. But silently *dropping* the row is only half
+ * a fix -- the count is what lets the report admit it.
  */
-static VentureMoney *
-venture_report_total(
-	GPtrArray	 *records,
-	const gchar	 *property,
-	guint		 *out_skipped
+static void
+venture_report_accumulate(
+	VentureMoney		**total,
+	const VentureMoney	 *amount,
+	guint			 *inout_skipped
 ){
-	g_autoptr(VentureMoney) total = NULL;
-	const gchar *currency = NULL;
-	guint skipped;
+	VentureMoney *next;
+
+	if (NULL == amount)
+		return;
+
+	if (NULL == *total)
+	{
+		*total = venture_money_copy(amount);
+		return;
+	}
+
+	next = venture_money_add(*total, amount, NULL);
+
+	if (NULL == next)
+	{
+		if (NULL != inout_skipped)
+			(*inout_skipped)++;
+		return;
+	}
+
+	venture_money_free(*total);
+	*total = next;
+}
+
+/*
+ * Notes on the result how many amounts its totals had to leave out. Called
+ * once per report, after every total is in, so a clean report carries no
+ * note and a lossy one says exactly how lossy it was. Appended rather than
+ * set, because a report can have other caveats too.
+ */
+static void
+venture_report_flag_skipped(
+	VentureReportResult	*result,
+	guint			 skipped
+){
+	g_autofree gchar *note = NULL;
+
+	if (0 == skipped)
+		return;
+
+	note = g_strdup_printf(
+		"%u amount%s could not be included in these totals -- a different "
+		"currency from the rest, or arithmetic that would overflow. "
+		"Cross-currency totals are refused rather than guessed; filter by "
+		"venture or currency for exact figures.",
+		skipped, (1 == skipped) ? "" : "s");
+
+	venture_report_result_append_note(result, note);
+}
+
+/*
+ * Picks the currency a total should be carried in: the one most of the
+ * amounts are denominated in, with ties broken toward the process default
+ * and then the alphabetically first code. Anchoring on "the first record"
+ * instead would hand the choice to the sort order, and a stray EUR row
+ * sorted first must not decide the currency of a USD ledger's total.
+ *
+ * Returns NULL when nothing carries an amount at all.
+ */
+static gchar *
+venture_report_majority_currency(GPtrArray *amounts)
+{
+	g_autoptr(GHashTable) counts = NULL;
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
+	const gchar *best;
+	guint best_count;
 	guint i;
 
-	skipped = 0;
+	counts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 
-	for (i = 0; i < records->len; i++)
+	for (i = 0; i < amounts->len; i++)
 	{
-		g_autoptr(VentureMoney) amount = NULL;
-		g_autoptr(VentureMoney) next = NULL;
+		const VentureMoney *amount;
+		gchar *currency;
+		guint count;
 
-		g_object_get(g_ptr_array_index(records, i), property, &amount, NULL);
+		amount = g_ptr_array_index(amounts, i);
 
 		if (NULL == amount)
 			continue;
 
-		if (NULL == total)
-		{
-			currency = venture_money_get_currency(amount);
-			total = venture_money_copy(amount);
-			continue;
-		}
-
-		if (0 != g_strcmp0(currency, venture_money_get_currency(amount)))
-		{
-			skipped++;
-			continue;
-		}
-
-		next = venture_money_add(total, amount, NULL);
-
-		if (NULL == next)
-		{
-			skipped++;
-			continue;
-		}
-
-		g_clear_pointer(&total, venture_money_free);
-		total = g_steal_pointer(&next);
+		currency = g_ascii_strup(venture_money_get_currency(amount), -1);
+		count = GPOINTER_TO_UINT(g_hash_table_lookup(counts, currency)) + 1;
+		g_hash_table_replace(counts, currency, GUINT_TO_POINTER(count));
 	}
 
-	if (NULL != out_skipped)
-		*out_skipped = skipped;
+	best = NULL;
+	best_count = 0;
 
-	if (NULL == total)
+	g_hash_table_iter_init(&iter, counts);
+
+	while (g_hash_table_iter_next(&iter, &key, &value))
+	{
+		const gchar *currency;
+		guint count;
+
+		currency = key;
+		count = GPOINTER_TO_UINT(value);
+
+		if ((NULL == best) || (count > best_count))
+		{
+			best = currency;
+			best_count = count;
+			continue;
+		}
+
+		if (count == best_count)
+		{
+			const gchar *fallback;
+			gboolean best_is_default;
+			gboolean this_is_default;
+
+			fallback = venture_money_get_default_currency();
+			best_is_default =
+				(0 == g_ascii_strcasecmp(best, fallback));
+			this_is_default =
+				(0 == g_ascii_strcasecmp(currency, fallback));
+
+			if (this_is_default && !best_is_default)
+				best = currency;
+			else if ((this_is_default == best_is_default) &&
+			         (g_strcmp0(currency, best) < 0))
+				best = currency;
+		}
+	}
+
+	return g_strdup(best);
+}
+
+/*
+ * Sums a collected array of amounts in their majority currency, counting
+ * whatever cannot join into @inout_skipped, which accumulates across calls
+ * so one counter can watch every total a report builds.
+ */
+static VentureMoney *
+venture_report_sum_amounts(
+	GPtrArray	 *amounts,
+	guint		 *inout_skipped
+){
+	g_autoptr(VentureMoney) total = NULL;
+	g_autofree gchar *currency = NULL;
+	guint i;
+
+	currency = venture_report_majority_currency(amounts);
+
+	if (NULL == currency)
 		return venture_money_new_zero(NULL);
+
+	total = venture_money_new_zero(currency);
+
+	for (i = 0; i < amounts->len; i++)
+		venture_report_accumulate(&total, g_ptr_array_index(amounts, i),
+		                          inout_skipped);
 
 	return g_steal_pointer(&total);
 }
 
 /*
- * Totals the net proceeds of a set of sales, which is what the P&L counts as
- * revenue -- not the gross, which includes money that was never yours.
+ * Totals a money property across a set of records, in the currency most of
+ * them are kept in.
  */
 static VentureMoney *
-venture_report_total_net(GPtrArray *sales)
-{
-	g_autoptr(VentureMoney) total = NULL;
+venture_report_total(
+	GPtrArray	 *records,
+	const gchar	 *property,
+	guint		 *inout_skipped
+){
+	g_autoptr(GPtrArray) amounts = NULL;
 	guint i;
 
-	total = venture_money_new_zero(NULL);
+	amounts = g_ptr_array_new_with_free_func(
+		(GDestroyNotify)venture_money_free);
+
+	for (i = 0; i < records->len; i++)
+	{
+		VentureMoney *amount = NULL;
+
+		g_object_get(g_ptr_array_index(records, i), property, &amount, NULL);
+
+		if (NULL != amount)
+			g_ptr_array_add(amounts, amount);
+	}
+
+	return venture_report_sum_amounts(amounts, inout_skipped);
+}
+
+/*
+ * Totals the net proceeds of a set of sales, which is what the P&L counts as
+ * revenue -- not the gross, which includes money that was never yours.
+ *
+ * Totalling in the sales' own majority currency rather than the process
+ * default matters here: a portfolio kept entirely in EUR must total in EUR,
+ * not report zero because every sale failed to add into a USD zero. A sale
+ * whose own fields disagree about currency yields no net at all, and that
+ * is counted too.
+ */
+static VentureMoney *
+venture_report_total_net(
+	GPtrArray	 *sales,
+	guint		 *inout_skipped
+){
+	g_autoptr(GPtrArray) nets = NULL;
+	guint i;
+
+	nets = g_ptr_array_new_with_free_func((GDestroyNotify)venture_money_free);
 
 	for (i = 0; i < sales->len; i++)
 	{
-		g_autoptr(VentureMoney) net = NULL;
-		g_autoptr(VentureMoney) next = NULL;
+		VentureMoney *net;
 
 		net = venture_sale_get_net(g_ptr_array_index(sales, i), NULL);
 
 		if (NULL == net)
+		{
+			if (NULL != inout_skipped)
+				(*inout_skipped)++;
 			continue;
+		}
 
-		next = venture_money_add(total, net, NULL);
-
-		if (NULL == next)
-			continue;
-
-		g_clear_pointer(&total, venture_money_free);
-		total = g_steal_pointer(&next);
+		g_ptr_array_add(nets, net);
 	}
 
-	return g_steal_pointer(&total);
+	return venture_report_sum_amounts(nets, inout_skipped);
 }
 
 /*
@@ -204,6 +350,7 @@ venture_report_pnl(
 	g_autoptr(VentureMoney) deductible = NULL;
 	g_autoptr(VentureMoney) profit = NULL;
 	g_autofree gchar *title = NULL;
+	guint skipped;
 	guint i;
 
 	sales_query = venture_report_scoped_query(context, VENTURE_TYPE_SALE,
@@ -230,12 +377,13 @@ venture_report_pnl(
 	if (NULL == expenses)
 		return NULL;
 
-	revenue = venture_report_total_net(sales);
-	gross = venture_report_total(sales, "gross", NULL);
-	fees = venture_report_total(sales, "fees", NULL);
-	shipping = venture_report_total(sales, "shipping-cost", NULL);
-	refunds = venture_report_total(sales, "refunded", NULL);
-	expense_total = venture_report_total(expenses, "amount", NULL);
+	skipped = 0;
+	revenue = venture_report_total_net(sales, &skipped);
+	gross = venture_report_total(sales, "gross", &skipped);
+	fees = venture_report_total(sales, "fees", &skipped);
+	shipping = venture_report_total(sales, "shipping-cost", &skipped);
+	refunds = venture_report_total(sales, "refunded", &skipped);
+	expense_total = venture_report_total(expenses, "amount", &skipped);
 
 	/* The deductible total is tracked separately from the cash total,
 	 * because they are different questions: what left the account, and
@@ -246,21 +394,11 @@ venture_report_pnl(
 	for (i = 0; i < expenses->len; i++)
 	{
 		g_autoptr(VentureMoney) amount = NULL;
-		g_autoptr(VentureMoney) next = NULL;
 
 		amount = venture_expense_get_deductible_amount(
 			g_ptr_array_index(expenses, i), NULL);
 
-		if (NULL == amount)
-			continue;
-
-		next = venture_money_add(deductible, amount, NULL);
-
-		if (NULL == next)
-			continue;
-
-		g_clear_pointer(&deductible, venture_money_free);
-		deductible = g_steal_pointer(&next);
+		venture_report_accumulate(&deductible, amount, &skipped);
 	}
 
 	profit = venture_money_subtract(revenue, expense_total, NULL);
@@ -323,6 +461,20 @@ venture_report_pnl(
 			"for tax.");
 	}
 
+	/* Revenue in one currency and expenses in another has no profit line
+	 * at all, and the metric machinery renders an absent amount as zero.
+	 * A zero that means "no answer" must not be left looking like an
+	 * answer of zero. */
+	if (NULL == profit)
+	{
+		venture_report_result_append_note(result,
+			"Revenue and expenses are in different currencies, so no "
+			"profit could be computed; the profit line's zero is an "
+			"absence, not a result.");
+	}
+
+	venture_report_flag_skipped(result, skipped);
+
 	return g_steal_pointer(&result);
 }
 
@@ -341,6 +493,7 @@ venture_report_ventures(
 	g_autoptr(VentureQuery) ventures_query = NULL;
 	g_autoptr(GPtrArray) ventures = NULL;
 	g_autoptr(VentureMoney) portfolio_revenue = NULL;
+	guint skipped;
 	guint i;
 
 	ventures_query = venture_query_new(VENTURE_TYPE_VENTURE);
@@ -353,7 +506,7 @@ venture_report_ventures(
 		return NULL;
 
 	result = venture_report_result_new("Venture performance", period);
-	portfolio_revenue = venture_money_new_zero(NULL);
+	skipped = 0;
 
 	venture_report_result_add_column(result, "venture", "Venture",
 	                                 VENTURE_REPORT_COLUMN_TEXT);
@@ -379,7 +532,6 @@ venture_report_ventures(
 		g_autoptr(VentureMoney) revenue = NULL;
 		g_autoptr(VentureMoney) spent = NULL;
 		g_autoptr(VentureMoney) profit = NULL;
-		g_autoptr(VentureMoney) running = NULL;
 		g_autofree gchar *name = NULL;
 		g_autofree gchar *type = NULL;
 		VentureEntity *venture;
@@ -420,17 +572,11 @@ venture_report_ventures(
 		if ((NULL == sales) || (NULL == expenses))
 			return NULL;
 
-		revenue = venture_report_total_net(sales);
-		spent = venture_report_total(expenses, "amount", NULL);
+		revenue = venture_report_total_net(sales, &skipped);
+		spent = venture_report_total(expenses, "amount", &skipped);
 		profit = venture_money_subtract(revenue, spent, NULL);
 
-		running = venture_money_add(portfolio_revenue, revenue, NULL);
-
-		if (NULL != running)
-		{
-			g_clear_pointer(&portfolio_revenue, venture_money_free);
-			portfolio_revenue = g_steal_pointer(&running);
-		}
+		venture_report_accumulate(&portfolio_revenue, revenue, &skipped);
 
 		venture_report_result_begin_row(result);
 		venture_report_result_set_text(result, "venture", name);
@@ -449,6 +595,8 @@ venture_report_ventures(
 	venture_report_result_add_metric(result,
 		venture_metric_new_money("revenue", "Portfolio revenue",
 		                         portfolio_revenue));
+
+	venture_report_flag_skipped(result, skipped);
 
 	return g_steal_pointer(&result);
 }
@@ -480,8 +628,10 @@ venture_report_categories(
 	g_autofree gchar *title = NULL;
 	const gchar *group_by;
 	GList *iter;
+	guint skipped;
 	guint i;
 
+	skipped = 0;
 	group_by = (NULL != options)
 		? venture_json_object_get_string(options, "group_by", "genre")
 		: "genre";
@@ -598,7 +748,7 @@ venture_report_categories(
 		guint j;
 
 		bucket = g_hash_table_lookup(groups, iter->data);
-		revenue = venture_report_total_net(bucket);
+		revenue = venture_report_total_net(bucket, &skipped);
 		units = 0;
 
 		for (j = 0; j < bucket->len; j++)
@@ -644,6 +794,8 @@ venture_report_categories(
 		venture_metric_new_count("groups", "Distinct values",
 		                         (gint64)g_list_length(keys)));
 
+	venture_report_flag_skipped(result, skipped);
+
 	return g_steal_pointer(&result);
 }
 
@@ -663,6 +815,7 @@ venture_report_inventory(
 	g_autoptr(GPtrArray) items = NULL;
 	g_autoptr(VentureMoney) total_value = NULL;
 	gint64 below_reorder;
+	guint skipped;
 	guint i;
 
 	items_query = venture_query_new(VENTURE_TYPE_INVENTORY_ITEM);
@@ -675,7 +828,7 @@ venture_report_inventory(
 		return NULL;
 
 	result = venture_report_result_new("Inventory", period);
-	total_value = venture_money_new_zero(NULL);
+	skipped = 0;
 	below_reorder = 0;
 
 	venture_report_result_add_column(result, "sku", "SKU",
@@ -697,7 +850,6 @@ venture_report_inventory(
 		g_autoptr(GPtrArray) transactions = NULL;
 		g_autoptr(VentureMoney) unit_cost = NULL;
 		g_autoptr(VentureMoney) value = NULL;
-		g_autoptr(VentureMoney) running = NULL;
 		g_autofree gchar *sku = NULL;
 		g_autofree gchar *location = NULL;
 		VentureEntity *item;
@@ -753,18 +905,16 @@ venture_report_inventory(
 		}
 
 		if (NULL != unit_cost)
+		{
 			value = venture_money_multiply_int(unit_cost, on_hand, NULL);
 
-		if (NULL != value)
-		{
-			running = venture_money_add(total_value, value, NULL);
-
-			if (NULL != running)
-			{
-				g_clear_pointer(&total_value, venture_money_free);
-				total_value = g_steal_pointer(&running);
-			}
+			/* A costed item whose value could not be computed is an
+			 * exclusion too, not merely an empty cell. */
+			if (NULL == value)
+				skipped++;
 		}
+
+		venture_report_accumulate(&total_value, value, &skipped);
 
 		if ((reorder_point > 0) && (on_hand <= reorder_point))
 			below_reorder++;
@@ -796,6 +946,8 @@ venture_report_inventory(
 		venture_report_result_add_metric(result, metric);
 	}
 
+	venture_report_flag_skipped(result, skipped);
+
 	return g_steal_pointer(&result);
 }
 
@@ -819,6 +971,7 @@ venture_report_tax(
 	g_autoptr(VentureMoney) review_total = NULL;
 	GList *iter;
 	gint64 review_count;
+	guint skipped;
 	guint i;
 
 	expenses_query = venture_report_scoped_query(context, VENTURE_TYPE_EXPENSE,
@@ -835,9 +988,8 @@ venture_report_tax(
 
 	result = venture_report_result_new("Deductions and write-offs", period);
 	buckets = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-	deductible_total = venture_money_new_zero(NULL);
-	review_total = venture_money_new_zero(NULL);
 	review_count = 0;
+	skipped = 0;
 
 	venture_report_result_add_column(result, "category", "Category",
 	                                 VENTURE_REPORT_COLUMN_TEXT);
@@ -878,21 +1030,11 @@ venture_report_tax(
 		if (VENTURE_DEDUCTIBILITY_REVIEW == deductibility)
 		{
 			g_autoptr(VentureMoney) amount = NULL;
-			g_autoptr(VentureMoney) running = NULL;
 
 			review_count++;
 			g_object_get(expense, "amount", &amount, NULL);
 
-			if (NULL != amount)
-			{
-				running = venture_money_add(review_total, amount, NULL);
-
-				if (NULL != running)
-				{
-					g_clear_pointer(&review_total, venture_money_free);
-					review_total = g_steal_pointer(&running);
-				}
-			}
+			venture_report_accumulate(&review_total, amount, &skipped);
 		}
 	}
 
@@ -903,41 +1045,24 @@ venture_report_tax(
 	{
 		g_autoptr(VentureMoney) spent = NULL;
 		g_autoptr(VentureMoney) deductible = NULL;
-		g_autoptr(VentureMoney) running = NULL;
 		GPtrArray *bucket;
 		guint j;
 
 		bucket = g_hash_table_lookup(buckets, iter->data);
-		spent = venture_report_total(bucket, "amount", NULL);
+		spent = venture_report_total(bucket, "amount", &skipped);
 		deductible = venture_money_new_zero(venture_money_get_currency(spent));
 
 		for (j = 0; j < bucket->len; j++)
 		{
 			g_autoptr(VentureMoney) amount = NULL;
-			g_autoptr(VentureMoney) next = NULL;
 
 			amount = venture_expense_get_deductible_amount(
 				g_ptr_array_index(bucket, j), NULL);
 
-			if (NULL == amount)
-				continue;
-
-			next = venture_money_add(deductible, amount, NULL);
-
-			if (NULL == next)
-				continue;
-
-			g_clear_pointer(&deductible, venture_money_free);
-			deductible = g_steal_pointer(&next);
+			venture_report_accumulate(&deductible, amount, &skipped);
 		}
 
-		running = venture_money_add(deductible_total, deductible, NULL);
-
-		if (NULL != running)
-		{
-			g_clear_pointer(&deductible_total, venture_money_free);
-			deductible_total = g_steal_pointer(&running);
-		}
+		venture_report_accumulate(&deductible_total, deductible, &skipped);
 
 		venture_report_result_begin_row(result);
 		venture_report_result_set_text(result, "category", iter->data);
@@ -974,6 +1099,9 @@ venture_report_tax(
 		g_autofree gchar *amount_text = NULL;
 		g_autofree gchar *note = NULL;
 
+		if (NULL == review_total)
+			review_total = venture_money_new_zero(NULL);
+
 		amount_text = venture_money_to_display_string(review_total, TRUE);
 		note = g_strdup_printf(
 			"%" G_GINT64_FORMAT " expenses totalling %s are still marked "
@@ -982,6 +1110,8 @@ venture_report_tax(
 
 		venture_report_result_set_note(result, note);
 	}
+
+	venture_report_flag_skipped(result, skipped);
 
 	return g_steal_pointer(&result);
 }
@@ -1002,6 +1132,7 @@ venture_report_campaigns(
 	g_autoptr(GPtrArray) campaigns = NULL;
 	g_autoptr(VentureMoney) total_spend = NULL;
 	g_autoptr(VentureMoney) total_revenue = NULL;
+	guint skipped;
 	guint i;
 
 	query = venture_report_scoped_query(context, VENTURE_TYPE_CAMPAIGN,
@@ -1016,8 +1147,9 @@ venture_report_campaigns(
 		return NULL;
 
 	result = venture_report_result_new("Campaign performance", period);
-	total_spend = venture_report_total(campaigns, "spend", NULL);
-	total_revenue = venture_report_total(campaigns, "revenue", NULL);
+	skipped = 0;
+	total_spend = venture_report_total(campaigns, "spend", &skipped);
+	total_revenue = venture_report_total(campaigns, "revenue", &skipped);
 
 	venture_report_result_add_column(result, "campaign", "Campaign",
 	                                 VENTURE_REPORT_COLUMN_TEXT);
@@ -1063,6 +1195,8 @@ venture_report_campaigns(
 		venture_metric_new_money("revenue", "Attributed revenue",
 		                         total_revenue));
 
+	venture_report_flag_skipped(result, skipped);
+
 	return g_steal_pointer(&result);
 }
 
@@ -1080,6 +1214,7 @@ venture_report_pipeline(
 	g_autoptr(VentureMoney) weighted_value = NULL;
 	g_auto(GStrv) stages = NULL;
 	gsize s;
+	guint skipped;
 	guint i;
 
 	query = venture_query_new(VENTURE_TYPE_DEAL);
@@ -1092,8 +1227,7 @@ venture_report_pipeline(
 		return NULL;
 
 	result = venture_report_result_new("Deal pipeline", period);
-	open_value = venture_money_new_zero(NULL);
-	weighted_value = venture_money_new_zero(NULL);
+	skipped = 0;
 
 	venture_report_result_add_column(result, "stage", "Stage",
 	                                 VENTURE_REPORT_COLUMN_TEXT);
@@ -1119,15 +1253,12 @@ venture_report_pipeline(
 		                            &stage_enum))
 			continue;
 
-		stage_value = venture_money_new_zero(NULL);
-		stage_weighted = venture_money_new_zero(NULL);
 		count = 0;
 
 		for (i = 0; i < deals->len; i++)
 		{
 			g_autoptr(VentureMoney) value = NULL;
 			g_autoptr(VentureMoney) weighted = NULL;
-			g_autoptr(VentureMoney) next = NULL;
 			VentureEntity *deal;
 			VentureDealStage stage;
 
@@ -1139,55 +1270,27 @@ venture_report_pipeline(
 
 			count++;
 
-			if (NULL != value)
-			{
-				next = venture_money_add(stage_value, value, NULL);
-
-				if (NULL != next)
-				{
-					g_clear_pointer(&stage_value, venture_money_free);
-					stage_value = g_steal_pointer(&next);
-				}
-			}
+			venture_report_accumulate(&stage_value, value, &skipped);
 
 			weighted = venture_deal_get_weighted_value(VENTURE_DEAL(deal),
 			                                           NULL);
-
-			if (NULL != weighted)
-			{
-				g_autoptr(VentureMoney) accumulated = NULL;
-
-				accumulated = venture_money_add(stage_weighted, weighted,
-				                                NULL);
-
-				if (NULL != accumulated)
-				{
-					g_clear_pointer(&stage_weighted, venture_money_free);
-					stage_weighted = g_steal_pointer(&accumulated);
-				}
-			}
+			venture_report_accumulate(&stage_weighted, weighted, &skipped);
 		}
 
 		if (!venture_deal_stage_is_closed((VentureDealStage)stage_enum))
 		{
-			g_autoptr(VentureMoney) running = NULL;
-
-			running = venture_money_add(open_value, stage_value, NULL);
-
-			if (NULL != running)
-			{
-				g_clear_pointer(&open_value, venture_money_free);
-				open_value = g_steal_pointer(&running);
-			}
-
-			running = venture_money_add(weighted_value, stage_weighted, NULL);
-
-			if (NULL != running)
-			{
-				g_clear_pointer(&weighted_value, venture_money_free);
-				weighted_value = g_steal_pointer(&running);
-			}
+			venture_report_accumulate(&open_value, stage_value, &skipped);
+			venture_report_accumulate(&weighted_value, stage_weighted,
+			                          &skipped);
 		}
+
+		/* An empty stage still shows a zero rather than a blank, which
+		 * is what keeps the funnel readable as a funnel. */
+		if (NULL == stage_value)
+			stage_value = venture_money_new_zero(NULL);
+
+		if (NULL == stage_weighted)
+			stage_weighted = venture_money_new_zero(NULL);
 
 		venture_report_result_begin_row(result);
 		venture_report_result_set_text(result, "stage", stages[s]);
@@ -1201,6 +1304,8 @@ venture_report_pipeline(
 	venture_report_result_add_metric(result,
 		venture_metric_new_money("weighted", "Weighted pipeline",
 		                         weighted_value));
+
+	venture_report_flag_skipped(result, skipped);
 
 	return g_steal_pointer(&result);
 }
@@ -1218,8 +1323,10 @@ venture_report_monthly(
 ){
 	g_autoptr(VentureReportResult) result = NULL;
 	g_autoptr(GPtrArray) months = NULL;
+	guint skipped;
 	guint i;
 
+	skipped = 0;
 	result = venture_report_result_new("Monthly revenue and expenses", period);
 
 	venture_report_result_add_column(result, "month", "Month",
@@ -1270,8 +1377,8 @@ venture_report_monthly(
 		if ((NULL == sales) || (NULL == expenses))
 			return NULL;
 
-		revenue = venture_report_total_net(sales);
-		spent = venture_report_total(expenses, "amount", NULL);
+		revenue = venture_report_total_net(sales, &skipped);
+		spent = venture_report_total(expenses, "amount", &skipped);
 		profit = venture_money_subtract(revenue, spent, NULL);
 
 		venture_report_result_begin_row(result);
@@ -1282,6 +1389,8 @@ venture_report_monthly(
 		venture_report_result_set_money(result, "expenses", spent);
 		venture_report_result_set_money(result, "profit", profit);
 	}
+
+	venture_report_flag_skipped(result, skipped);
 
 	return g_steal_pointer(&result);
 }
@@ -1395,6 +1504,244 @@ venture_report_ideas(
 }
 
 /* ==========================================================================
+ * Receivables aging
+ * ========================================================================== */
+
+/*
+ * Sums an invoice's lines the same way the invoice page does: each line is
+ * quantity times unit price computed exactly, never a stored total that
+ * could disagree with its own parts.
+ */
+static VentureMoney *
+venture_report_invoice_total(
+	VentureContext	 *context,
+	gint64		  invoice_id,
+	guint		 *inout_skipped,
+	GError		**error
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) lines = NULL;
+	g_autoptr(GPtrArray) amounts = NULL;
+	guint i;
+
+	query = venture_query_new(VENTURE_TYPE_INVOICE_LINE);
+
+	if (!venture_query_add_filter_int(query, "invoice-id",
+	                                  VENTURE_FILTER_OP_EQ, invoice_id, error))
+		return NULL;
+
+	lines = venture_report_fetch_all(context, query, error);
+
+	if (NULL == lines)
+		return NULL;
+
+	amounts = g_ptr_array_new_with_free_func(
+		(GDestroyNotify)venture_money_free);
+
+	for (i = 0; i < lines->len; i++)
+	{
+		VentureMoney *amount;
+
+		/* A line with no unit price bills nothing; that is a state the
+		 * invoice editor allows while drafting, not an error here. */
+		amount = venture_invoice_line_get_amount(
+			g_ptr_array_index(lines, i), NULL);
+
+		if (NULL != amount)
+			g_ptr_array_add(amounts, amount);
+	}
+
+	return venture_report_sum_amounts(amounts, inout_skipped);
+}
+
+/*
+ * Outstanding invoices bucketed by how far past due they are. Aging is a
+ * snapshot, not a movement: the period's end supplies the "as of" date the
+ * way the inventory report uses it, and the period's start means nothing --
+ * money owed from before the window is still owed.
+ */
+static VentureReportResult *
+venture_report_receivables(
+	VentureContext		 *context,
+	VentureDateRange	 *period,
+	JsonObject		 *options,
+	GError			**error
+){
+	/* The last bucket is selected by a missing due date, never by the
+	 * day arithmetic, so its bounds are sentinels. */
+	static const struct
+	{
+		const gchar	*label;
+		gint64		 min_days;
+		gint64		 max_days;
+	} buckets[] = {
+		{ "Current",      G_MININT64, 0          },
+		{ "1-30 days",    1,          30         },
+		{ "31-60 days",   31,         60         },
+		{ "61-90 days",   61,         90         },
+		{ "Over 90 days", 91,         G_MAXINT64 },
+		{ "No due date",  0,          0          }
+	};
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) invoices = NULL;
+	g_autoptr(GDateTime) fallback_now = NULL;
+	g_autoptr(GPtrArray) all_amounts = NULL;
+	g_autoptr(GPtrArray) overdue_amounts = NULL;
+	GPtrArray *bucket_amounts[G_N_ELEMENTS(buckets)];
+	guint bucket_counts[G_N_ELEMENTS(buckets)];
+	GDateTime *as_of;
+	guint skipped;
+	gsize b;
+	guint i;
+
+	query = venture_report_scoped_query(context, VENTURE_TYPE_INVOICE, NULL,
+	                                    NULL, options, error);
+
+	if (NULL == query)
+		return NULL;
+
+	/* Only a sent invoice is a claim on anybody: a draft is still being
+	 * written, and paid or void ones are settled history. */
+	if (!venture_query_add_filter_string(query, "status",
+	                                     VENTURE_FILTER_OP_EQ,
+	                                     venture_enum_to_nick(
+	                                         VENTURE_TYPE_INVOICE_STATUS,
+	                                         VENTURE_INVOICE_STATUS_SENT),
+	                                     error))
+		return NULL;
+
+	invoices = venture_report_fetch_all(context, query, error);
+
+	if (NULL == invoices)
+		return NULL;
+
+	as_of = (NULL != period) ? venture_date_range_get_end(period) : NULL;
+
+	if (NULL == as_of)
+	{
+		fallback_now = venture_time_now();
+		as_of = fallback_now;
+	}
+
+	result = venture_report_result_new("Receivables aging", period);
+	skipped = 0;
+	all_amounts = g_ptr_array_new_with_free_func(
+		(GDestroyNotify)venture_money_free);
+	overdue_amounts = g_ptr_array_new_with_free_func(
+		(GDestroyNotify)venture_money_free);
+
+	for (b = 0; b < G_N_ELEMENTS(buckets); b++)
+	{
+		bucket_amounts[b] = g_ptr_array_new_with_free_func(
+			(GDestroyNotify)venture_money_free);
+		bucket_counts[b] = 0;
+	}
+
+	venture_report_result_add_column(result, "age", "Age",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "count", "Invoices",
+	                                 VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "amount", "Amount",
+	                                 VENTURE_REPORT_COLUMN_MONEY);
+
+	for (i = 0; i < invoices->len; i++)
+	{
+		g_autoptr(GDateTime) due = NULL;
+		g_autoptr(VentureMoney) total = NULL;
+		VentureEntity *invoice;
+		gsize bucket;
+
+		invoice = g_ptr_array_index(invoices, i);
+		g_object_get(invoice, "due-at", &due, NULL);
+
+		total = venture_report_invoice_total(context,
+		                                     venture_entity_get_id(invoice),
+		                                     &skipped, error);
+
+		if (NULL == total)
+		{
+			for (b = 0; b < G_N_ELEMENTS(buckets); b++)
+				g_ptr_array_unref(bucket_amounts[b]);
+
+			return NULL;
+		}
+
+		if (NULL == due)
+		{
+			bucket = G_N_ELEMENTS(buckets) - 1;
+		}
+		else
+		{
+			gint64 days;
+
+			days = g_date_time_difference(as_of, due) / G_TIME_SPAN_DAY;
+			bucket = 0;
+
+			for (b = 0; b < G_N_ELEMENTS(buckets) - 1; b++)
+			{
+				if ((days >= buckets[b].min_days) &&
+				    (days <= buckets[b].max_days))
+				{
+					bucket = b;
+					break;
+				}
+			}
+		}
+
+		bucket_counts[bucket]++;
+		g_ptr_array_add(bucket_amounts[bucket], venture_money_copy(total));
+		g_ptr_array_add(all_amounts, venture_money_copy(total));
+
+		/* Overdue means a due date that has passed -- undated invoices
+		 * are unknown, not late. */
+		if ((bucket >= 1) && (bucket <= 4))
+			g_ptr_array_add(overdue_amounts, venture_money_copy(total));
+	}
+
+	for (b = 0; b < G_N_ELEMENTS(buckets); b++)
+	{
+		g_autoptr(VentureMoney) amount = NULL;
+
+		amount = venture_report_sum_amounts(bucket_amounts[b], &skipped);
+
+		venture_report_result_begin_row(result);
+		venture_report_result_set_text(result, "age", buckets[b].label);
+		venture_report_result_set_number(result, "count",
+		                                 (gdouble)bucket_counts[b]);
+		venture_report_result_set_money(result, "amount", amount);
+	}
+
+	{
+		g_autoptr(VentureMoney) outstanding = NULL;
+		g_autoptr(VentureMoney) overdue = NULL;
+		VentureMetric *metric;
+
+		outstanding = venture_report_sum_amounts(all_amounts, &skipped);
+		overdue = venture_report_sum_amounts(overdue_amounts, &skipped);
+
+		venture_report_result_add_metric(result,
+			venture_metric_new_money("outstanding", "Outstanding",
+			                         outstanding));
+
+		metric = venture_metric_new_money("overdue", "Overdue", overdue);
+		venture_metric_set_higher_is_better(metric, FALSE);
+		venture_report_result_add_metric(result, metric);
+
+		venture_report_result_add_metric(result,
+			venture_metric_new_count("invoices", "Open invoices",
+			                         (gint64)invoices->len));
+	}
+
+	for (b = 0; b < G_N_ELEMENTS(buckets); b++)
+		g_ptr_array_unref(bucket_amounts[b]);
+
+	venture_report_flag_skipped(result, skipped);
+
+	return g_steal_pointer(&result);
+}
+
+/* ==========================================================================
  * Registration
  * ========================================================================== */
 
@@ -1438,7 +1785,11 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 		  venture_report_monthly },
 		{ "ideas", "Idea pipeline",
 		  "Ideas ranked by opportunity and confidence against effort",
-		  venture_report_ideas }
+		  venture_report_ideas },
+		{ "receivables", "Receivables aging",
+		  "Outstanding invoices bucketed by how far past due they are, "
+		  "with the overdue portion totalled separately",
+		  venture_report_receivables }
 	};
 	gsize i;
 

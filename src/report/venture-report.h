@@ -195,6 +195,21 @@ venture_report_result_set_note(
 );
 
 /**
+ * venture_report_result_append_note:
+ * @self: a #VentureReportResult
+ * @note: a caveat displayed with the report
+ *
+ * Adds a caveat without displacing one already attached. A report can earn
+ * more than one -- unreviewed expenses and excluded currencies at once --
+ * and the reader needs both, not whichever was set last.
+ */
+void
+venture_report_result_append_note(
+	VentureReportResult	*self,
+	const gchar		*note
+);
+
+/**
  * venture_report_result_render:
  * @self: a #VentureReportResult
  * @format: the output format
