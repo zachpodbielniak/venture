@@ -101,6 +101,7 @@ venture_auth_authenticate(
  * @self: a #VentureAuth
  * @username: the username or email
  * @password: the password
+ * @remote_address: (nullable): the peer address the attempt came from
  * @out_cookie: (out) (transfer full): the session cookie to set
  * @error: (out) (optional): return location for a #GError
  *
@@ -110,6 +111,13 @@ venture_auth_authenticate(
  * password and a deactivated account all produce the same message, so the
  * response cannot be used to enumerate accounts.
  *
+ * Attempts are rate limited per @remote_address according to
+ * security.login_rate_limit, and refused outright once the budget for the
+ * minute is spent -- a password check that still runs is a guess that still
+ * counts. %NULL skips the limit and is for in-process callers only; a route
+ * handler must pass the real peer, which venture_auth_remote_address()
+ * extracts.
+ *
  * Returns: %TRUE on success
  */
 gboolean
@@ -117,9 +125,22 @@ venture_auth_login(
 	VentureAuth	 *self,
 	const gchar	 *username,
 	const gchar	 *password,
+	const gchar	 *remote_address,
 	gchar		**out_cookie,
 	GError		**error
 );
+
+/**
+ * venture_auth_remote_address:
+ * @request: an #HtmxRequest
+ *
+ * Extracts the peer address a request arrived from, for rate limiting.
+ *
+ * Returns: (transfer full) (nullable): the address, or %NULL if the
+ * request has no network peer
+ */
+gchar *
+venture_auth_remote_address(HtmxRequest *request);
 
 /**
  * venture_auth_end_sessions:

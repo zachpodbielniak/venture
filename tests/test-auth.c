@@ -141,7 +141,8 @@ test_auth_login_succeeds(
 	                   VENTURE_USER_ROLE_OWNER);
 
 	g_assert_true(venture_auth_login(fixture->auth, "zach",
-	                                 "correct horse battery", &cookie, &error));
+	                                 "correct horse battery", NULL, &cookie,
+	                                 &error));
 	g_assert_no_error(error);
 	g_assert_nonnull(cookie);
 
@@ -164,16 +165,16 @@ test_auth_login_failures_are_indistinguishable(
 
 	user = create_user(fixture, "zach", "correct horse", VENTURE_USER_ROLE_OWNER);
 
-	g_assert_false(venture_auth_login(fixture->auth, "zach", "wrong", &cookie,
-	                                  &wrong_password));
-	g_assert_false(venture_auth_login(fixture->auth, "nobody", "wrong", &cookie,
-	                                  &unknown_user));
+	g_assert_false(venture_auth_login(fixture->auth, "zach", "wrong", NULL,
+	                                  &cookie, &wrong_password));
+	g_assert_false(venture_auth_login(fixture->auth, "nobody", "wrong", NULL,
+	                                  &cookie, &unknown_user));
 
 	g_object_set(user, "active", FALSE, NULL);
 	g_assert_true(venture_database_save(fixture->database,
 	                                    VENTURE_ENTITY(user), NULL, NULL));
 	g_assert_false(venture_auth_login(fixture->auth, "zach", "correct horse",
-	                                  &cookie, &inactive));
+	                                  NULL, &cookie, &inactive));
 
 	/*
 	 * All three must read identically. Distinguishing them would turn the
@@ -192,8 +193,62 @@ test_auth_login_rejects_empty(
 	g_autofree gchar *cookie = NULL;
 	g_autoptr(GError) error = NULL;
 
-	g_assert_false(venture_auth_login(fixture->auth, "", "", &cookie, &error));
+	g_assert_false(venture_auth_login(fixture->auth, "", "", NULL, &cookie,
+	                                  &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED);
+}
+
+static void
+test_auth_login_rate_limits_an_address(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureUser) user = NULL;
+	g_autoptr(VentureAuth) auth = NULL;
+	guint i;
+
+	user = create_user(fixture, "zach", "correct horse", VENTURE_USER_ROLE_OWNER);
+
+	/* A tight budget, and an auth built after it so the limiter sees it.
+	 * security.login_rate_limit existed in the configuration for a while
+	 * with nothing consuming it; this pins that it now does something. */
+	g_object_set(fixture->config, "security-login-rate-limit", (gint64)3, NULL);
+	auth = venture_auth_new(fixture->context);
+
+	for (i = 0; i < 3; i++)
+	{
+		g_autofree gchar *cookie = NULL;
+		g_autoptr(GError) error = NULL;
+
+		g_assert_false(venture_auth_login(auth, "zach", "wrong",
+		                                  "203.0.113.9", &cookie, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED);
+	}
+
+	/* The budget is spent, so even the right password is refused from this
+	 * address: a password check that still runs is a guess that still
+	 * counts. */
+	{
+		g_autofree gchar *cookie = NULL;
+		g_autoptr(GError) error = NULL;
+
+		g_assert_false(venture_auth_login(auth, "zach", "correct horse",
+		                                  "203.0.113.9", &cookie, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED);
+		g_assert_nonnull(g_strstr_len(error->message, -1, "Too many"));
+	}
+
+	/* The limit is per address, not per account: somebody else guessing at
+	 * the login form must not lock the operator out of their own books. */
+	{
+		g_autofree gchar *cookie = NULL;
+		g_autoptr(GError) error = NULL;
+
+		g_assert_true(venture_auth_login(auth, "zach", "correct horse",
+		                                 "203.0.113.10", &cookie, &error));
+		g_assert_no_error(error);
+		g_assert_nonnull(cookie);
+	}
 }
 
 /* --- Roles --------------------------------------------------------------- */
@@ -526,7 +581,7 @@ test_auth_logout_invalidates_existing_sessions(
 	user_id = venture_entity_get_id(VENTURE_ENTITY(user));
 
 	g_assert_true(venture_auth_login(fixture->auth, "operator",
-	                                 "a-long-enough-password", &cookie,
+	                                 "a-long-enough-password", NULL, &cookie,
 	                                 &error));
 	g_assert_nonnull(cookie);
 
@@ -567,7 +622,8 @@ test_auth_signing_back_in_immediately_works(
 		VENTURE_ENTITY(user), NULL, &error));
 
 	g_assert_true(venture_auth_login(fixture->auth, "operator",
-	                                 "a-long-enough-password", &first, &error));
+	                                 "a-long-enough-password", NULL, &first,
+	                                 &error));
 
 	g_assert_true(venture_auth_end_sessions(fixture->auth,
 		venture_entity_get_id(VENTURE_ENTITY(user)), &error));
@@ -580,7 +636,7 @@ test_auth_signing_back_in_immediately_works(
 	 * successful sign-in that does not work.
 	 */
 	g_assert_true(venture_auth_login(fixture->auth, "operator",
-	                                 "a-long-enough-password", &second,
+	                                 "a-long-enough-password", NULL, &second,
 	                                 &error));
 	g_assert_no_error(error);
 	g_assert_nonnull(second);
@@ -1852,6 +1908,8 @@ main(
 	ADD("/auth/login-failures-are-indistinguishable",
 	    test_auth_login_failures_are_indistinguishable);
 	ADD("/auth/login-rejects-empty", test_auth_login_rejects_empty);
+	ADD("/auth/login-rate-limits-an-address",
+	    test_auth_login_rate_limits_an_address);
 
 	ADD("/auth/role-ordering", test_auth_role_ordering);
 	ADD("/auth/unauthenticated-is-refused", test_auth_unauthenticated_is_refused);

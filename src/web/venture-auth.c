@@ -22,6 +22,7 @@ struct _VentureAuth
 	gboolean	 cookie_secure;
 	guint		 password_iterations;
 	guint		 password_min_length;
+	HtmxRateLimiter	*login_limiter;
 };
 
 G_DEFINE_FINAL_TYPE(VentureAuth, venture_auth, G_TYPE_OBJECT)
@@ -34,6 +35,7 @@ venture_auth_finalize(GObject *object)
 	self = VENTURE_AUTH(object);
 
 	g_clear_object(&self->context);
+	g_clear_object(&self->login_limiter);
 	g_clear_pointer(&self->secret, g_free);
 
 	G_OBJECT_CLASS(venture_auth_parent_class)->finalize(object);
@@ -97,7 +99,47 @@ venture_auth_new(VentureContext *context)
 		self->password_min_length = (guint)MAX(minimum, 1);
 	}
 
+	{
+		gint64 rate;
+
+		g_object_get(config, "security-login-rate-limit", &rate, NULL);
+
+		/* The bucket holds a minute's budget and refills continuously,
+		 * so a burst up to the limit is fine and a sustained guess rate
+		 * beyond it is not. Zero or negative disables the limit, which
+		 * is for tests, not deployments. */
+		if (rate > 0)
+		{
+			self->login_limiter = htmx_rate_limiter_new((guint)rate,
+				(gdouble)rate / 60.0);
+		}
+	}
+
 	return self;
+}
+
+gchar *
+venture_auth_remote_address(HtmxRequest *request)
+{
+	GSocketAddress *remote;
+	GInetAddress *inet;
+	SoupServerMessage *message;
+
+	g_return_val_if_fail(HTMX_IS_REQUEST(request), NULL);
+
+	message = htmx_request_get_message(request);
+
+	if (NULL == message)
+		return NULL;
+
+	remote = soup_server_message_get_remote_address(message);
+
+	if (!G_IS_INET_SOCKET_ADDRESS(remote))
+		return NULL;
+
+	inet = g_inet_socket_address_get_address(G_INET_SOCKET_ADDRESS(remote));
+
+	return g_inet_address_to_string(inet);
 }
 
 void
@@ -540,6 +582,7 @@ venture_auth_login(
 	VentureAuth	 *self,
 	const gchar	 *username,
 	const gchar	 *password,
+	const gchar	 *remote_address,
 	gchar		**out_cookie,
 	GError		**error
 ){
@@ -549,6 +592,19 @@ venture_auth_login(
 
 	g_return_val_if_fail(VENTURE_IS_AUTH(self), FALSE);
 	g_return_val_if_fail(NULL != out_cookie, FALSE);
+
+	/* The attempt is spent before the password is looked at, because the
+	 * guesses a brute force needs are exactly the ones arriving after the
+	 * budget is gone. A NULL address is an in-process caller with no
+	 * network peer, and is not limited. */
+	if ((NULL != self->login_limiter) && (NULL != remote_address) &&
+	    !htmx_rate_limiter_allow(self->login_limiter, remote_address))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED,
+		                    "Too many sign-in attempts; wait a minute and "
+		                    "try again");
+		return FALSE;
+	}
 
 	database = venture_context_get_database(self->context);
 
@@ -731,7 +787,13 @@ venture_auth_ensure_owner(
 
 	database = venture_context_get_database(self->context);
 	query = venture_query_new(VENTURE_TYPE_USER);
-	existing = venture_database_count(database, query, NULL);
+	existing = venture_database_count(database, query, error);
+
+	/* A failed count is not an empty table. Bootstrapping an owner
+	 * account because the user count errored would mint a privileged
+	 * login on a database that already has its owners. */
+	if (existing < 0)
+		return NULL;
 
 	if (existing > 0)
 		return NULL;

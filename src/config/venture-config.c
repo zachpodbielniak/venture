@@ -98,7 +98,7 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_INT ("security-password-min-length", "security", "password_min_length",
 	        8, "Shortest password accepted when one is set or changed"),
 	VC_INT ("security-login-rate-limit", "security", "login_rate_limit", 10,
-	        "Failed logins allowed per address per minute"),
+	        "Sign-in attempts allowed per address per minute; 0 disables"),
 
 	VC_STR ("locale-default-currency", "locale", "default_currency", "USD",
 	        "Currency assumed when an amount does not name one"),

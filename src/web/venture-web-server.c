@@ -1073,7 +1073,13 @@ venture_web_api_list(
 		return venture_web_error_response(error);
 
 	total = venture_database_count(venture_context_get_database(self->context),
-	                               query, NULL);
+	                               query, &error);
+
+	/* The UI path renders a failed count as "?", but an API client reads
+	 * numbers programmatically, and a total of -1 walking into someone's
+	 * pagination arithmetic is worse than an honest error. */
+	if (total < 0)
+		return venture_web_error_response(error);
 
 	builder = json_builder_new();
 	json_builder_begin_object(builder);
@@ -4655,15 +4661,17 @@ venture_web_ui_login_submit(
 ){
 	VentureWebServer *self;
 	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *remote = NULL;
 	g_autoptr(GError) error = NULL;
 	HtmxResponse *response;
 
 	self = user_data;
+	remote = venture_auth_remote_address(request);
 
 	if (!venture_auth_login(self->auth,
 	                        htmx_request_get_form_value(request, "username"),
 	                        htmx_request_get_form_value(request, "password"),
-	                        &cookie, &error))
+	                        remote, &cookie, &error))
 	{
 		g_autoptr(GString) body = NULL;
 		g_autofree gchar *html = NULL;
