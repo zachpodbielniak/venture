@@ -32,6 +32,16 @@ typedef struct
 	gchar			*token;
 	VentureOutputFormat	 format;
 	gboolean		 quiet;
+
+	/* Whether --server and --token came from the command line rather than
+	 * the environment. `mcp` has to tell the difference: it refuses a
+	 * token in argv, and silently ignoring one somebody passed would be
+	 * worse than refusing it. */
+	gboolean		 server_from_argv;
+	gboolean		 token_from_argv;
+
+	/* `mcp` only: let its write tools apply rather than hold. */
+	gboolean		 apply_writes;
 } VentureCli;
 
 /* --- Output -------------------------------------------------------------- */
@@ -1161,6 +1171,90 @@ venture_cli_command_health(
 	return 0;
 }
 
+/*
+ * venturectl mcp
+ *
+ * A stdio MCP server, so an AI coding agent can drive VENTURE the way it
+ * drives any other tool server: through an .mcp.json entry naming this
+ * command. The tool surface is built at startup from GET /api/v1/schema, so
+ * a record type registered by a plugin is offered without a line changing
+ * here.
+ *
+ * Two things about this subcommand are deliberately unlike the others.
+ *
+ * It takes its credential from the environment -- VENTURE_TOKEN -- and
+ * refuses --token outright. An MCP server is spawned by an agent from a
+ * config file, and a credential written into that file's argv is visible in
+ * `ps` to every account on the host; a process's environment is readable
+ * only by its owner. --server is honoured, because a hostname is not a
+ * secret; with none given the server reads VENTURE_URL, then VENTURE_SERVER.
+ *
+ * And it must not write anything to standard output except protocol
+ * messages: stdout is the transport. Every diagnostic goes to stderr,
+ * including GLib's, which by default does not.
+ */
+static gint
+venture_cli_command_mcp(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(VentureMcpServer) server = NULL;
+
+	/*
+	 * Refused rather than ignored.
+	 *
+	 * `mcp` reads its token from the environment and would otherwise
+	 * quietly disregard one passed as an argument -- and somebody who
+	 * passed it would believe it had been used, having already exposed it
+	 * in `ps` and in the shell history for nothing.
+	 */
+	if (cli->token_from_argv)
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "`venturectl mcp` does not take --token. An argv "
+		                    "is world-readable through /proc and lands in "
+		                    "the shell's history, and an MCP server is "
+		                    "spawned from a config file that would then hold "
+		                    "the credential. Set VENTURE_TOKEN in the "
+		                    "environment instead.\n"
+		                    "Rotate that token: it has already been exposed.");
+		return -1;
+	}
+
+	/* --server is not a secret, so it is honoured. With none given the
+	 * server reads VENTURE_URL, then VENTURE_SERVER. */
+	server = venture_mcp_server_new(
+		cli->server_from_argv ? cli->base_url : NULL, NULL, error);
+
+	if (NULL == server)
+		return -1;
+
+	venture_mcp_server_set_stage_writes(server, !cli->apply_writes);
+
+	if (!venture_mcp_server_load_catalog(server, error))
+		return -1;
+
+	if (!cli->quiet)
+	{
+		g_auto(GStrv) types = NULL;
+
+		types = venture_mcp_catalog_list_types(
+			venture_mcp_server_get_catalog(server));
+
+		/* stderr, not stdout: stdout carries the protocol. */
+		g_printerr("venturectl mcp: %u record types, writes %s\n",
+		           g_strv_length(types),
+		           cli->apply_writes ? "applied" : "staged");
+	}
+
+	if (!venture_mcp_server_run(server, error))
+		return -1;
+
+	return 0;
+}
+
 /* --- Entry point --------------------------------------------------------- */
 
 int
@@ -1171,13 +1265,15 @@ main(
 	g_autoptr(GOptionContext) options = NULL;
 	g_autoptr(GError) error = NULL;
 	g_auto(GStrv) args = NULL;
-	VentureCli cli = { NULL, NULL, NULL, VENTURE_OUTPUT_FORMAT_TABLE, FALSE };
+	VentureCli cli = { NULL, NULL, NULL, VENTURE_OUTPUT_FORMAT_TABLE, FALSE,
+	                   FALSE, FALSE, FALSE };
 	g_autofree gchar *server = NULL;
 	g_autofree gchar *token = NULL;
 	g_autofree gchar *format = NULL;
 	gboolean show_version = FALSE;
 	gboolean show_license = FALSE;
 	gboolean quiet = FALSE;
+	gboolean apply_writes = FALSE;
 	gint result;
 
 	const GOptionEntry entries[] = {
@@ -1189,6 +1285,8 @@ main(
 		  "Output as table, json, yaml or csv", "FORMAT" },
 		{ "quiet", 'q', 0, G_OPTION_ARG_NONE, &quiet,
 		  "Print only the data", NULL },
+		{ "apply-writes", 0, 0, G_OPTION_ARG_NONE, &apply_writes,
+		  "mcp only: let write tools apply instead of holding", NULL },
 		{ "version", 'V', 0, G_OPTION_ARG_NONE, &show_version,
 		  "Print the version and exit", NULL },
 		{ "license", 0, 0, G_OPTION_ARG_NONE, &show_license,
@@ -1216,6 +1314,8 @@ main(
 		"  forge verify ID              record which account the token is\n"
 		"  report [NAME] [PERIOD]       list reports, or run one\n"
 		"  health                       check the server is up\n"
+		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
+		"                               stdio as an MCP server\n"
 		"\n"
 		"Examples:\n"
 		"  venturectl types sale\n"
@@ -1228,6 +1328,7 @@ main(
 		"  venturectl -f csv report receivables > aging.csv\n"
 		"  printf '%s' \"$FORGE_TOKEN\" | venturectl forge set-token 1\n"
 		"  venturectl -f json list sale | jq '.records[].gross.formatted'\n"
+		"  VENTURE_TOKEN=... venturectl mcp        # stdio MCP server\n"
 		"\n"
 		"Filters use field__operator=value. Operators: eq ne lt lte gt gte\n"
 		"like ilike in not_in is_null not_null between.\n"
@@ -1290,6 +1391,24 @@ main(
 	 * environment is the documented way and takes no flag. */
 	cli.token = (NULL != token) ? g_strdup(token)
 	                            : g_strdup(g_getenv("VENTURE_TOKEN"));
+	cli.server_from_argv = (NULL != server);
+	cli.token_from_argv = (NULL != token);
+	cli.apply_writes = apply_writes;
+
+	/*
+	 * Refused rather than ignored, for the same reason `mcp` refuses
+	 * --token: a flag that quietly does nothing on nine of ten commands
+	 * teaches that it did something.
+	 */
+	if (apply_writes && (0 != g_strcmp0(args[0], "mcp")))
+	{
+		g_printerr("venturectl: --apply-writes only means something to "
+		           "`venturectl mcp`, which holds its writes by default. "
+		           "\"%s\" applies them either way.\n", args[0]);
+		g_free(cli.base_url);
+		g_free(cli.token);
+		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
+	}
 	cli.quiet = quiet;
 	cli.format = venture_cli_default_format();
 
@@ -1332,6 +1451,8 @@ main(
 		result = venture_cli_command_types(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "health"))
 		result = venture_cli_command_health(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "mcp"))
+		result = venture_cli_command_mcp(&cli, args, &error);
 	else
 	{
 		g_printerr("venturectl: \"%s\" is not a command. Try --help.\n",

@@ -23,6 +23,11 @@ curl -H "Authorization: Bearer $VENTURE_TOKEN" localhost:8747/api/v1/sale
 Mint a token with =POST /api/v1/tokens= while holding a session. The plaintext
 is returned exactly once; only its hash is stored.
 
+=venturectl mcp= serves this API to an outside AI agent as an MCP server,
+taking its token from =VENTURE_TOKEN= and generating its tool surface from
+=/api/v1/schema= so a plugin's record type is offered without any change.
+See [[file:mcp.org][venturectl mcp]].
+
 * Endpoints
 
 | Method   | Path                                | Purpose                              |
@@ -49,7 +54,9 @@ is returned exactly once; only its hash is stored.
 | =GET=    | =/api/v1/automations=               | engine state and its pods            |
 
 Both singular and plural type names work, so =/api/v1/sale= and =/api/v1/sales=
-are the same resource.
+are the same resource. A client that presents record types to somebody should
+offer one of the two spellings, not both: they are one resource, and showing
+two invites a duplicate.
 
 ** Settings
 

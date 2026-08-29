@@ -438,7 +438,12 @@ TYPELIB_FILE := $(GIR_NAMESPACE)-$(GIR_VERSION).typelib
 # Test flags
 # ---------------------------------------------------------------------------
 
-TEST_CFLAGS := $(CFLAGS) -I$(CURDIR)/tests
+# Fixtures are found through a define, never by guessing at the working
+# directory: `make test` runs each binary from the tree root and `make
+# test-one` may not.
+TEST_CFLAGS := $(CFLAGS) -I$(CURDIR)/tests \
+               -DVENTURE_TEST_FIXTURES=\"$(CURDIR)/tests/fixtures\" \
+               -DVENTURE_TEST_EXAMPLES=\"$(CURDIR)/data/examples\"
 TEST_LDFLAGS := $(LDFLAGS)
 
 # ---------------------------------------------------------------------------

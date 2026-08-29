@@ -75,6 +75,18 @@
 
 #include "config/venture-config.h"
 
+/* --- MCP ----------------------------------------------------------------- */
+
+/*
+ * `venturectl mcp` serves the REST API to an AI agent, so this lives on the
+ * core side rather than behind VENTURE_SERVER_BUILD: the subcommand has to
+ * build on a machine that cannot build the server at all, and it needs
+ * nothing the CLI does not already link.
+ */
+
+#include "mcp/venture-mcp-catalog.h"
+#include "mcp/venture-mcp-server.h"
+
 /* --- Server-only subsystems ---------------------------------------------- */
 
 #ifdef VENTURE_SERVER_BUILD

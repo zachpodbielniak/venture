@@ -1,0 +1,156 @@
+[
+  {
+    "name": "venture",
+    "plural": "ventures",
+    "table": "ventures",
+    "fields": [
+      {
+        "name": "id",
+        "label": "Id",
+        "type": "integer",
+        "required": false,
+        "show_in_list": true,
+        "order": 0
+      },
+      {
+        "name": "name",
+        "label": "Name",
+        "type": "string",
+        "required": true,
+        "show_in_list": true,
+        "order": 1
+      },
+      {
+        "name": "status",
+        "label": "Status",
+        "type": "enum",
+        "required": false,
+        "show_in_list": true,
+        "order": 2,
+        "choices": [
+          {
+            "value": "active",
+            "label": "Active"
+          },
+          {
+            "value": "paused",
+            "label": "Paused"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "sale",
+    "plural": "sales",
+    "table": "sales",
+    "fields": [
+      {
+        "name": "id",
+        "label": "Id",
+        "type": "integer",
+        "required": false,
+        "show_in_list": true,
+        "order": 0
+      },
+      {
+        "name": "venture-id",
+        "label": "Venture",
+        "type": "reference",
+        "required": true,
+        "show_in_list": true,
+        "order": 1,
+        "references": "venture",
+        "help": "Which venture the sale belongs to"
+      },
+      {
+        "name": "gross",
+        "label": "Gross",
+        "type": "money",
+        "required": true,
+        "show_in_list": true,
+        "order": 2
+      },
+      {
+        "name": "occurred-at",
+        "label": "Occurred at",
+        "type": "date",
+        "required": true,
+        "show_in_list": true,
+        "order": 3
+      }
+    ]
+  },
+  {
+    "name": "expense",
+    "plural": "expenses",
+    "table": "expenses",
+    "fields": [
+      {
+        "name": "id",
+        "label": "Id",
+        "type": "integer",
+        "required": false,
+        "show_in_list": true,
+        "order": 0
+      },
+      {
+        "name": "description",
+        "label": "Description",
+        "type": "string",
+        "required": true,
+        "show_in_list": true,
+        "order": 1
+      },
+      {
+        "name": "amount",
+        "label": "Amount",
+        "type": "money",
+        "required": true,
+        "show_in_list": true,
+        "order": 2
+      },
+      {
+        "name": "deductibility",
+        "label": "Deductibility",
+        "type": "enum",
+        "required": false,
+        "show_in_list": true,
+        "order": 3,
+        "choices": [
+          {
+            "value": "full",
+            "label": "Full"
+          },
+          {
+            "value": "review",
+            "label": "Needs review"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "subscription",
+    "plural": "subscriptions",
+    "table": "subscriptions",
+    "fields": [
+      {
+        "name": "id",
+        "label": "Id",
+        "type": "integer",
+        "required": false,
+        "show_in_list": true,
+        "order": 0
+      },
+      {
+        "name": "plan",
+        "label": "Plan",
+        "type": "string",
+        "required": true,
+        "show_in_list": true,
+        "order": 1
+      }
+    ]
+  }
+]

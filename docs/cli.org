@@ -67,6 +67,7 @@ venturectl update TYPE ID field=value    # change named fields
 venturectl delete TYPE ID                # soft delete
 venturectl report [NAME] [PERIOD]        # list reports, or run one
 venturectl health                        # is the server up
+venturectl mcp [--apply-writes]          # serve the API to an agent over stdio
 #+end_src
 
 * Examples
@@ -155,3 +156,11 @@ The interface is deliberately machine-friendly: =venturectl types= enumerates
 what exists, =venturectl types TYPE= describes a type's fields, and JSON is
 the default when output is piped. An agent can discover the whole data model
 without documentation.
+
+For an agent that speaks the Model Context Protocol rather than a shell,
+=venturectl mcp= is the same API as a stdio MCP server: nine tools whose
+record-type enumerations are generated from =/api/v1/schema= at startup, so a
+plugin's type is offered with no change anywhere. Writes are staged rather
+than applied unless =--apply-writes= is given. It takes its credential from
+=VENTURE_TOKEN= and refuses =--token= outright, since an MCP server is spawned
+from a config file. See [[file:mcp.org][venturectl mcp]].

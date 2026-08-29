@@ -68,9 +68,15 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `forge verify ID` | record which account the token belongs to |
 | `report [NAME] [PERIOD]` | list reports, or run one |
 | `health` | is the server up |
+| `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 
 Flags: `--server/-s`, `--token/-t`, `--format/-f table|json|yaml|csv`,
 `--quiet/-q`.
+
+`mcp` is the one command that refuses `--token`: it is spawned from an agent's
+config file, and a credential written there is visible in `ps` to every
+account on the host. It reads `VENTURE_TOKEN` and `VENTURE_URL` from the
+environment. `--server` is fine — a hostname is not a secret.
 
 Periods, anywhere one is accepted (`report NAME PERIOD`, `period=` filters):
 named (`today`, `yesterday`, `this_week`, `last_week`, `this_month`,
@@ -164,6 +170,14 @@ Setting a hash directly is what hashing exists to prevent.
 
 **Audit entries and run records refuse writes entirely**, for everybody.
 They are the record of what happened.
+
+**`venturectl mcp` stages writes rather than applying them**, unless started
+with `--apply-writes`. A staged write is a *hold*: the tool prints the exact
+request it would have sent and sends nothing. Nothing is queued on the server
+— VENTURE's REST API has no server-side staging for a token-authenticated
+write, so a staged change will never appear in `GET /api/v1/confirmations`.
+Report it to the person you work for; do not tell them it is awaiting
+approval somewhere.
 
 **Some types need more than an editor.** `forge` is owner-only, `forge_rule`
 and `plugin_config` are admin-only, `user` and `api_token` are owner-only. A

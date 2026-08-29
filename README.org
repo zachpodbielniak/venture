@@ -17,7 +17,7 @@ It is built for one operator running several things at once: a book imprint, an 
 | Binary       | What it is                                                      |
 |--------------+-----------------------------------------------------------------|
 | =venture=    | The server. REST API, HTMX web UI, reporting, AI                 |
-| =venturectl= | The CLI. Drives the server over its REST API                     |
+| =venturectl= | The CLI, and =venturectl mcp=, a stdio MCP server over that API   |
 
 Both link every vendored dependency statically, so neither has a runtime dependency on =libyaml-glib.so=, =libhtmx-glib.so=, =libai-glib.so=, =liborm-glib.so=, =libpodomation.so= or =libcrispy.so=. Only true system libraries stay dynamic.
 
@@ -140,6 +140,23 @@ does the same thing without scripting.
 
 AI tool calls read freely. Anything that would change a record is staged as a =VentureAiConfirmation= carrying a diff, and applies only after approval. Every applied mutation is audited with the prompt that caused it. The policy is configurable per install and per tool; the default is =confirm_writes=, because a hallucinated tool call that rewrites an expense is a tax problem rather than a UI annoyance.
 
+*** An outside agent gets the whole data model, generated
+
+=venturectl mcp= is a Model Context Protocol server on stdin and stdout, so
+an AI coding agent reaches VENTURE the way it reaches any other tool server —
+an =.mcp.json= entry naming the command. It offers nine tools, and the record
+types they accept are enumerated from =GET /api/v1/schema= at startup rather
+than written down in C. A record type registered by a plugin is therefore
+offered the moment it registers, which is the same promise the REST API
+already makes.
+
+The token comes from =VENTURE_TOKEN= and there is no flag for it: an MCP
+server is spawned from a config file, and an argv is world-readable through
+=/proc=. Writes are staged rather than applied by default, matching the
+in-process AI's =confirm_writes= policy. See
+[[file:docs/mcp.org][the MCP documentation]], which is explicit about what
+staging does and does not mean.
+
 *** Conversations are records
 
 The assistant lives in a floating launcher that opens a right-hand panel (=Ctrl+/=). Each conversation is a =chat_thread= with =chat_message= rows — stored through the same repository as everything else, so a thread resumes across page loads, restarts and machines, and the model is shown the stored transcript when a thread continues. Threads are scoped to the account that had them: the chat routes 404 on anybody else's thread, and the generic surfaces for the chat types are owner-only.
@@ -192,7 +209,8 @@ Working and covered by tests:
 - authentication with per-address login rate limiting, sessions, API
   tokens, the REST API, the HTMX UI
 - the AI service, its tools and the write-confirmation policy
-- =venturectl=
+- =venturectl=, including =venturectl mcp= — a stdio MCP server whose tool
+  surface is generated from the schema, tested entirely against fixtures
 - =VenturePluginManager= and all four extension mechanisms: native =.so=
   plugins, crispy =.c= scripts, podomation rules and YAML venture types
 - =VentureAutomation=: the embedded podomation engine, VENTURE's =venture=

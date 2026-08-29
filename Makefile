@@ -59,7 +59,8 @@ CORE_SRCS := \
 	$(wildcard src/interfaces/*.c) \
 	$(wildcard src/model/*.c) \
 	$(wildcard src/config/*.c) \
-	$(wildcard src/util/*.c)
+	$(wildcard src/util/*.c) \
+	$(wildcard src/mcp/*.c)
 
 # Server-only subsystems.
 SERVER_ONLY_SRCS := \
@@ -96,7 +97,8 @@ PUBLIC_HDRS := \
 	$(wildcard src/plugin/*.h) \
 	$(wildcard src/web/*.h) \
 	$(wildcard src/forge/*.h) \
-	$(wildcard src/util/*.h)
+	$(wildcard src/util/*.h) \
+	$(wildcard src/mcp/*.h)
 
 TEST_SRCS := $(wildcard tests/test-*.c)
 

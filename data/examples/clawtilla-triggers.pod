@@ -1,0 +1,117 @@
+# clawtilla-triggers.pod - telling an outside agent that a record changed
+#
+# Copyright (C) 2026 Zach Podbielniak
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# VENTURE has no webhook sender of its own and does not need one. The
+# venture module raises on_created, on_updated and on_deleted for every
+# record change from every surface -- web, API, CLI, AI -- and podomation's
+# webhook module POSTs. So "tell the agent when a deal closes" is a rule in
+# this file and no C in either project.
+#
+# The worked case is clawtilla, whose generic trigger provider turns an
+# inbound POST into a message to an agent. Nothing here is clawtilla-
+# specific: any endpoint that accepts a JSON POST works the same way.
+#
+# --------------------------------------------------------------------------
+# What actually arrives at the other end
+# --------------------------------------------------------------------------
+#
+# The venture module's event data has exactly three members, so the body the
+# receiver sees is:
+#
+#     {"type": "sale", "id": 42, "label": "Sale #42"}
+#
+# That is the whole payload. It is an identifier, not a record: the receiver
+# is expected to call back for the detail -- `venture_get` over the MCP
+# server, or GET /api/v1/<type>/<id> -- which is the right shape anyway,
+# because a payload cannot carry a record's sensitive fields and should not
+# try.
+#
+# --------------------------------------------------------------------------
+# The secret goes in the URL, and here is why
+# --------------------------------------------------------------------------
+#
+# podomation's webhook->post() takes one argument, a URL, and sends the event
+# data as an application/json body. It sets no other headers: there is no
+# Authorization, and no signature header. Any recipe that assumes a bearer
+# token or an HMAC over the body will authenticate nothing.
+#
+# So the endpoint has to be a capability URL -- the secret in the path --
+# which is exactly the case clawtilla's generic trigger provider covers for
+# senders that cannot set headers. Two things follow, and both matter:
+#
+#   - Treat the URL as the credential it is. It is in this file, so this
+#     file is a secret. It also reaches the receiver's access log, so give
+#     it an endpoint that is cheap to rotate and rotate it when this file is
+#     shared.
+#   - Use https for anything not on a loopback or a tailnet. A capability
+#     URL over plain http is a secret shouted across the network.
+#
+# --------------------------------------------------------------------------
+# Filter, or the agent hears about everything
+# --------------------------------------------------------------------------
+#
+# on_created fires for every record type there is -- every audit-adjacent
+# write, every imported CSV row, every ticket comment. An unguarded rule
+# turns a bulk import into thousands of agent turns, which costs real money.
+# Guard on the type, always.
+#
+# One sale closing.
+pod sale_watch = venture->new();
+sale_watch->on_created where event->type == "sale"
+	=> webhook->post("https://clawtilla.example/hooks/REPLACE_WITH_ENDPOINT_ID");
+
+# A deal moving. on_updated fires on every field change, so this is the
+# noisiest of the three -- consider whether a scheduled digest would serve
+# better than a message per edit.
+pod deal_watch = venture->new();
+deal_watch->on_updated where event->type == "deal"
+	=> webhook->post("https://clawtilla.example/hooks/REPLACE_WITH_ENDPOINT_ID");
+
+# An expense filed, so the bookkeeping agent can categorise it. This is the
+# one where the loop below is a live risk: read it before enabling this.
+pod expense_watch = venture->new();
+expense_watch->on_created where event->type == "expense"
+	=> webhook->post("https://clawtilla.example/hooks/REPLACE_WITH_ENDPOINT_ID");
+
+# --------------------------------------------------------------------------
+# The loop this can make, which the engine does NOT prevent
+# --------------------------------------------------------------------------
+#
+# VENTURE's cascade guard stops an automation's own writes from raising
+# events, so a rule that writes cannot trigger itself. It does not stop this
+# one, because the write comes back from outside:
+#
+#   an expense is created  ->  the agent is told  ->  the agent writes an
+#   expense through the API  ->  that is an ordinary request, so on_created
+#   fires again  ->  the agent is told again
+#
+# The write arrives as a separate HTTP request and the guard has no way to
+# know an automation started the chain. Three remedies, in order of
+# preference:
+#
+#   1. Point the trigger at a record type the agent does not write. An agent
+#      that reads expenses and writes tickets cannot feed itself.
+#   2. Let the agent stage rather than apply -- `venturectl mcp` does this by
+#      default -- so a write only happens when a person approves it, and the
+#      loop needs a human at every turn.
+#   3. Lean on clawtilla's own loop guard. It is a backstop, not a design:
+#      by the time it fires, the turns have been paid for.
+#
+# --------------------------------------------------------------------------
+# Checking it before trusting it
+# --------------------------------------------------------------------------
+#
+# The Automations page validates with the real parser and shows diagnostics,
+# and Reload rebuilds the engine from the file. To see the payload itself,
+# point a rule at something that prints:
+#
+#     pod echo_watch = venture->new();
+#     echo_watch->on_created
+#         => log->write_info("changed: {event->type} {event->id} {event->label}");
+#
+# A rule that parses is not a rule that reaches anybody. Confirm the receiver
+# saw the POST before believing the wiring: webhook->post() logs the status
+# code it got back, and a 404 from a mistyped endpoint id looks exactly like
+# a rule that never fired.

@@ -71,6 +71,11 @@ source module".
 
 =data/examples/automations.pod= in the source tree, including the one that
 matters for a business: the recurring expense.
+=data/examples/clawtilla-triggers.pod= is the other shape: telling an outside
+AI agent that a record changed, which needs no code in either project.
+=tests/test-automation.c= parses every =.pod= in that directory with the real
+parser, so a shipped example that does not load is a test failure rather than
+a bug report from whoever copied it.
 
 #+begin_src
 pod monthly_hosting = cron->new("0 9 1 * *");

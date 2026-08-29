@@ -1,0 +1,163 @@
+#+title: venturectl mcp
+#+description: Serving the REST API to an AI agent as an MCP server
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-08-29]
+#+updated: [2026-08-29]
+#+version: 0.1.0
+
+* venturectl mcp
+
+=venturectl mcp= is a Model Context Protocol server on standard input and standard output. It puts VENTURE in front of an outside AI agent — Claude Code, opencode, grok, or anything else that reads an =.mcp.json= — by translating tool calls into requests against the [[file:api.org][REST API]] with a bearer token.
+
+This is a different thing from [[file:ai.org][the AI inside VENTURE]], and the difference matters. The in-process assistant is a participant in the server: it shares the repository, stages its writes as =VentureAiConfirmation= records, and is audited with the prompt that caused each change. =venturectl mcp= is an ordinary API client that happens to speak MCP; it holds a token, it has whatever authority that token's account has, and its writes are audited as that account.
+
+#+begin_src sh
+export VENTURE_URL=http://localhost:8747
+export VENTURE_TOKEN=...
+venturectl mcp
+#+end_src
+
+** Configuration comes from the environment
+
+| Variable         | What it does                                                  |
+|------------------+---------------------------------------------------------------|
+| =VENTURE_TOKEN=  | the bearer token. Required; there is no flag for it           |
+| =VENTURE_URL=    | which server to talk to. Defaults to =http://localhost:8747=  |
+| =VENTURE_SERVER= | read if =VENTURE_URL= is unset, so the rest of venturectl's environment still works |
+
+There is deliberately no =--token=. An argv is world-readable through =/proc= and lands in the shell's history, and an MCP server is spawned from a config file that several tools read and some sync — so a credential written there is a credential to rotate. Passing =--token= to this subcommand is refused rather than ignored, because somebody who passed it would otherwise believe it had been used, having exposed it for nothing.
+
+=--server= *is* honoured, because a hostname is not a secret.
+
+*** Minting a token
+
+=POST /api/v1/tokens= while holding a session — sign in to the web UI and create one there. The plaintext is returned exactly once and only its hash is stored, so copy it then. With no token set, =venturectl mcp= refuses at startup and says this, rather than starting and letting every call fail with a 401.
+
+That refusal is not politeness. Every request failing identically reads, to an agent, like a server whose records are all missing — and an agent that believes a record is missing creates it again.
+
+** The tool surface is generated from the schema
+
+At startup the server fetches =GET /api/v1/schema= and builds its tools from what came back. Nothing in the C names a record type.
+
+This follows from what the API already promises: it is generated from the record registry, and =docs/api.org= says outright that a plugin's record type becomes a resource the moment it registers, with no routing to add. A hand-written tool list would be a second copy of VENTURE's data model, and it would go stale the first time a plugin registered a type — offering an agent a surface that is confidently missing things.
+
+Concretely: register a record type in a plugin, restart both, and it is in the =type= enumeration of every tool that takes one. =tests/test-mcp.c= pins this with two schema fixtures differing by a single entry.
+
+*** Nine tools
+
+| Tool                    | What it does                                             |
+|-------------------------+----------------------------------------------------------|
+| =venture_schema=        | the record types, or one of them in full                 |
+| =venture_list=          | list records of a type, filtered                         |
+| =venture_get=           | fetch one by id                                          |
+| =venture_create=        | create one                                               |
+| =venture_update=        | change named fields of one                               |
+| =venture_delete=        | soft-delete one                                          |
+| =venture_reports=       | what reports there are                                   |
+| =venture_report=        | run one                                                  |
+| =venture_confirmations= | list, approve or reject the in-process AI's staged writes |
+
+The names are verbs, not nouns. A tool per record type per verb would be 31 built-in types times five verbs — 155 tools in every context window — and =venturectl= already demonstrates that one generic command per verb is enough. What must never be written down is the list of nouns, and it is not.
+
+*** Singular and plural are one resource
+
+=/api/v1/sale= and =/api/v1/sales= are the same route, so the tools offer the singular once and accept either spelling. Listing both would present one record type as two and invite an agent to treat =sale= and =sales= as separate things — a duplicate waiting to happen.
+
+*** Field names arrive in the spelling that works
+
+Properties are =forge-id= in C and =forge_id= on the wire. The schema endpoint reports the C spelling; =venture_schema= translates it, exactly as =venturectl describe= does.
+
+This is worth a paragraph because the failure is silent. VENTURE *ignores* a dashed member in a POST body rather than refusing it: the record saves and the value is simply not there. So =venture_create= refuses a dashed field name itself and names the underscored one, rather than sending a write that will half-succeed.
+
+** Writes are staged by default
+
+=venture_create=, =venture_update= and =venture_delete= describe the change and do not perform it. =venturectl mcp --apply-writes= turns that off.
+
+The default matches VENTURE's own =confirm_writes= policy, and for the same reason: a hallucinated tool call that rewrites an expense is a tax problem rather than a UI annoyance.
+
+*** What staging is, exactly — and what it is not
+
+A staged write is a *hold*. The tool returns the request it would have sent, in full, and sends nothing. Nothing is queued on the server.
+
+That last sentence is the important one, and the tool's own output says it. **VENTURE's REST API has no server-side staging for a token-authenticated write.** Its confirmations are raised inside =VentureAiService= when the in-process assistant calls a write tool; there is no route that mints one, and a bearer-token =POST /api/v1/expense= either applies or fails. So a staged write does not appear in =GET /api/v1/confirmations= and =venture_confirmations= will not show it.
+
+Reporting "staged for approval" would therefore be a lie of the worst kind — it would send whoever read it to look in a queue that will never hold the change.
+
+=venture_confirmations= is still wired to the real endpoints, because they are real: it lists, approves and rejects what VENTURE's *own* assistant has staged. That is a genuinely useful thing for an outside agent to be able to see and answer.
+
+*** If you want an outside agent's writes to reach a human queue
+
+Two honest options today:
+
+1. Leave staging on and let the agent report the change to the person it works for. The hold is client-side, the description is exact, and a person decides.
+2. Give the token an account whose role cannot write, so a mistaken =--apply-writes= is refused by the server rather than by politeness.
+
+A third would need server work: a route that mints a =VentureAiConfirmation= from an authenticated API write — roughly =POST /api/v1/:type?stage=1= — so a token write lands in the same queue the assistant's writes do, answerable from the same page. That is the piece an external decision inbox would poll for, and it does not exist yet.
+
+** A report says which content type it returned
+
+=?format=csv= returns =text/csv=, not JSON. So =venture_report= prefixes its answer with the =Content-Type= the server actually sent and a plain statement of what the body is:
+
+#+begin_src
+Report: pnl
+Content-Type: text/csv; charset=utf-8
+This body is CSV.
+
+metric,value
+...
+#+end_src
+
+Classified from the response, never from the request. A server that ignored the format parameter — an older build, a proxy that stripped the query string — cannot make this claim CSV. CSV read as JSON is nonsense that parses, and an agent that mistakes one for the other reports numbers that are not there.
+
+** A 401 is a bad token, never a missing record
+
+Every failing status maps to a message in one place. The 401 case is handled from the status *before* the body is consulted at all.
+
+The reason is specific. An unauthenticated request comes back with an error body shaped like every other error, and the plausible handling — decode it, report its message — turns "your credential is wrong" into whatever the body happens to say. Should that ever read like a missing record, an agent would go and create a duplicate. An agent told its token is wrong stops and asks.
+
+A genuine 404 still reads as a missing record; a 403 says the account may not do this and mentions that some record types are owner-only.
+
+** Wiring it to an agent
+
+#+begin_src json
+{
+  "mcpServers": {
+    "venture": {
+      "command": "venturectl",
+      "args": ["mcp"],
+      "env": { "VENTURE_URL": "http://localhost:8747" }
+    }
+  }
+}
+#+end_src
+
+=VENTURE_TOKEN= is left out on purpose: put it in the environment the agent is started with, not in a file that gets committed. Confirm with =ps aux= that no token is visible once it is running.
+
+Pair it with [[file:../skills/venturectl/SKILL.md][the venturectl skill]], which covers the same server from the shell.
+
+** Telling an agent that something changed
+
+The MCP server is a pull: the agent asks. For a push, VENTURE's podomation module raises =on_created=, =on_updated= and =on_deleted= for every record change from every surface, and podomation's webhook module POSTs — so "tell the agent when a deal closes" is a rule and no code at all.
+
+=data/examples/clawtilla-triggers.pod= is the worked recipe, including two things that are easy to get wrong: the webhook module sets no headers, so the receiving endpoint has to authenticate by a capability URL rather than a bearer token or an HMAC; and an agent that writes back through the API re-raises the event, which the engine's cascade guard does not cover because the write arrives as a separate request. See [[file:automation.org][Automation]].
+
+** The protocol, and why there is no SDK
+
+Newline-delimited JSON-RPC 2.0 on stdin and stdout, written directly. =mcp-glib= exists and was considered; it was not vendored, for two reasons that are about this tree rather than about that library:
+
+- Its build directory is flat — =build/=, with no split by build type. All six current dependencies split by =$(BUILD_TYPE)=, and the reason is recorded in =CLAUDE.md=: orm-glib's flat archive is why =make clean-all= now removes every dependency build tree, because a =git checkout= gives objects the same mtime as their sources and make re-archives stale ones. A seventh dependency where =make= and =make DEBUG=1= overwrite each other's objects in place would reintroduce exactly that.
+- Its =PKG_DEPS= names =libdex-1=, which =venturectl= does not otherwise need. pkg-config resolves a whole list in one call and empties the flags if any member is missing, so a machine without =libdex-devel= could no longer build the CLI — and =make venturectl= working on a machine that cannot build the server is a property this tree maintains on purpose. (The declaration is stale: mcp-glib references no dex symbol. It is a packaging defect upstream rather than a real dependency, and fixing it there would remove this half of the objection.)
+
+Against that, the surface actually used is four methods — =initialize=, =notifications/initialized=, =tools/list=, =tools/call= — plus =ping=. The rest of mcp-glib is HTTP, WebSocket, mux, sampling, prompts, resources, roots, tasks and completion, none of which a stdio tool server touches.
+
+Two protocol details that are load-bearing:
+
+- **The JSON-RPC id keeps its type.** A numeric id answered as a quoted string is a response the client cannot match to its request, and the symptom is the server appearing to hang. The id is copied node for node.
+- **Nothing but protocol may reach stdout.** GLib's default log writer sends =g_message()= and =g_info()= to *stdout*, and one such line between two JSON-RPC messages breaks the client's parser while looking perfectly fine in a terminal. =venture_mcp_server_run()= installs a writer that sends everything to stderr before reading the first line.
+
+** Testing
+
+=tests/test-mcp.c=, 24 tests, and every response comes from a fixture: the transport is an injection point, so the suite needs no VENTURE server, no network and no subprocess. =unshare -rn ./build/debug/tests/test-mcp= demonstrates it.
+
+The schema fixtures are =tests/fixtures/schema.json= and =tests/fixtures/schema-with-plugin-type.json=, which differ by one record type. Adding a type to the first extends the "every type is offered" assertion by itself, because that test walks the fixture rather than a list written in the test.

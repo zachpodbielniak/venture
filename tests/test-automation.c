@@ -212,6 +212,58 @@ test_automation_does_not_cascade(
 	venture_automation_stop(automation);
 }
 
+/*
+ * Every rule file shipped in data/examples/ parses.
+ *
+ * These are documentation people copy into a live rules file, and the
+ * Automations page validates with this same parser -- so a shipped example
+ * that does not parse is a bug report waiting to be filed by whoever
+ * followed it. The directory is walked rather than listed, so a new example
+ * is covered the moment it is added.
+ */
+static void
+test_automation_shipped_examples_parse(void)
+{
+	g_autoptr(GDir) dir = NULL;
+	g_autoptr(GError) error = NULL;
+	const gchar *name;
+	guint checked;
+
+	dir = g_dir_open(VENTURE_TEST_EXAMPLES, 0, &error);
+
+	g_assert_no_error(error);
+	g_assert_nonnull(dir);
+
+	checked = 0;
+
+	while (NULL != (name = g_dir_read_name(dir)))
+	{
+		g_autofree gchar *path = NULL;
+		g_autofree gchar *source = NULL;
+		g_autofree gchar *message = NULL;
+
+		if (!g_str_has_suffix(name, ".pod"))
+			continue;
+
+		path = g_build_filename(VENTURE_TEST_EXAMPLES, name, NULL);
+
+		g_assert_true(g_file_get_contents(path, &source, NULL, &error));
+		g_assert_no_error(error);
+
+		if (!venture_automation_validate_dsl(source, &message))
+		{
+			g_error("%s does not parse: %s", name,
+			        (NULL != message) ? message : "no reason given");
+		}
+
+		checked++;
+	}
+
+	/* A walk that found nothing passes silently, and would keep passing
+	 * if the directory moved. */
+	g_assert_cmpuint(checked, >, 0);
+}
+
 int
 main(
 	int	  argc,
@@ -226,6 +278,9 @@ main(
 	g_test_add("/automation/does-not-cascade", Fixture, NULL,
 	           fixture_set_up, test_automation_does_not_cascade,
 	           fixture_tear_down);
+
+	g_test_add_func("/automation/shipped-examples-parse",
+	                test_automation_shipped_examples_parse);
 
 	return g_test_run();
 }
