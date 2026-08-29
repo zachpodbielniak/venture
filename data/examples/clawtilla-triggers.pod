@@ -37,9 +37,15 @@
 # Authorization, and no signature header. Any recipe that assumes a bearer
 # token or an HMAC over the body will authenticate nothing.
 #
-# So the endpoint has to be a capability URL -- the secret in the path --
-# which is exactly the case clawtilla's generic trigger provider covers for
-# senders that cannot set headers. Two things follow, and both matter:
+# So the endpoint has to be a capability URL -- the secret as a `token`
+# query parameter -- which is exactly the case clawtilla's generic trigger
+# provider covers for senders that cannot set headers.
+#
+# Only the *generic* provider accepts it. A trigger that declares forgejo,
+# gitea, github or gitlab is authenticated by that forge's own scheme, and a
+# token in the URL will not open it -- deliberately, so a capability URL
+# cannot be used to sidestep a signature somebody chose. Two things follow,
+# and both matter:
 #
 #   - Treat the URL as the credential it is. It is in this file, so this
 #     file is a secret. It also reaches the receiver's access log, so give
@@ -60,20 +66,20 @@
 # One sale closing.
 pod sale_watch = venture->new();
 sale_watch->on_created where event->type == "sale"
-	=> webhook->post("https://clawtilla.example/hooks/REPLACE_WITH_ENDPOINT_ID");
+	=> webhook->post("https://clawtilla.example/hooks/REPLACE_WITH_ENDPOINT_ID?token=REPLACE_WITH_SECRET");
 
 # A deal moving. on_updated fires on every field change, so this is the
 # noisiest of the three -- consider whether a scheduled digest would serve
 # better than a message per edit.
 pod deal_watch = venture->new();
 deal_watch->on_updated where event->type == "deal"
-	=> webhook->post("https://clawtilla.example/hooks/REPLACE_WITH_ENDPOINT_ID");
+	=> webhook->post("https://clawtilla.example/hooks/REPLACE_WITH_ENDPOINT_ID?token=REPLACE_WITH_SECRET");
 
 # An expense filed, so the bookkeeping agent can categorise it. This is the
 # one where the loop below is a live risk: read it before enabling this.
 pod expense_watch = venture->new();
 expense_watch->on_created where event->type == "expense"
-	=> webhook->post("https://clawtilla.example/hooks/REPLACE_WITH_ENDPOINT_ID");
+	=> webhook->post("https://clawtilla.example/hooks/REPLACE_WITH_ENDPOINT_ID?token=REPLACE_WITH_SECRET");
 
 # --------------------------------------------------------------------------
 # The loop this can make, which the engine does NOT prevent
@@ -114,4 +120,5 @@ expense_watch->on_created where event->type == "expense"
 # A rule that parses is not a rule that reaches anybody. Confirm the receiver
 # saw the POST before believing the wiring: webhook->post() logs the status
 # code it got back, and a 404 from a mistyped endpoint id looks exactly like
-# a rule that never fired.
+# a rule that never fired. A 401 means the token is missing or wrong -- most
+# often a URL copied without its query string.
