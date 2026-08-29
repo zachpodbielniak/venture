@@ -117,7 +117,11 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_STRV("ai-auto-approve-tools", "ai", "auto_approve_tools",
 	        "Tools that may run without confirmation"),
 	VC_INT ("ai-confirmation-ttl", "ai", "confirmation_ttl", 3600,
-	        "Seconds a staged mutation waits for a decision"),
+	        "Seconds a staged change waits for a decision before it is "
+	        "dropped"),
+	VC_INT ("ai-confirmation-limit", "ai", "confirmation_limit", 200,
+	        "Most staged changes that may wait at once; further staging is "
+	        "refused"),
 	VC_INT ("ai-max-tokens", "ai", "max_tokens", 4096, "Response token limit"),
 	VC_INT ("ai-tool-timeout", "ai", "tool_timeout", 30,
 	        "Seconds a single tool call may run"),

@@ -12,152 +12,6 @@
 #include <string.h>
 
 /* ==========================================================================
- * Confirmations
- * ========================================================================== */
-
-struct _VentureAiConfirmation
-{
-	GObject parent_instance;
-
-	gchar				*id;
-	gchar				*summary;
-	gchar				*prompt;
-	gchar				*tool_name;
-	JsonNode			*diff;
-	VentureConfirmationState	 state;
-	GDateTime			*created_at;
-	GDateTime			*expires_at;
-
-	/* The record with the change already applied in memory, held until a
-	 * decision is made. Staging the object rather than the instruction
-	 * means approval cannot re-interpret the request differently from
-	 * what the diff showed. */
-	VentureEntity			*staged;
-	gboolean			 is_delete;
-};
-
-G_DEFINE_FINAL_TYPE(VentureAiConfirmation, venture_ai_confirmation, G_TYPE_OBJECT)
-
-static void
-venture_ai_confirmation_finalize(GObject *object)
-{
-	VentureAiConfirmation *self;
-
-	self = VENTURE_AI_CONFIRMATION(object);
-
-	g_clear_pointer(&self->id, g_free);
-	g_clear_pointer(&self->summary, g_free);
-	g_clear_pointer(&self->prompt, g_free);
-	g_clear_pointer(&self->tool_name, g_free);
-	g_clear_pointer(&self->diff, json_node_unref);
-	g_clear_pointer(&self->created_at, g_date_time_unref);
-	g_clear_pointer(&self->expires_at, g_date_time_unref);
-	g_clear_object(&self->staged);
-
-	G_OBJECT_CLASS(venture_ai_confirmation_parent_class)->finalize(object);
-}
-
-static void
-venture_ai_confirmation_class_init(VentureAiConfirmationClass *klass)
-{
-	G_OBJECT_CLASS(klass)->finalize = venture_ai_confirmation_finalize;
-}
-
-static void
-venture_ai_confirmation_init(VentureAiConfirmation *self)
-{
-	self->state = VENTURE_CONFIRMATION_STATE_PENDING;
-}
-
-const gchar *
-venture_ai_confirmation_get_id(VentureAiConfirmation *self)
-{
-	g_return_val_if_fail(VENTURE_IS_AI_CONFIRMATION(self), NULL);
-
-	return self->id;
-}
-
-const gchar *
-venture_ai_confirmation_get_summary(VentureAiConfirmation *self)
-{
-	g_return_val_if_fail(VENTURE_IS_AI_CONFIRMATION(self), NULL);
-
-	return self->summary;
-}
-
-JsonNode *
-venture_ai_confirmation_get_diff(VentureAiConfirmation *self)
-{
-	g_return_val_if_fail(VENTURE_IS_AI_CONFIRMATION(self), NULL);
-
-	return self->diff;
-}
-
-GType
-venture_ai_confirmation_get_entity_type(VentureAiConfirmation *self)
-{
-	g_return_val_if_fail(VENTURE_IS_AI_CONFIRMATION(self), G_TYPE_INVALID);
-
-	if (NULL == self->staged)
-		return G_TYPE_INVALID;
-
-	return G_OBJECT_TYPE(self->staged);
-}
-
-VentureConfirmationState
-venture_ai_confirmation_get_state(VentureAiConfirmation *self)
-{
-	g_return_val_if_fail(VENTURE_IS_AI_CONFIRMATION(self),
-	                     VENTURE_CONFIRMATION_STATE_EXPIRED);
-
-	return self->state;
-}
-
-JsonNode *
-venture_ai_confirmation_to_json(VentureAiConfirmation *self)
-{
-	g_autoptr(JsonBuilder) builder = NULL;
-
-	g_return_val_if_fail(VENTURE_IS_AI_CONFIRMATION(self), NULL);
-
-	builder = json_builder_new();
-	json_builder_begin_object(builder);
-
-	json_builder_set_member_name(builder, "id");
-	json_builder_add_string_value(builder, self->id);
-
-	json_builder_set_member_name(builder, "summary");
-	json_builder_add_string_value(builder, self->summary);
-
-	json_builder_set_member_name(builder, "tool");
-	json_builder_add_string_value(builder, self->tool_name);
-
-	json_builder_set_member_name(builder, "state");
-	json_builder_add_string_value(builder,
-		venture_enum_to_nick(VENTURE_TYPE_CONFIRMATION_STATE,
-		                     (gint)self->state));
-
-	if (NULL != self->diff)
-	{
-		json_builder_set_member_name(builder, "diff");
-		json_builder_add_value(builder, json_node_ref(self->diff));
-	}
-
-	if (NULL != self->expires_at)
-	{
-		g_autofree gchar *text = NULL;
-
-		text = venture_time_to_string(self->expires_at);
-		json_builder_set_member_name(builder, "expires_at");
-		json_builder_add_string_value(builder, text);
-	}
-
-	json_builder_end_object(builder);
-
-	return json_builder_get_root(builder);
-}
-
-/* ==========================================================================
  * Service
  * ========================================================================== */
 
@@ -171,10 +25,6 @@ struct _VentureAiService
 	VentureAiPolicy		 policy;
 	gchar			*system_prompt;
 	gint			 max_tokens;
-	gint64			 confirmation_ttl;
-
-	/* Confirmation id -> VentureAiConfirmation. */
-	GHashTable		*pending;
 
 	/* The prompt currently being answered, so a staged change and its
 	 * audit entry can record what caused it. */
@@ -196,7 +46,6 @@ venture_ai_service_finalize(GObject *object)
 	g_clear_object(&self->executor);
 	g_clear_pointer(&self->system_prompt, g_free);
 	g_clear_pointer(&self->current_prompt, g_free);
-	g_clear_pointer(&self->pending, g_hash_table_unref);
 
 	G_OBJECT_CLASS(venture_ai_service_parent_class)->finalize(object);
 }
@@ -210,8 +59,6 @@ venture_ai_service_class_init(VentureAiServiceClass *klass)
 static void
 venture_ai_service_init(VentureAiService *self)
 {
-	self->pending = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
-	                                      g_object_unref);
 }
 
 VentureAiPolicy
@@ -535,101 +382,38 @@ venture_ai_tool_report(
  * Stages a change rather than applying it, and returns the tool result that
  * tells the model so.
  *
- * The staged object already carries the change, so approving it later cannot
- * apply something different from what the diff showed.
+ * The queue itself is #VentureConfirmationStore on the context, shared with
+ * every other surface that can propose a change. That sharing is the point:
+ * a person answering "the bookkeeping agent wants to record a $12 expense"
+ * should not have to know whether the agent was this assistant or an outside
+ * one holding an API token, and two queues would mean two places to look.
  */
 static gchar *
 venture_ai_stage_change(
 	VentureAiService	*self,
-	const gchar		*tool_name,
+	VentureAuditAction	 action,
 	VentureEntity		*staged,
-	JsonNode		*diff,
-	gboolean		 is_delete,
-	const gchar		*summary
+	VentureEntity		*original
 ){
 	g_autoptr(JsonBuilder) builder = NULL;
 	g_autoptr(JsonNode) node = NULL;
-	g_autoptr(GDateTime) now = NULL;
-	VentureAiConfirmation *confirmation;
+	g_autoptr(GError) local_error = NULL;
+	VentureConfirmation *confirmation;
+	VentureActor origin;
 
-	/*
-	 * A staged change that is already waiting is not staged twice.
-	 *
-	 * Models retry: a tool that answers "awaiting_approval" rather than
-	 * "ok" reads to some of them as a failure worth another go, and the
-	 * operator then faces three identical cards for one campaign and has
-	 * to work out whether approving all three creates three records. It
-	 * would. Returning the existing confirmation makes the retry a no-op
-	 * and keeps the count of cards equal to the count of changes.
-	 */
-	{
-		GHashTableIter iter;
-		gpointer value;
+	origin.kind = VENTURE_ACTOR_KIND_AI;
+	origin.name = (NULL != self->current_principal)
+		? self->current_principal->name : "ai";
+	origin.prompt = self->current_prompt;
+	origin.request_id = NULL;
+	origin.approved_by = NULL;
 
-		g_hash_table_iter_init(&iter, self->pending);
+	confirmation = venture_confirmation_store_stage(
+		venture_context_get_confirmations(self->context), action, staged,
+		original, &origin, "assistant", &local_error);
 
-		while (g_hash_table_iter_next(&iter, NULL, &value))
-		{
-			VentureAiConfirmation *existing;
-
-			existing = value;
-
-			if (VENTURE_CONFIRMATION_STATE_PENDING != existing->state)
-				continue;
-
-			if (0 != g_strcmp0(existing->tool_name, tool_name))
-				continue;
-
-			if (0 != g_strcmp0(existing->summary, summary))
-				continue;
-
-			/*
-			 * Same tool, same summary, and the same field values:
-			 * the model asked for a change it has already asked
-			 * for. Replace the staged object so the newest attempt
-			 * wins -- a retry usually carries more of the fields,
-			 * not fewer -- but keep the one card.
-			 */
-			g_set_object(&existing->staged, staged);
-			g_clear_pointer(&existing->diff, json_node_unref);
-			existing->diff = (NULL != diff) ? json_node_ref(diff)
-			                               : NULL;
-
-			builder = json_builder_new();
-			json_builder_begin_object(builder);
-			json_builder_set_member_name(builder, "status");
-			json_builder_add_string_value(builder,
-			                              "awaiting_approval");
-			json_builder_set_member_name(builder, "confirmation_id");
-			json_builder_add_string_value(builder, existing->id);
-			json_builder_set_member_name(builder, "note");
-			json_builder_add_string_value(builder,
-				"This change was already staged; it is still "
-				"waiting for the operator. Do not call the tool "
-				"again -- tell them it is waiting.");
-			json_builder_end_object(builder);
-			node = json_builder_get_root(builder);
-
-			return venture_ai_tool_result(node);
-		}
-	}
-
-	confirmation = g_object_new(VENTURE_TYPE_AI_CONFIRMATION, NULL);
-	confirmation->id = venture_generate_token(8);
-	confirmation->summary = g_strdup(summary);
-	confirmation->tool_name = g_strdup(tool_name);
-	confirmation->prompt = g_strdup(self->current_prompt);
-	confirmation->diff = (NULL != diff) ? json_node_ref(diff) : NULL;
-	confirmation->staged = g_object_ref(staged);
-	confirmation->is_delete = is_delete;
-
-	now = venture_time_now();
-	confirmation->created_at = g_date_time_ref(now);
-	confirmation->expires_at = g_date_time_add_seconds(now,
-		(gdouble)self->confirmation_ttl);
-
-	g_hash_table_insert(self->pending, g_strdup(confirmation->id),
-	                    confirmation);
+	if (NULL == confirmation)
+		return venture_ai_tool_error("%s", local_error->message);
 
 	builder = json_builder_new();
 	json_builder_begin_object(builder);
@@ -638,15 +422,18 @@ venture_ai_stage_change(
 	json_builder_add_string_value(builder, "awaiting_approval");
 
 	json_builder_set_member_name(builder, "confirmation_id");
-	json_builder_add_string_value(builder, confirmation->id);
+	json_builder_add_string_value(builder,
+		venture_confirmation_get_id(confirmation));
 
 	json_builder_set_member_name(builder, "summary");
-	json_builder_add_string_value(builder, summary);
+	json_builder_add_string_value(builder,
+		venture_confirmation_get_summary(confirmation));
 
-	if (NULL != diff)
+	if (NULL != venture_confirmation_get_diff(confirmation))
 	{
 		json_builder_set_member_name(builder, "diff");
-		json_builder_add_value(builder, json_node_ref(diff));
+		json_builder_add_value(builder,
+			json_node_ref(venture_confirmation_get_diff(confirmation)));
 	}
 
 	/* Telling the model plainly that nothing has changed stops it
@@ -682,6 +469,7 @@ venture_ai_apply(
 	actor.name = (NULL != principal) ? principal->name : "ai";
 	actor.prompt = prompt;
 	actor.request_id = NULL;
+	actor.approved_by = NULL;
 
 	if (is_delete)
 	{
@@ -703,10 +491,7 @@ venture_ai_tool_create(
 ){
 	VentureAiService *self;
 	g_autoptr(VentureEntity) record = NULL;
-	g_autoptr(JsonNode) diff = NULL;
 	g_autoptr(GError) local_error = NULL;
-	g_autofree gchar *summary = NULL;
-	g_autofree gchar *label = NULL;
 	JsonObject *input;
 	const gchar *type_name;
 
@@ -742,15 +527,6 @@ venture_ai_tool_create(
 	venture_entity_set_organization_id(record,
 		venture_context_get_default_organization_id(self->context));
 
-	/* Validate before staging, so the operator is never asked to approve
-	 * something that would fail anyway. */
-	if (!venture_entity_validate(record, &local_error))
-		return venture_ai_tool_error("%s", local_error->message);
-
-	label = venture_entity_get_display_name(record);
-	summary = g_strdup_printf("Create %s \"%s\"", type_name, label);
-	diff = venture_serializable_to_json(VENTURE_SERIALIZABLE(record), FALSE);
-
 	if (VENTURE_AI_POLICY_AUTONOMOUS == self->policy)
 	{
 		if (!venture_ai_apply(self, record, FALSE, self->current_prompt,
@@ -767,8 +543,8 @@ venture_ai_tool_create(
 		}
 	}
 
-	return venture_ai_stage_change(self, "venture_create", record, diff,
-	                               FALSE, summary);
+	return venture_ai_stage_change(self, VENTURE_AUDIT_ACTION_CREATE, record,
+	                               NULL);
 }
 
 static gchar *
@@ -781,10 +557,7 @@ venture_ai_tool_update(
 	VentureAiService *self;
 	g_autoptr(VentureEntity) record = NULL;
 	g_autoptr(VentureEntity) original = NULL;
-	g_autoptr(JsonNode) diff = NULL;
 	g_autoptr(GError) local_error = NULL;
-	g_autofree gchar *summary = NULL;
-	g_autofree gchar *label = NULL;
 	JsonObject *input;
 	GType entity_type;
 	const gchar *type_name;
@@ -830,17 +603,6 @@ venture_ai_tool_update(
 			return venture_ai_tool_error("%s", local_error->message);
 	}
 
-	if (!venture_entity_validate(record, &local_error))
-		return venture_ai_tool_error("%s", local_error->message);
-
-	diff = venture_entity_diff(original, record);
-
-	if (0 == json_object_get_size(json_node_get_object(diff)))
-		return venture_ai_tool_error("That would not change anything");
-
-	label = venture_entity_get_display_name(record);
-	summary = g_strdup_printf("Update %s \"%s\"", type_name, label);
-
 	if (VENTURE_AI_POLICY_AUTONOMOUS == self->policy)
 	{
 		if (!venture_ai_apply(self, record, FALSE, self->current_prompt,
@@ -857,8 +619,8 @@ venture_ai_tool_update(
 		}
 	}
 
-	return venture_ai_stage_change(self, "venture_update", record, diff,
-	                               FALSE, summary);
+	return venture_ai_stage_change(self, VENTURE_AUDIT_ACTION_UPDATE, record,
+	                               original);
 }
 
 static gchar *
@@ -870,9 +632,8 @@ venture_ai_tool_delete(
 ){
 	VentureAiService *self;
 	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(VentureEntity) original = NULL;
 	g_autoptr(GError) local_error = NULL;
-	g_autofree gchar *summary = NULL;
-	g_autofree gchar *label = NULL;
 	JsonObject *input;
 	GType entity_type;
 	const gchar *type_name;
@@ -907,9 +668,10 @@ venture_ai_tool_delete(
 		return venture_ai_tool_error("There is no %s with id %" G_GINT64_FORMAT,
 		                             type_name, id);
 
-	label = venture_entity_get_display_name(record);
-	summary = g_strdup_printf("Delete %s \"%s\" (recoverable)", type_name,
-	                          label);
+	/* A second copy, untouched by the deletion, so a stale approval can
+	 * still say what somebody else changed in the meantime. */
+	original = venture_database_get(venture_context_get_database(self->context),
+	                                entity_type, id, NULL);
 
 	/*
 	 * Deletion is staged even under the autonomous policy. Everything
@@ -918,8 +680,8 @@ venture_ai_tool_delete(
 	 * materially worse, and soft deletion alone is not reason enough to
 	 * let a model do it unattended.
 	 */
-	return venture_ai_stage_change(self, "venture_delete", record, NULL,
-	                               TRUE, summary);
+	return venture_ai_stage_change(self, VENTURE_AUDIT_ACTION_DELETE, record,
+	                               original);
 }
 
 /* --- Read tools beyond the query ------------------------------------------ */
@@ -1899,10 +1661,7 @@ venture_ai_service_new(
 	self->context = g_object_ref(context);
 	self->policy = venture_config_get_ai_policy(config);
 
-	g_object_get(config,
-	             "ai-max-tokens", &max_tokens,
-	             "ai-confirmation-ttl", &self->confirmation_ttl,
-	             NULL);
+	g_object_get(config, "ai-max-tokens", &max_tokens, NULL);
 	self->max_tokens = (gint)max_tokens;
 
 	self->provider = venture_ai_service_create_provider(self, error);
@@ -2054,166 +1813,6 @@ venture_ai_service_answer(
 ){
 	return venture_ai_service_answer_in_thread(self, NULL, message,
 	                                           principal, error);
-}
-
-/* --- Confirmations ------------------------------------------------------- */
-
-/*
- * Marks anything past its deadline as expired. A staged change that has sat
- * unapproved for an hour almost certainly refers to a conversation the
- * operator has moved on from, and applying it later would surprise them.
- */
-static void
-venture_ai_service_expire(VentureAiService *self)
-{
-	g_autoptr(GDateTime) now = NULL;
-	GHashTableIter iter;
-	gpointer value;
-
-	now = venture_time_now();
-	g_hash_table_iter_init(&iter, self->pending);
-
-	while (g_hash_table_iter_next(&iter, NULL, &value))
-	{
-		VentureAiConfirmation *confirmation;
-
-		confirmation = value;
-
-		if (VENTURE_CONFIRMATION_STATE_PENDING != confirmation->state)
-			continue;
-
-		if ((NULL != confirmation->expires_at) &&
-		    (g_date_time_compare(now, confirmation->expires_at) >= 0))
-			confirmation->state = VENTURE_CONFIRMATION_STATE_EXPIRED;
-	}
-}
-
-GPtrArray *
-venture_ai_service_list_pending(VentureAiService *self)
-{
-	GPtrArray *pending;
-	GHashTableIter iter;
-	gpointer value;
-
-	g_return_val_if_fail(VENTURE_IS_AI_SERVICE(self), NULL);
-
-	venture_ai_service_expire(self);
-
-	pending = g_ptr_array_new();
-	g_hash_table_iter_init(&iter, self->pending);
-
-	while (g_hash_table_iter_next(&iter, NULL, &value))
-	{
-		VentureAiConfirmation *confirmation;
-
-		confirmation = value;
-
-		if (VENTURE_CONFIRMATION_STATE_PENDING == confirmation->state)
-			g_ptr_array_add(pending, confirmation);
-	}
-
-	return pending;
-}
-
-VentureAiConfirmation *
-venture_ai_service_find(
-	VentureAiService	*self,
-	const gchar		*confirmation_id
-){
-	g_return_val_if_fail(VENTURE_IS_AI_SERVICE(self), NULL);
-
-	if (NULL == confirmation_id)
-		return NULL;
-
-	return g_hash_table_lookup(self->pending, confirmation_id);
-}
-
-gboolean
-venture_ai_service_approve(
-	VentureAiService	 *self,
-	const gchar		 *confirmation_id,
-	VentureAuthPrincipal	 *principal,
-	GError			**error
-){
-	VentureAiConfirmation *confirmation;
-
-	g_return_val_if_fail(VENTURE_IS_AI_SERVICE(self), FALSE);
-	g_return_val_if_fail(NULL != confirmation_id, FALSE);
-
-	venture_ai_service_expire(self);
-	confirmation = g_hash_table_lookup(self->pending, confirmation_id);
-
-	if (NULL == confirmation)
-	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
-		            "There is no pending change with id %s", confirmation_id);
-		return FALSE;
-	}
-
-	if (VENTURE_CONFIRMATION_STATE_PENDING != confirmation->state)
-	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
-		            "That change is already %s",
-		            venture_enum_to_nick(VENTURE_TYPE_CONFIRMATION_STATE,
-		                                 (gint)confirmation->state));
-		return FALSE;
-	}
-
-	if (!venture_ai_apply(self, confirmation->staged, confirmation->is_delete,
-	                      confirmation->prompt, principal, error))
-	{
-		/* A failed apply is recorded as failed rather than left
-		 * pending, so it cannot be retried into a different outcome
-		 * than the diff described. */
-		confirmation->state = VENTURE_CONFIRMATION_STATE_FAILED;
-		return FALSE;
-	}
-
-	confirmation->state = VENTURE_CONFIRMATION_STATE_APPROVED;
-
-	return TRUE;
-}
-
-gboolean
-venture_ai_service_reject(
-	VentureAiService	 *self,
-	const gchar		 *confirmation_id,
-	VentureAuthPrincipal	 *principal,
-	GError			**error
-){
-	VentureAiConfirmation *confirmation;
-
-	g_return_val_if_fail(VENTURE_IS_AI_SERVICE(self), FALSE);
-	g_return_val_if_fail(NULL != confirmation_id, FALSE);
-
-	confirmation = g_hash_table_lookup(self->pending, confirmation_id);
-
-	if (NULL == confirmation)
-	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
-		            "There is no pending change with id %s", confirmation_id);
-		return FALSE;
-	}
-
-	confirmation->state = VENTURE_CONFIRMATION_STATE_REJECTED;
-
-	/* The refusal is audited too: knowing what the AI proposed and was
-	 * denied is as useful as knowing what it did. */
-	{
-		g_autoptr(VentureAuditEntry) entry = NULL;
-
-		entry = venture_audit_entry_new_for_change(
-			VENTURE_AUDIT_ACTION_REJECT, VENTURE_ACTOR_KIND_USER,
-			(NULL != principal) ? principal->name : NULL,
-			confirmation->staged, confirmation->diff);
-		g_object_set(entry, "prompt", confirmation->prompt,
-		             "source", "ai", NULL);
-
-		venture_database_save(venture_context_get_database(self->context),
-		                      VENTURE_ENTITY(entry), NULL, NULL);
-	}
-
-	return TRUE;
 }
 
 JsonNode *

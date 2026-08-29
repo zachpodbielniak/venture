@@ -651,7 +651,7 @@ typedef enum
  *
  * How much authority AI tool calls have. The default is
  * %VENTURE_AI_POLICY_CONFIRM_WRITES: reads run unattended, and anything that
- * would change a record is turned into a #VentureAiConfirmation carrying a
+ * would change a record is turned into a #VentureConfirmation carrying a
  * diff for approval. Every applied mutation is audited regardless of policy.
  */
 typedef enum
@@ -669,7 +669,7 @@ typedef enum
  * @VENTURE_CONFIRMATION_STATE_EXPIRED: timed out without a decision
  * @VENTURE_CONFIRMATION_STATE_FAILED: approved but the write then failed
  *
- * The lifecycle of a staged AI mutation.
+ * The lifecycle of a staged change, whichever surface proposed it.
  */
 typedef enum
 {

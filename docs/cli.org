@@ -161,6 +161,8 @@ For an agent that speaks the Model Context Protocol rather than a shell,
 =venturectl mcp= is the same API as a stdio MCP server: nine tools whose
 record-type enumerations are generated from =/api/v1/schema= at startup, so a
 plugin's type is offered with no change anywhere. Writes are staged rather
-than applied unless =--apply-writes= is given. It takes its credential from
+than applied unless =--apply-writes= is given: the change is queued on the
+server for somebody to approve, not merely described. =venturectl --stage=
+does the same for =create=, =update= and =delete= from the shell. It takes its credential from
 =VENTURE_TOKEN= and refuses =--token= outright, since an MCP server is spawned
 from a config file. See [[file:mcp.org][venturectl mcp]].

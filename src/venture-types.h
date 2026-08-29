@@ -88,6 +88,8 @@ typedef struct _VentureEntityRegistry		VentureEntityRegistry;
 typedef struct _VentureVentureTypeRegistry	VentureVentureTypeRegistry;
 typedef struct _VentureConfig			VentureConfig;
 typedef struct _VentureContext			VentureContext;
+typedef struct _VentureConfirmation		VentureConfirmation;
+typedef struct _VentureConfirmationStore	VentureConfirmationStore;
 typedef struct _VentureApplication		VentureApplication;
 
 /* --- Database ------------------------------------------------------------ */
@@ -110,7 +112,9 @@ typedef struct _VentureReportRegistry		VentureReportRegistry;
 typedef struct _VentureAiService		VentureAiService;
 typedef struct _VentureAiSession		VentureAiSession;
 typedef struct _VentureAiToolRegistry		VentureAiToolRegistry;
-typedef struct _VentureAiConfirmation		VentureAiConfirmation;
+
+/* A staged change is #VentureConfirmation, above: it stopped being about AI
+ * when a token-authenticated REST write could stage one too. */
 
 /* --- Automation ---------------------------------------------------------- */
 

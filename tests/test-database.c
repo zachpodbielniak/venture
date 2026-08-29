@@ -1162,6 +1162,7 @@ test_database_writes_audit_entries(
 	actor.name = "claude-sonnet-5";
 	actor.prompt = "mark the etsy shop as active";
 	actor.request_id = "req-1";
+	actor.approved_by = NULL;
 
 	venture = venture_venture_new();
 	g_object_set(venture, "name", "etsy", NULL);
@@ -1888,6 +1889,7 @@ test_database_moving_a_record_between_entities_is_audited(void)
 	actor.name = "someone";
 	actor.prompt = NULL;
 	actor.request_id = NULL;
+	actor.approved_by = NULL;
 
 	venture = venture_venture_new();
 	g_object_set(venture, "name", "Moved", NULL);

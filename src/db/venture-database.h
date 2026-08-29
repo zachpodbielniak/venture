@@ -46,7 +46,13 @@ G_DECLARE_FINAL_TYPE(VentureDatabase, venture_database, VENTURE, DATABASE, GObje
  * @name: (nullable): a human-readable label, such as a username or model id
  * @prompt: (nullable): for an AI-driven change, the instruction that caused
  *   it
- * @request_id: (nullable): correlates the change with a request
+ * @request_id: (nullable): correlates the change with a request. A change
+ *   applied from the confirmation queue carries the confirmation's
+ *   identifier here, which is what tells a staged-then-approved write apart
+ *   from a direct one -- a direct write never sets it
+ * @approved_by: (nullable): for a change that went through the confirmation
+ *   queue, who let it through. @name stays whoever asked, so the trail
+ *   records both parties rather than collapsing them into one
  *
  * Who is responsible for a mutation. Passed to every write so the audit
  * trail can answer "did I do that, or did the AI?" months later.
@@ -57,6 +63,7 @@ typedef struct
 	const gchar		*name;
 	const gchar		*prompt;
 	const gchar		*request_id;
+	const gchar		*approved_by;
 } VentureActor;
 
 /**

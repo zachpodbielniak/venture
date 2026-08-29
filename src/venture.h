@@ -105,6 +105,10 @@
 
 #include "report/venture-report.h"
 
+/* The confirmation store comes first: the context owns one and names its
+ * type in an accessor. */
+#include "core/venture-confirmation-store.h"
+
 #include "core/venture-context.h"
 #include "core/venture-ticket-relation.h"
 

@@ -10,7 +10,9 @@
 
 =venturectl mcp= is a Model Context Protocol server on standard input and standard output. It puts VENTURE in front of an outside AI agent — Claude Code, opencode, grok, or anything else that reads an =.mcp.json= — by translating tool calls into requests against the [[file:api.org][REST API]] with a bearer token.
 
-This is a different thing from [[file:ai.org][the AI inside VENTURE]], and the difference matters. The in-process assistant is a participant in the server: it shares the repository, stages its writes as =VentureAiConfirmation= records, and is audited with the prompt that caused each change. =venturectl mcp= is an ordinary API client that happens to speak MCP; it holds a token, it has whatever authority that token's account has, and its writes are audited as that account.
+This is a different thing from [[file:ai.org][the AI inside VENTURE]], and the difference matters. The in-process assistant is a participant in the server: it shares the repository and is audited with the prompt that caused each change. =venturectl mcp= is an ordinary API client that happens to speak MCP; it holds a token, it has whatever authority that token's account has, and its writes are audited as that account.
+
+What they no longer differ on is staging. Both propose a change into the same queue of =VentureConfirmation= records, and a person answers them from the same page — the whole reason for the =?stage=1= route being there.
 
 #+begin_src sh
 export VENTURE_URL=http://localhost:8747
@@ -56,7 +58,7 @@ Concretely: register a record type in a plugin, restart both, and it is in the =
 | =venture_delete=        | soft-delete one                                          |
 | =venture_reports=       | what reports there are                                   |
 | =venture_report=        | run one                                                  |
-| =venture_confirmations= | list, approve or reject the in-process AI's staged writes |
+| =venture_confirmations= | list, approve or reject anything waiting for a decision   |
 
 The names are verbs, not nouns. A tool per record type per verb would be 31 built-in types times five verbs — 155 tools in every context window — and =venturectl= already demonstrates that one generic command per verb is enough. What must never be written down is the list of nouns, and it is not.
 
@@ -72,28 +74,67 @@ This is worth a paragraph because the failure is silent. VENTURE *ignores* a das
 
 ** Writes are staged by default
 
-=venture_create=, =venture_update= and =venture_delete= describe the change and do not perform it. =venturectl mcp --apply-writes= turns that off.
+=venture_create=, =venture_update= and =venture_delete= propose the change
+instead of making it. =venturectl mcp --apply-writes= turns that off.
 
-The default matches VENTURE's own =confirm_writes= policy, and for the same reason: a hallucinated tool call that rewrites an expense is a tax problem rather than a UI annoyance.
+The default matches VENTURE's own =confirm_writes= policy, and for the same
+reason: a hallucinated tool call that rewrites an expense is a tax problem
+rather than a UI annoyance.
 
-*** What staging is, exactly — and what it is not
+*** Staging is a queue on the server
 
-A staged write is a *hold*. The tool returns the request it would have sent, in full, and sends nothing. Nothing is queued on the server.
+The tool sends the write with =?stage=1=. VENTURE builds and validates the
+record exactly as it would for a direct write, holds it, and answers =202=
+with a confirmation. The tool reports its id and where it is waiting:
 
-That last sentence is the important one, and the tool's own output says it. **VENTURE's REST API has no server-side staging for a token-authenticated write.** Its confirmations are raised inside =VentureAiService= when the in-process assistant calls a write tool; there is no route that mints one, and a bearer-token =POST /api/v1/expense= either applies or fails. So a staged write does not appear in =GET /api/v1/confirmations= and =venture_confirmations= will not show it.
+#+begin_src
+Not applied yet. The change was staged on the VENTURE server and is waiting
+for a person to approve it.
 
-Reporting "staged for approval" would therefore be a lie of the worst kind — it would send whoever read it to look in a queue that will never hold the change.
+  confirmation id: a3f9c118
+  approve: POST /api/v1/confirmations/a3f9c118/approve
+  reject:  POST /api/v1/confirmations/a3f9c118/reject
+#+end_src
 
-=venture_confirmations= is still wired to the real endpoints, because they are real: it lists, approves and rejects what VENTURE's *own* assistant has staged. That is a genuinely useful thing for an outside agent to be able to see and answer.
+It really is queued: =venture_confirmations= lists it, =GET
+/api/v1/confirmations= lists it, and it appears in the AI panel beside
+anything VENTURE's own assistant has staged. A person can find and answer it
+without the agent's cooperation, which is the difference between a queue and
+a promise.
 
-*** If you want an outside agent's writes to reach a human queue
+This is what an outside decision inbox polls. See [[file:api.org][Staging a
+write]] for the route, the conflict rules and how long a card waits.
 
-Two honest options today:
+*** Against a server that cannot stage, it holds instead
 
-1. Leave staging on and let the agent report the change to the person it works for. The hold is client-side, the description is exact, and a person decides.
-2. Give the token an account whose role cannot write, so a mistaken =--apply-writes= is refused by the server rather than by politeness.
+At startup the server reads =GET /api/v1/health= and looks for
+=staged_writes=. If it is absent — an older VENTURE — the write tools fall
+back to describing the change without sending it, and say so:
 
-A third would need server work: a route that mints a =VentureAiConfirmation= from an authenticated API write — roughly =POST /api/v1/:type?stage=1= — so a token write lands in the same queue the assistant's writes do, answerable from the same page. That is the piece an external decision inbox would poll for, and it does not exist yet.
+#+begin_src
+Not applied. Write staging is on and this VENTURE server is too old to stage
+a change itself, so the change was described and not sent.
+
+  POST /api/v1/expense
+  ...
+
+Nothing is queued on the VENTURE server: it has no pending confirmation for
+this, and venture_confirmations will not show it.
+#+end_src
+
+The probe is not politeness. =?stage=1= is an unknown query parameter to a
+build that predates staging, an unknown parameter on a write route is
+*ignored*, and the change would be applied — the one outcome this flag exists
+to prevent. Guessing would send exactly the write it was holding back.
+
+*** And the answer is classified from the reply, never from the request
+
+A proxy that strips the query string, or a server that advertised staging and
+then did not do it, answers with the record it just wrote. The tool checks
+for =staged= in the response before it says anything about a queue: reporting
+a change as awaiting approval when it is already in the books would send
+whoever read it to look for a decision nobody has to make, while the figure
+sits in the accounts.
 
 ** A report says which content type it returned
 
@@ -158,6 +199,6 @@ Two protocol details that are load-bearing:
 
 ** Testing
 
-=tests/test-mcp.c=, 24 tests, and every response comes from a fixture: the transport is an injection point, so the suite needs no VENTURE server, no network and no subprocess. =unshare -rn ./build/debug/tests/test-mcp= demonstrates it.
+=tests/test-mcp.c=, 27 tests, and every response comes from a fixture: the transport is an injection point, so the suite needs no VENTURE server, no network and no subprocess. =unshare -rn ./build/debug/tests/test-mcp= demonstrates it.
 
 The schema fixtures are =tests/fixtures/schema.json= and =tests/fixtures/schema-with-plugin-type.json=, which differ by one record type. Adding a type to the first extends the "every type is offered" assertion by itself, because that test walks the fixture rather than a list written in the test.

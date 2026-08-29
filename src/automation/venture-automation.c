@@ -454,6 +454,7 @@ venture_pod_module_handle_create(
 	actor.name = "automation";
 	actor.prompt = NULL;
 	actor.request_id = NULL;
+	actor.approved_by = NULL;
 
 	if (!venture_database_save(venture_context_get_database(self->context),
 	                           record, &actor, &error))

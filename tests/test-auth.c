@@ -903,6 +903,89 @@ server_fixture_post_raw(
 }
 
 /*
+ * Like server_fixture_request(), but the body goes out as JSON.
+ *
+ * The API decodes a body regardless of what the Content-Type says, but a
+ * test that lies about it is a test that would keep passing if the route
+ * started caring -- and a client that got this wrong is exactly the sort of
+ * thing these tests are here to notice.
+ */
+static guint
+server_fixture_json(
+	ServerFixture	 *fixture,
+	const gchar	 *method,
+	const gchar	 *path,
+	const gchar	 *cookie,
+	const gchar	 *json,
+	gchar		**out_body
+){
+	g_autoptr(SoupMessage) message = NULL;
+	g_autofree gchar *url = NULL;
+	RequestResult outcome = { FALSE, NULL, NULL };
+
+	url = g_strdup_printf("http://127.0.0.1:%u%s", fixture->port, path);
+	message = soup_message_new(method, url);
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+
+	if (NULL != cookie)
+		soup_message_headers_append(
+			soup_message_get_request_headers(message), "Cookie", cookie);
+
+	if (NULL != json)
+	{
+		g_autoptr(GBytes) bytes = NULL;
+
+		bytes = g_bytes_new(json, strlen(json));
+		soup_message_set_request_body_from_bytes(message, "application/json",
+		                                         bytes);
+	}
+
+	soup_session_send_and_read_async(fixture->session, message,
+	                                 G_PRIORITY_DEFAULT, NULL,
+	                                 server_fixture_request_done, &outcome);
+
+	while (!outcome.done)
+		g_main_context_iteration(NULL, TRUE);
+
+	if (NULL != outcome.error)
+		g_error("%s %s: %s", method, path, outcome.error->message);
+
+	if (NULL != out_body)
+		*out_body = g_strndup(g_bytes_get_data(outcome.body, NULL),
+		                      g_bytes_get_size(outcome.body));
+
+	g_clear_pointer(&outcome.body, g_bytes_unref);
+	g_clear_error(&outcome.error);
+
+	return soup_message_get_status(message);
+}
+
+/*
+ * How many records of @type the API reports, as the caller.
+ */
+static gint64
+server_fixture_count(
+	ServerFixture	*fixture,
+	const gchar	*type,
+	const gchar	*cookie
+){
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *path = NULL;
+	g_autoptr(JsonNode) node = NULL;
+
+	path = g_strdup_printf("/api/v1/%s", type);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, cookie,
+	                                        NULL, &body, NULL),
+	                 ==, SOUP_STATUS_OK);
+
+	node = venture_json_parse(body, NULL);
+	g_assert_nonnull(node);
+
+	return json_object_get_int_member(json_node_get_object(node), "total");
+}
+
+/*
  * Creates an active account directly in the fixture's database, so a test
  * can sign in over HTTP as somebody specific.
  */
@@ -1728,9 +1811,13 @@ test_auth_approving_respects_the_records_own_role(
 	g_assert_nonnull(editor);
 
 	/*
-	 * This fixture has no AI provider, so the route reports that before
-	 * it ever looks a confirmation up -- the guard's own branch cannot
-	 * be reached from here, and exercising it would need a live model.
+	 * This fixture has no AI provider, and the route no longer cares:
+	 * the confirmation queue belongs to the context rather than to the
+	 * assistant, so an install with AI switched off still stages REST
+	 * writes and still answers here. An unknown id is therefore a plain
+	 * 404 -- it used to be a 501 saying AI was not configured, which was
+	 * a true statement about the wrong thing.
+	 *
 	 * What these three assertions pin is everything the guard rests on:
 	 * that an editor passes the blanket check (so the guard is what
 	 * stops them, not the check above it), that a viewer does not reach
@@ -1739,7 +1826,7 @@ test_auth_approving_respects_the_records_own_role(
 	 */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/confirmations/nosuchid/approve", editor, "", NULL, NULL),
-		==, SOUP_STATUS_NOT_IMPLEMENTED);
+		==, SOUP_STATUS_NOT_FOUND);
 
 	/* A viewer must not reach it at all. */
 	{
@@ -1763,6 +1850,244 @@ test_auth_approving_respects_the_records_own_role(
 		editor, "{\"name\":\"theirs\",\"base_url\":\"https://attacker.example\"}",
 		NULL, NULL),
 		==, SOUP_STATUS_FORBIDDEN);
+}
+
+/*
+ * A write with `?stage=1` proposes the change instead of making it.
+ *
+ * What breaks if this regresses: the reason the route exists. An outside
+ * agent is given a token so that it can suggest bookkeeping without being
+ * trusted to do it; a staged write that writes is that trust granted by
+ * accident, with a confirmation card beside it that reads as a request for
+ * permission somebody already took.
+ *
+ * The count is checked through the API rather than the database on purpose:
+ * that is the surface the agent and the person both see.
+ */
+static void
+test_auth_staged_write_changes_nothing(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor = NULL;
+	g_autofree gchar *staged = NULL;
+	g_autofree gchar *listing = NULL;
+	g_autofree gchar *approve_path = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	JsonObject *confirmation;
+	const gchar *id;
+
+	(void)user_data;
+
+	server_fixture_create_user(fixture, "eve", "e-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "eve", "e-long-password");
+	g_assert_nonnull(editor);
+
+	g_assert_cmpint(server_fixture_count(fixture, "expense", editor), ==, 0);
+
+	g_assert_cmpuint(server_fixture_json(fixture, "POST",
+		"/api/v1/expense?stage=1", editor,
+		"{\"description\":\"Coffee grinder\",\"amount\":\"12.00 USD\"}",
+		&staged),
+		==, SOUP_STATUS_ACCEPTED);
+
+	/* Nothing written. */
+	g_assert_cmpint(server_fixture_count(fixture, "expense", editor), ==, 0);
+
+	node = venture_json_parse(staged, NULL);
+	g_assert_nonnull(node);
+	g_assert_true(json_object_get_boolean_member(json_node_get_object(node),
+	                                             "staged"));
+
+	confirmation = json_object_get_object_member(json_node_get_object(node),
+	                                             "confirmation");
+	id = venture_json_object_get_string(confirmation, "id", NULL);
+	g_assert_nonnull(id);
+
+	/* And it is in the queue a person answers from, described well enough
+	 * to decide on: which type, and what the change would be. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/api/v1/confirmations", editor, NULL, &listing, NULL),
+		==, SOUP_STATUS_OK);
+
+	{
+		g_autoptr(JsonNode) queue = NULL;
+		JsonObject *card;
+
+		queue = venture_json_parse(listing, NULL);
+		g_assert_nonnull(queue);
+		g_assert_true(JSON_NODE_HOLDS_ARRAY(queue));
+		g_assert_cmpuint(json_array_get_length(json_node_get_array(queue)),
+		                 ==, 1);
+
+		card = json_array_get_object_element(json_node_get_array(queue), 0);
+
+		g_assert_cmpstr(venture_json_object_get_string(card, "id", NULL), ==,
+		                id);
+		g_assert_cmpstr(venture_json_object_get_string(card, "type", NULL),
+		                ==, "expense");
+		g_assert_cmpstr(venture_json_object_get_string(card, "action", NULL),
+		                ==, "create");
+		g_assert_cmpstr(venture_json_object_get_string(
+			json_object_get_object_member(card, "origin"), "via", NULL), ==,
+			"rest-api");
+	}
+
+	/* Approving applies it, through the same repository call a direct
+	 * write would have used. */
+	approve_path = g_strdup_printf("/api/v1/confirmations/%s/approve", id);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", approve_path,
+	                                        editor, "", NULL, NULL),
+	                 ==, SOUP_STATUS_OK);
+
+	g_assert_cmpint(server_fixture_count(fixture, "expense", editor), ==, 1);
+}
+
+/*
+ * Rejecting discards it, and the record never appears.
+ */
+static void
+test_auth_staged_write_can_be_rejected(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor = NULL;
+	g_autofree gchar *staged = NULL;
+	g_autofree gchar *listing = NULL;
+	g_autofree gchar *reject_path = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	const gchar *id;
+
+	(void)user_data;
+
+	server_fixture_create_user(fixture, "erica", "e-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "erica", "e-long-password");
+
+	g_assert_cmpuint(server_fixture_json(fixture, "POST",
+		"/api/v1/expense?stage=1", editor,
+		"{\"description\":\"Not ours\",\"amount\":\"400.00 USD\"}", &staged),
+		==, SOUP_STATUS_ACCEPTED);
+
+	node = venture_json_parse(staged, NULL);
+	id = venture_json_object_get_string(
+		json_object_get_object_member(json_node_get_object(node),
+		                              "confirmation"), "id", NULL);
+	g_assert_nonnull(id);
+
+	reject_path = g_strdup_printf("/api/v1/confirmations/%s/reject", id);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", reject_path,
+	                                        editor, "", NULL, NULL),
+	                 ==, SOUP_STATUS_OK);
+
+	g_assert_cmpint(server_fixture_count(fixture, "expense", editor), ==, 0);
+
+	/* And it is out of the queue, rather than sitting there looking like
+	 * it still needs answering. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/api/v1/confirmations", editor, NULL, &listing, NULL),
+		==, SOUP_STATUS_OK);
+
+	g_assert_null(strstr(listing, id));
+}
+
+/*
+ * Staging is a write, and needs the role a write needs.
+ *
+ * What breaks if this regresses: a viewer gets a way to put changes in front
+ * of an editor who approves cards without re-reading them. Proposing is
+ * cheaper than writing, which is exactly why it must not be a lower bar.
+ */
+static void
+test_auth_staging_needs_the_editor_role(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *viewer = NULL;
+
+	(void)user_data;
+
+	server_fixture_create_user(fixture, "val", "v-long-password",
+	                           VENTURE_USER_ROLE_VIEWER, NULL);
+	viewer = server_fixture_login(fixture, "val", "v-long-password");
+
+	g_assert_cmpuint(server_fixture_json(fixture, "POST",
+		"/api/v1/expense?stage=1", viewer,
+		"{\"description\":\"Sneaky\",\"amount\":\"1.00 USD\"}", NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+}
+
+/*
+ * A `stage` value the server does not recognise is refused, not ignored.
+ *
+ * What breaks if this regresses: `?stage=y` is an unknown query parameter,
+ * an unknown parameter on a write route is ignored, and the write the caller
+ * was trying to hold back is applied. The failure is silent and the record
+ * is already there by the time anybody reads the response.
+ */
+static void
+test_auth_unknown_stage_value_is_refused(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor = NULL;
+
+	(void)user_data;
+
+	server_fixture_create_user(fixture, "ewan", "e-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "ewan", "e-long-password");
+
+	g_assert_cmpuint(server_fixture_json(fixture, "POST",
+		"/api/v1/expense?stage=y", editor,
+		"{\"description\":\"Held back\",\"amount\":\"7.00 USD\"}", NULL),
+		==, SOUP_STATUS_BAD_REQUEST);
+
+	/* And nothing was written by the request that was refused. */
+	g_assert_cmpint(server_fixture_count(fixture, "expense", editor), ==, 0);
+}
+
+/*
+ * A staged delete leaves the record alone until it is approved.
+ */
+static void
+test_auth_staged_delete_leaves_the_record(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor = NULL;
+	g_autofree gchar *created = NULL;
+	g_autofree gchar *staged = NULL;
+	g_autofree gchar *delete_path = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	gint64 id;
+
+	(void)user_data;
+
+	server_fixture_create_user(fixture, "ed", "e-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "ed", "e-long-password");
+
+	g_assert_cmpuint(server_fixture_json(fixture, "POST", "/api/v1/expense",
+		editor, "{\"description\":\"Wrong row\",\"amount\":\"1.00 USD\"}",
+		&created),
+		==, SOUP_STATUS_CREATED);
+
+	node = venture_json_parse(created, NULL);
+	id = json_object_get_int_member(json_node_get_object(node), "id");
+	g_assert_cmpint(id, >, 0);
+
+	delete_path = g_strdup_printf("/api/v1/expense/%" G_GINT64_FORMAT
+	                              "?stage=1", id);
+
+	g_assert_cmpuint(server_fixture_json(fixture, "DELETE", delete_path,
+	                                     editor, NULL, &staged),
+	                 ==, SOUP_STATUS_ACCEPTED);
+
+	g_assert_cmpint(server_fixture_count(fixture, "expense", editor), ==, 1);
 }
 
 /*
@@ -1949,6 +2274,21 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/ticket-board-filters-compose", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_ticket_board_filters_compose,
+	           server_fixture_tear_down);
+	g_test_add("/auth/staged-write-changes-nothing", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_staged_write_changes_nothing,
+	           server_fixture_tear_down);
+	g_test_add("/auth/staged-write-can-be-rejected", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_staged_write_can_be_rejected,
+	           server_fixture_tear_down);
+	g_test_add("/auth/staging-needs-the-editor-role", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_staging_needs_the_editor_role,
+	           server_fixture_tear_down);
+	g_test_add("/auth/unknown-stage-value-is-refused", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_unknown_stage_value_is_refused,
+	           server_fixture_tear_down);
+	g_test_add("/auth/staged-delete-leaves-the-record", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_staged_delete_leaves_the_record,
 	           server_fixture_tear_down);
 	g_test_add("/auth/approving-respects-the-records-own-role", ServerFixture,
 	           NULL, server_fixture_set_up,

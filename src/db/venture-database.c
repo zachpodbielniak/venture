@@ -604,6 +604,12 @@ venture_database_record_audit(
 	if ((NULL != actor) && (NULL != actor->request_id))
 		g_object_set(entry, "request-id", actor->request_id, NULL);
 
+	/* Only a change that came out of the confirmation queue has one, so
+	 * its presence is what separates a staged-then-approved write from a
+	 * direct one without anybody having to read the actor kind and guess. */
+	if ((NULL != actor) && (NULL != actor->approved_by))
+		g_object_set(entry, "approved-by", actor->approved_by, NULL);
+
 	g_object_set(entry, "source", "database", NULL);
 
 	if (!venture_database_save(self, VENTURE_ENTITY(entry), NULL,

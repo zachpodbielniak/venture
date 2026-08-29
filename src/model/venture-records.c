@@ -1829,6 +1829,13 @@ static const VentureFieldDecl venture_audit_entry_fields[] = {
 	                   "The instruction that caused an AI-driven change"),
 	VENTURE_FIELD("request-id", "Request", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_INDEXED),
+	/* Set only for a change that went through the confirmation queue, so
+	 * "which of these did somebody actually approve" is a filter rather
+	 * than an inference from the actor kind. */
+	VENTURE_FIELD("approved-by", "Approved by",
+	              "Who approved a staged change; empty for a direct write",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("ip-address", "Address", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_NONE)
 };

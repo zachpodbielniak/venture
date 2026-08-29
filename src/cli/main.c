@@ -42,6 +42,10 @@ typedef struct
 
 	/* `mcp` only: let its write tools apply rather than hold. */
 	gboolean		 apply_writes;
+
+	/* Propose a write instead of making it. Only create, update and
+	 * delete honour it, and passing it to anything else is refused. */
+	gboolean		 stage;
 } VentureCli;
 
 /* --- Output -------------------------------------------------------------- */
@@ -676,6 +680,68 @@ venture_cli_command_get(
 	return 0;
 }
 
+/*
+ * The path a write goes to, with `?stage=1` when --stage was passed.
+ *
+ * One function for the three write commands, so they cannot disagree about
+ * the spelling -- and so a command that forgot it would be a missing call
+ * rather than a missing string.
+ */
+static gchar *
+venture_cli_write_path(
+	VentureCli	*cli,
+	const gchar	*path
+){
+	if (cli->stage)
+		return g_strconcat(path, "?stage=1", NULL);
+
+	return g_strdup(path);
+}
+
+/*
+ * Whether a reply says the change was staged rather than made.
+ *
+ * Read from the reply, never from the flag: a server that ignored the
+ * parameter answers with the record it just wrote, and reporting that as
+ * waiting for approval would send somebody looking for a decision nobody
+ * has to make while the figure sits in the accounts.
+ */
+static gboolean
+venture_cli_report_staged(
+	VentureCli	*cli,
+	JsonNode	*node
+){
+	JsonObject *object;
+	JsonObject *confirmation;
+
+	if (!JSON_NODE_HOLDS_OBJECT(node))
+		return FALSE;
+
+	object = json_node_get_object(node);
+
+	if (!json_object_get_boolean_member_with_default(object, "staged", FALSE))
+		return FALSE;
+
+	if (cli->quiet)
+		return TRUE;
+
+	confirmation = json_object_has_member(object, "confirmation")
+		? json_object_get_object_member(object, "confirmation") : NULL;
+
+	{
+		const gchar *id;
+
+		id = (NULL != confirmation)
+			? venture_json_object_get_string(confirmation, "id", "?") : "?";
+
+		g_print("Not applied. It is waiting for approval as %s.\n", id);
+		g_print("  approve: POST /api/v1/confirmations/%s/approve\n", id);
+		g_print("  reject:  POST /api/v1/confirmations/%s/reject\n", id);
+	}
+
+	return TRUE;
+}
+
 static gint
 venture_cli_command_create(
 	VentureCli	 *cli,
@@ -694,11 +760,19 @@ venture_cli_command_create(
 	}
 
 	values = venture_cli_values_from_args(args, 2);
-	path = g_strdup_printf("/api/v1/%s", args[1]);
+	{
+		g_autofree gchar *base = NULL;
+
+		base = g_strdup_printf("/api/v1/%s", args[1]);
+		path = venture_cli_write_path(cli, base);
+	}
+
 	node = venture_cli_request(cli, "POST", path, values, error);
 
 	if (NULL == node)
 		return -1;
+
+	venture_cli_report_staged(cli, node);
 
 	{
 		g_autofree gchar *text = NULL;
@@ -728,11 +802,19 @@ venture_cli_command_update(
 	}
 
 	values = venture_cli_values_from_args(args, 3);
-	path = g_strdup_printf("/api/v1/%s/%s", args[1], args[2]);
+	{
+		g_autofree gchar *base = NULL;
+
+		base = g_strdup_printf("/api/v1/%s/%s", args[1], args[2]);
+		path = venture_cli_write_path(cli, base);
+	}
+
 	node = venture_cli_request(cli, "PATCH", path, values, error);
 
 	if (NULL == node)
 		return -1;
+
+	venture_cli_report_staged(cli, node);
 
 	{
 		g_autofree gchar *text = NULL;
@@ -760,11 +842,22 @@ venture_cli_command_delete(
 		return -1;
 	}
 
-	path = g_strdup_printf("/api/v1/%s/%s", args[1], args[2]);
+	{
+		g_autofree gchar *base = NULL;
+
+		base = g_strdup_printf("/api/v1/%s/%s", args[1], args[2]);
+		path = venture_cli_write_path(cli, base);
+	}
+
 	node = venture_cli_request(cli, "DELETE", path, NULL, error);
 
 	if (NULL == node)
 		return -1;
+
+	/* Never "Deleted" for a change that is only waiting to be: the
+	 * sentence is the whole of what most callers read. */
+	if (venture_cli_report_staged(cli, node))
+		return 0;
 
 	if (!cli->quiet)
 		g_print("Deleted %s %s. This is recoverable.\n", args[1], args[2]);
@@ -1266,7 +1359,7 @@ main(
 	g_autoptr(GError) error = NULL;
 	g_auto(GStrv) args = NULL;
 	VentureCli cli = { NULL, NULL, NULL, VENTURE_OUTPUT_FORMAT_TABLE, FALSE,
-	                   FALSE, FALSE, FALSE };
+	                   FALSE, FALSE, FALSE, FALSE };
 	g_autofree gchar *server = NULL;
 	g_autofree gchar *token = NULL;
 	g_autofree gchar *format = NULL;
@@ -1274,6 +1367,7 @@ main(
 	gboolean show_license = FALSE;
 	gboolean quiet = FALSE;
 	gboolean apply_writes = FALSE;
+	gboolean stage = FALSE;
 	gint result;
 
 	const GOptionEntry entries[] = {
@@ -1286,7 +1380,10 @@ main(
 		{ "quiet", 'q', 0, G_OPTION_ARG_NONE, &quiet,
 		  "Print only the data", NULL },
 		{ "apply-writes", 0, 0, G_OPTION_ARG_NONE, &apply_writes,
-		  "mcp only: let write tools apply instead of holding", NULL },
+		  "mcp only: let write tools apply instead of staging", NULL },
+		{ "stage", 0, 0, G_OPTION_ARG_NONE, &stage,
+		  "create/update/delete only: propose the change for approval "
+		  "instead of making it", NULL },
 		{ "version", 'V', 0, G_OPTION_ARG_NONE, &show_version,
 		  "Print the version and exit", NULL },
 		{ "license", 0, 0, G_OPTION_ARG_NONE, &show_license,
@@ -1394,6 +1491,7 @@ main(
 	cli.server_from_argv = (NULL != server);
 	cli.token_from_argv = (NULL != token);
 	cli.apply_writes = apply_writes;
+	cli.stage = stage;
 
 	/*
 	 * Refused rather than ignored, for the same reason `mcp` refuses
@@ -1409,6 +1507,25 @@ main(
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
+
+	/*
+	 * Same rule, same reason. Only the three generic write verbs go
+	 * through a route that reads `stage`; on anything else the parameter
+	 * would be an unknown one, which a write route *ignores* -- so a
+	 * quietly accepted --stage would apply the change it was asked to
+	 * hold back.
+	 */
+	if (stage && (0 != g_strcmp0(args[0], "create")) &&
+	    (0 != g_strcmp0(args[0], "update")) &&
+	    (0 != g_strcmp0(args[0], "delete")))
+	{
+		g_printerr("venturectl: --stage only means something to create, "
+		           "update and delete. \"%s\" would ignore it.\n", args[0]);
+		g_free(cli.base_url);
+		g_free(cli.token);
+		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
+	}
+
 	cli.quiet = quiet;
 	cli.format = venture_cli_default_format();
 

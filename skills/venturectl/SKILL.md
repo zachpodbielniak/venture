@@ -172,12 +172,50 @@ Setting a hash directly is what hashing exists to prevent.
 They are the record of what happened.
 
 **`venturectl mcp` stages writes rather than applying them**, unless started
-with `--apply-writes`. A staged write is a *hold*: the tool prints the exact
-request it would have sent and sends nothing. Nothing is queued on the server
-— VENTURE's REST API has no server-side staging for a token-authenticated
-write, so a staged change will never appear in `GET /api/v1/confirmations`.
-Report it to the person you work for; do not tell them it is awaiting
-approval somewhere.
+with `--apply-writes`. A staged write sends the request with `?stage=1`, and
+the server mints a confirmation instead of applying the change. The tool
+answers with the confirmation's id and the routes that decide it. It really
+is queued: `GET /api/v1/confirmations` lists it, `venture_confirmations`
+lists it, and the AI panel shows it beside anything VENTURE's own assistant
+has staged.
+
+Nothing takes effect until somebody approves. Say that, with the id — do not
+report a staged change as done.
+
+Against a VENTURE too old to stage (no `staged_writes` in `GET
+/api/v1/health`) the tool falls back to a client-side *hold*: it prints the
+request it would have sent and sends nothing, and it says outright that
+nothing is queued. Read which of the two you got; they are worded
+differently on purpose, and telling somebody to go and approve a change that
+was never sent wastes their time and leaves the change unmade.
+
+**Any write over the REST API can be staged the same way**, not only through
+`venturectl mcp`: add `?stage=1` to a `POST`, `PUT`, `PATCH` or `DELETE` and
+the change waits for approval instead of applying. The response is a `202`
+carrying the confirmation. Two traps:
+
+- A `stage` value the server does not recognise is a `400`, not a silent
+  "no". Use `stage=1`.
+- Approving is refused with a `409` if the record changed since it was
+  staged, and the confirmation is then dropped. Re-read the record and stage
+  the change again rather than retrying the approval.
+
+A card waits `ai.confirmation_ttl` seconds (an hour by default) and is then
+dropped; at most `ai.confirmation_limit` may wait at once. Both settings keep
+the `ai.` prefix but govern every staged change.
+
+`venturectl --stage` does the same from the shell:
+
+```bash
+venturectl --stage create expense description="Cover art" amount=250.00
+# Not applied. It is waiting for approval as a3f9c118.
+#   approve: POST /api/v1/confirmations/a3f9c118/approve
+```
+
+It is refused on any command other than `create`, `update` and `delete`,
+because those are the only routes that read it -- and an unknown query
+parameter on a write route is ignored, so a quietly accepted `--stage` would
+apply the change it was asked to hold back.
 
 **Some types need more than an editor.** `forge` is owner-only, `forge_rule`
 and `plugin_config` are admin-only, `user` and `api_token` are owner-only. A

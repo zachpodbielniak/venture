@@ -120,12 +120,18 @@ venture_mcp_server_set_transport(
  *
  * Turns staging on or off.
  *
- * With staging on, venture_create, venture_update and venture_delete report
- * exactly the request they would send and send nothing. It is a hold, not a
- * queue: see docs/mcp.org, which is explicit that VENTURE's REST API has no
- * server-side staging for a token-authenticated write, so nothing is left
- * pending anywhere. Saying a change was staged when the server never heard
- * about it would be worse than applying it.
+ * With staging on, venture_create, venture_update and venture_delete send
+ * the write with `?stage=1`, so the server mints a confirmation instead of
+ * applying the change and a person decides it from the same queue the
+ * in-process assistant's writes land in.
+ *
+ * Whether the server can do that is read from `/api/v1/health` at startup,
+ * never assumed. `?stage=1` is an unknown query parameter to a build that
+ * predates staging, and an unknown parameter on a write route is ignored --
+ * so guessing would send exactly the change this flag exists to hold back.
+ * Against such a server the tools fall back to describing the change without
+ * sending it, and say so: claiming a change was queued somewhere it is not
+ * sends whoever reads it to a queue that will never hold it.
  */
 void
 venture_mcp_server_set_stage_writes(

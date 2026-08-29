@@ -224,6 +224,7 @@ venture_work_service_apply(gpointer user_data)
 	actor.name = "forge-run";
 	actor.prompt = NULL;
 	actor.request_id = NULL;
+	actor.approved_by = NULL;
 
 	if (!venture_database_save(venture_context_get_database(self->context),
 	                           run, &actor, &error))
@@ -804,6 +805,7 @@ venture_work_service_reconcile(VentureWorkService *self)
 		actor.name = "startup";
 		actor.prompt = NULL;
 		actor.request_id = NULL;
+		actor.approved_by = NULL;
 
 		venture_database_save(venture_context_get_database(self->context),
 		                      run, &actor, NULL);
@@ -1041,6 +1043,7 @@ venture_work_service_start_for_ticket(
 	actor.name = requested_by;
 	actor.prompt = NULL;
 	actor.request_id = NULL;
+	actor.approved_by = NULL;
 
 	if (!venture_database_save(venture_context_get_database(self->context),
 	                           VENTURE_ENTITY(run), &actor, error))

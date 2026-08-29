@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-08-14]
+#+updated: [2026-08-29]
 #+version: 0.1.0
 
 * Configuration
@@ -221,7 +221,8 @@ venture --generate-c-config > ~/.config/venture/config.c
 - *database* — URI, pool size, automatic migration
 - *security* — authentication, sessions, password iterations, rate limit
 - *locale* — currency, timezone, fiscal year start
-- *ai* — provider, model, policy, auto-approved tools, prompt extras
+- *ai* — provider, model, policy, auto-approved tools, prompt extras, and
+  the confirmation queue (see below)
 - *automation* — the pods file, module paths, shutdown timeout
 - *plugins* — paths, crispy, declarative venture types
 - *ui* — theme, accent, page size, the AI panel (=ui.chat_dock= gates the
@@ -229,6 +230,22 @@ venture --generate-c-config > ~/.config/venture/config.c
 - *logging* — level, file, format
 
 Every setting is documented inline in the generated file.
+
+** The =ai.confirmation_*= settings are not only about AI
+
+=ai.confirmation_ttl= (3600) is how long a proposed change waits for a
+decision before it is dropped, and =ai.confirmation_limit= (200) is how many
+may wait at once. Both govern the whole confirmation queue, which is also
+where a REST write staged with =?stage=1= lands — the prefix is from when the
+in-process assistant was the only thing that staged anything.
+
+They are left named that way on purpose. Renaming a configuration key to tidy
+up a prefix silently reverts every install that set the old one, and a queue
+that quietly went back to an hour is exactly the sort of change nobody
+notices until a card has vanished.
+
+An install with =ai.enabled: false= still has a working queue and still
+honours both settings. See [[file:api.org][Staging a write]].
 
 ** What =ui.accent= actually controls
 

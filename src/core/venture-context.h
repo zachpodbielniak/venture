@@ -150,6 +150,21 @@ VentureVentureTypeRegistry *
 venture_context_get_venture_types(VentureContext *self);
 
 /**
+ * venture_context_get_confirmations:
+ * @self: a #VentureContext
+ *
+ * Retrieves the queue of changes proposed but not yet made.
+ *
+ * Always present, unlike the AI service: the queue is where a staged REST
+ * write waits as well as an assistant's, and an install with AI switched off
+ * still stages and still needs somewhere to put them.
+ *
+ * Returns: (transfer none): the confirmation store
+ */
+VentureConfirmationStore *
+venture_context_get_confirmations(VentureContext *self);
+
+/**
  * venture_context_set_ai_service:
  * @self: a #VentureContext
  * @service: (nullable): the AI service

@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-08-14]
+#+updated: [2026-08-29]
 #+version: 0.1.0
 
 * REST API
@@ -44,7 +44,7 @@ See [[file:mcp.org][venturectl mcp]].
 | =GET=    | =/api/v1/reports=                   | list reports                         |
 | =GET=    | =/api/v1/reports/:name=             | run one; =?format=csv= for CSV       |
 | =POST=   | =/api/v1/tokens=                    | mint an API token                    |
-| =GET=    | =/api/v1/confirmations=             | AI changes awaiting approval         |
+| =GET=    | =/api/v1/confirmations=             | changes awaiting approval            |
 | =POST=   | =/api/v1/confirmations/:id/approve= | apply a staged change                |
 | =POST=   | =/api/v1/confirmations/:id/reject=  | discard one                          |
 | =GET=    | =/api/v1/settings=                  | the resolved configuration           |
@@ -52,6 +52,9 @@ See [[file:mcp.org][venturectl mcp]].
 | =GET=    | =/api/v1/venture-types=             | declarative venture types            |
 | =GET=    | =/api/v1/venture-types/:name=       | one of them, with its fields         |
 | =GET=    | =/api/v1/automations=               | engine state and its pods            |
+
+Any of the four write verbs takes =?stage=1=, which proposes the change
+instead of making it. See [[*Staging a write][Staging a write]].
 
 Both singular and plural type names work, so =/api/v1/sale= and =/api/v1/sales=
 are the same resource. A client that presents record types to somebody should
@@ -75,6 +78,141 @@ The same data renders at =/settings= in the web UI. Both are read-only:
 configuration is layered, so a value written through the API could be
 silently overridden by a later layer, and the page would then be showing
 something the server is not using.
+
+* Staging a write
+
+Add =?stage=1= to a =POST=, =PUT=, =PATCH= or =DELETE= and the change is
+*proposed* rather than made. The server builds and validates the record
+exactly as it would for a direct write, holds it, and answers =202 Accepted=
+with the confirmation somebody has to approve:
+
+#+begin_src sh
+curl -X POST -H "Authorization: Bearer $VENTURE_TOKEN" \
+     -H 'Content-Type: application/json' \
+     -d '{"description": "Cover art", "amount": "250.00 USD"}' \
+     'localhost:8747/api/v1/expense?stage=1'
+#+end_src
+
+#+begin_src json
+{
+  "status": "awaiting_approval",
+  "staged": true,
+  "confirmation": {
+    "id": "a3f9c118",
+    "summary": "Create expense \"Cover art\"",
+    "action": "create",
+    "state": "pending",
+    "type": "expense",
+    "label": "Cover art",
+    "origin": { "kind": "import", "name": "books-agent", "via": "rest-api" },
+    "diff": { "description": "Cover art", "amount": { "amount": 25000, "currency": "USD" } },
+    "created_at": "2026-08-29T14:02:11Z",
+    "expires_at": "2026-08-29T15:02:11Z"
+  },
+  "note": "Nothing has been changed. ..."
+}
+#+end_src
+
+This is what an outside agent uses. Give it a token, tell it to stage, and
+what it proposes lands in the same queue the in-process assistant's writes do
+— answerable from the AI panel, from =GET /api/v1/confirmations=, or from a
+decision inbox in another program entirely.
+
+The card is deliberately self-contained: which record type, which record if
+there is one, what would change, and who asked. Whatever renders it will not
+have the request that produced it.
+
+The prompt behind an assistant-staged change is *not* on the card. This
+endpoint is open to any viewer and a prompt is the text of somebody's private
+chat thread; it goes to the audit trail instead, where "why did this change"
+belongs.
+
+** Nothing is written until it is approved
+
+=GET /api/v1/health= reports =staged_writes: true= on a build that has this
+route. It says what the build can do and deliberately not what the install is
+doing — health is the one route with no authentication, and how many changes
+are waiting is business activity, behind the viewer role at
+=/api/v1/confirmations=.
+
+Ask before assuming. =?stage=1= is an unknown query parameter to an older
+build, an unknown parameter on a write route is *ignored*, and the write a
+client meant to hold back is applied. A value the server does not recognise —
+=?stage=y= — is refused with a =400= for the same reason: read as "no", it
+would apply the write.
+
+** Approving, rejecting, and a record that moved
+
+#+begin_src sh
+curl -X POST -H "Authorization: Bearer $VENTURE_TOKEN" \
+     localhost:8747/api/v1/confirmations/a3f9c118/approve
+#+end_src
+
+Approving needs the editor role, *and* the role that record type needs in its
+own right — a forge is owner-only on the direct route and is owner-only here.
+Without that, staging would launder the authorisation.
+
+It applies the staged object through the same repository call an ordinary
+write uses, so it cannot produce a different outcome from the diff that was
+shown. It also cannot overwrite work done in the meantime: the staged record
+carries the version it was read at, so if somebody edited the row while the
+card was waiting, the approval fails with =409= naming the fields that moved:
+
+#+begin_src json
+{ "error": "conflict",
+  "message": "Update expense \"Cover art\" was not applied: memo, vendor changed since this was staged. Nothing was written -- the record was not overwritten with what was staged. Look at it as it is now and stage the change again.",
+  "code": 8 }
+#+end_src
+
+The confirmation is then *dropped*. Its staged object is pinned to a version
+the row has moved past, so approving it again could not succeed either, and a
+card that can only ever fail is worse than none. Read the record and stage
+the change afresh.
+
+A convergent case is not a conflict: if the change was already made by
+somebody else, exactly, there is nothing left to write and the approval
+succeeds having done nothing.
+
+Rejecting discards the change and records the refusal in the audit trail —
+knowing what an agent proposed and was denied is as useful as knowing what it
+did.
+
+** How long a card waits, and how many
+
+A change waits =ai.confirmation_ttl= seconds (an hour by default) and is then
+dropped. It is *removed*, not marked: a server left running would otherwise
+accumulate every change nobody ever answered, each holding a whole record.
+
+At most =ai.confirmation_limit= (200 by default) may wait at once. Staging
+past that is refused with a =409= naming the limit. The lifetime bounds how
+long one change waits; only the cap bounds how many an agent in a retry loop
+can pile up inside that window.
+
+Both settings keep their =ai.= prefix from when the assistant was the only
+thing that staged anything. They govern the whole queue.
+
+** The audit trail says which kind of change it was
+
+| Case                    | =actor_kind=  | =actor=        | =approved_by= | =request_id=    |
+|-------------------------+---------------+----------------+---------------+-----------------|
+| direct, session         | =user=        | the person     | —             | —               |
+| direct, bearer token    | =import=      | the token      | —             | —               |
+| staged, then approved   | who asked     | who asked      | who approved  | confirmation id |
+| the assistant's own     | =ai=          | the model      | who approved  | confirmation id |
+
+=approved_by= is set only for a change that came out of the queue, so "which
+of these did somebody actually approve" is a filter rather than an inference:
+
+#+begin_src sh
+venturectl list audit_entry approved_by__not_null=1 order=-occurred_at
+#+end_src
+
+** What is not stageable
+
+=POST /api/v1/:type/:id/restore= applies immediately. Un-deleting is the one
+generic write whose worst case is a record being visible again, and it is not
+worth an action of its own in the queue. The four verbs above are the whole
+surface.
 
 * Forge endpoints
 

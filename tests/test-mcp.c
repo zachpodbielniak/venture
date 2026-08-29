@@ -44,6 +44,12 @@ typedef struct
 	gchar	*content_type;
 	guint	 status;
 
+	/* Answered for /api/v1/health only, so a test can say whether the
+	 * server on the other end can stage a write. Left NULL, health gets
+	 * whatever @body is -- which is how an older server that never heard
+	 * of staging is simulated. */
+	gchar	*health;
+
 	gchar	*last_method;
 	gchar	*last_path;
 	gchar	*last_body;
@@ -70,6 +76,7 @@ mock_transport_free(gpointer data)
 	mock = data;
 
 	g_free(mock->body);
+	g_free(mock->health);
 	g_free(mock->content_type);
 	g_free(mock->last_method);
 	g_free(mock->last_path);
@@ -105,6 +112,20 @@ mock_transport_call(
 	MockTransport *mock;
 
 	mock = user_data;
+
+	/* The capability probe is not one of the calls a test counts: it is
+	 * setup, and counting it would make "nothing crossed the wire" mean
+	 * something different depending on whether staging was on. */
+	if ((NULL != mock->health) && (0 == g_strcmp0(path, "/api/v1/health")))
+	{
+		*out_status = 200;
+
+		if (NULL != out_content_type)
+			*out_content_type = g_strdup("application/json");
+
+		return g_strdup(mock->health);
+	}
+
 	mock->calls++;
 
 	g_free(mock->last_method);
@@ -161,8 +182,9 @@ fixture_schema(const gchar *name)
  * a schema fixture. Every protocol test starts here.
  */
 static VentureMcpServer *
-server_with_fixture(
+server_with_fixture_staging(
 	const gchar	 *fixture,
+	gboolean	  server_stages,
 	MockTransport	**out_mock
 ){
 	g_autoptr(GError) error = NULL;
@@ -179,6 +201,10 @@ server_with_fixture(
 	venture_mcp_server_set_transport(server, mock_transport_call, mock,
 	                                 mock_transport_free);
 
+	if (server_stages)
+		mock->health = g_strdup("{\"status\": \"ok\", "
+		                        "\"staged_writes\": true}");
+
 	schema = fixture_read(fixture);
 	mock_transport_answer(mock, 200, "application/json", schema);
 
@@ -189,6 +215,18 @@ server_with_fixture(
 		*out_mock = mock;
 
 	return server;
+}
+
+/*
+ * The common case: a server that does not advertise staging, which is what
+ * every test written before staging existed assumed.
+ */
+static VentureMcpServer *
+server_with_fixture(
+	const gchar	 *fixture,
+	MockTransport	**out_mock
+){
+	return server_with_fixture_staging(fixture, FALSE, out_mock);
 }
 
 /* --- Small helpers over the protocol ------------------------------------- */
@@ -1006,12 +1044,13 @@ test_report_reports_what_arrived_not_what_was_asked(void)
 /* --- Staging ------------------------------------------------------------- */
 
 /*
- * A staged write sends nothing and says so.
+ * A staged write against a server too old to stage sends nothing and says so.
  *
- * And it says nothing is queued on the server, because VENTURE has no
- * server-side staging for a token-authenticated write -- its confirmations
- * are raised by its own in-process assistant. "Staged for approval" would
- * send the reader to a queue that will never hold this change.
+ * This is the fallback, and it is the behaviour every build had before the
+ * server grew a staging route. It has to say plainly that nothing is queued:
+ * "staged for approval" would send the reader to a queue that will never
+ * hold this change, which is worse than reporting that the change was
+ * described and not sent.
  */
 static void
 test_staged_write_sends_nothing(void)
@@ -1060,9 +1099,168 @@ test_staged_write_sends_nothing(void)
 
 	/* It must not claim anything is waiting for a decision. */
 	g_assert_nonnull(g_strstr_len(text, -1, "Nothing is queued"));
+	g_assert_null(g_strstr_len(text, -1, "confirmation id"));
 
 	/* And nothing crossed the wire. */
 	g_assert_cmpuint(mock->calls, ==, calls_before);
+}
+
+/*
+ * Against a server that can stage, the write goes out with `?stage=1` and
+ * the answer names the confirmation.
+ *
+ * What breaks if this regresses: the whole point of the server-side queue.
+ * A hold that never leaves the process is only as good as the agent's
+ * willingness to report it; a confirmation on the server is something a
+ * person can find without the agent's cooperation.
+ */
+static void
+test_staged_write_reaches_the_queue(void)
+{
+	g_autoptr(VentureMcpServer) server = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) request = NULL;
+	g_autoptr(JsonNode) response = NULL;
+	MockTransport *mock;
+	const gchar *text;
+	gboolean is_error;
+
+	server = server_with_fixture_staging("schema.json", TRUE, &mock);
+	g_assert_true(venture_mcp_server_get_stage_writes(server));
+
+	mock_transport_answer(mock, 202, "application/json",
+		"{\"status\": \"awaiting_approval\", \"staged\": true, "
+		"\"confirmation\": {\"id\": \"a3f9c118\", \"type\": \"expense\", "
+		"\"action\": \"create\"}}");
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "name");
+	json_builder_add_string_value(builder, "venture_create");
+	json_builder_set_member_name(builder, "arguments");
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "type");
+	json_builder_add_string_value(builder, "expense");
+	json_builder_set_member_name(builder, "values");
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "description");
+	json_builder_add_string_value(builder, "Cover art");
+	json_builder_end_object(builder);
+	json_builder_end_object(builder);
+	json_builder_end_object(builder);
+
+	request = rpc_request("tools/call", json_builder_get_root(builder));
+	response = venture_mcp_server_handle(server, request);
+
+	text = result_text(response, &is_error);
+	g_assert_false(is_error);
+
+	/* The parameter really went out. */
+	g_assert_cmpstr(mock->last_method, ==, "POST");
+	g_assert_cmpstr(mock->last_path, ==, "/api/v1/expense?stage=1");
+
+	/* And the answer says where the change is waiting, by id. */
+	g_assert_nonnull(g_strstr_len(text, -1, "a3f9c118"));
+	g_assert_nonnull(g_strstr_len(text, -1, "confirmation id"));
+	g_assert_nonnull(g_strstr_len(text, -1, "Not applied yet"));
+	g_assert_nonnull(g_strstr_len(text, -1,
+		"/api/v1/confirmations/a3f9c118/approve"));
+
+	/* It must not repeat the old claim that nothing is queued: there is
+	 * something queued, and telling the agent otherwise stops it saying
+	 * so. */
+	g_assert_null(g_strstr_len(text, -1, "Nothing is queued"));
+}
+
+/*
+ * A staged write that came back applied is reported as applied.
+ *
+ * What breaks if this regresses: the one lie that matters here. A proxy that
+ * strips the query string, or a server that advertised staging and then did
+ * not do it, answers with the record it just wrote. Classifying from the
+ * request rather than the reply would report a change as waiting for
+ * approval when it is already in the books, and nobody would go looking.
+ */
+static void
+test_staged_write_does_not_claim_a_queue_it_cannot_see(void)
+{
+	g_autoptr(VentureMcpServer) server = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) request = NULL;
+	g_autoptr(JsonNode) response = NULL;
+	MockTransport *mock;
+	const gchar *text;
+	gboolean is_error;
+
+	server = server_with_fixture_staging("schema.json", TRUE, &mock);
+
+	/* What a server that ignored the parameter answers: the record. */
+	mock_transport_answer(mock, 201, "application/json",
+		"{\"id\": 12, \"description\": \"Cover art\"}");
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "name");
+	json_builder_add_string_value(builder, "venture_create");
+	json_builder_set_member_name(builder, "arguments");
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "type");
+	json_builder_add_string_value(builder, "expense");
+	json_builder_set_member_name(builder, "values");
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "description");
+	json_builder_add_string_value(builder, "Cover art");
+	json_builder_end_object(builder);
+	json_builder_end_object(builder);
+	json_builder_end_object(builder);
+
+	request = rpc_request("tools/call", json_builder_get_root(builder));
+	response = venture_mcp_server_handle(server, request);
+
+	text = result_text(response, &is_error);
+	g_assert_false(is_error);
+
+	g_assert_null(g_strstr_len(text, -1, "Not applied"));
+	g_assert_null(g_strstr_len(text, -1, "confirmation id"));
+	g_assert_nonnull(g_strstr_len(text, -1, "\"id\""));
+}
+
+/*
+ * `--apply-writes` sends no parameter at all, against a staging server as
+ * much as against an old one.
+ */
+static void
+test_applied_write_sends_no_stage_parameter(void)
+{
+	g_autoptr(VentureMcpServer) server = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) request = NULL;
+	g_autoptr(JsonNode) response = NULL;
+	MockTransport *mock;
+
+	server = server_with_fixture_staging("schema.json", TRUE, &mock);
+	venture_mcp_server_set_stage_writes(server, FALSE);
+	mock_transport_answer(mock, 200, "application/json", "{\"id\": 12}");
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "name");
+	json_builder_add_string_value(builder, "venture_delete");
+	json_builder_set_member_name(builder, "arguments");
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "type");
+	json_builder_add_string_value(builder, "expense");
+	json_builder_set_member_name(builder, "id");
+	json_builder_add_int_value(builder, 12);
+	json_builder_end_object(builder);
+	json_builder_end_object(builder);
+
+	request = rpc_request("tools/call", json_builder_get_root(builder));
+	response = venture_mcp_server_handle(server, request);
+
+	g_assert_nonnull(response);
+	g_assert_cmpstr(mock->last_method, ==, "DELETE");
+	g_assert_cmpstr(mock->last_path, ==, "/api/v1/expense/12");
 }
 
 /*
@@ -1322,6 +1520,12 @@ main(
 
 	g_test_add_func("/mcp/staging/sends-nothing",
 	                test_staged_write_sends_nothing);
+	g_test_add_func("/mcp/staging/reaches-the-queue",
+	                test_staged_write_reaches_the_queue);
+	g_test_add_func("/mcp/staging/does-not-claim-a-queue-it-cannot-see",
+	                test_staged_write_does_not_claim_a_queue_it_cannot_see);
+	g_test_add_func("/mcp/staging/apply-sends-no-parameter",
+	                test_applied_write_sends_no_stage_parameter);
 	g_test_add_func("/mcp/staging/applied-write-reaches-the-server",
 	                test_applied_write_reaches_the_server);
 

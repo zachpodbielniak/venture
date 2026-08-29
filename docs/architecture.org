@@ -60,13 +60,21 @@ A plugin that registers a record type gets all of it. That is the whole extensib
 
 =libventure-core.a= is everything from =model/= down. =libventure.a= adds the rest. =venturectl= links only the former, which is why =make venturectl= works on a machine with no libpq, no sqlite headers and no readline.
 
-** Why the AI writes through confirmations
+** Why a change can be proposed rather than made
 
 The AI's tools reach the same repository the web UI and the CLI use — not a parallel, laxer path. Validation, optimistic concurrency, soft deletion and auditing all apply identically.
 
-What differs is authority. Under the default =confirm_writes= policy, a mutating tool call does not mutate. It stages a =VentureAiConfirmation= holding the record with the change already applied in memory, plus a field-by-field diff, and returns a tool result telling the model plainly that nothing has happened yet. Approval applies the staged object — so approving cannot produce a different outcome from the diff that was shown.
+What differs is authority. Under the default =confirm_writes= policy, a mutating tool call does not mutate. It stages a =VentureConfirmation= holding the record with the change already applied in memory, plus a field-by-field diff, and returns a tool result telling the model plainly that nothing has happened yet. Approval applies the staged object — so approving cannot produce a different outcome from the diff that was shown.
 
 Deletion stages even under =autonomous=. Every other AI action produces a value a person can eyeball afterwards; removing a record is the one where noticing late is materially worse.
+
+*** The queue is not the AI's
+
+=VentureConfirmationStore= hangs off =VentureContext=, not off =VentureAiService=, and a REST write sent with =?stage=1= mints into the same one. That is deliberate rather than incidental: an outside agent holding an API token proposes changes for the same reason the assistant does, and somebody answering "an agent wants to record a $12 expense" should have one place to look rather than one per surface. An install with AI switched off still stages.
+
+It also means approval has exactly one implementation. Two would be two behaviours, and the behaviour in question is what gets written to the books.
+
+Approval carries the optimistic-concurrency check that everything else here carries: the staged record holds the version it was read at, so a card approved after somebody edited the row fails with a conflict naming what moved rather than quietly restoring every field to what the agent proposed an hour ago.
 
 ** Why money is three columns
 

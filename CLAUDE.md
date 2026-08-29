@@ -67,6 +67,35 @@ first seven columns were empty.
 - **Sensitive fields** (`VENTURE_COLUMN_FLAG_SENSITIVE`) must never reach a
   response, a log line, a form or the AI. A URI carrying a password gets
   `venture_string_redact_uri()` before it is shown anywhere.
+- **`VentureActor` is filled field by field at every call site.** It is a
+  plain struct declared as a bare local, `-Wmissing-field-initializers` is on
+  so nobody writes `= {0}`, and `venture_database_record_audit()` reads every
+  member. Adding a field means visiting all seven hand-filling sites *and the
+  tests* — `venture_auth_to_actor()` covers the other thirty-odd callers.
+  Miss one and the audit writer dereferences an uninitialised stack pointer,
+  which is a segfault a long way from the edit. Adding `approved_by` did
+  exactly that to `tests/test-database.c`.
+- **`/api/v1/health` is the only authenticated-by-nothing route besides the
+  webhook**, because a container healthcheck runs before anybody has
+  credentials. It may say what this *build* can do — the version, the
+  backend, whether staging exists — and must never say what this *install* is
+  doing. A count of pending confirmations was drafted for it and removed for
+  this reason: how much work is queued is business activity, and it lives
+  behind the viewer role at `/api/v1/confirmations`.
+- **A staged write and a direct one are the same code until the last line.**
+  `venture_web_api_write()` takes a `stage` flag and branches only at the
+  save, and approval calls `venture_database_save()` on the staged object.
+  Two paths would be two behaviours, and the behaviour in question is what
+  gets written to the books. It is also what makes a stale approval a
+  conflict for free: the staged record carries the version it was read at, so
+  the optimistic-concurrency check in `venture_database_update()` catches it
+  with no second mechanism.
+- **A staged change that fails to apply is dropped, not retried.**
+  `venture_database_save()` bumps the record's version *before* the UPDATE
+  that then matched nothing, so the staged object describes a version that
+  never existed and a second approval could not work either. The refusal says
+  which fields moved — from the `original` snapshot the confirmation keeps —
+  and says to stage it again.
 - **A save short-circuits on an empty diff.** Anything excluded from the
   audit diff silently refuses to change: the call returns success and the row
   keeps its old value. Only genuine machinery belongs in the identity spine.

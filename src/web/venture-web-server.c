@@ -1160,16 +1160,113 @@ venture_web_api_get(
 }
 
 /*
+ * Whether this write should be proposed instead of performed.
+ *
+ * Only the four generic write verbs read it. The parsing lives in the
+ * library so that an unrecognised spelling is refused rather than read as
+ * "no" -- a caller who wrote stage=y meant to hold the write back, and
+ * treating the unknown value as false applies it instead.
+ */
+static gboolean
+venture_web_stage_requested(
+	HtmxRequest	 *request,
+	gboolean	 *out_stage,
+	GError		**error
+){
+	return venture_confirmation_parse_stage_flag(
+		htmx_request_get_query_param(request, "stage"), out_stage, error);
+}
+
+/*
+ * The reply to a write that was staged rather than performed.
+ *
+ * 202 rather than 201 or 200, and the body says plainly that nothing has
+ * changed: a client that read a 201 here would report a record it could not
+ * then fetch.
+ */
+static HtmxResponse *
+venture_web_staged_response(VentureConfirmation *confirmation)
+{
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+
+	json_builder_set_member_name(builder, "status");
+	json_builder_add_string_value(builder, "awaiting_approval");
+
+	json_builder_set_member_name(builder, "staged");
+	json_builder_add_boolean_value(builder, TRUE);
+
+	json_builder_set_member_name(builder, "confirmation");
+	json_builder_add_value(builder,
+		venture_confirmation_to_json(confirmation));
+
+	json_builder_set_member_name(builder, "note");
+	json_builder_add_string_value(builder,
+		"Nothing has been changed. This is waiting for somebody with the "
+		"editor role to approve it at POST /api/v1/confirmations/"
+		"<id>/approve, or reject it. It is listed by GET "
+		"/api/v1/confirmations until it is decided or expires.");
+
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(node, 202);
+}
+
+/*
+ * Stages a write that has been built and would otherwise have been saved.
+ *
+ * @original is the record as it stood, kept so that an approval arriving
+ * after somebody else edited the row can say what moved rather than
+ * overwriting it.
+ */
+static HtmxResponse *
+venture_web_api_stage(
+	VentureWebServer	*self,
+	VentureEntity		*record,
+	VentureEntity		*original,
+	VentureAuthPrincipal	*principal,
+	VentureAuditAction	 action
+){
+	g_autoptr(GError) error = NULL;
+	VentureConfirmation *confirmation;
+	VentureActor origin;
+
+	/* The same actor a direct write would have been audited as, so the
+	 * queue records who asked in the spelling the audit trail uses. */
+	venture_auth_to_actor(principal, &origin);
+
+	confirmation = venture_confirmation_store_stage(
+		venture_context_get_confirmations(self->context), action, record,
+		original, &origin, "rest-api", &error);
+
+	if (NULL == confirmation)
+		return venture_web_error_response(error);
+
+	return venture_web_staged_response(confirmation);
+}
+
+/*
  * Applies a JSON body to a record and saves it. Shared by create and update
  * so the two cannot drift in what they accept.
+ *
+ * @stage turns the save into a proposal. Everything above that point is the
+ * same code, deliberately: a staged create that parsed its body differently
+ * from a direct one would be a second create, and the whole reason approval
+ * applies the staged *object* is that it cannot then mean something else.
  */
 static HtmxResponse *
 venture_web_api_write(
 	VentureWebServer	*self,
 	HtmxRequest		*request,
 	VentureEntity		*record,
+	VentureEntity		*original,
 	VentureAuthPrincipal	*principal,
-	gboolean		 created
+	gboolean		 created,
+	gboolean		 stage
 ){
 	g_autoptr(JsonNode) body = NULL;
 	g_autoptr(JsonNode) node = NULL;
@@ -1238,6 +1335,13 @@ venture_web_api_write(
 			venture_context_get_default_organization_id(self->context));
 	}
 
+	if (stage)
+	{
+		return venture_web_api_stage(self, record, original, principal,
+			created ? VENTURE_AUDIT_ACTION_CREATE
+			        : VENTURE_AUDIT_ACTION_UPDATE);
+	}
+
 	venture_auth_to_actor(principal, &actor);
 
 	if (!venture_database_save(venture_context_get_database(self->context),
@@ -1260,6 +1364,7 @@ venture_web_api_create(
 	g_autoptr(VentureEntity) record = NULL;
 	g_autoptr(GError) error = NULL;
 	GType entity_type;
+	gboolean stage;
 
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
@@ -1278,9 +1383,13 @@ venture_web_api_create(
 	if (!venture_web_type_accepts_writes(entity_type, &error))
 		return venture_web_error_response(error);
 
+	if (!venture_web_stage_requested(request, &stage, &error))
+		return venture_web_error_response(error);
+
 	record = g_object_new(entity_type, NULL);
 
-	return venture_web_api_write(self, request, record, principal, TRUE);
+	return venture_web_api_write(self, request, record, NULL, principal, TRUE,
+	                             stage);
 }
 
 static HtmxResponse *
@@ -1292,9 +1401,11 @@ venture_web_api_update(
 	VentureWebServer *self;
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
 	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(VentureEntity) original = NULL;
 	g_autoptr(GError) error = NULL;
 	GType entity_type;
 	const gchar *id_text;
+	gboolean stage;
 
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
@@ -1311,6 +1422,9 @@ venture_web_api_update(
 		return venture_web_error_response(error);
 
 	if (!venture_web_type_accepts_writes(entity_type, &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_stage_requested(request, &stage, &error))
 		return venture_web_error_response(error);
 
 	id_text = g_hash_table_lookup(params, "id");
@@ -1329,7 +1443,18 @@ venture_web_api_update(
 		return venture_web_error_response(error);
 	}
 
-	return venture_web_api_write(self, request, record, principal, FALSE);
+	/* A second, unmodified copy: it is what the diff is taken against,
+	 * and what an approval arriving after somebody else edited the row
+	 * compares with to say which fields moved. */
+	if (stage)
+	{
+		original = venture_database_get(
+			venture_context_get_database(self->context), entity_type,
+			g_ascii_strtoll(id_text, NULL, 10), NULL);
+	}
+
+	return venture_web_api_write(self, request, record, original, principal,
+	                             FALSE, stage);
 }
 
 static HtmxResponse *
@@ -1341,12 +1466,14 @@ venture_web_api_delete(
 	VentureWebServer *self;
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
 	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(VentureEntity) original = NULL;
 	g_autoptr(JsonBuilder) builder = NULL;
 	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(GError) error = NULL;
 	VentureActor actor;
 	GType entity_type;
 	const gchar *id_text;
+	gboolean stage;
 
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
@@ -1365,6 +1492,9 @@ venture_web_api_delete(
 	if (!venture_web_type_accepts_writes(entity_type, &error))
 		return venture_web_error_response(error);
 
+	if (!venture_web_stage_requested(request, &stage, &error))
+		return venture_web_error_response(error);
+
 	id_text = g_hash_table_lookup(params, "id");
 	record = venture_database_get(venture_context_get_database(self->context),
 	                              entity_type,
@@ -1379,6 +1509,18 @@ venture_web_api_delete(
 		}
 
 		return venture_web_error_response(error);
+	}
+
+	if (stage)
+	{
+		/* Untouched by the deletion the approval will perform, so a
+		 * stale approval can still name what changed underneath. */
+		original = venture_database_get(
+			venture_context_get_database(self->context), entity_type,
+			g_ascii_strtoll(id_text, NULL, 10), NULL);
+
+		return venture_web_api_stage(self, record, original, principal,
+		                             VENTURE_AUDIT_ACTION_DELETE);
 	}
 
 	venture_auth_to_actor(principal, &actor);
@@ -9385,6 +9527,27 @@ venture_web_api_health(
 	json_builder_add_boolean_value(builder,
 		NULL != venture_context_get_ai_service(self->context));
 
+	/*
+	 * Whether a write may be proposed instead of performed.
+	 *
+	 * Advertised because the alternative is unsafe. `?stage=1` on a build
+	 * that has never heard of it is an unknown query parameter on a write
+	 * route, which is ignored -- so a client that assumed staging would
+	 * send a change it meant to hold back and the record would be
+	 * written. A client can ask here first and refuse to pretend.
+	 */
+	json_builder_set_member_name(builder, "staged_writes");
+	json_builder_add_boolean_value(builder, TRUE);
+
+	/*
+	 * And nothing beyond that. This route is the one deliberate
+	 * exception to the authentication rule -- a container healthcheck
+	 * runs before anybody has credentials -- so it may say what this
+	 * build can do and must not say what this install is doing. How many
+	 * changes are waiting is business activity, and it is behind the
+	 * viewer role at /api/v1/confirmations.
+	 */
+
 	json_builder_end_object(builder);
 	node = json_builder_get_root(builder);
 
@@ -10528,24 +10691,19 @@ venture_web_chat_append_confirmations(
 	GHashTable		*already_seen
 ){
 	g_autoptr(GPtrArray) pending = NULL;
-	VentureAiService *service;
 	guint i;
 
-	service = venture_context_get_ai_service(self->context);
-
-	if (NULL == service)
-		return;
-
-	pending = venture_ai_service_list_pending(service);
+	pending = venture_confirmation_store_list_pending(
+		venture_context_get_confirmations(self->context));
 
 	for (i = 0; (NULL != pending) && (i < pending->len); i++)
 	{
-		VentureAiConfirmation *confirmation;
+		VentureConfirmation *confirmation;
 		JsonNode *diff;
 		const gchar *id;
 
 		confirmation = g_ptr_array_index(pending, i);
-		id = venture_ai_confirmation_get_id(confirmation);
+		id = venture_confirmation_get_id(confirmation);
 
 		/*
 		 * Only what this turn staged. Rendering everything pending
@@ -10563,12 +10721,12 @@ venture_web_chat_append_confirmations(
 		venture_html_escape_append(html, id);
 		g_string_append(html, "\"><h4>Waiting for your approval</h4><p>");
 		venture_html_escape_append(html,
-			venture_ai_confirmation_get_summary(confirmation));
+			venture_confirmation_get_summary(confirmation));
 		g_string_append(html, "</p>");
 
 		/* The field-by-field change, so approving is a decision about
 		 * values rather than about a sentence describing them. */
-		diff = venture_ai_confirmation_get_diff(confirmation);
+		diff = venture_confirmation_get_diff(confirmation);
 
 		if ((NULL != diff) && JSON_NODE_HOLDS_OBJECT(diff))
 		{
@@ -10653,7 +10811,7 @@ venture_web_ui_chat_decide(
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
 	g_autoptr(GString) html = NULL;
 	g_autoptr(GError) error = NULL;
-	VentureAiService *service;
+	VentureConfirmationStore *store;
 	const gchar *id;
 	gboolean decided;
 
@@ -10665,15 +10823,7 @@ venture_web_ui_chat_decide(
 	                          &error))
 		return venture_web_error_response(error);
 
-	service = venture_context_get_ai_service(self->context);
-
-	if (NULL == service)
-	{
-		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
-		                    "AI is not configured on this instance");
-		return venture_web_error_response(error);
-	}
-
+	store = venture_context_get_confirmations(self->context);
 	id = g_hash_table_lookup(params, "id");
 
 	/*
@@ -10689,15 +10839,15 @@ venture_web_ui_chat_decide(
 	 */
 	if (approve)
 	{
-		VentureAiConfirmation *pending;
+		VentureConfirmation *pending;
 
-		pending = venture_ai_service_find(service, id);
+		pending = venture_confirmation_store_find(store, id);
 
 		if (NULL != pending)
 		{
 			GType staged_type;
 
-			staged_type = venture_ai_confirmation_get_entity_type(pending);
+			staged_type = venture_confirmation_get_entity_type(pending);
 
 			if ((G_TYPE_INVALID != staged_type) &&
 			    !venture_web_require_for_type(self, principal, staged_type,
@@ -10708,8 +10858,10 @@ venture_web_ui_chat_decide(
 	}
 
 	decided = approve
-		? venture_ai_service_approve(service, id, principal, &error)
-		: venture_ai_service_reject(service, id, principal, &error);
+		? venture_confirmation_store_approve(store, id,
+			(NULL != principal) ? principal->name : NULL, &error)
+		: venture_confirmation_store_reject(store, id,
+			(NULL != principal) ? principal->name : NULL, &error);
 
 	html = g_string_new("<div class=\"msg ai\">"
 	                    "<span class=\"msg-avatar\">"
@@ -10885,12 +11037,12 @@ venture_web_ui_chat(
 		g_autoptr(GPtrArray) already = NULL;
 		guint p;
 
-		already = venture_ai_service_list_pending(
-			venture_context_get_ai_service(self->context));
+		already = venture_confirmation_store_list_pending(
+			venture_context_get_confirmations(self->context));
 
 		for (p = 0; (NULL != already) && (p < already->len); p++)
 			g_hash_table_add(staged_before, g_strdup(
-				venture_ai_confirmation_get_id(
+				venture_confirmation_get_id(
 					g_ptr_array_index(already, p))));
 	}
 
@@ -11214,7 +11366,6 @@ venture_web_api_confirmations(
 	g_autoptr(JsonBuilder) builder = NULL;
 	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(GError) error = NULL;
-	VentureAiService *ai;
 	guint i;
 
 	self = user_data;
@@ -11224,20 +11375,23 @@ venture_web_api_confirmations(
 	                          &error))
 		return venture_web_error_response(error);
 
-	ai = venture_context_get_ai_service(self->context);
+	/*
+	 * The queue, not the assistant's queue. A change staged by a
+	 * token-authenticated write is listed here beside one the in-process
+	 * assistant proposed, and an install with AI switched off still has
+	 * the former -- which is why this no longer starts by asking whether
+	 * there is an AI service and returning an empty array if not.
+	 */
+	pending = venture_confirmation_store_list_pending(
+		venture_context_get_confirmations(self->context));
+
 	builder = json_builder_new();
 	json_builder_begin_array(builder);
 
-	if (NULL != ai)
+	for (i = 0; i < pending->len; i++)
 	{
-		pending = venture_ai_service_list_pending(ai);
-
-		for (i = 0; i < pending->len; i++)
-		{
-			json_builder_add_value(builder,
-				venture_ai_confirmation_to_json(
-					g_ptr_array_index(pending, i)));
-		}
+		json_builder_add_value(builder,
+			venture_confirmation_to_json(g_ptr_array_index(pending, i)));
 	}
 
 	json_builder_end_array(builder);
@@ -11262,28 +11416,20 @@ venture_web_api_decide(
 	g_autoptr(JsonBuilder) builder = NULL;
 	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(GError) error = NULL;
-	VentureAiService *ai;
+	VentureConfirmationStore *store;
 	const gchar *id;
 	gboolean ok;
 
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
 
-	/* Approving an AI write is exactly the authority an editor has, and
+	/* Approving a staged write is exactly the authority an editor has, and
 	 * exactly what a viewer must not have. */
 	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
-	ai = venture_context_get_ai_service(self->context);
-
-	if (NULL == ai)
-	{
-		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED,
-		                    "AI is not configured on this instance");
-		return venture_web_error_response(error);
-	}
-
+	store = venture_context_get_confirmations(self->context);
 	id = g_hash_table_lookup(params, "id");
 
 	/*
@@ -11299,15 +11445,15 @@ venture_web_api_decide(
 	 */
 	if (approve)
 	{
-		VentureAiConfirmation *pending;
+		VentureConfirmation *pending;
 
-		pending = venture_ai_service_find(ai, id);
+		pending = venture_confirmation_store_find(store, id);
 
 		if (NULL != pending)
 		{
 			GType staged_type;
 
-			staged_type = venture_ai_confirmation_get_entity_type(pending);
+			staged_type = venture_confirmation_get_entity_type(pending);
 
 			if ((G_TYPE_INVALID != staged_type) &&
 			    !venture_web_require_for_type(self, principal, staged_type,
@@ -11317,10 +11463,11 @@ venture_web_api_decide(
 		}
 	}
 
-
 	ok = approve
-		? venture_ai_service_approve(ai, id, principal, &error)
-		: venture_ai_service_reject(ai, id, principal, &error);
+		? venture_confirmation_store_approve(store, id,
+			(NULL != principal) ? principal->name : NULL, &error)
+		: venture_confirmation_store_reject(store, id,
+			(NULL != principal) ? principal->name : NULL, &error);
 
 	if (!ok)
 		return venture_web_error_response(error);
@@ -12974,6 +13121,7 @@ venture_web_forge_webhook(
 	actor.name = "forge";
 	actor.prompt = NULL;
 	actor.request_id = NULL;
+	actor.approved_by = NULL;
 
 	now = g_date_time_new_now_utc();
 

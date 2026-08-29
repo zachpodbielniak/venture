@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-08-14]
+#+updated: [2026-08-29]
 #+version: 0.1.0
 
 * AI
@@ -251,7 +251,31 @@ noticing late is materially worse.
 
 Staged changes expire after =ai.confirmation_ttl= seconds. One that has sat
 unapproved for an hour almost certainly refers to a conversation the operator
-has moved on from.
+has moved on from. An expired change is *removed* rather than marked: nothing
+can be done with one, and a server left running would otherwise accumulate
+every change nobody ever answered. At most =ai.confirmation_limit= may wait at
+once; staging past that is refused.
+
+** The queue is not the assistant's alone
+
+A staged change lives in a queue on the context rather than inside the AI
+service, and the REST API stages into the same one: =POST /api/v1/expense?stage=1=
+mints a confirmation exactly as a tool call does. See
+[[file:api.org][Staging a write]].
+
+That is why the two settings above keep their =ai.= prefix while governing
+changes the assistant had nothing to do with — they predate the sharing, and
+renaming a configuration key to tidy up a prefix is not worth the install that
+silently reverts to a default.
+
+It also means an install running =ai.enabled: false= still has a working
+confirmation queue, and =/api/v1/confirmations= answers rather than returning
+an empty array. What is absent without AI is the assistant, not staging.
+
+Approving applies the staged object through the same repository call an
+ordinary write uses, so a stale approval is a =409= naming what changed
+underneath rather than a silent overwrite. The rules are the same whoever
+proposed the change, which is the point of there being one queue.
 
 * Approving
 
@@ -277,6 +301,20 @@ change" is answerable months later.
 #+begin_src sh
 venturectl list audit_entry actor_kind__eq=ai order=-occurred_at
 #+end_src
+
+A change that came out of the confirmation queue additionally records
+=approved_by=, the person who let it through, and =request_id=, the
+confirmation's own identifier. A direct write sets neither, so the three cases
+are three different rows rather than three readings of one:
+
+#+begin_src sh
+# everything somebody approved, whoever proposed it
+venturectl list audit_entry approved_by__not_null=1 order=-occurred_at
+#+end_src
+
+=actor= stays whoever *asked* — the model for an assistant change, the token's
+account for an agent's. Collapsing the two parties into one field would lose
+exactly the distinction the trail is for.
 
 A rejection is audited too: knowing what the AI proposed and was denied is as
 useful as knowing what it did.

@@ -141,9 +141,9 @@ static const VentureMcpToolDef tool_defs[] = {
 	},
 	{
 		"venture_confirmations",
-		"List the changes VENTURE's own assistant has staged and is "
-		"waiting on a person for, or approve or reject one of them by "
-		"id.",
+		"List every change waiting for a person to approve it -- staged by "
+		"this session's writes, by another agent, or by VENTURE's own "
+		"assistant -- or approve or reject one of them by id.",
 		TOOL_FLAG_NONE
 	}
 };

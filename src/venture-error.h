@@ -45,9 +45,9 @@ G_BEGIN_DECLS
  * @VENTURE_ERROR_CONFIG: the configuration is missing or malformed
  * @VENTURE_ERROR_PLUGIN: a plugin failed to load, register or run
  * @VENTURE_ERROR_AI: an AI provider or tool call failed
- * @VENTURE_ERROR_AI_CONFIRMATION_REQUIRED: the AI attempted a mutation that
- *   policy requires a human to approve first; the accompanying
- *   #VentureAiConfirmation identifier is in the error message
+ * @VENTURE_ERROR_AI_CONFIRMATION_REQUIRED: a mutation that policy requires a
+ *   human to approve first; the accompanying #VentureConfirmation identifier
+ *   is in the error message
  * @VENTURE_ERROR_AUTOMATION: an automation binding or the engine failed
  * @VENTURE_ERROR_SERIALIZATION: a value could not be encoded or decoded
  * @VENTURE_ERROR_UNSUPPORTED: the operation is not supported by this build,

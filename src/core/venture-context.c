@@ -16,6 +16,7 @@ struct _VentureContext
 	VentureEntityRegistry	*entities;
 	VentureReportRegistry	*reports;
 	VentureVentureTypeRegistry *venture_types;
+	VentureConfirmationStore *confirmations;
 	VentureAiService	*ai;
 	VentureAutomation	*automation;
 	VenturePluginManager	*plugins;
@@ -38,6 +39,7 @@ venture_context_finalize(GObject *object)
 	g_clear_object(&self->database);
 	g_clear_object(&self->reports);
 	g_clear_object(&self->venture_types);
+	g_clear_object(&self->confirmations);
 	g_clear_object(&self->ai);
 	g_clear_object(&self->automation);
 	g_clear_object(&self->plugins);
@@ -78,9 +80,37 @@ venture_context_new(
 	self->venture_types = venture_venture_type_registry_new();
 	self->timezone = venture_config_get_timezone(config);
 
+	/*
+	 * The confirmation queue exists whether or not AI does. It began as
+	 * the assistant's, but a change proposed by an outside agent holding
+	 * an API token has to land somewhere a person can answer it, and one
+	 * queue answered from one page is the whole point. An install with
+	 * `ai.enabled: false` still stages REST writes.
+	 */
+	{
+		gint64 ttl;
+		gint64 limit;
+
+		g_object_get(config,
+		             "ai-confirmation-ttl", &ttl,
+		             "ai-confirmation-limit", &limit,
+		             NULL);
+
+		self->confirmations = venture_confirmation_store_new(database, ttl,
+		                                                     limit);
+	}
+
 	venture_report_registry_register_builtins(self->reports);
 
 	return self;
+}
+
+VentureConfirmationStore *
+venture_context_get_confirmations(VentureContext *self)
+{
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), NULL);
+
+	return self->confirmations;
 }
 
 VentureConfig *

@@ -138,7 +138,7 @@ does the same thing without scripting.
 
 *** AI has authority, but bounded
 
-AI tool calls read freely. Anything that would change a record is staged as a =VentureAiConfirmation= carrying a diff, and applies only after approval. Every applied mutation is audited with the prompt that caused it. The policy is configurable per install and per tool; the default is =confirm_writes=, because a hallucinated tool call that rewrites an expense is a tax problem rather than a UI annoyance.
+AI tool calls read freely. Anything that would change a record is staged as a =VentureConfirmation= carrying a diff, and applies only after approval. So is any REST write sent with =?stage=1=, which is how an outside agent holding an API token proposes a change: one queue, answered from one page, whoever asked. Every applied mutation is audited with the prompt that caused it. The policy is configurable per install and per tool; the default is =confirm_writes=, because a hallucinated tool call that rewrites an expense is a tax problem rather than a UI annoyance.
 
 *** An outside agent gets the whole data model, generated
 
@@ -153,9 +153,9 @@ already makes.
 The token comes from =VENTURE_TOKEN= and there is no flag for it: an MCP
 server is spawned from a config file, and an argv is world-readable through
 =/proc=. Writes are staged rather than applied by default, matching the
-in-process AI's =confirm_writes= policy. See
-[[file:docs/mcp.org][the MCP documentation]], which is explicit about what
-staging does and does not mean.
+in-process AI's =confirm_writes= policy: the change is queued on the server as
+a confirmation and a person approves it from the same panel the assistant's
+staged writes appear in. See [[file:docs/mcp.org][the MCP documentation]].
 
 *** Conversations are records
 

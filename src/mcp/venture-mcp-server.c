@@ -40,6 +40,15 @@ struct _VentureMcpServer
 	gchar			*token;
 	gboolean		 stage_writes;
 
+	/*
+	 * Whether the VENTURE server on the other end can stage a write.
+	 * Read from /api/v1/health at startup rather than assumed: `?stage=1`
+	 * against a build that predates staging is an unknown query parameter
+	 * on a write route, which is ignored, and the change is applied. A
+	 * client that guessed would send exactly the write it meant to hold.
+	 */
+	gboolean		 server_stages;
+
 	SoupSession		*session;
 	VentureMcpCatalog	*catalog;
 
@@ -445,6 +454,7 @@ venture_mcp_server_load_catalog(
 	GError			**error
 ){
 	g_autoptr(JsonNode) schema = NULL;
+	g_autoptr(JsonNode) health = NULL;
 	g_autoptr(VentureMcpCatalog) catalog = NULL;
 
 	g_return_val_if_fail(VENTURE_IS_MCP_SERVER(self), FALSE);
@@ -454,6 +464,22 @@ venture_mcp_server_load_catalog(
 
 	if (NULL == schema)
 		return FALSE;
+
+	/*
+	 * Ask once whether this server stages, rather than per write.
+	 *
+	 * A failure here is not fatal -- it means an older server, and the
+	 * write tools fall back to describing the change without sending it,
+	 * which is what they did before staging existed. What must not happen
+	 * is claiming a change was queued on a server that never heard of the
+	 * parameter and applied the write instead.
+	 */
+	health = venture_mcp_server_request(self, "GET", "/api/v1/health", NULL,
+	                                    NULL);
+
+	self->server_stages = (NULL != health) && JSON_NODE_HOLDS_OBJECT(health) &&
+		json_object_get_boolean_member_with_default(
+			json_node_get_object(health), "staged_writes", FALSE);
 
 	catalog = venture_mcp_catalog_new_from_schema(schema, error);
 
@@ -869,24 +895,94 @@ venture_mcp_tool_get(
 }
 
 /*
- * The text a write tool returns when staging holds it.
+ * The path a write goes to, with `?stage=1` appended when the change is
+ * being proposed rather than made.
  *
- * It states plainly that nothing was sent and that nothing is pending on the
- * server, because VENTURE's REST API has no server-side staging for a
- * token-authenticated write -- its confirmations are raised by its own
- * in-process assistant. Reporting "staged for approval" would send whoever
- * read it to look in a queue that will never contain this change.
+ * One function so the three write tools cannot disagree about the spelling.
  */
 static gchar *
-venture_mcp_staged_text(
+venture_mcp_write_path(
+	VentureMcpServer	*self,
+	const gchar		*path
+){
+	if (self->stage_writes && self->server_stages)
+		return g_strconcat(path, "?stage=1", NULL);
+
+	return g_strdup(path);
+}
+
+/*
+ * The answer a write tool gives when the server staged the change.
+ *
+ * It names the confirmation id, because that is what somebody has to quote
+ * to approve or reject it, and it says where the change is waiting. Unlike
+ * the hold this replaced, "staged for approval" is now true: the change is
+ * in the server's queue and venture_confirmations lists it.
+ */
+static gchar *
+venture_mcp_staged_text(JsonNode *reply)
+{
+	g_autoptr(GString) text = NULL;
+	g_autofree gchar *encoded = NULL;
+	JsonObject *object;
+	JsonObject *confirmation;
+	const gchar *id;
+
+	object = JSON_NODE_HOLDS_OBJECT(reply) ? json_node_get_object(reply)
+	                                       : NULL;
+	confirmation = ((NULL != object) &&
+	                json_object_has_member(object, "confirmation"))
+		? json_object_get_object_member(object, "confirmation") : NULL;
+	id = (NULL != confirmation)
+		? venture_json_object_get_string(confirmation, "id", NULL) : NULL;
+
+	text = g_string_new("Not applied yet. The change was staged on the "
+	                    "VENTURE server and is waiting for a person to "
+	                    "approve it.\n\n");
+
+	if (NULL != id)
+	{
+		g_string_append_printf(text,
+			"  confirmation id: %s\n"
+			"  approve: POST /api/v1/confirmations/%s/approve\n"
+			"  reject:  POST /api/v1/confirmations/%s/reject\n\n",
+			id, id, id);
+	}
+
+	encoded = venture_json_to_string(reply, TRUE);
+	g_string_append_printf(text, "%s\n", encoded);
+
+	g_string_append(text,
+		"\nIt is listed by venture_confirmations and by GET "
+		"/api/v1/confirmations until it is decided, and it expires on its "
+		"own if nobody answers. Tell the person you are working for what it "
+		"will do and that it needs approving; do not report it as done. To "
+		"write directly instead, the server has to be started as "
+		"`venturectl mcp --apply-writes`.\n");
+
+	return g_string_free(g_steal_pointer(&text), FALSE);
+}
+
+/*
+ * The answer a write tool gives when staging was asked for and the server
+ * cannot do it.
+ *
+ * This is the old client-side hold, kept for exactly this case. It states
+ * that nothing was sent and that nothing is queued anywhere, because saying
+ * "staged for approval" would send whoever read it to look in a queue that
+ * will never hold the change.
+ */
+static gchar *
+venture_mcp_held_text(
 	const gchar	*method,
 	const gchar	*path,
 	JsonNode	*body
 ){
 	g_autoptr(GString) text = NULL;
 
-	text = g_string_new("Not applied. Write staging is on, so this change "
-	                    "was described and not sent.\n\n");
+	text = g_string_new("Not applied. Write staging is on and this VENTURE "
+	                    "server is too old to stage a change itself, so the "
+	                    "change was described and not sent.\n\n");
 
 	g_string_append_printf(text, "  %s %s\n", method, path);
 
@@ -902,10 +998,50 @@ venture_mcp_staged_text(
 		"\nNothing is queued on the VENTURE server: it has no pending "
 		"confirmation for this, and venture_confirmations will not show it. "
 		"Report the change above to the person you are working for and let "
-		"them decide. To let this session write directly instead, the server "
-		"has to be started as `venturectl mcp --apply-writes`.\n");
+		"them decide. A server that reports staged_writes at /api/v1/health "
+		"would have queued it for them instead.\n");
 
 	return g_string_free(g_steal_pointer(&text), FALSE);
+}
+
+/*
+ * Sends a write, staged or not, and renders whichever answer came back.
+ *
+ * The staged and direct paths differ by a query parameter and nothing else,
+ * which is the point: the server builds the record the same way either way,
+ * so a change an agent proposes is the change that gets applied.
+ */
+static gchar *
+venture_mcp_write(
+	VentureMcpServer	 *self,
+	const gchar		 *method,
+	const gchar		 *path,
+	JsonNode		 *values,
+	GError			**error
+){
+	g_autofree gchar *target = NULL;
+	g_autoptr(JsonNode) node = NULL;
+
+	if (self->stage_writes && !self->server_stages)
+		return venture_mcp_held_text(method, path, values);
+
+	target = venture_mcp_write_path(self, path);
+	node = venture_mcp_server_request(self, method, target, values, error);
+
+	if (NULL == node)
+		return NULL;
+
+	/*
+	 * Classified from the reply, never from the request. A server that
+	 * ignored the parameter answers with the record it just wrote, and
+	 * reporting that as staged would be the one lie that matters here.
+	 */
+	if (self->stage_writes && JSON_NODE_HOLDS_OBJECT(node) &&
+	    json_object_get_boolean_member_with_default(json_node_get_object(node),
+	                                                "staged", FALSE))
+		return venture_mcp_staged_text(node);
+
+	return venture_json_to_string(node, TRUE);
 }
 
 static gchar *
@@ -915,7 +1051,6 @@ venture_mcp_tool_create(
 	GError			**error
 ){
 	g_autoptr(JsonNode) values = NULL;
-	g_autoptr(JsonNode) node = NULL;
 	g_autofree gchar *path = NULL;
 	const gchar *type;
 
@@ -931,15 +1066,7 @@ venture_mcp_tool_create(
 
 	path = g_strdup_printf("/api/v1/%s", type);
 
-	if (self->stage_writes)
-		return venture_mcp_staged_text("POST", path, values);
-
-	node = venture_mcp_server_request(self, "POST", path, values, error);
-
-	if (NULL == node)
-		return NULL;
-
-	return venture_json_to_string(node, TRUE);
+	return venture_mcp_write(self, "POST", path, values, error);
 }
 
 static gchar *
@@ -949,7 +1076,6 @@ venture_mcp_tool_update(
 	GError			**error
 ){
 	g_autoptr(JsonNode) values = NULL;
-	g_autoptr(JsonNode) node = NULL;
 	g_autofree gchar *path = NULL;
 	const gchar *type;
 	gint64 id;
@@ -969,15 +1095,7 @@ venture_mcp_tool_update(
 
 	path = g_strdup_printf("/api/v1/%s/%" G_GINT64_FORMAT, type, id);
 
-	if (self->stage_writes)
-		return venture_mcp_staged_text("PATCH", path, values);
-
-	node = venture_mcp_server_request(self, "PATCH", path, values, error);
-
-	if (NULL == node)
-		return NULL;
-
-	return venture_json_to_string(node, TRUE);
+	return venture_mcp_write(self, "PATCH", path, values, error);
 }
 
 static gchar *
@@ -986,7 +1104,6 @@ venture_mcp_tool_delete(
 	JsonObject		 *arguments,
 	GError			**error
 ){
-	g_autoptr(JsonNode) node = NULL;
 	g_autofree gchar *path = NULL;
 	const gchar *type;
 	gint64 id;
@@ -1001,15 +1118,7 @@ venture_mcp_tool_delete(
 
 	path = g_strdup_printf("/api/v1/%s/%" G_GINT64_FORMAT, type, id);
 
-	if (self->stage_writes)
-		return venture_mcp_staged_text("DELETE", path, NULL);
-
-	node = venture_mcp_server_request(self, "DELETE", path, NULL, error);
-
-	if (NULL == node)
-		return NULL;
-
-	return venture_json_to_string(node, TRUE);
+	return venture_mcp_write(self, "DELETE", path, NULL, error);
 }
 
 static gchar *
@@ -1329,8 +1438,11 @@ venture_mcp_handle_initialize(VentureMcpServer *self)
 			? "VENTURE is an ERP and CRM. Call venture_schema before "
 			  "writing anything: field names are exact and a wrong one is "
 			  "ignored rather than refused. Write staging is on, so "
-			  "venture_create, venture_update and venture_delete describe "
-			  "the change and do not perform it."
+			  "venture_create, venture_update and venture_delete propose "
+			  "the change instead of making it: the server queues it and a "
+			  "person approves it. Nothing you write takes effect until "
+			  "somebody says so, and venture_confirmations shows what is "
+			  "waiting."
 			: "VENTURE is an ERP and CRM. Call venture_schema before "
 			  "writing anything: field names are exact and a wrong one is "
 			  "ignored rather than refused. Write staging is off, so writes "

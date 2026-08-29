@@ -723,6 +723,10 @@ venture_auth_to_actor(
 	actor->prompt = NULL;
 	actor->request_id = NULL;
 
+	/* Only a change applied out of the confirmation queue has an
+	 * approver; a direct request is its own authority. */
+	actor->approved_by = NULL;
+
 	/* A token-authenticated request is machine traffic, and the audit
 	 * trail should say so rather than attributing it to a person. */
 	if ((NULL != principal) && (0 != principal->token_id))
