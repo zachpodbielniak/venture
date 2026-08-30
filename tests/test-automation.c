@@ -18,6 +18,8 @@
 
 #include <glib.h>
 
+#include "venture-test-util.h"
+
 typedef struct
 {
 	VentureConfig	*config;
@@ -63,12 +65,15 @@ fixture_tear_down(
 	g_clear_object(&fixture->database);
 	g_clear_object(&fixture->config);
 
+	/*
+	 * g_file_delete() on a directory fails exactly the way g_rmdir()
+	 * does when it is not empty, and its GError was discarded -- so the
+	 * pod state the engine writes under here kept the directory alive
+	 * and nothing said so.
+	 */
 	if (NULL != fixture->state_dir)
 	{
-		g_autoptr(GFile) directory = NULL;
-
-		directory = g_file_new_for_path(fixture->state_dir);
-		g_file_delete(directory, NULL, NULL);
+		venture_test_remove_tree(fixture->state_dir);
 		g_clear_pointer(&fixture->state_dir, g_free);
 	}
 }

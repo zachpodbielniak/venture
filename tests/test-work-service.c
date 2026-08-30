@@ -14,6 +14,8 @@
 
 #include <glib.h>
 
+#include "venture-test-util.h"
+
 typedef struct
 {
 	VentureConfig	*config;
@@ -91,6 +93,13 @@ fixture_tear_down(
 	g_clear_object(&fixture->context);
 	g_clear_object(&fixture->database);
 	g_clear_object(&fixture->config);
+
+	/*
+	 * The state directory was freed and never removed, so each run left
+	 * one /tmp/venture-work-* per test holding whatever the runner had
+	 * written into it.
+	 */
+	venture_test_remove_tree(fixture->state_dir);
 	g_clear_pointer(&fixture->state_dir, g_free);
 }
 
@@ -121,6 +130,42 @@ test_work_disabled_by_default(
 
 	g_assert_null(service);
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+}
+
+/*
+ * Waits for every run this service started to stop being live.
+ *
+ * A run happens on the service's own thread, and the thread is joined by
+ * the finalizer -- but the finalizer runs when the last reference goes,
+ * which a test that never turns the main loop does not reach until it
+ * returns. So the worker was still calling g_mkdir_with_parents() for the
+ * run's workspace while fixture_tear_down() was removing the directory
+ * above it: strace shows the rmdir and the mkdir interleaved, and which
+ * one won decided whether a /tmp/venture-work-* directory survived the
+ * run.
+ *
+ * Draining first is what makes the teardown deterministic. It is also the
+ * honest shape for a test that starts background work: asserting on a
+ * record and walking away leaves a thread writing into a directory
+ * nobody owns any more.
+ *
+ * Bounded rather than open-ended, because a test that can hang is worse
+ * than one that fails -- the run here fails almost at once (there is no
+ * repository to clone), so this normally returns in milliseconds.
+ */
+static void
+settle_runs(
+	VentureWorkService	*service
+){
+	gint64 deadline;
+
+	deadline = g_get_monotonic_time() + (5 * G_USEC_PER_SEC);
+
+	while ((venture_work_service_count_live(service) > 0) &&
+	       (g_get_monotonic_time() < deadline))
+		g_main_context_iteration(NULL, FALSE);
+
+	g_assert_cmpuint(venture_work_service_count_live(service), ==, 0);
 }
 
 static gboolean
@@ -194,6 +239,13 @@ test_work_does_not_block_the_main_loop(
 
 	/* A blocked loop would have managed nothing at all. */
 	g_assert_cmpuint(ticks, >=, 20);
+
+	/*
+	 * This one usually drains on its own -- two seconds of iterating the
+	 * loop is far longer than the run lasts -- but "usually" is not a
+	 * thing to leave a background thread's lifetime resting on.
+	 */
+	settle_runs(service);
 }
 
 /*
@@ -231,6 +283,8 @@ test_work_records_the_run(
 
 	g_object_get(run, "ticket-id", &ticket_id, NULL);
 	g_assert_cmpint(ticket_id, ==, fixture->ticket_id);
+
+	settle_runs(service);
 }
 
 /*

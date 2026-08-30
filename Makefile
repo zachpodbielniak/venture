@@ -191,9 +191,27 @@ pod-modules: $(OUTDIR)/$(LIB_STATIC) $(POD_MODULE_SOS)
 # The plugins are a prerequisite because the suite loads the example plugin
 # for real. Without them that test skips itself rather than failing, which
 # would quietly stop covering the thing plugins exist for.
+#
+# TMPDIR is private to the run, and the litter check is what reads it.
+#
+# g_get_tmp_dir() honours TMPDIR, so every fixture's g_dir_make_tmp() lands
+# in a directory belonging to this run alone -- which is what lets the check
+# compare before against after exactly. Sharing /tmp would make two worktrees
+# building at once report each other's fixtures as this run's litter.
+#
+# The final rmdir is bare on purpose: it succeeds only if the directory is
+# empty, so a run whose fixtures cleaned up leaves nothing, and one that
+# somehow did not keeps its evidence where the check just named it.
+#
+# A failing run keeps everything and is *told where*: a g_assert aborts before
+# any teardown, which is deliberate -- those directories are what somebody
+# debugging the failure wants -- and moving them under a private TMPDIR would
+# otherwise have hidden them.
 test: $(TEST_BINS) plugins
 	@echo "Running test suite ($(BUILD_TYPE))..."
-	@failed=0; total=0; \
+	@TMPDIR=$$(mktemp -d /tmp/venture-run-XXXXXX); export TMPDIR; \
+	bash $(TOOLSDIR)/venture-test-litter.sh snapshot $(OUTDIR)/test-litter; \
+	failed=0; total=0; \
 	for t in $(TEST_BINS); do \
 		total=$$((total + 1)); \
 		echo "  --- $$(basename $$t)"; \
@@ -211,10 +229,13 @@ test: $(TEST_BINS) plugins
 	done; \
 	echo ""; \
 	if [ $$failed -gt 0 ]; then \
-		echo "$$failed of $$total test binaries failed"; exit 1; \
-	else \
-		echo "All $$total test binaries passed"; \
-	fi
+		echo "$$failed of $$total test binaries failed"; \
+		echo "fixtures from this run are under $$TMPDIR"; \
+		exit 1; \
+	fi; \
+	bash $(TOOLSDIR)/venture-test-litter.sh check $(OUTDIR)/test-litter || exit 1; \
+	rmdir "$$TMPDIR" 2>/dev/null || true; \
+	echo "All $$total test binaries passed"
 
 # Run one test binary verbosely: make test-one T=test-money
 .PHONY: test-one

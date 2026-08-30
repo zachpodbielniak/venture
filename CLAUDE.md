@@ -272,3 +272,23 @@ implements it, and say in a comment what breaks if it regresses.
 When you fix a bug, add the test that would have caught it, and check that it
 fails without the fix — several tests here were written after a bug that
 looked like a data problem and was an ordering one.
+
+A fixture that needs a state directory removes it with
+`venture_test_remove_tree()` from `tests/venture-test-util.h`. **Never
+`g_rmdir()` and never `g_file_delete()`** — both do nothing at all to a
+directory that is not empty, and both report it in a way every caller here
+discarded, so a fixture that wrote one file inside the directory it made left
+that directory behind once per test per run. Five did; a green suite left
+seventeen in `/tmp` and said nothing.
+
+`make test` runs under a private `TMPDIR` and `tools/venture-test-litter.sh`
+fails a **green** run that left one, comparing the run against itself — a
+*failing* run's directories are evidence and must stay, which is also why the
+teardown never runs on that path: `g_assert` aborts the process.
+
+It found a second thing worth knowing: **a test that starts a coding run must
+drain it before returning.** `venture_work_service`'s worker was still creating
+the run's workspace while the teardown removed the directory above it.
+`settle_runs()` in `tests/test-work-service.c` waits on
+`venture_work_service_count_live()`, bounded — a test that can hang is worse
+than one that fails.

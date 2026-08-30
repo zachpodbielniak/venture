@@ -12,6 +12,8 @@
 
 #include <venture.h>
 
+#include "venture-test-util.h"
+
 static void
 test_config_defaults(void)
 {
@@ -430,7 +432,16 @@ test_config_resolve_path(void)
 	g_autofree gchar *state_dir = NULL;
 
 	config = venture_config_new();
-	state_dir = g_build_filename(g_get_tmp_dir(), "venture-test-state", NULL);
+
+	/*
+	 * A real temporary directory rather than a fixed name under
+	 * g_get_tmp_dir(): setting state-dir creates it, so the fixed name
+	 * was left behind by every run -- and being fixed, it was invisible
+	 * to the litter check, whose prefixes come from g_dir_make_tmp()
+	 * literals.
+	 */
+	state_dir = g_dir_make_tmp("venture-config-XXXXXX", NULL);
+	g_assert_nonnull(state_dir);
 	g_object_set(config, "state-dir", state_dir, NULL);
 
 	absolute = venture_config_resolve_path(config, "/etc/venture/x.pod");
@@ -439,6 +450,8 @@ test_config_resolve_path(void)
 	relative = venture_config_resolve_path(config, "automations.pod");
 	g_assert_true(g_str_has_prefix(relative, state_dir));
 	g_assert_true(g_str_has_suffix(relative, "automations.pod"));
+
+	venture_test_remove_tree(state_dir);
 }
 
 static void

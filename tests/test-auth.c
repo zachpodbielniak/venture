@@ -18,6 +18,8 @@
 
 #include <unistd.h>
 
+#include "venture-test-util.h"
+
 typedef struct
 {
 	VentureDatabase	*database;
@@ -726,9 +728,16 @@ server_fixture_tear_down(
 	g_clear_object(&fixture->database);
 	g_clear_object(&fixture->config);
 
+	/*
+	 * The whole tree, not g_rmdir(), which does nothing to a directory
+	 * that is not empty. The CSV-import and attachment-upload tests
+	 * write under <state_dir>/attachments/, so every green run of this
+	 * binary used to leave two /tmp/venture-routes-* directories behind
+	 * and say nothing about it.
+	 */
 	if (NULL != fixture->state_dir)
 	{
-		g_rmdir(fixture->state_dir);
+		venture_test_remove_tree(fixture->state_dir);
 		g_clear_pointer(&fixture->state_dir, g_free);
 	}
 }

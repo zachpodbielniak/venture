@@ -18,8 +18,11 @@
 #include <glib/gstdio.h>
 #include <string.h>
 
+#include "venture-test-util.h"
+
 typedef struct
 {
+	gchar *base;
 	gchar *root;
 	gchar *outside;
 } Fixture;
@@ -30,16 +33,22 @@ fixture_set_up(
 	gconstpointer	 user_data
 ){
 	g_autoptr(GError) error = NULL;
-	g_autofree gchar *base = NULL;
 	g_autofree gchar *inside = NULL;
 
 	(void)user_data;
 
-	base = g_dir_make_tmp("venture-sandbox-XXXXXX", &error);
+	/*
+	 * Kept on the fixture rather than freed here. The temp root is the
+	 * only handle on both `workspace` and `elsewhere`, and dropping it
+	 * left the teardown with nothing to remove -- seven
+	 * /tmp/venture-sandbox-* directories per run, each holding two
+	 * subdirectories and two files.
+	 */
+	fixture->base = g_dir_make_tmp("venture-sandbox-XXXXXX", &error);
 	g_assert_no_error(error);
 
-	fixture->root = g_build_filename(base, "workspace", NULL);
-	fixture->outside = g_build_filename(base, "elsewhere", NULL);
+	fixture->root = g_build_filename(fixture->base, "workspace", NULL);
+	fixture->outside = g_build_filename(fixture->base, "elsewhere", NULL);
 
 	g_assert_cmpint(g_mkdir_with_parents(fixture->root, 0755), ==, 0);
 	g_assert_cmpint(g_mkdir_with_parents(fixture->outside, 0755), ==, 0);
@@ -65,6 +74,15 @@ fixture_tear_down(
 ){
 	(void)user_data;
 
+	/*
+	 * The base, which holds both of the others -- and this fixture is
+	 * the one that deliberately creates a path *outside* the sandbox
+	 * root, so removing `root` alone would leave `elsewhere` and its
+	 * secret.txt behind.
+	 */
+	venture_test_remove_tree(fixture->base);
+
+	g_clear_pointer(&fixture->base, g_free);
 	g_clear_pointer(&fixture->root, g_free);
 	g_clear_pointer(&fixture->outside, g_free);
 }

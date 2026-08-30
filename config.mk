@@ -79,6 +79,7 @@ VENTUREDEPSINCLUDEDIR ?= $(INCLUDEDIR)/venture-deps
 # ---------------------------------------------------------------------------
 
 BUILDDIR := build
+TOOLSDIR := tools
 OBJDIR_DEBUG := $(BUILDDIR)/debug/obj
 OBJDIR_RELEASE := $(BUILDDIR)/release/obj
 OUTDIR_DEBUG := $(BUILDDIR)/debug

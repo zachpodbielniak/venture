@@ -17,6 +17,8 @@
 
 #include <string.h>
 
+#include "venture-test-util.h"
+
 typedef struct
 {
 	VentureDatabase	*database;
@@ -50,37 +52,12 @@ fixture_set_up(
 }
 
 static void
-remove_directory(const gchar *path)
-{
-	g_autoptr(GDir) directory = NULL;
-	const gchar *entry;
-
-	if (NULL == path)
-		return;
-
-	directory = g_dir_open(path, 0, NULL);
-
-	if (NULL != directory)
-	{
-		while (NULL != (entry = g_dir_read_name(directory)))
-		{
-			g_autofree gchar *full = NULL;
-
-			full = g_build_filename(path, entry, NULL);
-			g_remove(full);
-		}
-	}
-
-	g_rmdir(path);
-}
-
-static void
 fixture_tear_down(
 	Fixture		*fixture,
 	gconstpointer	 user_data
 ){
-	remove_directory(fixture->plugin_dir);
-	remove_directory(fixture->type_dir);
+	venture_test_remove_tree(fixture->plugin_dir);
+	venture_test_remove_tree(fixture->type_dir);
 
 	g_clear_pointer(&fixture->plugin_dir, g_free);
 	g_clear_pointer(&fixture->type_dir, g_free);
@@ -743,7 +720,7 @@ test_plugin_manager_compiles_a_crispy_plugin(
 		g_assert_true(g_file_test(cache_dir, G_FILE_TEST_IS_DIR));
 	}
 
-	remove_directory(state_dir);
+	venture_test_remove_tree(state_dir);
 }
 
 static void
@@ -803,7 +780,7 @@ test_plugin_manager_reports_a_broken_crispy_plugin(
 	g_assert_false(venture_plugin_manager_load_file(manager, path, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN);
 
-	remove_directory(state_dir);
+	venture_test_remove_tree(state_dir);
 }
 
 
@@ -925,7 +902,7 @@ test_automation_starts_without_rules(
 	g_assert_true(venture_automation_start(automation, &error));
 	g_assert_no_error(error);
 
-	remove_directory(state_dir);
+	venture_test_remove_tree(state_dir);
 }
 
 static void
@@ -1307,7 +1284,7 @@ test_automation_does_not_cascade(
 	g_assert_cmpint(ideas, ==, 1);
 
 	venture_automation_stop(automation);
-	remove_directory(state_dir);
+	venture_test_remove_tree(state_dir);
 }
 
 static void

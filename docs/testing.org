@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-08-14]
+#+updated: [2026-08-29]
 #+version: 0.1.0
 
 * Testing
@@ -14,7 +14,7 @@ make DEBUG=1 test-one T=test-money   # one binary, verbosely
 make DEBUG=1 test-valgrind           # under valgrind, if installed
 #+end_src
 
-Every test runs against a private in-memory SQLite database, so the suite needs no external service and cannot leave state behind. Set =VENTURE_TEST_DB= to a =postgres://= URI to run the database tests against PostgreSQL instead:
+Every test runs against a private in-memory SQLite database, so the suite needs no external service. It leaves nothing behind on disk either -- see [[#temporary-directories][Temporary directories]] below, which is a claim the suite now checks rather than one this page merely makes. Set =VENTURE_TEST_DB= to a =postgres://= URI to run the database tests against PostgreSQL instead:
 
 #+begin_src sh
 podman run -d --rm --name pg -e POSTGRES_PASSWORD=t -e POSTGRES_USER=venture \
@@ -149,3 +149,29 @@ g_test_add("/area/behaviour", Fixture, NULL,
 #+end_src
 
 Write the test around the behaviour that matters rather than the function that implements it, and say in a comment what breaks if it regresses. Several tests in this suite exist because a plausible implementation would have been wrong in a way that only shows up in a tax return.
+
+** Temporary directories
+:PROPERTIES:
+:CUSTOM_ID: temporary-directories
+:END:
+
+A fixture that needs a state directory makes one with =g_dir_make_tmp()= and removes it with =venture_test_remove_tree()= from =tests/venture-test-util.h=. Never =g_rmdir()=, and never =g_file_delete()=: both do nothing at all to a directory that is not empty, and both report it in a way every caller here discarded. So a fixture that wrote a single file inside the directory it made left that directory behind, silently, once per test per run.
+
+Five fixtures did. A full green suite left seventeen directories in =/tmp=, 44 had accumulated over a few hours of ordinary runs, and "All 14 test binaries passed" said nothing about any of it.
+
+=venture_test_remove_tree()= deletes the tree, and checks the canonical path of every entry against the root it was given before touching it -- so a =..= in a name, or a directory reached through a symlink, cannot carry a teardown outside the directory the fixture made. A symlink is unlinked rather than followed, and it is the link's own location that is checked, not where it points.
+
+=make test= gives each run a private =TMPDIR=, which =g_get_tmp_dir()= honours, and =tools/venture-test-litter.sh= compares the directories before the run against the ones after it. A *green* run that left one is a failure:
+
+#+begin_src text
+test-litter: the suite passed but left temporary directories behind:
+  /tmp/venture-run-YOlWIW/venture-routes-CJ5AV3
+test-litter: a fixture removed its file and not the directory holding it
+test-litter: use venture_test_remove_tree(), not g_rmdir() or g_file_delete()
+#+end_src
+
+It compares the run against itself rather than checking that =/tmp= is empty, because a *failing* run leaves its directories on purpose. A =g_assert= failure aborts the process, so no teardown runs on that path -- which is correct and should stay that way: that directory is the evidence. The private =TMPDIR= is what makes the comparison exact, since two worktrees building at once would otherwise report each other's fixtures.
+
+What it cannot see is a directory whose name is not a =g_dir_make_tmp()= string literal in =tests/test-*.c=; the prefixes are read from those literals rather than written down, so the list grows with the suite instead of drifting from it. =make test='s bare =rmdir= of its own =TMPDIR= is the second net: it succeeds only on an empty directory, so a run that left something under a name the scan cannot match still leaves its =TMPDIR= where somebody will find it.
+
+One more thing it surfaced, which was not litter: =test-work-service= started a coding run and returned without waiting for it, so the service's worker thread was still calling =g_mkdir_with_parents()= for the run's workspace while the teardown was removing the directory above it. =strace= shows the =mkdir= and the =rmdir= interleaved. =settle_runs()= drains the live set first. A test that starts background work and walks away leaves a thread writing into a directory nobody owns any more, whoever wins the race.
