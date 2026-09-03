@@ -27,7 +27,7 @@ about it.
 | =pipeline=   | open deals by stage, probability-weighted                    |
 | =monthly=    | revenue, expenses and profit month by month                  |
 | =ideas=      | ideas ranked by opportunity and confidence against effort    |
-| =receivables= | outstanding invoices bucketed by how far past due          |
+| =receivables= | outstanding invoices bucketed by how far past due           |
 
 #+begin_src sh
 venturectl report                       # list them
@@ -38,6 +38,25 @@ curl '.../api/v1/reports/tax?period=2026&format=csv'
 
 =categories= takes =group_by=, so the same report answers "how did each genre
 do", "how did each format do" and "how did each product do".
+
+** What =receivables= ages against
+
+The end of the period, or now, whichever is earlier.
+
+For a period that has closed those are the same question and the end date
+is the honest one: a receivables report for last month should age against
+31 August rather than against whenever somebody happened to run it.
+
+For the period you are standing in they are not. Its end date is in the
+future, and aging against a date that has not happened yet reports invoices
+as overdue before they are due --- run =report receivables this_month= on 3
+September anchored to 30 September and an invoice due on the 13th lands in
+the =1-30 days= bucket and joins the overdue total. That total is the
+figure somebody chases a customer over, so it says debt, not forecast.
+
+Invoices with no due date are their own bucket rather than overdue: undated
+is unknown, not late. Only =sent= invoices count at all --- a draft is still
+being written, and paid or void ones are settled history.
 
 * Design notes
 

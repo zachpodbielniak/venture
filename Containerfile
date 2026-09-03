@@ -112,6 +112,19 @@ RUN if [ "${BUILD_TYPE}" = "debug" ]; then export DEBUG=1; fi; \
 # so it is cheap to run here -- and an image that ships a binary whose tests
 # were never run is an image that ships an untested binary.
 #
+
+#
+# tools/ is the test suite's, not the build's: `make test` runs
+# venture-test-litter.sh from here to prove a green run left no temp
+# directories behind. Without it that line fails on a missing file and takes
+# the whole build with it -- `|| exit 1` cannot tell a missing script from a
+# dirty machine -- so RUN_TESTS=1 could never pass in a container, however
+# green the suite was.
+#
+# Copied after `make all` so that editing a tool does not rebuild the world.
+#
+COPY tools/ tools/
+
 ARG RUN_TESTS=1
 RUN if [ "${RUN_TESTS}" = "1" ]; then \
         if [ "${BUILD_TYPE}" = "debug" ]; then export DEBUG=1; fi; \

@@ -1618,11 +1618,24 @@ venture_report_receivables(
 
 	as_of = (NULL != period) ? venture_date_range_get_end(period) : NULL;
 
-	if (NULL == as_of)
-	{
-		fallback_now = venture_time_now();
+	/* Age as of the period's end, but never later than now.
+	 *
+	 * For a period that has closed, the end date is the right anchor: a
+	 * receivables report for last month should age against 31 August,
+	 * not against whenever somebody happens to run it.
+	 *
+	 * For the period we are standing in, that end date is in the future,
+	 * and aging against a date that has not happened reports invoices as
+	 * overdue before they are due -- on 3 September, a "this month"
+	 * report anchored to 30 September puts an invoice due on the 13th in
+	 * the 1-30 days bucket and counts it in the overdue total. That is a
+	 * forecast being presented as a debt, and it is the figure somebody
+	 * chases a customer over.
+	 */
+	fallback_now = venture_time_now();
+
+	if ((NULL == as_of) || (g_date_time_compare(as_of, fallback_now) > 0))
 		as_of = fallback_now;
-	}
 
 	result = venture_report_result_new("Receivables aging", period);
 	skipped = 0;
