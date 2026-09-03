@@ -859,44 +859,6 @@ venture_web_page(
 		}
 
 		g_string_append(html, "</div>");
-
-		/*
-		 * Keep the sidebar where the reader left it.
-		 *
-		 * Every nav entry is an ordinary link, so following one is a full
-		 * page load and the rebuilt sidebar starts at the top -- which
-		 * throws away the scroll of anybody working from the entries far
-		 * down it, on exactly the click that proves they were reading
-		 * them.
-		 *
-		 * Inline and immediately after the list for the same reason the
-		 * theme script is inline: this has to run before the first paint.
-		 * Restoring from venture.js at the end of the body would leave
-		 * the browser free to paint the sidebar at the top first, which
-		 * replaces the lost position with a visible jump -- a different
-		 * annoyance, not a fix.
-		 *
-		 * sessionStorage rather than localStorage: a scroll position is
-		 * worth remembering across a click, not across a week. The writes
-		 * are throttled because a scroll event fires far more often than
-		 * anything needs storing, and every failure is swallowed --
-		 * private-mode storage that throws must cost the navigation
-		 * nothing.
-		 */
-		g_string_append(html,
-			"<script>(function(){try{"
-			"var n=document.querySelector('.sidebar .nav');"
-			"if(!n)return;"
-			"var k='venture.nav.scroll',t=null;"
-			"var v=sessionStorage.getItem(k);"
-			"if(v)n.scrollTop=parseInt(v,10)||0;"
-			"n.addEventListener('scroll',function(){"
-			"if(t)return;"
-			"t=setTimeout(function(){t=null;"
-			"try{sessionStorage.setItem(k,n.scrollTop);}catch(e){}"
-			"},150);"
-			"},{passive:true});"
-			"}catch(e){}})();</script>");
 	}
 
 	g_string_append(html, "<div class=\"sidebar-footer\">");
@@ -930,6 +892,61 @@ venture_web_page(
 	g_string_append(html, "<a class=\"btn btn-ghost btn-sm\" "
 	                      "href=\"/logout\">Sign out</a>");
 	g_string_append(html, "</div></nav>");
+
+	/*
+	 * Put the sidebar back where the reader left it, and make sure the
+	 * page they are on is one of the entries they can see.
+	 *
+	 * Every nav entry is an ordinary link, so following one is a full page
+	 * load and the rebuilt sidebar starts at the top -- which throws away
+	 * the scroll of anybody working from the entries far down it, on
+	 * exactly the click that proves they were reading them. Arriving from
+	 * a bookmark or a typed URL has the opposite problem: nothing was
+	 * saved, and the entry for the current page may sit below the fold
+	 * with no indication the sidebar goes any further.
+	 *
+	 * So: restore first, then bring the active entry into view only if it
+	 * is not already there. That order matters. Correcting unconditionally
+	 * would yank the sidebar on every ordinary click, undoing the
+	 * restore it just performed.
+	 *
+	 * Emitted here, after the sidebar closes rather than after the list,
+	 * because .nav is a flex child sized against its siblings: run this
+	 * with the footer still unparsed and its height is computed as though
+	 * the footer were not there, which is too tall, and both the scroll
+	 * clamp and the centring are then measured against a box that does not
+	 * exist. It still precedes <main>, which is what keeps it ahead of the
+	 * first paint -- the same reason the theme script is inline. Restoring
+	 * from venture.js at the end of the body would leave the browser free
+	 * to paint the sidebar at the top first, replacing the lost position
+	 * with a visible jump: a different annoyance, not a fix.
+	 *
+	 * sessionStorage rather than localStorage: a scroll position is worth
+	 * remembering across a click, not across a week. The writes are
+	 * throttled because a scroll event fires far more often than anything
+	 * needs storing, and every failure is swallowed -- private-mode
+	 * storage that throws must cost the navigation nothing.
+	 */
+	g_string_append(html,
+		"<script>(function(){try{"
+		"var n=document.querySelector('.sidebar .nav');"
+		"if(!n)return;"
+		"var k='venture.nav.scroll',t=null;"
+		"var v=sessionStorage.getItem(k);"
+		"if(v)n.scrollTop=parseInt(v,10)||0;"
+		"var a=n.querySelector('.nav-item.active');"
+		"if(a){"
+		"var ar=a.getBoundingClientRect(),nr=n.getBoundingClientRect();"
+		"if(ar.top<nr.top||ar.bottom>nr.bottom)"
+		"n.scrollTop+=ar.top-nr.top-(nr.height-ar.height)/2;"
+		"}"
+		"n.addEventListener('scroll',function(){"
+		"if(t)return;"
+		"t=setTimeout(function(){t=null;"
+		"try{sessionStorage.setItem(k,n.scrollTop);}catch(e){}"
+		"},150);"
+		"},{passive:true});"
+		"}catch(e){}})();</script>");
 
 	/* Main */
 	g_string_append(html, "<main class=\"main\">");

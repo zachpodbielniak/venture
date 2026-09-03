@@ -2643,13 +2643,16 @@ test_auth_redirect_notices_render(
 }
 
 /*
- * The sidebar remembers its scroll position across a navigation.
+ * The sidebar remembers its scroll position, and shows you where you are.
  *
  * Every nav entry is a plain link, so each click rebuilds the sidebar from
- * scratch and it would otherwise come back at the top. Asserted on the
- * markup because the behaviour itself is the browser's; what can regress
- * here is the hook going missing, and it has to be inline and before the
- * footer or it runs after the first paint and jumps instead.
+ * scratch and it would otherwise come back at the top. Arriving from a
+ * bookmark has the opposite problem: nothing was saved, and the entry for
+ * the current page can sit below the fold.
+ *
+ * Asserted on the markup because the behaviour itself is the browser's.
+ * What can regress here is the hook going missing, or moving to where it
+ * measures a sidebar that is not finished being parsed.
  */
 static void
 test_auth_sidebar_restores_its_scroll(
@@ -2660,6 +2663,7 @@ test_auth_sidebar_restores_its_scroll(
 	g_autofree gchar *page = NULL;
 	const gchar *script;
 	const gchar *footer;
+	const gchar *main_start;
 
 	server_fixture_create_user(fixture, "adam", "a-long-password",
 	                           VENTURE_USER_ROLE_ADMIN, NULL);
@@ -2674,18 +2678,61 @@ test_auth_sidebar_restores_its_scroll(
 	/* Reads the position back, not merely stores it. */
 	g_assert_nonnull(strstr(page, "scrollTop"));
 
+	/* And finds the current page's entry, to bring it into view when the
+	 * restored position does not already show it. */
+	g_assert_nonnull(strstr(page, ".nav-item.active"));
+
 	/*
-	 * Before the sidebar footer, which is what puts it inside the parsed
-	 * document at the point the nav exists and ahead of the first paint.
+	 * After the sidebar footer, because .nav is a flex child sized against
+	 * its siblings: measured before the footer exists its height comes out
+	 * too tall, and the centring is then computed against a box that is
+	 * not the one the reader sees.
 	 *
-	 * Matched on the markup rather than the bare class name: the
+	 * Matched on the footer's markup rather than the bare class name: the
 	 * stylesheet is inlined into every page and styles .sidebar-footer
 	 * hundreds of lines above the body, so the name alone finds the CSS
 	 * and compares against the wrong position entirely.
 	 */
 	footer = strstr(page, "<div class=\"sidebar-footer\">");
 	g_assert_nonnull(footer);
-	g_assert_true(script < footer);
+	g_assert_true(footer < script);
+
+	/*
+	 * And before <main>, which is what keeps it ahead of the first paint.
+	 * Moved to the end of the body it would run after the browser had
+	 * already drawn the sidebar at the top, turning a lost position into a
+	 * visible jump.
+	 */
+	main_start = strstr(page, "<main class=\"main\">");
+	g_assert_nonnull(main_start);
+	g_assert_true(script < main_start);
+}
+
+/*
+ * The active entry is marked, which is what the script above looks for. A
+ * sidebar that stopped marking it would leave that lookup finding nothing
+ * and failing silently -- the page would simply never scroll itself into
+ * view, with no error anywhere.
+ */
+static void
+test_auth_sidebar_marks_the_active_entry(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *page = NULL;
+
+	server_fixture_create_user(fixture, "adam", "a-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	cookie = server_fixture_login(fixture, "adam", "a-long-password");
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/account/tokens",
+		cookie, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+
+	/* The entry for the page being viewed, carrying the class the script
+	 * selects on. */
+	g_assert_nonnull(strstr(page,
+		"<a class=\"nav-item active\" href=\"/account/tokens\">"));
 }
 
 /*
@@ -2802,6 +2849,9 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/sidebar-restores-its-scroll", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_sidebar_restores_its_scroll,
+	           server_fixture_tear_down);
+	g_test_add("/auth/sidebar-marks-the-active-entry", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_sidebar_marks_the_active_entry,
 	           server_fixture_tear_down);
 	g_test_add("/auth/redirect-notices-render", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_redirect_notices_render,
