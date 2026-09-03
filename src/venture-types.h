@@ -110,6 +110,8 @@ typedef struct _VentureReportRegistry		VentureReportRegistry;
 /* --- AI ------------------------------------------------------------------ */
 
 typedef struct _VentureAiService		VentureAiService;
+typedef struct _VentureKbService		VentureKbService;
+typedef struct _VentureEmbedder		VentureEmbedder;
 typedef struct _VentureAiSession		VentureAiSession;
 typedef struct _VentureAiToolRegistry		VentureAiToolRegistry;
 

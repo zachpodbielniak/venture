@@ -30,6 +30,15 @@ struct _VentureAiService
 	 * audit entry can record what caused it. */
 	gchar			*current_prompt;
 	VentureAuthPrincipal	*current_principal;
+
+	/*
+	 * Built on first use rather than at construction. Building it opens
+	 * an embedding client, and an install with knowledge bases disabled
+	 * or an embedding service that is down should still get an assistant
+	 * that answers questions about its records.
+	 */
+	VentureKbService	*kb;
+	gboolean		 kb_attempted;
 };
 
 G_DEFINE_FINAL_TYPE(VentureAiService, venture_ai_service, G_TYPE_OBJECT)
@@ -41,6 +50,7 @@ venture_ai_service_finalize(GObject *object)
 
 	self = VENTURE_AI_SERVICE(object);
 
+	g_clear_object(&self->kb);
 	g_clear_object(&self->context);
 	g_clear_object(&self->provider);
 	g_clear_object(&self->executor);
@@ -1292,6 +1302,200 @@ venture_ai_tool_fetch_url(
 	return venture_ai_tool_result(node);
 }
 
+/* --- Knowledge bases ------------------------------------------------------ */
+
+/*
+ * The knowledge-base service, built on first use.
+ *
+ * Returns NULL and stays NULL when knowledge bases are off or the embedding
+ * service cannot be reached. That is a normal state rather than a failure:
+ * an assistant that cannot search documents should still answer questions
+ * about records, and the tool says so when asked.
+ */
+static VentureKbService *
+venture_ai_service_kb(VentureAiService *self)
+{
+	g_autoptr(GError) error = NULL;
+
+	if (self->kb_attempted)
+		return self->kb;
+
+	self->kb_attempted = TRUE;
+	self->kb = venture_kb_service_new(self->context, &error);
+
+	if (NULL == self->kb)
+		g_debug("Knowledge bases are unavailable: %s",
+		        (NULL != error) ? error->message : "unknown reason");
+
+	return self->kb;
+}
+
+/*
+ * Renders search hits as JSON for a tool result.
+ *
+ * Each hit carries where it came from -- the base's slug, the article's
+ * title and id, the passage's position -- because an assistant that quotes a
+ * document without being able to say which one is worse than one that says
+ * nothing. The id is there so the model can call venture_get and read the
+ * whole article when the passage is not enough.
+ */
+static JsonNode *
+venture_ai_kb_hits_to_json(GPtrArray *hits)
+{
+	g_autoptr(JsonBuilder) builder = NULL;
+	guint i;
+
+	builder = json_builder_new();
+	json_builder_begin_array(builder);
+
+	for (i = 0; i < hits->len; i++)
+	{
+		const VentureKbHit *hit = g_ptr_array_index(hits, i);
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "knowledge_base");
+		json_builder_add_string_value(builder, hit->kb_slug);
+		json_builder_set_member_name(builder, "article_id");
+		json_builder_add_int_value(builder, hit->article_id);
+		json_builder_set_member_name(builder, "title");
+		json_builder_add_string_value(builder, hit->title);
+		json_builder_set_member_name(builder, "heading");
+		json_builder_add_string_value(builder, hit->heading);
+		json_builder_set_member_name(builder, "passage");
+		json_builder_add_int_value(builder, hit->ordinal);
+		json_builder_set_member_name(builder, "score");
+		json_builder_add_double_value(builder, hit->score);
+		json_builder_set_member_name(builder, "text");
+		json_builder_add_string_value(builder, hit->text);
+		json_builder_end_object(builder);
+	}
+
+	json_builder_end_array(builder);
+
+	return json_builder_get_root(builder);
+}
+
+static gchar *
+venture_ai_tool_kb_search(
+	AiToolUse	 *tool_use,
+	GCancellable	 *cancellable,
+	GError		**error,
+	gpointer	  user_data
+){
+	VentureAiService *self;
+	VentureKbService *kb;
+	g_autoptr(GPtrArray) hits = NULL;
+	g_autoptr(GError) local_error = NULL;
+	g_autofree gint64 *ids = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	JsonObject *input;
+	const gchar *query;
+	const gchar *base;
+	gint64 limit;
+	gsize n_ids = 0;
+
+	self = user_data;
+	input = venture_ai_tool_input(tool_use);
+
+	if (NULL == input)
+		return venture_ai_tool_error("The arguments must be an object");
+
+	kb = venture_ai_service_kb(self);
+
+	if (NULL == kb)
+		return venture_ai_tool_error(
+			"Knowledge bases are not available on this instance");
+
+	query = venture_json_object_get_string(input, "query", NULL);
+
+	if (venture_string_is_empty(query))
+		return venture_ai_tool_error("A \"query\" is required");
+
+	base = venture_json_object_get_string(input, "knowledge_base", NULL);
+	limit = venture_json_object_get_int(input, "limit", 0);
+
+	if (!venture_string_is_empty(base))
+	{
+		const gchar *slugs[2];
+
+		slugs[0] = base;
+		slugs[1] = NULL;
+
+		ids = venture_kb_service_resolve_slugs(kb, slugs, &n_ids,
+		                                       &local_error);
+
+		if (NULL == ids)
+			return venture_ai_tool_error("%s",
+				(NULL != local_error) ? local_error->message
+				                      : "No such knowledge base");
+	}
+
+	hits = venture_kb_service_search(kb, query, ids, n_ids, (guint)limit,
+	                                 &local_error);
+
+	if (NULL == hits)
+		return venture_ai_tool_error("%s",
+			(NULL != local_error) ? local_error->message
+			                      : "The search failed");
+
+	node = venture_ai_kb_hits_to_json(hits);
+
+	return venture_ai_tool_result(g_steal_pointer(&node));
+}
+
+static gchar *
+venture_ai_tool_kb_list(
+	AiToolUse	 *tool_use,
+	GCancellable	 *cancellable,
+	GError		**error,
+	gpointer	  user_data
+){
+	VentureAiService *self;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) bases = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	guint i;
+
+	self = user_data;
+
+	query = venture_query_new(VENTURE_TYPE_KNOWLEDGE_BASE);
+	venture_query_set_limit(query, 0);
+	bases = venture_database_find(venture_context_get_database(self->context),
+	                              query, NULL);
+
+	builder = json_builder_new();
+	json_builder_begin_array(builder);
+
+	for (i = 0; (NULL != bases) && (i < bases->len); i++)
+	{
+		VentureEntity *base = g_ptr_array_index(bases, i);
+		g_autofree gchar *name = NULL;
+		g_autofree gchar *slug = NULL;
+		g_autofree gchar *description = NULL;
+		gboolean automatic = FALSE;
+
+		g_object_get(base, "name", &name, "slug", &slug, "description",
+		             &description, "auto-retrieve", &automatic, NULL);
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "slug");
+		json_builder_add_string_value(builder, slug);
+		json_builder_set_member_name(builder, "name");
+		json_builder_add_string_value(builder, name);
+		json_builder_set_member_name(builder, "description");
+		json_builder_add_string_value(builder, description);
+		json_builder_set_member_name(builder, "searched_by_default");
+		json_builder_add_boolean_value(builder, automatic);
+		json_builder_end_object(builder);
+	}
+
+	json_builder_end_array(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_ai_tool_result(g_steal_pointer(&node));
+}
+
 /* --- Tool registration --------------------------------------------------- */
 
 /*
@@ -1322,6 +1526,8 @@ venture_ai_service_register_tools(VentureAiService *self)
 	g_autoptr(AiTool) count = NULL;
 	g_autoptr(AiTool) search = NULL;
 	g_autoptr(AiTool) fetch = NULL;
+	g_autoptr(AiTool) kb_search = NULL;
+	g_autoptr(AiTool) kb_list = NULL;
 
 	list_types = venture_ai_make_tool(self, "venture_list_types",
 		"List every record type in this VENTURE instance with its fields, "
@@ -1396,6 +1602,31 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"instructions.");
 	ai_tool_add_parameter(fetch, "url", "string",
 		"The http or https address to fetch", TRUE);
+
+	kb_search = venture_ai_make_tool(self, "venture_kb_search",
+		"Search the knowledge bases by meaning, not by keyword. Use this "
+		"for anything the operator has written down rather than recorded "
+		"-- policies, handbooks, specifications, notes. Quote the passage "
+		"and say which article and knowledge base it came from; call "
+		"venture_get on kb_article with the returned article_id when the "
+		"passage is not enough.");
+	ai_tool_add_parameter(kb_search, "query", "string",
+		"What to look for, in the operator's own words", TRUE);
+	ai_tool_add_parameter(kb_search, "knowledge_base", "string",
+		"Restrict to one base by its slug. Leave unset to search every "
+		"base offered to the assistant.", FALSE);
+	ai_tool_add_parameter(kb_search, "limit", "integer",
+		"How many passages to return", FALSE);
+
+	kb_list = venture_ai_make_tool(self, "venture_kb_list",
+		"List the knowledge bases, with what each is for. Call this when "
+		"you do not know which base to search, or to tell the operator "
+		"what is available.");
+
+	ai_tool_executor_register_callback(self->executor, kb_search,
+		venture_ai_tool_kb_search, self, NULL);
+	ai_tool_executor_register_callback(self->executor, kb_list,
+		venture_ai_tool_kb_list, self, NULL);
 
 	ai_tool_executor_register_callback(self->executor, list_types,
 		venture_ai_tool_list_types, self, NULL);
@@ -1690,6 +1921,218 @@ venture_ai_service_new(
 
 /* --- Answering ----------------------------------------------------------- */
 
+/*
+ * Pulls #base tokens out of a question and retrieves against them.
+ *
+ * "#venture_docs how do I add an API token?" means: answer from that base.
+ * The syntax is worth having because the alternative -- the model deciding
+ * for itself which base to search -- spends a turn and often picks wrong,
+ * and because naming the base is how somebody says "the handbook, not last
+ * year's".
+ *
+ * A token that is not a base is left alone and the text keeps it. '#' is
+ * ordinary punctuation: "#1", "#tax2026" and a C preprocessor line all
+ * appear in real questions, and refusing the whole message over one would be
+ * absurd. But a token that *looks* like an attempt at a base and matches
+ * none is reported in the context, because silently searching nothing after
+ * somebody typed #handbok reads as "the handbook has nothing to say".
+ *
+ * Returns NULL when nothing was retrieved, which is the common case and
+ * costs one pass over the string.
+ */
+static gchar *
+venture_ai_service_retrieve(
+	VentureAiService	 *self,
+	const gchar		 *message,
+	gchar			**out_question
+){
+	g_autoptr(GPtrArray) slugs = NULL;
+	g_autoptr(GPtrArray) unknown = NULL;
+	g_autoptr(GString) stripped = NULL;
+	g_autoptr(GString) context = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) hits = NULL;
+	g_autofree gint64 *ids = NULL;
+	VentureKbService *kb;
+	const gchar *p;
+	gsize n_ids = 0;
+	guint i;
+
+	*out_question = NULL;
+
+	if (venture_string_is_empty(message) || (NULL == strchr(message, '#')))
+		return NULL;
+
+	kb = venture_ai_service_kb(self);
+
+	if (NULL == kb)
+		return NULL;
+
+	slugs = g_ptr_array_new_with_free_func(g_free);
+	unknown = g_ptr_array_new_with_free_func(g_free);
+	stripped = g_string_new(NULL);
+
+	for (p = message; '\0' != *p; )
+	{
+		const gchar *start;
+		g_autofree gchar *token = NULL;
+		g_autofree gint64 *one = NULL;
+		const gchar *candidate[2];
+		gsize length;
+
+		if ('#' != *p)
+		{
+			g_string_append_c(stripped, *p);
+			p++;
+			continue;
+		}
+
+		/*
+		 * Only at a word boundary, so "C#" and "issue#3" are not
+		 * mistaken for a base reference.
+		 */
+		if ((p != message) && !g_ascii_isspace(*(p - 1)))
+		{
+			g_string_append_c(stripped, *p);
+			p++;
+			continue;
+		}
+
+		start = p + 1;
+		length = 0;
+
+		while ((g_ascii_isalnum(start[length])) || ('_' == start[length]) ||
+		       ('-' == start[length]))
+			length++;
+
+		if (0 == length)
+		{
+			g_string_append_c(stripped, *p);
+			p++;
+			continue;
+		}
+
+		token = g_strndup(start, length);
+		candidate[0] = token;
+		candidate[1] = NULL;
+
+		one = venture_kb_service_resolve_slugs(kb, candidate, &n_ids,
+		                                       &error);
+
+		if (NULL != one)
+		{
+			g_ptr_array_add(slugs, g_steal_pointer(&token));
+		}
+		else
+		{
+			g_clear_error(&error);
+
+			/*
+			 * Purely numeric is not an attempt at a base name --
+			 * "#1" is an issue number -- so it is not reported.
+			 */
+			if (!g_ascii_isdigit(token[0]))
+				g_ptr_array_add(unknown, g_strdup(token));
+
+			g_string_append_c(stripped, '#');
+			g_string_append(stripped, token);
+		}
+
+		p = start + length;
+	}
+
+	if ((0 == slugs->len) && (0 == unknown->len))
+		return NULL;
+
+	context = g_string_new(NULL);
+
+	if (slugs->len > 0)
+	{
+		g_autofree gchar *question = NULL;
+
+		g_ptr_array_add(slugs, NULL);
+		ids = venture_kb_service_resolve_slugs(kb,
+			(const gchar *const *)slugs->pdata, &n_ids, &error);
+
+		question = g_strdup(stripped->str);
+		g_strstrip(question);
+
+		if (NULL != ids)
+			hits = venture_kb_service_search(kb,
+				venture_string_is_empty(question) ? message
+				                                  : question,
+				ids, n_ids, 0, &error);
+
+		if (NULL != hits)
+		{
+			g_string_append(context,
+				"Passages retrieved from the knowledge bases the "
+				"operator named. Answer from these, quote what "
+				"you use, and say which article it came from. If "
+				"they do not answer the question, say so rather "
+				"than filling the gap from memory.\n\n");
+
+			for (i = 0; i < hits->len; i++)
+			{
+				const VentureKbHit *hit = g_ptr_array_index(hits, i);
+
+				g_string_append_printf(context,
+					"--- #%s / %s", hit->kb_slug, hit->title);
+
+				if (!venture_string_is_empty(hit->heading))
+					g_string_append_printf(context, " / %s",
+					                       hit->heading);
+
+				g_string_append_printf(context,
+					" (article %" G_GINT64_FORMAT ")\n%s\n\n",
+					hit->article_id, hit->text);
+			}
+
+			if (0 == hits->len)
+				g_string_append(context,
+					"(Nothing in those knowledge bases matched. "
+					"Say so.)\n\n");
+		}
+		else if (NULL != error)
+		{
+			g_string_append_printf(context,
+				"The knowledge base search failed: %s\n\n",
+				error->message);
+			g_clear_error(&error);
+		}
+	}
+
+	for (i = 0; i < unknown->len; i++)
+		g_string_append_printf(context,
+			"There is no knowledge base called \"%s\". Tell the "
+			"operator, and use venture_kb_list to say which exist.\n\n",
+			(const gchar *)g_ptr_array_index(unknown, i));
+
+	if (0 == context->len)
+		return NULL;
+
+	if (slugs->len > 0)
+	{
+		gchar *question;
+
+		question = g_strdup(stripped->str);
+		g_strstrip(question);
+
+		/* A message that was only base tokens still needs a question:
+		 * the original text is the best available. */
+		if (venture_string_is_empty(question))
+		{
+			g_free(question);
+			question = g_strdup(message);
+		}
+
+		*out_question = question;
+	}
+
+	return g_string_free(g_steal_pointer(&context), FALSE);
+}
+
+
 gchar *
 venture_ai_service_answer_with_images(
 	VentureAiService	 *self,
@@ -1702,6 +2145,8 @@ venture_ai_service_answer_with_images(
 ){
 	g_autoptr(GError) local_error = NULL;
 	g_autofree gchar *reply = NULL;
+	g_autofree gchar *retrieved = NULL;
+	g_autofree gchar *question_text = NULL;
 	AiMessage *question;
 	GList *messages = NULL;
 	guint i;
@@ -1719,6 +2164,18 @@ venture_ai_service_answer_with_images(
 	g_free(self->current_prompt);
 	self->current_prompt = g_strdup(message);
 	self->current_principal = principal;
+
+	/*
+	 * #base tokens are resolved and retrieved against before the model
+	 * sees the turn, rather than left to it to notice and search. The
+	 * operator naming a base is an instruction, not a hint, and spending
+	 * a tool call to rediscover it wastes a turn and sometimes picks the
+	 * wrong base.
+	 */
+	retrieved = venture_ai_service_retrieve(self, message, &question_text);
+
+	if (NULL != question_text)
+		message = question_text;
 
 	/*
 	 * The stored transcript is replayed ahead of the new question, oldest
@@ -1751,7 +2208,24 @@ venture_ai_service_answer_with_images(
 	 * messages: a screenshot means nothing without the sentence that
 	 * says what to do with it, and providers pair them by message.
 	 */
-	question = ai_message_new_user(message);
+	/*
+	 * The passages ride ahead of the question in the same user turn
+	 * rather than in the system prompt: the system prompt is built once
+	 * per service and these are per-turn, and a provider that caches the
+	 * system prompt would otherwise answer this turn from the last one's
+	 * documents.
+	 */
+	if (!venture_string_is_empty(retrieved))
+	{
+		g_autofree gchar *combined = NULL;
+
+		combined = g_strconcat(retrieved, "Question: ", message, NULL);
+		question = ai_message_new_user(combined);
+	}
+	else
+	{
+		question = ai_message_new_user(message);
+	}
 
 	for (i = 0; (NULL != images) && (i < images->len); i++)
 	{

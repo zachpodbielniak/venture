@@ -328,6 +328,29 @@ main(
 		}
 	}
 
+	/*
+	 * Knowledge bases, built once and shared. Unavailable is a normal
+	 * state -- kb.enabled off, or no embedding service reachable -- and
+	 * the server is useful without them, so it is a message rather than a
+	 * failure to start.
+	 */
+	{
+		g_autoptr(VentureKbService) kb = NULL;
+
+		kb = venture_kb_service_new(context, &error);
+
+		if (NULL == kb)
+		{
+			g_message("Knowledge bases are unavailable: %s",
+			          error->message);
+			g_clear_error(&error);
+		}
+		else
+		{
+			venture_context_set_kb_service(context, kb);
+		}
+	}
+
 	if (!no_automation)
 	{
 		automation = venture_automation_new(context, &error);

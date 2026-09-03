@@ -11824,6 +11824,359 @@ venture_web_api_mint_token(
 	return venture_web_json_response(node, 201);
 }
 
+
+/* --- Knowledge bases ------------------------------------------------------ */
+
+/*
+ * The shared knowledge-base service, or a refusal explaining its absence.
+ *
+ * Absence is a configuration state rather than an error in the request, so
+ * the message says which -- an operator whose search returns 503 wants to
+ * know whether to fix the config or the ollama container.
+ */
+static VentureKbService *
+venture_web_kb_service(
+	VentureWebServer	 *self,
+	HtmxResponse		**denied
+){
+	VentureKbService *kb;
+
+	*denied = NULL;
+	kb = venture_context_get_kb_service(self->context);
+
+	if (NULL == kb)
+	{
+		g_autoptr(GError) error = NULL;
+
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "Knowledge bases are not available on this "
+		                    "instance. Either kb.enabled is false, or the "
+		                    "embedding service named by kb.embedding_url "
+		                    "could not be reached at startup.");
+		*denied = venture_web_error_response(error);
+	}
+
+	return kb;
+}
+
+static HtmxResponse *
+venture_web_api_kb_search(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	VentureKbService *kb;
+	g_autoptr(GPtrArray) hits = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gint64 *ids = NULL;
+	HtmxResponse *denied;
+	const gchar *query;
+	const gchar *base;
+	const gchar *limit_text;
+	gsize n_ids = 0;
+	guint limit = 0;
+	guint i;
+
+	self = user_data;
+
+	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+
+	if (NULL != denied)
+		return denied;
+
+	kb = venture_web_kb_service(self, &denied);
+
+	if (NULL == kb)
+		return denied;
+
+	query = htmx_request_get_query_param(request, "q");
+
+	if (venture_string_is_empty(query))
+	{
+		g_set_error_literal(&error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "A \"q\" to search for is required");
+		return venture_web_error_response(error);
+	}
+
+	base = htmx_request_get_query_param(request, "kb");
+	limit_text = htmx_request_get_query_param(request, "limit");
+
+	if (!venture_string_is_empty(limit_text))
+		limit = (guint)g_ascii_strtoull(limit_text, NULL, 10);
+
+	if (!venture_string_is_empty(base))
+	{
+		g_auto(GStrv) slugs = NULL;
+
+		/* Comma separated, so one request can scope to several bases
+		 * the way the chat's #tokens do. */
+		slugs = g_strsplit(base, ",", -1);
+		ids = venture_kb_service_resolve_slugs(kb,
+			(const gchar *const *)slugs, &n_ids, &error);
+
+		if (NULL == ids)
+			return venture_web_error_response(error);
+	}
+
+	hits = venture_kb_service_search(kb, query, ids, n_ids, limit, &error);
+
+	if (NULL == hits)
+		return venture_web_error_response(error);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "query");
+	json_builder_add_string_value(builder, query);
+	json_builder_set_member_name(builder, "hits");
+	json_builder_begin_array(builder);
+
+	for (i = 0; i < hits->len; i++)
+	{
+		const VentureKbHit *hit = g_ptr_array_index(hits, i);
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "knowledge_base");
+		json_builder_add_string_value(builder, hit->kb_slug);
+		json_builder_set_member_name(builder, "kb_id");
+		json_builder_add_int_value(builder, hit->kb_id);
+		json_builder_set_member_name(builder, "article_id");
+		json_builder_add_int_value(builder, hit->article_id);
+		json_builder_set_member_name(builder, "title");
+		json_builder_add_string_value(builder, hit->title);
+		json_builder_set_member_name(builder, "heading");
+		json_builder_add_string_value(builder, hit->heading);
+		json_builder_set_member_name(builder, "ordinal");
+		json_builder_add_int_value(builder, hit->ordinal);
+		json_builder_set_member_name(builder, "score");
+		json_builder_add_double_value(builder, hit->score);
+		json_builder_set_member_name(builder, "text");
+		json_builder_add_string_value(builder, hit->text);
+		json_builder_end_object(builder);
+	}
+
+	json_builder_end_array(builder);
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * Renders what an import or sync did.
+ */
+static HtmxResponse *
+venture_web_kb_result_response(VentureKbIngestResult *result)
+{
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	guint i;
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "created");
+	json_builder_add_int_value(builder, result->created);
+	json_builder_set_member_name(builder, "updated");
+	json_builder_add_int_value(builder, result->updated);
+	json_builder_set_member_name(builder, "unchanged");
+	json_builder_add_int_value(builder, result->unchanged);
+	json_builder_set_member_name(builder, "skipped");
+	json_builder_add_int_value(builder, result->skipped);
+	json_builder_set_member_name(builder, "failed");
+	json_builder_add_int_value(builder, result->failed);
+	json_builder_set_member_name(builder, "indexed");
+	json_builder_add_int_value(builder, result->indexed);
+	json_builder_set_member_name(builder, "notes");
+	json_builder_begin_array(builder);
+
+	for (i = 0; i < result->notes->len; i++)
+		json_builder_add_string_value(builder,
+			g_ptr_array_index(result->notes, i));
+
+	json_builder_end_array(builder);
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(node, 200);
+}
+
+static HtmxResponse *
+venture_web_api_kb_sync(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	VentureKbService *kb;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureKbIngestResult) result = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	HtmxResponse *denied;
+	const gchar *id_text;
+	gint64 kb_id;
+
+	self = user_data;
+
+	/*
+	 * Editor, not viewer. A sync reads a directory on the server and
+	 * writes records from it, which is a change to what the assistant
+	 * will say.
+	 */
+	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+
+	if (NULL != denied)
+		return denied;
+
+	kb = venture_web_kb_service(self, &denied);
+
+	if (NULL == kb)
+		return denied;
+
+	id_text = g_hash_table_lookup(params, "id");
+	kb_id = (NULL != id_text) ? g_ascii_strtoll(id_text, NULL, 10) : 0;
+
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+
+	result = venture_kb_sync_directory(kb, kb_id, &actor, &error);
+
+	if (NULL == result)
+		return venture_web_error_response(error);
+
+	return venture_web_kb_result_response(result);
+}
+
+static HtmxResponse *
+venture_web_api_kb_reindex(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	VentureKbService *kb;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	VentureActor actor;
+	HtmxResponse *denied;
+	const gchar *id_text;
+	const gchar *force_text;
+	gint64 kb_id;
+	gint indexed;
+
+	self = user_data;
+
+	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+
+	if (NULL != denied)
+		return denied;
+
+	kb = venture_web_kb_service(self, &denied);
+
+	if (NULL == kb)
+		return denied;
+
+	id_text = g_hash_table_lookup(params, "id");
+	kb_id = (NULL != id_text) ? g_ascii_strtoll(id_text, NULL, 10) : 0;
+	force_text = htmx_request_get_query_param(request, "force");
+
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+
+	indexed = venture_kb_service_reindex(kb, kb_id,
+		(NULL != force_text) && (0 == g_strcmp0(force_text, "true")),
+		&actor, &error);
+
+	if (indexed < 0)
+		return venture_web_error_response(error);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "indexed");
+	json_builder_add_int_value(builder, indexed);
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(node, 200);
+}
+
+static HtmxResponse *
+venture_web_api_kb_export(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	VentureKbService *kb;
+	g_autoptr(GBytes) archive = NULL;
+	g_autoptr(VentureEntity) base = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *slug = NULL;
+	g_autofree gchar *disposition = NULL;
+	HtmxResponse *response;
+	HtmxResponse *denied;
+	const gchar *id_text;
+	const gchar *format;
+	gint64 kb_id;
+
+	self = user_data;
+
+	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+
+	if (NULL != denied)
+		return denied;
+
+	kb = venture_web_kb_service(self, &denied);
+
+	if (NULL == kb)
+		return denied;
+
+	id_text = g_hash_table_lookup(params, "id");
+	kb_id = (NULL != id_text) ? g_ascii_strtoll(id_text, NULL, 10) : 0;
+	format = htmx_request_get_query_param(request, "format");
+
+	if (venture_string_is_empty(format))
+		format = "zip";
+
+	if (!venture_kb_export(kb, kb_id, format, &archive, &error))
+		return venture_web_error_response(error);
+
+	base = venture_database_get(venture_context_get_database(self->context),
+	                            VENTURE_TYPE_KNOWLEDGE_BASE, kb_id, NULL);
+
+	if (NULL != base)
+		g_object_get(base, "slug", &slug, NULL);
+
+	if (venture_string_is_empty(slug))
+	{
+		g_free(slug);
+		slug = g_strdup("knowledge-base");
+	}
+
+	response = htmx_response_new();
+	htmx_response_set_status(response, 200);
+	htmx_response_set_bytes(response, archive);
+	htmx_response_set_content_type(response,
+		(0 == g_strcmp0(format, "zip"))
+			? "application/zip" : "application/gzip");
+
+	/*
+	 * Named, so a browser saves something recognisable rather than the
+	 * route's last path segment.
+	 */
+	disposition = g_strdup_printf("attachment; filename=\"%s.%s\"", slug,
+	                              (0 == g_strcmp0(format, "zip"))
+	                                  ? "zip" : "tar.gz");
+	htmx_response_add_header(response, "Content-Disposition", disposition);
+
+	return response;
+}
+
 /* --- Plugins, venture types and automations ------------------------------ */
 
 static HtmxResponse *
@@ -14026,6 +14379,14 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/confirmations/:id/reject",
 	                 venture_web_api_reject, self);
 	htmx_router_get(router, "/api/v1/settings", venture_web_api_settings, self);
+	htmx_router_get(router, "/api/v1/kb/search", venture_web_api_kb_search,
+	                self);
+	htmx_router_post(router, "/api/v1/kb/:id/sync", venture_web_api_kb_sync,
+	                 self);
+	htmx_router_post(router, "/api/v1/kb/:id/reindex",
+	                 venture_web_api_kb_reindex, self);
+	htmx_router_get(router, "/api/v1/kb/:id/export",
+	                venture_web_api_kb_export, self);
 	htmx_router_get(router, "/api/v1/plugins", venture_web_api_plugins, self);
 	htmx_router_get(router, "/api/v1/venture-types",
 	                venture_web_api_venture_types, self);

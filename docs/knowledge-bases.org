@@ -217,3 +217,68 @@ same shape.
 
 The export is itself importable, which is the property worth having: an
 export nobody can import is a backup that does not restore.
+
+* Reaching it
+
+Knowledge bases are ordinary record types, so =list kb_article=,
+=get knowledge_base 1= and =create kb_article ...= work everywhere records
+work --- REST, =venturectl=, the MCP tool surface. What follows is only the
+part that is not CRUD.
+
+** From the assistant
+
+Two tools: =venture_kb_search=, which searches by meaning and returns
+passages with the article and base they came from, and =venture_kb_list=,
+which says what bases exist and what each is for.
+
+The assistant is told to quote what it uses and name the article, and to say
+when the passages do not answer the question rather than filling the gap from
+memory.
+
+** The =#= key, in the chat
+
+Naming a base is an instruction rather than a hint:
+
+#+begin_example
+#venture_docs how do I add an API token?
+#+end_example
+
+The token is resolved and the retrieval happens *before* the model sees the
+turn, so the passages arrive with the question instead of costing a tool call
+to rediscover. Several bases can be named at once.
+
+A =#= that is not a base is left alone: =#1=, =#tax2026= and a C preprocessor
+line all appear in real questions, and refusing a message over one would be
+absurd. It is only read as a base reference at a word boundary, so =C#= and
+=issue#3= are not. But a token that *looks* like an attempt and matches
+nothing is reported to the model, because silently searching nothing after
+somebody typed =#handbok= reads as "the handbook has nothing to say".
+
+** REST
+
+| Method | Path                            | Role   |
+|--------+---------------------------------+--------|
+| =GET=  | =/api/v1/kb/search?q=&kb=&limit== | viewer |
+| =POST= | =/api/v1/kb/:id/sync=           | editor |
+| =POST= | =/api/v1/kb/:id/reindex?force== | editor |
+| =GET=  | =/api/v1/kb/:id/export?format== | viewer |
+
+=kb= is comma separated, so one request can scope to several bases the way
+the chat's =#= tokens do.
+
+Sync and reindex need the *editor* role rather than a session: a sync reads a
+directory on the server and rewrites articles from it, which is a change to
+what the assistant will tell everybody.
+
+** venturectl
+
+#+begin_src sh
+venturectl kb search "how do I add an API token?" --kb venture_docs
+venturectl kb sync 3
+venturectl kb reindex           # every base; --force after a model change
+venturectl kb export 3 --format tar.gz > docs.tar.gz
+#+end_src
+
+=kb search= finds meaning; =list kb_article search=...= matches characters
+and will miss a passage that answers the question in different words. Both
+are useful, for different questions.

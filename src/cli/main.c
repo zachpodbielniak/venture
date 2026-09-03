@@ -557,6 +557,43 @@ venture_cli_request_text(
 	return g_steal_pointer(&text);
 }
 
+/*
+ * Fetches a path and returns the bytes untouched.
+ *
+ * Distinct from venture_cli_request_text() because an archive is not text:
+ * g_strndup'ing it is fine, but every consumer of that string measures it
+ * with strlen and stops at the first NUL, which for a zip is within the
+ * first few bytes. Failures are still JSON, and are decoded from a copy.
+ */
+static GBytes *
+venture_cli_request_bytes(
+	VentureCli	 *cli,
+	const gchar	 *method,
+	const gchar	 *path,
+	GError		**error
+){
+	g_autoptr(GBytes) response = NULL;
+	guint status;
+
+	response = venture_cli_send(cli, method, path, NULL, &status, error);
+
+	if (NULL == response)
+		return NULL;
+
+	if (status >= 400)
+	{
+		g_autofree gchar *text = NULL;
+
+		text = g_strndup(g_bytes_get_data(response, NULL),
+		                 g_bytes_get_size(response));
+		venture_cli_error_from_body(text, error);
+
+		return NULL;
+	}
+
+	return g_steal_pointer(&response);
+}
+
 /* --- Subcommands --------------------------------------------------------- */
 
 /*
@@ -1244,6 +1281,202 @@ venture_cli_command_types(
 	return 0;
 }
 
+/*
+ * venturectl kb search|sync|reindex|export
+ *
+ * A verb family rather than a per-type subcommand: knowledge bases are
+ * ordinary record types, so `list kb_article` and `create knowledge_base`
+ * already work and nothing here duplicates them. What these four do is the
+ * part that is not CRUD -- retrieval, and the three operations that keep an
+ * index in step with the world.
+ */
+static gint
+venture_cli_command_kb(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	const gchar *action;
+
+	action = (NULL != args[1]) ? args[1] : NULL;
+
+	if (venture_string_is_empty(action))
+	{
+		g_printerr("Usage: venturectl kb search QUERY [--kb SLUG] "
+		           "[--limit N]\n"
+		           "       venturectl kb sync KB_ID\n"
+		           "       venturectl kb reindex [KB_ID] [--force]\n"
+		           "       venturectl kb export KB_ID [--format zip|tar.gz]"
+		           "\n");
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "no kb action given");
+		return -1;
+	}
+
+	if (0 == g_strcmp0(action, "search"))
+	{
+		g_autoptr(JsonNode) node = NULL;
+		g_autofree gchar *path = NULL;
+		g_autofree gchar *escaped = NULL;
+		g_autoptr(GString) url = NULL;
+		g_autofree gchar *text = NULL;
+		const gchar *query;
+		gsize i;
+
+		query = args[2];
+
+		if (venture_string_is_empty(query))
+		{
+			g_set_error_literal(error, VENTURE_ERROR,
+			                    VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "Say what to search for");
+			return -1;
+		}
+
+		escaped = g_uri_escape_string(query, NULL, TRUE);
+		url = g_string_new("/api/v1/kb/search?q=");
+		g_string_append(url, escaped);
+
+		/*
+		 * Flags are read off the tail rather than through GOption:
+		 * the option parser has already run and consumed the global
+		 * flags, and re-running it here would take --format, which
+		 * means something else at this level.
+		 */
+		for (i = 3; NULL != args[i]; i++)
+		{
+			if ((0 == g_strcmp0(args[i], "--kb")) && (NULL != args[i + 1]))
+			{
+				g_autofree gchar *value = NULL;
+
+				value = g_uri_escape_string(args[i + 1], NULL, TRUE);
+				g_string_append_printf(url, "&kb=%s", value);
+				i++;
+			}
+			else if ((0 == g_strcmp0(args[i], "--limit")) &&
+			         (NULL != args[i + 1]))
+			{
+				g_string_append_printf(url, "&limit=%s", args[i + 1]);
+				i++;
+			}
+		}
+
+		node = venture_cli_request(cli, "GET", url->str, NULL, error);
+
+		if (NULL == node)
+			return -1;
+
+		text = venture_json_to_string(node, TRUE);
+		g_print("%s\n", text);
+
+		return 0;
+	}
+
+	if ((0 == g_strcmp0(action, "sync")) ||
+	    (0 == g_strcmp0(action, "reindex")))
+	{
+		g_autoptr(JsonNode) node = NULL;
+		g_autoptr(GString) url = NULL;
+		g_autofree gchar *text = NULL;
+		const gchar *id;
+		gsize i;
+
+		id = (NULL != args[2]) ? args[2] : "0";
+
+		if ((0 == g_strcmp0(action, "sync")) &&
+		    (0 == g_strcmp0(id, "0")))
+		{
+			g_set_error_literal(error, VENTURE_ERROR,
+			                    VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "Say which knowledge base to sync");
+			return -1;
+		}
+
+		url = g_string_new(NULL);
+		g_string_append_printf(url, "/api/v1/kb/%s/%s", id, action);
+
+		for (i = 3; NULL != args[i]; i++)
+		{
+			if (0 == g_strcmp0(args[i], "--force"))
+				g_string_append(url, "?force=true");
+		}
+
+		node = venture_cli_request(cli, "POST", url->str, NULL, error);
+
+		if (NULL == node)
+			return -1;
+
+		text = venture_json_to_string(node, TRUE);
+		g_print("%s\n", text);
+
+		return 0;
+	}
+
+	if (0 == g_strcmp0(action, "export"))
+	{
+		g_autoptr(GBytes) archive = NULL;
+		g_autoptr(GString) url = NULL;
+		const gchar *format = "zip";
+		const gchar *id;
+		gconstpointer data;
+		gsize size = 0;
+		gsize i;
+
+		id = args[2];
+
+		if (venture_string_is_empty(id))
+		{
+			g_set_error_literal(error, VENTURE_ERROR,
+			                    VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "Say which knowledge base to export");
+			return -1;
+		}
+
+		for (i = 3; NULL != args[i]; i++)
+		{
+			if ((0 == g_strcmp0(args[i], "--format")) &&
+			    (NULL != args[i + 1]))
+			{
+				format = args[i + 1];
+				i++;
+			}
+		}
+
+		url = g_string_new(NULL);
+		g_string_append_printf(url, "/api/v1/kb/%s/export?format=%s", id,
+		                       format);
+
+		archive = venture_cli_request_bytes(cli, "GET", url->str, error);
+
+		if (NULL == archive)
+			return -1;
+
+		/*
+		 * Written to stdout so it can be redirected, which is what
+		 * every other export in this CLI does. Writing a file here
+		 * would mean inventing a name and a directory policy.
+		 */
+		data = g_bytes_get_data(archive, &size);
+
+		if (size != fwrite(data, 1, size, stdout))
+		{
+			g_set_error_literal(error, VENTURE_ERROR,
+			                    VENTURE_ERROR_FAILED,
+			                    "Could not write the archive to stdout");
+			return -1;
+		}
+
+		return 0;
+	}
+
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+	            "\"%s\" is not a kb action. Try search, sync, reindex or "
+	            "export.", action);
+
+	return -1;
+}
+
 static gint
 venture_cli_command_health(
 	VentureCli	 *cli,
@@ -1410,6 +1643,13 @@ main(
 		"  forge set-secret ID          set or generate its webhook secret\n"
 		"  forge verify ID              record which account the token is\n"
 		"  report [NAME] [PERIOD]       list reports, or run one\n"
+		"  kb search QUERY              search the knowledge bases by\n"
+		"                               meaning; --kb SLUG, --limit N\n"
+		"  kb sync KB_ID                bring a base into line with its\n"
+		"                               source directory on the server\n"
+		"  kb reindex [KB_ID] [--force] re-embed articles that need it\n"
+		"  kb export KB_ID              write an archive to stdout;\n"
+		"                               --format zip|tar.gz\n"
 		"  health                       check the server is up\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
@@ -1566,6 +1806,8 @@ main(
 	         (0 == g_strcmp0(args[0], "schema")) ||
 	         (0 == g_strcmp0(args[0], "describe")))
 		result = venture_cli_command_types(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "kb"))
+		result = venture_cli_command_kb(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "health"))
 		result = venture_cli_command_health(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "mcp"))

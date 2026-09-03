@@ -1134,6 +1134,19 @@ test_auth_api_refuses_anonymous_requests(
 		 * about their own finances. */
 		"/ui/chat/threads",
 		"/ui/chat/thread/1",
+		/*
+		 * The knowledge bases. Search returns passages of whatever the
+		 * operator has filed -- contracts, policies, drafts -- and the
+		 * export hands over the whole corpus in one request, which
+		 * makes it the single most valuable unauthenticated route
+		 * this server could accidentally offer.
+		 */
+		"/api/v1/knowledge_base",
+		"/api/v1/kb_article",
+		"/api/v1/kb_chunk",
+		"/api/v1/kb_link",
+		"/api/v1/kb/search?q=anything",
+		"/api/v1/kb/1/export",
 		NULL
 	};
 	gsize i;
@@ -2643,6 +2656,52 @@ test_auth_redirect_notices_render(
 }
 
 /*
+ * The knowledge-base write routes refuse an anonymous POST.
+ *
+ * A missing guard on these looks exactly like nothing: sync reads a
+ * directory on the server and rewrites articles from it, and reindex spends
+ * an embedding request per passage. Neither is reachable through the
+ * anonymous GET sweep above, because both are POSTs.
+ */
+static void
+test_auth_kb_writes_refuse_anonymous(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/kb/1/sync", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/kb/1/reindex", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+}
+
+/*
+ * And they need the editor role, not merely a session.
+ *
+ * A sync changes what the assistant will tell everybody, which is an edit
+ * to the install's answers rather than a read of them.
+ */
+static void
+test_auth_kb_writes_need_the_editor_role(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+
+	server_fixture_create_user(fixture, "vera", "v-long-password",
+	                           VENTURE_USER_ROLE_VIEWER, NULL);
+	cookie = server_fixture_login(fixture, "vera", "v-long-password");
+
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/kb/1/sync", cookie, "", NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/kb/1/reindex", cookie, "", NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+}
+
+/*
  * The sidebar remembers its scroll position, and shows you where you are.
  *
  * Every nav entry is a plain link, so each click rebuilds the sidebar from
@@ -2846,6 +2905,13 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/token-never-expires-by-default", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_token_never_expires_by_default,
+	           server_fixture_tear_down);
+	g_test_add("/auth/kb-writes-refuse-anonymous", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_kb_writes_refuse_anonymous,
+	           server_fixture_tear_down);
+	g_test_add("/auth/kb-writes-need-the-editor-role", ServerFixture, NULL,
+	           server_fixture_set_up,
+	           test_auth_kb_writes_need_the_editor_role,
 	           server_fixture_tear_down);
 	g_test_add("/auth/sidebar-restores-its-scroll", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_sidebar_restores_its_scroll,

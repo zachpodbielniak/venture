@@ -67,6 +67,10 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `forge set-secret ID` | set or generate its webhook secret |
 | `forge verify ID` | record which account the token belongs to |
 | `report [NAME] [PERIOD]` | list reports, or run one |
+| `kb search QUERY` | search knowledge bases by meaning; `--kb SLUG`, `--limit N` |
+| `kb sync KB_ID` | re-read the base's source directory on the server |
+| `kb reindex [KB_ID] [--force]` | re-embed articles that need it |
+| `kb export KB_ID` | write an archive to stdout; `--format zip\|tar.gz` |
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 
@@ -77,6 +81,22 @@ Flags: `--server/-s`, `--token/-t`, `--format/-f table|json|yaml|csv`,
 config file, and a credential written there is visible in `ps` to every
 account on the host. It reads `VENTURE_TOKEN` and `VENTURE_URL` from the
 environment. `--server` is fine — a hostname is not a secret.
+
+Knowledge bases are ordinary record types, so `list kb_article`,
+`get knowledge_base 1` and `create kb_article ...` all work and are the way
+to read or write articles. The `kb` verbs are only the part that is not
+CRUD. Two things to know before using them:
+
+- **`kb search` finds meaning, not words.** It is the right tool when the
+  operator asks about something written down rather than recorded — a
+  policy, a specification, a handbook. `list kb_article search=...` matches
+  characters and will miss a passage that answers the question in different
+  words.
+- **`kb reindex` without `--force` is cheap and safe**; with `--force` it
+  re-embeds everything, which is what a change of embedding model requires
+  and is otherwise a waste. Articles indexed by a different model are always
+  re-embedded, force or not, because vectors from two models cannot be
+  compared.
 
 Periods, anywhere one is accepted (`report NAME PERIOD`, `period=` filters):
 named (`today`, `yesterday`, `this_week`, `last_week`, `this_month`,

@@ -189,6 +189,34 @@ VentureAiService *
 venture_context_get_ai_service(VentureContext *self);
 
 /**
+ * venture_context_set_kb_service:
+ * @self: a #VentureContext
+ * @service: (nullable): the knowledge-base service
+ *
+ * Holds the knowledge-base service so every surface shares one.
+ *
+ * Building one opens an embedding client, so a per-request instance would
+ * mean a connection per request and, worse, a different one answering the
+ * web UI than the AI -- which matters because the model a base is indexed
+ * with is checked against the embedder's.
+ */
+void
+venture_context_set_kb_service(
+	VentureContext		*self,
+	VentureKbService	*service
+);
+
+/**
+ * venture_context_get_kb_service:
+ * @self: a #VentureContext
+ *
+ * Returns: (transfer none) (nullable): the knowledge-base service, or %NULL
+ *   when knowledge bases are disabled or the embedder could not be built
+ */
+VentureKbService *
+venture_context_get_kb_service(VentureContext *self);
+
+/**
  * venture_context_set_automation:
  * @self: a #VentureContext
  * @automation: (nullable): the automation engine
