@@ -634,6 +634,32 @@ kb_service_or_skip(Fixture *fixture)
 	return service;
 }
 
+/*
+ * Builds the service without requiring a reachable embedding server.
+ *
+ * Export, archive detection and extraction do not embed anything, so gating
+ * them on ollama hid a real bug: the release image shipped without
+ * libarchive, every export answered 501, and the tests that would have said
+ * so skipped themselves in the builder -- which has no embedding service.
+ * Anything that does not need a vector must not ask for one.
+ */
+static VentureKbService *
+kb_service_no_embedding(Fixture *fixture)
+{
+	g_autoptr(GError) error = NULL;
+	VentureKbService *service;
+
+	service = venture_kb_service_new(fixture->context, &error);
+
+	if (NULL == service)
+	{
+		g_test_skip("knowledge bases are disabled");
+		return NULL;
+	}
+
+	return service;
+}
+
 static gint64
 kb_make_base(
 	Fixture		*fixture,
@@ -1207,7 +1233,7 @@ test_kb_export_round_trip(
 	gint64 source_id;
 	gint64 target_id;
 
-	service = kb_service_or_skip(fixture);
+	service = kb_service_no_embedding(fixture);
 
 	if (NULL == service)
 		return;
@@ -1257,7 +1283,7 @@ test_kb_export_formats(
 	g_autoptr(GError) error = NULL;
 	gint64 kb_id;
 
-	service = kb_service_or_skip(fixture);
+	service = kb_service_no_embedding(fixture);
 
 	if (NULL == service)
 		return;

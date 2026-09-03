@@ -261,10 +261,25 @@ somebody typed =#handbok= reads as "the handbook has nothing to say".
 | =GET=  | =/api/v1/kb/search?q=&kb=&limit== | viewer |
 | =POST= | =/api/v1/kb/:id/sync=           | editor |
 | =POST= | =/api/v1/kb/:id/reindex?force== | editor |
+| =POST= | =/api/v1/kb/:id/import=         | editor |
 | =GET=  | =/api/v1/kb/:id/export?format== | viewer |
+| =POST= | =/api/v1/kb/crossref/:type/:id= | editor |
+| =POST= | =/api/v1/kb/from/:type/:id=     | editor |
 
 =kb= is comma separated, so one request can scope to several bases the way
 the chat's =#= tokens do.
+
+=import= is a multipart upload and takes several files at once. Each goes
+through the same ingest path as a sync, so an archive is unpacked and its
+members follow the same rules --- which is what makes "drop in a zip of the
+handbook" work with no second code path. The per-file cap is
+=kb.max_upload_mb=, checked before the bytes reach the unpacker because an
+archive is expanded in memory.
+
+An uploaded file deliberately gets *no* =source-path=. That field is what
+sync reconciles against, and recording the browser's filename there would
+make the next sync archive the article for having "gone" from a directory it
+was never in.
 
 Sync and reindex need the *editor* role rather than a session: a sync reads a
 directory on the server and rewrites articles from it, which is a change to

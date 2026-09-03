@@ -9644,8 +9644,24 @@ venture_web_ui_kb(
 		 * that its record form cannot express. Export is a link
 		 * because it is a download; the other two post.
 		 */
+		/*
+		 * Upload posts multipart straight at the API route, so one
+		 * ingest path serves the browser, the CLI and a sync. The
+		 * accept list is advisory -- the server decides by content,
+		 * and a file it cannot read is skipped with a note rather
+		 * than refused.
+		 */
 		g_string_append_printf(content,
 			"</td><td class=\"kb-actions\">"
+			"<form class=\"kb-upload\" hx-post=\"/api/v1/kb/%"
+			G_GINT64_FORMAT "/import\" hx-encoding=\"multipart/form-data\" "
+			"hx-swap=\"none\" "
+			"hx-on::after-request=\"window.location.reload()\">"
+			"<label class=\"btn btn-sm\">Import"
+			"<input type=\"file\" name=\"files\" multiple hidden "
+			"accept=\".org,.md,.txt,.html,.pdf,.docx,.zip,.tar.gz,.tgz\" "
+			"onchange=\"this.form.requestSubmit()\">"
+			"</label></form>"
 			"<button class=\"btn btn-sm\" hx-post=\"/api/v1/kb/%"
 			G_GINT64_FORMAT "/sync\" hx-swap=\"none\" "
 			"hx-on::after-request=\"window.location.reload()\">Sync</button>"
@@ -9655,7 +9671,7 @@ venture_web_ui_kb(
 			"<a class=\"btn btn-sm\" href=\"/api/v1/kb/%"
 			G_GINT64_FORMAT "/export?format=zip\">Export</a>"
 			"</td></tr>",
-			base_id, base_id, base_id);
+			base_id, base_id, base_id, base_id);
 	}
 
 	if ((NULL == bases) || (0 == bases->len))
@@ -12560,6 +12576,109 @@ venture_web_api_kb_export(
 }
 
 /*
+ * Uploads one or more files into a knowledge base.
+ *
+ * Every file goes through the same ingest path as a sync, so an archive is
+ * unpacked and its members follow the same rules recursively -- which is
+ * what makes "drop a zip of the handbook in" work without a second code
+ * path for it.
+ *
+ * Editor, like sync: this writes articles the assistant will quote.
+ */
+static HtmxResponse *
+venture_web_api_kb_import(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	VentureKbService *kb;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureKbIngestResult) result = NULL;
+	g_autoptr(GPtrArray) files = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureConfig *config;
+	VentureActor actor;
+	HtmxResponse *denied;
+	const gchar *id_text;
+	gint64 kb_id;
+	gint64 max_mb = 64;
+	guint i;
+
+	self = user_data;
+
+	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+
+	if (NULL != denied)
+		return denied;
+
+	kb = venture_web_kb_service(self, &denied);
+
+	if (NULL == kb)
+		return denied;
+
+	id_text = g_hash_table_lookup(params, "id");
+	kb_id = (NULL != id_text) ? g_ascii_strtoll(id_text, NULL, 10) : 0;
+
+	config = venture_context_get_config(self->context);
+	g_object_get(config, "kb-max-upload-mb", &max_mb, NULL);
+
+	files = htmx_uploaded_file_parse_multipart(
+		htmx_request_get_content_type(request),
+		htmx_request_get_body_bytes(request), NULL, &error);
+
+	if ((NULL == files) || (0 == files->len))
+	{
+		if (NULL == error)
+			g_set_error_literal(&error, VENTURE_ERROR,
+			                    VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "No file arrived");
+
+		return venture_web_error_response(error);
+	}
+
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+	result = venture_kb_ingest_result_new();
+
+	for (i = 0; i < files->len; i++)
+	{
+		HtmxUploadedFile *file = g_ptr_array_index(files, i);
+
+		/*
+		 * The cap is per file rather than per request, and checked
+		 * before the bytes reach the unpacker: an archive is expanded
+		 * in memory, so the limit that matters is on what arrives.
+		 */
+		if ((max_mb > 0) &&
+		    (htmx_uploaded_file_get_size(file) >
+		     (gsize)(max_mb * 1024 * 1024)))
+		{
+			g_set_error(&error, VENTURE_ERROR,
+			            VENTURE_ERROR_INVALID_ARGUMENT,
+			            "%s is over the %" G_GINT64_FORMAT " MB import "
+			            "limit",
+			            htmx_uploaded_file_get_filename(file), max_mb);
+			return venture_web_error_response(error);
+		}
+
+		/*
+		 * source_path is deliberately NULL for an upload. It is what
+		 * sync reconciles against, and an uploaded file has no path on
+		 * this server -- recording the browser's filename there would
+		 * make the next sync archive the article for having "gone".
+		 */
+		if (!venture_kb_ingest_bytes(kb, kb_id,
+		                             htmx_uploaded_file_get_data(file),
+		                             htmx_uploaded_file_get_filename(file),
+		                             NULL, &actor, result, &error))
+			return venture_web_error_response(error);
+	}
+
+	return venture_web_kb_result_response(result);
+}
+
+/*
  * Cross-references one record against the corpus.
  *
  * Editor, like sync: it writes kb_link rows that then appear on the record's
@@ -14909,6 +15028,8 @@ venture_web_server_new(
 	                 venture_web_api_kb_reindex, self);
 	htmx_router_get(router, "/api/v1/kb/:id/export",
 	                venture_web_api_kb_export, self);
+	htmx_router_post(router, "/api/v1/kb/:id/import",
+	                 venture_web_api_kb_import, self);
 	htmx_router_post(router, "/api/v1/kb/crossref/:type/:id",
 	                 venture_web_api_kb_crossref, self);
 	htmx_router_post(router, "/api/v1/kb/from/:type/:id",

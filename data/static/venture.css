@@ -2171,6 +2171,17 @@ body.ai-resizing { user-select: none; cursor: ew-resize; }
 	overflow: hidden;
 }
 
+.kb-upload {
+	display: inline;
+	margin: 0;
+}
+
+/* The file input is hidden and driven by its label, because a bare
+ * <input type=file> cannot be styled to match the buttons beside it. */
+.kb-upload label {
+	cursor: pointer;
+}
+
 .kb-actions {
 	display: flex;
 	gap: var(--space-2);

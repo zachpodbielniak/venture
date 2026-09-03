@@ -55,9 +55,17 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         poppler-glib-devel \
         libetpan-devel \
         libgudev-devel \
+        libarchive-devel \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
+#
+# libarchive-devel is the knowledge-base import and export: zip and tar.gz
+# both ways, and .docx, which is a zip with XML inside. Like poppler it is
+# optional at build time -- config.mk probes for it -- which is exactly why
+# it has to be named here. Leaving it out does not fail the build; it ships
+# an image whose export route answers 501, and the tests that would have
+# caught it need an embedding service the builder does not have.
 #
 # libetpan-devel and libgudev-devel are podomation's, not VENTURE's: its
 # mail and device modules need them. They are here rather than in
@@ -184,6 +192,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         readline \
         libetpan \
         libgudev \
+        libarchive \
         ca-certificates \
         tzdata \
         git \

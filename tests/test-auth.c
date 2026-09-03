@@ -2686,6 +2686,12 @@ test_auth_kb_writes_refuse_anonymous(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/kb/from/idea/1", NULL, "", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
+
+	/* Import takes a file and writes articles from it, archives
+	 * included -- the most that can be done to a base in one request. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/kb/1/import", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
 }
 
 /*
@@ -2716,6 +2722,9 @@ test_auth_kb_writes_need_the_editor_role(
 		==, SOUP_STATUS_FORBIDDEN);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/kb/from/idea/1", cookie, "", NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/kb/1/import", cookie, "", NULL, NULL),
 		==, SOUP_STATUS_FORBIDDEN);
 }
 
