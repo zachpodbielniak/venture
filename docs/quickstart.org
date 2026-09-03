@@ -68,12 +68,19 @@ On a fresh database this creates the schema, seeds a default organisation, a cha
 
   This is shown once. Save it now.
 
-VENTURE 0.1.0 listening on http://127.0.0.1:8747
+VENTURE 0.2.0 listening on http://127.0.0.1:8747
 #+end_src
 
 Pass =--owner-password= to choose it yourself.
 
 ** Mint a token for the CLI
+
+In the browser: *Your account → API tokens*, or
+[[http://localhost:8747/account/tokens][localhost:8747/account/tokens]].
+Name it, optionally give it an expiry, and copy the secret — it is shown
+exactly once. The same page revokes it again.
+
+Over HTTP, if you would rather not leave the terminal:
 
 #+begin_src sh
 # Sign in and keep the session cookie

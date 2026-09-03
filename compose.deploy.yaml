@@ -71,7 +71,7 @@ services:
   venture:
     # Pinned. `latest` on a server means the next restart is an upgrade you
     # did not schedule, at a time you did not pick.
-    image: quay.io/zachpodbielniak/venture:0.1.0
+    image: quay.io/zachpodbielniak/venture:0.2.0
     container_name: venture
 
     depends_on:

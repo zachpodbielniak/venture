@@ -6,6 +6,12 @@
 
 build/
 deps/*/build/
+
+# Generated from src/venture-version.h.in with the numbers in config.mk. A
+# stale copy from a host build shadows the rule that would regenerate it, and
+# the image then reports whatever version the host last built.
+src/venture-version.h
+
 compose-data/
 .git/
 .gitignore

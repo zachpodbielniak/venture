@@ -20,6 +20,43 @@
 
 #include "venture-assets.h"
 
+/*
+ * A minted secret waiting to be shown once.
+ *
+ * The expiry is not a convenience. A handle that was redirected to but never
+ * loaded -- the browser was closed, the redirect was lost -- would otherwise
+ * keep a usable API token in memory for as long as the process runs.
+ */
+typedef struct
+{
+	gchar		*secret;
+	gint64		 token_id;
+	GDateTime	*created_at;
+} VentureWebReveal;
+
+#define VENTURE_WEB_REVEAL_TTL_SECONDS 300
+
+static void
+venture_web_reveal_free(VentureWebReveal *self)
+{
+	if (NULL == self)
+		return;
+
+	/*
+	 * Wiped rather than merely freed. It is a live credential until the
+	 * moment it is handed over, and a freed heap block is still readable
+	 * in a core dump.
+	 */
+	if (NULL != self->secret)
+	{
+		memset(self->secret, 0, strlen(self->secret));
+		g_free(self->secret);
+	}
+
+	g_clear_pointer(&self->created_at, g_date_time_unref);
+	g_free(self);
+}
+
 struct _VentureWebServer
 {
 	GObject parent_instance;
@@ -29,6 +66,23 @@ struct _VentureWebServer
 	HtmxServer	*server;
 	gchar		*base_url;
 	guint16		 port;
+
+	/*
+	 * Freshly minted API tokens, keyed by a random handle, waiting to be
+	 * shown to the browser exactly once.
+	 *
+	 * The mint is a POST and the page that displays the secret is a GET,
+	 * because a mint that rendered its own response would create a second
+	 * token every time somebody refreshed. Redirecting is the fix, and a
+	 * redirect cannot carry a secret: a query string lands in history, in
+	 * the access log and in any Referer the next page sends. So the
+	 * secret stays here and the redirect carries only the handle, which
+	 * is spent the moment it is read.
+	 *
+	 * No lock: htmx-glib serves every request from the one main context,
+	 * so these are only ever touched from that thread.
+	 */
+	GHashTable	*reveals;
 };
 
 G_DEFINE_FINAL_TYPE(VentureWebServer, venture_web_server, G_TYPE_OBJECT)
@@ -49,6 +103,7 @@ venture_web_server_finalize(GObject *object)
 	g_clear_object(&self->auth);
 	g_clear_object(&self->server);
 	g_clear_pointer(&self->base_url, g_free);
+	g_clear_pointer(&self->reveals, g_hash_table_unref);
 
 	G_OBJECT_CLASS(venture_web_server_parent_class)->finalize(object);
 }
@@ -62,6 +117,8 @@ venture_web_server_class_init(VentureWebServerClass *klass)
 static void
 venture_web_server_init(VentureWebServer *self)
 {
+	self->reveals = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+	                                      (GDestroyNotify)venture_web_reveal_free);
 }
 
 /* ==========================================================================
@@ -637,6 +694,14 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<circle cx=\"12\" cy=\"12\" r=\"9\"/>"
 			"<circle cx=\"12\" cy=\"10\" r=\"3\"/>"
 			"<path d=\"M6.5 19a6 6 0 0 1 11 0\"/>"
+		),
+		NULL
+	},
+	{
+		"/account/tokens", "API tokens",
+		VENTURE_ICON(
+			"<path d=\"M14 7a4 4 0 1 0-3.9 5H14l2 2 2-2 2 2 2-2-2-2h-6z\"/>"
+			"<circle cx=\"7\" cy=\"11\" r=\"1.2\"/>"
 		),
 		NULL
 	},
@@ -8034,7 +8099,7 @@ venture_web_ui_entities(
 	                       "spheres you keep books for. Every record belongs "
 	                       "to exactly one.</p></div></div>");
 
-	notice = g_hash_table_lookup(params, "notice");
+	notice = htmx_request_get_query_param(request, "notice");
 
 	if (NULL != notice)
 	{
@@ -8542,6 +8607,91 @@ venture_web_redirect_to(const gchar *path)
 	return response;
 }
 
+/*
+ * Files a freshly minted secret away and returns the handle that will fetch
+ * it back. Expired entries are dropped on the way past, which is enough
+ * housekeeping for a table that only ever holds the tokens one operator
+ * minted in the last five minutes.
+ */
+static gchar *
+venture_web_reveal_store(
+	VentureWebServer	*self,
+	const gchar		*secret,
+	gint64			 token_id
+){
+	g_autoptr(GDateTime) now = NULL;
+	VentureWebReveal *reveal;
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
+	gchar *handle;
+
+	now = venture_time_now();
+
+	g_hash_table_iter_init(&iter, self->reveals);
+
+	while (g_hash_table_iter_next(&iter, &key, &value))
+	{
+		VentureWebReveal *stale = value;
+
+		if (g_date_time_difference(now, stale->created_at) >
+		    (VENTURE_WEB_REVEAL_TTL_SECONDS * G_TIME_SPAN_SECOND))
+			g_hash_table_iter_remove(&iter);
+	}
+
+	reveal = g_new0(VentureWebReveal, 1);
+	reveal->secret = g_strdup(secret);
+	reveal->token_id = token_id;
+	reveal->created_at = g_date_time_ref(now);
+
+	handle = venture_generate_token(16);
+	g_hash_table_insert(self->reveals, g_strdup(handle), reveal);
+
+	return handle;
+}
+
+/*
+ * Spends a handle. Returns %NULL for one that was already used, never
+ * existed, or sat unread past its expiry -- all three are the same answer to
+ * the caller, which is that there is nothing to show.
+ */
+static VentureWebReveal *
+venture_web_reveal_take(
+	VentureWebServer	*self,
+	const gchar		*handle
+){
+	g_autoptr(GDateTime) now = NULL;
+	g_autofree gchar *stored_key = NULL;
+	VentureWebReveal *reveal = NULL;
+	gpointer key = NULL;
+	gpointer value = NULL;
+
+	if (venture_string_is_empty(handle))
+		return NULL;
+
+	/*
+	 * Stolen rather than looked up, so that whatever happens next this
+	 * handle is spent. steal_extended hands back the key as well; plain
+	 * g_hash_table_steal() skips both destroy notifies and would leak it.
+	 */
+	if (!g_hash_table_steal_extended(self->reveals, handle, &key, &value))
+		return NULL;
+
+	stored_key = key;
+	reveal = value;
+	now = venture_time_now();
+
+	if (g_date_time_difference(now, reveal->created_at) >
+	    (VENTURE_WEB_REVEAL_TTL_SECONDS * G_TIME_SPAN_SECOND))
+	{
+		venture_web_reveal_free(reveal);
+
+		return NULL;
+	}
+
+	return reveal;
+}
+
 static HtmxResponse *
 venture_web_ui_account(
 	HtmxRequest	*request,
@@ -8568,7 +8718,7 @@ venture_web_ui_account(
 	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
 	                       "<h1>Your account</h1></div></div>");
 
-	notice = g_hash_table_lookup(params, "notice");
+	notice = htmx_request_get_query_param(request, "notice");
 
 	if (NULL != notice)
 	{
@@ -8633,6 +8783,20 @@ venture_web_ui_account(
 			venture_auth_get_password_min_length(self->auth),
 			venture_auth_get_password_min_length(self->auth),
 			venture_auth_get_password_min_length(self->auth));
+
+		/*
+		 * Signposted from here because this is where somebody looks for
+		 * their own credentials. The page itself is admin-gated, so the
+		 * link is shown only to somebody it will let in.
+		 */
+		if (venture_auth_require(self->auth, principal,
+		                         VENTURE_USER_ROLE_ADMIN, NULL))
+			g_string_append(content,
+				"<h2>API tokens</h2>"
+				"<p class=\"muted small\">Credentials for venturectl and "
+				"anything else using the API.</p>"
+				"<a class=\"btn\" href=\"/account/tokens\">Manage API "
+				"tokens</a>");
 	}
 
 	g_string_append(content, "</div></div>");
@@ -8698,6 +8862,378 @@ venture_web_ui_account_password(
 }
 
 /*
+ * The API tokens page.
+ *
+ * Admin, matching POST /api/v1/tokens: a token carries the role of whoever
+ * minted it, so minting one is handing out a credential rather than editing
+ * a record. This page exists because the alternative was two curl calls --
+ * sign in for a cookie, then post with it -- which is a lot of ceremony for
+ * something an operator needs before they can use the CLI at all.
+ */
+static HtmxResponse *
+venture_web_ui_tokens(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) tokens = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureWebReveal *reveal;
+	HtmxResponse *redirect;
+	const gchar *notice;
+	guint i;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	                          &error))
+		return venture_web_error_response(error);
+
+	query = venture_query_new(VENTURE_TYPE_API_TOKEN);
+	venture_query_set_limit(query, 0);
+	tokens = venture_database_find(venture_context_get_database(self->context),
+	                               query, &error);
+
+	if (NULL == tokens)
+		return venture_web_error_response(error);
+
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+	                       "<h1>API tokens</h1>"
+	                       "<p class=\"muted\">Credentials for venturectl, "
+	                       "MCP agents and anything else talking to the "
+	                       "API.</p></div></div>");
+
+	notice = htmx_request_get_query_param(request, "notice");
+
+	if (NULL != notice)
+	{
+		gboolean ok;
+
+		ok = (NULL != g_strrstr(notice, "ok"));
+		g_string_append_printf(content, "<div class=\"banner %s\">",
+		                       ok ? "banner-ok" : "banner-warn");
+
+		if (0 == g_strcmp0(notice, "revoked-ok"))
+			g_string_append(content,
+				"Token revoked. Anything using it is now signed out.");
+		else if (0 == g_strcmp0(notice, "gone"))
+			g_string_append(content,
+				"That token has already been shown. It is stored only as a "
+				"hash, so it cannot be shown again --- revoke it and mint "
+				"another.");
+		else
+			g_string_append(content, "That did not work.");
+
+		g_string_append(content, "</div>");
+	}
+
+	/*
+	 * The one and only time this secret is displayed. It is not in the
+	 * URL, not in the database and not recoverable: what is stored is a
+	 * hash, exactly as for a password.
+	 */
+	reveal = venture_web_reveal_take(self,
+		htmx_request_get_query_param(request, "reveal"));
+
+	if (NULL != reveal)
+	{
+		g_string_append(content,
+			"<div class=\"card\"><div class=\"card-body\">"
+			"<div class=\"banner banner-ok\">"
+			"Copy this now. It will not be shown again."
+			"</div>"
+			"<pre class=\"token-reveal\"><code>");
+		venture_html_escape_append(content, reveal->secret);
+		g_string_append(content,
+			"</code></pre>"
+			"<p class=\"muted small\">Only a hash of it is stored, so nobody "
+			"--- including this page --- can show it to you a second time. "
+			"Use it as <code>VENTURE_TOKEN</code>, or as an "
+			"<code>Authorization: Bearer</code> header.</p>"
+			"</div></div>");
+
+		venture_web_reveal_free(reveal);
+	}
+
+	g_string_append_printf(content,
+		"<div class=\"card\"><div class=\"card-body\">"
+		"<h2>Mint a token</h2>"
+		"<p class=\"muted small\">It will carry your own role (%s). There is "
+		"no way to mint one with more access than you have, and none to "
+		"narrow it either --- for a token that may do less, sign in as a user "
+		"who may do less.</p>"
+		"<form method=\"post\" action=\"/account/tokens\">"
+		"<label>Name"
+		"<input type=\"text\" name=\"name\" required maxlength=\"120\" "
+		"placeholder=\"laptop venturectl\"></label>"
+		"<label>Expires"
+		"<select name=\"expires_in_days\">"
+		"<option value=\"0\">never</option>"
+		"<option value=\"30\">in 30 days</option>"
+		"<option value=\"90\">in 90 days</option>"
+		"<option value=\"365\">in a year</option>"
+		"</select></label>"
+		"<button class=\"btn btn-primary\" type=\"submit\">Mint token</button>"
+		"</form>"
+		"</div></div>",
+		venture_enum_to_nick(VENTURE_TYPE_USER_ROLE, (gint)principal->role));
+
+	g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
+	                         "<table class=\"table\"><thead><tr>"
+	                         "<th>Name</th><th>Prefix</th><th>Role</th>"
+	                         "<th>Expires</th><th>Last used</th>"
+	                         "<th>Status</th><th></th>"
+	                         "</tr></thead><tbody>");
+
+	for (i = 0; i < tokens->len; i++)
+	{
+		g_autofree gchar *name = NULL;
+		g_autofree gchar *prefix = NULL;
+		g_autoptr(GDateTime) expires_at = NULL;
+		g_autoptr(GDateTime) last_used = NULL;
+		VentureEntity *entity;
+		VentureUserRole role;
+		gboolean active;
+		gint64 id;
+
+		entity = g_ptr_array_index(tokens, i);
+		id = venture_entity_get_id(entity);
+
+		g_object_get(entity, "name", &name, "prefix", &prefix, "role", &role,
+		             "active", &active, "expires-at", &expires_at,
+		             "last-used-at", &last_used, NULL);
+
+		g_string_append(content, "<tr><td>");
+		venture_html_escape_append(content,
+			venture_string_is_empty(name) ? "\xe2\x80\x94" : name);
+
+		/*
+		 * The first characters, stored in the clear precisely so a token
+		 * can be told apart from another one here and in the logs
+		 * without revealing any of them.
+		 */
+		g_string_append(content, "</td><td><code class=\"muted\">");
+		venture_html_escape_append(content,
+			venture_string_is_empty(prefix) ? "\xe2\x80\x94" : prefix);
+		g_string_append(content, "\xe2\x80\xa6</code></td><td>");
+		venture_html_escape_append(content,
+			venture_enum_to_nick(VENTURE_TYPE_USER_ROLE, (gint)role));
+		g_string_append(content, "</td><td class=\"muted small\">");
+
+		if (NULL != expires_at)
+		{
+			g_autofree gchar *when = NULL;
+
+			when = g_date_time_format(expires_at, "%Y-%m-%d");
+			venture_html_escape_append(content, when);
+		}
+		else
+		{
+			g_string_append(content, "never");
+		}
+
+		g_string_append(content, "</td><td class=\"muted small\">");
+
+		if (NULL != last_used)
+		{
+			g_autofree gchar *when = NULL;
+
+			when = g_date_time_format(last_used, "%Y-%m-%d %H:%M");
+			venture_html_escape_append(content, when);
+		}
+		else
+		{
+			g_string_append(content, "never");
+		}
+
+		g_string_append_printf(content,
+			"</td><td>%s</td><td>",
+			active ? "<span class=\"badge positive\">active</span>"
+			       : "<span class=\"badge\">revoked</span>");
+
+		if (active)
+			g_string_append_printf(content,
+				"<form method=\"post\" action=\"/account/tokens/%"
+				G_GINT64_FORMAT "/revoke\" class=\"inline-form\">"
+				"<button class=\"btn btn-sm\" type=\"submit\">Revoke</button>"
+				"</form>", id);
+
+		g_string_append(content, "</td></tr>");
+	}
+
+	if (0 == tokens->len)
+		g_string_append(content,
+			"<tr><td colspan=\"7\" class=\"muted\">No tokens yet.</td></tr>");
+
+	g_string_append(content, "</tbody></table></div></div>");
+
+	return venture_web_html_response(
+		venture_web_page(self, request, "/account/tokens", "API tokens",
+		                 content->str), 200);
+}
+
+/*
+ * Mints a token and redirects to the page that will show it once.
+ *
+ * Shares venture_web_api_mint_token()'s rule that this is an administrative
+ * act, and its consequence that the token carries the minter's role.
+ */
+static HtmxResponse *
+venture_web_ui_tokens_create(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureApiToken) token = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *handle = NULL;
+	g_autofree gchar *location = NULL;
+	VentureActor actor;
+	HtmxResponse *redirect;
+	const gchar *name;
+	const gchar *expires_in;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	                          &error))
+		return venture_web_error_response(error);
+
+	name = htmx_request_get_form_value(request, "name");
+	expires_in = htmx_request_get_form_value(request, "expires_in_days");
+
+	token = venture_api_token_new();
+	g_object_set(token, "name",
+	             venture_string_is_empty(name) ? "api token" : name,
+	             "role", principal->role, NULL);
+
+	/*
+	 * Whose token this is. The API mint route did not record this, which
+	 * left a list of credentials nobody could be held to; a token that
+	 * outlives the person who made it is exactly the one worth finding.
+	 */
+	if (0 != principal->user_id)
+		g_object_set(token, "user-id", principal->user_id, NULL);
+
+	venture_entity_set_organization_id(VENTURE_ENTITY(token),
+		venture_context_get_default_organization_id(self->context));
+
+	if (!venture_string_is_empty(expires_in))
+	{
+		gint64 days;
+
+		days = g_ascii_strtoll(expires_in, NULL, 10);
+
+		/* Zero is the "never" option rather than "expired on creation",
+		 * so anything that is not a positive number means no expiry. */
+		if (days > 0)
+		{
+			g_autoptr(GDateTime) now = NULL;
+			g_autoptr(GDateTime) expires_at = NULL;
+
+			now = venture_time_now();
+			expires_at = g_date_time_add_days(now, (gint)days);
+			g_object_set(token, "expires-at", expires_at, NULL);
+		}
+	}
+
+	secret = venture_api_token_generate(token);
+
+	if (NULL == secret)
+		return venture_web_redirect_to("/account/tokens?notice=failed");
+
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           VENTURE_ENTITY(token), &actor, &error))
+		return venture_web_redirect_to("/account/tokens?notice=failed");
+
+	handle = venture_web_reveal_store(self, secret,
+	                                  venture_entity_get_id(
+	                                      VENTURE_ENTITY(token)));
+	location = g_strdup_printf("/account/tokens?reveal=%s", handle);
+
+	return venture_web_redirect_to(location);
+}
+
+/*
+ * Revokes a token by clearing its active flag rather than deleting the row.
+ *
+ * A deleted token takes with it the record that it ever existed, which is
+ * the opposite of what somebody revoking a credential after an incident
+ * needs: they want the prefix, the role and the last-used time to stay
+ * readable. venture_api_token_matches() refuses an inactive token, so this
+ * takes effect on the next request.
+ */
+static HtmxResponse *
+venture_web_ui_tokens_revoke(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) entity = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	HtmxResponse *redirect;
+	const gchar *id_text;
+	gint64 id;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	                          &error))
+		return venture_web_error_response(error);
+
+	id_text = g_hash_table_lookup(params, "id");
+	id = (NULL != id_text) ? g_ascii_strtoll(id_text, NULL, 10) : 0;
+
+	entity = venture_database_get(venture_context_get_database(self->context),
+	                              VENTURE_TYPE_API_TOKEN, id, NULL);
+
+	if (NULL == entity)
+		return venture_web_redirect_to("/account/tokens?notice=failed");
+
+	g_object_set(entity, "active", FALSE, NULL);
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           entity, &actor, &error))
+		return venture_web_redirect_to("/account/tokens?notice=failed");
+
+	return venture_web_redirect_to("/account/tokens?notice=revoked-ok");
+}
+
+/*
  * Managing other people's accounts is owner-only. Admin deliberately does
  * not carry it: the difference between the two roles is precisely who may
  * grant access, and an admin who can promote themselves is an owner.
@@ -8744,7 +9280,7 @@ venture_web_ui_users(
 	                       "<p class=\"muted\">Who can sign in, and what they "
 	                       "may do.</p></div></div>");
 
-	notice = g_hash_table_lookup(params, "notice");
+	notice = htmx_request_get_query_param(request, "notice");
 
 	if (NULL != notice)
 	{
@@ -11189,6 +11725,12 @@ venture_web_api_mint_token(
 	token = venture_api_token_new();
 	g_object_set(token, "name", (NULL != name) ? name : "api token",
 	             "role", principal->role, NULL);
+
+	/* Whose token this is, so the list on /account/tokens can answer that
+	 * for a token minted here as well as for one minted in the browser. */
+	if (0 != principal->user_id)
+		g_object_set(token, "user-id", principal->user_id, NULL);
+
 	venture_entity_set_organization_id(VENTURE_ENTITY(token),
 		venture_context_get_default_organization_id(self->context));
 
@@ -13365,6 +13907,11 @@ venture_web_server_new(
 	htmx_router_get(router, "/account", venture_web_ui_account, self);
 	htmx_router_post(router, "/account/password",
 	                 venture_web_ui_account_password, self);
+	htmx_router_get(router, "/account/tokens", venture_web_ui_tokens, self);
+	htmx_router_post(router, "/account/tokens", venture_web_ui_tokens_create,
+	                 self);
+	htmx_router_post(router, "/account/tokens/:id/revoke",
+	                 venture_web_ui_tokens_revoke, self);
 	htmx_router_get(router, "/users", venture_web_ui_users, self);
 	htmx_router_post(router, "/users", venture_web_ui_users_create, self);
 	htmx_router_post(router, "/users/:id/update",

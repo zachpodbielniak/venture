@@ -2224,6 +2224,462 @@ test_auth_ticket_board_filters_compose(
 		"/tickets?view=board&kind=all&issue_type=bug"));
 }
 
+
+/* --- API tokens in the browser -------------------------------------------- */
+
+/*
+ * Like server_fixture_request(), but reads the Location header and sends an
+ * Authorization header. Minting a token in the browser is a redirect to a
+ * page that shows it, and the point of the whole feature is that what comes
+ * back then works as a bearer credential -- so a test that cannot follow the
+ * one or present the other is not testing the feature.
+ */
+static guint
+server_fixture_request_ex(
+	ServerFixture	 *fixture,
+	const gchar	 *method,
+	const gchar	 *path,
+	const gchar	 *cookie,
+	const gchar	 *bearer,
+	const gchar	 *form_body,
+	gchar		**out_body,
+	gchar		**out_location
+){
+	g_autoptr(SoupMessage) message = NULL;
+	g_autofree gchar *url = NULL;
+	RequestResult outcome = { FALSE, NULL, NULL };
+
+	url = g_strdup_printf("http://127.0.0.1:%u%s", fixture->port, path);
+	message = soup_message_new(method, url);
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+
+	if (NULL != cookie)
+		soup_message_headers_append(
+			soup_message_get_request_headers(message), "Cookie", cookie);
+
+	if (NULL != bearer)
+	{
+		g_autofree gchar *value = NULL;
+
+		value = g_strconcat("Bearer ", bearer, NULL);
+		soup_message_headers_append(
+			soup_message_get_request_headers(message), "Authorization",
+			value);
+	}
+
+	if (NULL != form_body)
+	{
+		g_autoptr(GBytes) bytes = NULL;
+
+		bytes = g_bytes_new(form_body, strlen(form_body));
+		soup_message_set_request_body_from_bytes(message,
+			"application/x-www-form-urlencoded", bytes);
+	}
+
+	soup_session_send_and_read_async(fixture->session, message,
+	                                 G_PRIORITY_DEFAULT, NULL,
+	                                 server_fixture_request_done, &outcome);
+
+	while (!outcome.done)
+		g_main_context_iteration(NULL, TRUE);
+
+	if (NULL != outcome.error)
+		g_error("%s %s: %s", method, path, outcome.error->message);
+
+	if (NULL != out_body)
+		*out_body = g_strndup(g_bytes_get_data(outcome.body, NULL),
+		                      g_bytes_get_size(outcome.body));
+
+	if (NULL != out_location)
+		*out_location = g_strdup(soup_message_headers_get_one(
+			soup_message_get_response_headers(message), "Location"));
+
+	g_clear_pointer(&outcome.body, g_bytes_unref);
+	g_clear_error(&outcome.error);
+
+	return soup_message_get_status(message);
+}
+
+/*
+ * Pulls the one-time secret out of the reveal page.
+ *
+ * Every token is printed with its "vk_" prefix, so finding it does not
+ * depend on the surrounding markup -- which would make this a test of the
+ * HTML rather than of the token.
+ */
+static gchar *
+extract_revealed_token(const gchar *html)
+{
+	const gchar *start;
+	const gchar *end;
+
+	g_assert_nonnull(html);
+	start = strstr(html, "vk_");
+
+	if (NULL == start)
+		return NULL;
+
+	end = start;
+
+	while (('\0' != *end) && ('<' != *end) && !g_ascii_isspace(*end))
+		end++;
+
+	return g_strndup(start, (gsize)(end - start));
+}
+
+/*
+ * Signs in as an admin, mints a token through the page, and returns the
+ * plaintext exactly as somebody clicking the button would have read it.
+ */
+static gchar *
+server_fixture_mint_token(
+	ServerFixture	 *fixture,
+	const gchar	 *cookie,
+	const gchar	 *form_body,
+	gchar		**out_reveal_path
+){
+	g_autofree gchar *location = NULL;
+	g_autofree gchar *page = NULL;
+
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "POST",
+		"/account/tokens", cookie, NULL, form_body, NULL, &location),
+		==, SOUP_STATUS_FOUND);
+
+	g_assert_nonnull(location);
+	g_assert_nonnull(strstr(location, "reveal="));
+
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET", location,
+		cookie, NULL, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+
+	if (NULL != out_reveal_path)
+		*out_reveal_path = g_steal_pointer(&location);
+
+	return extract_revealed_token(page);
+}
+
+/*
+ * The page is admin-only, matching POST /api/v1/tokens. A token carries the
+ * role of whoever minted it, so an editor who could reach this page could
+ * mint themselves a durable editor credential that no password change
+ * revokes -- and the whole point of the role split is who may hand out
+ * access.
+ */
+static void
+test_auth_tokens_page_is_admin_only(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor_cookie = NULL;
+	g_autofree gchar *admin_cookie = NULL;
+	g_autofree gchar *page = NULL;
+
+	server_fixture_create_user(fixture, "edna", "e-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	server_fixture_create_user(fixture, "adam", "a-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+
+	editor_cookie = server_fixture_login(fixture, "edna", "e-long-password");
+	admin_cookie = server_fixture_login(fixture, "adam", "a-long-password");
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/account/tokens",
+		editor_cookie, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+
+	/* And the POST, not merely the page: refusing to draw the button
+	 * while still honouring the request would protect nothing. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/tokens",
+		editor_cookie, "name=sneaky&expires_in_days=0", NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/account/tokens",
+		admin_cookie, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "Mint a token"));
+}
+
+/*
+ * Anonymous requests are turned away at both verbs. The GET is covered by
+ * the navigation sweep above; the POST is not in the sidebar and would
+ * otherwise be an unauthenticated way to mint an owner credential.
+ */
+static void
+test_auth_tokens_refuse_anonymous(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/account/tokens"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/tokens",
+		NULL, "name=anon&expires_in_days=0", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/account/tokens/1/revoke", NULL, NULL, NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+}
+
+/*
+ * The token minted in the browser is a working credential. This is the
+ * feature: what the page prints has to be usable verbatim as a bearer
+ * token, or the page is decoration.
+ */
+static void
+test_auth_token_minted_in_browser_authenticates(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *listing = NULL;
+
+	server_fixture_create_user(fixture, "adam", "a-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	cookie = server_fixture_login(fixture, "adam", "a-long-password");
+
+	secret = server_fixture_mint_token(fixture, cookie,
+	                                   "name=laptop&expires_in_days=0", NULL);
+
+	g_assert_nonnull(secret);
+	g_assert_true(g_str_has_prefix(secret, "vk_"));
+
+	/* No cookie at all, so nothing but the token can be authenticating
+	 * this. */
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, &listing, NULL),
+		==, SOUP_STATUS_OK);
+
+	/* And the name reached the record, so the list can tell one token
+	 * from another. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/account/tokens",
+		cookie, NULL, &listing, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(listing, "laptop"));
+}
+
+/*
+ * The secret is shown once and never again.
+ *
+ * The handle travels in the URL, which means it lands in history and in the
+ * access log; if replaying it kept working, the "only shown once" promise
+ * would be false for anybody who could read either.
+ */
+static void
+test_auth_token_reveal_is_one_shot(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *reveal_path = NULL;
+	g_autofree gchar *replay = NULL;
+
+	server_fixture_create_user(fixture, "adam", "a-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	cookie = server_fixture_login(fixture, "adam", "a-long-password");
+
+	secret = server_fixture_mint_token(fixture, cookie,
+	                                   "name=once&expires_in_days=0",
+	                                   &reveal_path);
+	g_assert_nonnull(secret);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", reveal_path,
+		cookie, NULL, &replay, NULL), ==, SOUP_STATUS_OK);
+
+	/* The page still renders -- it is the token list -- but the secret
+	 * is not on it. */
+	g_assert_null(strstr(replay, secret));
+	g_assert_nonnull(strstr(replay, "once"));
+}
+
+/*
+ * Revoking stops the token working, and keeps the row.
+ *
+ * Deleting it would take the prefix, the role and the last-used time with
+ * it, which is exactly what somebody revoking a credential after an
+ * incident wants to still be able to read.
+ */
+static void
+test_auth_token_revoke_stops_it_working(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *listing = NULL;
+
+	server_fixture_create_user(fixture, "adam", "a-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	cookie = server_fixture_login(fixture, "adam", "a-long-password");
+
+	secret = server_fixture_mint_token(fixture, cookie,
+	                                   "name=doomed&expires_in_days=0", NULL);
+	g_assert_nonnull(secret);
+
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL),
+		==, SOUP_STATUS_OK);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/account/tokens/1/revoke", cookie, "", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+
+	/* The row survives, marked revoked. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/account/tokens",
+		cookie, NULL, &listing, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(listing, "doomed"));
+	g_assert_nonnull(strstr(listing, "revoked"));
+}
+
+/*
+ * An expiry chosen in the form reaches the record.
+ *
+ * venture_api_token_matches() already refuses a token whose expires-at has
+ * passed; what this covers is the wiring from the select to the field, which
+ * is where an expiry silently becomes "never".
+ */
+static void
+test_auth_token_expiry_is_recorded(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) entity = NULL;
+	g_autoptr(GDateTime) expires_at = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *secret = NULL;
+	gint64 days;
+
+	server_fixture_create_user(fixture, "adam", "a-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	cookie = server_fixture_login(fixture, "adam", "a-long-password");
+
+	secret = server_fixture_mint_token(fixture, cookie,
+	                                   "name=temporary&expires_in_days=30",
+	                                   NULL);
+	g_assert_nonnull(secret);
+
+	entity = venture_database_get(fixture->database, VENTURE_TYPE_API_TOKEN,
+	                              1, NULL);
+	g_assert_nonnull(entity);
+
+	g_object_get(entity, "expires-at", &expires_at, NULL);
+	g_assert_nonnull(expires_at);
+
+	now = venture_time_now();
+	days = g_date_time_difference(expires_at, now) / G_TIME_SPAN_DAY;
+
+	/* 29 rather than 30 because the subtraction truncates. */
+	g_assert_cmpint(days, >=, 29);
+	g_assert_cmpint(days, <=, 30);
+}
+
+/*
+ * "Never" has to mean never, not "expired the instant it was made". Zero is
+ * the value the select posts for it, and an unchecked strtoll would turn it
+ * into an expiry date of now.
+ */
+static void
+test_auth_token_never_expires_by_default(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) entity = NULL;
+	g_autoptr(GDateTime) expires_at = NULL;
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *secret = NULL;
+
+	server_fixture_create_user(fixture, "adam", "a-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	cookie = server_fixture_login(fixture, "adam", "a-long-password");
+
+	secret = server_fixture_mint_token(fixture, cookie,
+	                                   "name=forever&expires_in_days=0", NULL);
+	g_assert_nonnull(secret);
+
+	entity = venture_database_get(fixture->database, VENTURE_TYPE_API_TOKEN,
+	                              1, NULL);
+	g_assert_nonnull(entity);
+
+	g_object_get(entity, "expires-at", &expires_at, NULL);
+	g_assert_null(expires_at);
+
+	/* And it works, which is the observable half of the same claim. */
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL),
+		==, SOUP_STATUS_OK);
+}
+
+/*
+ * The banner a redirect asks for actually renders.
+ *
+ * These pages read ?notice= to say "Password changed." or "Token revoked."
+ * after a POST. They read it out of the route-parameter table for a while,
+ * which only ever holds :id-style segments, so every one of those banners
+ * was silently dropped: the action worked and the page came back looking as
+ * though nothing had happened.
+ */
+static void
+test_auth_redirect_notices_render(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *account = NULL;
+	g_autofree gchar *tokens = NULL;
+
+	server_fixture_create_user(fixture, "adam", "a-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	cookie = server_fixture_login(fixture, "adam", "a-long-password");
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/account?notice=changed", cookie, NULL, &account, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(account, "Password changed."));
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/account/tokens?notice=revoked-ok", cookie, NULL, &tokens, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(tokens, "Token revoked."));
+}
+
+/*
+ * The database keeps a hash, never the secret -- the same property the
+ * password table has, and the reason the reveal page can only ever run once.
+ */
+static void
+test_auth_browser_token_stores_only_a_hash(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) entity = NULL;
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *hash = NULL;
+	g_autofree gchar *prefix = NULL;
+
+	server_fixture_create_user(fixture, "adam", "a-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	cookie = server_fixture_login(fixture, "adam", "a-long-password");
+
+	secret = server_fixture_mint_token(fixture, cookie,
+	                                   "name=hashed&expires_in_days=0", NULL);
+	g_assert_nonnull(secret);
+
+	entity = venture_database_get(fixture->database, VENTURE_TYPE_API_TOKEN,
+	                              1, NULL);
+	g_assert_nonnull(entity);
+
+	g_object_get(entity, "token-hash", &hash, "prefix", &prefix, NULL);
+
+	g_assert_nonnull(hash);
+	g_assert_null(strstr(hash, secret));
+
+	/* The prefix is deliberately in the clear, and is a prefix of the
+	 * secret rather than of the stored hash. */
+	g_assert_nonnull(prefix);
+	g_assert_true(g_str_has_prefix(secret + 3, prefix));
+}
+
 int
 main(
 	int	  argc,
@@ -2274,6 +2730,36 @@ main(
 
 	g_test_add("/auth/pages-refuse-anonymous-requests", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_pages_refuse_anonymous_requests,
+	           server_fixture_tear_down);
+
+	g_test_add("/auth/tokens-page-is-admin-only", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_tokens_page_is_admin_only,
+	           server_fixture_tear_down);
+	g_test_add("/auth/tokens-refuse-anonymous", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_tokens_refuse_anonymous,
+	           server_fixture_tear_down);
+	g_test_add("/auth/token-minted-in-browser-authenticates", ServerFixture,
+	           NULL, server_fixture_set_up,
+	           test_auth_token_minted_in_browser_authenticates,
+	           server_fixture_tear_down);
+	g_test_add("/auth/token-reveal-is-one-shot", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_token_reveal_is_one_shot,
+	           server_fixture_tear_down);
+	g_test_add("/auth/token-revoke-stops-it-working", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_token_revoke_stops_it_working,
+	           server_fixture_tear_down);
+	g_test_add("/auth/token-expiry-is-recorded", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_token_expiry_is_recorded,
+	           server_fixture_tear_down);
+	g_test_add("/auth/token-never-expires-by-default", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_token_never_expires_by_default,
+	           server_fixture_tear_down);
+	g_test_add("/auth/redirect-notices-render", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_redirect_notices_render,
+	           server_fixture_tear_down);
+	g_test_add("/auth/browser-token-stores-only-a-hash", ServerFixture, NULL,
+	           server_fixture_set_up,
+	           test_auth_browser_token_stores_only_a_hash,
 	           server_fixture_tear_down);
 
 	g_test_add("/auth/forge-records-are-owner-only", ServerFixture, NULL,

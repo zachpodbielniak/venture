@@ -803,9 +803,9 @@ test_web_navigation_links_all_resolve(
 	gconstpointer	 user_data
 ){
 	static const gchar *const fixed_pages[] = {
-		"/", "/reports", "/settings", "/account", "/users", "/entities",
-		"/tickets", "/login", "/logout", "/search", "/automations",
-		"/plugins", NULL
+		"/", "/reports", "/settings", "/account", "/account/tokens",
+		"/users", "/entities", "/tickets", "/login", "/logout", "/search",
+		"/automations", "/plugins", NULL
 	};
 	const VentureWebNavLink *links;
 	gsize i;

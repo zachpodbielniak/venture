@@ -168,7 +168,13 @@ $(OUTDIR)/pod-modules/libpod-module-%.so: modules/%/*.c | $(OUTDIR)/pod-modules
 # ---------------------------------------------------------------------------
 
 # Version header.
-src/venture-version.h: src/venture-version.h.in
+#
+# config.mk is a prerequisite because the version numbers substituted below
+# live there, not in the .in. Without it, bumping VERSION_MINOR regenerates
+# nothing: the stale header is newer than the template, make calls it up to
+# date, and the build produces a binary that reports the previous version
+# while every tag and changelog says otherwise.
+src/venture-version.h: src/venture-version.h.in config.mk
 	@echo "  GEN     $@"
 	$(Q)sed \
 		-e 's|@VENTURE_VERSION_MAJOR@|$(VERSION_MAJOR)|g' \

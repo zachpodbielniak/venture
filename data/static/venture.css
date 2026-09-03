@@ -2086,6 +2086,29 @@ body.ai-resizing { user-select: none; cursor: ew-resize; }
 	min-width: 0;
 }
 
+/*
+ * The one-time display of a freshly minted API token.
+ *
+ * Deliberately loud, and deliberately wide enough for the whole string: this
+ * is the only moment the secret exists anywhere a person can read it, and a
+ * box that truncates it or wraps it mid-token is one somebody copies wrongly
+ * and then debugs as an authentication bug.
+ */
+.token-reveal {
+	margin: var(--space-3) 0 var(--space-2);
+	padding: var(--space-3);
+	background: var(--surface-sunken);
+	border: 1px solid var(--accent-soft);
+	border-radius: var(--radius);
+	overflow-x: auto;
+}
+
+.token-reveal code {
+	font-size: 13px;
+	user-select: all;
+	white-space: pre;
+}
+
 /* A definition list of read-only facts about the current account. */
 dl.detail {
 	display: grid;

@@ -20,8 +20,17 @@ Either a bearer token or a browser session cookie.
 curl -H "Authorization: Bearer $VENTURE_TOKEN" localhost:8747/api/v1/sale
 #+end_src
 
-Mint a token with =POST /api/v1/tokens= while holding a session. The plaintext
-is returned exactly once; only its hash is stored.
+Mint a token in the browser at *Your account -> API tokens*
+(=/account/tokens=), which is the easiest route and the only one that does
+not need a token to get a token. The page lists what exists, mints a new one
+with an optional expiry, and revokes any of them.
+
+Or mint one over HTTP with =POST /api/v1/tokens= while holding a session.
+Either way the plaintext is shown exactly once; only its hash is stored.
+
+Both routes are admin-only, and a token carries the role of whoever minted
+it. There is no scope parameter: for a token that may do less, sign in as a
+user who may do less and mint it there.
 
 =venturectl mcp= serves this API to an outside AI agent as an MCP server,
 taking its token from =VENTURE_TOKEN= and generating its tool surface from

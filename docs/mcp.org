@@ -34,7 +34,7 @@ There is deliberately no =--token=. An argv is world-readable through =/proc= an
 
 *** Minting a token
 
-=POST /api/v1/tokens= while holding a session — sign in to the web UI and create one there. The plaintext is returned exactly once and only its hash is stored, so copy it then. With no token set, =venturectl mcp= refuses at startup and says this, rather than starting and letting every call fail with a 401.
+Sign in to the web UI and go to *Your account → API tokens* (=/account/tokens=). Name it for the agent that will hold it, give it an expiry if the agent is temporary, and copy the secret: it is shown exactly once and only its hash is stored. The same page revokes it later, which is what you want the moment an agent's config leaks. =POST /api/v1/tokens= does the same thing over HTTP if you already hold a session. With no token set, =venturectl mcp= refuses at startup and says this, rather than starting and letting every call fail with a 401.
 
 That refusal is not politeness. Every request failing identically reads, to an agent, like a server whose records are all missing — and an agent that believes a record is missing creates it again.
 
