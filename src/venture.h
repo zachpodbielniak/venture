@@ -124,6 +124,7 @@
 #include "kb/venture-kb-chunk.h"
 #include "kb/venture-kb-service.h"
 #include "kb/venture-kb-ingest.h"
+#include "kb/venture-kb-crossref.h"
 #include "forge/venture-forge-client.h"
 #include "forge/venture-forgejo-client.h"
 #include "forge/venture-forge-rules.h"

@@ -698,6 +698,15 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		NULL
 	},
 	{
+		"/kb", "Knowledge",
+		VENTURE_ICON(
+			"<path d=\"M4 5a2 2 0 0 1 2-2h5v18H6a2 2 0 0 1-2-2z\"/>"
+			"<path d=\"M20 5a2 2 0 0 0-2-2h-5v18h5a2 2 0 0 0 2-2z\"/>"
+			"<path d=\"M11 3v18\"/>"
+		),
+		NULL
+	},
+	{
 		"/account/tokens", "API tokens",
 		VENTURE_ICON(
 			"<path d=\"M14 7a4 4 0 1 0-3.9 5H14l2 2 2-2 2 2 2-2-2-2h-6z\"/>"
@@ -6183,6 +6192,17 @@ venture_web_append_detail_value(
  * turns a set of tables into a CRM: the point of a contact is everything
  * attached to them.
  */
+/*
+ * Defined further down, beside the knowledge-base page it shares helpers
+ * with, but used from the detail page above it.
+ */
+static void
+venture_web_append_knowledge(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+);
+
 static void
 venture_web_append_related(
 	VentureWebServer	*self,
@@ -6208,6 +6228,18 @@ venture_web_append_related(
 		 */
 		if ((VENTURE_TYPE_TICKET_RELATION == types[i]) ||
 		    (VENTURE_TYPE_TICKET_LINK == types[i]))
+			continue;
+
+		/*
+		 * kb_link names its subject by type and id rather than by a
+		 * reference field, so the walk below would never find it
+		 * anyway -- but kb_chunk *does* reference kb_article, and a
+		 * knowledge-base article's page listing its own passages as
+		 * "kb_chunk #1 ... #47" is a wall of links that say nothing.
+		 * Both get a panel of their own instead.
+		 */
+		if ((VENTURE_TYPE_KB_LINK == types[i]) ||
+		    (VENTURE_TYPE_KB_CHUNK == types[i]))
 			continue;
 
 		g_autoptr(VentureEntity) prototype = NULL;
@@ -7158,6 +7190,7 @@ venture_web_ui_detail(
 	g_string_append(content, "</dl></div></div>");
 
 	venture_web_append_related(self, content, record);
+	venture_web_append_knowledge(self, content, record);
 
 	/* An invoice's lines and total, with the actions its status allows.
 	 * The other type-specific block, for the same reason as the ticket
@@ -9286,6 +9319,355 @@ venture_web_ui_tokens_revoke(
 		return venture_web_redirect_to("/account/tokens?notice=failed");
 
 	return venture_web_redirect_to("/account/tokens?notice=revoked-ok");
+}
+
+
+/*
+ * The knowledge that bears on this record.
+ *
+ * Hand-written rather than derived, because kb_link names its subject by
+ * type and id: the generic walk keys on reference fields and would never
+ * find it. Reads the stored links rather than recomputing, so rendering a
+ * page costs a query instead of an embedding request -- and each link says
+ * when it was computed, because that is the cost of not recomputing.
+ */
+static void
+venture_web_append_knowledge(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autoptr(GPtrArray) links = NULL;
+	VentureKbService *kb;
+	const gchar *type_name;
+	gint64 record_id;
+	guint i;
+
+	kb = venture_context_get_kb_service(self->context);
+
+	if (NULL == kb)
+		return;
+
+	type_name = venture_entity_get_entity_name(record);
+	record_id = venture_entity_get_id(record);
+
+	if (!venture_kb_crossref_type_is_eligible(G_OBJECT_TYPE(record)))
+		return;
+
+	links = venture_kb_crossref_links_for(kb, type_name, record_id, NULL);
+
+	g_string_append(content,
+		"<div class=\"card\"><div class=\"card-body\">"
+		"<div class=\"section-head\"><h2>Related knowledge</h2>");
+
+	/*
+	 * The button is offered even when links exist, because the record's
+	 * text changes and the links do not follow it. Posting to the API
+	 * from here rather than a form action keeps the page a GET.
+	 */
+	g_string_append_printf(content,
+		"<button class=\"btn btn-sm\" hx-post=\"/api/v1/kb/crossref/%s/%"
+		G_GINT64_FORMAT "\" hx-swap=\"none\" "
+		"hx-on::after-request=\"window.location.reload()\">"
+		"%s</button></div>",
+		type_name, record_id,
+		((NULL != links) && (links->len > 0)) ? "Recompute" : "Find related");
+
+	if ((NULL == links) || (0 == links->len))
+	{
+		g_string_append(content,
+			"<p class=\"muted\">Nothing linked yet. Cross-referencing "
+			"embeds this record's text and compares it against the "
+			"knowledge bases.</p></div></div>");
+		return;
+	}
+
+	g_string_append(content, "<div class=\"kb-links\">");
+
+	for (i = 0; i < links->len; i++)
+	{
+		VentureEntity *link = g_ptr_array_index(links, i);
+		g_autoptr(VentureEntity) article = NULL;
+		g_autofree gchar *excerpt = NULL;
+		g_autofree gchar *title = NULL;
+		g_autoptr(GDateTime) computed = NULL;
+		gint64 article_id;
+		gdouble score;
+
+		g_object_get(link, "article-id", &article_id, "score", &score,
+		             "excerpt", &excerpt, "computed-at", &computed, NULL);
+
+		article = venture_database_get(
+			venture_context_get_database(self->context),
+			VENTURE_TYPE_KB_ARTICLE, article_id, NULL);
+
+		if (NULL != article)
+			g_object_get(article, "title", &title, NULL);
+
+		g_string_append(content, "<div class=\"kb-link\">");
+		g_string_append_printf(content,
+			"<a class=\"kb-link-title\" href=\"/e/kb_article/%"
+			G_GINT64_FORMAT "\">", article_id);
+		venture_html_escape_append(content,
+			venture_string_is_empty(title) ? "(deleted article)"
+			                               : title);
+		g_string_append(content, "</a>");
+
+		/*
+		 * The score is shown as a percentage rather than hidden. A
+		 * reader deciding whether to follow a link wants to know
+		 * whether it is a strong match or the weakest one that got
+		 * past the threshold.
+		 */
+		g_string_append_printf(content,
+			"<span class=\"badge\">%.0f%%</span>", score * 100.0);
+
+		if (!venture_string_is_empty(excerpt))
+		{
+			g_string_append(content, "<p class=\"kb-link-excerpt\">");
+			venture_html_escape_append(content, excerpt);
+			g_string_append(content, "</p>");
+		}
+
+		g_string_append(content, "</div>");
+	}
+
+	g_string_append(content, "</div></div></div>");
+}
+
+/*
+ * The knowledge-base browser: the bases, and one search box across them.
+ *
+ * A page of its own rather than only the generic /e/knowledge_base list,
+ * because searching by meaning is the one thing the generic machinery cannot
+ * do -- its list filter matches characters.
+ */
+static HtmxResponse *
+venture_web_ui_kb(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	VentureKbService *kb;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) bases = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *redirect;
+	const gchar *search;
+	guint i;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+	                       "<h1>Knowledge</h1>"
+	                       "<p class=\"muted\">Documents the assistant can "
+	                       "read, searched by meaning.</p></div></div>");
+
+	kb = venture_context_get_kb_service(self->context);
+
+	if (NULL == kb)
+	{
+		/*
+		 * Says which of the two reasons it is. An operator whose
+		 * search box has gone wants to know whether to edit the config
+		 * or restart the embedding service.
+		 */
+		g_string_append(content,
+			"<div class=\"card\"><div class=\"card-body\">"
+			"<div class=\"banner banner-warn\">Knowledge bases are "
+			"unavailable. Either <code>kb.enabled</code> is false, or "
+			"the embedding service named by <code>kb.embedding_url</code> "
+			"could not be reached when the server started.</div>"
+			"</div></div>");
+
+		return venture_web_html_response(
+			venture_web_page(self, request, "/kb", "Knowledge",
+			                 content->str), 200);
+	}
+
+	search = htmx_request_get_query_param(request, "q");
+
+	g_string_append(content,
+		"<div class=\"card\"><div class=\"card-body\">"
+		"<form class=\"kb-search\" action=\"/kb\" method=\"get\">"
+		"<input type=\"search\" name=\"q\" placeholder=\"Ask the "
+		"knowledge bases…\" value=\"");
+
+	if (!venture_string_is_empty(search))
+		venture_html_escape_append(content, search);
+
+	g_string_append(content,
+		"\" autofocus>"
+		"<button class=\"btn btn-primary\" type=\"submit\">Search</button>"
+		"</form>");
+
+	if (!venture_string_is_empty(search))
+	{
+		g_autoptr(GPtrArray) hits = NULL;
+
+		hits = venture_kb_service_search(kb, search, NULL, 0, 0, &error);
+
+		if (NULL == hits)
+		{
+			g_string_append(content, "<div class=\"banner banner-warn\">");
+			venture_html_escape_append(content,
+				(NULL != error) ? error->message
+				                : "The search failed");
+			g_string_append(content, "</div>");
+		}
+		else if (0 == hits->len)
+		{
+			g_string_append(content,
+				"<p class=\"muted\">Nothing matched. Only published "
+				"articles in bases offered to the assistant are "
+				"searched.</p>");
+		}
+		else
+		{
+			g_string_append(content, "<div class=\"kb-links\">");
+
+			for (i = 0; i < hits->len; i++)
+			{
+				const VentureKbHit *hit = g_ptr_array_index(hits, i);
+
+				g_string_append(content, "<div class=\"kb-link\">");
+				g_string_append_printf(content,
+					"<a class=\"kb-link-title\" href=\"/e/kb_article/%"
+					G_GINT64_FORMAT "\">", hit->article_id);
+				venture_html_escape_append(content, hit->title);
+				g_string_append(content, "</a>");
+
+				g_string_append_printf(content,
+					"<span class=\"badge\">%.0f%%</span>"
+					"<span class=\"muted small\"> #",
+					hit->score * 100.0);
+				venture_html_escape_append(content, hit->kb_slug);
+
+				if (!venture_string_is_empty(hit->heading))
+				{
+					g_string_append(content, " / ");
+					venture_html_escape_append(content,
+					                           hit->heading);
+				}
+
+				g_string_append(content, "</span>");
+				g_string_append(content, "<p class=\"kb-link-excerpt\">");
+				venture_html_escape_append(content, hit->text);
+				g_string_append(content, "</p></div>");
+			}
+
+			g_string_append(content, "</div>");
+		}
+	}
+
+	g_string_append(content, "</div></div>");
+
+	query = venture_query_new(VENTURE_TYPE_KNOWLEDGE_BASE);
+	venture_query_set_limit(query, 0);
+	bases = venture_database_find(
+		venture_context_get_database(self->context), query, NULL);
+
+	g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
+	                         "<div class=\"section-head\"><h2>Bases</h2>"
+	                         "<a class=\"btn btn-sm\" "
+	                         "href=\"/e/knowledge_base/new\">New base</a>"
+	                         "</div>"
+	                         "<table class=\"table\"><thead><tr>"
+	                         "<th>Name</th><th>#slug</th><th>Articles</th>"
+	                         "<th>Model</th><th>Synced</th><th></th>"
+	                         "</tr></thead><tbody>");
+
+	for (i = 0; (NULL != bases) && (i < bases->len); i++)
+	{
+		VentureEntity *base = g_ptr_array_index(bases, i);
+		g_autoptr(VentureQuery) count_query = NULL;
+		g_autoptr(GPtrArray) articles = NULL;
+		g_autofree gchar *name = NULL;
+		g_autofree gchar *slug = NULL;
+		g_autofree gchar *model = NULL;
+		g_autoptr(GDateTime) synced = NULL;
+		gint64 base_id;
+		gboolean automatic = FALSE;
+
+		base_id = venture_entity_get_id(base);
+		g_object_get(base, "name", &name, "slug", &slug,
+		             "embedding-model", &model, "synced-at", &synced,
+		             "auto-retrieve", &automatic, NULL);
+
+		count_query = venture_query_new(VENTURE_TYPE_KB_ARTICLE);
+		venture_query_set_limit(count_query, 0);
+		venture_query_add_filter_int(count_query, "kb-id",
+		                             VENTURE_FILTER_OP_EQ, base_id, NULL);
+		articles = venture_database_find(
+			venture_context_get_database(self->context), count_query,
+			NULL);
+
+		g_string_append_printf(content,
+			"<tr><td><a href=\"/e/knowledge_base/%" G_GINT64_FORMAT
+			"\">", base_id);
+		venture_html_escape_append(content, name);
+		g_string_append(content, "</a>");
+
+		if (!automatic)
+			g_string_append(content,
+				" <span class=\"badge\">not offered to the AI</span>");
+
+		g_string_append(content, "</td><td><code>#");
+		venture_html_escape_append(content, slug);
+		g_string_append_printf(content, "</code></td><td>%u</td><td class=\"muted small\">",
+		                       (NULL != articles) ? articles->len : 0);
+		venture_html_escape_append(content,
+			venture_string_is_empty(model) ? "not indexed" : model);
+		g_string_append(content, "</td><td class=\"muted small\">");
+
+		if (NULL != synced)
+		{
+			g_autofree gchar *when = NULL;
+
+			when = g_date_time_format(synced, "%Y-%m-%d %H:%M");
+			venture_html_escape_append(content, when);
+		}
+		else
+		{
+			g_string_append(content, "never");
+		}
+
+		/*
+		 * Sync, reindex and export, as the three things a base needs
+		 * that its record form cannot express. Export is a link
+		 * because it is a download; the other two post.
+		 */
+		g_string_append_printf(content,
+			"</td><td class=\"kb-actions\">"
+			"<button class=\"btn btn-sm\" hx-post=\"/api/v1/kb/%"
+			G_GINT64_FORMAT "/sync\" hx-swap=\"none\" "
+			"hx-on::after-request=\"window.location.reload()\">Sync</button>"
+			"<button class=\"btn btn-sm\" hx-post=\"/api/v1/kb/%"
+			G_GINT64_FORMAT "/reindex\" hx-swap=\"none\" "
+			"hx-on::after-request=\"window.location.reload()\">Reindex</button>"
+			"<a class=\"btn btn-sm\" href=\"/api/v1/kb/%"
+			G_GINT64_FORMAT "/export?format=zip\">Export</a>"
+			"</td></tr>",
+			base_id, base_id, base_id);
+	}
+
+	if ((NULL == bases) || (0 == bases->len))
+		g_string_append(content,
+			"<tr><td colspan=\"6\" class=\"muted\">No knowledge bases "
+			"yet.</td></tr>");
+
+	g_string_append(content, "</tbody></table></div></div>");
+
+	return venture_web_html_response(
+		venture_web_page(self, request, "/kb", "Knowledge", content->str),
+		200);
 }
 
 /*
@@ -12177,6 +12559,145 @@ venture_web_api_kb_export(
 	return response;
 }
 
+/*
+ * Cross-references one record against the corpus.
+ *
+ * Editor, like sync: it writes kb_link rows that then appear on the record's
+ * page, so it changes what the install says about that record.
+ */
+static HtmxResponse *
+venture_web_api_kb_crossref(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	VentureKbService *kb;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	VentureActor actor;
+	HtmxResponse *denied;
+	const gchar *type_name;
+	const gchar *id_text;
+	gint64 record_id;
+	gint written;
+
+	self = user_data;
+
+	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+
+	if (NULL != denied)
+		return denied;
+
+	kb = venture_web_kb_service(self, &denied);
+
+	if (NULL == kb)
+		return denied;
+
+	type_name = g_hash_table_lookup(params, "type");
+	id_text = g_hash_table_lookup(params, "id");
+	record_id = (NULL != id_text) ? g_ascii_strtoll(id_text, NULL, 10) : 0;
+
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+
+	written = venture_kb_crossref_record(kb, type_name, record_id, &actor,
+	                                     &error);
+
+	if (written < 0)
+		return venture_web_error_response(error);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "links");
+	json_builder_add_int_value(builder, written);
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * Writes a knowledge-base article from a record.
+ *
+ * The body names the base; the route names the record. Built from the
+ * record's own text rather than by asking a model to summarise it, because a
+ * summary is a second version of the truth and this one is meant to be
+ * citable.
+ */
+static HtmxResponse *
+venture_web_api_kb_from_record(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	VentureKbService *kb;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	VentureActor actor;
+	HtmxResponse *denied;
+	const gchar *type_name;
+	const gchar *id_text;
+	gint64 record_id;
+	gint64 kb_id = 0;
+	gint64 article_id;
+
+	self = user_data;
+
+	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+
+	if (NULL != denied)
+		return denied;
+
+	kb = venture_web_kb_service(self, &denied);
+
+	if (NULL == kb)
+		return denied;
+
+	type_name = g_hash_table_lookup(params, "type");
+	id_text = g_hash_table_lookup(params, "id");
+	record_id = (NULL != id_text) ? g_ascii_strtoll(id_text, NULL, 10) : 0;
+
+	body = htmx_request_get_json(request, NULL);
+
+	if ((NULL != body) && JSON_NODE_HOLDS_OBJECT(body))
+		kb_id = venture_json_object_get_int(json_node_get_object(body),
+		                                    "kb_id", 0);
+
+	if (0 == kb_id)
+	{
+		g_set_error_literal(&error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Say which knowledge base to write into, as "
+		                    "\"kb_id\"");
+		return venture_web_error_response(error);
+	}
+
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+
+	article_id = venture_kb_article_from_record(kb, kb_id, type_name,
+	                                            record_id, &actor, &error);
+
+	if (article_id < 0)
+		return venture_web_error_response(error);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "article_id");
+	json_builder_add_int_value(builder, article_id);
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(node, 201);
+}
+
 /* --- Plugins, venture types and automations ------------------------------ */
 
 static HtmxResponse *
@@ -14315,6 +14836,7 @@ venture_web_server_new(
 	htmx_router_get(router, "/account", venture_web_ui_account, self);
 	htmx_router_post(router, "/account/password",
 	                 venture_web_ui_account_password, self);
+	htmx_router_get(router, "/kb", venture_web_ui_kb, self);
 	htmx_router_get(router, "/account/tokens", venture_web_ui_tokens, self);
 	htmx_router_post(router, "/account/tokens", venture_web_ui_tokens_create,
 	                 self);
@@ -14387,6 +14909,10 @@ venture_web_server_new(
 	                 venture_web_api_kb_reindex, self);
 	htmx_router_get(router, "/api/v1/kb/:id/export",
 	                venture_web_api_kb_export, self);
+	htmx_router_post(router, "/api/v1/kb/crossref/:type/:id",
+	                 venture_web_api_kb_crossref, self);
+	htmx_router_post(router, "/api/v1/kb/from/:type/:id",
+	                 venture_web_api_kb_from_record, self);
 	htmx_router_get(router, "/api/v1/plugins", venture_web_api_plugins, self);
 	htmx_router_get(router, "/api/v1/venture-types",
 	                venture_web_api_venture_types, self);

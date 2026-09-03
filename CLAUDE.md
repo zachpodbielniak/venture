@@ -221,6 +221,43 @@ first seven columns were empty.
   `SUM(integer)` as an integer; PostgreSQL widens it to numeric, and the
   typed accessor asserts. Cast aggregates explicitly — `CAST(SUM(x) AS
   BIGINT)` — or the SQLite suite passes while PostgreSQL dies.
+- **Vectors from two embedding models cannot be compared.** The cosine
+  between them is not a weak match but noise that reads exactly like one: a
+  number in [-1, 1] that looks plausible and means nothing. The model is
+  therefore recorded on the base, the article *and* the chunk, and checked
+  at each: a base is claimed by the first model to index it and refuses a
+  second, a reindex skips what is current, and a search skips any passage
+  the configured model did not write. Changing `kb.embedding_model` requires
+  `kb reindex --force`; there is no cheaper correct answer.
+- **`kb.embedding_*` is deliberately separate from `ai.*`.** The assistant is
+  whichever model writes well; the embedder is whichever model the corpus was
+  indexed with, and only one of those can be changed freely. Sharing them
+  would mean switching chat models silently invalidated the index.
+- **Knowledge-base indexing is synchronous, and there is nowhere to move it.**
+  Coding runs hold the only background thread and may not touch the database,
+  so an article is embedded on the request that saved it and bulk work is an
+  explicit command. `kb sweep`-style operations take a limit for this reason.
+- **A chunk and a link are purged, not soft deleted.** Both are derived and
+  carry no history of their own, and a soft-deleted one would still be read
+  back by the query that walks the table -- so every reindex would make the
+  corpus slower and the old text would stay findable.
+- **Sync hashes the file's bytes, never its extracted text.** A PDF re-saved
+  with identical text is therefore seen as changed, which is the cheap
+  direction to be wrong in: hashing the extraction pays the extraction cost
+  for every file on every sync just to decide it had nothing to do.
+- **An article whose source file has gone is archived, not deleted.** A file
+  removed from a checkout is usually a move, and destroying the article takes
+  its cross-references with it. Archived articles are not searched, so the
+  behaviour is the same and the mistake is recoverable.
+- **`kb_link` is polymorphic like `ticket_relation`,** so it gets no picker,
+  no reverse section from `venture_web_append_related()` and a hand-written
+  panel. `kb_chunk` is skipped in that walk too, for the opposite reason: it
+  *does* reference `kb_article`, and an article's page listing its own
+  passages is a wall of useless links.
+- **Crossref eligibility is derived from the field table, not listed.** A
+  type with a long text field participates. Do not add a hardcoded list --
+  that is the thing this design exists to avoid, and a plugin's record type
+  should be covered the day it registers.
 - **`make DEBUG=1 test` does not relink the server binary.** After editing
   `data/static/*` verify `build/debug/venture` is newer than
   `build/debug/venture-assets.h`, or the browser serves last hour's JS

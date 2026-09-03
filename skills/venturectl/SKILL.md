@@ -71,6 +71,8 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `kb sync KB_ID` | re-read the base's source directory on the server |
 | `kb reindex [KB_ID] [--force]` | re-embed articles that need it |
 | `kb export KB_ID` | write an archive to stdout; `--format zip\|tar.gz` |
+| `kb crossref TYPE ID` | link the knowledge bearing on one record |
+| `kb article TYPE ID --kb N` | write a KB article from a record |
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 

@@ -2109,6 +2109,74 @@ body.ai-resizing { user-select: none; cursor: ew-resize; }
 	white-space: pre;
 }
 
+/*
+ * Knowledge bases.
+ *
+ * A retrieved passage is prose, not a table row: it wants a measure narrow
+ * enough to read and enough space around it to be told apart from the next
+ * one. The excerpt is clamped rather than scrolled -- somebody scanning
+ * results wants to compare them, and a passage that grows to a page pushes
+ * the rest off the screen.
+ */
+.section-head {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: var(--space-3);
+	margin-bottom: var(--space-3);
+}
+
+.section-head h2 {
+	margin: 0;
+}
+
+.kb-search {
+	display: flex;
+	gap: var(--space-2);
+	margin: 0 0 var(--space-4);
+}
+
+.kb-search input[type="search"] {
+	flex: 1 1 auto;
+	margin: 0;
+}
+
+.kb-links {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-4);
+}
+
+.kb-link {
+	padding-left: var(--space-3);
+	border-left: 2px solid var(--accent-soft);
+}
+
+.kb-link-title {
+	font-weight: 600;
+	margin-right: var(--space-2);
+}
+
+.kb-link-excerpt {
+	margin: var(--space-2) 0 0;
+	max-width: 68ch;
+	color: var(--text-muted);
+	white-space: pre-wrap;
+
+	/* Four lines is enough to judge relevance and short enough that ten
+	 * results still fit on a screen. */
+	display: -webkit-box;
+	-webkit-line-clamp: 4;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+
+.kb-actions {
+	display: flex;
+	gap: var(--space-2);
+	white-space: nowrap;
+}
+
 /* A definition list of read-only facts about the current account. */
 dl.detail {
 	display: grid;

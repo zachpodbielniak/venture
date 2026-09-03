@@ -2674,6 +2674,18 @@ test_auth_kb_writes_refuse_anonymous(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/kb/1/reindex", NULL, "", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
+
+	/*
+	 * Cross-reference and article generation write records too, and both
+	 * spend embedding requests -- an unauthenticated caller could run the
+	 * bill up without ever reading anything.
+	 */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/kb/crossref/idea/1", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/kb/from/idea/1", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
 }
 
 /*
@@ -2698,6 +2710,12 @@ test_auth_kb_writes_need_the_editor_role(
 		==, SOUP_STATUS_FORBIDDEN);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/kb/1/reindex", cookie, "", NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/kb/crossref/idea/1", cookie, "", NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/kb/from/idea/1", cookie, "", NULL, NULL),
 		==, SOUP_STATUS_FORBIDDEN);
 }
 

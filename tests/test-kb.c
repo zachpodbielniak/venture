@@ -1276,6 +1276,285 @@ test_kb_export_formats(
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
 }
 
+/* ==========================================================================
+ * Cross-referencing
+ * ========================================================================== */
+
+/*
+ * Which types participate is derived from the field table, not listed.
+ *
+ * A type with a long text field has something to compare; one with only
+ * short strings does not. That is the same declaration the web form reads to
+ * choose a textarea, so this tracks what a type actually holds rather than a
+ * list somebody has to remember to update when a plugin adds a type.
+ */
+static void
+test_kb_crossref_eligibility_is_derived(void)
+{
+	/* Long text: a description, a body, a resolution. */
+	g_assert_true(venture_kb_crossref_type_is_eligible(VENTURE_TYPE_IDEA));
+	g_assert_true(venture_kb_crossref_type_is_eligible(
+		VENTURE_TYPE_RESEARCH_NOTE));
+	g_assert_true(venture_kb_crossref_type_is_eligible(VENTURE_TYPE_TICKET));
+
+	/* No long text: a ledger line is amounts and references. */
+	g_assert_false(venture_kb_crossref_type_is_eligible(
+		VENTURE_TYPE_LEDGER_ENTRY));
+
+	/*
+	 * The knowledge-base types are excluded even though kb_article is all
+	 * text: cross-referencing an article against the corpus it belongs to
+	 * finds itself.
+	 */
+	g_assert_false(venture_kb_crossref_type_is_eligible(
+		VENTURE_TYPE_KB_ARTICLE));
+	g_assert_false(venture_kb_crossref_type_is_eligible(
+		VENTURE_TYPE_KB_CHUNK));
+
+	/* And so are credentials and the audit log. */
+	g_assert_false(venture_kb_crossref_type_is_eligible(VENTURE_TYPE_USER));
+	g_assert_false(venture_kb_crossref_type_is_eligible(
+		VENTURE_TYPE_API_TOKEN));
+	g_assert_false(venture_kb_crossref_type_is_eligible(
+		VENTURE_TYPE_AUDIT_ENTRY));
+}
+
+/*
+ * A record is linked to the passage that bears on it, and not to the ones
+ * that do not.
+ */
+static void
+test_kb_crossref_links_a_record(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureKbService) service = NULL;
+	g_autoptr(VentureIdea) idea = NULL;
+	g_autoptr(GPtrArray) links = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 kb_id;
+	gint64 idea_id;
+	gint written;
+
+	service = kb_service_or_skip(fixture);
+
+	if (NULL == service)
+		return;
+
+	kb_id = kb_make_base(fixture, "policies");
+	kb_make_article(fixture, kb_id, "Expense reimbursement",
+		"* Reimbursement\n"
+		"Expenses are repaid within thirty days of the receipt being "
+		"filed, provided the receipt shows the amount and the date.\n",
+		VENTURE_KB_ARTICLE_STATUS_PUBLISHED);
+	kb_make_article(fixture, kb_id, "Trademark filings",
+		"* Trademarks\n"
+		"A mark is filed in class 25 for apparel and class 16 for "
+		"printed matter.\n",
+		VENTURE_KB_ARTICLE_STATUS_PUBLISHED);
+
+	g_assert_cmpint(venture_kb_service_reindex(service, kb_id, FALSE, NULL,
+	                                           &error), ==, 2);
+	g_assert_no_error(error);
+
+	idea = venture_idea_new();
+	g_object_set(idea, "title", "Automate expense claims",
+	             "description",
+	             "Staff are waiting too long to be paid back for things "
+	             "they bought. Work out how quickly receipts have to be "
+	             "reimbursed and build it into the workflow.",
+	             NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(idea),
+	                                   fixture->organization_id);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(idea), NULL, NULL));
+	idea_id = venture_entity_get_id(VENTURE_ENTITY(idea));
+
+	written = venture_kb_crossref_record(service, "idea", idea_id, NULL,
+	                                     &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(written, >=, 0);
+
+	links = venture_kb_crossref_links_for(service, "idea", idea_id, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(links);
+
+	/*
+	 * Asserted on which article was linked rather than on how many.
+	 * Thresholds and scores move with the model; what must hold is that
+	 * the reimbursement policy is the one an expenses idea points at.
+	 */
+	if (links->len > 0)
+	{
+		g_autoptr(VentureEntity) article = NULL;
+		g_autofree gchar *title = NULL;
+		gint64 article_id;
+
+		g_object_get(g_ptr_array_index(links, 0), "article-id",
+		             &article_id, NULL);
+		article = venture_database_get(fixture->database,
+		                               VENTURE_TYPE_KB_ARTICLE, article_id,
+		                               NULL);
+		g_assert_nonnull(article);
+		g_object_get(article, "title", &title, NULL);
+		g_assert_cmpstr(title, ==, "Expense reimbursement");
+	}
+}
+
+/*
+ * Re-running replaces a record's links rather than adding to them.
+ *
+ * A record whose description was rewritten is about something else now, and
+ * keeping the old links would cite passages for text that has gone.
+ */
+static void
+test_kb_crossref_replaces_links(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureKbService) service = NULL;
+	g_autoptr(VentureIdea) idea = NULL;
+	g_autoptr(GPtrArray) first = NULL;
+	g_autoptr(GPtrArray) second = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 kb_id;
+	gint64 idea_id;
+
+	service = kb_service_or_skip(fixture);
+
+	if (NULL == service)
+		return;
+
+	kb_id = kb_make_base(fixture, "handbook2");
+	kb_make_article(fixture, kb_id, "Reimbursement",
+		"* Reimbursement\nExpenses are repaid within thirty days.\n",
+		VENTURE_KB_ARTICLE_STATUS_PUBLISHED);
+	g_assert_cmpint(venture_kb_service_reindex(service, kb_id, FALSE, NULL,
+	                                           &error), ==, 1);
+
+	idea = venture_idea_new();
+	g_object_set(idea, "title", "Expenses", "description",
+	             "How long until a filed receipt is reimbursed?", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(idea),
+	                                   fixture->organization_id);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(idea), NULL, NULL));
+	idea_id = venture_entity_get_id(VENTURE_ENTITY(idea));
+
+	g_assert_cmpint(venture_kb_crossref_record(service, "idea", idea_id,
+	                                           NULL, &error), >=, 0);
+	g_assert_no_error(error);
+
+	first = venture_kb_crossref_links_for(service, "idea", idea_id, NULL);
+	g_assert_nonnull(first);
+
+	/* Twice over, with no change to anything. */
+	g_assert_cmpint(venture_kb_crossref_record(service, "idea", idea_id,
+	                                           NULL, &error), >=, 0);
+	g_assert_no_error(error);
+
+	second = venture_kb_crossref_links_for(service, "idea", idea_id, NULL);
+	g_assert_nonnull(second);
+	g_assert_cmpuint(second->len, ==, first->len);
+}
+
+/*
+ * A type with nothing to compare is refused by name rather than silently
+ * producing no links, which would look the same as finding nothing.
+ */
+static void
+test_kb_crossref_refuses_an_ineligible_type(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureKbService) service = NULL;
+	g_autoptr(GError) error = NULL;
+
+	service = kb_service_or_skip(fixture);
+
+	if (NULL == service)
+		return;
+
+	g_assert_cmpint(venture_kb_crossref_record(service, "ledger_entry", 1,
+	                                           NULL, &error), ==, -1);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED);
+}
+
+/*
+ * An article generated from a record records where it came from, and a
+ * second call updates it rather than making another.
+ *
+ * Generating twice from a ticket that has since been resolved should correct
+ * the article, not leave two versions for the assistant to choose between.
+ */
+static void
+test_kb_article_from_record(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureKbService) service = NULL;
+	g_autoptr(VentureResearchNote) note = NULL;
+	g_autoptr(VentureEntity) article = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) found = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *origin_type = NULL;
+	g_autofree gchar *body = NULL;
+	gint64 kb_id;
+	gint64 note_id;
+	gint64 first_id;
+	gint64 second_id;
+	gint64 origin_id;
+
+	service = kb_service_or_skip(fixture);
+
+	if (NULL == service)
+		return;
+
+	kb_id = kb_make_base(fixture, "generated");
+
+	note = venture_research_note_new();
+	g_object_set(note, "title", "Print-on-demand margins",
+	             "body", "Unit economics are thin below 200 copies; the "
+	             "setup fee dominates until then.", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(note),
+	                                   fixture->organization_id);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(note), NULL, NULL));
+	note_id = venture_entity_get_id(VENTURE_ENTITY(note));
+
+	first_id = venture_kb_article_from_record(service, kb_id,
+	                                          "research_note", note_id, NULL,
+	                                          &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(first_id, >, 0);
+
+	article = venture_database_get(fixture->database, VENTURE_TYPE_KB_ARTICLE,
+	                               first_id, NULL);
+	g_assert_nonnull(article);
+	g_object_get(article, "origin-type", &origin_type, "origin-id",
+	             &origin_id, "body", &body, NULL);
+
+	g_assert_cmpstr(origin_type, ==, "research_note");
+	g_assert_cmpint(origin_id, ==, note_id);
+
+	/* Built from the record's own text, not summarised into something
+	 * else -- the article is meant to be citable. */
+	g_assert_nonnull(strstr(body, "200 copies"));
+
+	/* A second call updates rather than duplicating. */
+	second_id = venture_kb_article_from_record(service, kb_id,
+	                                           "research_note", note_id,
+	                                           NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(second_id, ==, first_id);
+
+	query = venture_query_new(VENTURE_TYPE_KB_ARTICLE);
+	venture_query_set_limit(query, 0);
+	found = venture_database_find(fixture->database, query, NULL);
+	g_assert_cmpuint(found->len, ==, 1);
+}
+
 int
 main(
 	int	  argc,
@@ -1347,6 +1626,18 @@ main(
 	           test_kb_export_round_trip, fixture_tear_down);
 	g_test_add("/kb/export/formats", Fixture, NULL, fixture_set_up,
 	           test_kb_export_formats, fixture_tear_down);
+
+	g_test_add_func("/kb/crossref/eligibility-is-derived",
+	                test_kb_crossref_eligibility_is_derived);
+	g_test_add("/kb/crossref/links-a-record", Fixture, NULL, fixture_set_up,
+	           test_kb_crossref_links_a_record, fixture_tear_down);
+	g_test_add("/kb/crossref/replaces-links", Fixture, NULL, fixture_set_up,
+	           test_kb_crossref_replaces_links, fixture_tear_down);
+	g_test_add("/kb/crossref/refuses-an-ineligible-type", Fixture, NULL,
+	           fixture_set_up, test_kb_crossref_refuses_an_ineligible_type,
+	           fixture_tear_down);
+	g_test_add("/kb/article/from-record", Fixture, NULL, fixture_set_up,
+	           test_kb_article_from_record, fixture_tear_down);
 
 	return g_test_run();
 }

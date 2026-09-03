@@ -1413,6 +1413,84 @@ venture_cli_command_kb(
 		return 0;
 	}
 
+	if ((0 == g_strcmp0(action, "crossref")) ||
+	    (0 == g_strcmp0(action, "article")))
+	{
+		g_autoptr(JsonNode) node = NULL;
+		g_autoptr(JsonNode) body = NULL;
+		g_autoptr(GString) url = NULL;
+		g_autofree gchar *text = NULL;
+		const gchar *type_name;
+		const gchar *id;
+
+		type_name = args[2];
+		id = args[3];
+
+		if (venture_string_is_empty(type_name) || venture_string_is_empty(id))
+		{
+			g_printerr("Usage: venturectl kb %s TYPE ID%s\n", action,
+			           (0 == g_strcmp0(action, "article"))
+			               ? " --kb KB_ID" : "");
+			g_set_error_literal(error, VENTURE_ERROR,
+			                    VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "say which record");
+			return -1;
+		}
+
+		url = g_string_new(NULL);
+
+		if (0 == g_strcmp0(action, "crossref"))
+		{
+			g_string_append_printf(url, "/api/v1/kb/crossref/%s/%s",
+			                       type_name, id);
+		}
+		else
+		{
+			g_autoptr(JsonBuilder) builder = NULL;
+			const gchar *kb_id = NULL;
+			gsize i;
+
+			for (i = 4; NULL != args[i]; i++)
+			{
+				if ((0 == g_strcmp0(args[i], "--kb")) &&
+				    (NULL != args[i + 1]))
+				{
+					kb_id = args[i + 1];
+					i++;
+				}
+			}
+
+			if (venture_string_is_empty(kb_id))
+			{
+				g_set_error_literal(error, VENTURE_ERROR,
+				                    VENTURE_ERROR_INVALID_ARGUMENT,
+				                    "Say which knowledge base with --kb");
+				return -1;
+			}
+
+			g_string_append_printf(url, "/api/v1/kb/from/%s/%s",
+			                       type_name, id);
+
+			builder = json_builder_new();
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "kb_id");
+			json_builder_add_int_value(builder,
+				g_ascii_strtoll(kb_id, NULL, 10));
+			json_builder_end_object(builder);
+			body = json_builder_get_root(builder);
+		}
+
+		node = venture_cli_request(cli, "POST", url->str, body, error);
+
+		if (NULL == node)
+			return -1;
+
+		text = venture_json_to_string(node, TRUE);
+		g_print("%s\n", text);
+
+		return 0;
+	}
+
 	if (0 == g_strcmp0(action, "export"))
 	{
 		g_autoptr(GBytes) archive = NULL;
@@ -1471,8 +1549,8 @@ venture_cli_command_kb(
 	}
 
 	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-	            "\"%s\" is not a kb action. Try search, sync, reindex or "
-	            "export.", action);
+	            "\"%s\" is not a kb action. Try search, sync, reindex, "
+	            "export, crossref or article.", action);
 
 	return -1;
 }
@@ -1650,6 +1728,9 @@ main(
 		"  kb reindex [KB_ID] [--force] re-embed articles that need it\n"
 		"  kb export KB_ID              write an archive to stdout;\n"
 		"                               --format zip|tar.gz\n"
+		"  kb crossref TYPE ID          link the knowledge that bears\n"
+		"                               on one record\n"
+		"  kb article TYPE ID --kb N    write a KB article from a record\n"
 		"  health                       check the server is up\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"

@@ -282,3 +282,103 @@ venturectl kb export 3 --format tar.gz > docs.tar.gz
 =kb search= finds meaning; =list kb_article search=...= matches characters
 and will miss a passage that answers the question in different words. Both
 are useful, for different questions.
+
+* Cross-referencing
+
+The point of the whole feature: an idea's page saying which passages of which
+handbook bear on it, without anybody having filed the connection.
+
+A record's text is embedded and compared against the corpus, and links above
+=kb.crossref_min_score= are recorded as =kb_link= rows. Below that threshold
+nothing is recorded at all --- a weak match is not a weak signal here.
+With a corpus of any size everything matches everything a little, and a page
+listing its ten least-irrelevant passages is worse than one listing none.
+
+** Which records participate
+
+Derived from the field table, not listed anywhere. A type declaring at least
+one long text field has something to compare; one with only short strings ---
+a ledger line, a tax category --- does not. That is the same declaration the
+web form reads to choose a textarea over a one-line box, so a record type a
+plugin registers next week is covered without a line changing here.
+
+Four exclusions, each for its own reason:
+
+- the knowledge-base types themselves, because cross-referencing an article
+  against the corpus it belongs to finds itself
+- users and API tokens, which carry credentials and nothing worth matching
+- the audit log, which is a record of changes rather than a thing knowledge
+  bears on
+- chat threads and messages, which are per-user and not shared knowledge
+
+A record's *short* string fields are left out of the comparison text as well.
+Tags and an assignee say what a record is filed under rather than what it is
+about, and including them pulls every record with the same assignee towards
+the same passages.
+
+Fields flagged =VENTURE_COLUMN_FLAG_SENSITIVE= are skipped even when they are
+text. An embedding request is the AI, and the vector would outlive the
+redaction --- nothing about a stored vector says what it was made from.
+
+** When it runs
+
+Never on its own. Each record costs an embedding request, so a sweep of a
+populated install is minutes of them, and coding runs hold the only
+background thread in VENTURE and may not touch the database --- there is
+nowhere to hide the work. Making it a command means the operator chooses when
+to pay:
+
+#+begin_src sh
+venturectl kb crossref idea 12
+#+end_src
+
+or the *Find related* button on the record's own page. Re-running replaces
+that record's links rather than adding to them: a record whose description
+was rewritten is about something else now, and keeping the old links would
+cite passages for text that has gone.
+
+Pages read the stored links rather than recomputing, so rendering costs a
+query instead of an embedding request. The consequence is that links are as
+old as the last cross-reference, which is why each one records when it was
+computed.
+
+* Writing an article from a record
+
+#+begin_src sh
+venturectl kb article research_note 7 --kb 2
+#+end_src
+
+For turning a research note, a resolved ticket or a closed deal into
+something the assistant can find later. The article is built from the
+record's own text --- its display name as the title, its long text fields as
+the body --- rather than by asking a model to summarise it. A summary is a
+second version of the truth, and this one is meant to be citable.
+
+=origin-type= and =origin-id= record where it came from, so a second call
+updates that article rather than making another. Generating twice from a
+ticket that has since been resolved should correct the article, not leave two
+versions for the assistant to choose between.
+
+* In the browser
+
+*Knowledge* in the sidebar (=/kb=) lists the bases and carries one search box
+across them. It is a page of its own rather than only the generic
+=/e/knowledge_base= list because searching by meaning is the one thing the
+generic machinery cannot do: its list filter matches characters.
+
+Each base row offers the three things its record form cannot express ---
+sync, reindex and export. Everything else about a base or an article is the
+ordinary generated form, because it is an ordinary record type.
+
+Every eligible record's page grows a *Related knowledge* panel showing the
+passages that bear on it, each with its score as a percentage. The score is
+shown rather than hidden: a reader deciding whether to follow a link wants to
+know whether it is a strong match or the weakest one that got past the
+threshold.
+
+That panel is hand-written rather than derived. =kb_link= names its subject by
+type and id, so the generic related-records walk --- which keys on reference
+fields --- would never find it. =kb_chunk= is excluded from that walk too,
+for a different reason: it *does* reference =kb_article=, and an article's
+page listing its own passages as "kb_chunk #1 … #47" is a wall of links that
+say nothing.
