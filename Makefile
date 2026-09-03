@@ -236,6 +236,7 @@ test: $(TEST_BINS) plugins
 		exit 1; \
 	fi; \
 	bash $(TOOLSDIR)/venture-test-litter.sh check $(OUTDIR)/test-litter || exit 1; \
+	bash $(TOOLSDIR)/check-versions.sh || exit 1; \
 	rmdir "$$TMPDIR" 2>/dev/null || true; \
 	echo "All $$total test binaries passed"
 
