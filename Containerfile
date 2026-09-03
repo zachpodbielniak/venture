@@ -219,10 +219,19 @@ RUN if [ "${WITH_CRISPY}" = "1" ]; then \
 # The alternative is to leave this off and bind-mount the CLI you already
 # have; see docs/containers.org.
 #
+# grok-build is deliberately absent. It was listed here as
+# `@vercel/grok-build`, which does not exist on the npm registry and made
+# WITH_AGENT_CLI=1 fail the build outright with a 404. The only npm package
+# publishing a `grok` binary is `grok-cli`, an unrelated third party's
+# wrapper that proxies claude-code through the xAI API -- not xAI's own CLI,
+# and not something to install into an image that is allowed to execute what
+# it fetches. Bind-mount the real binary instead, as docs/containers.org
+# describes, and name it in forge.cli_allowed_commands.
+#
 ARG WITH_AGENT_CLI=0
 RUN if [ "${WITH_AGENT_CLI}" = "1" ]; then \
         dnf install -y --setopt=install_weak_deps=False nodejs npm \
-        && npm install -g @anthropic-ai/claude-code opencode-ai @vercel/grok-build \
+        && npm install -g @anthropic-ai/claude-code opencode-ai \
         && dnf clean all \
         && rm -rf /var/cache/dnf /root/.npm; \
     fi
