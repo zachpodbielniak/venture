@@ -463,38 +463,79 @@ venture_kb_find_article(
 }
 
 /*
- * A title from a filename: the stem, with separators turned back into
- * spaces. "getting-started.org" reads better as "getting started" than as
- * itself, and it is what somebody scanning a list wants to see.
+ * A title from the path a file arrived under.
+ *
+ * The whole relative path rather than the basename, because a folder or an
+ * archive routinely holds several files with the same name --- README.md in
+ * every directory is the normal case, not a corner one --- and two articles
+ * both called "readme" are indistinguishable in a search result. Directory
+ * separators become " / ", which reads as a breadcrumb.
+ *
+ * The extension goes, and hyphens and underscores become spaces:
+ * "guides/getting-started.org" is "guides / getting started".
  */
 static gchar *
-venture_kb_title_from_filename(const gchar *filename)
+venture_kb_title_from_path(const gchar *path)
 {
-	g_autofree gchar *base = NULL;
-	gchar *dot;
-	gchar *p;
+	g_autoptr(GString) out = NULL;
+	g_auto(GStrv) parts = NULL;
+	g_autofree gchar *normalised = NULL;
+	gsize i;
 
-	if (venture_string_is_empty(filename))
+	if (venture_string_is_empty(path))
 		return g_strdup("Untitled");
 
-	base = g_path_get_basename(filename);
-	dot = strrchr(base, '.');
+	/* A browser sends a directory upload with forward slashes whatever the
+	 * platform, and an archive member always uses them. */
+	normalised = g_strdup(path);
+	g_strdelimit(normalised, "\\", '/');
 
-	if ((NULL != dot) && (dot != base))
-		*dot = '\0';
+	parts = g_strsplit(normalised, "/", -1);
+	out = g_string_new(NULL);
 
-	for (p = base; '\0' != *p; p++)
+	for (i = 0; (NULL != parts) && (NULL != parts[i]); i++)
 	{
-		if (('-' == *p) || ('_' == *p))
-			*p = ' ';
+		g_autofree gchar *piece = NULL;
+		gchar *dot;
+		gchar *p;
+
+		if (venture_string_is_empty(parts[i]) ||
+		    (0 == g_strcmp0(parts[i], ".")))
+			continue;
+
+		piece = g_strdup(parts[i]);
+
+		/* Only the last component loses its extension: a directory
+		 * called "v1.2" is not an extension. */
+		if (NULL == parts[i + 1])
+		{
+			dot = strrchr(piece, '.');
+
+			if ((NULL != dot) && (dot != piece))
+				*dot = '\0';
+		}
+
+		for (p = piece; '\0' != *p; p++)
+		{
+			if (('-' == *p) || ('_' == *p))
+				*p = ' ';
+		}
+
+		g_strstrip(piece);
+
+		if (venture_string_is_empty(piece))
+			continue;
+
+		if (out->len > 0)
+			g_string_append(out, " / ");
+
+		g_string_append(out, piece);
 	}
 
-	g_strstrip(base);
-
-	if (venture_string_is_empty(base))
+	if (0 == out->len)
 		return g_strdup("Untitled");
 
-	return g_steal_pointer(&base);
+	return g_strdup(out->str);
 }
 
 static gboolean
@@ -524,7 +565,8 @@ venture_kb_ingest_archive(
 	VentureKbService	 *service,
 	gint64			  kb_id,
 	GBytes			 *bytes,
-	const gchar		 *prefix,
+	const gchar		 *display_path,
+	const gchar		 *source_path,
 	const VentureActor	 *actor,
 	VentureKbIngestResult	 *result,
 	guint			  depth,
@@ -544,7 +586,7 @@ venture_kb_ingest_archive(
 	{
 		venture_kb_note(result,
 			"%s: archives nested more than %d deep are not unpacked",
-			prefix, VENTURE_KB_MAX_ARCHIVE_DEPTH);
+			display_path, VENTURE_KB_MAX_ARCHIVE_DEPTH);
 		result->skipped++;
 		return TRUE;
 	}
@@ -561,7 +603,7 @@ venture_kb_ingest_archive(
 	if (ARCHIVE_OK != archive_read_open_memory(reader, (void *)data, size))
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-		            "%s could not be opened as an archive", prefix);
+		            "%s could not be opened as an archive", display_path);
 		archive_read_free(reader);
 		return FALSE;
 	}
@@ -572,6 +614,7 @@ venture_kb_ingest_archive(
 		g_autoptr(GByteArray) buffer = NULL;
 		g_autoptr(GBytes) member = NULL;
 		g_autofree gchar *member_path = NULL;
+		gchar *member_source = NULL;
 		gint64 entry_size;
 
 		if (venture_string_is_empty(path))
@@ -583,7 +626,7 @@ venture_kb_ingest_archive(
 		if (g_str_has_prefix(path, "/") || (NULL != strstr(path, "..")))
 		{
 			venture_kb_note(result, "%s: skipped a member named %s",
-			                prefix, path);
+			                display_path, path);
 			result->skipped++;
 			continue;
 		}
@@ -592,7 +635,7 @@ venture_kb_ingest_archive(
 		{
 			venture_kb_note(result,
 				"%s: stopped after %" G_GINT64_FORMAT " files",
-				prefix, max_entries);
+				display_path, max_entries);
 			break;
 		}
 
@@ -603,7 +646,7 @@ venture_kb_ingest_archive(
 
 		if (entry_size > (64 * 1024 * 1024))
 		{
-			venture_kb_note(result, "%s: %s is too large", prefix,
+			venture_kb_note(result, "%s: %s is too large", display_path,
 			                path);
 			result->skipped++;
 			continue;
@@ -616,18 +659,30 @@ venture_kb_ingest_archive(
 		    (la_ssize_t)entry_size)
 		{
 			venture_kb_note(result, "%s: %s could not be read",
-			                prefix, path);
+			                display_path, path);
 			result->failed++;
 			continue;
 		}
 
 		member = g_byte_array_free_to_bytes(g_steal_pointer(&buffer));
-		member_path = g_build_filename(prefix, path, NULL);
 		taken++;
 
-		ok = venture_kb_ingest_one(service, kb_id, member, path,
-		                           member_path, actor, result,
+		/*
+		 * The display path is the archive's plus the member's, so two
+		 * READMEs in different directories stay distinguishable. The
+		 * source path is only extended when there was one -- an
+		 * uploaded archive has none, and inventing one would make the
+		 * next sync archive everything it contained.
+		 */
+		member_path = g_build_filename(display_path, path, NULL);
+
+		if (!venture_string_is_empty(source_path))
+			member_source = g_build_filename(source_path, path, NULL);
+
+		ok = venture_kb_ingest_one(service, kb_id, member, member_path,
+		                           member_source, actor, result,
 		                           depth + 1, error);
+		g_clear_pointer(&member_source, g_free);
 	}
 
 	archive_read_free(reader);
@@ -663,10 +718,17 @@ venture_kb_ingest_one(
 	if (venture_kb_is_archive(filename, bytes))
 	{
 #ifdef VENTURE_HAVE_LIBARCHIVE
-		return venture_kb_ingest_archive(service, kb_id, bytes,
-		                                 (NULL != source_path)
-		                                     ? source_path : filename,
-		                                 actor, result, depth, error);
+		/*
+		 * The members inherit this archive's *display* path for their
+		 * titles, and its source path -- which is NULL for an upload --
+		 * for sync. Passing the filename as a source path, as this once
+		 * did, gave uploaded members a path like "docs.zip/a/b.org" that
+		 * is on no disk, so the next sync of that base archived every one
+		 * of them for having "gone".
+		 */
+		return venture_kb_ingest_archive(service, kb_id, bytes, filename,
+		                                 source_path, actor, result, depth,
+		                                 error);
 #else
 		venture_kb_note(result,
 			"%s: this build cannot read archives", filename);
@@ -679,7 +741,13 @@ venture_kb_ingest_one(
 	g_bytes_get_data(bytes, &size);
 	hash = g_compute_checksum_for_bytes(G_CHECKSUM_SHA256, bytes);
 
-	title = venture_kb_title_from_filename(filename);
+	/*
+	 * Identity comes from the whole relative path, not the basename. A
+	 * folder or an archive routinely holds several README.md, and slugging
+	 * the basename makes the second one overwrite the first -- silently,
+	 * because an existing slug is treated as the same document.
+	 */
+	title = venture_kb_title_from_path(filename);
 	slug = venture_kb_slugify(title);
 
 	article = venture_kb_find_article(service, kb_id, source_path, slug);

@@ -1581,6 +1581,198 @@ test_kb_article_from_record(
 	g_assert_cmpuint(found->len, ==, 1);
 }
 
+/*
+ * Two files with the same basename in different folders stay two articles.
+ *
+ * This is the normal case for a folder import, not a corner one -- README.md
+ * in every directory -- and deriving identity from the basename made the
+ * second silently overwrite the first, because an existing slug is treated
+ * as the same document.
+ */
+static void
+test_kb_folder_import_keeps_paths_distinct(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureKbService) service = NULL;
+	g_autoptr(VentureKbIngestResult) result = NULL;
+	g_autoptr(GBytes) one = NULL;
+	g_autoptr(GBytes) two = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) found = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 kb_id;
+
+	service = kb_service_or_skip(fixture);
+
+	if (NULL == service)
+		return;
+
+	kb_id = kb_make_base(fixture, "folder");
+	result = venture_kb_ingest_result_new();
+
+	one = kb_bytes("* Guides\nHow to get started.\n");
+	two = kb_bytes("* API\nHow to call it.\n");
+
+	/* The shape a browser sends for a directory upload: the relative path
+	 * as the filename, forward slashes on every platform. */
+	g_assert_true(venture_kb_ingest_bytes(service, kb_id, one,
+	                                      "docs/guides/readme.md", NULL,
+	                                      NULL, result, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_kb_ingest_bytes(service, kb_id, two,
+	                                      "docs/api/readme.md", NULL, NULL,
+	                                      result, &error));
+	g_assert_no_error(error);
+
+	g_assert_cmpuint(result->created, ==, 2);
+
+	query = venture_query_new(VENTURE_TYPE_KB_ARTICLE);
+	venture_query_set_limit(query, 0);
+	found = venture_database_find(fixture->database, query, NULL);
+	g_assert_cmpuint(found->len, ==, 2);
+
+	/* And the titles say which is which, rather than both being "readme". */
+	{
+		g_autofree gchar *a = NULL;
+		g_autofree gchar *b = NULL;
+
+		g_object_get(g_ptr_array_index(found, 0), "title", &a, NULL);
+		g_object_get(g_ptr_array_index(found, 1), "title", &b, NULL);
+
+		g_assert_cmpstr(a, !=, b);
+		g_assert_nonnull(strstr(a, "readme"));
+		g_assert_nonnull(strstr(b, "readme"));
+	}
+}
+
+/*
+ * A title reads as a breadcrumb, and only the last component loses its
+ * extension -- a directory called "v1.2" is not an extension.
+ */
+static void
+test_kb_folder_import_titles(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureKbService) service = NULL;
+	g_autoptr(VentureKbIngestResult) result = NULL;
+	g_autoptr(GBytes) bytes = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) found = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *title = NULL;
+	gint64 kb_id;
+
+	service = kb_service_or_skip(fixture);
+
+	if (NULL == service)
+		return;
+
+	kb_id = kb_make_base(fixture, "titles");
+	result = venture_kb_ingest_result_new();
+	bytes = kb_bytes("* Spec\nThe wire format.\n");
+
+	g_assert_true(venture_kb_ingest_bytes(service, kb_id, bytes,
+	                                      "api/v1.2/getting-started.org",
+	                                      NULL, NULL, result, &error));
+	g_assert_no_error(error);
+
+	query = venture_query_new(VENTURE_TYPE_KB_ARTICLE);
+	found = venture_database_find(fixture->database, query, NULL);
+	g_assert_cmpuint(found->len, ==, 1);
+
+	g_object_get(g_ptr_array_index(found, 0), "title", &title, NULL);
+	g_assert_cmpstr(title, ==, "api / v1.2 / getting started");
+}
+
+/*
+ * An uploaded archive's members get no source path, so a later sync does not
+ * archive them.
+ *
+ * source-path is what sync reconciles against. Giving an uploaded member a
+ * path like "docs.zip/a/b.org" -- which is on no disk -- made the next sync
+ * of that base archive every one of them for having "gone".
+ */
+static void
+test_kb_uploaded_archive_survives_a_sync(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureKbService) service = NULL;
+	g_autoptr(VentureKbIngestResult) imported = NULL;
+	g_autoptr(VentureKbIngestResult) synced = NULL;
+	g_autoptr(VentureEntity) base = NULL;
+	g_autoptr(GBytes) archive = NULL;
+	g_autoptr(GPtrArray) found = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *root = NULL;
+	g_autofree gchar *ondisk = NULL;
+	gint64 source_id;
+	gint64 kb_id;
+	guint archived = 0;
+	guint i;
+
+	service = kb_service_or_skip(fixture);
+
+	if (NULL == service)
+		return;
+
+	/* An archive to upload, made by exporting a base. */
+	source_id = kb_make_base(fixture, "source");
+	kb_make_article(fixture, source_id, "Alpha", "* Alpha\nFirst.\n",
+	                VENTURE_KB_ARTICLE_STATUS_PUBLISHED);
+	g_assert_true(venture_kb_export(service, source_id, "zip", &archive,
+	                                &error));
+	g_assert_no_error(error);
+
+	/* A base that also syncs a directory. */
+	root = g_build_filename(fixture->state_dir, "tree", NULL);
+	g_assert_cmpint(g_mkdir_with_parents(root, 0755), ==, 0);
+	ondisk = g_build_filename(root, "ondisk.org", NULL);
+	g_assert_true(g_file_set_contents(ondisk, "* On disk\nHere.\n", -1,
+	                                  NULL));
+
+	kb_id = kb_make_base(fixture, "mixed-source");
+	base = venture_database_get(fixture->database,
+	                            VENTURE_TYPE_KNOWLEDGE_BASE, kb_id, NULL);
+	g_object_set(base, "source-path", root, NULL);
+	g_assert_true(venture_database_save(fixture->database, base, NULL, NULL));
+
+	imported = venture_kb_ingest_result_new();
+	g_assert_true(venture_kb_ingest_bytes(service, kb_id, archive,
+	                                      "export.zip", NULL, NULL, imported,
+	                                      &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(imported->created, ==, 1);
+
+	/* Now sync the directory, which knows nothing about the upload. */
+	synced = venture_kb_sync_directory(service, kb_id, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(synced);
+
+	query = venture_query_new(VENTURE_TYPE_KB_ARTICLE);
+	venture_query_set_limit(query, 0);
+	venture_query_add_filter_int(query, "kb-id", VENTURE_FILTER_OP_EQ, kb_id,
+	                             NULL);
+	found = venture_database_find(fixture->database, query, NULL);
+
+	for (i = 0; i < found->len; i++)
+	{
+		VentureKbArticleStatus status;
+
+		g_object_get(g_ptr_array_index(found, i), "status", &status, NULL);
+
+		if (VENTURE_KB_ARTICLE_STATUS_ARCHIVED == status)
+			archived++;
+	}
+
+	/* The uploaded article and the synced one, and nothing archived. */
+	g_assert_cmpuint(found->len, ==, 2);
+	g_assert_cmpuint(archived, ==, 0);
+}
+
 int
 main(
 	int	  argc,
@@ -1664,6 +1856,15 @@ main(
 	           fixture_tear_down);
 	g_test_add("/kb/article/from-record", Fixture, NULL, fixture_set_up,
 	           test_kb_article_from_record, fixture_tear_down);
+
+	g_test_add("/kb/folder/keeps-paths-distinct", Fixture, NULL,
+	           fixture_set_up, test_kb_folder_import_keeps_paths_distinct,
+	           fixture_tear_down);
+	g_test_add("/kb/folder/titles", Fixture, NULL, fixture_set_up,
+	           test_kb_folder_import_titles, fixture_tear_down);
+	g_test_add("/kb/folder/uploaded-archive-survives-a-sync", Fixture, NULL,
+	           fixture_set_up, test_kb_uploaded_archive_survives_a_sync,
+	           fixture_tear_down);
 
 	return g_test_run();
 }

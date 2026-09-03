@@ -9662,6 +9662,25 @@ venture_web_ui_kb(
 			"accept=\".org,.md,.txt,.html,.pdf,.docx,.zip,.tar.gz,.tgz\" "
 			"onchange=\"this.form.requestSubmit()\">"
 			"</label></form>"
+			/*
+			 * A second form rather than a second input in the first:
+			 * webkitdirectory is a property of the input, and one form
+			 * cannot offer both a file picker and a folder picker from
+			 * the same control. Deliberately no accept list -- a folder
+			 * is picked whole and the browser would apply the filter to
+			 * the directory entry itself, not its contents; the server
+			 * decides what it can read and notes the rest.
+			 */
+			"<form class=\"kb-upload\" hx-post=\"/api/v1/kb/%"
+			G_GINT64_FORMAT "/import\" hx-encoding=\"multipart/form-data\" "
+			"hx-swap=\"none\" "
+			"hx-on::after-request=\"window.location.reload()\">"
+			"<label class=\"btn btn-sm\" title=\"Add every supported file "
+			"in a folder, including subfolders\">Import folder"
+			"<input type=\"file\" name=\"files\" multiple hidden "
+			"webkitdirectory directory "
+			"onchange=\"this.form.requestSubmit()\">"
+			"</label></form>"
 			"<button class=\"btn btn-sm\" hx-post=\"/api/v1/kb/%"
 			G_GINT64_FORMAT "/sync\" hx-swap=\"none\" "
 			"hx-on::after-request=\"window.location.reload()\">Sync</button>"
@@ -9671,7 +9690,7 @@ venture_web_ui_kb(
 			"<a class=\"btn btn-sm\" href=\"/api/v1/kb/%"
 			G_GINT64_FORMAT "/export?format=zip\">Export</a>"
 			"</td></tr>",
-			base_id, base_id, base_id, base_id);
+			base_id, base_id, base_id, base_id, base_id);
 	}
 
 	if ((NULL == bases) || (0 == bases->len))

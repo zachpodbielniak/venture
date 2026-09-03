@@ -269,6 +269,26 @@ somebody typed =#handbok= reads as "the handbook has nothing to say".
 =kb= is comma separated, so one request can scope to several bases the way
 the chat's =#= tokens do.
 
+There are two import buttons, and the difference is the picker rather than
+the endpoint. *Import* opens a file picker; *Import folder* opens a directory
+picker and submits every file underneath it, recursively. Both post to the
+same route, because the browser sends a directory upload as a list of files
+with their relative paths as filenames --- there is nothing for the server to
+do differently.
+
+The folder picker carries no =accept= filter deliberately. A folder is chosen
+whole, and the browser would apply the filter to the directory entry rather
+than to its contents; the server decides what it can read and notes the rest.
+
+*Identity comes from the whole relative path*, not the basename. A folder or
+an archive routinely holds several =README.md= --- one per directory is the
+normal case --- and slugging the basename makes the second silently overwrite
+the first, because an existing slug is treated as the same document. Titles
+read as breadcrumbs for the same reason:
+=api/v1.2/getting-started.org= becomes "api / v1.2 / getting started", and
+only the last component loses its extension, since a directory called
+=v1.2= is not one.
+
 =import= is a multipart upload and takes several files at once. Each goes
 through the same ingest path as a sync, so an archive is unpacked and its
 members follow the same rules --- which is what makes "drop in a zip of the
@@ -276,10 +296,13 @@ handbook" work with no second code path. The per-file cap is
 =kb.max_upload_mb=, checked before the bytes reach the unpacker because an
 archive is expanded in memory.
 
-An uploaded file deliberately gets *no* =source-path=. That field is what
-sync reconciles against, and recording the browser's filename there would
-make the next sync archive the article for having "gone" from a directory it
-was never in.
+An uploaded file deliberately gets *no* =source-path=, and neither do the
+members of an uploaded archive. That field is what sync reconciles against,
+so a path like =docs.zip/a/b.org= --- which is on no disk --- makes the next
+sync of that base archive every article the upload created, for having
+"gone" from a directory they were never in. Display path and source path are
+therefore threaded separately through the whole ingest: one decides what an
+article is called, the other whether sync owns it.
 
 Sync and reindex need the *editor* role rather than a session: a sync reads a
 directory on the server and rewrites articles from it, which is a change to
