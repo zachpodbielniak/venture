@@ -12264,13 +12264,30 @@ venture_web_kb_service(
 	if (NULL == kb)
 	{
 		g_autoptr(GError) error = NULL;
+		g_autoptr(JsonBuilder) builder = NULL;
+		g_autoptr(JsonNode) node = NULL;
 
 		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
 		                    "Knowledge bases are not available on this "
 		                    "instance. Either kb.enabled is false, or the "
 		                    "embedding service named by kb.embedding_url "
 		                    "could not be reached at startup.");
-		*denied = venture_web_error_response(error);
+
+		/*
+		 * 503, built here rather than through venture_web_error_response(),
+		 * which maps VENTURE_ERROR_CONFIG to 500 along with every other
+		 * internal fault. This is not the server breaking: it is a
+		 * capability this install does not currently offer, which is what
+		 * 503 means and what tells the operator to look at the config or
+		 * the embedding container rather than at a stack trace.
+		 */
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+		venture_json_builder_add_error(builder, error);
+		json_builder_end_object(builder);
+		node = json_builder_get_root(builder);
+
+		*denied = venture_web_json_response(node, 503);
 	}
 
 	return kb;
@@ -12619,6 +12636,7 @@ venture_web_api_kb_import(
 	VentureConfig *config;
 	VentureActor actor;
 	HtmxResponse *denied;
+	const gchar *content_type;
 	const gchar *id_text;
 	gint64 kb_id;
 	gint64 max_mb = 64;
@@ -12630,6 +12648,37 @@ venture_web_api_kb_import(
 
 	if (NULL != denied)
 		return denied;
+
+	content_type = htmx_request_get_content_type(request);
+
+	/*
+	 * The request is checked before the service is looked up. A malformed
+	 * upload is malformed whether or not knowledge bases happen to be
+	 * available, and answering "your body is url-encoded" is what the
+	 * caller has to act on first -- otherwise fixing the encoding is
+	 * rewarded with a second, different error and the impression that
+	 * nothing works.
+	 */
+
+	/*
+	 * Checked before parsing, so the answer names the cause. A client that
+	 * posted the form url-encoded -- which is what happens when the
+	 * encoding attribute is missing or unsupported -- otherwise gets a
+	 * parser failure in someone else's error domain, and
+	 * venture_web_error_response() maps an unfamiliar domain to 500. A
+	 * 500 says the server broke; this is the request being wrong, and the
+	 * difference is the whole debugging session.
+	 */
+	if ((NULL == content_type) ||
+	    (NULL == strstr(content_type, "multipart/form-data")))
+	{
+		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "An import must be posted as multipart/form-data; this "
+		            "request was %s. A file cannot survive url-encoding.",
+		            venture_string_is_empty(content_type)
+		                ? "sent without a content type" : content_type);
+		return venture_web_error_response(error);
+	}
 
 	kb = venture_web_kb_service(self, &denied);
 
@@ -12643,15 +12692,22 @@ venture_web_api_kb_import(
 	g_object_get(config, "kb-max-upload-mb", &max_mb, NULL);
 
 	files = htmx_uploaded_file_parse_multipart(
-		htmx_request_get_content_type(request),
-		htmx_request_get_body_bytes(request), NULL, &error);
+		content_type, htmx_request_get_body_bytes(request), NULL, &error);
 
 	if ((NULL == files) || (0 == files->len))
 	{
-		if (NULL == error)
-			g_set_error_literal(&error, VENTURE_ERROR,
-			                    VENTURE_ERROR_INVALID_ARGUMENT,
-			                    "No file arrived");
+		/*
+		 * Re-raised in this domain rather than passed through. The
+		 * parser's own error is about multipart syntax and belongs in
+		 * the message, but its domain would become a 500.
+		 */
+		g_autofree gchar *why = NULL;
+
+		why = g_strdup((NULL != error) ? error->message
+		                               : "no file part was found");
+		g_clear_error(&error);
+		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "That upload carried no file: %s", why);
 
 		return venture_web_error_response(error);
 	}

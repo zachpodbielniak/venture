@@ -30,6 +30,23 @@ status=0
 check () {
     local file="$1" pattern="$2" what="$3" found
 
+    #
+    # A file that is not here is not a failure. The container build copies
+    # only what compiles -- src, data, tools, tests -- so compose.deploy.yaml
+    # and docs/ are legitimately absent there, and failing on that makes the
+    # check unusable in the one place it runs unattended.
+    #
+    # A file that *is* here but has lost the line is still a failure, because
+    # that is the drift this exists to catch. The two cases are reported
+    # differently on purpose: "not in this checkout" and "the line moved" send
+    # somebody to very different places.
+    #
+    if [[ ! -f "$file" ]]
+    then
+        echo "check-versions: $file: not in this checkout, skipped"
+        return
+    fi
+
     found=$(grep -oE "$pattern" "$file" 2>/dev/null | head -1 || true)
 
     if [[ -z "$found" ]]
@@ -53,7 +70,7 @@ check docs/quickstart.org '^VENTURE [0-9]+\.[0-9]+\.[0-9]+ listening' \
 
 if [[ $status -eq 0 ]]
 then
-    echo "check-versions: $version everywhere"
+    echo "check-versions: $version everywhere it could look"
 fi
 
 exit $status

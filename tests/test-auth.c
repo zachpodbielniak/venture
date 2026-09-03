@@ -2656,6 +2656,39 @@ test_auth_redirect_notices_render(
 }
 
 /*
+ * A url-encoded import is a 400 that says so, not a 500.
+ *
+ * This is what a browser sends when the form has no working encoding
+ * attribute, and it is the failure an operator actually hits. The parser's
+ * error is in htmx's domain, and venture_web_error_response() maps an
+ * unfamiliar domain to 500 -- so without the content-type check first, a
+ * wrong request reads as a broken server and the debugging starts in the
+ * wrong place.
+ */
+static void
+test_auth_kb_import_rejects_urlencoded(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *body = NULL;
+
+	server_fixture_create_user(fixture, "edna", "e-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	cookie = server_fixture_login(fixture, "edna", "e-long-password");
+
+	/* server_fixture_request posts application/x-www-form-urlencoded,
+	 * which is exactly the shape being guarded against. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/kb/1/import", cookie, "files=readme.md", &body, NULL),
+		==, SOUP_STATUS_BAD_REQUEST);
+
+	/* And the message names the cause rather than the symptom. */
+	g_assert_nonnull(body);
+	g_assert_nonnull(strstr(body, "multipart/form-data"));
+}
+
+/*
  * The knowledge-base write routes refuse an anonymous POST.
  *
  * A missing guard on these looks exactly like nothing: sync reads a
@@ -2932,6 +2965,9 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/token-never-expires-by-default", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_token_never_expires_by_default,
+	           server_fixture_tear_down);
+	g_test_add("/auth/kb-import-rejects-urlencoded", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_kb_import_rejects_urlencoded,
 	           server_fixture_tear_down);
 	g_test_add("/auth/kb-writes-refuse-anonymous", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_kb_writes_refuse_anonymous,

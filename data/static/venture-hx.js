@@ -393,8 +393,22 @@
 		});
 	}
 
-	function collectValues(el, verb) {
-		var params = new URLSearchParams();
+	/*
+	 * Whether this request must be sent as multipart/form-data.
+	 *
+	 * A URLSearchParams body stringifies a File to "[object File]" -- the
+	 * request succeeds, carries no bytes, and the server sees a form field
+	 * where it expected an upload. So anything with a file input has to
+	 * say so, and hx-encoding is how htmx spells that.
+	 */
+	function wantsMultipart(el) {
+		var encoding = inheritedAttr(el, "hx-encoding");
+
+		return encoding === "multipart/form-data";
+	}
+
+	function collectValues(el, verb, multipart) {
+		var params = multipart ? new FormData() : new URLSearchParams();
 		var include = inheritedAttr(el, "hx-include");
 		var vals = inheritedAttr(el, "hx-vals");
 		var only = inheritedAttr(el, "hx-params");
@@ -447,11 +461,12 @@
 		 * case: a delete button inside a form should not post the form. */
 		if (only) {
 			if (only === "none") {
-				return new URLSearchParams();
+				return multipart ? new FormData() : new URLSearchParams();
 			}
 
 			if (only !== "*") {
-				var filtered = new URLSearchParams();
+				var filtered = multipart ? new FormData()
+				                         : new URLSearchParams();
 				var wanted;
 				var negate = false;
 				var list = only;
@@ -570,7 +585,8 @@
 		var swapSpec = parseSwapSpec(inheritedAttr(el, "hx-swap"));
 		var headersSpec = inheritedAttr(el, "hx-headers");
 		var syncSpec = inheritedAttr(el, "hx-sync");
-		var params = collectValues(el, verb);
+		var multipart = wantsMultipart(el);
+		var params = collectValues(el, verb, multipart);
 		var target = resolveTarget(el, targetSpec);
 		var requestUrl = url;
 		var body = null;
@@ -626,11 +642,20 @@
 		}
 
 		if (verb === "get" || verb === "delete") {
-			var query = params.toString();
+			var query = multipart ? "" : params.toString();
 
 			if (query) {
 				requestUrl += (requestUrl.indexOf("?") === -1 ? "?" : "&") + query;
 			}
+		} else if (multipart) {
+			/*
+			 * No Content-Type header. The browser sets it from the
+			 * FormData, and only the browser knows the boundary it
+			 * chose -- naming the type here produces a request whose
+			 * declared boundary does not match its body, which every
+			 * multipart parser rejects.
+			 */
+			body = params;
 		} else {
 			body = params;
 			headers["Content-Type"] =
