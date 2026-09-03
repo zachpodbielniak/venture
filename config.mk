@@ -222,6 +222,17 @@ ifeq ($(POPPLER_AVAILABLE),1)
     CFLAGS_BASE += -DVENTURE_HAVE_POPPLER=1
 endif
 
+# Archive reading and writing, for knowledge-base import and export.
+# Optional the same way poppler is: without it the server builds and runs,
+# a .zip import reports that archives are unavailable, and an export offers
+# only the plain-file form. One library covers all of it -- zip and tar.gz
+# both ways, and .docx, which is a zip with XML inside.
+LIBARCHIVE_AVAILABLE := $(shell $(PKG_CONFIG) --exists libarchive 2>/dev/null && echo 1 || echo 0)
+ifeq ($(LIBARCHIVE_AVAILABLE),1)
+    DEPS_SERVER += libarchive
+    CFLAGS_BASE += -DVENTURE_HAVE_LIBARCHIVE=1
+endif
+
 # crispy links against readline for its REPL; the objects we pull in for
 # plugin compilation do not need it, but the archive references it, so it
 # must be on the final link line. -lm is for the floating-point helpers used
@@ -508,17 +519,18 @@ endif
 FEDORA_DEPS := gcc make pkgconf-pkg-config \
                glib2-devel libyaml-devel json-glib-devel libsoup3-devel \
                libxml2-devel sqlite-devel libpq-devel readline-devel \
-               gobject-introspection-devel poppler-glib-devel
+               gobject-introspection-devel poppler-glib-devel \
+               libarchive-devel
 
 DEBIAN_DEPS := gcc make pkg-config \
                libglib2.0-dev libyaml-dev libjson-glib-dev libsoup-3.0-dev \
                libxml2-dev libsqlite3-dev libpq-dev libreadline-dev \
                gobject-introspection libgirepository1.0-dev \
-               libpoppler-glib-dev
+               libpoppler-glib-dev libarchive-dev
 
 ARCH_DEPS := gcc make pkgconf \
              glib2 libyaml json-glib libsoup3 libxml2 sqlite postgresql-libs \
-             readline gobject-introspection poppler-glib
+             readline gobject-introspection poppler-glib libarchive
 
 .PHONY: install-deps
 install-deps:

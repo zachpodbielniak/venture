@@ -885,6 +885,397 @@ test_kb_resolve_slugs(
 	g_assert_nonnull(strstr(error->message, "handbok"));
 }
 
+/* ==========================================================================
+ * Ingest, sync and export
+ * ========================================================================== */
+
+static GBytes *
+kb_bytes(const gchar *text)
+{
+	return g_bytes_new(text, strlen(text));
+}
+
+/*
+ * A text file becomes an article, and the same file again changes nothing.
+ *
+ * The second half is what makes a sync of a large tree cheap enough to run
+ * often, which is what makes it useful at all.
+ */
+static void
+test_kb_ingest_is_idempotent(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureKbService) service = NULL;
+	g_autoptr(VentureKbIngestResult) first = NULL;
+	g_autoptr(VentureKbIngestResult) second = NULL;
+	g_autoptr(GBytes) bytes = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 kb_id;
+
+	service = kb_service_or_skip(fixture);
+
+	if (NULL == service)
+		return;
+
+	kb_id = kb_make_base(fixture, "imported");
+	bytes = kb_bytes("* Expenses\nReimbursed within thirty days.\n");
+
+	first = venture_kb_ingest_result_new();
+	g_assert_true(venture_kb_ingest_bytes(service, kb_id, bytes,
+	                                      "expenses-policy.org",
+	                                      "expenses-policy.org", NULL, first,
+	                                      &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(first->created, ==, 1);
+	g_assert_cmpuint(first->indexed, ==, 1);
+
+	second = venture_kb_ingest_result_new();
+	g_assert_true(venture_kb_ingest_bytes(service, kb_id, bytes,
+	                                      "expenses-policy.org",
+	                                      "expenses-policy.org", NULL,
+	                                      second, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(second->unchanged, ==, 1);
+	g_assert_cmpuint(second->created, ==, 0);
+	g_assert_cmpuint(second->updated, ==, 0);
+}
+
+/*
+ * A title is derived from the filename, and the slug from the title.
+ */
+static void
+test_kb_ingest_names_the_article(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureKbService) service = NULL;
+	g_autoptr(VentureKbIngestResult) result = NULL;
+	g_autoptr(GBytes) bytes = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) found = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *title = NULL;
+	g_autofree gchar *slug = NULL;
+	gint64 kb_id;
+
+	service = kb_service_or_skip(fixture);
+
+	if (NULL == service)
+		return;
+
+	kb_id = kb_make_base(fixture, "named");
+	bytes = kb_bytes("Body text.\n");
+	result = venture_kb_ingest_result_new();
+
+	g_assert_true(venture_kb_ingest_bytes(service, kb_id, bytes,
+	                                      "getting-started.md",
+	                                      "getting-started.md", NULL, result,
+	                                      &error));
+	g_assert_no_error(error);
+
+	query = venture_query_new(VENTURE_TYPE_KB_ARTICLE);
+	found = venture_database_find(fixture->database, query, NULL);
+	g_assert_cmpuint(found->len, ==, 1);
+
+	g_object_get(g_ptr_array_index(found, 0), "title", &title, "slug", &slug,
+	             NULL);
+
+	/* Separators become spaces: a list of articles reads better as
+	 * "getting started" than as the filename. */
+	g_assert_cmpstr(title, ==, "getting started");
+	g_assert_cmpstr(slug, ==, "getting-started");
+}
+
+/*
+ * A file that is not text is skipped, not failed, and says why.
+ *
+ * An import of a documentation tree that happens to contain screenshots
+ * should not stop at the first one.
+ */
+static void
+test_kb_ingest_skips_unreadable(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureKbService) service = NULL;
+	g_autoptr(VentureKbIngestResult) result = NULL;
+	g_autoptr(GBytes) bytes = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 kb_id;
+
+	service = kb_service_or_skip(fixture);
+
+	if (NULL == service)
+		return;
+
+	kb_id = kb_make_base(fixture, "mixed");
+	bytes = g_bytes_new("\x89PNG\r\n\x1a\n\x00\x00\x00\x0d", 12);
+	result = venture_kb_ingest_result_new();
+
+	g_assert_true(venture_kb_ingest_bytes(service, kb_id, bytes,
+	                                      "screenshot.png", NULL, NULL,
+	                                      result, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(result->skipped, ==, 1);
+	g_assert_cmpuint(result->created, ==, 0);
+	g_assert_cmpuint(result->notes->len, ==, 1);
+}
+
+/*
+ * Text that is not UTF-8 is refused rather than repaired.
+ *
+ * Substituting replacement characters silently changes what the document
+ * says, and the change is invisible until somebody reads the passage it
+ * landed in.
+ */
+static void
+test_kb_extract_refuses_bad_utf8(void)
+{
+	g_autoptr(GBytes) bytes = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *text = NULL;
+	VentureKbFormat format;
+
+	bytes = g_bytes_new("valid then \xff\xfe invalid", 22);
+	text = venture_kb_extract_text(bytes, "notes.txt", &format, &error);
+
+	g_assert_null(text);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
+/*
+ * An archive is recognised by its bytes, not its name -- and a .docx, which
+ * is also a zip, is deliberately not treated as one.
+ */
+static void
+test_kb_archive_detection(void)
+{
+	g_autoptr(GBytes) zip = NULL;
+	g_autoptr(GBytes) gzip = NULL;
+	g_autoptr(GBytes) text = NULL;
+
+	zip = g_bytes_new("PK\x03\x04rest of it", 16);
+	gzip = g_bytes_new("\x1f\x8b\x08\x00rest", 8);
+	text = g_bytes_new("just some words", 15);
+
+	/* Named anything, or nothing: the magic decides. */
+	g_assert_true(venture_kb_is_archive("bundle.zip", zip));
+	g_assert_true(venture_kb_is_archive(NULL, zip));
+	g_assert_true(venture_kb_is_archive("docs.tar.gz", gzip));
+
+	/* A .zip that is not one is stored rather than unpacked. */
+	g_assert_false(venture_kb_is_archive("bundle.zip", text));
+
+	/* A .docx is a zip with a known extractor; unpacking it would file
+	 * its XML parts as articles. */
+	g_assert_false(venture_kb_is_archive("contract.docx", zip));
+}
+
+/*
+ * Syncing a directory imports it, and a file that has gone is archived
+ * rather than deleted.
+ *
+ * A file removed from a checkout is usually a move, and destroying the
+ * article would take its cross-references with it.
+ */
+static void
+test_kb_sync_directory(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureKbService) service = NULL;
+	g_autoptr(VentureKbIngestResult) first = NULL;
+	g_autoptr(VentureKbIngestResult) second = NULL;
+	g_autoptr(VentureEntity) base = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *root = NULL;
+	g_autofree gchar *one = NULL;
+	g_autofree gchar *two = NULL;
+	g_autofree gchar *nested_dir = NULL;
+	g_autofree gchar *nested = NULL;
+	gint64 kb_id;
+
+	service = kb_service_or_skip(fixture);
+
+	if (NULL == service)
+		return;
+
+	root = g_build_filename(fixture->state_dir, "corpus", NULL);
+	nested_dir = g_build_filename(root, "guides", NULL);
+	g_assert_cmpint(g_mkdir_with_parents(nested_dir, 0755), ==, 0);
+
+	one = g_build_filename(root, "alpha.org", NULL);
+	two = g_build_filename(root, "beta.org", NULL);
+	nested = g_build_filename(nested_dir, "gamma.md", NULL);
+
+	g_assert_true(g_file_set_contents(one, "* Alpha\nFirst.\n", -1, NULL));
+	g_assert_true(g_file_set_contents(two, "* Beta\nSecond.\n", -1, NULL));
+	g_assert_true(g_file_set_contents(nested, "# Gamma\nThird.\n", -1, NULL));
+
+	kb_id = kb_make_base(fixture, "synced");
+	base = venture_database_get(fixture->database,
+	                            VENTURE_TYPE_KNOWLEDGE_BASE, kb_id, NULL);
+	g_object_set(base, "source-path", root, NULL);
+	g_assert_true(venture_database_save(fixture->database, base, NULL, NULL));
+
+	first = venture_kb_sync_directory(service, kb_id, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(first);
+
+	/* Nested directories are walked. */
+	g_assert_cmpuint(first->created, ==, 3);
+
+	/* A file that has gone is archived, and the rest are unchanged. */
+	g_assert_cmpint(g_unlink(two), ==, 0);
+
+	second = venture_kb_sync_directory(service, kb_id, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(second);
+	g_assert_cmpuint(second->unchanged, ==, 2);
+	g_assert_cmpuint(second->created, ==, 0);
+
+	{
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) found = NULL;
+		guint archived = 0;
+		guint i;
+
+		query = venture_query_new(VENTURE_TYPE_KB_ARTICLE);
+		venture_query_set_limit(query, 0);
+		found = venture_database_find(fixture->database, query, NULL);
+
+		for (i = 0; i < found->len; i++)
+		{
+			VentureKbArticleStatus status;
+
+			g_object_get(g_ptr_array_index(found, i), "status",
+			             &status, NULL);
+
+			if (VENTURE_KB_ARTICLE_STATUS_ARCHIVED == status)
+				archived++;
+		}
+
+		/* Archived, and still there -- not destroyed. */
+		g_assert_cmpuint(found->len, ==, 3);
+		g_assert_cmpuint(archived, ==, 1);
+	}
+}
+
+/*
+ * A base with no source directory cannot be synced, and says so rather than
+ * silently doing nothing.
+ */
+static void
+test_kb_sync_needs_a_directory(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureKbService) service = NULL;
+	g_autoptr(VentureKbIngestResult) result = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 kb_id;
+
+	service = kb_service_or_skip(fixture);
+
+	if (NULL == service)
+		return;
+
+	kb_id = kb_make_base(fixture, "no-source");
+	result = venture_kb_sync_directory(service, kb_id, NULL, &error);
+
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
+/*
+ * An export is an archive of the articles plus a manifest, and it can be
+ * read back by the importer.
+ *
+ * The round trip is the test that matters: an export nobody can import is a
+ * backup that does not restore.
+ */
+static void
+test_kb_export_round_trip(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureKbService) service = NULL;
+	g_autoptr(VentureKbIngestResult) result = NULL;
+	g_autoptr(GBytes) archive = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 source_id;
+	gint64 target_id;
+
+	service = kb_service_or_skip(fixture);
+
+	if (NULL == service)
+		return;
+
+	source_id = kb_make_base(fixture, "exported");
+	kb_make_article(fixture, source_id, "Alpha", "* Alpha\nFirst article.\n",
+	                VENTURE_KB_ARTICLE_STATUS_PUBLISHED);
+	kb_make_article(fixture, source_id, "Beta", "* Beta\nSecond article.\n",
+	                VENTURE_KB_ARTICLE_STATUS_PUBLISHED);
+
+	g_assert_true(venture_kb_export(service, source_id, "zip", &archive,
+	                                &error));
+	g_assert_no_error(error);
+	g_assert_nonnull(archive);
+	g_assert_cmpuint(g_bytes_get_size(archive), >, 0);
+
+	/* What came out is an archive by the same test the importer uses. */
+	g_assert_true(venture_kb_is_archive("export.zip", archive));
+
+	/* And it imports, into a different base, as the articles it held. */
+	target_id = kb_make_base(fixture, "restored");
+	result = venture_kb_ingest_result_new();
+
+	g_assert_true(venture_kb_ingest_bytes(service, target_id, archive,
+	                                      "export.zip", NULL, NULL, result,
+	                                      &error));
+	g_assert_no_error(error);
+
+	/* Two articles and the manifest; the manifest is json, which is not a
+	 * format the importer reads, so it is skipped rather than filed. */
+	g_assert_cmpuint(result->created, ==, 2);
+	g_assert_cmpuint(result->skipped, ==, 1);
+}
+
+/*
+ * tar.gz is offered as well as zip, and an unknown format is refused by
+ * name.
+ */
+static void
+test_kb_export_formats(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureKbService) service = NULL;
+	g_autoptr(GBytes) tarball = NULL;
+	g_autoptr(GBytes) nothing = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 kb_id;
+
+	service = kb_service_or_skip(fixture);
+
+	if (NULL == service)
+		return;
+
+	kb_id = kb_make_base(fixture, "formats");
+	kb_make_article(fixture, kb_id, "Alpha", "* Alpha\nText.\n",
+	                VENTURE_KB_ARTICLE_STATUS_PUBLISHED);
+
+	g_assert_true(venture_kb_export(service, kb_id, "tar.gz", &tarball,
+	                                &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_kb_is_archive("export.tar.gz", tarball));
+
+	g_assert_false(venture_kb_export(service, kb_id, "rar", &nothing,
+	                                 &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+}
+
 int
 main(
 	int	  argc,
@@ -937,6 +1328,25 @@ main(
 	           fixture_tear_down);
 	g_test_add("/kb/search/resolve-slugs", Fixture, NULL, fixture_set_up,
 	           test_kb_resolve_slugs, fixture_tear_down);
+
+	g_test_add_func("/kb/extract/refuses-bad-utf8",
+	                test_kb_extract_refuses_bad_utf8);
+	g_test_add_func("/kb/archive/detection", test_kb_archive_detection);
+
+	g_test_add("/kb/ingest/is-idempotent", Fixture, NULL, fixture_set_up,
+	           test_kb_ingest_is_idempotent, fixture_tear_down);
+	g_test_add("/kb/ingest/names-the-article", Fixture, NULL, fixture_set_up,
+	           test_kb_ingest_names_the_article, fixture_tear_down);
+	g_test_add("/kb/ingest/skips-unreadable", Fixture, NULL, fixture_set_up,
+	           test_kb_ingest_skips_unreadable, fixture_tear_down);
+	g_test_add("/kb/sync/directory", Fixture, NULL, fixture_set_up,
+	           test_kb_sync_directory, fixture_tear_down);
+	g_test_add("/kb/sync/needs-a-directory", Fixture, NULL, fixture_set_up,
+	           test_kb_sync_needs_a_directory, fixture_tear_down);
+	g_test_add("/kb/export/round-trip", Fixture, NULL, fixture_set_up,
+	           test_kb_export_round_trip, fixture_tear_down);
+	g_test_add("/kb/export/formats", Fixture, NULL, fixture_set_up,
+	           test_kb_export_formats, fixture_tear_down);
 
 	return g_test_run();
 }

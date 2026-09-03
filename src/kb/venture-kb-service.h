@@ -91,6 +91,16 @@ venture_kb_service_new(
 );
 
 /**
+ * venture_kb_service_get_context:
+ * @self: the service
+ *
+ * Returns: (transfer none): the context, for the ingest and export paths
+ *   that need the database and configuration
+ */
+VentureContext *
+venture_kb_service_get_context(VentureKbService *self);
+
+/**
  * venture_kb_service_get_embedder:
  * @self: the service
  *

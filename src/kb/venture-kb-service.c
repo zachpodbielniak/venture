@@ -102,6 +102,14 @@ venture_kb_service_new(
 	return g_steal_pointer(&self);
 }
 
+VentureContext *
+venture_kb_service_get_context(VentureKbService *self)
+{
+	g_return_val_if_fail(VENTURE_IS_KB_SERVICE(self), NULL);
+
+	return self->context;
+}
+
 VentureEmbedder *
 venture_kb_service_get_embedder(VentureKbService *self)
 {

@@ -146,3 +146,74 @@ Naming a base explicitly searches it either way.
 An unknown base slug is an error naming it, not a silent omission: somebody
 who typed =#handbok= and got answers from everywhere else would reasonably
 believe the handbook had been searched and had nothing to say.
+
+* Getting documents in
+
+Four kinds of input, and the differences matter:
+
+| Input                     | What happens                                    |
+|---------------------------+-------------------------------------------------|
+| =.org= =.md= =.txt= =.html= | the file is the article, verbatim             |
+| =.pdf= =.docx=            | text is extracted; the article holds the text   |
+| =.zip= =.tar.gz= =.tgz=   | unpacked, and each file inside follows these rules |
+| anything else             | skipped, with a note saying why                 |
+
+The last is deliberate. A binary read as text produces a body of mojibake
+that embeds to a vector, and a vector nobody can tell is meaningless is worse
+than a missing one: it competes with real answers.
+
+Text is *validated* as UTF-8, not repaired. Substituting replacement
+characters silently changes what the document says, and the change is
+invisible until somebody reads the passage it landed in.
+
+An archive is recognised by its bytes rather than its name, so one uploaded
+without an extension still unpacks and a =.zip= that is not one is stored
+instead of fed to the unpacker. A =.docx= is also a zip and is deliberately
+excluded: it is a document with a known extractor, and unpacking it would
+file its XML parts as articles. Nesting is capped at three deep and the
+entry count at =kb.max_archive_entries=, because a zip inside a zip inside a
+zip is a zip bomb whether or not anybody meant it that way.
+
+** Syncing a directory
+
+Give a base a =source-path= and it can be brought into line with a directory
+on the server:
+
+#+begin_src sh
+venturectl kb sync handbook
+#+end_src
+
+Change is detected by hashing the file's *bytes*, not its extracted text. A
+PDF re-saved with identical text is therefore seen as changed, which is the
+cheap direction to be wrong in --- the alternative pays the extraction cost
+for every file on every sync just to decide it had nothing to do. An
+unchanged file costs a hash and nothing else, which is what makes syncing a
+large tree cheap enough to run often.
+
+Dotfiles are skipped, so a checkout's =.git= does not become several thousand
+articles.
+
+An article whose file has gone is *archived*, not deleted. A file removed
+from a checkout is usually a move, and destroying the article would take its
+cross-references with it. Archived articles are not searched, so the
+observable behaviour is the same and the mistake is recoverable --- and if
+the file comes back, the article is published again.
+
+** Exporting
+
+#+begin_src sh
+venturectl kb export handbook --format tar.gz > handbook.tar.gz
+#+end_src
+
+One file per article under =articles/=, named by slug and given the extension
+its format exports as. A PDF exports as =.txt=, because what the article
+holds is the extracted text and writing that under a =.pdf= name produces a
+file nothing can open.
+
+=manifest.json= carries what a plain file has nowhere to hold: the base's
+description, and each article's status, tags, origin and source path. Without
+it an export is a pile of text files that cannot be imported back into the
+same shape.
+
+The export is itself importable, which is the property worth having: an
+export nobody can import is a backup that does not restore.
