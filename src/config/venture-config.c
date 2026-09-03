@@ -100,6 +100,63 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_INT ("security-login-rate-limit", "security", "login_rate_limit", 10,
 	        "Sign-in attempts allowed per address per minute; 0 disables"),
 
+	/*
+	 * Knowledge bases.
+	 *
+	 * The default provider is a local ollama because embedding is the one
+	 * AI feature that runs against every document you own rather than the
+	 * occasional question: sending a whole handbook to a metered API to
+	 * find out it was already indexed is a bill nobody expected. It also
+	 * keeps the corpus on this machine, which is the point of some of
+	 * these bases. Set kb-embedding-provider to "openai" for any
+	 * OpenAI-compatible /v1/embeddings endpoint.
+	 */
+	VC_BOOL("kb-enabled", "kb", "enabled", TRUE,
+	        "Whether knowledge bases and retrieval are available"),
+	VC_STR ("kb-embedding-provider", "kb", "embedding_provider", "ollama",
+	        "ollama, or openai for any OpenAI-compatible endpoint"),
+	VC_STR ("kb-embedding-url", "kb", "embedding_url",
+	        "http://127.0.0.1:11434",
+	        "Base URL of the embedding service"),
+	VC_STR ("kb-embedding-model", "kb", "embedding_model",
+	        "nomic-embed-text:v1.5", "Model used to embed passages"),
+	/*
+	 * Named, not stored. Same indirection as the database password: a key
+	 * in the config file is a key in every backup of it.
+	 */
+	VC_STR ("kb-embedding-key-env", "kb", "embedding_key_env", "",
+	        "Environment variable holding the embedding API key, if needed"),
+	/*
+	 * Chunk size is in characters rather than tokens because the tokeniser
+	 * is the model's and we do not have it. 1200 is roughly 300 tokens,
+	 * comfortably inside every embedding context worth using, and short
+	 * enough that a hit points at a paragraph rather than a chapter.
+	 */
+	VC_INT ("kb-chunk-chars", "kb", "chunk_chars", 1200,
+	        "Target passage length, in characters"),
+	/*
+	 * Overlap exists so a sentence spanning a boundary is still findable.
+	 * Without it the one paragraph that answers the question is the one
+	 * split down the middle.
+	 */
+	VC_INT ("kb-chunk-overlap", "kb", "chunk_overlap", 200,
+	        "Characters each passage repeats from the previous one"),
+	VC_INT ("kb-search-limit", "kb", "search_limit", 8,
+	        "Passages returned by a search, and given to the assistant"),
+	/*
+	 * Percent rather than a fraction: the config vocabulary has no double,
+	 * and a threshold nobody can express is a threshold nobody sets.
+	 */
+	VC_INT ("kb-crossref-min-score", "kb", "crossref_min_score", 60,
+	        "Cosine similarity, as a percentage, below which a "
+	        "cross-reference is not recorded"),
+	VC_INT ("kb-crossref-max-links", "kb", "crossref_max_links", 5,
+	        "Most cross-references recorded for one record"),
+	VC_INT ("kb-max-upload-mb", "kb", "max_upload_mb", 64,
+	        "Largest file accepted by an import"),
+	VC_INT ("kb-max-archive-entries", "kb", "max_archive_entries", 2000,
+	        "Most files taken from a single uploaded archive"),
+
 	VC_STR ("locale-default-currency", "locale", "default_currency", "USD",
 	        "Currency assumed when an amount does not name one"),
 	VC_STR ("locale-timezone", "locale", "timezone", "America/New_York",

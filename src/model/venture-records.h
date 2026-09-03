@@ -194,6 +194,23 @@ venture_idea_get_score(VentureIdea *self);
 #define VENTURE_TYPE_RESEARCH_NOTE (venture_research_note_get_type())
 VENTURE_DECLARE_ENTITY(VentureResearchNote, venture_research_note, RESEARCH_NOTE)
 
+/* ==========================================================================
+ * Knowledge bases
+ * ========================================================================== */
+
+#define VENTURE_TYPE_KNOWLEDGE_BASE (venture_knowledge_base_get_type())
+VENTURE_DECLARE_ENTITY(VentureKnowledgeBase, venture_knowledge_base,
+                       KNOWLEDGE_BASE)
+
+#define VENTURE_TYPE_KB_ARTICLE (venture_kb_article_get_type())
+VENTURE_DECLARE_ENTITY(VentureKbArticle, venture_kb_article, KB_ARTICLE)
+
+#define VENTURE_TYPE_KB_CHUNK (venture_kb_chunk_get_type())
+VENTURE_DECLARE_ENTITY(VentureKbChunk, venture_kb_chunk, KB_CHUNK)
+
+#define VENTURE_TYPE_KB_LINK (venture_kb_link_get_type())
+VENTURE_DECLARE_ENTITY(VentureKbLink, venture_kb_link, KB_LINK)
+
 #define VENTURE_TYPE_TICKET (venture_ticket_get_type())
 VENTURE_DECLARE_ENTITY(VentureTicket, venture_ticket, TICKET)
 

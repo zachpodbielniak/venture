@@ -702,6 +702,61 @@ typedef enum
 } VentureUserRole;
 
 /**
+ * VentureKbFormat:
+ * @VENTURE_KB_FORMAT_ORG: Emacs Org mode, the preferred source format
+ * @VENTURE_KB_FORMAT_MARKDOWN: Markdown
+ * @VENTURE_KB_FORMAT_TEXT: plain text
+ * @VENTURE_KB_FORMAT_HTML: HTML
+ * @VENTURE_KB_FORMAT_PDF: text extracted from a PDF
+ * @VENTURE_KB_FORMAT_DOCX: text extracted from an OOXML document
+ * @VENTURE_KB_FORMAT_OTHER: stored, but its text could not be read
+ *
+ * What an article's body came from.
+ *
+ * This records the *source* format, not a rendering instruction. An article
+ * imported from a PDF keeps %VENTURE_KB_FORMAT_PDF even though its body is
+ * now plain text, because the difference matters when the file changes on
+ * disk and has to be extracted again -- and because text recovered from a
+ * PDF is worth trusting less than text somebody wrote.
+ *
+ * %VENTURE_KB_FORMAT_ORG is zero: it is the preferred format, so an article
+ * created without saying is treated as the thing most of them are.
+ */
+typedef enum
+{
+	VENTURE_KB_FORMAT_ORG = 0,
+	VENTURE_KB_FORMAT_MARKDOWN,
+	VENTURE_KB_FORMAT_TEXT,
+	VENTURE_KB_FORMAT_HTML,
+	VENTURE_KB_FORMAT_PDF,
+	VENTURE_KB_FORMAT_DOCX,
+	VENTURE_KB_FORMAT_OTHER
+} VentureKbFormat;
+
+/**
+ * VentureKbArticleStatus:
+ * @VENTURE_KB_ARTICLE_STATUS_PUBLISHED: searchable and offered to the AI
+ * @VENTURE_KB_ARTICLE_STATUS_DRAFT: kept, but withheld from search
+ * @VENTURE_KB_ARTICLE_STATUS_ARCHIVED: superseded; withheld from search
+ *
+ * Whether an article counts as knowledge yet.
+ *
+ * %VENTURE_KB_ARTICLE_STATUS_PUBLISHED is zero because an imported or synced
+ * file is knowledge the moment it arrives -- making import land in a draft
+ * state would mean every sync needed a second, manual step before the AI
+ * could see any of it. Draft is the deliberate act, not the default.
+ *
+ * Only published articles are searched. A draft still embeds, so promoting
+ * one costs nothing.
+ */
+typedef enum
+{
+	VENTURE_KB_ARTICLE_STATUS_PUBLISHED = 0,
+	VENTURE_KB_ARTICLE_STATUS_DRAFT,
+	VENTURE_KB_ARTICLE_STATUS_ARCHIVED
+} VentureKbArticleStatus;
+
+/**
  * VentureFieldKind:
  * @VENTURE_FIELD_KIND_STRING: a short single-line string
  * @VENTURE_FIELD_KIND_TEXT: a long multi-line string
@@ -905,6 +960,8 @@ typedef enum
 #define VENTURE_TYPE_TICKET_STATUS		(venture_ticket_status_get_type())
 #define VENTURE_TYPE_TICKET_KIND		(venture_ticket_kind_get_type())
 #define VENTURE_TYPE_ISSUE_TYPE			(venture_issue_type_get_type())
+#define VENTURE_TYPE_KB_FORMAT			(venture_kb_format_get_type())
+#define VENTURE_TYPE_KB_ARTICLE_STATUS		(venture_kb_article_status_get_type())
 #define VENTURE_TYPE_FORGE_KIND			(venture_forge_kind_get_type())
 #define VENTURE_TYPE_FORGE_RUNNER		(venture_forge_runner_get_type())
 #define VENTURE_TYPE_FORGE_RUN_OUTCOME		(venture_forge_run_outcome_get_type())
@@ -944,6 +1001,8 @@ GType venture_interaction_kind_get_type		(void) G_GNUC_CONST;
 GType venture_ticket_status_get_type		(void) G_GNUC_CONST;
 GType venture_ticket_kind_get_type		(void) G_GNUC_CONST;
 GType venture_issue_type_get_type		(void) G_GNUC_CONST;
+GType venture_kb_format_get_type		(void) G_GNUC_CONST;
+GType venture_kb_article_status_get_type	(void) G_GNUC_CONST;
 GType venture_forge_kind_get_type		(void) G_GNUC_CONST;
 GType venture_forge_runner_get_type		(void) G_GNUC_CONST;
 GType venture_forge_run_outcome_get_type	(void) G_GNUC_CONST;

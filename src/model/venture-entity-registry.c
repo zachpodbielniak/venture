@@ -441,6 +441,12 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 
 		venture_idea_get_type,
 		venture_research_note_get_type,
+
+		venture_knowledge_base_get_type,
+		venture_kb_article_get_type,
+		venture_kb_chunk_get_type,
+		venture_kb_link_get_type,
+
 		venture_ticket_get_type,
 		venture_ticket_comment_get_type,
 		venture_ticket_relation_get_type,

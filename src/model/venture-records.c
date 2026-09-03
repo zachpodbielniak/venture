@@ -905,6 +905,256 @@ static const VentureFieldDecl venture_research_note_fields[] = {
 VENTURE_DEFINE_ENTITY(VentureResearchNote, venture_research_note,
                       venture_research_note_fields)
 
+
+/* ==========================================================================
+ * Knowledge bases
+ * ========================================================================== */
+
+/*
+ * A knowledge base: a named set of documents the AI is allowed to read.
+ *
+ * More than one exists because the useful question is rarely "what do we
+ * know" but "what do the API docs say" -- and because a base is the unit of
+ * scope for retrieval. Asking one base beats asking all of them the moment
+ * two of them disagree, which is normal: last year's handbook and this
+ * year's both describe a real policy.
+ *
+ * The slug is what somebody types after '#' in the chat, so it is unique,
+ * indexed and deliberately not the display name. A name can be edited to fix
+ * a typo without silently breaking every saved prompt that referenced it.
+ */
+static const VentureFieldDecl venture_knowledge_base_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", NULL),
+	VENTURE_FIELD("slug", "Slug",
+	              "What to type after # in the chat; lowercase, no spaces",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE |
+	              VENTURE_COLUMN_FLAG_INDEXED |
+	              VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD_TEXT("description", "Description",
+	                   "What is in here, and when to reach for it"),
+	/*
+	 * Shown to the model when this base is selected, ahead of the
+	 * retrieved passages. The place to say "cite the section number" or
+	 * "this is the 2025 policy, superseded in April".
+	 */
+	VENTURE_FIELD_TEXT("instructions", "AI instructions",
+	                   "Given to the assistant along with the passages"),
+	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture",
+	                  VENTURE_COLUMN_FLAG_INDEXED),
+	/*
+	 * The model that embedded this base's chunks.
+	 *
+	 * Recorded per base rather than read from config at search time
+	 * because vectors from two models are not comparable -- the numbers
+	 * are in different spaces and cosine between them is meaningless
+	 * noise, not a weak match. Changing the configured model must
+	 * therefore force a re-embed, and this is what detects that.
+	 */
+	VENTURE_FIELD("embedding-model", "Embedding model", NULL,
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("embedding-dims", "Dimensions", NULL,
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	/*
+	 * A directory on the server to sync from. Optional: a base can be
+	 * written entirely in the browser and never touch the disk.
+	 */
+	VENTURE_FIELD("source-path", "Source directory",
+	              "Synced from this directory on the server, when set",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("synced-at", "Last synced", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	/* Whether the assistant may reach for this base without being asked
+	 * for it by name. A base of drafts usually should not. */
+	VENTURE_FIELD("auto-retrieve", "Offer to the AI",
+	              "Searched even when the prompt does not name it",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("tags", "Tags", "Comma separated",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE)
+};
+
+VENTURE_DEFINE_ENTITY(VentureKnowledgeBase, venture_knowledge_base,
+                      venture_knowledge_base_fields)
+
+/*
+ * One document in a knowledge base.
+ *
+ * The body is the extracted text in every case, including for a PDF or a
+ * .docx: search, embedding, export and editing all want one representation,
+ * and keeping the original bytes as the source of truth would mean
+ * re-extracting on every read. The original file is kept alongside when
+ * there was one, named by source-path.
+ *
+ * source-hash is what makes sync cheap and idempotent. It is of the file's
+ * bytes, not of the extracted text, so a PDF re-saved with identical text is
+ * still seen as changed -- the alternative, hashing the extraction, means
+ * every sync pays the extraction cost for every file just to decide it had
+ * nothing to do.
+ */
+static const VentureFieldDecl venture_kb_article_fields[] = {
+	VENTURE_FIELD_NAME("title", "Title", NULL),
+	VENTURE_FIELD_REF("kb-id", "Knowledge base", NULL, "knowledge_base",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL |
+	                  VENTURE_COLUMN_FLAG_INDEXED),
+	/* Unique within a base, not globally: two bases may both have a
+	 * "getting-started", and that is not a collision. */
+	VENTURE_FIELD("slug", "Slug", "Stable name within the base",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_INDEXED |
+	              VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD_ENUM("format", "Format", NULL,
+	                   venture_kb_format_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_ENUM("status", "Status", NULL,
+	                   venture_kb_article_status_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("body", "Body", "The article's text"),
+	VENTURE_FIELD_TEXT("summary", "Summary",
+	                   "Shown in search results ahead of the passage"),
+	VENTURE_FIELD("source-path", "Source file",
+	              "Where it came from, for sync", VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("source-hash", "Checksum",
+	              "SHA-256 of the file's bytes, for change detection",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("mime-type", "Type", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("size-bytes", "Size", NULL, VENTURE_FIELD_KIND_INTEGER,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("source-url", "Source URL", NULL,
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	/*
+	 * What this was written from, when something wrote it.
+	 *
+	 * Polymorphic for the same reason a ticket relation is: an article can
+	 * be generated from a research note, a ticket, a deal or a record type
+	 * a plugin added last week. It is provenance rather than a link to
+	 * follow, so it gets no picker and no reverse panel -- the useful
+	 * direction is the cross-reference in kb_link, which is computed.
+	 */
+	VENTURE_FIELD("origin-type", "Generated from",
+	              "Record type this was written from, if any",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("origin-id", "Generated from id", NULL,
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("tags", "Tags", "Comma separated",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD("author", "Author", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NONE),
+	/*
+	 * When the body was last turned into vectors, and by which model.
+	 * Null means never: the article is stored and searchable by keyword,
+	 * and invisible to vector search until it is indexed.
+	 */
+	VENTURE_FIELD("embedded-at", "Indexed", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("embedding-model", "Indexed with", NULL,
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
+};
+
+VENTURE_DEFINE_ENTITY(VentureKbArticle, venture_kb_article,
+                      venture_kb_article_fields)
+
+/*
+ * One embedded passage of an article.
+ *
+ * A row per chunk rather than a vector per article because an article is
+ * usually longer than the embedding model's context, and because the useful
+ * answer to "where does it say that" is a passage rather than a document.
+ *
+ * The vector is base64 of little-endian float32, in a text column. There is
+ * no vector type here: SQLite has none, and the PostgreSQL one lives in an
+ * extension this deployment does not install. Brute-force cosine over a few
+ * thousand rows is microseconds, so the index nobody can build is not yet
+ * missed -- and when it is, this column is what an ANN index would be built
+ * from anyway. JSON would have been the obvious alternative and is four
+ * times the size for the same numbers.
+ */
+static const VentureFieldDecl venture_kb_chunk_fields[] = {
+	VENTURE_FIELD_REF("article-id", "Article", NULL, "kb_article",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL |
+	                  VENTURE_COLUMN_FLAG_INDEXED),
+	/*
+	 * Denormalised from the article so that searching one base is a
+	 * filter on this table alone. The join it removes is on the hot path
+	 * of every retrieval, and a chunk cannot change base without its
+	 * article being rewritten.
+	 */
+	VENTURE_FIELD_REF("kb-id", "Knowledge base", NULL, "knowledge_base",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL |
+	                  VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("ordinal", "Position", "Order within the article",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("text", "Text", "The passage, as embedded"),
+	/* The heading this passage sits under, kept so a result can say where
+	 * in the document it came from without re-parsing the body. */
+	VENTURE_FIELD("heading", "Heading", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("embedding", "Vector",
+	                   "base64 of little-endian float32"),
+	VENTURE_FIELD("dims", "Dimensions", NULL, VENTURE_FIELD_KIND_INTEGER,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("embedding-model", "Model", NULL,
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("char-count", "Characters", NULL,
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
+};
+
+VENTURE_DEFINE_ENTITY(VentureKbChunk, venture_kb_chunk,
+                      venture_kb_chunk_fields)
+
+/*
+ * A computed connection between an article and any other record.
+ *
+ * This is the cross-reference: the reason an idea's page can say which
+ * passages of which handbook bear on it. The subject is named by type and
+ * id, so it reaches every registered record type including ones a plugin
+ * added -- and, like #VentureTicketRelation, that shape has no database
+ * constraint behind it. Create these only through venture_kb_link_create().
+ *
+ * The score is cosine similarity at the time it was computed, kept so the
+ * list can be ordered and thresholded without recomputing, and so a link
+ * that was strong under a previous embedding model is visibly stale rather
+ * than silently wrong.
+ */
+static const VentureFieldDecl venture_kb_link_fields[] = {
+	VENTURE_FIELD_REF("article-id", "Article", NULL, "kb_article",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL |
+	                  VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("kb-id", "Knowledge base", NULL, "knowledge_base",
+	                  VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("subject-type", "Subject type",
+	              "Registered record type this bears on",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NOT_NULL |
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("subject-id", "Subject id", NULL,
+	              VENTURE_FIELD_KIND_INTEGER,
+	              VENTURE_COLUMN_FLAG_NOT_NULL |
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	/*
+	 * The subject's name as it was when the link was made, so the row
+	 * still reads correctly once the subject has been renamed or
+	 * deleted -- which is exactly when somebody is working out what it
+	 * meant. Same reasoning as VentureTicketRelation's subject-label.
+	 */
+	VENTURE_FIELD("subject-label", "Subject", NULL,
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("score", "Score", "Cosine similarity when computed",
+	              VENTURE_FIELD_KIND_DOUBLE, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("chunk-ordinal", "Passage",
+	              "Which passage of the article matched",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("excerpt", "Excerpt",
+	                   "The passage that matched, for display"),
+	VENTURE_FIELD("embedding-model", "Model", NULL,
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("computed-at", "Computed", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED)
+};
+
+VENTURE_DEFINE_ENTITY(VentureKbLink, venture_kb_link, venture_kb_link_fields)
+
 /*
  * A ticket: something to do, in a state, assigned to somebody.
  *

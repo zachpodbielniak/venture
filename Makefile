@@ -71,7 +71,8 @@ SERVER_ONLY_SRCS := \
 	$(wildcard src/automation/*.c) \
 	$(wildcard src/plugin/*.c) \
 	$(wildcard src/web/*.c) \
-	$(wildcard src/forge/*.c)
+	$(wildcard src/forge/*.c) \
+	$(wildcard src/kb/*.c)
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
@@ -97,6 +98,7 @@ PUBLIC_HDRS := \
 	$(wildcard src/plugin/*.h) \
 	$(wildcard src/web/*.h) \
 	$(wildcard src/forge/*.h) \
+	$(wildcard src/kb/*.h) \
 	$(wildcard src/util/*.h) \
 	$(wildcard src/mcp/*.h)
 

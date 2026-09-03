@@ -230,6 +230,32 @@ VENTURE_DEFINE_ENUM_TYPE(venture_issue_type_get_type,
                          "VentureIssueType",
                          venture_issue_type_values)
 
+static const GEnumValue venture_kb_format_values[] = {
+	VE(VENTURE_KB_FORMAT_ORG,      "org"),
+	VE(VENTURE_KB_FORMAT_MARKDOWN, "markdown"),
+	VE(VENTURE_KB_FORMAT_TEXT,     "text"),
+	VE(VENTURE_KB_FORMAT_HTML,     "html"),
+	VE(VENTURE_KB_FORMAT_PDF,      "pdf"),
+	VE(VENTURE_KB_FORMAT_DOCX,     "docx"),
+	VE(VENTURE_KB_FORMAT_OTHER,    "other"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_kb_format_get_type,
+                         "VentureKbFormat",
+                         venture_kb_format_values)
+
+static const GEnumValue venture_kb_article_status_values[] = {
+	VE(VENTURE_KB_ARTICLE_STATUS_PUBLISHED, "published"),
+	VE(VENTURE_KB_ARTICLE_STATUS_DRAFT,     "draft"),
+	VE(VENTURE_KB_ARTICLE_STATUS_ARCHIVED,  "archived"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_kb_article_status_get_type,
+                         "VentureKbArticleStatus",
+                         venture_kb_article_status_values)
+
 static const GEnumValue venture_forge_kind_values[] = {
 	VE(VENTURE_FORGE_KIND_FORGEJO, "forgejo"),
 	VE(VENTURE_FORGE_KIND_GITEA,   "gitea"),

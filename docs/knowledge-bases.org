@@ -1,0 +1,148 @@
+#+title: Knowledge bases
+#+description: Documents the assistant can read, and how they reach it
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-03]
+#+updated: [2026-09-03]
+#+version: 0.3.0
+
+* Knowledge bases
+
+A knowledge base is a named set of documents the assistant is allowed to
+read, searched by meaning rather than by keyword. More than one exists
+because the useful question is rarely "what do we know" but "what do the API
+docs say" --- and because a base is the unit of scope for retrieval. Asking
+one base beats asking all of them the moment two of them disagree, which is
+normal: last year's handbook and this year's both describe a real policy.
+
+| Record           | What it is                                            |
+|------------------+-------------------------------------------------------|
+| =knowledge_base= | a named, slugged set of articles                      |
+| =kb_article=     | one document, with its text and where it came from    |
+| =kb_chunk=       | one embedded passage of an article                    |
+| =kb_link=        | a computed connection to any other record             |
+
+All four are ordinary record types, so they get REST CRUD, the web list and
+form, =venturectl= subcommands, MCP tools and audit diffs from the same
+registration everything else does. Nothing about them is special-cased.
+
+* Why a passage and not a document
+
+An article is longer than the model's context and, more to the point, longer
+than the answer to a question. One vector per document finds the right
+handbook and cannot say which paragraph; one per passage finds the paragraph.
+
+The split follows headings first, because a heading is the author's own
+statement about where one idea ends. Only a section too long to embed is
+broken further, and then at a paragraph boundary, then a sentence, then a
+space --- a cut mid-word is the last resort rather than the default.
+Consecutive passages overlap by =kb.chunk_overlap= characters so that the one
+sentence which answers the question is not the one that fell across a
+boundary.
+
+Each passage is embedded with its heading prepended. A paragraph reading
+"it must be set before the first run" is unfindable on its own; under "API
+tokens" it is not.
+
+Sizes are in characters, not tokens, because the tokeniser belongs to the
+model and we do not have it. They are targets rather than limits.
+
+* The embedding model is not the chat model
+
+=kb.embedding_provider= and =kb.embedding_model= are configured separately
+from =ai.provider= and =ai.model=, and that separation is deliberate.
+
+The assistant is whichever model writes well. The embedder is whichever model
+the corpus was indexed with --- and only one of those can be changed freely.
+Every stored vector was made by a particular model, so switching embedders
+invalidates the index; switching chat models must not.
+
+It also allows the arrangement most installs want: a hosted model for the
+conversation, a local one for the documents, so the corpus never leaves the
+machine.
+
+#+begin_src yaml
+kb:
+  enabled: true
+  embedding_provider: ollama          # or openai, for anything compatible
+  embedding_url: http://127.0.0.1:11434
+  embedding_model: nomic-embed-text:v1.5
+  embedding_key_env: ""               # names the variable, never the key
+  chunk_chars: 1200
+  chunk_overlap: 200
+  search_limit: 8
+#+end_src
+
+Embedding goes through ai-glib's =AiEmbedder=, implemented there by the
+Ollama and OpenAI clients. The OpenAI shape is spoken by every compatible
+server --- vLLM, LM Studio, llama.cpp, Together --- so pointing
+=embedding_url= at one and naming its model needs no new code here.
+
+** Vectors from two models cannot be compared
+
+This is the trap the whole design is arranged around. The numbers are in
+different spaces, and the cosine between them is not a weak match but noise
+that reads exactly like one: a number in [-1, 1] that looks entirely
+plausible and means nothing.
+
+So the model is recorded in three places, and checked:
+
+- on the *base*, which is claimed by the first model to index it. Indexing
+  an article of that base with a different model is refused, naming both.
+- on the *article*, so a reindex can skip what is already current.
+- on the *chunk*, so a search skips any passage the configured model did not
+  write rather than scoring it.
+
+Changing =kb.embedding_model= therefore requires a forced reindex. That is
+not a limitation to work around; it is the only correct response.
+
+* Storage
+
+A vector is base64 of little-endian float32 in a text column. Neither backend
+has a vector type: SQLite has none, and the PostgreSQL one lives in an
+extension this deployment does not install. JSON would have been the obvious
+alternative and is four times the size for the same numbers.
+
+Little-endian is named rather than native so a database moved between
+architectures still reads back what it stored.
+
+Search is brute-force cosine over the chunks of the bases asked for. At a few
+thousand passages the arithmetic is microseconds and the query that reads
+them costs more, so the index nobody can build is not yet missed --- and when
+it is, this column is what an ANN index would be built from anyway.
+
+* Indexing is synchronous, and bulk work is a command
+
+Coding runs hold the only background thread in VENTURE and are forbidden from
+touching the database: writing a record emits =entity-saved=, whose handler
+enters podomation's nested main loop on the default context, and driving that
+from a second thread is a context-ownership failure rather than merely a data
+race.
+
+So an article is embedded on the request that saved it, and anything larger
+is an explicit command. There is no sweep that happens on its own.
+
+Re-indexing an article *replaces* its passages inside one transaction. An
+article that shrank would otherwise stay findable by text it no longer
+contains, citing a document that has since been corrected. A failure part-way
+leaves the previous index rather than none.
+
+Chunks are purged rather than soft deleted. A chunk is derived from its
+article and carries no history of its own --- the article's audit trail is
+the one that matters --- and a soft-deleted chunk would still be read back by
+the search that walks the table.
+
+* What is searched
+
+Only *published* articles. A draft is knowledge somebody is still deciding
+about, and an assistant citing one is quoting a document its author has not
+stood behind. Drafts are still embedded, so promoting one costs nothing.
+
+Only bases marked *auto-retrieve*, when the caller names none. A base of
+drafts, or one kept only for export, should not silently answer every
+question, so participation is a property of the base rather than a default.
+Naming a base explicitly searches it either way.
+
+An unknown base slug is an error naming it, not a silent omission: somebody
+who typed =#handbok= and got answers from everywhere else would reasonably
+believe the handbook had been searched and had nothing to say.
