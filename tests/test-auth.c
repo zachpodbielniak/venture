@@ -2643,6 +2643,52 @@ test_auth_redirect_notices_render(
 }
 
 /*
+ * The sidebar remembers its scroll position across a navigation.
+ *
+ * Every nav entry is a plain link, so each click rebuilds the sidebar from
+ * scratch and it would otherwise come back at the top. Asserted on the
+ * markup because the behaviour itself is the browser's; what can regress
+ * here is the hook going missing, and it has to be inline and before the
+ * footer or it runs after the first paint and jumps instead.
+ */
+static void
+test_auth_sidebar_restores_its_scroll(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *page = NULL;
+	const gchar *script;
+	const gchar *footer;
+
+	server_fixture_create_user(fixture, "adam", "a-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	cookie = server_fixture_login(fixture, "adam", "a-long-password");
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/reports",
+		cookie, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+
+	script = strstr(page, "venture.nav.scroll");
+	g_assert_nonnull(script);
+
+	/* Reads the position back, not merely stores it. */
+	g_assert_nonnull(strstr(page, "scrollTop"));
+
+	/*
+	 * Before the sidebar footer, which is what puts it inside the parsed
+	 * document at the point the nav exists and ahead of the first paint.
+	 *
+	 * Matched on the markup rather than the bare class name: the
+	 * stylesheet is inlined into every page and styles .sidebar-footer
+	 * hundreds of lines above the body, so the name alone finds the CSS
+	 * and compares against the wrong position entirely.
+	 */
+	footer = strstr(page, "<div class=\"sidebar-footer\">");
+	g_assert_nonnull(footer);
+	g_assert_true(script < footer);
+}
+
+/*
  * The database keeps a hash, never the secret -- the same property the
  * password table has, and the reason the reveal page can only ever run once.
  */
@@ -2753,6 +2799,9 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/token-never-expires-by-default", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_token_never_expires_by_default,
+	           server_fixture_tear_down);
+	g_test_add("/auth/sidebar-restores-its-scroll", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_sidebar_restores_its_scroll,
 	           server_fixture_tear_down);
 	g_test_add("/auth/redirect-notices-render", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_redirect_notices_render,

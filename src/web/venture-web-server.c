@@ -859,6 +859,44 @@ venture_web_page(
 		}
 
 		g_string_append(html, "</div>");
+
+		/*
+		 * Keep the sidebar where the reader left it.
+		 *
+		 * Every nav entry is an ordinary link, so following one is a full
+		 * page load and the rebuilt sidebar starts at the top -- which
+		 * throws away the scroll of anybody working from the entries far
+		 * down it, on exactly the click that proves they were reading
+		 * them.
+		 *
+		 * Inline and immediately after the list for the same reason the
+		 * theme script is inline: this has to run before the first paint.
+		 * Restoring from venture.js at the end of the body would leave
+		 * the browser free to paint the sidebar at the top first, which
+		 * replaces the lost position with a visible jump -- a different
+		 * annoyance, not a fix.
+		 *
+		 * sessionStorage rather than localStorage: a scroll position is
+		 * worth remembering across a click, not across a week. The writes
+		 * are throttled because a scroll event fires far more often than
+		 * anything needs storing, and every failure is swallowed --
+		 * private-mode storage that throws must cost the navigation
+		 * nothing.
+		 */
+		g_string_append(html,
+			"<script>(function(){try{"
+			"var n=document.querySelector('.sidebar .nav');"
+			"if(!n)return;"
+			"var k='venture.nav.scroll',t=null;"
+			"var v=sessionStorage.getItem(k);"
+			"if(v)n.scrollTop=parseInt(v,10)||0;"
+			"n.addEventListener('scroll',function(){"
+			"if(t)return;"
+			"t=setTimeout(function(){t=null;"
+			"try{sessionStorage.setItem(k,n.scrollTop);}catch(e){}"
+			"},150);"
+			"},{passive:true});"
+			"}catch(e){}})();</script>");
 	}
 
 	g_string_append(html, "<div class=\"sidebar-footer\">");
