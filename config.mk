@@ -36,7 +36,7 @@
 
 VERSION_MAJOR := 0
 VERSION_MINOR := 3
-VERSION_MICRO := 2
+VERSION_MICRO := 3
 VERSION := $(VERSION_MAJOR).$(VERSION_MINOR).$(VERSION_MICRO)
 
 # API version used for the pkg-config name and installed header directory.
