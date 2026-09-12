@@ -592,6 +592,31 @@ than one that fails.
 - **Rename and export** are `/ui/chat/thread/:id/rename` (JSON) and
   `/export` (org, verbatim bodies, `*`-led lines escaped with a comma),
   scoped like reading: another person's thread is NOT_FOUND.
+- **A streamed answer is two requests.** `POST /ui/chat` with `stream=1`
+  parks a `VentureWebChatTurn` (history refs, images, staged-before, the
+  model text) behind a one-shot token and returns an empty bubble carrying
+  `data-chat-stream`; `GET /ui/chat/stream/:token` opens an
+  `HtmxSseConnection`, returns `htmx_response_new_streaming()` so the
+  router leaves the message alone, and answers. Events are `delta`,
+  `status` and `done`; `done` carries the fully rendered bubble and
+  replaces what the deltas painted. Without `stream=1` the blocking path
+  answers, which is what the tests, the CLI and a no-script form take.
+- **The stream owns a copy of the principal.** The request returns long
+  before the model does, and `VentureAuthPrincipal` is a plain struct with
+  no refcount, so borrowing it is a use-after-free the moment a tool stages
+  a write.
+- **One AI turn at a time, per service.** `venture_ai_service_answer_stream_async()`
+  refuses with `VENTURE_ERROR_CONFLICT` while `streaming` is set: the
+  executor's stream flag, its tool list and `current_prompt` are single
+  slots. The blocking path enforced this by holding the main loop; going
+  async made it something that has to be said out loud.
+- **`ai_tool_executor_set_stream()` is set per turn, not once.** The same
+  executor answers the CLI and MCP, which have nowhere to put a delta.
+- **Never put a class name a test greps for inside venture.js.** The
+  script is inlined into every page, so `"notice negative"` in a JS string
+  made a dashboard test find an error notice that was not on the page.
+  Build dynamic notices as DOM nodes, and assert on markup
+  (`<div class="notice negative">`), not on two words.
 - **Skills live in `src/ai/venture-ai-skills.c`.** Built-ins are a static
   table there; `ai_skill` records (chat module) add to it and a record's
   trigger shadows a built-in's. `venture_ai_skills_expand()` runs on the

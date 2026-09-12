@@ -1199,6 +1199,7 @@ test_auth_api_refuses_anonymous_requests(
 		"/ui/chat/thread/1",
 		"/ui/chat/thread/1/export",
 		"/ui/chat/complete",
+		"/ui/chat/stream/whatever",
 		/*
 		 * The knowledge bases. Search returns passages of whatever the
 		 * operator has filed -- contracts, policies, drafts -- and the
@@ -1887,6 +1888,52 @@ test_auth_chat_rename_and_export(
 	g_assert_nonnull(strstr(export, "* You\n\nwhat did march cost\n"
 	                                ",* not a heading\n"));
 	g_assert_nonnull(strstr(export, "* VENTURE\n\nMarch cost 1,200."));
+}
+
+/*
+ * A streamed answer is two requests, and the token between them is
+ * one-shot and bound to the person who asked.
+ *
+ * There is no provider in a test fixture, so a turn is never parked and
+ * the POST says so whether or not the browser asked to stream. What is
+ * worth pinning is the half that does not need a model: a token nobody
+ * minted, or one that has been spent, is not an error to puzzle over --
+ * it is simply not there, and it answers the same way to everybody.
+ */
+static void
+test_auth_chat_stream_token_is_one_shot(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *plain = NULL;
+	g_autofree gchar *streamed = NULL;
+	g_autofree gchar *missing = NULL;
+
+	server_fixture_create_user(fixture, "alice", "a-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	cookie = server_fixture_login(fixture, "alice", "a-long-password");
+
+	/* Without a provider both paths say the same thing, and neither
+	 * stores a question nothing will answer. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/ui/chat",
+		cookie, "message=how+much+did+march+cost", &plain, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(plain, "AI is not configured"));
+	g_assert_null(strstr(plain, "data-chat-stream"));
+
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/ui/chat",
+		cookie, "message=how+much+did+march+cost&stream=1", &streamed, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(streamed, "AI is not configured"));
+	g_assert_null(strstr(streamed, "data-chat-stream"));
+
+	/* A token that was never minted is not found, and says so in words
+	 * rather than hanging a connection open. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/ui/chat/stream/0123456789abcdef", cookie, NULL, &missing, NULL),
+		==, SOUP_STATUS_NOT_FOUND);
+	g_assert_nonnull(strstr(missing, "no longer waiting"));
 }
 
 /*
@@ -3503,6 +3550,9 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/chat-rename-and-export", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_chat_rename_and_export,
+	           server_fixture_tear_down);
+	g_test_add("/auth/chat-stream-token-is-one-shot", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_chat_stream_token_is_one_shot,
 	           server_fixture_tear_down);
 	g_test_add("/auth/chat-complete-lists-skills-and-bases", ServerFixture,
 	           NULL, server_fixture_set_up,

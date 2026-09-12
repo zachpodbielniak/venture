@@ -37,6 +37,9 @@
 #include <glib-object.h>
 #include <json-glib/json-glib.h>
 
+/* For #AiEvent, which a streaming turn narrates itself with. */
+#include <ai-glib.h>
+
 G_BEGIN_DECLS
 
 /* --- Service ------------------------------------------------------------- */
@@ -135,6 +138,95 @@ venture_ai_service_answer_in_thread(
  *
  * Returns: (transfer full) (nullable): the reply, or %NULL on error
  */
+/**
+ * VentureAiStreamFunc:
+ * @service: the #VentureAiService answering
+ * @event: (transfer none): what just happened
+ * @user_data: the data passed to venture_ai_service_answer_stream_async()
+ *
+ * Called for each thing that happens during a streaming turn: a chunk of
+ * prose, a tool starting, a tool finishing, token usage. The events are
+ * provider-neutral -- see #AiEvent -- so a consumer reads the same stream
+ * whichever model is configured.
+ *
+ * Called on the thread that started the turn, from the main loop.
+ */
+typedef void (*VentureAiStreamFunc)(
+	VentureAiService	*service,
+	AiEvent			*event,
+	gpointer		 user_data
+);
+
+/**
+ * venture_ai_service_is_busy:
+ * @self: a #VentureAiService
+ *
+ * Whether a streaming turn is in flight. One turn at a time: the
+ * executor's streaming flag and the prompt an audit entry is stamped with
+ * are single slots on the service.
+ *
+ * Returns: %TRUE while a turn is being answered
+ */
+gboolean
+venture_ai_service_is_busy(VentureAiService *self);
+
+/**
+ * venture_ai_service_answer_stream_async:
+ * @self: a #VentureAiService
+ * @history: (nullable) (element-type VentureChatMessage): the conversation
+ *   so far, oldest first
+ * @message: what the operator asked
+ * @images: (nullable) (element-type GBytes): images attached to this turn
+ * @mime_types: (nullable) (array zero-terminated=1): the MIME type of each
+ *   image, parallel to @images
+ * @principal: (nullable): who is asking, for the audit trail
+ * @on_event: (scope notified) (nullable): called as the turn unfolds
+ * @event_data: data for @on_event
+ * @cancellable: (nullable): a #GCancellable
+ * @callback: (scope async): called when the turn is finished
+ * @user_data: data for @callback
+ *
+ * Like venture_ai_service_answer_with_images(), but asynchronous, and the
+ * turn narrates itself through @on_event as it goes. The tool loop is the
+ * same one: a model may call tools and go round again, and @on_event says
+ * so, so the operator watching sees why an answer is taking its time.
+ *
+ * A provider that cannot stream still works -- it simply reports nothing
+ * until the answer is whole. A second turn while one is in flight fails
+ * with %VENTURE_ERROR_CONFLICT rather than queueing.
+ */
+void
+venture_ai_service_answer_stream_async(
+	VentureAiService	 *self,
+	GPtrArray		 *history,
+	const gchar		 *message,
+	GPtrArray		 *images,
+	const gchar *const	 *mime_types,
+	VentureAuthPrincipal	 *principal,
+	VentureAiStreamFunc	  on_event,
+	gpointer		  event_data,
+	GCancellable		 *cancellable,
+	GAsyncReadyCallback	  callback,
+	gpointer		  user_data
+);
+
+/**
+ * venture_ai_service_answer_stream_finish:
+ * @self: a #VentureAiService
+ * @result: the #GAsyncResult
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Finishes venture_ai_service_answer_stream_async().
+ *
+ * Returns: (transfer full) (nullable): the whole reply, or %NULL on error
+ */
+gchar *
+venture_ai_service_answer_stream_finish(
+	VentureAiService	 *self,
+	GAsyncResult		 *result,
+	GError			**error
+);
+
 gchar *
 venture_ai_service_answer_with_images(
 	VentureAiService	 *self,

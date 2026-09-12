@@ -598,6 +598,174 @@
 	}
 
 	/* ------------------------------------------------------------------ */
+	/* Streaming replies                                                   */
+	/* ------------------------------------------------------------------ */
+
+	/*
+	 * The server answers a streamed turn with an empty bubble naming the
+	 * stream that will fill it. Opening that stream is this; what comes
+	 * down it is prose, a line of status while the model is off calling
+	 * a tool, and finally the whole reply rendered the way a stored one
+	 * is -- markdown, links, approval cards -- which replaces everything
+	 * the deltas painted.
+	 *
+	 * The deltas are put in with textContent, never innerHTML: they are
+	 * the model's words arriving a fragment at a time, and a fragment
+	 * cannot be escaped correctly on its own even if it were worth
+	 * trying.
+	 */
+	function wireChatStream(root) {
+		(root || document).querySelectorAll("[data-chat-stream]")
+			.forEach(function (bubble) {
+				if (bubble.ventureStreamBound || !window.EventSource) {
+					return;
+				}
+
+				bubble.ventureStreamBound = true;
+				openChatStream(bubble);
+			});
+	}
+
+	function openChatStream(bubble) {
+		var url = bubble.getAttribute("data-chat-stream");
+		var text = bubble.querySelector("[data-chat-text]");
+		var status = bubble.querySelector("[data-chat-status]");
+		var source = new EventSource(url, { withCredentials: true });
+		var finished = false;
+
+		/*
+		 * The finished reply, or the failure, in place of the bubble.
+		 * Inserted before it and then the bubble removed, because the
+		 * server sends several top-level nodes when the turn staged a
+		 * change: the message, and a card per change to approve.
+		 */
+		function finish(html) {
+			var holder = document.createElement("div");
+			var parent = bubble.parentNode;
+
+			finished = true;
+			source.close();
+
+			if (!parent) {
+				setChatBusy(false);
+				return;
+			}
+
+			holder.innerHTML = html;
+
+			while (holder.firstChild) {
+				parent.insertBefore(holder.firstChild, bubble);
+			}
+
+			parent.removeChild(bubble);
+
+			/* The approval buttons are hx-post; nothing has wired
+			 * them yet, because this markup never went through a
+			 * swap. */
+			if (window.htmx) {
+				window.htmx.process(parent);
+			}
+
+			wireReplyTools(parent);
+			setChatBusy(false);
+			syncStarters();
+			scrollChatToBottom();
+			notifyIfPanelClosed();
+		}
+
+		source.addEventListener("delta", function (event) {
+			if (status) {
+				status.textContent = "";
+			}
+
+			if (text) {
+				text.textContent += event.data;
+			}
+
+			scrollChatToBottom();
+		});
+
+		source.addEventListener("status", function (event) {
+			if (status) {
+				status.textContent = event.data.trim();
+			}
+
+			scrollChatToBottom();
+		});
+
+		source.addEventListener("done", function (event) {
+			finish(event.data);
+		});
+
+		/*
+		 * EventSource raises this both when a connection fails and
+		 * when the server closes one, and it reconnects on its own
+		 * unless told otherwise. The token is spent, so a reconnect
+		 * would only ask for a turn that is no longer there --
+		 * closing it here is what stops that becoming a loop.
+		 */
+		source.addEventListener("error", function () {
+			if (finished) {
+				return;
+			}
+
+			finished = true;
+			source.close();
+
+			if (status) {
+				status.textContent = "";
+			}
+
+			var content = bubble.querySelector(".msg-content");
+			var notice = document.createElement("div");
+			var retry = document.createElement("div");
+			var again = document.createElement("button");
+
+			/* Built as nodes rather than markup. Half of this used to
+			 * be an innerHTML string, which put the class name of a
+			 * failure notice into the script inlined on every page --
+			 * and a test looking for one on a dashboard found it. */
+			notice.className = "notice negative";
+
+			if (text && text.textContent !== "") {
+				/* Half an answer is still worth keeping; what is
+				 * missing is said underneath it. */
+				notice.textContent = "The connection dropped before "
+					+ "the answer finished.";
+				content.appendChild(notice);
+			} else {
+				notice.textContent = "The assistant could not be reached.";
+				content.textContent = "";
+				content.appendChild(notice);
+			}
+
+			again.type = "button";
+			again.className = "btn btn-sm";
+			again.setAttribute("data-ai-retry", "");
+			again.textContent = "Try again";
+			retry.className = "chat-retry";
+			retry.appendChild(again);
+			content.appendChild(retry);
+			bubble.classList.remove("streaming");
+
+			setChatBusy(false);
+			scrollChatToBottom();
+		});
+	}
+
+	/* A reply that landed while the panel was closed is easy to miss. */
+	function notifyIfPanelClosed() {
+		if (!panel() || panel().classList.contains("open")) {
+			return;
+		}
+
+		document.querySelectorAll(".ai-fab").forEach(function (fab) {
+			fab.classList.add("unread");
+		});
+		toast("The assistant replied \u2014 Ctrl+/ to read it", "info", 6000);
+	}
+
+	/* ------------------------------------------------------------------ */
 	/* The composer's menus: # for a knowledge base, / for a skill        */
 	/* ------------------------------------------------------------------ */
 
@@ -981,6 +1149,19 @@
 
 					if (context) {
 						context.value = currentPagePath();
+					}
+
+					/*
+					 * And whether this browser can watch the answer
+					 * being written. Asked for per send rather than
+					 * once, so a form the server rendered before the
+					 * script ran is never told the browser can do
+					 * something it cannot.
+					 */
+					var stream = document.getElementById("chat-stream");
+
+					if (stream) {
+						stream.value = window.EventSource ? "1" : "";
 					}
 
 					setChatBusy(true);
@@ -1862,20 +2043,24 @@
 			var swapped = (event.detail && event.detail.target) || event.target;
 
 			if (swapped.closest && swapped.closest(".chat-log")) {
-				setChatBusy(false);
+				var streaming = swapped.querySelector("[data-chat-stream]");
+
 				syncStarters();
 				wireReplyTools(swapped);
+				wireChatStream(swapped);
 				scrollChatToBottom();
 
-				/* A reply that landed while the panel was closed is
-				 * easy to miss; the launcher says one is waiting. */
-				if (panel() && !panel().classList.contains("open")
-				    && swapped.querySelector(".msg.ai")) {
-					document.querySelectorAll(".ai-fab").forEach(function (fab) {
-						fab.classList.add("unread");
-					});
-					toast("The assistant replied \u2014 Ctrl+/ to read it",
-					      "info", 6000);
+				/*
+				 * A placeholder is not an answer: the composer stays
+				 * held and the launcher stays quiet until the stream
+				 * says the turn is over.
+				 */
+				if (!streaming) {
+					setChatBusy(false);
+
+					if (swapped.querySelector(".msg.ai")) {
+						notifyIfPanelClosed();
+					}
 				}
 			}
 		});
@@ -3084,6 +3269,7 @@
 		wireAttachments();
 		wirePodEditor();
 		wireReplyTools(document);
+		wireChatStream(document);
 
 	/*
 	 * The kanban board.

@@ -36,6 +36,49 @@ typedef struct
 
 #define VENTURE_WEB_REVEAL_TTL_SECONDS 300
 
+/*
+ * One turn, worked out by the POST and waiting for the GET that will
+ * stream it.
+ *
+ * It holds refs to the history records rather than ids: they were read
+ * once already, and re-reading them in the second request would let a
+ * message saved in between change what the model is shown compared with
+ * what the first request decided.
+ */
+typedef struct
+{
+	gint64			 thread_id;
+	gint64			 user_id;
+	gchar			*model_text;
+	GPtrArray		*history;
+	GPtrArray		*images;
+	GPtrArray		*image_types;
+	GHashTable		*staged_before;
+	GDateTime		*created_at;
+} VentureWebChatTurn;
+
+/*
+ * Long enough for a slow page to open the stream, short enough that an
+ * abandoned turn is not still holding a conversation's history an hour
+ * later.
+ */
+#define VENTURE_WEB_CHAT_TURN_TTL_SECONDS 120
+
+static void
+venture_web_chat_turn_free(VentureWebChatTurn *self)
+{
+	if (NULL == self)
+		return;
+
+	g_free(self->model_text);
+	g_clear_pointer(&self->history, g_ptr_array_unref);
+	g_clear_pointer(&self->images, g_ptr_array_unref);
+	g_clear_pointer(&self->image_types, g_ptr_array_unref);
+	g_clear_pointer(&self->staged_before, g_hash_table_unref);
+	g_clear_pointer(&self->created_at, g_date_time_unref);
+	g_free(self);
+}
+
 static void
 venture_web_reveal_free(VentureWebReveal *self)
 {
@@ -83,6 +126,20 @@ struct _VentureWebServer
 	 * so these are only ever touched from that thread.
 	 */
 	GHashTable	*reveals;
+
+	/*
+	 * Turns waiting to be streamed, keyed by a one-shot token.
+	 *
+	 * A streamed answer is two requests: the POST that stores the
+	 * question and decides what the model will be shown, and the GET
+	 * that holds a connection open while it answers. Everything the
+	 * second needs is worked out by the first -- the history to replay,
+	 * the images, what was already staged -- because the POST is where
+	 * the form, the attachments and the page context are, and passing
+	 * that lot through a query string would put a conversation in the
+	 * access log.
+	 */
+	GHashTable	*chat_turns;
 };
 
 G_DEFINE_FINAL_TYPE(VentureWebServer, venture_web_server, G_TYPE_OBJECT)
@@ -104,6 +161,7 @@ venture_web_server_finalize(GObject *object)
 	g_clear_object(&self->server);
 	g_clear_pointer(&self->base_url, g_free);
 	g_clear_pointer(&self->reveals, g_hash_table_unref);
+	g_clear_pointer(&self->chat_turns, g_hash_table_unref);
 
 	G_OBJECT_CLASS(venture_web_server_parent_class)->finalize(object);
 }
@@ -119,6 +177,8 @@ venture_web_server_init(VentureWebServer *self)
 {
 	self->reveals = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
 	                                      (GDestroyNotify)venture_web_reveal_free);
+	self->chat_turns = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+		(GDestroyNotify)venture_web_chat_turn_free);
 }
 
 /* ==========================================================================
@@ -1581,6 +1641,10 @@ venture_web_page(
 			"name=\"attachments\" value=\"\">"
 			"<input type=\"hidden\" id=\"chat-context\" "
 			"name=\"context\" value=\"\">"
+			/* Set to 1 by the script when this browser can hold a
+			 * stream open. Empty means answer it in one go. */
+			"<input type=\"hidden\" id=\"chat-stream\" "
+			"name=\"stream\" value=\"\">"
 			"<input type=\"file\" id=\"chat-attach-file\" multiple "
 			"class=\"hidden\" "
 			"accept=\".pdf,.txt,.md,.org,.csv,.json,.yaml,.yml,"
@@ -12305,6 +12369,35 @@ venture_web_chat_append_message(
 }
 
 /*
+ * The bubble a failed turn leaves behind: what went wrong, and the button
+ * that sends the question again.
+ *
+ * The question itself stays stored. A provider that timed out is not part
+ * of the conversation, but the thing that was asked is, and re-asking it
+ * should not mean retyping it.
+ */
+static void
+venture_web_chat_append_failure(
+	GString		*html,
+	const gchar	*message
+){
+	g_string_append(html, "<div class=\"msg ai\">"
+	                      "<span class=\"msg-avatar\">"
+	                      VENTURE_SPARK
+	                      "</span>"
+	                      "<div class=\"msg-content\">"
+	                      "<div class=\"notice negative\"><span>");
+	venture_html_escape_append(html, message);
+	g_string_append(html, "</span></div>"
+	                      "<div class=\"chat-retry\">"
+	                      "<button type=\"button\" class=\"btn btn-sm\" "
+	                      "data-ai-retry>Try again</button>"
+	                      "<span class=\"muted small\">The question is kept; "
+	                      "a retry sends it again.</span>"
+	                      "</div></div></div>");
+}
+
+/*
  * The hidden form field naming the active thread, swapped out-of-band so a
  * reply lands in whichever conversation the panel now shows. The client
  * mirrors this value into localStorage, which is what makes a conversation
@@ -14068,6 +14161,408 @@ venture_web_ui_chat_reject(
 	return venture_web_ui_chat_decide(request, params, user_data, FALSE);
 }
 
+/* --- Streaming one turn ---------------------------------------------------- */
+
+/*
+ * Parks a worked-out turn and returns the one-shot token that runs it.
+ * Expired turns are dropped on the way past, which is enough housekeeping
+ * for a table that holds the questions asked in the last two minutes.
+ *
+ * Returns: (transfer full): the token
+ */
+static gchar *
+venture_web_chat_turn_park(
+	VentureWebServer	*self,
+	VentureWebChatTurn	*turn
+){
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
+	gchar *token;
+
+	turn->created_at = venture_time_now();
+
+	g_hash_table_iter_init(&iter, self->chat_turns);
+
+	while (g_hash_table_iter_next(&iter, &key, &value))
+	{
+		VentureWebChatTurn *stale = value;
+
+		if (g_date_time_difference(turn->created_at, stale->created_at) >
+		    (VENTURE_WEB_CHAT_TURN_TTL_SECONDS * G_TIME_SPAN_SECOND))
+			g_hash_table_iter_remove(&iter);
+	}
+
+	token = venture_generate_token(16);
+	g_hash_table_insert(self->chat_turns, g_strdup(token), turn);
+
+	return token;
+}
+
+/*
+ * Spends a token. %NULL for one that was already spent, never existed,
+ * expired, or belongs to somebody else -- all four are the same answer,
+ * which is that there is nothing to stream.
+ *
+ * Returns: (transfer full) (nullable): the turn
+ */
+static VentureWebChatTurn *
+venture_web_chat_turn_take(
+	VentureWebServer	*self,
+	const gchar		*token,
+	gint64			 user_id
+){
+	g_autoptr(GDateTime) now = NULL;
+	VentureWebChatTurn *turn;
+	gpointer key;
+	gpointer value;
+
+	if (venture_string_is_empty(token))
+		return NULL;
+
+	if (!g_hash_table_steal_extended(self->chat_turns, token, &key, &value))
+		return NULL;
+
+	g_free(key);
+	turn = value;
+	now = venture_time_now();
+
+	if ((turn->user_id != user_id) ||
+	    (g_date_time_difference(now, turn->created_at) >
+	     (VENTURE_WEB_CHAT_TURN_TTL_SECONDS * G_TIME_SPAN_SECOND)))
+	{
+		venture_web_chat_turn_free(turn);
+		return NULL;
+	}
+
+	return turn;
+}
+
+/*
+ * One turn being streamed: the connection it writes to, the turn it is
+ * answering, and a copy of who asked.
+ *
+ * The principal is copied rather than borrowed. The request that opened
+ * the stream returns long before the model does, taking its principal
+ * with it, and the AI service holds on to the one it was given for the
+ * whole turn so that a staged write is attributed to a person.
+ */
+typedef struct
+{
+	VentureWebServer	*self;
+	HtmxSseConnection	*connection;
+	VentureWebChatTurn	*turn;
+	VentureAuthPrincipal	*principal;
+	gboolean		 open;
+} VentureWebChatStream;
+
+static void
+venture_web_chat_stream_free(VentureWebChatStream *self)
+{
+	if (NULL == self)
+		return;
+
+	g_clear_object(&self->connection);
+	g_clear_pointer(&self->turn, venture_web_chat_turn_free);
+	g_clear_pointer(&self->principal, venture_auth_principal_free);
+	g_free(self);
+}
+
+static void
+venture_web_chat_stream_closed(
+	HtmxSseConnection	*connection,
+	gpointer		 user_data
+){
+	VentureWebChatStream *stream = user_data;
+
+	(void)connection;
+
+	/*
+	 * The tab was closed, or the network went. The turn is not
+	 * cancelled: the model is already working and the answer is worth
+	 * storing whether or not anybody is still watching -- resuming the
+	 * conversation later is how it is read. Only the writing stops.
+	 */
+	stream->open = FALSE;
+}
+
+/*
+ * Sends one event, with the line endings the framing can carry.
+ *
+ * A bare carriage return ends a field in the SSE grammar, so a reply
+ * written on a machine that uses CRLF would have arrived split across
+ * events with the halves reassembled in the wrong order.
+ */
+static void
+venture_web_chat_stream_send(
+	VentureWebChatStream	*stream,
+	const gchar		*event,
+	const gchar		*data
+){
+	g_autofree gchar *normalised = NULL;
+
+	if (!stream->open || venture_string_is_empty(data))
+		return;
+
+	if (!htmx_sse_connection_is_connected(stream->connection))
+	{
+		stream->open = FALSE;
+		return;
+	}
+
+	if (NULL == strchr(data, '\r'))
+	{
+		htmx_sse_connection_send_event(stream->connection, event, data, NULL);
+		return;
+	}
+
+	{
+		g_auto(GStrv) parts = NULL;
+
+		parts = g_strsplit(data, "\r\n", -1);
+		normalised = g_strjoinv("\n", parts);
+		g_strdelimit(normalised, "\r", '\n');
+	}
+
+	htmx_sse_connection_send_event(stream->connection, event, normalised, NULL);
+}
+
+/*
+ * Each thing the turn does, on its way past.
+ *
+ * Prose goes out as it arrives. A tool call becomes a line of status
+ * instead: what the model is doing while it is not talking is the part a
+ * person waiting actually wants, and it is the difference between a slow
+ * answer and an interface that looks stuck.
+ */
+static void
+venture_web_chat_stream_event(
+	VentureAiService	*service,
+	AiEvent			*event,
+	gpointer		 user_data
+){
+	VentureWebChatStream *stream = user_data;
+
+	(void)service;
+
+	switch (ai_event_get_kind(event))
+	{
+	case AI_EVENT_TEXT_DELTA:
+		venture_web_chat_stream_send(stream, "delta",
+		                             ai_event_get_text(event));
+		break;
+
+	case AI_EVENT_TOOL_STARTED:
+	{
+		AiToolUse *use;
+		const gchar *name;
+
+		use = ai_event_get_tool_use(event);
+		name = (NULL != use) ? ai_tool_use_get_name(use) : NULL;
+
+		if (!venture_string_is_empty(name))
+		{
+			g_autofree gchar *status = NULL;
+
+			status = g_strconcat(name, "\xe2\x80\xa6", NULL);
+			venture_web_chat_stream_send(stream, "status", status);
+		}
+
+		break;
+	}
+
+	case AI_EVENT_TOOL_FINISHED:
+		/* A space rather than nothing: an empty event body is not
+		 * sent at all, so the line would stay on the last tool. */
+		venture_web_chat_stream_send(stream, "status", " ");
+		break;
+
+	default:
+		break;
+	}
+}
+
+/*
+ * The turn is answered. What the model finally said is stored and
+ * rendered the same way the blocking path renders it, and that markup --
+ * not the deltas -- is what the panel ends up showing: a turn that called
+ * a tool halfway through said things before it that are not part of the
+ * answer, and markdown cannot be formatted a fragment at a time anyway.
+ */
+static void
+venture_web_chat_stream_done(
+	GObject		*source,
+	GAsyncResult	*result,
+	gpointer	 user_data
+){
+	VentureWebChatStream *stream = user_data;
+	g_autoptr(GString) html = NULL;
+	g_autofree gchar *answer = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+
+	answer = venture_ai_service_answer_stream_finish(
+		VENTURE_AI_SERVICE(source), result, &error);
+
+	html = g_string_new(NULL);
+
+	if (NULL == answer)
+	{
+		venture_web_chat_append_failure(html, error->message);
+		venture_web_chat_stream_send(stream, "done", html->str);
+		htmx_sse_connection_close(stream->connection);
+		venture_web_chat_stream_free(stream);
+		return;
+	}
+
+	venture_auth_to_actor(stream->principal, &actor);
+
+	{
+		g_autoptr(VentureChatMessage) stored = NULL;
+
+		stored = venture_chat_message_new();
+		g_object_set(stored, "thread-id", stream->turn->thread_id,
+		             "role", VENTURE_CHAT_ROLE_ASSISTANT,
+		             "body", answer, NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(stored),
+			venture_context_get_default_organization_id(
+				stream->self->context));
+
+		if (!venture_database_save(
+			venture_context_get_database(stream->self->context),
+			VENTURE_ENTITY(stored), &actor, &error))
+		{
+			/*
+			 * The answer exists and the operator is owed it, but
+			 * the thread will not have it tomorrow. Said plainly
+			 * rather than swallowed: a conversation that quietly
+			 * loses half of itself is worse than one that says so.
+			 */
+			venture_web_chat_append_message(html,
+				VENTURE_CHAT_ROLE_ASSISTANT, answer);
+			venture_web_chat_append_failure(html, error->message);
+			venture_web_chat_stream_send(stream, "done", html->str);
+			htmx_sse_connection_close(stream->connection);
+			venture_web_chat_stream_free(stream);
+			return;
+		}
+	}
+
+	venture_web_chat_append_message(html, VENTURE_CHAT_ROLE_ASSISTANT, answer);
+	venture_web_chat_append_confirmations(stream->self, html,
+	                                      stream->turn->staged_before);
+
+	venture_web_chat_stream_send(stream, "done", html->str);
+	htmx_sse_connection_close(stream->connection);
+	venture_web_chat_stream_free(stream);
+}
+
+/*
+ * GET /ui/chat/stream/:token - answer a parked turn, out loud.
+ *
+ * The token is spent here, so a reconnecting browser finds nothing rather
+ * than asking the same question twice, and a token minted for somebody
+ * else is indistinguishable from one that never existed.
+ */
+static HtmxResponse *
+venture_web_ui_chat_stream(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureWebChatTurn *turn;
+	VentureWebChatStream *stream;
+	VentureAiService *service;
+	SoupServerMessage *message;
+
+	self = user_data;
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "chat");
+
+		if (NULL != gate)
+			return gate;
+	}
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	turn = venture_web_chat_turn_take(self,
+		g_hash_table_lookup(params, "token"), principal->user_id);
+
+	if (NULL == turn)
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		                    "That question is no longer waiting to be "
+		                    "answered");
+		return venture_web_error_response(error);
+	}
+
+	message = htmx_request_get_message(request);
+
+	if (NULL == message)
+	{
+		venture_web_chat_turn_free(turn);
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED,
+		                    "This request cannot be streamed");
+		return venture_web_error_response(error);
+	}
+
+	stream = g_new0(VentureWebChatStream, 1);
+	stream->self = self;
+	stream->turn = turn;
+	stream->open = TRUE;
+	stream->connection = htmx_sse_connection_new(message);
+
+	/* Our own copy, because the request's goes when this handler
+	 * returns and the model has not started yet. */
+	stream->principal = g_new0(VentureAuthPrincipal, 1);
+	stream->principal->user_id = principal->user_id;
+	stream->principal->token_id = principal->token_id;
+	stream->principal->role = principal->role;
+	stream->principal->authenticated = principal->authenticated;
+	stream->principal->name = g_strdup(principal->name);
+
+	g_signal_connect(stream->connection, "closed",
+	                 G_CALLBACK(venture_web_chat_stream_closed), stream);
+
+	service = venture_context_get_ai_service(self->context);
+
+	/*
+	 * Reported down the stream rather than as a status: the connection
+	 * is open by now, and an EventSource that fails to connect tells the
+	 * browser nothing more useful than "it did not work".
+	 */
+	if (NULL == service)
+	{
+		g_autoptr(GString) html = NULL;
+
+		html = g_string_new(NULL);
+		venture_web_chat_append_failure(html,
+			"AI is not configured on this instance.");
+		venture_web_chat_stream_send(stream, "done", html->str);
+		htmx_sse_connection_close(stream->connection);
+		venture_web_chat_stream_free(stream);
+
+		return htmx_response_new_streaming();
+	}
+
+	venture_ai_service_answer_stream_async(service, turn->history,
+		turn->model_text, turn->images,
+		(const gchar *const *)turn->image_types->pdata,
+		stream->principal, venture_web_chat_stream_event, stream, NULL,
+		venture_web_chat_stream_done, stream);
+
+	return htmx_response_new_streaming();
+}
+
 /*
  * POST /ui/chat - one exchange, persisted on both sides.
  */
@@ -14319,6 +14814,77 @@ venture_web_ui_chat(
 			return venture_web_error_response(error);
 	}
 
+	/*
+	 * A browser that can hold a stream open gets one: the turn is parked
+	 * here and answered by the GET that follows, so the model's prose
+	 * arrives as it is written rather than in one lump at the end.
+	 *
+	 * Only when the script asks for it. A form posted without scripting
+	 * has nowhere to put an EventSource, and the blocking path below is
+	 * what answers it -- the same path the CLI, the API and every test
+	 * take.
+	 */
+	if (0 == g_strcmp0(htmx_request_get_form_value(request, "stream"), "1"))
+	{
+		VentureWebChatTurn *turn;
+		g_autofree gchar *token = NULL;
+
+		turn = g_new0(VentureWebChatTurn, 1);
+		turn->thread_id = thread_id;
+		turn->user_id = principal->user_id;
+		turn->model_text = g_strdup(model_text->str);
+		turn->staged_before = g_hash_table_ref(staged_before);
+		turn->images = g_ptr_array_ref(images);
+		turn->image_types = g_ptr_array_ref(image_types);
+
+		/* Refs, because the arrays this was read into go with this
+		 * request and the model is shown them in the next one. */
+		turn->history = g_ptr_array_new_with_free_func(g_object_unref);
+
+		{
+			guint h;
+
+			for (h = 0; h < history->len; h++)
+				g_ptr_array_add(turn->history,
+					g_object_ref(g_ptr_array_index(history, h)));
+		}
+
+		token = venture_web_chat_turn_park(self, turn);
+
+		/*
+		 * An empty bubble that says where its words will come from.
+		 * The script opens the stream; the status line and the
+		 * paragraph are what it writes into.
+		 */
+		g_string_append(html, "<div class=\"msg ai streaming\" "
+		                      "data-chat-stream=\"/ui/chat/stream/");
+		venture_html_escape_append(html, token);
+		g_string_append(html, "\"><span class=\"msg-avatar\">"
+		                      VENTURE_SPARK
+		                      "</span><div class=\"msg-content\">"
+		                      "<div class=\"chat-status\" data-chat-status>"
+		                      "</div>"
+		                      "<p class=\"chat-stream-text\" data-chat-text>"
+		                      "</p></div></div>");
+
+		venture_web_chat_append_thread_input(html, thread_id);
+
+		if (fresh_thread)
+		{
+			g_autofree gchar *title = NULL;
+
+			g_object_get(thread, "title", &title, NULL);
+			venture_web_chat_append_title(html, title);
+		}
+
+		g_object_set(thread, "last-activity-at", now, NULL);
+		venture_database_save(venture_context_get_database(self->context),
+		                      VENTURE_ENTITY(thread), &actor, NULL);
+
+		return venture_web_html_response(
+			g_string_free(g_steal_pointer(&html), FALSE), 200);
+	}
+
 	{
 		g_autofree gchar *answer = NULL;
 
@@ -14333,21 +14899,7 @@ venture_web_ui_chat(
 			/* The question stays stored -- resuming the thread and
 			 * asking again is the recovery -- but a provider error
 			 * is not part of the conversation. */
-			g_string_append(html, "<div class=\"msg ai\">"
-			                      "<span class=\"msg-avatar\">"
-						 VENTURE_SPARK
-						 "</span>"
-			                      "<div class=\"msg-content\">"
-			                      "<div class=\"notice negative\">"
-			                      "<span>");
-			venture_html_escape_append(html, error->message);
-			g_string_append(html, "</span></div>"
-			                      "<div class=\"chat-retry\">"
-			                      "<button type=\"button\" class=\"btn btn-sm\" "
-			                      "data-ai-retry>Try again</button>"
-			                      "<span class=\"muted small\">The question is "
-			                      "kept; a retry sends it again.</span>"
-			                      "</div></div></div>");
+			venture_web_chat_append_failure(html, error->message);
 		}
 		else
 		{
@@ -25812,6 +26364,8 @@ venture_web_server_new(
 	                self);
 	htmx_router_get(router, "/ui/chat/complete", venture_web_ui_chat_complete,
 	                self);
+	htmx_router_get(router, "/ui/chat/stream/:token",
+	                venture_web_ui_chat_stream, self);
 	htmx_router_post(router, "/ui/chat/thread/:id/rename",
 	                 venture_web_ui_chat_thread_rename, self);
 	htmx_router_get(router, "/ui/chat/thread/:id/export",

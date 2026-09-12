@@ -42,6 +42,19 @@ struct _VentureAiService
 	 */
 	VentureKbService	*kb;
 	gboolean		 kb_attempted;
+
+	/*
+	 * A streaming turn is in flight.
+	 *
+	 * One turn at a time, per service. The executor's tool list, the
+	 * streaming flag and the two current_* fields above are all single
+	 * slots on this object, and a second turn overlapping the first
+	 * would read the wrong prompt into an audit entry and interleave two
+	 * models' deltas into one transcript. The blocking path enforced
+	 * this by accident -- it held the main loop for the whole turn --
+	 * and going asynchronous makes it something that has to be said.
+	 */
+	gboolean		 streaming;
 };
 
 G_DEFINE_FINAL_TYPE(VentureAiService, venture_ai_service, G_TYPE_OBJECT)
@@ -3294,37 +3307,29 @@ venture_ai_service_retrieve(
 }
 
 
-gchar *
-venture_ai_service_answer_with_images(
+/*
+ * Builds the message list for one turn: the stored transcript, then this
+ * question with its retrieved passages and its images.
+ *
+ * Shared by the blocking and the streaming paths. It was duplicated for
+ * about an hour, which was long enough for the two to disagree about
+ * whether #base tokens were stripped before the model saw them.
+ *
+ * Returns: (transfer full) (element-type AiMessage): the messages
+ */
+static GList *
+venture_ai_service_build_turn(
 	VentureAiService	 *self,
 	GPtrArray		 *history,
 	const gchar		 *message,
 	GPtrArray		 *images,
-	const gchar *const	 *mime_types,
-	VentureAuthPrincipal	 *principal,
-	GError			**error
+	const gchar *const	 *mime_types
 ){
-	g_autoptr(GError) local_error = NULL;
-	g_autofree gchar *reply = NULL;
 	g_autofree gchar *retrieved = NULL;
 	g_autofree gchar *question_text = NULL;
 	AiMessage *question;
 	GList *messages = NULL;
 	guint i;
-
-	g_return_val_if_fail(VENTURE_IS_AI_SERVICE(self), NULL);
-
-	if (venture_string_is_empty(message))
-	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		                    "Ask a question first");
-		return NULL;
-	}
-
-	/* Held for the duration so a tool call can record what prompted it. */
-	g_free(self->current_prompt);
-	self->current_prompt = g_strdup(message);
-	self->current_principal = principal;
 
 	/*
 	 * #base tokens are resolved and retrieved against before the model
@@ -3408,6 +3413,48 @@ venture_ai_service_answer_with_images(
 
 	messages = g_list_append(messages, question);
 
+	return messages;
+}
+
+gchar *
+venture_ai_service_answer_with_images(
+	VentureAiService	 *self,
+	GPtrArray		 *history,
+	const gchar		 *message,
+	GPtrArray		 *images,
+	const gchar *const	 *mime_types,
+	VentureAuthPrincipal	 *principal,
+	GError			**error
+){
+	g_autoptr(GError) local_error = NULL;
+	g_autofree gchar *reply = NULL;
+	GList *messages = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_AI_SERVICE(self), NULL);
+
+	if (venture_string_is_empty(message))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Ask a question first");
+		return NULL;
+	}
+
+	if (self->streaming)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+		                    "The assistant is answering another question. "
+		                    "Try again in a moment.");
+		return NULL;
+	}
+
+	/* Held for the duration so a tool call can record what prompted it. */
+	g_free(self->current_prompt);
+	self->current_prompt = g_strdup(message);
+	self->current_principal = principal;
+
+	messages = venture_ai_service_build_turn(self, history, message, images,
+	                                         mime_types);
+
 	reply = ai_tool_executor_run(self->executor, self->provider, messages,
 	                             self->system_prompt, self->max_tokens, NULL,
 	                             &local_error);
@@ -3424,6 +3471,194 @@ venture_ai_service_answer_with_images(
 	}
 
 	return g_steal_pointer(&reply);
+}
+
+/* --- Streaming ------------------------------------------------------------ */
+
+/*
+ * One streaming turn's bookkeeping, carried as the task's data so it is
+ * freed whatever way the turn ends.
+ */
+typedef struct
+{
+	VentureAiService	*service;
+	VentureAiStreamFunc	 on_event;
+	gpointer		 event_data;
+	GList			*messages;
+	gulong			 handler_id;
+} VentureAiStreamCall;
+
+static void
+venture_ai_stream_call_free(gpointer data)
+{
+	VentureAiStreamCall *call = data;
+
+	if (NULL == call)
+		return;
+
+	g_list_free_full(call->messages, g_object_unref);
+	g_free(call);
+}
+
+gboolean
+venture_ai_service_is_busy(VentureAiService *self)
+{
+	g_return_val_if_fail(VENTURE_IS_AI_SERVICE(self), FALSE);
+
+	return self->streaming;
+}
+
+/*
+ * Every event the executor reports, handed straight to the caller.
+ *
+ * The events are the executor's own -- a tool starting and finishing --
+ * and the provider's, which it forwards, so a text delta and a tool call
+ * arrive on one channel in the order they happened.
+ */
+static void
+venture_ai_service_on_stream_event(
+	AiEventSource	*source,
+	AiEvent		*event,
+	gpointer	 user_data
+){
+	VentureAiStreamCall *call = user_data;
+
+	(void)source;
+
+	if (NULL != call->on_event)
+		call->on_event(call->service, event, call->event_data);
+}
+
+/*
+ * The turn is over, one way or another. Everything set up for it comes
+ * down here, in the one place, so a provider failure leaves the service
+ * as usable as a success does.
+ */
+static void
+venture_ai_service_stream_done(
+	GObject		*source,
+	GAsyncResult	*result,
+	gpointer	 user_data
+){
+	g_autoptr(GTask) task = user_data;
+	g_autoptr(GError) local_error = NULL;
+	g_autofree gchar *reply = NULL;
+	VentureAiStreamCall *call;
+	VentureAiService *self;
+
+	call = g_task_get_task_data(task);
+	self = call->service;
+
+	reply = ai_tool_executor_run_finish(AI_TOOL_EXECUTOR(source), result,
+	                                    &local_error);
+
+	if (0 != call->handler_id)
+	{
+		g_signal_handler_disconnect(self->executor, call->handler_id);
+		call->handler_id = 0;
+	}
+
+	ai_tool_executor_set_stream(self->executor, FALSE);
+	self->current_principal = NULL;
+	self->streaming = FALSE;
+
+	if (NULL == reply)
+	{
+		g_task_return_new_error(task, VENTURE_ERROR, VENTURE_ERROR_AI,
+		                        "%s", (NULL != local_error)
+		                              ? local_error->message
+		                              : "the provider failed");
+		return;
+	}
+
+	g_task_return_pointer(task, g_steal_pointer(&reply), g_free);
+}
+
+void
+venture_ai_service_answer_stream_async(
+	VentureAiService	 *self,
+	GPtrArray		 *history,
+	const gchar		 *message,
+	GPtrArray		 *images,
+	const gchar *const	 *mime_types,
+	VentureAuthPrincipal	 *principal,
+	VentureAiStreamFunc	  on_event,
+	gpointer		  event_data,
+	GCancellable		 *cancellable,
+	GAsyncReadyCallback	  callback,
+	gpointer		  user_data
+){
+	g_autoptr(GTask) task = NULL;
+	VentureAiStreamCall *call;
+
+	g_return_if_fail(VENTURE_IS_AI_SERVICE(self));
+
+	task = g_task_new(self, cancellable, callback, user_data);
+	g_task_set_source_tag(task, venture_ai_service_answer_stream_async);
+
+	if (venture_string_is_empty(message))
+	{
+		g_task_return_new_error(task, VENTURE_ERROR,
+		                        VENTURE_ERROR_INVALID_ARGUMENT,
+		                        "Ask a question first");
+		return;
+	}
+
+	/*
+	 * Refused rather than queued. A queued turn holds a browser
+	 * connection open for as long as somebody else's question takes,
+	 * with nothing to show for it; being told to try again in a moment
+	 * is shorter to say and shorter to wait out.
+	 */
+	if (self->streaming)
+	{
+		g_task_return_new_error(task, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+		                        "The assistant is answering another "
+		                        "question. Try again in a moment.");
+		return;
+	}
+
+	/* Held for the duration so a tool call can record what prompted it. */
+	g_free(self->current_prompt);
+	self->current_prompt = g_strdup(message);
+	self->current_principal = principal;
+	self->streaming = TRUE;
+
+	call = g_new0(VentureAiStreamCall, 1);
+	call->service = self;
+	call->on_event = on_event;
+	call->event_data = event_data;
+	call->messages = venture_ai_service_build_turn(self, history, message,
+	                                               images, mime_types);
+	g_task_set_task_data(task, call, venture_ai_stream_call_free);
+
+	/*
+	 * The flag is set for this turn and cleared when it ends, rather than
+	 * left on: the same executor answers the CLI and the MCP server,
+	 * neither of which has anywhere to put a delta, and a provider that
+	 * cannot stream ignores it anyway.
+	 */
+	call->handler_id = g_signal_connect(self->executor, "event",
+		G_CALLBACK(venture_ai_service_on_stream_event), call);
+	ai_tool_executor_set_stream(self->executor, TRUE);
+
+	ai_tool_executor_run_async(self->executor, self->provider,
+	                           call->messages, self->system_prompt,
+	                           self->max_tokens, 0, cancellable,
+	                           venture_ai_service_stream_done,
+	                           g_steal_pointer(&task));
+}
+
+gchar *
+venture_ai_service_answer_stream_finish(
+	VentureAiService	 *self,
+	GAsyncResult		 *result,
+	GError			**error
+){
+	g_return_val_if_fail(VENTURE_IS_AI_SERVICE(self), NULL);
+	g_return_val_if_fail(g_task_is_valid(result, self), NULL);
+
+	return g_task_propagate_pointer(G_TASK(result), error);
 }
 
 gchar *

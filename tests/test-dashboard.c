@@ -1678,7 +1678,10 @@ test_dashboard_http_round_trip(
 	g_assert_cmpuint(server_get(fixture, "/dashboards/factory", &page), ==,
 	                 SOUP_STATUS_OK);
 	g_assert_null(strstr(page, "which is off"));
-	g_assert_null(strstr(page, "notice negative"));
+	/* The rendered element, not the two words: the stylesheet and the
+	 * script are inlined into every page, and either may mention a
+	 * class name without anything on the page carrying it. */
+	g_assert_null(strstr(page, "<div class=\"notice negative\">"));
 	g_assert_nonnull(strstr(page, "widget-environments"));
 	g_clear_pointer(&page, g_free);
 

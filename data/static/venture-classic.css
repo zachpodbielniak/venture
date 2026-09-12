@@ -2020,6 +2020,37 @@ body.ai-resizing { user-select: none; cursor: ew-resize; }
 .chat-complete-group { grid-area: group; font-size: 10px; text-transform: uppercase;
                        letter-spacing: 0.08em; color: var(--text-faint); }
 
+/* A reply being written. The status line says what the model is doing
+ * while it is not talking; the caret says it has not stopped. */
+.chat-status {
+	font-size: 11px;
+	color: var(--text-faint);
+	min-height: 0;
+}
+
+.chat-status:not(:empty) {
+	margin-bottom: 4px;
+	animation: assist-pulse 1.4s ease-in-out infinite;
+}
+
+.chat-stream-text {
+	margin: 0;
+	white-space: pre-wrap;
+	line-height: 1.6;
+}
+
+.msg.ai.streaming .chat-stream-text::after {
+	content: "\2588";
+	margin-left: 1px;
+	color: var(--text-faint);
+	animation: stream-caret 1s ease-in-out infinite;
+}
+
+@keyframes stream-caret {
+	0%, 100% { opacity: 1; }
+	50%      { opacity: 0; }
+}
+
 /* ==========================================================================
    Request feedback
    ========================================================================== */

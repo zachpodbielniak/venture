@@ -67,6 +67,20 @@ Type =#= and a menu lists the knowledge bases you may read, by slug, with their 
 - One question at a time. While an answer is on its way a second send is held with a note rather than interleaving two replies; a reply that never arrives releases the box after three minutes.
 - Slash commands, none of which reach the model: =/new=, =/threads=, =/export=, =/close=, =/help=.
 
+** Replies arrive as they are written
+
+An answer is streamed. The panel shows an empty bubble the moment you send, and the model's prose fills it in a word at a time, with a caret at the end so a pause reads as thinking rather than as a hang. While the model is off calling a tool — reading a record, running a report — the bubble says which one instead of sitting silent, which is the difference between a slow answer and an interface that looks stuck.
+
+It is two requests. The =POST= stores the question, works out what the model will be shown — the replayed history, the attachments, the page you are on — and parks it behind a one-shot token; a =GET= on =/ui/chat/stream/<token>= holds a connection open and answers it. The token is spent on use, expires after two minutes, and belongs to the person who asked: anyone else's is indistinguishable from one that never existed. Nothing about the conversation travels in the URL.
+
+When the turn finishes, the whole reply — rendered the way a stored one is, with its markdown, its links and its approval cards — replaces everything the deltas painted. That is deliberate rather than wasteful: markdown cannot be formatted a fragment at a time, and a turn that called a tool halfway through says things before it that are not part of the answer.
+
+Closing the tab does not cancel the turn. The model is already working and the answer is stored either way, so reopening the conversation finds it.
+
+*One at a time.* A turn holds the executor, the streaming flag and the prompt that an audit entry will be stamped with, all of which are single slots. A second question while one is in flight is refused with "the assistant is answering another question" and the *Try again* button, rather than queued behind a wait with nothing to show or — worse — interleaved into the same transcript. The composer already holds one send at a time per browser, so this is only reachable from two tabs or two people.
+
+*Degrading.* A provider that cannot stream still answers; it simply says nothing until the answer is whole. A browser without =EventSource=, or a form posted with scripting off, takes the blocking path instead — the same one the CLI and the API take — and the reply arrives in one piece. The client asks for a stream per send rather than once, so a page rendered before the script ran never claims a capability the browser lacks.
+
 ** Replies
 
 The model's markdown is rendered — paragraphs, lists, bold, inline code — and never interpreted: everything it says is escaped first and formatted after, so a reply cannot carry markup into the page. Fenced code blocks come through whole, with nothing inside them treated as formatting. A markdown link becomes a link only to an =http(s)= URL or a local path; anything else stays text. A =>= line is a quote.
