@@ -58,6 +58,7 @@ CORE_SRCS := \
 	$(wildcard src/boxed/*.c) \
 	$(wildcard src/interfaces/*.c) \
 	$(wildcard src/model/*.c) \
+	src/periods/venture-period-records.c \
 	$(wildcard src/config/*.c) \
 	$(wildcard src/util/*.c) \
 	$(wildcard src/mcp/*.c)
@@ -74,6 +75,8 @@ SERVER_ONLY_SRCS := \
 	$(wildcard src/forge/*.c) \
 	$(wildcard src/kb/*.c)
 
+SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard src/periods/*.c))
+
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
 CLI_SRCS := $(wildcard src/cli/*.c)
@@ -89,6 +92,7 @@ PUBLIC_HDRS := \
 	$(wildcard src/boxed/*.h) \
 	$(wildcard src/interfaces/*.h) \
 	$(wildcard src/model/*.h) \
+	$(wildcard src/periods/*.h) \
 	$(wildcard src/config/*.h) \
 	$(wildcard src/core/*.h) \
 	$(wildcard src/db/*.h) \

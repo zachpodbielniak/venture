@@ -71,6 +71,7 @@
 #include "model/venture-venture-type.h"
 #include "model/venture-entity-registry.h"
 #include "model/venture-module.h"
+#include "periods/venture-period-records.h"
 
 /* --- Configuration ------------------------------------------------------- */
 
@@ -99,6 +100,7 @@
 #include "db/venture-schema.h"
 #include "db/venture-query.h"
 #include "db/venture-database.h"
+#include "periods/venture-period-constraints.h"
 
 #include "plugin/venture-plugin-manager.h"
 

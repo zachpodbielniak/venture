@@ -953,6 +953,8 @@ typedef enum
  *   a log line or anything the AI can see
  * @VENTURE_COLUMN_FLAG_SEARCHABLE: include in full-text search
  * @VENTURE_COLUMN_FLAG_TRANSIENT: computed at run time; never persisted
+ * @VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION: nonempty values are unique within
+ *   an organization, including soft-deleted records
  *
  * Per-property persistence hints. These are attached to a GObject property
  * with venture_entity_class_set_column_flags(), which is how a plain
@@ -968,7 +970,8 @@ typedef enum
 	VENTURE_COLUMN_FLAG_IMMUTABLE   = 1 << 4,
 	VENTURE_COLUMN_FLAG_SENSITIVE   = 1 << 5,
 	VENTURE_COLUMN_FLAG_SEARCHABLE  = 1 << 6,
-	VENTURE_COLUMN_FLAG_TRANSIENT   = 1 << 7
+	VENTURE_COLUMN_FLAG_TRANSIENT   = 1 << 7,
+	VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION = 1 << 8
 } VentureColumnFlags;
 
 /* --- GType registration -------------------------------------------------- */

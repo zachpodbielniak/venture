@@ -711,6 +711,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 
 	g_return_if_fail(VENTURE_IS_ENTITY_REGISTRY(self));
 
+	venture_period_records_register_constraints();
+
 	for (i = 0; i < G_N_ELEMENTS(builtins); i++)
 	{
 		g_autoptr(GError) local_error = NULL;
