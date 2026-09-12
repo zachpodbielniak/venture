@@ -50,6 +50,7 @@ static const VentureFieldDecl event_fields[] = {
 	VENTURE_FIELD_REF("invoice-id", "Invoice", NULL, "invoice", VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD_REF("customer-id", "Customer", NULL, "company", VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD_NAME("state", "State", "Issued, void, or a plugin workflow state"),
+	VENTURE_FIELD_NAME("kind", "Event", "issue, void, or transition"),
 	VENTURE_FIELD("date", "Date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("due-at", "Due", "Frozen at issue", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("amount", "Issued amount", "Frozen from the invoice lines at issue"),

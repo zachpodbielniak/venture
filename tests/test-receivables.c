@@ -88,6 +88,7 @@ rows(Fixture *f, const gchar *name)
 	query = venture_query_new(record_type(name));
 	venture_query_set_limit(query, 0);
 	venture_query_set_include_deleted(query, TRUE);
+	g_assert_true(venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, &error));
 	found = venture_database_find(f->database, query, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(found);
@@ -540,6 +541,197 @@ test_transition_veto(Fixture *f, gconstpointer data)
 	g_assert_cmpstr(before, ==, after);
 }
 
+static void
+test_batch(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) first = NULL;
+	g_autoptr(VentureEntity) second = NULL;
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(GPtrArray) allocations = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *before = NULL;
+	g_autofree gchar *after = NULL;
+	VentureSettlementService *service;
+	gboolean ok;
+
+	service = venture_settlement_service_get(f->database);
+	first = invoice_new(f, "BATCH-1", "2026-07-01", "60 USD");
+	second = invoice_new(f, "BATCH-2", "2026-07-01", "40 USD");
+	payment = payment_new(f, 0, "100 USD", "2026-07-10");
+	allocations = g_ptr_array_new_with_free_func(g_object_unref);
+	g_ptr_array_add(allocations, allocation_new(f, 0, 0, venture_entity_get_id(first), "60 USD", "2026-07-10"));
+	g_ptr_array_add(allocations, allocation_new(f, 0, 0, venture_entity_get_id(second), data != NULL ? "50 USD" : "40 USD", "2026-07-10"));
+	before = fingerprint(f);
+	ok = venture_settlement_service_apply_payment(service, VENTURE_PAYMENT(payment), allocations, NULL, &error);
+	if (data != NULL)
+	{
+		g_assert_false(ok);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		after = fingerprint(f);
+		g_assert_cmpstr(before, ==, after);
+		g_assert_false(venture_entity_is_persisted(payment));
+		g_assert_false(venture_entity_is_persisted(g_ptr_array_index(allocations, 0)));
+		assert_status(f, first, "sent");
+	}
+	else
+	{
+		g_assert_no_error(error);
+		g_assert_true(ok);
+		assert_status(f, first, "paid");
+		assert_status(f, second, "paid");
+	}
+}
+
+static void
+test_plugin_state(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(GDateTime) date = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	VentureSettlementService *service;
+	VentureInvoiceStateMachine *machine;
+
+	service = venture_settlement_service_get(f->database);
+	machine = venture_settlement_service_get_state_machine(service);
+	invoice = invoice_new(f, "PLUGIN", "2026-07-01", "100 USD");
+	g_assert_true(venture_invoice_state_machine_add_state(machine, "disputed", VENTURE_INVOICE_STATUS_SENT, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_invoice_state_machine_add_transition(machine, "sent", "disputed", &error));
+	g_assert_true(venture_invoice_state_machine_add_transition(machine, "disputed", "sent", &error));
+	g_assert_true(venture_invoice_state_machine_add_transition(machine, "disputed", "paid", &error));
+	date = g_date_time_new_from_iso8601("2026-07-02T00:00:00Z", NULL);
+	g_assert_true(venture_settlement_service_transition(service, VENTURE_INVOICE(invoice), "disputed", date, NULL, &error));
+	g_assert_true(venture_settlement_service_transition(service, VENTURE_INVOICE(invoice), "sent", date, NULL, &error));
+	g_assert_true(venture_settlement_service_transition(service, VENTURE_INVOICE(invoice), "disputed", date, NULL, &error));
+	g_assert_no_error(error);
+	balance = venture_settlement_service_invoice_balance(service, venture_entity_get_id(invoice), NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 10000);
+	payment = payment_new(f, venture_entity_get_id(invoice), "100 USD", "2026-07-10");
+	save(f, payment);
+	assert_status(f, invoice, "paid");
+	g_assert_false(venture_invoice_state_machine_add_state(machine, "disputed", VENTURE_INVOICE_STATUS_SENT, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS);
+}
+
+/* A future refund must never fund an allocation in an earlier statement. */
+static void
+test_backdated_allocation(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(VentureEntity) deposit = NULL;
+	g_autoptr(VentureEntity) refund = NULL;
+	g_autoptr(VentureEntity) allocation = NULL;
+	g_autoptr(GPtrArray) allocations = NULL;
+	g_autoptr(GError) error = NULL;
+
+	invoice = invoice_new(f, "BACKDATE", "2026-07-01", "100 USD");
+	payment = payment_new(f, venture_entity_get_id(invoice), "100 USD", "2026-07-20");
+	save(f, payment);
+	allocations = rows(f, "payment_allocation");
+	refund = record_new(f, "refund");
+	g_object_set(refund, "customer-id", f->customer_id,
+		"allocation-id", venture_entity_get_id(g_ptr_array_index(allocations, 0)), NULL);
+	money_field(refund, "date", "2026-08-20");
+	money_field(refund, "amount", "50 USD");
+	save(f, refund);
+	deposit = payment_new(f, 0, "50 USD", "2026-07-01");
+	save(f, deposit);
+	allocation = allocation_new(f, venture_entity_get_id(deposit), 0,
+		venture_entity_get_id(invoice), "50 USD", "2026-07-25");
+	g_assert_false(venture_database_save(f->database, allocation, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
+/* Deletion writes all columns; an unsaved paid field must not hitch a ride. */
+static void
+test_delete_cannot_set_paid(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(GError) error = NULL;
+
+	invoice = record_new(f, "invoice");
+	g_object_set(invoice, "number", "DELETE-BYPASS", NULL);
+	save(f, invoice);
+	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_PAID, NULL);
+	g_assert_false(venture_database_delete(f->database, invoice, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	assert_status(f, invoice, "draft");
+}
+
+static void
+test_transition_cannot_edit_issued(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(GDateTime) date = NULL;
+	g_autoptr(GError) error = NULL;
+
+	invoice = invoice_new(f, "FROZEN", "2026-07-01", "100 USD");
+	money_field(invoice, "issued-at", "2026-06-01");
+	date = g_date_time_new_from_iso8601("2026-08-01T00:00:00Z", NULL);
+	g_assert_false(venture_settlement_service_transition(venture_settlement_service_get(f->database),
+		VENTURE_INVOICE(invoice), "void", date, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
+static void
+test_statement(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(VentureDateRange) period = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(JsonObject) options = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureReport *report;
+
+	invoice = invoice_new(f, "STATEMENT", "2026-07-01", "100 USD");
+	payment = payment_new(f, venture_entity_get_id(invoice), "120 USD", "2026-08-15");
+	save(f, payment);
+	period = venture_date_range_parse("2026-07", NULL, 1, &error);
+	g_assert_no_error(error);
+	balance = venture_settlement_service_customer_balance(venture_settlement_service_get(f->database),
+		f->organization_id, f->customer_id, venture_date_range_get_end(period), "USD", &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 10000);
+	g_clear_pointer(&balance, venture_money_free);
+	balance = venture_settlement_service_customer_balance(venture_settlement_service_get(f->database),
+		f->organization_id, f->customer_id, NULL, "USD", &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_money_get_amount(balance), ==, -2000);
+	g_clear_pointer(&period, venture_date_range_free);
+	period = venture_date_range_parse("2026-08", NULL, 1, &error);
+	options = json_object_new();
+	json_object_set_int_member(options, "customer_id", f->customer_id);
+	report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "customer_statement");
+	g_assert_nonnull(report);
+	result = venture_report_generate(report, f->context, period, options, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_assert_cmpint(metric_amount(result, "opening"), ==, 10000);
+	g_assert_cmpint(metric_amount(result, "balance"), ==, -2000);
+	g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 1);
+}
+
+static void
+test_docs(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *index = NULL;
+	g_autofree gchar *modules = NULL;
+	g_autofree gchar *doc = NULL;
+
+	g_assert_true(g_file_get_contents("docs/receivables.org", &doc, NULL, NULL));
+	g_assert_true(g_file_get_contents("docs/index.org", &index, NULL, NULL));
+	g_assert_true(g_file_get_contents("docs/modules.org", &modules, NULL, NULL));
+	g_assert_nonnull(strstr(index, "file:receivables.org"));
+	g_assert_nonnull(strstr(modules, "| =receivables="));
+	g_assert_nonnull(strstr(doc, "venture_receivables_post_batch"));
+}
+
 int
 main(int argc, char **argv)
 {
@@ -556,6 +748,14 @@ main(int argc, char **argv)
 	ADD("duplicate", test_duplicate);
 	ADD("ledger-batches", test_ledger_batches);
 	ADD("transition-veto", test_transition_veto);
+	ADD("batch", test_batch);
+	g_test_add("/receivables/batch-rollback", Fixture, "fail", set_up, test_batch, tear_down);
+	ADD("plugin-state", test_plugin_state);
+	ADD("backdated-allocation", test_backdated_allocation);
+	ADD("delete-cannot-set-paid", test_delete_cannot_set_paid);
+	ADD("transition-cannot-edit-issued", test_transition_cannot_edit_issued);
+	ADD("statement", test_statement);
+	ADD("docs", test_docs);
 	g_test_add("/receivables/zero", Fixture, "0 USD", set_up, test_invalid_amount, tear_down);
 	g_test_add("/receivables/negative", Fixture, "-10 USD", set_up, test_invalid_amount, tear_down);
 	g_test_add("/receivables/wrong-currency", Fixture, "100 EUR", set_up, test_invalid_amount, tear_down);

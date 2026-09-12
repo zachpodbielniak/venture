@@ -59,12 +59,15 @@ CORE_SRCS := \
 	$(wildcard src/interfaces/*.c) \
 	$(wildcard src/model/*.c) \
 	src/receivables/venture-receivable-records.c \
+	src/receivables/venture-invoice-state-machine.c \
 	$(wildcard src/config/*.c) \
 	$(wildcard src/util/*.c) \
 	$(wildcard src/mcp/*.c)
 
 # Server-only subsystems.
 SERVER_ONLY_SRCS := \
+	src/receivables/venture-settlement-service.c \
+	src/receivables/venture-receivable-reports.c \
 	$(wildcard src/core/*.c) \
 	$(wildcard src/db/*.c) \
 	$(wildcard src/report/*.c) \

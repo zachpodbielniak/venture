@@ -69,6 +69,7 @@
 #include "model/venture-entity-macros.h"
 #include "model/venture-records.h"
 #include "receivables/venture-receivable-records.h"
+#include "receivables/venture-invoice-state-machine.h"
 #include "model/venture-venture-type.h"
 #include "model/venture-entity-registry.h"
 #include "model/venture-module.h"
@@ -106,6 +107,7 @@
 #include "automation/venture-automation.h"
 
 #include "report/venture-report.h"
+#include "receivables/venture-settlement-service.h"
 
 /* The confirmation store comes first: the context owns one and names its
  * type in an accessor. */

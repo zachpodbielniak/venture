@@ -2640,7 +2640,10 @@ static const VentureFieldDecl venture_invoice_fields[] = {
 	              VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("terms", "Terms", "Payment terms shown on the "
 	                   "printed invoice"),
-	VENTURE_FIELD_TEXT("notes", "Notes", "Internal; never printed")
+	VENTURE_FIELD_TEXT("notes", "Notes", "Internal; never printed"),
+	VENTURE_FIELD("workflow-state", "Workflow state",
+		"Set through VentureSettlementService; plugins may extend the lifecycle",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY(VentureInvoice, venture_invoice, venture_invoice_fields)
