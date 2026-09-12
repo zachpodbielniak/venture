@@ -864,6 +864,53 @@ test_identity_integrity(Fixture *f, gconstpointer data)
 }
 
 static void
+test_balance_boundaries(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureJournal) draft = header(f);
+	g_autoptr(GPtrArray) rows = lines(f, 10000, "USD");
+	g_autoptr(VentureJournal) posted = NULL;
+	g_autoptr(GDateTime) as_of = date("2026-02-01T00:00:00Z");
+	g_autoptr(VentureMoney) balance = NULL;
+	g_autoptr(GError) error = NULL;
+	VenturePostingService *service = venture_database_get_posting_service(f->db);
+	gint64 org = f->org;
+	gboolean other_org = g_strcmp0(data, "organization") == 0;
+
+	posted = venture_posting_service_post(service, draft, rows, NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(posted);
+	if (other_org)
+	{
+		g_autoptr(VentureOrganization) other = venture_organization_new();
+
+		g_object_set(other, "name", "Other books", NULL);
+		g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(other), NULL, &error));
+		org = venture_entity_get_id(VENTURE_ENTITY(other));
+	}
+	else
+	{
+		g_autoptr(VentureMoney) amount = venture_money_new_for_currency(10000, "USD");
+		guint i;
+
+		g_clear_object(&draft);
+		g_clear_pointer(&rows, g_ptr_array_unref);
+		draft = header(f);
+		rows = lines(f, 10000, "USD");
+		g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(draft), NULL, &error));
+		for (i = 0; i < rows->len; i++)
+		{
+			g_object_set(g_ptr_array_index(rows, i), "journal-id", venture_entity_get_id(VENTURE_ENTITY(draft)),
+				"book-amount", amount, NULL);
+			g_assert_true(venture_database_save(f->db, g_ptr_array_index(rows, i), NULL, &error));
+		}
+	}
+	balance = venture_posting_service_account_balance(service, account(f, "1000"), org, "USD", as_of, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(balance);
+	g_assert_cmpint(balance->amount, ==, other_org ? 0 : 10000);
+}
+
+static void
 test_batch_identity(Fixture *f, gconstpointer data)
 {
 	g_autoptr(GPtrArray) entries = g_ptr_array_new_with_free_func(g_object_unref);
@@ -923,6 +970,74 @@ test_batch_identity(Fixture *f, gconstpointer data)
 	}
 }
 
+static void
+test_balance_scope(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureJournal) draft = header(f);
+	g_autoptr(VentureJournal) usd = NULL;
+	g_autoptr(VentureJournal) eur = NULL;
+	g_autoptr(GPtrArray) rows = lines(f, 10000, "USD");
+	g_autoptr(VentureOrganization) other = venture_organization_new();
+	g_autoptr(GDateTime) as_of = date("2026-02-01T00:00:00Z");
+	g_autoptr(VentureMoney) amount = venture_money_new_for_currency(20000, "EUR");
+	g_autoptr(VentureMoney) balance = NULL;
+	g_autoptr(GError) error = NULL;
+	VenturePostingService *service = venture_database_get_posting_service(f->db);
+	gint64 cash = account(f, "1000");
+	guint i;
+
+	(void)data;
+	usd = venture_posting_service_post(service, draft, rows, NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(usd);
+	g_clear_object(&draft);
+	draft = header(f);
+	g_object_set(draft, "currency", "EUR", NULL);
+	g_clear_pointer(&rows, g_ptr_array_unref);
+	rows = lines(f, 10000, "USD");
+	for (i = 0; i < rows->len; i++)
+		g_object_set(g_ptr_array_index(rows, i), "amount", amount, NULL);
+	eur = venture_posting_service_post(service, draft, rows, NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(eur);
+
+	g_clear_object(&draft);
+	draft = header(f);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(draft), NULL, &error));
+	g_clear_pointer(&amount, venture_money_free);
+	amount = venture_money_new_for_currency(9000000, "USD");
+	g_clear_pointer(&rows, g_ptr_array_unref);
+	rows = lines(f, 10000, "USD");
+	for (i = 0; i < rows->len; i++)
+	{
+		g_object_set(g_ptr_array_index(rows, i), "journal-id",
+			venture_entity_get_id(VENTURE_ENTITY(draft)), "amount", amount,
+			"book-amount", amount, NULL);
+		g_assert_true(venture_database_save(f->db, g_ptr_array_index(rows, i), NULL, &error));
+	}
+	/* Neither a valued draft nor a mutable opening balance is evidence. */
+	{
+		g_autoptr(VentureEntity) cash_account = venture_database_get(f->db, VENTURE_TYPE_ACCOUNT, cash, &error);
+
+		g_object_set(cash_account, "opening-balance", amount, NULL);
+		g_assert_true(venture_database_save(f->db, cash_account, NULL, &error));
+	}
+	balance = venture_posting_service_account_balance(service, cash, f->org, "USD", as_of, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(balance->amount, ==, 10000);
+	g_clear_pointer(&balance, venture_money_free);
+	balance = venture_posting_service_account_balance(service, cash, f->org, "EUR", as_of, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(balance->amount, ==, 20000);
+	g_object_set(other, "name", "Separate entity", NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(other), NULL, &error));
+	g_clear_pointer(&balance, venture_money_free);
+	balance = venture_posting_service_account_balance(service, cash,
+		venture_entity_get_id(VENTURE_ENTITY(other)), "USD", as_of, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(balance->amount, ==, 0);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -946,6 +1061,7 @@ main(int argc, char **argv)
 	ADD("date-integrity", test_date_integrity);
 	ADD("generic-validator-state", test_generic_validator_state);
 	ADD("identity-integrity", test_identity_integrity);
+	ADD("balance-scope", test_balance_scope);
 #define CASE(group, name, fn) g_test_add("/ledger/" group "/" name, Fixture, name, setup, fn, teardown)
 	CASE("refuse", "unbalanced", test_refusals);
 	CASE("refuse", "currency", test_refusals);
@@ -979,6 +1095,8 @@ main(int argc, char **argv)
 	CASE("batch", "source-type", test_batch_identity);
 	CASE("batch", "empty-transaction", test_batch_identity);
 	CASE("batch", "reverse-retry", test_batch_identity);
+	CASE("balance", "draft", test_balance_boundaries);
+	CASE("balance", "organization", test_balance_boundaries);
 #undef CASE
 #undef ADD
 	return g_test_run();
