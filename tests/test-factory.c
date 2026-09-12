@@ -790,6 +790,68 @@ test_factory_changelog_is_drafted_from_tickets(
 	g_object_get(release, "changelog", &changelog, NULL);
 	g_assert_nonnull(strstr(changelog, "Crash on save"));
 
+	/* The same draft over the API, which is what an agent calls: the
+	 * answer says whether anything changed, and a bare call leaves a
+	 * written changelog alone as the form does. */
+	{
+		g_autofree gchar *api_path = NULL;
+		g_autofree gchar *body = NULL;
+		g_autoptr(JsonNode) node = NULL;
+		JsonObject *reply;
+
+		g_object_set(release, "changelog", "hand-written again", NULL);
+		g_assert_true(venture_database_save(fixture->database, release, NULL,
+		                                    NULL));
+		api_path = g_strdup_printf("/api/v1/releases/%" G_GINT64_FORMAT
+		                           "/changelog", release_id);
+
+		g_assert_cmpuint(server_request_full(fixture, "POST", api_path,
+			"application/json", "{}", NULL, &body), ==, SOUP_STATUS_OK);
+		node = venture_json_parse(body, NULL);
+		reply = json_node_get_object(node);
+		g_assert_false(json_object_get_boolean_member(reply, "changed"));
+
+		g_clear_pointer(&body, g_free);
+		g_clear_pointer(&node, json_node_unref);
+		g_assert_cmpuint(server_request_full(fixture, "POST", api_path,
+			"application/json", "{\"replace\": true}", NULL, &body), ==,
+			SOUP_STATUS_OK);
+		node = venture_json_parse(body, NULL);
+		reply = json_node_get_object(node);
+		g_assert_true(json_object_get_boolean_member(reply, "changed"));
+		g_assert_nonnull(strstr(json_object_get_string_member(
+			json_object_get_object_member(reply, "release"), "changelog"),
+			"Crash on save"));
+
+		/* And publishing over the API is refused for the same reason
+		 * the button is missing: no repository. */
+		g_clear_pointer(&api_path, g_free);
+		api_path = g_strdup_printf("/api/v1/releases/%" G_GINT64_FORMAT
+		                           "/publish", release_id);
+		g_assert_cmpuint(server_request_full(fixture, "POST", api_path,
+			"application/json", "{}", NULL, NULL), ==, 422);
+	}
+
+	/* The loop at a glance, as JSON: the release is listed, so is the
+	 * nothing that is on fire. */
+	{
+		g_autofree gchar *body = NULL;
+		g_autoptr(JsonNode) node = NULL;
+		JsonObject *status;
+
+		g_assert_cmpuint(server_request(fixture, "GET", "/api/v1/factory",
+		                                NULL, &body), ==, SOUP_STATUS_OK);
+		node = venture_json_parse(body, NULL);
+		status = json_node_get_object(node);
+		g_assert_cmpuint(json_array_get_length(
+			json_object_get_array_member(status, "releases")), ==, 1);
+		g_assert_cmpuint(json_array_get_length(
+			json_object_get_array_member(status, "incidents")), ==, 0);
+		g_assert_true(json_object_has_member(status, "environments"));
+		g_assert_true(json_object_has_member(status, "milestones"));
+		g_assert_true(json_object_has_member(status, "builds"));
+	}
+
 	/* The release page lists what shipped and offers the actions; with
 	 * no repository there is nothing to publish to. */
 	g_clear_pointer(&path, g_free);

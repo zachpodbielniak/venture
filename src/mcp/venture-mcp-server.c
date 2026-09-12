@@ -1457,6 +1457,364 @@ venture_mcp_handle_initialize(VentureMcpServer *self)
 /*
  * Dispatches one tools/call to the tool that answers it.
  */
+/*
+ * A write that the server cannot stage -- a whole dashboard, or an action
+ * on the forge -- is refused outright when staging is on, and says what
+ * to do instead. Sending it would apply it, and holding it client-side
+ * would describe a queue that does not exist.
+ */
+static gboolean
+venture_mcp_require_apply_writes(
+	VentureMcpServer	 *self,
+	const gchar		 *what,
+	const gchar		 *instead,
+	GError			**error
+){
+	if (!self->stage_writes)
+		return TRUE;
+
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+	            "Not applied. %s cannot be staged for approval, and this "
+	            "server was started with write staging on. Either start it "
+	            "as `venturectl mcp --apply-writes`, or %s. Tell the person "
+	            "you are working for which you need.", what, instead);
+
+	return FALSE;
+}
+
+static gchar *
+venture_mcp_tool_modules(
+	VentureMcpServer	 *self,
+	JsonObject		 *arguments,
+	GError			**error
+){
+	g_autoptr(JsonNode) node = NULL;
+
+	(void)arguments;
+
+	node = venture_mcp_server_request(self, "GET", "/api/v1/modules", NULL,
+	                                  error);
+
+	if (NULL == node)
+		return NULL;
+
+	return venture_json_to_string(node, TRUE);
+}
+
+static gchar *
+venture_mcp_tool_links(
+	VentureMcpServer	 *self,
+	JsonObject		 *arguments,
+	GError			**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *path = NULL;
+	const gchar *type;
+	gint64 id;
+
+	type = venture_mcp_resolve_argument_type(self, arguments, error);
+
+	if (NULL == type)
+		return NULL;
+
+	if (!venture_mcp_resolve_argument_id(arguments, &id, error))
+		return NULL;
+
+	path = g_strdup_printf("/api/v1/links/%s/%" G_GINT64_FORMAT, type, id);
+	node = venture_mcp_server_request(self, "GET", path, NULL, error);
+
+	if (NULL == node)
+		return NULL;
+
+	return venture_json_to_string(node, TRUE);
+}
+
+/*
+ * venture_link: POST /api/v1/links, which stages like any write.
+ */
+static gchar *
+venture_mcp_tool_link(
+	VentureMcpServer	 *self,
+	JsonObject		 *arguments,
+	GError			**error
+){
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	const gchar *source_type;
+	const gchar *target_type;
+	const gchar *kind;
+	const gchar *note;
+	gint64 source_id;
+	gint64 target_id;
+
+	source_type = (NULL != arguments)
+		? venture_json_object_get_string(arguments, "source_type", NULL)
+		: NULL;
+	target_type = (NULL != arguments)
+		? venture_json_object_get_string(arguments, "target_type", NULL)
+		: NULL;
+	source_id = (NULL != arguments)
+		? venture_json_object_get_int(arguments, "source_id", 0) : 0;
+	target_id = (NULL != arguments)
+		? venture_json_object_get_int(arguments, "target_id", 0) : 0;
+
+	if ((NULL == source_type) || (NULL == target_type) || (0 == source_id) ||
+	    (0 == target_id))
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "A link needs source_type, source_id, "
+		                    "target_type and target_id.");
+		return NULL;
+	}
+
+	kind = venture_json_object_get_string(arguments, "kind", NULL);
+	note = venture_json_object_get_string(arguments, "note", NULL);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "source_type");
+	json_builder_add_string_value(builder, source_type);
+	json_builder_set_member_name(builder, "source_id");
+	json_builder_add_int_value(builder, source_id);
+	json_builder_set_member_name(builder, "target_type");
+	json_builder_add_string_value(builder, target_type);
+	json_builder_set_member_name(builder, "target_id");
+	json_builder_add_int_value(builder, target_id);
+
+	if ((NULL != kind) && ('\0' != kind[0]))
+	{
+		json_builder_set_member_name(builder, "kind");
+		json_builder_add_string_value(builder, kind);
+	}
+
+	if ((NULL != note) && ('\0' != note[0]))
+	{
+		json_builder_set_member_name(builder, "note");
+		json_builder_add_string_value(builder, note);
+	}
+
+	json_builder_end_object(builder);
+	body = json_builder_get_root(builder);
+
+	return venture_mcp_write(self, "POST", "/api/v1/links", body, error);
+}
+
+static gchar *
+venture_mcp_tool_dashboards(
+	VentureMcpServer	 *self,
+	JsonObject		 *arguments,
+	GError			**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	const gchar *what;
+	const gchar *path;
+
+	what = (NULL != arguments)
+		? venture_json_object_get_string(arguments, "what", NULL) : NULL;
+
+	if ((NULL == what) || ('\0' == what[0]) || (0 == g_strcmp0(what, "list")))
+		path = "/api/v1/dashboards";
+	else if (0 == g_strcmp0(what, "kinds"))
+		path = "/api/v1/widget-kinds";
+	else if (0 == g_strcmp0(what, "templates"))
+		path = "/api/v1/dashboard-templates";
+	else
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "\"%s\" is not something venture_dashboards lists. "
+		            "Use list, kinds or templates.", what);
+		return NULL;
+	}
+
+	node = venture_mcp_server_request(self, "GET", path, NULL, error);
+
+	if (NULL == node)
+		return NULL;
+
+	return venture_json_to_string(node, TRUE);
+}
+
+static gchar *
+venture_mcp_tool_dashboard(
+	VentureMcpServer	 *self,
+	JsonObject		 *arguments,
+	GError			**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GString) path = NULL;
+	const gchar *slug;
+	const gchar *mode;
+
+	slug = (NULL != arguments)
+		? venture_json_object_get_string(arguments, "slug", NULL) : NULL;
+
+	if ((NULL == slug) || ('\0' == slug[0]))
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Which dashboard? venture_dashboards lists "
+		                    "them by slug.");
+		return NULL;
+	}
+
+	mode = venture_json_object_get_string(arguments, "mode", NULL);
+	path = g_string_new("/api/v1/dashboards/");
+	g_string_append_uri_escaped(path, slug, NULL, FALSE);
+
+	if (0 == g_strcmp0(mode, "definition"))
+		g_string_append(path, "/export");
+	else if (0 == g_strcmp0(mode, "settings"))
+		g_string_append(path, "?data=0");
+	else if ((NULL != mode) && ('\0' != mode[0]) &&
+	         (0 != g_strcmp0(mode, "data")))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "\"%s\" is not a mode. Use data, settings or "
+		            "definition.", mode);
+		return NULL;
+	}
+
+	node = venture_mcp_server_request(self, "GET", path->str, NULL, error);
+
+	if (NULL == node)
+		return NULL;
+
+	return venture_json_to_string(node, TRUE);
+}
+
+static gchar *
+venture_mcp_tool_dashboard_build(
+	VentureMcpServer	 *self,
+	JsonObject		 *arguments,
+	GError			**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	const gchar *template_name;
+	JsonNode *definition;
+
+	if (!venture_mcp_require_apply_writes(self, "Building a whole dashboard",
+		"create the `dashboard` record with venture_create and then each "
+		"`dashboard_widget` with its dashboard_id, which stage like any "
+		"record", error))
+		return NULL;
+
+	template_name = (NULL != arguments)
+		? venture_json_object_get_string(arguments, "template", NULL) : NULL;
+	definition = (NULL != arguments)
+		? json_object_get_member(arguments, "definition") : NULL;
+
+	if ((NULL != template_name) && ('\0' != template_name[0]))
+	{
+		g_autoptr(JsonBuilder) builder = NULL;
+
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "template");
+		json_builder_add_string_value(builder, template_name);
+		json_builder_end_object(builder);
+		body = json_builder_get_root(builder);
+		node = venture_mcp_server_request(self, "POST",
+			"/api/v1/dashboards/from-template", body, error);
+	}
+	else if ((NULL != definition) && JSON_NODE_HOLDS_OBJECT(definition))
+	{
+		node = venture_mcp_server_request(self, "POST",
+			"/api/v1/dashboards/import", definition, error);
+	}
+	else
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Name a template, or pass a definition object "
+		                    "with a name and a list of widgets.");
+		return NULL;
+	}
+
+	if (NULL == node)
+		return NULL;
+
+	return venture_json_to_string(node, TRUE);
+}
+
+static gchar *
+venture_mcp_tool_factory(
+	VentureMcpServer	 *self,
+	JsonObject		 *arguments,
+	GError			**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autofree gchar *path = NULL;
+	const gchar *action;
+	gint64 id;
+
+	action = (NULL != arguments)
+		? venture_json_object_get_string(arguments, "action", NULL) : NULL;
+
+	if ((NULL == action) || ('\0' == action[0]) ||
+	    (0 == g_strcmp0(action, "status")))
+	{
+		node = venture_mcp_server_request(self, "GET", "/api/v1/factory",
+		                                  NULL, error);
+
+		if (NULL == node)
+			return NULL;
+
+		return venture_json_to_string(node, TRUE);
+	}
+
+	if ((0 != g_strcmp0(action, "changelog")) &&
+	    (0 != g_strcmp0(action, "publish")))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "\"%s\" is not a factory action. Use status, changelog "
+		            "or publish.", action);
+		return NULL;
+	}
+
+	if (!venture_mcp_resolve_argument_id(arguments, &id, error))
+		return NULL;
+
+	if (0 == g_strcmp0(action, "changelog"))
+	{
+		if (!venture_mcp_require_apply_writes(self,
+			"Drafting a changelog onto the release",
+			"read the tickets with venture_list (release_id filter) and "
+			"set the changelog with venture_update, which stages", error))
+			return NULL;
+	}
+	else if (!venture_mcp_require_apply_writes(self,
+		"Publishing a release to the forge",
+		"ask the person you are working for to press Publish on the "
+		"release's page", error))
+	{
+		return NULL;
+	}
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder,
+		(0 == g_strcmp0(action, "changelog")) ? "replace" : "prerelease");
+	json_builder_add_boolean_value(builder,
+		venture_json_object_get_bool(arguments,
+			(0 == g_strcmp0(action, "changelog")) ? "replace" : "prerelease",
+			FALSE));
+	json_builder_end_object(builder);
+	body = json_builder_get_root(builder);
+
+	path = g_strdup_printf("/api/v1/releases/%" G_GINT64_FORMAT "/%s", id,
+	                       action);
+	node = venture_mcp_server_request(self, "POST", path, body, error);
+
+	if (NULL == node)
+		return NULL;
+
+	return venture_json_to_string(node, TRUE);
+}
+
 static gchar *
 venture_mcp_dispatch_tool(
 	VentureMcpServer	 *self,
@@ -1490,6 +1848,27 @@ venture_mcp_dispatch_tool(
 
 	if (0 == g_strcmp0(name, "venture_confirmations"))
 		return venture_mcp_tool_confirmations(self, arguments, error);
+
+	if (0 == g_strcmp0(name, "venture_modules"))
+		return venture_mcp_tool_modules(self, arguments, error);
+
+	if (0 == g_strcmp0(name, "venture_links"))
+		return venture_mcp_tool_links(self, arguments, error);
+
+	if (0 == g_strcmp0(name, "venture_link"))
+		return venture_mcp_tool_link(self, arguments, error);
+
+	if (0 == g_strcmp0(name, "venture_dashboards"))
+		return venture_mcp_tool_dashboards(self, arguments, error);
+
+	if (0 == g_strcmp0(name, "venture_dashboard"))
+		return venture_mcp_tool_dashboard(self, arguments, error);
+
+	if (0 == g_strcmp0(name, "venture_dashboard_build"))
+		return venture_mcp_tool_dashboard_build(self, arguments, error);
+
+	if (0 == g_strcmp0(name, "venture_factory"))
+		return venture_mcp_tool_factory(self, arguments, error);
 
 	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
 	            "There is no tool called \"%s\".", name);

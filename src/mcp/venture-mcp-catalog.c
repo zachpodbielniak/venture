@@ -48,8 +48,8 @@ G_DEFINE_TYPE(VentureMcpCatalog, venture_mcp_catalog, G_TYPE_OBJECT)
 
 /*
  * Which generated pieces a tool's schema needs. The tool NAMES are fixed --
- * there are nine of them and they are the verbs, not the nouns -- while
- * everything that enumerates record types is filled in from the schema.
+ * they are the verbs, not the nouns -- while everything that enumerates
+ * record types is filled in from the schema.
  *
  * A per-type tool surface was the alternative and is the wrong shape: 31
  * built-in types times five verbs is 155 tools in every context window, and
@@ -144,6 +144,75 @@ static const VentureMcpToolDef tool_defs[] = {
 		"List every change waiting for a person to approve it -- staged by "
 		"this session's writes, by another agent, or by VENTURE's own "
 		"assistant -- or approve or reject one of them by id.",
+		TOOL_FLAG_NONE
+	},
+	{
+		"venture_modules",
+		"Which modules this server runs -- CRM, invoicing, the software "
+		"factory, dashboards and the rest -- with what each owns and why "
+		"any is off. A record type whose module is off is not in the "
+		"schema and its routes answer 404.",
+		TOOL_FLAG_NONE
+	},
+	{
+		"venture_links",
+		"Every link touching one record, read from it: what it blocks, "
+		"depends on, produced, or is otherwise joined to, across every "
+		"record type. Follow a thread from a release to the tickets it "
+		"shipped, or from an incident to the deployment that caused it.",
+		TOOL_FLAG_TYPE | TOOL_FLAG_TYPE_REQUIRED | TOOL_FLAG_ID
+	},
+	{
+		"venture_link",
+		"Link two records of any types with a kind that says what the "
+		"link means read from the source: related, blocks, blocked_by, "
+		"depends_on, required_by, parent_of, child_of, duplicates, "
+		"causes, caused_by, produces, produced_by, references, "
+		"referenced_by, supersedes, superseded_by. A write, so it is "
+		"staged like venture_create unless the server was started with "
+		"--apply-writes.",
+		TOOL_FLAG_NONE
+	},
+	{
+		"venture_dashboards",
+		"The dashboards on this server (`what`: list), the catalogue of "
+		"widget kinds a dashboard can hold (`what`: kinds -- each with the "
+		"settings it reads), or the shipped templates with their full "
+		"definitions (`what`: templates). Read kinds before building a "
+		"dashboard.",
+		TOOL_FLAG_NONE
+	},
+	{
+		"venture_dashboard",
+		"One dashboard by slug. `mode` data (the default) evaluates every "
+		"widget and returns what each shows right now -- counts, lists, "
+		"report figures, notes; settings lists the widgets without "
+		"evaluating them; definition returns the portable JSON that "
+		"venture_dashboard_build accepts, for copying or editing.",
+		TOOL_FLAG_NONE
+	},
+	{
+		"venture_dashboard_build",
+		"Create a dashboard: from a shipped template by name, or from a "
+		"definition -- {name, description, purpose, layout, widgets: "
+		"[{kind, title, entity_type, filter, report_name, ...}]} as "
+		"venture_dashboards (what: templates) shows. Every widget is "
+		"checked before anything is written. A dashboard is layout, not "
+		"business data, but it is still a write: it needs the server "
+		"started with --apply-writes; otherwise use venture_create on "
+		"dashboard and then dashboard_widget, which stage like any record.",
+		TOOL_FLAG_NONE
+	},
+	{
+		"venture_factory",
+		"The software factory. `action` status (the default) is the loop "
+		"at a glance: open milestones with progress, the newest releases, "
+		"the latest CI builds, each environment with the release it runs, "
+		"and open incidents. changelog drafts a release's changelog from "
+		"the tickets marked as fixed in it (replace: true overwrites one "
+		"somebody wrote); publish cuts the release on the git forge, "
+		"creating the tag, which cannot be undone from here. The two "
+		"writes need --apply-writes.",
 		TOOL_FLAG_NONE
 	}
 };
@@ -598,6 +667,49 @@ venture_mcp_catalog_add_object_property(
 	json_builder_end_object(builder);
 }
 
+static void
+venture_mcp_catalog_add_boolean_property(
+	JsonBuilder	*builder,
+	const gchar	*name,
+	const gchar	*description
+){
+	json_builder_set_member_name(builder, name);
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "type");
+	json_builder_add_string_value(builder, "boolean");
+	json_builder_set_member_name(builder, "description");
+	json_builder_add_string_value(builder, description);
+	json_builder_end_object(builder);
+}
+
+/*
+ * A string property constrained to a few values.
+ */
+static void
+venture_mcp_catalog_add_enum_property(
+	JsonBuilder		*builder,
+	const gchar		*name,
+	const gchar		*description,
+	const gchar *const	*values
+){
+	gsize i;
+
+	json_builder_set_member_name(builder, name);
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "type");
+	json_builder_add_string_value(builder, "string");
+	json_builder_set_member_name(builder, "description");
+	json_builder_add_string_value(builder, description);
+	json_builder_set_member_name(builder, "enum");
+	json_builder_begin_array(builder);
+
+	for (i = 0; NULL != values[i]; i++)
+		json_builder_add_string_value(builder, values[i]);
+
+	json_builder_end_array(builder);
+	json_builder_end_object(builder);
+}
+
 /*
  * The parts of an input schema that are particular to one tool. Everything
  * driven by a flag is emitted by the caller, so a tool that grows a record
@@ -677,6 +789,84 @@ venture_mcp_catalog_add_tool_extras(
 			"Which staged change to approve or reject.");
 		return;
 	}
+
+	if (0 == g_strcmp0(tool_name, "venture_link"))
+	{
+		venture_mcp_catalog_add_string_property(builder, "source_type",
+			"The record type at this end.");
+		venture_mcp_catalog_add_integer_property(builder, "source_id",
+			"Its numeric id.");
+		venture_mcp_catalog_add_string_property(builder, "kind",
+			"What the link means, read from the source. Defaults to "
+			"related.");
+		venture_mcp_catalog_add_string_property(builder, "target_type",
+			"The record type at the other end.");
+		venture_mcp_catalog_add_integer_property(builder, "target_id",
+			"Its numeric id.");
+		venture_mcp_catalog_add_string_property(builder, "note",
+			"Why, in a few words.");
+		return;
+	}
+
+	if (0 == g_strcmp0(tool_name, "venture_dashboards"))
+	{
+		static const gchar *const whats[] = {
+			"list", "kinds", "templates", NULL
+		};
+
+		venture_mcp_catalog_add_enum_property(builder, "what",
+			"list for the dashboards, kinds for the widget catalogue, "
+			"templates for the shipped definitions. Defaults to list.",
+			whats);
+		return;
+	}
+
+	if (0 == g_strcmp0(tool_name, "venture_dashboard"))
+	{
+		static const gchar *const modes[] = {
+			"data", "settings", "definition", NULL
+		};
+
+		venture_mcp_catalog_add_string_property(builder, "slug",
+			"The dashboard's slug, as in /dashboards/<slug>. "
+			"venture_dashboards lists them.");
+		venture_mcp_catalog_add_enum_property(builder, "mode",
+			"data evaluates every widget; settings lists them; definition "
+			"is the portable JSON. Defaults to data.", modes);
+		return;
+	}
+
+	if (0 == g_strcmp0(tool_name, "venture_dashboard_build"))
+	{
+		venture_mcp_catalog_add_string_property(builder, "template",
+			"A shipped template: factory, reporting, work or overview. "
+			"venture_dashboards (what: templates) shows each one's "
+			"definition.");
+		venture_mcp_catalog_add_object_property(builder, "definition",
+			"A dashboard definition, as venture_dashboard (mode: "
+			"definition) returns one. Ignored when a template is named.");
+		return;
+	}
+
+	if (0 == g_strcmp0(tool_name, "venture_factory"))
+	{
+		static const gchar *const actions[] = {
+			"status", "changelog", "publish", NULL
+		};
+
+		venture_mcp_catalog_add_enum_property(builder, "action",
+			"status for the loop at a glance; changelog to draft a "
+			"release's changelog from its tickets; publish to cut a "
+			"release on the forge. Defaults to status.", actions);
+		venture_mcp_catalog_add_integer_property(builder, "id",
+			"The release's numeric id, for changelog and publish.");
+		venture_mcp_catalog_add_boolean_property(builder, "replace",
+			"changelog only: overwrite a changelog somebody already "
+			"wrote. Defaults to false.");
+		venture_mcp_catalog_add_boolean_property(builder, "prerelease",
+			"publish only: mark the release a pre-release on the forge.");
+		return;
+	}
 }
 
 /*
@@ -702,6 +892,17 @@ venture_mcp_catalog_add_required(
 
 	if (0 == g_strcmp0(def->name, "venture_report"))
 		json_builder_add_string_value(builder, "name");
+
+	if (0 == g_strcmp0(def->name, "venture_dashboard"))
+		json_builder_add_string_value(builder, "slug");
+
+	if (0 == g_strcmp0(def->name, "venture_link"))
+	{
+		json_builder_add_string_value(builder, "source_type");
+		json_builder_add_string_value(builder, "source_id");
+		json_builder_add_string_value(builder, "target_type");
+		json_builder_add_string_value(builder, "target_id");
+	}
 
 	json_builder_end_array(builder);
 }

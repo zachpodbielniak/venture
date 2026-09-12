@@ -70,6 +70,9 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `links TYPE ID` | every link touching a record, read from it |
 | `link TYPE ID TYPE ID [kind=K] [note=T]` | link two records; kinds: related, blocks, blocked_by, depends_on, required_by, parent_of, child_of, duplicates, causes, caused_by, produces, produced_by, references, referenced_by, supersedes, superseded_by; unlink with `delete record_link ID` |
 | `modules` | which modules the server runs; `-f json` for types, reports and reasons |
+| `factory` | the software factory at a glance: milestones with progress, releases, builds, environments and what they run, open incidents |
+| `release changelog ID [--replace]` | draft a release's changelog from the tickets marked fixed in it |
+| `release publish ID [--prerelease]` | cut the release on the forge; creates the tag, cannot be undone here |
 | `dashboards` | the dashboards the token may see |
 | `dashboard SLUG` | one dashboard, every widget evaluated; `-f json` for the whole answer |
 | `dashboard export SLUG` | its definition as JSON; `dashboard import FILE` (or `-`) creates one from it |

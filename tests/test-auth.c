@@ -1153,6 +1153,7 @@ test_auth_api_refuses_anonymous_requests(
 		/* Dashboards: a page somebody built is a summary of what they
 		 * watch, and the widget catalogue says what this install can
 		 * show. */
+		"/api/v1/factory",
 		"/api/v1/dashboards",
 		"/api/v1/dashboards/factory",
 		"/api/v1/dashboards/factory/export",
@@ -1268,6 +1269,21 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/runs/1/cancel", NULL, "", NULL, NULL),
 		==, SOUP_STATUS_FOUND);
+
+	/* The factory's two actions over the API: a changelog is a write, a
+	 * publish creates a tag on the forge. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/releases/1/changelog", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/releases/1/publish", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/dashboards/import", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/dashboards/from-template", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
 
 	/* The dashboard writes: making, changing and removing pages and
 	 * their widgets. */

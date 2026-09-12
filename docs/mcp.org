@@ -46,7 +46,7 @@ This follows from what the API already promises: it is generated from the record
 
 Concretely: register a record type in a plugin, restart both, and it is in the =type= enumeration of every tool that takes one. =tests/test-mcp.c= pins this with two schema fixtures differing by a single entry.
 
-*** Nine tools
+*** Sixteen tools
 
 | Tool                    | What it does                                             |
 |-------------------------+----------------------------------------------------------|
@@ -59,6 +59,15 @@ Concretely: register a record type in a plugin, restart both, and it is in the =
 | =venture_reports=       | what reports there are                                   |
 | =venture_report=        | run one                                                  |
 | =venture_confirmations= | list, approve or reject anything waiting for a decision   |
+| =venture_modules=       | which modules the server runs, and why any is off        |
+| =venture_links=         | every link touching one record                           |
+| =venture_link=          | link two records of any types; staged like a create      |
+| =venture_dashboards=    | the dashboards, the widget-kind catalogue, or the templates |
+| =venture_dashboard=     | one dashboard: evaluated, its settings, or its definition |
+| =venture_dashboard_build= | make one from a template or a definition                |
+| =venture_factory=       | the factory at a glance; draft a changelog; publish a release |
+
+The last five are the two things an agent is most often asked to do with VENTURE beyond records: build a page, and run the factory. =venture_dashboards= with =what: kinds= lists every widget kind with the settings it reads, and =what: templates= returns the four shipped definitions in full, so an agent can copy one and change it; =venture_dashboard_build= takes a template name or a definition; =venture_dashboard= reads a page back evaluated — every widget with what it shows right now. =venture_factory= reads the loop, drafts a release's changelog from its tickets, and publishes to the forge. Building a whole dashboard and publishing a release cannot wait in the confirmation queue — one is several records, the other a tag on another system — so both refuse while write staging is on and say what to do instead: start the server with =--apply-writes=, or for a dashboard create the =dashboard= and then each =dashboard_widget= with =venture_create=, which stage like any record.
 
 The names are verbs, not nouns. A tool per record type per verb would be 31 built-in types times five verbs — 155 tools in every context window — and =venturectl= already demonstrates that one generic command per verb is enough. What must never be written down is the list of nouns, and it is not.
 

@@ -152,6 +152,8 @@ properties.
 | =venture_report=      | read — any report                            |
 | =venture_links=       | read — every link touching a record          |
 | =venture_dashboard=   | read — a dashboard, every widget evaluated; or the list of them |
+| =venture_factory=     | read for status; changelog staged unless autonomous; publish only when autonomous |
+| =venture_dashboard_build= | only when autonomous — a whole page cannot be staged   |
 | =venture_link=        | staged unless the policy is autonomous       |
 | =venture_create=      | staged unless the policy is autonomous       |
 | =venture_update=      | staged unless the policy is autonomous       |

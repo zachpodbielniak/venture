@@ -77,6 +77,20 @@ An incident names the environment it happened in, the release that was running a
 
 Lead time is measured to the release, not to "done". Done is a column on a board; released is a fact a customer can observe. A ticket finished in March and released in June took until June.
 
+* Over the API, the CLI and the assistant
+
+Every factory record is an ordinary type, so =/api/v1/milestone=, =release=, =build=, =environment=, =deployment= and =incident= have the generic routes, =venturectl list|get|create|update= work on them, and the assistant's =venture_query= and =venture_create= reach them, staged under the default policy. Three things are more than a record:
+
+| Question                        | API                                   | venturectl                       | assistant / MCP                       |
+|---------------------------------+---------------------------------------+----------------------------------+---------------------------------------|
+| where does the factory stand    | =GET /api/v1/factory=                 | =factory=                        | =venture_factory= (status)            |
+| draft a changelog from tickets  | =POST /api/v1/releases/:id/changelog= | =release changelog ID [--replace]= | =venture_factory= action changelog    |
+| publish a release to the forge  | =POST /api/v1/releases/:id/publish=   | =release publish ID [--prerelease]= | =venture_factory= action publish    |
+
+All three call the same functions in =src/core/venture-factory.c= that the pages call, so a changelog an agent drafts is the changelog the button drafts. The status is the five questions the Factory page asks, as one JSON object. Drafting is an update to the release and follows the write policy — the in-process assistant stages it unless autonomous; =venturectl mcp= needs =--apply-writes=, or an agent sets the field itself with =venture_update=, which stages. Publishing creates a tag and a release on the forge, which no approval could undo, so it is offered to the assistant only under the autonomous policy and to =venturectl mcp= only with =--apply-writes=.
+
+An agent building a factory dashboard uses the same surface: =venture_dashboards= (=what: templates=) for the shipped factory definition, =venture_dashboard_build= to make it, =venture_dashboard= to read it back with every widget answered. See [[file:dashboards.org][Dashboards]].
+
 * Links
 
 Everything here links freely. A release =produces= a build; an incident is =caused_by= a deployment; a ticket =blocks= a release. See [[file:data-model.org::*Linking any record to any other][Linking any record to any other]].

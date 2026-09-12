@@ -425,7 +425,7 @@ test_catalog_from_schema(void)
 	tools = venture_mcp_catalog_get_tools(catalog);
 	g_assert_nonnull(tools);
 	g_assert_true(JSON_NODE_HOLDS_ARRAY(tools));
-	g_assert_cmpuint(json_array_get_length(json_node_get_array(tools)), ==, 9);
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(tools)), ==, 16);
 
 	enumeration = tool_type_enum(tools, "venture_list");
 	g_assert_nonnull(enumeration);
@@ -757,7 +757,199 @@ test_protocol_tools_list(void)
 	                                       "result");
 	tools = json_object_get_array_member(result, "tools");
 
-	g_assert_cmpuint(json_array_get_length(tools), ==, 9);
+	g_assert_cmpuint(json_array_get_length(tools), ==, 16);
+}
+
+/*
+ * The dashboards and the factory reach an agent through the same verbs a
+ * person has: list and read a dashboard, read the catalogue and the
+ * templates, build one, read the loop, draft a changelog. Each maps to
+ * one route, and the writes refuse -- naming the alternative -- while
+ * staging is on, because a whole dashboard or a tag on the forge cannot
+ * wait in the queue.
+ */
+static void
+test_dashboards_and_factory_tools(void)
+{
+	g_autoptr(VentureMcpServer) server = NULL;
+	MockTransport *mock;
+
+	server = server_with_fixture_staging("schema.json", TRUE, &mock);
+	mock_transport_answer(mock, 200, "application/json", "[]");
+
+	{
+		g_autoptr(JsonNode) params = NULL;
+		g_autoptr(JsonNode) request = NULL;
+		g_autoptr(JsonNode) response = NULL;
+		gboolean is_error;
+
+		params = call_params("venture_dashboards", NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		result_text(response, &is_error);
+		g_assert_false(is_error);
+		g_assert_cmpstr(mock->last_path, ==, "/api/v1/dashboards");
+
+		g_clear_pointer(&request, json_node_unref);
+		g_clear_pointer(&response, json_node_unref);
+		params = call_params("venture_dashboards", "what", "kinds", NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		result_text(response, &is_error);
+		g_assert_false(is_error);
+		g_assert_cmpstr(mock->last_path, ==, "/api/v1/widget-kinds");
+
+		g_clear_pointer(&request, json_node_unref);
+		g_clear_pointer(&response, json_node_unref);
+		params = call_params("venture_dashboards", "what", "templates", NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		result_text(response, &is_error);
+		g_assert_false(is_error);
+		g_assert_cmpstr(mock->last_path, ==, "/api/v1/dashboard-templates");
+	}
+
+	mock_transport_answer(mock, 200, "application/json", "{\"widgets\": []}");
+
+	{
+		g_autoptr(JsonNode) params = NULL;
+		g_autoptr(JsonNode) request = NULL;
+		g_autoptr(JsonNode) response = NULL;
+		gboolean is_error;
+
+		params = call_params("venture_dashboard", "slug", "factory", NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		result_text(response, &is_error);
+		g_assert_false(is_error);
+		g_assert_cmpstr(mock->last_path, ==, "/api/v1/dashboards/factory");
+
+		g_clear_pointer(&request, json_node_unref);
+		g_clear_pointer(&response, json_node_unref);
+		params = call_params("venture_dashboard", "slug", "factory",
+		                     "mode", "definition", NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		result_text(response, &is_error);
+		g_assert_false(is_error);
+		g_assert_cmpstr(mock->last_path, ==,
+		                "/api/v1/dashboards/factory/export");
+
+		g_clear_pointer(&request, json_node_unref);
+		g_clear_pointer(&response, json_node_unref);
+		params = call_params("venture_dashboard", "slug", "factory",
+		                     "mode", "settings", NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		result_text(response, &is_error);
+		g_assert_false(is_error);
+		g_assert_cmpstr(mock->last_path, ==,
+		                "/api/v1/dashboards/factory?data=0");
+	}
+
+	/* Staging is on: building refuses without sending, and says what to
+	 * do instead. */
+	{
+		g_autoptr(JsonNode) params = NULL;
+		g_autoptr(JsonNode) request = NULL;
+		g_autoptr(JsonNode) response = NULL;
+		const gchar *text;
+		gboolean is_error;
+		guint calls_before;
+
+		calls_before = mock->calls;
+		params = call_params("venture_dashboard_build", "template", "factory",
+		                     NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		text = result_text(response, &is_error);
+		g_assert_true(is_error);
+		g_assert_nonnull(g_strstr_len(text, -1, "--apply-writes"));
+		g_assert_nonnull(g_strstr_len(text, -1, "dashboard_widget"));
+		g_assert_cmpuint(mock->calls, ==, calls_before);
+
+		g_clear_pointer(&request, json_node_unref);
+		g_clear_pointer(&response, json_node_unref);
+		params = call_params("venture_factory", "action", "publish", "id", "3",
+		                     NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		text = result_text(response, &is_error);
+		g_assert_true(is_error);
+		g_assert_nonnull(g_strstr_len(text, -1, "Publish"));
+		g_assert_cmpuint(mock->calls, ==, calls_before);
+	}
+
+	/* Status is a read and always goes. */
+	{
+		g_autoptr(JsonNode) params = NULL;
+		g_autoptr(JsonNode) request = NULL;
+		g_autoptr(JsonNode) response = NULL;
+		gboolean is_error;
+
+		params = call_params("venture_factory", NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		result_text(response, &is_error);
+		g_assert_false(is_error);
+		g_assert_cmpstr(mock->last_method, ==, "GET");
+		g_assert_cmpstr(mock->last_path, ==, "/api/v1/factory");
+	}
+
+	/* With writes applied, both go to their routes with their flag. */
+	venture_mcp_server_set_stage_writes(server, FALSE);
+
+	{
+		g_autoptr(JsonNode) params = NULL;
+		g_autoptr(JsonNode) request = NULL;
+		g_autoptr(JsonNode) response = NULL;
+		gboolean is_error;
+
+		params = call_params("venture_dashboard_build", "template", "work",
+		                     NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		result_text(response, &is_error);
+		g_assert_false(is_error);
+		g_assert_cmpstr(mock->last_method, ==, "POST");
+		g_assert_cmpstr(mock->last_path, ==,
+		                "/api/v1/dashboards/from-template");
+		g_assert_nonnull(g_strstr_len(mock->last_body, -1, "\"work\""));
+
+		g_clear_pointer(&request, json_node_unref);
+		g_clear_pointer(&response, json_node_unref);
+		params = call_params("venture_factory", "action", "changelog",
+		                     "id", "3", NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		result_text(response, &is_error);
+		g_assert_false(is_error);
+		g_assert_cmpstr(mock->last_path, ==, "/api/v1/releases/3/changelog");
+		g_assert_nonnull(g_strstr_len(mock->last_body, -1, "\"replace\""));
+	}
+
+	/* A link is an ordinary write: staged when staging is on. */
+	venture_mcp_server_set_stage_writes(server, TRUE);
+	mock_transport_answer(mock, 202, "application/json",
+	                      "{\"staged\": true, \"confirmation\": {\"id\": \"c1\"}}");
+
+	{
+		g_autoptr(JsonNode) params = NULL;
+		g_autoptr(JsonNode) request = NULL;
+		g_autoptr(JsonNode) response = NULL;
+		const gchar *text;
+		gboolean is_error;
+
+		params = call_params("venture_link", "source_type", "release",
+		                     "source_id", "1", "target_type", "ticket",
+		                     "target_id", "2", "kind", "produces", NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		text = result_text(response, &is_error);
+		g_assert_false(is_error);
+		g_assert_cmpstr(mock->last_path, ==, "/api/v1/links?stage=1");
+		g_assert_nonnull(g_strstr_len(text, -1, "confirmation id: c1"));
+	}
 }
 
 static void
@@ -1502,6 +1694,8 @@ main(
 	g_test_add_func("/mcp/protocol/id-keeps-its-type",
 	                test_protocol_id_keeps_its_type);
 	g_test_add_func("/mcp/protocol/tools-list", test_protocol_tools_list);
+	g_test_add_func("/mcp/tools/dashboards-and-factory",
+	                test_dashboards_and_factory_tools);
 	g_test_add_func("/mcp/protocol/unknown-tool", test_protocol_unknown_tool);
 
 	g_test_add_func("/mcp/error/401-is-a-bad-token",

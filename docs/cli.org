@@ -69,6 +69,9 @@ venturectl report [NAME] [PERIOD]        # list reports, or run one
 venturectl links TYPE ID                 # every link touching a record
 venturectl link TYPE ID TYPE ID [kind=K] # link two records; note=... too
 venturectl modules                       # which modules the server runs
+venturectl factory                       # the software factory at a glance
+venturectl release changelog ID          # draft its changelog; --replace
+venturectl release publish ID            # cut it on the forge; --prerelease
 venturectl dashboards                    # the dashboards
 venturectl dashboard SLUG                # one, every widget evaluated
 venturectl dashboard export SLUG         # its definition, as JSON

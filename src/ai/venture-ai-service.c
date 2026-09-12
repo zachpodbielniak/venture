@@ -1730,6 +1730,215 @@ venture_ai_tool_dashboard(
 	}
 }
 
+/*
+ * The factory at a glance, or one of its two actions. Status is a read.
+ * Drafting a changelog is an update to the release, so it follows the
+ * policy every update does: applied when autonomous, staged otherwise.
+ * Publishing creates a tag and a release on the forge, which no approval
+ * here could undo, so it is offered only under the autonomous policy and
+ * otherwise says who has to press the button.
+ */
+static gchar *
+venture_ai_tool_factory(
+	AiToolUse	 *tool_use,
+	GCancellable	 *cancellable,
+	GError		**error,
+	gpointer	  user_data
+){
+	VentureAiService *self;
+	g_autoptr(VentureEntity) release = NULL;
+	g_autoptr(VentureEntity) original = NULL;
+	g_autoptr(GError) local_error = NULL;
+	JsonObject *input;
+	const gchar *action;
+	gint64 id;
+
+	self = user_data;
+	input = venture_ai_tool_input(tool_use);
+	action = (NULL != input)
+		? venture_json_object_get_string(input, "action", "status") : "status";
+
+	if (!venture_context_module_enabled(self->context, "factory"))
+		return venture_ai_tool_error("The factory module is off");
+
+	if (venture_string_is_empty(action) || (0 == g_strcmp0(action, "status")))
+	{
+		g_autoptr(JsonNode) node = NULL;
+
+		node = venture_factory_describe(self->context, NULL, 0, &local_error);
+
+		if (NULL == node)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		return venture_ai_tool_result(g_steal_pointer(&node));
+	}
+
+	if ((0 != g_strcmp0(action, "changelog")) &&
+	    (0 != g_strcmp0(action, "publish")))
+		return venture_ai_tool_error("\"%s\" is not a factory action; use "
+		                             "status, changelog or publish", action);
+
+	if (VENTURE_AI_POLICY_READ_ONLY == self->policy)
+		return venture_ai_tool_error("The assistant is read-only on this "
+		                             "install");
+
+	id = venture_json_object_get_int(input, "id", 0);
+
+	if (0 == id)
+		return venture_ai_tool_error("A release \"id\" is required");
+
+	release = venture_database_get(venture_context_get_database(self->context),
+	                               VENTURE_TYPE_RELEASE, id, &local_error);
+
+	if (NULL == release)
+		return venture_ai_tool_error("There is no release with id %"
+		                             G_GINT64_FORMAT, id);
+
+	if (0 == g_strcmp0(action, "changelog"))
+	{
+		gboolean replace;
+
+		replace = venture_json_object_get_bool(input, "replace", FALSE);
+		original = venture_database_get(
+			venture_context_get_database(self->context), VENTURE_TYPE_RELEASE,
+			id, NULL);
+
+		if (!venture_factory_apply_changelog(self->context, release, replace))
+			return venture_ai_tool_error("Release %" G_GINT64_FORMAT " already "
+			                             "has a changelog; pass replace: "
+			                             "true to overwrite it", id);
+
+		if (VENTURE_AI_POLICY_AUTONOMOUS == self->policy)
+		{
+			g_autoptr(JsonNode) node = NULL;
+
+			if (!venture_ai_apply(self, release, FALSE, self->current_prompt,
+			                      self->current_principal, &local_error))
+				return venture_ai_tool_error("%s", local_error->message);
+
+			node = venture_serializable_to_json(VENTURE_SERIALIZABLE(release),
+			                                    FALSE);
+
+			return venture_ai_tool_result(g_steal_pointer(&node));
+		}
+
+		return venture_ai_stage_change(self, VENTURE_AUDIT_ACTION_UPDATE,
+		                               release, original);
+	}
+
+	if (VENTURE_AI_POLICY_AUTONOMOUS != self->policy)
+		return venture_ai_tool_error("Publishing creates a tag and a release "
+		                             "on the forge, which cannot be staged "
+		                             "for approval or undone from here. Ask "
+		                             "the operator to press Publish on the "
+		                             "release's page, or draft the changelog "
+		                             "for them first.");
+
+	{
+		g_autoptr(JsonNode) node = NULL;
+		VentureActor actor;
+
+		actor.kind = VENTURE_ACTOR_KIND_AI;
+		actor.name = (NULL != self->current_principal)
+			? self->current_principal->name : "ai";
+		actor.prompt = self->current_prompt;
+		actor.request_id = NULL;
+		actor.approved_by = NULL;
+
+		if (!venture_factory_publish_release(self->context, release,
+			venture_json_object_get_bool(input, "prerelease", FALSE), &actor,
+			&local_error))
+			return venture_ai_tool_error("%s", local_error->message);
+
+		node = venture_serializable_to_json(VENTURE_SERIALIZABLE(release),
+		                                    FALSE);
+
+		return venture_ai_tool_result(g_steal_pointer(&node));
+	}
+}
+
+/*
+ * Builds a dashboard from a template or a definition. A dashboard and its
+ * widgets are several records written together, which the confirmation
+ * queue -- one record per card -- cannot stage, so this is offered only
+ * under the autonomous policy; otherwise the assistant builds it record
+ * by record with venture_create, each staged, or hands the definition to
+ * the operator to import.
+ */
+static gchar *
+venture_ai_tool_dashboard_build(
+	AiToolUse	 *tool_use,
+	GCancellable	 *cancellable,
+	GError		**error,
+	gpointer	  user_data
+){
+	VentureAiService *self;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) local_error = NULL;
+	JsonObject *input;
+	const gchar *template_name;
+	JsonNode *definition;
+	VentureActor actor;
+
+	self = user_data;
+
+	if (!venture_context_module_enabled(self->context, "dashboards"))
+		return venture_ai_tool_error("The dashboards module is off");
+
+	if (VENTURE_AI_POLICY_AUTONOMOUS != self->policy)
+		return venture_ai_tool_error("Building a whole dashboard cannot be "
+		                             "staged for approval. Create the "
+		                             "dashboard with venture_create on "
+		                             "\"dashboard\", then each widget with "
+		                             "venture_create on \"dashboard_widget\" "
+		                             "naming its dashboard_id -- each is "
+		                             "staged -- or give the operator the "
+		                             "definition to import at /dashboards.");
+
+	input = venture_ai_tool_input(tool_use);
+
+	if (NULL == input)
+		return venture_ai_tool_error("The arguments must be an object");
+
+	template_name = venture_json_object_get_string(input, "template", NULL);
+	definition = json_object_has_member(input, "definition")
+		? json_object_get_member(input, "definition") : NULL;
+
+	actor.kind = VENTURE_ACTOR_KIND_AI;
+	actor.name = (NULL != self->current_principal)
+		? self->current_principal->name : "ai";
+	actor.prompt = self->current_prompt;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+
+	if (!venture_string_is_empty(template_name))
+		dashboard = venture_dashboard_create_from_template(self->context,
+			template_name,
+			(NULL != self->current_principal)
+				? self->current_principal->user_id : 0,
+			&actor, &local_error);
+	else if ((NULL != definition) && JSON_NODE_HOLDS_OBJECT(definition))
+		dashboard = venture_dashboard_import(self->context, definition,
+			(NULL != self->current_principal)
+				? self->current_principal->user_id : 0,
+			&actor, &local_error);
+	else
+		return venture_ai_tool_error("Name a \"template\" or pass a "
+		                             "\"definition\" object");
+
+	if (NULL == dashboard)
+		return venture_ai_tool_error("%s", local_error->message);
+
+	node = venture_dashboard_describe(self->context, dashboard, NULL, FALSE,
+	                                  &local_error);
+
+	if (NULL == node)
+		return venture_ai_tool_error("%s", local_error->message);
+
+	return venture_ai_tool_result(g_steal_pointer(&node));
+}
+
 /* --- Tool registration --------------------------------------------------- */
 
 /*
@@ -1764,6 +1973,7 @@ venture_ai_service_register_tools(VentureAiService *self)
 	g_autoptr(AiTool) kb_list = NULL;
 	g_autoptr(AiTool) links = NULL;
 	g_autoptr(AiTool) dashboard = NULL;
+	g_autoptr(AiTool) factory = NULL;
 
 	list_types = venture_ai_make_tool(self, "venture_list_types",
 		"List every record type in this VENTURE instance with its fields, "
@@ -1878,6 +2088,26 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"The dashboard's slug, as in /dashboards/<slug>; omit to list them",
 		FALSE);
 
+	factory = venture_ai_make_tool(self, "venture_factory",
+		"The software factory. action \"status\" (the default): open "
+		"milestones with progress, the newest releases, the latest CI "
+		"builds, each environment with the release it is running, and "
+		"the open incidents. action \"changelog\" with a release id drafts "
+		"its changelog from the tickets marked as fixed in it (staged "
+		"unless the policy is autonomous; replace: true overwrites one "
+		"somebody wrote). action \"publish\" cuts the release on the git "
+		"forge, which only the autonomous policy allows.");
+	ai_tool_add_parameter(factory, "action", "string",
+		"status, changelog or publish; defaults to status", FALSE);
+	ai_tool_add_parameter(factory, "id", "integer",
+		"The release's numeric id, for changelog and publish", FALSE);
+	ai_tool_add_parameter(factory, "replace", "boolean",
+		"changelog: overwrite an existing changelog", FALSE);
+	ai_tool_add_parameter(factory, "prerelease", "boolean",
+		"publish: mark it a pre-release", FALSE);
+
+	ai_tool_executor_register_callback(self->executor, factory,
+		venture_ai_tool_factory, self, NULL);
 	ai_tool_executor_register_callback(self->executor, dashboard,
 		venture_ai_tool_dashboard, self, NULL);
 	ai_tool_executor_register_callback(self->executor, links,
@@ -1916,6 +2146,7 @@ venture_ai_service_register_tools(VentureAiService *self)
 		g_autoptr(AiTool) update = NULL;
 		g_autoptr(AiTool) remove = NULL;
 		g_autoptr(AiTool) link = NULL;
+		g_autoptr(AiTool) build = NULL;
 
 		create = venture_ai_make_tool(self, "venture_create",
 			"Create a record. Unless the policy is autonomous this stages "
@@ -1970,6 +2201,23 @@ venture_ai_service_register_tools(VentureAiService *self)
 		ai_tool_add_parameter(link, "note", "string",
 			"Why, in a few words", FALSE);
 
+		build = venture_ai_make_tool(self, "venture_dashboard_build",
+			"Build a dashboard from a shipped template (factory, "
+			"reporting, work, overview) or from a definition object -- "
+			"{name, description, purpose, layout, widgets: [{kind, title, "
+			"entity_type, filter, report_name, field, columns, body, ...}]} "
+			"-- as venture_dashboard returns one. Only under the autonomous "
+			"policy: a whole page cannot be staged, so otherwise create the "
+			"dashboard and its widgets one record at a time with "
+			"venture_create, which stages each.");
+		ai_tool_add_parameter(build, "template", "string",
+			"A shipped template's name", FALSE);
+		ai_tool_add_parameter(build, "definition", "object",
+			"A dashboard definition; ignored when a template is named",
+			FALSE);
+
+		ai_tool_executor_register_callback(self->executor, build,
+			venture_ai_tool_dashboard_build, self, NULL);
 		ai_tool_executor_register_callback(self->executor, link,
 			venture_ai_tool_link, self, NULL);
 		ai_tool_executor_register_callback(self->executor, create,

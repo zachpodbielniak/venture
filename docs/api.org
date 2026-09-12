@@ -64,6 +64,9 @@ See [[file:mcp.org][venturectl mcp]].
 | =GET=    | =/api/v1/modules=                   | every module, its state and why      |
 | =GET=    | =/api/v1/links/:type/:id=           | every link touching a record         |
 | =POST=   | =/api/v1/links=                     | link two records; =?stage=1= stages  |
+| =GET=    | =/api/v1/factory=                   | the software factory at a glance     |
+| =POST=   | =/api/v1/releases/:id/changelog=    | draft a changelog from its tickets   |
+| =POST=   | =/api/v1/releases/:id/publish=      | cut the release on the forge         |
 | =GET=    | =/api/v1/dashboards=                | every dashboard the caller may see   |
 | =GET=    | =/api/v1/dashboards/:slug=          | one, every widget evaluated          |
 | =GET=    | =/api/v1/dashboards/:slug/export=   | its definition, portable             |
@@ -87,6 +90,14 @@ two invites a duplicate.
 ** Links
 
 =GET /api/v1/links/:type/:id= describes every link touching a record, read from it: the link's id, the kind from here, the other end's type, id and current label, whether the other end still exists, and the note. =POST /api/v1/links= takes ={"source_type","source_id","kind","target_type","target_id","note"}= and is the same as =POST /api/v1/record_link=, =?stage=1= included. A link is refused when either end is missing, when the ends are the same record, or when the pair is already linked in either direction — at the save, so an approved staged link is held to the same rules.
+
+** The factory
+
+=GET /api/v1/factory= is the loop at a glance: open milestones with their progress, the newest releases, the latest builds, each environment with the release it is running, and the incidents still open — the five questions the Factory page asks, as one object. =?organization_id=N= scopes it.
+
+=POST /api/v1/releases/:id/changelog= drafts the release's changelog from the tickets marked as fixed in it and saves it; the body may carry ={"replace": true}= to overwrite a changelog somebody wrote, and the answer's =changed= says whether anything was. =POST /api/v1/releases/:id/publish= cuts the release on the forge — the tag from the record or =v= plus the version, the changelog as the body, ={"prerelease": true}= to mark it so — and answers with the release carrying the forge's id and page. Both need the editor role and the factory module; publish also needs the forge module and a repository on the release. Neither can be staged: a changelog is an ordinary field an agent can also set through =PATCH /api/v1/release/:id?stage=1=, and a publish creates a tag on another system.
+
+Everything else about the factory is the generic routes: =/api/v1/milestone=, =release=, =build=, =environment=, =deployment=, =incident=, with =?stage=1= on every write. See [[file:factory.org][The software factory]].
 
 ** Dashboards
 

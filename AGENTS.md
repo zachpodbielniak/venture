@@ -369,6 +369,19 @@ than one that fails.
   makes fatal.** Wrap a deliberately bad delivery in
   `g_test_expect_message()`.
 
+## The factory's operations live in core
+
+- **`src/core/venture-factory.c` is the one implementation** of drafting a
+  changelog, publishing a release, a milestone's progress, an environment's
+  running release and the status summary. The pages, `/api/v1/factory`,
+  `/api/v1/releases/:id/{changelog,publish}`, `venturectl factory|release`,
+  the assistant's `venture_factory` and the MCP tool all call it. Do not
+  re-implement any of these in the web layer.
+- **Publishing cannot be staged.** It creates a tag on another system;
+  the assistant offers it only under the autonomous policy and
+  `venturectl mcp` only with `--apply-writes`. A changelog draft is an
+  ordinary update and stages like one.
+
 ## Dashboards
 
 - **A widget kind writes its JSON and its HTML from one loop.** Two

@@ -1912,6 +1912,192 @@ venture_cli_command_dashboard(
 }
 
 /*
+ * venturectl factory
+ *
+ * The loop at a glance.
+ */
+static gint
+venture_cli_command_factory(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	JsonObject *status;
+	JsonArray *rows;
+	guint i;
+
+	(void)args;
+
+	node = venture_cli_request(cli, "GET", "/api/v1/factory", NULL, error);
+
+	if (NULL == node)
+		return -1;
+
+	if ((VENTURE_OUTPUT_FORMAT_TABLE != cli->format) ||
+	    !JSON_NODE_HOLDS_OBJECT(node))
+	{
+		venture_cli_output(cli, node);
+		return 0;
+	}
+
+	status = json_node_get_object(node);
+
+	rows = json_object_get_array_member(status, "milestones");
+	g_print("MILESTONES\n");
+
+	if (0 == json_array_get_length(rows))
+		g_print("  none open\n");
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row;
+
+		row = json_array_get_object_element(rows, i);
+		g_print("  #%-5" G_GINT64_FORMAT " %-24s %-10s %" G_GINT64_FORMAT
+		        "/%" G_GINT64_FORMAT " done (%" G_GINT64_FORMAT "%%)  due %s\n",
+		        venture_json_object_get_int(row, "id", 0),
+		        venture_json_object_get_string(row, "label", ""),
+		        venture_json_object_get_string(row, "status", ""),
+		        venture_json_object_get_int(row, "done", 0),
+		        venture_json_object_get_int(row, "tickets", 0),
+		        venture_json_object_get_int(row, "percent", 0),
+		        venture_json_object_get_string(row, "due_on", "-"));
+	}
+
+	rows = json_object_get_array_member(status, "environments");
+	g_print("\nENVIRONMENTS\n");
+
+	if (0 == json_array_get_length(rows))
+		g_print("  none\n");
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row;
+		const gchar *release;
+
+		row = json_array_get_object_element(rows, i);
+		release = venture_json_object_get_string(row, "release", NULL);
+		g_print("  #%-5" G_GINT64_FORMAT " %-24s %-12s running %s\n",
+		        venture_json_object_get_int(row, "id", 0),
+		        venture_json_object_get_string(row, "label", ""),
+		        venture_json_object_get_string(row, "kind", ""),
+		        (NULL != release) ? release : "nothing");
+	}
+
+	rows = json_object_get_array_member(status, "releases");
+	g_print("\nRELEASES\n");
+
+	if (0 == json_array_get_length(rows))
+		g_print("  none\n");
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row;
+
+		row = json_array_get_object_element(rows, i);
+		g_print("  #%-5" G_GINT64_FORMAT " %-16s %-10s %s\n",
+		        venture_json_object_get_int(row, "id", 0),
+		        venture_json_object_get_string(row, "number", ""),
+		        venture_json_object_get_string(row, "status", ""),
+		        venture_json_object_get_string(row, "released_at", ""));
+	}
+
+	rows = json_object_get_array_member(status, "builds");
+	g_print("\nBUILDS\n");
+
+	if (0 == json_array_get_length(rows))
+		g_print("  none\n");
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row;
+
+		row = json_array_get_object_element(rows, i);
+		g_print("  #%-5" G_GINT64_FORMAT " %-10s %-12s %-16s %s\n",
+		        venture_json_object_get_int(row, "id", 0),
+		        venture_json_object_get_string(row, "status", ""),
+		        venture_json_object_get_string(row, "workflow", ""),
+		        venture_json_object_get_string(row, "ref", ""),
+		        venture_json_object_get_string(row, "label", ""));
+	}
+
+	rows = json_object_get_array_member(status, "incidents");
+	g_print("\nOPEN INCIDENTS\n");
+
+	if (0 == json_array_get_length(rows))
+		g_print("  nothing is on fire\n");
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row;
+
+		row = json_array_get_object_element(rows, i);
+		g_print("  #%-5" G_GINT64_FORMAT " %-5s %-10s %s\n",
+		        venture_json_object_get_int(row, "id", 0),
+		        venture_json_object_get_string(row, "severity", ""),
+		        venture_json_object_get_string(row, "status", ""),
+		        venture_json_object_get_string(row, "label", ""));
+	}
+
+	return 0;
+}
+
+/*
+ * venturectl release changelog ID [--replace]
+ * venturectl release publish ID [--prerelease]
+ */
+static gint
+venture_cli_command_release(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *path = NULL;
+	const gchar *verb;
+	const gchar *flag;
+	gboolean set;
+
+	verb = args[1];
+
+	if ((NULL == verb) || (NULL == args[2]) ||
+	    ((0 != g_strcmp0(verb, "changelog")) &&
+	     (0 != g_strcmp0(verb, "publish"))))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "usage: venturectl release changelog ID "
+		                    "[--replace] | release publish ID "
+		                    "[--prerelease]");
+		return -1;
+	}
+
+	flag = (0 == g_strcmp0(verb, "changelog")) ? "replace" : "prerelease";
+	set = (NULL != args[3]) &&
+	      ((0 == g_strcmp0(args[3], "--replace")) ||
+	       (0 == g_strcmp0(args[3], "--prerelease")));
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, flag);
+	json_builder_add_boolean_value(builder, set);
+	json_builder_end_object(builder);
+	body = json_builder_get_root(builder);
+
+	path = g_strdup_printf("/api/v1/releases/%s/%s", args[2], verb);
+	node = venture_cli_request(cli, "POST", path, body, error);
+
+	if (NULL == node)
+		return -1;
+
+	venture_cli_output(cli, node);
+
+	return 0;
+}
+
+/*
  * venturectl link SOURCE_TYPE ID TARGET_TYPE ID [kind=...] [note=...]
  *
  * Goes through POST /api/v1/links, so the server's checks -- both ends
@@ -2229,6 +2415,10 @@ main(
 		"                               record_link ID\n"
 		"  modules                      list the server's modules and which\n"
 		"                               are on; -f json for the detail\n"
+		"  factory                      the software factory at a glance\n"
+		"  release changelog ID         draft a release's changelog from\n"
+		"                               its tickets; --replace overwrites\n"
+		"  release publish ID           cut it on the forge; --prerelease\n"
 		"  dashboards                   list the dashboards\n"
 		"  dashboard SLUG               a dashboard, every widget evaluated\n"
 		"  dashboard export SLUG        its definition, as JSON\n"
@@ -2399,6 +2589,10 @@ main(
 		result = venture_cli_command_modules(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "links"))
 		result = venture_cli_command_links(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "factory"))
+		result = venture_cli_command_factory(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "release"))
+		result = venture_cli_command_release(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dashboards"))
 		result = venture_cli_command_dashboards(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dashboard"))

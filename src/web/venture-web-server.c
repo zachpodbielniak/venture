@@ -16755,112 +16755,6 @@ venture_web_forge_webhook_release(
 }
 
 /*
- * The tickets a release shipped, oldest first.
- *
- * Returns: (transfer container): the tickets
- */
-static GPtrArray *
-venture_web_factory_release_tickets(
-	VentureWebServer	*self,
-	gint64			 release_id
-){
-	g_autoptr(VentureQuery) query = NULL;
-
-	query = venture_query_new(VENTURE_TYPE_TICKET);
-
-	if (!venture_query_add_filter_int(query, "release-id",
-	                                  VENTURE_FILTER_OP_EQ, release_id, NULL))
-		return NULL;
-
-	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
-	venture_query_set_limit(query, 500);
-
-	return venture_database_find(venture_context_get_database(self->context),
-	                             query, NULL);
-}
-
-/*
- * A changelog drafted from the tickets, grouped by issue type in the
- * enum's order so bugs and stories always land in the same place. Markdown,
- * because that is what a forge renders a release body as.
- *
- * Returns: (transfer full): the text
- */
-static gchar *
-venture_web_factory_draft_changelog(
-	VentureWebServer	*self,
-	VentureEntity		*release
-){
-	g_autoptr(GString) text = NULL;
-	g_autoptr(GPtrArray) tickets = NULL;
-	g_auto(GStrv) types = NULL;
-	g_autofree gchar *version = NULL;
-	g_autofree gchar *name = NULL;
-	gsize t;
-
-	g_object_get(release, "number", &version, "name", &name, NULL);
-
-	text = g_string_new(NULL);
-	g_string_append_printf(text, "## %s", version);
-
-	if (!venture_string_is_empty(name))
-		g_string_append_printf(text, " \xe2\x80\x94 %s", name);
-
-	g_string_append(text, "\n");
-
-	tickets = venture_web_factory_release_tickets(
-		self, venture_entity_get_id(release));
-
-	if ((NULL == tickets) || (0 == tickets->len))
-	{
-		g_string_append(text, "\nNo tickets are marked as fixed in this "
-		                      "release yet.\n");
-		return g_string_free(g_steal_pointer(&text), FALSE);
-	}
-
-	types = venture_enum_list_nicks(VENTURE_TYPE_ISSUE_TYPE);
-
-	for (t = 0; NULL != types[t]; t++)
-	{
-		gboolean heading = FALSE;
-		gint wanted;
-		guint i;
-
-		if (!venture_enum_from_nick(VENTURE_TYPE_ISSUE_TYPE, types[t], &wanted))
-			continue;
-
-		for (i = 0; i < tickets->len; i++)
-		{
-			g_autofree gchar *title = NULL;
-			VentureEntity *ticket;
-			VentureIssueType issue_type;
-
-			ticket = g_ptr_array_index(tickets, i);
-			g_object_get(ticket, "issue-type", &issue_type, "title", &title,
-			             NULL);
-
-			if ((gint)issue_type != wanted)
-				continue;
-
-			if (!heading)
-			{
-				g_autofree gchar *label = NULL;
-
-				label = venture_web_label_from_name(types[t]);
-				g_string_append_printf(text, "\n### %s\n\n", label);
-				heading = TRUE;
-			}
-
-			g_string_append_printf(text, "- #%" G_GINT64_FORMAT " %s\n",
-			                       venture_entity_get_id(ticket),
-			                       (NULL != title) ? title : "");
-		}
-	}
-
-	return g_string_free(g_steal_pointer(&text), FALSE);
-}
-
-/*
  * A release's page: what it shipped, how it was built, where it went, and
  * the two actions the generated form cannot offer -- drafting the changelog
  * from the tickets, and publishing to the forge.
@@ -16884,7 +16778,8 @@ venture_web_append_release_block(
 	g_object_get(record, "changelog", &changelog, "tag", &tag, "url", &url,
 	             "status", &status, "repo-id", &repo_id, NULL);
 
-	tickets = venture_web_factory_release_tickets(self, id);
+	tickets = venture_factory_release_tickets(
+		venture_context_get_database(self->context), id);
 
 	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
 	                         "<h2>Shipped in this release</h2></div>"
@@ -16969,8 +16864,6 @@ venture_web_ui_release_changelog(
 	g_autoptr(VentureEntity) release = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *destination = NULL;
-	g_autofree gchar *existing = NULL;
-	g_autofree gchar *draft = NULL;
 	HtmxResponse *redirect;
 	VentureActor actor;
 	gint64 id;
@@ -17003,16 +16896,11 @@ venture_web_ui_release_changelog(
 		return venture_web_error_response(error);
 
 	destination = g_strdup_printf("/e/release/%" G_GINT64_FORMAT, id);
-	g_object_get(release, "changelog", &existing, NULL);
 
-	/* A changelog somebody edited is kept unless they asked otherwise:
-	 * the draft is a starting point, not the truth. */
-	if (!venture_string_is_empty(existing) &&
-	    (0 != g_strcmp0(htmx_request_get_form_value(request, "replace"), "1")))
+	if (!venture_factory_apply_changelog(self->context, release,
+		(0 == g_strcmp0(htmx_request_get_form_value(request, "replace"),
+		                "1"))))
 		return venture_web_redirect_to(destination);
-
-	draft = venture_web_factory_draft_changelog(self, release);
-	g_object_set(release, "changelog", draft, NULL);
 
 	venture_auth_to_actor(principal, &actor);
 
@@ -17041,26 +16929,11 @@ venture_web_ui_release_publish(
 	VentureWebServer *self = user_data;
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
 	g_autoptr(VentureEntity) release = NULL;
-	g_autoptr(VentureEntity) repo = NULL;
-	g_autoptr(VentureEntity) forge = NULL;
-	g_autoptr(VentureForgeClient) client = NULL;
-	g_autoptr(GDateTime) now = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *destination = NULL;
-	g_autofree gchar *tag = NULL;
-	g_autofree gchar *version = NULL;
-	g_autofree gchar *name = NULL;
-	g_autofree gchar *changelog = NULL;
-	g_autofree gchar *existing_url = NULL;
-	g_autofree gchar *repo_name = NULL;
-	g_autofree gchar *url = NULL;
 	HtmxResponse *redirect;
 	VentureActor actor;
 	gint64 id;
-	gint64 repo_id = 0;
-	gint64 forge_id = 0;
-	gint64 external_id = 0;
-	gboolean prerelease;
 
 	{
 		HtmxResponse *gate;
@@ -17095,126 +16968,207 @@ venture_web_ui_release_publish(
 		return venture_web_error_response(error);
 
 	destination = g_strdup_printf("/e/release/%" G_GINT64_FORMAT, id);
-
-	g_object_get(release,
-	             "tag", &tag, "number", &version, "name", &name,
-	             "changelog", &changelog, "url", &existing_url,
-	             "repo-id", &repo_id,
-	             NULL);
-
-	if (!venture_string_is_empty(existing_url))
-	{
-		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS,
-		            "Release %s is already on the forge at %s", version,
-		            existing_url);
-		return venture_web_error_response(error);
-	}
-
-	if (0 == repo_id)
-	{
-		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-		                    "The release names no repository to publish to");
-		return venture_web_error_response(error);
-	}
-
-	repo = venture_database_get(venture_context_get_database(self->context),
-	                            VENTURE_TYPE_FORGE_REPO, repo_id, &error);
-
-	if (NULL == repo)
-		return venture_web_error_response(error);
-
-	g_object_get(repo, "name", &repo_name, "forge-id", &forge_id, NULL);
-
-	forge = venture_database_get(venture_context_get_database(self->context),
-	                             VENTURE_TYPE_FORGE, forge_id, &error);
-
-	if (NULL == forge)
-		return venture_web_error_response(error);
-
-	client = venture_web_forge_client(self, VENTURE_FORGE(forge), &error);
-
-	if (NULL == client)
-		return venture_web_error_response(error);
-
-	if (venture_string_is_empty(tag))
-	{
-		g_free(tag);
-		tag = g_strdup_printf("v%s", version);
-	}
-
-	prerelease = (0 == g_strcmp0(htmx_request_get_form_value(request,
-	                                                        "prerelease"),
-	                             "1"));
-
-	if (!venture_forge_client_create_release(client, repo_name, tag, NULL,
-	                                         !venture_string_is_empty(name)
-	                                                 ? name : version,
-	                                         changelog, FALSE, prerelease,
-	                                         &external_id, &url, &error))
-		return venture_web_error_response(error);
-
-	now = g_date_time_new_now_utc();
-
-	g_object_set(release,
-	             "tag", tag,
-	             "url", url,
-	             "external-id", external_id,
-	             "status", VENTURE_RELEASE_STATUS_RELEASED,
-	             "released-at", now,
-	             NULL);
-
 	venture_auth_to_actor(principal, &actor);
 
-	if (!venture_database_save(venture_context_get_database(self->context),
-	                           release, &actor, &error))
+	if (!venture_factory_publish_release(self->context, release,
+		(0 == g_strcmp0(htmx_request_get_form_value(request, "prerelease"),
+		                "1")),
+		&actor, &error))
 		return venture_web_error_response(error);
 
 	return venture_web_redirect_to(destination);
 }
 
+/* --- The factory API ------------------------------------------------------ */
+
 /*
- * Counts a milestone's tickets, and how many of them are finished.
+ * Loads the release in the path for an API action, with the gates.
  */
-static void
-venture_web_factory_milestone_progress(
-	VentureWebServer	*self,
-	gint64			 milestone_id,
-	gint64			*out_total,
-	gint64			*out_done
+static HtmxResponse *
+venture_web_api_release_load(
+	VentureWebServer	 *self,
+	HtmxRequest		 *request,
+	GHashTable		 *params,
+	VentureAuthPrincipal	**out_principal,
+	VentureEntity		**out_release
 ){
-	g_autoptr(VentureQuery) all = NULL;
-	g_autoptr(GPtrArray) tickets = NULL;
-	guint i;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) release = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *gate;
 
-	*out_total = 0;
-	*out_done = 0;
+	gate = venture_web_require_module_api(self, "factory");
 
-	all = venture_query_new(VENTURE_TYPE_TICKET);
+	if (NULL != gate)
+		return gate;
 
-	if (!venture_query_add_filter_int(all, "milestone-id",
-	                                  VENTURE_FILTER_OP_EQ, milestone_id,
-	                                  NULL))
-		return;
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
 
-	venture_query_set_limit(all, 0);
-	tickets = venture_database_find(venture_context_get_database(self->context),
-	                                all, NULL);
+	if (NULL != gate)
+		return gate;
 
-	if (NULL == tickets)
-		return;
+	principal = venture_auth_authenticate(self->auth, request);
+	release = venture_database_get(venture_context_get_database(self->context),
+	                               VENTURE_TYPE_RELEASE,
+	                               g_ascii_strtoll(g_hash_table_lookup(params,
+	                                                                   "id"),
+	                                               NULL, 10),
+	                               &error);
 
-	*out_total = (gint64)tickets->len;
+	if (NULL == release)
+		return venture_web_error_response(error);
 
-	for (i = 0; i < tickets->len; i++)
+	*out_principal = g_steal_pointer(&principal);
+	*out_release = g_steal_pointer(&release);
+
+	return NULL;
+}
+
+/*
+ * POST /api/v1/releases/:id/changelog - draft the changelog from the
+ * tickets. {"replace": true} overwrites one somebody wrote. Answers with
+ * the release; "changed" says whether anything was.
+ */
+static HtmxResponse *
+venture_web_api_release_changelog(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) release = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+	gboolean replace;
+	gboolean changed;
+
+	gate = venture_web_api_release_load(self, request, params, &principal,
+	                                    &release);
+
+	if (NULL != gate)
+		return gate;
+
+	body = htmx_request_get_json(request, NULL);
+	replace = ((NULL != body) && JSON_NODE_HOLDS_OBJECT(body))
+		? venture_json_object_get_bool(json_node_get_object(body), "replace",
+		                               FALSE)
+		: FALSE;
+
+	changed = venture_factory_apply_changelog(self->context, release, replace);
+
+	if (changed)
 	{
-		VentureTicketStatus status;
+		venture_auth_to_actor(principal, &actor);
 
-		g_object_get(g_ptr_array_index(tickets, i), "status", &status, NULL);
-
-		if ((VENTURE_TICKET_STATUS_DONE == status) ||
-		    (VENTURE_TICKET_STATUS_CANCELLED == status))
-			(*out_done)++;
+		if (!venture_database_save(venture_context_get_database(self->context),
+		                           release, &actor, &error))
+			return venture_web_error_response(error);
 	}
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "changed");
+	json_builder_add_boolean_value(builder, changed);
+	json_builder_set_member_name(builder, "release");
+	json_builder_add_value(builder,
+		venture_serializable_to_json(VENTURE_SERIALIZABLE(release), FALSE));
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * POST /api/v1/releases/:id/publish - cut it on the forge.
+ * {"prerelease": true} marks it so.
+ */
+static HtmxResponse *
+venture_web_api_release_publish(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) release = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+	gboolean prerelease;
+
+	gate = venture_web_api_release_load(self, request, params, &principal,
+	                                    &release);
+
+	if (NULL != gate)
+		return gate;
+
+	body = htmx_request_get_json(request, NULL);
+	prerelease = ((NULL != body) && JSON_NODE_HOLDS_OBJECT(body))
+		? venture_json_object_get_bool(json_node_get_object(body),
+		                               "prerelease", FALSE)
+		: FALSE;
+
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_factory_publish_release(self->context, release, prerelease,
+	                                     &actor, &error))
+		return venture_web_error_response(error);
+
+	node = venture_serializable_to_json(VENTURE_SERIALIZABLE(release), FALSE);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * GET /api/v1/factory - the loop at a glance. ?organization_id=N scopes
+ * it to that entity and those beneath it.
+ */
+static HtmxResponse *
+venture_web_api_factory(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GArray) tree = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *gate;
+	const gchar *organization;
+
+	(void)params;
+
+	gate = venture_web_require_module_api(self, "factory");
+
+	if (NULL != gate)
+		return gate;
+
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+
+	if (NULL != gate)
+		return gate;
+
+	organization = htmx_request_get_query_param(request, "organization_id");
+
+	if (!venture_string_is_empty(organization))
+		tree = venture_web_organization_tree(self,
+			g_ascii_strtoll(organization, NULL, 10));
+
+	node = venture_factory_describe(self->context,
+		(NULL != tree) ? (const gint64 *)tree->data : NULL,
+		(NULL != tree) ? tree->len : 0, &error);
+
+	if (NULL == node)
+		return venture_web_error_response(error);
+
+	return venture_web_json_response(node, 200);
 }
 
 /*
@@ -17230,7 +17184,8 @@ venture_web_append_milestone_block(
 	gint64 total;
 	gint64 done;
 
-	venture_web_factory_milestone_progress(self, venture_entity_get_id(record),
+	venture_factory_milestone_progress(
+		venture_context_get_database(self->context), venture_entity_get_id(record),
 	                                       &total, &done);
 
 	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
@@ -17248,43 +17203,6 @@ venture_web_append_milestone_block(
 }
 
 /*
- * The latest deployment that succeeded to an environment: what it is
- * running.
- *
- * Returns: (transfer full) (nullable): the deployment
- */
-static VentureEntity *
-venture_web_factory_current_deployment(
-	VentureWebServer	*self,
-	gint64			 environment_id
-){
-	g_autoptr(VentureQuery) query = NULL;
-	g_autoptr(GPtrArray) deployments = NULL;
-
-	query = venture_query_new(VENTURE_TYPE_DEPLOYMENT);
-
-	if (!venture_query_add_filter_int(query, "environment-id",
-	                                  VENTURE_FILTER_OP_EQ, environment_id,
-	                                  NULL) ||
-	    !venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ,
-	                                     "succeeded", NULL))
-		return NULL;
-
-	venture_query_add_order(query, "deployed-at", VENTURE_SORT_DESCENDING,
-	                        NULL);
-	venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, NULL);
-	venture_query_set_limit(query, 1);
-
-	deployments = venture_database_find(
-		venture_context_get_database(self->context), query, NULL);
-
-	if ((NULL == deployments) || (0 == deployments->len))
-		return NULL;
-
-	return g_object_ref(g_ptr_array_index(deployments, 0));
-}
-
-/*
  * An environment's page: what it is running now.
  */
 static void
@@ -17297,8 +17215,8 @@ venture_web_append_environment_block(
 	g_autoptr(VentureEntity) release = NULL;
 	gint64 release_id = 0;
 
-	deployment = venture_web_factory_current_deployment(
-		self, venture_entity_get_id(record));
+	deployment = venture_factory_current_deployment(
+		venture_context_get_database(self->context), venture_entity_get_id(record));
 
 	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
 	                         "<h2>Running now</h2></div><div class=\"card-body\">");
@@ -17416,7 +17334,8 @@ venture_web_factory_milestone_row(
 
 	g_object_get(record, "name", &name, "status", &status, "due-on", &due,
 	             NULL);
-	venture_web_factory_milestone_progress(self, venture_entity_get_id(record),
+	venture_factory_milestone_progress(
+		venture_context_get_database(self->context), venture_entity_get_id(record),
 	                                       &total, &done);
 
 	g_string_append(content, "<li><span class=\"badge\">");
@@ -17551,8 +17470,8 @@ venture_web_factory_environment_row(
 	venture_html_escape_append(content, name);
 	g_string_append(content, "</a>");
 
-	deployment = venture_web_factory_current_deployment(
-		self, venture_entity_get_id(record));
+	deployment = venture_factory_current_deployment(
+		venture_context_get_database(self->context), venture_entity_get_id(record));
 
 	if (NULL != deployment)
 	{
@@ -19776,6 +19695,11 @@ venture_web_server_new(
 
 	/* API */
 	htmx_router_get(router, "/api/v1/health", venture_web_api_health, self);
+	htmx_router_get(router, "/api/v1/factory", venture_web_api_factory, self);
+	htmx_router_post(router, "/api/v1/releases/:id/changelog",
+	                 venture_web_api_release_changelog, self);
+	htmx_router_post(router, "/api/v1/releases/:id/publish",
+	                 venture_web_api_release_publish, self);
 	htmx_router_get(router, "/api/v1/widget-kinds",
 	                venture_web_api_widget_kinds, self);
 	htmx_router_get(router, "/api/v1/dashboard-templates",

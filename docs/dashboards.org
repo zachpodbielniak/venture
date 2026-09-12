@@ -126,7 +126,9 @@ venturectl dashboard templates
 venturectl dashboard kinds
 #+end_src
 
-The assistant has =venture_dashboard=: with a slug, every widget on that dashboard with what it shows right now; without one, the dashboards that exist. It reads shared dashboards only — a personal one belongs to a person — and reads them across every entity, as the assistant does everything. Ask it "what does the factory dashboard say" and it reads the page you built rather than guessing which queries you meant.
+Through =venturectl mcp=, an outside agent has =venture_dashboards= (=what=: =list=, =kinds= or =templates=), =venture_dashboard= (=mode=: =data=, =settings= or =definition=) and =venture_dashboard_build= (a template name or a definition). Building is refused while the MCP server stages writes — a whole page cannot wait in the queue — and the refusal says to start it with =--apply-writes= or to create the =dashboard= and each =dashboard_widget= with =venture_create=, which stage like any record. See [[file:mcp.org][venturectl mcp]].
+
+The assistant has =venture_dashboard=: with a slug, every widget on that dashboard with what it shows right now; without one, the dashboards that exist. It reads shared dashboards only — a personal one belongs to a person — and reads them across every entity, as the assistant does everything. Ask it "what does the factory dashboard say" and it reads the page you built rather than guessing which queries you meant. Under the autonomous policy it also has =venture_dashboard_build=; under the default policy it builds a page record by record with =venture_create=, each staged for approval.
 
 * Adding a widget kind
 
