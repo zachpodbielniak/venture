@@ -227,6 +227,73 @@ venture_report_result_render(
 );
 
 /**
+ * venture_report_result_render_html_body:
+ * @self: a #VentureReportResult
+ * @with_metrics: whether to emit the headline tiles
+ * @with_table: whether to emit the table
+ * @max_rows: how many rows at most, or 0 for all
+ *
+ * Renders the report's parts without the card around them, for a surface
+ * that supplies its own -- a dashboard widget, which is a card already.
+ * The full HTML render is this inside a card with the title and period.
+ *
+ * Returns: (transfer full): the rendered fragment
+ */
+gchar *
+venture_report_result_render_html_body(
+	VentureReportResult	*self,
+	gboolean		 with_metrics,
+	gboolean		 with_table,
+	guint			 max_rows
+);
+
+/**
+ * venture_report_result_get_column_keys:
+ * @self: a #VentureReportResult
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the column keys, in
+ *   order
+ */
+gchar **
+venture_report_result_get_column_keys(VentureReportResult *self);
+
+/**
+ * venture_report_result_get_cell:
+ * @self: a #VentureReportResult
+ * @row: the row index
+ * @key: the column key
+ *
+ * Reads one cell as the value the report set: a string, a double or a
+ * #VentureMoney. A dashboard chart reads its bars from here.
+ *
+ * Returns: (transfer none) (nullable): the value, or %NULL if unset
+ */
+const GValue *
+venture_report_result_get_cell(
+	VentureReportResult	*self,
+	guint			 row,
+	const gchar		*key
+);
+
+/**
+ * venture_report_result_format_cell:
+ * @self: a #VentureReportResult
+ * @row: the row index
+ * @key: the column key
+ *
+ * Formats one cell the way the table would: money with its symbol,
+ * percentages with a sign, whole numbers without a pointless fraction.
+ *
+ * Returns: (transfer full): the text, empty if the cell is unset
+ */
+gchar *
+venture_report_result_format_cell(
+	VentureReportResult	*self,
+	guint			 row,
+	const gchar		*key
+);
+
+/**
  * venture_report_result_to_json:
  * @self: a #VentureReportResult
  *

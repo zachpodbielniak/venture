@@ -1308,6 +1308,81 @@ GType
 venture_incident_status_get_type(void) G_GNUC_CONST;
 
 /**
+ * VentureDashboardPurpose:
+ * @VENTURE_DASHBOARD_PURPOSE_OVERVIEW: a general view, the kind a home page is
+ * @VENTURE_DASHBOARD_PURPOSE_REPORTING: figures and tables, for reading
+ * @VENTURE_DASHBOARD_PURPOSE_WORK: queues and actions, for doing
+ *
+ * What a dashboard is for. It changes nothing about what a dashboard may
+ * hold -- any widget goes on any dashboard -- and is there so a list of
+ * twenty views can be sorted, and so a template lands in the right group.
+ */
+typedef enum
+{
+	VENTURE_DASHBOARD_PURPOSE_OVERVIEW = 0,
+	VENTURE_DASHBOARD_PURPOSE_REPORTING,
+	VENTURE_DASHBOARD_PURPOSE_WORK
+} VentureDashboardPurpose;
+
+#define VENTURE_TYPE_DASHBOARD_PURPOSE (venture_dashboard_purpose_get_type())
+
+GType
+venture_dashboard_purpose_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureDashboardLayout:
+ * @VENTURE_DASHBOARD_LAYOUT_THREE_COLUMNS: three across, the default
+ * @VENTURE_DASHBOARD_LAYOUT_TWO_COLUMNS: two across
+ * @VENTURE_DASHBOARD_LAYOUT_FOUR_COLUMNS: four across, for many small figures
+ * @VENTURE_DASHBOARD_LAYOUT_ONE_COLUMN: stacked, for a page that reads top
+ *   to bottom
+ *
+ * How many columns a dashboard's grid has on a wide screen. Narrow screens
+ * collapse every layout to one column.
+ */
+typedef enum
+{
+	VENTURE_DASHBOARD_LAYOUT_THREE_COLUMNS = 0,
+	VENTURE_DASHBOARD_LAYOUT_TWO_COLUMNS,
+	VENTURE_DASHBOARD_LAYOUT_FOUR_COLUMNS,
+	VENTURE_DASHBOARD_LAYOUT_ONE_COLUMN
+} VentureDashboardLayout;
+
+#define VENTURE_TYPE_DASHBOARD_LAYOUT (venture_dashboard_layout_get_type())
+
+GType
+venture_dashboard_layout_get_type(void) G_GNUC_CONST;
+
+/**
+ * venture_dashboard_layout_get_columns:
+ * @layout: a layout
+ *
+ * Returns: the number of grid columns, 1 to 4
+ */
+guint
+venture_dashboard_layout_get_columns(VentureDashboardLayout layout);
+
+/**
+ * VentureWidgetSpan:
+ * @VENTURE_WIDGET_SPAN_NORMAL: one grid column
+ * @VENTURE_WIDGET_SPAN_WIDE: two grid columns
+ * @VENTURE_WIDGET_SPAN_FULL: the whole row
+ *
+ * How much of a dashboard row a widget takes.
+ */
+typedef enum
+{
+	VENTURE_WIDGET_SPAN_NORMAL = 0,
+	VENTURE_WIDGET_SPAN_WIDE,
+	VENTURE_WIDGET_SPAN_FULL
+} VentureWidgetSpan;
+
+#define VENTURE_TYPE_WIDGET_SPAN (venture_widget_span_get_type())
+
+GType
+venture_widget_span_get_type(void) G_GNUC_CONST;
+
+/**
  * VentureLinkKind:
  * @VENTURE_LINK_KIND_RELATED: connected, with no direction
  * @VENTURE_LINK_KIND_BLOCKS: the source cannot finish until the target does

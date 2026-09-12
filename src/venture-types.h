@@ -92,6 +92,13 @@ typedef struct _VentureDeployment		VentureDeployment;
 typedef struct _VentureIncident			VentureIncident;
 typedef struct _VentureWorkService		VentureWorkService;
 
+/* --- Dashboards ----------------------------------------------------------- */
+
+typedef struct _VentureDashboard		VentureDashboard;
+typedef struct _VentureDashboardWidget		VentureDashboardWidget;
+typedef struct _VentureWidgetKindRegistry	VentureWidgetKindRegistry;
+typedef struct _VentureWidgetResult		VentureWidgetResult;
+
 /* --- Registries and infrastructure --------------------------------------- */
 
 typedef struct _VentureEntityRegistry		VentureEntityRegistry;

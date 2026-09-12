@@ -1,0 +1,175 @@
+#+title: Dashboards
+#+description: Pages of widgets, as many as you like: any report, any record type, any count or queue, arranged your way
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-11]
+#+updated: [2026-09-11]
+#+version: 0.5.0
+
+* What this is
+
+The =dashboards= module lets you build pages. A dashboard is a named page with a grid of widgets; a widget is a small declarative question — "how many incidents are open", "the newest eight builds", "this month's profit and loss", "what is due in the next fortnight", "a note about how this team works" — answered from whatever record type or report it names. You can have as many dashboards as you like, one of them can be the home page, and each can be shared with everyone or kept to yourself.
+
+Both the dashboard and its widgets are ordinary record types, so they get what every record type gets: a table, REST CRUD, an audit trail, =venturectl=, and the assistant's tools. What this module adds is the meaning of a widget: the catalogue of kinds, what each kind reads from a widget's settings, and one function that turns a widget into something to show — as HTML for the browser and as JSON for the API, from the same pass over the data, so the two cannot disagree.
+
+The module requires only =core=. A widget can point at any module's records or reports; when that module is off the widget says so in its place and the rest of the page still works, and when it comes back on the widget answers again. Nothing about a dashboard needs to change when a module is switched.
+
+* The pages
+
+| Path                            | What it is                                                     |
+|---------------------------------+----------------------------------------------------------------|
+| =/dashboards=                   | every dashboard you may see, the templates, and the import box |
+| =/dashboards/:slug=             | a dashboard                                                    |
+| =/dashboards/:slug/edit=        | the same page with its controls out, and the dashboard's settings |
+| =/dashboards/:slug/widgets/new= | add a widget                                                   |
+| =/dashboards/:slug/widgets/:id/edit= | change one                                                 |
+| =/dashboards/:slug/export=      | the definition, as a JSON download                             |
+| =/overview=                     | the built-in overview, always                                  |
+| =/=                             | the dashboard marked as home, or the built-in overview         |
+
+Every dashboard you may see is listed in the sidebar under *Views*, so a page you built is one click from anywhere.
+
+A dashboard's slug is its address, made from the name when you leave it blank and normalised when you type one; two living dashboards cannot share one.
+
+* Making one
+
+Three ways, all on =/dashboards=.
+
+*From a template.* Four ship: =factory= (the software factory at a glance — what is planned, building, shipping and running, the incidents open, the coding runs in flight, the knowledge and the actions beside them), =reporting= (month end: the P&L figures, revenue by venture, receivables, the pipeline, profit by month), =work= (your tickets, what is due, what is waiting for a decision), and =overview= (the built-in home page as widgets you can rearrange). A template is a definition in the export format, so what you get is exactly what an export of it would be, and you can change every widget afterwards.
+
+*Empty*, with a name and a purpose, then add widgets.
+
+*Imported*, from a definition somebody exported — pasted into the box, or with =venturectl dashboard import FILE=.
+
+A dashboard has a *purpose* — overview, reporting or work — which changes nothing about what it may hold and is there so twenty views sort sensibly. It has a *layout* of one to four columns; narrow screens collapse every layout to one. *Home* puts it at =/=; only one dashboard is home, and marking one unmarks the rest. *Personal* keeps it to its owner: nobody else sees it in the list, the sidebar, or the API, and the page answers 404 rather than 403, so whether somebody else's page exists is not something a stranger can learn. A *venture* narrows every widget that can be narrowed to one venture — every list, count and breakdown on a type with a =venture_id= field.
+
+* Widgets
+
+Every widget has a kind, a title (or the kind supplies one), a width — one column, two, or the whole row — a position, and an optional refresh interval in seconds, on which the card reloads itself without the page. The rest of its settings are read by the kind, and the editor shows only the ones the chosen kind reads.
+
+| Kind             | Shows                                                                          | Reads                                         |
+|------------------+--------------------------------------------------------------------------------+-----------------------------------------------|
+| =count=          | one figure: how many records of a type match a filter, optionally within a period on a date field | =entity_type=, =filter=, =period=, =field=    |
+| =list=           | the newest few records of a type matching a filter, with the columns you choose, each linking to its page | =entity_type=, =filter=, =order=, =limit=, =columns= |
+| =breakdown=      | counts per value of a field with a fixed set of values — tickets by status, deals by stage — as bars linking to their rows | =entity_type=, =field=, =filter=              |
+| =upcoming=       | what is due within the next so many days on a date field, overdue first        | =entity_type=, =field=, =filter=, =limit=, =options= (={"days": 14}=) |
+| =record=         | one record's fields                                                            | =entity_type=, =record_id=, =columns=         |
+| =links=          | everything linked to one record, read from it                                  | =entity_type=, =record_id=                    |
+| =metric=         | one headline figure from a report, with its change against the previous period | =report_name=, =period=, =field= (the metric's key; the first when blank) |
+| =report=         | a whole report for a period: the tiles, the table, or both                     | =report_name=, =period=, =limit=, =options= (={"tiles": false}=, ={"table": false}=) |
+| =chart=          | a report's rows as bars: one column for the labels, one for the lengths        | =report_name=, =period=, =field= (value column), =columns= (label column), =limit= |
+| =activity=       | the latest changes from the audit trail, optionally for one record type        | =entity_type=, =limit=                        |
+| =confirmations=  | staged changes waiting for a person                                            | =limit=                                       |
+| =note=           | words: lines starting with =-= are bullets; paths and URLs become links        | =body=                                        |
+| =actions=        | buttons, one per line as =Label | /path=                                       | =body=                                        |
+| =search=         | a search box, for everything or for one type                                   | =entity_type=                                 |
+| =environments=   | each environment and the release it is running now (needs =factory=)           | =filter=, =order=, =limit=                    |
+| =milestone=      | one milestone's tickets done over planned; the soonest-due open one when no id is given (needs =factory=) | =record_id=                                   |
+
+A *filter* is written exactly as on a list page's URL: =status=open&priority__in=high,urgent=. The same parser reads both, so what a widget shows is what that URL shows, and every count and list carries a link to its rows. Two placeholders are substituted for whoever is looking: ={me}= is their username and ={user_id}= their id, so a work dashboard's "my tickets" is =assignee={me}= and the same page answers for everyone who opens it. ={venture_id}= is the dashboard's venture.
+
+An *order* is a field name, with a leading =-= for descending. A *period* is anything a report accepts: =this_month=, =last_30_days=, =ytd=, =2026-Q2=, =all_time=. *Columns* are field names in the wire spelling, comma separated; sensitive fields are never shown whatever was asked. *Options* are a JSON object, for the few settings a kind needs beyond these.
+
+A widget's *scope* is the viewer's: the entity picked in the sidebar and everything beneath it, the same as every list and report. A widget never scopes itself, so the same widget on a page and in an API call answers about the same rows.
+
+Every widget is checked at the save, whichever door it came through: the kind must exist, the record type must exist (even one whose module is off — the widget outlives the switch), the report must exist, the options must be a JSON object. A widget that cannot be answered when the page renders — a report that errored, a module that is off, a record that was deleted — says so in its place. One bad widget never takes the page down.
+
+* Export and import
+
+=/dashboards/:slug/export= and =GET /api/v1/dashboards/:slug/export= write a definition: the dashboard's settings and each widget's, in the wire spelling, with no ids, owners or timestamps.
+
+#+begin_src json
+{
+  "name": "Factory",
+  "slug": "factory",
+  "description": "From a ticket to a running release, and back.",
+  "purpose": "work",
+  "layout": "three_columns",
+  "home": false,
+  "personal": false,
+  "position": 0,
+  "widgets": [
+    {"kind": "count", "title": "Open incidents", "entity_type": "incident",
+     "filter": "status__in=open,mitigated", "span": "normal", ...},
+    ...
+  ]
+}
+#+end_src
+
+It imports on any install through the box on =/dashboards=, =POST /api/v1/dashboards/import=, or =venturectl dashboard import FILE=. A taken slug gets a number suffixed, so importing the same file twice gives two dashboards rather than a refusal. Every widget is built and checked before anything is written, so a definition with one bad widget — an unknown kind, a misspelt setting, a type that does not exist — is refused as a whole and leaves nothing behind. Positions follow the file's order unless the file says otherwise.
+
+Definitions are plain JSON, so they belong in git. A team's factory dashboard can live beside the code it watches.
+
+* The API, the CLI, the assistant
+
+| Method | Path                                   | Purpose                                              |
+|--------+----------------------------------------+------------------------------------------------------|
+| =GET=  | =/api/v1/dashboards=                   | every dashboard the caller may see, widgets unevaluated |
+| =GET=  | =/api/v1/dashboards/:slug=             | one, every widget evaluated; =?data=0= to skip that; =?organization_id=N= to scope |
+| =GET=  | =/api/v1/dashboards/:slug/export=      | the definition                                       |
+| =POST= | =/api/v1/dashboards/import=            | a definition in the body                             |
+| =POST= | =/api/v1/dashboards/from-template=     | ={"template": "factory"}=                            |
+| =GET=  | =/api/v1/widget-kinds=                 | the catalogue: name, label, what it reads, whether its module is on |
+| =GET=  | =/api/v1/dashboard-templates=          | the templates, definitions included                  |
+| =*=    | =/api/v1/dashboard=, =/api/v1/dashboard_widget= | the generic record routes, like any type   |
+
+Each evaluated widget carries its settings, its resolved title, its link, an =error= when it could not be answered, and =data= in a shape the kind decides — a count's ={"count": 3}=, a list's rows, a metric's figure and change, a breakdown's groups, a report's whole result.
+
+#+begin_src sh
+venturectl dashboards                    # what exists
+venturectl dashboard factory             # every widget, evaluated, as a table
+venturectl -f json dashboard factory     # the whole answer
+venturectl dashboard export factory > factory.json
+venturectl dashboard import factory.json
+venturectl dashboard create work         # from a template
+venturectl dashboard templates
+venturectl dashboard kinds
+#+end_src
+
+The assistant has =venture_dashboard=: with a slug, every widget on that dashboard with what it shows right now; without one, the dashboards that exist. It reads shared dashboards only — a personal one belongs to a person — and reads them across every entity, as the assistant does everything. Ask it "what does the factory dashboard say" and it reads the page you built rather than guessing which queries you meant.
+
+* Adding a widget kind
+
+A plugin registers a kind the way it registers a report:
+
+#+begin_src c
+static VentureWidgetResult *
+my_kind(VentureContext *context, VentureDashboardWidget *widget,
+        const VentureWidgetScope *scope, gpointer user_data, GError **error)
+{
+	VentureWidgetResult *result;
+
+	result = venture_widget_result_new();
+	result->title = g_strdup("Weather");
+	result->html = g_strdup("<p>Sunny</p>");
+	result->data = json_node_new(JSON_NODE_NULL);
+	result->link = g_strdup("/e/venture");
+	return result;
+}
+
+static const gchar *const my_kind_uses[] = { "entity_type", "limit", NULL };
+
+static const VentureWidgetKindInfo my_kind_info = {
+	"weather", "Weather", "What the sky is doing over a venture",
+	NULL, my_kind_uses, my_kind
+};
+
+venture_widget_kind_registry_add(venture_widget_kind_registry_get_default(),
+                                 &my_kind_info, NULL, NULL, &error);
+#+end_src
+
+The registry is process-wide, like the entity registry, so a kind registered once is offered by every context. =uses= lists the widget fields the kind reads, in the wire spelling; the editor shows only those. A =module= makes the kind say "off" instead of rendering when that module is. The function reads what it needs from the widget, answers within the scope — the entities in =organization_ids=, the viewer's =username= for ={me}= — and fills both =html= and =data=; returning =NULL= with an error is a failure the page renders in place.
+
+* Why it is shaped this way
+
+*Settings are columns, not a blob.* A widget's record type, report, filter, order, limit and so on are plain fields on =dashboard_widget=. A column has a label, a help line and a form box for free; a JSON blob would need a hand-written form, which is the thing this codebase exists to avoid. The kind decides which columns mean something, and =options= exists for the two or three settings that do not deserve a column.
+
+*The kind is a string, not an enum.* A plugin can add one without a change to the core, and the save validator refuses a kind nobody registered, so the freedom costs nothing.
+
+*One function produces both renderings.* Every kind writes its JSON and its HTML from the same loop. Two implementations would be two answers, and the assistant reading one while the operator looks at the other is exactly the disagreement a dashboard exists to prevent.
+
+*Rendering never fails.* =venture_dashboard_render_widget()= returns a result with an error in it rather than nothing. A page is a set of independent questions; a report that started failing yesterday should be a red card, not a blank page.
+
+*A widget outlives a module switch.* The validator accepts a record type that exists but is hidden, so a factory dashboard built while the factory is on survives it being turned off and is whole again when it comes back. Refusing would mean a configuration change deleted somebody's page.
+
+*One home, at the save.* "Only one dashboard is home" is enforced by the dashboard's save validator, which unmarks the others — a write from inside a validator, allowed because the lock is recursive. It is there rather than in the web handler so the API and an import behave the same.

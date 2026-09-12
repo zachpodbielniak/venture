@@ -4,7 +4,7 @@
 #+categories: projects docs
 #+created: [2026-08-14]
 #+updated: [2026-09-11]
-#+version: 0.4.0
+#+version: 0.5.0
 
 * AI
 
@@ -151,6 +151,7 @@ properties.
 | =venture_fetch_url=   | read — a public web page, as text            |
 | =venture_report=      | read — any report                            |
 | =venture_links=       | read — every link touching a record          |
+| =venture_dashboard=   | read — a dashboard, every widget evaluated; or the list of them |
 | =venture_link=        | staged unless the policy is autonomous       |
 | =venture_create=      | staged unless the policy is autonomous       |
 | =venture_update=      | staged unless the policy is autonomous       |

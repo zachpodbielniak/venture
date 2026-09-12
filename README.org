@@ -4,7 +4,7 @@
 #+categories: projects
 #+created: [2026-08-14]
 #+updated: [2026-09-11]
-#+version: 0.4.0
+#+version: 0.5.0
 
 * VENTURE
 
@@ -123,6 +123,19 @@ read from either end. Every detail page has a Links panel; the API, the CLI
 and the assistant have the same. The checks the schema cannot express run at
 the save, so an approved staged link is held to the same rules as one made
 by hand.
+
+*** Pages you build
+
+The =dashboards= module: as many pages as you like, each a grid of widgets
+-- a count, a list, a breakdown, a report's figure or its table or its rows
+as bars, what is due, one record, its links, the audit trail, what awaits
+approval, a note, a row of buttons, a search box, and for the factory each
+environment's running release and a milestone's progress. Any widget reads
+any module's records or reports; the same widget answers identically on the
+page, over the API and to the assistant. One dashboard can be home, a
+personal one is yours alone, and a dashboard exports as JSON that imports
+anywhere -- four ship as templates, the factory among them. See
+[[file:docs/dashboards.org][dashboards]].
 
 *** A software factory
 

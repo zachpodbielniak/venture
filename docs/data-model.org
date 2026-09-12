@@ -4,7 +4,7 @@
 #+categories: projects docs
 #+created: [2026-08-14]
 #+updated: [2026-09-11]
-#+version: 0.4.0
+#+version: 0.5.0
 
 * Data model
 
@@ -134,6 +134,12 @@ Tickets gained two fields: =issue-type= (epic, story, task, subtask, research, b
 The loop from a ticket to a running release and back, as records. A =milestone= is a planned increment; a =release= is a version that went out, with its changelog; a =build= is one CI run, written by the forge's webhook; an =environment= is somewhere a release runs; a =deployment= is a release arriving there; an =incident= is something going wrong there, pointing at the release and deployment it came from and the ticket that fixes it. Tickets gained =milestone-id= and =release-id=. See [[file:factory.org][The software factory]].
 
 A release's version is the field =number=, because every record already has a =version= — the optimistic-concurrency counter. A field table may not reuse a name the entity spine owns (=id=, =uuid=, =created-at=, =updated-at=, =version=); the installer refuses one at class initialisation.
+
+** Dashboards
+
+- *dashboard*, *dashboard_widget*.
+
+A =dashboard= is a named page — slug, purpose, layout, whether it is home, whether it is personal to its owner, an optional venture to narrow to — and a =dashboard_widget= is one card on it: a =kind= (a string, so a plugin can add one), a title, a width, a position, and the settings the kind reads — record type, record id, report name, period, filter, order, limit, field, columns, body, options. Settings are columns rather than a blob because a column gets a labelled form box for free. What each kind makes of them is in =src/core/venture-dashboard.c=. See [[file:dashboards.org][Dashboards]].
 
 * Modules
 

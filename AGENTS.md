@@ -368,3 +368,36 @@ than one that fails.
 - **A refused webhook signature is a `g_warning`, which the test harness
   makes fatal.** Wrap a deliberately bad delivery in
   `g_test_expect_message()`.
+
+## Dashboards
+
+- **A widget kind writes its JSON and its HTML from one loop.** Two
+  renderings from two code paths are two answers; the assistant reading
+  `data` while the operator looks at the card is the disagreement a
+  dashboard exists to prevent. Add a kind to the table in
+  `src/core/venture-dashboard.c`, list the fields it reads in `uses` (the
+  editor shows only those), and never render a kind in the web layer.
+- **`venture_dashboard_render_widget()` never returns NULL.** A widget that
+  cannot be answered is a result with `error` set, rendered in place. A
+  page is a set of independent questions.
+- **The widget validator accepts a type or report whose module is off.**
+  Use `venture_entity_registry_lookup_any()` there, not `_lookup()`; a
+  factory dashboard must survive the factory being switched off. The
+  kind's own `module` is what makes it say "off" at render time.
+- **A widget never scopes itself.** The scope (`VentureWidgetScope`) comes
+  from the caller -- the sidebar picker on a page, `?organization_id=` on
+  the API, nothing for the assistant -- so one widget answers about the
+  same rows through every door. `{me}` is the scope's username.
+- **Dashboards and widgets are checked at the save, like everything.**
+  Slug uniqueness and the single home page live in the dashboard's save
+  validator, which writes the other dashboards from inside the lock (it is
+  recursive); the kind, type, report and options checks live in the
+  widget's. The web handlers do none of this themselves.
+- **`/` is the home dashboard when one is visible, `/overview` is always
+  the built-in page.** A test that asserts on the home page must know
+  which it is looking at; `tests/test-auth.c` and `tests/test-plugin.c`
+  list both.
+- **Templates are written in the export format.** A template is what an
+  export of the dashboard it makes would be, and `test-dashboard` imports
+  every one, so a template naming a field that does not exist fails the
+  suite rather than a user.

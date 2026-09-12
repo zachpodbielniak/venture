@@ -704,6 +704,54 @@ VENTURE_DEFINE_ENUM_TYPE(venture_incident_status_get_type,
                          "VentureIncidentStatus",
                          venture_incident_status_values)
 
+static const GEnumValue venture_dashboard_purpose_values[] = {
+	VE(VENTURE_DASHBOARD_PURPOSE_OVERVIEW,  "overview"),
+	VE(VENTURE_DASHBOARD_PURPOSE_REPORTING, "reporting"),
+	VE(VENTURE_DASHBOARD_PURPOSE_WORK,      "work"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_dashboard_purpose_get_type,
+                         "VentureDashboardPurpose",
+                         venture_dashboard_purpose_values)
+
+static const GEnumValue venture_dashboard_layout_values[] = {
+	VE(VENTURE_DASHBOARD_LAYOUT_THREE_COLUMNS, "three_columns"),
+	VE(VENTURE_DASHBOARD_LAYOUT_TWO_COLUMNS,   "two_columns"),
+	VE(VENTURE_DASHBOARD_LAYOUT_FOUR_COLUMNS,  "four_columns"),
+	VE(VENTURE_DASHBOARD_LAYOUT_ONE_COLUMN,    "one_column"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_dashboard_layout_get_type,
+                         "VentureDashboardLayout",
+                         venture_dashboard_layout_values)
+
+guint
+venture_dashboard_layout_get_columns(VentureDashboardLayout layout)
+{
+	switch (layout)
+	{
+	case VENTURE_DASHBOARD_LAYOUT_TWO_COLUMNS:  return 2;
+	case VENTURE_DASHBOARD_LAYOUT_FOUR_COLUMNS: return 4;
+	case VENTURE_DASHBOARD_LAYOUT_ONE_COLUMN:   return 1;
+	case VENTURE_DASHBOARD_LAYOUT_THREE_COLUMNS:
+	default:
+		return 3;
+	}
+}
+
+static const GEnumValue venture_widget_span_values[] = {
+	VE(VENTURE_WIDGET_SPAN_NORMAL, "normal"),
+	VE(VENTURE_WIDGET_SPAN_WIDE,   "wide"),
+	VE(VENTURE_WIDGET_SPAN_FULL,   "full"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_widget_span_get_type,
+                         "VentureWidgetSpan",
+                         venture_widget_span_values)
+
 static const GEnumValue venture_link_kind_values[] = {
 	VE(VENTURE_LINK_KIND_RELATED,       "related"),
 	VE(VENTURE_LINK_KIND_BLOCKS,        "blocks"),

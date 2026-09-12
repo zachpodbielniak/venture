@@ -1150,6 +1150,17 @@ test_auth_api_refuses_anonymous_requests(
 		"/api/v1/kb_link",
 		"/api/v1/kb/search?q=anything",
 		"/api/v1/kb/1/export",
+		/* Dashboards: a page somebody built is a summary of what they
+		 * watch, and the widget catalogue says what this install can
+		 * show. */
+		"/api/v1/dashboards",
+		"/api/v1/dashboards/factory",
+		"/api/v1/dashboards/factory/export",
+		"/api/v1/widget-kinds",
+		"/api/v1/dashboard-templates",
+		"/api/v1/dashboard",
+		"/api/v1/dashboard_widget",
+		"/dashboards/factory/widgets/1",
 		NULL
 	};
 	gsize i;
@@ -1257,6 +1268,41 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/runs/1/cancel", NULL, "", NULL, NULL),
 		==, SOUP_STATUS_FOUND);
+
+	/* The dashboard writes: making, changing and removing pages and
+	 * their widgets. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/dashboards", NULL, "name=x", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/dashboards/import", NULL, "definition={}", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/dashboards/x", NULL, "name=y", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/dashboards/x/delete", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/dashboards/x/widgets", NULL, "kind=note", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/dashboards/x/widgets/1", NULL, "kind=note", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/dashboards/x/widgets/1/delete", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/dashboards/x/widgets/1/move", NULL, "direction=up", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+		"/dashboards/x/edit"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+		"/dashboards/x/widgets/new"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+		"/dashboards/x/export"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+		"/overview"), ==, SOUP_STATUS_FOUND);
 
 	/* The run card is a fragment, so it 401s rather than redirecting --
 	 * the same rule the chat fragments follow. */

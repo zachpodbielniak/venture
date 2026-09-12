@@ -610,30 +610,88 @@ venture_report_render_org(VentureReportResult *self)
 	return g_string_free(g_steal_pointer(&text), FALSE);
 }
 
-static gchar *
-venture_report_render_html(VentureReportResult *self)
+gchar **
+venture_report_result_get_column_keys(VentureReportResult *self)
 {
+	g_autoptr(GPtrArray) keys = NULL;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_REPORT_RESULT(self), NULL);
+
+	keys = g_ptr_array_new_with_free_func(g_free);
+
+	for (i = 0; i < self->columns->len; i++)
+	{
+		const VentureReportColumn *column;
+
+		column = g_ptr_array_index(self->columns, i);
+		g_ptr_array_add(keys, g_strdup(column->key));
+	}
+
+	g_ptr_array_add(keys, NULL);
+
+	return (gchar **)g_ptr_array_free(g_steal_pointer(&keys), FALSE);
+}
+
+const GValue *
+venture_report_result_get_cell(
+	VentureReportResult	*self,
+	guint			 row,
+	const gchar		*key
+){
+	g_return_val_if_fail(VENTURE_IS_REPORT_RESULT(self), NULL);
+	g_return_val_if_fail(NULL != key, NULL);
+
+	if (row >= self->rows->len)
+		return NULL;
+
+	return g_hash_table_lookup(g_ptr_array_index(self->rows, row), key);
+}
+
+gchar *
+venture_report_result_format_cell(
+	VentureReportResult	*self,
+	guint			 row,
+	const gchar		*key
+){
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_REPORT_RESULT(self), NULL);
+	g_return_val_if_fail(NULL != key, NULL);
+
+	if (row >= self->rows->len)
+		return g_strdup("");
+
+	for (i = 0; i < self->columns->len; i++)
+	{
+		const VentureReportColumn *column;
+
+		column = g_ptr_array_index(self->columns, i);
+
+		if (0 == g_strcmp0(column->key, key))
+			return venture_report_format_cell(column,
+				g_ptr_array_index(self->rows, row));
+	}
+
+	return g_strdup("");
+}
+
+gchar *
+venture_report_result_render_html_body(
+	VentureReportResult	*self,
+	gboolean		 with_metrics,
+	gboolean		 with_table,
+	guint			 max_rows
+){
 	g_autoptr(GString) html = NULL;
 	guint i;
 	guint j;
 
+	g_return_val_if_fail(VENTURE_IS_REPORT_RESULT(self), NULL);
+
 	html = g_string_new(NULL);
 
-	g_string_append(html, "<div class=\"card\"><div class=\"card-head\"><h2>");
-	venture_html_escape_append(html, self->title);
-	g_string_append(html, "</h2>");
-
-	if (NULL != self->period)
-	{
-		g_string_append(html, "<span class=\"badge\">");
-		venture_html_escape_append(html,
-			venture_date_range_get_label(self->period));
-		g_string_append(html, "</span>");
-	}
-
-	g_string_append(html, "</div>");
-
-	if (self->metrics->len > 0)
+	if (with_metrics && (self->metrics->len > 0))
 	{
 		g_string_append(html, "<div class=\"card-body\">"
 		                      "<div class=\"grid cols-4\">");
@@ -674,7 +732,7 @@ venture_report_render_html(VentureReportResult *self)
 		g_string_append(html, "</div></div>");
 	}
 
-	if (self->columns->len > 0)
+	if (with_table && (self->columns->len > 0))
 	{
 		g_string_append(html, "<div class=\"table-wrap\">"
 		                      "<table class=\"data\"><thead><tr>");
@@ -694,6 +752,15 @@ venture_report_render_html(VentureReportResult *self)
 
 		for (j = 0; j < self->rows->len; j++)
 		{
+			if ((max_rows > 0) && (j >= max_rows))
+			{
+				g_string_append_printf(html,
+					"<tr><td colspan=\"%u\" class=\"muted\">"
+					"and %u more</td></tr>",
+					self->columns->len, self->rows->len - max_rows);
+				break;
+			}
+
 			g_string_append(html, "<tr>");
 
 			for (i = 0; i < self->columns->len; i++)
@@ -718,7 +785,7 @@ venture_report_render_html(VentureReportResult *self)
 		g_string_append(html, "</tbody></table></div>");
 	}
 
-	if (self->rows->len == 0)
+	if (with_table && (self->rows->len == 0))
 	{
 		g_string_append(html, "<div class=\"empty\">"
 		                      "<h3>Nothing in this period</h3>"
@@ -733,6 +800,37 @@ venture_report_render_html(VentureReportResult *self)
 		g_string_append(html, "</div></div>");
 	}
 
+	return g_string_free(g_steal_pointer(&html), FALSE);
+}
+
+/*
+ * The full render: the body above inside a card headed by the title and
+ * the period.
+ */
+static gchar *
+venture_report_render_html(VentureReportResult *self)
+{
+	g_autoptr(GString) html = NULL;
+	g_autofree gchar *body = NULL;
+
+	html = g_string_new(NULL);
+
+	g_string_append(html, "<div class=\"card\"><div class=\"card-head\"><h2>");
+	venture_html_escape_append(html, self->title);
+	g_string_append(html, "</h2>");
+
+	if (NULL != self->period)
+	{
+		g_string_append(html, "<span class=\"badge\">");
+		venture_html_escape_append(html,
+			venture_date_range_get_label(self->period));
+		g_string_append(html, "</span>");
+	}
+
+	g_string_append(html, "</div>");
+
+	body = venture_report_result_render_html_body(self, TRUE, TRUE, 0);
+	g_string_append(html, body);
 	g_string_append(html, "</div>");
 
 	return g_string_free(g_steal_pointer(&html), FALSE);

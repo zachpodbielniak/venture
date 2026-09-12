@@ -326,6 +326,7 @@ venture_module_to_json(VentureModule *self)
  *   +-- ai --------- chat
  *   +-- automation
  *   +-- plugins
+ *   +-- dashboards
  *
  * finance requires sales because a profit-and-loss without revenue is not
  * a report anybody wants; outreach requires sales because a campaign's
@@ -430,6 +431,12 @@ static GType (*const venture_module_factory_types[]) (void) = {
 	venture_environment_get_type,
 	venture_deployment_get_type,
 	venture_incident_get_type,
+	NULL
+};
+
+static GType (*const venture_module_dashboards_types[]) (void) = {
+	venture_dashboard_get_type,
+	venture_dashboard_widget_get_type,
 	NULL
 };
 
@@ -579,6 +586,13 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		venture_module_requires_forge, venture_module_suggests_factory,
 		venture_module_factory_types, venture_module_reports_factory, NULL,
 		FALSE
+	},
+	{
+		"dashboards", "Dashboards",
+		"Custom pages of widgets: any report, any record type, any count "
+		"or queue, arranged as you like, and more than one of them.",
+		venture_module_requires_core, NULL,
+		venture_module_dashboards_types, NULL, NULL, FALSE
 	}
 };
 

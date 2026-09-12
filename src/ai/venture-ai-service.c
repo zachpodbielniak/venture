@@ -1643,6 +1643,93 @@ venture_ai_tool_kb_list(
 	return venture_ai_tool_result(g_steal_pointer(&node));
 }
 
+/*
+ * A dashboard as the operator sees it: every widget with its settings and
+ * its answer now. Without a slug, the dashboards that exist. The scope is
+ * the assistant's own -- every entity -- and the viewer is nobody, so a
+ * `{me}` filter reads as empty; the assistant is not a user.
+ */
+static gchar *
+venture_ai_tool_dashboard(
+	AiToolUse	 *tool_use,
+	GCancellable	 *cancellable,
+	GError		**error,
+	gpointer	  user_data
+){
+	VentureAiService *self;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) local_error = NULL;
+	JsonObject *input;
+	const gchar *slug;
+
+	self = user_data;
+
+	if (!venture_context_module_enabled(self->context, "dashboards"))
+		return venture_ai_tool_error("The dashboards module is off");
+
+	input = venture_ai_tool_input(tool_use);
+	slug = (NULL != input)
+		? venture_json_object_get_string(input, "slug", NULL) : NULL;
+
+	if (venture_string_is_empty(slug))
+	{
+		g_autoptr(GPtrArray) dashboards = NULL;
+		g_autoptr(JsonBuilder) builder = NULL;
+		guint i;
+
+		dashboards = venture_dashboard_list_visible(
+			venture_context_get_database(self->context), 0, &local_error);
+
+		if (NULL == dashboards)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		builder = json_builder_new();
+		json_builder_begin_array(builder);
+
+		for (i = 0; i < dashboards->len; i++)
+		{
+			g_autoptr(JsonNode) described = NULL;
+
+			described = venture_dashboard_describe(self->context,
+				g_ptr_array_index(dashboards, i), NULL, FALSE, NULL);
+
+			if (NULL != described)
+				json_builder_add_value(builder, g_steal_pointer(&described));
+		}
+
+		json_builder_end_array(builder);
+		node = json_builder_get_root(builder);
+
+		return venture_ai_tool_result(g_steal_pointer(&node));
+	}
+
+	{
+		g_autoptr(VentureDashboard) dashboard = NULL;
+		VentureWidgetScope scope = { NULL, 0, 0, NULL, 0 };
+
+		dashboard = venture_dashboard_find_by_slug(
+			venture_context_get_database(self->context), slug, &local_error);
+
+		if (NULL == dashboard)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		/* Personal dashboards belong to a person; the assistant reads
+		 * the shared ones. */
+		if (!venture_dashboard_is_visible_to(dashboard, 0))
+			return venture_ai_tool_error("There is no dashboard called "
+			                             "\"%s\"", slug);
+
+		g_object_get(dashboard, "venture-id", &scope.venture_id, NULL);
+		node = venture_dashboard_describe(self->context, dashboard, &scope,
+		                                  TRUE, &local_error);
+
+		if (NULL == node)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		return venture_ai_tool_result(g_steal_pointer(&node));
+	}
+}
+
 /* --- Tool registration --------------------------------------------------- */
 
 /*
@@ -1676,6 +1763,7 @@ venture_ai_service_register_tools(VentureAiService *self)
 	g_autoptr(AiTool) kb_search = NULL;
 	g_autoptr(AiTool) kb_list = NULL;
 	g_autoptr(AiTool) links = NULL;
+	g_autoptr(AiTool) dashboard = NULL;
 
 	list_types = venture_ai_make_tool(self, "venture_list_types",
 		"List every record type in this VENTURE instance with its fields, "
@@ -1781,6 +1869,17 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(links, "id", "integer", "The record's numeric id",
 	                      TRUE);
 
+	dashboard = venture_ai_make_tool(self, "venture_dashboard",
+		"Read a dashboard: every widget on it with its settings and what "
+		"it shows right now -- counts, lists, report figures, notes. Call "
+		"it with no slug to list the dashboards. Use it when the operator "
+		"asks about a page they built, such as the factory dashboard.");
+	ai_tool_add_parameter(dashboard, "slug", "string",
+		"The dashboard's slug, as in /dashboards/<slug>; omit to list them",
+		FALSE);
+
+	ai_tool_executor_register_callback(self->executor, dashboard,
+		venture_ai_tool_dashboard, self, NULL);
 	ai_tool_executor_register_callback(self->executor, links,
 		venture_ai_tool_links, self, NULL);
 	ai_tool_executor_register_callback(self->executor, kb_search,

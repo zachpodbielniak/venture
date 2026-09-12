@@ -93,6 +93,10 @@ venture_context_new(
 	/* The cross-row checks a polymorphic link needs, on every writer. */
 	venture_record_link_install_validator(database);
 
+	/* And the ones a dashboard needs: a widget kind that exists, a
+	 * report that exists, one home page at a time. */
+	venture_dashboard_install_validators(self);
+
 	/*
 	 * The confirmation queue exists whether or not AI does. It began as
 	 * the assistant's, but a change proposed by an outside agent holding

@@ -4,7 +4,7 @@
 #+categories: projects docs
 #+created: [2026-08-14]
 #+updated: [2026-09-11]
-#+version: 0.4.0
+#+version: 0.5.0
 
 
 * For an AI agent
@@ -69,6 +69,12 @@ venturectl report [NAME] [PERIOD]        # list reports, or run one
 venturectl links TYPE ID                 # every link touching a record
 venturectl link TYPE ID TYPE ID [kind=K] # link two records; note=... too
 venturectl modules                       # which modules the server runs
+venturectl dashboards                    # the dashboards
+venturectl dashboard SLUG                # one, every widget evaluated
+venturectl dashboard export SLUG         # its definition, as JSON
+venturectl dashboard import FILE         # a definition (- for stdin)
+venturectl dashboard create TEMPLATE     # factory, reporting, work, overview
+venturectl dashboard templates|kinds     # what create and widgets accept
 venturectl health                        # is the server up
 venturectl mcp [--apply-writes]          # serve the API to an agent over stdio
 #+end_src
@@ -89,6 +95,10 @@ venturectl update venture 3 status=paused
 venturectl report pnl this_quarter
 venturectl report categories fy        # by genre, over the fiscal year
 venturectl -f csv report receivables > aging.csv
+
+venturectl dashboard create factory
+venturectl dashboard factory           # every widget, with its answer
+venturectl dashboard export factory > factory.json
 #+end_src
 
 * Periods

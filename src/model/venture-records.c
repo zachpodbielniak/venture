@@ -1612,6 +1612,180 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureRecordLink, venture_record_link,
 		venture_record_link_get_display_name;
 )
 
+/* ==========================================================================
+ * Dashboards
+ *
+ * A dashboard is a named page of widgets, and a widget is a small,
+ * declarative question -- "the open incidents", "this month's releases
+ * report", "how many tickets are mine" -- answered from whatever record
+ * type or report it names. Both are ordinary records, so a dashboard is
+ * built in the browser, exported as JSON, created by venturectl, and read by
+ * the assistant, with nothing written per surface. What each widget kind
+ * makes of its settings is decided in core/venture-dashboard.c.
+ * ========================================================================== */
+
+static gboolean
+venture_dashboard_before_save(
+	VentureEntity	 *self,
+	GError		**error
+);
+
+static const VentureFieldDecl venture_dashboard_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "e.g. Factory, Month end, My work"),
+	VENTURE_FIELD("slug", "Slug",
+	              "Its address under /dashboards/; made from the name if "
+	              "left blank",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("description", "Description",
+	                   "What the page is for, shown under its title"),
+	VENTURE_FIELD_ENUM("purpose", "Purpose",
+	                   "Overview, reporting or work; sorts the list",
+	                   venture_dashboard_purpose_get_type,
+	                   VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_ENUM("layout", "Layout", "How many columns across",
+	                   venture_dashboard_layout_get_type,
+	                   VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("home", "Home page",
+	              "Show this dashboard at / instead of the built-in overview",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("personal", "Personal",
+	              "Only its owner can see it; otherwise every user can",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("owner-user-id", "Owner", "Who made it", "user",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("venture-id", "Venture",
+	                  "Narrow every widget that can be to one venture",
+	                  "venture", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("position", "Position", "Order in the sidebar; lowest first",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
+};
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureDashboard, venture_dashboard,
+                                venture_dashboard_fields,
+	VENTURE_ENTITY_CLASS(klass)->before_save = venture_dashboard_before_save;
+)
+
+/*
+ * A dashboard's slug is its address: /dashboards/factory. It is derived from
+ * the name when left blank, here rather than in a form handler, so a
+ * dashboard created over the API or imported from a file gets one too.
+ */
+static gboolean
+venture_dashboard_before_save(
+	VentureEntity	 *self,
+	GError		**error
+){
+	g_autofree gchar *slug = NULL;
+	g_autofree gchar *name = NULL;
+
+	g_object_get(self, "slug", &slug, "name", &name, NULL);
+
+	if (venture_string_is_empty(slug))
+	{
+		g_autofree gchar *derived = NULL;
+
+		derived = venture_slugify(name);
+
+		if (venture_string_is_empty(derived))
+		{
+			g_set_error_literal(error, VENTURE_ERROR,
+			                    VENTURE_ERROR_VALIDATION,
+			                    "A dashboard needs a name a slug can be "
+			                    "made from");
+			return FALSE;
+		}
+
+		g_object_set(self, "slug", derived, NULL);
+	}
+	else
+	{
+		g_autofree gchar *normalised = NULL;
+
+		/* Typed slugs are normalised the same way, so "My Board" and
+		 * "my-board" cannot be two addresses for one page. */
+		normalised = venture_slugify(slug);
+
+		if (venture_string_is_empty(normalised))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "\"%s\" cannot be made into a slug", slug);
+			return FALSE;
+		}
+
+		if (0 != g_strcmp0(normalised, slug))
+			g_object_set(self, "slug", normalised, NULL);
+	}
+
+	return VENTURE_ENTITY_CLASS(venture_dashboard_parent_class)->before_save(
+		self, error);
+}
+
+
+/*
+ * One widget on a dashboard.
+ *
+ * The kind is a string, not an enum, so a plugin can register a widget kind
+ * the way it registers a record type or a report; the save validator in
+ * core/venture-dashboard.c refuses a kind nobody registered. The settings
+ * are plain columns rather than one JSON blob because a column has a label,
+ * a help line and a form box for free, and because "which record type" and
+ * "which report" are questions every kind answers the same way. What each
+ * kind reads is listed by the kind itself, and the editor shows only those.
+ */
+static const VentureFieldDecl venture_dashboard_widget_fields[] = {
+	VENTURE_FIELD_REF("dashboard-id", "Dashboard", NULL, "dashboard",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("title", "Title",
+	              "Shown on the card; the kind supplies one if left blank",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD("kind", "Kind",
+	              "What the widget shows: list, count, metric, report, ...",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("position", "Position", "Order on the page; lowest first",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_ENUM("span", "Width", "One column, two, or the whole row",
+	                   venture_widget_span_get_type,
+	                   VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("entity-type", "Record type",
+	              "The record type the widget reads, e.g. ticket, release",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("record-id", "Record id",
+	              "One record's id, for the kinds that show a single record",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("report-name", "Report",
+	              "A report's name, e.g. pnl, releases, lead_time",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("period", "Period",
+	              "this_month, last_30_days, ytd, all_time, 2026-Q2 ...",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("filter", "Filter",
+	              "As on a list page: status=open&assignee={me}",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("order", "Order",
+	              "A field to sort by; a leading - sorts descending",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("limit", "Limit", "How many rows; 0 for the kind's default",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("field", "Field",
+	              "The field the kind groups, counts, dates or charts by",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("columns", "Columns",
+	              "Comma-separated fields to show; the kind's default if blank",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("body", "Body",
+	                   "Text for a note, or one action per line as "
+	                   "Label | /path"),
+	VENTURE_FIELD("refresh-seconds", "Refresh",
+	              "Reload the widget every so many seconds; 0 never",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("options", "Options",
+	                   "Extra settings as JSON, e.g. {\"days\": 30}")
+};
+
+VENTURE_DEFINE_ENTITY(VentureDashboardWidget, venture_dashboard_widget,
+                      venture_dashboard_widget_fields)
+
 /*
  * One forge server: a Forgejo or Gitea instance you have an account on.
  *

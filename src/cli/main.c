@@ -1646,6 +1646,272 @@ venture_cli_command_links(
 }
 
 /*
+ * venturectl dashboards
+ *
+ * The dashboards the token may see, with their widget counts.
+ */
+static gint
+venture_cli_command_dashboards(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	JsonArray *dashboards;
+	guint i;
+
+	(void)args;
+
+	node = venture_cli_request(cli, "GET", "/api/v1/dashboards", NULL, error);
+
+	if (NULL == node)
+		return -1;
+
+	if (VENTURE_OUTPUT_FORMAT_TABLE != cli->format)
+	{
+		venture_cli_output(cli, node);
+		return 0;
+	}
+
+	dashboards = json_node_get_array(node);
+
+	if (0 == json_array_get_length(dashboards))
+	{
+		g_print("No dashboards. Make one at /dashboards, or "
+		        "`venturectl dashboard create TEMPLATE`.\n");
+		return 0;
+	}
+
+	g_print("%-20s %-10s %-7s %-6s %s\n", "SLUG", "PURPOSE", "WIDGETS",
+	        "HOME", "NAME");
+
+	for (i = 0; i < json_array_get_length(dashboards); i++)
+	{
+		JsonObject *dashboard;
+		JsonArray *widgets;
+
+		dashboard = json_array_get_object_element(dashboards, i);
+		widgets = json_object_has_member(dashboard, "widgets")
+			? json_object_get_array_member(dashboard, "widgets") : NULL;
+
+		g_print("%-20s %-10s %-7u %-6s %s\n",
+		        venture_json_object_get_string(dashboard, "slug", "?"),
+		        venture_json_object_get_string(dashboard, "purpose", "?"),
+		        (NULL != widgets) ? json_array_get_length(widgets) : 0,
+		        venture_json_object_get_bool(dashboard, "home", FALSE)
+		                ? "yes" : "",
+		        venture_json_object_get_string(dashboard, "name", ""));
+	}
+
+	return 0;
+}
+
+/*
+ * venturectl dashboard SLUG            every widget, with what it shows
+ * venturectl dashboard export SLUG     the definition, for a file
+ * venturectl dashboard import FILE     a definition from a file (- for stdin)
+ * venturectl dashboard create TEMPLATE one of the shipped templates
+ * venturectl dashboard templates       what create accepts
+ * venturectl dashboard kinds           the widget kinds
+ */
+static gint
+venture_cli_command_dashboard(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *path = NULL;
+	const gchar *verb;
+
+	verb = args[1];
+
+	if (NULL == verb)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "usage: venturectl dashboard SLUG | export SLUG | "
+		                    "import FILE | create TEMPLATE | templates | "
+		                    "kinds");
+		return -1;
+	}
+
+	if (0 == g_strcmp0(verb, "templates"))
+	{
+		node = venture_cli_request(cli, "GET", "/api/v1/dashboard-templates",
+		                           NULL, error);
+	}
+	else if (0 == g_strcmp0(verb, "kinds"))
+	{
+		node = venture_cli_request(cli, "GET", "/api/v1/widget-kinds", NULL,
+		                           error);
+	}
+	else if (0 == g_strcmp0(verb, "export"))
+	{
+		if (NULL == args[2])
+		{
+			g_set_error_literal(error, VENTURE_ERROR,
+			                    VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "usage: venturectl dashboard export SLUG");
+			return -1;
+		}
+
+		path = g_strdup_printf("/api/v1/dashboards/%s/export", args[2]);
+		node = venture_cli_request(cli, "GET", path, NULL, error);
+	}
+	else if (0 == g_strcmp0(verb, "create"))
+	{
+		g_autoptr(JsonBuilder) builder = NULL;
+		g_autoptr(JsonNode) body = NULL;
+
+		if (NULL == args[2])
+		{
+			g_set_error_literal(error, VENTURE_ERROR,
+			                    VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "usage: venturectl dashboard create TEMPLATE");
+			return -1;
+		}
+
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "template");
+		json_builder_add_string_value(builder, args[2]);
+		json_builder_end_object(builder);
+		body = json_builder_get_root(builder);
+		node = venture_cli_request(cli, "POST",
+		                           "/api/v1/dashboards/from-template", body,
+		                           error);
+	}
+	else if (0 == g_strcmp0(verb, "import"))
+	{
+		g_autoptr(JsonNode) body = NULL;
+		g_autofree gchar *text = NULL;
+
+		if (NULL == args[2])
+		{
+			g_set_error_literal(error, VENTURE_ERROR,
+			                    VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "usage: venturectl dashboard import FILE");
+			return -1;
+		}
+
+		if (0 == g_strcmp0(args[2], "-"))
+		{
+			g_autoptr(GIOChannel) channel = NULL;
+			gsize length = 0;
+
+			channel = g_io_channel_unix_new(0);
+
+			if (G_IO_STATUS_NORMAL != g_io_channel_read_to_end(channel, &text,
+			                                                   &length, error))
+				return -1;
+		}
+		else if (!g_file_get_contents(args[2], &text, NULL, error))
+		{
+			return -1;
+		}
+
+		body = venture_json_parse(text, error);
+
+		if (NULL == body)
+			return -1;
+
+		node = venture_cli_request(cli, "POST", "/api/v1/dashboards/import",
+		                           body, error);
+	}
+	else
+	{
+		path = g_strdup_printf("/api/v1/dashboards/%s", verb);
+		node = venture_cli_request(cli, "GET", path, NULL, error);
+	}
+
+	if (NULL == node)
+		return -1;
+
+	if ((VENTURE_OUTPUT_FORMAT_TABLE != cli->format) ||
+	    !JSON_NODE_HOLDS_OBJECT(node) ||
+	    !json_object_has_member(json_node_get_object(node), "widgets"))
+	{
+		venture_cli_output(cli, node);
+		return 0;
+	}
+
+	/* A dashboard as a table: one row per widget, with its answer
+	 * summarised in a line. The JSON has the whole of it. */
+	{
+		JsonObject *dashboard;
+		JsonArray *widgets;
+		guint i;
+
+		dashboard = json_node_get_object(node);
+		widgets = json_object_get_array_member(dashboard, "widgets");
+
+		g_print("%s  (%s)\n\n",
+		        venture_json_object_get_string(dashboard, "name", "?"),
+		        venture_json_object_get_string(dashboard, "path", ""));
+		g_print("%-6s %-14s %-32s %s\n", "ID", "KIND", "TITLE", "SHOWS");
+
+		for (i = 0; i < json_array_get_length(widgets); i++)
+		{
+			JsonObject *widget;
+			g_autofree gchar *shows = NULL;
+			const gchar *problem;
+			JsonNode *data;
+
+			widget = json_array_get_object_element(widgets, i);
+			problem = venture_json_object_get_string(widget, "error", NULL);
+			data = json_object_has_member(widget, "data")
+				? json_object_get_member(widget, "data") : NULL;
+
+			if (NULL != problem)
+			{
+				shows = g_strdup_printf("error: %s", problem);
+			}
+			else if ((NULL != data) && JSON_NODE_HOLDS_OBJECT(data) &&
+			         json_object_has_member(json_node_get_object(data),
+			                                "count"))
+			{
+				shows = g_strdup_printf("%" G_GINT64_FORMAT,
+					venture_json_object_get_int(json_node_get_object(data),
+					                            "count", 0));
+			}
+			else if ((NULL != data) && JSON_NODE_HOLDS_OBJECT(data) &&
+			         json_object_has_member(json_node_get_object(data),
+			                                "formatted"))
+			{
+				shows = g_strdup(venture_json_object_get_string(
+					json_node_get_object(data), "formatted", ""));
+			}
+			else if ((NULL != data) && JSON_NODE_HOLDS_OBJECT(data) &&
+			         json_object_has_member(json_node_get_object(data),
+			                                "rows"))
+			{
+				shows = g_strdup_printf("%u rows", json_array_get_length(
+					json_object_get_array_member(json_node_get_object(data),
+					                             "rows")));
+			}
+			else if ((NULL != data) && JSON_NODE_HOLDS_ARRAY(data))
+			{
+				shows = g_strdup_printf("%u items",
+					json_array_get_length(json_node_get_array(data)));
+			}
+			else
+			{
+				shows = g_strdup("");
+			}
+
+			g_print("%-6" G_GINT64_FORMAT " %-14s %-32.32s %s\n",
+			        venture_json_object_get_int(widget, "id", 0),
+			        venture_json_object_get_string(widget, "kind", "?"),
+			        venture_json_object_get_string(widget, "resolved_title",
+			                                       ""),
+			        shows);
+		}
+	}
+
+	return 0;
+}
+
+/*
  * venturectl link SOURCE_TYPE ID TARGET_TYPE ID [kind=...] [note=...]
  *
  * Goes through POST /api/v1/links, so the server's checks -- both ends
@@ -1963,6 +2229,12 @@ main(
 		"                               record_link ID\n"
 		"  modules                      list the server's modules and which\n"
 		"                               are on; -f json for the detail\n"
+		"  dashboards                   list the dashboards\n"
+		"  dashboard SLUG               a dashboard, every widget evaluated\n"
+		"  dashboard export SLUG        its definition, as JSON\n"
+		"  dashboard import FILE        a definition from a file, or -\n"
+		"  dashboard create TEMPLATE    factory, reporting, work, overview\n"
+		"  dashboard templates|kinds    what create and widgets accept\n"
 		"  health                       check the server is up\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
@@ -2127,6 +2399,10 @@ main(
 		result = venture_cli_command_modules(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "links"))
 		result = venture_cli_command_links(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "dashboards"))
+		result = venture_cli_command_dashboards(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "dashboard"))
+		result = venture_cli_command_dashboard(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "link"))
 		result = venture_cli_command_link(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "mcp"))

@@ -2650,3 +2650,165 @@ ul.related li:last-child { border-bottom: none; }
 	color: var(--text-muted);
 	font-weight: 600;
 }
+
+/* ==========================================================================
+   Dashboards: the widget grid and the widget kinds
+   ========================================================================== */
+
+/*
+ * A dashboard's grid is a plain N-up, unlike the built-in overview's
+ * asymmetric one: the operator chose the widgets and their widths, and a
+ * grid that second-guessed them would move things they placed.
+ */
+.widget-grid {
+	display: grid;
+	gap: var(--space-5);
+	align-items: start;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.widget-grid.cols-1 { grid-template-columns: minmax(0, 1fr); }
+.widget-grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.widget-grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+.widget-grid .span-wide { grid-column: span 2; }
+.widget-grid .span-full { grid-column: 1 / -1; }
+.widget-grid.cols-1 .span-wide { grid-column: span 1; }
+
+.widget .card-body { padding: var(--space-4) var(--space-5); }
+.widget .card-tools { display: flex; align-items: center; gap: var(--space-2); }
+.widget .card-tools form.inline { display: inline-flex; gap: 2px; margin: 0; }
+.widget .card-tools .btn-sm { padding: 2px 8px; }
+
+/* One number, big enough to read from across the room. */
+.widget-figure {
+	display: flex;
+	align-items: baseline;
+	gap: var(--space-3);
+	flex-wrap: wrap;
+}
+
+.widget-figure .figure {
+	font-family: var(--font-serif);
+	font-size: 40px;
+	letter-spacing: -0.03em;
+	line-height: 1;
+	color: var(--text);
+	text-decoration: none;
+}
+
+.widget-figure a.figure:hover { color: var(--accent); }
+.widget-figure .figure-note { font-size: 12px; color: var(--text-faint); }
+
+/* Bars, for a breakdown or a chart. The track is the full width and the
+ * fill is a percentage of the largest, so the eye compares lengths. */
+.bar-list { list-style: none; margin: 0; padding: 0; }
+.bar-list li + li { margin-top: var(--space-2); }
+
+.bar-row {
+	display: grid;
+	grid-template-columns: minmax(80px, 30%) 1fr auto;
+	align-items: center;
+	gap: var(--space-3);
+	color: inherit;
+	text-decoration: none;
+	font-size: 13px;
+}
+
+a.bar-row:hover .bar-label { color: var(--accent); }
+.bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.bar-track {
+	display: block;
+	height: 10px;
+	border-radius: 5px;
+	background: var(--surface-sunken);
+	overflow: hidden;
+}
+
+.bar-fill {
+	display: block;
+	height: 100%;
+	border-radius: 5px;
+	background: var(--accent);
+	min-width: 2px;
+	transition: width var(--transition);
+}
+
+.bar-fill.negative { background: var(--negative); }
+.bar-value { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); }
+
+/* A list widget's table has no header: the card's title is the header. */
+.widget-table td { padding: var(--space-2) var(--space-3); font-size: 13px; }
+.widget-table tr:first-child td { border-top: 0; }
+
+/* One record's fields, as a definition list. */
+.widget-fields {
+	display: grid;
+	grid-template-columns: max-content 1fr;
+	gap: var(--space-2) var(--space-4);
+	margin: 0;
+	font-size: 13px;
+}
+
+.widget-fields dt {
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.1em;
+	color: var(--text-faint);
+	align-self: baseline;
+}
+
+.widget-fields dd { margin: 0; }
+
+.widget-note p { margin: 0 0 var(--space-3); font-size: 13px; line-height: 1.6; }
+.widget-note p:last-child { margin-bottom: 0; }
+.widget-note ul { margin: 0 0 var(--space-3); padding-left: 1.2em; font-size: 13px; }
+
+.widget-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+
+.widget-search { display: flex; gap: var(--space-2); }
+.widget-search input { flex: 1 1 auto; min-width: 0; width: 100%; }
+
+.widget-lead { margin: 0 0 var(--space-3); font-size: 13px; }
+
+.widget-progress .progress {
+	height: 10px;
+	border-radius: 5px;
+	background: var(--surface-sunken);
+	overflow: hidden;
+	margin-bottom: var(--space-3);
+}
+
+.widget-progress .progress-fill {
+	height: 100%;
+	background: var(--positive);
+	border-radius: 5px;
+}
+
+.widget-progress p { margin: 0 0 var(--space-2); font-size: 13px; }
+
+.relation-list li.overdue > a { color: var(--negative); }
+
+.section-title {
+	font-family: var(--font);
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.1em;
+	color: var(--text-faint);
+	margin: var(--space-6) 0 var(--space-3);
+}
+
+/* The editor hides the settings a kind does not read, once scripting has
+ * said which those are. Without scripting everything shows. */
+[data-widget-field][hidden] { display: none; }
+
+@media (max-width: 900px) {
+	.widget-grid,
+	.widget-grid.cols-2,
+	.widget-grid.cols-4 { grid-template-columns: minmax(0, 1fr); }
+	.widget-grid .span-wide,
+	.widget-grid .span-full { grid-column: span 1; }
+}

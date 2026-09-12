@@ -4,7 +4,7 @@
 #+categories: projects docs
 #+created: [2026-08-14]
 #+updated: [2026-09-11]
-#+version: 0.4.0
+#+version: 0.5.0
 
 * REST API
 
@@ -64,6 +64,13 @@ See [[file:mcp.org][venturectl mcp]].
 | =GET=    | =/api/v1/modules=                   | every module, its state and why      |
 | =GET=    | =/api/v1/links/:type/:id=           | every link touching a record         |
 | =POST=   | =/api/v1/links=                     | link two records; =?stage=1= stages  |
+| =GET=    | =/api/v1/dashboards=                | every dashboard the caller may see   |
+| =GET=    | =/api/v1/dashboards/:slug=          | one, every widget evaluated          |
+| =GET=    | =/api/v1/dashboards/:slug/export=   | its definition, portable             |
+| =POST=   | =/api/v1/dashboards/import=         | a definition, as a new dashboard     |
+| =POST=   | =/api/v1/dashboards/from-template=  | ={"template": "factory"}=            |
+| =GET=    | =/api/v1/widget-kinds=              | the widget catalogue                 |
+| =GET=    | =/api/v1/dashboard-templates=       | the shipped templates                |
 
 Any of the four write verbs takes =?stage=1=, which proposes the change
 instead of making it. See [[*Staging a write][Staging a write]].
@@ -80,6 +87,10 @@ two invites a duplicate.
 ** Links
 
 =GET /api/v1/links/:type/:id= describes every link touching a record, read from it: the link's id, the kind from here, the other end's type, id and current label, whether the other end still exists, and the note. =POST /api/v1/links= takes ={"source_type","source_id","kind","target_type","target_id","note"}= and is the same as =POST /api/v1/record_link=, =?stage=1= included. A link is refused when either end is missing, when the ends are the same record, or when the pair is already linked in either direction — at the save, so an approved staged link is held to the same rules.
+
+** Dashboards
+
+=GET /api/v1/dashboards/:slug= returns a dashboard with every widget evaluated: each widget's settings, its resolved title, its link, an =error= when it could not be answered, and =data= in a shape its kind decides. =?data=0= lists the widgets without evaluating them; =?organization_id=N= scopes every widget to that entity and those beneath it, as the sidebar picker does for a page. A personal dashboard belonging to somebody else answers 404. The generic routes =/api/v1/dashboard= and =/api/v1/dashboard_widget= work like any other type's, and a widget written through them is held to the same checks as one made in the editor. See [[file:dashboards.org][Dashboards]].
 
 ** Settings
 

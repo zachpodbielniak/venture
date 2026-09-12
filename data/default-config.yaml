@@ -306,6 +306,7 @@ modules:
   #       chat         stored conversations
   #     automation     the podomation engine     (also: automation.enabled)
   #     plugins        plugins and venture types (also: plugins.enabled)
+  #     dashboards     pages of widgets you build
   #
   # The older *.enabled switches still work and mean the same thing; both
   # have to be true for the module to be on. Prefer this section.

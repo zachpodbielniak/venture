@@ -339,6 +339,28 @@ venture_web_page(
 	const gchar		*content
 );
 
+/* The dashboards, defined beside their pages further down but reached
+ * from the home page and the sidebar above them. */
+static gchar *
+venture_web_render_home_dashboard(
+	VentureWebServer	*self,
+	HtmxRequest		*request
+);
+
+static void
+venture_web_append_dashboard_nav(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	GString			*html,
+	const gchar		*active
+);
+
+static GArray *
+venture_web_organization_tree(
+	VentureWebServer	*self,
+	gint64			 root
+);
+
 /*
  * The UI counterpart. The session is checked before the module, so an
  * anonymous request is sent to sign in rather than told what the install
@@ -633,6 +655,15 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		),
 		"Overview",
 		"core"
+	},
+	{
+		"/dashboards", "Dashboards",
+		VENTURE_ICON(
+			"<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\"/>"
+			"<path d=\"M3 10h18\"/><path d=\"M10 10v10\"/>"
+		),
+		NULL,
+		"dashboards"
 	},
 	{
 		"/reports", "Reports",
@@ -1137,6 +1168,9 @@ venture_web_page(
 			venture_html_escape_append(html, links[i].label);
 			g_string_append(html, "</a>");
 		}
+
+		/* The operator's own pages, after the built-in ones. */
+		venture_web_append_dashboard_nav(self, request, html, active);
 
 		g_string_append(html, "</div>");
 	}
@@ -2083,7 +2117,42 @@ venture_web_api_report(
  * ========================================================================== */
 
 static HtmxResponse *
+venture_web_ui_overview(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+);
+
+/*
+ * GET / - the home page: a dashboard marked as home, if the viewer may
+ * see one, otherwise the built-in overview, which is always at /overview.
+ */
+static HtmxResponse *
 venture_web_ui_dashboard(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	gchar *home;
+
+	self = user_data;
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!principal->authenticated)
+		return venture_web_ui_overview(request, params, user_data);
+
+	home = venture_web_render_home_dashboard(self, request);
+
+	if (NULL != home)
+		return venture_web_html_response(home, 200);
+
+	return venture_web_ui_overview(request, params, user_data);
+}
+
+static HtmxResponse *
+venture_web_ui_overview(
 	HtmxRequest	*request,
 	GHashTable	*params,
 	gpointer	 user_data
@@ -17685,6 +17754,1835 @@ venture_web_ui_factory(
 		200);
 }
 
+/* --- Dashboards ----------------------------------------------------------- */
+
+/*
+ * Pages of widgets. Every handler here loads the dashboard by slug through
+ * one gate, which checks the module, the session, the role and -- for a
+ * personal dashboard -- that the viewer owns it, answering NOT_FOUND
+ * rather than FORBIDDEN so that whether somebody else's page exists is not
+ * something a stranger can learn.
+ */
+
+/*
+ * Gates a dashboard request and loads the dashboard.
+ *
+ * Returns: (transfer full) (nullable): a response to return instead, or
+ *   %NULL when the request may proceed and @out_dashboard is set
+ */
+static HtmxResponse *
+venture_web_dashboard_load(
+	VentureWebServer	 *self,
+	HtmxRequest		 *request,
+	GHashTable		 *params,
+	VentureUserRole		  role,
+	gboolean		  api,
+	VentureAuthPrincipal	**out_principal,
+	VentureDashboard	**out_dashboard
+){
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *gate;
+	const gchar *slug;
+
+	gate = api ? venture_web_require_module_api(self, "dashboards")
+	           : venture_web_require_module_ui(self, request, "dashboards");
+
+	if (NULL != gate)
+		return gate;
+
+	if (!api)
+	{
+		gate = venture_web_ui_require_session(self, request);
+
+		if (NULL != gate)
+			return gate;
+	}
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, role, &error))
+		return venture_web_error_response(error);
+
+	slug = g_hash_table_lookup(params, "slug");
+	dashboard = venture_dashboard_find_by_slug(
+		venture_context_get_database(self->context), slug, &error);
+
+	if ((NULL != dashboard) &&
+	    !venture_dashboard_is_visible_to(dashboard, principal->user_id))
+	{
+		g_clear_object(&dashboard);
+		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "There is no dashboard called \"%s\"", slug);
+	}
+
+	if (NULL == dashboard)
+	{
+		if (api)
+			return venture_web_error_response(error);
+
+		return venture_web_html_response(
+			venture_web_page(self, request, "/dashboards", "Not found",
+				"<div class=\"notice negative\">No such dashboard.</div>"),
+			404);
+	}
+
+	if (NULL != out_principal)
+		*out_principal = g_steal_pointer(&principal);
+
+	*out_dashboard = g_steal_pointer(&dashboard);
+
+	return NULL;
+}
+
+/*
+ * Fills the scope a page renders under: the viewer, and the entity they
+ * have picked in the sidebar, with everything beneath it. @tree is owned
+ * by the caller and must outlive @scope.
+ */
+static void
+venture_web_dashboard_scope(
+	VentureWebServer	 *self,
+	HtmxRequest		 *request,
+	VentureAuthPrincipal	 *principal,
+	VentureDashboard	 *dashboard,
+	VentureWidgetScope	 *scope,
+	GArray			**tree
+){
+	gint64 active;
+
+	scope->organization_ids = NULL;
+	scope->n_organizations = 0;
+	scope->user_id = principal->user_id;
+	scope->username = principal->name;
+	scope->venture_id = 0;
+	g_object_get(dashboard, "venture-id", &scope->venture_id, NULL);
+
+	active = venture_web_active_organization(self, request);
+	*tree = NULL;
+
+	if (0 != active)
+	{
+		*tree = venture_web_organization_tree(self, active);
+		scope->organization_ids = (const gint64 *)(*tree)->data;
+		scope->n_organizations = (*tree)->len;
+	}
+}
+
+/*
+ * One widget as a card. The same markup serves the page and the refresh
+ * fragment, so a widget that reloads itself every minute lands exactly
+ * where it was.
+ */
+static void
+venture_web_append_widget_card(
+	VentureWebServer	*self,
+	GString			*content,
+	const gchar		*slug,
+	VentureDashboardWidget	*widget,
+	VentureWidgetResult	*result,
+	gboolean		 editing
+){
+	g_autofree gchar *kind = NULL;
+	g_autofree gchar *slug_attr = NULL;
+	VentureWidgetSpan span;
+	gint64 refresh = 0;
+	gint64 id;
+
+	(void)self;
+
+	id = venture_entity_get_id(VENTURE_ENTITY(widget));
+	g_object_get(widget, "kind", &kind, "span", &span,
+	             "refresh-seconds", &refresh, NULL);
+	slug_attr = venture_attribute_escape(slug);
+
+	g_string_append_printf(content,
+		"<div class=\"card dash-card widget widget-%s%s\" "
+		"id=\"widget-%" G_GINT64_FORMAT "\"",
+		(NULL != kind) ? kind : "unknown",
+		(VENTURE_WIDGET_SPAN_FULL == span) ? " span-full"
+			: ((VENTURE_WIDGET_SPAN_WIDE == span) ? " span-wide" : ""),
+		id);
+
+	/* A refresh is an ordinary HTMX poll; nothing here knows or cares
+	 * what the widget shows. Not while editing, where a reload would
+	 * pull the controls out from under the cursor. */
+	if ((refresh > 0) && !editing)
+	{
+		g_string_append_printf(content,
+			" hx-get=\"/dashboards/%s/widgets/%" G_GINT64_FORMAT "\" "
+			"hx-trigger=\"every %" G_GINT64_FORMAT "s\" hx-swap=\"outerHTML\"",
+			slug_attr, id, MAX(refresh, (gint64)5));
+	}
+
+	g_string_append(content, "><div class=\"card-head\"><h2>");
+	venture_html_escape_append(content, result->title);
+	g_string_append(content, "</h2><div class=\"card-tools\">");
+
+	if (editing)
+	{
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/dashboards/%s/widgets/%"
+			G_GINT64_FORMAT "/move\" class=\"inline\">"
+			"<button class=\"btn btn-sm\" name=\"direction\" value=\"up\" "
+			"title=\"Move earlier\">&uarr;</button>"
+			"<button class=\"btn btn-sm\" name=\"direction\" value=\"down\" "
+			"title=\"Move later\">&darr;</button></form> "
+			"<a class=\"btn btn-sm\" href=\"/dashboards/%s/widgets/%"
+			G_GINT64_FORMAT "/edit\">Edit</a> "
+			"<form method=\"post\" action=\"/dashboards/%s/widgets/%"
+			G_GINT64_FORMAT "/delete\" class=\"inline\">"
+			"<button class=\"btn btn-sm btn-danger\" type=\"submit\">"
+			"Remove</button></form>",
+			slug_attr, id, slug_attr, id, slug_attr, id);
+	}
+	else if (NULL != result->link)
+	{
+		g_autofree gchar *href = NULL;
+
+		href = venture_attribute_escape(result->link);
+		g_string_append(content, "<a class=\"btn btn-sm\" href=\"");
+		g_string_append(content, href);
+		g_string_append(content, "\">");
+		venture_html_escape_append(content,
+			(NULL != result->link_label) ? result->link_label : "All");
+		g_string_append(content, "</a>");
+	}
+
+	g_string_append(content, "</div></div><div class=\"card-body\">");
+
+	if (NULL != result->error)
+	{
+		g_string_append(content, "<div class=\"notice negative\">");
+		venture_html_escape_append(content, result->error);
+		g_string_append(content, "</div>");
+	}
+	else if (NULL != result->html)
+	{
+		g_string_append(content, result->html);
+	}
+
+	g_string_append(content, "</div></div>");
+}
+
+/*
+ * The grid of every widget on a dashboard.
+ */
+static void
+venture_web_append_dashboard_grid(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	VentureAuthPrincipal	*principal,
+	VentureDashboard	*dashboard,
+	GString			*content,
+	gboolean		 editing
+){
+	g_autoptr(GPtrArray) widgets = NULL;
+	g_autoptr(GArray) tree = NULL;
+	g_autofree gchar *slug = NULL;
+	VentureWidgetScope scope;
+	VentureDashboardLayout layout;
+	guint i;
+
+	g_object_get(dashboard, "slug", &slug, "layout", &layout, NULL);
+	venture_web_dashboard_scope(self, request, principal, dashboard, &scope,
+	                            &tree);
+
+	widgets = venture_dashboard_list_widgets(
+		venture_context_get_database(self->context),
+		venture_entity_get_id(VENTURE_ENTITY(dashboard)), NULL);
+
+	g_string_append_printf(content, "<div class=\"widget-grid cols-%u\">",
+	                       venture_dashboard_layout_get_columns(layout));
+
+	for (i = 0; (NULL != widgets) && (i < widgets->len); i++)
+	{
+		g_autoptr(VentureWidgetResult) result = NULL;
+		VentureDashboardWidget *widget;
+
+		widget = g_ptr_array_index(widgets, i);
+		result = venture_dashboard_render_widget(self->context, widget, &scope);
+		venture_web_append_widget_card(self, content, slug, widget, result,
+		                               editing);
+	}
+
+	if ((NULL == widgets) || (0 == widgets->len))
+	{
+		g_string_append_printf(content,
+			"<div class=\"empty span-full\"><h3>No widgets yet</h3>"
+			"<p class=\"muted\">Add a count, a list, a report, a note -- "
+			"anything from any module -- and arrange them here.</p>"
+			"<p><a class=\"btn btn-primary\" href=\"/dashboards/%s/widgets/new\">"
+			"Add a widget</a></p></div>", slug);
+	}
+
+	g_string_append(content, "</div>");
+}
+
+/*
+ * A home dashboard, rendered for "/". Returns %NULL when none is set or
+ * the viewer may not see it, in which case the built-in overview is shown.
+ */
+static gchar *
+venture_web_render_home_dashboard(
+	VentureWebServer	*self,
+	HtmxRequest		*request
+){
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autofree gchar *name = NULL;
+	g_autofree gchar *slug = NULL;
+	g_autofree gchar *description = NULL;
+
+	if (!venture_web_module_enabled(self, "dashboards"))
+		return NULL;
+
+	principal = venture_auth_authenticate(self->auth, request);
+	dashboard = venture_dashboard_find_home(
+		venture_context_get_database(self->context), principal->user_id);
+
+	if (NULL == dashboard)
+		return NULL;
+
+	g_object_get(dashboard, "name", &name, "slug", &slug,
+	             "description", &description, NULL);
+
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+	                       "<h1>");
+	venture_html_escape_append(content, name);
+	g_string_append(content, "</h1><span class=\"subtitle\">");
+	venture_html_escape_append(content,
+		!venture_string_is_empty(description) ? description
+		                                      : "Your home dashboard");
+	g_string_append(content, "</span></div><div class=\"page-actions\">"
+	                         "<a class=\"btn\" href=\"/overview\">Built-in "
+	                         "overview</a> ");
+	g_string_append_printf(content,
+		"<a class=\"btn\" href=\"/dashboards\">All dashboards</a> "
+		"<a class=\"btn btn-primary\" href=\"/dashboards/%s/edit\">Edit</a>"
+		"</div></div>", slug);
+
+	venture_web_append_dashboard_grid(self, request, principal, dashboard,
+	                                  content, FALSE);
+
+	return venture_web_page(self, request, "/", name, content->str);
+}
+
+/*
+ * The dashboards a viewer may see, for the sidebar.
+ */
+static void
+venture_web_append_dashboard_nav(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	GString			*html,
+	const gchar		*active
+){
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GPtrArray) dashboards = NULL;
+	guint i;
+
+	if (!venture_web_module_enabled(self, "dashboards"))
+		return;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!principal->authenticated)
+		return;
+
+	dashboards = venture_dashboard_list_visible(
+		venture_context_get_database(self->context), principal->user_id,
+		NULL);
+
+	if ((NULL == dashboards) || (0 == dashboards->len))
+		return;
+
+	g_string_append(html, "<div class=\"nav-section\">Views</div>");
+
+	for (i = 0; i < dashboards->len; i++)
+	{
+		VentureDashboard *dashboard;
+		g_autofree gchar *name = NULL;
+		g_autofree gchar *slug = NULL;
+		g_autofree gchar *path = NULL;
+
+		dashboard = g_ptr_array_index(dashboards, i);
+		g_object_get(dashboard, "name", &name, "slug", &slug, NULL);
+		path = g_strdup_printf("/dashboards/%s", slug);
+
+		g_string_append_printf(html, "<a class=\"nav-item%s\" href=\"%s\">"
+			"<span class=\"icon\">" VENTURE_ICON(
+				"<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\"/>"
+				"<path d=\"M3 10h18\"/><path d=\"M10 10v10\"/>")
+			"</span>",
+			(0 == g_strcmp0(active, path)) ? " active" : "", path);
+		venture_html_escape_append(html, name);
+		g_string_append(html, "</a>");
+	}
+}
+
+/*
+ * GET /dashboards - every dashboard you may see, and the ways to make one.
+ */
+static HtmxResponse *
+venture_web_ui_dashboards(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GPtrArray) dashboards = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autoptr(GError) error = NULL;
+	const VentureDashboardTemplate *templates;
+	HtmxResponse *gate;
+	gsize n_templates;
+	gsize t;
+	guint i;
+
+	(void)params;
+
+	gate = venture_web_require_module_ui(self, request, "dashboards");
+
+	if (NULL != gate)
+		return gate;
+
+	gate = venture_web_ui_require_session(self, request);
+
+	if (NULL != gate)
+		return gate;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	dashboards = venture_dashboard_list_visible(
+		venture_context_get_database(self->context), principal->user_id,
+		&error);
+
+	if (NULL == dashboards)
+		return venture_web_error_response(error);
+
+	content = g_string_new(
+		"<div class=\"page-head\"><div class=\"page-title\">"
+		"<h1>Dashboards</h1><span class=\"subtitle\">Pages of widgets, "
+		"arranged your way</span></div>"
+		"<div class=\"page-actions\">"
+		"<a class=\"btn\" href=\"/overview\">Built-in overview</a>"
+		"</div></div>");
+
+	g_string_append(content, "<div class=\"grid cols-3\">");
+
+	for (i = 0; i < dashboards->len; i++)
+	{
+		VentureDashboard *dashboard;
+		g_autofree gchar *name = NULL;
+		g_autofree gchar *slug = NULL;
+		g_autofree gchar *description = NULL;
+		VentureDashboardPurpose purpose;
+		gboolean home = FALSE;
+		gboolean personal = FALSE;
+
+		dashboard = g_ptr_array_index(dashboards, i);
+		g_object_get(dashboard, "name", &name, "slug", &slug,
+		             "description", &description, "purpose", &purpose,
+		             "home", &home, "personal", &personal, NULL);
+
+		g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
+		                         "<h2>");
+		g_string_append_printf(content, "<a href=\"/dashboards/%s\">", slug);
+		venture_html_escape_append(content, name);
+		g_string_append(content, "</a></h2><p class=\"muted\">");
+		venture_html_escape_append(content,
+			!venture_string_is_empty(description) ? description : "");
+		g_string_append(content, "</p><p><span class=\"badge\">");
+		venture_html_escape_append(content,
+			venture_enum_to_nick(VENTURE_TYPE_DASHBOARD_PURPOSE, (gint)purpose));
+		g_string_append(content, "</span>");
+
+		if (home)
+			g_string_append(content, " <span class=\"badge info\">home</span>");
+
+		if (personal)
+			g_string_append(content, " <span class=\"badge\">personal</span>");
+
+		g_string_append_printf(content,
+			"</p><a class=\"btn btn-primary btn-sm\" href=\"/dashboards/%s\">"
+			"Open</a> <a class=\"btn btn-sm\" href=\"/dashboards/%s/edit\">"
+			"Edit</a></div></div>", slug, slug);
+	}
+
+	g_string_append(content, "</div>");
+
+	if (0 == dashboards->len)
+	{
+		g_string_append(content,
+			"<div class=\"empty\"><h3>No dashboards yet</h3>"
+			"<p class=\"muted\">Start from a template below, or make an "
+			"empty one and add widgets to it.</p></div>");
+	}
+
+	/* Making one: from a template, or blank. Editors only, so the forms
+	 * are not offered to a viewer who could not submit them. */
+	if (venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, NULL))
+	{
+		templates = venture_dashboard_get_templates(&n_templates);
+
+		g_string_append(content,
+			"<h2 class=\"section-title\">Start from a template</h2>"
+			"<div class=\"grid cols-2\">");
+
+		for (t = 0; t < n_templates; t++)
+		{
+			g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
+			                         "<h2>");
+			venture_html_escape_append(content, templates[t].label);
+			g_string_append(content, "</h2><p class=\"muted\">");
+			venture_html_escape_append(content, templates[t].description);
+			g_string_append(content, "</p>");
+
+			if ((NULL != templates[t].module) &&
+			    !venture_web_module_enabled(self, templates[t].module))
+			{
+				g_string_append(content, "<p class=\"muted small\">Mostly "
+				                         "about the ");
+				venture_html_escape_append(content, templates[t].module);
+				g_string_append(content, " module, which is off; its "
+				                         "widgets will say so until it is "
+				                         "on.</p>");
+			}
+
+			g_string_append_printf(content,
+				"<form method=\"post\" action=\"/dashboards\" class=\"inline\">"
+				"<input type=\"hidden\" name=\"template\" value=\"%s\">"
+				"<button class=\"btn btn-primary btn-sm\" type=\"submit\">"
+				"Create</button></form></div></div>", templates[t].name);
+		}
+
+		g_string_append(content, "</div>");
+
+		g_string_append(content,
+			"<h2 class=\"section-title\">Or an empty one</h2>"
+			"<div class=\"card\"><div class=\"card-body\">"
+			"<form method=\"post\" action=\"/dashboards\">"
+			"<div class=\"form-grid\">"
+			"<div class=\"field\"><label><span class=\"field-label\">Name"
+			"<span class=\"required\">*</span></span>"
+			"<input type=\"text\" name=\"name\" required placeholder=\"e.g. "
+			"Launch week\"></label></div>"
+			"<div class=\"field\"><label><span class=\"field-label\">Purpose"
+			"</span><select name=\"purpose\">"
+			"<option value=\"overview\">Overview</option>"
+			"<option value=\"reporting\">Reporting</option>"
+			"<option value=\"work\">Work</option></select></label></div>"
+			"<div class=\"field\"><label><span class=\"field-label\">Personal"
+			"</span><input type=\"hidden\" name=\"personal\" value=\"false\">"
+			"<input type=\"checkbox\" name=\"personal\" value=\"true\"></label>"
+			"<div class=\"hint\">Only you can see it</div></div>"
+			"</div><div class=\"form-actions\">"
+			"<button class=\"btn btn-primary\" type=\"submit\">Create</button>"
+			"</div></form></div></div>");
+
+		g_string_append(content,
+			"<h2 class=\"section-title\">Or import a definition</h2>"
+			"<div class=\"card\"><div class=\"card-body\">"
+			"<form method=\"post\" action=\"/dashboards/import\">"
+			"<div class=\"field\"><label><span class=\"field-label\">JSON, "
+			"as Export writes it</span>"
+			"<textarea name=\"definition\" rows=\"8\" class=\"mono\" "
+			"placeholder='{\"name\": \"...\", \"widgets\": [...]}'>"
+			"</textarea></label></div>"
+			"<div class=\"form-actions\">"
+			"<button class=\"btn btn-primary\" type=\"submit\">Import</button>"
+			"</div></form></div></div>");
+	}
+
+	return venture_web_html_response(
+		venture_web_page(self, request, "/dashboards", "Dashboards",
+		                 content->str), 200);
+}
+
+/*
+ * POST /dashboards - make one, from a template or from a name.
+ */
+static HtmxResponse *
+venture_web_ui_dashboard_create(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	g_autofree gchar *slug = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+	const gchar *template_name;
+
+	(void)params;
+
+	gate = venture_web_require_module_ui(self, request, "dashboards");
+
+	if (NULL != gate)
+		return gate;
+
+	gate = venture_web_ui_require_session(self, request);
+
+	if (NULL != gate)
+		return gate;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	venture_auth_to_actor(principal, &actor);
+	template_name = htmx_request_get_form_value(request, "template");
+
+	if (!venture_string_is_empty(template_name))
+	{
+		dashboard = venture_dashboard_create_from_template(self->context,
+			template_name, principal->user_id, &actor, &error);
+	}
+	else
+	{
+		g_autoptr(GPtrArray) specs = NULL;
+
+		dashboard = venture_dashboard_new();
+		specs = venture_entity_get_field_specs(VENTURE_ENTITY(dashboard));
+
+		if (!venture_web_apply_form(self, request, VENTURE_ENTITY(dashboard),
+		                            specs, &error))
+			return venture_web_error_response(error);
+
+		g_object_set(dashboard, "owner-user-id", principal->user_id, NULL);
+
+		if (!venture_database_save(venture_context_get_database(self->context),
+		                           VENTURE_ENTITY(dashboard), &actor, &error))
+			g_clear_object(&dashboard);
+	}
+
+	if (NULL == dashboard)
+		return venture_web_error_response(error);
+
+	g_object_get(dashboard, "slug", &slug, NULL);
+	destination = g_strdup_printf("/dashboards/%s", slug);
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * POST /dashboards/import - a definition pasted into the box.
+ */
+static HtmxResponse *
+venture_web_ui_dashboard_import(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(JsonNode) definition = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	g_autofree gchar *slug = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+	const gchar *text;
+
+	(void)params;
+
+	gate = venture_web_require_module_ui(self, request, "dashboards");
+
+	if (NULL != gate)
+		return gate;
+
+	gate = venture_web_ui_require_session(self, request);
+
+	if (NULL != gate)
+		return gate;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	text = htmx_request_get_form_value(request, "definition");
+
+	if (venture_string_is_empty(text))
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "Paste a dashboard definition to import");
+		return venture_web_error_response(error);
+	}
+
+	definition = venture_json_parse(text, &error);
+
+	if (NULL == definition)
+		return venture_web_error_response(error);
+
+	venture_auth_to_actor(principal, &actor);
+	dashboard = venture_dashboard_import(self->context, definition,
+	                                     principal->user_id, &actor, &error);
+
+	if (NULL == dashboard)
+		return venture_web_error_response(error);
+
+	g_object_get(dashboard, "slug", &slug, NULL);
+	destination = g_strdup_printf("/dashboards/%s", slug);
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * GET /dashboards/:slug - the page.
+ */
+static HtmxResponse *
+venture_web_ui_dashboard_view(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autofree gchar *name = NULL;
+	g_autofree gchar *slug = NULL;
+	g_autofree gchar *description = NULL;
+	g_autofree gchar *active = NULL;
+	HtmxResponse *gate;
+
+	gate = venture_web_dashboard_load(self, request, params,
+	                                  VENTURE_USER_ROLE_VIEWER, FALSE,
+	                                  &principal, &dashboard);
+
+	if (NULL != gate)
+		return gate;
+
+	g_object_get(dashboard, "name", &name, "slug", &slug,
+	             "description", &description, NULL);
+
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+	                       "<h1>");
+	venture_html_escape_append(content, name);
+	g_string_append(content, "</h1>");
+
+	if (!venture_string_is_empty(description))
+	{
+		g_string_append(content, "<span class=\"subtitle\">");
+		venture_html_escape_append(content, description);
+		g_string_append(content, "</span>");
+	}
+
+	g_string_append(content, "</div><div class=\"page-actions\">"
+	                         "<a class=\"btn\" href=\"/dashboards\">All "
+	                         "dashboards</a> ");
+
+	if (venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, NULL))
+	{
+		g_string_append_printf(content,
+			"<a class=\"btn\" href=\"/dashboards/%s/export\">Export</a> "
+			"<a class=\"btn btn-primary\" href=\"/dashboards/%s/edit\">Edit"
+			"</a>", slug, slug);
+	}
+
+	g_string_append(content, "</div></div>");
+
+	venture_web_append_dashboard_grid(self, request, principal, dashboard,
+	                                  content, FALSE);
+
+	active = g_strdup_printf("/dashboards/%s", slug);
+
+	return venture_web_html_response(
+		venture_web_page(self, request, active, name, content->str), 200);
+}
+
+/*
+ * GET /dashboards/:slug/widgets/:id - one card, for a refresh.
+ *
+ * A fragment, so an anonymous request gets a 401 rather than a redirect:
+ * HTMX would otherwise swap the login page into the card.
+ */
+static HtmxResponse *
+venture_web_ui_dashboard_widget(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(VentureEntity) widget = NULL;
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autoptr(GArray) tree = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *slug = NULL;
+	VentureWidgetScope scope;
+	HtmxResponse *gate;
+	gint64 dashboard_id = 0;
+
+	gate = venture_web_dashboard_load(self, request, params,
+	                                  VENTURE_USER_ROLE_VIEWER, TRUE,
+	                                  &principal, &dashboard);
+
+	if (NULL != gate)
+		return gate;
+
+	widget = venture_database_get(venture_context_get_database(self->context),
+	                              VENTURE_TYPE_DASHBOARD_WIDGET,
+	                              g_ascii_strtoll(g_hash_table_lookup(params,
+	                                                                  "id"),
+	                                              NULL, 10),
+	                              &error);
+
+	if (NULL == widget)
+		return venture_web_error_response(error);
+
+	g_object_get(widget, "dashboard-id", &dashboard_id, NULL);
+
+	if (dashboard_id != venture_entity_get_id(VENTURE_ENTITY(dashboard)))
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		                    "No such widget on this dashboard");
+		return venture_web_error_response(error);
+	}
+
+	g_object_get(dashboard, "slug", &slug, NULL);
+	venture_web_dashboard_scope(self, request, principal, dashboard, &scope,
+	                            &tree);
+	result = venture_dashboard_render_widget(self->context,
+		VENTURE_DASHBOARD_WIDGET(widget), &scope);
+
+	content = g_string_new(NULL);
+	venture_web_append_widget_card(self, content, slug,
+	                               VENTURE_DASHBOARD_WIDGET(widget), result,
+	                               FALSE);
+
+	return venture_web_html_response(g_string_free(g_steal_pointer(&content),
+	                                               FALSE), 200);
+}
+
+/*
+ * GET /dashboards/:slug/edit - the page with its controls out, and the
+ * dashboard's own settings.
+ */
+static HtmxResponse *
+venture_web_ui_dashboard_edit(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(GPtrArray) specs = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autofree gchar *name = NULL;
+	g_autofree gchar *slug = NULL;
+	g_autofree gchar *active = NULL;
+	HtmxResponse *gate;
+	guint i;
+
+	gate = venture_web_dashboard_load(self, request, params,
+	                                  VENTURE_USER_ROLE_EDITOR, FALSE,
+	                                  &principal, &dashboard);
+
+	if (NULL != gate)
+		return gate;
+
+	g_object_get(dashboard, "name", &name, "slug", &slug, NULL);
+
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+	                       "<h1>");
+	venture_html_escape_append(content, name);
+	g_string_append_printf(content,
+		"</h1><span class=\"subtitle\">Editing</span></div>"
+		"<div class=\"page-actions\">"
+		"<a class=\"btn btn-primary\" href=\"/dashboards/%s/widgets/new\">"
+		"Add a widget</a> "
+		"<a class=\"btn\" href=\"/dashboards/%s\">Done</a></div></div>",
+		slug, slug);
+
+	venture_web_append_dashboard_grid(self, request, principal, dashboard,
+	                                  content, TRUE);
+
+	/* The dashboard's own settings, from its field table. */
+	specs = venture_entity_get_field_specs(VENTURE_ENTITY(dashboard));
+	g_ptr_array_sort_values(specs, venture_field_spec_compare_display_order);
+
+	g_string_append_printf(content,
+		"<h2 class=\"section-title\">Settings</h2>"
+		"<form method=\"post\" action=\"/dashboards/%s\">"
+		"<div class=\"card\"><div class=\"card-body\"><div class=\"form-grid\">",
+		slug);
+
+	for (i = 0; i < specs->len; i++)
+	{
+		VentureFieldSpec *spec;
+
+		spec = g_ptr_array_index(specs, i);
+
+		/* Who owns it is set when it is made, not edited. */
+		if (0 == g_strcmp0(venture_field_spec_get_name(spec), "owner-user-id"))
+			continue;
+
+		venture_web_append_form_field(self, content, spec,
+		                              VENTURE_ENTITY(dashboard));
+	}
+
+	g_string_append_printf(content,
+		"</div></div></div><div class=\"form-actions\">"
+		"<button class=\"btn btn-primary\" type=\"submit\">Save settings"
+		"</button></div></form>"
+		"<form method=\"post\" action=\"/dashboards/%s/delete\" "
+		"class=\"danger-zone\">"
+		"<button class=\"btn btn-danger\" type=\"submit\">Delete dashboard"
+		"</button><span class=\"muted small\">Recoverable: the dashboard "
+		"and its widgets are hidden and kept.</span></form>", slug);
+
+	active = g_strdup_printf("/dashboards/%s", slug);
+
+	return venture_web_html_response(
+		venture_web_page(self, request, active, name, content->str), 200);
+}
+
+/*
+ * POST /dashboards/:slug - save the settings.
+ */
+static HtmxResponse *
+venture_web_ui_dashboard_update(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(GPtrArray) specs = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *slug = NULL;
+	g_autofree gchar *destination = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+
+	gate = venture_web_dashboard_load(self, request, params,
+	                                  VENTURE_USER_ROLE_EDITOR, FALSE,
+	                                  &principal, &dashboard);
+
+	if (NULL != gate)
+		return gate;
+
+	specs = venture_entity_get_field_specs(VENTURE_ENTITY(dashboard));
+
+	if (!venture_web_apply_form(self, request, VENTURE_ENTITY(dashboard), specs,
+	                            &error))
+		return venture_web_error_response(error);
+
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           VENTURE_ENTITY(dashboard), &actor, &error))
+		return venture_web_error_response(error);
+
+	/* The slug may have changed; follow it. */
+	g_object_get(dashboard, "slug", &slug, NULL);
+	destination = g_strdup_printf("/dashboards/%s", slug);
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * POST /dashboards/:slug/delete
+ */
+static HtmxResponse *
+venture_web_ui_dashboard_delete(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(GPtrArray) widgets = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+	guint i;
+
+	gate = venture_web_dashboard_load(self, request, params,
+	                                  VENTURE_USER_ROLE_EDITOR, FALSE,
+	                                  &principal, &dashboard);
+
+	if (NULL != gate)
+		return gate;
+
+	venture_auth_to_actor(principal, &actor);
+
+	/* The widgets go with it. Soft, like every deletion, so restoring
+	 * the dashboard is a matter of restoring the rows. */
+	widgets = venture_dashboard_list_widgets(
+		venture_context_get_database(self->context),
+		venture_entity_get_id(VENTURE_ENTITY(dashboard)), NULL);
+
+	for (i = 0; (NULL != widgets) && (i < widgets->len); i++)
+	{
+		if (!venture_database_delete(venture_context_get_database(self->context),
+		                             g_ptr_array_index(widgets, i), &actor,
+		                             &error))
+			return venture_web_error_response(error);
+	}
+
+	if (!venture_database_delete(venture_context_get_database(self->context),
+	                             VENTURE_ENTITY(dashboard), &actor, &error))
+		return venture_web_error_response(error);
+
+	return venture_web_redirect_to("/dashboards");
+}
+
+/*
+ * GET /dashboards/:slug/export - the definition, as a file.
+ */
+static HtmxResponse *
+venture_web_ui_dashboard_export(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *slug = NULL;
+	g_autofree gchar *disposition = NULL;
+	HtmxResponse *gate;
+	HtmxResponse *response;
+
+	gate = venture_web_dashboard_load(self, request, params,
+	                                  VENTURE_USER_ROLE_VIEWER, FALSE,
+	                                  &principal, &dashboard);
+
+	if (NULL != gate)
+		return gate;
+
+	node = venture_dashboard_export(venture_context_get_database(self->context),
+	                                dashboard, &error);
+
+	if (NULL == node)
+		return venture_web_error_response(error);
+
+	g_object_get(dashboard, "slug", &slug, NULL);
+	response = venture_web_json_response(node, 200);
+	disposition = g_strdup_printf("attachment; filename=\"dashboard-%s.json\"",
+	                              slug);
+	htmx_response_add_header(response, "Content-Disposition", disposition);
+
+	return response;
+}
+
+/*
+ * The widget form, shared by new and edit. The kind is a select built
+ * from the registry, each option carrying the fields its kind reads, so
+ * the page can show only those; without scripting every field is shown
+ * with its help text, which still works.
+ */
+static void
+venture_web_append_widget_form(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureDashboard	*dashboard,
+	VentureDashboardWidget	*widget
+){
+	g_autoptr(GPtrArray) specs = NULL;
+	g_autoptr(JsonNode) kinds = NULL;
+	g_autofree gchar *slug = NULL;
+	g_autofree gchar *current_kind = NULL;
+	JsonArray *array;
+	gint64 id;
+	guint i;
+
+	g_object_get(dashboard, "slug", &slug, NULL);
+	g_object_get(widget, "kind", &current_kind, NULL);
+	id = venture_entity_get_id(VENTURE_ENTITY(widget));
+
+	if (0 != id)
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/dashboards/%s/widgets/%"
+			G_GINT64_FORMAT "\" data-widget-editor>", slug, id);
+	else
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/dashboards/%s/widgets\" "
+			"data-widget-editor>", slug);
+
+	g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
+	                         "<div class=\"form-grid\">");
+
+	/* The kind first, because it decides what else is shown. */
+	kinds = venture_widget_kind_registry_describe(
+		venture_widget_kind_registry_get_default(), self->context);
+	array = json_node_get_array(kinds);
+
+	g_string_append(content,
+		"<div class=\"field\" data-widget-field=\"kind\"><label>"
+		"<span class=\"field-label\">Kind<span class=\"required\">*</span>"
+		"</span><select name=\"kind\" data-widget-kind required>");
+
+	for (i = 0; i < json_array_get_length(array); i++)
+	{
+		JsonObject *kind;
+		JsonArray *uses;
+		g_autoptr(GString) uses_text = NULL;
+		const gchar *name;
+		guint u;
+
+		kind = json_array_get_object_element(array, i);
+		name = json_object_get_string_member(kind, "name");
+		uses = json_object_get_array_member(kind, "uses");
+		uses_text = g_string_new(NULL);
+
+		for (u = 0; u < json_array_get_length(uses); u++)
+		{
+			if (u > 0)
+				g_string_append_c(uses_text, ' ');
+
+			g_string_append(uses_text, json_array_get_string_element(uses, u));
+		}
+
+		g_string_append_printf(content,
+			"<option value=\"%s\" data-uses=\"%s\"%s%s>", name, uses_text->str,
+			(0 == g_strcmp0(name, current_kind)) ? " selected" : "",
+			json_object_get_boolean_member(kind, "enabled") ? ""
+			                                                : " disabled");
+		venture_html_escape_append(content,
+			json_object_get_string_member(kind, "label"));
+
+		if (!json_object_get_boolean_member(kind, "enabled"))
+			g_string_append(content, " (module off)");
+
+		g_string_append(content, "</option>");
+	}
+
+	g_string_append(content, "</select></label>"
+	                         "<div class=\"hint\" data-widget-kind-help>"
+	                         "What the widget shows.</div></div>");
+
+	specs = venture_entity_get_field_specs(VENTURE_ENTITY(widget));
+	g_ptr_array_sort_values(specs, venture_field_spec_compare_display_order);
+
+	for (i = 0; i < specs->len; i++)
+	{
+		VentureFieldSpec *spec;
+		g_autofree gchar *wire = NULL;
+		const gchar *name;
+
+		spec = g_ptr_array_index(specs, i);
+		name = venture_field_spec_get_name(spec);
+
+		if ((0 == g_strcmp0(name, "kind")) ||
+		    (0 == g_strcmp0(name, "dashboard-id")))
+			continue;
+
+		wire = venture_entity_property_to_column(name);
+		g_string_append_printf(content, "<div data-widget-field=\"%s\">",
+		                       wire);
+		venture_web_append_form_field(self, content, spec,
+		                              VENTURE_ENTITY(widget));
+		g_string_append(content, "</div>");
+	}
+
+	g_string_append_printf(content,
+		"</div></div></div><div class=\"form-actions\">"
+		"<button class=\"btn btn-primary\" type=\"submit\">Save widget</button>"
+		" <a class=\"btn\" href=\"/dashboards/%s/edit\">Cancel</a>"
+		"</div></form>", slug);
+
+	if (0 != id)
+	{
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/dashboards/%s/widgets/%"
+			G_GINT64_FORMAT "/delete\" class=\"danger-zone\">"
+			"<button class=\"btn btn-danger\" type=\"submit\">Remove widget"
+			"</button></form>", slug, id);
+	}
+
+	/* The catalogue, for reading while choosing. */
+	g_string_append(content, "<h2 class=\"section-title\">The kinds</h2>"
+	                         "<div class=\"table-wrap\"><table class=\"data\">"
+	                         "<thead><tr><th>Kind</th><th>Shows</th>"
+	                         "<th>Reads</th></tr></thead><tbody>");
+
+	for (i = 0; i < json_array_get_length(array); i++)
+	{
+		JsonObject *kind;
+		JsonArray *uses;
+		guint u;
+
+		kind = json_array_get_object_element(array, i);
+		uses = json_object_get_array_member(kind, "uses");
+
+		g_string_append(content, "<tr><td><strong>");
+		venture_html_escape_append(content,
+			json_object_get_string_member(kind, "label"));
+		g_string_append(content, "</strong><br><code>");
+		venture_html_escape_append(content,
+			json_object_get_string_member(kind, "name"));
+		g_string_append(content, "</code></td><td>");
+		venture_html_escape_append(content,
+			json_object_get_string_member(kind, "description"));
+		g_string_append(content, "</td><td>");
+
+		for (u = 0; u < json_array_get_length(uses); u++)
+		{
+			g_string_append(content, (u > 0) ? ", <code>" : "<code>");
+			venture_html_escape_append(content,
+				json_array_get_string_element(uses, u));
+			g_string_append(content, "</code>");
+		}
+
+		g_string_append(content, "</td></tr>");
+	}
+
+	g_string_append(content, "</tbody></table></div>"
+		"<p class=\"muted small\">A filter is written as on a list page: "
+		"<code>status=open&amp;priority__in=high,urgent</code>. "
+		"<code>{me}</code> is your username, <code>{user_id}</code> your id. "
+		"Periods: this_month, last_month, last_30_days, ytd, this_year, "
+		"all_time, 2026-Q2. Options are JSON, e.g. <code>{\"days\": 30}</code> "
+		"for Upcoming or <code>{\"table\": false}</code> for Report.</p>");
+}
+
+/*
+ * Loads a widget that belongs to the dashboard in the path.
+ */
+static VentureDashboardWidget *
+venture_web_dashboard_widget_load(
+	VentureWebServer	 *self,
+	GHashTable		 *params,
+	VentureDashboard	 *dashboard,
+	GError			**error
+){
+	g_autoptr(VentureEntity) widget = NULL;
+	const gchar *id_text;
+	gint64 dashboard_id = 0;
+
+	id_text = g_hash_table_lookup(params, "id");
+	widget = venture_database_get(venture_context_get_database(self->context),
+	                              VENTURE_TYPE_DASHBOARD_WIDGET,
+	                              (NULL != id_text)
+	                                      ? g_ascii_strtoll(id_text, NULL, 10)
+	                                      : 0,
+	                              error);
+
+	if (NULL == widget)
+		return NULL;
+
+	g_object_get(widget, "dashboard-id", &dashboard_id, NULL);
+
+	if ((dashboard_id != venture_entity_get_id(VENTURE_ENTITY(dashboard))) ||
+	    venture_entity_is_deleted(widget))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		                    "No such widget on this dashboard");
+		return NULL;
+	}
+
+	return VENTURE_DASHBOARD_WIDGET(g_steal_pointer(&widget));
+}
+
+/*
+ * GET /dashboards/:slug/widgets/new and /dashboards/:slug/widgets/:id/edit
+ */
+static HtmxResponse *
+venture_web_ui_dashboard_widget_form(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(VentureDashboardWidget) widget = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *name = NULL;
+	g_autofree gchar *slug = NULL;
+	g_autofree gchar *active = NULL;
+	HtmxResponse *gate;
+
+	gate = venture_web_dashboard_load(self, request, params,
+	                                  VENTURE_USER_ROLE_EDITOR, FALSE,
+	                                  &principal, &dashboard);
+
+	if (NULL != gate)
+		return gate;
+
+	if (NULL != g_hash_table_lookup(params, "id"))
+	{
+		widget = venture_web_dashboard_widget_load(self, params, dashboard,
+		                                           &error);
+
+		if (NULL == widget)
+			return venture_web_error_response(error);
+	}
+	else
+	{
+		const gchar *kind;
+
+		widget = venture_dashboard_widget_new();
+		kind = htmx_request_get_query_param(request, "kind");
+
+		if (!venture_string_is_empty(kind))
+			g_object_set(widget, "kind", kind, NULL);
+	}
+
+	g_object_get(dashboard, "name", &name, "slug", &slug, NULL);
+
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+	                       "<h1>");
+	g_string_append(content, (NULL != g_hash_table_lookup(params, "id"))
+	                         ? "Edit widget" : "Add a widget");
+	g_string_append(content, "</h1><span class=\"subtitle\">on ");
+	venture_html_escape_append(content, name);
+	g_string_append(content, "</span></div></div>");
+
+	venture_web_append_widget_form(self, content, dashboard, widget);
+
+	active = g_strdup_printf("/dashboards/%s", slug);
+
+	return venture_web_html_response(
+		venture_web_page(self, request, active, "Widget", content->str), 200);
+}
+
+/*
+ * POST /dashboards/:slug/widgets and /dashboards/:slug/widgets/:id
+ */
+static HtmxResponse *
+venture_web_ui_dashboard_widget_save(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(VentureDashboardWidget) widget = NULL;
+	g_autoptr(GPtrArray) specs = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *slug = NULL;
+	g_autofree gchar *destination = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+
+	gate = venture_web_dashboard_load(self, request, params,
+	                                  VENTURE_USER_ROLE_EDITOR, FALSE,
+	                                  &principal, &dashboard);
+
+	if (NULL != gate)
+		return gate;
+
+	if (NULL != g_hash_table_lookup(params, "id"))
+	{
+		widget = venture_web_dashboard_widget_load(self, params, dashboard,
+		                                           &error);
+
+		if (NULL == widget)
+			return venture_web_error_response(error);
+	}
+	else
+	{
+		widget = venture_dashboard_widget_new();
+	}
+
+	specs = venture_entity_get_field_specs(VENTURE_ENTITY(widget));
+
+	if (!venture_web_apply_form(self, request, VENTURE_ENTITY(widget), specs,
+	                            &error))
+		return venture_web_error_response(error);
+
+	/* The dashboard is the one in the path, whatever the form carried. */
+	g_object_set(widget, "dashboard-id",
+	             venture_entity_get_id(VENTURE_ENTITY(dashboard)), NULL);
+
+	/* A new widget goes last. */
+	if (!venture_entity_is_persisted(VENTURE_ENTITY(widget)))
+	{
+		gint64 position = 0;
+
+		g_object_get(widget, "position", &position, NULL);
+
+		if (0 == position)
+		{
+			g_autoptr(GPtrArray) existing = NULL;
+
+			existing = venture_dashboard_list_widgets(
+				venture_context_get_database(self->context),
+				venture_entity_get_id(VENTURE_ENTITY(dashboard)), NULL);
+			g_object_set(widget, "position",
+			             (gint64)(((NULL != existing) ? existing->len : 0) + 1)
+			                 * 10,
+			             NULL);
+		}
+	}
+
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           VENTURE_ENTITY(widget), &actor, &error))
+		return venture_web_error_response(error);
+
+	g_object_get(dashboard, "slug", &slug, NULL);
+	destination = g_strdup_printf("/dashboards/%s/edit", slug);
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * POST /dashboards/:slug/widgets/:id/delete
+ */
+static HtmxResponse *
+venture_web_ui_dashboard_widget_delete(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(VentureDashboardWidget) widget = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *slug = NULL;
+	g_autofree gchar *destination = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+
+	gate = venture_web_dashboard_load(self, request, params,
+	                                  VENTURE_USER_ROLE_EDITOR, FALSE,
+	                                  &principal, &dashboard);
+
+	if (NULL != gate)
+		return gate;
+
+	widget = venture_web_dashboard_widget_load(self, params, dashboard, &error);
+
+	if (NULL == widget)
+		return venture_web_error_response(error);
+
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_delete(venture_context_get_database(self->context),
+	                             VENTURE_ENTITY(widget), &actor, &error))
+		return venture_web_error_response(error);
+
+	g_object_get(dashboard, "slug", &slug, NULL);
+	destination = g_strdup_printf("/dashboards/%s/edit", slug);
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * POST /dashboards/:slug/widgets/:id/move - direction=up|down
+ */
+static HtmxResponse *
+venture_web_ui_dashboard_widget_move(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(VentureDashboardWidget) widget = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *slug = NULL;
+	g_autofree gchar *destination = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+	const gchar *direction;
+
+	gate = venture_web_dashboard_load(self, request, params,
+	                                  VENTURE_USER_ROLE_EDITOR, FALSE,
+	                                  &principal, &dashboard);
+
+	if (NULL != gate)
+		return gate;
+
+	widget = venture_web_dashboard_widget_load(self, params, dashboard, &error);
+
+	if (NULL == widget)
+		return venture_web_error_response(error);
+
+	direction = htmx_request_get_form_value(request, "direction");
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_dashboard_move_widget(venture_context_get_database(self->context),
+	                                   widget,
+	                                   (0 == g_strcmp0(direction, "up")) ? -1 : 1,
+	                                   &actor, &error))
+		return venture_web_error_response(error);
+
+	g_object_get(dashboard, "slug", &slug, NULL);
+	destination = g_strdup_printf("/dashboards/%s/edit", slug);
+
+	return venture_web_redirect_to(destination);
+}
+
+/* --- The dashboards API --------------------------------------------------- */
+
+/*
+ * The scope an API caller renders under: the token's user, and either
+ * everything or the entity named in ?organization_id=.
+ */
+static void
+venture_web_api_dashboard_scope(
+	VentureWebServer	 *self,
+	HtmxRequest		 *request,
+	VentureAuthPrincipal	 *principal,
+	VentureDashboard	 *dashboard,
+	VentureWidgetScope	 *scope,
+	GArray			**tree
+){
+	const gchar *organization;
+
+	scope->organization_ids = NULL;
+	scope->n_organizations = 0;
+	scope->user_id = principal->user_id;
+	scope->username = principal->name;
+	scope->venture_id = 0;
+	g_object_get(dashboard, "venture-id", &scope->venture_id, NULL);
+	*tree = NULL;
+
+	organization = htmx_request_get_query_param(request, "organization_id");
+
+	if (!venture_string_is_empty(organization))
+	{
+		*tree = venture_web_organization_tree(self,
+			g_ascii_strtoll(organization, NULL, 10));
+		scope->organization_ids = (const gint64 *)(*tree)->data;
+		scope->n_organizations = (*tree)->len;
+	}
+}
+
+/*
+ * GET /api/v1/dashboards - every dashboard the caller may see.
+ */
+static HtmxResponse *
+venture_web_api_dashboards(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GPtrArray) dashboards = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *gate;
+	guint i;
+
+	(void)params;
+
+	gate = venture_web_require_module_api(self, "dashboards");
+
+	if (NULL != gate)
+		return gate;
+
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+
+	if (NULL != gate)
+		return gate;
+
+	principal = venture_auth_authenticate(self->auth, request);
+	dashboards = venture_dashboard_list_visible(
+		venture_context_get_database(self->context), principal->user_id,
+		&error);
+
+	if (NULL == dashboards)
+		return venture_web_error_response(error);
+
+	builder = json_builder_new();
+	json_builder_begin_array(builder);
+
+	for (i = 0; i < dashboards->len; i++)
+	{
+		g_autoptr(JsonNode) described = NULL;
+
+		described = venture_dashboard_describe(self->context,
+			g_ptr_array_index(dashboards, i), NULL, FALSE, &error);
+
+		if (NULL == described)
+			return venture_web_error_response(error);
+
+		json_builder_add_value(builder, g_steal_pointer(&described));
+	}
+
+	json_builder_end_array(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * GET /api/v1/dashboards/:slug - the dashboard with every widget's answer.
+ * ?data=0 lists the widgets without evaluating them.
+ */
+static HtmxResponse *
+venture_web_api_dashboard(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GArray) tree = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureWidgetScope scope;
+	HtmxResponse *gate;
+	const gchar *data;
+
+	gate = venture_web_dashboard_load(self, request, params,
+	                                  VENTURE_USER_ROLE_VIEWER, TRUE,
+	                                  &principal, &dashboard);
+
+	if (NULL != gate)
+		return gate;
+
+	venture_web_api_dashboard_scope(self, request, principal, dashboard,
+	                                &scope, &tree);
+	data = htmx_request_get_query_param(request, "data");
+	node = venture_dashboard_describe(self->context, dashboard, &scope,
+		(NULL == data) || (0 != g_strcmp0(data, "0")), &error);
+
+	if (NULL == node)
+		return venture_web_error_response(error);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * GET /api/v1/dashboards/:slug/export
+ */
+static HtmxResponse *
+venture_web_api_dashboard_export(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *gate;
+
+	gate = venture_web_dashboard_load(self, request, params,
+	                                  VENTURE_USER_ROLE_VIEWER, TRUE,
+	                                  &principal, &dashboard);
+
+	if (NULL != gate)
+		return gate;
+
+	node = venture_dashboard_export(venture_context_get_database(self->context),
+	                                dashboard, &error);
+
+	if (NULL == node)
+		return venture_web_error_response(error);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * POST /api/v1/dashboards/import - a definition in the body.
+ * POST /api/v1/dashboards/from-template - {"template": "factory"}.
+ */
+static HtmxResponse *
+venture_web_api_dashboard_import(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+	gboolean from_template;
+
+	gate = venture_web_require_module_api(self, "dashboards");
+
+	if (NULL != gate)
+		return gate;
+
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+
+	if (NULL != gate)
+		return gate;
+
+	principal = venture_auth_authenticate(self->auth, request);
+	body = htmx_request_get_json(request, NULL);
+
+	if ((NULL == body) || !JSON_NODE_HOLDS_OBJECT(body))
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_SERIALIZATION,
+		                    "The request body must be a JSON object");
+		return venture_web_error_response(error);
+	}
+
+	venture_auth_to_actor(principal, &actor);
+	from_template = (0 == g_strcmp0(g_hash_table_lookup(params, "action"),
+	                                "from-template"));
+
+	if (!from_template &&
+	    (0 != g_strcmp0(g_hash_table_lookup(params, "action"), "import")))
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		                    "POST /api/v1/dashboards/import or "
+		                    "/api/v1/dashboards/from-template");
+		return venture_web_error_response(error);
+	}
+
+	if (from_template)
+	{
+		dashboard = venture_dashboard_create_from_template(self->context,
+			venture_json_object_get_string(json_node_get_object(body),
+			                               "template", NULL),
+			principal->user_id, &actor, &error);
+	}
+	else
+	{
+		dashboard = venture_dashboard_import(self->context, body,
+		                                     principal->user_id, &actor,
+		                                     &error);
+	}
+
+	if (NULL == dashboard)
+		return venture_web_error_response(error);
+
+	node = venture_dashboard_describe(self->context, dashboard, NULL, FALSE,
+	                                  &error);
+
+	if (NULL == node)
+		return venture_web_error_response(error);
+
+	return venture_web_json_response(node, 201);
+}
+
+/*
+ * GET /api/v1/widget-kinds - the catalogue.
+ */
+static HtmxResponse *
+venture_web_api_widget_kinds(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(JsonNode) node = NULL;
+	HtmxResponse *gate;
+
+	(void)params;
+
+	gate = venture_web_require_module_api(self, "dashboards");
+
+	if (NULL != gate)
+		return gate;
+
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+
+	if (NULL != gate)
+		return gate;
+
+	node = venture_widget_kind_registry_describe(
+		venture_widget_kind_registry_get_default(), self->context);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * GET /api/v1/dashboard-templates - what can be made in one call.
+ */
+static HtmxResponse *
+venture_web_api_dashboard_templates(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	const VentureDashboardTemplate *templates;
+	HtmxResponse *gate;
+	gsize n_templates;
+	gsize i;
+
+	(void)params;
+
+	gate = venture_web_require_module_api(self, "dashboards");
+
+	if (NULL != gate)
+		return gate;
+
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+
+	if (NULL != gate)
+		return gate;
+
+	templates = venture_dashboard_get_templates(&n_templates);
+	builder = json_builder_new();
+	json_builder_begin_array(builder);
+
+	for (i = 0; i < n_templates; i++)
+	{
+		g_autoptr(JsonNode) definition = NULL;
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "name");
+		json_builder_add_string_value(builder, templates[i].name);
+		json_builder_set_member_name(builder, "label");
+		json_builder_add_string_value(builder, templates[i].label);
+		json_builder_set_member_name(builder, "description");
+		json_builder_add_string_value(builder, templates[i].description);
+		json_builder_set_member_name(builder, "module");
+
+		if (NULL != templates[i].module)
+			json_builder_add_string_value(builder, templates[i].module);
+		else
+			json_builder_add_null_value(builder);
+
+		json_builder_set_member_name(builder, "definition");
+		definition = venture_json_parse(templates[i].definition, NULL);
+
+		if (NULL != definition)
+			json_builder_add_value(builder, g_steal_pointer(&definition));
+		else
+			json_builder_add_null_value(builder);
+
+		json_builder_end_object(builder);
+	}
+
+	json_builder_end_array(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(node, 200);
+}
+
 VentureWebServer *
 venture_web_server_new(
 	VentureContext	 *context,
@@ -17724,6 +19622,39 @@ venture_web_server_new(
 
 	/* UI */
 	htmx_router_get(router, "/", venture_web_ui_dashboard, self);
+	htmx_router_get(router, "/overview", venture_web_ui_overview, self);
+
+	/* Dashboards. The literal paths go before the :slug ones, because the
+	 * router takes the first match. */
+	htmx_router_get(router, "/dashboards", venture_web_ui_dashboards, self);
+	htmx_router_post(router, "/dashboards", venture_web_ui_dashboard_create,
+	                 self);
+	htmx_router_post(router, "/dashboards/import",
+	                 venture_web_ui_dashboard_import, self);
+	htmx_router_get(router, "/dashboards/:slug", venture_web_ui_dashboard_view,
+	                self);
+	htmx_router_post(router, "/dashboards/:slug",
+	                 venture_web_ui_dashboard_update, self);
+	htmx_router_get(router, "/dashboards/:slug/edit",
+	                venture_web_ui_dashboard_edit, self);
+	htmx_router_get(router, "/dashboards/:slug/export",
+	                venture_web_ui_dashboard_export, self);
+	htmx_router_post(router, "/dashboards/:slug/delete",
+	                 venture_web_ui_dashboard_delete, self);
+	htmx_router_get(router, "/dashboards/:slug/widgets/new",
+	                venture_web_ui_dashboard_widget_form, self);
+	htmx_router_post(router, "/dashboards/:slug/widgets",
+	                 venture_web_ui_dashboard_widget_save, self);
+	htmx_router_get(router, "/dashboards/:slug/widgets/:id",
+	                venture_web_ui_dashboard_widget, self);
+	htmx_router_get(router, "/dashboards/:slug/widgets/:id/edit",
+	                venture_web_ui_dashboard_widget_form, self);
+	htmx_router_post(router, "/dashboards/:slug/widgets/:id",
+	                 venture_web_ui_dashboard_widget_save, self);
+	htmx_router_post(router, "/dashboards/:slug/widgets/:id/delete",
+	                 venture_web_ui_dashboard_widget_delete, self);
+	htmx_router_post(router, "/dashboards/:slug/widgets/:id/move",
+	                 venture_web_ui_dashboard_widget_move, self);
 	htmx_router_get(router, "/search", venture_web_ui_search, self);
 	htmx_router_get(router, "/automations", venture_web_ui_automations, self);
 	htmx_router_post(router, "/automations/validate",
@@ -17845,6 +19776,18 @@ venture_web_server_new(
 
 	/* API */
 	htmx_router_get(router, "/api/v1/health", venture_web_api_health, self);
+	htmx_router_get(router, "/api/v1/widget-kinds",
+	                venture_web_api_widget_kinds, self);
+	htmx_router_get(router, "/api/v1/dashboard-templates",
+	                venture_web_api_dashboard_templates, self);
+	htmx_router_get(router, "/api/v1/dashboards", venture_web_api_dashboards,
+	                self);
+	htmx_router_post(router, "/api/v1/dashboards/:action",
+	                 venture_web_api_dashboard_import, self);
+	htmx_router_get(router, "/api/v1/dashboards/:slug",
+	                venture_web_api_dashboard, self);
+	htmx_router_get(router, "/api/v1/dashboards/:slug/export",
+	                venture_web_api_dashboard_export, self);
 	htmx_router_get(router, "/api/v1/schema", venture_web_api_describe, self);
 	htmx_router_get(router, "/api/v1/schema/:type", venture_web_api_describe,
 	                self);

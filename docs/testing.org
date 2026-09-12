@@ -4,7 +4,7 @@
 #+categories: projects docs
 #+created: [2026-08-14]
 #+updated: [2026-09-11]
-#+version: 0.4.0
+#+version: 0.5.0
 
 * Testing
 
@@ -134,6 +134,10 @@ That any two records of any types link, and that one row reads correctly from bo
 ** =test-factory=
 
 That a =workflow_run= delivery becomes a build when requested and updates the same build when completed, a retried delivery included, and that a bad signature plants nothing. That a release cut on the forge becomes a release here with its version read from the tag, and a deleted one is yanked on the same row. That the changelog is drafted from the tickets by issue type and never overwrites what somebody wrote unless asked. That the lead-time and incident reports measure what they claim. That with the module off every page, type and report is gone and the CI webhook is acknowledged and dropped -- and that flipping the switch on the live configuration is enough to bring it back.
+
+** =test-dashboard=
+
+That the dashboards module owns its two types and the widget catalogue has every built-in kind, with the factory ones marked as its. That a plugin can add a kind and a bad or duplicate one is refused. That a slug is derived, normalised and unique. That a widget is refused at the save for a kind, a type, a report or options that do not exist, and accepted for a type or report whose module is merely off. That count, list and breakdown answer from the same rows, with ={me}= substituted for whoever is looking; that a note's markup is escaped and an action with a script href is dropped; that metric, report and chart read one report three ways; that a widget for a module that is off, or of a kind that vanished, is an error in place and never a missing page. That only one dashboard is home, and a personal home is nobody else's. That every template imports, an export re-imports to the same definition, importing twice gives two, and a definition with one bad widget leaves nothing behind. And, over a real server: the whole loop from template to home page to deletion, that another user's personal dashboard answers 404 on the page, the API and the fragment, and that the module switch takes the pages, the API and the sidebar entry with it and leaves =/= as the built-in overview.
 
 ** =test-forge=
 

@@ -1120,6 +1120,49 @@
 	/* Bootstrap                                                           */
 	/* ------------------------------------------------------------------ */
 
+	/* ------------------------------------------------------------------ */
+	/* The dashboard widget editor                                         */
+	/* ------------------------------------------------------------------ */
+
+	/*
+	 * Each kind option carries the settings its kind reads, so the form
+	 * shows only those and the help for the chosen kind. Without this the
+	 * whole form shows and still works; this is the difference between a
+	 * form with five boxes and one with fifteen.
+	 */
+	function wireWidgetEditor() {
+		var select = document.querySelector("select[data-widget-kind]");
+		var help = document.querySelector("[data-widget-kind-help]");
+		var always = ["title", "span", "position", "refresh_seconds"];
+
+		if (!select) {
+			return;
+		}
+
+		function apply() {
+			var option = select.options[select.selectedIndex];
+			var uses = option ? (option.getAttribute("data-uses") || "").split(" ") : [];
+
+			document.querySelectorAll("[data-widget-field]").forEach(function (field) {
+				var name = field.getAttribute("data-widget-field");
+
+				if (name === "kind") {
+					return;
+				}
+
+				field.hidden = always.indexOf(name) < 0 && uses.indexOf(name) < 0;
+			});
+
+			if (help && option) {
+				help.textContent = option.textContent + ": reads "
+					+ (uses.filter(Boolean).join(", ") || "nothing");
+			}
+		}
+
+		select.addEventListener("change", apply);
+		apply();
+	}
+
 	function init() {
 		applyTheme(storedTheme());
 
@@ -1401,6 +1444,7 @@
 		wireBoard(document);
 		wireServerEvents();
 		wireReveal(document);
+		wireWidgetEditor();
 		scrollChatToBottom();
 	}
 

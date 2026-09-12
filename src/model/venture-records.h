@@ -265,6 +265,15 @@ VENTURE_DECLARE_ENTITY(VentureDeployment, venture_deployment, DEPLOYMENT)
 #define VENTURE_TYPE_INCIDENT (venture_incident_get_type())
 VENTURE_DECLARE_ENTITY(VentureIncident, venture_incident, INCIDENT)
 
+/* --- Dashboards ----------------------------------------------------------- */
+
+#define VENTURE_TYPE_DASHBOARD (venture_dashboard_get_type())
+VENTURE_DECLARE_ENTITY(VentureDashboard, venture_dashboard, DASHBOARD)
+
+#define VENTURE_TYPE_DASHBOARD_WIDGET (venture_dashboard_widget_get_type())
+VENTURE_DECLARE_ENTITY(VentureDashboardWidget, venture_dashboard_widget,
+                       DASHBOARD_WIDGET)
+
 #define VENTURE_TYPE_INVOICE (venture_invoice_get_type())
 VENTURE_DECLARE_ENTITY(VentureInvoice, venture_invoice, INVOICE)
 

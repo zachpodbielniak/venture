@@ -4,7 +4,7 @@
 #+categories: projects docs
 #+created: [2026-08-14]
 #+updated: [2026-09-11]
-#+version: 0.4.0
+#+version: 0.5.0
 
 * Architecture
 
@@ -49,6 +49,10 @@ What a disabled module loses is decided there and applied to the registries the 
 ** Links
 
 =record_link= joins any two records by type and id with a kind that has an inverse, stored once and read from either end. The checks the schema cannot express run as a save validator inside =venture_database_save()=, which every writer goes through. See [[file:data-model.org][the data model]].
+
+** Dashboards
+
+A dashboard is a page of widgets and a widget is a declarative question — a count, a list, a report's figure — answered by a kind from a process-wide catalogue (=src/core/venture-dashboard.c=). Each kind produces JSON and HTML from one pass, so the browser, the API and the assistant see one answer. Both records are ordinary types; a plugin adds a kind the way it adds a report. See [[file:dashboards.org][Dashboards]].
 
 ** Layers
 
