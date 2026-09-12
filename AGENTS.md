@@ -612,11 +612,36 @@ than one that fails.
   async made it something that has to be said out loud.
 - **`ai_tool_executor_set_stream()` is set per turn, not once.** The same
   executor answers the CLI and MCP, which have nowhere to put a delta.
+- **Every `<select>` is enhanced into a themed picker** by `wirePickers()`
+  in venture.js; the native element stays in the DOM, keeps its name and
+  is still what the form posts, so every existing `change` listener and
+  the no-script path are untouched. Opt out with `data-no-picker`.
+  Floating panels (`.picker-panel`, `.record-results`) are
+  `position: fixed` and placed by `placeFloating()`, because `.card` has
+  `overflow: hidden` and clipped them.
 - **Never put a class name a test greps for inside venture.js.** The
   script is inlined into every page, so `"notice negative"` in a JS string
   made a dashboard test find an error notice that was not on the page.
   Build dynamic notices as DOM nodes, and assert on markup
   (`<div class="notice negative">`), not on two words.
+- **The harness is `src/ai/venture-ai-harness.c`**, ai-glib's
+  (`AiResourceRegistry` -> `AiCommandSet` -> `AiCompletionContext`, the
+  shape `ai-tui` uses) wired to a browser. It owns completion for `/`,
+  `@` and `#`, command expansion, `@type/id` mention expansion, and
+  `venture_ai_harness_describe_record()` -- the one place a record is
+  written out for a model, which the page context also calls.
+  `venture_context_get_ai_harness()` builds it on first use.
+- **The harness never decides permissions.** It takes a
+  `VentureHarnessAllowFunc`; the web layer passes one that calls
+  `venture_web_require_for_type()`, because which role a type needs is
+  that file's policy and a second copy would go stale.
+- **Shell escapes in command bodies are off** (`AI_COMMAND_SHELL_NEVER`).
+  Those directories are shared with every agent tool on the machine and
+  this process answers a port.
+- **`/ui/chat/complete` takes `buffer` and `cursor`**, not a fragment, and
+  answers with a kind, a byte range and items. The client recomputes the
+  range in UTF-16 units because a textarea slices in those; the server's
+  range is in bytes and only the kind and items are used.
 - **Skills live in `src/ai/venture-ai-skills.c`.** Built-ins are a static
   table there; `ai_skill` records (chat module) add to it and a record's
   trigger shadows a built-in's. `venture_ai_skills_expand()` runs on the

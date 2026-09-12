@@ -408,9 +408,9 @@
 			setPanelOpen(false);
 			return true;
 		case "/help":
-			toast("Type / for skills and commands, # for a knowledge base. "
-				+ "Up recalls the last question; Shift+Enter is a new line.",
-				"info", 8000);
+			toast("Type / for commands, @ to name a record, # for a "
+				+ "knowledge base. Up recalls the last question; "
+				+ "Shift+Enter is a new line.", "info", 8000);
 			return true;
 		default:
 			return false;
@@ -780,52 +780,47 @@
 	 * so the menu can only offer what typing could do.
 	 */
 	var completeState = null;
-	var completeCache = null;
-	var completeFetched = 0;
-
-	var CLIENT_COMMANDS = [
-		{ trigger: "new", name: "New conversation", description: "Start fresh" },
-		{ trigger: "threads", name: "Conversations", description: "Resume an earlier one" },
-		{ trigger: "export", name: "Export", description: "Download this conversation as org" },
-		{ trigger: "close", name: "Close", description: "Hide the panel" },
-		{ trigger: "help", name: "Help", description: "What the composer understands" }
-	];
-
-	function fetchCompletions() {
-		if (completeCache && Date.now() - completeFetched < 60000) {
-			return Promise.resolve(completeCache);
-		}
-
-		return window.fetch("/ui/chat/complete", {
-			credentials: "same-origin"
-		}).then(function (response) {
-			return response.ok ? response.json() : { skills: [], bases: [] };
-		}).then(function (body) {
-			completeCache = body || { skills: [], bases: [] };
-			completeFetched = Date.now();
-			return completeCache;
-		}).catch(function () {
-			return completeCache || { skills: [], bases: [] };
-		});
-	}
+	var completeTimer = null;
 
 	/*
-	 * What is being completed, from the text before the caret: the
-	 * kind, the fragment typed so far, and where it starts.
+	 * The commands the composer runs itself. They are listed here and
+	 * not on the server because the script is what carries them out, and
+	 * a menu offering one the script did not understand would be a menu
+	 * that lies.
 	 */
-	function completionAt(textarea) {
+	var CLIENT_COMMANDS = [
+		{ trigger: "new", name: "New conversation", description: "Start fresh" },
+		{ trigger: "threads", name: "Conversations",
+		  description: "Resume an earlier one" },
+		{ trigger: "export", name: "Export",
+		  description: "Download this conversation as org" },
+		{ trigger: "close", name: "Close", description: "Hide the panel" },
+		{ trigger: "help", name: "Help",
+		  description: "What the composer understands" }
+	];
+
+	/*
+	 * Where the token under the caret starts, by the same rule the
+	 * harness applies: a slash only at the very start of the composer, an
+	 * @ or a # at the start of a word, and no spaces inside.
+	 *
+	 * The server sends its own range back, in bytes. This is measured in
+	 * the units the textarea actually slices by, which is the only way a
+	 * question with an accent in it replaces the right characters.
+	 */
+	function completionRange(textarea) {
 		var caret = textarea.selectionStart;
 		var before = textarea.value.slice(0, caret);
-		var slash = /^\/([a-z0-9-]*)$/i.exec(before);
-		var hash = /(^|\s)#([a-z0-9_-]*)$/i.exec(before);
+		var slash = /^\/([^\s]*)$/.exec(before);
+		var token = /(^|\s)([@#])([^\s]*)$/.exec(before);
 
 		if (slash) {
-			return { kind: "skill", fragment: slash[1], start: 0, end: caret };
+			return { sigil: "/", start: 0, end: caret };
 		}
 
-		if (hash) {
-			return { kind: "base", fragment: hash[2],
-			         start: caret - hash[2].length - 1, end: caret };
+		if (token) {
+			return { sigil: token[2], start: caret - token[3].length - 1,
+			         end: caret };
 		}
 
 		return null;
@@ -856,6 +851,7 @@
 		var menu = document.getElementById("chat-complete");
 
 		completeState = null;
+		window.clearTimeout(completeTimer);
 
 		if (menu) {
 			menu.hidden = true;
@@ -863,88 +859,44 @@
 		}
 	}
 
-	function renderCompletion(textarea, spec, data) {
+	function renderCompletion(textarea, range, kind, items) {
 		var menu = completeMenu();
-		var fragment = spec.fragment.toLowerCase();
-		var items = [];
 
 		if (!menu) {
 			return;
 		}
 
-		if (spec.kind === "base") {
-			(data.bases || []).forEach(function (base) {
-				items.push({ insert: "#" + base.slug + " ", label: "#" + base.slug,
-				             name: base.name, description: base.description || "",
-				             group: "Knowledge base" });
-			});
-		} else {
-			(data.skills || []).forEach(function (skill) {
-				items.push({ insert: "/" + skill.trigger + " ",
-				             label: "/" + skill.trigger, name: skill.name,
-				             description: skill.description || "",
-				             group: skill.builtin ? "Skill" : "Your skill" });
-			});
+		/* The panel's own commands, filtered the way the server filtered
+		 * its own: by what has been typed after the slash. */
+		if (kind === "command") {
+			var typed = textarea.value.slice(range.start + 1,
+			                                range.end).toLowerCase();
+
 			CLIENT_COMMANDS.forEach(function (command) {
-				items.push({ insert: "/" + command.trigger, label: "/" + command.trigger,
-				             name: command.name, description: command.description,
-				             group: "Command", command: true });
+				if (typed !== ""
+				    && command.trigger.indexOf(typed) !== 0) {
+					return;
+				}
+
+				items.push({ insert: "/" + command.trigger,
+				             label: "/" + command.trigger,
+				             name: command.name,
+				             description: command.description,
+				             origin: "panel", command: true });
 			});
+
+			items.push({ insert: "", label: "Harness\u2026", name: "",
+			             description: "Every command, and where it came from",
+			             origin: "", href: "/harness" });
 		}
 
-		/*
-		 * What is typed matches the trigger first and the words second:
-		 * "/re" is /reply before it is anything with "re" in its
-		 * description. Both kinds are kept, prefix matches ahead.
-		 */
-		var sigil = spec.kind === "base" ? "#" : "/";
-		var prefixed = [];
-		var mentioned = [];
-
-		items.forEach(function (item) {
-			if (item.manage) {
-				return;
-			}
-
-			var label = item.label.toLowerCase();
-			var hay = (item.name + " " + item.description).toLowerCase();
-
-			if (fragment === "" || label.indexOf(sigil + fragment) === 0) {
-				prefixed.push(item);
-			} else if (hay.indexOf(fragment) !== -1) {
-				mentioned.push(item);
-			}
-		});
-
-		items = prefixed.concat(mentioned);
-
-		if (spec.kind === "skill") {
-			items.push({ manage: true, label: "Manage skills\u2026",
-			             name: "", description: "Add or edit /skills as records",
-			             group: "" });
-		}
-
-		/* No bases at all is worth saying, once, with the way to fix
-		 * it; a fragment that matches nothing just closes the menu. */
-		if (spec.kind === "base" && items.length === 0) {
-			if (fragment !== "") {
-				closeCompletion();
-				return;
-			}
-
-			items.push({ manage: true, href: "/kb",
-			             label: "No knowledge bases yet",
-			             name: "", description: "Create one under Knowledge",
-			             group: "" });
-		}
-
-		if (items.length === 0 || (items.length === 1 && items[0].manage
-		    && fragment !== "")) {
+		if (items.length === 0) {
 			closeCompletion();
 			return;
 		}
 
-		completeState = { textarea: textarea, spec: spec, items: items, index: 0 };
+		completeState = { textarea: textarea, range: range, items: items,
+		                  index: 0 };
 		menu.innerHTML = "";
 
 		items.forEach(function (item, i) {
@@ -952,23 +904,22 @@
 			var label = document.createElement("span");
 			var name = document.createElement("span");
 			var desc = document.createElement("span");
-			var group = document.createElement("span");
+			var origin = document.createElement("span");
 
 			row.className = "chat-complete-item" + (i === 0 ? " active" : "");
 			row.setAttribute("role", "option");
-			row.dataset.index = String(i);
 			label.className = "chat-complete-label";
 			label.textContent = item.label;
 			name.className = "chat-complete-name";
-			name.textContent = item.name;
+			name.textContent = item.name || "";
 			desc.className = "chat-complete-desc";
-			desc.textContent = item.description;
-			group.className = "chat-complete-group";
-			group.textContent = item.group;
+			desc.textContent = item.description || "";
+			origin.className = "chat-complete-group";
+			origin.textContent = item.origin || "";
 			row.appendChild(label);
 			row.appendChild(name);
 			row.appendChild(desc);
-			row.appendChild(group);
+			row.appendChild(origin);
 			row.addEventListener("mousedown", function (event) {
 				/* mousedown, so the composer keeps focus. */
 				event.preventDefault();
@@ -1015,52 +966,82 @@
 			return;
 		}
 
-		if (item.manage) {
-			window.location.href = item.href || "/e/ai_skill";
+		if (item.href) {
+			window.location.href = item.href;
 			return;
 		}
 
 		var value = textarea.value;
-		var after = value.slice(state.spec.end);
 
-		textarea.value = value.slice(0, state.spec.start) + item.insert + after;
+		textarea.value = value.slice(0, state.range.start) + item.insert
+			+ value.slice(state.range.end);
 
-		var caret = state.spec.start + item.insert.length;
+		var caret = state.range.start + item.insert.length;
 
 		textarea.setSelectionRange(caret, caret);
 		textarea.style.height = "auto";
 		textarea.style.height = textarea.scrollHeight + "px";
 		rememberDraft(textarea.value);
 
-		/* A command runs at once; a skill or a base waits for the rest
-		 * of the sentence. */
+		/*
+		 * A command the panel runs goes at once. Everything else --
+		 * a skill, a record, a base -- is part of a sentence that is
+		 * not finished yet, and the menu reopens if the next thing
+		 * typed is completable too.
+		 */
 		if (item.command) {
 			runSlashCommand(item.insert);
 			textarea.value = "";
 			textarea.style.height = "auto";
 			rememberDraft("");
+			return;
 		}
+
+		updateCompletion(textarea);
 	}
 
+	/*
+	 * What can be completed is the server's answer, not a guess here: it
+	 * knows the commands on disk, the record types this person may read,
+	 * and the knowledge bases. Debounced, because "@ticket/pay" is four
+	 * searches if every keystroke asks.
+	 */
 	function updateCompletion(textarea) {
-		var spec = completionAt(textarea);
+		var range = completionRange(textarea);
 
-		if (!spec) {
+		if (!range) {
 			closeCompletion();
 			return;
 		}
 
-		fetchCompletions().then(function (data) {
-			/* The caret may have moved on while the list was fetched. */
-			var now = completionAt(textarea);
+		window.clearTimeout(completeTimer);
+		completeTimer = window.setTimeout(function () {
+			var buffer = textarea.value;
+			var cursor = textarea.selectionStart;
+			var query = "?buffer=" + encodeURIComponent(buffer)
+				+ "&cursor=" + encodeURIComponent(String(cursor));
 
-			if (!now || now.kind !== spec.kind) {
-				closeCompletion();
-				return;
-			}
+			window.fetch("/ui/chat/complete" + query, {
+				credentials: "same-origin"
+			}).then(function (response) {
+				return response.ok ? response.json() : null;
+			}).then(function (body) {
+				/* The caret may have moved on while this was in
+				 * flight; what came back is about where it was. */
+				var now = completionRange(textarea);
 
-			renderCompletion(textarea, now, data);
-		});
+				if (!body || !now || now.sigil !== range.sigil
+				    || textarea.value !== buffer) {
+					return;
+				}
+
+				renderCompletion(textarea, now, body.kind,
+				                 body.items || []);
+			}).catch(function () {
+				/* A menu is a convenience; losing it must not make
+				 * the composer feel broken. */
+			});
+		}, 120);
 	}
 
 	/*
@@ -1601,6 +1582,416 @@
 	}
 
 	/* ------------------------------------------------------------------ */
+	/* Pickers: a themed select, and searching for a record               */
+	/* ------------------------------------------------------------------ */
+
+	/*
+	 * A native select draws its popup with the operating system, which
+	 * is the one part of this interface no stylesheet reaches: on a dark
+	 * theme it opens as a grey slab in somebody else's font, and with
+	 * thirty record types in it there is nothing to type into.
+	 *
+	 * So the select stays, hidden, and keeps being what the form posts
+	 * and what every existing handler reads. In front of it goes a
+	 * button and a panel drawn from the same tokens as everything else,
+	 * with a filter box once there are enough options to lose one in.
+	 * Without scripting the native control is simply still there.
+	 */
+	var PICKER_SEARCH_THRESHOLD = 7;
+
+	var openPicker = null;
+
+	/*
+	 * Floating panels are positioned against the viewport, not against
+	 * the thing that opened them.
+	 *
+	 * A card clips its contents -- it has to, or a table's corners
+	 * escape it -- so a panel laid out inside one is cut off at the
+	 * card's edge. Measured once on open: the type list showed two of
+	 * sixty options. Fixed positioning leaves every clipping context
+	 * behind, at the cost of having to do the arithmetic here.
+	 */
+	function placeFloating(panel, anchor) {
+		var rect = anchor.getBoundingClientRect();
+		var room = window.innerHeight - rect.bottom;
+
+		panel.style.position = "fixed";
+		panel.style.left = Math.round(rect.left) + "px";
+		panel.style.minWidth = Math.round(rect.width) + "px";
+
+		/* Below when there is room for a usable list, above when the
+		 * control is near the bottom of the window. */
+		if (room < 180 && rect.top > room) {
+			panel.style.top = "auto";
+			panel.style.bottom = Math.round(window.innerHeight - rect.top + 2)
+				+ "px";
+			panel.style.maxHeight = Math.round(rect.top - 12) + "px";
+		} else {
+			panel.style.bottom = "auto";
+			panel.style.top = Math.round(rect.bottom + 2) + "px";
+			panel.style.maxHeight = Math.round(room - 12) + "px";
+		}
+	}
+
+	function closePicker() {
+		if (!openPicker) {
+			return;
+		}
+
+		openPicker.wrap.classList.remove("open");
+		openPicker.panel.hidden = true;
+		openPicker = null;
+	}
+
+	function pickerLabel(select) {
+		var option = select.options[select.selectedIndex];
+
+		return option ? option.textContent : "";
+	}
+
+	function wirePickers(root) {
+		(root || document).querySelectorAll("select").forEach(function (select) {
+			if (select.venturePicker || select.multiple
+			    || select.hasAttribute("data-no-picker")) {
+				return;
+			}
+
+			select.venturePicker = true;
+			buildPicker(select);
+		});
+	}
+
+	function buildPicker(select) {
+		var wrap = document.createElement("span");
+		var button = document.createElement("button");
+		var panel = document.createElement("div");
+		var filter = document.createElement("input");
+		var list = document.createElement("div");
+		var cursor = 0;
+
+		wrap.className = "picker";
+		button.type = "button";
+		button.className = "picker-button";
+		button.setAttribute("aria-haspopup", "listbox");
+		panel.className = "picker-panel";
+		panel.hidden = true;
+		filter.type = "search";
+		filter.className = "picker-filter";
+		filter.placeholder = "Filter\u2026";
+		filter.setAttribute("aria-label", "Filter options");
+		list.className = "picker-list";
+		list.setAttribute("role", "listbox");
+
+		if (select.options.length > PICKER_SEARCH_THRESHOLD) {
+			panel.appendChild(filter);
+		}
+
+		panel.appendChild(list);
+
+		/* The select keeps its place in the form and its name; it is
+		 * only taken out of the tab order and out of sight. */
+		select.parentNode.insertBefore(wrap, select);
+		wrap.appendChild(select);
+		wrap.appendChild(button);
+		wrap.appendChild(panel);
+		select.classList.add("picker-native");
+		select.tabIndex = -1;
+
+		function syncButton() {
+			button.textContent = pickerLabel(select);
+		}
+
+		function rows() {
+			return Array.prototype.slice.call(
+				list.querySelectorAll(".picker-option:not([hidden])"));
+		}
+
+		function highlight(index) {
+			var visible = rows();
+
+			if (visible.length === 0) {
+				return;
+			}
+
+			cursor = Math.max(0, Math.min(index, visible.length - 1));
+
+			visible.forEach(function (row, i) {
+				row.classList.toggle("active", i === cursor);
+
+				if (i === cursor && row.scrollIntoView) {
+					row.scrollIntoView({ block: "nearest" });
+				}
+			});
+		}
+
+		function choose(row) {
+			select.selectedIndex = parseInt(row.dataset.index, 10);
+			syncButton();
+			closePicker();
+			button.focus();
+
+			/* Everything already listening to this select -- the widget
+			 * editor, the board's move form, the bulk bar -- hears the
+			 * same event it would have heard from the native one. */
+			select.dispatchEvent(new Event("change", { bubbles: true }));
+		}
+
+		function build() {
+			list.innerHTML = "";
+
+			Array.prototype.forEach.call(select.options, function (option, i) {
+				var row = document.createElement("div");
+
+				row.className = "picker-option"
+					+ (i === select.selectedIndex ? " selected" : "");
+				row.setAttribute("role", "option");
+				row.dataset.index = String(i);
+				row.textContent = option.textContent;
+				row.addEventListener("mousedown", function (event) {
+					event.preventDefault();
+					choose(row);
+				});
+				list.appendChild(row);
+			});
+		}
+
+		function applyFilter() {
+			var needle = filter.value.trim().toLowerCase();
+
+			list.querySelectorAll(".picker-option").forEach(function (row) {
+				row.hidden = needle !== ""
+					&& row.textContent.toLowerCase().indexOf(needle) === -1;
+			});
+
+			highlight(0);
+		}
+
+		function open() {
+			if (select.disabled) {
+				return;
+			}
+
+			closePicker();
+			build();
+			filter.value = "";
+			applyFilter();
+			panel.hidden = false;
+			placeFloating(panel, button);
+			wrap.classList.add("open");
+			openPicker = { wrap: wrap, panel: panel };
+
+			var chosen = rows().findIndex(function (row) {
+				return parseInt(row.dataset.index, 10) === select.selectedIndex;
+			});
+
+			highlight(chosen < 0 ? 0 : chosen);
+
+			if (panel.contains(filter)) {
+				filter.focus();
+			}
+		}
+
+		button.addEventListener("click", function () {
+			if (openPicker && openPicker.wrap === wrap) {
+				closePicker();
+			} else {
+				open();
+			}
+		});
+
+		filter.addEventListener("input", applyFilter);
+
+		wrap.addEventListener("keydown", function (event) {
+			if (panel.hidden) {
+				if (event.key === "ArrowDown" || event.key === "Enter"
+				    || event.key === " ") {
+					event.preventDefault();
+					open();
+				}
+
+				return;
+			}
+
+			if (event.key === "ArrowDown") {
+				event.preventDefault();
+				highlight(cursor + 1);
+			} else if (event.key === "ArrowUp") {
+				event.preventDefault();
+				highlight(cursor - 1);
+			} else if (event.key === "Enter") {
+				event.preventDefault();
+
+				var visible = rows();
+
+				if (visible[cursor]) {
+					choose(visible[cursor]);
+				}
+			} else if (event.key === "Escape") {
+				event.preventDefault();
+				closePicker();
+				button.focus();
+			}
+		});
+
+		/* A change made to the select by anything else -- a form reset,
+		 * a script setting a value -- must show on the button. */
+		select.addEventListener("change", syncButton);
+
+		syncButton();
+	}
+
+	/*
+	 * Searching for the record to link to.
+	 *
+	 * The form posts a numeric id and always did. What this puts in
+	 * front of it is a box that searches the type chosen beside it, so
+	 * the id is picked from a list of real records rather than copied
+	 * out of another tab and hopefully typed correctly.
+	 */
+	function wireRecordPickers(root) {
+		(root || document).querySelectorAll("[data-record-pick]")
+			.forEach(function (host) {
+				if (host.ventureWired) {
+					return;
+				}
+
+				host.ventureWired = true;
+				buildRecordPicker(host);
+			});
+	}
+
+	function buildRecordPicker(host) {
+		var hidden = host.querySelector("input[type=number]");
+		var form = host.closest("form");
+		var typeName = host.getAttribute("data-type-field");
+		var typeSelect = form && typeName
+			? form.querySelector("[name=\"" + typeName + "\"]")
+			: null;
+		var search = document.createElement("input");
+		var results = document.createElement("div");
+		var chosen = document.createElement("span");
+		var timer = null;
+
+		if (!hidden) {
+			return;
+		}
+
+		search.type = "search";
+		search.className = "record-search";
+		search.placeholder = "Search\u2026";
+		search.setAttribute("aria-label", "Search for a record to link");
+		results.className = "record-results";
+		results.hidden = true;
+		chosen.className = "record-chosen";
+		chosen.hidden = true;
+
+		/*
+		 * The number box is what the form posts and stays in the DOM,
+		 * but it is no longer something to type into: the search takes
+		 * a number as readily as a name, so two boxes for one value
+		 * was only ever a question about which of them counted.
+		 */
+		hidden.classList.add("record-id");
+		host.classList.add("searchable");
+		host.appendChild(search);
+		host.appendChild(chosen);
+		host.appendChild(results);
+
+		function clearChoice() {
+			hidden.value = "";
+			chosen.hidden = true;
+			chosen.textContent = "";
+		}
+
+		function pick(item) {
+			hidden.value = String(item.id);
+			chosen.textContent = "#" + item.id + " " + item.label;
+			chosen.hidden = false;
+			search.value = "";
+			results.hidden = true;
+			results.innerHTML = "";
+		}
+
+		function render(items) {
+			results.innerHTML = "";
+
+			if (items.length === 0) {
+				var empty = document.createElement("div");
+
+				empty.className = "record-result muted";
+				empty.textContent = "Nothing matches";
+				results.appendChild(empty);
+				placeFloating(results, search);
+				results.hidden = false;
+				return;
+			}
+
+			items.forEach(function (item) {
+				var row = document.createElement("div");
+				var id = document.createElement("span");
+
+				row.className = "record-result";
+				id.className = "record-result-id";
+				id.textContent = "#" + item.id;
+				row.appendChild(id);
+				row.appendChild(document.createTextNode(item.label));
+				row.addEventListener("mousedown", function (event) {
+					event.preventDefault();
+					pick(item);
+				});
+				results.appendChild(row);
+			});
+
+			placeFloating(results, search);
+			results.hidden = false;
+		}
+
+		function search_now() {
+			var type = typeSelect ? typeSelect.value : "";
+			var text = search.value.trim();
+
+			if (!type) {
+				return;
+			}
+
+			window.fetch("/ui/records/search?type="
+				+ encodeURIComponent(type) + "&q=" + encodeURIComponent(text), {
+				credentials: "same-origin"
+			}).then(function (response) {
+				return response.ok ? response.json() : { items: [] };
+			}).then(function (body) {
+				render(body.items || []);
+			}).catch(function () {
+				results.hidden = true;
+			});
+		}
+
+		search.addEventListener("input", function () {
+			clearChoice();
+			window.clearTimeout(timer);
+			timer = window.setTimeout(search_now, 160);
+		});
+
+		search.addEventListener("focus", search_now);
+
+		search.addEventListener("blur", function () {
+			window.setTimeout(function () {
+				results.hidden = true;
+			}, 150);
+		});
+
+		/* A different type is a different set of records; whatever was
+		 * chosen under the old one is not it. */
+		if (typeSelect) {
+			typeSelect.addEventListener("change", function () {
+				clearChoice();
+				results.hidden = true;
+				results.innerHTML = "";
+			});
+		}
+	}
+
+	/* ------------------------------------------------------------------ */
 	/* The automation rules editor                                         */
 	/* ------------------------------------------------------------------ */
 
@@ -1756,6 +2147,11 @@
 			 * there is a reliable way out of the panel. */
 			if (event.key === "Escape") {
 				var open = document.querySelector(".modal-backdrop");
+
+				if (openPicker) {
+					closePicker();
+					return;
+				}
 
 				if (paletteState) {
 					closePalette();
@@ -2029,6 +2425,8 @@
 
 		document.body.addEventListener("htmx:afterSwap", function (event) {
 			wireRowLinks(event.detail && event.detail.target);
+			wirePickers(event.detail && event.detail.target);
+			wireRecordPickers(event.detail && event.detail.target);
 			wireComposer();
 			wireAssist(document);
 			clearTyping();
@@ -3270,6 +3668,14 @@
 		wirePodEditor();
 		wireReplyTools(document);
 		wireChatStream(document);
+		wirePickers(document);
+		wireRecordPickers(document);
+
+		document.addEventListener("mousedown", function (event) {
+			if (openPicker && !openPicker.wrap.contains(event.target)) {
+				closePicker();
+			}
+		});
 
 	/*
 	 * The kanban board.

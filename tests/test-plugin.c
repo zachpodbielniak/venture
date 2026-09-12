@@ -806,7 +806,8 @@ test_web_navigation_links_all_resolve(
 		"/", "/reports", "/settings", "/account", "/account/tokens",
 		"/users", "/entities", "/tickets", "/login", "/logout", "/search",
 		"/automations", "/plugins", "/kb", "/modules", "/factory",
-		"/dashboards", "/overview", "/sprints", "/runs", "/webhooks", NULL
+		"/dashboards", "/overview", "/sprints", "/runs", "/webhooks",
+		"/harness", NULL
 	};
 	const VentureWebNavLink *links;
 	gsize i;

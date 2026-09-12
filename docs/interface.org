@@ -90,6 +90,16 @@ A plugin page or a custom widget should use these and nothing else.
 
 The classes worth knowing when writing markup: =.card= with =.card-head= and =.card-body=; =.grid.cols-N= and =.bento= for compartments that share rules; =.stat= with =.stat-label= and =.stat-value=; =table.data=; =.badge= with =.positive= / =.negative= / =.warning= / =.info=; =.btn= with =.btn-primary=, =.btn-ghost=, =.btn-danger=, =.btn-sm=; =.notice= with the same four statuses; =.field= with =.field-label= and =.field-help=; =.page-head= with =.page-title=, =.eyebrow= and =.page-actions=.
 
+** Pickers
+
+A native =<select>= draws its popup with the operating system, and no stylesheet reaches it: on a dark theme it opens as a grey slab in somebody else's font, and with sixty record types in it there is nothing to type into.
+
+So the select stays — hidden, and still what the form posts and what every existing handler reads — and a button and a panel drawn from these tokens go in front of it. Past seven options the panel gets a filter box. Arrows move, =Enter= picks, =Escape= closes, and a click outside dismisses it. With scripting off the native control is simply still there, which is the point of enhancing rather than replacing.
+
+The panel is positioned against the viewport rather than its container. A card clips its contents — it has to, or a table's corners escape it — so a panel laid out inside one is cut off at the card's edge.
+
+Where a form wants a record's id, the same idea applies twice over: a search box in front of the number input finds the record by name through =/ui/records/search=, and the id it fills in came from a record that exists. Asking for a number meant opening the list in another tab to read one off it, and a mistyped digit links to a different record silently.
+
 ** Why this and not the usual
 
 A business tool is looked at for hours. The generic interface — rounded white cards, blue buttons, a drop shadow under everything — is designed to be glanced at, and it goes soft under sustained attention: nothing is aligned to anything, every element is lifted the same amount, and colour is spent on decoration so there is none left for meaning. A panel drawn with one pixel rules, two registers of type and one red is the opposite: everything sits on a line, the hierarchy is scale, and when something is red it is because you should look at it.

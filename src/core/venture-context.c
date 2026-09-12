@@ -18,6 +18,7 @@ struct _VentureContext
 	VentureVentureTypeRegistry *venture_types;
 	VentureConfirmationStore *confirmations;
 	VentureAiService	*ai;
+	VentureAiHarness	*harness;
 	VentureAutomation	*automation;
 	VenturePluginManager	*plugins;
 	VentureWorkService	*work;
@@ -49,6 +50,7 @@ venture_context_finalize(GObject *object)
 	g_clear_object(&self->venture_types);
 	g_clear_object(&self->confirmations);
 	g_clear_object(&self->ai);
+	g_clear_object(&self->harness);
 	g_clear_object(&self->automation);
 	g_clear_object(&self->plugins);
 	g_clear_object(&self->work);
@@ -401,6 +403,25 @@ venture_context_get_ai_service(VentureContext *self)
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), NULL);
 
 	return self->ai;
+}
+
+/*
+ * The harness is built on first use rather than at construction.
+ *
+ * Building it scans the resource directories, which is a handful of
+ * stats against the home directory. An install nobody opens the assistant
+ * on should not pay for that at startup, and a command written after the
+ * server came up is found because the first request is what goes looking.
+ */
+VentureAiHarness *
+venture_context_get_ai_harness(VentureContext *self)
+{
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), NULL);
+
+	if (NULL == self->harness)
+		self->harness = venture_ai_harness_new(self);
+
+	return self->harness;
 }
 
 void

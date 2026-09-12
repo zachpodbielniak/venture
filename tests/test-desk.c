@@ -300,6 +300,125 @@ test_desk_skills_expand(
 	g_assert_true(saw_chase);
 }
 
+/* --- The harness ----------------------------------------------------------- */
+
+/*
+ * The harness is what sits between a person typing and the model: it
+ * knows where the cursor is, what can be named there, and what an @
+ * reference means once it is sent.
+ */
+static void
+test_desk_harness_completes_and_names(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureAiHarness) harness = NULL;
+	g_autoptr(GPtrArray) types = NULL;
+	g_autoptr(GPtrArray) records = NULL;
+	g_autofree gchar *described = NULL;
+	g_autofree gchar *named = NULL;
+	g_autofree gchar *expanded = NULL;
+	g_autofree gchar *command = NULL;
+	gint64 ticket_id;
+	guint start;
+	guint end;
+	gboolean saw;
+	guint i;
+
+	(void)user_data;
+
+	harness = venture_ai_harness_new(fixture->context);
+
+	{
+		g_autoptr(VentureTicket) ticket = NULL;
+
+		ticket = venture_ticket_new();
+		g_object_set(ticket, "title", "Payments fail on renewal",
+		             "status", VENTURE_TICKET_STATUS_TRIAGE, NULL);
+		file_under_default(fixture, ticket);
+		g_assert_true(venture_database_save(fixture->database,
+			VENTURE_ENTITY(ticket), NULL, NULL));
+		ticket_id = venture_entity_get_id(VENTURE_ENTITY(ticket));
+	}
+
+	/* Where the cursor is. A slash counts only at the very start; an @
+	 * or a # only at the start of a word. */
+	g_assert_cmpint(venture_ai_harness_completion_kind("/sum", 4), ==,
+	                VENTURE_HARNESS_COMPLETION_COMMAND);
+	g_assert_cmpint(venture_ai_harness_completion_kind("due 2026/09", 11), ==,
+	                VENTURE_HARNESS_COMPLETION_NONE);
+	g_assert_cmpint(venture_ai_harness_completion_kind("about @tick", 11), ==,
+	                VENTURE_HARNESS_COMPLETION_RECORD);
+	g_assert_cmpint(venture_ai_harness_completion_kind("in C# today", 4), ==,
+	                VENTURE_HARNESS_COMPLETION_NONE);
+	g_assert_cmpint(venture_ai_harness_completion_kind("read #con", 9), ==,
+	                VENTURE_HARNESS_COMPLETION_BASE);
+	g_assert_cmpint(venture_ai_harness_completion_kind("nothing here", 12), ==,
+	                VENTURE_HARNESS_COMPLETION_NONE);
+
+	/* An @ with no slash yet offers the types, and the range it replaces
+	 * is the token, not the whole line. */
+	types = venture_ai_harness_complete(harness, "about @tick", 11, NULL,
+	                                    NULL, &start, &end);
+	g_assert_nonnull(types);
+	g_assert_cmpuint(start, ==, 6);
+	g_assert_cmpuint(end, ==, 11);
+	saw = FALSE;
+
+	for (i = 0; i < types->len; i++)
+	{
+		VentureHarnessItem *item;
+
+		item = g_ptr_array_index(types, i);
+
+		if (0 == g_strcmp0(item->label, "@ticket"))
+		{
+			saw = TRUE;
+			g_assert_cmpstr(item->insert, ==, "@ticket/");
+		}
+	}
+
+	g_assert_true(saw);
+
+	/* Past the slash it searches that type by name. */
+	records = venture_ai_harness_complete(harness, "@ticket/renewal", 15,
+	                                      NULL, NULL, NULL, NULL);
+	g_assert_nonnull(records);
+	g_assert_cmpuint(records->len, ==, 1);
+	g_assert_cmpstr(((VentureHarnessItem *)g_ptr_array_index(records, 0))->name,
+	                ==, "Payments fail on renewal");
+
+	/* One record, written out the way a model is shown it. */
+	described = venture_ai_harness_describe_record(harness, "ticket",
+	                                               ticket_id);
+	g_assert_nonnull(described);
+	g_assert_nonnull(strstr(described, "Payments fail on renewal"));
+	g_assert_nonnull(strstr(described, "- title:"));
+
+	/* The spine is machinery and stays out of it. */
+	g_assert_null(strstr(described, "- uuid:"));
+	g_assert_null(strstr(described, "- version:"));
+
+	/* A mention in a sentence resolves; the sentence is left alone. */
+	named = g_strdup_printf("what is left on @ticket/%" G_GINT64_FORMAT "?",
+	                        ticket_id);
+	expanded = venture_ai_harness_expand_mentions(harness, named, NULL, NULL);
+	g_assert_nonnull(expanded);
+	g_assert_nonnull(strstr(expanded, "Payments fail on renewal"));
+
+	/* Nothing named, nothing to say. */
+	g_assert_null(venture_ai_harness_expand_mentions(harness,
+		"what is left on this?", NULL, NULL));
+	g_assert_null(venture_ai_harness_expand_mentions(harness,
+		"mail me at zach@example.org", NULL, NULL));
+
+	/* And a command still expands through the harness, skills first. */
+	command = venture_ai_harness_expand(harness, "/summarise");
+	g_assert_nonnull(command);
+	g_assert_nonnull(strstr(command, "Summarise what I am looking at"));
+	g_assert_null(venture_ai_harness_expand(harness, "not a command"));
+}
+
 /* --- Modules --------------------------------------------------------------- */
 
 /*
@@ -1422,6 +1541,8 @@ main(
 	g_test_add(path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)
 
 	ADD("/desk/skills-expand", test_desk_skills_expand);
+	ADD("/desk/harness-completes-and-names",
+	    test_desk_harness_completes_and_names);
 	ADD("/desk/inbox-is-fed-by-the-audit-trail",
 	    test_desk_inbox_is_fed_by_the_audit_trail);
 	ADD("/desk/broadcast-respects-roles", test_desk_broadcast_respects_roles);

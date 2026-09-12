@@ -2156,6 +2156,144 @@ body.ai-resizing { user-select: none; cursor: ew-resize; }
 	50%      { opacity: 0; }
 }
 
+/* --- Pickers ---------------------------------------------------------------- */
+
+/*
+ * A select's popup is drawn by the operating system and no stylesheet
+ * reaches it. The native control stays -- it is what the form posts --
+ * and this is drawn over it.
+ */
+.picker { position: relative; display: inline-flex; min-width: 0; }
+.picker-native { position: absolute; opacity: 0; pointer-events: none;
+                 width: 100%; height: 100%; }
+
+.picker-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-3);
+	width: 100%;
+	min-width: 0;
+	padding: 8px 10px;
+	border: 1px solid var(--border-strong);
+	background: var(--surface-sunken);
+	color: var(--text);
+	font: inherit;
+	font-size: 13.5px;
+	text-align: left;
+	cursor: pointer;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.picker-button::after {
+	content: "";
+	flex: none;
+	width: 6px;
+	height: 6px;
+	border-right: 1.5px solid var(--text-muted);
+	border-bottom: 1.5px solid var(--text-muted);
+	transform: translateY(-2px) rotate(45deg);
+}
+
+.picker-button:hover { border-color: var(--text); }
+.picker.open .picker-button { border-color: var(--accent); }
+
+.picker-panel {
+	/* Positioned against the viewport by the script, to escape the
+	 * card that would otherwise clip it. */
+	position: fixed;
+	max-width: 420px;
+	z-index: 60;
+	background: var(--surface-raised);
+	border: 1px solid var(--border-strong);
+	box-shadow: var(--ring);
+}
+
+.picker-panel[hidden] { display: none; }
+.picker-panel { display: flex; flex-direction: column; overflow: hidden; }
+
+.picker-filter {
+	width: 100%;
+	border: 0;
+	border-bottom: 1px solid var(--border);
+	background: transparent;
+	font-size: 13px;
+	padding: 7px 10px;
+}
+
+.picker-filter:focus { box-shadow: none; border-color: var(--accent); }
+
+.picker-list { overflow-y: auto; }
+
+.picker-option {
+	padding: 6px 10px;
+	font-size: 13px;
+	cursor: pointer;
+	white-space: nowrap;
+	border-left: 2px solid transparent;
+}
+
+.picker-option[hidden] { display: none; }
+.picker-option.selected { color: var(--accent); }
+.picker-option.active { background: var(--surface-hover);
+                        border-left-color: var(--accent); }
+
+/* The record to link to, searched rather than typed. */
+.record-pick { position: relative; display: inline-flex; align-items: center;
+               gap: var(--space-2); }
+.record-pick .record-id { width: 5.5em; }
+
+/* Once the search is wired the number box is machinery, not a control. */
+.record-pick.searchable .record-id { position: absolute; opacity: 0;
+                                     pointer-events: none; width: 1px; }
+
+.record-search { width: 18em; max-width: 100%; }
+
+.record-chosen {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--accent);
+	max-width: 16em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.record-results {
+	position: fixed;
+	min-width: 22em;
+	max-width: 32em;
+	z-index: 60;
+	overflow-y: auto;
+	background: var(--surface-raised);
+	border: 1px solid var(--border-strong);
+	box-shadow: var(--ring);
+}
+
+.record-results[hidden] { display: none; }
+.record-results { overflow-y: auto; }
+
+.record-result {
+	display: flex;
+	gap: var(--space-3);
+	padding: 6px 10px;
+	font-size: 13px;
+	cursor: pointer;
+	border-left: 2px solid transparent;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.record-result:hover { background: var(--surface-hover);
+                       border-left-color: var(--accent); }
+.record-result-id { font-family: var(--font-mono); font-size: 11px;
+                    color: var(--text-faint); flex: none; }
+
 /* ==========================================================================
    Request feedback
    ========================================================================== */

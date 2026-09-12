@@ -47,17 +47,39 @@ This rides on the turn only. The stored transcript keeps one line, =[While viewi
 
 While a conversation is empty the panel offers a few questions for the page: a ticket wants summarising and answering, the inbox wants triage, the home page wants "what needs my attention today", and every page offers "what can you do, and what needs my approval". Clicking one sends it, with the page as context. They make way for the conversation once there is one.
 
-** Skills
+** The harness
 
-A skill is a saved way of asking: a slash trigger and the prompt it stands for. Type =/= at the start of the composer and a menu opens with every skill and command, filtered as you type; arrows move, =Enter= or =Tab= picks, =Escape= closes. "/reply firm" sends the whole paragraph about drafting a reply, with "firm" as the instruction; the record on the screen is the context, the way every question carries it. The transcript keeps what you typed.
+The composer is a harness in ai-glib's sense, the same one =ai-tui= drives in a terminal: a resource registry that finds command files, a command set that resolves a typed line against them, and a completion context that answers "what could this be" for the text at the cursor. What differs here is the front end — a panel rather than a terminal — and what an =@= names.
 
-Eight are built in: =/summarise=, =/reply=, =/triage=, =/next=, =/standup=, =/weekly=, =/explain=, =/chase=. Your own are =ai_skill= records — name, trigger, one-line description, prompt, enabled — reachable from the *Skills* entry in the sidebar, the *Manage skills…* row at the bottom of the menu, the API and =venturectl=. In a prompt, ={input}= is replaced by whatever follows the trigger; without it the input is appended as instructions. A record whose trigger matches a built-in replaces it, which is how a house style overrides the stock wording. A disabled record is invisible.
+Three sigils, each answering a different question you have mid-sentence:
 
-The menu also lists the composer's own commands — =/new=, =/threads=, =/export=, =/close=, =/help= — which run at once and never reach the model.
+| =/command= | what can I ask for?  | commands, from here and from disk |
+| =@record=  | which one do I mean? | a ticket, a release, an incident  |
+| =#base=    | what should it read? | a knowledge base                  |
 
-** Naming a knowledge base
+A menu opens as you type. Arrows move, =Enter= or =Tab= picks, =Escape= closes. The *Harness* page in the sidebar lists everything the composer knows and where each piece came from, which is how you answer "why does =/release= do that" — the answer is nearly always two files of the same name, one shadowing the other.
 
-Type =#= and a menu lists the knowledge bases you may read, by slug, with their names and descriptions; pick one and =#slug= lands in the box. The rest works as before: the passages retrieved from that base ride ahead of the question. The menu opens for a =#= at the start of a word only, so "C#" and "issue#3" leave it shut.
+*** Commands
+
+Eight are built in: =/summarise=, =/reply=, =/triage=, =/next=, =/standup=, =/weekly=, =/explain=, =/chase=. They lean on the page context every question carries, so =/summarise= on a ticket means that ticket.
+
+Your own are =ai_skill= records — name, trigger, one-line description, prompt, enabled — reachable from the *Harness* page, the API and =venturectl=. In a prompt, ={input}= is replaced by whatever follows the trigger; without it the input is appended as instructions. A record whose trigger matches a built-in replaces it, which is how a house style overrides the stock wording. A disabled record is invisible.
+
+Beyond those, the harness reads the directories every other agent tool already uses: =~/.claude/commands=, =~/.config/ai-glib/commands=, =.agents/skills= and their project-local equivalents. A markdown file with a =description= in its frontmatter is a slash command; =$ARGUMENTS= in the body takes what follows the trigger, and a body without it still takes them, appended as instructions. Commands an operator wrote for a terminal agent are not written again here. Precedence is: this install's skills, then project files, then your home directory.
+
+A command body's =!`cmd`= shell escape is *never* run. ai-glib requires a file to opt in with =shell: true=; this turns it off outright, because those directories are shared with every other tool on the machine and this process answers a network port.
+
+The menu also lists the panel's own commands — =/new=, =/threads=, =/export=, =/close=, =/help= — which run at once and never reach the model.
+
+*** Naming a record
+
+Type =@= and the menu offers the record types you may read; type past the slash and it searches that type. =@ticket/12=, =@release/4=, =@incident/2=. The record's fields go to the model ahead of the question, the same rendering the page context uses, so a conversation about the software factory can name what it is about instead of describing it.
+
+The text is left alone: you wrote =@ticket/12= and the transcript says so a month later. Naming the same record twice in one question reads it once. A type you may not open is not offered and not read — the harness asks the web layer, which is where that policy lives.
+
+*** Naming a knowledge base
+
+Type =#= and the menu lists the knowledge bases you may read, by slug. The passages retrieved from that base ride ahead of the question. The menu opens for a =#= at the start of a word only, so "C#" and "issue#3" leave it shut — and a =/= opens the command menu only at the very start of the composer, so a date or a path does not.
 
 ** The composer
 

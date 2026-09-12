@@ -1937,16 +1937,21 @@ test_auth_chat_stream_token_is_one_shot(
 }
 
 /*
- * The composer's menus are fed by one endpoint: the skills, built in and
- * stored, and the knowledge bases this person may read, by slug.
+ * The composer's menus are fed by one endpoint, and what it offers is the
+ * harness's answer for the text at the cursor: a command, a record type,
+ * a record of that type, or a knowledge base.
  */
 static void
-test_auth_chat_complete_lists_skills_and_bases(
+test_auth_chat_complete_is_the_harness(
 	ServerFixture	*fixture,
 	gconstpointer	 user_data
 ){
 	g_autofree gchar *cookie = NULL;
-	g_autofree gchar *body = NULL;
+	g_autofree gchar *commands = NULL;
+	g_autofree gchar *types = NULL;
+	g_autofree gchar *records = NULL;
+	g_autofree gchar *bases = NULL;
+	g_autofree gchar *nothing = NULL;
 
 	server_fixture_create_user(fixture, "alice", "a-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, NULL);
@@ -1954,6 +1959,7 @@ test_auth_chat_complete_lists_skills_and_bases(
 	{
 		g_autoptr(VentureKnowledgeBase) base = NULL;
 		g_autoptr(VentureAiSkill) skill = NULL;
+		g_autoptr(VentureTicket) ticket = NULL;
 
 		base = venture_knowledge_base_new();
 		g_object_set(base, "name", "Contracts", "slug", "contracts",
@@ -1967,17 +1973,54 @@ test_auth_chat_complete_lists_skills_and_bases(
 		             "enabled", TRUE, NULL);
 		g_assert_true(venture_database_save(fixture->database,
 			VENTURE_ENTITY(skill), NULL, NULL));
+
+		ticket = venture_ticket_new();
+		g_object_set(ticket, "title", "Payments fail on renewal", NULL);
+		g_assert_true(venture_database_save(fixture->database,
+			VENTURE_ENTITY(ticket), NULL, NULL));
 	}
 
 	cookie = server_fixture_login(fixture, "alice", "a-long-password");
 
+	/* A slash at the start of the composer offers commands, this
+	 * install's own among them. */
 	g_assert_cmpuint(server_fixture_request(fixture, "GET",
-		"/ui/chat/complete", cookie, NULL, &body, NULL), ==, SOUP_STATUS_OK);
-	g_assert_nonnull(strstr(body, "\"trigger\" : \"summarise\""));
-	g_assert_nonnull(strstr(body, "\"trigger\" : \"chase\""));
-	g_assert_nonnull(strstr(body, "\"name\" : \"Chase, our way\""));
-	g_assert_nonnull(strstr(body, "\"slug\" : \"contracts\""));
-	g_assert_nonnull(strstr(body, "\"description\" : \"Signed agreements\""));
+		"/ui/chat/complete?buffer=%2F&cursor=1", cookie, NULL, &commands,
+		NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(commands, "\"kind\" : \"command\""));
+	g_assert_nonnull(strstr(commands, "\"/summarise\""));
+	g_assert_nonnull(strstr(commands, "Chase, our way"));
+
+	/* An @ offers record types. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/ui/chat/complete?buffer=about%20%40tick&cursor=11", cookie, NULL,
+		&types, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(types, "\"kind\" : \"record\""));
+	g_assert_nonnull(strstr(types, "\"@ticket\""));
+	g_assert_nonnull(strstr(types, "\"@ticket/\""));
+
+	/* And past the slash it searches that type. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/ui/chat/complete?buffer=%40ticket%2Frenewal&cursor=15", cookie,
+		NULL, &records, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(records, "Payments fail on renewal"));
+	g_assert_nonnull(strstr(records, "\"@ticket/1\""));
+
+	/* A # offers the knowledge bases. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/ui/chat/complete?buffer=%23&cursor=1", cookie, NULL, &bases, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(bases, "\"kind\" : \"base\""));
+	g_assert_nonnull(strstr(bases, "\"#contracts\""));
+
+	/*
+	 * A slash that is not the first thing typed is a date or a path.
+	 * Completing it would cover what is being written with a menu.
+	 */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/ui/chat/complete?buffer=due%202026%2F09&cursor=11", cookie, NULL,
+		&nothing, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(nothing, "\"kind\" : \"none\""));
 }
 
 /*
@@ -3554,9 +3597,9 @@ main(
 	g_test_add("/auth/chat-stream-token-is-one-shot", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_chat_stream_token_is_one_shot,
 	           server_fixture_tear_down);
-	g_test_add("/auth/chat-complete-lists-skills-and-bases", ServerFixture,
+	g_test_add("/auth/chat-complete-is-the-harness", ServerFixture,
 	           NULL, server_fixture_set_up,
-	           test_auth_chat_complete_lists_skills_and_bases,
+	           test_auth_chat_complete_is_the_harness,
 	           server_fixture_tear_down);
 	g_test_add("/auth/chat-reply-rendering", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_chat_reply_rendering,

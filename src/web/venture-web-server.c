@@ -1219,7 +1219,7 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"kb"
 	},
 	{
-		"/e/ai_skill", "Skills",
+		"/harness", "Harness",
 		VENTURE_ICON(
 			"<path d=\"M13 3l-6 10h5l-1 8 6-10h-5z\"/>"
 		),
@@ -7452,10 +7452,13 @@ venture_web_append_ticket_relations(
 		g_string_append(content, "</option>");
 	}
 
+	/* Searched rather than typed, the same as the link form below it. */
 	g_string_append(content,
 		"</select> "
+		"<span class=\"record-pick\" data-record-pick "
+		"data-type-field=\"subject_type\">"
 		"<input type=\"number\" name=\"subject_id\" placeholder=\"id\" "
-		"min=\"1\" required> "
+		"min=\"1\" required></span> "
 		"<input type=\"text\" name=\"note\" placeholder=\"why (optional)\"> "
 		"<button class=\"btn\" type=\"submit\">Relate</button></form>");
 
@@ -7637,10 +7640,22 @@ venture_web_append_links(
 		g_string_append(content, "</option>");
 	}
 
+	/*
+	 * The target is searched, not typed. Asking for a record's id means
+	 * opening the list in another tab to go and read one off it, and the
+	 * number that comes back is unverifiable until the link is made: a
+	 * mistyped digit silently links to a different record that exists.
+	 *
+	 * The number input is still what the form posts, and it still works
+	 * on its own with scripting off; the script puts a search box in
+	 * front of it that fills it in.
+	 */
 	g_string_append(content,
 		"</select> "
+		"<span class=\"record-pick\" data-record-pick "
+		"data-type-field=\"target_type\">"
 		"<input type=\"number\" name=\"target_id\" placeholder=\"id\" "
-		"min=\"1\" required> "
+		"min=\"1\" required></span> "
 		"<input type=\"text\" name=\"note\" placeholder=\"why (optional)\"> "
 		"<button class=\"btn\" type=\"submit\">Link</button></form>");
 
@@ -12468,16 +12483,9 @@ venture_web_chat_describe_context(
 	    (NULL != parts[2]) && (NULL == parts[3]) &&
 	    (0 != g_strcmp0(parts[2], "new")))
 	{
-		g_autoptr(VentureEntity) record = NULL;
-		g_autoptr(JsonNode) node = NULL;
 		g_autoptr(GError) error = NULL;
-		g_autofree gchar *name = NULL;
-		JsonObject *object;
-		GList *members;
-		GList *m;
+		g_autofree gchar *described = NULL;
 		GType type;
-		gint64 id;
-		guint shown;
 
 		type = venture_entity_registry_lookup(
 			venture_context_get_entity_registry(self->context), parts[1]);
@@ -12489,73 +12497,23 @@ venture_web_chat_describe_context(
 		                                  VENTURE_USER_ROLE_VIEWER, &error))
 			return NULL;
 
-		id = g_ascii_strtoll(parts[2], NULL, 10);
-		record = venture_database_get(
-			venture_context_get_database(self->context), type, id, &error);
+		/*
+		 * The harness writes the record out. It is the one place a
+		 * record is rendered for a model -- an @ mention goes through
+		 * the same call -- so the page you are looking at and the
+		 * record you named cannot describe the same ticket
+		 * differently.
+		 */
+		described = venture_ai_harness_describe_record(
+			venture_context_get_ai_harness(self->context), parts[1],
+			g_ascii_strtoll(parts[2], NULL, 10));
 
-		if (NULL == record)
+		if (NULL == described)
 			return NULL;
 
-		name = venture_entity_get_display_name(record);
 		g_string_append_printf(out,
-			"The operator is looking at the %s record #%" G_GINT64_FORMAT
-			" (\"%s\", at %s). When they say \"this\" they mean it. "
-			"Its fields:\n", parts[1], id,
-			(NULL != name) ? name : "", path);
-
-		node = venture_serializable_to_json(VENTURE_SERIALIZABLE(record),
-		                                    FALSE);
-		object = json_node_get_object(node);
-		members = json_object_get_members(object);
-		shown = 0;
-
-		for (m = members; NULL != m; m = m->next)
-		{
-			g_autofree gchar *rendered = NULL;
-			JsonNode *value;
-
-			if (venture_web_field_is_machinery(m->data))
-				continue;
-
-			value = json_object_get_member(object, m->data);
-
-			if ((NULL == value) || JSON_NODE_HOLDS_NULL(value))
-				continue;
-
-			rendered = venture_web_json_to_display(value);
-
-			if (venture_string_is_empty(rendered))
-				continue;
-
-			/* A long text field is cut: the model has venture_get for
-			 * the rest, and the point here is orientation. */
-			if (strlen(rendered) > 600)
-			{
-				g_autofree gchar *cut = NULL;
-
-				cut = venture_truncate(rendered, 600);
-				g_string_append_printf(out, "- %s: %s\n",
-				                       (const gchar *)m->data, cut);
-			}
-			else
-			{
-				g_string_append_printf(out, "- %s: %s\n",
-				                       (const gchar *)m->data, rendered);
-			}
-
-			shown++;
-
-			if (out->len > 3000)
-			{
-				g_string_append(out, "- (more fields not shown)\n");
-				break;
-			}
-		}
-
-		g_list_free(members);
-
-		if (0 == shown)
-			g_string_append(out, "- (no fields set)\n");
+			"The operator is looking at the %s (at %s). When they say "
+			"\"this\" they mean it.\n", described, path);
 
 		return g_string_free(g_steal_pointer(&out), FALSE);
 	}
@@ -13054,6 +13012,378 @@ venture_web_ui_chat_thread_delete(
 }
 
 /*
+ * GET /harness - what the assistant can be asked for, and from where.
+ *
+ * Three things live here that used to have no home: the skills an
+ * operator writes as records, the command files this machine already has
+ * for other agent tools, and the directories those are read from. Seeing
+ * them in one list is how somebody answers "why does /release do that" --
+ * the answer is nearly always that two files of the same name exist and
+ * one is shadowing the other.
+ */
+static void
+venture_web_harness_append_section(
+	GString		*content,
+	const gchar	*title,
+	const gchar	*blurb,
+	GPtrArray	*items
+){
+	guint i;
+
+	g_string_append(content, "<div class=\"card mb-4\"><div class=\"card-head\">"
+	                         "<h2>");
+	venture_html_escape_append(content, title);
+	g_string_append(content, "</h2></div>");
+
+	if ((NULL == items) || (0 == items->len))
+	{
+		g_string_append(content, "<div class=\"card-body\">"
+		                         "<p class=\"muted mb-0\">");
+		venture_html_escape_append(content, blurb);
+		g_string_append(content, "</p></div></div>");
+		return;
+	}
+
+	g_string_append(content, "<div class=\"table-wrap\">"
+	                         "<table class=\"data\"><thead><tr>"
+	                         "<th>Name</th><th>What it does</th>"
+	                         "<th>From</th></tr></thead><tbody>");
+
+	for (i = 0; i < items->len; i++)
+	{
+		VentureHarnessItem *item;
+
+		item = g_ptr_array_index(items, i);
+
+		g_string_append(content, "<tr><td><code>");
+		venture_html_escape_append(content, item->label);
+		g_string_append(content, "</code></td><td>");
+		venture_html_escape_append(content, item->description);
+		g_string_append(content, "</td><td><span class=\"badge\">");
+		venture_html_escape_append(content, item->origin);
+		g_string_append(content, "</span></td></tr>");
+	}
+
+	g_string_append(content, "</tbody></table></div></div>");
+}
+
+static void
+venture_web_harness_append_paths(
+	GString		*content,
+	const gchar	*title,
+	gchar	       **paths
+){
+	gsize i;
+
+	g_string_append(content, "<h3 class=\"mt-4\">");
+	venture_html_escape_append(content, title);
+	g_string_append(content, "</h3><ul class=\"related\">");
+
+	for (i = 0; (NULL != paths) && (NULL != paths[i]); i++)
+	{
+		g_string_append(content, "<li><code>");
+		venture_html_escape_append(content, paths[i]);
+		g_string_append(content, "</code></li>");
+	}
+
+	if ((NULL == paths) || (NULL == paths[0]))
+		g_string_append(content, "<li class=\"muted\">None</li>");
+
+	g_string_append(content, "</ul>");
+}
+
+static HtmxResponse *
+venture_web_ui_harness(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GPtrArray) skills = NULL;
+	g_autoptr(GPtrArray) commands = NULL;
+	g_autoptr(GPtrArray) files = NULL;
+	g_autoptr(GPtrArray) agents = NULL;
+	g_autoptr(GString) content = NULL;
+	g_auto(GStrv) command_paths = NULL;
+	g_auto(GStrv) skill_paths = NULL;
+	VentureAiHarness *harness;
+	HtmxResponse *redirect;
+	guint i;
+
+	self = user_data;
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "chat");
+
+		if (NULL != gate)
+			return gate;
+	}
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+	harness = venture_context_get_ai_harness(self->context);
+	venture_ai_harness_refresh(harness);
+
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+	                       "<span class=\"eyebrow\">Assistant</span>"
+	                       "<h1>Harness</h1><span class=\"subtitle\">"
+	                       "What the assistant can be asked for: the skills "
+	                       "kept here, the command files this machine already "
+	                       "has, and what an @ can name."
+	                       "</span></div><div class=\"page-actions\">"
+	                       "<a class=\"btn btn-primary\" href=\"/e/ai_skill\">"
+	                       "Skills</a>"
+	                       "<a class=\"btn\" href=\"/e/ai_skill/new\">"
+	                       "New skill</a></div></div>");
+
+	/* This install's own, which shadow anything of the same name. */
+	{
+		g_autoptr(GPtrArray) infos = NULL;
+
+		skills = g_ptr_array_new_with_free_func(
+			(GDestroyNotify)venture_harness_item_free);
+		infos = venture_ai_skills_list(self->context, NULL);
+
+		for (i = 0; (NULL != infos) && (i < infos->len); i++)
+		{
+			VentureAiSkillInfo *info;
+			VentureHarnessItem *item;
+
+			info = g_ptr_array_index(infos, i);
+			item = g_new0(VentureHarnessItem, 1);
+			item->kind = VENTURE_HARNESS_COMPLETION_COMMAND;
+			item->insert = g_strdup_printf("/%s ", info->trigger);
+			item->label = g_strdup_printf("/%s", info->trigger);
+			item->name = g_strdup(info->name);
+			item->description = g_strdup(info->description);
+			item->origin = g_strdup(info->builtin ? "built in" : "yours");
+			g_ptr_array_add(skills, item);
+		}
+	}
+
+	venture_web_harness_append_section(content, "Skills",
+		"None yet.", skills);
+
+	files = venture_ai_harness_list(harness, AI_RESOURCE_COMMAND);
+	venture_web_harness_append_section(content, "Command files",
+		"No command files found in the directories below. A markdown file "
+		"with a description in its frontmatter becomes a slash command.",
+		files);
+
+	agents = venture_ai_harness_list(harness, AI_RESOURCE_AGENT);
+	venture_web_harness_append_section(content, "Agents",
+		"No agent files found. These are read but not yet dispatched from "
+		"the web composer.", agents);
+
+	commands = venture_ai_harness_list(harness, AI_RESOURCE_SKILL);
+	venture_web_harness_append_section(content, "Skill files",
+		"No skill files found.", commands);
+
+	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
+	                         "<h2>Where these come from</h2></div>"
+	                         "<div class=\"card-body\">"
+	                         "<p class=\"muted\">Read in order; a project "
+	                         "directory beats your home directory, and a skill "
+	                         "kept here beats both.</p>");
+
+	command_paths = venture_ai_harness_search_paths(harness,
+	                                                AI_RESOURCE_COMMAND);
+	skill_paths = venture_ai_harness_search_paths(harness, AI_RESOURCE_SKILL);
+	venture_web_harness_append_paths(content, "Commands", command_paths);
+	venture_web_harness_append_paths(content, "Skills", skill_paths);
+	g_string_append(content, "</div></div>");
+
+	/* What an @ reaches, said plainly rather than left to be discovered. */
+	g_string_append(content, "<div class=\"card mt-4\">"
+	                         "<div class=\"card-head\">"
+	                         "<h2>Naming a record</h2></div>"
+	                         "<div class=\"card-body\">"
+	                         "<p>Type <code>@</code> in the composer to name "
+	                         "something the question is about: "
+	                         "<code>@ticket/12</code>, <code>@release/4</code>, "
+	                         "<code>@incident/2</code>. The menu offers the "
+	                         "record types you may read, then searches that "
+	                         "type. The record's fields go to the model ahead "
+	                         "of the question; the transcript keeps the "
+	                         "<code>@</code> token.</p>"
+	                         "<p class=\"mb-0 muted\">A <code>#</code> names a "
+	                         "knowledge base to read from instead.</p>"
+	                         "</div></div>");
+
+	return venture_web_html_response(
+		venture_web_page(self, request, "/harness", "Harness", content->str),
+		200);
+}
+
+/*
+ * GET /ui/records/search - records of one type, by name.
+ *
+ * What the link picker searches. Deliberately not the generic list API:
+ * that returns whole records, and this is a menu that needs an id and
+ * something to read. The same per-type permission the list page applies
+ * is applied here, so a search cannot be used to enumerate a type the
+ * caller may not open.
+ */
+static HtmxResponse *
+venture_web_ui_records_search(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) found = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	const gchar *type_name;
+	const gchar *text;
+	GType type;
+	guint i;
+
+	self = user_data;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	type_name = htmx_request_get_query_param(request, "type");
+	text = htmx_request_get_query_param(request, "q");
+
+	type = venture_entity_registry_lookup(
+		venture_context_get_entity_registry(self->context), type_name);
+
+	if (G_TYPE_INVALID == type)
+	{
+		venture_entity_registry_set_unknown_type_error(
+			venture_context_get_entity_registry(self->context), type_name,
+			&error);
+		return venture_web_error_response(error);
+	}
+
+	if (!venture_web_require_for_type(self, principal, type,
+	                                  VENTURE_USER_ROLE_VIEWER, &error))
+		return venture_web_error_response(error);
+
+	query = venture_query_new(type);
+
+	/* All digits is an id: somebody who knows the number should not have
+	 * to find the record by its name to use it. */
+	if (!venture_string_is_empty(text))
+	{
+		gboolean numeric;
+		gsize c;
+
+		numeric = TRUE;
+
+		for (c = 0; '\0' != text[c]; c++)
+		{
+			if (!g_ascii_isdigit(text[c]))
+			{
+				numeric = FALSE;
+				break;
+			}
+		}
+
+		if (numeric)
+			venture_query_add_filter_int(query, "id", VENTURE_FILTER_OP_EQ,
+			                             g_ascii_strtoll(text, NULL, 10),
+			                             NULL);
+		else
+			venture_query_set_search(query, text);
+	}
+
+	venture_query_set_limit(query, 12);
+	found = venture_database_find(venture_context_get_database(self->context),
+	                              query, &error);
+
+	if (NULL == found)
+		return venture_web_error_response(error);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "items");
+	json_builder_begin_array(builder);
+
+	for (i = 0; i < found->len; i++)
+	{
+		VentureEntity *record;
+		g_autofree gchar *label = NULL;
+
+		record = g_ptr_array_index(found, i);
+		label = venture_entity_get_display_name(record);
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "id");
+		json_builder_add_int_value(builder, venture_entity_get_id(record));
+		json_builder_set_member_name(builder, "label");
+		json_builder_add_string_value(builder,
+			!venture_string_is_empty(label) ? label : "(untitled)");
+		json_builder_end_object(builder);
+	}
+
+	json_builder_end_array(builder);
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(node, 200);
+}
+
+/* The completion kind, as the client names it. */
+static const gchar *
+venture_web_harness_kind_name(VentureHarnessCompletion kind)
+{
+	switch (kind)
+	{
+	case VENTURE_HARNESS_COMPLETION_COMMAND:
+		return "command";
+
+	case VENTURE_HARNESS_COMPLETION_RECORD:
+		return "record";
+
+	case VENTURE_HARNESS_COMPLETION_BASE:
+		return "base";
+
+	default:
+		return "none";
+	}
+}
+
+/*
+ * Whether the person asking may see a record type.
+ *
+ * The harness asks through this rather than deciding for itself: which
+ * role a type needs is this file's policy, and a second copy of it in the
+ * AI layer is a second place for it to go stale.
+ */
+typedef struct
+{
+	VentureWebServer	*self;
+	VentureAuthPrincipal	*principal;
+} VentureWebHarnessAllow;
+
+static gboolean
+venture_web_harness_allows(
+	GType		 entity_type,
+	gpointer	 user_data
+){
+	VentureWebHarnessAllow *allow = user_data;
+
+	return venture_web_require_for_type(allow->self, allow->principal,
+	                                    entity_type, VENTURE_USER_ROLE_VIEWER,
+	                                    NULL);
+}
+
+/*
  * GET /ui/chat/complete - what the composer's menus offer.
  *
  * The skills, built in and stored, for the / menu; the knowledge bases
@@ -13071,10 +13401,17 @@ venture_web_ui_chat_complete(
 ){
 	VentureWebServer *self;
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
-	g_autoptr(GPtrArray) skills = NULL;
+	g_autoptr(GPtrArray) items = NULL;
 	g_autoptr(JsonBuilder) builder = NULL;
 	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(GError) error = NULL;
+	VentureWebHarnessAllow allow;
+	VentureAiHarness *harness;
+	const gchar *buffer;
+	const gchar *cursor_text;
+	guint cursor;
+	guint start;
+	guint end;
 	guint i;
 
 	self = user_data;
@@ -13093,78 +13430,67 @@ venture_web_ui_chat_complete(
 	                          &error))
 		return venture_web_error_response(error);
 
-	skills = venture_ai_skills_list(self->context, &error);
+	buffer = htmx_request_get_query_param(request, "buffer");
+	cursor_text = htmx_request_get_query_param(request, "cursor");
 
-	if (NULL == skills)
-		return venture_web_error_response(error);
+	if (NULL == buffer)
+		buffer = "";
+
+	cursor = (NULL != cursor_text)
+		? (guint)g_ascii_strtoull(cursor_text, NULL, 10)
+		: (guint)strlen(buffer);
+
+	harness = venture_context_get_ai_harness(self->context);
+
+	/*
+	 * Rescanned on every open. A command file written a minute ago
+	 * belongs in the menu, and the alternative is restarting a server to
+	 * pick up a markdown file.
+	 */
+	venture_ai_harness_refresh(harness);
+
+	allow.self = self;
+	allow.principal = principal;
+	start = 0;
+	end = 0;
+	items = venture_ai_harness_complete(harness, buffer, cursor,
+	                                    venture_web_harness_allows, &allow,
+	                                    &start, &end);
 
 	builder = json_builder_new();
 	json_builder_begin_object(builder);
 
-	json_builder_set_member_name(builder, "skills");
+	json_builder_set_member_name(builder, "kind");
+	json_builder_add_string_value(builder,
+		venture_web_harness_kind_name(
+			venture_ai_harness_completion_kind(buffer, cursor)));
+
+	json_builder_set_member_name(builder, "start");
+	json_builder_add_int_value(builder, start);
+	json_builder_set_member_name(builder, "end");
+	json_builder_add_int_value(builder, end);
+
+	json_builder_set_member_name(builder, "items");
 	json_builder_begin_array(builder);
 
-	for (i = 0; i < skills->len; i++)
+	for (i = 0; (NULL != items) && (i < items->len); i++)
 	{
-		VentureAiSkillInfo *skill;
+		VentureHarnessItem *item;
 
-		skill = g_ptr_array_index(skills, i);
+		item = g_ptr_array_index(items, i);
+
 		json_builder_begin_object(builder);
-		json_builder_set_member_name(builder, "trigger");
-		json_builder_add_string_value(builder, skill->trigger);
+		json_builder_set_member_name(builder, "insert");
+		json_builder_add_string_value(builder, item->insert);
+		json_builder_set_member_name(builder, "label");
+		json_builder_add_string_value(builder, item->label);
 		json_builder_set_member_name(builder, "name");
-		json_builder_add_string_value(builder, skill->name);
+		json_builder_add_string_value(builder, item->name);
 		json_builder_set_member_name(builder, "description");
-		json_builder_add_string_value(builder, skill->description);
-		json_builder_set_member_name(builder, "builtin");
-		json_builder_add_boolean_value(builder, skill->builtin);
+		json_builder_add_string_value(builder, item->description);
+		json_builder_set_member_name(builder, "origin");
+		json_builder_add_string_value(builder, item->origin);
 		json_builder_end_object(builder);
-	}
-
-	json_builder_end_array(builder);
-
-	json_builder_set_member_name(builder, "bases");
-	json_builder_begin_array(builder);
-
-	if ((G_TYPE_INVALID != venture_entity_registry_lookup(
-		venture_context_get_entity_registry(self->context),
-		"knowledge_base")) &&
-	    venture_web_require_for_type(self, principal,
-	                                 VENTURE_TYPE_KNOWLEDGE_BASE,
-	                                 VENTURE_USER_ROLE_VIEWER, NULL))
-	{
-		g_autoptr(VentureQuery) query = NULL;
-		g_autoptr(GPtrArray) bases = NULL;
-
-		query = venture_query_new(VENTURE_TYPE_KNOWLEDGE_BASE);
-		bases = venture_database_find(
-			venture_context_get_database(self->context), query, NULL);
-
-		for (i = 0; (NULL != bases) && (i < bases->len); i++)
-		{
-			VentureEntity *base;
-			g_autofree gchar *slug = NULL;
-			g_autofree gchar *name = NULL;
-			g_autofree gchar *description = NULL;
-
-			base = g_ptr_array_index(bases, i);
-			g_object_get(base, "slug", &slug, "name", &name,
-			             "description", &description, NULL);
-
-			if (venture_string_is_empty(slug))
-				continue;
-
-			json_builder_begin_object(builder);
-			json_builder_set_member_name(builder, "slug");
-			json_builder_add_string_value(builder, slug);
-			json_builder_set_member_name(builder, "name");
-			json_builder_add_string_value(builder,
-				(NULL != name) ? name : slug);
-			json_builder_set_member_name(builder, "description");
-			json_builder_add_string_value(builder,
-				(NULL != description) ? description : "");
-			json_builder_end_object(builder);
-		}
 	}
 
 	json_builder_end_array(builder);
@@ -14680,17 +15006,41 @@ venture_web_ui_chat(
 	images = g_ptr_array_new_with_free_func((GDestroyNotify)g_bytes_unref);
 
 	/*
-	 * A slash and a known trigger is a skill: the model gets the prompt
-	 * it stands for, the transcript keeps what was typed. An unknown
-	 * trigger is just a question that starts with a slash.
+	 * A slash and a known command is a command: the model gets the
+	 * prompt it stands for, the transcript keeps what was typed. An
+	 * unknown one is just a question that starts with a slash.
 	 */
 	{
 		g_autofree gchar *expanded = NULL;
 
-		expanded = venture_ai_skills_expand(self->context, message);
+		expanded = venture_ai_harness_expand(
+			venture_context_get_ai_harness(self->context), message);
 
 		if (NULL != expanded)
 			g_string_assign(model_text, expanded);
+	}
+
+	/*
+	 * And an @record names something to read. The records ride ahead of
+	 * the question on this turn only; the transcript keeps the @ token,
+	 * which is shorter than the record and still says what was meant.
+	 */
+	{
+		g_autofree gchar *mentioned = NULL;
+		VentureWebHarnessAllow allow;
+
+		allow.self = self;
+		allow.principal = principal;
+		mentioned = venture_ai_harness_expand_mentions(
+			venture_context_get_ai_harness(self->context), message,
+			venture_web_harness_allows, &allow);
+
+		if (!venture_string_is_empty(mentioned))
+		{
+			g_string_prepend(model_text, "\n\n");
+			g_string_prepend(model_text, mentioned);
+			g_string_prepend(model_text, "[Named] ");
+		}
 	}
 	image_types = g_ptr_array_new_with_free_func(g_free);
 
@@ -26362,6 +26712,9 @@ venture_web_server_new(
 	                self);
 	htmx_router_get(router, "/ui/chat/thread/:id", venture_web_ui_chat_thread,
 	                self);
+	htmx_router_get(router, "/harness", venture_web_ui_harness, self);
+	htmx_router_get(router, "/ui/records/search",
+	                venture_web_ui_records_search, self);
 	htmx_router_get(router, "/ui/chat/complete", venture_web_ui_chat_complete,
 	                self);
 	htmx_router_get(router, "/ui/chat/stream/:token",

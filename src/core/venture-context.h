@@ -253,6 +253,18 @@ VentureAiService *
 venture_context_get_ai_service(VentureContext *self);
 
 /**
+ * venture_context_get_ai_harness:
+ * @self: a #VentureContext
+ *
+ * The assistant's harness: the slash commands, the completion behind the
+ * composer's menus, and the `@record` references. Built on first use.
+ *
+ * Returns: (transfer none): the harness
+ */
+VentureAiHarness *
+venture_context_get_ai_harness(VentureContext *self);
+
+/**
  * venture_context_set_kb_service:
  * @self: a #VentureContext
  * @service: (nullable): the knowledge-base service
