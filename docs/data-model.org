@@ -409,3 +409,7 @@ value would otherwise be echoed back to the browser.
 
 Deleting is soft and says so: the record is hidden and kept, because a
 deleted sale is still part of last quarter's figures.
+
+** Shipping database changes
+
+Every persistent feature also ships paired SQLite/PostgreSQL migration SQL, representative upgrade tests and documentation. See [[file:migrations.org][database migrations]] for startup ordering and the append-only history contract; field tables define the schema, while SQL carries existing data into the new behavior.

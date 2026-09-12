@@ -224,11 +224,11 @@ $(OUTDIR)/venture-assets.h: $(ASSET_FILES) | $(OUTDIR)
 
 # The model catalogue, read out of ai-glib's provider headers rather than
 # written here. See tools/venture-models.sh for why.
-AI_PROVIDER_HEADERS := $(wildcard deps/ai-glib/src/providers/*.h)
+AI_PROVIDER_HEADERS := $(wildcard $(AI_GLIB_DIR)/src/providers/*.h)
 
 $(OUTDIR)/venture-models.h: tools/venture-models.sh $(AI_PROVIDER_HEADERS) | $(OUTDIR)
 	@echo "  GEN     $@"
-	$(Q)tools/venture-models.sh deps/ai-glib/src/providers > $@
+	$(Q)tools/venture-models.sh $(AI_GLIB_DIR)/src/providers > $@
 
 # pkg-config file.
 $(OUTDIR)/venture-$(API_VERSION).pc: venture.pc.in | $(OUTDIR)
@@ -545,3 +545,10 @@ uninstall:
 	rm -f $(DESTDIR)$(MANDIR)/man1/venturectl.1
 	rm -f $(DESTDIR)$(GIRDIR)/$(GIR_FILE)
 	rm -f $(DESTDIR)$(TYPELIBDIR)/$(TYPELIB_FILE)
+
+# SQL is installed with the binary, with an atomic generator output.
+MIGRATION_FILES := $(wildcard migrations/sqlite/*.sql migrations/postgresql/*.sql)
+$(OBJDIR)/server/db/venture-migrations.o: $(OUTDIR)/venture-migration-sql.h
+$(OUTDIR)/venture-migration-sql.h: tools/venture-migrations.sh $(MIGRATION_FILES) migrations/sqlite migrations/postgresql | $(OUTDIR)
+	@echo "  GEN     $@"
+	$(Q)tools/venture-migrations.sh migrations > $@.tmp && mv $@.tmp $@

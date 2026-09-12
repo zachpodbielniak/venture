@@ -7,15 +7,9 @@
 
 #include "venture.h"
 #include "ledger/venture-ledger-private.h"
+#include "db/venture-migrations.h"
 
 #include <string.h>
-
-/*
- * The schema version this build expects. Bumped when a change needs more
- * than the automatic column addition the schema layer performs -- a data
- * backfill, a rename, a constraint that existing rows would violate.
- */
-#define VENTURE_DATABASE_SCHEMA_VERSION (1)
 
 struct _VentureDatabase
 {
@@ -1924,55 +1918,36 @@ venture_database_seed_tax_categories(
 
 gboolean
 venture_database_migrate(
-	VentureDatabase		 *self,
-	VentureEntityRegistry	 *registry,
-	GError			**error
+	VentureDatabase *self,
+	VentureEntityRegistry *registry,
+	GError **error
 ){
+	g_autoptr(GRecMutexLocker) lock = NULL;
+	g_autoptr(OrmMigrator) migrator = NULL;
+	g_autoptr(GArray) applied = NULL;
+	g_autoptr(GArray) pending = NULL;
 	gint64 organization_id;
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY_REGISTRY(registry), FALSE);
-
-	g_rec_mutex_lock(&self->lock);
-
-	if (!venture_schema_create_all(self->connection, registry, error))
+	lock = g_rec_mutex_locker_new(&self->lock);
+	if (self->transaction_depth != 0)
 	{
-		g_rec_mutex_unlock(&self->lock);
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+			"Startup migrations require an idle database connection");
 		return FALSE;
 	}
-
-	if (!orm_connection_execute(self->connection,
-		"CREATE TABLE IF NOT EXISTS venture_schema_version ("
-		"version INTEGER NOT NULL)", error))
-	{
-		g_rec_mutex_unlock(&self->lock);
+	migrator = venture_migrations_new(self->connection, self->backend, error);
+	/* Refuse changed or unknown history before touching application tables. */
+	if (migrator == NULL || !orm_migrator_status(migrator, &applied, &pending, error))
 		return FALSE;
-	}
-
-	g_rec_mutex_unlock(&self->lock);
-
-	if (0 == venture_database_get_schema_version(self))
-	{
-		g_autofree gchar *sql = NULL;
-
-		sql = g_strdup_printf(
-			"INSERT INTO venture_schema_version (version) VALUES (%d)",
-			VENTURE_DATABASE_SCHEMA_VERSION);
-
-		if (!venture_database_execute(self, sql, NULL, error))
-			return FALSE;
-	}
+	if (!venture_schema_create_all(self->connection, registry, error) ||
+		!orm_migrator_up(migrator, 0, error))
+		return FALSE;
 
 	organization_id = venture_database_seed_default_organization(self, error);
-
-	if (0 == organization_id)
+	if (organization_id == 0 || !venture_database_seed_accounts(self, organization_id, error) ||
+		!venture_database_seed_tax_categories(self, organization_id, error))
 		return FALSE;
-
-	if (!venture_database_seed_accounts(self, organization_id, error))
-		return FALSE;
-
-	if (!venture_database_seed_tax_categories(self, organization_id, error))
-		return FALSE;
-
 	return TRUE;
 }

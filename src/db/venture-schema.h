@@ -7,8 +7,8 @@
  * There is no schema file. The tables, columns, types, constraints and
  * indexes are all derived from the GObject properties of the registered
  * record types, which means a new field is a line in a field table and a new
- * record type is a registration -- never a migration written by hand and
- * never a schema that has drifted from the code.
+ * record type is a registration. Versioned backend SQL handles data upgrades
+ * and invariants beyond additive reconciliation; see docs/migrations.org.
  *
  * Column naming and types
  * -----------------------

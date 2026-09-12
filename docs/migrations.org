@@ -1,0 +1,54 @@
+#+title: Database migrations
+#+description: Backend SQL shipped with each database feature and applied at startup
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-12]
+#+updated: [2026-09-12]
+#+version: 0.6.0
+
+* Startup contract
+
+Every database feature must ship its upgrade SQL, behavior tests and documentation in the same change. The GObject field tables remain the source of truth for record columns, forms and APIs; SQL migrations express the data transformations and database-specific work that adding a property cannot express. The pinned orm-glib commit =981b7c1334165b74591d7d0ca4c9d3fe523003d3= is the latest Forgejo master checked for this change and supplies =OrmMigrator=.
+
+With =database.auto_migrate: true= (the default), startup runs migrations before seeding the application and serving requests. =venture --migrate= runs the same path and exits, even with automatic migration disabled. A failure stops startup with the database error; no server is started on a partially upgraded schema. Automatic migration disabled means the operator must run =--migrate= during deployment.
+
+The runner first validates all recorded versions, names and SHA-256 checksums, then reconciles the registered property-derived tables and columns, then applies pending SQL in increasing version order. History validation therefore refuses a changed migration or an older executable before application-schema reconciliation. The additive reconciliation is restartable but is not rolled back with a later SQL failure. Each SQL file and its =schema_migrations= history row commit together. If a later file fails, earlier completed files remain committed and the failed file remains pending for a retry.
+
+SQLite reserves the database for writing during each migration; PostgreSQL uses orm-glib's advisory lock. The connection must be idle and is held exclusively within VENTURE while migration and seeding run. Do not run competing application schema writers or an old server during an upgrade; the SQL migration locks do not make the separate property-schema reconciliation a cross-process transaction.
+
+* Authoring a database feature
+
+Add a matching pair with an unused, increasing six-digit positive version:
+
+#+begin_example
+migrations/sqlite/000002_descriptive_name.sql
+migrations/postgresql/000002_descriptive_name.sql
+#+end_example
+
+Both backends must have exactly the same filenames and versions, even when the SQL is identical. The build rejects missing counterparts, empty files, malformed names and duplicate versions. Files may contain multiple SQL statements, quoted semicolons, comments and trigger bodies: the backend executes the batch without a home-grown SQL splitter. Never put transaction control, migration-bookkeeping writes or changes to locking in a script; orm-glib owns those. Released files are immutable, including comments: fix a released migration by appending a new pair rather than editing its checksum or deleting its history.
+
+The scripts are embedded in the server archive and executable by =tools/venture-migrations.sh=. The installed server and container need no writable migration directory, working-directory convention or extra SQL installation step. Adding, editing or removing a script regenerates the embedded catalog and relinks the server; the standalone CLI does not acquire server dependencies. All files remain in the catalog permanently so history can be validated on every startup.
+
+The migration runs after additive schema reconciliation and before seeds. A backfill can therefore refer to a new field added in the same release. Do not depend on seeded account IDs or call application save validators from SQL. Modules may be disabled and their tables absent: write and test an explicit compatible schema path for that case; do not silently skip a version and mark it applied. SQL renames or type changes which conflict with current metadata require staged releases (add the new representation, migrate data, then retire the old representation); dropping a column still declared in the field table causes it to be recreated on the next reconciliation. Existing C schema repairs remain in place for older installations.
+
+For an additive feature with no data transformation, its SQL should express the intended database invariant or verify the required schema on the supported installation states, rather than inventing historical values. Do not fabricate financial events from a present-day invoice status. The initial =000001_legacy_baseline.sql= adopts existing installations and creates the legacy version marker for new ones; it preserves the marker and existing data and does not reconstruct past invoice/payment history. =schema_migrations= is the authoritative applied-script history; =venture_schema_version= remains the legacy compatibility marker.
+
+* Verification before merge
+
+Exercise a fresh database, a representative prior schema containing real rows, and a restart against the upgraded database. Verify transformed values and preservation of unrelated data, not merely the number of migration rows. Test a mid-script failure and retry, tampered and unknown history, and optional-module configurations touched by the change. Validate the SQLite and PostgreSQL SQL against disposable databases for backend-specific changes; never point destructive test fixtures at a production database.
+
+#+begin_src sh
+shellcheck tools/venture-migrations.sh
+make DEBUG=1
+make DEBUG=1 test-one T=test-migrations
+make DEBUG=1 test
+venture --state-dir /path/to/test-state --database sqlite:///path/to/test.db --migrate
+#+end_src
+
+The migration suite checks legacy adoption across reopened file connections, unchanged business data, checksum and unknown-version refusal before schema changes, transaction rollback of an entire multi-statement batch, successful retry, literal semicolon preservation and rejection inside an existing transaction. The normal database suite also exercises fresh startup. PostgreSQL requires its own disposable integration environment; compiling libpq support is not a live-backend test.
+
+The PostgreSQL case is opt-in and uses its own uniquely named schema, removing it on success:
+
+#+begin_src sh
+VENTURE_TEST_MIGRATION_POSTGRES_URI=postgres://user@127.0.0.1:5432/test_db make DEBUG=1 test-one T=test-migrations
+#+end_src

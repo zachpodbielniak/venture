@@ -731,3 +731,7 @@ than one that fails.
 - **The scanline and grain layers are `body::before` / `body::after`** at
   z-index 9000, above every overlay, pointer-events none, hidden in
   print. A new fixed overlay does not need to go above them.
+
+## Versioned database migrations
+
+Every database feature ships paired, append-only SQL in `migrations/sqlite/` and `migrations/postgresql/`, meaningful upgrade/restart/failure tests, and docs in the same change. Read `docs/migrations.org` before editing persistent fields or storage behavior. Keep the GObject field table authoritative; the SQL expresses backfills and backend-specific invariants, and runs after additive schema reconciliation but before seeds. Never edit an applied script or manage transactions/history inside it. Test representative old data and affected disabled-module configurations; do not infer historical accounting events from current status. `OrmMigrator` validates checksums and unknown versions before schema reconciliation and applies each SQL batch atomically. Build embeds the complete script history into the server. Run DEBUG build/tests and ShellCheck for generator changes.
