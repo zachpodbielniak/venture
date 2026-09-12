@@ -2540,6 +2540,10 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(report, "group_by", "string",
 		"For the categories report, the product field to group by; "
 		"defaults to genre", FALSE);
+	ai_tool_add_parameter(report, "as_of", "string",
+		"Historical cutoff as an ISO date or timestamp; include rows deleted after it", FALSE);
+	ai_tool_add_parameter(report, "organization_id", "integer",
+		"The legal entity whose financial records to report", FALSE);
 
 	get = venture_ai_make_tool(self, "venture_get",
 		"Fetch one record in full by type and id. Use this after a search "

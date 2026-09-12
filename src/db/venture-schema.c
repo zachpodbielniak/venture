@@ -290,6 +290,18 @@ venture_schema_append_index(
 
 	context = user_data;
 
+	if (0 != (flags & VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION))
+	{
+		quoted_table = venture_schema_quote_identifier(context->table);
+		quoted_column = venture_schema_quote_identifier(column);
+		index_name = g_strdup_printf("uq_%s_organization_%s", context->table, column);
+		g_ptr_array_add(context->statements,
+			g_strdup_printf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s "
+				"(\"organization_id\", %s) WHERE %s IS NOT NULL AND %s <> ''",
+				index_name, quoted_table, quoted_column, quoted_column, quoted_column));
+		return;
+	}
+
 	if (0 == (flags & VENTURE_COLUMN_FLAG_INDEXED))
 		return;
 
@@ -544,6 +556,9 @@ venture_schema_create_table(
 	}
 
 	index_sql = venture_schema_get_create_index_sql(entity_type, dialect);
+
+	if (!venture_period_constraints_migrate(connection, entity_type, error))
+		return FALSE;
 
 	for (i = 0; NULL != index_sql[i]; i++)
 	{

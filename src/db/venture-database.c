@@ -1048,6 +1048,12 @@ venture_database_save(
 	/* Source and posting share a transaction, whichever surface saved it. */
 	if (venture_ledger_wrap_source(self, entity))
 		return venture_ledger_save_source(self, entity, actor, error);
+	{
+		gboolean handled;
+		gboolean ok = venture_periods_save(self, entity, actor, &handled, error);
+		if (handled || !ok)
+			return ok;
+	}
 
 	/* Validation happens before anything is written, never after: a
 	 * half-written invalid record is worse than a rejected one. */
@@ -1118,6 +1124,12 @@ venture_database_save(
 	}
 
 	/* Likewise the validators, for the same reason. */
+	if (!venture_periods_validate_financial(self, entity, previous, error))
+	{
+		g_rec_mutex_unlock(&self->lock);
+		return FALSE;
+	}
+
 	{
 		guint v;
 
@@ -1367,6 +1379,8 @@ venture_database_delete(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_periods_check_removal(self, entity, error))
+		return FALSE;
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
@@ -1423,6 +1437,8 @@ venture_database_restore(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_periods_check_removal(self, entity, error))
+		return FALSE;
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))

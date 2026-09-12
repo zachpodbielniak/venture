@@ -1,0 +1,176 @@
+#+title: Fiscal periods and historical reports
+#+description: Organization calendars, closing controls and preserved financial totals
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-12]
+#+updated: [2026-09-12]
+
+* A calendar belongs to one organization
+
+The =periods= module requires =finance=. It owns =fiscal_year=,
+=fiscal_period= and =report_snapshot=; their tables, forms, REST resources,
+CLI commands and audit records come from field tables. Disabling =periods=
+hides those records and the =snapshot_vs_live= report together.
+
+Create a fiscal year with its organization, name, =start_at= and
+=period_length= (=monthly= or =quarterly=). The service generates twelve
+months or four quarters in the same transaction. =end_at= is the date twelve
+months after the start; supplying a different end is refused. Boundaries are
+measured from the original start, so a January 31 start does not drift after
+February. Starts are inclusive and ends exclusive.
+
+A company's calendars cannot overlap or leave gaps. Another organization
+can use the same dates independently. Saved boundaries, organization and
+year membership are immutable; calendars cannot be deleted or restored.
+Generic fiscal-year creation uses =VenturePeriodService=, so every entry
+point gets the same complete calendar.
+
+* Closing and reopening
+
+Set a fiscal period's =state= from =open= to =closed= using any ordinary
+record editor. Earlier periods must already be closed or locked. Closing a
+year requires its periods to be closed; locking a year requires its periods
+to be locked. The service stamps =closed_by= from the actor or named
+approver and =closed_at= from the clock. Those stamps cannot be supplied or
+edited by a caller.
+
+The close checklist refuses unbalanced ledger transaction batches and draft
+invoices dated in the period. Failures are collected and named together in
+the error, so fixing one does not merely reveal the next. Ledger amounts are
+summed with =VentureMoney=; currencies and organizations are not netted
+against one another.
+
+Reopening requires the named =periods.reopen= permission. Active
+administrators and owners hold it; a machine actor needs a named human
+approval with that permission. The normal audit diff records who reopened
+the period and when. The last close stamp and every earlier snapshot remain.
+A closed fiscal year must be reopened before one of its periods. A locked
+period cannot reopen or be edited.
+
+Sales, expenses, invoices, invoice lines and ledger entries are checked at
+the repository boundary. Both the old accounting date and the proposed one
+must be postable, so changing a date or organization cannot move a closed
+record out of the restriction. Delete and restore are checked too. Web
+forms, REST, CLI and approved AI proposals reach this same boundary; a
+proposal staged while a period was open is refused if approved after close.
+
+An organization without a calendar keeps its existing posting behavior.
+Once it has a calendar, an undated write or a date outside that calendar is
+refused. With the module disabled the default guard permits posting.
+
+* Reports as of a date
+
+Financial reports accept =as_of= as an ISO timestamp or a calendar date.
+A date means the end of that UTC day. The reporting =period= still selects
+the business-date range; =as_of= selects historical visibility. A row whose
+=deleted_at= is later than the cutoff is included, while a row deleted at or
+before it is excluded. Omitting =as_of= reads currently visible records.
+
+#+begin_src sh
+venturectl report pnl 2024-01 as_of=2024-01-31 organization_id=1
+venturectl report receivables 2024-01 as_of=2024-01-31 organization_id=1
+venturectl report snapshot_vs_live 2024-01 organization_id=1
+#+end_src
+
+REST accepts the same options on
+=/api/v1/reports/pnl?period=2024-01&as_of=2024-01-31&organization_id=1=.
+The report page accepts those query parameters too, and the assistant's
+report tool describes them. Exact timestamps can select an instant within a
+day; malformed cutoffs are refused rather than treated as live reports.
+
+Historical receivables exclude invoices issued after the cutoff. Payment
+dates and later audited status changes reconstruct whether an invoice was
+outstanding; soft-deleted invoice lines use the same visibility cutoff.
+This is the seam for the payments module to replace with its authoritative
+allocation history. No payment posting or settlement service is implemented
+here.
+
+* What a close preserves
+
+Closing a period generates each enabled report marked with the
+=VentureReport:financial= property and saves its exact result in a
+=report_snapshot=. Built-ins include P&L, venture and category performance,
+inventory, deductions, campaigns, pipeline, monthly series and receivables.
+The snapshot keeps the organization, fiscal period, report name, effective
+cutoff, closing actor, metrics, table and explanatory notes. Money retains
+its exact serialized representation.
+
+The cutoff is immediately before the exclusive period end, capped at the
+closing instant for a period closed early. Report generation, period state,
+audit and snapshots share one transaction. A report failure leaves the
+period open and stores no partial snapshots. Closing needs a reporting
+context; an isolated repository cannot silently omit the reports.
+
+Snapshots cannot be created, edited, deleted or restored through ordinary
+record writes. Reopening and closing again appends another set of evidence.
+The =snapshot_vs_live= report reruns the preserved periods against current
+records and lists differences, with the saved and current results beside
+one another. With no differences it has no rows. An unavailable report is
+reported in a note rather than silently declared unchanged.
+
+The cutoff is not a complete versioned database: later edits to amounts,
+classification or descriptive fields are not generally reversed. Preserve
+closed figures by keeping the period closed; use snapshots and the drift
+report when a period is reopened for correction. Historical invoice status
+without a payment date or audit evidence cannot recover missing history.
+
+* Extension points and the posting boundary
+
+=VenturePeriodGuard= is a GInterface. The database owns a registry containing
+the default calendar guard. Additional guards run in registration order and
+all must allow the date. Posting services should call this inside their own
+posting transaction, before writing any lines:
+
+#+begin_src C
+gboolean venture_period_guard_is_postable(
+    VenturePeriodGuard *self,
+    VentureDatabase *database,
+    gint64 organization_id,
+    GDateTime *date,
+    GError **error);
+
+if (!venture_period_guard_is_postable(
+        VENTURE_PERIOD_GUARD(venture_database_get_period_guard(database)),
+        database, organization_id, occurred_at, error))
+    return FALSE;
+#+end_src
+
+A refusal names the period and its state in =GError=. Closed and locked
+periods use =VENTURE_ERROR_CONFLICT=; a missing or uncovered date uses
+=VENTURE_ERROR_VALIDATION=. The registry remains available with periods off.
+This module does not post journals.
+
+=VenturePeriodCheck= is the checklist GInterface. Obtain the checklist with
+=venture_period_service_get_checklist()= and register another implementation,
+or connect to its =collect-checks= signal. The signal is =RUN_LAST=; handlers
+append checks before every collected check is run. A failing plugin check
+vetoes close without replacing the built-in checks. Financial report plugins
+set =financial= to true and consume the same =as_of= and =organization_id=
+options to participate in snapshots.
+
+* Financial identifiers
+
+Nonempty sale and expense =external_id= values are unique within an
+organization, including soft-deleted records. Empty external IDs remain
+available for manual entries. Re-importing an identity is refused; it does
+not silently create another financial row. Account codes and invoice numbers
+are also unique per organization, so two organizations may each use account
+=1000= and invoice =1=.
+
+The metadata-driven migration replaces legacy global constraints on account
+codes and invoice numbers. SQLite preserves rows, identities, references,
+indexes, triggers and its autoincrement watermark while rebuilding the
+constraint; PostgreSQL drops only the old global constraint. Startup can run
+the migration repeatedly. Existing duplicate external IDs cause migration to
+fail; it does not choose which financial record to discard.
+
+* Tests
+
+=test-periods= covers organization uniqueness, populated-schema migration,
+calendar generation and refusals, close order, reopening and audit, the
+checklist, historical reports, snapshots and the generated surfaces.
+=test-period-surfaces= exercises real HTTP forms and REST calls, the real
+CLI subprocess and the assistant's approval store, including proposals
+staged before close, locked periods, invalid cutoffs and the exclusive
+snapshot boundary. No journal posting, payments, bank matching or vendor
+bills are part of this module.

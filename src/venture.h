@@ -74,6 +74,7 @@
 #include "model/venture-venture-type.h"
 #include "model/venture-entity-registry.h"
 #include "model/venture-module.h"
+#include "periods/venture-period-records.h"
 
 /* --- Configuration ------------------------------------------------------- */
 
@@ -102,6 +103,10 @@
 #include "db/venture-schema.h"
 #include "db/venture-query.h"
 #include "db/venture-database.h"
+#include "periods/venture-period-constraints.h"
+#include "periods/venture-period-check.h"
+#include "periods/venture-period-service.h"
+#include "periods/venture-period-guard.h"
 
 #include "plugin/venture-plugin-manager.h"
 
@@ -109,6 +114,7 @@
 
 #include "report/venture-report.h"
 #include "receivables/venture-settlement-service.h"
+#include "periods/venture-period-report.h"
 
 /* The confirmation store comes first: the context owns one and names its
  * type in an accessor. */

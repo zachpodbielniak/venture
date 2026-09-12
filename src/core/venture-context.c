@@ -159,6 +159,7 @@ venture_context_new(
 	g_signal_connect_object(self->modules, "changed",
 	                        G_CALLBACK(venture_context_on_modules_changed),
 	                        self, G_CONNECT_SWAPPED);
+	venture_period_service_install(self);
 
 	return self;
 }

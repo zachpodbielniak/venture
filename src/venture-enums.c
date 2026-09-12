@@ -862,6 +862,7 @@ static const GFlagsValue venture_column_flags_values[] = {
 	VE(VENTURE_COLUMN_FLAG_SENSITIVE,   "sensitive"),
 	VE(VENTURE_COLUMN_FLAG_SEARCHABLE,  "searchable"),
 	VE(VENTURE_COLUMN_FLAG_TRANSIENT,   "transient"),
+	VE(VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION, "unique_organization"),
 	VE_END
 };
 

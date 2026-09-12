@@ -2370,6 +2370,7 @@ venture_web_api_report(
 	g_autoptr(VentureReportResult) result = NULL;
 	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonObject) report_options = json_object_new();
 	VentureReport *report;
 	const gchar *name;
 
@@ -2397,7 +2398,15 @@ venture_web_api_report(
 	if (NULL == period)
 		return venture_web_error_response(error);
 
-	result = venture_report_generate(report, self->context, period, NULL,
+	{
+		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
+		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
+		if (!venture_string_is_empty(as_of))
+			json_object_set_string_member(report_options, "as_of", as_of);
+		if (!venture_string_is_empty(organization))
+			json_object_set_int_member(report_options, "organization_id", g_ascii_strtoll(organization, NULL, 10));
+	}
+	result = venture_report_generate(report, self->context, period, report_options,
 	                                 &error);
 
 	if (NULL == result)
@@ -4837,8 +4846,13 @@ venture_web_ui_import(
 			          VENTURE_COLUMN_FLAG_TRANSIENT))
 				continue;
 
-			json_builder_set_member_name(builder,
-				venture_field_spec_get_name(spec));
+			/* The importer feeds the same underscore-keyed JSON decoder as
+			 * REST; dashed properties would silently lose external IDs. */
+			{
+				g_autofree gchar *column = venture_entity_property_to_column(
+					venture_field_spec_get_name(spec));
+				json_builder_set_member_name(builder, column);
+			}
 			json_builder_add_value(builder,
 				venture_web_csv_cell_to_json(spec, cells[c]));
 		}
@@ -4905,13 +4919,22 @@ venture_web_ui_import(
 
 	venture_auth_to_actor(principal, &actor);
 
+	/* A uniqueness refusal can happen at save, after field validation.
+	 * Keep earlier rows in this import inside the same transaction. */
+	if (!venture_database_begin(venture_context_get_database(self->context), &error))
+		return venture_web_error_response(error);
 	for (i = 0; i < built->len; i++)
 	{
 		if (!venture_database_save(
 			venture_context_get_database(self->context),
 			g_ptr_array_index(built, i), &actor, &error))
+		{
+			venture_database_rollback(venture_context_get_database(self->context));
 			return venture_web_error_response(error);
+		}
 	}
+	if (!venture_database_commit(venture_context_get_database(self->context), &error))
+		return venture_web_error_response(error);
 
 	g_string_append_printf(content,
 		"<div class=\"notice positive\">Imported %u record%s.</div>"
@@ -5394,7 +5417,9 @@ venture_web_ui_report(
 	g_autoptr(VentureReportResult) result = NULL;
 	g_autoptr(GString) content = NULL;
 	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonObject) report_options = json_object_new();
 	g_autofree gchar *rendered = NULL;
+	g_autoptr(GString) historical_suffix = g_string_new(NULL);
 	VentureReport *report;
 	HtmxResponse *redirect;
 	const gchar *name;
@@ -5432,7 +5457,15 @@ venture_web_ui_report(
 			venture_web_page(self, request, "/reports", "Bad period", body), 400);
 	}
 
-	result = venture_report_generate(report, self->context, period, NULL,
+	{
+		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
+		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
+		if (!venture_string_is_empty(as_of))
+			json_object_set_string_member(report_options, "as_of", as_of);
+		if (!venture_string_is_empty(organization))
+			json_object_set_int_member(report_options, "organization_id", g_ascii_strtoll(organization, NULL, 10));
+	}
+	result = venture_report_generate(report, self->context, period, report_options,
 	                                 &error);
 
 	if (NULL == result)
@@ -5443,6 +5476,18 @@ venture_web_ui_report(
 		                       error->message);
 		return venture_web_html_response(
 			venture_web_page(self, request, "/reports", "Error", body), 500);
+	}
+
+	{
+		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
+		if (NULL != as_of)
+		{
+			g_string_append(historical_suffix, "&amp;as_of=");
+			g_string_append_uri_escaped(historical_suffix, as_of, NULL, FALSE);
+		}
+		if (json_object_has_member(report_options, "organization_id"))
+			g_string_append_printf(historical_suffix, "&amp;organization_id=%" G_GINT64_FORMAT,
+				venture_json_object_get_int(report_options, "organization_id", 0));
 	}
 
 	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
@@ -5462,19 +5507,36 @@ venture_web_ui_report(
 		for (i = 0; NULL != periods[i]; i++)
 		{
 			g_string_append_printf(content,
-				"<a class=\"btn btn-sm%s\" href=\"/reports/%s?period=%s\">%s</a>",
+				"<a class=\"btn btn-sm%s\" href=\"/reports/%s?period=%s%s\">%s</a>",
 				(0 == g_strcmp0(requested_period, periods[i])) ? " active" : "",
-				name, periods[i], periods[i]);
+				name, periods[i], historical_suffix->str, periods[i]);
 		}
 
 		g_string_append(content, "</div>");
 	}
 
 	g_string_append_printf(content,
-		"<a class=\"btn btn-sm\" href=\"/api/v1/reports/%s?format=csv&period=%s\">"
+		"<a class=\"btn btn-sm\" href=\"/api/v1/reports/%s?format=csv&period=%s%s\">"
 		"Export CSV</a>", name,
-		(NULL != requested_period) ? requested_period : "this_month");
+		(NULL != requested_period) ? requested_period : "this_month", historical_suffix->str);
 	g_string_append(content, "</div></div>");
+
+	{
+		gboolean financial;
+		g_object_get(report, "financial", &financial, NULL);
+		if (financial)
+		{
+			g_string_append(content, "<form method=\"get\" class=\"form-grid\"><label>Period<input name=\"period\" value=\"");
+			venture_html_escape_append(content, (NULL != requested_period) ? requested_period : "this_month");
+			g_string_append(content, "\"></label><label>As of<input name=\"as_of\" placeholder=\"Live totals\" value=\"");
+			venture_html_escape_append(content, venture_json_object_get_string(report_options, "as_of", ""));
+			g_string_append(content, "\"></label>");
+			if (json_object_has_member(report_options, "organization_id"))
+				g_string_append_printf(content, "<input type=\"hidden\" name=\"organization_id\" value=\"%" G_GINT64_FORMAT "\">",
+					venture_json_object_get_int(report_options, "organization_id", 0));
+			g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
+		}
+	}
 
 	rendered = venture_report_result_render(result, VENTURE_OUTPUT_FORMAT_HTML);
 	g_string_append(content, rendered);

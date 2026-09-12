@@ -707,8 +707,7 @@ venture_confirmation_store_approve(
 		            "Look at it as it is now and stage the change again.",
 		            confirmation->summary,
 		            (NULL != drift) ? drift
-		                            : "the record changed since this was "
-		                              "staged");
+		                            : local_error->message);
 
 		g_hash_table_remove(self->pending, confirmation_id);
 		return FALSE;

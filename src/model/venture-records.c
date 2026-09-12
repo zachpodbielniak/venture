@@ -227,12 +227,13 @@ static const VentureFieldDecl venture_sale_fields[] = {
 	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("channel", "Channel", "Where the sale happened",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
-	/* The platform's own order identifier, indexed and unique so that
-	 * re-importing a marketplace export cannot duplicate sales. */
+	/* A nonempty platform identifier is unique within its organization,
+	 * including deleted sales, so a repeated import cannot revive revenue. */
 	VENTURE_FIELD("external-id", "Order ID",
 	              "The platform's order identifier; prevents double import",
 	              VENTURE_FIELD_KIND_STRING,
-	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE),
+	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE |
+	              VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
 	VENTURE_FIELD("occurred-at", "Sold", NULL, VENTURE_FIELD_KIND_DATETIME,
 	              VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("quantity", "Quantity", NULL, VENTURE_FIELD_KIND_INTEGER,
@@ -397,7 +398,8 @@ static const VentureFieldDecl venture_expense_fields[] = {
 	              VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("external-id", "External ID",
 	              "Bank or card transaction identifier; prevents double import",
-	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED |
+	              VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
 	VENTURE_FIELD("reimbursable", "Reimbursable", NULL,
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
@@ -2623,7 +2625,7 @@ static const VentureFieldDecl venture_invoice_fields[] = {
 	VENTURE_FIELD("number", "Number", "Yours to allocate; INV-2026-001 "
 	              "style works",
 	              VENTURE_FIELD_KIND_STRING,
-	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE |
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION |
 	              VENTURE_COLUMN_FLAG_INDEXED |
 	              VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD_ENUM("status", "Status", NULL,

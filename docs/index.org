@@ -20,6 +20,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:cli.org][venturectl]] — the command line client
 - [[file:ai.org][AI]] — tools, the confirmation policy, and the audit trail
 - [[file:mcp.org][venturectl mcp]] — serving the API to an outside AI agent over stdio
+- [[file:periods.org][Fiscal periods]] — calendars, closing controls and historical reports
 - [[file:money.org][Money and accounting]] — exact arithmetic, allocation, deductibility, the ledger
 - [[file:ledger.org][General journal]] — atomic posting, immutable journals, rules, reversals and authoritative balances
 - [[file:receivables.org][Customer receivables]] — receipts, credits, refunds and historical customer balances
