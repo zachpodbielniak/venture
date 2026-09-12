@@ -165,6 +165,12 @@ That pod handlers run on the thread that dispatched them. podomation's default h
 
 * Adding tests
 
+The =test-ledger= binary pins the universal posting boundary, including
+outer-transaction rollback, veto signals, source-save integration, exchange
+valuation, immutable history and authoritative balances. The native plugin
+test also posts with the example plugin's real rule. See
+[[file:ledger.org][the general journal]] for the contracts under test.
+
 One file per subsystem, =tests/test-<area>.c=, picked up automatically by the Makefile's wildcard. Use the fixture pattern for anything needing a database:
 
 #+begin_src C
