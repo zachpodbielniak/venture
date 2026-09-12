@@ -68,6 +68,7 @@
 #include "model/venture-entity.h"
 #include "model/venture-entity-macros.h"
 #include "model/venture-records.h"
+#include "receivables/venture-receivable-records.h"
 #include "model/venture-venture-type.h"
 #include "model/venture-entity-registry.h"
 #include "model/venture-module.h"

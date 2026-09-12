@@ -335,8 +335,209 @@ test_historical_payment(Fixture *f, gconstpointer data)
 	invoice = invoice_new(f, "HISTORY", "2026-07-01", "100 USD");
 	payment = payment_new(f, venture_entity_get_id(invoice), "100 USD", "2026-08-15");
 	save(f, payment);
+	assert_status(f, invoice, "paid");
 	result = aging(f, "2026-07");
 	g_assert_cmpint(metric_amount(result, "outstanding"), ==, 10000);
+}
+
+static VentureEntity *
+allocation_new(Fixture *f, gint64 payment_id, gint64 credit_id,
+	gint64 invoice_id, const gchar *amount, const gchar *date)
+{
+	VentureEntity *allocation;
+
+	allocation = record_new(f, "payment_allocation");
+	g_object_set(allocation, "payment-id", payment_id, "credit-id", credit_id,
+		"invoice-id", invoice_id, NULL);
+	money_field(allocation, "amount", amount);
+	money_field(allocation, "date", date);
+	return allocation;
+}
+
+static void
+test_deposit_allocations_refund(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) first = NULL;
+	g_autoptr(VentureEntity) second = NULL;
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(VentureEntity) allocation = NULL;
+	g_autoptr(VentureEntity) refund = NULL;
+	g_autoptr(GPtrArray) credits = NULL;
+	gint64 credit_id;
+
+	first = invoice_new(f, "ONE", "2026-07-01", "50 USD");
+	second = invoice_new(f, "TWO", "2026-07-01", "40 USD");
+	payment = payment_new(f, 0, "100 USD", "2026-07-10");
+	save(f, payment);
+	credits = rows(f, "customer_credit");
+	g_assert_cmpuint(credits->len, ==, 1);
+	credit_id = venture_entity_get_id(g_ptr_array_index(credits, 0));
+	g_assert_cmpint(amount_field(g_ptr_array_index(credits, 0), "remaining"), ==, 10000);
+	allocation = allocation_new(f, venture_entity_get_id(payment), 0,
+		venture_entity_get_id(first), "50 USD", "2026-07-12");
+	save(f, allocation);
+	g_clear_object(&allocation);
+	allocation = allocation_new(f, 0, credit_id, venture_entity_get_id(second),
+		"40 USD", "2026-07-13");
+	save(f, allocation);
+	assert_status(f, first, "paid");
+	assert_status(f, second, "paid");
+	g_clear_pointer(&credits, g_ptr_array_unref);
+	credits = rows(f, "customer_credit");
+	g_assert_cmpint(amount_field(g_ptr_array_index(credits, 0), "remaining"), ==, 1000);
+	refund = record_new(f, "refund");
+	g_object_set(refund, "customer-id", f->customer_id,
+		"allocation-id", venture_entity_get_id(allocation), NULL);
+	money_field(refund, "date", "2026-08-05");
+	money_field(refund, "amount", "10 USD");
+	save(f, refund);
+	assert_status(f, second, "partially_paid");
+	g_clear_object(&refund);
+	refund = record_new(f, "refund");
+	g_object_set(refund, "customer-id", f->customer_id, "credit-id", credit_id, NULL);
+	money_field(refund, "date", "2026-08-06");
+	money_field(refund, "amount", "10 USD");
+	save(f, refund);
+	g_clear_pointer(&credits, g_ptr_array_unref);
+	credits = rows(f, "customer_credit");
+	g_assert_cmpint(amount_field(g_ptr_array_index(credits, 0), "remaining"), ==, 0);
+}
+
+static void
+test_credit_note(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) credit = NULL;
+	g_autoptr(VentureEntity) allocation = NULL;
+	g_autoptr(GPtrArray) credits = NULL;
+
+	invoice = invoice_new(f, "CREDIT", "2026-07-01", "100 USD");
+	credit = record_new(f, "customer_credit");
+	g_object_set(credit, "customer-id", f->customer_id, "kind", "credit_note", NULL);
+	money_field(credit, "amount", "100 USD");
+	money_field(credit, "date", "2026-07-10");
+	save(f, credit);
+	allocation = allocation_new(f, 0, venture_entity_get_id(credit),
+		venture_entity_get_id(invoice), "100 USD", "2026-07-11");
+	save(f, allocation);
+	assert_status(f, invoice, "paid");
+	credits = rows(f, "customer_credit");
+	g_assert_cmpint(amount_field(g_ptr_array_index(credits, 0), "remaining"), ==, 0);
+}
+
+static void
+test_duplicate(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(VentureEntity) duplicate = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *before = NULL;
+	g_autofree gchar *after = NULL;
+
+	payment = payment_new(f, 0, "10 USD", "2026-07-01");
+	g_object_set(payment, "external-id", "bank/42", NULL);
+	save(f, payment);
+	duplicate = payment_new(f, 0, "10 USD", "2026-07-01");
+	g_object_set(duplicate, "external-id", "bank/42", NULL);
+	before = fingerprint(f);
+	g_assert_false(venture_database_save(f->database, duplicate, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS);
+	after = fingerprint(f);
+	g_assert_cmpstr(before, ==, after);
+}
+
+static void
+test_invalid_amount(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *before = NULL;
+	g_autofree gchar *after = NULL;
+
+	invoice = invoice_new(f, "INVALID", "2026-07-01", "100 USD");
+	payment = payment_new(f, venture_entity_get_id(invoice), data, "2026-07-10");
+	before = fingerprint(f);
+	g_assert_false(venture_database_save(f->database, payment, NULL, &error));
+	g_assert_nonnull(error);
+	after = fingerprint(f);
+	g_assert_cmpstr(before, ==, after);
+}
+
+static void
+test_ledger_batches(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(GPtrArray) entries = NULL;
+	g_autoptr(GHashTable) balances = NULL;
+	GHashTableIter iter;
+	gpointer balance;
+	guint i;
+
+	invoice = invoice_new(f, "LEDGER", "2026-07-01", "100 USD");
+	payment = payment_new(f, venture_entity_get_id(invoice), "100 USD", "2026-07-10");
+	save(f, payment);
+	entries = rows(f, "ledger_entry");
+	g_assert_cmpuint(entries->len, >=, 4);
+	balances = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	for (i = 0; i < entries->len; i++)
+	{
+		VentureEntity *entry;
+		g_autofree gchar *transaction = NULL;
+		g_autofree gchar *source = NULL;
+		gint64 *sum;
+		gint side;
+
+		entry = g_ptr_array_index(entries, i);
+		g_object_get(entry, "transaction-id", &transaction, "source-type", &source, "side", &side, NULL);
+		g_assert_nonnull(source);
+		sum = g_hash_table_lookup(balances, transaction);
+		if (sum == NULL)
+		{
+			sum = g_new0(gint64, 1);
+			g_hash_table_insert(balances, g_strdup(transaction), sum);
+		}
+		*sum += (side == VENTURE_LEDGER_SIDE_DEBIT ? 1 : -1) * amount_field(entry, "amount");
+	}
+	g_hash_table_iter_init(&iter, balances);
+	while (g_hash_table_iter_next(&iter, NULL, &balance))
+		g_assert_cmpint(*(gint64 *)balance, ==, 0);
+}
+
+static gboolean
+veto_transition(GObject *machine, VentureEntity *invoice, const gchar *from,
+	const gchar *to, gpointer data)
+{
+	return FALSE;
+}
+
+static void
+test_transition_veto(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(GObject) machine = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *before = NULL;
+	g_autofree gchar *after = NULL;
+	GObject *service;
+	GSignalQuery signal;
+
+	invoice = invoice_new(f, "VETO", "2026-07-01", "100 USD");
+	service = g_object_get_data(G_OBJECT(f->database), "venture-settlement-service");
+	g_assert_nonnull(service);
+	g_object_get(service, "state-machine", &machine, NULL);
+	g_assert_nonnull(machine);
+	g_signal_query(g_signal_lookup("transition", G_OBJECT_TYPE(machine)), &signal);
+	g_assert_true((signal.signal_flags & G_SIGNAL_RUN_LAST) != 0);
+	g_signal_connect(machine, "transition", G_CALLBACK(veto_transition), NULL);
+	payment = payment_new(f, venture_entity_get_id(invoice), "100 USD", "2026-07-10");
+	before = fingerprint(f);
+	g_assert_false(venture_database_save(f->database, payment, NULL, &error));
+	g_assert_nonnull(error);
+	after = fingerprint(f);
+	g_assert_cmpstr(before, ==, after);
 }
 
 int
@@ -350,6 +551,14 @@ main(int argc, char **argv)
 	ADD("atomic-failure", test_atomic_failure);
 	ADD("issue-cutoff", test_issue_cutoff);
 	ADD("historical-payment", test_historical_payment);
+	ADD("deposit-allocations-refund", test_deposit_allocations_refund);
+	ADD("credit-note", test_credit_note);
+	ADD("duplicate", test_duplicate);
+	ADD("ledger-batches", test_ledger_batches);
+	ADD("transition-veto", test_transition_veto);
+	g_test_add("/receivables/zero", Fixture, "0 USD", set_up, test_invalid_amount, tear_down);
+	g_test_add("/receivables/negative", Fixture, "-10 USD", set_up, test_invalid_amount, tear_down);
+	g_test_add("/receivables/wrong-currency", Fixture, "100 EUR", set_up, test_invalid_amount, tear_down);
 #undef ADD
 	return g_test_run();
 }

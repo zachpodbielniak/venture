@@ -58,6 +58,7 @@ CORE_SRCS := \
 	$(wildcard src/boxed/*.c) \
 	$(wildcard src/interfaces/*.c) \
 	$(wildcard src/model/*.c) \
+	src/receivables/venture-receivable-records.c \
 	$(wildcard src/config/*.c) \
 	$(wildcard src/util/*.c) \
 	$(wildcard src/mcp/*.c)
@@ -89,6 +90,7 @@ PUBLIC_HDRS := \
 	$(wildcard src/boxed/*.h) \
 	$(wildcard src/interfaces/*.h) \
 	$(wildcard src/model/*.h) \
+	$(wildcard src/receivables/*.h) \
 	$(wildcard src/config/*.h) \
 	$(wildcard src/core/*.h) \
 	$(wildcard src/db/*.h) \
