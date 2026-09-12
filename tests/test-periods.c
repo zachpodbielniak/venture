@@ -235,6 +235,252 @@ test_numbering_migration(void)
 	g_assert_no_error(error);
 }
 
+static void
+test_period_records(Fixture *fixture, gconstpointer data)
+{
+	static const gchar *const names[] = { "fiscal_year", "fiscal_period", "report_snapshot" };
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS(names); i++)
+	{
+		VentureModule *module;
+		GType type = venture_entity_registry_lookup(venture_entity_registry_get_default(), names[i]);
+		g_assert_cmpuint(type, !=, G_TYPE_INVALID);
+		module = venture_module_registry_get_module_for_type(
+			venture_context_get_modules(fixture->context), names[i]);
+		g_assert_nonnull(module);
+		g_assert_cmpstr(venture_module_get_name(module), ==, "periods");
+	}
+}
+
+static VentureEntity *
+new_year(Fixture *fixture, const gchar *start_text, gint64 organization_id, gint length)
+{
+	g_autoptr(GDateTime) start = venture_time_from_string(start_text, NULL);
+	g_autoptr(GDateTime) end = g_date_time_add_years(start, 1);
+	return g_object_new(VENTURE_TYPE_FISCAL_YEAR, "name", start_text,
+		"organization-id", organization_id, "start-at", start, "end-at", end,
+		"period-length", length, NULL);
+}
+
+static GPtrArray *
+periods_for(Fixture *fixture, gint64 organization_id)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FISCAL_PERIOD);
+	g_autoptr(GError) error = NULL;
+	GPtrArray *rows;
+	venture_query_set_organization(query, organization_id);
+	venture_query_add_order(query, "start-at", VENTURE_SORT_ASCENDING, NULL);
+	rows = venture_database_find(fixture->database, query, &error);
+	g_assert_no_error(error);
+	return rows;
+}
+
+/* Boundaries are derived from the original start, so a January 31 start
+ * does not drift to March 28 after a short February. */
+static void
+test_calendar_generation(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(VentureEntity) year = NULL;
+	g_autoptr(GPtrArray) periods = NULL;
+	g_autoptr(GDateTime) start = NULL;
+	g_autoptr(GDateTime) end = NULL;
+	g_autoptr(GError) error = NULL;
+	guint months = (0 == GPOINTER_TO_INT(data)) ? 1 : 3;
+	guint i;
+
+	year = new_year(fixture, "2024-01-31", fixture->organization_id, GPOINTER_TO_INT(data));
+	g_assert_true(venture_database_save(fixture->database, year, NULL, &error));
+	g_assert_no_error(error);
+	periods = periods_for(fixture, fixture->organization_id);
+	g_assert_cmpuint(periods->len, ==, 12 / months);
+	g_object_get(year, "start-at", &start, "end-at", &end, NULL);
+	for (i = 0; i < periods->len; i++)
+	{
+		g_autoptr(GDateTime) a = NULL;
+		g_autoptr(GDateTime) b = NULL;
+		g_autoptr(GDateTime) expected_a = g_date_time_add_months(start, i * months);
+		g_autoptr(GDateTime) expected_b = g_date_time_add_months(start, (i + 1) * months);
+		gint state;
+		g_object_get(g_ptr_array_index(periods, i), "start-at", &a, "end-at", &b, "state", &state, NULL);
+		g_assert_cmpint(g_date_time_compare(a, expected_a), ==, 0);
+		g_assert_cmpint(g_date_time_compare(b, expected_b), ==, 0);
+		g_assert_cmpint(state, ==, VENTURE_PERIOD_OPEN);
+	}
+}
+
+static void
+test_calendar_refusal(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(VentureEntity) year = NULL;
+	g_autoptr(VentureEntity) invalid = NULL;
+	g_autoptr(GError) error = NULL;
+	const gchar *start = data;
+
+	year = new_year(fixture, "2024-01-01", fixture->organization_id, 0);
+	g_assert_true(venture_database_save(fixture->database, year, NULL, &error));
+	g_assert_no_error(error);
+	invalid = new_year(fixture, start, fixture->organization_id, 0);
+	g_assert_false(venture_database_save(fixture->database, invalid, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	/* The same dates in another company are independent. */
+	g_object_set(invalid, "organization-id", fixture->other_id, NULL);
+	g_assert_true(venture_database_save(fixture->database, invalid, NULL, &error));
+	g_assert_no_error(error);
+}
+
+static VentureActor
+actor_named(const gchar *name)
+{
+	VentureActor actor;
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = name;
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	return actor;
+}
+
+static GPtrArray *
+calendar(Fixture *fixture)
+{
+	g_autoptr(VentureEntity) year = new_year(fixture, "2024-01-01", fixture->organization_id, 0);
+	g_autoptr(GError) error = NULL;
+	g_assert_true(venture_database_save(fixture->database, year, NULL, &error));
+	g_assert_no_error(error);
+	return periods_for(fixture, fixture->organization_id);
+}
+
+static gboolean
+change_state(Fixture *fixture, VentureEntity *period, gint state,
+	const gchar *name, GError **error)
+{
+	VentureActor actor = actor_named(name);
+	g_object_set(period, "state", state, NULL);
+	return venture_database_save(fixture->database, period, &actor, error);
+}
+
+static void
+test_close_order(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(GPtrArray) periods = calendar(fixture);
+	g_autoptr(GError) error = NULL;
+	g_assert_false(change_state(fixture, g_ptr_array_index(periods, 1), VENTURE_PERIOD_CLOSED, "closer", &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_assert_nonnull(strstr(error->message, "P01"));
+}
+
+static void
+test_closed_stamps(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(GPtrArray) periods = calendar(fixture);
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *closed_by = NULL;
+	g_autoptr(GDateTime) closed_at = NULL;
+	VentureEntity *period = g_ptr_array_index(periods, 0);
+
+	g_assert_true(change_state(fixture, period, VENTURE_PERIOD_CLOSED, "closer", &error));
+	g_assert_no_error(error);
+	g_object_get(period, "closed-by", &closed_by, "closed-at", &closed_at, NULL);
+	g_assert_cmpstr(closed_by, ==, "closer");
+	g_assert_nonnull(closed_at);
+}
+
+static void
+test_reopen_permission(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(GPtrArray) periods = calendar(fixture);
+	g_autoptr(VentureUser) user = venture_user_new();
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_AUDIT_ENTRY);
+	g_autoptr(GPtrArray) audit = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureEntity *period = g_ptr_array_index(periods, 0);
+
+	g_assert_true(change_state(fixture, period, VENTURE_PERIOD_CLOSED, "closer", &error));
+	g_assert_no_error(error);
+	g_assert_false(change_state(fixture, period, VENTURE_PERIOD_OPEN, "editor", &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_assert_nonnull(strstr(error->message, "periods.reopen"));
+	g_clear_error(&error);
+	g_object_set(user, "username", "owner", "role", VENTURE_USER_ROLE_OWNER, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(user), NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(change_state(fixture, period, VENTURE_PERIOD_OPEN, "owner", &error));
+	g_assert_no_error(error);
+	venture_query_add_filter_string(query, "target-type", VENTURE_FILTER_OP_EQ, "fiscal_period", NULL);
+	venture_query_add_filter_string(query, "actor", VENTURE_FILTER_OP_EQ, "owner", NULL);
+	audit = venture_database_find(fixture->database, query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(audit->len, ==, 1);
+	{
+		g_autofree gchar *diff = NULL;
+		g_object_get(g_ptr_array_index(audit, 0), "diff", &diff, NULL);
+		g_assert_nonnull(strstr(diff, "closed"));
+		g_assert_nonnull(strstr(diff, "open"));
+	}
+}
+
+static void
+test_locked(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(GPtrArray) periods = calendar(fixture);
+	g_autoptr(GError) error = NULL;
+	VentureEntity *period = g_ptr_array_index(periods, 0);
+	g_assert_true(change_state(fixture, period, VENTURE_PERIOD_CLOSED, "closer", &error));
+	g_assert_no_error(error);
+	g_assert_true(change_state(fixture, period, VENTURE_PERIOD_LOCKED, "closer", &error));
+	g_assert_no_error(error);
+	g_assert_false(change_state(fixture, period, VENTURE_PERIOD_OPEN, "owner", &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_assert_nonnull(strstr(error->message, "locked"));
+}
+
+static VentureEntity *
+dated_record(Fixture *fixture, const gchar *type_name, const gchar *date)
+{
+	GType type = venture_entity_registry_lookup(venture_entity_registry_get_default(), type_name);
+	VentureEntity *entity;
+	entity = (VENTURE_TYPE_LEDGER_ENTRY == type)
+		? g_object_new(type, "transaction-id", "batch-1", "account-id", (gint64)1,
+			"organization-id", fixture->organization_id, NULL)
+		: financial_record(fixture, type, fixture->organization_id);
+	g_assert_true(venture_entity_set_field_from_string(entity,
+		(VENTURE_TYPE_INVOICE == type) ? "issued-at" : "occurred-at", date, NULL));
+	if (VENTURE_TYPE_LEDGER_ENTRY == type)
+		g_assert_true(venture_entity_set_field_from_string(entity, "amount", "10.00 USD", NULL));
+	return entity;
+}
+
+static void
+test_guard_writes(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(GPtrArray) periods = calendar(fixture);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) entity = dated_record(fixture, data, "2024-01-15");
+	VentureEntity *period = g_ptr_array_index(periods, 0);
+
+	g_assert_true(change_state(fixture, period, VENTURE_PERIOD_CLOSED, "closer", &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_database_save(fixture->database, entity, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_assert_nonnull(strstr(error->message, "P01"));
+	g_assert_nonnull(strstr(error->message, "closed"));
+}
+
+static void
+test_close_check(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(GPtrArray) periods = calendar(fixture);
+	g_autoptr(VentureEntity) entity = dated_record(fixture, data, "2024-01-15");
+	g_autoptr(GError) error = NULL;
+	g_assert_true(venture_database_save(fixture->database, entity, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_false(change_state(fixture, g_ptr_array_index(periods, 0), VENTURE_PERIOD_CLOSED, "closer", &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, (0 == strcmp(data, "invoice")) ? "draft" : "unbalanced"));
+}
+
 int
 main(int argc, char **argv)
 {
@@ -248,5 +494,25 @@ main(int argc, char **argv)
 	g_test_add("/periods/numbering/invoice", Fixture, GINT_TO_POINTER(1),
 		fixture_set_up, test_numbering, fixture_tear_down);
 	g_test_add_func("/periods/numbering/migration", test_numbering_migration);
+	g_test_add("/periods/records", Fixture, NULL,
+		fixture_set_up, test_period_records, fixture_tear_down);
+	g_test_add("/periods/calendar/monthly", Fixture, GINT_TO_POINTER(0),
+		fixture_set_up, test_calendar_generation, fixture_tear_down);
+	g_test_add("/periods/calendar/quarterly", Fixture, GINT_TO_POINTER(1),
+		fixture_set_up, test_calendar_generation, fixture_tear_down);
+	g_test_add("/periods/calendar/overlap", Fixture, "2024-07-01",
+		fixture_set_up, test_calendar_refusal, fixture_tear_down);
+	g_test_add("/periods/calendar/gap", Fixture, "2025-02-01",
+		fixture_set_up, test_calendar_refusal, fixture_tear_down);
+	g_test_add("/periods/close/order", Fixture, NULL, fixture_set_up, test_close_order, fixture_tear_down);
+	g_test_add("/periods/close/stamps", Fixture, NULL, fixture_set_up, test_closed_stamps, fixture_tear_down);
+	g_test_add("/periods/close/reopen", Fixture, NULL, fixture_set_up, test_reopen_permission, fixture_tear_down);
+	g_test_add("/periods/close/locked", Fixture, NULL, fixture_set_up, test_locked, fixture_tear_down);
+	g_test_add("/periods/guard/sale", Fixture, "sale", fixture_set_up, test_guard_writes, fixture_tear_down);
+	g_test_add("/periods/guard/expense", Fixture, "expense", fixture_set_up, test_guard_writes, fixture_tear_down);
+	g_test_add("/periods/guard/invoice", Fixture, "invoice", fixture_set_up, test_guard_writes, fixture_tear_down);
+	g_test_add("/periods/guard/ledger", Fixture, "ledger_entry", fixture_set_up, test_guard_writes, fixture_tear_down);
+	g_test_add("/periods/checks/ledger", Fixture, "ledger_entry", fixture_set_up, test_close_check, fixture_tear_down);
+	g_test_add("/periods/checks/invoice", Fixture, "invoice", fixture_set_up, test_close_check, fixture_tear_down);
 	return g_test_run();
 }

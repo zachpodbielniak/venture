@@ -101,6 +101,9 @@
 #include "db/venture-query.h"
 #include "db/venture-database.h"
 #include "periods/venture-period-constraints.h"
+#include "periods/venture-period-check.h"
+#include "periods/venture-period-service.h"
+#include "periods/venture-period-guard.h"
 
 #include "plugin/venture-plugin-manager.h"
 

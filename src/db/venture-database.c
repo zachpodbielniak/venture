@@ -1000,6 +1000,13 @@ venture_database_save(
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
 
+	{
+		gboolean handled;
+		gboolean ok = venture_periods_save(self, entity, actor, &handled, error);
+		if (handled || !ok)
+			return ok;
+	}
+
 	/* Validation happens before anything is written, never after: a
 	 * half-written invalid record is worse than a rejected one. */
 	if (!venture_entity_validate(entity, error))
@@ -1049,6 +1056,12 @@ venture_database_save(
 	}
 
 	/* Likewise the validators, for the same reason. */
+	if (!venture_periods_validate_financial(self, entity, previous, error))
+	{
+		g_rec_mutex_unlock(&self->lock);
+		return FALSE;
+	}
+
 	{
 		guint v;
 
@@ -1288,6 +1301,8 @@ venture_database_delete(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_periods_check_removal(self, entity, error))
+		return FALSE;
 
 	if (!venture_entity_is_persisted(entity))
 	{
@@ -1337,6 +1352,8 @@ venture_database_restore(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_periods_check_removal(self, entity, error))
+		return FALSE;
 
 	if (!venture_entity_is_deleted(entity))
 		return TRUE;

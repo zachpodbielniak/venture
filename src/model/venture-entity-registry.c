@@ -706,6 +706,9 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_user_get_type,
 		venture_api_token_get_type,
 		venture_audit_entry_get_type
+		, venture_fiscal_year_get_type
+		, venture_fiscal_period_get_type
+		, venture_report_snapshot_get_type
 	};
 	gsize i;
 

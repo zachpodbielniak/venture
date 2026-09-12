@@ -507,6 +507,13 @@ static const gchar *const venture_module_reports_factory[] = {
 	"releases", "lead_time", "incidents", "delivery", NULL
 };
 
+static GType (*const venture_module_periods_types[]) (void) = {
+	venture_fiscal_year_get_type, venture_fiscal_period_get_type,
+	venture_report_snapshot_get_type, NULL
+};
+static const gchar *const venture_module_requires_finance[] = { "finance", NULL };
+static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live", NULL };
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -624,6 +631,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"or queue, arranged as you like, and more than one of them.",
 		venture_module_requires_core, NULL,
 		venture_module_dashboards_types, NULL, NULL, FALSE
+	},
+	{
+		"periods", "Fiscal periods", "Fiscal calendars, closing controls and historical reports.",
+		venture_module_requires_finance, NULL,
+		venture_module_periods_types, venture_module_reports_periods, NULL, FALSE
 	}
 };
 
