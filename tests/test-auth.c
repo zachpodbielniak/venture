@@ -1092,6 +1092,64 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/search"),
 	                 ==, SOUP_STATUS_FOUND);
 
+	/* The workdesk: an inbox is one person's business; saved views say
+	 * what somebody watches; the sprints and the runs are the plan and
+	 * the spend. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/inbox"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/views"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/views/1"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/sprints"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/runs"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/inbox/read",
+		NULL, "id=0", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/watch",
+		NULL, "type=ticket&id=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/views",
+		NULL, "name=x&entity_type=ticket", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/views/1/delete",
+		NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/tickets/1/macro", NULL, "macro_id=1", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/tickets/1/worklog", NULL, "hours=1", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/tickets/1/assign-me", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/incidents/1/ticket", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/e/ticket/bulk",
+		NULL, "ids=1&field=status&value=done", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+
+	/* Webhooks name the host this install's data is posted to, and the
+	 * assistant's three judgements read a ticket's whole thread. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/webhooks"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/webhooks/1/test", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/webhooks/1/secret", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/tickets/1/triage", NULL, "priority=high", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/tickets/1/satisfaction", NULL, "satisfaction=good", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+		"/tickets/1/assist?what=triage"), ==, SOUP_STATUS_UNAUTHORIZED);
+
+	/* Two fragments, which 401 like the chat ones. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/inbox/count"),
+	                 ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/runs/table"),
+	                 ==, SOUP_STATUS_UNAUTHORIZED);
+
 	/*
 	 * An unknown path redirects rather than 404s while anonymous: whether
 	 * a page exists is not information for people without a session, and
@@ -1162,6 +1220,31 @@ test_auth_api_refuses_anonymous_requests(
 		"/api/v1/dashboard",
 		"/api/v1/dashboard_widget",
 		"/dashboards/factory/widgets/1",
+		/* The workdesk: an inbox, who watches what, a record's whole
+		 * history, the plan, the spend, and the palette that lists
+		 * every page and record type this install has. */
+		"/api/v1/inbox",
+		"/api/v1/watching/ticket/1",
+		"/api/v1/activity/ticket/1",
+		"/api/v1/tickets/1/sla",
+		"/api/v1/sprints",
+		"/api/v1/sprints/1",
+		"/api/v1/runs",
+		"/api/v1/budgets",
+		"/api/v1/palette?q=a",
+		"/api/v1/notification",
+		"/api/v1/watch",
+		"/api/v1/saved_view",
+		"/api/v1/sla_policy",
+		"/api/v1/macro",
+		"/api/v1/worklog",
+		"/api/v1/sprint",
+		"/api/v1/agent_budget",
+		"/api/v1/webhooks",
+		"/api/v1/webhook",
+		"/api/v1/webhook_delivery",
+		"/api/v1/routing_rule",
+		"/api/v1/tickets/1/summary",
 		NULL
 	};
 	gsize i;
@@ -1283,6 +1366,39 @@ test_auth_api_refuses_anonymous_requests(
 		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/dashboards/from-template", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/inbox/read", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/watch", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/tickets/1/macro", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/tickets/1/worklog", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/sla/sweep", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/incidents/1/ticket", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/ticket/bulk", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/webhooks/1/test", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/webhooks/1/secret", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/tickets/1/triage", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/tickets/1/draft", NULL, "{}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
 
 	/* The dashboard writes: making, changing and removing pages and

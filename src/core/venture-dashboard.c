@@ -818,7 +818,14 @@ venture_widget_kind_count(
 	result = venture_widget_result_new();
 	result->title = venture_widget_type_label(context, entity_type, TRUE);
 	result->link = venture_widget_list_path(widget, entity_type, scope);
-	result->link_label = g_strdup("Rows");
+
+	/*
+	 * The link says what is on the other end of it. "Rows" was true and
+	 * useless: a card titled "Missed a promise" showing 3 with a button
+	 * marked Rows tells the reader nothing about where the button goes,
+	 * and every count card on a page said the same word.
+	 */
+	result->link_label = venture_widget_type_label(context, entity_type, TRUE);
 
 	builder = json_builder_new();
 	json_builder_begin_object(builder);
@@ -2122,7 +2129,7 @@ venture_widget_kind_activity(
 		json_builder_begin_object(builder);
 		json_builder_set_member_name(builder, "actor");
 		json_builder_add_string_value(builder,
-			venture_string_is_empty(actor) ? "someone" : actor);
+			venture_string_is_empty(actor) ? "The system" : actor);
 		json_builder_set_member_name(builder, "action");
 		json_builder_add_string_value(builder, action_nick);
 		json_builder_set_member_name(builder, "target_type");
@@ -2139,7 +2146,7 @@ venture_widget_kind_activity(
 
 		g_string_append(html, "<li><span class=\"activity-actor\">");
 		venture_html_escape_append(html,
-			venture_string_is_empty(actor) ? "someone" : actor);
+			venture_string_is_empty(actor) ? "The system" : actor);
 		g_string_append(html, "</span> ");
 		venture_html_escape_append(html, action_nick);
 		g_string_append(html, " ");

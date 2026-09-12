@@ -2240,6 +2240,638 @@ venture_report_incidents(
 	return g_steal_pointer(&result);
 }
 
+/* ==========================================================================
+ * Delivery: the four keys, and what the agents cost to get there
+ *
+ * DORA's four -- deployment frequency, lead time for changes, change
+ * failure rate, time to restore -- measured from the factory's own
+ * records: a change is a ticket, a deploy is a deployment into a
+ * production environment, a failure is an incident that names the
+ * deployment, a restore is the incident resolving. Beside them, what
+ * the coding runs did and cost in the same period, because the question
+ * in 2026 is not "how fast" but "how fast, at what price, and how much
+ * of it did a model write".
+ * ========================================================================== */
+
+static VentureReportResult *
+venture_report_delivery(
+	VentureContext		 *context,
+	VentureDateRange	 *period,
+	JsonObject		 *options,
+	GError			**error
+){
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(VentureQuery) env_query = NULL;
+	g_autoptr(GPtrArray) environments = NULL;
+	g_autoptr(VentureQuery) deploy_query = NULL;
+	g_autoptr(GPtrArray) deployments = NULL;
+	g_autoptr(VentureQuery) incident_query = NULL;
+	g_autoptr(GPtrArray) incidents = NULL;
+	g_autoptr(VentureQuery) run_query = NULL;
+	g_autoptr(GPtrArray) runs = NULL;
+	g_autoptr(GArray) lead_days = NULL;
+	g_autoptr(GHashTable) production = NULL;
+	g_autoptr(GPtrArray) costs = NULL;
+	g_autoptr(VentureMoney) cost_total = NULL;
+	gint64 days;
+	guint prod_deploys;
+	guint failed_deploys;
+	guint failures;
+	guint restored;
+	gdouble restore_hours;
+	guint run_succeeded;
+	guint run_failed;
+	guint run_prs;
+	gint64 tokens;
+	guint i;
+
+	(void)options;
+
+	/* Which environments are production: the ones the four keys are
+	 * about. A staging deploy is practice. */
+	env_query = venture_query_new(VENTURE_TYPE_ENVIRONMENT);
+	venture_query_set_organization(env_query,
+		venture_context_get_default_organization_id(context));
+	environments = venture_report_fetch_all(context, env_query, error);
+
+	if (NULL == environments)
+		return NULL;
+
+	production = g_hash_table_new(g_direct_hash, g_direct_equal);
+
+	for (i = 0; i < environments->len; i++)
+	{
+		VentureEntity *environment;
+		VentureEnvironmentKind kind;
+
+		environment = g_ptr_array_index(environments, i);
+		g_object_get(environment, "kind", &kind, NULL);
+
+		if (VENTURE_ENVIRONMENT_KIND_PRODUCTION == kind)
+			g_hash_table_add(production,
+				GINT_TO_POINTER((gint)venture_entity_get_id(environment)));
+	}
+
+	deploy_query = venture_query_new(VENTURE_TYPE_DEPLOYMENT);
+	venture_query_set_organization(deploy_query,
+		venture_context_get_default_organization_id(context));
+
+	if (!venture_query_set_date_range(deploy_query, "deployed-at", period,
+	                                  error))
+		return NULL;
+
+	venture_query_add_order(deploy_query, "deployed-at", VENTURE_SORT_ASCENDING,
+	                        NULL);
+	deployments = venture_report_fetch_all(context, deploy_query, error);
+
+	if (NULL == deployments)
+		return NULL;
+
+	incident_query = venture_query_new(VENTURE_TYPE_INCIDENT);
+	venture_query_set_organization(incident_query,
+		venture_context_get_default_organization_id(context));
+
+	if (!venture_query_set_date_range(incident_query, "started-at", period,
+	                                  error))
+		return NULL;
+
+	incidents = venture_report_fetch_all(context, incident_query, error);
+
+	if (NULL == incidents)
+		return NULL;
+
+	result = venture_report_result_new("Delivery", period);
+	lead_days = g_array_new(FALSE, FALSE, sizeof(gdouble));
+	prod_deploys = failed_deploys = failures = restored = 0;
+	restore_hours = 0.0;
+
+	venture_report_result_add_column(result, "environment", "Environment",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "kind", "Kind",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "deployments", "Deployments",
+	                                 VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "failed", "Failed deploys",
+	                                 VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "incidents", "Incidents",
+	                                 VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "lead", "Median lead days",
+	                                 VENTURE_REPORT_COLUMN_NUMBER);
+
+	/* One row per environment, with the production ones feeding the
+	 * headline figures. */
+	for (i = 0; i < environments->len; i++)
+	{
+		VentureEntity *environment;
+		g_autofree gchar *name = NULL;
+		g_autoptr(GArray) env_lead = NULL;
+		VentureEnvironmentKind kind;
+		gint64 env_id;
+		guint env_deploys;
+		guint env_failed;
+		guint env_incidents;
+		guint j;
+		gdouble median;
+
+		environment = g_ptr_array_index(environments, i);
+		env_id = venture_entity_get_id(environment);
+		g_object_get(environment, "name", &name, "kind", &kind, NULL);
+		env_lead = g_array_new(FALSE, FALSE, sizeof(gdouble));
+		env_deploys = env_failed = env_incidents = 0;
+
+		for (j = 0; j < deployments->len; j++)
+		{
+			VentureEntity *deployment;
+			g_autoptr(GDateTime) deployed_at = NULL;
+			VentureDeploymentStatus status;
+			gint64 environment_id = 0;
+			gint64 release_id = 0;
+
+			deployment = g_ptr_array_index(deployments, j);
+			g_object_get(deployment, "environment-id", &environment_id,
+			             "release-id", &release_id, "status", &status,
+			             "deployed-at", &deployed_at, NULL);
+
+			if (environment_id != env_id)
+				continue;
+
+			if (VENTURE_DEPLOYMENT_STATUS_FAILED == status)
+			{
+				env_failed++;
+				continue;
+			}
+
+			if (VENTURE_DEPLOYMENT_STATUS_SUCCEEDED != status)
+				continue;
+
+			env_deploys++;
+
+			/* Lead time for changes: from each ticket the release
+			 * carried being raised to this deployment landing. */
+			if ((0 != release_id) && (NULL != deployed_at))
+			{
+				g_autoptr(GPtrArray) tickets = NULL;
+				guint k;
+
+				tickets = venture_factory_release_tickets(
+					venture_context_get_database(context), release_id);
+
+				for (k = 0; (NULL != tickets) && (k < tickets->len); k++)
+				{
+					GDateTime *created;
+					gdouble lead;
+
+					created = venture_entity_get_created_at(
+						g_ptr_array_index(tickets, k));
+
+					if (NULL == created)
+						continue;
+
+					lead = (gdouble)g_date_time_difference(deployed_at,
+					                                       created)
+					       / (gdouble)G_TIME_SPAN_DAY;
+
+					if (lead < 0.0)
+						lead = 0.0;
+
+					g_array_append_val(env_lead, lead);
+
+					if (VENTURE_ENVIRONMENT_KIND_PRODUCTION == kind)
+						g_array_append_val(lead_days, lead);
+				}
+			}
+		}
+
+		for (j = 0; j < incidents->len; j++)
+		{
+			gint64 environment_id = 0;
+
+			g_object_get(g_ptr_array_index(incidents, j),
+			             "environment-id", &environment_id, NULL);
+
+			if (environment_id == env_id)
+				env_incidents++;
+		}
+
+		if (VENTURE_ENVIRONMENT_KIND_PRODUCTION == kind)
+		{
+			prod_deploys += env_deploys;
+			failed_deploys += env_failed;
+		}
+
+		median = 0.0;
+
+		if (env_lead->len > 0)
+		{
+			g_array_sort(env_lead, venture_report_compare_double);
+			median = (0 == (env_lead->len % 2))
+				? (g_array_index(env_lead, gdouble, env_lead->len / 2 - 1) +
+				   g_array_index(env_lead, gdouble, env_lead->len / 2)) / 2.0
+				: g_array_index(env_lead, gdouble, env_lead->len / 2);
+		}
+
+		venture_report_result_begin_row(result);
+		venture_report_result_set_text(result, "environment", name);
+		venture_report_result_set_text(result, "kind",
+			venture_enum_to_nick(VENTURE_TYPE_ENVIRONMENT_KIND, (gint)kind));
+		venture_report_result_set_number(result, "deployments",
+		                                 (gdouble)env_deploys);
+		venture_report_result_set_number(result, "failed", (gdouble)env_failed);
+		venture_report_result_set_number(result, "incidents",
+		                                 (gdouble)env_incidents);
+		venture_report_result_set_number(result, "lead", median);
+	}
+
+	/* Change failure rate counts incidents that name a deployment into
+	 * production; time to restore is measured over every incident that
+	 * resolved in the period. */
+	for (i = 0; i < incidents->len; i++)
+	{
+		VentureEntity *incident;
+		g_autoptr(GDateTime) started_at = NULL;
+		g_autoptr(GDateTime) resolved_at = NULL;
+		gint64 deployment_id = 0;
+		gint64 environment_id = 0;
+
+		incident = g_ptr_array_index(incidents, i);
+		g_object_get(incident, "deployment-id", &deployment_id,
+		             "environment-id", &environment_id,
+		             "started-at", &started_at, "resolved-at", &resolved_at,
+		             NULL);
+
+		if ((0 != deployment_id) &&
+		    g_hash_table_contains(production,
+		                          GINT_TO_POINTER((gint)environment_id)))
+			failures++;
+
+		if ((NULL != started_at) && (NULL != resolved_at))
+		{
+			gdouble hours;
+
+			hours = (gdouble)g_date_time_difference(resolved_at, started_at)
+			        / (gdouble)G_TIME_SPAN_HOUR;
+			restore_hours += MAX(hours, 0.0);
+			restored++;
+		}
+	}
+
+	days = venture_date_range_get_days(period);
+
+	if (days < 1)
+		days = 1;
+
+	venture_report_result_add_metric(result,
+		venture_metric_new_count("deployments", "Production deployments",
+		                         (gint64)prod_deploys));
+	venture_report_result_add_metric(result,
+		venture_metric_new_number("frequency", "Deployments per week",
+		                          ((gdouble)prod_deploys * 7.0) / (gdouble)days));
+
+	if (lead_days->len > 0)
+	{
+		gdouble median;
+
+		g_array_sort(lead_days, venture_report_compare_double);
+		median = (0 == (lead_days->len % 2))
+			? (g_array_index(lead_days, gdouble, lead_days->len / 2 - 1) +
+			   g_array_index(lead_days, gdouble, lead_days->len / 2)) / 2.0
+			: g_array_index(lead_days, gdouble, lead_days->len / 2);
+		venture_report_result_add_metric(result,
+			venture_metric_new_number("lead_time",
+			                          "Median lead time for changes (days)",
+			                          median));
+	}
+
+	venture_report_result_add_metric(result,
+		venture_metric_new_ratio("change_failure_rate", "Change failure rate",
+		                         (prod_deploys > 0)
+		                         	? (gdouble)failures / (gdouble)prod_deploys
+		                         	: 0.0));
+	venture_report_result_add_metric(result,
+		venture_metric_new_number("time_to_restore",
+		                          "Mean time to restore (hours)",
+		                          (restored > 0) ? restore_hours / restored
+		                                         : 0.0));
+
+	/* And the agents' side of the same period. The forge module may be
+	 * off, in which case the runs table is not offered and the figures
+	 * are simply absent rather than zero. */
+	if (venture_context_module_enabled(context, "forge"))
+	{
+		run_query = venture_query_new(VENTURE_TYPE_FORGE_RUN);
+		venture_query_set_organization(run_query,
+			venture_context_get_default_organization_id(context));
+
+		if (!venture_query_set_date_range(run_query, "started-at", period,
+		                                  error))
+			return NULL;
+
+		runs = venture_report_fetch_all(context, run_query, error);
+
+		if (NULL == runs)
+			return NULL;
+
+		costs = g_ptr_array_new_with_free_func(
+			(GDestroyNotify)venture_money_free);
+		run_succeeded = run_failed = run_prs = 0;
+		tokens = 0;
+
+		for (i = 0; i < runs->len; i++)
+		{
+			VentureEntity *run;
+			VentureMoney *cost = NULL;
+			VentureForgeRunState state;
+			gint64 pr = 0;
+			gint64 in_tokens = 0;
+			gint64 out_tokens = 0;
+
+			run = g_ptr_array_index(runs, i);
+			g_object_get(run, "state", &state, "pull-request-number", &pr,
+			             "input-tokens", &in_tokens,
+			             "output-tokens", &out_tokens, "cost", &cost, NULL);
+
+			if (VENTURE_FORGE_RUN_STATE_SUCCEEDED == state)
+				run_succeeded++;
+			else if ((VENTURE_FORGE_RUN_STATE_FAILED == state) ||
+			         (VENTURE_FORGE_RUN_STATE_INTERRUPTED == state))
+				run_failed++;
+
+			if (pr > 0)
+				run_prs++;
+
+			tokens += in_tokens + out_tokens;
+
+			if (NULL != cost)
+				g_ptr_array_add(costs, cost);
+		}
+
+		cost_total = venture_money_sum(costs, NULL, NULL);
+
+		venture_report_result_add_metric(result,
+			venture_metric_new_count("runs", "Coding runs", (gint64)runs->len));
+		venture_report_result_add_metric(result,
+			venture_metric_new_count("runs_succeeded", "Runs succeeded",
+			                         (gint64)run_succeeded));
+		venture_report_result_add_metric(result,
+			venture_metric_new_count("runs_failed", "Runs failed",
+			                         (gint64)run_failed));
+		venture_report_result_add_metric(result,
+			venture_metric_new_count("pull_requests", "Pull requests drafted",
+			                         (gint64)run_prs));
+		venture_report_result_add_metric(result,
+			venture_metric_new_count("tokens", "Tokens", tokens));
+
+		if (NULL != cost_total)
+		{
+			venture_report_result_add_metric(result,
+				venture_metric_new_money("agent_cost", "Agent cost",
+				                         cost_total));
+
+			if (run_prs > 0)
+			{
+				g_autoptr(GPtrArray) shares = NULL;
+
+				shares = venture_money_allocate_evenly(cost_total, run_prs,
+				                                       NULL);
+
+				if ((NULL != shares) && (shares->len > 0))
+					venture_report_result_add_metric(result,
+						venture_metric_new_money("cost_per_pull_request",
+						                         "Cost per pull request",
+						                         g_ptr_array_index(shares, 0)));
+			}
+		}
+	}
+
+	if (0 == g_hash_table_size(production))
+		venture_report_result_set_note(result,
+			"No environment is marked production, so the four keys have "
+			"nothing to count. Set an environment's kind to production.");
+
+	return g_steal_pointer(&result);
+}
+
+/* ==========================================================================
+ * Support: how the desk is doing
+ *
+ * The four questions a helpdesk is judged on -- how fast somebody
+ * answers, how fast it is finished, how often a promise is missed, and
+ * what the people on the other end made of it -- one row per person
+ * holding tickets, so it is also the answer to "who is carrying what".
+ * ========================================================================== */
+
+static VentureReportResult *
+venture_report_support(
+	VentureContext		 *context,
+	VentureDateRange	 *period,
+	JsonObject		 *options,
+	GError			**error
+){
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) tickets = NULL;
+	g_autoptr(GHashTable) rows = NULL;
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
+	gdouble response_hours;
+	gdouble resolution_hours;
+	guint responded;
+	guint resolved;
+	guint breached;
+	guint rated;
+	guint good;
+	guint open;
+	guint i;
+
+	/*
+	 * By when the ticket was raised, not when it was resolved: "the
+	 * tickets of March" is what somebody means, and measuring the ones
+	 * resolved in March would count January's slowest and miss March's.
+	 */
+	query = venture_report_scoped_query(context, VENTURE_TYPE_TICKET, NULL,
+	                                    NULL, options, error);
+
+	if (NULL == query)
+		return NULL;
+
+	if ((NULL != period) &&
+	    !venture_query_set_date_range(query, "created-at", period, error))
+		return NULL;
+
+	tickets = venture_report_fetch_all(context, query, error);
+
+	if (NULL == tickets)
+		return NULL;
+
+	result = venture_report_result_new("Support", period);
+	rows = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	response_hours = resolution_hours = 0.0;
+	responded = resolved = breached = rated = good = open = 0;
+
+	venture_report_result_add_column(result, "assignee", "Assignee",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "tickets", "Tickets",
+	                                 VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "open", "Still open",
+	                                 VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "breached", "Breached",
+	                                 VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "response", "Avg reply hours",
+	                                 VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "resolution",
+	                                 "Avg resolve hours",
+	                                 VENTURE_REPORT_COLUMN_NUMBER);
+
+	/*
+	 * One accumulator per assignee, kept in a table keyed by name. Six
+	 * doubles in one allocation rather than six tables: the figures move
+	 * together and a row is meaningless without all of them.
+	 */
+	for (i = 0; i < tickets->len; i++)
+	{
+		VentureEntity *ticket;
+		g_autofree gchar *assignee = NULL;
+		g_autoptr(GDateTime) responded_at = NULL;
+		g_autoptr(GDateTime) resolved_at = NULL;
+		GDateTime *created;
+		VentureTicketStatus status;
+		VentureSatisfaction satisfaction;
+		gdouble *row;
+		gboolean is_breached = FALSE;
+		const gchar *name;
+
+		ticket = g_ptr_array_index(tickets, i);
+		g_object_get(ticket, "assignee", &assignee, "status", &status,
+		             "first-responded-at", &responded_at,
+		             "resolved-at", &resolved_at, "sla-breached", &is_breached,
+		             "satisfaction", &satisfaction, NULL);
+		created = venture_entity_get_created_at(ticket);
+		name = venture_string_is_empty(assignee) ? "(unassigned)" : assignee;
+
+		row = g_hash_table_lookup(rows, name);
+
+		if (NULL == row)
+		{
+			row = g_new0(gdouble, 6);
+			g_hash_table_insert(rows, g_strdup(name), row);
+		}
+
+		row[0] += 1.0;
+
+		if ((VENTURE_TICKET_STATUS_DONE != status) &&
+		    (VENTURE_TICKET_STATUS_CANCELLED != status))
+		{
+			row[1] += 1.0;
+			open++;
+		}
+
+		if (is_breached)
+		{
+			row[2] += 1.0;
+			breached++;
+		}
+
+		if ((NULL != responded_at) && (NULL != created))
+		{
+			gdouble hours;
+
+			hours = (gdouble)g_date_time_difference(responded_at, created)
+			        / (gdouble)G_TIME_SPAN_HOUR;
+			hours = MAX(hours, 0.0);
+			row[3] += hours;
+			row[4] += 1.0;
+			response_hours += hours;
+			responded++;
+		}
+
+		if ((NULL != resolved_at) && (NULL != created))
+		{
+			gdouble hours;
+
+			hours = (gdouble)g_date_time_difference(resolved_at, created)
+			        / (gdouble)G_TIME_SPAN_HOUR;
+			resolution_hours += MAX(hours, 0.0);
+			resolved++;
+			row[5] += MAX(hours, 0.0);
+		}
+
+		if (VENTURE_SATISFACTION_UNRATED != satisfaction)
+		{
+			rated++;
+
+			if (VENTURE_SATISFACTION_GOOD == satisfaction)
+				good++;
+		}
+	}
+
+	g_hash_table_iter_init(&iter, rows);
+
+	while (g_hash_table_iter_next(&iter, &key, &value))
+	{
+		const gdouble *row = value;
+
+		venture_report_result_begin_row(result);
+		venture_report_result_set_text(result, "assignee", key);
+		venture_report_result_set_number(result, "tickets", row[0]);
+		venture_report_result_set_number(result, "open", row[1]);
+		venture_report_result_set_number(result, "breached", row[2]);
+		venture_report_result_set_number(result, "response",
+		                                 (row[4] > 0.0) ? row[3] / row[4] : 0.0);
+		venture_report_result_set_number(result, "resolution",
+			((row[0] - row[1]) > 0.0) ? row[5] / (row[0] - row[1]) : 0.0);
+	}
+
+	venture_report_result_add_metric(result,
+		venture_metric_new_count("tickets", "Tickets raised",
+		                         (gint64)tickets->len));
+	venture_report_result_add_metric(result,
+		venture_metric_new_count("open", "Still open", (gint64)open));
+	venture_report_result_add_metric(result,
+		venture_metric_new_number("response", "Mean hours to first reply",
+		                          (responded > 0) ? response_hours / responded
+		                                          : 0.0));
+	venture_report_result_add_metric(result,
+		venture_metric_new_number("resolution", "Mean hours to resolve",
+		                          (resolved > 0) ? resolution_hours / resolved
+		                                         : 0.0));
+	venture_report_result_add_metric(result,
+		venture_metric_new_ratio("breach_rate", "Service level missed",
+		                         (tickets->len > 0)
+		                         	? (gdouble)breached / (gdouble)tickets->len
+		                         	: 0.0));
+
+	/*
+	 * CSAT the way everybody computes it: the share of ratings that were
+	 * good, over the ratings given rather than over the tickets. A
+	 * denominator of every ticket would read as a satisfaction score
+	 * falling every time somebody did not answer a survey.
+	 *
+	 * And left out entirely when nobody has rated anything, rather than
+	 * shown as zero. A satisfaction score of 0% is a claim -- everyone
+	 * who answered was unhappy -- and "nobody has said" is not that
+	 * claim. The note says so in its place.
+	 */
+	if (rated > 0)
+	{
+		venture_report_result_add_metric(result,
+			venture_metric_new_ratio("csat", "Satisfaction",
+			                         (gdouble)good / (gdouble)rated));
+		venture_report_result_add_metric(result,
+			venture_metric_new_count("rated", "Tickets rated",
+			                         (gint64)rated));
+	}
+	else
+	{
+		venture_report_result_append_note(result,
+			"No ticket in the period carries a satisfaction rating, so "
+			"there is no score to show. Record one on a ticket's Desk "
+			"card.");
+	}
+
+	return g_steal_pointer(&result);
+}
+
 
 void
 venture_report_registry_register_builtins(VentureReportRegistry *self)
@@ -2297,7 +2929,17 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 		{ "incidents", "Incidents",
 		  "Incidents that started in the period, with hours to resolve and "
 		  "the mean across those resolved",
-		  venture_report_incidents }
+		  venture_report_incidents },
+		{ "support", "Support",
+		  "How the desk is doing: tickets per assignee, how many are still "
+		  "open, how fast the first reply and the resolution came, how "
+		  "often a service level was missed, and what people made of it",
+		  venture_report_support },
+		{ "delivery", "Delivery",
+		  "The four keys -- deployment frequency, lead time for changes, "
+		  "change failure rate, time to restore -- from the factory's own "
+		  "records, beside what the coding runs did and cost",
+		  venture_report_delivery }
 	};
 	gsize i;
 

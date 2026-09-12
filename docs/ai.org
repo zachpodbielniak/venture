@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-11]
-#+version: 0.5.0
+#+updated: [2026-09-12]
+#+version: 0.6.0
 
 * AI
 
@@ -153,6 +153,10 @@ properties.
 | =venture_links=       | read — every link touching a record          |
 | =venture_dashboard=   | read — a dashboard, every widget evaluated; or the list of them |
 | =venture_factory=     | read for status; changelog staged unless autonomous; publish only when autonomous |
+| =venture_inbox=       | read — the operator's own inbox; marking read is theirs to do |
+| =venture_runs=        | read — the coding runs with cost, and the agent budgets |
+| =venture_desk= (triage, summarise, draft) | read — judgements about a ticket's text, on the toolless path |
+| =venture_desk=        | read for sla, activity, sprints; worklog staged unless autonomous; macro, fix_ticket and bulk only when autonomous |
 | =venture_dashboard_build= | only when autonomous — a whole page cannot be staged   |
 | =venture_link=        | staged unless the policy is autonomous       |
 | =venture_create=      | staged unless the policy is autonomous       |

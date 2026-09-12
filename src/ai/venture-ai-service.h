@@ -188,6 +188,30 @@ venture_ai_service_get_policy(VentureAiService *self);
 JsonNode *
 venture_ai_service_describe_tools(VentureAiService *self);
 
+/**
+ * venture_ai_service_complete:
+ * @self: a #VentureAiService
+ * @system_prompt: what the model is for, this once
+ * @user_text: the turn
+ * @error: (out) (optional): return location for a #GError
+ *
+ * One turn with no tools at all: the configured provider and model, a
+ * system prompt for this job, and a single question. Used where the
+ * answer wanted is a judgement about text rather than an errand -- a
+ * ticket's classification, a summary, a draft reply -- and where letting
+ * the model reach the record tools would be both slower and a way for
+ * text somebody else wrote to steer a tool call.
+ *
+ * Returns: (transfer full) (nullable): the reply, or %NULL on error
+ */
+gchar *
+venture_ai_service_complete(
+	VentureAiService	 *self,
+	const gchar		 *system_prompt,
+	const gchar		 *user_text,
+	GError			**error
+);
+
 G_END_DECLS
 
 #endif /* VENTURE_AI_SERVICE_H */

@@ -1025,3 +1025,90 @@ venture_filter_op_arity(VentureFilterOp op)
 		return 1;
 	}
 }
+
+/* --- Workdesk -------------------------------------------------------------- */
+
+static const GEnumValue venture_notification_kind_values[] = {
+	VE(VENTURE_NOTIFICATION_KIND_MENTION,  "mention"),
+	VE(VENTURE_NOTIFICATION_KIND_ASSIGNED, "assigned"),
+	VE(VENTURE_NOTIFICATION_KIND_WATCHED,  "watched"),
+	VE(VENTURE_NOTIFICATION_KIND_SLA,      "sla"),
+	VE(VENTURE_NOTIFICATION_KIND_BUDGET,   "budget"),
+	VE(VENTURE_NOTIFICATION_KIND_RUN,      "run"),
+	VE(VENTURE_NOTIFICATION_KIND_SYSTEM,   "system"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_notification_kind_get_type,
+                         "VentureNotificationKind",
+                         venture_notification_kind_values)
+
+static const GEnumValue venture_sprint_status_values[] = {
+	VE(VENTURE_SPRINT_STATUS_PLANNED,   "planned"),
+	VE(VENTURE_SPRINT_STATUS_ACTIVE,    "active"),
+	VE(VENTURE_SPRINT_STATUS_COMPLETED, "completed"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_sprint_status_get_type,
+                         "VentureSprintStatus",
+                         venture_sprint_status_values)
+
+static const GEnumValue venture_budget_period_values[] = {
+	VE(VENTURE_BUDGET_PERIOD_MONTHLY,  "monthly"),
+	VE(VENTURE_BUDGET_PERIOD_WEEKLY,   "weekly"),
+	VE(VENTURE_BUDGET_PERIOD_ALL_TIME, "all_time"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_budget_period_get_type,
+                         "VentureBudgetPeriod",
+                         venture_budget_period_values)
+
+static const GEnumValue venture_sla_state_values[] = {
+	VE(VENTURE_SLA_STATE_NONE,     "none"),
+	VE(VENTURE_SLA_STATE_OK,       "ok"),
+	VE(VENTURE_SLA_STATE_WARNING,  "warning"),
+	VE(VENTURE_SLA_STATE_BREACHED, "breached"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_sla_state_get_type,
+                         "VentureSlaState",
+                         venture_sla_state_values)
+
+/* --- Webhooks, routing and satisfaction ----------------------------------- */
+
+static const GEnumValue venture_delivery_state_values[] = {
+	VE(VENTURE_DELIVERY_STATE_PENDING,   "pending"),
+	VE(VENTURE_DELIVERY_STATE_SUCCEEDED, "succeeded"),
+	VE(VENTURE_DELIVERY_STATE_FAILED,    "failed"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_delivery_state_get_type,
+                         "VentureDeliveryState",
+                         venture_delivery_state_values)
+
+static const GEnumValue venture_routing_strategy_values[] = {
+	VE(VENTURE_ROUTING_STRATEGY_ROUND_ROBIN, "round_robin"),
+	VE(VENTURE_ROUTING_STRATEGY_LEAST_BUSY,  "least_busy"),
+	VE(VENTURE_ROUTING_STRATEGY_FIRST,       "first"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_routing_strategy_get_type,
+                         "VentureRoutingStrategy",
+                         venture_routing_strategy_values)
+
+static const GEnumValue venture_satisfaction_values[] = {
+	VE(VENTURE_SATISFACTION_UNRATED, "unrated"),
+	VE(VENTURE_SATISFACTION_BAD,     "bad"),
+	VE(VENTURE_SATISFACTION_NEUTRAL, "neutral"),
+	VE(VENTURE_SATISFACTION_GOOD,    "good"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_satisfaction_get_type,
+                         "VentureSatisfaction",
+                         venture_satisfaction_values)

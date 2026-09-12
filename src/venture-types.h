@@ -97,6 +97,20 @@ typedef struct _VentureWorkService		VentureWorkService;
 typedef struct _VentureDashboard		VentureDashboard;
 typedef struct _VentureDashboardWidget		VentureDashboardWidget;
 typedef struct _VentureWidgetKindRegistry	VentureWidgetKindRegistry;
+
+/* --- The workdesk --------------------------------------------------------- */
+
+typedef struct _VentureSavedView		VentureSavedView;
+typedef struct _VentureWatch			VentureWatch;
+typedef struct _VentureNotification		VentureNotification;
+typedef struct _VentureSlaPolicy		VentureSlaPolicy;
+typedef struct _VentureMacro			VentureMacro;
+typedef struct _VentureWorklog			VentureWorklog;
+typedef struct _VentureSprint			VentureSprint;
+typedef struct _VentureAgentBudget		VentureAgentBudget;
+typedef struct _VentureWebhook			VentureWebhook;
+typedef struct _VentureWebhookDelivery		VentureWebhookDelivery;
+typedef struct _VentureRoutingRule		VentureRoutingRule;
 typedef struct _VentureWidgetResult		VentureWidgetResult;
 
 /* --- Registries and infrastructure --------------------------------------- */

@@ -274,6 +274,44 @@ VENTURE_DECLARE_ENTITY(VentureDashboard, venture_dashboard, DASHBOARD)
 VENTURE_DECLARE_ENTITY(VentureDashboardWidget, venture_dashboard_widget,
                        DASHBOARD_WIDGET)
 
+/* --- The workdesk --------------------------------------------------------- */
+
+#define VENTURE_TYPE_SAVED_VIEW (venture_saved_view_get_type())
+VENTURE_DECLARE_ENTITY(VentureSavedView, venture_saved_view, SAVED_VIEW)
+
+#define VENTURE_TYPE_WATCH (venture_watch_get_type())
+VENTURE_DECLARE_ENTITY(VentureWatch, venture_watch, WATCH)
+
+#define VENTURE_TYPE_NOTIFICATION (venture_notification_get_type())
+VENTURE_DECLARE_ENTITY(VentureNotification, venture_notification, NOTIFICATION)
+
+#define VENTURE_TYPE_SLA_POLICY (venture_sla_policy_get_type())
+VENTURE_DECLARE_ENTITY(VentureSlaPolicy, venture_sla_policy, SLA_POLICY)
+
+#define VENTURE_TYPE_MACRO (venture_macro_get_type())
+VENTURE_DECLARE_ENTITY(VentureMacro, venture_macro, MACRO)
+
+#define VENTURE_TYPE_WORKLOG (venture_worklog_get_type())
+VENTURE_DECLARE_ENTITY(VentureWorklog, venture_worklog, WORKLOG)
+
+#define VENTURE_TYPE_SPRINT (venture_sprint_get_type())
+VENTURE_DECLARE_ENTITY(VentureSprint, venture_sprint, SPRINT)
+
+#define VENTURE_TYPE_AGENT_BUDGET (venture_agent_budget_get_type())
+VENTURE_DECLARE_ENTITY(VentureAgentBudget, venture_agent_budget, AGENT_BUDGET)
+
+/* --- Webhooks out and routing --------------------------------------------- */
+
+#define VENTURE_TYPE_WEBHOOK (venture_webhook_get_type())
+VENTURE_DECLARE_ENTITY(VentureWebhook, venture_webhook, WEBHOOK)
+
+#define VENTURE_TYPE_WEBHOOK_DELIVERY (venture_webhook_delivery_get_type())
+VENTURE_DECLARE_ENTITY(VentureWebhookDelivery, venture_webhook_delivery,
+                       WEBHOOK_DELIVERY)
+
+#define VENTURE_TYPE_ROUTING_RULE (venture_routing_rule_get_type())
+VENTURE_DECLARE_ENTITY(VentureRoutingRule, venture_routing_rule, ROUTING_RULE)
+
 #define VENTURE_TYPE_INVOICE (venture_invoice_get_type())
 VENTURE_DECLARE_ENTITY(VentureInvoice, venture_invoice, INVOICE)
 

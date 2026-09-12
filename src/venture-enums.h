@@ -1432,6 +1432,169 @@ GType
 venture_link_kind_get_type(void) G_GNUC_CONST;
 
 /**
+ * VentureNotificationKind:
+ * @VENTURE_NOTIFICATION_KIND_MENTION: somebody wrote @you in a comment
+ * @VENTURE_NOTIFICATION_KIND_ASSIGNED: a ticket was handed to you
+ * @VENTURE_NOTIFICATION_KIND_WATCHED: a record you watch changed
+ * @VENTURE_NOTIFICATION_KIND_SLA: a ticket is about to miss, or missed,
+ *   its service level
+ * @VENTURE_NOTIFICATION_KIND_BUDGET: an agent budget crossed its warning
+ *   line or ran out
+ * @VENTURE_NOTIFICATION_KIND_RUN: a coding run finished, one way or another
+ * @VENTURE_NOTIFICATION_KIND_SYSTEM: anything else the install wants to say
+ *
+ * Why a notification exists. The inbox groups and colours by it, and a
+ * filter on it is how "just the mentions" is answered.
+ */
+typedef enum
+{
+	VENTURE_NOTIFICATION_KIND_MENTION = 0,
+	VENTURE_NOTIFICATION_KIND_ASSIGNED,
+	VENTURE_NOTIFICATION_KIND_WATCHED,
+	VENTURE_NOTIFICATION_KIND_SLA,
+	VENTURE_NOTIFICATION_KIND_BUDGET,
+	VENTURE_NOTIFICATION_KIND_RUN,
+	VENTURE_NOTIFICATION_KIND_SYSTEM
+} VentureNotificationKind;
+
+#define VENTURE_TYPE_NOTIFICATION_KIND (venture_notification_kind_get_type())
+
+GType
+venture_notification_kind_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureSprintStatus:
+ * @VENTURE_SPRINT_STATUS_PLANNED: not started; tickets can still be moved in
+ * @VENTURE_SPRINT_STATUS_ACTIVE: the one being worked
+ * @VENTURE_SPRINT_STATUS_COMPLETED: over; what did not finish rolls forward
+ *
+ * Where a sprint stands. Planned is zero so a sprint made without saying
+ * is one that has not begun.
+ */
+typedef enum
+{
+	VENTURE_SPRINT_STATUS_PLANNED = 0,
+	VENTURE_SPRINT_STATUS_ACTIVE,
+	VENTURE_SPRINT_STATUS_COMPLETED
+} VentureSprintStatus;
+
+#define VENTURE_TYPE_SPRINT_STATUS (venture_sprint_status_get_type())
+
+GType
+venture_sprint_status_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureBudgetPeriod:
+ * @VENTURE_BUDGET_PERIOD_MONTHLY: the calendar month, resetting on the 1st
+ * @VENTURE_BUDGET_PERIOD_WEEKLY: the ISO week, resetting on Monday
+ * @VENTURE_BUDGET_PERIOD_ALL_TIME: never resets; a cap on the whole spend
+ *
+ * The window an agent budget's limit applies to.
+ */
+typedef enum
+{
+	VENTURE_BUDGET_PERIOD_MONTHLY = 0,
+	VENTURE_BUDGET_PERIOD_WEEKLY,
+	VENTURE_BUDGET_PERIOD_ALL_TIME
+} VentureBudgetPeriod;
+
+#define VENTURE_TYPE_BUDGET_PERIOD (venture_budget_period_get_type())
+
+GType
+venture_budget_period_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureSlaState:
+ * @VENTURE_SLA_STATE_NONE: no policy covers the ticket, or it is closed
+ * @VENTURE_SLA_STATE_OK: within the target with room to spare
+ * @VENTURE_SLA_STATE_WARNING: inside the last fifth of the target
+ * @VENTURE_SLA_STATE_BREACHED: the target has passed
+ *
+ * How a ticket stands against one of its service-level clocks. Computed
+ * from the due time and the moment of asking, never stored -- the stored
+ * fact is the due time, which does not change by being looked at.
+ */
+typedef enum
+{
+	VENTURE_SLA_STATE_NONE = 0,
+	VENTURE_SLA_STATE_OK,
+	VENTURE_SLA_STATE_WARNING,
+	VENTURE_SLA_STATE_BREACHED
+} VentureSlaState;
+
+#define VENTURE_TYPE_SLA_STATE (venture_sla_state_get_type())
+
+GType
+venture_sla_state_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureDeliveryState:
+ * @VENTURE_DELIVERY_STATE_PENDING: sent, nothing back yet
+ * @VENTURE_DELIVERY_STATE_SUCCEEDED: the endpoint answered 2xx
+ * @VENTURE_DELIVERY_STATE_FAILED: it answered something else, or nothing
+ *
+ * How one outbound webhook delivery went.
+ */
+typedef enum
+{
+	VENTURE_DELIVERY_STATE_PENDING = 0,
+	VENTURE_DELIVERY_STATE_SUCCEEDED,
+	VENTURE_DELIVERY_STATE_FAILED
+} VentureDeliveryState;
+
+#define VENTURE_TYPE_DELIVERY_STATE (venture_delivery_state_get_type())
+
+GType
+venture_delivery_state_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureRoutingStrategy:
+ * @VENTURE_ROUTING_STRATEGY_ROUND_ROBIN: each new ticket to the next name
+ *   in the list, in turn
+ * @VENTURE_ROUTING_STRATEGY_LEAST_BUSY: to whoever holds the fewest open
+ *   tickets right now
+ * @VENTURE_ROUTING_STRATEGY_FIRST: always the first name; a queue with one
+ *   owner
+ *
+ * How a routing rule picks whom a ticket goes to.
+ */
+typedef enum
+{
+	VENTURE_ROUTING_STRATEGY_ROUND_ROBIN = 0,
+	VENTURE_ROUTING_STRATEGY_LEAST_BUSY,
+	VENTURE_ROUTING_STRATEGY_FIRST
+} VentureRoutingStrategy;
+
+#define VENTURE_TYPE_ROUTING_STRATEGY (venture_routing_strategy_get_type())
+
+GType
+venture_routing_strategy_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureSatisfaction:
+ * @VENTURE_SATISFACTION_UNRATED: nobody has said
+ * @VENTURE_SATISFACTION_BAD: not good
+ * @VENTURE_SATISFACTION_NEUTRAL: adequate
+ * @VENTURE_SATISFACTION_GOOD: good
+ *
+ * What whoever raised a ticket made of how it went. Unrated is zero
+ * deliberately: the column is added to a populated table, and every
+ * historical ticket reads back as "nobody has said", which is true.
+ */
+typedef enum
+{
+	VENTURE_SATISFACTION_UNRATED = 0,
+	VENTURE_SATISFACTION_BAD,
+	VENTURE_SATISFACTION_NEUTRAL,
+	VENTURE_SATISFACTION_GOOD
+} VentureSatisfaction;
+
+#define VENTURE_TYPE_SATISFACTION (venture_satisfaction_get_type())
+
+GType
+venture_satisfaction_get_type(void) G_GNUC_CONST;
+
+/**
  * venture_link_kind_inverse:
  * @kind: a link kind
  *

@@ -1738,6 +1738,376 @@ venture_mcp_tool_dashboard_build(
 	return venture_json_to_string(node, TRUE);
 }
 
+/* --- The workdesk ---------------------------------------------------------- */
+
+static gchar *
+venture_mcp_tool_inbox(
+	VentureMcpServer	 *self,
+	JsonObject		 *arguments,
+	GError			**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	const gchar *action;
+
+	action = (NULL != arguments)
+		? venture_json_object_get_string(arguments, "action", NULL) : NULL;
+
+	if (0 == g_strcmp0(action, "read"))
+	{
+		g_autoptr(JsonBuilder) builder = NULL;
+		g_autoptr(JsonNode) body = NULL;
+
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "id");
+		json_builder_add_int_value(builder,
+			(NULL != arguments)
+				? venture_json_object_get_int(arguments, "id", 0) : 0);
+		json_builder_end_object(builder);
+		body = json_builder_get_root(builder);
+
+		node = venture_mcp_server_request(self, "POST", "/api/v1/inbox/read",
+		                                  body, error);
+	}
+	else if ((NULL == action) || ('\0' == action[0]) ||
+	         (0 == g_strcmp0(action, "list")))
+	{
+		g_autofree gchar *path = NULL;
+		gboolean unread;
+		gint64 limit;
+
+		unread = (NULL != arguments)
+			? venture_json_object_get_bool(arguments, "unread", TRUE) : TRUE;
+		limit = (NULL != arguments)
+			? venture_json_object_get_int(arguments, "limit", 0) : 0;
+		path = g_strdup_printf("/api/v1/inbox?unread=%s&limit=%"
+		                       G_GINT64_FORMAT, unread ? "1" : "0", limit);
+		node = venture_mcp_server_request(self, "GET", path, NULL, error);
+	}
+	else
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "\"%s\" is not an inbox action. Use list or read.",
+		            action);
+		return NULL;
+	}
+
+	if (NULL == node)
+		return NULL;
+
+	return venture_json_to_string(node, TRUE);
+}
+
+static gchar *
+venture_mcp_tool_runs(
+	VentureMcpServer	 *self,
+	JsonObject		 *arguments,
+	GError			**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *path = NULL;
+	const gchar *what;
+	const gchar *state;
+	gint64 limit;
+
+	what = (NULL != arguments)
+		? venture_json_object_get_string(arguments, "what", NULL) : NULL;
+
+	if (0 == g_strcmp0(what, "budgets"))
+	{
+		path = g_strdup("/api/v1/budgets");
+	}
+	else if ((NULL == what) || ('\0' == what[0]) ||
+	         (0 == g_strcmp0(what, "runs")))
+	{
+		g_autofree gchar *escaped = NULL;
+
+		state = (NULL != arguments)
+			? venture_json_object_get_string(arguments, "state", NULL) : NULL;
+		limit = (NULL != arguments)
+			? venture_json_object_get_int(arguments, "limit", 0) : 0;
+		escaped = g_uri_escape_string((NULL != state) ? state : "all", NULL,
+		                              FALSE);
+		path = g_strdup_printf("/api/v1/runs?state=%s&limit=%" G_GINT64_FORMAT,
+		                       escaped, limit);
+	}
+	else
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "\"%s\" is not something venture_runs shows. Use runs "
+		            "or budgets.", what);
+		return NULL;
+	}
+
+	node = venture_mcp_server_request(self, "GET", path, NULL, error);
+
+	if (NULL == node)
+		return NULL;
+
+	return venture_json_to_string(node, TRUE);
+}
+
+static gchar *
+venture_mcp_tool_desk(
+	VentureMcpServer	 *self,
+	JsonObject		 *arguments,
+	GError			**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *path = NULL;
+	const gchar *action;
+	gint64 id;
+
+	action = (NULL != arguments)
+		? venture_json_object_get_string(arguments, "action", NULL) : NULL;
+
+	if ((NULL == action) || ('\0' == action[0]))
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "venture_desk needs an action.");
+		return NULL;
+	}
+
+	id = (NULL != arguments) ? venture_json_object_get_int(arguments, "id", 0)
+	                         : 0;
+
+	if (0 == g_strcmp0(action, "sprints"))
+	{
+		node = venture_mcp_server_request(self, "GET", "/api/v1/sprints", NULL,
+		                                  error);
+	}
+	else if (0 == g_strcmp0(action, "sprint"))
+	{
+		if (!venture_mcp_resolve_argument_id(arguments, &id, error))
+			return NULL;
+
+		path = g_strdup_printf("/api/v1/sprints/%" G_GINT64_FORMAT, id);
+		node = venture_mcp_server_request(self, "GET", path, NULL, error);
+	}
+	else if (0 == g_strcmp0(action, "sla"))
+	{
+		if (!venture_mcp_resolve_argument_id(arguments, &id, error))
+			return NULL;
+
+		path = g_strdup_printf("/api/v1/tickets/%" G_GINT64_FORMAT "/sla", id);
+		node = venture_mcp_server_request(self, "GET", path, NULL, error);
+	}
+	else if (0 == g_strcmp0(action, "activity"))
+	{
+		const gchar *type_name;
+
+		type_name = (NULL != arguments)
+			? venture_json_object_get_string(arguments, "type", NULL) : NULL;
+
+		if ((NULL == type_name) || ('\0' == type_name[0]) ||
+		    !venture_mcp_resolve_argument_id(arguments, &id, error))
+		{
+			if ((NULL == error) || (NULL == *error))
+				g_set_error_literal(error, VENTURE_ERROR,
+				                    VENTURE_ERROR_INVALID_ARGUMENT,
+				                    "activity needs a type and an id.");
+			return NULL;
+		}
+
+		path = g_strdup_printf("/api/v1/activity/%s/%" G_GINT64_FORMAT
+		                       "?limit=%" G_GINT64_FORMAT, type_name, id,
+		                       venture_json_object_get_int(arguments, "limit",
+		                                                   0));
+		node = venture_mcp_server_request(self, "GET", path, NULL, error);
+	}
+	else if ((0 == g_strcmp0(action, "triage")) ||
+	         (0 == g_strcmp0(action, "summarise")) ||
+	         (0 == g_strcmp0(action, "draft")))
+	{
+		/* All three are reads: a triage is a proposal and a draft is a
+		 * draft, so neither needs --apply-writes. */
+		if (!venture_mcp_resolve_argument_id(arguments, &id, error))
+			return NULL;
+
+		if (0 == g_strcmp0(action, "summarise"))
+		{
+			path = g_strdup_printf("/api/v1/tickets/%" G_GINT64_FORMAT
+			                       "/summary", id);
+			node = venture_mcp_server_request(self, "GET", path, NULL, error);
+		}
+		else if (0 == g_strcmp0(action, "draft"))
+		{
+			g_autoptr(JsonBuilder) builder = NULL;
+			g_autoptr(JsonNode) body = NULL;
+
+			builder = json_builder_new();
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "instruction");
+			json_builder_add_string_value(builder,
+				venture_json_object_get_string(arguments, "note", ""));
+			json_builder_end_object(builder);
+			body = json_builder_get_root(builder);
+
+			path = g_strdup_printf("/api/v1/tickets/%" G_GINT64_FORMAT
+			                       "/draft", id);
+			node = venture_mcp_server_request(self, "POST", path, body, error);
+		}
+		else
+		{
+			path = g_strdup_printf("/api/v1/tickets/%" G_GINT64_FORMAT
+			                       "/triage", id);
+			node = venture_mcp_server_request(self, "POST", path, NULL, error);
+		}
+	}
+	else if (0 == g_strcmp0(action, "worklog"))
+	{
+		g_autoptr(JsonBuilder) builder = NULL;
+		g_autoptr(JsonNode) body = NULL;
+		g_autofree gchar *write_path = NULL;
+		const gchar *hours;
+
+		if (!venture_mcp_resolve_argument_id(arguments, &id, error))
+			return NULL;
+
+		hours = venture_json_object_get_string(arguments, "hours", NULL);
+
+		/* A worklog is a record, so it goes through the generic create
+		 * and stages exactly as one would. */
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "ticket_id");
+		json_builder_add_int_value(builder, id);
+		json_builder_set_member_name(builder, "hours");
+		json_builder_add_double_value(builder,
+			(NULL != hours) ? g_ascii_strtod(hours, NULL) : 0.0);
+		json_builder_set_member_name(builder, "note");
+		json_builder_add_string_value(builder,
+			venture_json_object_get_string(arguments, "note", ""));
+		json_builder_end_object(builder);
+		body = json_builder_get_root(builder);
+
+		write_path = venture_mcp_write_path(self, "/api/v1/worklog");
+		node = venture_mcp_server_request(self, "POST", write_path, body,
+		                                  error);
+	}
+	else if (0 == g_strcmp0(action, "macro"))
+	{
+		g_autoptr(JsonBuilder) builder = NULL;
+		g_autoptr(JsonNode) body = NULL;
+
+		if (!venture_mcp_resolve_argument_id(arguments, &id, error))
+			return NULL;
+
+		if (!venture_mcp_require_apply_writes(self, "Applying a macro",
+			"propose its reply with venture_create on ticket_comment and "
+			"its changes with venture_update on the ticket, which stage",
+			error))
+			return NULL;
+
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "macro");
+		json_builder_add_string_value(builder,
+			venture_json_object_get_string(arguments, "macro", ""));
+		json_builder_end_object(builder);
+		body = json_builder_get_root(builder);
+
+		path = g_strdup_printf("/api/v1/tickets/%" G_GINT64_FORMAT "/macro",
+		                       id);
+		node = venture_mcp_server_request(self, "POST", path, body, error);
+	}
+	else if (0 == g_strcmp0(action, "fix_ticket"))
+	{
+		if (!venture_mcp_resolve_argument_id(arguments, &id, error))
+			return NULL;
+
+		if (!venture_mcp_require_apply_writes(self,
+			"Opening an incident's fix ticket",
+			"propose the ticket with venture_create on ticket and set the "
+			"incident's ticket_id with venture_update, which stage", error))
+			return NULL;
+
+		path = g_strdup_printf("/api/v1/incidents/%" G_GINT64_FORMAT "/ticket",
+		                       id);
+		node = venture_mcp_server_request(self, "POST", path, NULL, error);
+	}
+	else if (0 == g_strcmp0(action, "bulk"))
+	{
+		g_autoptr(JsonBuilder) builder = NULL;
+		g_autoptr(JsonNode) body = NULL;
+		g_auto(GStrv) parts = NULL;
+		const gchar *type_name;
+		const gchar *ids;
+		gsize i;
+
+		type_name = venture_json_object_get_string(arguments, "type", NULL);
+		ids = venture_json_object_get_string(arguments, "ids", NULL);
+
+		if ((NULL == type_name) || (NULL == ids))
+		{
+			g_set_error_literal(error, VENTURE_ERROR,
+			                    VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "bulk needs a type and comma-separated ids.");
+			return NULL;
+		}
+
+		if (!venture_mcp_require_apply_writes(self, "A bulk change",
+			"change each record with venture_update, which stages each",
+			error))
+			return NULL;
+
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "ids");
+		json_builder_begin_array(builder);
+		parts = g_strsplit_set(ids, ", ", -1);
+
+		for (i = 0; NULL != parts[i]; i++)
+		{
+			if ('\0' != parts[i][0])
+				json_builder_add_int_value(builder,
+					g_ascii_strtoll(parts[i], NULL, 10));
+		}
+
+		json_builder_end_array(builder);
+
+		if (venture_json_object_get_bool(arguments, "delete", FALSE))
+		{
+			json_builder_set_member_name(builder, "delete");
+			json_builder_add_boolean_value(builder, TRUE);
+		}
+		else if (json_object_has_member(arguments, "changes"))
+		{
+			json_builder_set_member_name(builder, "changes");
+			json_builder_add_value(builder,
+				json_node_ref(json_object_get_member(arguments, "changes")));
+		}
+
+		json_builder_end_object(builder);
+		body = json_builder_get_root(builder);
+
+		path = g_strdup_printf("/api/v1/%s/bulk", type_name);
+		node = venture_mcp_server_request(self, "POST", path, body, error);
+	}
+	else if (0 == g_strcmp0(action, "sweep"))
+	{
+		if (!venture_mcp_require_apply_writes(self, "A service-level sweep",
+			"read the clocks with action sla; the board and the inbox "
+			"sweep on their own when opened", error))
+			return NULL;
+
+		node = venture_mcp_server_request(self, "POST", "/api/v1/sla/sweep",
+		                                  NULL, error);
+	}
+	else
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "\"%s\" is not a desk action.", action);
+		return NULL;
+	}
+
+	if (NULL == node)
+		return NULL;
+
+	return venture_json_to_string(node, TRUE);
+}
+
 static gchar *
 venture_mcp_tool_factory(
 	VentureMcpServer	 *self,
@@ -1869,6 +2239,15 @@ venture_mcp_dispatch_tool(
 
 	if (0 == g_strcmp0(name, "venture_factory"))
 		return venture_mcp_tool_factory(self, arguments, error);
+
+	if (0 == g_strcmp0(name, "venture_inbox"))
+		return venture_mcp_tool_inbox(self, arguments, error);
+
+	if (0 == g_strcmp0(name, "venture_runs"))
+		return venture_mcp_tool_runs(self, arguments, error);
+
+	if (0 == g_strcmp0(name, "venture_desk"))
+		return venture_mcp_tool_desk(self, arguments, error);
 
 	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
 	            "There is no tool called \"%s\".", name);

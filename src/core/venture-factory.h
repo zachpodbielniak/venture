@@ -165,6 +165,100 @@ venture_factory_describe(
 	GError		**error
 );
 
+/* --- Budgets, runs and incidents ----------------------------------------- */
+
+/**
+ * venture_factory_budgets_describe:
+ * @context: the wiring
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Every active agent budget with what has been spent against it in the
+ * current window: the limit, the spend summed from the runs' own cost,
+ * the percentage, how many runs counted, and whether the warning line or
+ * the limit has been crossed. What `GET /api/v1/budgets` and the Runs
+ * page show.
+ *
+ * Returns: (transfer full) (nullable): a JSON array, or %NULL on error
+ */
+JsonNode *
+venture_factory_budgets_describe(
+	VentureContext	 *context,
+	GError		**error
+);
+
+/**
+ * venture_factory_budget_allows_run:
+ * @context: the wiring
+ * @repo_id: the repository the run would be against
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Asked before a run starts. Every active budget covering the repository
+ * is checked against its window's spend: one that is exhausted and set to
+ * hard-stop refuses the run with %VENTURE_ERROR_CONFLICT, and either way
+ * a budget crossing its warning line or its limit for the first time this
+ * window tells the owners and admins once. A budget whose limit is in a
+ * currency the runs are not charged in cannot be compared and does not
+ * refuse anything.
+ *
+ * Returns: %TRUE if a run may start
+ */
+gboolean
+venture_factory_budget_allows_run(
+	VentureContext	 *context,
+	gint64		  repo_id,
+	GError		**error
+);
+
+/**
+ * venture_factory_runs_describe:
+ * @context: the wiring
+ * @organization_ids: (nullable) (array length=n_organizations): the scope
+ * @n_organizations: how many
+ * @state: (nullable): only runs in this state, by nick; %NULL for all
+ * @limit: at most this many, newest first; 0 for 50
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Mission control: the coding runs across every repository with their
+ * ticket, state, runner, model, tokens, cost and duration, plus totals --
+ * how many are live, how many succeeded and failed, what they cost, what
+ * a successful run costs on average. `GET /api/v1/runs`, the Runs page,
+ * `venturectl runs` and the assistant's runs tool all read this.
+ *
+ * Returns: (transfer full) (nullable): a JSON object, or %NULL on error
+ */
+JsonNode *
+venture_factory_runs_describe(
+	VentureContext	 *context,
+	const gint64	 *organization_ids,
+	gsize		  n_organizations,
+	const gchar	 *state,
+	guint		  limit,
+	GError		**error
+);
+
+/**
+ * venture_factory_open_fix_ticket:
+ * @context: the wiring
+ * @incident: the incident, updated in place with the ticket
+ * @actor: (nullable): who asked
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Opens the bug for an incident: a ticket titled after it, typed as a
+ * bug, with its priority from the severity, on the repository of the
+ * release that was running, linked back from the incident's ticket field.
+ * An incident that already names a ticket is refused rather than given a
+ * second one.
+ *
+ * Returns: (transfer full) (nullable): the ticket
+ */
+VentureEntity *
+venture_factory_open_fix_ticket(
+	VentureContext		 *context,
+	VentureEntity		 *incident,
+	const VentureActor	 *actor,
+	GError			**error
+);
+
 G_END_DECLS
 
 #endif /* VENTURE_FACTORY_H */

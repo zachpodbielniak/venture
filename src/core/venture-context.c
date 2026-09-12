@@ -97,6 +97,19 @@ venture_context_new(
 	 * report that exists, one home page at a time. */
 	venture_dashboard_install_validators(self);
 
+	/* The workdesk: the inbox listens to the audit trail, a ticket gets
+	 * its service-level clocks on its first save, and a worklog keeps
+	 * its ticket's total in step. All on every writer. */
+	venture_notify_install(self);
+	venture_sla_install(self);
+	venture_desk_install(self);
+
+	/* Who a new ticket goes to, and who outside hears that it changed.
+	 * Routing is a validator so it runs before the row is written;
+	 * webhooks listen to the audit trail, like the inbox. */
+	venture_routing_install(self);
+	venture_webhook_install(self);
+
 	/*
 	 * The confirmation queue exists whether or not AI does. It began as
 	 * the assistant's, but a change proposed by an outside agent holding

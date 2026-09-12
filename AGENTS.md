@@ -422,3 +422,92 @@ than one that fails.
   export of the dashboard it makes would be, and `test-dashboard` imports
   every one, so a template naming a field that does not exist fails the
   suite rather than a user.
+
+## The workdesk
+
+- **The inbox is fed by the audit signal, and only there.**
+  `src/core/venture-notify.c` listens to `VentureDatabase::audit`; a
+  mention, an assignment, a watched change and a finished run all become
+  notifications from that one handler, so every writer tells the same
+  people. Never send a "watched" notification from a page handler. The
+  handler skips the system actor's updates -- a first-reply stamp, a
+  logged-hours total, a breach mark -- or every event would be told twice.
+  Notifications about `notification`, `watch`, the audit log and chat are
+  refused by type, which is what stops the loop.
+- **Derived writes bump the version.** The first-reply stamp
+  (`venture-sla.c`), the logged-hours roll-up (`venture-desk.c`) and a
+  budget's warned-at (`venture-factory.c`) are saves of the record, so an
+  object read before them is a version behind and its save conflicts.
+  `venture_desk_apply_macro()` saves the ticket *before* its reply for this
+  reason; a test that comments on a ticket must re-read it before saving
+  it again. Four tests in `tests/test-desk.c` were written after hitting
+  exactly this.
+- **A service level's clocks are set once, on the first save, and never
+  moved.** The validator returns early when either due time is set or when
+  `previous` is non-NULL. Do not "fix" a stale deadline by recomputing it
+  on priority change -- a deadline that moves is not a deadline.
+- **The sweep is lazy and bounded.** `venture_sla_sweep()` runs from the
+  board, the inbox and `POST /api/v1/sla/sweep`, never from a timer:
+  coding runs hold the only background thread and may not touch the
+  database.
+- **A bulk edit is one transaction and re-uses the single-record path.**
+  `venture_desk_bulk_update()` calls `venture_entity_set_field_from_string()`
+  and `venture_database_save()` per record inside one `begin`/`commit`, so
+  every validator and every audit entry is exactly what a form would
+  produce. Do not add a SQL `UPDATE ... WHERE id IN` fast path.
+- **A budget sums the runs' own `cost`; nothing stores a running total.**
+  `venture_factory_budget_allows_run()` is asked from
+  `venture_work_service_start_for_ticket()` before the rule is resolved.
+  The warned-at and exhausted-at stamps are compared against the window's
+  start, which is how a warning is sent once per window rather than once.
+- **Inbox and watch rows are owner-only through the generic routes**, like
+  chat; `/inbox`, `/api/v1/inbox` and the watch button filter to the caller.
+  `tests/test-auth.c` lists every new route.
+
+## Webhooks out, routing and the assistant at the desk
+
+- **Outbound delivery is asynchronous on the main loop, never a thread.**
+  `venture_webhook_send()` fires from inside a database write; a blocking
+  POST there would make every save in the program wait on somebody else's
+  server. The completion callback writes the delivery record on the main
+  thread, which is also why it holds a reference on the context.
+- **`venture_webhook_test()` waits in a nested main loop rather than
+  blocking.** It has to return an answer -- somebody pressed Test -- but
+  `soup_session_send_and_read()` stops every source in the process,
+  including the one serving the far end when the far end is this install.
+  That is the first thing an operator tries, and it deadlocked until the
+  timeout. A nested loop on the main thread is safe here for the reason
+  the automation engine's are not: no handler of ours is on a worker
+  underneath it.
+- **The quiet list is what stops the loop.** A webhook about a
+  `webhook_delivery` would fire a webhook about a webhook. `webhook`,
+  `webhook_delivery`, `notification`, `watch`, the audit log, chat, the
+  KB's derived rows, `api_token` and `user` are never published. Adding a
+  type that the sender writes means adding it there.
+- **A signature is an HMAC-SHA256 over the exact body bytes**, hex,
+  prefixed `sha256=`, in `X-Venture-Signature` -- deliberately the same
+  shape VENTURE verifies inbound from a forge. Do not change one without
+  the other.
+- **Ten consecutive failures switch a webhook off** and tell the admins.
+  There is no retry: a retry that is not idempotent at the far end is
+  worse than a gap, and the delivery id is what lets a receiver decide.
+- **`webhook` is owner-only and `webhook_delivery` refuses writes**, via
+  `venture_web_require_for_type()` and `venture_web_type_accepts_writes()`.
+  The row names the host this install's data is posted to and holds the
+  secret; the delivery is evidence. The assistant is given no webhook tool
+  at all, exactly as it is given no way to read a forge token.
+- **Routing is a save validator, not a signal handler.** Assigning after
+  the write would be a second save, a second audit entry and a
+  notification about a change nobody made. It only ever fires when
+  `previous` is NULL and the assignee is empty.
+- **The three ticket judgements run on the toolless executor.**
+  `VentureAiService` holds a second `AiToolExecutor` that never gets a
+  tool, and `venture_ai_service_complete()` runs against it. A ticket's
+  text is a stranger's writing; every prompt in `venture-ai-assist.c` also
+  says so and says to ignore instructions inside it. Do not route these
+  through `self->executor`.
+- **A triage is a proposal and a draft is a draft.** `..._apply_triage()`
+  goes through `venture_entity_set_field_from_string()`, so an invented
+  enum value changes nothing, and it merges tags rather than replacing
+  them. Nothing in this file posts a comment or saves a ticket -- the
+  caller does, under the ordinary write policy.

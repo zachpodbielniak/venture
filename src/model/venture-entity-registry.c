@@ -685,6 +685,19 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_dashboard_get_type,
 		venture_dashboard_widget_get_type,
 
+		venture_saved_view_get_type,
+		venture_watch_get_type,
+		venture_notification_get_type,
+		venture_sla_policy_get_type,
+		venture_macro_get_type,
+		venture_worklog_get_type,
+		venture_sprint_get_type,
+		venture_agent_budget_get_type,
+
+		venture_webhook_get_type,
+		venture_webhook_delivery_get_type,
+		venture_routing_rule_get_type,
+
 		venture_plugin_config_get_type,
 
 		venture_user_get_type,

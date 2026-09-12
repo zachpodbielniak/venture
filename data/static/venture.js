@@ -18,6 +18,10 @@
 	var STORAGE_PANEL = "venture.ai.open";
 	var STORAGE_THREAD = "venture.ai.thread";
 	var STORAGE_WIDTH = "venture.ai.width";
+	var STORAGE_RECENT = "venture.palette.recent";
+
+	/* The moment a "g" was pressed, for the two-key jumps. */
+	var pendingGo = 0;
 
 	/*
 	 * What gets a scroll-entry animation: whole content blocks only.
@@ -863,6 +867,11 @@
 			if (event.key === "Escape") {
 				var open = document.querySelector(".modal-backdrop");
 
+				if (paletteState) {
+					closePalette();
+					return;
+				}
+
 				if (open) {
 					open.remove();
 					return;
@@ -881,21 +890,60 @@
 				return;
 			}
 
-			/* Ctrl+K goes to search from anywhere, like every other tool
-			 * with a command bar. */
+			/* Ctrl+K opens the palette from anywhere, like every other
+			 * tool with a command bar. The sidebar search box stays for
+			 * a browser without scripting. */
 			if (event.key === "k" && (event.ctrlKey || event.metaKey)) {
-				var global = document.querySelector("[data-global-search]");
+				event.preventDefault();
+				openPalette();
+				return;
+			}
 
-				if (global) {
+			if (isTyping(event.target)) {
+				return;
+			}
+
+			/* Two-key jumps: g then a letter, within a second. */
+			if (pendingGo && Date.now() - pendingGo < 1000) {
+				var jumps = {
+					i: "/inbox", t: "/tickets", d: "/", r: "/runs",
+					s: "/sprints", f: "/factory", v: "/views",
+					b: "/dashboards"
+				};
+
+				pendingGo = 0;
+
+				if (jumps[event.key]) {
 					event.preventDefault();
-					global.focus();
-					global.select();
+					window.location.href = jumps[event.key];
+					return;
+				}
+			}
+
+			if (event.key === "g") {
+				pendingGo = Date.now();
+				return;
+			}
+
+			/* c makes a new one of whatever the page lists. */
+			if (event.key === "c") {
+				var create = document.querySelector(
+					".page-actions a.btn-primary[href$=\"/new\"]");
+
+				if (create) {
+					event.preventDefault();
+					window.location.href = create.getAttribute("href");
 				}
 
 				return;
 			}
 
-			if (isTyping(event.target)) {
+			if (event.key === "j" || event.key === "k" || event.key === "x"
+			    || event.key === "Enter") {
+				if (moveListCursor(event.key)) {
+					event.preventDefault();
+				}
+
 				return;
 			}
 
@@ -926,8 +974,17 @@
 
 	function showShortcuts() {
 		var rows = [
+			["Ctrl + K", "Command palette: pages, records, new\u2026"],
 			["/", "Focus search"],
-			["Ctrl + K", "Global search"],
+			["g i", "Inbox"],
+			["g t", "Tickets"],
+			["g r", "Runs"],
+			["g s", "Sprints"],
+			["g d", "Home"],
+			["c", "New record, on a list"],
+			["j / k", "Move down / up a list"],
+			["x", "Select the row, for a bulk edit"],
+			["Enter", "Open the row"],
 			["Ctrl + /", "Toggle the AI panel"],
 			["t", "Cycle theme"],
 			["Esc", "Close dialog or panel"],
@@ -1082,6 +1139,7 @@
 		document.body.addEventListener("htmx:afterSwap", function (event) {
 			wireRowLinks(event.detail && event.detail.target);
 			wireComposer();
+			wireAssist(document);
 			clearTyping();
 
 			/* The server may have OOB-swapped the hidden thread field;
@@ -1113,6 +1171,610 @@
 		document.body.addEventListener("htmx:sendError", function () {
 			clearTyping();
 			toast("Cannot reach the server", "negative", 6000);
+		});
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* The command palette                                                 */
+	/* ------------------------------------------------------------------ */
+
+	/*
+	 * One box that goes anywhere: pages, record types with their New,
+	 * and records by name. What it offers comes from /api/v1/palette,
+	 * which reads the same navigation table the sidebar does, so the
+	 * two cannot disagree about what exists. The last few picks are
+	 * kept per browser and offered first on an empty box.
+	 */
+	var paletteState = null;
+
+	function recentPicks() {
+		try {
+			return JSON.parse(window.localStorage.getItem(STORAGE_RECENT)
+			                  || "[]");
+		} catch (e) {
+			return [];
+		}
+	}
+
+	function rememberPick(item) {
+		try {
+			var list = recentPicks().filter(function (entry) {
+				return entry.url !== item.url;
+			});
+
+			list.unshift({ label: item.label, url: item.url, kind: item.kind });
+			window.localStorage.setItem(STORAGE_RECENT,
+			                            JSON.stringify(list.slice(0, 8)));
+		} catch (e) {
+			/* Nothing to remember with. */
+		}
+	}
+
+	function closePalette() {
+		if (paletteState) {
+			paletteState.backdrop.remove();
+			paletteState = null;
+		}
+	}
+
+	function openPalette() {
+		if (paletteState) {
+			paletteState.input.focus();
+			return;
+		}
+
+		var backdrop = document.createElement("div");
+
+		backdrop.className = "palette-backdrop";
+		backdrop.innerHTML =
+			"<div class=\"palette\" role=\"dialog\" aria-modal=\"true\">" +
+			"<input class=\"palette-input\" type=\"text\" " +
+			"placeholder=\"Go to, open, or make\u2026\" " +
+			"autocomplete=\"off\" spellcheck=\"false\">" +
+			"<ul class=\"palette-list\"></ul>" +
+			"<div class=\"palette-hint\"><span><kbd>\u2191</kbd><kbd>\u2193</kbd> " +
+			"move</span><span><kbd>Enter</kbd> open</span>" +
+			"<span><kbd>Esc</kbd> close</span></div></div>";
+
+		backdrop.addEventListener("click", function (event) {
+			if (event.target === backdrop) {
+				closePalette();
+			}
+		});
+
+		document.body.appendChild(backdrop);
+
+		paletteState = {
+			backdrop: backdrop,
+			input: backdrop.querySelector(".palette-input"),
+			list: backdrop.querySelector(".palette-list"),
+			items: [],
+			cursor: 0,
+			timer: null,
+			request: 0
+		};
+
+		paletteState.input.addEventListener("input", function () {
+			if (paletteState.timer) {
+				window.clearTimeout(paletteState.timer);
+			}
+
+			paletteState.timer = window.setTimeout(refreshPalette, 120);
+		});
+
+		paletteState.input.addEventListener("keydown", function (event) {
+			if (event.key === "ArrowDown") {
+				event.preventDefault();
+				setPaletteCursor(paletteState.cursor + 1);
+			} else if (event.key === "ArrowUp") {
+				event.preventDefault();
+				setPaletteCursor(paletteState.cursor - 1);
+			} else if (event.key === "Enter") {
+				event.preventDefault();
+				pickPalette(paletteState.items[paletteState.cursor]);
+			} else if (event.key === "Escape") {
+				event.preventDefault();
+				closePalette();
+			}
+		});
+
+		paletteState.input.focus();
+		refreshPalette();
+	}
+
+	function setPaletteCursor(index) {
+		if (!paletteState || !paletteState.items.length) {
+			return;
+		}
+
+		var n = paletteState.items.length;
+
+		paletteState.cursor = ((index % n) + n) % n;
+
+		paletteState.list.querySelectorAll(".palette-item").forEach(function (el, i) {
+			el.classList.toggle("active", i === paletteState.cursor);
+
+			if (i === paletteState.cursor && el.scrollIntoView) {
+				el.scrollIntoView({ block: "nearest" });
+			}
+		});
+	}
+
+	function pickPalette(item) {
+		if (!item) {
+			return;
+		}
+
+		rememberPick(item);
+		closePalette();
+		window.location.href = item.url;
+	}
+
+	function refreshPalette() {
+		var q = paletteState.input.value.trim();
+		var request = ++paletteState.request;
+
+		/* An empty box offers what was picked recently, without a round
+		 * trip; anything typed asks the server. */
+		if (!q) {
+			renderPalette([{ group: "Recent", items: recentPicks().map(function (r) {
+				return { label: r.label, url: r.url, kind: r.kind || "" };
+			}) }], "Type to find a page, a record type, or a record.");
+			return;
+		}
+
+		fetch("/api/v1/palette?q=" + encodeURIComponent(q), {
+			credentials: "same-origin",
+			headers: { "Accept": "application/json" }
+		}).then(function (response) {
+			return response.ok ? response.json() : null;
+		}).then(function (data) {
+			if (!data || !paletteState || request !== paletteState.request) {
+				return;
+			}
+
+			var groups = [];
+			var pages = (data.pages || []).map(function (p) {
+				return { label: p.label, url: p.url, kind: "page" };
+			});
+			var news = (data.types || []).map(function (t) {
+				return { label: "New " + t.label.replace(/s$/, ""),
+				         url: t.new_url, kind: t.type };
+			});
+			var lists = (data.types || []).map(function (t) {
+				return { label: "All " + t.label, url: t.url, kind: t.type };
+			});
+			var records = (data.records || []).map(function (r) {
+				return { label: r.label, url: r.url, kind: r.type };
+			});
+
+			if (records.length) { groups.push({ group: "Records", items: records }); }
+			if (pages.length)   { groups.push({ group: "Pages", items: pages }); }
+			if (lists.length)   { groups.push({ group: "Lists", items: lists }); }
+			if (news.length)    { groups.push({ group: "Make", items: news }); }
+
+			renderPalette(groups, "Nothing matches \u201c" + q + "\u201d.");
+		}).catch(function () {
+			/* The palette is a convenience; a failed lookup shows nothing. */
+		});
+	}
+
+	function renderPalette(groups, emptyText) {
+		var list = paletteState.list;
+		var items = [];
+
+		list.innerHTML = "";
+
+		groups.forEach(function (group) {
+			if (!group.items.length) {
+				return;
+			}
+
+			var heading = document.createElement("li");
+
+			heading.className = "palette-group";
+			heading.textContent = group.group;
+			list.appendChild(heading);
+
+			group.items.forEach(function (item) {
+				var el = document.createElement("li");
+				var kind = document.createElement("span");
+
+				el.className = "palette-item";
+				el.textContent = item.label;
+				kind.className = "palette-kind";
+				kind.textContent = item.kind || "";
+				el.appendChild(kind);
+
+				el.addEventListener("mouseenter", function () {
+					setPaletteCursor(items.indexOf(item));
+				});
+				el.addEventListener("click", function () {
+					pickPalette(item);
+				});
+
+				list.appendChild(el);
+				items.push(item);
+			});
+		});
+
+		if (!items.length) {
+			var empty = document.createElement("li");
+
+			empty.className = "palette-empty";
+			empty.textContent = emptyText;
+			list.appendChild(empty);
+		}
+
+		paletteState.items = items;
+		paletteState.cursor = 0;
+		setPaletteCursor(0);
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* Lists: the keyboard cursor and bulk edits                          */
+	/* ------------------------------------------------------------------ */
+
+	/*
+	 * j and k walk the rows of a list, Enter opens the one under the
+	 * cursor, x ticks it. The cursor is a class on the row, so it is
+	 * visible and survives a re-render of the bulk bar.
+	 */
+	function moveListCursor(key) {
+		var table = document.querySelector("table[data-list]");
+
+		if (!table) {
+			return false;
+		}
+
+		var rows = Array.prototype.slice.call(table.querySelectorAll("tbody tr"));
+
+		if (!rows.length) {
+			return false;
+		}
+
+		var current = rows.findIndex(function (row) {
+			return row.classList.contains("cursor");
+		});
+
+		if (key === "j" || key === "k") {
+			var next = current < 0 ? 0 : current + (key === "j" ? 1 : -1);
+
+			next = Math.max(0, Math.min(rows.length - 1, next));
+			rows.forEach(function (row, i) {
+				row.classList.toggle("cursor", i === next);
+			});
+			rows[next].scrollIntoView({ block: "nearest" });
+			return true;
+		}
+
+		if (current < 0) {
+			return false;
+		}
+
+		if (key === "Enter") {
+			var href = rows[current].getAttribute("data-href");
+
+			if (href) {
+				window.location.href = href;
+			}
+
+			return true;
+		}
+
+		if (key === "x") {
+			var box = rows[current].querySelector("[data-bulk-id]");
+
+			if (box) {
+				box.checked = !box.checked;
+				box.dispatchEvent(new Event("change", { bubbles: true }));
+			}
+
+			return true;
+		}
+
+		return false;
+	}
+
+	/*
+	 * The bulk bar appears when a row is ticked and carries the ids in
+	 * a hidden field, so the form works exactly as it would with the
+	 * ids typed in. Choosing an enum or boolean field swaps the value
+	 * box for a select of its choices, which the option carries.
+	 */
+	function wireBulk() {
+		var bar = document.querySelector("[data-bulk-bar]");
+
+		if (!bar) {
+			return;
+		}
+
+		var ids = bar.querySelector("[data-bulk-ids]");
+		var count = bar.querySelector("[data-bulk-count]");
+		var field = bar.querySelector("[data-bulk-field]");
+		var slot = bar.querySelector("[data-bulk-value-slot]");
+		var all = document.querySelector("[data-bulk-all]");
+
+		function boxes() {
+			return Array.prototype.slice.call(
+				document.querySelectorAll("[data-bulk-id]"));
+		}
+
+		function sync() {
+			var picked = boxes().filter(function (box) { return box.checked; });
+
+			picked.forEach(function (box) {
+				box.closest("tr").classList.add("selected");
+			});
+			boxes().filter(function (box) { return !box.checked; })
+				.forEach(function (box) {
+					box.closest("tr").classList.remove("selected");
+				});
+
+			ids.value = picked.map(function (box) {
+				return box.getAttribute("data-bulk-id");
+			}).join(",");
+			count.textContent = picked.length + " selected";
+			bar.hidden = picked.length === 0;
+
+			if (all) {
+				all.checked = picked.length > 0 && picked.length === boxes().length;
+			}
+		}
+
+		function valueControl() {
+			var option = field.options[field.selectedIndex];
+			var choices = option ? option.getAttribute("data-options") : null;
+
+			if (choices) {
+				var select = document.createElement("select");
+
+				select.name = "value";
+				select.setAttribute("data-bulk-value", "");
+				choices.split(",").forEach(function (choice) {
+					var opt = document.createElement("option");
+
+					opt.value = choice;
+					opt.textContent = choice;
+					select.appendChild(opt);
+				});
+				slot.innerHTML = "";
+				slot.appendChild(select);
+			} else if (!slot.querySelector("input")) {
+				slot.innerHTML = "<input type=\"text\" name=\"value\" " +
+				                 "placeholder=\"New value\" data-bulk-value>";
+			}
+		}
+
+		document.addEventListener("change", function (event) {
+			if (event.target.matches("[data-bulk-id]")) {
+				sync();
+			}
+		});
+
+		if (all) {
+			all.addEventListener("change", function () {
+				boxes().forEach(function (box) { box.checked = all.checked; });
+				sync();
+			});
+		}
+
+		field.addEventListener("change", valueControl);
+		valueControl();
+
+		bar.querySelector("[data-bulk-clear]").addEventListener("click", function () {
+			boxes().forEach(function (box) { box.checked = false; });
+			sync();
+		});
+
+		bar.querySelector("[data-bulk-delete]").addEventListener("click", function (event) {
+			var n = ids.value ? ids.value.split(",").length : 0;
+
+			if (!window.confirm("Delete " + n + " record" + (n === 1 ? "" : "s")
+			                    + "? They can be restored.")) {
+				event.preventDefault();
+			}
+		});
+
+		sync();
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* The inbox and watching                                              */
+	/* ------------------------------------------------------------------ */
+
+	/*
+	 * The count in the sidebar is polled gently, and marking one read is
+	 * done in place: the row slides away and the count drops, without a
+	 * reload. Both fall back to the plain form and page load.
+	 */
+	function wireInbox() {
+		var badge = document.querySelector("[data-inbox-count]");
+
+		function setCount(n) {
+			if (!badge) {
+				return;
+			}
+
+			var was = parseInt(badge.textContent, 10) || 0;
+
+			badge.textContent = n;
+			badge.classList.toggle("empty", n === 0);
+
+			if (n > was) {
+				badge.classList.remove("bump");
+				void badge.offsetWidth;
+				badge.classList.add("bump");
+			}
+		}
+
+		if (badge) {
+			window.setInterval(function () {
+				if (document.hidden) {
+					return;
+				}
+
+				fetch("/inbox/count", { credentials: "same-origin",
+				                        headers: { "Accept": "application/json" } })
+					.then(function (r) { return r.ok ? r.json() : null; })
+					.then(function (data) {
+						if (data && typeof data.unread === "number") {
+							setCount(data.unread);
+						}
+					})
+					.catch(function () {});
+			}, 45000);
+		}
+
+		document.querySelectorAll("[data-inbox-read]").forEach(function (form) {
+			form.addEventListener("submit", function (event) {
+				var item = form.closest("[data-notification]");
+				var data = new URLSearchParams(new FormData(form));
+
+				event.preventDefault();
+				data.set("async", "1");
+
+				fetch(form.getAttribute("action"), {
+					method: "POST",
+					credentials: "same-origin",
+					headers: { "Content-Type": "application/x-www-form-urlencoded" },
+					body: data.toString()
+				}).then(function (response) {
+					if (!response.ok) {
+						throw new Error("read failed");
+					}
+
+					if (item) {
+						item.classList.add("leaving");
+						window.setTimeout(function () {
+							item.classList.remove("unread");
+							item.classList.remove("leaving");
+							form.remove();
+						}, 350);
+					}
+
+					if (badge) {
+						setCount(Math.max(0, (parseInt(badge.textContent, 10) || 0) - 1));
+					}
+				}).catch(function () {
+					form.submit();
+				});
+			});
+		});
+
+		document.querySelectorAll("[data-watch]").forEach(function (form) {
+			form.addEventListener("submit", function (event) {
+				var data = new URLSearchParams(new FormData(form));
+				var button = form.querySelector("button");
+				var action = form.querySelector("[name=action]");
+
+				event.preventDefault();
+				data.set("async", "1");
+
+				fetch(form.getAttribute("action"), {
+					method: "POST",
+					credentials: "same-origin",
+					headers: { "Content-Type": "application/x-www-form-urlencoded" },
+					body: data.toString()
+				}).then(function (response) {
+					if (!response.ok) {
+						throw new Error("watch failed");
+					}
+
+					var watching = action.value === "watch";
+
+					action.value = watching ? "unwatch" : "watch";
+					button.classList.toggle("watching", watching);
+					button.lastChild.textContent = watching ? " Watching" : " Watch";
+					toast(watching ? "You will be told when this changes"
+					               : "No longer watching", "positive");
+				}).catch(function () {
+					form.submit();
+				});
+			});
+		});
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* The assistant's cards                                               */
+	/* ------------------------------------------------------------------ */
+
+	/*
+	 * A summary or a drafted reply arrives as a card with two buttons:
+	 * copy it, or put it in the comment composer. "Use it" fills the box
+	 * and focuses it rather than posting: a reply that sent itself would
+	 * be the one thing in this program that reached a customer without
+	 * anybody reading it.
+	 */
+	function wireAssist(root) {
+		(root || document).querySelectorAll("[data-assist-copy]").forEach(function (button) {
+			if (button.ventureWired) {
+				return;
+			}
+
+			button.ventureWired = true;
+			button.addEventListener("click", function () {
+				var body = button.closest(".assist-card")
+					.querySelector("[data-assist-body]");
+
+				if (!body || !navigator.clipboard) {
+					return;
+				}
+
+				navigator.clipboard.writeText(body.textContent).then(function () {
+					toast("Copied", "positive");
+				}).catch(function () {
+					toast("Could not copy that", "negative");
+				});
+			});
+		});
+
+		(root || document).querySelectorAll("[data-assist-use]").forEach(function (button) {
+			if (button.ventureWired) {
+				return;
+			}
+
+			button.ventureWired = true;
+			button.addEventListener("click", function () {
+				var body = button.closest(".assist-card")
+					.querySelector("[data-assist-body]");
+				var box = document.querySelector(
+					".comment-composer textarea[name=body]");
+
+				if (!body || !box) {
+					return;
+				}
+
+				box.value = body.textContent;
+				box.focus();
+				box.scrollIntoView({ block: "center", behavior: "smooth" });
+				toast("In the composer \u2014 read it before you send it",
+				      "positive", 6000);
+			});
+		});
+	}
+
+	/*
+	 * A pasted secret is shown once and is long; clicking it copies the
+	 * whole thing, because selecting sixty-four characters by hand is
+	 * how a character gets left behind.
+	 */
+	function wireSecrets(root) {
+		(root || document).querySelectorAll("[data-copy]").forEach(function (block) {
+			if (block.ventureWired) {
+				return;
+			}
+
+			block.ventureWired = true;
+			block.addEventListener("click", function () {
+				if (!navigator.clipboard) {
+					return;
+				}
+
+				navigator.clipboard.writeText(block.textContent.trim())
+					.then(function () { toast("Copied", "positive"); })
+					.catch(function () {});
+			});
 		});
 	}
 
@@ -1603,12 +2265,17 @@
 		wireReveal(document);
 		wireWidgetEditor();
 		wireGridEditor();
+		wireBulk();
+		wireInbox();
+		wireAssist(document);
+		wireSecrets(document);
 		scrollChatToBottom();
 	}
 
 	window.venture = {
 		toast: toast,
 		openModal: openModal,
+		openPalette: openPalette,
 		setTheme: setTheme,
 		togglePanel: togglePanel,
 		scrollChatToBottom: scrollChatToBottom

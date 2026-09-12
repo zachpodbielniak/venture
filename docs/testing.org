@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-11]
-#+version: 0.5.0
+#+updated: [2026-09-12]
+#+version: 0.6.0
 
 * Testing
 
@@ -138,6 +138,14 @@ That a =workflow_run= delivery becomes a build when requested and updates the sa
 ** =test-dashboard=
 
 That the dashboards module owns its two types and the widget catalogue has every built-in kind, with the factory ones marked as its. That a plugin can add a kind and a bad or duplicate one is refused. That a slug is derived, normalised and unique. That a widget is refused at the save for a kind, a type, a report or options that do not exist, and accepted for a type or report whose module is merely off. That count, list and breakdown answer from the same rows, with ={me}= substituted for whoever is looking; that a note's markup is escaped and an action with a script href is dropped; that metric, report and chart read one report three ways; that a widget for a module that is off, or of a kind that vanished, is an error in place and never a missing page. That only one dashboard is home, and a personal home is nobody else's. That every template imports, an export re-imports to the same definition, importing twice gives two, and a definition with one bad widget leaves nothing behind. And, over a real server: the whole loop from template to home page to deletion, that another user's personal dashboard answers 404 on the page, the API and the fragment, and that the module switch takes the pages, the API and the sidebar entry with it and leaves =/= as the built-in overview.
+
+** =test-webhook=
+
+Webhooks out, routing, satisfaction and triage. An event is named from the type and the action, and the patterns a webhook subscribes to match exactly, per-type or everything — and =ticket.*= does not swallow =ticket_link=. A change reaches a real HTTP server the test owns, carrying a body whose HMAC the test recomputes, and the delivery is recorded; a webhook subscribed to something else receives nothing, and saving a webhook fires nothing. Ten refusals switch it off and it goes quiet. A rota assigns in turn and does not override a ticket raised for somebody, the narrowest rule wins, least-busy counts, and a rule naming nobody refuses. The support report scores satisfaction over the ratings given. Applying a triage takes what it understands, merges tags rather than replacing them, and ignores an invented priority.
+
+** =test-desk=
+
+The workdesk. The inbox is fed by the audit trail and nobody is told about their own edit: an assignment tells the assignee, a comment tells the mentioned and the watchers, a change tells the watchers what moved, the system's roll-ups tell nobody, and reading is per person. A service-level policy matches most-specific-first, stamps a ticket's clocks once, is stamped by the first visible reply and not by a note, and the sweep marks a breach once. A macro applies in one transaction and an inactive one is refused; worklogs roll up onto the ticket and follow a removal; a sprint counts its points; a bulk edit is all or nothing; the timeline weaves changes, comments and worklogs newest first; a budget warns once and refuses a run once exhausted; an incident opens its fix once, linked; the delivery report reads the four keys.
 
 ** =test-forge=
 

@@ -4,7 +4,7 @@
 #+categories: projects
 #+created: [2026-08-14]
 #+updated: [2026-09-11]
-#+version: 0.5.0
+#+version: 0.6.0
 
 * VENTURE
 
@@ -136,6 +136,8 @@ page, over the API and to the assistant. One dashboard can be home, a
 personal one is yours alone, and a dashboard exports as JSON that imports
 anywhere -- four ship as templates, the factory among them. See
 [[file:docs/dashboards.org][dashboards]].
+
+The workdesk: every record has a Watch button and a timeline; an inbox fed by the audit trail tells you about mentions, assignments, watched changes, service levels, budgets and runs; saved views, service-level policies with live clocks, macros, worklogs, sprints and bulk edits on tickets; mission control for the coding runs with a cost per success, agent budgets that refuse a run once the money is gone, and a delivery report with DORA's four keys beside the agents' cost. Ctrl+K opens a command palette. See [[file:docs/workdesk.org][the workdesk]].
 
 *** A software factory
 

@@ -347,6 +347,11 @@ static GType (*const venture_module_core_types[]) (void) = {
 	venture_user_get_type,
 	venture_api_token_get_type,
 	venture_audit_entry_get_type,
+	/* Saved views, watches and the inbox belong to everybody, so they
+	 * belong to the module that is always on. */
+	venture_saved_view_get_type,
+	venture_watch_get_type,
+	venture_notification_get_type,
 	NULL
 };
 
@@ -406,6 +411,17 @@ static GType (*const venture_module_tickets_types[]) (void) = {
 	venture_ticket_get_type,
 	venture_ticket_comment_get_type,
 	venture_ticket_relation_get_type,
+	venture_sla_policy_get_type,
+	venture_macro_get_type,
+	venture_worklog_get_type,
+	venture_sprint_get_type,
+	venture_routing_rule_get_type,
+	NULL
+};
+
+static GType (*const venture_module_webhooks_types[]) (void) = {
+	venture_webhook_get_type,
+	venture_webhook_delivery_get_type,
 	NULL
 };
 
@@ -421,6 +437,7 @@ static GType (*const venture_module_forge_types[]) (void) = {
 	venture_forge_rule_get_type,
 	venture_ticket_link_get_type,
 	venture_forge_run_get_type,
+	venture_agent_budget_get_type,
 	NULL
 };
 
@@ -480,8 +497,11 @@ static const gchar *const venture_module_reports_outreach[] = {
 	"campaigns", NULL
 };
 static const gchar *const venture_module_reports_ideas[] = { "ideas", NULL };
+static const gchar *const venture_module_reports_tickets[] = {
+	"support", NULL
+};
 static const gchar *const venture_module_reports_factory[] = {
-	"releases", "lead_time", "incidents", NULL
+	"releases", "lead_time", "incidents", "delivery", NULL
 };
 
 static const VentureModuleInfo venture_module_builtins[] = {
@@ -545,7 +565,15 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"Internal tasks and external support requests, one shape, on a "
 		"kanban board.",
 		venture_module_requires_core, venture_module_suggests_tickets,
-		venture_module_tickets_types, NULL, NULL, FALSE
+		venture_module_tickets_types, venture_module_reports_tickets, NULL,
+		FALSE
+	},
+	{
+		"webhooks", "Webhooks",
+		"Telling something outside that a record changed: a URL, the "
+		"events it wants, a signing secret, and the log of what went out.",
+		venture_module_requires_core, NULL,
+		venture_module_webhooks_types, NULL, NULL, FALSE
 	},
 	{
 		"ai", "AI",

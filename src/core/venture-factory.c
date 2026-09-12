@@ -709,3 +709,863 @@ venture_factory_describe(
 
 	return json_builder_get_root(builder);
 }
+
+/* ==========================================================================
+ * Budgets
+ * ========================================================================== */
+
+/*
+ * The start of a budget's current window, or %NULL for all time.
+ */
+static GDateTime *
+venture_factory_budget_window_start(
+	VentureBudgetPeriod	 period,
+	GDateTime		*now
+){
+	switch (period)
+	{
+	case VENTURE_BUDGET_PERIOD_MONTHLY:
+		return g_date_time_new_utc(g_date_time_get_year(now),
+		                           g_date_time_get_month(now), 1, 0, 0, 0.0);
+
+	case VENTURE_BUDGET_PERIOD_WEEKLY:
+	{
+		g_autoptr(GDateTime) midnight = NULL;
+
+		midnight = g_date_time_new_utc(g_date_time_get_year(now),
+		                               g_date_time_get_month(now),
+		                               g_date_time_get_day_of_month(now),
+		                               0, 0, 0.0);
+		/* Monday is 1. */
+		return g_date_time_add_days(midnight,
+		                            -(g_date_time_get_day_of_week(now) - 1));
+	}
+
+	case VENTURE_BUDGET_PERIOD_ALL_TIME:
+	default:
+		return NULL;
+	}
+}
+
+/*
+ * The runs that count against a budget: those started in its window, and
+ * for a repository-scoped budget those whose ticket names that
+ * repository. The ticket is the run's own idea of where it went, which is
+ * what the rule keyed on.
+ */
+static void
+venture_factory_budget_spend(
+	VentureContext	*context,
+	VentureEntity	*budget,
+	GDateTime	*now,
+	VentureMoney	**out_spent,
+	gint64		*out_runs
+){
+	VentureDatabase *database;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) runs = NULL;
+	g_autoptr(GPtrArray) amounts = NULL;
+	g_autoptr(GDateTime) start = NULL;
+	g_autoptr(GHashTable) repo_by_ticket = NULL;
+	g_autofree gchar *currency = NULL;
+	VentureMoney *limit = NULL;
+	VentureBudgetPeriod period;
+	gint64 repo_id = 0;
+	guint i;
+
+	*out_spent = NULL;
+	*out_runs = 0;
+
+	database = venture_context_get_database(context);
+	g_object_get(budget, "period", &period, "repo-id", &repo_id,
+	             "limit", &limit, NULL);
+	currency = g_strdup((NULL != limit) ? venture_money_get_currency(limit)
+	                                    : venture_money_get_default_currency());
+	g_clear_pointer(&limit, venture_money_free);
+
+	query = venture_query_new(VENTURE_TYPE_FORGE_RUN);
+	start = venture_factory_budget_window_start(period, now);
+
+	if (NULL != start)
+	{
+		g_autofree gchar *text = NULL;
+
+		text = venture_time_to_string(start);
+		venture_query_add_filter_string(query, "started-at",
+		                                VENTURE_FILTER_OP_GTE, text, NULL);
+	}
+
+	venture_query_set_limit(query, 0);
+	runs = venture_database_find(database, query, NULL);
+	amounts = g_ptr_array_new_with_free_func((GDestroyNotify)venture_money_free);
+	repo_by_ticket = g_hash_table_new(g_direct_hash, g_direct_equal);
+
+	for (i = 0; (NULL != runs) && (i < runs->len); i++)
+	{
+		VentureEntity *run;
+		VentureMoney *cost = NULL;
+		gint64 ticket_id = 0;
+
+		run = g_ptr_array_index(runs, i);
+		g_object_get(run, "ticket-id", &ticket_id, "cost", &cost, NULL);
+
+		if (0 != repo_id)
+		{
+			gpointer cached;
+			gint64 run_repo;
+
+			cached = g_hash_table_lookup(repo_by_ticket,
+			                             GINT_TO_POINTER((gint)ticket_id));
+
+			if (NULL != cached)
+			{
+				run_repo = GPOINTER_TO_INT(cached);
+			}
+			else
+			{
+				g_autoptr(VentureEntity) ticket = NULL;
+
+				run_repo = 0;
+				ticket = venture_database_get(database, VENTURE_TYPE_TICKET,
+				                              ticket_id, NULL);
+
+				if (NULL != ticket)
+					g_object_get(ticket, "repo-id", &run_repo, NULL);
+
+				/* Zero is stored as -1 so "unknown" and "not cached"
+				 * stay distinguishable. */
+				g_hash_table_insert(repo_by_ticket,
+				                    GINT_TO_POINTER((gint)ticket_id),
+				                    GINT_TO_POINTER((gint)((0 == run_repo)
+				                                           ? -1 : run_repo)));
+			}
+
+			if (-1 == run_repo)
+				run_repo = 0;
+
+			if (run_repo != repo_id)
+			{
+				g_clear_pointer(&cost, venture_money_free);
+				continue;
+			}
+		}
+
+		(*out_runs)++;
+
+		/* A run charged in another currency is a run that cannot be
+		 * added to this budget; it is counted and its cost left out,
+		 * which understates -- the honest direction for a cap is to
+		 * say so in the note rather than to guess a rate. */
+		if ((NULL != cost) &&
+		    (0 == g_strcmp0(venture_money_get_currency(cost), currency)))
+			g_ptr_array_add(amounts, g_steal_pointer(&cost));
+
+		g_clear_pointer(&cost, venture_money_free);
+	}
+
+	*out_spent = venture_money_sum(amounts, currency, NULL);
+
+	if (NULL == *out_spent)
+		*out_spent = venture_money_new_zero(currency);
+}
+
+/*
+ * One budget's standing, as JSON. Shared by the listing and the check so
+ * the page and the refusal agree on the percentage.
+ */
+static void
+venture_factory_budget_add(
+	JsonBuilder	*builder,
+	VentureEntity	*budget,
+	VentureMoney	*spent,
+	gint64		 runs,
+	gint		 percent,
+	gboolean	 comparable
+){
+	g_autofree gchar *name = NULL;
+	g_autofree gchar *spent_text = NULL;
+	g_autofree gchar *limit_text = NULL;
+	g_autoptr(GDateTime) warned_at = NULL;
+	g_autoptr(GDateTime) exhausted_at = NULL;
+	VentureMoney *limit = NULL;
+	VentureBudgetPeriod period;
+	gint64 repo_id = 0;
+	gint64 warn_percent = 0;
+	gboolean hard_stop = FALSE;
+
+	g_object_get(budget, "name", &name, "period", &period, "repo-id", &repo_id,
+	             "limit", &limit, "warn-percent", &warn_percent,
+	             "hard-stop", &hard_stop, "warned-at", &warned_at,
+	             "exhausted-at", &exhausted_at, NULL);
+
+	spent_text = venture_money_to_display_string(spent, TRUE);
+	limit_text = (NULL != limit) ? venture_money_to_display_string(limit, TRUE)
+	                             : g_strdup("");
+
+	json_builder_begin_object(builder);
+	venture_factory_add_identity(builder, budget);
+	venture_factory_add_string(builder, "name", name);
+	venture_factory_add_enum(builder, "period", VENTURE_TYPE_BUDGET_PERIOD,
+	                         (gint)period);
+	json_builder_set_member_name(builder, "repo_id");
+	json_builder_add_int_value(builder, repo_id);
+	json_builder_set_member_name(builder, "limit");
+	json_builder_add_value(builder,
+		(NULL != limit) ? venture_money_to_json(limit)
+		                : json_node_new(JSON_NODE_NULL));
+	venture_factory_add_string(builder, "limit_display", limit_text);
+	json_builder_set_member_name(builder, "spent");
+	json_builder_add_value(builder, venture_money_to_json(spent));
+	venture_factory_add_string(builder, "spent_display", spent_text);
+	json_builder_set_member_name(builder, "runs");
+	json_builder_add_int_value(builder, runs);
+	json_builder_set_member_name(builder, "percent");
+	json_builder_add_int_value(builder, percent);
+	json_builder_set_member_name(builder, "warn_percent");
+	json_builder_add_int_value(builder, warn_percent);
+	json_builder_set_member_name(builder, "hard_stop");
+	json_builder_add_boolean_value(builder, hard_stop);
+	json_builder_set_member_name(builder, "comparable");
+	json_builder_add_boolean_value(builder, comparable);
+	json_builder_set_member_name(builder, "warning");
+	json_builder_add_boolean_value(builder,
+		comparable && (warn_percent > 0) && (percent >= warn_percent));
+	json_builder_set_member_name(builder, "exhausted");
+	json_builder_add_boolean_value(builder, comparable && (percent >= 100));
+	venture_factory_add_time(builder, "warned_at", warned_at);
+	venture_factory_add_time(builder, "exhausted_at", exhausted_at);
+	json_builder_end_object(builder);
+
+	g_clear_pointer(&limit, venture_money_free);
+}
+
+/*
+ * Spend against limit as a percentage, when the two can be compared.
+ */
+static gboolean
+venture_factory_budget_percent(
+	VentureEntity	*budget,
+	VentureMoney	*spent,
+	gint		*out_percent
+){
+	VentureMoney *limit = NULL;
+	gdouble limit_value;
+	gdouble spent_value;
+
+	*out_percent = 0;
+	g_object_get(budget, "limit", &limit, NULL);
+
+	if ((NULL == limit) || venture_money_is_zero(limit) ||
+	    (0 != g_strcmp0(venture_money_get_currency(limit),
+	                    venture_money_get_currency(spent))))
+	{
+		g_clear_pointer(&limit, venture_money_free);
+		return FALSE;
+	}
+
+	limit_value = venture_money_to_double(limit);
+	spent_value = venture_money_to_double(spent);
+	g_clear_pointer(&limit, venture_money_free);
+
+	if (limit_value <= 0.0)
+		return FALSE;
+
+	*out_percent = (gint)((spent_value * 100.0) / limit_value);
+
+	return TRUE;
+}
+
+static GPtrArray *
+venture_factory_active_budgets(VentureContext *context)
+{
+	g_autoptr(VentureQuery) query = NULL;
+
+	query = venture_query_new(VENTURE_TYPE_AGENT_BUDGET);
+	venture_query_add_filter_string(query, "active", VENTURE_FILTER_OP_EQ,
+	                                "true", NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_set_limit(query, 0);
+
+	return venture_database_find(venture_context_get_database(context), query,
+	                             NULL);
+}
+
+JsonNode *
+venture_factory_budgets_describe(
+	VentureContext	 *context,
+	GError		**error
+){
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(GPtrArray) budgets = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+
+	if (!venture_context_module_enabled(context, "forge"))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		                    "The forge module is disabled on this install");
+		return NULL;
+	}
+
+	now = venture_time_now();
+	budgets = venture_factory_active_budgets(context);
+	builder = json_builder_new();
+	json_builder_begin_array(builder);
+
+	for (i = 0; (NULL != budgets) && (i < budgets->len); i++)
+	{
+		VentureEntity *budget;
+		g_autoptr(VentureMoney) spent = NULL;
+		gint64 runs;
+		gint percent;
+		gboolean comparable;
+
+		budget = g_ptr_array_index(budgets, i);
+		venture_factory_budget_spend(context, budget, now, &spent, &runs);
+		comparable = venture_factory_budget_percent(budget, spent, &percent);
+		venture_factory_budget_add(builder, budget, spent, runs, percent,
+		                           comparable);
+	}
+
+	json_builder_end_array(builder);
+
+	return json_builder_get_root(builder);
+}
+
+gboolean
+venture_factory_budget_allows_run(
+	VentureContext	 *context,
+	gint64		  repo_id,
+	GError		**error
+){
+	g_autoptr(GPtrArray) budgets = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), FALSE);
+
+	now = venture_time_now();
+	budgets = venture_factory_active_budgets(context);
+
+	for (i = 0; (NULL != budgets) && (i < budgets->len); i++)
+	{
+		VentureEntity *budget;
+		g_autoptr(VentureMoney) spent = NULL;
+		g_autoptr(GDateTime) window = NULL;
+		g_autoptr(GDateTime) warned_at = NULL;
+		g_autoptr(GDateTime) exhausted_at = NULL;
+		g_autofree gchar *name = NULL;
+		g_autofree gchar *spent_text = NULL;
+		VentureBudgetPeriod period;
+		gint64 budget_repo = 0;
+		gint64 warn_percent = 0;
+		gint64 runs;
+		gboolean hard_stop = FALSE;
+		gboolean changed;
+		gint percent;
+
+		budget = g_ptr_array_index(budgets, i);
+		g_object_get(budget, "repo-id", &budget_repo, "period", &period,
+		             "warn-percent", &warn_percent, "hard-stop", &hard_stop,
+		             "warned-at", &warned_at, "exhausted-at", &exhausted_at,
+		             "name", &name, NULL);
+
+		if ((0 != budget_repo) && (budget_repo != repo_id))
+			continue;
+
+		venture_factory_budget_spend(context, budget, now, &spent, &runs);
+
+		if (!venture_factory_budget_percent(budget, spent, &percent))
+			continue;
+
+		spent_text = venture_money_to_display_string(spent, TRUE);
+		window = venture_factory_budget_window_start(period, now);
+		changed = FALSE;
+
+		/* A stamp from before this window is last window's; the line is
+		 * crossed afresh each time the window turns. */
+		if ((NULL != warned_at) && (NULL != window) &&
+		    (g_date_time_compare(warned_at, window) < 0))
+			g_clear_pointer(&warned_at, g_date_time_unref);
+
+		if ((NULL != exhausted_at) && (NULL != window) &&
+		    (g_date_time_compare(exhausted_at, window) < 0))
+			g_clear_pointer(&exhausted_at, g_date_time_unref);
+
+		if ((percent >= 100) && (NULL == exhausted_at))
+		{
+			g_autofree gchar *title = NULL;
+			g_autofree gchar *body = NULL;
+
+			title = g_strdup_printf("Agent budget exhausted: %s", name);
+			body = g_strdup_printf("%s spent, %d%% of the limit. %s",
+			                       spent_text, percent,
+			                       hard_stop ? "New runs are refused until "
+			                                   "the window resets or the "
+			                                   "limit is raised."
+			                                 : "Runs continue; the budget "
+			                                   "is a warning, not a stop.");
+			venture_notify_broadcast(context, VENTURE_USER_ROLE_ADMIN,
+			                         VENTURE_NOTIFICATION_KIND_BUDGET, title,
+			                         body, "agent_budget",
+			                         venture_entity_get_id(budget), name,
+			                         NULL, NULL);
+			g_object_set(budget, "exhausted-at", now, NULL);
+			changed = TRUE;
+		}
+		else if ((warn_percent > 0) && (percent >= warn_percent) &&
+		         (percent < 100) && (NULL == warned_at))
+		{
+			g_autofree gchar *title = NULL;
+			g_autofree gchar *body = NULL;
+
+			title = g_strdup_printf("Agent budget at %d%%: %s", percent, name);
+			body = g_strdup_printf("%s spent against the limit this window.",
+			                       spent_text);
+			venture_notify_broadcast(context, VENTURE_USER_ROLE_ADMIN,
+			                         VENTURE_NOTIFICATION_KIND_BUDGET, title,
+			                         body, "agent_budget",
+			                         venture_entity_get_id(budget), name,
+			                         NULL, NULL);
+			g_object_set(budget, "warned-at", now, NULL);
+			changed = TRUE;
+		}
+
+		if (changed)
+			venture_database_save(venture_context_get_database(context),
+			                      budget, NULL, NULL);
+
+		if ((percent >= 100) && hard_stop)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+			            "The agent budget \"%s\" is exhausted: %s spent "
+			            "against its limit. Raise the limit, switch off "
+			            "the hard stop, or wait for the window to reset.",
+			            name, spent_text);
+			return FALSE;
+		}
+	}
+
+	return TRUE;
+}
+
+/* ==========================================================================
+ * Mission control
+ * ========================================================================== */
+
+JsonNode *
+venture_factory_runs_describe(
+	VentureContext	 *context,
+	const gint64	 *organization_ids,
+	gsize		  n_organizations,
+	const gchar	 *state,
+	guint		  limit,
+	GError		**error
+){
+	VentureDatabase *database;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) runs = NULL;
+	g_autoptr(GPtrArray) costs = NULL;
+	g_autoptr(GPtrArray) success_costs = NULL;
+	g_autoptr(VentureMoney) total_cost = NULL;
+	g_autoptr(VentureMoney) success_cost = NULL;
+	g_autoptr(GHashTable) ticket_titles = NULL;
+	gint64 live;
+	gint64 succeeded;
+	gint64 failed;
+	gint64 pull_requests;
+	gint64 input_tokens;
+	gint64 output_tokens;
+	gint64 total_seconds;
+	gint64 timed;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+
+	if (!venture_context_module_enabled(context, "forge"))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		                    "The forge module is disabled on this install "
+		                    "(modules.forge.enabled)");
+		return NULL;
+	}
+
+	database = venture_context_get_database(context);
+	query = venture_query_new(VENTURE_TYPE_FORGE_RUN);
+
+	if (!venture_string_is_empty(state) && (0 != g_strcmp0(state, "all")))
+	{
+		if (!venture_query_add_filter_string(query, "state",
+		                                     VENTURE_FILTER_OP_EQ, state,
+		                                     error))
+			return NULL;
+	}
+
+	venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, NULL);
+	venture_query_set_limit(query, (0 == limit) ? 50 : limit);
+	venture_factory_scope(query, organization_ids, n_organizations);
+	runs = venture_database_find(database, query, error);
+
+	if (NULL == runs)
+		return NULL;
+
+	costs = g_ptr_array_new_with_free_func((GDestroyNotify)venture_money_free);
+	success_costs = g_ptr_array_new_with_free_func(
+		(GDestroyNotify)venture_money_free);
+	ticket_titles = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
+	                                      g_free);
+	live = succeeded = failed = pull_requests = 0;
+	input_tokens = output_tokens = total_seconds = timed = 0;
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "runs");
+	json_builder_begin_array(builder);
+
+	for (i = 0; i < runs->len; i++)
+	{
+		VentureEntity *run;
+		g_autofree gchar *branch = NULL;
+		g_autofree gchar *provider = NULL;
+		g_autofree gchar *model = NULL;
+		g_autofree gchar *summary = NULL;
+		g_autofree gchar *failure = NULL;
+		g_autoptr(GDateTime) started = NULL;
+		g_autoptr(GDateTime) finished = NULL;
+		VentureMoney *cost = NULL;
+		VentureForgeRunState run_state;
+		VentureForgeRunner runner;
+		VentureForgeRunOutcome outcome;
+		const gchar *title;
+		gint64 ticket_id = 0;
+		gint64 rule_id = 0;
+		gint64 pr = 0;
+		gint64 in_tokens = 0;
+		gint64 out_tokens = 0;
+		gint64 turns = 0;
+		gint64 seconds;
+
+		run = g_ptr_array_index(runs, i);
+		g_object_get(run,
+		             "ticket-id", &ticket_id, "rule-id", &rule_id,
+		             "state", &run_state, "runner", &runner,
+		             "outcome", &outcome, "branch", &branch,
+		             "pull-request-number", &pr, "started-at", &started,
+		             "finished-at", &finished, "provider", &provider,
+		             "model", &model, "input-tokens", &in_tokens,
+		             "output-tokens", &out_tokens, "turns", &turns,
+		             "cost", &cost, "summary", &summary,
+		             "failure-reason", &failure, NULL);
+
+		title = g_hash_table_lookup(ticket_titles,
+		                            GINT_TO_POINTER((gint)ticket_id));
+
+		if (NULL == title)
+		{
+			g_autoptr(VentureEntity) ticket = NULL;
+			gchar *label;
+
+			ticket = venture_database_get(database, VENTURE_TYPE_TICKET,
+			                              ticket_id, NULL);
+			label = (NULL != ticket) ? venture_entity_get_display_name(ticket)
+			                         : g_strdup_printf("ticket #%" G_GINT64_FORMAT,
+			                                           ticket_id);
+			g_hash_table_insert(ticket_titles, GINT_TO_POINTER((gint)ticket_id),
+			                    label);
+			title = label;
+		}
+
+		seconds = 0;
+
+		if ((NULL != started) && (NULL != finished))
+		{
+			seconds = g_date_time_difference(finished, started)
+			          / G_TIME_SPAN_SECOND;
+			total_seconds += seconds;
+			timed++;
+		}
+		else if (NULL != started)
+		{
+			g_autoptr(GDateTime) now = NULL;
+
+			now = venture_time_now();
+			seconds = g_date_time_difference(now, started) / G_TIME_SPAN_SECOND;
+		}
+
+		if ((VENTURE_FORGE_RUN_STATE_QUEUED == run_state) ||
+		    (VENTURE_FORGE_RUN_STATE_RUNNING == run_state))
+			live++;
+		else if (VENTURE_FORGE_RUN_STATE_SUCCEEDED == run_state)
+			succeeded++;
+		else if ((VENTURE_FORGE_RUN_STATE_FAILED == run_state) ||
+		         (VENTURE_FORGE_RUN_STATE_INTERRUPTED == run_state))
+			failed++;
+
+		if (pr > 0)
+			pull_requests++;
+
+		input_tokens += in_tokens;
+		output_tokens += out_tokens;
+
+		json_builder_begin_object(builder);
+		venture_factory_add_identity(builder, run);
+		json_builder_set_member_name(builder, "ticket_id");
+		json_builder_add_int_value(builder, ticket_id);
+		venture_factory_add_string(builder, "ticket", title);
+		json_builder_set_member_name(builder, "rule_id");
+		json_builder_add_int_value(builder, rule_id);
+		venture_factory_add_enum(builder, "state", VENTURE_TYPE_FORGE_RUN_STATE,
+		                         (gint)run_state);
+		venture_factory_add_enum(builder, "runner", VENTURE_TYPE_FORGE_RUNNER,
+		                         (gint)runner);
+		venture_factory_add_enum(builder, "outcome",
+		                         VENTURE_TYPE_FORGE_RUN_OUTCOME, (gint)outcome);
+		venture_factory_add_string(builder, "branch", branch);
+		json_builder_set_member_name(builder, "pull_request_number");
+		json_builder_add_int_value(builder, pr);
+		venture_factory_add_string(builder, "provider", provider);
+		venture_factory_add_string(builder, "model", model);
+		json_builder_set_member_name(builder, "input_tokens");
+		json_builder_add_int_value(builder, in_tokens);
+		json_builder_set_member_name(builder, "output_tokens");
+		json_builder_add_int_value(builder, out_tokens);
+		json_builder_set_member_name(builder, "turns");
+		json_builder_add_int_value(builder, turns);
+		json_builder_set_member_name(builder, "cost");
+
+		if (NULL != cost)
+		{
+			g_autofree gchar *display = NULL;
+
+			json_builder_add_value(builder, venture_money_to_json(cost));
+			display = venture_money_to_display_string(cost, TRUE);
+			venture_factory_add_string(builder, "cost_display", display);
+			g_ptr_array_add(costs, venture_money_copy(cost));
+
+			if (VENTURE_FORGE_RUN_STATE_SUCCEEDED == run_state)
+				g_ptr_array_add(success_costs, venture_money_copy(cost));
+
+			venture_money_free(cost);
+		}
+		else
+		{
+			json_builder_add_null_value(builder);
+			venture_factory_add_string(builder, "cost_display", NULL);
+		}
+
+		venture_factory_add_time(builder, "started_at", started);
+		venture_factory_add_time(builder, "finished_at", finished);
+		json_builder_set_member_name(builder, "seconds");
+		json_builder_add_int_value(builder, seconds);
+		venture_factory_add_string(builder, "summary", summary);
+		venture_factory_add_string(builder, "failure_reason", failure);
+		json_builder_end_object(builder);
+	}
+
+	json_builder_end_array(builder);
+
+	/* Totals over what was listed; a filtered list totals the filter. */
+	total_cost = venture_money_sum(costs, NULL, NULL);
+	success_cost = venture_money_sum(success_costs, NULL, NULL);
+
+	json_builder_set_member_name(builder, "totals");
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "runs");
+	json_builder_add_int_value(builder, (gint64)runs->len);
+	json_builder_set_member_name(builder, "live");
+	json_builder_add_int_value(builder, live);
+	json_builder_set_member_name(builder, "succeeded");
+	json_builder_add_int_value(builder, succeeded);
+	json_builder_set_member_name(builder, "failed");
+	json_builder_add_int_value(builder, failed);
+	json_builder_set_member_name(builder, "pull_requests");
+	json_builder_add_int_value(builder, pull_requests);
+	json_builder_set_member_name(builder, "input_tokens");
+	json_builder_add_int_value(builder, input_tokens);
+	json_builder_set_member_name(builder, "output_tokens");
+	json_builder_add_int_value(builder, output_tokens);
+	json_builder_set_member_name(builder, "average_seconds");
+	json_builder_add_int_value(builder, (timed > 0) ? total_seconds / timed : 0);
+	json_builder_set_member_name(builder, "cost");
+	json_builder_add_value(builder,
+		(NULL != total_cost) ? venture_money_to_json(total_cost)
+		                     : json_node_new(JSON_NODE_NULL));
+
+	{
+		g_autofree gchar *display = NULL;
+
+		display = (NULL != total_cost)
+			? venture_money_to_display_string(total_cost, TRUE) : NULL;
+		venture_factory_add_string(builder, "cost_display", display);
+	}
+
+	json_builder_set_member_name(builder, "cost_per_success");
+
+	if ((NULL != success_cost) && (succeeded > 0))
+	{
+		g_autoptr(VentureMoney) each = NULL;
+		g_autoptr(GPtrArray) shares = NULL;
+
+		/* Allocated rather than divided, so the shares add back up. */
+		shares = venture_money_allocate_evenly(success_cost, (guint)succeeded,
+		                                       NULL);
+
+		if ((NULL != shares) && (shares->len > 0))
+			each = venture_money_copy(g_ptr_array_index(shares, 0));
+
+		if (NULL != each)
+		{
+			g_autofree gchar *display = NULL;
+
+			json_builder_add_value(builder, venture_money_to_json(each));
+			display = venture_money_to_display_string(each, TRUE);
+			venture_factory_add_string(builder, "cost_per_success_display",
+			                           display);
+		}
+		else
+		{
+			json_builder_add_null_value(builder);
+			venture_factory_add_string(builder, "cost_per_success_display",
+			                           NULL);
+		}
+	}
+	else
+	{
+		json_builder_add_null_value(builder);
+		venture_factory_add_string(builder, "cost_per_success_display", NULL);
+	}
+
+	json_builder_end_object(builder);
+	json_builder_end_object(builder);
+
+	return json_builder_get_root(builder);
+}
+
+/* ==========================================================================
+ * Incidents
+ * ========================================================================== */
+
+VentureEntity *
+venture_factory_open_fix_ticket(
+	VentureContext		 *context,
+	VentureEntity		 *incident,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	VentureDatabase *database;
+	g_autoptr(VentureTicket) ticket = NULL;
+	g_autoptr(VentureEntity) release = NULL;
+	g_autofree gchar *title = NULL;
+	g_autofree gchar *summary = NULL;
+	g_autofree gchar *description = NULL;
+	VentureIncidentSeverity severity;
+	VenturePriority priority;
+	gint64 existing = 0;
+	gint64 release_id = 0;
+	gint64 repo_id = 0;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+	g_return_val_if_fail(VENTURE_IS_INCIDENT(incident), NULL);
+
+	if (!venture_context_module_enabled(context, "tickets"))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		                    "The tickets module is off, so there is nowhere "
+		                    "to open the fix");
+		return NULL;
+	}
+
+	database = venture_context_get_database(context);
+	g_object_get(incident, "ticket-id", &existing, "title", &title,
+	             "summary", &summary, "severity", &severity,
+	             "release-id", &release_id, NULL);
+
+	if (0 != existing)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+		            "This incident already has ticket #%" G_GINT64_FORMAT,
+		            existing);
+		return NULL;
+	}
+
+	/* Everything is down is urgent; cosmetic is low; the two in between
+	 * map to the two in between. */
+	switch (severity)
+	{
+	case VENTURE_INCIDENT_SEVERITY_SEV1: priority = VENTURE_PRIORITY_URGENT; break;
+	case VENTURE_INCIDENT_SEVERITY_SEV2: priority = VENTURE_PRIORITY_HIGH;   break;
+	case VENTURE_INCIDENT_SEVERITY_SEV4: priority = VENTURE_PRIORITY_LOW;    break;
+	case VENTURE_INCIDENT_SEVERITY_SEV3:
+	default:                             priority = VENTURE_PRIORITY_NORMAL; break;
+	}
+
+	if (0 != release_id)
+	{
+		release = venture_database_get(database, VENTURE_TYPE_RELEASE,
+		                               release_id, NULL);
+
+		if (NULL != release)
+			g_object_get(release, "repo-id", &repo_id, NULL);
+	}
+
+	description = g_strdup_printf("Opened from incident #%" G_GINT64_FORMAT
+	                              ".\n\n%s",
+	                              venture_entity_get_id(incident),
+	                              venture_string_is_empty(summary) ? "" : summary);
+
+	ticket = venture_ticket_new();
+	g_object_set(ticket,
+	             "title", title,
+	             "kind", VENTURE_TICKET_KIND_INTERNAL,
+	             "status", VENTURE_TICKET_STATUS_TODO,
+	             "priority", priority,
+	             "issue-type", VENTURE_ISSUE_TYPE_BUG,
+	             "description", description,
+	             "repo-id", repo_id,
+	             NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(ticket),
+		venture_entity_get_organization_id(incident));
+
+	if (!venture_database_begin(database, error))
+		return NULL;
+
+	if (!venture_database_save(database, VENTURE_ENTITY(ticket), actor, error))
+	{
+		venture_database_rollback(database);
+		return NULL;
+	}
+
+	g_object_set(incident, "ticket-id",
+	             venture_entity_get_id(VENTURE_ENTITY(ticket)), NULL);
+
+	if (!venture_database_save(database, incident, actor, error))
+	{
+		venture_database_rollback(database);
+		return NULL;
+	}
+
+	if (!venture_database_commit(database, error))
+		return NULL;
+
+	/* The link both ways, so the ticket's page says what it fixes. Built
+	 * checked, then saved like any record; a link that cannot be made is
+	 * not worth refusing the ticket over. */
+	{
+		g_autoptr(VentureRecordLink) link = NULL;
+
+		link = venture_record_link_create(database, "incident",
+		                                  venture_entity_get_id(incident),
+		                                  VENTURE_LINK_KIND_CAUSES, "ticket",
+		                                  venture_entity_get_id(
+		                                  	VENTURE_ENTITY(ticket)),
+		                                  "The fix", NULL);
+
+		if (NULL != link)
+			venture_database_save(database, VENTURE_ENTITY(link), actor, NULL);
+	}
+
+	return VENTURE_ENTITY(g_steal_pointer(&ticket));
+}

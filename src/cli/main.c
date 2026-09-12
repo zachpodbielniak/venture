@@ -2097,6 +2097,724 @@ venture_cli_command_release(
 	return 0;
 }
 
+/* --- The workdesk ---------------------------------------------------------- */
+
+/*
+ * venturectl inbox [--all] | inbox read ID|all
+ */
+static gint
+venture_cli_command_inbox(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	JsonObject *root;
+	JsonArray *rows;
+	guint i;
+
+	if ((NULL != args[1]) && (0 == g_strcmp0(args[1], "read")))
+	{
+		g_autoptr(JsonBuilder) builder = NULL;
+		g_autoptr(JsonNode) body = NULL;
+
+		if (NULL == args[2])
+		{
+			g_set_error_literal(error, VENTURE_ERROR,
+			                    VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "usage: venturectl inbox read ID|all");
+			return -1;
+		}
+
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "id");
+		json_builder_add_int_value(builder,
+			(0 == g_strcmp0(args[2], "all"))
+				? 0 : g_ascii_strtoll(args[2], NULL, 10));
+		json_builder_end_object(builder);
+		body = json_builder_get_root(builder);
+
+		node = venture_cli_request(cli, "POST", "/api/v1/inbox/read", body,
+		                           error);
+
+		if (NULL == node)
+			return -1;
+
+		venture_cli_output(cli, node);
+		return 0;
+	}
+
+	node = venture_cli_request(cli, "GET",
+		((NULL != args[1]) && (0 == g_strcmp0(args[1], "--all")))
+			? "/api/v1/inbox?unread=0" : "/api/v1/inbox",
+		NULL, error);
+
+	if (NULL == node)
+		return -1;
+
+	if ((VENTURE_OUTPUT_FORMAT_TABLE != cli->format) ||
+	    !JSON_NODE_HOLDS_OBJECT(node))
+	{
+		venture_cli_output(cli, node);
+		return 0;
+	}
+
+	root = json_node_get_object(node);
+	rows = json_object_get_array_member(root, "notifications");
+
+	if (0 == json_array_get_length(rows))
+	{
+		g_print("Nothing unread. `venturectl inbox --all` shows everything.\n");
+		return 0;
+	}
+
+	g_print("%-6s %-9s %-4s %-18s %s\n", "ID", "KIND", "READ", "WHEN", "TITLE");
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row;
+		const gchar *when;
+
+		row = json_array_get_object_element(rows, i);
+		when = venture_json_object_get_string(row, "occurred_at", "");
+		g_print("%-6" G_GINT64_FORMAT " %-9s %-4s %-18.18s %s\n",
+		        venture_json_object_get_int(row, "id", 0),
+		        venture_json_object_get_string(row, "kind", ""),
+		        venture_json_object_get_bool(row, "read", FALSE) ? "yes" : "",
+		        when, venture_json_object_get_string(row, "title", ""));
+	}
+
+	return 0;
+}
+
+/*
+ * venturectl runs [--state S] | budgets
+ */
+static gint
+venture_cli_command_runs(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *path = NULL;
+	JsonObject *root;
+	JsonObject *totals;
+	JsonArray *rows;
+	const gchar *state = "all";
+	guint i;
+
+	if ((NULL != args[1]) && (0 == g_strcmp0(args[1], "--state")) &&
+	    (NULL != args[2]))
+		state = args[2];
+
+	path = g_strdup_printf("/api/v1/runs?state=%s", state);
+	node = venture_cli_request(cli, "GET", path, NULL, error);
+
+	if (NULL == node)
+		return -1;
+
+	if ((VENTURE_OUTPUT_FORMAT_TABLE != cli->format) ||
+	    !JSON_NODE_HOLDS_OBJECT(node))
+	{
+		venture_cli_output(cli, node);
+		return 0;
+	}
+
+	root = json_node_get_object(node);
+	rows = json_object_get_array_member(root, "runs");
+	totals = json_object_get_object_member(root, "totals");
+
+	if (0 == json_array_get_length(rows))
+	{
+		g_print("No runs.\n");
+		return 0;
+	}
+
+	g_print("%-6s %-11s %-7s %-24s %-8s %-10s %s\n", "RUN", "STATE", "RUNNER",
+	        "MODEL", "TOKENS", "COST", "TICKET");
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row;
+
+		row = json_array_get_object_element(rows, i);
+		g_print("%-6" G_GINT64_FORMAT " %-11s %-7s %-24.24s %-8" G_GINT64_FORMAT
+		        " %-10s %s\n",
+		        venture_json_object_get_int(row, "id", 0),
+		        venture_json_object_get_string(row, "state", ""),
+		        venture_json_object_get_string(row, "runner", ""),
+		        venture_json_object_get_string(row, "model", ""),
+		        venture_json_object_get_int(row, "input_tokens", 0)
+		        + venture_json_object_get_int(row, "output_tokens", 0),
+		        venture_json_object_get_string(row, "cost_display", ""),
+		        venture_json_object_get_string(row, "ticket", ""));
+	}
+
+	g_print("\n%" G_GINT64_FORMAT " live, %" G_GINT64_FORMAT " succeeded, %"
+	        G_GINT64_FORMAT " failed, %" G_GINT64_FORMAT " pull requests; "
+	        "cost %s, per success %s\n",
+	        venture_json_object_get_int(totals, "live", 0),
+	        venture_json_object_get_int(totals, "succeeded", 0),
+	        venture_json_object_get_int(totals, "failed", 0),
+	        venture_json_object_get_int(totals, "pull_requests", 0),
+	        venture_json_object_get_string(totals, "cost_display", "-"),
+	        venture_json_object_get_string(totals, "cost_per_success_display",
+	                                       "-"));
+
+	return 0;
+}
+
+static gint
+venture_cli_command_budgets(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	JsonArray *rows;
+	guint i;
+
+	(void)args;
+
+	node = venture_cli_request(cli, "GET", "/api/v1/budgets", NULL, error);
+
+	if (NULL == node)
+		return -1;
+
+	if ((VENTURE_OUTPUT_FORMAT_TABLE != cli->format) ||
+	    !JSON_NODE_HOLDS_ARRAY(node))
+	{
+		venture_cli_output(cli, node);
+		return 0;
+	}
+
+	rows = json_node_get_array(node);
+
+	if (0 == json_array_get_length(rows))
+	{
+		g_print("No agent budgets. `venturectl create agent_budget "
+		        "name=... limit=25.00 period=monthly hard_stop=true`.\n");
+		return 0;
+	}
+
+	g_print("%-6s %-24s %-9s %-12s %-12s %-5s %s\n", "ID", "NAME", "PERIOD",
+	        "SPENT", "LIMIT", "PCT", "STATE");
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row;
+
+		row = json_array_get_object_element(rows, i);
+		g_print("%-6" G_GINT64_FORMAT " %-24.24s %-9s %-12s %-12s %-5"
+		        G_GINT64_FORMAT " %s\n",
+		        venture_json_object_get_int(row, "id", 0),
+		        venture_json_object_get_string(row, "name", ""),
+		        venture_json_object_get_string(row, "period", ""),
+		        venture_json_object_get_string(row, "spent_display", ""),
+		        venture_json_object_get_string(row, "limit_display", ""),
+		        venture_json_object_get_int(row, "percent", 0),
+		        venture_json_object_get_bool(row, "exhausted", FALSE)
+		        	? "exhausted"
+		        	: venture_json_object_get_bool(row, "warning", FALSE)
+		        		? "warning" : "ok");
+	}
+
+	return 0;
+}
+
+/*
+ * venturectl ticket ID sla|activity|macro NAME|worklog HOURS [NOTE]
+ */
+static gint
+venture_cli_command_ticket(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *path = NULL;
+	const gchar *verb;
+
+	if ((NULL == args[1]) || (NULL == args[2]))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "usage: venturectl ticket ID sla|activity|"
+		                    "macro NAME|worklog HOURS [NOTE]");
+		return -1;
+	}
+
+	verb = args[2];
+
+	if (0 == g_strcmp0(verb, "sla"))
+	{
+		path = g_strdup_printf("/api/v1/tickets/%s/sla", args[1]);
+		node = venture_cli_request(cli, "GET", path, NULL, error);
+	}
+	else if (0 == g_strcmp0(verb, "activity"))
+	{
+		path = g_strdup_printf("/api/v1/activity/ticket/%s", args[1]);
+		node = venture_cli_request(cli, "GET", path, NULL, error);
+	}
+	else if ((0 == g_strcmp0(verb, "macro")) && (NULL != args[3]))
+	{
+		g_autoptr(JsonBuilder) builder = NULL;
+		g_autoptr(JsonNode) body = NULL;
+
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "macro");
+		json_builder_add_string_value(builder, args[3]);
+		json_builder_end_object(builder);
+		body = json_builder_get_root(builder);
+
+		path = g_strdup_printf("/api/v1/tickets/%s/macro", args[1]);
+		node = venture_cli_request(cli, "POST", path, body, error);
+	}
+	else if ((0 == g_strcmp0(verb, "triage")) ||
+	         (0 == g_strcmp0(verb, "summary")) ||
+	         (0 == g_strcmp0(verb, "draft")))
+	{
+		if (0 == g_strcmp0(verb, "summary"))
+		{
+			path = g_strdup_printf("/api/v1/tickets/%s/summary", args[1]);
+			node = venture_cli_request(cli, "GET", path, NULL, error);
+		}
+		else if (0 == g_strcmp0(verb, "draft"))
+		{
+			g_autoptr(JsonBuilder) builder = NULL;
+			g_autoptr(JsonNode) body = NULL;
+
+			builder = json_builder_new();
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "instruction");
+			json_builder_add_string_value(builder,
+			                              (NULL != args[3]) ? args[3] : "");
+			json_builder_end_object(builder);
+			body = json_builder_get_root(builder);
+
+			path = g_strdup_printf("/api/v1/tickets/%s/draft", args[1]);
+			node = venture_cli_request(cli, "POST", path, body, error);
+		}
+		else
+		{
+			g_autoptr(JsonBuilder) builder = NULL;
+			g_autoptr(JsonNode) body = NULL;
+
+			builder = json_builder_new();
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "apply");
+			json_builder_add_boolean_value(builder,
+				(NULL != args[3]) && (0 == g_strcmp0(args[3], "--apply")));
+			json_builder_end_object(builder);
+			body = json_builder_get_root(builder);
+
+			path = g_strdup_printf("/api/v1/tickets/%s/triage", args[1]);
+			node = venture_cli_request(cli, "POST", path, body, error);
+		}
+
+		if (NULL == node)
+			return -1;
+
+		/*
+		 * A summary and a draft are prose, and a table around a
+		 * paragraph helps nobody: print the text and let it be piped.
+		 */
+		if ((VENTURE_OUTPUT_FORMAT_TABLE == cli->format) &&
+		    JSON_NODE_HOLDS_OBJECT(node) &&
+		    (0 != g_strcmp0(verb, "triage")))
+		{
+			g_print("%s\n", venture_json_object_get_string(
+				json_node_get_object(node),
+				(0 == g_strcmp0(verb, "draft")) ? "draft" : "summary", ""));
+			return 0;
+		}
+
+		venture_cli_output(cli, node);
+
+		return 0;
+	}
+	else if ((0 == g_strcmp0(verb, "worklog")) && (NULL != args[3]))
+	{
+		g_autoptr(JsonBuilder) builder = NULL;
+		g_autoptr(JsonNode) body = NULL;
+
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "hours");
+		json_builder_add_double_value(builder, g_ascii_strtod(args[3], NULL));
+		json_builder_set_member_name(builder, "note");
+		json_builder_add_string_value(builder,
+			(NULL != args[4]) ? args[4] : "");
+		json_builder_end_object(builder);
+		body = json_builder_get_root(builder);
+
+		path = g_strdup_printf("/api/v1/tickets/%s/worklog", args[1]);
+		node = venture_cli_request(cli, "POST", path, body, error);
+	}
+	else
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "usage: venturectl ticket ID sla|activity|"
+		                    "triage [--apply]|summary|draft [AIM]|"
+		                    "macro NAME|worklog HOURS [NOTE]");
+		return -1;
+	}
+
+	if (NULL == node)
+		return -1;
+
+	venture_cli_output(cli, node);
+
+	return 0;
+}
+
+/*
+ * venturectl sprints | sprint ID
+ */
+static gint
+venture_cli_command_sprints(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *path = NULL;
+	JsonArray *rows;
+	guint i;
+
+	if (NULL != args[1])
+	{
+		path = g_strdup_printf("/api/v1/sprints/%s", args[1]);
+		node = venture_cli_request(cli, "GET", path, NULL, error);
+
+		if (NULL == node)
+			return -1;
+
+		venture_cli_output(cli, node);
+		return 0;
+	}
+
+	node = venture_cli_request(cli, "GET", "/api/v1/sprints", NULL, error);
+
+	if (NULL == node)
+		return -1;
+
+	if ((VENTURE_OUTPUT_FORMAT_TABLE != cli->format) ||
+	    !JSON_NODE_HOLDS_ARRAY(node))
+	{
+		venture_cli_output(cli, node);
+		return 0;
+	}
+
+	rows = json_node_get_array(node);
+
+	if (0 == json_array_get_length(rows))
+	{
+		g_print("No sprints.\n");
+		return 0;
+	}
+
+	g_print("%-6s %-24s %-10s %-8s %-10s %-6s %s\n", "ID", "NAME", "STATUS",
+	        "TICKETS", "POINTS", "PCT", "ENDS");
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row;
+		g_autofree gchar *tickets = NULL;
+		g_autofree gchar *points = NULL;
+
+		row = json_array_get_object_element(rows, i);
+		tickets = g_strdup_printf("%" G_GINT64_FORMAT "/%" G_GINT64_FORMAT,
+		                          venture_json_object_get_int(row, "done", 0),
+		                          venture_json_object_get_int(row, "tickets", 0));
+		points = g_strdup_printf("%" G_GINT64_FORMAT "/%" G_GINT64_FORMAT,
+		                         venture_json_object_get_int(row, "points_done", 0),
+		                         venture_json_object_get_int(row, "points", 0));
+		g_print("%-6" G_GINT64_FORMAT " %-24.24s %-10s %-8s %-10s %-6"
+		        G_GINT64_FORMAT " %s\n",
+		        venture_json_object_get_int(row, "id", 0),
+		        venture_json_object_get_string(row, "name", ""),
+		        venture_json_object_get_string(row, "status", ""),
+		        tickets, points,
+		        venture_json_object_get_int(row, "percent", 0),
+		        venture_json_object_get_string(row, "ends_on", "-"));
+	}
+
+	return 0;
+}
+
+/*
+ * venturectl watch TYPE ID | unwatch TYPE ID | activity TYPE ID
+ */
+static gint
+venture_cli_command_watch(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+
+	if ((NULL == args[1]) || (NULL == args[2]))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "usage: venturectl %s TYPE ID", args[0]);
+		return -1;
+	}
+
+	if (0 == g_strcmp0(args[0], "activity"))
+	{
+		g_autofree gchar *path = NULL;
+
+		path = g_strdup_printf("/api/v1/activity/%s/%s", args[1], args[2]);
+		node = venture_cli_request(cli, "GET", path, NULL, error);
+	}
+	else
+	{
+		g_autoptr(JsonBuilder) builder = NULL;
+		g_autoptr(JsonNode) body = NULL;
+
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "type");
+		json_builder_add_string_value(builder, args[1]);
+		json_builder_set_member_name(builder, "id");
+		json_builder_add_int_value(builder, g_ascii_strtoll(args[2], NULL, 10));
+		json_builder_set_member_name(builder, "watch");
+		json_builder_add_boolean_value(builder,
+			(0 == g_strcmp0(args[0], "watch")));
+		json_builder_end_object(builder);
+		body = json_builder_get_root(builder);
+
+		node = venture_cli_request(cli, "POST", "/api/v1/watch", body, error);
+	}
+
+	if (NULL == node)
+		return -1;
+
+	venture_cli_output(cli, node);
+
+	return 0;
+}
+
+/*
+ * venturectl bulk TYPE ID,ID,... field=value ... | --delete
+ *
+ * One request, one transaction: a value one record refuses leaves all of
+ * them as they were, which is what makes it safe to run over a filter's
+ * worth of ids.
+ */
+static gint
+venture_cli_command_bulk(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *path = NULL;
+	g_auto(GStrv) ids = NULL;
+	gboolean remove = FALSE;
+	gsize i;
+
+	if ((NULL == args[1]) || (NULL == args[2]) || (NULL == args[3]))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "usage: venturectl bulk TYPE ID,ID,... "
+		                    "field=value ... | --delete");
+		return -1;
+	}
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "ids");
+	json_builder_begin_array(builder);
+	ids = g_strsplit(args[2], ",", -1);
+
+	for (i = 0; NULL != ids[i]; i++)
+	{
+		if ('\0' != ids[i][0])
+			json_builder_add_int_value(builder,
+				g_ascii_strtoll(ids[i], NULL, 10));
+	}
+
+	json_builder_end_array(builder);
+
+	if (0 == g_strcmp0(args[3], "--delete"))
+	{
+		remove = TRUE;
+		json_builder_set_member_name(builder, "delete");
+		json_builder_add_boolean_value(builder, TRUE);
+	}
+	else
+	{
+		json_builder_set_member_name(builder, "changes");
+		json_builder_begin_object(builder);
+
+		for (i = 3; NULL != args[i]; i++)
+		{
+			gchar *equals;
+
+			equals = strchr(args[i], '=');
+
+			if (NULL == equals)
+			{
+				g_set_error(error, VENTURE_ERROR,
+				            VENTURE_ERROR_INVALID_ARGUMENT,
+				            "\"%s\" is not field=value", args[i]);
+				return -1;
+			}
+
+			*equals = '\0';
+			json_builder_set_member_name(builder, args[i]);
+			json_builder_add_string_value(builder, equals + 1);
+		}
+
+		json_builder_end_object(builder);
+	}
+
+	json_builder_end_object(builder);
+	body = json_builder_get_root(builder);
+
+	path = g_strdup_printf("/api/v1/%s/bulk", args[1]);
+	node = venture_cli_request(cli, "POST", path, body, error);
+
+	if (NULL == node)
+		return -1;
+
+	if (!cli->quiet && JSON_NODE_HOLDS_OBJECT(node))
+		g_print("%" G_GINT64_FORMAT " %s.\n",
+		        venture_json_object_get_int(json_node_get_object(node),
+		                                    "changed", 0),
+		        remove ? "removed" : "changed");
+	else
+		venture_cli_output(cli, node);
+
+	return 0;
+}
+
+/*
+ * venturectl incident ID ticket
+ */
+static gint
+venture_cli_command_incident(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *path = NULL;
+
+	if ((NULL == args[1]) || (0 != g_strcmp0(args[2], "ticket")))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "usage: venturectl incident ID ticket");
+		return -1;
+	}
+
+	path = g_strdup_printf("/api/v1/incidents/%s/ticket", args[1]);
+	node = venture_cli_request(cli, "POST", path, NULL, error);
+
+	if (NULL == node)
+		return -1;
+
+	venture_cli_output(cli, node);
+
+	return 0;
+}
+
+/*
+ * venturectl webhooks | webhook test ID | webhook secret ID
+ */
+static gint
+venture_cli_command_webhooks(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *path = NULL;
+	JsonArray *rows;
+	guint i;
+
+	if (0 == g_strcmp0(args[0], "webhook"))
+	{
+		const gchar *verb;
+
+		verb = args[1];
+
+		if ((NULL == verb) || (NULL == args[2]) ||
+		    ((0 != g_strcmp0(verb, "test")) &&
+		     (0 != g_strcmp0(verb, "secret"))))
+		{
+			g_set_error_literal(error, VENTURE_ERROR,
+			                    VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "usage: venturectl webhook test ID | "
+			                    "webhook secret ID");
+			return -1;
+		}
+
+		path = g_strdup_printf("/api/v1/webhooks/%s/%s", args[2],
+		                       (0 == g_strcmp0(verb, "test")) ? "test"
+		                                                      : "secret");
+		node = venture_cli_request(cli, "POST", path, NULL, error);
+
+		if (NULL == node)
+			return -1;
+
+		venture_cli_output(cli, node);
+
+		return 0;
+	}
+
+	node = venture_cli_request(cli, "GET", "/api/v1/webhooks", NULL, error);
+
+	if (NULL == node)
+		return -1;
+
+	if ((VENTURE_OUTPUT_FORMAT_TABLE != cli->format) ||
+	    !JSON_NODE_HOLDS_ARRAY(node))
+	{
+		venture_cli_output(cli, node);
+		return 0;
+	}
+
+	rows = json_node_get_array(node);
+
+	if (0 == json_array_get_length(rows))
+	{
+		g_print("Nothing is listening. `venturectl create webhook "
+		        "name=... url=https://... events='ticket.*'`, then "
+		        "`venturectl webhook secret ID`.\n");
+		return 0;
+	}
+
+	g_print("%-5s %-20s %-8s %-7s %-5s %-24s %s\n", "ID", "NAME", "ACTIVE",
+	        "SIGNED", "FAILS", "EVENTS", "URL");
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row;
+
+		row = json_array_get_object_element(rows, i);
+		g_print("%-5" G_GINT64_FORMAT " %-20.20s %-8s %-7s %-5" G_GINT64_FORMAT
+		        " %-24.24s %s\n",
+		        venture_json_object_get_int(row, "id", 0),
+		        venture_json_object_get_string(row, "name", ""),
+		        venture_json_object_get_bool(row, "active", FALSE) ? "yes"
+		                                                           : "",
+		        venture_json_object_get_bool(row, "signed", FALSE) ? "yes"
+		                                                           : "no",
+		        venture_json_object_get_int(row, "failure_count", 0),
+		        venture_json_object_get_string(row, "events", "*"),
+		        venture_json_object_get_string(row, "url", ""));
+	}
+
+	return 0;
+}
+
 /*
  * venturectl link SOURCE_TYPE ID TARGET_TYPE ID [kind=...] [note=...]
  *
@@ -2425,6 +3143,30 @@ main(
 		"  dashboard import FILE        a definition from a file, or -\n"
 		"  dashboard create TEMPLATE    factory, reporting, work, overview\n"
 		"  dashboard templates|kinds    what create and widgets accept\n"
+		"  inbox [--all]                what you have been told; unread\n"
+		"                               by default\n"
+		"  inbox read ID|all            mark it read\n"
+		"  watch TYPE ID                be told when a record changes;\n"
+		"                               unwatch to stop\n"
+		"  activity TYPE ID             a record's timeline: changes,\n"
+		"                               comments, worklogs\n"
+		"  ticket ID sla                its service-level clocks\n"
+		"  ticket ID macro NAME         apply a macro to it\n"
+		"  ticket ID worklog H [NOTE]   log hours against it\n"
+		"  ticket ID triage [--apply]   have the assistant propose a\n"
+		"                               priority, a type and tags\n"
+		"  ticket ID summary            what the thread amounts to\n"
+		"  ticket ID draft [AIM]        draft the next reply; never sent\n"
+		"  sprints | sprint ID          the sprints and their burn\n"
+		"  bulk TYPE IDS field=value    change many records at once;\n"
+		"                               --delete removes them\n"
+		"  incident ID ticket           open the bug for an incident\n"
+		"  runs [--state S]             mission control: every coding\n"
+		"                               run, with cost\n"
+		"  budgets                      the agent budgets and their spend\n"
+		"  webhooks                     outbound webhooks and their health\n"
+		"  webhook test ID              send a ping and wait for the answer\n"
+		"  webhook secret ID            generate a new signing secret\n"
 		"  health                       check the server is up\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
@@ -2599,6 +3341,28 @@ main(
 		result = venture_cli_command_dashboard(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "link"))
 		result = venture_cli_command_link(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "inbox"))
+		result = venture_cli_command_inbox(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "runs"))
+		result = venture_cli_command_runs(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "budgets"))
+		result = venture_cli_command_budgets(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "ticket"))
+		result = venture_cli_command_ticket(&cli, args, &error);
+	else if ((0 == g_strcmp0(args[0], "sprints")) ||
+	         (0 == g_strcmp0(args[0], "sprint")))
+		result = venture_cli_command_sprints(&cli, args, &error);
+	else if ((0 == g_strcmp0(args[0], "watch")) ||
+	         (0 == g_strcmp0(args[0], "unwatch")) ||
+	         (0 == g_strcmp0(args[0], "activity")))
+		result = venture_cli_command_watch(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "bulk"))
+		result = venture_cli_command_bulk(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "incident"))
+		result = venture_cli_command_incident(&cli, args, &error);
+	else if ((0 == g_strcmp0(args[0], "webhooks")) ||
+	         (0 == g_strcmp0(args[0], "webhook")))
+		result = venture_cli_command_webhooks(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "mcp"))
 		result = venture_cli_command_mcp(&cli, args, &error);
 	else

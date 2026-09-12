@@ -425,7 +425,7 @@ test_catalog_from_schema(void)
 	tools = venture_mcp_catalog_get_tools(catalog);
 	g_assert_nonnull(tools);
 	g_assert_true(JSON_NODE_HOLDS_ARRAY(tools));
-	g_assert_cmpuint(json_array_get_length(json_node_get_array(tools)), ==, 16);
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(tools)), ==, 19);
 
 	enumeration = tool_type_enum(tools, "venture_list");
 	g_assert_nonnull(enumeration);
@@ -757,7 +757,7 @@ test_protocol_tools_list(void)
 	                                       "result");
 	tools = json_object_get_array_member(result, "tools");
 
-	g_assert_cmpuint(json_array_get_length(tools), ==, 16);
+	g_assert_cmpuint(json_array_get_length(tools), ==, 19);
 }
 
 /*

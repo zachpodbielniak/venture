@@ -1000,6 +1000,11 @@ venture_work_service_start_for_ticket(
 		return 0;
 	}
 
+	/* The budget is asked before the rule: a run refused for money is
+	 * refused whatever the rule says, and the refusal names the budget. */
+	if (!venture_factory_budget_allows_run(self->context, repo_id, error))
+		return 0;
+
 	rule = venture_forge_rule_resolve(venture_context_get_database(self->context),
 	                                  repo_id, issue_type, NULL);
 

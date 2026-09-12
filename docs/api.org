@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-11]
-#+version: 0.5.0
+#+updated: [2026-09-12]
+#+version: 0.6.0
 
 * REST API
 
@@ -74,6 +74,28 @@ See [[file:mcp.org][venturectl mcp]].
 | =POST=   | =/api/v1/dashboards/from-template=  | ={"template": "factory"}=            |
 | =GET=    | =/api/v1/widget-kinds=              | the widget catalogue                 |
 | =GET=    | =/api/v1/dashboard-templates=       | the shipped templates                |
+| =GET=    | =/api/v1/inbox=                     | the caller's notifications; =?unread=0= for all |
+| =POST=   | =/api/v1/inbox/read=                | ={"id": N}=, or 0 for every unread one |
+| =POST=   | =/api/v1/watch=                     | ={"type","id","watch": true|false}=  |
+| =GET=    | =/api/v1/watching/:type/:id=        | whether you follow it, and who does  |
+| =GET=    | =/api/v1/activity/:type/:id=        | a record's timeline                  |
+| =GET=    | =/api/v1/tickets/:id/sla=           | a ticket's service-level clocks      |
+| =POST=   | =/api/v1/tickets/:id/macro=         | ={"macro": name or id}=              |
+| =POST=   | =/api/v1/tickets/:id/worklog=       | ={"hours": 1.5, "note": "..."}=      |
+| =POST=   | =/api/v1/sla/sweep=                 | mark service levels that fell due    |
+| =GET=    | =/api/v1/sprints=                   | every sprint with its burn           |
+| =GET=    | =/api/v1/sprints/:id=               | one, with its tickets                |
+| =POST=   | =/api/v1/incidents/:id/ticket=      | open the bug for an incident         |
+| =POST=   | =/api/v1/:type/bulk=                | change or delete many records at once |
+| =GET=    | =/api/v1/runs=                      | mission control: the coding runs and totals |
+| =GET=    | =/api/v1/budgets=                   | the agent budgets and their spend    |
+| =GET=    | =/api/v1/palette?q=                 | pages, record types and records for the command palette |
+| =GET=    | =/api/v1/webhooks=                  | what is listening, and the last few deliveries each |
+| =POST=   | =/api/v1/webhooks/:id/test=         | send a ping and wait for the answer  |
+| =POST=   | =/api/v1/webhooks/:id/secret=       | generate a signing secret, shown once |
+| =POST=   | =/api/v1/tickets/:id/triage=        | a proposed priority, type and tags; =apply= to keep them |
+| =GET=    | =/api/v1/tickets/:id/summary=       | what the thread amounts to           |
+| =POST=   | =/api/v1/tickets/:id/draft=         | draft the next reply; never posted   |
 
 Any of the four write verbs takes =?stage=1=, which proposes the change
 instead of making it. See [[*Staging a write][Staging a write]].
@@ -104,6 +126,22 @@ Everything else about the factory is the generic routes: =/api/v1/milestone=, =r
 A widget's place on the grid is four fields, =grid_col=, =grid_row=, =grid_width= and =grid_height=, zero meaning "wherever fits"; the checked way to move one is the editor's =POST /dashboards/:slug/widgets/:id/place=, which refuses a taken cell with 409. See [[file:dashboards.org][Dashboards]].
 
 =GET /api/v1/dashboards/:slug= returns a dashboard with every widget evaluated: each widget's settings, its resolved title, its link, an =error= when it could not be answered, and =data= in a shape its kind decides. =?data=0= lists the widgets without evaluating them; =?organization_id=N= scopes every widget to that entity and those beneath it, as the sidebar picker does for a page. A personal dashboard belonging to somebody else answers 404. The generic routes =/api/v1/dashboard= and =/api/v1/dashboard_widget= work like any other type's, and a widget written through them is held to the same checks as one made in the editor. See [[file:dashboards.org][Dashboards]].
+
+** The workdesk
+
+=GET /api/v1/inbox= returns ={"unread": N, "notifications": [...]}= for the caller — a token with no user has no inbox — each notification with its kind, title, body, actor, the record it is about and a =url= to it, whether it is read, and when. =POST /api/v1/inbox/read= with ={"id": N}= marks one read, or every unread one with 0; somebody else's notification is not found, never forbidden. =POST /api/v1/watch= with ={"type": "ticket", "id": 7, "watch": true}= follows a record (=false= stops); =GET /api/v1/watching/:type/:id= says whether you do and who else does.
+
+=GET /api/v1/activity/:type/:id= is the record's timeline, newest first: each audited change with =actor=, =actor_kind=, =action=, =when= and =changes= (the diff, field to ={"from","to"}=), and for a ticket its comments (=body=, =internal=) and worklogs (=hours=, =body=) woven in. =GET /api/v1/tickets/:id/sla= is the ticket's clocks: whether a policy covers it, each clock's state (=none=, =ok=, =warning=, =breached=) and seconds remaining, whether it has been answered, whether it is closed.
+
+=POST /api/v1/tickets/:id/macro= applies a macro by name or id and answers with the ticket; =POST /api/v1/tickets/:id/worklog= logs hours and answers 201 with the worklog. =POST /api/v1/:type/bulk= takes ={"ids": [...], "changes": {"status": "done"}}= or ={"ids": [...], "delete": true}=, applies it in one transaction — one refusal and nothing changes — and answers ={"changed": N}=; at most 500 ids. =POST /api/v1/incidents/:id/ticket= opens the incident's fix ticket and answers 201 with it; an incident that already names one gets 409. =POST /api/v1/sla/sweep= marks open tickets past their resolution target and answers ={"marked": N}=.
+
+=GET /api/v1/runs= is mission control: ={"runs": [...], "totals": {...}}=, each run with its ticket, state, runner, outcome, branch, pull request, provider, model, tokens, cost, timing and summary; =?state=running= narrows it, =?limit=N= and =?organization_id=N= as elsewhere. =GET /api/v1/budgets= lists the active budgets with =spent=, =limit=, =percent=, =runs=, =warning= and =exhausted= for the current window. None of these are stageable except the worklog, which is the record =worklog= and takes =?stage=1= through its generic route. See [[file:workdesk.org][The workdesk]].
+
+** Webhooks and the assistant at the desk
+
+=GET /api/v1/webhooks= lists every webhook with whether it is active and signed, its consecutive failures, when it last delivered, and its last ten deliveries; the secret itself is never in the answer, only whether there is one. =POST /api/v1/webhooks/:id/test= sends a =webhook.test= delivery, waits, and answers with the delivery record. =POST /api/v1/webhooks/:id/secret= generates one (or takes ={"secret": "..."}=) and answers with it exactly once. All three are owner-only, as is the =webhook= type itself. See [[file:webhooks.org][Webhooks out]].
+
+=POST /api/v1/tickets/:id/triage= reads the ticket and its thread and answers ={"triage": {...}, "applied": false, "ticket": {...}}=, where the triage carries a =priority=, an =issue_type=, =tags=, a =summary=, the requester's =sentiment= and a sentence of =reasoning=. Nothing changes unless the body says ={"apply": true}=, and then only the fields the enums actually accept — an invented priority changes nothing. =GET /api/v1/tickets/:id/summary= answers ={"summary": "..."}=; =POST /api/v1/tickets/:id/draft= takes ={"instruction": "..."}= and answers ={"draft": "...", "posted": false}=. A drafted reply is never posted: add it with =POST /api/v1/ticket_comment= once somebody has read it. All three need the AI module and a configured provider.
 
 ** Settings
 

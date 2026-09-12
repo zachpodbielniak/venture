@@ -22,6 +22,9 @@ struct _VentureAiService
 	VentureContext		*context;
 	AiProvider		*provider;
 	AiToolExecutor		*executor;
+
+	/* Toolless, for one-shot judgements; see venture_ai_service_complete(). */
+	AiToolExecutor		*plain;
 	VentureAiPolicy		 policy;
 	gchar			*system_prompt;
 	gint			 max_tokens;
@@ -54,6 +57,7 @@ venture_ai_service_finalize(GObject *object)
 	g_clear_object(&self->context);
 	g_clear_object(&self->provider);
 	g_clear_object(&self->executor);
+	g_clear_object(&self->plain);
 	g_clear_pointer(&self->system_prompt, g_free);
 	g_clear_pointer(&self->current_prompt, g_free);
 
@@ -1946,6 +1950,514 @@ venture_ai_tool_dashboard_build(
  * record types and their fields are described by the registry, so the model
  * is told what actually exists rather than guessing.
  */
+/* --- The workdesk ---------------------------------------------------------- */
+
+/*
+ * The inbox: what the operator has been told, and marking it read. Read
+ * under every policy -- it is their own inbox, and marking a line read is
+ * not business data -- but scoped to the signed-in user, never anybody
+ * else's.
+ */
+static gchar *
+venture_ai_tool_inbox(
+	AiToolUse	 *tool_use,
+	GCancellable	 *cancellable,
+	GError		**error,
+	gpointer	  user_data
+){
+	VentureAiService *self;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(GError) local_error = NULL;
+	JsonObject *input;
+	const gchar *action;
+	gint64 user_id;
+	guint i;
+
+	(void)cancellable;
+	(void)error;
+
+	self = user_data;
+	input = venture_ai_tool_input(tool_use);
+	action = (NULL != input)
+		? venture_json_object_get_string(input, "action", "list") : "list";
+	user_id = (NULL != self->current_principal)
+		? self->current_principal->user_id : 0;
+
+	if (0 == user_id)
+		return venture_ai_tool_error("There is no signed-in user, so there is "
+		                             "no inbox to read");
+
+	if (0 == g_strcmp0(action, "read"))
+	{
+		gint changed;
+
+		changed = venture_notify_mark_read(self->context, user_id,
+			(NULL != input) ? venture_json_object_get_int(input, "id", 0) : 0,
+			&local_error);
+
+		if (changed < 0)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "read");
+		json_builder_add_int_value(builder, changed);
+		json_builder_end_object(builder);
+
+		return venture_ai_tool_result(json_builder_get_root(builder));
+	}
+
+	if (0 != g_strcmp0(action, "list"))
+		return venture_ai_tool_error("\"%s\" is not an inbox action; use "
+		                             "list or read", action);
+
+	rows = venture_notify_list(self->context, user_id,
+		(NULL != input) ? venture_json_object_get_bool(input, "unread_only",
+		                                                 TRUE) : TRUE,
+		(NULL != input) ? (guint)venture_json_object_get_int(input, "limit", 0)
+		                : 0,
+		&local_error);
+
+	if (NULL == rows)
+		return venture_ai_tool_error("%s", local_error->message);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "unread");
+	json_builder_add_int_value(builder,
+		venture_notify_unread_count(self->context, user_id));
+	json_builder_set_member_name(builder, "notifications");
+	json_builder_begin_array(builder);
+
+	for (i = 0; i < rows->len; i++)
+		json_builder_add_value(builder,
+			venture_notify_to_json(g_ptr_array_index(rows, i)));
+
+	json_builder_end_array(builder);
+	json_builder_end_object(builder);
+
+	return venture_ai_tool_result(json_builder_get_root(builder));
+}
+
+/*
+ * Mission control: the coding runs and the budgets they run under.
+ */
+static gchar *
+venture_ai_tool_runs(
+	AiToolUse	 *tool_use,
+	GCancellable	 *cancellable,
+	GError		**error,
+	gpointer	  user_data
+){
+	VentureAiService *self;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) local_error = NULL;
+	JsonObject *input;
+	const gchar *what;
+
+	(void)cancellable;
+	(void)error;
+
+	self = user_data;
+	input = venture_ai_tool_input(tool_use);
+	what = (NULL != input)
+		? venture_json_object_get_string(input, "what", "runs") : "runs";
+
+	if (0 == g_strcmp0(what, "budgets"))
+		node = venture_factory_budgets_describe(self->context, &local_error);
+	else if (0 == g_strcmp0(what, "runs"))
+		node = venture_factory_runs_describe(self->context, NULL, 0,
+			(NULL != input) ? venture_json_object_get_string(input, "state",
+			                                                 NULL) : NULL,
+			(NULL != input) ? (guint)venture_json_object_get_int(input, "limit",
+			                                                     0) : 0,
+			&local_error);
+	else
+		return venture_ai_tool_error("\"%s\" is not something venture_runs "
+		                             "shows; use runs or budgets", what);
+
+	if (NULL == node)
+		return venture_ai_tool_error("%s", local_error->message);
+
+	return venture_ai_tool_result(g_steal_pointer(&node));
+}
+
+/*
+ * The desk: a ticket's service level and timeline, the sprints, and the
+ * three writes a form cannot express -- a macro, a worklog, the bug for
+ * an incident, and a change to many records at once. A worklog stages
+ * like any record under the confirming policy; the others cannot be
+ * staged and are offered only under the autonomous one.
+ */
+static gchar *
+venture_ai_tool_desk(
+	AiToolUse	 *tool_use,
+	GCancellable	 *cancellable,
+	GError		**error,
+	gpointer	  user_data
+){
+	VentureAiService *self;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) local_error = NULL;
+	JsonObject *input;
+	const gchar *action;
+	VentureActor actor;
+	gint64 id;
+
+	(void)cancellable;
+	(void)error;
+
+	self = user_data;
+	input = venture_ai_tool_input(tool_use);
+
+	if (NULL == input)
+		return venture_ai_tool_error("The arguments must be an object");
+
+	action = venture_json_object_get_string(input, "action", NULL);
+	id = venture_json_object_get_int(input, "id", 0);
+
+	actor.kind = VENTURE_ACTOR_KIND_AI;
+	actor.name = (NULL != self->current_principal)
+		? self->current_principal->name : "ai";
+	actor.prompt = self->current_prompt;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+
+	if (venture_string_is_empty(action))
+		return venture_ai_tool_error("An \"action\" is required: sla, "
+		                             "activity, sprints, sprint, triage, "
+		                             "summarise, draft, macro, worklog, "
+		                             "fix_ticket or bulk");
+
+	if (0 == g_strcmp0(action, "activity"))
+	{
+		const gchar *type_name;
+
+		type_name = venture_json_object_get_string(input, "type", NULL);
+
+		if (venture_string_is_empty(type_name) || (0 == id))
+			return venture_ai_tool_error("activity needs a \"type\" and an "
+			                             "\"id\"");
+
+		node = venture_desk_activity(self->context, type_name, id,
+			(guint)venture_json_object_get_int(input, "limit", 0),
+			&local_error);
+
+		if (NULL == node)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		return venture_ai_tool_result(g_steal_pointer(&node));
+	}
+
+	if (0 == g_strcmp0(action, "sprints"))
+	{
+		g_autoptr(GPtrArray) sprints = NULL;
+		g_autoptr(JsonBuilder) builder = NULL;
+		guint i;
+
+		sprints = venture_desk_list_sprints(self->context, NULL, 0,
+		                                    &local_error);
+
+		if (NULL == sprints)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		builder = json_builder_new();
+		json_builder_begin_array(builder);
+
+		for (i = 0; i < sprints->len; i++)
+			json_builder_add_value(builder,
+				venture_desk_sprint_to_json(self->context,
+				                            g_ptr_array_index(sprints, i),
+				                            FALSE));
+
+		json_builder_end_array(builder);
+
+		return venture_ai_tool_result(json_builder_get_root(builder));
+	}
+
+	if (0 == g_strcmp0(action, "sprint"))
+	{
+		g_autoptr(VentureEntity) sprint = NULL;
+
+		sprint = venture_database_get(venture_context_get_database(self->context),
+		                              VENTURE_TYPE_SPRINT, id, &local_error);
+
+		if (NULL == sprint)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		return venture_ai_tool_result(
+			venture_desk_sprint_to_json(self->context, sprint, TRUE));
+	}
+
+	if (0 == g_strcmp0(action, "sla"))
+	{
+		g_autoptr(VentureEntity) ticket = NULL;
+		VentureSlaStatus status;
+
+		ticket = venture_database_get(venture_context_get_database(self->context),
+		                              VENTURE_TYPE_TICKET, id, &local_error);
+
+		if (NULL == ticket)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		venture_sla_status(ticket, NULL, &status);
+
+		return venture_ai_tool_result(venture_sla_status_to_json(&status));
+	}
+
+	/*
+	 * The three judgements about a ticket's text. Reads, all of them --
+	 * a triage is a proposal until somebody applies it, and a drafted
+	 * reply is a draft -- so they are offered under every policy that
+	 * can read at all. Each runs on the toolless path, so the ticket's
+	 * text cannot steer a tool call.
+	 */
+	if ((0 == g_strcmp0(action, "triage")) ||
+	    (0 == g_strcmp0(action, "summarise")) ||
+	    (0 == g_strcmp0(action, "summarize")) ||
+	    (0 == g_strcmp0(action, "draft")))
+	{
+		g_autoptr(VentureEntity) ticket = NULL;
+
+		ticket = venture_database_get(venture_context_get_database(self->context),
+		                              VENTURE_TYPE_TICKET, id, &local_error);
+
+		if (NULL == ticket)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		if (0 == g_strcmp0(action, "triage"))
+		{
+			node = venture_ai_assist_triage(self->context, ticket,
+			                                &local_error);
+
+			if (NULL == node)
+				return venture_ai_tool_error("%s", local_error->message);
+
+			return venture_ai_tool_result(g_steal_pointer(&node));
+		}
+
+		{
+			g_autoptr(JsonBuilder) builder = NULL;
+			g_autofree gchar *text = NULL;
+			const gchar *member;
+
+			if (0 == g_strcmp0(action, "draft"))
+			{
+				member = "draft";
+				text = venture_ai_assist_draft_reply(self->context, ticket,
+					venture_json_object_get_string(input, "note", NULL),
+					&local_error);
+			}
+			else
+			{
+				member = "summary";
+				text = venture_ai_assist_summarise(self->context, ticket,
+				                                   &local_error);
+			}
+
+			if (NULL == text)
+				return venture_ai_tool_error("%s", local_error->message);
+
+			builder = json_builder_new();
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, member);
+			json_builder_add_string_value(builder, text);
+
+			if (0 == g_strcmp0(action, "draft"))
+			{
+				json_builder_set_member_name(builder, "posted");
+				json_builder_add_boolean_value(builder, FALSE);
+				json_builder_set_member_name(builder, "note");
+				json_builder_add_string_value(builder,
+					"A draft, never posted. Show it to the person you are "
+					"working for; add it with venture_create on "
+					"ticket_comment once they have read it.");
+			}
+
+			json_builder_end_object(builder);
+
+			return venture_ai_tool_result(json_builder_get_root(builder));
+		}
+	}
+
+	/* Everything below writes. */
+	if (VENTURE_AI_POLICY_READ_ONLY == self->policy)
+		return venture_ai_tool_error("The assistant is read-only on this "
+		                             "install");
+
+	if (0 == g_strcmp0(action, "worklog"))
+	{
+		g_autoptr(VentureEntity) ticket = NULL;
+		g_autoptr(VentureWorklog) worklog = NULL;
+		g_autoptr(GDateTime) now = NULL;
+		gdouble hours;
+
+		hours = json_object_has_member(input, "hours")
+			? json_node_get_double(json_object_get_member(input, "hours"))
+			: 0.0;
+
+		if (VENTURE_AI_POLICY_AUTONOMOUS == self->policy)
+		{
+			g_autoptr(VentureEntity) logged = NULL;
+
+			logged = venture_desk_log_work(self->context, id, hours,
+				venture_json_object_get_string(input, "note", NULL),
+				&actor, &local_error);
+
+			if (NULL == logged)
+				return venture_ai_tool_error("%s", local_error->message);
+
+			return venture_ai_tool_result(
+				venture_serializable_to_json(VENTURE_SERIALIZABLE(logged),
+				                             FALSE));
+		}
+
+		/* Staged, like any created record: the worklog is the record. */
+		if (!(hours > 0.0))
+			return venture_ai_tool_error("Logged time must be more than zero "
+			                             "hours");
+
+		ticket = venture_database_get(venture_context_get_database(self->context),
+		                              VENTURE_TYPE_TICKET, id, &local_error);
+
+		if (NULL == ticket)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		now = venture_time_now();
+		worklog = venture_worklog_new();
+		g_object_set(worklog, "ticket-id", id, "author", actor.name,
+		             "hours", hours, "occurred-at", now,
+		             "note", venture_json_object_get_string(input, "note", NULL),
+		             NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(worklog),
+			venture_entity_get_organization_id(ticket));
+
+		return venture_ai_stage_change(self, VENTURE_AUDIT_ACTION_CREATE,
+		                               VENTURE_ENTITY(worklog), NULL);
+	}
+
+	if (VENTURE_AI_POLICY_AUTONOMOUS != self->policy)
+		return venture_ai_tool_error("\"%s\" cannot be staged for approval, "
+		                             "so it is only offered under the "
+		                             "autonomous policy. A macro is a comment "
+		                             "plus field changes: propose them with "
+		                             "venture_create on ticket_comment and "
+		                             "venture_update on the ticket, which "
+		                             "stage. A bulk change is one "
+		                             "venture_update per record.", action);
+
+	if (0 == g_strcmp0(action, "macro"))
+	{
+		g_autoptr(VentureEntity) ticket = NULL;
+		g_autoptr(VentureEntity) macro = NULL;
+		const gchar *name;
+
+		name = venture_json_object_get_string(input, "macro", NULL);
+		ticket = venture_database_get(venture_context_get_database(self->context),
+		                              VENTURE_TYPE_TICKET, id, &local_error);
+
+		if (NULL == ticket)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		macro = venture_desk_find_macro(self->context, name);
+
+		if (NULL == macro)
+			return venture_ai_tool_error("There is no macro \"%s\"",
+			                             (NULL != name) ? name : "");
+
+		if (!venture_desk_apply_macro(self->context, ticket, macro, &actor,
+		                              &local_error))
+			return venture_ai_tool_error("%s", local_error->message);
+
+		return venture_ai_tool_result(
+			venture_serializable_to_json(VENTURE_SERIALIZABLE(ticket), FALSE));
+	}
+
+	if (0 == g_strcmp0(action, "fix_ticket"))
+	{
+		g_autoptr(VentureEntity) incident = NULL;
+		g_autoptr(VentureEntity) ticket = NULL;
+
+		incident = venture_database_get(
+			venture_context_get_database(self->context), VENTURE_TYPE_INCIDENT,
+			id, &local_error);
+
+		if (NULL == incident)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		ticket = venture_factory_open_fix_ticket(self->context, incident,
+		                                         &actor, &local_error);
+
+		if (NULL == ticket)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		return venture_ai_tool_result(
+			venture_serializable_to_json(VENTURE_SERIALIZABLE(ticket), FALSE));
+	}
+
+	if (0 == g_strcmp0(action, "bulk"))
+	{
+		g_autoptr(GArray) ids = NULL;
+		g_autoptr(JsonBuilder) builder = NULL;
+		const gchar *type_name;
+		JsonArray *id_array;
+		GType entity_type;
+		gint changed;
+		guint i;
+
+		type_name = venture_json_object_get_string(input, "type", NULL);
+		entity_type = venture_entity_registry_lookup(
+			venture_context_get_entity_registry(self->context),
+			(NULL != type_name) ? type_name : "");
+
+		if (G_TYPE_INVALID == entity_type)
+			return venture_ai_tool_error("bulk needs a \"type\" that exists");
+
+		if ((VENTURE_TYPE_AUDIT_ENTRY == entity_type) ||
+		    (VENTURE_TYPE_FORGE_RUN == entity_type))
+			return venture_ai_tool_type_refused(type_name);
+
+		id_array = json_object_has_member(input, "ids")
+			? json_object_get_array_member(input, "ids") : NULL;
+		ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+
+		for (i = 0; (NULL != id_array) && (i < json_array_get_length(id_array));
+		     i++)
+		{
+			gint64 one;
+
+			one = json_array_get_int_element(id_array, i);
+			g_array_append_val(ids, one);
+		}
+
+		if (venture_json_object_get_bool(input, "delete", FALSE))
+			changed = venture_desk_bulk_delete(self->context, entity_type,
+				(const gint64 *)ids->data, ids->len, &actor, &local_error);
+		else if (json_object_has_member(input, "changes"))
+			changed = venture_desk_bulk_update(self->context, entity_type,
+				(const gint64 *)ids->data, ids->len,
+				json_object_get_object_member(input, "changes"), &actor,
+				&local_error);
+		else
+			return venture_ai_tool_error("bulk needs \"changes\" or "
+			                             "\"delete\": true");
+
+		if (changed < 0)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "changed");
+		json_builder_add_int_value(builder, changed);
+		json_builder_end_object(builder);
+
+		return venture_ai_tool_result(json_builder_get_root(builder));
+	}
+
+	return venture_ai_tool_error("\"%s\" is not a desk action", action);
+}
+
 static AiTool *
 venture_ai_make_tool(
 	VentureAiService	*self,
@@ -1974,6 +2486,9 @@ venture_ai_service_register_tools(VentureAiService *self)
 	g_autoptr(AiTool) links = NULL;
 	g_autoptr(AiTool) dashboard = NULL;
 	g_autoptr(AiTool) factory = NULL;
+	g_autoptr(AiTool) inbox = NULL;
+	g_autoptr(AiTool) runs = NULL;
+	g_autoptr(AiTool) desk = NULL;
 
 	list_types = venture_ai_make_tool(self, "venture_list_types",
 		"List every record type in this VENTURE instance with its fields, "
@@ -2106,6 +2621,77 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(factory, "prerelease", "boolean",
 		"publish: mark it a pre-release", FALSE);
 
+	inbox = venture_ai_make_tool(self, "venture_inbox",
+		"The operator's inbox: what they have been told -- mentions, "
+		"tickets handed to them, changes to records they watch, service "
+		"levels about to be missed, budgets crossed, runs finishing. "
+		"action \"list\" (the default) reads it, unread only unless "
+		"unread_only is false; action \"read\" marks one notification "
+		"read by id, or every one with id 0.");
+	ai_tool_add_parameter(inbox, "action", "string", "list or read", FALSE);
+	ai_tool_add_parameter(inbox, "id", "integer",
+		"read: the notification, or 0 for all", FALSE);
+	ai_tool_add_parameter(inbox, "unread_only", "boolean",
+		"list: leave out what was read; defaults to true", FALSE);
+	ai_tool_add_parameter(inbox, "limit", "integer", "list: at most this many",
+		FALSE);
+
+	runs = venture_ai_make_tool(self, "venture_runs",
+		"Mission control for the coding runs. what \"runs\" (the default) "
+		"lists them across every repository with state, runner, model, "
+		"tokens, cost and duration, plus totals: live, succeeded, failed, "
+		"pull requests, cost, cost per success; filter with state. what "
+		"\"budgets\" lists the agent budgets with spend against limit.");
+	ai_tool_add_parameter(runs, "what", "string", "runs or budgets", FALSE);
+	ai_tool_add_parameter(runs, "state", "string",
+		"runs: queued, running, succeeded, failed, cancelled, refused, "
+		"interrupted", FALSE);
+	ai_tool_add_parameter(runs, "limit", "integer", "runs: at most this many",
+		FALSE);
+
+	desk = venture_ai_make_tool(self, "venture_desk",
+		"The workdesk. Reads: action \"sla\" with a ticket id gives its "
+		"service-level clocks; \"activity\" with type and id gives a "
+		"record's timeline -- every change with who and what moved, and a "
+		"ticket's comments and worklogs; \"sprints\" lists sprints with "
+		"their burn; \"sprint\" with an id includes its tickets; "
+		"\"triage\" proposes a priority, an issue type and tags for a "
+		"ticket with a one-line summary and the requester's sentiment, "
+		"changing nothing; \"summarise\" says what a thread amounts to; "
+		"\"draft\" writes the next reply for a person to edit and never "
+		"posts it. Writes: "
+		"\"worklog\" logs hours against a ticket (staged unless the policy "
+		"is autonomous); \"macro\" applies a macro by name to a ticket, "
+		"\"fix_ticket\" opens the bug for an incident id, and \"bulk\" "
+		"changes many records of a type at once with ids and changes, or "
+		"deletes them with delete: true -- the last three only under the "
+		"autonomous policy, because they cannot be staged.");
+	ai_tool_add_parameter(desk, "action", "string",
+		"sla, activity, sprints, sprint, triage, summarise, draft, worklog, "
+		"macro, fix_ticket or bulk",
+		TRUE);
+	ai_tool_add_parameter(desk, "id", "integer",
+		"The ticket, sprint, incident or record", FALSE);
+	ai_tool_add_parameter(desk, "type", "string",
+		"activity and bulk: the record type", FALSE);
+	ai_tool_add_parameter(desk, "hours", "number", "worklog: how long", FALSE);
+	ai_tool_add_parameter(desk, "note", "string", "worklog: on what", FALSE);
+	ai_tool_add_parameter(desk, "macro", "string",
+		"macro: its name or id", FALSE);
+	ai_tool_add_parameter(desk, "ids", "array", "bulk: the record ids", FALSE);
+	ai_tool_add_parameter(desk, "changes", "object",
+		"bulk: field to value, in the wire spelling", FALSE);
+	ai_tool_add_parameter(desk, "delete", "boolean",
+		"bulk: remove them instead of changing them", FALSE);
+	ai_tool_add_parameter(desk, "limit", "integer",
+		"activity: at most this many entries", FALSE);
+
+	ai_tool_executor_register_callback(self->executor, inbox,
+		venture_ai_tool_inbox, self, NULL);
+	ai_tool_executor_register_callback(self->executor, runs,
+		venture_ai_tool_runs, self, NULL);
+	ai_tool_executor_register_callback(self->executor, desk,
+		venture_ai_tool_desk, self, NULL);
 	ai_tool_executor_register_callback(self->executor, factory,
 		venture_ai_tool_factory, self, NULL);
 	ai_tool_executor_register_callback(self->executor, dashboard,
@@ -2447,10 +3033,51 @@ venture_ai_service_new(
 	 * venture_* tools registered below and nothing else.
 	 */
 	self->executor = ai_tool_executor_new_empty();
+
+	/*
+	 * A second executor that never gets a tool. venture_ai_service_complete()
+	 * runs against it, so a judgement about somebody else's text -- a
+	 * ticket's classification, a drafted reply -- cannot reach a record,
+	 * whatever that text asks for.
+	 */
+	self->plain = ai_tool_executor_new_empty();
 	venture_ai_service_register_tools(self);
 	self->system_prompt = venture_ai_service_build_prompt(self);
 
 	return g_steal_pointer(&self);
+}
+
+gchar *
+venture_ai_service_complete(
+	VentureAiService	 *self,
+	const gchar		 *system_prompt,
+	const gchar		 *user_text,
+	GError			**error
+){
+	g_autoptr(GError) local_error = NULL;
+	g_autofree gchar *reply = NULL;
+	GList *messages = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_AI_SERVICE(self), NULL);
+	g_return_val_if_fail(NULL != user_text, NULL);
+
+	messages = g_list_append(NULL, ai_message_new_user(user_text));
+
+	reply = ai_tool_executor_run(self->plain, self->provider, messages,
+	                             system_prompt, self->max_tokens, NULL,
+	                             &local_error);
+
+	g_list_free_full(messages, g_object_unref);
+
+	if (NULL == reply)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_AI, "%s",
+		            (NULL != local_error) ? local_error->message
+		                                  : "the provider failed");
+		return NULL;
+	}
+
+	return g_steal_pointer(&reply);
 }
 
 /* --- Answering ----------------------------------------------------------- */

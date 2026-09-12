@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-11]
-#+version: 0.5.0
+#+updated: [2026-09-12]
+#+version: 0.6.0
 
 * VENTURE
 
@@ -28,6 +28,8 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:modules.org][Modules]] — switching pieces of VENTURE on and off, and what a module is made of
 - [[file:factory.org][The software factory]] — milestones, releases, builds, environments, deployments, incidents
 - [[file:dashboards.org][Dashboards]] — pages of widgets, as many as you like, from any module's records and reports
+- [[file:webhooks.org][Webhooks out]] — telling something outside that a record changed: events, signing, deliveries
+- [[file:workdesk.org][The workdesk]] — the inbox and watching, saved views, service levels, macros, worklogs, sprints, bulk edits, the timeline, mission control and agent budgets
 - [[file:extending.org][Extending]] — plugins, crispy scripts, declarative venture types, plugin modules
 - [[file:containers.org][Containers]] — the Containerfile, local compose, and a deployment example
 - [[file:testing.org][Testing]] — running the suite, and what it guarantees
@@ -43,6 +45,10 @@ Nothing is deleted. Deletion stamps a time; the row stays, so a report over a pa
 Everything is a module, and every module is a switch. The CRM, invoicing, the knowledge bases, the software factory: each is a named group of record types, reports, pages and services that a configuration turns off as one thing, and a module whose requirement is off is refused at startup rather than run half-working.
 
 Any record links to any other. A =record_link= names both ends by type and id and carries a kind with an inverse, so a release points at the tickets it shipped and an incident at the deployment that caused it, on every record's page, through the API, the CLI and the AI.
+
+Something outside can be told too. A webhook is a URL, a set of events and a signing secret; every audited change matching it is POSTed with an HMAC-SHA256 over the body, asynchronously so no write waits on somebody else's server, and every attempt is kept. Ten refusals in a row switch a dead endpoint off and say so.
+
+You are told what matters, and only that. Every record's page has a Watch button and a timeline; a comment naming =@you=, a ticket handed to you, a change to something you follow, a service level about to be missed, a budget crossed or a run finishing lands in your inbox, fed by the audit trail so every door tells the same people the same things. Saved views keep a filtered list under a name; a service-level policy puts clocks on a ticket; a macro answers in one press; sprints burn down; forty records change in one transaction; and the coding runs have one screen, a cost, and a budget that refuses them before the money is gone.
 
 Any page you want, you build. A dashboard is a grid of widgets — a count, a list, a report's figure, a breakdown, a note, a row of buttons — each a declarative question answered from any module's records or reports, rendered the same for the browser, the API and the assistant. There can be as many as you like; one can be home; a personal one is yours alone; and a dashboard exports as JSON that imports anywhere.
 

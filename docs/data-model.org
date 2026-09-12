@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-11]
-#+version: 0.5.0
+#+updated: [2026-09-12]
+#+version: 0.6.0
 
 * Data model
 
@@ -134,6 +134,18 @@ Tickets gained two fields: =issue-type= (epic, story, task, subtask, research, b
 The loop from a ticket to a running release and back, as records. A =milestone= is a planned increment; a =release= is a version that went out, with its changelog; a =build= is one CI run, written by the forge's webhook; an =environment= is somewhere a release runs; a =deployment= is a release arriving there; an =incident= is something going wrong there, pointing at the release and deployment it came from and the ticket that fixes it. Tickets gained =milestone-id= and =release-id=. See [[file:factory.org][The software factory]].
 
 A release's version is the field =number=, because every record already has a =version= — the optimistic-concurrency counter. A field table may not reuse a name the entity spine owns (=id=, =uuid=, =created-at=, =updated-at=, =version=); the installer refuses one at class initialisation.
+
+** Webhooks out and routing
+
+- *webhook*, *webhook_delivery* (webhooks); *routing_rule* (tickets).
+
+A =webhook= is a URL, a comma-separated list of event patterns, a signing secret and whether to send the whole record; a =webhook_delivery= is one attempt, with what was sent, what came back and how long it took. A =routing_rule= says who a new ticket goes to: matched on kind, priority and tag like a service-level policy, and assigning round-robin, to whoever is least busy, or always to the first name. Tickets gained =satisfaction= and =satisfaction-comment=. See [[file:webhooks.org][Webhooks out]] and [[file:workdesk.org][The workdesk]].
+
+** The workdesk
+
+- *saved_view*, *watch*, *notification* (core); *sla_policy*, *macro*, *worklog*, *sprint* (tickets); *agent_budget* (forge).
+
+A =saved_view= is a list URL with a name: the record type, the query string, whether it opens as the board, shared or personal, pinned or not. A =watch= is a person following a record, named by type and id like a record link. A =notification= is one thing one person was told — kind, title, body, who caused it, what it is about, when, and when it was read — and is per-user like a chat thread, guarded the same way. An =sla_policy= says how many hours a ticket of a kind and priority has until its first visible reply and its resolution; a =macro= is a canned reply plus field changes; a =worklog= is hours against a ticket; a =sprint= is a dated window with a goal and a points capacity. An =agent_budget= caps what the coding runs may cost in a window, per repository or overall, with a warning line and a hard stop. Tickets gained =sprint-id=, =story-points=, =first-response-due-at=, =resolution-due-at=, =first-responded-at=, =sla-breached= and =logged-hours=. See [[file:workdesk.org][The workdesk]].
 
 ** Dashboards
 

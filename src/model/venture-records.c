@@ -1241,7 +1241,54 @@ static const VentureFieldDecl venture_ticket_fields[] = {
 	VENTURE_FIELD_REF("milestone-id", "Milestone", "Planned for",
 	                  "milestone", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("release-id", "Fixed in", "The release that shipped it",
-	                  "release", VENTURE_COLUMN_FLAG_NONE)
+	                  "release", VENTURE_COLUMN_FLAG_NONE),
+	/*
+	 * The sprint it is planned into and what it weighs there. Points are
+	 * a separate number from the hour estimate above because they answer
+	 * a different question -- relative size, agreed as a team -- and a
+	 * board that burns down hours is not the board people asked for.
+	 */
+	VENTURE_FIELD_REF("sprint-id", "Sprint", "Planned into", "sprint",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("story-points", "Points", "Relative size, for the sprint",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	/*
+	 * The service-level clocks. The due times are set once, when the
+	 * ticket is first saved and a policy covers it, and left alone: a
+	 * deadline that moved every time the priority was edited would be
+	 * no deadline. First response is stamped by the first reply that
+	 * whoever raised it could read. Breached is written by the sweep so
+	 * that a list can filter on it; the live state is always computed.
+	 */
+	VENTURE_FIELD("first-response-due-at", "Respond by",
+	              "When the first reply is due under the service level",
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("resolution-due-at", "Resolve by",
+	              "When the ticket is due to be resolved under the service level",
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("first-responded-at", "First reply",
+	              "When the first visible reply was made",
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("sla-breached", "Breached",
+	              "Set once the resolution target passed while it was open",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
+	/* Maintained from the worklogs, so a list can sort and filter on it
+	 * without summing rows; the worklog is the truth. */
+	VENTURE_FIELD("logged-hours", "Logged",
+	              "Hours logged against it, summed from the worklogs",
+	              VENTURE_FIELD_KIND_DOUBLE, VENTURE_COLUMN_FLAG_NONE),
+	/*
+	 * What whoever raised it made of how it went. Two fields rather than
+	 * a survey record: a rating belongs to the ticket it rates, there is
+	 * exactly one, and a table of one-row surveys buys nothing but a
+	 * join. The comment is where the score stops being a number.
+	 */
+	VENTURE_FIELD_ENUM("satisfaction", "Satisfaction",
+	                   "What whoever raised it made of how it went",
+	                   venture_satisfaction_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("satisfaction-comment", "Satisfaction comment",
+	                   "What they said about it")
 };
 
 VENTURE_DEFINE_ENTITY(VentureTicket, venture_ticket, venture_ticket_fields)
@@ -1811,6 +1858,346 @@ VENTURE_DEFINE_ENTITY(VentureDashboardWidget, venture_dashboard_widget,
  * because a repository has to point at one. The token and the webhook secret
  * are why this type is owner-only everywhere and invisible to the AI.
  */
+/* ==========================================================================
+ * The workdesk
+ *
+ * What a helpdesk and a tracker have that a list of tickets does not: a
+ * place a person is told things, the choice of what to be told about, a
+ * clock on how quickly somebody is answered, a reply that can be given in
+ * one press, the hours a ticket took, and the fortnight it was planned
+ * into. Each is a record, so each is on the API, in the CLI and readable by
+ * the assistant without anything written per surface.
+ * ========================================================================== */
+
+/*
+ * A list somebody wants back: a record type plus the query string that
+ * filtered, sorted and searched it. The URL was always bookmarkable; this
+ * is the bookmark with a name, shared or kept, and pinned into the sidebar
+ * when it is looked at every day.
+ */
+static const VentureFieldDecl venture_saved_view_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "e.g. My urgent tickets, Unpaid invoices"),
+	VENTURE_FIELD("entity-type", "Record type",
+	              "The type the view lists, e.g. ticket, invoice",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("query", "Query",
+	              "The list's query string: field filters, order, search",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("board", "Board",
+	              "Open as the ticket board rather than a list",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("description", "Description", NULL),
+	VENTURE_FIELD("personal", "Personal",
+	              "Only its owner sees it; otherwise every user does",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("pinned", "Pinned", "Show it in the sidebar",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("owner-user-id", "Owner", "Who saved it", "user",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("position", "Position", "Order in the sidebar; lowest first",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
+};
+
+VENTURE_DEFINE_ENTITY(VentureSavedView, venture_saved_view,
+                      venture_saved_view_fields)
+
+/*
+ * A person following a record. Polymorphic like a record link, because
+ * anything can be watched -- a ticket, an invoice, a release -- and a
+ * column per type would be the ticket table's problem all over again.
+ */
+static const VentureFieldDecl venture_watch_fields[] = {
+	VENTURE_FIELD_REF("user-id", "User", NULL, "user",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("target-type", "Record type", NULL,
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("target-id", "Record", NULL, VENTURE_FIELD_KIND_INTEGER,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("target-label", "Label", "What it was called when watched",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
+};
+
+VENTURE_DEFINE_ENTITY(VentureWatch, venture_watch, venture_watch_fields)
+
+/*
+ * One thing one person is told. Written by the machinery -- a mention, an
+ * assignment, a change to something watched, a service level about to be
+ * missed, a budget line crossed, a run finishing -- and read from the
+ * inbox. Per-user like a chat thread, and guarded the same way.
+ */
+static const VentureFieldDecl venture_notification_fields[] = {
+	VENTURE_FIELD_REF("user-id", "User", "Who it is for", "user",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_ENUM("kind", "Kind", NULL,
+	                   venture_notification_kind_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_NAME("title", "Title", NULL),
+	VENTURE_FIELD_TEXT("body", "Body", NULL),
+	VENTURE_FIELD("actor", "By", "Who caused it",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("target-type", "Record type", NULL,
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("target-id", "Record", NULL, VENTURE_FIELD_KIND_INTEGER,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("target-label", "About", NULL,
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("read-at", "Read", "Empty while unread",
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("occurred-at", "When", NULL, VENTURE_FIELD_KIND_DATETIME,
+	              VENTURE_COLUMN_FLAG_INDEXED)
+};
+
+VENTURE_DEFINE_ENTITY(VentureNotification, venture_notification,
+                      venture_notification_fields)
+
+/*
+ * How quickly a ticket must be answered and resolved. Matched on the
+ * ticket's kind and priority, most specific policy first, so "external
+ * urgent: reply in one hour" beats "everything: reply in a day". Hours
+ * are wall-clock hours; business hours are a calendar this install does
+ * not have, and a promise made in wall-clock time is one a customer can
+ * check.
+ */
+static const VentureFieldDecl venture_sla_policy_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "e.g. Support urgent, Internal default"),
+	VENTURE_FIELD_ENUM("kind", "Ticket kind", "Which tickets it covers",
+	                   venture_ticket_kind_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("all-kinds", "Every kind",
+	              "Ignore the kind and cover internal and external alike",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("priority", "Priority", "Which priority it covers",
+	                   venture_priority_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("all-priorities", "Every priority",
+	              "Ignore the priority and cover them all",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("first-response-hours", "Respond within",
+	              "Hours until the first visible reply is due; 0 for no target",
+	              VENTURE_FIELD_KIND_DOUBLE, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("resolution-hours", "Resolve within",
+	              "Hours until the ticket is due to be resolved; 0 for none",
+	              VENTURE_FIELD_KIND_DOUBLE, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+};
+
+VENTURE_DEFINE_ENTITY(VentureSlaPolicy, venture_sla_policy,
+                      venture_sla_policy_fields)
+
+/*
+ * A reply and a set of changes, applied to a ticket in one press. The
+ * reply is optional and so is every change, because "close as duplicate"
+ * needs no words and "send the how-to" changes nothing. The apply flags
+ * exist because an enum cannot say "leave it alone".
+ */
+static const VentureFieldDecl venture_macro_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "e.g. Ask for logs, Close as fixed"),
+	VENTURE_FIELD_TEXT("description", "Description", "When to use it"),
+	VENTURE_FIELD_TEXT("body", "Reply",
+	                   "The comment to add; {ticket}, {title} and {me} are "
+	                   "filled in"),
+	VENTURE_FIELD("internal", "Internal note",
+	              "Add the reply as a note whoever raised it cannot see",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("apply-status", "Change status", NULL,
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("status", "Status", "The status to set",
+	                   venture_ticket_status_get_type,
+	                   VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("apply-priority", "Change priority", NULL,
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("priority", "Priority", "The priority to set",
+	                   venture_priority_get_type,
+	                   VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("assignee", "Assign to",
+	              "A username, or {me} for whoever applies it; blank leaves it",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("add-tags", "Add tags", "Comma separated",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("position", "Position", "Order in the menu; lowest first",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
+};
+
+VENTURE_DEFINE_ENTITY(VentureMacro, venture_macro, venture_macro_fields)
+
+/*
+ * Hours spent on a ticket, by whom, when. Rows rather than a running total
+ * because the total is derivable and the rows are not; the ticket's
+ * logged-hours is kept in step from these.
+ */
+static const VentureFieldDecl venture_worklog_fields[] = {
+	VENTURE_FIELD_REF("ticket-id", "Ticket", NULL, "ticket",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("author", "Who", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("hours", "Hours", NULL, VENTURE_FIELD_KIND_DOUBLE,
+	              VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("occurred-at", "When", NULL, VENTURE_FIELD_KIND_DATETIME,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("note", "Note", "What the time went on")
+};
+
+VENTURE_DEFINE_ENTITY(VentureWorklog, venture_worklog, venture_worklog_fields)
+
+/*
+ * A fixed window of work with a goal. Tickets are planned into it by their
+ * sprint-id; progress is counted from them, in points when they carry
+ * points and in tickets when they do not.
+ */
+static const VentureFieldDecl venture_sprint_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "e.g. Sprint 12, September week 2"),
+	VENTURE_FIELD_TEXT("goal", "Goal", "What done looks like at the end"),
+	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("status", "Status", NULL,
+	                   venture_sprint_status_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("starts-on", "Starts", NULL, VENTURE_FIELD_KIND_DATETIME,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("ends-on", "Ends", NULL, VENTURE_FIELD_KIND_DATETIME,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("capacity-points", "Capacity",
+	              "Points the team expects to finish; 0 for unplanned",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+};
+
+VENTURE_DEFINE_ENTITY(VentureSprint, venture_sprint, venture_sprint_fields)
+
+/* ==========================================================================
+ * Webhooks out
+ *
+ * VENTURE has always accepted webhooks from a forge. This is the other
+ * direction: a record changed here, and something outside wants to know.
+ * A webhook is a URL, a set of events and a shared secret; a delivery is
+ * what happened when one fired, kept because "did it go out" is a
+ * question somebody asks at exactly the moment nothing is working.
+ * ========================================================================== */
+
+static const VentureFieldDecl venture_webhook_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "e.g. Ops chat, Billing sync"),
+	VENTURE_FIELD("url", "URL", "Where the POST goes",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NOT_NULL),
+	/*
+	 * Which events, as a comma-separated list of "type.action" patterns:
+	 * "ticket.created", "invoice.*", or "*" for everything. A list
+	 * rather than a flag per event, because the events are the record
+	 * types crossed with three actions and a plugin can add a type --
+	 * the same reason nothing else in this tree writes down the nouns.
+	 */
+	VENTURE_FIELD("events", "Events",
+	              "Comma separated, e.g. ticket.created, invoice.*, or * "
+	              "for everything",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	/* Signed with this, so the far end can tell a delivery from a forgery.
+	 * Sensitive: it never reaches a response, a form or the AI. */
+	VENTURE_FIELD("secret", "Signing secret",
+	              "Deliveries are signed with it; generated when left blank",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("secret-set-at", "Secret set", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("include-record", "Send the record",
+	              "Include the whole record in the body, not just its "
+	              "type, id and label",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	/*
+	 * Consecutive failures, and when the last delivery was attempted.
+	 * The count is what switches a dead endpoint off rather than
+	 * retrying it against every write for a week; a success resets it.
+	 */
+	VENTURE_FIELD("failure-count", "Consecutive failures", NULL,
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("last-delivery-at", "Last delivery", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("description", "Description", "What is at the far end")
+};
+
+VENTURE_DEFINE_ENTITY(VentureWebhook, venture_webhook, venture_webhook_fields)
+
+/*
+ * One attempt at one delivery. Evidence, like a coding run: what was
+ * sent, what came back, how long it took.
+ */
+static const VentureFieldDecl venture_webhook_delivery_fields[] = {
+	VENTURE_FIELD_REF("webhook-id", "Webhook", NULL, "webhook",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("event", "Event", "e.g. ticket.created",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_ENUM("state", "State", NULL,
+	                   venture_delivery_state_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("target-type", "Record type", NULL,
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("target-id", "Record", NULL, VENTURE_FIELD_KIND_INTEGER,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("target-label", "About", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("status-code", "Status", "What the endpoint answered",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("duration-ms", "Took", "Milliseconds",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("attempted-at", "Attempted", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("request-body", "Sent", "The body that went out"),
+	VENTURE_FIELD_TEXT("response-excerpt", "Answered",
+	                   "The beginning of what came back"),
+	VENTURE_FIELD_TEXT("failure-reason", "Error", "Why it did not arrive")
+};
+
+VENTURE_DEFINE_ENTITY(VentureWebhookDelivery, venture_webhook_delivery,
+                      venture_webhook_delivery_fields)
+
+/*
+ * Who a new ticket goes to.
+ *
+ * Matched like a service-level policy -- most specific first -- and
+ * applied only when the ticket arrives with nobody on it, so a ticket
+ * raised with an assignee keeps the one it was given. The cursor is the
+ * round robin's memory; it is a field rather than a global because two
+ * rules covering different queues take turns independently.
+ */
+static const VentureFieldDecl venture_routing_rule_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "e.g. Support rota, Bugs to the team"),
+	VENTURE_FIELD_ENUM("kind", "Ticket kind", "Which tickets it covers",
+	                   venture_ticket_kind_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("all-kinds", "Every kind",
+	              "Ignore the kind and cover internal and external alike",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("priority", "Priority", "Which priority it covers",
+	                   venture_priority_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("all-priorities", "Every priority",
+	              "Ignore the priority and cover them all",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("tag", "Tag", "Only tickets carrying this tag; blank for any",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("strategy", "Strategy", NULL,
+	                   venture_routing_strategy_get_type,
+	                   VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("assignees", "Assign to",
+	              "Usernames, comma separated, in rota order",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("cursor", "Rota position",
+	              "Where the round robin has got to", VENTURE_FIELD_KIND_INTEGER,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+};
+
+VENTURE_DEFINE_ENTITY(VentureRoutingRule, venture_routing_rule,
+                      venture_routing_rule_fields)
+
 static const VentureFieldDecl venture_forge_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", "What you call this server"),
 	VENTURE_FIELD_ENUM("kind", "Software",
@@ -2141,6 +2528,46 @@ static const VentureFieldDecl venture_forge_run_fields[] = {
 
 VENTURE_DEFINE_ENTITY(VentureForgeRun, venture_forge_run,
                       venture_forge_run_fields)
+
+/*
+ * A cap on what the coding runs may cost.
+ *
+ * This is an ERP, so what the models charge is an expense with a line in
+ * the books, and an expense gets a budget. One row per limit: a repository
+ * or every repository, a window, an amount. The spend is never stored here
+ * -- it is summed from the runs' own cost field at the moment of asking,
+ * so a run whose cost is corrected afterwards corrects the budget too.
+ * The two stamps below say when the warning and the stop were sent, so
+ * that each is sent once per window rather than on every run.
+ */
+static const VentureFieldDecl venture_agent_budget_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "e.g. Monthly agent spend"),
+	VENTURE_FIELD_REF("repo-id", "Repository",
+	                  "Only runs against this repository; blank for every run",
+	                  "forge_repo", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("period", "Period", "The window the limit covers",
+	                   venture_budget_period_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_MONEY("limit", "Limit", "What the runs may cost in the window"),
+	VENTURE_FIELD("warn-percent", "Warn at",
+	              "Percent of the limit at which a warning is sent; 0 for none",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("hard-stop", "Hard stop",
+	              "Refuse new runs once the limit is reached",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("warned-at", "Warned",
+	              "When the warning for the current window went out",
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("exhausted-at", "Exhausted",
+	              "When the current window ran out",
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+};
+
+VENTURE_DEFINE_ENTITY(VentureAgentBudget, venture_agent_budget,
+                      venture_agent_budget_fields)
 
 static const VentureFieldDecl venture_document_fields[] = {
 	VENTURE_FIELD_NAME("title", "Title", NULL),

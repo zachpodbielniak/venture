@@ -1,0 +1,99 @@
+#+title: Webhooks out
+#+description: Telling something outside that a record changed: events, signing, deliveries, and what happens when the far end stops answering
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-12]
+#+updated: [2026-09-12]
+#+version: 0.6.0
+
+* What this is
+
+VENTURE has always accepted webhooks from a git forge. This is the other direction: a record changed here, and something outside wants to know. A =webhook= is a URL, a list of events and a signing secret; every audited change matching one is POSTed to it, signed the way VENTURE signs nothing else and verifies everything it receives, and what happened is kept as a =webhook_delivery=.
+
+The module is =webhooks= and it requires only =core=. Turning it off stops every delivery without deleting anything, which is the switch to reach for when an endpoint is melting.
+
+* Events
+
+An event is the record type and what happened to it: =ticket.created=, =invoice.updated=, =sale.deleted=. Nothing writes that list down — it is the types crossed with three actions, so a plugin's record type is publishable the day it registers, for the same reason the REST API and the CLI cover it with no routing to add.
+
+A webhook subscribes with a comma-separated list of patterns:
+
+| Pattern                       | Matches                                     |
+|-------------------------------+---------------------------------------------|
+| =*=                           | everything                                  |
+| =ticket.*=                    | every action on a ticket                    |
+| =ticket.created=              | exactly that                                |
+| =ticket.created, invoice.*=   | either                                      |
+| (blank)                       | everything — a webhook nobody has narrowed yet |
+
+A prefix is not a type: =ticket.*= does not match =ticket_link.created=.
+
+** What is never published
+
+Some types are quiet, whatever a webhook subscribes to: =webhook= and =webhook_delivery= (a delivery about a delivery is the obvious loop), =notification= and =watch= (bookkeeping), =audit_entry=, =chat_thread= and =chat_message= (private), =kb_chunk= and =kb_link= (derived, and a reindex would post a thousand times), =api_token= and =user= (access management). The list is in =src/core/venture-webhook.c= beside the one the inbox uses, and for the same reasons.
+
+* The body
+
+#+begin_src json
+{
+  "event": "ticket.created",
+  "delivery": "0f0a9f5e-...",
+  "occurred_at": "2026-09-12T09:14:02Z",
+  "actor": "zach",
+  "webhook": { "id": 1, "name": "Ops chat" },
+  "record": {
+    "type": "ticket",
+    "id": 7,
+    "label": "Checkout returns 500 on Apple Pay",
+    "url": "/e/ticket/7"
+  },
+  "data": null
+}
+#+end_src
+
+The envelope is always this shape, so a receiver routes on it without knowing VENTURE's types, and =delivery= is a fresh id it can deduplicate on. =data= is =null= unless the webhook has *Send the record* set, in which case it carries the whole record — never its sensitive fields, which are withheld from a body posted to somebody else's server for exactly the reason they are withheld from a response.
+
+* Signing
+
+Every delivery carries three headers:
+
+| Header                 | What it is                                            |
+|------------------------+-------------------------------------------------------|
+| =X-Venture-Event=      | the event name                                        |
+| =X-Venture-Delivery=   | a fresh id for this delivery                          |
+| =X-Venture-Signature=  | =sha256=< hex >=, an HMAC-SHA256 of the exact body bytes keyed by the secret |
+
+Compute the HMAC over the raw body and compare in constant time. This is the same shape VENTURE verifies on the way in from a forge, so an operator who has wired one up already knows how to check the other.
+
+A webhook with no secret sends no signature, and the page says *unsigned* in yellow. Generate one with the *New secret* button, =venturectl webhook secret ID= or =POST /api/v1/webhooks/:id/secret=; it is shown exactly once, like an API token, because only its holder needs it and a secret shown twice is a secret in two logs.
+
+* Deliveries
+
+Sending is asynchronous, on the main loop. A write does not wait for somebody else's server — the only background thread in this program belongs to coding runs and may not touch the database, so this is a queued request rather than a thread, and the result is recorded when it arrives.
+
+Every attempt becomes a =webhook_delivery=: the event, the record, the state, the status code, how long it took, the body that went out and the beginning of what came back. Delivery records are evidence, like a coding run and the audit log: the generic routes refuse to edit them, and reading stays open.
+
+** When the far end stops answering
+
+Consecutive failures are counted on the webhook. A success resets the count; ten in a row switches the webhook off and tells the owners and admins in their inbox. An endpoint that has refused ten deliveries is gone, and posting to it on every write for the rest of the week costs a request per change and tells nobody anything. Switch it back on from the webhook's page once it is fixed.
+
+There is no retry. A retry that is not idempotent on the far end is worse than a gap, and a delivery id is exactly what a receiver needs to make its own decision; the delivery log is how you find what was missed.
+
+* Testing one
+
+*Test* on the Webhooks page sends a =webhook.test= delivery and waits for the answer, so pressing it tells you whether the far end is there rather than promising to find out. The same thing is =venturectl webhook test ID= and =POST /api/v1/webhooks/:id/test=.
+
+Pointing a webhook at your own install to see what a body looks like works, which is worth saying because it did not at first: the test waits in a nested main loop rather than blocking, so the server can answer itself.
+
+* Over the API and the CLI
+
+| Question              | API                                    | venturectl               |
+|-----------------------+----------------------------------------+--------------------------|
+| what is listening     | =GET /api/v1/webhooks=                 | =webhooks=               |
+| is the far end there  | =POST /api/v1/webhooks/:id/test=       | =webhook test ID=        |
+| a fresh secret        | =POST /api/v1/webhooks/:id/secret=     | =webhook secret ID=      |
+| make or change one    | the generic routes on =webhook=        | =create/update webhook=  |
+
+Webhooks are owner-only everywhere — the page, the generic routes, the API — for the same reason a forge is: the row names the host this install's business data is posted to and holds the secret that signs it, and an editor who could change the URL could point every change in the books at a server they control, with the staged diff showing nothing but a URL moving.
+
+The assistant is not given webhooks at all. It has no tool that lists, makes or changes one, exactly as it has no way to read a forge's token.

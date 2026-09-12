@@ -115,12 +115,18 @@
 #include "core/venture-record-link.h"
 #include "core/venture-dashboard.h"
 #include "core/venture-factory.h"
+#include "core/venture-notify.h"
+#include "core/venture-sla.h"
+#include "core/venture-desk.h"
+#include "core/venture-webhook.h"
+#include "core/venture-routing.h"
 
 /* Auth comes before the AI service, which names VentureAuthPrincipal in its
  * signatures, and before the web server, which uses both. */
 #include "web/venture-auth.h"
 
 #include "ai/venture-ai-service.h"
+#include "ai/venture-ai-assist.h"
 
 /* --- Forge integration --------------------------------------------------- */
 

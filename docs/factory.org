@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-11]
-#+updated: [2026-09-11]
-#+version: 0.5.0
+#+updated: [2026-09-12]
+#+version: 0.6.0
 
 * What this is
 
@@ -90,6 +90,10 @@ Every factory record is an ordinary type, so =/api/v1/milestone=, =release=, =bu
 All three call the same functions in =src/core/venture-factory.c= that the pages call, so a changelog an agent drafts is the changelog the button drafts. The status is the five questions the Factory page asks, as one JSON object. Drafting is an update to the release and follows the write policy — the in-process assistant stages it unless autonomous; =venturectl mcp= needs =--apply-writes=, or an agent sets the field itself with =venture_update=, which stages. Publishing creates a tag and a release on the forge, which no approval could undo, so it is offered to the assistant only under the autonomous policy and to =venturectl mcp= only with =--apply-writes=.
 
 An agent building a factory dashboard uses the same surface: =venture_dashboards= (=what: templates=) for the shipped factory definition, =venture_dashboard_build= to make it, =venture_dashboard= to read it back with every widget answered. See [[file:dashboards.org][Dashboards]].
+
+* Mission control, budgets and the delivery report
+
+=/runs= is every coding run across every repository with its state, runner, model, tokens, cost and duration, live ones cancellable, totals over the list, and the budgets beneath. An =agent_budget= caps what the runs may cost in a window; before a run starts every budget covering its repository is checked, crossing a line tells the admins once, and an exhausted hard-stop budget refuses the run. The =delivery= report is DORA's four keys — deployment frequency, lead time for changes, change failure rate, time to restore — from these records, beside what the runs did and cost. An incident's page opens its fix ticket in one press, typed as a bug and prioritised from the severity. All of it is in [[file:workdesk.org][The workdesk]].
 
 * Links
 

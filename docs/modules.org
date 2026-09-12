@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-11]
-#+updated: [2026-09-11]
-#+version: 0.5.0
+#+updated: [2026-09-12]
+#+version: 0.6.0
 
 * Modules
 
@@ -23,7 +23,7 @@ Written bottom-up, because a module may only require what precedes it:
 
 | Module       | Requires        | Owns                                                              | Also switched by      |
 |--------------+-----------------+-------------------------------------------------------------------+-----------------------|
-| =core=       | —               | organization, venture, document, record_link, plugin_config, user, api_token, audit_entry | always on |
+| =core=       | —               | organization, venture, document, record_link, plugin_config, user, api_token, audit_entry, saved_view, watch, notification | always on |
 | =sales=      | core            | product, inventory_item, inventory_txn, sale; =categories=, =inventory= |               |
 | =finance=    | sales           | expense, account, ledger_entry, tax_category; =pnl=, =ventures=, =monthly=, =tax= |     |
 | =crm=        | core            | company, contact, interaction, deal; =pipeline=                   |                       |
@@ -31,13 +31,14 @@ Written bottom-up, because a module may only require what precedes it:
 | =outreach=   | sales           | campaign, newsletter, subscriber, post; =campaigns=               |                       |
 | =ideas=      | core            | idea, research_note; =ideas=                                      |                       |
 | =kb=         | core            | knowledge_base, kb_article, kb_chunk, kb_link                     | =kb.enabled=          |
-| =tickets=    | core            | ticket, ticket_comment, ticket_relation                           |                       |
+| =tickets=    | core            | ticket, ticket_comment, ticket_relation, sla_policy, macro, worklog, sprint, routing_rule; =support= | |
+| =webhooks=   | core            | webhook, webhook_delivery; the =/webhooks= page and its API        |                       |
 | =ai=         | core            | the assistant and its tools                                       | =ai.enabled=          |
 | =chat=       | ai              | chat_thread, chat_message                                         |                       |
 | =automation= | core            | the podomation engine                                             | =automation.enabled=  |
 | =plugins=    | core            | plugins and declarative venture types                             | =plugins.enabled=     |
-| =forge=      | tickets         | forge, forge_repo, forge_rule, ticket_link, forge_run             | =forge.enabled=       |
-| =factory=    | forge           | milestone, release, build, environment, deployment, incident; =releases=, =lead_time=, =incidents= | |
+| =forge=      | tickets         | forge, forge_repo, forge_rule, ticket_link, forge_run, agent_budget | =forge.enabled=     |
+| =factory=    | forge           | milestone, release, build, environment, deployment, incident; =releases=, =lead_time=, =incidents=, =delivery= | |
 | =dashboards= | core            | dashboard, dashboard_widget; the =/dashboards= pages and their API | |
 
 Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.

@@ -2882,3 +2882,480 @@ a.bar-row:hover .bar-label { color: var(--accent); }
 	.widget-grid > .grid-cell { grid-column: auto !important; grid-row: auto !important; }
 	.widget-grid > .grid-cell { display: none; }
 }
+
+/* ==========================================================================
+ * The workdesk
+ *
+ * The inbox, the timeline every record carries, the ticket's desk, saved
+ * views, bulk edits, sprints, the palette and mission control. Drawn from
+ * the same tokens as everything above: a hairline, a pale tint, ink for
+ * the one action that matters.
+ * ========================================================================== */
+
+/* --- The inbox entry and its count ---------------------------------------- */
+
+.nav-inbox { position: relative; }
+
+.nav-count {
+	margin-left: auto;
+	min-width: 20px;
+	padding: 1px 7px;
+	border-radius: var(--radius-pill);
+	background: var(--accent);
+	color: var(--accent-contrast);
+	font-size: 10.5px;
+	font-weight: 650;
+	line-height: 16px;
+	text-align: center;
+	letter-spacing: 0;
+	transition: transform var(--transition), opacity var(--transition);
+}
+
+.nav-count.empty { opacity: 0; transform: scale(0.6); }
+.nav-count.bump { animation: count-bump 0.5s ease-out; }
+
+@keyframes count-bump {
+	0%   { transform: scale(1); }
+	40%  { transform: scale(1.35); }
+	100% { transform: scale(1); }
+}
+
+/* --- The inbox ------------------------------------------------------------- */
+
+.inbox { list-style: none; margin: 0; padding: 0; }
+
+.inbox-item {
+	display: grid;
+	grid-template-columns: auto 1fr auto auto;
+	align-items: start;
+	gap: var(--space-3) var(--space-4);
+	padding: var(--space-3) var(--space-5);
+	border-bottom: 1px solid var(--border);
+	transition: background var(--transition), opacity 0.35s ease,
+	            transform 0.35s ease;
+}
+
+.inbox-item:last-child { border-bottom: 0; }
+.inbox-item:hover { background: var(--surface-hover); }
+
+/* Unread is a hair of accent on the left edge, not a bold font: a full
+ * page of bold is a page where nothing stands out. */
+.inbox-item.unread { box-shadow: inset 3px 0 0 var(--accent); }
+.inbox-item.leaving { opacity: 0; transform: translateX(24px); }
+
+.inbox-item .badge { margin-top: 3px; }
+.inbox-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+
+.inbox-title {
+	font-weight: 600;
+	color: var(--text);
+	text-decoration: none;
+	line-height: 1.35;
+}
+
+a.inbox-title:hover { color: var(--accent); }
+
+.inbox-detail {
+	font-size: 13px;
+	color: var(--text-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+}
+
+.inbox-when { font-size: 11.5px; color: var(--text-faint); white-space: nowrap;
+              margin-top: 4px; }
+.inbox-item form.inline { margin: 0; }
+
+/* --- The timeline ---------------------------------------------------------- */
+
+.timeline {
+	list-style: none;
+	margin: 0;
+	padding: 0 0 0 var(--space-4);
+	border-left: 1px solid var(--border-strong);
+}
+
+.timeline-item {
+	position: relative;
+	padding: 0 0 var(--space-5) var(--space-4);
+}
+
+.timeline-item:last-child { padding-bottom: var(--space-2); }
+
+/* The dot sits on the rule, and is filled for the events that are words
+ * rather than field changes. */
+.timeline-dot {
+	position: absolute;
+	left: calc(-1 * var(--space-4) - 5px);
+	top: 5px;
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
+	background: var(--surface);
+	border: 2px solid var(--border-strong);
+}
+
+.timeline-comment .timeline-dot { background: var(--accent); border-color: var(--accent); }
+.timeline-worklog .timeline-dot { background: var(--positive); border-color: var(--positive); }
+
+.timeline-head { font-size: 13px; color: var(--text-muted); line-height: 1.5; }
+.timeline-actor { font-weight: 600; color: var(--text); }
+.timeline-when { color: var(--text-faint); font-size: 11.5px; margin-left: 4px; }
+
+.timeline-text {
+	margin-top: var(--space-2);
+	padding: var(--space-3) var(--space-4);
+	background: var(--surface-sunken);
+	border-radius: var(--radius);
+	white-space: pre-wrap;
+	font-size: 13.5px;
+	line-height: 1.55;
+}
+
+.timeline-diff {
+	display: grid;
+	grid-template-columns: max-content 1fr;
+	gap: 2px var(--space-4);
+	margin: var(--space-2) 0 0;
+	font-size: 12.5px;
+}
+
+.timeline-diff dt { color: var(--text-faint); font-family: var(--font-mono); }
+.timeline-diff dd { margin: 0; }
+.timeline-diff s { color: var(--text-faint); text-decoration-color: var(--negative); }
+.timeline-diff b { font-weight: 600; }
+
+/* --- The ticket's desk ----------------------------------------------------- */
+
+.desk .card-head { align-items: center; }
+.desk-actions { display: flex; gap: var(--space-2); }
+.desk-actions form { margin: 0; }
+.desk-body { display: flex; flex-direction: column; gap: var(--space-4); }
+
+.desk-sla { display: flex; flex-wrap: wrap; gap: var(--space-5); }
+
+.desk-clock {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.desk-clock-label {
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.1em;
+	color: var(--text-faint);
+}
+
+.desk-form {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-2);
+	margin: 0;
+}
+
+.desk-form label { display: inline-flex; align-items: center; gap: var(--space-2);
+                   font-size: 13px; color: var(--text-muted); }
+.desk-form input[type="text"] { flex: 1 1 160px; }
+.desk-hint { margin: 0; font-size: 13px; }
+
+/* The service-level badge on a card: lower-case and unbolded, because
+ * "2h 15m left" is a reading, not a label. */
+.badge.sla { text-transform: none; letter-spacing: 0; font-weight: 600;
+             font-family: var(--font-mono); }
+
+.ticket-points {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	font-weight: 600;
+	padding: 1px 6px;
+	border-radius: var(--radius-sm);
+	border: 1px solid var(--border-strong);
+	color: var(--text-muted);
+}
+
+/* --- Watching -------------------------------------------------------------- */
+
+.btn .icon { display: inline-flex; width: 16px; height: 16px; }
+.btn .icon svg { width: 16px; height: 16px; }
+.btn.watching { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+form.inline { display: inline; margin: 0; }
+
+/* --- Saved views ----------------------------------------------------------- */
+
+.save-view { position: relative; display: inline-block; }
+.save-view > summary { list-style: none; cursor: pointer; }
+.save-view > summary::-webkit-details-marker { display: none; }
+
+.save-view-form {
+	position: absolute;
+	right: 0;
+	top: calc(100% + 6px);
+	z-index: 30;
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-3);
+	min-width: 260px;
+	padding: var(--space-4);
+	margin: 0;
+	background: var(--surface-raised);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-lg);
+	box-shadow: var(--shadow-lg);
+}
+
+.save-view-form .checkbox { font-size: 13px; }
+
+/* --- Bulk edits ------------------------------------------------------------ */
+
+table.data.selectable td.tick, table.data.selectable th.tick {
+	width: 28px;
+	padding-right: 0;
+	text-align: center;
+}
+
+table.data.selectable input[type="checkbox"] { margin: 0; vertical-align: middle; }
+table.data tbody tr.selected { background: var(--accent-soft); }
+
+/* The keyboard cursor: a hair of accent on the left, the same device the
+ * inbox uses for unread, so one thing means "here" everywhere. */
+table.data tbody tr.cursor { box-shadow: inset 3px 0 0 var(--accent); }
+table.data tbody tr.cursor td:first-child { padding-left: calc(var(--space-4) - 3px); }
+
+.bulk-bar {
+	position: sticky;
+	top: var(--space-3);
+	z-index: 20;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-2);
+	margin: 0 0 var(--space-4);
+	padding: var(--space-2) var(--space-4);
+	background: var(--surface-raised);
+	border: 1px solid var(--accent);
+	border-radius: var(--radius-lg);
+	box-shadow: var(--shadow-lg);
+	animation: bulk-in 0.18s ease-out;
+}
+
+@keyframes bulk-in {
+	from { opacity: 0; transform: translateY(-6px); }
+	to   { opacity: 1; transform: none; }
+}
+
+.bulk-bar[hidden] { display: none; }
+.bulk-count { font-weight: 600; font-size: 13px; margin-right: var(--space-2); }
+.bulk-bar select, .bulk-bar input { min-width: 140px; }
+
+/* --- Sprints --------------------------------------------------------------- */
+
+.sprint-card .card-head h2 { display: flex; align-items: center; gap: var(--space-3); }
+.sprint-card .card-head h2 a { color: inherit; text-decoration: none; }
+.sprint-card .card-head h2 a:hover { color: var(--accent); }
+.sprint-completed { opacity: 0.7; }
+.sprint-goal { margin: 0 0 var(--space-3); color: var(--text-muted); }
+
+.sprint-burn {
+	display: grid;
+	grid-template-columns: 1fr auto;
+	align-items: center;
+	gap: var(--space-4);
+}
+
+.sprint-burn .bar-track { height: 12px; border-radius: 6px; }
+.sprint-burn .bar-fill { border-radius: 6px; }
+
+/* --- Mission control ------------------------------------------------------- */
+
+table.data.runs code { font-size: 12px; }
+.bar-fill.warning { background: var(--warning); }
+
+/* --- The palette ----------------------------------------------------------- */
+
+.palette-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 200;
+	background: var(--overlay);
+	display: flex;
+	align-items: flex-start;
+	justify-content: center;
+	padding-top: 12vh;
+	animation: fade-in 0.12s ease-out;
+}
+
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+.palette {
+	width: min(640px, 92vw);
+	max-height: 70vh;
+	display: flex;
+	flex-direction: column;
+	background: var(--surface-raised);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-lg);
+	box-shadow: var(--shadow-lg);
+	overflow: hidden;
+	animation: palette-in 0.16s ease-out;
+}
+
+@keyframes palette-in {
+	from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+	to   { opacity: 1; transform: none; }
+}
+
+.palette-input {
+	width: 100%;
+	box-sizing: border-box;
+	padding: var(--space-4) var(--space-5);
+	border: 0;
+	border-bottom: 1px solid var(--border);
+	border-radius: 0;
+	background: transparent;
+	font-size: 16px;
+	outline: none;
+}
+
+.palette-input:focus { box-shadow: none; }
+
+.palette-list {
+	list-style: none;
+	margin: 0;
+	padding: var(--space-2) 0;
+	overflow-y: auto;
+}
+
+.palette-group {
+	padding: var(--space-2) var(--space-5) var(--space-1);
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.1em;
+	color: var(--text-faint);
+}
+
+.palette-item {
+	display: flex;
+	align-items: center;
+	gap: var(--space-3);
+	padding: var(--space-2) var(--space-5);
+	cursor: pointer;
+	color: var(--text);
+	text-decoration: none;
+	font-size: 14px;
+}
+
+.palette-item.active, .palette-item:hover { background: var(--accent-soft); }
+.palette-item .palette-kind {
+	margin-left: auto;
+	font-size: 11px;
+	color: var(--text-faint);
+	font-family: var(--font-mono);
+}
+
+.palette-empty { padding: var(--space-4) var(--space-5); color: var(--text-muted);
+                 font-size: 13px; }
+
+.palette-hint {
+	display: flex;
+	gap: var(--space-4);
+	padding: var(--space-2) var(--space-5);
+	border-top: 1px solid var(--border);
+	font-size: 11.5px;
+	color: var(--text-faint);
+}
+
+.palette-hint kbd { font-size: 10px; padding: 0 4px; min-width: 0; }
+
+@media (max-width: 720px) {
+	.inbox-item { grid-template-columns: auto 1fr; }
+	.inbox-when, .inbox-item form.inline { grid-column: 2; }
+	.bulk-bar { position: static; }
+}
+
+/* --- The assistant at the desk --------------------------------------------- */
+
+.assist-actions { border-top: 1px solid var(--border); padding-top: var(--space-3); }
+.assist-slot:empty { display: none; }
+
+/* While a request is in flight htmx puts .htmx-request on the indicator;
+ * the slot is empty at that point, so the pulse is the only thing saying
+ * a model is thinking. */
+.assist-slot.htmx-request::after {
+	content: "thinking\2026";
+	display: block;
+	padding: var(--space-3) var(--space-4);
+	color: var(--text-faint);
+	font-size: 13px;
+	animation: assist-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes assist-pulse {
+	0%, 100% { opacity: 0.45; }
+	50%      { opacity: 1; }
+}
+
+.assist-card {
+	border: 1px solid var(--accent);
+	border-radius: var(--radius-lg);
+	background: var(--accent-soft);
+	padding: var(--space-4);
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-3);
+	animation: bulk-in 0.18s ease-out;
+}
+
+.assist-head { display: flex; align-items: center; gap: var(--space-2); }
+.assist-head .btn { margin-left: auto; }
+.assist-head .btn + .btn { margin-left: 0; }
+
+.assist-summary { margin: 0; font-weight: 600; line-height: 1.45; }
+.assist-why { margin: 0; font-size: 12.5px; }
+
+.assist-text {
+	white-space: pre-wrap;
+	line-height: 1.6;
+	font-size: 13.5px;
+	max-height: 420px;
+	overflow-y: auto;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	padding: var(--space-3) var(--space-4);
+}
+
+.assist-form {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-2);
+	margin: 0;
+}
+
+.assist-form label { display: inline-flex; align-items: center; gap: 6px;
+                     font-size: 12.5px; color: var(--text-muted); }
+.assist-form input[type="text"] { background: var(--surface); }
+.assist-form input[name="tags"] { flex: 1 1 180px; }
+
+/* --- Webhooks -------------------------------------------------------------- */
+
+.secret {
+	font-family: var(--font-mono);
+	font-size: 12.5px;
+	word-break: break-all;
+	white-space: pre-wrap;
+	margin: var(--space-3) 0 0;
+	padding: var(--space-3);
+	background: var(--surface);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius);
+	cursor: copy;
+}

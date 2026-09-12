@@ -77,6 +77,23 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `dashboard SLUG` | one dashboard, every widget evaluated; `-f json` for the whole answer |
 | `dashboard export SLUG` | its definition as JSON; `dashboard import FILE` (or `-`) creates one from it |
 | `dashboard create TEMPLATE` | `factory`, `reporting`, `work` or `overview`; `dashboard templates` and `dashboard kinds` list what is accepted |
+| `inbox [--all]` | what the token's user has been told: mentions, assignments, watched changes, service levels, budgets, runs; `inbox read ID\|all` marks read |
+| `watch TYPE ID` / `unwatch TYPE ID` | follow a record, so changes land in the inbox |
+| `activity TYPE ID` | a record's timeline: every change with who and what moved, plus a ticket's comments and worklogs |
+| `ticket ID sla` | a ticket's service-level clocks: state and seconds remaining for first reply and resolution |
+| `ticket ID macro NAME` | apply a macro (canned reply plus field changes) — not stageable |
+| `ticket ID worklog HOURS [NOTE]` | log time; the ticket's `logged_hours` follows |
+| `sprints` / `sprint ID` | the sprints with their burn; one with its tickets |
+| `bulk TYPE 1,2,3 field=value ...` | change many records in one transaction; `--delete` removes them; not stageable — use `update` per record to propose |
+| `incident ID ticket` | open the bug for an incident, prioritised from its severity |
+| `runs [--state S]` | mission control: every coding run with state, model, tokens, cost; totals |
+| `budgets` | the agent budgets and their spend this window |
+| `ticket ID triage [--apply]` | have the assistant propose a priority, issue type and tags; `--apply` keeps them. Changes nothing without it |
+| `ticket ID summary` | what the ticket's whole thread amounts to |
+| `ticket ID draft [AIM]` | draft the next reply. **Never posted** — show it to the operator, then `create ticket_comment` if they want it |
+| `webhooks` | outbound webhooks: active, signed, consecutive failures, events, URL |
+| `webhook test ID` | send a `webhook.test` delivery and wait for the answer |
+| `webhook secret ID` | generate a signing secret — shown once, owner only |
 | `kb search QUERY` | search knowledge bases by meaning; `--kb SLUG`, `--limit N` |
 | `kb sync KB_ID` | re-read the base's source directory on the server |
 | `kb reindex [KB_ID] [--force]` | re-embed articles that need it |

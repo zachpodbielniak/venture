@@ -204,6 +204,43 @@ static const VentureMcpToolDef tool_defs[] = {
 		TOOL_FLAG_NONE
 	},
 	{
+		"venture_inbox",
+		"The caller's inbox: mentions, tickets handed over, changes to "
+		"watched records, service levels about to be missed, budgets "
+		"crossed, runs finishing. `action` list (the default) reads it, "
+		"unread only unless `unread` is false; read marks one notification "
+		"read by `id`, or every one with id 0. Reading the inbox is not a "
+		"write and needs no --apply-writes.",
+		TOOL_FLAG_NONE
+	},
+	{
+		"venture_runs",
+		"Mission control for the coding runs. `what` runs (the default) "
+		"lists them across every repository with state, runner, model, "
+		"tokens, cost and duration plus totals -- live, succeeded, failed, "
+		"pull requests, cost, cost per success -- narrowed by `state`; "
+		"budgets lists the agent budgets with spend against limit for the "
+		"current window.",
+		TOOL_FLAG_NONE
+	},
+	{
+		"venture_desk",
+		"The workdesk. Reads: `action` sla (a ticket's service-level "
+		"clocks, by id), activity (a record's timeline by type and id: "
+		"every change with who and what moved, plus a ticket's comments "
+		"and worklogs), sprints (each with its burn), sprint (one, with "
+		"its tickets), triage (a proposed priority, issue type and tags "
+		"for a ticket with a summary and the requester's sentiment -- it "
+		"changes nothing), summarise (what a thread amounts to) and draft "
+		"(the next reply, for a person to edit; never posted). Writes: worklog logs hours against a ticket and "
+		"stages like any record; macro applies a macro by name to a "
+		"ticket, fix_ticket opens the bug for an incident, bulk changes "
+		"many records of a type at once (ids and changes, or delete: "
+		"true) and sweep marks service levels that have fallen due -- "
+		"those four cannot be staged and need --apply-writes.",
+		TOOL_FLAG_NONE
+	},
+	{
 		"venture_factory",
 		"The software factory. `action` status (the default) is the loop "
 		"at a glance: open milestones with progress, the newest releases, "
@@ -848,6 +885,71 @@ venture_mcp_catalog_add_tool_extras(
 		return;
 	}
 
+	if (0 == g_strcmp0(tool_name, "venture_inbox"))
+	{
+		static const gchar *const actions[] = { "list", "read", NULL };
+
+		venture_mcp_catalog_add_enum_property(builder, "action",
+			"list reads the inbox; read marks a notification read. "
+			"Defaults to list.", actions);
+		venture_mcp_catalog_add_integer_property(builder, "id",
+			"read: the notification's id, or 0 for every unread one.");
+		venture_mcp_catalog_add_boolean_property(builder, "unread",
+			"list: only what is unread. Defaults to true.");
+		venture_mcp_catalog_add_integer_property(builder, "limit",
+			"list: at most this many, newest first. Defaults to 50.");
+		return;
+	}
+
+	if (0 == g_strcmp0(tool_name, "venture_runs"))
+	{
+		static const gchar *const whats[] = { "runs", "budgets", NULL };
+		static const gchar *const states[] = {
+			"queued", "running", "succeeded", "failed", "cancelled",
+			"refused", "interrupted", NULL
+		};
+
+		venture_mcp_catalog_add_enum_property(builder, "what",
+			"runs for the runs and their totals; budgets for the agent "
+			"budgets. Defaults to runs.", whats);
+		venture_mcp_catalog_add_enum_property(builder, "state",
+			"runs: only runs in this state.", states);
+		venture_mcp_catalog_add_integer_property(builder, "limit",
+			"runs: at most this many, newest first. Defaults to 50.");
+		return;
+	}
+
+	if (0 == g_strcmp0(tool_name, "venture_desk"))
+	{
+		static const gchar *const actions[] = {
+			"sla", "activity", "sprints", "sprint", "triage", "summarise",
+			"draft", "worklog", "macro", "fix_ticket", "bulk", "sweep", NULL
+		};
+
+		venture_mcp_catalog_add_enum_property(builder, "action",
+			"What to do; see the tool's description.", actions);
+		venture_mcp_catalog_add_integer_property(builder, "id",
+			"The ticket (sla, worklog, macro), sprint, incident "
+			"(fix_ticket) or record (activity).");
+		venture_mcp_catalog_add_string_property(builder, "type",
+			"activity and bulk: the record type.");
+		venture_mcp_catalog_add_string_property(builder, "hours",
+			"worklog: how long, as a number of hours, e.g. 1.5.");
+		venture_mcp_catalog_add_string_property(builder, "note",
+			"worklog: what the time went on.");
+		venture_mcp_catalog_add_string_property(builder, "macro",
+			"macro: the macro's name or id.");
+		venture_mcp_catalog_add_object_property(builder, "changes",
+			"bulk: field to value, in the wire spelling.");
+		venture_mcp_catalog_add_string_property(builder, "ids",
+			"bulk: the record ids, comma separated.");
+		venture_mcp_catalog_add_boolean_property(builder, "delete",
+			"bulk: remove the records instead of changing them.");
+		venture_mcp_catalog_add_integer_property(builder, "limit",
+			"activity: at most this many entries.");
+		return;
+	}
+
 	if (0 == g_strcmp0(tool_name, "venture_factory"))
 	{
 		static const gchar *const actions[] = {
@@ -895,6 +997,9 @@ venture_mcp_catalog_add_required(
 
 	if (0 == g_strcmp0(def->name, "venture_dashboard"))
 		json_builder_add_string_value(builder, "slug");
+
+	if (0 == g_strcmp0(def->name, "venture_desk"))
+		json_builder_add_string_value(builder, "action");
 
 	if (0 == g_strcmp0(def->name, "venture_link"))
 	{
