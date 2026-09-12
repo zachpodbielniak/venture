@@ -89,6 +89,91 @@ venture_entity_registry_lookup(
 );
 
 /**
+ * venture_entity_registry_lookup_any:
+ * @self: a #VentureEntityRegistry
+ * @entity_name: the singular or plural machine name
+ *
+ * Looks a type up whether or not its module has hidden it. For error
+ * messages and for the few places -- the module registry, the save-time
+ * reference check -- that need to tell "disabled" from "never existed".
+ * Everything that offers types to a caller uses venture_entity_registry_lookup().
+ *
+ * Returns: the #GType, or %G_TYPE_INVALID if never registered
+ */
+GType
+venture_entity_registry_lookup_any(
+	VentureEntityRegistry	*self,
+	const gchar		*entity_name
+);
+
+/**
+ * venture_entity_registry_is_type_enabled:
+ * @self: a #VentureEntityRegistry
+ * @entity_name: the singular or plural machine name
+ *
+ * Returns: %TRUE if the type is registered and not hidden by a module
+ */
+gboolean
+venture_entity_registry_is_type_enabled(
+	VentureEntityRegistry	*self,
+	const gchar		*entity_name
+);
+
+/**
+ * venture_entity_registry_get_type_module:
+ * @self: a #VentureEntityRegistry
+ * @entity_name: the singular or plural machine name
+ *
+ * Returns: (transfer none) (nullable): the name of the module that owns
+ *   the type, or %NULL for a type no module claims
+ */
+const gchar *
+venture_entity_registry_get_type_module(
+	VentureEntityRegistry	*self,
+	const gchar		*entity_name
+);
+
+/**
+ * venture_entity_registry_set_type_module:
+ * @self: a #VentureEntityRegistry
+ * @entity_name: the singular machine name
+ * @module_name: (nullable): the owning module, or %NULL to disown
+ * @enabled: whether the type is offered
+ *
+ * Stamps a type with its module and shows or hides it. Hidden types stay
+ * registered -- their #GType, prototype and table are all still there --
+ * but every lookup and listing skips them, which is how a disabled module
+ * disappears from REST, the UI, the schema, the AI tools and the CLI in
+ * one move. Called by venture_module_registry_apply(); a name that is not
+ * registered is ignored.
+ */
+void
+venture_entity_registry_set_type_module(
+	VentureEntityRegistry	*self,
+	const gchar		*entity_name,
+	const gchar		*module_name,
+	gboolean		 enabled
+);
+
+/**
+ * venture_entity_registry_set_unknown_type_error:
+ * @self: a #VentureEntityRegistry
+ * @entity_name: (nullable): the name that was not found
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Sets the error every caller should raise for a type name that did not
+ * resolve. It says which of two different things went wrong: the type
+ * belongs to a module that is switched off, naming the setting, or no such
+ * type exists, listing what does.
+ */
+void
+venture_entity_registry_set_unknown_type_error(
+	VentureEntityRegistry	 *self,
+	const gchar		 *entity_name,
+	GError			**error
+);
+
+/**
  * venture_entity_registry_create:
  * @self: a #VentureEntityRegistry
  * @entity_name: the entity name

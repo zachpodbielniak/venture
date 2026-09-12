@@ -75,16 +75,19 @@ venture_kb_service_new(
 
 	config = venture_context_get_config(context);
 	g_object_get(config,
-	             "kb-enabled", &enabled,
 	             "kb-chunk-chars", &chunk_chars,
 	             "kb-chunk-overlap", &chunk_overlap,
 	             "kb-search-limit", &search_limit,
 	             NULL);
 
+	/* The module registry already folds kb.enabled in, so this is the
+	 * one check: the module is off, whichever switch turned it off. */
+	enabled = venture_context_module_enabled(context, "kb");
+
 	if (!enabled)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
-		                    "Knowledge bases are disabled in configuration");
+		                    "The kb module is disabled in configuration");
 		return NULL;
 	}
 

@@ -329,3 +329,42 @@ the run's workspace while the teardown removed the directory above it.
 `settle_runs()` in `tests/test-work-service.c` waits on
 `venture_work_service_count_live()`, bounded — a test that can hang is worse
 than one that fails.
+
+## Modules, links and the factory
+
+- **Every record type belongs to a module, and the module registry is the
+  only thing that hides types.** `venture_module_registry_apply()` masks the
+  process-wide entity registry; everything else asks the registry. Do not
+  add a second "is this type enabled" check anywhere -- if a surface still
+  offers a hidden type, the bug is in the registry mask, not in that surface.
+  A page or service that belongs to a module calls
+  `venture_web_require_module_ui()` / `_api()` or
+  `venture_context_module_enabled()` first; the generic record routes do
+  not need to.
+- **The built-in module table is written bottom-up.** A module may only
+  require what precedes it; `venture_module_registry_add()` refuses anything
+  else, which is what rules a cycle out. Adding a module means placing it
+  after everything it requires, and adding a type means listing it under
+  exactly one module -- a type claimed twice is refused at startup.
+- **A field may not take a name the entity spine owns.** `id`, `uuid`,
+  `created-at`, `updated-at`, `version`. A release with a field called
+  `version` installed a string over the optimistic-concurrency counter and
+  every second save failed as a conflict with itself; the release's version
+  is now `number`, and `venture_entity_class_install_fields()` aborts on a
+  collision so it cannot recur.
+- **Cross-row invariants are save validators, not constructor checks.**
+  `venture_database_add_save_validator()` runs inside the lock for every
+  writer -- the form, the API, an approved staged change, the AI. A check
+  that lives only in a constructor is one door; `record_link` does both, and
+  `ticket_relation` predates the mechanism.
+- **The module registry is live.** It re-resolves on the configuration's
+  `notify` and `module-switch-changed` signals and the context re-applies
+  the masks, so a test may flip a switch on a running fixture. Reports are
+  hidden, never removed, for the same reason: turning a module back on must
+  restore them with nothing re-registered.
+- **Tests that hand-make records must file them under the default
+  organisation.** Every report and page scopes to it; a record with
+  organisation 0 is invisible to them and the report reads zero rows.
+- **A refused webhook signature is a `g_warning`, which the test harness
+  makes fatal.** Wrap a deliberately bad delivery in
+  `g_test_expect_message()`.

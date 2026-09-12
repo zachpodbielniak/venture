@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-08-14]
-#+version: 0.1.0
+#+updated: [2026-09-11]
+#+version: 0.4.0
 
 * Extending VENTURE
 
@@ -108,6 +108,24 @@ same API; use it when you want a build step and a Makefile of your own.
 
 Plugins are never unloaded. A loaded object may have registered a GType, and
 pulling the code out from under a live type crashes on next use.
+
+A plugin should declare itself as a module, in one call:
+
+#+begin_src C
+static GType (*const types[]) (void) = { venture_subscription_get_type, NULL };
+static const gchar *const requires[] = { "finance", NULL };
+static const gchar *const reports[] = { "subscriptions", NULL };
+static const VentureModuleInfo module = {
+	"example", "Example plugin", "Recurring subscriptions.",
+	requires, NULL, types, reports, NULL, FALSE
+};
+
+venture_context_register_module(context, &module, error);
+#+end_src
+
+That registers the types, resolves the module against the running configuration and applies the result, so =modules.example.enabled: false= switches the plugin off exactly as it switches a built-in module -- types hidden, reports hidden, pages gone. See [[file:modules.org][Modules]].
+
+A record type whose invariants span rows -- "both ends of this must exist" -- registers a /save validator/ with =venture_database_add_save_validator()=. It runs inside the database lock before every write of that type, from every writer, and may fill derived fields. =record_link= is the worked example.
 
 * 4. A record type in C
 
@@ -238,6 +256,8 @@ built-in to every consumer:
   audit diffs and CLI subcommands
 - reports appear in the CLI, the web UI, the API and the AI's report tool
 - both are covered by the same validation, concurrency and audit guarantees
+- a module is switched, listed and masked exactly as a built-in one, and its
+  types link to and from every other record through =record_link=
 
 That is the point of deriving everything from property metadata rather than
 writing it out: there is no second path for extensions to fall short on.

@@ -68,7 +68,7 @@ On a fresh database this creates the schema, seeds a default organisation, a cha
 
   This is shown once. Save it now.
 
-VENTURE 0.3.5 listening on http://127.0.0.1:8747
+VENTURE 0.4.0 listening on http://127.0.0.1:8747
 #+end_src
 
 Pass =--owner-password= to choose it yourself.

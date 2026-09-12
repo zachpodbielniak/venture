@@ -279,6 +279,49 @@ plugins:
   # is best-effort and logs a warning.
   required: []
 
+modules:
+  # Every module VENTURE is made of can be switched off here, as one thing:
+  # its record types disappear from the API, the UI, the schema, the AI
+  # tools and venturectl; its reports leave the reports page; its pages
+  # answer 404; and its services are never built. Nothing is deleted. A
+  # table a module created stays where it is, and turning the module back
+  # on shows the same rows.
+  #
+  # A module that requires one you have turned off is refused at startup
+  # with a message naming both, rather than left half-working. The graph:
+  #
+  #   core (always on)
+  #     sales          products, inventory, sales
+  #       finance      expenses, accounts, ledger, tax; the P&L reports
+  #         invoicing  invoices (also needs crm)
+  #       outreach     campaigns, newsletters, subscribers, posts
+  #     crm            companies, contacts, interactions, deals
+  #     ideas          ideas, research notes
+  #     kb             knowledge bases           (also: kb.enabled)
+  #     tickets        tickets, comments, relations
+  #       forge        repositories, rules, runs (also: forge.enabled)
+  #         factory    milestones, releases, builds, environments,
+  #                    deployments, incidents
+  #     ai             the assistant             (also: ai.enabled)
+  #       chat         stored conversations
+  #     automation     the podomation engine     (also: automation.enabled)
+  #     plugins        plugins and venture types (also: plugins.enabled)
+  #
+  # The older *.enabled switches still work and mean the same thing; both
+  # have to be true for the module to be on. Prefer this section.
+  #
+  # Either spelling is accepted:
+  #
+  #   crm: false
+  #   crm:
+  #     enabled: false
+  #
+  # `venture --list-modules` prints the resolved table for a configuration
+  # without starting anything, and `venture --disable-module NAME` turns
+  # one off for a single run. A plugin may add modules of its own, which
+  # are switched here the same way.
+  {}
+
 ui:
   # system | light | dark. "system" follows the browser's preference and
   # still lets the theme toggle override it.

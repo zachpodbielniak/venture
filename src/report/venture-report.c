@@ -1184,6 +1184,11 @@ struct _VentureReportRegistry
 	GObject parent_instance;
 
 	GHashTable *reports;
+
+	/* name -> present when a module has switched the report off. The
+	 * report stays registered so turning the module back on restores
+	 * it, but lookups and listings skip it. */
+	GHashTable *hidden;
 };
 
 G_DEFINE_FINAL_TYPE(VentureReportRegistry, venture_report_registry, G_TYPE_OBJECT)
@@ -1196,6 +1201,7 @@ venture_report_registry_finalize(GObject *object)
 	self = VENTURE_REPORT_REGISTRY(object);
 
 	g_clear_pointer(&self->reports, g_hash_table_unref);
+	g_clear_pointer(&self->hidden, g_hash_table_unref);
 
 	G_OBJECT_CLASS(venture_report_registry_parent_class)->finalize(object);
 }
@@ -1209,6 +1215,8 @@ venture_report_registry_class_init(VentureReportRegistryClass *klass)
 static void
 venture_report_registry_init(VentureReportRegistry *self)
 {
+	self->hidden = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+	                                     NULL);
 	self->reports = g_hash_table_new_full(g_str_hash, g_str_equal,
 	                                      g_free, g_object_unref);
 }
@@ -1233,6 +1241,17 @@ venture_report_registry_add(
 	                    g_strdup(venture_report_get_name(report)), report);
 }
 
+gboolean
+venture_report_registry_remove(
+	VentureReportRegistry	*self,
+	const gchar		*name
+){
+	g_return_val_if_fail(VENTURE_IS_REPORT_REGISTRY(self), FALSE);
+	g_return_val_if_fail(NULL != name, FALSE);
+
+	return g_hash_table_remove(self->reports, name);
+}
+
 VentureReport *
 venture_report_registry_lookup(
 	VentureReportRegistry	*self,
@@ -1241,7 +1260,25 @@ venture_report_registry_lookup(
 	g_return_val_if_fail(VENTURE_IS_REPORT_REGISTRY(self), NULL);
 	g_return_val_if_fail(NULL != name, NULL);
 
+	if (g_hash_table_contains(self->hidden, name))
+		return NULL;
+
 	return g_hash_table_lookup(self->reports, name);
+}
+
+void
+venture_report_registry_set_enabled(
+	VentureReportRegistry	*self,
+	const gchar		*name,
+	gboolean		 enabled
+){
+	g_return_if_fail(VENTURE_IS_REPORT_REGISTRY(self));
+	g_return_if_fail(NULL != name);
+
+	if (enabled)
+		g_hash_table_remove(self->hidden, name);
+	else
+		g_hash_table_add(self->hidden, g_strdup(name));
 }
 
 static gint
@@ -1261,6 +1298,7 @@ venture_report_registry_list(VentureReportRegistry *self)
 {
 	GPtrArray *reports;
 	GHashTableIter iter;
+	gpointer key;
 	gpointer value;
 
 	g_return_val_if_fail(VENTURE_IS_REPORT_REGISTRY(self), NULL);
@@ -1268,8 +1306,13 @@ venture_report_registry_list(VentureReportRegistry *self)
 	reports = g_ptr_array_new();
 	g_hash_table_iter_init(&iter, self->reports);
 
-	while (g_hash_table_iter_next(&iter, NULL, &value))
+	while (g_hash_table_iter_next(&iter, &key, &value))
+	{
+		if (g_hash_table_contains(self->hidden, key))
+			continue;
+
 		g_ptr_array_add(reports, value);
+	}
 
 	/* Sorted so generated help, tool descriptions and the UI's report
 	 * menu are deterministic. */

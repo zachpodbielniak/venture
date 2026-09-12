@@ -78,13 +78,25 @@ typedef struct _VentureForge			VentureForge;
 typedef struct _VentureForgeRepo		VentureForgeRepo;
 typedef struct _VentureForgeRule		VentureForgeRule;
 typedef struct _VentureTicketRelation		VentureTicketRelation;
+typedef struct _VentureRecordLink		VentureRecordLink;
 typedef struct _VentureTicketLink		VentureTicketLink;
 typedef struct _VentureForgeRun			VentureForgeRun;
+
+/* --- The software factory ------------------------------------------------- */
+
+typedef struct _VentureMilestone		VentureMilestone;
+typedef struct _VentureRelease			VentureRelease;
+typedef struct _VentureBuild			VentureBuild;
+typedef struct _VentureEnvironment		VentureEnvironment;
+typedef struct _VentureDeployment		VentureDeployment;
+typedef struct _VentureIncident			VentureIncident;
 typedef struct _VentureWorkService		VentureWorkService;
 
 /* --- Registries and infrastructure --------------------------------------- */
 
 typedef struct _VentureEntityRegistry		VentureEntityRegistry;
+typedef struct _VentureModule			VentureModule;
+typedef struct _VentureModuleRegistry		VentureModuleRegistry;
 typedef struct _VentureVentureTypeRegistry	VentureVentureTypeRegistry;
 typedef struct _VentureConfig			VentureConfig;
 typedef struct _VentureContext			VentureContext;

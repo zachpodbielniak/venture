@@ -236,20 +236,47 @@ venture_plugin_register(
 	GError		**error
 );
 
+/*
+ * The plugin as a module.
+ *
+ * Declaring one is what lets an install switch the plugin off with
+ * `modules.example.enabled: false` exactly as it switches a built-in
+ * module, and what hides the subscription type and its report when it
+ * does. The description must outlive the plugin, which a static does.
+ */
+static GType (*const venture_example_types[]) (void) = {
+	venture_subscription_get_type,
+	NULL
+};
+
+static const gchar *const venture_example_requires[] = { "finance", NULL };
+static const gchar *const venture_example_reports[] = { "subscriptions", NULL };
+
+static const VentureModuleInfo venture_example_module = {
+	"example", "Example plugin",
+	"Recurring subscriptions, from the worked example plugin.",
+	venture_example_requires, NULL,
+	venture_example_types, venture_example_reports, NULL, FALSE
+};
+
 gboolean
 venture_plugin_register(
 	VentureContext	 *context,
 	GError		**error
 ){
 	/*
-	 * Registering the record type is all that is needed for it to gain a
-	 * table, REST CRUD at /api/v1/subscription, a web list view, AI tools
-	 * and venturectl subcommands. The table is created on the next
-	 * migration, which the server runs at startup.
+	 * Registering the module registers the record type with it, which
+	 * is all that is needed for the type to gain a table, REST CRUD at
+	 * /api/v1/subscription, a web list view, AI tools and venturectl
+	 * subcommands. The table is created on the next migration, which
+	 * the server runs at startup.
+	 *
+	 * A module that requires one the configuration turned off is
+	 * refused here, and that is "not now" rather than "broken": the
+	 * plugin reports it and the server carries on.
 	 */
-	if (!venture_entity_registry_register(
-		venture_context_get_entity_registry(context),
-		VENTURE_TYPE_SUBSCRIPTION, error))
+	if (!venture_context_register_module(context, &venture_example_module,
+	                                     error))
 		return FALSE;
 
 	venture_report_registry_add(
@@ -258,6 +285,10 @@ venture_plugin_register(
 			"subscriptions", "Recurring subscriptions",
 			"Active subscriptions with their annualised cost",
 			venture_subscription_report)));
+
+	/* The report was added after the module was applied; apply again so
+	 * a disabled module hides it too. */
+	venture_context_apply_modules(context);
 
 	return TRUE;
 }

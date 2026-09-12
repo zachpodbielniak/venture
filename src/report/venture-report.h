@@ -394,6 +394,43 @@ venture_report_registry_add(
 );
 
 /**
+ * venture_report_registry_remove:
+ * @self: a #VentureReportRegistry
+ * @name: the report name
+ *
+ * Withdraws a report. The module registry does this for every report a
+ * disabled module owns, so a profit-and-loss is not offered on an install
+ * that keeps no books.
+ *
+ * Returns: %TRUE if a report by that name was registered
+ */
+gboolean
+venture_report_registry_remove(
+	VentureReportRegistry	*self,
+	const gchar		*name
+);
+
+/**
+ * venture_report_registry_set_enabled:
+ * @self: a #VentureReportRegistry
+ * @name: the report name
+ * @enabled: whether the report is offered
+ *
+ * Hides or shows a report without withdrawing it. The module registry
+ * hides every report a disabled module owns and shows them again when the
+ * module is on, so a profit-and-loss is not offered on an install that
+ * keeps no books -- and comes back, with nothing re-registered, when it
+ * does. A name that is not registered is remembered, so a report added
+ * later under it is hidden too.
+ */
+void
+venture_report_registry_set_enabled(
+	VentureReportRegistry	*self,
+	const gchar		*name,
+	gboolean		 enabled
+);
+
+/**
  * venture_report_registry_lookup:
  * @self: a #VentureReportRegistry
  * @name: the report name

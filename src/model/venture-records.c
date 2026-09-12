@@ -1234,7 +1234,14 @@ static const VentureFieldDecl venture_ticket_fields[] = {
 	 * the link would make the rule depend on the thing it decides.
 	 */
 	VENTURE_FIELD_REF("repo-id", "Repository", NULL, "forge_repo",
-	                  VENTURE_COLUMN_FLAG_NONE)
+	                  VENTURE_COLUMN_FLAG_NONE),
+	/* The factory's two questions of a ticket: which increment it is
+	 * planned for, and which release carried it out. Both soft -- the
+	 * factory module may be off -- so the picker is simply empty then. */
+	VENTURE_FIELD_REF("milestone-id", "Milestone", "Planned for",
+	                  "milestone", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("release-id", "Fixed in", "The release that shipped it",
+	                  "release", VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY(VentureTicket, venture_ticket, venture_ticket_fields)
@@ -1314,6 +1321,296 @@ static const VentureFieldDecl venture_ticket_relation_fields[] = {
 
 VENTURE_DEFINE_ENTITY(VentureTicketRelation, venture_ticket_relation,
                       venture_ticket_relation_fields)
+
+/* ==========================================================================
+ * The software factory
+ *
+ * The loop a software venture runs: an idea becomes tickets, tickets are
+ * planned into a milestone, worked on a branch -- by a person or by a
+ * coding run -- built by the forge's CI, assembled into a release, deployed
+ * to an environment, and, when something goes wrong there, raised as an
+ * incident that becomes a ticket again. Every step is a record, so every
+ * step is queryable, reportable, linkable and reachable by the AI, and the
+ * lead-time report can measure the loop end to end.
+ * ========================================================================== */
+
+/*
+ * A planned increment: what a set of tickets adds up to.
+ */
+static const VentureFieldDecl venture_milestone_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "e.g. 1.2, Q3 launch"),
+	VENTURE_FIELD_TEXT("description", "Description", "What it delivers"),
+	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("product-id", "Product", NULL, "product",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("status", "Status", NULL,
+	                   venture_milestone_status_get_type,
+	                   VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("due-on", "Due", NULL, VENTURE_FIELD_KIND_DATE,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("completed-at", "Completed", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+};
+
+VENTURE_DEFINE_ENTITY(VentureMilestone, venture_milestone,
+                      venture_milestone_fields)
+
+/*
+ * A version that went, or will go, out of the door.
+ *
+ * The version number is the name, so a release lists and links as "1.2.0". The
+ * tag and the external id are what the forge calls it, written back by the
+ * webhook when the forge publishes it or by Publish when VENTURE does.
+ */
+static const VentureFieldDecl venture_release_fields[] = {
+	/* "number", not "version": the entity spine owns a property called
+	 * version, the optimistic-concurrency counter. */
+	VENTURE_FIELD_NAME("number", "Version", "e.g. 1.2.0"),
+	VENTURE_FIELD("name", "Title", "A name for the release, if it has one",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD_REF("product-id", "Product", NULL, "product",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("repo-id", "Repository", "Where the tag lives",
+	                  "forge_repo", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("milestone-id", "Milestone", NULL, "milestone",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("status", "Status", NULL,
+	                   venture_release_status_get_type,
+	                   VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("tag", "Tag", "The git tag, e.g. v1.2.0",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("released-at", "Released", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("url", "URL", "The release page on the forge",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("changelog", "Changelog",
+	                   "What changed; Draft fills it from the tickets"),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD("external-id", "Forge id", "The forge's id for the release",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_INDEXED)
+};
+
+VENTURE_DEFINE_ENTITY(VentureRelease, venture_release, venture_release_fields)
+
+/*
+ * One run of a CI workflow, or a build somebody recorded by hand.
+ *
+ * Mostly written by the forge webhook: a workflow_run event creates the
+ * row when the run is requested and updates it when it completes, matched
+ * on the repository and the forge's own run id, so a retried delivery
+ * updates rather than duplicates.
+ */
+static const VentureFieldDecl venture_build_fields[] = {
+	VENTURE_FIELD("title", "Title", "The commit or workflow title",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD_REF("repo-id", "Repository", NULL, "forge_repo",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("release-id", "Release", "The release it built",
+	                  "release", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("run-id", "Coding run", "The run whose branch it built",
+	                  "forge_run", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("status", "Status", NULL, venture_build_status_get_type,
+	                   VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_ENUM("trigger", "Trigger", "What started it",
+	                   venture_build_trigger_get_type,
+	                   VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("workflow", "Workflow", "The CI workflow's name",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("external-id", "Forge run id", "The forge's id for the run",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("number", "Run number", NULL, VENTURE_FIELD_KIND_INTEGER,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("ref", "Branch", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("commit", "Commit", "The sha that was built",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("url", "URL", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("started-at", "Started", NULL, VENTURE_FIELD_KIND_DATETIME,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("finished-at", "Finished", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("log-excerpt", "Log", "The part of the log that matters")
+};
+
+VENTURE_DEFINE_ENTITY(VentureBuild, venture_build, venture_build_fields)
+
+/*
+ * Somewhere a release runs.
+ */
+static const VentureFieldDecl venture_environment_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "e.g. production, staging"),
+	VENTURE_FIELD_ENUM("kind", "Kind", NULL, venture_environment_kind_get_type,
+	                   VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("product-id", "Product", NULL, "product",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("url", "URL", "Where it answers", VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("description", "Description", NULL)
+};
+
+VENTURE_DEFINE_ENTITY(VentureEnvironment, venture_environment,
+                      venture_environment_fields)
+
+/*
+ * A release arriving in an environment. The latest one that succeeded is
+ * what the environment is running.
+ */
+static const VentureFieldDecl venture_deployment_fields[] = {
+	VENTURE_FIELD_REF("release-id", "Release", NULL, "release",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("environment-id", "Environment", NULL, "environment",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("build-id", "Build", "The build that was deployed",
+	                  "build", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("status", "Status", NULL,
+	                   venture_deployment_status_get_type,
+	                   VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("deployed-at", "Deployed", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("deployed-by", "Deployed by", "A person, a rule, a runner",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("url", "URL", "The pipeline or log", VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+};
+
+VENTURE_DEFINE_ENTITY(VentureDeployment, venture_deployment,
+                      venture_deployment_fields)
+
+/*
+ * Something going wrong where a release runs. Closes the loop: an incident
+ * names the environment, the release and the deployment it came from, and
+ * the ticket raised to fix it.
+ */
+static const VentureFieldDecl venture_incident_fields[] = {
+	VENTURE_FIELD_NAME("title", "Title", "What is wrong, in a line"),
+	VENTURE_FIELD_ENUM("severity", "Severity", NULL,
+	                   venture_incident_severity_get_type,
+	                   VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_ENUM("status", "Status", NULL,
+	                   venture_incident_status_get_type,
+	                   VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("environment-id", "Environment", NULL, "environment",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("release-id", "Release", "The release that was running",
+	                  "release", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("deployment-id", "Deployment", "The deployment that "
+	                  "introduced it", "deployment", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("ticket-id", "Ticket", "The fix", "ticket",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("started-at", "Started", NULL, VENTURE_FIELD_KIND_DATETIME,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("resolved-at", "Resolved", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("summary", "Summary", "What happened"),
+	VENTURE_FIELD_TEXT("postmortem", "Postmortem", "Why, and what changes")
+};
+
+VENTURE_DEFINE_ENTITY(VentureIncident, venture_incident,
+                      venture_incident_fields)
+
+/*
+ * A link between any two records.
+ *
+ * The generalisation of ticket_relation: both ends are named by type and
+ * id, so a release can point at the tickets it shipped, an incident at the
+ * deployment that caused it, an expense at the invoice it was billed
+ * through, and a plugin's record at anything at all -- without a foreign
+ * key per pair, which for thirty types is four hundred and thirty-five.
+ *
+ * The kind gives the link a direction and a meaning, and every directed
+ * kind has an inverse, so one row is enough: standing on the target, the
+ * link reads as the inverse. Both labels are stored, for the reason the
+ * ticket relation stores one -- a link still has to read correctly after
+ * one end has been deleted.
+ *
+ * The checks that a polymorphic pair cannot get from the schema -- that
+ * both types are registered and on, that both records exist, that a record
+ * is not linked to itself, that the same pair is not linked twice -- run as
+ * a save validator (see venture_record_link_install_validator()), so they
+ * apply to every writer: the form, the API, a staged approval, the AI.
+ */
+static const VentureFieldDecl venture_record_link_fields[] = {
+	VENTURE_FIELD("source-type", "From type", "The record type at this end",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("source-id", "From", "Its id", VENTURE_FIELD_KIND_INTEGER,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("source-label", "From (name)",
+	              "What it was called when it was linked",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD_ENUM("kind", "Kind", "What the link means, read from here",
+	                   venture_link_kind_get_type,
+	                   VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("target-type", "To type", "The record type at the other end",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("target-id", "To", "Its id", VENTURE_FIELD_KIND_INTEGER,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("target-label", "To (name)",
+	              "What it was called when it was linked",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD("note", "Note", "Why, in a few words",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE)
+};
+
+/*
+ * "Invoice INV-42 blocks Ticket #7", so a link reads as a sentence in a
+ * list, an audit entry or a staged-change card.
+ */
+static gchar *
+venture_record_link_get_display_name(VentureEntity *self)
+{
+	g_autofree gchar *source_label = NULL;
+	g_autofree gchar *target_label = NULL;
+	g_autofree gchar *source_type = NULL;
+	g_autofree gchar *target_type = NULL;
+	VentureLinkKind kind;
+	gint64 source_id = 0;
+	gint64 target_id = 0;
+
+	g_object_get(self,
+	             "source-type", &source_type, "source-id", &source_id,
+	             "source-label", &source_label,
+	             "target-type", &target_type, "target-id", &target_id,
+	             "target-label", &target_label,
+	             "kind", &kind,
+	             NULL);
+
+	if (venture_string_is_empty(source_label))
+	{
+		g_free(source_label);
+		source_label = g_strdup_printf("%s #%" G_GINT64_FORMAT,
+		                               (NULL != source_type) ? source_type
+		                                                     : "?",
+		                               source_id);
+	}
+
+	if (venture_string_is_empty(target_label))
+	{
+		g_free(target_label);
+		target_label = g_strdup_printf("%s #%" G_GINT64_FORMAT,
+		                               (NULL != target_type) ? target_type
+		                                                     : "?",
+		                               target_id);
+	}
+
+	return g_strdup_printf("%s %s %s", source_label,
+	                       venture_link_kind_to_label(kind), target_label);
+}
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureRecordLink, venture_record_link,
+                                venture_record_link_fields,
+	VENTURE_ENTITY_CLASS(klass)->get_display_name =
+		venture_record_link_get_display_name;
+)
 
 /*
  * One forge server: a Forgejo or Gitea instance you have an account on.

@@ -53,6 +53,16 @@ venture_configure(
 	if (NULL != g_getenv("VENTURE_UNATTENDED"))
 		venture_config_set_ai_policy(config, VENTURE_AI_POLICY_AUTONOMOUS);
 
+	/* Modules are switched here the same way the YAML switches them, so a
+	 * machine can run a different shape of the product: the laptop keeps
+	 * the books and nothing else, the server runs the whole factory. */
+	if (0 == g_strcmp0(hostname, "CHANGE-ME-laptop-hostname"))
+	{
+		venture_config_set_module_enabled(config, "forge", FALSE);
+		venture_config_set_module_enabled(config, "factory", FALSE);
+		venture_config_set_module_enabled(config, "kb", FALSE);
+	}
+
 	/* House rules for the AI. This text is appended to the system prompt,
 	 * so it is the cheapest place to teach it your conventions. */
 	venture_config_set_ai_system_prompt_extra(config,

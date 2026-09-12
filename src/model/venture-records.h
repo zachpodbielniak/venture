@@ -225,6 +225,9 @@ VENTURE_DECLARE_ENTITY(VentureTicketRelation, venture_ticket_relation,
 #define VENTURE_TYPE_DOCUMENT (venture_document_get_type())
 VENTURE_DECLARE_ENTITY(VentureDocument, venture_document, DOCUMENT)
 
+#define VENTURE_TYPE_RECORD_LINK (venture_record_link_get_type())
+VENTURE_DECLARE_ENTITY(VentureRecordLink, venture_record_link, RECORD_LINK)
+
 /* --- Forge integration ---------------------------------------------------- */
 
 #define VENTURE_TYPE_FORGE (venture_forge_get_type())
@@ -241,6 +244,26 @@ VENTURE_DECLARE_ENTITY(VentureTicketLink, venture_ticket_link, TICKET_LINK)
 
 #define VENTURE_TYPE_FORGE_RUN (venture_forge_run_get_type())
 VENTURE_DECLARE_ENTITY(VentureForgeRun, venture_forge_run, FORGE_RUN)
+
+/* --- The software factory ------------------------------------------------- */
+
+#define VENTURE_TYPE_MILESTONE (venture_milestone_get_type())
+VENTURE_DECLARE_ENTITY(VentureMilestone, venture_milestone, MILESTONE)
+
+#define VENTURE_TYPE_RELEASE (venture_release_get_type())
+VENTURE_DECLARE_ENTITY(VentureRelease, venture_release, RELEASE)
+
+#define VENTURE_TYPE_BUILD (venture_build_get_type())
+VENTURE_DECLARE_ENTITY(VentureBuild, venture_build, BUILD)
+
+#define VENTURE_TYPE_ENVIRONMENT (venture_environment_get_type())
+VENTURE_DECLARE_ENTITY(VentureEnvironment, venture_environment, ENVIRONMENT)
+
+#define VENTURE_TYPE_DEPLOYMENT (venture_deployment_get_type())
+VENTURE_DECLARE_ENTITY(VentureDeployment, venture_deployment, DEPLOYMENT)
+
+#define VENTURE_TYPE_INCIDENT (venture_incident_get_type())
+VENTURE_DECLARE_ENTITY(VentureIncident, venture_incident, INCIDENT)
 
 #define VENTURE_TYPE_INVOICE (venture_invoice_get_type())
 VENTURE_DECLARE_ENTITY(VentureInvoice, venture_invoice, INVOICE)

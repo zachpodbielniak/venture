@@ -430,11 +430,13 @@ venture_plugin_manager_load_configured(
 
 	config = venture_context_get_config(self->context);
 	g_object_get(config,
-	             "plugins-enabled", &enabled,
 	             "plugins-paths", &paths,
 	             "plugins-venture-type-paths", &type_paths,
 	             "plugins-required", &required,
 	             NULL);
+
+	/* The module registry folds plugins.enabled in. */
+	enabled = venture_context_module_enabled(self->context, "plugins");
 
 	if (!enabled)
 		return TRUE;

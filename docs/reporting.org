@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-08-14]
-#+version: 0.1.0
+#+updated: [2026-09-11]
+#+version: 0.4.0
 
 * Reporting
 
@@ -28,6 +28,9 @@ about it.
 | =monthly=    | revenue, expenses and profit month by month                  |
 | =ideas=      | ideas ranked by opportunity and confidence against effort    |
 | =receivables= | outstanding invoices bucketed by how far past due           |
+| =releases=   | releases out in the period, with tickets, builds, deployments |
+| =lead_time=  | days from a ticket being raised to its release going out     |
+| =incidents=  | incidents in the period, hours to resolve, the mean          |
 
 #+begin_src sh
 venturectl report                       # list them

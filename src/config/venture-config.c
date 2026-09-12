@@ -14,6 +14,8 @@
 
 #include <yaml-glib.h>
 
+#include <string.h>
+
 #ifdef VENTURE_SERVER_BUILD
 #include "plugin/venture-crispy-host.h"
 #endif
@@ -277,9 +279,25 @@ struct _VentureConfig
 
 	gchar		*resolved_state_dir;
 	gchar		*loaded_from;
+
+	/*
+	 * module name -> GINT_TO_POINTER(enabled). The `modules` section is
+	 * not a flat setting like the rest: its keys are module names, which
+	 * a plugin can add to, so they cannot be enumerated in the static
+	 * table above. Held apart and resolved by #VentureModuleRegistry.
+	 */
+	GHashTable	*module_switches;
 };
 
 static GParamSpec *venture_config_properties[VENTURE_CONFIG_N_SETTINGS + 1];
+
+enum
+{
+	SIGNAL_MODULE_SWITCH_CHANGED,
+	N_SIGNALS
+};
+
+static guint venture_config_signals[N_SIGNALS] = { 0 };
 
 G_DEFINE_FINAL_TYPE(VentureConfig, venture_config, G_TYPE_OBJECT)
 
@@ -347,6 +365,7 @@ venture_config_finalize(GObject *object)
 	self = VENTURE_CONFIG(object);
 
 	g_clear_pointer(&self->values, g_hash_table_unref);
+	g_clear_pointer(&self->module_switches, g_hash_table_unref);
 	g_clear_pointer(&self->resolved_state_dir, g_free);
 	g_clear_pointer(&self->loaded_from, g_free);
 
@@ -363,6 +382,21 @@ venture_config_class_init(VentureConfigClass *klass)
 	object_class->get_property = venture_config_get_property;
 	object_class->set_property = venture_config_set_property;
 	object_class->finalize = venture_config_finalize;
+
+	/**
+	 * VentureConfig::module-switch-changed:
+	 * @self: the configuration
+	 * @module_name: the module whose switch changed
+	 *
+	 * Emitted when a module switch is set or cleared. The module
+	 * registry listens, alongside the ordinary property notifications,
+	 * so a switch flipped after the registry was configured is still
+	 * honoured.
+	 */
+	venture_config_signals[SIGNAL_MODULE_SWITCH_CHANGED] =
+		g_signal_new("module-switch-changed", G_TYPE_FROM_CLASS(klass),
+		             G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_NONE, 1,
+		             G_TYPE_STRING);
 
 	for (i = 0; i < VENTURE_CONFIG_N_SETTINGS; i++)
 	{
@@ -419,6 +453,8 @@ venture_config_init(VentureConfig *self)
 {
 	gsize i;
 
+	self->module_switches = g_hash_table_new_full(g_str_hash, g_str_equal,
+	                                              g_free, NULL);
 	self->values = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
 	                                     venture_config_free_value);
 
@@ -555,6 +591,195 @@ venture_config_apply_section(
 	}
 }
 
+/*
+ * Whether a module name may appear as a configuration key. The same
+ * alphabet venture_module_registry_add() enforces, checked here too so a
+ * malformed key is reported where it was written.
+ */
+static gboolean
+venture_config_module_name_is_valid(const gchar *name)
+{
+	const gchar *cursor;
+
+	if (venture_string_is_empty(name))
+		return FALSE;
+
+	for (cursor = name; '\0' != *cursor; cursor++)
+	{
+		if (!g_ascii_islower(*cursor) && !g_ascii_isdigit(*cursor) &&
+		    ('_' != *cursor) && ('-' != *cursor))
+			return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ * Applies the `modules` section. Each key is a module name and its value
+ * is either a bare boolean or a mapping with an `enabled` key:
+ *
+ *   modules:
+ *     crm: false
+ *     factory:
+ *       enabled: true
+ *
+ * Both spellings are accepted because the short one is what a person
+ * writes and the long one is what leaves room for per-module settings
+ * later. Anything else under a module is reported as unknown, the same
+ * way a misspelt setting anywhere else is.
+ *
+ * Whether a name is a real module is not known here -- a plugin can add
+ * one -- so that check lives in venture_module_registry_check_configured()
+ * and runs once plugins have loaded.
+ */
+static void
+venture_config_apply_modules_section(
+	VentureConfig	*self,
+	JsonObject	*object,
+	GPtrArray	*unknown
+){
+	g_autoptr(GList) members = NULL;
+	GList *iter;
+
+	members = json_object_get_members(object);
+
+	for (iter = members; NULL != iter; iter = iter->next)
+	{
+		const gchar *name;
+		JsonNode *node;
+
+		name = iter->data;
+		node = json_object_get_member(object, name);
+
+		if (!venture_config_module_name_is_valid(name))
+		{
+			g_warning("Ignoring modules.%s: not a module name (use "
+			          "lowercase letters, digits, - and _)", name);
+			continue;
+		}
+
+		if (JSON_NODE_HOLDS_VALUE(node) &&
+		    (G_TYPE_BOOLEAN == json_node_get_value_type(node)))
+		{
+			venture_config_set_module_enabled(self, name,
+			                                  json_node_get_boolean(node));
+			continue;
+		}
+
+		if (JSON_NODE_HOLDS_OBJECT(node))
+		{
+			g_autoptr(GList) keys = NULL;
+			JsonObject *settings;
+			JsonNode *enabled;
+			GList *key;
+
+			settings = json_node_get_object(node);
+			enabled = json_object_get_member(settings, "enabled");
+
+			if ((NULL != enabled) && JSON_NODE_HOLDS_VALUE(enabled) &&
+			    (G_TYPE_BOOLEAN == json_node_get_value_type(enabled)))
+			{
+				venture_config_set_module_enabled(
+					self, name, json_node_get_boolean(enabled));
+			}
+			else if (NULL != enabled)
+			{
+				g_warning("Ignoring modules.%s.enabled: expected "
+				          "true or false", name);
+			}
+
+			keys = json_object_get_members(settings);
+
+			for (key = keys; NULL != key; key = key->next)
+			{
+				if (0 != g_strcmp0(key->data, "enabled"))
+				{
+					g_ptr_array_add(unknown,
+					                g_strdup_printf("modules.%s.%s", name,
+					                                (const gchar *)key->data));
+				}
+			}
+
+			continue;
+		}
+
+		g_warning("Ignoring modules.%s: expected true, false, or a "
+		          "mapping with an enabled key", name);
+	}
+}
+
+void
+venture_config_set_module_enabled(
+	VentureConfig	*self,
+	const gchar	*module_name,
+	gboolean	 enabled
+){
+	g_return_if_fail(VENTURE_IS_CONFIG(self));
+	g_return_if_fail(NULL != module_name);
+
+	g_hash_table_insert(self->module_switches, g_strdup(module_name),
+	                    GINT_TO_POINTER(enabled ? 1 : 0));
+
+	g_signal_emit(self, venture_config_signals[SIGNAL_MODULE_SWITCH_CHANGED],
+	              0, module_name);
+}
+
+void
+venture_config_clear_module_switch(
+	VentureConfig	*self,
+	const gchar	*module_name
+){
+	g_return_if_fail(VENTURE_IS_CONFIG(self));
+	g_return_if_fail(NULL != module_name);
+
+	g_hash_table_remove(self->module_switches, module_name);
+
+	g_signal_emit(self, venture_config_signals[SIGNAL_MODULE_SWITCH_CHANGED],
+	              0, module_name);
+}
+
+gboolean
+venture_config_get_module_switch(
+	VentureConfig	*self,
+	const gchar	*module_name,
+	gboolean	*out_enabled
+){
+	gpointer value;
+
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self), FALSE);
+	g_return_val_if_fail(NULL != module_name, FALSE);
+
+	if (!g_hash_table_lookup_extended(self->module_switches, module_name,
+	                                  NULL, &value))
+		return FALSE;
+
+	if (NULL != out_enabled)
+		*out_enabled = (0 != GPOINTER_TO_INT(value));
+
+	return TRUE;
+}
+
+gchar **
+venture_config_list_module_switches(VentureConfig *self)
+{
+	g_autoptr(GPtrArray) names = NULL;
+	g_autoptr(GList) keys = NULL;
+	GList *iter;
+
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self), NULL);
+
+	keys = g_hash_table_get_keys(self->module_switches);
+	keys = g_list_sort(keys, (GCompareFunc)g_strcmp0);
+	names = g_ptr_array_new();
+
+	for (iter = keys; NULL != iter; iter = iter->next)
+		g_ptr_array_add(names, g_strdup(iter->data));
+
+	g_ptr_array_add(names, NULL);
+
+	return (gchar **)g_ptr_array_free(g_steal_pointer(&names), FALSE);
+}
+
 gboolean
 venture_config_apply_yaml_string(
 	VentureConfig	 *self,
@@ -612,6 +837,13 @@ venture_config_apply_yaml_string(
 		if (!JSON_NODE_HOLDS_OBJECT(section_node))
 		{
 			g_ptr_array_add(unknown, g_strdup(iter->data));
+			continue;
+		}
+
+		if (0 == g_strcmp0(iter->data, "modules"))
+		{
+			venture_config_apply_modules_section(
+				self, json_node_get_object(section_node), unknown);
 			continue;
 		}
 
@@ -722,6 +954,60 @@ venture_config_apply_environment(VentureConfig *self)
 		}
 
 		g_object_set_property(G_OBJECT(self), setting->name, &value);
+	}
+
+	/*
+	 * VENTURE_MODULE_<NAME>=true|false switches a module, the way
+	 * VENTURE_<SECTION>_<KEY> sets a setting. The whole environment is
+	 * scanned rather than a known list looked up, because the module
+	 * names are not a known list: a plugin's module is switched the same
+	 * way. The name is lowercased back, so VENTURE_MODULE_CRM is
+	 * modules.crm.
+	 */
+	{
+		g_auto(GStrv) names = NULL;
+		gsize n;
+
+		names = g_listenv();
+
+		for (n = 0; (NULL != names) && (NULL != names[n]); n++)
+		{
+			g_autofree gchar *module_name = NULL;
+			g_autoptr(JsonNode) node = NULL;
+			g_auto(GValue) value = G_VALUE_INIT;
+			g_autoptr(GError) local_error = NULL;
+			const gchar *text;
+
+			if (!g_str_has_prefix(names[n], "VENTURE_MODULE_"))
+				continue;
+
+			module_name = g_ascii_strdown(
+				names[n] + strlen("VENTURE_MODULE_"), -1);
+
+			if (!venture_config_module_name_is_valid(module_name))
+			{
+				g_warning("Ignoring %s: not a module name", names[n]);
+				continue;
+			}
+
+			text = g_getenv(names[n]);
+
+			if (NULL == text)
+				continue;
+
+			node = json_node_init_string(json_node_alloc(), text);
+
+			if (!venture_json_value_from_node(node, G_TYPE_BOOLEAN, &value,
+			                                  &local_error))
+			{
+				g_warning("Ignoring %s: %s", names[n],
+				          local_error->message);
+				continue;
+			}
+
+			venture_config_set_module_enabled(self, module_name,
+			                                  g_value_get_boolean(&value));
+		}
 	}
 }
 
@@ -976,6 +1262,28 @@ venture_config_validate(
 		return FALSE;
 	}
 
+	/*
+	 * Modules last, once every plain setting has passed: the built-in
+	 * modules and the legacy switches are known here, so "invoicing is
+	 * on but the CRM is off" is caught before a database is opened. A
+	 * plugin's module is checked again once plugins have loaded, in
+	 * venture_module_registry_check_configured().
+	 */
+	{
+		g_autoptr(VentureModuleRegistry) modules = NULL;
+		g_autoptr(GError) local_error = NULL;
+
+		modules = venture_module_registry_new();
+		venture_module_registry_register_builtins(modules);
+
+		if (!venture_module_registry_configure(modules, self, &local_error))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			            "modules: %s", local_error->message);
+			return FALSE;
+		}
+	}
+
 	return TRUE;
 }
 
@@ -1071,6 +1379,30 @@ venture_config_to_yaml(
 		g_string_append_printf(yaml, "  %s: \"%s\"\n", setting->key,
 		                       (NULL != g_value_get_string(&value))
 		                               ? g_value_get_string(&value) : "");
+	}
+
+	/* The module switches, only those actually set: an absent module is
+	 * on by default, and writing every module out would turn a document
+	 * that says what was decided into one that says everything. */
+	{
+		g_auto(GStrv) names = NULL;
+		gsize n;
+
+		names = venture_config_list_module_switches(self);
+
+		if ((NULL != names) && (NULL != names[0]))
+		{
+			g_string_append(yaml, "\nmodules:\n");
+
+			for (n = 0; NULL != names[n]; n++)
+			{
+				gboolean enabled = TRUE;
+
+				venture_config_get_module_switch(self, names[n], &enabled);
+				g_string_append_printf(yaml, "  %s:\n    enabled: %s\n",
+				                       names[n], enabled ? "true" : "false");
+			}
+		}
 	}
 
 	return g_string_free(g_steal_pointer(&yaml), FALSE);
@@ -1228,6 +1560,50 @@ venture_config_describe(VentureConfig *self)
 		}
 
 		json_builder_end_object(builder);
+	}
+
+	/* The module switches, in the same shape, so a client reading the
+	 * settings sees them beside everything else. */
+	{
+		g_auto(GStrv) names = NULL;
+		gsize n;
+
+		names = venture_config_list_module_switches(self);
+
+		for (n = 0; (NULL != names) && (NULL != names[n]); n++)
+		{
+			g_autofree gchar *upper = NULL;
+			g_autofree gchar *variable = NULL;
+			g_autofree gchar *key = NULL;
+			g_autofree gchar *name = NULL;
+			gboolean enabled = TRUE;
+
+			venture_config_get_module_switch(self, names[n], &enabled);
+
+			upper = g_ascii_strup(names[n], -1);
+			g_strdelimit(upper, "-", '_');
+			variable = g_strdup_printf("VENTURE_MODULE_%s", upper);
+			key = g_strdup_printf("%s.enabled", names[n]);
+			name = g_strdup_printf("modules-%s-enabled", names[n]);
+
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "name");
+			json_builder_add_string_value(builder, name);
+			json_builder_set_member_name(builder, "section");
+			json_builder_add_string_value(builder, "modules");
+			json_builder_set_member_name(builder, "key");
+			json_builder_add_string_value(builder, key);
+			json_builder_set_member_name(builder, "description");
+			json_builder_add_string_value(builder,
+				"Whether the module is enabled");
+			json_builder_set_member_name(builder, "env");
+			json_builder_add_string_value(builder, variable);
+			json_builder_set_member_name(builder, "value");
+			json_builder_add_boolean_value(builder, enabled);
+			json_builder_set_member_name(builder, "type");
+			json_builder_add_string_value(builder, "boolean");
+			json_builder_end_object(builder);
+		}
 	}
 
 	json_builder_end_array(builder);

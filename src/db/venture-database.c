@@ -48,7 +48,37 @@ struct _VentureDatabase
 	 * there is no interleaving to get wrong.
 	 */
 	GRecMutex		 lock;
+
+	/*
+	 * Save validators, run inside the lock before a write. A record type
+	 * whose invariants span rows -- a link whose both ends must exist --
+	 * cannot check them from venture_entity_validate(), which has no
+	 * database, so it registers one of these instead. Every writer goes
+	 * through venture_database_save(), so every writer gets the check.
+	 */
+	GPtrArray		*validators;
 };
+
+typedef struct
+{
+	GType			 entity_type;
+	VentureSaveValidator	 validate;
+	gpointer		 user_data;
+	GDestroyNotify		 destroy;
+} VentureDatabaseValidator;
+
+static void
+venture_database_validator_free(gpointer data)
+{
+	VentureDatabaseValidator *validator;
+
+	validator = data;
+
+	if (NULL != validator->destroy)
+		validator->destroy(validator->user_data);
+
+	g_free(validator);
+}
 
 enum
 {
@@ -80,6 +110,7 @@ venture_database_finalize(GObject *object)
 	g_clear_object(&self->engine);
 	g_clear_pointer(&self->uri, g_free);
 	g_rec_mutex_clear(&self->lock);
+	g_clear_pointer(&self->validators, g_ptr_array_unref);
 
 	G_OBJECT_CLASS(venture_database_parent_class)->finalize(object);
 }
@@ -132,6 +163,8 @@ venture_database_init(VentureDatabase *self)
 	/* Recursive, because a write inside a transaction re-enters through
 	 * the same lock and a plain mutex would deadlock on itself. */
 	g_rec_mutex_init(&self->lock);
+	self->validators = g_ptr_array_new_with_free_func(
+		venture_database_validator_free);
 }
 
 /* --- Opening ------------------------------------------------------------- */
@@ -343,6 +376,29 @@ venture_database_new_for_config(
 	uri = venture_database_build_uri(config);
 
 	return venture_database_new(uri, error);
+}
+
+void
+venture_database_add_save_validator(
+	VentureDatabase		*self,
+	GType			 entity_type,
+	VentureSaveValidator	 validate,
+	gpointer		 user_data,
+	GDestroyNotify		 destroy
+){
+	VentureDatabaseValidator *validator;
+
+	g_return_if_fail(VENTURE_IS_DATABASE(self));
+	g_return_if_fail(g_type_is_a(entity_type, VENTURE_TYPE_ENTITY));
+	g_return_if_fail(NULL != validate);
+
+	validator = g_new0(VentureDatabaseValidator, 1);
+	validator->entity_type = entity_type;
+	validator->validate = validate;
+	validator->user_data = user_data;
+	validator->destroy = destroy;
+
+	g_ptr_array_add(self->validators, validator);
 }
 
 VentureDatabaseBackend
@@ -876,10 +932,39 @@ venture_database_check_references(
 		target_type = venture_entity_registry_lookup(
 			venture_entity_registry_get_default(), target_name);
 
-		/* A reference declared against a name nothing registered is a
-		 * bug in the declaration, not in the record being saved. */
 		if (G_TYPE_INVALID == target_type)
+		{
+			/*
+			 * Registered but hidden means the target's module is off,
+			 * and a reference written now cannot be checked -- so it
+			 * is refused, with the switch named. A field keeping the
+			 * value it already had was skipped above, which is what
+			 * keeps a record editable after the module it points into
+			 * is turned off.
+			 */
+			if (!venture_entity_registry_is_type_enabled(
+				venture_entity_registry_get_default(), target_name) &&
+			    (G_TYPE_INVALID != venture_entity_registry_lookup_any(
+				venture_entity_registry_get_default(), target_name)))
+			{
+				g_autoptr(GError) why = NULL;
+
+				venture_entity_registry_set_unknown_type_error(
+					venture_entity_registry_get_default(), target_name,
+					&why);
+				column = venture_entity_property_to_column(pspec->name);
+				g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				            "%s.%s cannot be set: %s",
+				            venture_entity_get_entity_name(entity), column,
+				            why->message);
+				return FALSE;
+			}
+
+			/* A reference declared against a name nothing registered
+			 * is a bug in the declaration, not in the record being
+			 * saved. */
 			continue;
+		}
 
 		column = venture_entity_property_to_column(pspec->name);
 		target = venture_database_get(self, target_type, target_id, NULL);
@@ -961,6 +1046,28 @@ venture_database_save(
 	{
 		g_rec_mutex_unlock(&self->lock);
 		return FALSE;
+	}
+
+	/* Likewise the validators, for the same reason. */
+	{
+		guint v;
+
+		for (v = 0; v < self->validators->len; v++)
+		{
+			VentureDatabaseValidator *validator;
+
+			validator = g_ptr_array_index(self->validators, v);
+
+			if (!g_type_is_a(G_OBJECT_TYPE(entity), validator->entity_type))
+				continue;
+
+			if (!validator->validate(self, entity, previous,
+			                         validator->user_data, error))
+			{
+				g_rec_mutex_unlock(&self->lock);
+				return FALSE;
+			}
+		}
 	}
 
 	expected_version = venture_entity_get_version(entity);

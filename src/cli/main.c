@@ -1576,6 +1576,232 @@ venture_cli_command_health(
 }
 
 /*
+ * venturectl links TYPE ID
+ *
+ * Every link touching a record, read from it.
+ */
+static gint
+venture_cli_command_links(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *path = NULL;
+	JsonArray *links;
+	guint i;
+
+	if ((NULL == args[1]) || (NULL == args[2]))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "usage: venturectl links TYPE ID");
+		return -1;
+	}
+
+	path = g_strdup_printf("/api/v1/links/%s/%s", args[1], args[2]);
+	node = venture_cli_request(cli, "GET", path, NULL, error);
+
+	if (NULL == node)
+		return -1;
+
+	if (VENTURE_OUTPUT_FORMAT_TABLE != cli->format)
+	{
+		venture_cli_output(cli, node);
+		return 0;
+	}
+
+	links = json_node_get_array(node);
+
+	if (0 == json_array_get_length(links))
+	{
+		g_print("No links.\n");
+		return 0;
+	}
+
+	g_print("%-6s %-14s %-16s %-6s %s\n", "LINK", "KIND", "TYPE", "ID",
+	        "RECORD");
+
+	for (i = 0; i < json_array_get_length(links); i++)
+	{
+		JsonObject *link;
+		const gchar *note;
+
+		link = json_array_get_object_element(links, i);
+		note = venture_json_object_get_string(link, "note", "");
+
+		g_print("%-6" G_GINT64_FORMAT " %-14s %-16s %-6" G_GINT64_FORMAT
+		        " %s%s%s%s\n",
+		        venture_json_object_get_int(link, "id", 0),
+		        venture_json_object_get_string(link, "kind", "?"),
+		        venture_json_object_get_string(link, "other_type", "?"),
+		        venture_json_object_get_int(link, "other_id", 0),
+		        venture_json_object_get_string(link, "other_label", ""),
+		        venture_json_object_get_bool(link, "other_exists", TRUE)
+		                ? "" : " (unavailable)",
+		        venture_string_is_empty(note) ? "" : "  -- ",
+		        venture_string_is_empty(note) ? "" : note);
+	}
+
+	return 0;
+}
+
+/*
+ * venturectl link SOURCE_TYPE ID TARGET_TYPE ID [kind=...] [note=...]
+ *
+ * Goes through POST /api/v1/links, so the server's checks -- both ends
+ * exist, no self-link, no duplicate -- apply, and --stage works the way it
+ * does for create.
+ */
+static gint
+venture_cli_command_link(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *path = NULL;
+	const gchar *kind = "related";
+	const gchar *note = "";
+	gsize i;
+
+	if ((NULL == args[1]) || (NULL == args[2]) || (NULL == args[3]) ||
+	    (NULL == args[4]))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "usage: venturectl link SOURCE_TYPE ID "
+		                    "TARGET_TYPE ID [kind=KIND] [note=TEXT]");
+		return -1;
+	}
+
+	for (i = 5; NULL != args[i]; i++)
+	{
+		if (g_str_has_prefix(args[i], "kind="))
+			kind = args[i] + strlen("kind=");
+		else if (g_str_has_prefix(args[i], "note="))
+			note = args[i] + strlen("note=");
+		else
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "\"%s\" is not kind=... or note=...", args[i]);
+			return -1;
+		}
+	}
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "source_type");
+	json_builder_add_string_value(builder, args[1]);
+	json_builder_set_member_name(builder, "source_id");
+	json_builder_add_int_value(builder, g_ascii_strtoll(args[2], NULL, 10));
+	json_builder_set_member_name(builder, "kind");
+	json_builder_add_string_value(builder, kind);
+	json_builder_set_member_name(builder, "target_type");
+	json_builder_add_string_value(builder, args[3]);
+	json_builder_set_member_name(builder, "target_id");
+	json_builder_add_int_value(builder, g_ascii_strtoll(args[4], NULL, 10));
+	json_builder_set_member_name(builder, "note");
+	json_builder_add_string_value(builder, note);
+	json_builder_end_object(builder);
+	body = json_builder_get_root(builder);
+
+	path = venture_cli_write_path(cli, "/api/v1/links");
+	node = venture_cli_request(cli, "POST", path, body, error);
+
+	if (NULL == node)
+		return -1;
+
+	if (venture_cli_report_staged(cli, node))
+		return 0;
+
+	venture_cli_output(cli, node);
+
+	return 0;
+}
+
+/*
+ * venturectl modules
+ *
+ * Which modules the server runs, in dependency order. Asked of the server
+ * rather than computed here: a plugin's module exists only there, and the
+ * resolved state depends on the server's configuration, not this
+ * machine's.
+ */
+static gint
+venture_cli_command_modules(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	JsonArray *modules;
+	guint i;
+
+	node = venture_cli_request(cli, "GET", "/api/v1/modules", NULL, error);
+
+	if (NULL == node)
+		return -1;
+
+	if (VENTURE_OUTPUT_FORMAT_TABLE != cli->format)
+	{
+		venture_cli_output(cli, node);
+		return 0;
+	}
+
+	if (!JSON_NODE_HOLDS_ARRAY(node))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_SERIALIZATION,
+		                    "The server did not return a list of modules");
+		return -1;
+	}
+
+	modules = json_node_get_array(node);
+
+	g_print("%-12s %-9s %-24s %s\n", "MODULE", "STATE", "REQUIRES", "NOTE");
+
+	for (i = 0; i < json_array_get_length(modules); i++)
+	{
+		g_autoptr(GString) requires = NULL;
+		JsonObject *module;
+		JsonArray *names;
+		const gchar *reason;
+		const gchar *state;
+		guint j;
+
+		module = json_array_get_object_element(modules, i);
+		names = json_object_has_member(module, "requires")
+			? json_object_get_array_member(module, "requires") : NULL;
+		requires = g_string_new(NULL);
+
+		for (j = 0; (NULL != names) && (j < json_array_get_length(names)); j++)
+		{
+			if (j > 0)
+				g_string_append(requires, ", ");
+
+			g_string_append(requires,
+			                json_array_get_string_element(names, j));
+		}
+
+		if (venture_json_object_get_bool(module, "locked", FALSE))
+			state = "locked";
+		else if (venture_json_object_get_bool(module, "enabled", FALSE))
+			state = "enabled";
+		else
+			state = "disabled";
+
+		reason = venture_json_object_get_string(module, "disabled_reason",
+		                                        NULL);
+
+		g_print("%-12s %-9s %-24s %s\n",
+		        venture_json_object_get_string(module, "name", "?"), state,
+		        requires->str, (NULL != reason) ? reason : "");
+	}
+
+	return 0;
+}
+
+/*
  * venturectl mcp
  *
  * A stdio MCP server, so an AI coding agent can drive VENTURE the way it
@@ -1731,6 +1957,12 @@ main(
 		"  kb crossref TYPE ID          link the knowledge that bears\n"
 		"                               on one record\n"
 		"  kb article TYPE ID --kb N    write a KB article from a record\n"
+		"  links TYPE ID                every link touching a record\n"
+		"  link TYPE ID TYPE ID         link two records; kind=blocks etc.,\n"
+		"                               note=...; unlink with delete\n"
+		"                               record_link ID\n"
+		"  modules                      list the server's modules and which\n"
+		"                               are on; -f json for the detail\n"
 		"  health                       check the server is up\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
@@ -1891,6 +2123,12 @@ main(
 		result = venture_cli_command_kb(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "health"))
 		result = venture_cli_command_health(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "modules"))
+		result = venture_cli_command_modules(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "links"))
+		result = venture_cli_command_links(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "link"))
+		result = venture_cli_command_link(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "mcp"))
 		result = venture_cli_command_mcp(&cli, args, &error);
 	else

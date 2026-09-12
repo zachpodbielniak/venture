@@ -20,6 +20,19 @@ struct _VentureEntityRegistry
 	 * instance; keeping one per type avoids constructing a throwaway
 	 * object on every REST request. */
 	GHashTable *prototypes;
+
+	/*
+	 * entity name -> the module that owns it. A type no module claims --
+	 * a plugin's, usually -- is absent here and always visible.
+	 */
+	GHashTable *modules;
+
+	/*
+	 * entity name -> present when hidden. The type stays registered,
+	 * because turning a module back on must show it again without
+	 * re-registering anything, but every lookup and listing skips it.
+	 */
+	GHashTable *hidden;
 };
 
 enum
@@ -41,6 +54,8 @@ venture_entity_registry_finalize(GObject *object)
 
 	g_clear_pointer(&self->types, g_hash_table_unref);
 	g_clear_pointer(&self->prototypes, g_hash_table_unref);
+	g_clear_pointer(&self->modules, g_hash_table_unref);
+	g_clear_pointer(&self->hidden, g_hash_table_unref);
 
 	G_OBJECT_CLASS(venture_entity_registry_parent_class)->finalize(object);
 }
@@ -73,6 +88,9 @@ static void
 venture_entity_registry_init(VentureEntityRegistry *self)
 {
 	self->types = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	self->modules = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+	                                      g_free);
+	self->hidden = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	self->prototypes = g_hash_table_new_full(g_str_hash, g_str_equal,
 	                                         g_free, g_object_unref);
 }
@@ -97,6 +115,81 @@ venture_entity_registry_get_default(void)
 	}
 
 	return instance;
+}
+
+/*
+ * Finds a registered type by its singular or plural name, hidden or not.
+ * @out_canonical receives the singular name as registered, which is the
+ * key every other table here uses.
+ *
+ * Returns: %TRUE if the name is registered
+ */
+static gboolean
+venture_entity_registry_find_any(
+	VentureEntityRegistry	 *self,
+	const gchar		 *entity_name,
+	const gchar		**out_canonical,
+	gpointer		 *out_value
+){
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
+
+	if (g_hash_table_lookup_extended(self->types, entity_name, &key, &value))
+	{
+		if (NULL != out_canonical)
+			*out_canonical = key;
+
+		if (NULL != out_value)
+			*out_value = value;
+
+		return TRUE;
+	}
+
+	/* Accept the plural too. Callers arrive holding a REST path segment
+	 * or a table name as often as a singular type name, and making each
+	 * of them singularise first would just spread the same logic around. */
+	g_hash_table_iter_init(&iter, self->types);
+
+	while (g_hash_table_iter_next(&iter, &key, &value))
+	{
+		g_autofree gchar *plural = NULL;
+
+		plural = venture_pluralise(key);
+
+		if (0 == g_strcmp0(plural, entity_name))
+		{
+			if (NULL != out_canonical)
+				*out_canonical = key;
+
+			if (NULL != out_value)
+				*out_value = value;
+
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+/*
+ * As venture_entity_registry_find_any(), but a hidden type is not found.
+ */
+static gboolean
+venture_entity_registry_find(
+	VentureEntityRegistry	 *self,
+	const gchar		 *entity_name,
+	gpointer		 *out_value
+){
+	const gchar *canonical;
+
+	canonical = NULL;
+
+	if (!venture_entity_registry_find_any(self, entity_name, &canonical,
+	                                      out_value))
+		return FALSE;
+
+	return !g_hash_table_contains(self->hidden, canonical);
 }
 
 gboolean
@@ -174,30 +267,148 @@ venture_entity_registry_lookup(
 	g_return_val_if_fail(VENTURE_IS_ENTITY_REGISTRY(self), G_TYPE_INVALID);
 	g_return_val_if_fail(NULL != entity_name, G_TYPE_INVALID);
 
-	if (g_hash_table_lookup_extended(self->types, entity_name, NULL, &value))
-		return (GType)GPOINTER_TO_SIZE(value);
+	value = NULL;
 
-	/* Accept the plural too. Callers arrive holding a REST path segment
-	 * or a table name as often as a singular type name, and making each
-	 * of them singularise first would just spread the same logic around. */
+	if (!venture_entity_registry_find(self, entity_name, &value))
+		return G_TYPE_INVALID;
+
+	return (GType)GPOINTER_TO_SIZE(value);
+}
+
+GType
+venture_entity_registry_lookup_any(
+	VentureEntityRegistry	*self,
+	const gchar		*entity_name
+){
+	gpointer value;
+
+	g_return_val_if_fail(VENTURE_IS_ENTITY_REGISTRY(self), G_TYPE_INVALID);
+	g_return_val_if_fail(NULL != entity_name, G_TYPE_INVALID);
+
+	value = NULL;
+
+	if (!venture_entity_registry_find_any(self, entity_name, NULL, &value))
+		return G_TYPE_INVALID;
+
+	return (GType)GPOINTER_TO_SIZE(value);
+}
+
+gboolean
+venture_entity_registry_is_type_enabled(
+	VentureEntityRegistry	*self,
+	const gchar		*entity_name
+){
+	const gchar *canonical;
+
+	g_return_val_if_fail(VENTURE_IS_ENTITY_REGISTRY(self), FALSE);
+	g_return_val_if_fail(NULL != entity_name, FALSE);
+
+	canonical = NULL;
+
+	if (!venture_entity_registry_find_any(self, entity_name, &canonical, NULL))
+		return FALSE;
+
+	return !g_hash_table_contains(self->hidden, canonical);
+}
+
+const gchar *
+venture_entity_registry_get_type_module(
+	VentureEntityRegistry	*self,
+	const gchar		*entity_name
+){
+	const gchar *canonical;
+
+	g_return_val_if_fail(VENTURE_IS_ENTITY_REGISTRY(self), NULL);
+	g_return_val_if_fail(NULL != entity_name, NULL);
+
+	canonical = NULL;
+
+	if (!venture_entity_registry_find_any(self, entity_name, &canonical, NULL))
+		return NULL;
+
+	return g_hash_table_lookup(self->modules, canonical);
+}
+
+void
+venture_entity_registry_set_type_module(
+	VentureEntityRegistry	*self,
+	const gchar		*entity_name,
+	const gchar		*module_name,
+	gboolean		 enabled
+){
+	const gchar *canonical;
+
+	g_return_if_fail(VENTURE_IS_ENTITY_REGISTRY(self));
+	g_return_if_fail(NULL != entity_name);
+
+	canonical = NULL;
+
+	/* A module may claim a type that was never registered -- a build
+	 * without it, or a test registry -- and that is not an error, just
+	 * nothing to mask. */
+	if (!venture_entity_registry_find_any(self, entity_name, &canonical, NULL))
+		return;
+
+	if (NULL != module_name)
+		g_hash_table_insert(self->modules, g_strdup(canonical),
+		                    g_strdup(module_name));
+	else
+		g_hash_table_remove(self->modules, canonical);
+
+	if (enabled)
+		g_hash_table_remove(self->hidden, canonical);
+	else
+		g_hash_table_add(self->hidden, g_strdup(canonical));
+}
+
+void
+venture_entity_registry_set_unknown_type_error(
+	VentureEntityRegistry	 *self,
+	const gchar		 *entity_name,
+	GError			**error
+){
+	const gchar *module_name;
+
+	g_return_if_fail(VENTURE_IS_ENTITY_REGISTRY(self));
+
+	if (NULL == entity_name)
+		entity_name = "";
+
+	/*
+	 * Registered but hidden is a different message from never
+	 * registered: the first is a switch the operator can flip, the
+	 * second is a typo or a plugin that is not loaded. Telling them
+	 * apart is the difference between a two-second fix and a hunt.
+	 */
+	if ((G_TYPE_INVALID != venture_entity_registry_lookup_any(self, entity_name)) &&
+	    !venture_entity_registry_is_type_enabled(self, entity_name))
 	{
-		GHashTableIter iter;
-		gpointer key;
+		module_name = venture_entity_registry_get_type_module(self,
+		                                                      entity_name);
 
-		g_hash_table_iter_init(&iter, self->types);
-
-		while (g_hash_table_iter_next(&iter, &key, &value))
-		{
-			g_autofree gchar *plural = NULL;
-
-			plural = venture_pluralise(key);
-
-			if (0 == g_strcmp0(plural, entity_name))
-				return (GType)GPOINTER_TO_SIZE(value);
-		}
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "The record type \"%s\" belongs to the %s module, "
+		            "which is disabled (modules.%s.enabled)",
+		            entity_name,
+		            (NULL != module_name) ? module_name : "?",
+		            (NULL != module_name) ? module_name : "?");
+		return;
 	}
 
-	return G_TYPE_INVALID;
+	{
+		g_auto(GStrv) known = NULL;
+		g_autofree gchar *list = NULL;
+
+		/* Listing what is available turns a dead end into a usable
+		 * message -- which matters most for the AI, since this error
+		 * is fed straight back to it as a tool result. */
+		known = venture_entity_registry_list_names(self);
+		list = g_strjoinv(", ", known);
+
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "There is no record type called \"%s\". Known types: %s",
+		            entity_name, list);
+	}
 }
 
 VentureEntity *
@@ -214,18 +425,8 @@ venture_entity_registry_create(
 
 	if (G_TYPE_INVALID == entity_type)
 	{
-		g_auto(GStrv) known = NULL;
-		g_autofree gchar *list = NULL;
-
-		/* Listing what is available turns a dead end into a usable
-		 * message -- which matters most for the AI, since this error
-		 * is fed straight back to it as a tool result. */
-		known = venture_entity_registry_list_names(self);
-		list = g_strjoinv(", ", known);
-
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
-		            "There is no record type called \"%s\". Known types: %s",
-		            entity_name, list);
+		venture_entity_registry_set_unknown_type_error(self, entity_name,
+		                                               error);
 		return NULL;
 	}
 
@@ -246,7 +447,15 @@ venture_entity_registry_list_names(VentureEntityRegistry *self)
 	names = g_ptr_array_new();
 
 	for (iter = keys; NULL != iter; iter = iter->next)
+	{
+		/* A hidden type is not offered anywhere: not as a REST
+		 * resource, a schema entry, a form, an AI tool argument or a
+		 * CLI subcommand. This one loop is what makes that true. */
+		if (g_hash_table_contains(self->hidden, iter->data))
+			continue;
+
 		g_ptr_array_add(names, g_strdup(iter->data));
+	}
 
 	g_ptr_array_add(names, NULL);
 
@@ -452,6 +661,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_ticket_relation_get_type,
 		venture_company_get_type,
 		venture_document_get_type,
+		venture_record_link_get_type,
 
 		venture_chat_thread_get_type,
 		venture_chat_message_get_type,
@@ -461,6 +671,13 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_forge_rule_get_type,
 		venture_ticket_link_get_type,
 		venture_forge_run_get_type,
+
+		venture_milestone_get_type,
+		venture_release_get_type,
+		venture_build_get_type,
+		venture_environment_get_type,
+		venture_deployment_get_type,
+		venture_incident_get_type,
 
 		venture_invoice_get_type,
 		venture_invoice_line_get_type,

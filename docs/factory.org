@@ -1,0 +1,86 @@
+#+title: The software factory
+#+description: Milestones, releases, builds, environments, deployments and incidents, and the loop they close
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-11]
+#+updated: [2026-09-11]
+#+version: 0.4.0
+
+* What this is
+
+The =factory= module is the loop a software venture runs, as records:
+
+#+begin_src
+idea -> ticket -> milestone -> branch -> build -> release -> deployment -> incident -> ticket
+#+end_src
+
+An idea becomes tickets. Tickets are planned into a milestone and worked on a branch — by a person, or by a coding run the forge module starts. The forge's CI builds the branch and reports the build. Tickets marked as fixed in a release are assembled into it, the changelog is drafted from them, and the release is published to the forge. It is deployed to an environment. When something goes wrong there, an incident names the environment, the release and the deployment it came from, and the ticket raised to fix it — which starts the loop again.
+
+Every step is a record, so every step is queryable, reportable, linkable and reachable by the AI, and the lead-time report measures the loop end to end.
+
+The module requires =forge=, which requires =tickets=. It suggests =sales= (a release belongs to a product) and =automation= (rules can react to every step). See [[file:modules.org][Modules]].
+
+* The six records
+
+| Type          | What it is                                                          |
+|---------------+---------------------------------------------------------------------|
+| =milestone=   | A planned increment: what a set of tickets adds up to. Status, due date, product. |
+| =release=     | A version that went, or will go, out. Its =number= is the version ("1.2.0"); =tag= and =external_id= are what the forge calls it. Carries the changelog. |
+| =build=       | One CI workflow run, or a build recorded by hand. Repository, branch, commit, status, what triggered it, when it ran. |
+| =environment= | Somewhere a release runs: development, staging, production. |
+| =deployment=  | A release arriving in an environment. The latest one that succeeded is what the environment is running. |
+| =incident=    | Something going wrong where a release runs. Severity, status, the environment, release and deployment it came from, the ticket that fixes it. |
+
+Tickets gained two fields: =milestone_id= (planned for) and =release_id= (fixed in). Both are soft references — the pickers are simply empty when the factory is off.
+
+A release's version is the field =number=, not =version=. Every record already has a =version=: the optimistic-concurrency counter that makes a stale edit a conflict rather than a silent overwrite. A field of the same name would install a string over it, and the second save of any release would fail as a conflict with itself. The field installer now refuses a name the entity spine owns, so this cannot recur.
+
+* The Factory page
+
+=/factory= is the loop at a glance: open milestones with their progress, the newest releases, the latest builds, each environment with the release it is running, and the incidents still open. Each list is the newest few with a link to the whole, because the page's job is "where does the factory stand", and the answer to that is short.
+
+A release's page lists the tickets it shipped, drafts the changelog, and publishes to the forge. A milestone's page shows its progress. An environment's page shows what it is running now.
+
+* Builds from the CI
+
+Turn on the =workflow_run= event on the forge's webhook (Repository → Settings → Webhooks, the same hook the issues come through). Every run of a Forgejo Actions or Gitea Actions workflow then becomes a build:
+
+- =requested= creates the build as queued;
+- =in_progress= marks it running;
+- =completed= marks it succeeded, failed or cancelled from the run's conclusion, and stamps when it finished.
+
+The build is matched on the repository and the forge's own run id, so the three deliveries for one run land on one row, and a retried delivery updates rather than duplicates. The repository must be enrolled in VENTURE; a run for one that is not is acknowledged and ignored, like any event nobody subscribed to.
+
+A build is attributed to the automation actor with the forge named, so one the CI reported is distinguishable in the audit log from one a person typed.
+
+* Releases, both ways
+
+*Cut on the forge.* Turn on the =release= event. A release published there becomes a release record here: the version read from the tag (=v1.2.0= is =1.2.0=), the notes filling an empty changelog, the status released with the forge's publication time. A release deleted on the forge is yanked here. Matched on the forge's id first and the tag second, so a release VENTURE published (which knows the id) and one cut on the forge (which VENTURE first hears of by tag) resolve to one row.
+
+*Published from VENTURE.* Create the release, mark tickets as fixed in it, press *Draft changelog* — the tickets grouped by issue type, as Markdown, which is what a forge renders a release body as — and press *Publish to forge*. The tag is the record's, or =v= plus the version when none is set; the forge creates it on the default branch if it does not exist. The id and the page come back and are written to the record, so the release is recognised when its own webhook arrives a moment later.
+
+Publish is offered once. A second publish would be a second release on the forge.
+
+A changelog somebody edited is kept. *Redraft* leaves it alone unless "replace what is there" is ticked, because the draft is a starting point, not the truth.
+
+* Incidents close the loop
+
+An incident names the environment it happened in, the release that was running and the deployment that introduced it, and the ticket raised to fix it. The =incidents= report gives hours to resolve per incident and the mean across those resolved. A fix ships in a release, which is deployed to the environment, and the next incident points at that.
+
+* The reports
+
+| Name         | Answers                                                                 |
+|--------------+-------------------------------------------------------------------------|
+| =releases=   | releases out in the period: tickets carried, builds green and red, deployments |
+| =lead_time=  | days from a ticket being raised to the release that carried it going out; per release, with the median |
+| =incidents=  | incidents started in the period, hours to resolve, the mean             |
+
+Lead time is measured to the release, not to "done". Done is a column on a board; released is a fact a customer can observe. A ticket finished in March and released in June took until June.
+
+* Links
+
+Everything here links freely. A release =produces= a build; an incident is =caused_by= a deployment; a ticket =blocks= a release. See [[file:data-model.org::*Linking any record to any other][Linking any record to any other]].
+
+* Automation
+
+Every write raises the record-change events the [[file:automation.org][automation]] engine listens for, so a rule can react to a build finishing red, a release going out or an incident being raised — post to a chat, open a ticket, run a command from the allowlist.

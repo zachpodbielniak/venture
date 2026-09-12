@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects
 #+created: [2026-08-14]
-#+updated: [2026-08-14]
-#+version: 0.1.0
+#+updated: [2026-09-11]
+#+version: 0.4.0
 
 * VENTURE
 
@@ -97,6 +97,43 @@ There are four ways in, in increasing order of power: a YAML venture type
 demand, and a native =.so= plugin. All four are loaded by
 =VenturePluginManager= from the same configured directories. See
 [[file:docs/extending.org][extending]].
+
+*** Everything is a module, and every module is a switch
+
+The CRM, invoicing, the knowledge bases, the git forges, the software
+factory: each is a named group of record types, reports, pages and services
+that the configuration turns off as one thing --
+
+#+begin_src yaml
+modules:
+  crm: false
+#+end_src
+
+-- and a module whose requirement is off is refused at startup, naming both,
+rather than run half-working. A disabled module's types disappear from REST,
+the schema, the forms, the AI and the CLI at once, because all of them ask
+one registry. Nothing is deleted; turn it back on and the rows are there.
+A plugin declares a module the same way. See [[file:docs/modules.org][modules]].
+
+*** Anything links to anything
+
+A =record_link= joins any two records by type and id with a kind that has an
+inverse -- blocks and blocked by, produces and produced by -- stored once and
+read from either end. Every detail page has a Links panel; the API, the CLI
+and the assistant have the same. The checks the schema cannot express run at
+the save, so an approved staged link is held to the same rules as one made
+by hand.
+
+*** A software factory
+
+The =factory= module is the loop a software venture runs, as records: a
+ticket is planned into a milestone, built by the forge's CI (every workflow
+run arrives through the webhook as a build), assembled into a release whose
+changelog is drafted from the tickets and published to the forge, deployed
+to an environment, and -- when something breaks there -- raised as an
+incident that points back at the release and deployment and forward at the
+ticket that fixes it. A lead-time report measures the loop end to end. See
+[[file:docs/factory.org][the software factory]].
 
 *** Multiple entities, nested
 
@@ -249,6 +286,18 @@ Working and covered by tests:
   pick up via a change signal, no restart
 - users, roles, password changes and session invalidation on sign-out
 - a container image and two compose files
+- modules: fifteen built in, switched from the configuration, the
+  environment or the command line, with dependencies resolved and refused
+  at startup; a Modules page, =/api/v1/modules=, =venturectl modules= and
+  =venture --list-modules=; plugin modules through
+  =venture_context_register_module()=
+- record links: any record to any other, with a kind and its inverse, on
+  every detail page, over the API, from the CLI and through the assistant,
+  validated at the save for every writer
+- the software factory: milestones, releases, builds, environments,
+  deployments and incidents; CI runs and forge releases ingested through
+  the webhook; changelogs drafted from tickets and releases published to the
+  forge; the =releases=, =lead_time= and =incidents= reports
 
 Known limits, as opposed to missing pieces:
 

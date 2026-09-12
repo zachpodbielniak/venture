@@ -606,6 +606,187 @@ static const GEnumValue venture_plugin_kind_values[] = {
 	VE_END
 };
 
+static const GEnumValue venture_milestone_status_values[] = {
+	VE(VENTURE_MILESTONE_STATUS_PLANNED,   "planned"),
+	VE(VENTURE_MILESTONE_STATUS_ACTIVE,    "active"),
+	VE(VENTURE_MILESTONE_STATUS_COMPLETED, "completed"),
+	VE(VENTURE_MILESTONE_STATUS_CANCELLED, "cancelled"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_milestone_status_get_type,
+                         "VentureMilestoneStatus",
+                         venture_milestone_status_values)
+
+static const GEnumValue venture_release_status_values[] = {
+	VE(VENTURE_RELEASE_STATUS_PLANNED,     "planned"),
+	VE(VENTURE_RELEASE_STATUS_IN_PROGRESS, "in_progress"),
+	VE(VENTURE_RELEASE_STATUS_RELEASED,    "released"),
+	VE(VENTURE_RELEASE_STATUS_YANKED,      "yanked"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_release_status_get_type,
+                         "VentureReleaseStatus",
+                         venture_release_status_values)
+
+static const GEnumValue venture_build_status_values[] = {
+	VE(VENTURE_BUILD_STATUS_QUEUED,    "queued"),
+	VE(VENTURE_BUILD_STATUS_RUNNING,   "running"),
+	VE(VENTURE_BUILD_STATUS_SUCCEEDED, "succeeded"),
+	VE(VENTURE_BUILD_STATUS_FAILED,    "failed"),
+	VE(VENTURE_BUILD_STATUS_CANCELLED, "cancelled"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_build_status_get_type,
+                         "VentureBuildStatus",
+                         venture_build_status_values)
+
+static const GEnumValue venture_build_trigger_values[] = {
+	VE(VENTURE_BUILD_TRIGGER_MANUAL,  "manual"),
+	VE(VENTURE_BUILD_TRIGGER_WEBHOOK, "webhook"),
+	VE(VENTURE_BUILD_TRIGGER_RULE,    "rule"),
+	VE(VENTURE_BUILD_TRIGGER_RUN,     "run"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_build_trigger_get_type,
+                         "VentureBuildTrigger",
+                         venture_build_trigger_values)
+
+static const GEnumValue venture_environment_kind_values[] = {
+	VE(VENTURE_ENVIRONMENT_KIND_DEVELOPMENT, "development"),
+	VE(VENTURE_ENVIRONMENT_KIND_STAGING,     "staging"),
+	VE(VENTURE_ENVIRONMENT_KIND_PRODUCTION,  "production"),
+	VE(VENTURE_ENVIRONMENT_KIND_OTHER,       "other"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_environment_kind_get_type,
+                         "VentureEnvironmentKind",
+                         venture_environment_kind_values)
+
+static const GEnumValue venture_deployment_status_values[] = {
+	VE(VENTURE_DEPLOYMENT_STATUS_PENDING,     "pending"),
+	VE(VENTURE_DEPLOYMENT_STATUS_IN_PROGRESS, "in_progress"),
+	VE(VENTURE_DEPLOYMENT_STATUS_SUCCEEDED,   "succeeded"),
+	VE(VENTURE_DEPLOYMENT_STATUS_FAILED,      "failed"),
+	VE(VENTURE_DEPLOYMENT_STATUS_ROLLED_BACK, "rolled_back"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_deployment_status_get_type,
+                         "VentureDeploymentStatus",
+                         venture_deployment_status_values)
+
+static const GEnumValue venture_incident_severity_values[] = {
+	VE(VENTURE_INCIDENT_SEVERITY_SEV3, "sev3"),
+	VE(VENTURE_INCIDENT_SEVERITY_SEV1, "sev1"),
+	VE(VENTURE_INCIDENT_SEVERITY_SEV2, "sev2"),
+	VE(VENTURE_INCIDENT_SEVERITY_SEV4, "sev4"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_incident_severity_get_type,
+                         "VentureIncidentSeverity",
+                         venture_incident_severity_values)
+
+static const GEnumValue venture_incident_status_values[] = {
+	VE(VENTURE_INCIDENT_STATUS_OPEN,       "open"),
+	VE(VENTURE_INCIDENT_STATUS_MITIGATED,  "mitigated"),
+	VE(VENTURE_INCIDENT_STATUS_RESOLVED,   "resolved"),
+	VE(VENTURE_INCIDENT_STATUS_POSTMORTEM, "postmortem"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_incident_status_get_type,
+                         "VentureIncidentStatus",
+                         venture_incident_status_values)
+
+static const GEnumValue venture_link_kind_values[] = {
+	VE(VENTURE_LINK_KIND_RELATED,       "related"),
+	VE(VENTURE_LINK_KIND_BLOCKS,        "blocks"),
+	VE(VENTURE_LINK_KIND_BLOCKED_BY,    "blocked_by"),
+	VE(VENTURE_LINK_KIND_DEPENDS_ON,    "depends_on"),
+	VE(VENTURE_LINK_KIND_REQUIRED_BY,   "required_by"),
+	VE(VENTURE_LINK_KIND_PARENT_OF,     "parent_of"),
+	VE(VENTURE_LINK_KIND_CHILD_OF,      "child_of"),
+	VE(VENTURE_LINK_KIND_DUPLICATES,    "duplicates"),
+	VE(VENTURE_LINK_KIND_CAUSES,        "causes"),
+	VE(VENTURE_LINK_KIND_CAUSED_BY,     "caused_by"),
+	VE(VENTURE_LINK_KIND_PRODUCES,      "produces"),
+	VE(VENTURE_LINK_KIND_PRODUCED_BY,   "produced_by"),
+	VE(VENTURE_LINK_KIND_REFERENCES,    "references"),
+	VE(VENTURE_LINK_KIND_REFERENCED_BY, "referenced_by"),
+	VE(VENTURE_LINK_KIND_SUPERSEDES,    "supersedes"),
+	VE(VENTURE_LINK_KIND_SUPERSEDED_BY, "superseded_by"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_link_kind_get_type,
+                         "VentureLinkKind",
+                         venture_link_kind_values)
+
+VentureLinkKind
+venture_link_kind_inverse(VentureLinkKind kind)
+{
+	switch (kind)
+	{
+	case VENTURE_LINK_KIND_BLOCKS:        return VENTURE_LINK_KIND_BLOCKED_BY;
+	case VENTURE_LINK_KIND_BLOCKED_BY:    return VENTURE_LINK_KIND_BLOCKS;
+	case VENTURE_LINK_KIND_DEPENDS_ON:    return VENTURE_LINK_KIND_REQUIRED_BY;
+	case VENTURE_LINK_KIND_REQUIRED_BY:   return VENTURE_LINK_KIND_DEPENDS_ON;
+	case VENTURE_LINK_KIND_PARENT_OF:     return VENTURE_LINK_KIND_CHILD_OF;
+	case VENTURE_LINK_KIND_CHILD_OF:      return VENTURE_LINK_KIND_PARENT_OF;
+	case VENTURE_LINK_KIND_CAUSES:        return VENTURE_LINK_KIND_CAUSED_BY;
+	case VENTURE_LINK_KIND_CAUSED_BY:     return VENTURE_LINK_KIND_CAUSES;
+	case VENTURE_LINK_KIND_PRODUCES:      return VENTURE_LINK_KIND_PRODUCED_BY;
+	case VENTURE_LINK_KIND_PRODUCED_BY:   return VENTURE_LINK_KIND_PRODUCES;
+	case VENTURE_LINK_KIND_REFERENCES:    return VENTURE_LINK_KIND_REFERENCED_BY;
+	case VENTURE_LINK_KIND_REFERENCED_BY: return VENTURE_LINK_KIND_REFERENCES;
+	case VENTURE_LINK_KIND_SUPERSEDES:    return VENTURE_LINK_KIND_SUPERSEDED_BY;
+	case VENTURE_LINK_KIND_SUPERSEDED_BY: return VENTURE_LINK_KIND_SUPERSEDES;
+
+	/* Related and duplicates read the same from either end. */
+	case VENTURE_LINK_KIND_RELATED:
+	case VENTURE_LINK_KIND_DUPLICATES:
+	default:
+		return kind;
+	}
+}
+
+gboolean
+venture_link_kind_is_symmetric(VentureLinkKind kind)
+{
+	return venture_link_kind_inverse(kind) == kind;
+}
+
+const gchar *
+venture_link_kind_to_label(VentureLinkKind kind)
+{
+	switch (kind)
+	{
+	case VENTURE_LINK_KIND_RELATED:       return "related to";
+	case VENTURE_LINK_KIND_BLOCKS:        return "blocks";
+	case VENTURE_LINK_KIND_BLOCKED_BY:    return "blocked by";
+	case VENTURE_LINK_KIND_DEPENDS_ON:    return "depends on";
+	case VENTURE_LINK_KIND_REQUIRED_BY:   return "required by";
+	case VENTURE_LINK_KIND_PARENT_OF:     return "parent of";
+	case VENTURE_LINK_KIND_CHILD_OF:      return "child of";
+	case VENTURE_LINK_KIND_DUPLICATES:    return "duplicates";
+	case VENTURE_LINK_KIND_CAUSES:        return "causes";
+	case VENTURE_LINK_KIND_CAUSED_BY:     return "caused by";
+	case VENTURE_LINK_KIND_PRODUCES:      return "produces";
+	case VENTURE_LINK_KIND_PRODUCED_BY:   return "produced by";
+	case VENTURE_LINK_KIND_REFERENCES:    return "references";
+	case VENTURE_LINK_KIND_REFERENCED_BY: return "referenced by";
+	case VENTURE_LINK_KIND_SUPERSEDES:    return "supersedes";
+	case VENTURE_LINK_KIND_SUPERSEDED_BY: return "superseded by";
+	default:                              return "linked to";
+	}
+}
+
 VENTURE_DEFINE_ENUM_TYPE(venture_plugin_kind_get_type,
                          "VenturePluginKind",
                          venture_plugin_kind_values)

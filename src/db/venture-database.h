@@ -204,6 +204,52 @@ venture_database_rollback(VentureDatabase *self);
 /* --- Record operations --------------------------------------------------- */
 
 /**
+ * VentureSaveValidator:
+ * @database: the database the record is about to be written to
+ * @entity: the record, validated and about to be inserted or updated
+ * @previous: (nullable): the stored row it replaces, or %NULL on insert
+ * @user_data: the data given at registration
+ * @error: (out) (optional): return location for a #GError
+ *
+ * A check that needs the database. venture_entity_validate() sees only the
+ * record; a rule like "both ends of this link must exist" has to look
+ * rows up, and this is where it does. Runs inside the database lock, so
+ * what it checked is what is there when the write lands. It may also fill
+ * derived fields, the way before_save does.
+ *
+ * Returns: %TRUE to proceed with the save
+ */
+typedef gboolean (*VentureSaveValidator) (
+	VentureDatabase	 *database,
+	VentureEntity	 *entity,
+	VentureEntity	 *previous,
+	gpointer	  user_data,
+	GError		**error
+);
+
+/**
+ * venture_database_add_save_validator:
+ * @self: a #VentureDatabase
+ * @entity_type: the record type to check; subclasses are checked too
+ * @validate: the check
+ * @user_data: passed to @validate
+ * @destroy: (nullable): called on @user_data when the database is finalised
+ *
+ * Registers a check that runs before every save of @entity_type, from any
+ * writer: the web form, the REST API, an approved staged change, the AI, a
+ * plugin. This is the mechanism for an invariant that spans rows, which
+ * the schema -- deliberately free of foreign-key clauses -- cannot express.
+ */
+void
+venture_database_add_save_validator(
+	VentureDatabase		*self,
+	GType			 entity_type,
+	VentureSaveValidator	 validate,
+	gpointer		 user_data,
+	GDestroyNotify		 destroy
+);
+
+/**
  * venture_database_save:
  * @self: a #VentureDatabase
  * @entity: the record to write

@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-08-14]
-#+version: 0.1.0
+#+updated: [2026-09-11]
+#+version: 0.4.0
 
 
 * For an AI agent
@@ -66,6 +66,9 @@ venturectl create TYPE field=value ...   # create
 venturectl update TYPE ID field=value    # change named fields
 venturectl delete TYPE ID                # soft delete
 venturectl report [NAME] [PERIOD]        # list reports, or run one
+venturectl links TYPE ID                 # every link touching a record
+venturectl link TYPE ID TYPE ID [kind=K] # link two records; note=... too
+venturectl modules                       # which modules the server runs
 venturectl health                        # is the server up
 venturectl mcp [--apply-writes]          # serve the API to an agent over stdio
 #+end_src

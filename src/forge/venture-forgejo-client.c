@@ -1095,6 +1095,309 @@ venture_forgejo_parse_issue_event(
 	return TRUE;
 }
 
+/*
+ * The delivery id, from whichever header this forge sends it in.
+ */
+static gchar *
+venture_forgejo_delivery_id(SoupMessageHeaders *headers)
+{
+	const gchar *delivery;
+
+	delivery = soup_message_headers_get_one(headers, "X-Forgejo-Delivery");
+
+	if (venture_string_is_empty(delivery))
+		delivery = soup_message_headers_get_one(headers, "X-Gitea-Delivery");
+
+	return g_strdup((NULL != delivery) ? delivery : "");
+}
+
+/*
+ * A workflow_run delivery, as Forgejo Actions and Gitea Actions send it:
+ * the run under "workflow_run", its workflow under "workflow", and the
+ * repository and sender beside them.
+ */
+static gboolean
+venture_forgejo_parse_workflow_event(
+	VentureForgeClient		 *client,
+	JsonNode			 *payload,
+	SoupMessageHeaders		 *headers,
+	VentureForgeWorkflowEvent	 *out_event,
+	GError				**error
+){
+	JsonObject *root;
+	JsonObject *run;
+	JsonObject *workflow;
+	JsonObject *repository;
+	JsonObject *sender;
+
+	(void)client;
+
+	g_return_val_if_fail(NULL != out_event, FALSE);
+
+	memset(out_event, 0, sizeof(*out_event));
+
+	if ((NULL == payload) ||
+	    (JSON_NODE_OBJECT != json_node_get_node_type(payload)))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "The payload is not a JSON object");
+		return FALSE;
+	}
+
+	root = json_node_get_object(payload);
+
+	run = json_object_has_member(root, "workflow_run")
+		? json_object_get_object_member(root, "workflow_run") : NULL;
+	workflow = json_object_has_member(root, "workflow")
+		? json_object_get_object_member(root, "workflow") : NULL;
+	repository = json_object_has_member(root, "repository")
+		? json_object_get_object_member(root, "repository") : NULL;
+	sender = json_object_has_member(root, "sender")
+		? json_object_get_object_member(root, "sender") : NULL;
+
+	if ((NULL == run) || (NULL == repository))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "The payload names no workflow run or no "
+		                    "repository");
+		return FALSE;
+	}
+
+	out_event->action = g_strdup(venture_json_object_get_string(root, "action",
+	                                                            ""));
+	out_event->repo_full_name = g_strdup(venture_json_object_get_string(
+		repository, "full_name", ""));
+	out_event->run_id = venture_json_object_get_int(run, "id", 0);
+	out_event->run_number = venture_json_object_get_int(run, "run_number", 0);
+	out_event->title = g_strdup(venture_json_object_get_string(
+		run, "display_title", ""));
+	out_event->head_branch = g_strdup(venture_json_object_get_string(
+		run, "head_branch", ""));
+	out_event->head_sha = g_strdup(venture_json_object_get_string(
+		run, "head_sha", ""));
+	out_event->status = g_strdup(venture_json_object_get_string(run, "status",
+	                                                            ""));
+	out_event->conclusion = g_strdup(venture_json_object_get_string(
+		run, "conclusion", ""));
+	out_event->url = g_strdup(venture_json_object_get_string(run, "html_url",
+	                                                         ""));
+	out_event->started_at = g_strdup(venture_json_object_get_string(
+		run, "started_at", NULL));
+	out_event->finished_at = g_strdup(venture_json_object_get_string(
+		run, "updated_at", NULL));
+
+	/* The workflow's own name where the payload carries the workflow,
+	 * else the run's; the two agree on a normal delivery. */
+	out_event->workflow_name = g_strdup(venture_json_object_get_string(
+		(NULL != workflow) ? workflow : run, "name", ""));
+
+	if (venture_string_is_empty(out_event->workflow_name))
+	{
+		g_free(out_event->workflow_name);
+		out_event->workflow_name = g_strdup(
+			venture_json_object_get_string(run, "name", ""));
+	}
+
+	if (NULL != sender)
+		out_event->sender = g_strdup(venture_json_object_get_string(
+			sender, "login", ""));
+	else
+		out_event->sender = g_strdup("");
+
+	out_event->delivery_id = venture_forgejo_delivery_id(headers);
+
+	if (0 == out_event->run_id)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "The workflow run has no id");
+		venture_forge_workflow_event_clear(out_event);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ * A release delivery: the release under "release", the repository and the
+ * sender beside it.
+ */
+static gboolean
+venture_forgejo_parse_release_event(
+	VentureForgeClient		 *client,
+	JsonNode			 *payload,
+	SoupMessageHeaders		 *headers,
+	VentureForgeReleaseEvent	 *out_event,
+	GError				**error
+){
+	JsonObject *root;
+	JsonObject *release;
+	JsonObject *repository;
+	JsonObject *sender;
+
+	(void)client;
+
+	g_return_val_if_fail(NULL != out_event, FALSE);
+
+	memset(out_event, 0, sizeof(*out_event));
+
+	if ((NULL == payload) ||
+	    (JSON_NODE_OBJECT != json_node_get_node_type(payload)))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "The payload is not a JSON object");
+		return FALSE;
+	}
+
+	root = json_node_get_object(payload);
+
+	release = json_object_has_member(root, "release")
+		? json_object_get_object_member(root, "release") : NULL;
+	repository = json_object_has_member(root, "repository")
+		? json_object_get_object_member(root, "repository") : NULL;
+	sender = json_object_has_member(root, "sender")
+		? json_object_get_object_member(root, "sender") : NULL;
+
+	if ((NULL == release) || (NULL == repository))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "The payload names no release or no repository");
+		return FALSE;
+	}
+
+	out_event->action = g_strdup(venture_json_object_get_string(root, "action",
+	                                                            ""));
+	out_event->repo_full_name = g_strdup(venture_json_object_get_string(
+		repository, "full_name", ""));
+	out_event->release_id = venture_json_object_get_int(release, "id", 0);
+	out_event->tag = g_strdup(venture_json_object_get_string(release,
+	                                                         "tag_name", ""));
+	out_event->name = g_strdup(venture_json_object_get_string(release, "name",
+	                                                          ""));
+	out_event->body = g_strdup(venture_json_object_get_string(release, "body",
+	                                                          ""));
+	out_event->url = g_strdup(venture_json_object_get_string(release,
+	                                                         "html_url", ""));
+	out_event->published_at = g_strdup(venture_json_object_get_string(
+		release, "published_at", NULL));
+	out_event->draft = venture_json_object_get_bool(release, "draft", FALSE);
+	out_event->prerelease = venture_json_object_get_bool(release, "prerelease",
+	                                                     FALSE);
+
+	if (NULL != sender)
+		out_event->sender = g_strdup(venture_json_object_get_string(
+			sender, "login", ""));
+	else
+		out_event->sender = g_strdup("");
+
+	out_event->delivery_id = venture_forgejo_delivery_id(headers);
+
+	if (venture_string_is_empty(out_event->tag))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "The release has no tag");
+		venture_forge_release_event_clear(out_event);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ * POST /repos/{owner}/{repo}/releases. Forgejo creates the tag at
+ * target_commitish if it does not exist, which is why a release can be
+ * published from VENTURE before anybody tagged anything.
+ */
+static gboolean
+venture_forgejo_create_release(
+	VentureForgeClient	 *client,
+	const gchar		 *repo_full_name,
+	const gchar		 *tag,
+	const gchar		 *target,
+	const gchar		 *name,
+	const gchar		 *body,
+	gboolean		  draft,
+	gboolean		  prerelease,
+	gint64			 *out_id,
+	gchar			**out_url,
+	GError			**error
+){
+	VentureForgejoClient *self = VENTURE_FORGEJO_CLIENT(client);
+	g_autofree gchar *prefix = NULL;
+	g_autofree gchar *path = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) request = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	JsonObject *object;
+
+	if (NULL != out_id)
+		*out_id = 0;
+
+	if (NULL != out_url)
+		*out_url = NULL;
+
+	if (venture_string_is_empty(tag))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "A release needs a tag");
+		return FALSE;
+	}
+
+	prefix = venture_forgejo_repo_prefix(repo_full_name, error);
+
+	if (NULL == prefix)
+		return FALSE;
+
+	path = g_strdup_printf("%s/releases", prefix);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "tag_name");
+	json_builder_add_string_value(builder, tag);
+	json_builder_set_member_name(builder, "name");
+	json_builder_add_string_value(builder,
+	                              !venture_string_is_empty(name) ? name : tag);
+	json_builder_set_member_name(builder, "body");
+	json_builder_add_string_value(builder, (NULL != body) ? body : "");
+	json_builder_set_member_name(builder, "draft");
+	json_builder_add_boolean_value(builder, draft);
+	json_builder_set_member_name(builder, "prerelease");
+	json_builder_add_boolean_value(builder, prerelease);
+
+	if (!venture_string_is_empty(target))
+	{
+		json_builder_set_member_name(builder, "target_commitish");
+		json_builder_add_string_value(builder, target);
+	}
+
+	json_builder_end_object(builder);
+	request = json_builder_get_root(builder);
+
+	node = venture_forgejo_send(self, SOUP_METHOD_POST, path, request,
+	                           "create a release", NULL, error);
+
+	if (NULL == node)
+		return FALSE;
+
+	if (JSON_NODE_OBJECT != json_node_get_node_type(node))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_SERIALIZATION,
+		                    "The forge did not describe the release it "
+		                    "created");
+		return FALSE;
+	}
+
+	object = json_node_get_object(node);
+
+	if (NULL != out_id)
+		*out_id = venture_json_object_get_int(object, "id", 0);
+
+	if (NULL != out_url)
+		*out_url = g_strdup(venture_json_object_get_string(object, "html_url",
+		                                                   ""));
+
+	return TRUE;
+}
+
 static void
 venture_forgejo_client_iface_init(VentureForgeClientInterface *iface)
 {
@@ -1108,4 +1411,7 @@ venture_forgejo_client_iface_init(VentureForgeClientInterface *iface)
 	iface->create_pull_request = venture_forgejo_create_pull_request;
 	iface->verify_webhook = venture_forgejo_verify_webhook;
 	iface->parse_issue_event = venture_forgejo_parse_issue_event;
+	iface->parse_workflow_event = venture_forgejo_parse_workflow_event;
+	iface->parse_release_event = venture_forgejo_parse_release_event;
+	iface->create_release = venture_forgejo_create_release;
 }

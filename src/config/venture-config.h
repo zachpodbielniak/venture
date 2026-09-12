@@ -339,6 +339,65 @@ venture_config_is_tool_auto_approved(
 GTimeZone *
 venture_config_get_timezone(VentureConfig *self);
 
+/**
+ * venture_config_set_module_enabled:
+ * @self: a #VentureConfig
+ * @module_name: a module name
+ * @enabled: whether the module is on
+ *
+ * Sets a module switch, as `modules.<name>.enabled` in the YAML does. This
+ * is the call a compiled C configuration uses to decide by hostname which
+ * modules a machine runs.
+ */
+void
+venture_config_set_module_enabled(
+	VentureConfig	*self,
+	const gchar	*module_name,
+	gboolean	 enabled
+);
+
+/**
+ * venture_config_clear_module_switch:
+ * @self: a #VentureConfig
+ * @module_name: a module name
+ *
+ * Forgets a module switch, returning the module to its default.
+ */
+void
+venture_config_clear_module_switch(
+	VentureConfig	*self,
+	const gchar	*module_name
+);
+
+/**
+ * venture_config_get_module_switch:
+ * @self: a #VentureConfig
+ * @module_name: a module name
+ * @out_enabled: (out) (optional): the configured value, if any
+ *
+ * Reads a module switch. A module nobody mentioned in the configuration is
+ * not "false": it is unset, and the module registry applies the default,
+ * which is on. That is why this returns whether a value exists at all.
+ *
+ * Returns: %TRUE if the module was configured either way
+ */
+gboolean
+venture_config_get_module_switch(
+	VentureConfig	*self,
+	const gchar	*module_name,
+	gboolean	*out_enabled
+);
+
+/**
+ * venture_config_list_module_switches:
+ * @self: a #VentureConfig
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the names of every
+ *   module the configuration mentions, sorted
+ */
+gchar **
+venture_config_list_module_switches(VentureConfig *self);
+
 G_END_DECLS
 
 #endif /* VENTURE_CONFIG_H */

@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-08-29]
-#+version: 0.1.0
+#+updated: [2026-09-11]
+#+version: 0.4.0
 
 * Configuration
 
@@ -228,8 +228,24 @@ venture --generate-c-config > ~/.config/venture/config.c
 - *ui* — theme, accent, page size, the AI panel (=ui.chat_dock= gates the
   launcher and panel entirely; =ui.chat_dock_expanded= starts the panel open)
 - *logging* — level, file, format
+- *modules* — which modules are on; see below and [[file:modules.org][Modules]]
 
 Every setting is documented inline in the generated file.
+
+** Modules
+
+#+begin_src yaml
+modules:
+  crm: false
+  factory:
+    enabled: true
+#+end_src
+
+Each key is a module name; the value is a boolean or a mapping with =enabled=. A module nobody mentions is on. =VENTURE_MODULE_<NAME>=false= does the same from the environment, =--disable-module NAME= for one run, and =venture_config_set_module_enabled()= from a compiled C configuration.
+
+Validation refuses a module whose requirement is off, naming both, before the database is opened. A name that is no module is refused once plugins have loaded, because a plugin can add one. =venture --list-modules= prints the resolved table without starting anything.
+
+The older =ai.enabled=, =kb.enabled=, =automation.enabled=, =forge.enabled= and =plugins.enabled= keep working; both they and the module switch must be true. Prefer the =modules= section.
 
 ** The =ai.confirmation_*= settings are not only about AI
 

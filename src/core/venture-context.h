@@ -150,6 +150,70 @@ VentureVentureTypeRegistry *
 venture_context_get_venture_types(VentureContext *self);
 
 /**
+ * venture_context_get_modules:
+ * @self: a #VentureContext
+ *
+ * Retrieves the module registry, resolved against this context's
+ * configuration. Every page, service and tool that belongs to a module
+ * asks it before doing anything.
+ *
+ * Returns: (transfer none): the module registry
+ */
+VentureModuleRegistry *
+venture_context_get_modules(VentureContext *self);
+
+/**
+ * venture_context_module_enabled:
+ * @self: a #VentureContext
+ * @module_name: a module name
+ *
+ * Shorthand for venture_module_registry_is_enabled() on the context's
+ * registry. An unknown module is disabled.
+ *
+ * Returns: %TRUE if the module is on
+ */
+gboolean
+venture_context_module_enabled(
+	VentureContext	*self,
+	const gchar	*module_name
+);
+
+/**
+ * venture_context_register_module:
+ * @self: a #VentureContext
+ * @info: the module's description, which must outlive the context
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The one call a plugin makes to become a module: registers every record
+ * type the description lists, adds the module -- resolving its switch and
+ * its requirements against the running configuration -- and applies the
+ * result, so a plugin's types are hidden when its module is off exactly as
+ * a built-in module's are. A description that requires a module which is
+ * off is an error, and the plugin should treat it as "not now" rather than
+ * "broken".
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+venture_context_register_module(
+	VentureContext			 *self,
+	const VentureModuleInfo		 *info,
+	GError				**error
+);
+
+/**
+ * venture_context_apply_modules:
+ * @self: a #VentureContext
+ *
+ * Re-applies the resolved module states to the entity and report
+ * registries. Called at construction, and again by the plugin manager once
+ * a plugin has registered a module of its own, so the plugin's types are
+ * masked the same way the built-in ones are.
+ */
+void
+venture_context_apply_modules(VentureContext *self);
+
+/**
  * venture_context_get_confirmations:
  * @self: a #VentureContext
  *

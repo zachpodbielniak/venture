@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-29]
-#+updated: [2026-08-29]
-#+version: 0.1.0
+#+updated: [2026-09-11]
+#+version: 0.4.0
 
 * venturectl mcp
 
@@ -61,6 +61,8 @@ Concretely: register a record type in a plugin, restart both, and it is in the =
 | =venture_confirmations= | list, approve or reject anything waiting for a decision   |
 
 The names are verbs, not nouns. A tool per record type per verb would be 31 built-in types times five verbs — 155 tools in every context window — and =venturectl= already demonstrates that one generic command per verb is enough. What must never be written down is the list of nouns, and it is not.
+
+The same promise covers the two things that grew around the record types. A disabled [[file:modules.org][module]]'s types are absent from the schema, so they are absent from the enumeration here, and an agent is never offered a resource that answers 404. And =record_link= is a record type: =venture_create= with =record_link= links any two records (the server checks both ends and stages it under the default policy), and =venture_list= with =record_link= and a =source_id= or =target_id= filter lists them.
 
 *** Singular and plural are one resource
 

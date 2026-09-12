@@ -868,6 +868,13 @@ venture_work_service_new(
 	             "forge-runs-enabled", &runs_enabled,
 	             "forge-run-concurrency", &concurrency, NULL);
 
+	if (!venture_context_module_enabled(context, "forge"))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "The forge module is disabled in configuration");
+		return NULL;
+	}
+
 	if (!runs_enabled)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,

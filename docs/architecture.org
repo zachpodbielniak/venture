@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-08-14]
-#+version: 0.1.0
+#+updated: [2026-09-11]
+#+version: 0.4.0
 
 * Architecture
 
@@ -39,6 +39,16 @@ From that declaration alone, VENTURE produces:
 | =venturectl=      | =list=, =get=, =create=, =update=, =delete= subcommands |
 
 A plugin that registers a record type gets all of it. That is the whole extensibility story, and it is why the core has no list of record types anywhere except the registry.
+
+** Modules
+
+Every record type, report, page and service belongs to a module, and a module is a switch. The module registry (=src/model/venture-module.c=) holds a static table written bottom-up -- a module may only require what precedes it, which is what rules a cycle out by construction -- and resolves every module's state once from the configuration: the =modules= section, then the legacy =*.enabled= switches, then requirements. A module whose requirement is off is refused at validation, before the database is opened.
+
+What a disabled module loses is decided there and applied to the registries the rest of the system already reads. Its types are hidden from the entity registry, so REST, the schema, the forms, the AI's tools, =venturectl= and =venturectl mcp= stop offering them without any of them knowing what a module is. Its reports are hidden from the report registry. Its pages and services ask =venture_context_module_enabled()= first. Nothing is deleted. See [[file:modules.org][Modules]].
+
+** Links
+
+=record_link= joins any two records by type and id with a kind that has an inverse, stored once and read from either end. The checks the schema cannot express run as a save validator inside =venture_database_save()=, which every writer goes through. See [[file:data-model.org][the data model]].
 
 ** Layers
 

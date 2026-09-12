@@ -1416,6 +1416,25 @@ venture_entity_class_install_fields(
 
 		g_return_if_fail(NULL != decl->name);
 
+		/*
+		 * A field may not take a name the identity spine owns. A
+		 * release with a field called "version" would install a string
+		 * property over the optimistic-concurrency counter, and every
+		 * second save of one would fail as a conflict with itself.
+		 * That happened; this is what stops it happening again, at
+		 * class initialisation rather than on the second save.
+		 */
+		if (NULL != g_object_class_find_property(G_OBJECT_CLASS(klass),
+		                                         decl->name))
+		{
+			g_error("%s declares a field named \"%s\", which %s already "
+			        "owns; pick another name",
+			        G_OBJECT_CLASS_NAME(klass), decl->name,
+			        g_strv_contains(venture_entity_identity_properties,
+			                        decl->name)
+			                ? "the entity spine" : "a parent class");
+		}
+
 		label = (NULL != decl->label) ? decl->label : decl->name;
 		blurb = (NULL != decl->help) ? decl->help : label;
 

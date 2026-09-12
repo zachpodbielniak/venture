@@ -128,6 +128,8 @@ main(
 	gboolean no_ai = FALSE;
 	gboolean no_plugins = FALSE;
 	gboolean no_automation = FALSE;
+	gboolean list_modules = FALSE;
+	g_auto(GStrv) disabled_modules = NULL;
 	gint port = 0;
 
 	const GOptionEntry entries[] = {
@@ -149,6 +151,10 @@ main(
 		  "Start without loading plugins or venture types", NULL },
 		{ "no-automation", 0, 0, G_OPTION_ARG_NONE, &no_automation,
 		  "Start without the automation engine", NULL },
+		{ "disable-module", 0, 0, G_OPTION_ARG_STRING_ARRAY, &disabled_modules,
+		  "Turn a module off for this run (repeatable)", "NAME" },
+		{ "list-modules", 0, 0, G_OPTION_ARG_NONE, &list_modules,
+		  "Print every module with its resolved state and exit", NULL },
 		{ "generate-config", 0, 0, G_OPTION_ARG_NONE, &generate_config,
 		  "Print a commented default configuration and exit", NULL },
 		{ "generate-c-config", 0, 0, G_OPTION_ARG_NONE, &generate_c_config,
@@ -169,6 +175,8 @@ main(
 		"  venture -d sqlite:///srv/venture.db      use a particular database\n"
 		"  venture -p 9000                          listen on another port\n"
 		"  venture --migrate                        apply migrations and exit\n"
+		"  venture --list-modules                   show which modules are on\n"
+		"  venture --disable-module crm             run without a module\n"
 		"  venture --generate-config > config.yaml  write a configuration to edit\n"
 		"\n"
 		"Configuration is layered: built-in defaults, then /etc/venture/config.yaml,\n"
@@ -235,10 +243,67 @@ main(
 	if (0 != port)
 		g_object_set(config, "server-port", (gint64)port, NULL);
 
+	{
+		gsize i;
+
+		for (i = 0; (NULL != disabled_modules) &&
+		            (NULL != disabled_modules[i]); i++)
+			venture_config_set_module_enabled(config, disabled_modules[i],
+			                                  FALSE);
+	}
+
 	if (!venture_config_validate(config, &error))
 	{
 		g_printerr("Configuration: %s\n", error->message);
 		return venture_error_to_exit_code(VENTURE_ERROR_CONFIG);
+	}
+
+	/*
+	 * Before the database, so the question "what would this
+	 * configuration run" is answered without touching anything. Only the
+	 * built-in modules are known here; a plugin's appears once the server
+	 * is up, at /api/v1/modules and `venturectl modules`.
+	 */
+	if (list_modules)
+	{
+		g_autoptr(VentureModuleRegistry) modules = NULL;
+		g_autoptr(GPtrArray) list = NULL;
+		guint i;
+
+		modules = venture_module_registry_new();
+		venture_module_registry_register_builtins(modules);
+		venture_module_registry_configure(modules, config, NULL);
+		list = venture_module_registry_list(modules);
+
+		g_print("%-12s %-9s %s\n", "MODULE", "STATE", "REQUIRES");
+
+		for (i = 0; i < list->len; i++)
+		{
+			VentureModule *module;
+			g_autofree gchar *requires = NULL;
+
+			module = g_ptr_array_index(list, i);
+			requires = g_strjoinv(", ",
+				(gchar **)venture_module_get_requires(module));
+
+			g_print("%-12s %-9s %s%s%s\n", venture_module_get_name(module),
+			        venture_module_is_locked(module) ? "locked"
+			        : venture_module_is_enabled(module) ? "enabled"
+			                                             : "disabled",
+			        requires,
+			        venture_module_is_enabled(module) ? "" : "  -- ",
+			        venture_module_is_enabled(module)
+			                ? "" : venture_module_get_disabled_reason(module));
+		}
+
+		if (!venture_module_registry_check_configured(modules, config, &error))
+		{
+			g_printerr("\n%s\n(a plugin may provide it; this list knows "
+			           "only the built-in modules)\n", error->message);
+			g_clear_error(&error);
+		}
+
+		return 0;
 	}
 
 	venture_configure_logging(config);
@@ -284,6 +349,53 @@ main(
 			          (1 == venture_plugin_manager_get_count(plugins))
 			                  ? "" : "s");
 		}
+	}
+
+	/*
+	 * Every module that will ever exist in this process is registered
+	 * now, so a configured name that matches none of them is a typo, and
+	 * a typo that switches nothing is the failure this check exists for.
+	 */
+	if (!venture_module_registry_check_configured(
+		venture_context_get_modules(context), config, &error))
+	{
+		g_printerr("Configuration: %s\n", error->message);
+		return venture_error_to_exit_code(VENTURE_ERROR_CONFIG);
+	}
+
+	{
+		g_autoptr(GPtrArray) modules = NULL;
+		g_autoptr(GString) off = NULL;
+		guint i;
+		guint on;
+
+		modules = venture_module_registry_list(
+			venture_context_get_modules(context));
+		off = g_string_new(NULL);
+		on = 0;
+
+		for (i = 0; i < modules->len; i++)
+		{
+			VentureModule *module;
+
+			module = g_ptr_array_index(modules, i);
+
+			if (venture_module_is_enabled(module))
+			{
+				on++;
+				continue;
+			}
+
+			if (off->len > 0)
+				g_string_append(off, ", ");
+
+			g_string_append(off, venture_module_get_name(module));
+		}
+
+		if (0 == off->len)
+			g_message("Modules: all %u enabled", on);
+		else
+			g_message("Modules: %u enabled; disabled: %s", on, off->str);
 	}
 
 	{

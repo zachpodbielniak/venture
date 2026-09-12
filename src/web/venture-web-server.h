@@ -45,6 +45,10 @@ typedef struct
 	const gchar *label;
 	const gchar *icon;
 	const gchar *section;
+
+	/* The module the link belongs to. A link whose module is off is not
+	 * rendered, and a section whose every link is off loses its heading. */
+	const gchar *module;
 } VentureWebNavLink;
 
 /**

@@ -1,0 +1,154 @@
+#+title: VENTURE modules
+#+description: Switching pieces of VENTURE on and off, and what a module is made of
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-11]
+#+updated: [2026-09-11]
+#+version: 0.4.0
+
+* Modules
+
+A module is a named group of record types, reports, pages and services that an install turns on or off as one thing. The CRM is a module. Invoicing is a module. The software factory is a module. An install that keeps books for a book imprint and nothing else runs =core=, =sales= and =finance=, and the sidebar, the API, the schema, the AI's tools and =venturectl= all stop mentioning everything else.
+
+The design has two promises, and every mechanism here exists to keep one of them:
+
+1. *A disabled module disappears from every surface at once.* Not "the page 404s but the API still answers"; not "the type is hidden from the form but the AI still offers it".
+2. *A module whose requirement is off is refused, not run half-working.* Invoicing with the CRM off is a Bill-to picker that is always empty and a save that fails on every row. The configuration is refused in a second instead, naming both modules.
+
+Nothing is deleted by turning a module off. A table a module created stays where it is, the rows stay in it, and turning the module back on shows them again.
+
+* The built-in modules
+
+Written bottom-up, because a module may only require what precedes it:
+
+| Module       | Requires        | Owns                                                              | Also switched by      |
+|--------------+-----------------+-------------------------------------------------------------------+-----------------------|
+| =core=       | —               | organization, venture, document, record_link, plugin_config, user, api_token, audit_entry | always on |
+| =sales=      | core            | product, inventory_item, inventory_txn, sale; =categories=, =inventory= |               |
+| =finance=    | sales           | expense, account, ledger_entry, tax_category; =pnl=, =ventures=, =monthly=, =tax= |     |
+| =crm=        | core            | company, contact, interaction, deal; =pipeline=                   |                       |
+| =invoicing=  | finance, crm    | invoice, invoice_line; =receivables=                              |                       |
+| =outreach=   | sales           | campaign, newsletter, subscriber, post; =campaigns=               |                       |
+| =ideas=      | core            | idea, research_note; =ideas=                                      |                       |
+| =kb=         | core            | knowledge_base, kb_article, kb_chunk, kb_link                     | =kb.enabled=          |
+| =tickets=    | core            | ticket, ticket_comment, ticket_relation                           |                       |
+| =ai=         | core            | the assistant and its tools                                       | =ai.enabled=          |
+| =chat=       | ai              | chat_thread, chat_message                                         |                       |
+| =automation= | core            | the podomation engine                                             | =automation.enabled=  |
+| =plugins=    | core            | plugins and declarative venture types                             | =plugins.enabled=     |
+| =forge=      | tickets         | forge, forge_repo, forge_rule, ticket_link, forge_run             | =forge.enabled=       |
+| =factory=    | forge           | milestone, release, build, environment, deployment, incident; =releases=, =lead_time=, =incidents= | |
+
+Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.
+
+The rest are /suggestions/: a module works without them and is better with them. A ticket's =company-id= picker is simply empty when the CRM is off; the column stays, a value it already had is kept, and a new value cannot be written because there is nothing to check it against.
+
+* Switching
+
+In the configuration:
+
+#+begin_src yaml
+modules:
+  crm: false
+  factory:
+    enabled: true
+#+end_src
+
+Both spellings are accepted. The short one is what a person writes; the long one leaves room for per-module settings later.
+
+From the environment, the way every setting can be set:
+
+#+begin_src sh
+VENTURE_MODULE_CRM=false venture
+#+end_src
+
+For one run:
+
+#+begin_src sh
+venture --disable-module crm --disable-module invoicing
+#+end_src
+
+From a compiled C configuration, which is how a machine decides for itself:
+
+#+begin_src C
+if (0 == g_strcmp0(g_get_host_name(), "laptop"))
+{
+	venture_config_set_module_enabled(config, "forge", FALSE);
+	venture_config_set_module_enabled(config, "factory", FALSE);
+}
+#+end_src
+
+A module nobody mentions is on. That is why the generated configuration's =modules:= section is empty: the file says what was decided, not everything.
+
+The older =ai.enabled=, =kb.enabled=, =automation.enabled=, =forge.enabled= and =plugins.enabled= switches still work and mean the same thing. Both have to be true for the module to be on. Prefer the =modules= section; the old ones are kept because renaming a configuration key silently reverts every install that set the old one.
+
+* Seeing what is on
+
+#+begin_src sh
+venture --list-modules                 # resolve a configuration without starting
+venturectl modules                     # ask a running server
+venturectl -f json modules             # with everything: types, reports, reasons
+curl .../api/v1/modules                # the same, over HTTP
+#+end_src
+
+The web UI has a Modules page under System. Every disabled module says why: the setting that turned it off, the legacy switch that did, or the required module that is itself off.
+
+The list is in dependency order. A module always follows what it requires, because that is the order they were registered in and registration refuses a requirement that is not there yet. It is what makes a cycle impossible by construction rather than merely detected.
+
+* What turning a module off actually does
+
+The registries the rest of the system already reads are masked, once, when the context is built:
+
+- Its *record types are hidden* from the entity registry. They stay registered — their =GType=, prototype and table are all still there — but every lookup and listing skips them. That one loop is what makes a disabled module disappear from REST, the schema, the forms, global search, the AI's tool arguments, =venturectl= and =venturectl mcp= at once: none of them know what a module is; they ask the registry.
+- Its *reports are hidden* from the report registry the same way, so a profit-and-loss is not offered on an install that keeps no books, and comes back with nothing re-registered when it is.
+- Its *pages answer 404* with the module named and the switch to look at. An anonymous request is sent to sign in first, so which modules an install runs is not disclosed to whoever asks.
+- Its *services are never built*: the AI service, the knowledge-base embedder, the automation engine, the coding-run service each ask the module registry before doing anything.
+- Its *webhook events are acknowledged and dropped*: a forge that keeps getting errors disables the hook, so a build delivered to an install with the factory off is a 204, not a 404.
+
+And two things it does not do:
+
+- It does not migrate the module's tables. A type the registry does not offer is not in the schema walk. Turning the module on later creates them then.
+- It does not touch a reference field on a type that stays. A =sale.contact_id= keeps whatever it had; the picker is empty; writing a new value is refused with the module named, because a reference into a table nobody can check is a dangling one waiting to happen.
+
+Every unknown-type error says which of the two things went wrong. "The record type =contact= belongs to the crm module, which is disabled (modules.crm.enabled)" is a switch to flip; "There is no record type called =contakt=. Known types: ..." is a typo.
+
+* Live configuration
+
+The module registry re-resolves whenever the configuration it was configured against changes a switch, and the context re-applies the masks. This matters to a compiled configuration that decides late, and to the test suite, which flips a switch on a running fixture and expects the server to follow. A conflict introduced this way is a debug line rather than an error, because there is nobody to hand the error to — and the state is still consistent, with the dependent off.
+
+* A plugin's module
+
+A plugin declares a module in one call, and from then on it is switched, listed and masked exactly as a built-in one:
+
+#+begin_src C
+static GType (*const types[]) (void) = { venture_subscription_get_type, NULL };
+static const gchar *const requires[] = { "finance", NULL };
+static const gchar *const reports[] = { "subscriptions", NULL };
+
+static const VentureModuleInfo module = {
+	"example", "Example plugin", "Recurring subscriptions.",
+	requires, NULL, types, reports, NULL, FALSE
+};
+
+gboolean
+venture_plugin_register(VentureContext *context, GError **error)
+{
+	return venture_context_register_module(context, &module, error);
+}
+#+end_src
+
+=venture_context_register_module()= registers every type the description lists, adds the module, resolves it against the running configuration and applies the result. A plugin module that requires a module the configuration turned off is refused, and the plugin should treat that as "not now" rather than "broken".
+
+Because a plugin's module is not known until the plugin loads, a configured name that matches no module is checked after plugins have loaded, and is fatal then: =modules.crn= is a typo, and a typo that switches nothing and says nothing is the most confusing configuration failure there is. =venture --list-modules= knows only the built-in modules and says so.
+
+The description must outlive the registry. A static does.
+
+* The rules a module is held to
+
+- The name is =[a-z0-9_-]+=: it is a configuration key and a URL segment.
+- Every requirement must be registered before the module that names it.
+- A module cannot require itself.
+- A record type belongs to one module only, or two switches would fight over it.
+- Every type it claims must be a concrete =VentureEntity= subclass.
+
+All five are checked at registration, and a built-in that breaks one aborts startup, because a registry missing a core module would fail in a hundred quieter ways later.

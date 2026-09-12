@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-08-29]
-#+version: 0.1.0
+#+updated: [2026-09-11]
+#+version: 0.4.0
 
 * Testing
 
@@ -122,6 +122,18 @@ flag survives, since it is the reason a comment is a record at all.
 ** =test-ticket-relation=
 
 That a ticket can point at any registered type, and that a pair which cannot mean anything is refused before it is written: an unknown type name, an id that is not there, the same pair twice, and a ticket related to itself. Also that the reverse lookup works, since a polymorphic pair is invisible to the machinery that finds records pointing at this one — and that a deleted subject leaves the relation still readable.
+
+** =test-module=
+
+That the built-in module table is in dependency order and every rule of registration holds; that a module whose requirement is off is refused with both named, and that the legacy =*.enabled= switches still count; that a disabled module's types and reports vanish from the registries and its pages, API routes and schema entries answer 404 over a real server, while the sidebar loses the links and the heading; that a written reference into a disabled module is refused with the switch named; and that a plugin's module resolves against the running configuration the moment it is added.
+
+** =test-record-link=
+
+That any two records of any types link, and that one row reads correctly from both ends -- the kind from the source, the inverse from the target. That a link which cannot mean anything is refused: an unknown type, a missing record, a record linked to itself, the same pair twice in either direction, the audit log. That the checks run at the save and not only in the constructor, so a link built by hand -- as the generic API would -- is held to them and gets its labels filled in. That a deleted or switched-off end keeps its label and loses its link.
+
+** =test-factory=
+
+That a =workflow_run= delivery becomes a build when requested and updates the same build when completed, a retried delivery included, and that a bad signature plants nothing. That a release cut on the forge becomes a release here with its version read from the tag, and a deleted one is yanked on the same row. That the changelog is drafted from the tickets by issue type and never overwrites what somebody wrote unless asked. That the lead-time and incident reports measure what they claim. That with the module off every page, type and report is gone and the CI webhook is acknowledged and dropped -- and that flipping the switch on the live configuration is enough to bring it back.
 
 ** =test-forge=
 

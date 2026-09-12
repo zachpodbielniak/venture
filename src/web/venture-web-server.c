@@ -229,6 +229,119 @@ venture_web_api_require(
 }
 
 /*
+ * Whether a module is on. A NULL module means "not gated", which is what a
+ * link or page that belongs to no module in particular says.
+ *
+ * Returns: %TRUE if the page or link may be offered
+ */
+static gboolean
+venture_web_module_enabled(
+	VentureWebServer	*self,
+	const gchar		*module_name
+){
+	if (NULL == module_name)
+		return TRUE;
+
+	return venture_context_module_enabled(self->context, module_name);
+}
+
+/*
+ * Builds the error a request into a disabled module gets. Named so the
+ * operator who turned the module off recognises it, and so somebody who
+ * did not learns which switch to look at.
+ */
+static void
+venture_web_set_module_disabled_error(
+	const gchar	 *module_name,
+	GError		**error
+){
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+	            "The %s module is disabled on this install "
+	            "(modules.%s.enabled)", module_name, module_name);
+}
+
+/*
+ * Refuses an API request into a module that is off.
+ *
+ * Every API route that belongs to a module calls this first. The generic
+ * record routes do not need to: a disabled module's types are hidden from
+ * the registry, so /api/v1/<type> already resolves to nothing.
+ *
+ * Returns: (transfer full) (nullable): a 404 to return instead, or %NULL
+ */
+static HtmxResponse *
+venture_web_require_module_api(
+	VentureWebServer	*self,
+	const gchar		*module_name
+){
+	g_autoptr(GError) error = NULL;
+
+	if (venture_web_module_enabled(self, module_name))
+		return NULL;
+
+	venture_web_set_module_disabled_error(module_name, &error);
+
+	return venture_web_error_response(error);
+}
+
+static HtmxResponse *
+venture_web_ui_require_session(
+	VentureWebServer	*self,
+	HtmxRequest		*request
+);
+
+static gchar *
+venture_web_page(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	const gchar		*active,
+	const gchar		*title,
+	const gchar		*content
+);
+
+/*
+ * The UI counterpart. The session is checked before the module, so an
+ * anonymous request is sent to sign in rather than told what the install
+ * runs; a signed-in one gets a page saying which module is off.
+ *
+ * Returns: (transfer full) (nullable): a response to return instead, or
+ *   %NULL when the request may proceed
+ */
+static HtmxResponse *
+venture_web_require_module_ui(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	const gchar		*module_name
+){
+	g_autoptr(GString) body = NULL;
+	HtmxResponse *redirect;
+
+	if (venture_web_module_enabled(self, module_name))
+		return NULL;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	body = g_string_new("<div class=\"empty\"><h3>The ");
+	venture_html_escape_append(body, module_name);
+	g_string_append(body,
+		" module is turned off</h3><p class=\"muted\">This page belongs to "
+		"a module the configuration has disabled. Turn it on with "
+		"<code>modules.");
+	venture_html_escape_append(body, module_name);
+	g_string_append(body,
+		".enabled: true</code> and restart, or see what is on at "
+		"<a href=\"/modules\">Modules</a>.</p>"
+		"<p><a class=\"btn btn-primary\" href=\"/\">Dashboard</a></p></div>");
+
+	return venture_web_html_response(
+		venture_web_page(self, request, "/modules", "Module off",
+		                 body->str), 404);
+}
+
+/*
  * Raises the role a request needs when the record type is itself part of
  * access control.
  *
@@ -478,7 +591,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<rect x=\"3\" y=\"14\" width=\"7\" height=\"7\" rx=\"1.5\"/>"
 			"<rect x=\"14\" y=\"14\" width=\"7\" height=\"7\" rx=\"1.5\"/>"
 		),
-		"Overview"
+		"Overview",
+		"core"
 	},
 	{
 		"/reports", "Reports",
@@ -486,7 +600,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M3 20h18\"/><path d=\"M6 20v-6\"/>"
 			"<path d=\"M12 20V5\"/><path d=\"M18 20v-9\"/>"
 		),
-		NULL
+		NULL,
+		"core"
 	},
 	{
 		"/e/venture", "Ventures",
@@ -495,14 +610,16 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2\"/>"
 			"<path d=\"M3 12h18\"/>"
 		),
-		"Business"
+		"Business",
+		"core"
 	},
 	{
 		"/e/sale", "Sales",
 		VENTURE_ICON(
 			"<path d=\"M3 17l6-6 4 4 8-8\"/><path d=\"M15 7h6v6\"/>"
 		),
-		NULL
+		NULL,
+		"sales"
 	},
 	{
 		"/e/invoice", "Invoices",
@@ -511,7 +628,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M14 3v5h5\"/><path d=\"M9 13h6\"/>"
 			"<path d=\"M9 17h4\"/>"
 		),
-		NULL
+		NULL,
+		"invoicing"
 	},
 	{
 		"/e/product", "Products",
@@ -519,7 +637,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M21 8l-9-5-9 5 9 5 9-5z\"/>"
 			"<path d=\"M3 8v8l9 5 9-5V8\"/><path d=\"M12 13v8\"/>"
 		),
-		NULL
+		NULL,
+		"sales"
 	},
 	{
 		"/e/inventory_item", "Inventory",
@@ -527,14 +646,16 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M12 2.5L3 7.5l9 5 9-5-9-5z\"/>"
 			"<path d=\"M3 12l9 5 9-5\"/><path d=\"M3 16.5l9 5 9-5\"/>"
 		),
-		NULL
+		NULL,
+		"sales"
 	},
 	{
 		"/e/expense", "Expenses",
 		VENTURE_ICON(
 			"<path d=\"M3 7l6 6 4-4 8 8\"/><path d=\"M15 17h6v-6\"/>"
 		),
-		"Money"
+		"Money",
+		"finance"
 	},
 	{
 		"/e/account", "Accounts",
@@ -543,7 +664,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M9 21V10\"/><path d=\"M15 21V10\"/>"
 			"<path d=\"M19 21V10\"/><path d=\"M12 3L3 8h18l-9-5z\"/>"
 		),
-		NULL
+		NULL,
+		"finance"
 	},
 	{
 		"/e/tax_category", "Tax",
@@ -552,7 +674,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<circle cx=\"7.5\" cy=\"7.5\" r=\"2.5\"/>"
 			"<circle cx=\"16.5\" cy=\"16.5\" r=\"2.5\"/>"
 		),
-		NULL
+		NULL,
+		"finance"
 	},
 	{
 		"/e/company", "Companies",
@@ -563,7 +686,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M9 7h2\"/><path d=\"M9 11h2\"/>"
 			"<path d=\"M9 15h2\"/>"
 		),
-		"Relations"
+		"Relations",
+		"crm"
 	},
 	{
 		"/e/contact", "Contacts",
@@ -571,7 +695,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2\"/>"
 			"<circle cx=\"12\" cy=\"7\" r=\"4\"/>"
 		),
-		NULL
+		NULL,
+		"crm"
 	},
 	{
 		"/e/deal", "Deals",
@@ -579,7 +704,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M4 8h13\"/><path d=\"M14 5l3 3-3 3\"/>"
 			"<path d=\"M20 16H7\"/><path d=\"M10 13l-3 3 3 3\"/>"
 		),
-		NULL
+		NULL,
+		"crm"
 	},
 	{
 		"/e/campaign", "Campaigns",
@@ -588,7 +714,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M16.5 9.5a3.5 3.5 0 0 1 0 5\"/>"
 			"<path d=\"M19.5 7a7 7 0 0 1 0 10\"/>"
 		),
-		"Growth"
+		"Growth",
+		"outreach"
 	},
 	{
 		"/e/newsletter", "Newsletters",
@@ -596,7 +723,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<rect x=\"3\" y=\"5\" width=\"18\" height=\"14\" rx=\"2\"/>"
 			"<path d=\"M3.5 7l8.5 6 8.5-6\"/>"
 		),
-		NULL
+		NULL,
+		"outreach"
 	},
 	{
 		"/e/post", "Posts",
@@ -605,7 +733,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M7 9h10\"/><path d=\"M7 13h10\"/>"
 			"<path d=\"M7 17h6\"/>"
 		),
-		NULL
+		NULL,
+		"outreach"
 	},
 	{
 		"/e/idea", "Ideas",
@@ -613,7 +742,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M9 18h6\"/><path d=\"M10 21h4\"/>"
 			"<path d=\"M12 3a6 6 0 0 0-3.5 10.9c.6.5.9 1.2.9 1.9V16h5.2v-.2c0-.7.3-1.4.9-1.9A6 6 0 0 0 12 3z\"/>"
 		),
-		"Thinking"
+		"Thinking",
+		"ideas"
 	},
 	{
 		"/tickets", "Tickets",
@@ -621,7 +751,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<rect x=\"3\" y=\"3\" width=\"18\" height=\"18\" rx=\"2\"/>"
 			"<path d=\"M8 12l3 3 5-6\"/>"
 		),
-		NULL
+		NULL,
+		"tickets"
 	},
 	{
 		"/e/research_note", "Research",
@@ -629,7 +760,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<circle cx=\"11\" cy=\"11\" r=\"7\"/>"
 			"<path d=\"M20 20l-3.9-3.9\"/>"
 		),
-		NULL
+		NULL,
+		"ideas"
 	},
 	{
 		"/e/forge_repo", "Repositories",
@@ -639,7 +771,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<circle cx=\"17\" cy=\"9\" r=\"2\"/><path d=\"M7 7v10\"/>"
 			"<path d=\"M17 11v1a4 4 0 0 1-4 4H7\"/>"
 		),
-		"Code"
+		"Code",
+		"forge"
 	},
 	{
 		"/e/forge_rule", "Agent rules",
@@ -651,7 +784,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M16 18h4\"/>"
 			"<circle cx=\"14\" cy=\"18\" r=\"2\"/>"
 		),
-		NULL
+		NULL,
+		"forge"
 	},
 	{
 		"/e/forge_run", "Runs",
@@ -659,7 +793,71 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<circle cx=\"12\" cy=\"12\" r=\"9\"/>"
 			"<path d=\"M10 8.5l6 3.5-6 3.5z\"/>"
 		),
-		NULL
+		NULL,
+		"forge"
+	},
+	{
+		"/factory", "Factory",
+		VENTURE_ICON(
+			"<path d=\"M3 21V9l6 4V9l6 4V9l6 4v8z\"/>"
+			"<path d=\"M3 21h18\"/><path d=\"M7 17h2\"/>"
+			"<path d=\"M12 17h2\"/><path d=\"M17 17h2\"/>"
+		),
+		"Factory",
+		"factory"
+	},
+	{
+		"/e/milestone", "Milestones",
+		VENTURE_ICON(
+			"<path d=\"M4 21V4\"/><path d=\"M4 5h13l-3 4 3 4H4\"/>"
+		),
+		NULL,
+		"factory"
+	},
+	{
+		"/e/release", "Releases",
+		VENTURE_ICON(
+			"<path d=\"M20.6 3.4a7 7 0 0 0-9.9 9.9l-6.4 6.4v1.9h1.9l6.4-6.4a7 7 0 0 0 8-11.8z\"/>"
+			"<circle cx=\"15.5\" cy=\"8.5\" r=\"1.5\"/>"
+		),
+		NULL,
+		"factory"
+	},
+	{
+		"/e/build", "Builds",
+		VENTURE_ICON(
+			"<path d=\"M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.4 2.4-2-2z\"/>"
+		),
+		NULL,
+		"factory"
+	},
+	{
+		"/e/environment", "Environments",
+		VENTURE_ICON(
+			"<rect x=\"3\" y=\"4\" width=\"18\" height=\"6\" rx=\"1.5\"/>"
+			"<rect x=\"3\" y=\"14\" width=\"18\" height=\"6\" rx=\"1.5\"/>"
+			"<path d=\"M7 7h.01\"/><path d=\"M7 17h.01\"/>"
+		),
+		NULL,
+		"factory"
+	},
+	{
+		"/e/deployment", "Deployments",
+		VENTURE_ICON(
+			"<path d=\"M12 3v12\"/><path d=\"M7 10l5 5 5-5\"/>"
+			"<path d=\"M4 20h16\"/>"
+		),
+		NULL,
+		"factory"
+	},
+	{
+		"/e/incident", "Incidents",
+		VENTURE_ICON(
+			"<path d=\"M12 3l9.5 16.5H2.5z\"/><path d=\"M12 9v5\"/>"
+			"<path d=\"M12 17.5h.01\"/>"
+		),
+		NULL,
+		"factory"
 	},
 	{
 		"/entities", "Entities",
@@ -670,14 +868,16 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M12 8v4\"/>"
 			"<path d=\"M5 16v-2a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v2\"/>"
 		),
-		"System"
+		"System",
+		"core"
 	},
 	{
 		"/automations", "Automations",
 		VENTURE_ICON(
 			"<path d=\"M13 2L4 14h7l-1 8 9-12h-7l1-8z\"/>"
 		),
-		NULL
+		NULL,
+		"automation"
 	},
 	{
 		"/plugins", "Plugins",
@@ -686,7 +886,19 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M6 8h12v3a6 6 0 0 1-12 0V8z\"/>"
 			"<path d=\"M12 17v5\"/>"
 		),
-		NULL
+		NULL,
+		"plugins"
+	},
+	{
+		"/modules", "Modules",
+		VENTURE_ICON(
+			"<rect x=\"3\" y=\"3\" width=\"8\" height=\"8\" rx=\"1.5\"/>"
+			"<rect x=\"13\" y=\"3\" width=\"8\" height=\"8\" rx=\"1.5\"/>"
+			"<rect x=\"3\" y=\"13\" width=\"8\" height=\"8\" rx=\"1.5\"/>"
+			"<path d=\"M17 13v8\"/><path d=\"M13 17h8\"/>"
+		),
+		NULL,
+		"core"
 	},
 	{
 		"/account", "Your account",
@@ -695,7 +907,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<circle cx=\"12\" cy=\"10\" r=\"3\"/>"
 			"<path d=\"M6.5 19a6 6 0 0 1 11 0\"/>"
 		),
-		NULL
+		NULL,
+		"core"
 	},
 	{
 		"/kb", "Knowledge",
@@ -704,7 +917,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M20 5a2 2 0 0 0-2-2h-5v18h5a2 2 0 0 0 2-2z\"/>"
 			"<path d=\"M11 3v18\"/>"
 		),
-		NULL
+		NULL,
+		"kb"
 	},
 	{
 		"/account/tokens", "API tokens",
@@ -712,7 +926,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M14 7a4 4 0 1 0-3.9 5H14l2 2 2-2 2 2 2-2-2-2h-6z\"/>"
 			"<circle cx=\"7\" cy=\"11\" r=\"1.2\"/>"
 		),
-		NULL
+		NULL,
+		"core"
 	},
 	{
 		"/users", "Users",
@@ -722,7 +937,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M22 21v-2a4 4 0 0 0-3-3.9\"/>"
 			"<path d=\"M16 3.1a4 4 0 0 1 0 7.8\"/>"
 		),
-		NULL
+		NULL,
+		"core"
 	},
 	{
 		"/settings", "Settings",
@@ -730,7 +946,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<circle cx=\"12\" cy=\"12\" r=\"3\"/>"
 			"<path d=\"M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.3 7.1l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 2.9-1.2V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0 1.2 2.9H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z\"/>"
 		),
-		NULL
+		NULL,
+		"core"
 	},
 	{
 		"/e/forge", "Forges",
@@ -739,7 +956,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<rect x=\"3\" y=\"13\" width=\"18\" height=\"7\" rx=\"2\"/>"
 			"<path d=\"M7 7.5h.01\"/><path d=\"M7 16.5h.01\"/>"
 		),
-		NULL
+		NULL,
+		"forge"
 	},
 	{
 		"/e/audit_entry", "Audit log",
@@ -747,9 +965,10 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M3.5 12a8.5 8.5 0 1 0 2.5-6\"/>"
 			"<path d=\"M3 3v5h5\"/><path d=\"M12 8v4.5l3 1.5\"/>"
 		),
-		NULL
+		NULL,
+		"core"
 	},
-	{ NULL, NULL, NULL, NULL }
+	{ NULL, NULL, NULL, NULL, NULL }
 };
 
 const VentureWebNavLink *
@@ -844,17 +1063,32 @@ venture_web_page(
 		const VentureWebNavLink *links;
 		gsize i;
 
+		const gchar *section = NULL;
+		const gchar *shown = NULL;
+
 		links = venture_web_navigation();
 
 		g_string_append(html, "<div class=\"nav\">");
 
 		for (i = 0; NULL != links[i].path; i++)
 		{
+			/* A section heading belongs to the first link that carries
+			 * it and every link after, until the next heading. */
 			if (NULL != links[i].section)
+				section = links[i].section;
+
+			/* A link whose module is off is not offered. The heading
+			 * follows the first link actually shown under it, so a
+			 * section emptied by configuration leaves no orphan. */
+			if (!venture_web_module_enabled(self, links[i].module))
+				continue;
+
+			if ((NULL != section) && (section != shown))
 			{
 				g_string_append(html, "<div class=\"nav-section\">");
-				venture_html_escape_append(html, links[i].section);
+				venture_html_escape_append(html, section);
 				g_string_append(html, "</div>");
+				shown = section;
 			}
 
 			g_string_append_printf(html, "<a class=\"nav-item%s\" href=\"%s\">",
@@ -971,7 +1205,9 @@ venture_web_page(
 	 * was active. dock_expanded carries its old meaning forward: start
 	 * with the panel open.
 	 */
-	if (chat_dock)
+	/* The panel is the chat module's; without it there is nothing for
+	 * the launcher to open. */
+	if (chat_dock && venture_web_module_enabled(self, "chat"))
 	{
 		g_string_append(html,
 			"<button type=\"button\" class=\"ai-fab\" data-ai-toggle "
@@ -1098,16 +1334,9 @@ venture_web_resolve_type(
 
 	if (G_TYPE_INVALID == *out_type)
 	{
-		g_auto(GStrv) known = NULL;
-		g_autofree gchar *list = NULL;
-
-		known = venture_entity_registry_list_names(
-			venture_context_get_entity_registry(self->context));
-		list = g_strjoinv(", ", known);
-
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
-		            "There is no record type called \"%s\". Known types: %s",
-		            name, list);
+		/* Says "disabled module" or "no such type", whichever it is. */
+		venture_entity_registry_set_unknown_type_error(
+			venture_context_get_entity_registry(self->context), name, error);
 		return FALSE;
 	}
 
@@ -1895,6 +2124,7 @@ venture_web_ui_dashboard(
 	 * dashboard's job is "is anything on fire", and the board is one
 	 * click away for the detail.
 	 */
+	if (venture_web_module_enabled(self, "tickets"))
 	{
 		static const VentureTicketStatus open_statuses[] = {
 			VENTURE_TICKET_STATUS_TRIAGE,
@@ -1990,6 +2220,7 @@ venture_web_ui_dashboard(
 	 * here rather than in SQL because money summation must refuse mixed
 	 * currencies, and the report engine's rules apply in C.
 	 */
+	if (venture_web_module_enabled(self, "crm"))
 	{
 		g_autoptr(VentureQuery) query = NULL;
 		g_autoptr(GPtrArray) deals = NULL;
@@ -2325,6 +2556,15 @@ venture_web_ui_automations(
 
 	self = user_data;
 
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "automation");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	redirect = venture_web_ui_require_session(self, request);
 
 	if (NULL != redirect)
@@ -2521,6 +2761,15 @@ venture_web_ui_automations_validate(
 	gboolean ok;
 
 	self = user_data;
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "automation");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	principal = venture_auth_authenticate(self->auth, request);
 
 	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
@@ -2571,6 +2820,15 @@ venture_web_ui_automations_save(
 	const gchar *source;
 
 	self = user_data;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "automation");
+
+		if (NULL != gate)
+			return gate;
+	}
 
 	redirect = venture_web_ui_require_session(self, request);
 
@@ -2646,6 +2904,15 @@ venture_web_ui_automations_reload(
 
 	self = user_data;
 
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "automation");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	redirect = venture_web_ui_require_session(self, request);
 
 	if (NULL != redirect)
@@ -2718,6 +2985,15 @@ venture_web_ui_invoice_status(
 	gint value;
 
 	self = user_data;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "invoicing");
+
+		if (NULL != gate)
+			return gate;
+	}
 
 	redirect = venture_web_ui_require_session(self, request);
 
@@ -2878,6 +3154,15 @@ venture_web_ui_invoice_print(
 	guint i;
 
 	self = user_data;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "invoicing");
+
+		if (NULL != gate)
+			return gate;
+	}
 
 	redirect = venture_web_ui_require_session(self, request);
 
@@ -3096,6 +3381,15 @@ venture_web_ui_plugins(
 
 	self = user_data;
 
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "plugins");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	redirect = venture_web_ui_require_session(self, request);
 
 	if (NULL != redirect)
@@ -3229,6 +3523,15 @@ venture_web_ui_plugins_config(
 	const gchar *config;
 
 	self = user_data;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "plugins");
+
+		if (NULL != gate)
+			return gate;
+	}
 
 	redirect = venture_web_ui_require_session(self, request);
 
@@ -6631,6 +6934,7 @@ venture_web_append_ticket_relations(
 		/* Offering the ticket's own relations or the audit log as a
 		 * subject is noise: nobody links a ticket to an audit row. */
 		if ((0 == g_strcmp0(type_names[i], "ticket_relation")) ||
+		    (0 == g_strcmp0(type_names[i], "record_link")) ||
 		    (0 == g_strcmp0(type_names[i], "audit_entry")))
 			continue;
 
@@ -6649,6 +6953,438 @@ venture_web_append_ticket_relations(
 		"<button class=\"btn\" type=\"submit\">Relate</button></form>");
 
 	g_string_append(content, "</div></div>");
+}
+
+/*
+ * Appends a <select> of link kinds, each option carrying the words the
+ * kind reads as from the record the form is on.
+ */
+static void
+venture_web_append_link_kind_options(GString *content)
+{
+	GEnumClass *enum_class;
+	guint i;
+
+	enum_class = g_type_class_ref(VENTURE_TYPE_LINK_KIND);
+
+	for (i = 0; i < enum_class->n_values; i++)
+	{
+		const GEnumValue *value;
+
+		value = &enum_class->values[i];
+
+		g_string_append(content, "<option value=\"");
+		venture_html_escape_append(content, value->value_nick);
+		g_string_append(content, "\">");
+		venture_html_escape_append(content,
+			venture_link_kind_to_label((VentureLinkKind)value->value));
+		g_string_append(content, "</option>");
+	}
+
+	g_type_class_unref(enum_class);
+}
+
+/*
+ * The "Links" panel, on every detail page.
+ *
+ * venture_web_append_related() finds records pointing at this one through
+ * declared references, and a polymorphic pair is invisible to it. This
+ * panel is the other half: every link touching the record, read from
+ * where the reader stands, with the form to add one. Offered on every
+ * type because that is the point of a link -- an expense can point at the
+ * invoice it was billed through as readily as a release at its tickets.
+ */
+static void
+venture_web_append_links(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autoptr(GPtrArray) links = NULL;
+	g_auto(GStrv) type_names = NULL;
+	const gchar *own_type;
+	gint64 own_id;
+	guint i;
+
+	own_type = venture_entity_get_entity_name(record);
+	own_id = venture_entity_get_id(record);
+
+	links = venture_record_link_find_for(
+		venture_context_get_database(self->context), own_type, own_id, NULL);
+
+	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
+	                         "<h2>Links</h2></div><div class=\"card-body\">");
+
+	if ((NULL == links) || (0 == links->len))
+	{
+		g_string_append(content, "<p class=\"muted\">Nothing linked yet.</p>");
+	}
+	else
+	{
+		g_string_append(content, "<ul class=\"relation-list\">");
+
+		for (i = 0; i < links->len; i++)
+		{
+			g_autoptr(VentureEntity) other = NULL;
+			g_autofree gchar *other_type = NULL;
+			g_autofree gchar *other_label = NULL;
+			g_autofree gchar *note = NULL;
+			VentureRecordLink *link;
+			VentureLinkKind kind;
+			gint64 other_id = 0;
+
+			link = g_ptr_array_index(links, i);
+
+			if (!venture_record_link_other_end(link, own_type, own_id,
+			                                   &other_type, &other_id,
+			                                   &other_label, &kind))
+				continue;
+
+			other = venture_record_link_resolve(
+				venture_context_get_database(self->context), other_type,
+				other_id, NULL);
+
+			if ((NULL != other) && venture_entity_is_deleted(other))
+				g_clear_object(&other);
+
+			g_object_get(link, "note", &note, NULL);
+
+			g_string_append(content, "<li><span class=\"badge\">");
+			venture_html_escape_append(content, venture_link_kind_to_label(kind));
+			g_string_append(content, "</span> <span class=\"muted\">");
+			venture_html_escape_append(content, other_type);
+			g_string_append(content, "</span> ");
+
+			/* Linked only while the other end is still there and its
+			 * module is on; otherwise the stored label, so the page
+			 * can still say what the link was about. */
+			if (NULL != other)
+			{
+				g_autofree gchar *fresh = NULL;
+
+				fresh = venture_entity_get_display_name(other);
+
+				g_string_append_printf(content, "<a href=\"/e/%s/%"
+				                                G_GINT64_FORMAT "\">",
+				                       other_type, other_id);
+				venture_html_escape_append(content,
+					!venture_string_is_empty(fresh) ? fresh : other_label);
+				g_string_append(content, "</a>");
+			}
+			else
+			{
+				venture_html_escape_append(content, other_label);
+				g_string_append(content, " <span class=\"muted\">"
+				                         "(unavailable)</span>");
+			}
+
+			if (!venture_string_is_empty(note))
+			{
+				g_string_append(content, " <span class=\"muted\">\xe2\x80\x94 ");
+				venture_html_escape_append(content, note);
+				g_string_append(content, "</span>");
+			}
+
+			g_string_append_printf(content,
+				" <form method=\"post\" action=\"/links/%" G_GINT64_FORMAT
+				"/delete\" class=\"inline\">"
+				"<input type=\"hidden\" name=\"back\" value=\"/e/%s/%"
+				G_GINT64_FORMAT "\">"
+				"<button class=\"btn btn-sm\" type=\"submit\">Unlink</button>"
+				"</form></li>",
+				venture_entity_get_id(VENTURE_ENTITY(link)), own_type, own_id);
+		}
+
+		g_string_append(content, "</ul>");
+	}
+
+	/* The picker. Every offered type, so a plugin's type and a module's
+	 * are there the moment they are on. */
+	type_names = venture_entity_registry_list_names(
+		venture_context_get_entity_registry(self->context));
+
+	g_string_append(content, "<form method=\"post\" action=\"/links\" "
+	                         "class=\"relate-form\">");
+	g_string_append_printf(content,
+		"<input type=\"hidden\" name=\"source_type\" value=\"%s\">"
+		"<input type=\"hidden\" name=\"source_id\" value=\"%" G_GINT64_FORMAT
+		"\">", own_type, own_id);
+
+	g_string_append(content, "<select name=\"kind\">");
+	venture_web_append_link_kind_options(content);
+	g_string_append(content, "</select> <select name=\"target_type\" required>");
+
+	for (i = 0; NULL != type_names[i]; i++)
+	{
+		/* Links, relations and the audit log are not things one links
+		 * to. */
+		if ((0 == g_strcmp0(type_names[i], "record_link")) ||
+		    (0 == g_strcmp0(type_names[i], "ticket_relation")) ||
+		    (0 == g_strcmp0(type_names[i], "audit_entry")))
+			continue;
+
+		g_string_append(content, "<option value=\"");
+		venture_html_escape_append(content, type_names[i]);
+		g_string_append(content, "\">");
+		venture_html_escape_append(content, type_names[i]);
+		g_string_append(content, "</option>");
+	}
+
+	g_string_append(content,
+		"</select> "
+		"<input type=\"number\" name=\"target_id\" placeholder=\"id\" "
+		"min=\"1\" required> "
+		"<input type=\"text\" name=\"note\" placeholder=\"why (optional)\"> "
+		"<button class=\"btn\" type=\"submit\">Link</button></form>");
+
+	g_string_append(content, "</div></div>");
+}
+
+/*
+ * Parses a kind nick from a form or JSON field, defaulting to related.
+ *
+ * Returns: %TRUE if @text named a kind or was empty
+ */
+static gboolean
+venture_web_parse_link_kind(
+	const gchar	 *text,
+	VentureLinkKind	 *out_kind,
+	GError		**error
+){
+	gint value;
+
+	*out_kind = VENTURE_LINK_KIND_RELATED;
+
+	if (venture_string_is_empty(text))
+		return TRUE;
+
+	if (!venture_enum_from_nick(VENTURE_TYPE_LINK_KIND, text, &value))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "\"%s\" is not a link kind", text);
+		return FALSE;
+	}
+
+	*out_kind = (VentureLinkKind)value;
+
+	return TRUE;
+}
+
+/*
+ * A path back to a record's page, or the dashboard for a value that is
+ * not one. The form sends where it came from; nothing outside this site
+ * is ever redirected to.
+ */
+static gchar *
+venture_web_link_return_path(
+	const gchar	*back,
+	const gchar	*source_type,
+	gint64		 source_id
+){
+	if ((NULL != back) && g_str_has_prefix(back, "/e/") &&
+	    (NULL == strstr(back, "//")))
+		return g_strdup(back);
+
+	if (!venture_string_is_empty(source_type) && (0 != source_id))
+		return g_strdup_printf("/e/%s/%" G_GINT64_FORMAT, source_type,
+		                       source_id);
+
+	return g_strdup("/");
+}
+
+/*
+ * POST /links - link the record the form was on to another.
+ */
+static HtmxResponse *
+venture_web_ui_link_create(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureRecordLink) link = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	HtmxResponse *redirect;
+	VentureActor actor;
+	VentureLinkKind kind;
+	const gchar *source_type;
+	const gchar *source_id;
+	const gchar *target_type;
+	const gchar *target_id;
+	gint64 source;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	source_type = htmx_request_get_form_value(request, "source_type");
+	source_id = htmx_request_get_form_value(request, "source_id");
+	target_type = htmx_request_get_form_value(request, "target_type");
+	target_id = htmx_request_get_form_value(request, "target_id");
+	source = (NULL != source_id) ? g_ascii_strtoll(source_id, NULL, 10) : 0;
+
+	if (!venture_web_parse_link_kind(
+		htmx_request_get_form_value(request, "kind"), &kind, &error))
+		return venture_web_error_response(error);
+
+	link = venture_record_link_create(
+		venture_context_get_database(self->context), source_type, source,
+		kind, target_type,
+		(NULL != target_id) ? g_ascii_strtoll(target_id, NULL, 10) : 0,
+		htmx_request_get_form_value(request, "note"), &error);
+
+	if (NULL == link)
+		return venture_web_error_response(error);
+
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           VENTURE_ENTITY(link), &actor, &error))
+		return venture_web_error_response(error);
+
+	destination = venture_web_link_return_path(
+		htmx_request_get_form_value(request, "back"), source_type, source);
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * POST /links/:id/delete - drop one, and go back to the page it was on.
+ */
+static HtmxResponse *
+venture_web_ui_link_delete(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) link = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	g_autofree gchar *source_type = NULL;
+	HtmxResponse *redirect;
+	VentureActor actor;
+	gint64 source_id = 0;
+	gint64 id;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	link = venture_database_get(venture_context_get_database(self->context),
+	                            VENTURE_TYPE_RECORD_LINK, id, &error);
+
+	if (NULL == link)
+		return venture_web_error_response(error);
+
+	g_object_get(link, "source-type", &source_type, "source-id", &source_id,
+	             NULL);
+
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_delete(venture_context_get_database(self->context),
+	                             link, &actor, &error))
+		return venture_web_error_response(error);
+
+	destination = venture_web_link_return_path(
+		htmx_request_get_form_value(request, "back"), source_type, source_id);
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * GET /api/v1/links/:type/:id - every link touching a record, read from it.
+ */
+static HtmxResponse *
+venture_web_api_links(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	GType entity_type;
+	gint64 id;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_resolve_type(self, params, &entity_type, &error))
+		return venture_web_error_response(error);
+
+	/* Reading a record's links discloses the record's existence and
+	 * name, so the same role the record itself needs. */
+	if (!venture_web_require_for_type(self, principal, entity_type,
+	                                  VENTURE_USER_ROLE_VIEWER, &error))
+		return venture_web_error_response(error);
+
+	id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+
+	node = venture_record_link_describe_for(
+		venture_context_get_database(self->context),
+		g_hash_table_lookup(params, "type"), id, &error);
+
+	if (NULL == node)
+		return venture_web_error_response(error);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * POST /api/v1/links - create a link from a body naming both ends.
+ *
+ * The same as POST /api/v1/record_link, with the body's meaning spelled out
+ * and ?stage=1 honoured the same way, so a client that has learned the one
+ * shape can use either.
+ */
+static HtmxResponse *
+venture_web_api_link_create(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(GError) error = NULL;
+	gboolean stage;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_stage_requested(request, &stage, &error))
+		return venture_web_error_response(error);
+
+	record = VENTURE_ENTITY(venture_record_link_new());
+
+	return venture_web_api_write(self, request, record, NULL, principal, TRUE,
+	                             stage);
 }
 
 /*
@@ -7105,6 +7841,27 @@ venture_web_append_invoice_block(
 	g_string_append(content, "</div></div>");
 }
 
+static void
+venture_web_append_release_block(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+);
+
+static void
+venture_web_append_milestone_block(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+);
+
+static void
+venture_web_append_environment_block(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+);
+
 static HtmxResponse *
 venture_web_ui_detail(
 	HtmxRequest	*request,
@@ -7190,7 +7947,14 @@ venture_web_ui_detail(
 	g_string_append(content, "</dl></div></div>");
 
 	venture_web_append_related(self, content, record);
-	venture_web_append_knowledge(self, content, record);
+
+	/* A link is not offered on a link; the audit log is not linkable. */
+	if ((VENTURE_TYPE_RECORD_LINK != entity_type) &&
+	    (VENTURE_TYPE_AUDIT_ENTRY != entity_type))
+		venture_web_append_links(self, content, record);
+
+	if (venture_web_module_enabled(self, "kb"))
+		venture_web_append_knowledge(self, content, record);
 
 	/* An invoice's lines and total, with the actions its status allows.
 	 * The other type-specific block, for the same reason as the ticket
@@ -7207,13 +7971,28 @@ venture_web_ui_detail(
 	if (VENTURE_TYPE_FORGE_REPO == entity_type)
 		venture_web_append_repo_block(self, content, record);
 
+	/* The factory's pages: what a release shipped and the actions on it,
+	 * a milestone's progress, what an environment is running. */
+	if (venture_web_module_enabled(self, "factory"))
+	{
+		if (VENTURE_TYPE_RELEASE == entity_type)
+			venture_web_append_release_block(self, content, record);
+
+		if (VENTURE_TYPE_MILESTONE == entity_type)
+			venture_web_append_milestone_block(self, content, record);
+
+		if (VENTURE_TYPE_ENVIRONMENT == entity_type)
+			venture_web_append_environment_block(self, content, record);
+	}
+
 	/*
 	 * The other half of a polymorphic relation. On a ticket the panel
 	 * above already lists them, and the audit log is deliberately not
 	 * relatable, so both are skipped here.
 	 */
 	if ((VENTURE_TYPE_TICKET != entity_type) &&
-	    (VENTURE_TYPE_TICKET_RELATION != entity_type))
+	    (VENTURE_TYPE_TICKET_RELATION != entity_type) &&
+	    venture_web_module_enabled(self, "tickets"))
 		venture_web_append_subject_tickets(self, content, record);
 
 	/*
@@ -7223,7 +8002,8 @@ venture_web_ui_detail(
 	 * page knows a specific type, because "click New, pick the ticket
 	 * you were just looking at, type, save" is not how anybody comments.
 	 */
-	if (VENTURE_TYPE_TICKET == entity_type)
+	if ((VENTURE_TYPE_TICKET == entity_type) &&
+	    venture_web_module_enabled(self, "forge"))
 		venture_web_append_ticket_forge_block(self, content, record);
 
 	/* What else this ticket is about, for the many tickets that are
@@ -7281,6 +8061,15 @@ venture_web_ui_ticket_comment(
 	gint64 ticket_id;
 
 	self = user_data;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "tickets");
+
+		if (NULL != gate)
+			return gate;
+	}
 
 	redirect = venture_web_ui_require_session(self, request);
 
@@ -7612,6 +8401,15 @@ venture_web_ui_tickets(
 
 	self = user_data;
 
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "tickets");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	redirect = venture_web_ui_require_session(self, request);
 
 	if (NULL != redirect)
@@ -7902,6 +8700,15 @@ venture_web_ui_ticket_move(
 	gint status_value;
 
 	self = user_data;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "tickets");
+
+		if (NULL != gate)
+			return gate;
+	}
 
 	redirect = venture_web_ui_require_session(self, request);
 
@@ -9460,6 +10267,15 @@ venture_web_ui_kb(
 
 	self = user_data;
 
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "kb");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	redirect = venture_web_ui_require_session(self, request);
 
 	if (NULL != redirect)
@@ -10998,6 +11814,15 @@ venture_web_ui_chat_threads(
 	g_autoptr(GError) error = NULL;
 
 	self = user_data;
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "chat");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	principal = venture_auth_authenticate(self->auth, request);
 
 	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
@@ -11033,6 +11858,15 @@ venture_web_ui_chat_thread(
 	guint i;
 
 	self = user_data;
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "chat");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	principal = venture_auth_authenticate(self->auth, request);
 
 	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
@@ -11106,6 +11940,15 @@ venture_web_ui_chat_thread_delete(
 	guint i;
 
 	self = user_data;
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "chat");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	principal = venture_auth_authenticate(self->auth, request);
 
 	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
@@ -11347,6 +12190,15 @@ venture_web_ui_chat_upload(
 	VentureActor actor;
 
 	self = user_data;
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "chat");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	principal = venture_auth_authenticate(self->auth, request);
 
 	/* An upload creates a document record, which is a write. */
@@ -11824,6 +12676,15 @@ venture_web_ui_chat_decide(
 	gboolean decided;
 
 	self = user_data;
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "chat");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	principal = venture_auth_authenticate(self->auth, request);
 
 	/* Applying a staged write is a write; deciding is the editor's. */
@@ -11948,6 +12809,15 @@ venture_web_ui_chat(
 	gint64 thread_id;
 
 	self = user_data;
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "chat");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	principal = venture_auth_authenticate(self->auth, request);
 
 	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
@@ -12316,6 +13186,15 @@ venture_web_api_kb_search(
 
 	self = user_data;
 
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_api(self, "kb");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
 
 	if (NULL != denied)
@@ -12460,6 +13339,15 @@ venture_web_api_kb_sync(
 	 * writes records from it, which is a change to what the assistant
 	 * will say.
 	 */
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_api(self, "kb");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
 
 	if (NULL != denied)
@@ -12504,6 +13392,15 @@ venture_web_api_kb_reindex(
 	gint indexed;
 
 	self = user_data;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_api(self, "kb");
+
+		if (NULL != gate)
+			return gate;
+	}
 
 	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
 
@@ -12559,6 +13456,15 @@ venture_web_api_kb_export(
 	gint64 kb_id;
 
 	self = user_data;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_api(self, "kb");
+
+		if (NULL != gate)
+			return gate;
+	}
 
 	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
 
@@ -12643,6 +13549,15 @@ venture_web_api_kb_import(
 	guint i;
 
 	self = user_data;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_api(self, "kb");
+
+		if (NULL != gate)
+			return gate;
+	}
 
 	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
 
@@ -12780,6 +13695,15 @@ venture_web_api_kb_crossref(
 
 	self = user_data;
 
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_api(self, "kb");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
 
 	if (NULL != denied)
@@ -12843,6 +13767,15 @@ venture_web_api_kb_from_record(
 	gint64 article_id;
 
 	self = user_data;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_api(self, "kb");
+
+		if (NULL != gate)
+			return gate;
+	}
 
 	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
 
@@ -12908,6 +13841,15 @@ venture_web_api_plugins(
 	self = user_data;
 
 	/* Names filesystem paths, so owner only. */
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_api(self, "plugins");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_OWNER);
 
 	if (NULL != denied)
@@ -12933,6 +13875,213 @@ venture_web_api_plugins(
 	return venture_web_json_response(node, 200);
 }
 
+/*
+ * GET /api/v1/modules - every module, in dependency order, with its state.
+ *
+ * Viewer role: which modules an install runs is the shape of the product
+ * a signed-in user is looking at, not activity, and a client -- venturectl,
+ * an agent -- needs it to know which record types and pages to expect.
+ */
+static HtmxResponse *
+venture_web_api_modules(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(JsonNode) node = NULL;
+	HtmxResponse *denied;
+
+	self = user_data;
+
+	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+
+	if (NULL != denied)
+		return denied;
+
+	node = venture_module_registry_describe(
+		venture_context_get_modules(self->context));
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * Appends the names in @array as a comma-separated run of badges, or a
+ * dash when there are none.
+ */
+static void
+venture_web_append_module_names(
+	GString		*content,
+	JsonArray	*array
+){
+	guint n;
+	guint i;
+
+	n = (NULL != array) ? json_array_get_length(array) : 0;
+
+	if (0 == n)
+	{
+		g_string_append(content, "<span class=\"muted\">\xe2\x80\x94</span>");
+		return;
+	}
+
+	for (i = 0; i < n; i++)
+	{
+		if (i > 0)
+			g_string_append(content, " ");
+
+		g_string_append(content, "<span class=\"badge\">");
+		venture_html_escape_append(content,
+		                           json_array_get_string_element(array, i));
+		g_string_append(content, "</span>");
+	}
+}
+
+/*
+ * GET /modules - the module table, for reading.
+ *
+ * Deliberately read-only. A module is switched in the configuration file
+ * and takes effect at the next start, because turning one off means its
+ * tables stop being migrated, its reports leave the registry and its
+ * services are never built -- none of which can be undone in a running
+ * process without a restart's worth of teardown. The page says how.
+ */
+static HtmxResponse *
+venture_web_ui_modules(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autoptr(JsonNode) list = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *redirect;
+	JsonArray *modules;
+	guint enabled;
+	guint i;
+
+	self = user_data;
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	list = venture_module_registry_describe(
+		venture_context_get_modules(self->context));
+	modules = json_node_get_array(list);
+	enabled = 0;
+
+	for (i = 0; i < json_array_get_length(modules); i++)
+	{
+		if (venture_json_object_get_bool(
+			json_array_get_object_element(modules, i), "enabled", FALSE))
+			enabled++;
+	}
+
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+	                       "<h1>Modules</h1><span class=\"subtitle\">");
+	g_string_append_printf(content, "%u of %u enabled", enabled,
+	                       json_array_get_length(modules));
+	g_string_append(content, "</span></div></div>");
+
+	g_string_append(content,
+		"<div class=\"card\"><div class=\"card-body\">"
+		"<p>A module is a group of record types, pages, reports and "
+		"services that switch on and off together. Modules are switched "
+		"in the configuration file and take effect at the next start:</p>"
+		"<pre><code>modules:\n  crm:\n    enabled: false</code></pre>"
+		"<p class=\"muted\">A module that requires one that is off is "
+		"refused at startup rather than run half-working. Nothing is "
+		"deleted by turning a module off; its tables and rows stay, and "
+		"turning it back on shows them again. <code>venture "
+		"--list-modules</code> prints this table for a configuration "
+		"without starting the server.</p></div></div>");
+
+	g_string_append(content,
+		"<div class=\"card\"><div class=\"table-wrap\"><table class=\"data\">"
+		"<thead><tr><th>Module</th><th>State</th><th>Requires</th>"
+		"<th>Needed by</th><th>Record types</th><th>Reports</th></tr></thead>"
+		"<tbody>");
+
+	for (i = 0; i < json_array_get_length(modules); i++)
+	{
+		JsonObject *module;
+		const gchar *reason;
+		gboolean on;
+		gboolean locked;
+
+		module = json_array_get_object_element(modules, i);
+		on = venture_json_object_get_bool(module, "enabled", FALSE);
+		locked = venture_json_object_get_bool(module, "locked", FALSE);
+		reason = venture_json_object_get_string(module, "disabled_reason",
+		                                        NULL);
+
+		g_string_append(content, "<tr><td><strong>");
+		venture_html_escape_append(content,
+			venture_json_object_get_string(module, "label", ""));
+		g_string_append(content, "</strong><br><span class=\"muted\">");
+		venture_html_escape_append(content,
+			venture_json_object_get_string(module, "name", ""));
+
+		if (0 == g_strcmp0(venture_json_object_get_string(module, "origin",
+		                                                  "builtin"),
+		                   "plugin"))
+			g_string_append(content, " \xc2\xb7 plugin");
+
+		g_string_append(content, "</span><br><small>");
+		venture_html_escape_append(content,
+			venture_json_object_get_string(module, "description", ""));
+		g_string_append(content, "</small></td><td>");
+
+		if (locked)
+			g_string_append(content, "<span class=\"badge\">always on</span>");
+		else if (on)
+			g_string_append(content, "<span class=\"badge positive\">"
+			                         "enabled</span>");
+		else
+		{
+			g_string_append(content, "<span class=\"badge negative\">"
+			                         "disabled</span>");
+
+			if (!venture_string_is_empty(reason))
+			{
+				g_string_append(content, "<br><small class=\"muted\">");
+				venture_html_escape_append(content, reason);
+				g_string_append(content, "</small>");
+			}
+		}
+
+		g_string_append(content, "</td><td>");
+		venture_web_append_module_names(content,
+			json_object_get_array_member(module, "requires"));
+		g_string_append(content, "</td><td>");
+		venture_web_append_module_names(content,
+			json_object_get_array_member(module, "required_by"));
+		g_string_append(content, "</td><td>");
+		venture_web_append_module_names(content,
+			json_object_get_array_member(module, "entity_types"));
+		g_string_append(content, "</td><td>");
+		venture_web_append_module_names(content,
+			json_object_get_array_member(module, "reports"));
+		g_string_append(content, "</td></tr>");
+	}
+
+	g_string_append(content, "</tbody></table></div></div>");
+
+	return venture_web_html_response(
+		venture_web_page(self, request, "/modules", "Modules", content->str),
+		200);
+}
+
 static HtmxResponse *
 venture_web_api_venture_types(
 	HtmxRequest	*request,
@@ -12945,6 +14094,15 @@ venture_web_api_venture_types(
 	const gchar *name;
 
 	self = user_data;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_api(self, "plugins");
+
+		if (NULL != gate)
+			return gate;
+	}
 
 	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
 
@@ -12991,6 +14149,15 @@ venture_web_api_automations(
 	HtmxResponse *denied;
 
 	self = user_data;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_api(self, "automation");
+
+		if (NULL != gate)
+			return gate;
+	}
 
 	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_OWNER);
 
@@ -13245,6 +14412,15 @@ venture_web_ui_forge_token(
 	VentureActor actor;
 	const gchar *token;
 
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "forge");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	redirect = venture_web_ui_require_session(self, request);
 
 	if (NULL != redirect)
@@ -13313,6 +14489,15 @@ venture_web_ui_forge_secret(
 	VentureActor actor;
 	const gchar *secret;
 
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "forge");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	redirect = venture_web_ui_require_session(self, request);
 
 	if (NULL != redirect)
@@ -13378,6 +14563,15 @@ venture_web_ui_forge_verify(
 	g_autofree gchar *destination = NULL;
 	HtmxResponse *redirect;
 	VentureActor actor;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "forge");
+
+		if (NULL != gate)
+			return gate;
+	}
 
 	redirect = venture_web_ui_require_session(self, request);
 
@@ -13480,6 +14674,15 @@ venture_web_ui_ticket_relate(
 	const gchar *note;
 	gint64 ticket_id;
 
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "tickets");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	redirect = venture_web_ui_require_session(self, request);
 
 	if (NULL != redirect)
@@ -13536,6 +14739,15 @@ venture_web_ui_relation_delete(
 	HtmxResponse *redirect;
 	VentureActor actor;
 	gint64 ticket_id = 0;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "tickets");
+
+		if (NULL != gate)
+			return gate;
+	}
 
 	redirect = venture_web_ui_require_session(self, request);
 
@@ -13606,6 +14818,15 @@ venture_web_ui_ticket_link(
 	gint64 forge_id = 0;
 	gint64 number = 0;
 	gboolean push_issues = FALSE;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "forge");
+
+		if (NULL != gate)
+			return gate;
+	}
 
 	redirect = venture_web_ui_require_session(self, request);
 
@@ -13744,6 +14965,15 @@ venture_web_ui_ticket_branch(
 	gint64 forge_id = 0;
 	gint64 number = 0;
 	gboolean exists = FALSE;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "forge");
+
+		if (NULL != gate)
+			return gate;
+	}
 
 	redirect = venture_web_ui_require_session(self, request);
 
@@ -13974,6 +15204,15 @@ venture_web_ui_ticket_work(
 	HtmxResponse *redirect;
 	gint64 ticket_id;
 
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "forge");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	redirect = venture_web_ui_require_session(self, request);
 
 	if (NULL != redirect)
@@ -14027,6 +15266,15 @@ venture_web_ui_run_cancel(
 	HtmxResponse *redirect;
 	gint64 run_id;
 
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "forge");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	redirect = venture_web_ui_require_session(self, request);
 
 	if (NULL != redirect)
@@ -14074,6 +15322,15 @@ venture_web_ui_ticket_runs(
 	gint64 ticket_id;
 	gint64 interval = 3;
 	gboolean live = FALSE;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "forge");
+
+		if (NULL != gate)
+			return gate;
+	}
 
 	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
 
@@ -14324,6 +15581,15 @@ venture_web_api_forge_token(
 	now = g_date_time_new_now_utc();
 	g_object_set(forge, "token", token, "token-set-at", now, NULL);
 
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_api(self, "forge");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
 
@@ -14396,6 +15662,15 @@ venture_web_api_forge_secret(
 	g_object_set(forge, "webhook-secret", secret,
 	             "webhook-secret-set-at", now, NULL);
 
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_api(self, "forge");
+
+		if (NULL != gate)
+			return gate;
+	}
+
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
 
@@ -14467,6 +15742,15 @@ venture_web_api_forge_verify(
 
 	now = g_date_time_new_now_utc();
 	g_object_set(forge, "bot-username", login, "verified-at", now, NULL);
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_api(self, "forge");
+
+		if (NULL != gate)
+			return gate;
+	}
 
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
@@ -14593,6 +15877,24 @@ venture_web_api_restore(
  * and retries, and an AI run takes minutes.
  */
 static HtmxResponse *
+venture_web_forge_webhook_workflow(
+	VentureWebServer	*self,
+	VentureForge		*forge,
+	VentureForgeClient	*client,
+	SoupMessageHeaders	*headers,
+	JsonNode		*payload
+);
+
+static HtmxResponse *
+venture_web_forge_webhook_release(
+	VentureWebServer	*self,
+	VentureForge		*forge,
+	VentureForgeClient	*client,
+	SoupMessageHeaders	*headers,
+	JsonNode		*payload
+);
+
+static HtmxResponse *
 venture_web_forge_webhook(
 	HtmxRequest	*request,
 	GHashTable	*params,
@@ -14626,6 +15928,11 @@ venture_web_forge_webhook(
 	const gchar *event_name;
 
 	memset(&event, 0, sizeof(event));
+
+	/* A forge that keeps getting 404s disables the hook, which is the
+	 * right outcome for a module that is off. */
+	if (!venture_web_module_enabled(self, "forge"))
+		return venture_web_forge_ack(SOUP_STATUS_NOT_FOUND);
 
 	g_object_get(venture_context_get_config(self->context),
 	             "forge-webhooks-enabled", &enabled,
@@ -14697,6 +16004,27 @@ venture_web_forge_webhook(
 
 	if (venture_string_is_empty(event_name))
 		event_name = soup_message_headers_get_one(headers, "X-Gitea-Event");
+
+	/*
+	 * The factory's two events, handed off whole: a CI run becomes a
+	 * build, a release cut on the forge becomes a release record.
+	 */
+	if ((0 == g_strcmp0(event_name, "workflow_run")) ||
+	    (0 == g_strcmp0(event_name, "release")))
+	{
+		parser = json_parser_new();
+
+		if ((NULL == data) ||
+		    !json_parser_load_from_data(parser, data, (gssize)length, NULL))
+			return venture_web_forge_ack(SOUP_STATUS_BAD_REQUEST);
+
+		if (0 == g_strcmp0(event_name, "workflow_run"))
+			return venture_web_forge_webhook_workflow(self, forge, client,
+				headers, json_parser_get_root(parser));
+
+		return venture_web_forge_webhook_release(self, forge, client, headers,
+			json_parser_get_root(parser));
+	}
 
 	/*
 	 * Anything that is not an issue is acknowledged and dropped, not
@@ -14926,6 +16254,1403 @@ venture_web_forge_webhook(
 	return venture_web_forge_ack(SOUP_STATUS_ACCEPTED);
 }
 
+/* --- The software factory ------------------------------------------------- */
+
+/*
+ * The automation actor the factory writes as, so a build the CI reported
+ * is distinguishable in the audit log from one a person typed.
+ */
+static void
+venture_web_factory_actor(VentureActor *actor)
+{
+	actor->kind = VENTURE_ACTOR_KIND_AUTOMATION;
+	actor->name = "forge";
+	actor->prompt = NULL;
+	actor->request_id = NULL;
+	actor->approved_by = NULL;
+}
+
+/*
+ * Parses a forge timestamp, tolerating an absent or unparseable one: a
+ * build without a start time is still a build.
+ *
+ * Returns: (transfer full) (nullable): the instant
+ */
+static GDateTime *
+venture_web_factory_parse_time(const gchar *text)
+{
+	if (venture_string_is_empty(text))
+		return NULL;
+
+	return venture_time_from_string(text, NULL);
+}
+
+/*
+ * What a workflow run's status and conclusion mean as a build status.
+ */
+static VentureBuildStatus
+venture_web_factory_build_status(
+	const gchar	*action,
+	const gchar	*status,
+	const gchar	*conclusion
+){
+	if ((0 == g_strcmp0(status, "completed")) ||
+	    (0 == g_strcmp0(action, "completed")))
+	{
+		if (0 == g_strcmp0(conclusion, "success"))
+			return VENTURE_BUILD_STATUS_SUCCEEDED;
+
+		if ((0 == g_strcmp0(conclusion, "cancelled")) ||
+		    (0 == g_strcmp0(conclusion, "skipped")))
+			return VENTURE_BUILD_STATUS_CANCELLED;
+
+		return VENTURE_BUILD_STATUS_FAILED;
+	}
+
+	if ((0 == g_strcmp0(status, "in_progress")) ||
+	    (0 == g_strcmp0(action, "in_progress")))
+		return VENTURE_BUILD_STATUS_RUNNING;
+
+	return VENTURE_BUILD_STATUS_QUEUED;
+}
+
+/*
+ * Finds the build a workflow run already produced, matched on the
+ * repository and the forge's own run id. A retried delivery and the
+ * completed event after the requested one both land on the same row.
+ *
+ * Returns: (transfer full) (nullable): the build
+ */
+static VentureEntity *
+venture_web_factory_find_build(
+	VentureWebServer	*self,
+	gint64			 repo_id,
+	gint64			 run_id
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) builds = NULL;
+	g_autofree gchar *external = NULL;
+
+	external = g_strdup_printf("%" G_GINT64_FORMAT, run_id);
+	query = venture_query_new(VENTURE_TYPE_BUILD);
+
+	if (!venture_query_add_filter_int(query, "repo-id", VENTURE_FILTER_OP_EQ,
+	                                  repo_id, NULL) ||
+	    !venture_query_add_filter_string(query, "external-id",
+	                                     VENTURE_FILTER_OP_EQ, external, NULL))
+		return NULL;
+
+	venture_query_set_limit(query, 1);
+	builds = venture_database_find(venture_context_get_database(self->context),
+	                               query, NULL);
+
+	if ((NULL == builds) || (0 == builds->len))
+		return NULL;
+
+	return g_object_ref(g_ptr_array_index(builds, 0));
+}
+
+/*
+ * A workflow_run delivery: one CI run becomes, or updates, one build.
+ */
+static HtmxResponse *
+venture_web_forge_webhook_workflow(
+	VentureWebServer	*self,
+	VentureForge		*forge,
+	VentureForgeClient	*client,
+	SoupMessageHeaders	*headers,
+	JsonNode		*payload
+){
+	g_autoptr(VentureForgeRepo) repo = NULL;
+	g_autoptr(VentureEntity) build = NULL;
+	g_autoptr(GDateTime) started = NULL;
+	g_autoptr(GDateTime) finished = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *external = NULL;
+	VentureForgeWorkflowEvent event;
+	VentureActor actor;
+	VentureBuildStatus status;
+	gint64 repo_id;
+
+	/* Builds are the factory's; without it the delivery is acknowledged
+	 * and dropped, like any event nobody subscribed to. */
+	if (!venture_web_module_enabled(self, "factory"))
+		return venture_web_forge_ack(SOUP_STATUS_NO_CONTENT);
+
+	if (!venture_forge_client_parse_workflow_event(client, payload, headers,
+	                                               &event, &error))
+	{
+		venture_forge_workflow_event_clear(&event);
+		return venture_web_forge_ack(SOUP_STATUS_BAD_REQUEST);
+	}
+
+	repo = venture_web_forge_repo_by_name(self,
+		venture_entity_get_id(VENTURE_ENTITY(forge)), event.repo_full_name);
+
+	if (NULL == repo)
+	{
+		venture_forge_workflow_event_clear(&event);
+		return venture_web_forge_ack(SOUP_STATUS_NO_CONTENT);
+	}
+
+	repo_id = venture_entity_get_id(VENTURE_ENTITY(repo));
+	build = venture_web_factory_find_build(self, repo_id, event.run_id);
+	status = venture_web_factory_build_status(event.action, event.status,
+	                                          event.conclusion);
+	started = venture_web_factory_parse_time(event.started_at);
+	finished = venture_web_factory_parse_time(event.finished_at);
+	external = g_strdup_printf("%" G_GINT64_FORMAT, event.run_id);
+
+	if (NULL == build)
+	{
+		build = VENTURE_ENTITY(venture_build_new());
+		venture_entity_set_organization_id(build,
+			venture_entity_get_organization_id(VENTURE_ENTITY(repo)));
+		g_object_set(build,
+		             "repo-id", repo_id,
+		             "external-id", external,
+		             "trigger", VENTURE_BUILD_TRIGGER_WEBHOOK,
+		             NULL);
+	}
+
+	g_object_set(build,
+	             "title", event.title,
+	             "workflow", event.workflow_name,
+	             "number", event.run_number,
+	             "ref", event.head_branch,
+	             "commit", event.head_sha,
+	             "url", event.url,
+	             "status", status,
+	             NULL);
+
+	if (NULL != started)
+		g_object_set(build, "started-at", started, NULL);
+
+	/* Finished only once it has: a queued run's updated_at is when it
+	 * was queued, and a build that reads as finished before it started
+	 * is a lie in the lead-time report. */
+	if ((NULL != finished) &&
+	    ((VENTURE_BUILD_STATUS_SUCCEEDED == status) ||
+	     (VENTURE_BUILD_STATUS_FAILED == status) ||
+	     (VENTURE_BUILD_STATUS_CANCELLED == status)))
+		g_object_set(build, "finished-at", finished, NULL);
+
+	venture_web_factory_actor(&actor);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           build, &actor, &error))
+	{
+		g_warning("venture_forge: cannot record build %s of %s: %s", external,
+		          event.repo_full_name, error->message);
+		venture_forge_workflow_event_clear(&event);
+		return venture_web_forge_ack(SOUP_STATUS_INTERNAL_SERVER_ERROR);
+	}
+
+	venture_forge_workflow_event_clear(&event);
+
+	return venture_web_forge_ack(SOUP_STATUS_ACCEPTED);
+}
+
+/*
+ * Finds the release a forge release already produced: by the forge's id
+ * first, then by tag, so a release VENTURE published (which knows the id)
+ * and one cut on the forge (which VENTURE first hears of by tag) both
+ * resolve to one row.
+ *
+ * Returns: (transfer full) (nullable): the release
+ */
+static VentureEntity *
+venture_web_factory_find_release(
+	VentureWebServer	*self,
+	gint64			 repo_id,
+	gint64			 external_id,
+	const gchar		*tag
+){
+	gint pass;
+
+	for (pass = 0; pass < 2; pass++)
+	{
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) releases = NULL;
+
+		if ((0 == pass) && (0 == external_id))
+			continue;
+
+		if ((1 == pass) && venture_string_is_empty(tag))
+			continue;
+
+		query = venture_query_new(VENTURE_TYPE_RELEASE);
+
+		if (!venture_query_add_filter_int(query, "repo-id",
+		                                  VENTURE_FILTER_OP_EQ, repo_id, NULL))
+			return NULL;
+
+		if (0 == pass)
+		{
+			if (!venture_query_add_filter_int(query, "external-id",
+			                                  VENTURE_FILTER_OP_EQ,
+			                                  external_id, NULL))
+				return NULL;
+		}
+		else
+		{
+			if (!venture_query_add_filter_string(query, "tag",
+			                                     VENTURE_FILTER_OP_EQ, tag,
+			                                     NULL))
+				return NULL;
+		}
+
+		venture_query_set_limit(query, 1);
+		releases = venture_database_find(
+			venture_context_get_database(self->context), query, NULL);
+
+		if ((NULL != releases) && (releases->len > 0))
+			return g_object_ref(g_ptr_array_index(releases, 0));
+	}
+
+	return NULL;
+}
+
+/*
+ * "v1.2.0" is version 1.2.0; "1.2.0" is too. Anything else is its own
+ * version string.
+ */
+static gchar *
+venture_web_factory_version_from_tag(const gchar *tag)
+{
+	if (venture_string_is_empty(tag))
+		return g_strdup("");
+
+	if ((('v' == tag[0]) || ('V' == tag[0])) && g_ascii_isdigit(tag[1]))
+		return g_strdup(tag + 1);
+
+	return g_strdup(tag);
+}
+
+/*
+ * A release delivery: a release cut on the forge becomes, or updates, a
+ * release record.
+ */
+static HtmxResponse *
+venture_web_forge_webhook_release(
+	VentureWebServer	*self,
+	VentureForge		*forge,
+	VentureForgeClient	*client,
+	SoupMessageHeaders	*headers,
+	JsonNode		*payload
+){
+	g_autoptr(VentureForgeRepo) repo = NULL;
+	g_autoptr(VentureEntity) release = NULL;
+	g_autoptr(GDateTime) published = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *existing_changelog = NULL;
+	VentureForgeReleaseEvent event;
+	VentureActor actor;
+	gint64 repo_id;
+	gint64 product_id = 0;
+
+	if (!venture_web_module_enabled(self, "factory"))
+		return venture_web_forge_ack(SOUP_STATUS_NO_CONTENT);
+
+	if (!venture_forge_client_parse_release_event(client, payload, headers,
+	                                              &event, &error))
+	{
+		venture_forge_release_event_clear(&event);
+		return venture_web_forge_ack(SOUP_STATUS_BAD_REQUEST);
+	}
+
+	repo = venture_web_forge_repo_by_name(self,
+		venture_entity_get_id(VENTURE_ENTITY(forge)), event.repo_full_name);
+
+	if (NULL == repo)
+	{
+		venture_forge_release_event_clear(&event);
+		return venture_web_forge_ack(SOUP_STATUS_NO_CONTENT);
+	}
+
+	repo_id = venture_entity_get_id(VENTURE_ENTITY(repo));
+	g_object_get(repo, "product-id", &product_id, NULL);
+
+	release = venture_web_factory_find_release(self, repo_id, event.release_id,
+	                                           event.tag);
+
+	if (NULL == release)
+	{
+		g_autofree gchar *version = NULL;
+
+		/* A release deleted on the forge that VENTURE never knew is
+		 * nothing to record. */
+		if (0 == g_strcmp0(event.action, "deleted"))
+		{
+			venture_forge_release_event_clear(&event);
+			return venture_web_forge_ack(SOUP_STATUS_NO_CONTENT);
+		}
+
+		version = venture_web_factory_version_from_tag(event.tag);
+
+		release = VENTURE_ENTITY(venture_release_new());
+		venture_entity_set_organization_id(release,
+			venture_entity_get_organization_id(VENTURE_ENTITY(repo)));
+		g_object_set(release,
+		             "number", version,
+		             "repo-id", repo_id,
+		             "product-id", product_id,
+		             NULL);
+	}
+
+	g_object_get(release, "changelog", &existing_changelog, NULL);
+
+	g_object_set(release,
+	             "tag", event.tag,
+	             "name", event.name,
+	             "url", event.url,
+	             "external-id", event.release_id,
+	             NULL);
+
+	/* The forge's notes fill an empty changelog and never overwrite one
+	 * somebody wrote here. */
+	if (venture_string_is_empty(existing_changelog) &&
+	    !venture_string_is_empty(event.body))
+		g_object_set(release, "changelog", event.body, NULL);
+
+	if (0 == g_strcmp0(event.action, "deleted"))
+	{
+		g_object_set(release, "status", VENTURE_RELEASE_STATUS_YANKED, NULL);
+	}
+	else if (event.draft)
+	{
+		g_object_set(release, "status", VENTURE_RELEASE_STATUS_IN_PROGRESS,
+		             NULL);
+	}
+	else
+	{
+		published = venture_web_factory_parse_time(event.published_at);
+
+		if (NULL == published)
+			published = g_date_time_new_now_utc();
+
+		g_object_set(release,
+		             "status", VENTURE_RELEASE_STATUS_RELEASED,
+		             "released-at", published,
+		             NULL);
+	}
+
+	venture_web_factory_actor(&actor);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           release, &actor, &error))
+	{
+		g_warning("venture_forge: cannot record release %s of %s: %s",
+		          event.tag, event.repo_full_name, error->message);
+		venture_forge_release_event_clear(&event);
+		return venture_web_forge_ack(SOUP_STATUS_INTERNAL_SERVER_ERROR);
+	}
+
+	venture_forge_release_event_clear(&event);
+
+	return venture_web_forge_ack(SOUP_STATUS_ACCEPTED);
+}
+
+/*
+ * The tickets a release shipped, oldest first.
+ *
+ * Returns: (transfer container): the tickets
+ */
+static GPtrArray *
+venture_web_factory_release_tickets(
+	VentureWebServer	*self,
+	gint64			 release_id
+){
+	g_autoptr(VentureQuery) query = NULL;
+
+	query = venture_query_new(VENTURE_TYPE_TICKET);
+
+	if (!venture_query_add_filter_int(query, "release-id",
+	                                  VENTURE_FILTER_OP_EQ, release_id, NULL))
+		return NULL;
+
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_set_limit(query, 500);
+
+	return venture_database_find(venture_context_get_database(self->context),
+	                             query, NULL);
+}
+
+/*
+ * A changelog drafted from the tickets, grouped by issue type in the
+ * enum's order so bugs and stories always land in the same place. Markdown,
+ * because that is what a forge renders a release body as.
+ *
+ * Returns: (transfer full): the text
+ */
+static gchar *
+venture_web_factory_draft_changelog(
+	VentureWebServer	*self,
+	VentureEntity		*release
+){
+	g_autoptr(GString) text = NULL;
+	g_autoptr(GPtrArray) tickets = NULL;
+	g_auto(GStrv) types = NULL;
+	g_autofree gchar *version = NULL;
+	g_autofree gchar *name = NULL;
+	gsize t;
+
+	g_object_get(release, "number", &version, "name", &name, NULL);
+
+	text = g_string_new(NULL);
+	g_string_append_printf(text, "## %s", version);
+
+	if (!venture_string_is_empty(name))
+		g_string_append_printf(text, " \xe2\x80\x94 %s", name);
+
+	g_string_append(text, "\n");
+
+	tickets = venture_web_factory_release_tickets(
+		self, venture_entity_get_id(release));
+
+	if ((NULL == tickets) || (0 == tickets->len))
+	{
+		g_string_append(text, "\nNo tickets are marked as fixed in this "
+		                      "release yet.\n");
+		return g_string_free(g_steal_pointer(&text), FALSE);
+	}
+
+	types = venture_enum_list_nicks(VENTURE_TYPE_ISSUE_TYPE);
+
+	for (t = 0; NULL != types[t]; t++)
+	{
+		gboolean heading = FALSE;
+		gint wanted;
+		guint i;
+
+		if (!venture_enum_from_nick(VENTURE_TYPE_ISSUE_TYPE, types[t], &wanted))
+			continue;
+
+		for (i = 0; i < tickets->len; i++)
+		{
+			g_autofree gchar *title = NULL;
+			VentureEntity *ticket;
+			VentureIssueType issue_type;
+
+			ticket = g_ptr_array_index(tickets, i);
+			g_object_get(ticket, "issue-type", &issue_type, "title", &title,
+			             NULL);
+
+			if ((gint)issue_type != wanted)
+				continue;
+
+			if (!heading)
+			{
+				g_autofree gchar *label = NULL;
+
+				label = venture_web_label_from_name(types[t]);
+				g_string_append_printf(text, "\n### %s\n\n", label);
+				heading = TRUE;
+			}
+
+			g_string_append_printf(text, "- #%" G_GINT64_FORMAT " %s\n",
+			                       venture_entity_get_id(ticket),
+			                       (NULL != title) ? title : "");
+		}
+	}
+
+	return g_string_free(g_steal_pointer(&text), FALSE);
+}
+
+/*
+ * A release's page: what it shipped, how it was built, where it went, and
+ * the two actions the generated form cannot offer -- drafting the changelog
+ * from the tickets, and publishing to the forge.
+ */
+static void
+venture_web_append_release_block(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autoptr(GPtrArray) tickets = NULL;
+	g_autofree gchar *changelog = NULL;
+	g_autofree gchar *tag = NULL;
+	g_autofree gchar *url = NULL;
+	VentureReleaseStatus status;
+	gint64 id;
+	gint64 repo_id = 0;
+	guint i;
+
+	id = venture_entity_get_id(record);
+	g_object_get(record, "changelog", &changelog, "tag", &tag, "url", &url,
+	             "status", &status, "repo-id", &repo_id, NULL);
+
+	tickets = venture_web_factory_release_tickets(self, id);
+
+	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
+	                         "<h2>Shipped in this release</h2></div>"
+	                         "<div class=\"card-body\">");
+
+	if ((NULL == tickets) || (0 == tickets->len))
+	{
+		g_string_append(content,
+			"<p class=\"muted\">No tickets are marked as fixed in this "
+			"release. Set a ticket's <em>Fixed in</em> to add it.</p>");
+	}
+	else
+	{
+		g_string_append(content, "<ul class=\"relation-list\">");
+
+		for (i = 0; i < tickets->len; i++)
+		{
+			g_autofree gchar *title = NULL;
+			VentureEntity *ticket;
+			VentureIssueType issue_type;
+
+			ticket = g_ptr_array_index(tickets, i);
+			g_object_get(ticket, "title", &title, "issue-type", &issue_type,
+			             NULL);
+
+			g_string_append(content, "<li><span class=\"badge\">");
+			venture_html_escape_append(content,
+				venture_enum_to_nick(VENTURE_TYPE_ISSUE_TYPE, (gint)issue_type));
+			g_string_append_printf(content,
+				"</span> <a href=\"/e/ticket/%" G_GINT64_FORMAT "\">",
+				venture_entity_get_id(ticket));
+			venture_html_escape_append(content, title);
+			g_string_append(content, "</a></li>");
+		}
+
+		g_string_append(content, "</ul>");
+	}
+
+	g_string_append_printf(content,
+		"<form method=\"post\" action=\"/releases/%" G_GINT64_FORMAT
+		"/changelog\" class=\"inline\">"
+		"<button class=\"btn btn-sm\" type=\"submit\">%s</button>"
+		"<label class=\"muted\"> <input type=\"checkbox\" name=\"replace\" "
+		"value=\"1\"> replace what is there</label></form>",
+		id, venture_string_is_empty(changelog) ? "Draft changelog"
+		                                       : "Redraft changelog");
+
+	/* Publishing needs a repository on a forge, and is offered once,
+	 * because a second publish is a second release on the forge. */
+	if ((0 != repo_id) && venture_web_module_enabled(self, "forge") &&
+	    venture_string_is_empty(url))
+	{
+		g_string_append_printf(content,
+			" <form method=\"post\" action=\"/releases/%" G_GINT64_FORMAT
+			"/publish\" class=\"inline\">"
+			"<button class=\"btn btn-sm btn-primary\" type=\"submit\">"
+			"Publish to forge</button>"
+			"<label class=\"muted\"> <input type=\"checkbox\" "
+			"name=\"prerelease\" value=\"1\"> pre-release</label></form>", id);
+	}
+	else if (!venture_string_is_empty(url))
+	{
+		g_string_append(content, " <a class=\"btn btn-sm\" href=\"");
+		venture_html_escape_append(content, url);
+		g_string_append(content, "\">On the forge</a>");
+	}
+
+	g_string_append(content, "</div></div>");
+}
+
+/*
+ * POST /releases/:id/changelog - draft the changelog from the tickets.
+ */
+static HtmxResponse *
+venture_web_ui_release_changelog(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) release = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	g_autofree gchar *existing = NULL;
+	g_autofree gchar *draft = NULL;
+	HtmxResponse *redirect;
+	VentureActor actor;
+	gint64 id;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "factory");
+
+		if (NULL != gate)
+			return gate;
+	}
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	release = venture_database_get(venture_context_get_database(self->context),
+	                               VENTURE_TYPE_RELEASE, id, &error);
+
+	if (NULL == release)
+		return venture_web_error_response(error);
+
+	destination = g_strdup_printf("/e/release/%" G_GINT64_FORMAT, id);
+	g_object_get(release, "changelog", &existing, NULL);
+
+	/* A changelog somebody edited is kept unless they asked otherwise:
+	 * the draft is a starting point, not the truth. */
+	if (!venture_string_is_empty(existing) &&
+	    (0 != g_strcmp0(htmx_request_get_form_value(request, "replace"), "1")))
+		return venture_web_redirect_to(destination);
+
+	draft = venture_web_factory_draft_changelog(self, release);
+	g_object_set(release, "changelog", draft, NULL);
+
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           release, &actor, &error))
+		return venture_web_error_response(error);
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * POST /releases/:id/publish - cut the release on the forge.
+ *
+ * The tag comes from the record, or "v" plus the version when none is set;
+ * the body is the changelog. The forge creates the tag on the default
+ * branch if it does not exist, and answers with the id and the page,
+ * which are written back so the release is recognised when its own
+ * webhook arrives a moment later.
+ */
+static HtmxResponse *
+venture_web_ui_release_publish(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) release = NULL;
+	g_autoptr(VentureEntity) repo = NULL;
+	g_autoptr(VentureEntity) forge = NULL;
+	g_autoptr(VentureForgeClient) client = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	g_autofree gchar *tag = NULL;
+	g_autofree gchar *version = NULL;
+	g_autofree gchar *name = NULL;
+	g_autofree gchar *changelog = NULL;
+	g_autofree gchar *existing_url = NULL;
+	g_autofree gchar *repo_name = NULL;
+	g_autofree gchar *url = NULL;
+	HtmxResponse *redirect;
+	VentureActor actor;
+	gint64 id;
+	gint64 repo_id = 0;
+	gint64 forge_id = 0;
+	gint64 external_id = 0;
+	gboolean prerelease;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "factory");
+
+		if (NULL != gate)
+			return gate;
+
+		gate = venture_web_require_module_ui(self, request, "forge");
+
+		if (NULL != gate)
+			return gate;
+	}
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	release = venture_database_get(venture_context_get_database(self->context),
+	                               VENTURE_TYPE_RELEASE, id, &error);
+
+	if (NULL == release)
+		return venture_web_error_response(error);
+
+	destination = g_strdup_printf("/e/release/%" G_GINT64_FORMAT, id);
+
+	g_object_get(release,
+	             "tag", &tag, "number", &version, "name", &name,
+	             "changelog", &changelog, "url", &existing_url,
+	             "repo-id", &repo_id,
+	             NULL);
+
+	if (!venture_string_is_empty(existing_url))
+	{
+		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS,
+		            "Release %s is already on the forge at %s", version,
+		            existing_url);
+		return venture_web_error_response(error);
+	}
+
+	if (0 == repo_id)
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "The release names no repository to publish to");
+		return venture_web_error_response(error);
+	}
+
+	repo = venture_database_get(venture_context_get_database(self->context),
+	                            VENTURE_TYPE_FORGE_REPO, repo_id, &error);
+
+	if (NULL == repo)
+		return venture_web_error_response(error);
+
+	g_object_get(repo, "name", &repo_name, "forge-id", &forge_id, NULL);
+
+	forge = venture_database_get(venture_context_get_database(self->context),
+	                             VENTURE_TYPE_FORGE, forge_id, &error);
+
+	if (NULL == forge)
+		return venture_web_error_response(error);
+
+	client = venture_web_forge_client(self, VENTURE_FORGE(forge), &error);
+
+	if (NULL == client)
+		return venture_web_error_response(error);
+
+	if (venture_string_is_empty(tag))
+	{
+		g_free(tag);
+		tag = g_strdup_printf("v%s", version);
+	}
+
+	prerelease = (0 == g_strcmp0(htmx_request_get_form_value(request,
+	                                                        "prerelease"),
+	                             "1"));
+
+	if (!venture_forge_client_create_release(client, repo_name, tag, NULL,
+	                                         !venture_string_is_empty(name)
+	                                                 ? name : version,
+	                                         changelog, FALSE, prerelease,
+	                                         &external_id, &url, &error))
+		return venture_web_error_response(error);
+
+	now = g_date_time_new_now_utc();
+
+	g_object_set(release,
+	             "tag", tag,
+	             "url", url,
+	             "external-id", external_id,
+	             "status", VENTURE_RELEASE_STATUS_RELEASED,
+	             "released-at", now,
+	             NULL);
+
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           release, &actor, &error))
+		return venture_web_error_response(error);
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * Counts a milestone's tickets, and how many of them are finished.
+ */
+static void
+venture_web_factory_milestone_progress(
+	VentureWebServer	*self,
+	gint64			 milestone_id,
+	gint64			*out_total,
+	gint64			*out_done
+){
+	g_autoptr(VentureQuery) all = NULL;
+	g_autoptr(GPtrArray) tickets = NULL;
+	guint i;
+
+	*out_total = 0;
+	*out_done = 0;
+
+	all = venture_query_new(VENTURE_TYPE_TICKET);
+
+	if (!venture_query_add_filter_int(all, "milestone-id",
+	                                  VENTURE_FILTER_OP_EQ, milestone_id,
+	                                  NULL))
+		return;
+
+	venture_query_set_limit(all, 0);
+	tickets = venture_database_find(venture_context_get_database(self->context),
+	                                all, NULL);
+
+	if (NULL == tickets)
+		return;
+
+	*out_total = (gint64)tickets->len;
+
+	for (i = 0; i < tickets->len; i++)
+	{
+		VentureTicketStatus status;
+
+		g_object_get(g_ptr_array_index(tickets, i), "status", &status, NULL);
+
+		if ((VENTURE_TICKET_STATUS_DONE == status) ||
+		    (VENTURE_TICKET_STATUS_CANCELLED == status))
+			(*out_done)++;
+	}
+}
+
+/*
+ * A milestone's page: how far along it is. The related-records panel
+ * already lists the tickets; this is the number.
+ */
+static void
+venture_web_append_milestone_block(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	gint64 total;
+	gint64 done;
+
+	venture_web_factory_milestone_progress(self, venture_entity_get_id(record),
+	                                       &total, &done);
+
+	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
+	                         "<h2>Progress</h2></div><div class=\"card-body\">"
+	                         "<div class=\"stat-row\">");
+	g_string_append_printf(content,
+		"<div class=\"stat\"><span class=\"stat-value\">%" G_GINT64_FORMAT
+		"</span><span class=\"stat-label\">Tickets</span></div>"
+		"<div class=\"stat\"><span class=\"stat-value\">%" G_GINT64_FORMAT
+		"</span><span class=\"stat-label\">Finished</span></div>"
+		"<div class=\"stat\"><span class=\"stat-value\">%d%%</span>"
+		"<span class=\"stat-label\">Complete</span></div>",
+		total, done, (total > 0) ? (gint)((done * 100) / total) : 0);
+	g_string_append(content, "</div></div></div>");
+}
+
+/*
+ * The latest deployment that succeeded to an environment: what it is
+ * running.
+ *
+ * Returns: (transfer full) (nullable): the deployment
+ */
+static VentureEntity *
+venture_web_factory_current_deployment(
+	VentureWebServer	*self,
+	gint64			 environment_id
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) deployments = NULL;
+
+	query = venture_query_new(VENTURE_TYPE_DEPLOYMENT);
+
+	if (!venture_query_add_filter_int(query, "environment-id",
+	                                  VENTURE_FILTER_OP_EQ, environment_id,
+	                                  NULL) ||
+	    !venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ,
+	                                     "succeeded", NULL))
+		return NULL;
+
+	venture_query_add_order(query, "deployed-at", VENTURE_SORT_DESCENDING,
+	                        NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, NULL);
+	venture_query_set_limit(query, 1);
+
+	deployments = venture_database_find(
+		venture_context_get_database(self->context), query, NULL);
+
+	if ((NULL == deployments) || (0 == deployments->len))
+		return NULL;
+
+	return g_object_ref(g_ptr_array_index(deployments, 0));
+}
+
+/*
+ * An environment's page: what it is running now.
+ */
+static void
+venture_web_append_environment_block(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autoptr(VentureEntity) deployment = NULL;
+	g_autoptr(VentureEntity) release = NULL;
+	gint64 release_id = 0;
+
+	deployment = venture_web_factory_current_deployment(
+		self, venture_entity_get_id(record));
+
+	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
+	                         "<h2>Running now</h2></div><div class=\"card-body\">");
+
+	if (NULL != deployment)
+	{
+		g_object_get(deployment, "release-id", &release_id, NULL);
+		release = venture_database_get(
+			venture_context_get_database(self->context), VENTURE_TYPE_RELEASE,
+			release_id, NULL);
+	}
+
+	if (NULL == release)
+	{
+		g_string_append(content, "<p class=\"muted\">Nothing has been "
+		                         "deployed here successfully yet.</p>");
+	}
+	else
+	{
+		g_autofree gchar *version = NULL;
+		g_autoptr(GDateTime) when = NULL;
+
+		g_object_get(release, "number", &version, NULL);
+		g_object_get(deployment, "deployed-at", &when, NULL);
+
+		g_string_append_printf(content,
+			"<p><a href=\"/e/release/%" G_GINT64_FORMAT "\">", release_id);
+		venture_html_escape_append(content, version);
+		g_string_append(content, "</a>");
+
+		if (NULL != when)
+		{
+			g_autofree gchar *relative = NULL;
+
+			relative = venture_time_to_relative_string(when);
+			g_string_append(content, " <span class=\"muted\">deployed ");
+			venture_html_escape_append(content, relative);
+			g_string_append(content, "</span>");
+		}
+
+		g_string_append_printf(content,
+			" <a class=\"btn btn-sm\" href=\"/e/deployment/%" G_GINT64_FORMAT
+			"\">Deployment</a></p>",
+			venture_entity_get_id(deployment));
+	}
+
+	g_string_append(content, "</div></div>");
+}
+
+/*
+ * Appends one list card for the factory page from a query, with a
+ * per-row renderer.
+ */
+typedef void (*VentureWebFactoryRowFunc) (VentureWebServer *self,
+                                           GString          *content,
+                                           VentureEntity    *record);
+
+static void
+venture_web_factory_card(
+	VentureWebServer		*self,
+	HtmxRequest			*request,
+	GString				*content,
+	const gchar			*title,
+	const gchar			*all_path,
+	VentureQuery			*query,
+	VentureWebFactoryRowFunc	 row,
+	const gchar			*empty,
+	gboolean			 wide
+){
+	g_autoptr(GPtrArray) records = NULL;
+	guint i;
+
+	venture_web_scope_to_active_organization(self, request, query);
+	records = venture_database_find(venture_context_get_database(self->context),
+	                                query, NULL);
+
+	g_string_append_printf(content,
+		"<div class=\"card dash-card%s\"><div class=\"card-head\"><h2>",
+		wide ? " dash-wide" : "");
+	venture_html_escape_append(content, title);
+	g_string_append_printf(content,
+		"</h2><a class=\"btn btn-sm\" href=\"%s\">All</a></div>"
+		"<div class=\"card-body\">", all_path);
+
+	if ((NULL == records) || (0 == records->len))
+	{
+		g_string_append(content, "<p class=\"muted\">");
+		venture_html_escape_append(content, empty);
+		g_string_append(content, "</p>");
+	}
+	else
+	{
+		g_string_append(content, "<ul class=\"relation-list\">");
+
+		for (i = 0; i < records->len; i++)
+			row(self, content, g_ptr_array_index(records, i));
+
+		g_string_append(content, "</ul>");
+	}
+
+	g_string_append(content, "</div></div>");
+}
+
+static void
+venture_web_factory_milestone_row(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autofree gchar *name = NULL;
+	g_autoptr(GDateTime) due = NULL;
+	VentureMilestoneStatus status;
+	gint64 total;
+	gint64 done;
+
+	g_object_get(record, "name", &name, "status", &status, "due-on", &due,
+	             NULL);
+	venture_web_factory_milestone_progress(self, venture_entity_get_id(record),
+	                                       &total, &done);
+
+	g_string_append(content, "<li><span class=\"badge\">");
+	venture_html_escape_append(content,
+		venture_enum_to_nick(VENTURE_TYPE_MILESTONE_STATUS, (gint)status));
+	g_string_append_printf(content,
+		"</span> <a href=\"/e/milestone/%" G_GINT64_FORMAT "\">",
+		venture_entity_get_id(record));
+	venture_html_escape_append(content, name);
+	g_string_append_printf(content,
+		"</a> <span class=\"muted\">%" G_GINT64_FORMAT "/%" G_GINT64_FORMAT
+		" done</span>", done, total);
+
+	if (NULL != due)
+	{
+		g_autofree gchar *text = NULL;
+
+		text = venture_time_to_date_string(due, NULL);
+		g_string_append(content, " <span class=\"muted\">due ");
+		venture_html_escape_append(content, text);
+		g_string_append(content, "</span>");
+	}
+
+	g_string_append(content, "</li>");
+}
+
+static void
+venture_web_factory_release_row(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autofree gchar *version = NULL;
+	g_autoptr(GDateTime) released = NULL;
+	VentureReleaseStatus status;
+
+	g_object_get(record, "number", &version, "status", &status,
+	             "released-at", &released, NULL);
+
+	g_string_append(content, "<li><span class=\"badge\">");
+	venture_html_escape_append(content,
+		venture_enum_to_nick(VENTURE_TYPE_RELEASE_STATUS, (gint)status));
+	g_string_append_printf(content,
+		"</span> <a href=\"/e/release/%" G_GINT64_FORMAT "\">",
+		venture_entity_get_id(record));
+	venture_html_escape_append(content, version);
+	g_string_append(content, "</a>");
+
+	if (NULL != released)
+	{
+		g_autofree gchar *relative = NULL;
+
+		relative = venture_time_to_relative_string(released);
+		g_string_append(content, " <span class=\"muted\">");
+		venture_html_escape_append(content, relative);
+		g_string_append(content, "</span>");
+	}
+
+	g_string_append(content, "</li>");
+}
+
+static void
+venture_web_factory_build_row(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autofree gchar *title = NULL;
+	g_autofree gchar *ref = NULL;
+	g_autofree gchar *workflow = NULL;
+	g_autoptr(GDateTime) started = NULL;
+	VentureBuildStatus status;
+	const gchar *tone;
+
+	g_object_get(record, "title", &title, "ref", &ref, "workflow", &workflow,
+	             "status", &status, "started-at", &started, NULL);
+
+	tone = (VENTURE_BUILD_STATUS_SUCCEEDED == status) ? " positive"
+	     : (VENTURE_BUILD_STATUS_FAILED == status) ? " negative" : "";
+
+	g_string_append_printf(content, "<li><span class=\"badge%s\">", tone);
+	venture_html_escape_append(content,
+		venture_enum_to_nick(VENTURE_TYPE_BUILD_STATUS, (gint)status));
+	g_string_append_printf(content,
+		"</span> <a href=\"/e/build/%" G_GINT64_FORMAT "\">",
+		venture_entity_get_id(record));
+	venture_html_escape_append(content,
+		!venture_string_is_empty(title) ? title
+		: !venture_string_is_empty(workflow) ? workflow : "build");
+	g_string_append(content, "</a>");
+
+	if (!venture_string_is_empty(ref))
+	{
+		g_string_append(content, " <span class=\"muted\">");
+		venture_html_escape_append(content, ref);
+		g_string_append(content, "</span>");
+	}
+
+	if (NULL != started)
+	{
+		g_autofree gchar *relative = NULL;
+
+		relative = venture_time_to_relative_string(started);
+		g_string_append(content, " <span class=\"muted\">");
+		venture_html_escape_append(content, relative);
+		g_string_append(content, "</span>");
+	}
+
+	g_string_append(content, "</li>");
+}
+
+static void
+venture_web_factory_environment_row(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autoptr(VentureEntity) deployment = NULL;
+	g_autoptr(VentureEntity) release = NULL;
+	g_autofree gchar *name = NULL;
+	VentureEnvironmentKind kind;
+	gint64 release_id = 0;
+
+	g_object_get(record, "name", &name, "kind", &kind, NULL);
+
+	g_string_append(content, "<li><span class=\"badge\">");
+	venture_html_escape_append(content,
+		venture_enum_to_nick(VENTURE_TYPE_ENVIRONMENT_KIND, (gint)kind));
+	g_string_append_printf(content,
+		"</span> <a href=\"/e/environment/%" G_GINT64_FORMAT "\">",
+		venture_entity_get_id(record));
+	venture_html_escape_append(content, name);
+	g_string_append(content, "</a>");
+
+	deployment = venture_web_factory_current_deployment(
+		self, venture_entity_get_id(record));
+
+	if (NULL != deployment)
+	{
+		g_object_get(deployment, "release-id", &release_id, NULL);
+		release = venture_database_get(
+			venture_context_get_database(self->context), VENTURE_TYPE_RELEASE,
+			release_id, NULL);
+	}
+
+	if (NULL != release)
+	{
+		g_autofree gchar *version = NULL;
+
+		g_object_get(release, "number", &version, NULL);
+		g_string_append_printf(content,
+			" <span class=\"muted\">running</span> <a href=\"/e/release/%"
+			G_GINT64_FORMAT "\">", release_id);
+		venture_html_escape_append(content, version);
+		g_string_append(content, "</a>");
+	}
+	else
+	{
+		g_string_append(content, " <span class=\"muted\">nothing deployed"
+		                         "</span>");
+	}
+
+	g_string_append(content, "</li>");
+}
+
+static void
+venture_web_factory_incident_row(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autofree gchar *title = NULL;
+	g_autoptr(GDateTime) started = NULL;
+	VentureIncidentSeverity severity;
+	VentureIncidentStatus status;
+
+	g_object_get(record, "title", &title, "severity", &severity,
+	             "status", &status, "started-at", &started, NULL);
+
+	g_string_append_printf(content, "<li><span class=\"badge%s\">",
+		((VENTURE_INCIDENT_SEVERITY_SEV1 == severity) ||
+		 (VENTURE_INCIDENT_SEVERITY_SEV2 == severity)) ? " negative"
+		                                              : " warning");
+	venture_html_escape_append(content,
+		venture_enum_to_nick(VENTURE_TYPE_INCIDENT_SEVERITY, (gint)severity));
+	g_string_append(content, "</span> <span class=\"badge\">");
+	venture_html_escape_append(content,
+		venture_enum_to_nick(VENTURE_TYPE_INCIDENT_STATUS, (gint)status));
+	g_string_append_printf(content,
+		"</span> <a href=\"/e/incident/%" G_GINT64_FORMAT "\">",
+		venture_entity_get_id(record));
+	venture_html_escape_append(content, title);
+	g_string_append(content, "</a>");
+
+	if (NULL != started)
+	{
+		g_autofree gchar *relative = NULL;
+
+		relative = venture_time_to_relative_string(started);
+		g_string_append(content, " <span class=\"muted\">");
+		venture_html_escape_append(content, relative);
+		g_string_append(content, "</span>");
+	}
+
+	g_string_append(content, "</li>");
+}
+
+/*
+ * GET /factory - the loop at a glance.
+ *
+ * One page, five lists: what is planned, what shipped, what the CI is
+ * doing, what each environment is running, and what is on fire. Each is
+ * the newest few with a link to the full list, because the page's job is
+ * "where does the factory stand", and the answer to that is short.
+ */
+static HtmxResponse *
+venture_web_ui_factory(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *redirect;
+
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "factory");
+
+		if (NULL != gate)
+			return gate;
+	}
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	content = g_string_new(
+		"<div class=\"page-head\"><div class=\"page-title\">"
+		"<h1>Factory</h1><span class=\"subtitle\">From a ticket to a "
+		"running release, and back</span></div>"
+		"<div class=\"page-actions\">"
+		"<a class=\"btn\" href=\"/reports/lead_time\">Lead time</a> "
+		"<a class=\"btn\" href=\"/reports/releases\">Releases report</a> "
+		"<a class=\"btn btn-primary\" href=\"/e/release/new\">New release</a>"
+		"</div></div><div class=\"dash-grid\">");
+
+	{
+		g_autoptr(VentureQuery) query = NULL;
+
+		query = venture_query_new(VENTURE_TYPE_MILESTONE);
+		venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_NE,
+		                                "completed", NULL);
+		venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_NE,
+		                                "cancelled", NULL);
+		venture_query_add_order(query, "due-on", VENTURE_SORT_ASCENDING, NULL);
+		venture_query_set_limit(query, 8);
+		venture_web_factory_card(self, request, content, "Milestones",
+		                         "/e/milestone", query,
+		                         venture_web_factory_milestone_row,
+		                         "No open milestones.", FALSE);
+	}
+
+	{
+		g_autoptr(VentureQuery) query = NULL;
+
+		query = venture_query_new(VENTURE_TYPE_RELEASE);
+		venture_query_add_order(query, "released-at", VENTURE_SORT_DESCENDING,
+		                        NULL);
+		venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, NULL);
+		venture_query_set_limit(query, 8);
+		venture_web_factory_card(self, request, content, "Releases",
+		                         "/e/release", query,
+		                         venture_web_factory_release_row,
+		                         "No releases yet.", FALSE);
+	}
+
+	{
+		g_autoptr(VentureQuery) query = NULL;
+
+		query = venture_query_new(VENTURE_TYPE_BUILD);
+		venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, NULL);
+		venture_query_set_limit(query, 10);
+		venture_web_factory_card(self, request, content, "Builds",
+		                         "/e/build", query,
+		                         venture_web_factory_build_row,
+		                         "No builds reported. Point the forge's "
+		                         "webhook at this server with the "
+		                         "workflow_run event on, or record one.",
+		                         FALSE);
+	}
+
+	{
+		g_autoptr(VentureQuery) query = NULL;
+
+		query = venture_query_new(VENTURE_TYPE_ENVIRONMENT);
+		venture_query_add_order(query, "kind", VENTURE_SORT_DESCENDING, NULL);
+		venture_query_add_order(query, "name", VENTURE_SORT_ASCENDING, NULL);
+		venture_query_set_limit(query, 12);
+		venture_web_factory_card(self, request, content, "Environments",
+		                         "/e/environment", query,
+		                         venture_web_factory_environment_row,
+		                         "No environments yet.", FALSE);
+	}
+
+	{
+		g_autoptr(VentureQuery) query = NULL;
+
+		query = venture_query_new(VENTURE_TYPE_INCIDENT);
+		venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_NE,
+		                                "resolved", NULL);
+		venture_query_add_order(query, "started-at", VENTURE_SORT_DESCENDING,
+		                        NULL);
+		venture_query_set_limit(query, 10);
+		venture_web_factory_card(self, request, content, "Open incidents",
+		                         "/e/incident", query,
+		                         venture_web_factory_incident_row,
+		                         "Nothing is on fire.", TRUE);
+	}
+
+	g_string_append(content, "</div>");
+
+	return venture_web_html_response(
+		venture_web_page(self, request, "/factory", "Factory", content->str),
+		200);
+}
+
 VentureWebServer *
 venture_web_server_new(
 	VentureContext	 *context,
@@ -14974,6 +17699,7 @@ venture_web_server_new(
 	htmx_router_post(router, "/automations/reload",
 	                 venture_web_ui_automations_reload, self);
 	htmx_router_get(router, "/plugins", venture_web_ui_plugins, self);
+	htmx_router_get(router, "/modules", venture_web_ui_modules, self);
 	htmx_router_post(router, "/plugins/config",
 	                 venture_web_ui_plugins_config, self);
 	htmx_router_post(router, "/invoices/:id/status",
@@ -14992,6 +17718,14 @@ venture_web_server_new(
 	                 venture_web_ui_ticket_relate, self);
 	htmx_router_post(router, "/relations/:id/delete",
 	                 venture_web_ui_relation_delete, self);
+	htmx_router_post(router, "/links", venture_web_ui_link_create, self);
+	htmx_router_get(router, "/factory", venture_web_ui_factory, self);
+	htmx_router_post(router, "/releases/:id/changelog",
+	                 venture_web_ui_release_changelog, self);
+	htmx_router_post(router, "/releases/:id/publish",
+	                 venture_web_ui_release_publish, self);
+	htmx_router_post(router, "/links/:id/delete", venture_web_ui_link_delete,
+	                 self);
 	htmx_router_post(router, "/tickets/:id/link", venture_web_ui_ticket_link,
 	                 self);
 	htmx_router_post(router, "/tickets/:id/branch",
@@ -15110,6 +17844,12 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/kb/from/:type/:id",
 	                 venture_web_api_kb_from_record, self);
 	htmx_router_get(router, "/api/v1/plugins", venture_web_api_plugins, self);
+	htmx_router_get(router, "/api/v1/modules", venture_web_api_modules, self);
+	/* Before /api/v1/:type/:id, or "links" would be read as a type. */
+	htmx_router_get(router, "/api/v1/links/:type/:id", venture_web_api_links,
+	                self);
+	htmx_router_post(router, "/api/v1/links", venture_web_api_link_create,
+	                 self);
 	htmx_router_get(router, "/api/v1/venture-types",
 	                venture_web_api_venture_types, self);
 	htmx_router_get(router, "/api/v1/venture-types/:name",

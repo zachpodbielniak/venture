@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-08-29]
-#+version: 0.1.0
+#+updated: [2026-09-11]
+#+version: 0.4.0
 
 * REST API
 
@@ -61,6 +61,9 @@ See [[file:mcp.org][venturectl mcp]].
 | =GET=    | =/api/v1/venture-types=             | declarative venture types            |
 | =GET=    | =/api/v1/venture-types/:name=       | one of them, with its fields         |
 | =GET=    | =/api/v1/automations=               | engine state and its pods            |
+| =GET=    | =/api/v1/modules=                   | every module, its state and why      |
+| =GET=    | =/api/v1/links/:type/:id=           | every link touching a record         |
+| =POST=   | =/api/v1/links=                     | link two records; =?stage=1= stages  |
 
 Any of the four write verbs takes =?stage=1=, which proposes the change
 instead of making it. See [[*Staging a write][Staging a write]].
@@ -69,6 +72,14 @@ Both singular and plural type names work, so =/api/v1/sale= and =/api/v1/sales=
 are the same resource. A client that presents record types to somebody should
 offer one of the two spellings, not both: they are one resource, and showing
 two invites a duplicate.
+
+** Modules
+
+=/api/v1/modules= lists every module in dependency order: name, label, description, what it requires and what requires it, the record types and reports it owns, whether it is locked, and — when it is off — why, in the words of the setting that turned it off. A type whose module is off is absent from =/api/v1/schema= and its generic routes answer 404 naming the module; a module's own routes do the same. See [[file:modules.org][Modules]].
+
+** Links
+
+=GET /api/v1/links/:type/:id= describes every link touching a record, read from it: the link's id, the kind from here, the other end's type, id and current label, whether the other end still exists, and the note. =POST /api/v1/links= takes ={"source_type","source_id","kind","target_type","target_id","note"}= and is the same as =POST /api/v1/record_link=, =?stage=1= included. A link is refused when either end is missing, when the ends are the same record, or when the pair is already linked in either direction — at the save, so an approved staged link is held to the same rules.
 
 ** Settings
 

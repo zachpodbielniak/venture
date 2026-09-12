@@ -1758,6 +1758,489 @@ venture_report_receivables(
  * Registration
  * ========================================================================== */
 
+/* ==========================================================================
+ * The software factory
+ * ========================================================================== */
+
+/*
+ * A record's product name, or a dash. Products belong to the sales module,
+ * which the factory suggests rather than requires, so the lookup may find
+ * nothing and the report still runs.
+ */
+static gchar *
+venture_report_product_label(
+	VentureContext	*context,
+	gint64		 product_id
+){
+	g_autoptr(VentureEntity) product = NULL;
+	GType product_type;
+
+	if (0 == product_id)
+		return g_strdup("\xe2\x80\x94");
+
+	product_type = venture_entity_registry_lookup(
+		venture_context_get_entity_registry(context), "product");
+
+	if (G_TYPE_INVALID != product_type)
+		product = venture_database_get(venture_context_get_database(context),
+		                               product_type, product_id, NULL);
+
+	if (NULL == product)
+		return g_strdup_printf("product #%" G_GINT64_FORMAT, product_id);
+
+	return venture_entity_get_display_name(product);
+}
+
+/*
+ * How many rows of @type point at @field = @id, and optionally how many of
+ * those have @status_field equal to @status_nick.
+ */
+static gint64
+venture_report_count_pointing_at(
+	VentureContext	*context,
+	GType		 type,
+	const gchar	*field,
+	gint64		 id,
+	const gchar	*status_field,
+	const gchar	*status_nick
+){
+	g_autoptr(VentureQuery) query = NULL;
+
+	query = venture_query_new(type);
+
+	if (!venture_query_add_filter_int(query, field, VENTURE_FILTER_OP_EQ, id,
+	                                  NULL))
+		return 0;
+
+	if ((NULL != status_field) &&
+	    !venture_query_add_filter_string(query, status_field,
+	                                     VENTURE_FILTER_OP_EQ, status_nick,
+	                                     NULL))
+		return 0;
+
+	return MAX(venture_database_count(venture_context_get_database(context),
+	                                  query, NULL), 0);
+}
+
+/*
+ * Releases released in the period: what each carried and how it was built
+ * and deployed.
+ */
+static VentureReportResult *
+venture_report_releases(
+	VentureContext		 *context,
+	VentureDateRange	 *period,
+	JsonObject		 *options,
+	GError			**error
+){
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) releases = NULL;
+	gint64 shipped_total;
+	gint64 failed_total;
+	guint i;
+
+	query = venture_query_new(VENTURE_TYPE_RELEASE);
+	venture_query_set_organization(query,
+		venture_context_get_default_organization_id(context));
+
+	if (!venture_query_set_date_range(query, "released-at", period, error))
+		return NULL;
+
+	if (!venture_query_add_order(query, "released-at", VENTURE_SORT_DESCENDING,
+	                             error))
+		return NULL;
+
+	releases = venture_report_fetch_all(context, query, error);
+
+	if (NULL == releases)
+		return NULL;
+
+	result = venture_report_result_new("Releases", period);
+	shipped_total = 0;
+	failed_total = 0;
+
+	venture_report_result_add_column(result, "version", "Version",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "product", "Product",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "status", "Status",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "released", "Released",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "tickets", "Tickets",
+	                                 VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "builds_ok", "Builds green",
+	                                 VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "builds_failed", "Builds red",
+	                                 VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "deployments", "Deployed",
+	                                 VENTURE_REPORT_COLUMN_NUMBER);
+
+	for (i = 0; i < releases->len; i++)
+	{
+		g_autofree gchar *version = NULL;
+		g_autofree gchar *product = NULL;
+		g_autofree gchar *released = NULL;
+		g_autoptr(GDateTime) released_at = NULL;
+		VentureEntity *release;
+		VentureReleaseStatus status;
+		gint64 product_id = 0;
+		gint64 id;
+		gint64 tickets;
+		gint64 ok;
+		gint64 failed;
+		gint64 deployed;
+
+		release = g_ptr_array_index(releases, i);
+		id = venture_entity_get_id(release);
+		g_object_get(release, "number", &version, "status", &status,
+		             "released-at", &released_at, "product-id", &product_id,
+		             NULL);
+
+		product = venture_report_product_label(context, product_id);
+		released = (NULL != released_at)
+			? venture_time_to_date_string(released_at, NULL) : g_strdup("");
+
+		tickets = venture_report_count_pointing_at(context, VENTURE_TYPE_TICKET,
+		                                           "release-id", id, NULL, NULL);
+		ok = venture_report_count_pointing_at(context, VENTURE_TYPE_BUILD,
+		                                      "release-id", id, "status",
+		                                      "succeeded");
+		failed = venture_report_count_pointing_at(context, VENTURE_TYPE_BUILD,
+		                                          "release-id", id, "status",
+		                                          "failed");
+		deployed = venture_report_count_pointing_at(context,
+		                                            VENTURE_TYPE_DEPLOYMENT,
+		                                            "release-id", id, "status",
+		                                            "succeeded");
+
+		shipped_total += tickets;
+		failed_total += failed;
+
+		venture_report_result_begin_row(result);
+		venture_report_result_set_text(result, "version", version);
+		venture_report_result_set_text(result, "product", product);
+		venture_report_result_set_text(result, "status",
+			venture_enum_to_nick(VENTURE_TYPE_RELEASE_STATUS, (gint)status));
+		venture_report_result_set_text(result, "released", released);
+		venture_report_result_set_number(result, "tickets", (gdouble)tickets);
+		venture_report_result_set_number(result, "builds_ok", (gdouble)ok);
+		venture_report_result_set_number(result, "builds_failed",
+		                                 (gdouble)failed);
+		venture_report_result_set_number(result, "deployments",
+		                                 (gdouble)deployed);
+	}
+
+	venture_report_result_add_metric(result,
+		venture_metric_new_count("releases", "Releases", (gint64)releases->len));
+	venture_report_result_add_metric(result,
+		venture_metric_new_count("tickets", "Tickets shipped", shipped_total));
+	venture_report_result_add_metric(result,
+		venture_metric_new_count("failed_builds", "Failed builds",
+		                         failed_total));
+
+	return g_steal_pointer(&result);
+}
+
+/*
+ * Lead time: from a ticket being created to the release that carried it
+ * going out. One row per release in the period, averaged over its tickets,
+ * with the median across every ticket as the headline.
+ *
+ * Measured to the release rather than to "done", because done is a column
+ * on a board and released is a fact a customer can observe. A ticket
+ * finished in March and released in June took until June.
+ */
+static gint
+venture_report_compare_double(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	gdouble left;
+	gdouble right;
+
+	left = *(const gdouble *)a;
+	right = *(const gdouble *)b;
+
+	return (left < right) ? -1 : (left > right) ? 1 : 0;
+}
+
+static VentureReportResult *
+venture_report_lead_time(
+	VentureContext		 *context,
+	VentureDateRange	 *period,
+	JsonObject		 *options,
+	GError			**error
+){
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) releases = NULL;
+	g_autoptr(GArray) all_days = NULL;
+	gdouble total_days;
+	guint counted;
+	guint i;
+
+	query = venture_query_new(VENTURE_TYPE_RELEASE);
+	venture_query_set_organization(query,
+		venture_context_get_default_organization_id(context));
+
+	if (!venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ,
+	                                     "released", error))
+		return NULL;
+
+	if (!venture_query_set_date_range(query, "released-at", period, error))
+		return NULL;
+
+	if (!venture_query_add_order(query, "released-at", VENTURE_SORT_ASCENDING,
+	                             error))
+		return NULL;
+
+	releases = venture_report_fetch_all(context, query, error);
+
+	if (NULL == releases)
+		return NULL;
+
+	result = venture_report_result_new("Lead time", period);
+	all_days = g_array_new(FALSE, FALSE, sizeof(gdouble));
+	total_days = 0.0;
+	counted = 0;
+
+	venture_report_result_add_column(result, "version", "Release",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "released", "Released",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "tickets", "Tickets",
+	                                 VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "average", "Average days",
+	                                 VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "longest", "Longest days",
+	                                 VENTURE_REPORT_COLUMN_NUMBER);
+
+	for (i = 0; i < releases->len; i++)
+	{
+		g_autoptr(VentureQuery) tickets_query = NULL;
+		g_autoptr(GPtrArray) tickets = NULL;
+		g_autoptr(GDateTime) released_at = NULL;
+		g_autofree gchar *version = NULL;
+		g_autofree gchar *released = NULL;
+		VentureEntity *release;
+		gdouble sum;
+		gdouble longest;
+		guint n;
+		guint j;
+
+		release = g_ptr_array_index(releases, i);
+		g_object_get(release, "number", &version, "released-at",
+		             &released_at, NULL);
+
+		if (NULL == released_at)
+			continue;
+
+		tickets_query = venture_query_new(VENTURE_TYPE_TICKET);
+
+		if (!venture_query_add_filter_int(tickets_query, "release-id",
+		                                  VENTURE_FILTER_OP_EQ,
+		                                  venture_entity_get_id(release), error))
+			return NULL;
+
+		tickets = venture_report_fetch_all(context, tickets_query, error);
+
+		if (NULL == tickets)
+			return NULL;
+
+		sum = 0.0;
+		longest = 0.0;
+		n = 0;
+
+		for (j = 0; j < tickets->len; j++)
+		{
+			VentureEntity *ticket;
+			GDateTime *created;
+			gdouble days;
+
+			ticket = g_ptr_array_index(tickets, j);
+			created = venture_entity_get_created_at(ticket);
+
+			if (NULL == created)
+				continue;
+
+			days = (gdouble)g_date_time_difference(released_at, created)
+			       / (gdouble)G_TIME_SPAN_DAY;
+
+			/* A ticket created after its release is a data-entry
+			 * order, not a negative lead time. */
+			if (days < 0.0)
+				days = 0.0;
+
+			sum += days;
+			longest = MAX(longest, days);
+			n++;
+			g_array_append_val(all_days, days);
+		}
+
+		released = venture_time_to_date_string(released_at, NULL);
+
+		venture_report_result_begin_row(result);
+		venture_report_result_set_text(result, "version", version);
+		venture_report_result_set_text(result, "released", released);
+		venture_report_result_set_number(result, "tickets", (gdouble)n);
+		venture_report_result_set_number(result, "average",
+		                                 (n > 0) ? sum / n : 0.0);
+		venture_report_result_set_number(result, "longest", longest);
+
+		total_days += sum;
+		counted += n;
+	}
+
+	if (all_days->len > 0)
+	{
+		gdouble median;
+
+		g_array_sort(all_days, venture_report_compare_double);
+
+		if (0 == (all_days->len % 2))
+			median = (g_array_index(all_days, gdouble, all_days->len / 2 - 1) +
+			          g_array_index(all_days, gdouble, all_days->len / 2)) / 2.0;
+		else
+			median = g_array_index(all_days, gdouble, all_days->len / 2);
+
+		venture_report_result_add_metric(result,
+			venture_metric_new_number("median", "Median lead time (days)",
+			                          median));
+	}
+
+	venture_report_result_add_metric(result,
+		venture_metric_new_number("average", "Average lead time (days)",
+		                          (counted > 0) ? total_days / counted : 0.0));
+	venture_report_result_add_metric(result,
+		venture_metric_new_count("tickets", "Tickets measured",
+		                         (gint64)counted));
+	venture_report_result_add_metric(result,
+		venture_metric_new_count("releases", "Releases",
+		                         (gint64)releases->len));
+
+	if (0 == counted)
+		venture_report_result_set_note(result,
+			"No ticket in the period is marked as fixed in a released "
+			"release. Set a ticket's Fixed in field to measure it.");
+
+	return g_steal_pointer(&result);
+}
+
+/*
+ * Incidents that started in the period, with how long each took to resolve
+ * and the mean across those that were.
+ */
+static VentureReportResult *
+venture_report_incidents(
+	VentureContext		 *context,
+	VentureDateRange	 *period,
+	JsonObject		 *options,
+	GError			**error
+){
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) incidents = NULL;
+	gdouble total_hours;
+	guint resolved;
+	guint open;
+	guint i;
+
+	query = venture_query_new(VENTURE_TYPE_INCIDENT);
+	venture_query_set_organization(query,
+		venture_context_get_default_organization_id(context));
+
+	if (!venture_query_set_date_range(query, "started-at", period, error))
+		return NULL;
+
+	if (!venture_query_add_order(query, "started-at", VENTURE_SORT_DESCENDING,
+	                             error))
+		return NULL;
+
+	incidents = venture_report_fetch_all(context, query, error);
+
+	if (NULL == incidents)
+		return NULL;
+
+	result = venture_report_result_new("Incidents", period);
+	total_hours = 0.0;
+	resolved = 0;
+	open = 0;
+
+	venture_report_result_add_column(result, "title", "Incident",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "severity", "Severity",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "status", "Status",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "started", "Started",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "hours", "Hours to resolve",
+	                                 VENTURE_REPORT_COLUMN_NUMBER);
+
+	for (i = 0; i < incidents->len; i++)
+	{
+		g_autofree gchar *title = NULL;
+		g_autofree gchar *started = NULL;
+		g_autoptr(GDateTime) started_at = NULL;
+		g_autoptr(GDateTime) resolved_at = NULL;
+		VentureEntity *incident;
+		VentureIncidentSeverity severity;
+		VentureIncidentStatus status;
+		gdouble hours;
+
+		incident = g_ptr_array_index(incidents, i);
+		g_object_get(incident, "title", &title, "severity", &severity,
+		             "status", &status, "started-at", &started_at,
+		             "resolved-at", &resolved_at, NULL);
+
+		hours = 0.0;
+
+		if ((NULL != started_at) && (NULL != resolved_at))
+		{
+			hours = (gdouble)g_date_time_difference(resolved_at, started_at)
+			        / (gdouble)G_TIME_SPAN_HOUR;
+
+			if (hours < 0.0)
+				hours = 0.0;
+
+			total_hours += hours;
+			resolved++;
+		}
+		else if ((VENTURE_INCIDENT_STATUS_OPEN == status) ||
+		         (VENTURE_INCIDENT_STATUS_MITIGATED == status))
+		{
+			open++;
+		}
+
+		started = (NULL != started_at)
+			? venture_time_to_date_string(started_at, NULL) : g_strdup("");
+
+		venture_report_result_begin_row(result);
+		venture_report_result_set_text(result, "title", title);
+		venture_report_result_set_text(result, "severity",
+			venture_enum_to_nick(VENTURE_TYPE_INCIDENT_SEVERITY,
+			                     (gint)severity));
+		venture_report_result_set_text(result, "status",
+			venture_enum_to_nick(VENTURE_TYPE_INCIDENT_STATUS, (gint)status));
+		venture_report_result_set_text(result, "started", started);
+		venture_report_result_set_number(result, "hours", hours);
+	}
+
+	venture_report_result_add_metric(result,
+		venture_metric_new_count("incidents", "Incidents",
+		                         (gint64)incidents->len));
+	venture_report_result_add_metric(result,
+		venture_metric_new_count("open", "Still open", (gint64)open));
+	venture_report_result_add_metric(result,
+		venture_metric_new_number("mttr", "Mean hours to resolve",
+		                          (resolved > 0) ? total_hours / resolved : 0.0));
+
+	return g_steal_pointer(&result);
+}
+
+
 void
 venture_report_registry_register_builtins(VentureReportRegistry *self)
 {
@@ -1802,7 +2285,19 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 		{ "receivables", "Receivables aging",
 		  "Outstanding invoices bucketed by how far past due they are, "
 		  "with the overdue portion totalled separately",
-		  venture_report_receivables }
+		  venture_report_receivables },
+		{ "releases", "Releases",
+		  "Releases that went out in the period: the tickets each carried, "
+		  "how its builds went, and where it was deployed",
+		  venture_report_releases },
+		{ "lead_time", "Lead time",
+		  "Days from a ticket being raised to the release that carried it "
+		  "going out, per release, with the median across the period",
+		  venture_report_lead_time },
+		{ "incidents", "Incidents",
+		  "Incidents that started in the period, with hours to resolve and "
+		  "the mean across those resolved",
+		  venture_report_incidents }
 	};
 	gsize i;
 

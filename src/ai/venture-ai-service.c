@@ -753,6 +753,153 @@ venture_ai_tool_get(
 }
 
 /*
+ * Every link touching a record, read from it. Read-only, so it is offered
+ * under every policy: knowing that a release shipped three tickets is the
+ * kind of thing the assistant is asked.
+ */
+static gchar *
+venture_ai_tool_links(
+	AiToolUse	 *tool_use,
+	GCancellable	 *cancellable,
+	GError		**error,
+	gpointer	  user_data
+){
+	VentureAiService *self;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) local_error = NULL;
+	JsonObject *input;
+	GType entity_type;
+	const gchar *type_name;
+	gint64 id;
+
+	self = user_data;
+	input = venture_ai_tool_input(tool_use);
+
+	if (NULL == input)
+		return venture_ai_tool_error("The arguments must be an object");
+
+	type_name = venture_json_object_get_string(input, "type", NULL);
+	id = venture_json_object_get_int(input, "id", 0);
+
+	if ((NULL == type_name) || (0 == id))
+		return venture_ai_tool_error("A \"type\" and an \"id\" are required");
+
+	entity_type = venture_entity_registry_lookup(
+		venture_context_get_entity_registry(self->context), type_name);
+
+	if (G_TYPE_INVALID == entity_type)
+		return venture_ai_tool_error("There is no record type called \"%s\"",
+		                             type_name);
+
+	if (!venture_ai_type_is_readable(entity_type))
+		return venture_ai_tool_type_refused(type_name);
+
+	node = venture_record_link_describe_for(
+		venture_context_get_database(self->context), type_name, id,
+		&local_error);
+
+	if (NULL == node)
+		return venture_ai_tool_error("%s", local_error->message);
+
+	return venture_ai_tool_result(node);
+}
+
+/*
+ * Links two records. A write, so it follows the policy the other writes
+ * do: staged for approval unless autonomous. The link is built through the
+ * validating constructor, so a link to a record that does not exist is
+ * refused here rather than at approval time, when the model is gone.
+ */
+static gchar *
+venture_ai_tool_link(
+	AiToolUse	 *tool_use,
+	GCancellable	 *cancellable,
+	GError		**error,
+	gpointer	  user_data
+){
+	VentureAiService *self;
+	g_autoptr(VentureRecordLink) link = NULL;
+	g_autoptr(GError) local_error = NULL;
+	JsonObject *input;
+	VentureLinkKind kind;
+	const gchar *source_type;
+	const gchar *target_type;
+	const gchar *kind_text;
+	gint64 source_id;
+	gint64 target_id;
+
+	self = user_data;
+	input = venture_ai_tool_input(tool_use);
+
+	if (NULL == input)
+		return venture_ai_tool_error("The arguments must be an object");
+
+	source_type = venture_json_object_get_string(input, "source_type", NULL);
+	source_id = venture_json_object_get_int(input, "source_id", 0);
+	target_type = venture_json_object_get_string(input, "target_type", NULL);
+	target_id = venture_json_object_get_int(input, "target_id", 0);
+	kind_text = venture_json_object_get_string(input, "kind", "related");
+
+	if ((NULL == source_type) || (0 == source_id) || (NULL == target_type) ||
+	    (0 == target_id))
+		return venture_ai_tool_error("source_type, source_id, target_type "
+		                             "and target_id are all required");
+
+	/* Both ends must be things the model may see at all. */
+	if (!venture_ai_type_is_readable(venture_entity_registry_lookup(
+		venture_context_get_entity_registry(self->context), source_type)))
+		return venture_ai_tool_type_refused(source_type);
+
+	if (!venture_ai_type_is_readable(venture_entity_registry_lookup(
+		venture_context_get_entity_registry(self->context), target_type)))
+		return venture_ai_tool_type_refused(target_type);
+
+	{
+		gint value;
+
+		if (!venture_enum_from_nick(VENTURE_TYPE_LINK_KIND, kind_text, &value))
+			return venture_ai_tool_error("\"%s\" is not a link kind; use one "
+			                             "of related, blocks, blocked_by, "
+			                             "depends_on, required_by, parent_of, "
+			                             "child_of, duplicates, causes, "
+			                             "caused_by, produces, produced_by, "
+			                             "references, referenced_by, "
+			                             "supersedes, superseded_by",
+			                             kind_text);
+
+		kind = (VentureLinkKind)value;
+	}
+
+	link = venture_record_link_create(
+		venture_context_get_database(self->context), source_type, source_id,
+		kind, target_type, target_id,
+		venture_json_object_get_string(input, "note", NULL), &local_error);
+
+	if (NULL == link)
+		return venture_ai_tool_error("%s", local_error->message);
+
+	if (VENTURE_AI_POLICY_AUTONOMOUS == self->policy)
+	{
+		if (!venture_ai_apply(self, VENTURE_ENTITY(link), FALSE,
+		                      self->current_prompt, self->current_principal,
+		                      &local_error))
+			return venture_ai_tool_error("%s", local_error->message);
+
+		{
+			g_autoptr(JsonNode) node = NULL;
+
+			node = venture_serializable_to_json(
+				VENTURE_SERIALIZABLE(link), FALSE);
+
+			return venture_ai_tool_result(node);
+		}
+	}
+
+	return venture_ai_stage_change(self, VENTURE_AUDIT_ACTION_CREATE,
+	                               VENTURE_ENTITY(link), NULL);
+}
+
+/*
  * How many, without the rows. "How many unreviewed expenses" should cost a
  * count, not fifty serialised records the model then counts itself --
  * wrongly, past the query cap.
@@ -1528,6 +1675,7 @@ venture_ai_service_register_tools(VentureAiService *self)
 	g_autoptr(AiTool) fetch = NULL;
 	g_autoptr(AiTool) kb_search = NULL;
 	g_autoptr(AiTool) kb_list = NULL;
+	g_autoptr(AiTool) links = NULL;
 
 	list_types = venture_ai_make_tool(self, "venture_list_types",
 		"List every record type in this VENTURE instance with its fields, "
@@ -1623,6 +1771,18 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"you do not know which base to search, or to tell the operator "
 		"what is available.");
 
+	links = venture_ai_make_tool(self, "venture_links",
+		"List every link touching a record, read from it: what it blocks, "
+		"depends on, produced, or is otherwise connected to, across every "
+		"record type. Use it to follow a thread -- from a release to the "
+		"tickets it shipped, from an incident to the deployment that "
+		"caused it.");
+	ai_tool_add_parameter(links, "type", "string", "The record type", TRUE);
+	ai_tool_add_parameter(links, "id", "integer", "The record's numeric id",
+	                      TRUE);
+
+	ai_tool_executor_register_callback(self->executor, links,
+		venture_ai_tool_links, self, NULL);
 	ai_tool_executor_register_callback(self->executor, kb_search,
 		venture_ai_tool_kb_search, self, NULL);
 	ai_tool_executor_register_callback(self->executor, kb_list,
@@ -1656,6 +1816,7 @@ venture_ai_service_register_tools(VentureAiService *self)
 		g_autoptr(AiTool) create = NULL;
 		g_autoptr(AiTool) update = NULL;
 		g_autoptr(AiTool) remove = NULL;
+		g_autoptr(AiTool) link = NULL;
 
 		create = venture_ai_make_tool(self, "venture_create",
 			"Create a record. Unless the policy is autonomous this stages "
@@ -1688,6 +1849,30 @@ venture_ai_service_register_tools(VentureAiService *self)
 		ai_tool_add_parameter(remove, "id", "integer",
 			"The record's numeric id", TRUE);
 
+		link = venture_ai_make_tool(self, "venture_link",
+			"Link two records of any types, with a kind that says what "
+			"the link means read from the source: related, blocks, "
+			"blocked_by, depends_on, required_by, parent_of, child_of, "
+			"duplicates, causes, caused_by, produces, produced_by, "
+			"references, referenced_by, supersedes, superseded_by. Unless "
+			"the policy is autonomous this stages the link for approval "
+			"and does NOT create it; say so.");
+		ai_tool_add_parameter(link, "source_type", "string",
+			"The record type at this end", TRUE);
+		ai_tool_add_parameter(link, "source_id", "integer",
+			"Its numeric id", TRUE);
+		ai_tool_add_parameter(link, "kind", "string",
+			"What the link means, from the source; defaults to related",
+			FALSE);
+		ai_tool_add_parameter(link, "target_type", "string",
+			"The record type at the other end", TRUE);
+		ai_tool_add_parameter(link, "target_id", "integer",
+			"Its numeric id", TRUE);
+		ai_tool_add_parameter(link, "note", "string",
+			"Why, in a few words", FALSE);
+
+		ai_tool_executor_register_callback(self->executor, link,
+			venture_ai_tool_link, self, NULL);
 		ai_tool_executor_register_callback(self->executor, create,
 			venture_ai_tool_create, self, NULL);
 		ai_tool_executor_register_callback(self->executor, update,
@@ -1879,12 +2064,14 @@ venture_ai_service_new(
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 
 	config = venture_context_get_config(context);
-	g_object_get(config, "ai-enabled", &enabled, NULL);
+
+	/* The module registry folds ai.enabled in. */
+	enabled = venture_context_module_enabled(context, "ai");
 
 	if (!enabled)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
-		                    "AI is disabled in configuration");
+		                    "The ai module is disabled in configuration");
 		return NULL;
 	}
 

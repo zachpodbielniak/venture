@@ -35,6 +35,51 @@ venture_forge_event_clear(VentureForgeEvent *event)
 	event->issue_number = 0;
 }
 
+void
+venture_forge_workflow_event_clear(VentureForgeWorkflowEvent *event)
+{
+	if (NULL == event)
+		return;
+
+	g_clear_pointer(&event->action, g_free);
+	g_clear_pointer(&event->repo_full_name, g_free);
+	g_clear_pointer(&event->workflow_name, g_free);
+	g_clear_pointer(&event->title, g_free);
+	g_clear_pointer(&event->head_branch, g_free);
+	g_clear_pointer(&event->head_sha, g_free);
+	g_clear_pointer(&event->status, g_free);
+	g_clear_pointer(&event->conclusion, g_free);
+	g_clear_pointer(&event->url, g_free);
+	g_clear_pointer(&event->started_at, g_free);
+	g_clear_pointer(&event->finished_at, g_free);
+	g_clear_pointer(&event->sender, g_free);
+	g_clear_pointer(&event->delivery_id, g_free);
+
+	event->run_id = 0;
+	event->run_number = 0;
+}
+
+void
+venture_forge_release_event_clear(VentureForgeReleaseEvent *event)
+{
+	if (NULL == event)
+		return;
+
+	g_clear_pointer(&event->action, g_free);
+	g_clear_pointer(&event->repo_full_name, g_free);
+	g_clear_pointer(&event->tag, g_free);
+	g_clear_pointer(&event->name, g_free);
+	g_clear_pointer(&event->body, g_free);
+	g_clear_pointer(&event->url, g_free);
+	g_clear_pointer(&event->published_at, g_free);
+	g_clear_pointer(&event->sender, g_free);
+	g_clear_pointer(&event->delivery_id, g_free);
+
+	event->release_id = 0;
+	event->draft = FALSE;
+	event->prerelease = FALSE;
+}
+
 /*
  * The dispatchers.
  *
@@ -199,6 +244,55 @@ venture_forge_client_parse_issue_event(
 	VENTURE_FORGE_DISPATCH(parse_issue_event, FALSE)
 
 	return iface->parse_issue_event(self, payload, headers, out_event, error);
+}
+
+gboolean
+venture_forge_client_parse_workflow_event(
+	VentureForgeClient		 *self,
+	JsonNode			 *payload,
+	SoupMessageHeaders		 *headers,
+	VentureForgeWorkflowEvent	 *out_event,
+	GError				**error
+){
+	VENTURE_FORGE_DISPATCH(parse_workflow_event, FALSE)
+
+	return iface->parse_workflow_event(self, payload, headers, out_event,
+	                                   error);
+}
+
+gboolean
+venture_forge_client_parse_release_event(
+	VentureForgeClient		 *self,
+	JsonNode			 *payload,
+	SoupMessageHeaders		 *headers,
+	VentureForgeReleaseEvent	 *out_event,
+	GError				**error
+){
+	VENTURE_FORGE_DISPATCH(parse_release_event, FALSE)
+
+	return iface->parse_release_event(self, payload, headers, out_event,
+	                                  error);
+}
+
+gboolean
+venture_forge_client_create_release(
+	VentureForgeClient	 *self,
+	const gchar		 *repo_full_name,
+	const gchar		 *tag,
+	const gchar		 *target,
+	const gchar		 *name,
+	const gchar		 *body,
+	gboolean		  draft,
+	gboolean		  prerelease,
+	gint64			 *out_id,
+	gchar			**out_url,
+	GError			**error
+){
+	VENTURE_FORGE_DISPATCH(create_release, FALSE)
+
+	return iface->create_release(self, repo_full_name, tag, target, name,
+	                             body, draft, prerelease, out_id, out_url,
+	                             error);
 }
 
 #undef VENTURE_FORGE_DISPATCH

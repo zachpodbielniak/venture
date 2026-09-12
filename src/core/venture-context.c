@@ -22,12 +22,19 @@ struct _VentureContext
 	VenturePluginManager	*plugins;
 	VentureWorkService	*work;
 	VentureKbService	*kb;
+	VentureModuleRegistry	*modules;
 
 	GTimeZone		*timezone;
 	gint64			 default_organization_id;
 };
 
 G_DEFINE_FINAL_TYPE(VentureContext, venture_context, G_TYPE_OBJECT)
+
+static void
+venture_context_on_modules_changed(VentureContext *self)
+{
+	venture_context_apply_modules(self);
+}
 
 static void
 venture_context_finalize(GObject *object)
@@ -46,6 +53,7 @@ venture_context_finalize(GObject *object)
 	g_clear_object(&self->plugins);
 	g_clear_object(&self->work);
 	g_clear_object(&self->kb);
+	g_clear_object(&self->modules);
 	g_clear_pointer(&self->timezone, g_time_zone_unref);
 
 	/* The entity registry is the process-wide default and is not owned. */
@@ -82,6 +90,9 @@ venture_context_new(
 	self->venture_types = venture_venture_type_registry_new();
 	self->timezone = venture_config_get_timezone(config);
 
+	/* The cross-row checks a polymorphic link needs, on every writer. */
+	venture_record_link_install_validator(database);
+
 	/*
 	 * The confirmation queue exists whether or not AI does. It began as
 	 * the assistant's, but a change proposed by an outside agent holding
@@ -104,7 +115,115 @@ venture_context_new(
 
 	venture_report_registry_register_builtins(self->reports);
 
+	/*
+	 * Modules, resolved against this configuration and applied to the
+	 * registries above. The configuration was validated before the
+	 * database was opened, so a dependency conflict cannot reach here
+	 * from the server; a test that skips validation gets the resolved
+	 * state -- every module that cannot work is off -- and a warning.
+	 */
+	self->modules = venture_module_registry_new();
+	venture_module_registry_register_builtins(self->modules);
+
+	{
+		g_autoptr(GError) local_error = NULL;
+
+		if (!venture_module_registry_configure(self->modules, config,
+		                                       &local_error))
+			g_warning("Modules: %s", local_error->message);
+	}
+
+	venture_context_apply_modules(self);
+
+	/* The registry re-resolves when the configuration changes under it;
+	 * the registries this context masks have to follow. */
+	g_signal_connect_object(self->modules, "changed",
+	                        G_CALLBACK(venture_context_on_modules_changed),
+	                        self, G_CONNECT_SWAPPED);
+
 	return self;
+}
+
+VentureModuleRegistry *
+venture_context_get_modules(VentureContext *self)
+{
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), NULL);
+
+	return self->modules;
+}
+
+gboolean
+venture_context_module_enabled(
+	VentureContext	*self,
+	const gchar	*module_name
+){
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), FALSE);
+
+	return venture_module_registry_is_enabled(self->modules, module_name);
+}
+
+gboolean
+venture_context_register_module(
+	VentureContext			 *self,
+	const VentureModuleInfo		 *info,
+	GError				**error
+){
+	gsize i;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), FALSE);
+	g_return_val_if_fail(NULL != info, FALSE);
+
+	/* The types first, so the module can be applied to them at once. A
+	 * type already registered -- a plugin reloaded -- is accepted. */
+	for (i = 0; (NULL != info->entity_types) &&
+	            (NULL != info->entity_types[i]); i++)
+	{
+		if (!venture_entity_registry_register(self->entities,
+		                                      info->entity_types[i](), error))
+			return FALSE;
+	}
+
+	if (!venture_module_registry_add(self->modules, info,
+	                                 VENTURE_MODULE_ORIGIN_PLUGIN, error))
+		return FALSE;
+
+	venture_context_apply_modules(self);
+
+	return TRUE;
+}
+
+void
+venture_context_apply_modules(VentureContext *self)
+{
+	g_autoptr(GPtrArray) modules = NULL;
+	guint i;
+
+	g_return_if_fail(VENTURE_IS_CONTEXT(self));
+
+	venture_module_registry_apply(self->modules, self->entities);
+
+	/*
+	 * A disabled module's reports are hidden rather than left to fail: a
+	 * report over a table its module never created is a SQL error
+	 * dressed as a report, and the reports page, the AI's report tool
+	 * and venturectl all list what the registry offers.
+	 */
+	modules = venture_module_registry_list(self->modules);
+
+	for (i = 0; i < modules->len; i++)
+	{
+		VentureModule *module;
+		const gchar *const *reports;
+		gsize j;
+
+		module = g_ptr_array_index(modules, i);
+		reports = venture_module_get_reports(module);
+
+		for (j = 0; NULL != reports[j]; j++)
+			venture_report_registry_set_enabled(
+				self->reports, reports[j],
+				venture_module_is_enabled(module));
+	}
 }
 
 VentureConfirmationStore *

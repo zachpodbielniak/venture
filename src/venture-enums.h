@@ -1123,6 +1123,270 @@ gboolean
 venture_venture_status_is_operating(VentureVentureStatus status);
 
 /**
+ * VentureMilestoneStatus:
+ * @VENTURE_MILESTONE_STATUS_PLANNED: not started
+ * @VENTURE_MILESTONE_STATUS_ACTIVE: being worked
+ * @VENTURE_MILESTONE_STATUS_COMPLETED: done
+ * @VENTURE_MILESTONE_STATUS_CANCELLED: abandoned
+ *
+ * Where a milestone stands.
+ */
+typedef enum
+{
+	VENTURE_MILESTONE_STATUS_PLANNED = 0,
+	VENTURE_MILESTONE_STATUS_ACTIVE,
+	VENTURE_MILESTONE_STATUS_COMPLETED,
+	VENTURE_MILESTONE_STATUS_CANCELLED
+} VentureMilestoneStatus;
+
+#define VENTURE_TYPE_MILESTONE_STATUS (venture_milestone_status_get_type())
+
+GType
+venture_milestone_status_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureReleaseStatus:
+ * @VENTURE_RELEASE_STATUS_PLANNED: a version with a name and nothing in it yet
+ * @VENTURE_RELEASE_STATUS_IN_PROGRESS: being assembled
+ * @VENTURE_RELEASE_STATUS_RELEASED: out
+ * @VENTURE_RELEASE_STATUS_YANKED: withdrawn after release
+ *
+ * Where a release stands. Released is recorded with a timestamp, which is
+ * what the lead-time report measures to.
+ */
+typedef enum
+{
+	VENTURE_RELEASE_STATUS_PLANNED = 0,
+	VENTURE_RELEASE_STATUS_IN_PROGRESS,
+	VENTURE_RELEASE_STATUS_RELEASED,
+	VENTURE_RELEASE_STATUS_YANKED
+} VentureReleaseStatus;
+
+#define VENTURE_TYPE_RELEASE_STATUS (venture_release_status_get_type())
+
+GType
+venture_release_status_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureBuildStatus:
+ * @VENTURE_BUILD_STATUS_QUEUED: accepted by the CI, not started
+ * @VENTURE_BUILD_STATUS_RUNNING: in progress
+ * @VENTURE_BUILD_STATUS_SUCCEEDED: finished green
+ * @VENTURE_BUILD_STATUS_FAILED: finished red
+ * @VENTURE_BUILD_STATUS_CANCELLED: stopped before it finished
+ *
+ * Where a build stands. Queued is the zero value so a row written before
+ * the CI reported anything reads as waiting rather than as green.
+ */
+typedef enum
+{
+	VENTURE_BUILD_STATUS_QUEUED = 0,
+	VENTURE_BUILD_STATUS_RUNNING,
+	VENTURE_BUILD_STATUS_SUCCEEDED,
+	VENTURE_BUILD_STATUS_FAILED,
+	VENTURE_BUILD_STATUS_CANCELLED
+} VentureBuildStatus;
+
+#define VENTURE_TYPE_BUILD_STATUS (venture_build_status_get_type())
+
+GType
+venture_build_status_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureBuildTrigger:
+ * @VENTURE_BUILD_TRIGGER_MANUAL: recorded by a person
+ * @VENTURE_BUILD_TRIGGER_WEBHOOK: reported by the forge's CI
+ * @VENTURE_BUILD_TRIGGER_RULE: started by an automation rule
+ * @VENTURE_BUILD_TRIGGER_RUN: produced by an AI coding run
+ *
+ * What started a build.
+ */
+typedef enum
+{
+	VENTURE_BUILD_TRIGGER_MANUAL = 0,
+	VENTURE_BUILD_TRIGGER_WEBHOOK,
+	VENTURE_BUILD_TRIGGER_RULE,
+	VENTURE_BUILD_TRIGGER_RUN
+} VentureBuildTrigger;
+
+#define VENTURE_TYPE_BUILD_TRIGGER (venture_build_trigger_get_type())
+
+GType
+venture_build_trigger_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureEnvironmentKind:
+ * @VENTURE_ENVIRONMENT_KIND_DEVELOPMENT: a developer's own
+ * @VENTURE_ENVIRONMENT_KIND_STAGING: the rehearsal
+ * @VENTURE_ENVIRONMENT_KIND_PRODUCTION: the one customers use
+ * @VENTURE_ENVIRONMENT_KIND_OTHER: anything else
+ *
+ * What an environment is for.
+ */
+typedef enum
+{
+	VENTURE_ENVIRONMENT_KIND_DEVELOPMENT = 0,
+	VENTURE_ENVIRONMENT_KIND_STAGING,
+	VENTURE_ENVIRONMENT_KIND_PRODUCTION,
+	VENTURE_ENVIRONMENT_KIND_OTHER
+} VentureEnvironmentKind;
+
+#define VENTURE_TYPE_ENVIRONMENT_KIND (venture_environment_kind_get_type())
+
+GType
+venture_environment_kind_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureDeploymentStatus:
+ * @VENTURE_DEPLOYMENT_STATUS_PENDING: planned, not started
+ * @VENTURE_DEPLOYMENT_STATUS_IN_PROGRESS: rolling out
+ * @VENTURE_DEPLOYMENT_STATUS_SUCCEEDED: live
+ * @VENTURE_DEPLOYMENT_STATUS_FAILED: did not go live
+ * @VENTURE_DEPLOYMENT_STATUS_ROLLED_BACK: was live, then withdrawn
+ *
+ * Where a deployment stands. The latest succeeded deployment to an
+ * environment is what that environment is running.
+ */
+typedef enum
+{
+	VENTURE_DEPLOYMENT_STATUS_PENDING = 0,
+	VENTURE_DEPLOYMENT_STATUS_IN_PROGRESS,
+	VENTURE_DEPLOYMENT_STATUS_SUCCEEDED,
+	VENTURE_DEPLOYMENT_STATUS_FAILED,
+	VENTURE_DEPLOYMENT_STATUS_ROLLED_BACK
+} VentureDeploymentStatus;
+
+#define VENTURE_TYPE_DEPLOYMENT_STATUS (venture_deployment_status_get_type())
+
+GType
+venture_deployment_status_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureIncidentSeverity:
+ * @VENTURE_INCIDENT_SEVERITY_SEV1: everything is down
+ * @VENTURE_INCIDENT_SEVERITY_SEV2: something important is down
+ * @VENTURE_INCIDENT_SEVERITY_SEV3: degraded, with a workaround
+ * @VENTURE_INCIDENT_SEVERITY_SEV4: cosmetic
+ *
+ * How bad an incident is. Sev3 is the zero value: most incidents are
+ * annoying rather than critical, and a row written without a severity
+ * should not read as an outage.
+ */
+typedef enum
+{
+	VENTURE_INCIDENT_SEVERITY_SEV3 = 0,
+	VENTURE_INCIDENT_SEVERITY_SEV1,
+	VENTURE_INCIDENT_SEVERITY_SEV2,
+	VENTURE_INCIDENT_SEVERITY_SEV4
+} VentureIncidentSeverity;
+
+#define VENTURE_TYPE_INCIDENT_SEVERITY (venture_incident_severity_get_type())
+
+GType
+venture_incident_severity_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureIncidentStatus:
+ * @VENTURE_INCIDENT_STATUS_OPEN: happening
+ * @VENTURE_INCIDENT_STATUS_MITIGATED: contained, not fixed
+ * @VENTURE_INCIDENT_STATUS_RESOLVED: fixed
+ * @VENTURE_INCIDENT_STATUS_POSTMORTEM: fixed, and being written up
+ *
+ * Where an incident stands.
+ */
+typedef enum
+{
+	VENTURE_INCIDENT_STATUS_OPEN = 0,
+	VENTURE_INCIDENT_STATUS_MITIGATED,
+	VENTURE_INCIDENT_STATUS_RESOLVED,
+	VENTURE_INCIDENT_STATUS_POSTMORTEM
+} VentureIncidentStatus;
+
+#define VENTURE_TYPE_INCIDENT_STATUS (venture_incident_status_get_type())
+
+GType
+venture_incident_status_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureLinkKind:
+ * @VENTURE_LINK_KIND_RELATED: connected, with no direction
+ * @VENTURE_LINK_KIND_BLOCKS: the source cannot finish until the target does
+ * @VENTURE_LINK_KIND_BLOCKED_BY: the reverse of blocks
+ * @VENTURE_LINK_KIND_DEPENDS_ON: the source needs the target
+ * @VENTURE_LINK_KIND_REQUIRED_BY: the reverse of depends on
+ * @VENTURE_LINK_KIND_PARENT_OF: the target is part of the source
+ * @VENTURE_LINK_KIND_CHILD_OF: the reverse of parent of
+ * @VENTURE_LINK_KIND_DUPLICATES: the two are the same thing twice
+ * @VENTURE_LINK_KIND_CAUSES: the source led to the target
+ * @VENTURE_LINK_KIND_CAUSED_BY: the reverse of causes
+ * @VENTURE_LINK_KIND_PRODUCES: the target came out of the source
+ * @VENTURE_LINK_KIND_PRODUCED_BY: the reverse of produces
+ * @VENTURE_LINK_KIND_REFERENCES: the source mentions the target
+ * @VENTURE_LINK_KIND_REFERENCED_BY: the reverse of references
+ * @VENTURE_LINK_KIND_SUPERSEDES: the source replaces the target
+ * @VENTURE_LINK_KIND_SUPERSEDED_BY: the reverse of supersedes
+ *
+ * What a #VentureRecordLink means, read from its source. Every directed
+ * kind has an inverse, and a link is stored once: standing on the target,
+ * the same row reads as the inverse. Related and duplicates are their own
+ * inverse.
+ */
+typedef enum
+{
+	VENTURE_LINK_KIND_RELATED = 0,
+	VENTURE_LINK_KIND_BLOCKS,
+	VENTURE_LINK_KIND_BLOCKED_BY,
+	VENTURE_LINK_KIND_DEPENDS_ON,
+	VENTURE_LINK_KIND_REQUIRED_BY,
+	VENTURE_LINK_KIND_PARENT_OF,
+	VENTURE_LINK_KIND_CHILD_OF,
+	VENTURE_LINK_KIND_DUPLICATES,
+	VENTURE_LINK_KIND_CAUSES,
+	VENTURE_LINK_KIND_CAUSED_BY,
+	VENTURE_LINK_KIND_PRODUCES,
+	VENTURE_LINK_KIND_PRODUCED_BY,
+	VENTURE_LINK_KIND_REFERENCES,
+	VENTURE_LINK_KIND_REFERENCED_BY,
+	VENTURE_LINK_KIND_SUPERSEDES,
+	VENTURE_LINK_KIND_SUPERSEDED_BY
+} VentureLinkKind;
+
+#define VENTURE_TYPE_LINK_KIND (venture_link_kind_get_type())
+
+GType
+venture_link_kind_get_type(void) G_GNUC_CONST;
+
+/**
+ * venture_link_kind_inverse:
+ * @kind: a link kind
+ *
+ * The same link read from the other end: blocks becomes blocked by, parent
+ * of becomes child of. The symmetric kinds are their own inverse.
+ *
+ * Returns: the inverse kind
+ */
+VentureLinkKind
+venture_link_kind_inverse(VentureLinkKind kind);
+
+/**
+ * venture_link_kind_is_symmetric:
+ * @kind: a link kind
+ *
+ * Returns: %TRUE if the kind reads the same from both ends
+ */
+gboolean
+venture_link_kind_is_symmetric(VentureLinkKind kind);
+
+/**
+ * venture_link_kind_to_label:
+ * @kind: a link kind
+ *
+ * Returns: (transfer none): the kind in words, e.g. "blocked by"
+ */
+const gchar *
+venture_link_kind_to_label(VentureLinkKind kind);
+
+/**
  * venture_filter_op_arity:
  * @op: a filter operator
  *

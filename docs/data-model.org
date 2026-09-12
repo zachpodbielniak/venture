@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-08-14]
-#+version: 0.1.0
+#+updated: [2026-09-11]
+#+version: 0.4.0
 
 * Data model
 
@@ -109,6 +109,16 @@ The subject label is stored rather than looked up. It is what the row displays a
 
 Create one through =venture_ticket_relation_create()= rather than by writing the row: nothing in the database stops a relation naming a type that was never registered or an id that was never there, and that check happens there.
 
+** Linking any record to any other
+
+*record_link* is the generalisation of =ticket_relation=. Both ends are named by type and id, so a release can point at the tickets it shipped, an incident at the deployment that caused it, an expense at the invoice it was billed through, and a plugin's record at anything at all — without a foreign key per pair.
+
+A link has a =kind= with a direction and an inverse, and is stored once: standing on the source it means its kind, standing on the target it means the inverse. =blocks= / =blocked_by=, =depends_on= / =required_by=, =parent_of= / =child_of=, =causes= / =caused_by=, =produces= / =produced_by=, =references= / =referenced_by=, =supersedes= / =superseded_by=; =related= and =duplicates= read the same from both ends.
+
+Every detail page has a Links panel listing the links touching the record, read from where the reader stands, with the form to add one. =GET /api/v1/links/:type/:id= returns the same view; =POST /api/v1/links= (or =POST /api/v1/record_link=) creates one, and =?stage=1= stages it. =venturectl links TYPE ID= and =venturectl link TYPE ID TYPE ID kind=...= do the same from the command line, and the assistant has =venture_links= and =venture_link=.
+
+The checks a polymorphic pair cannot get from the schema — both types registered and on, both records present, no record linked to itself, no pair linked twice in either direction — run as a /save validator/ (=venture_database_add_save_validator()=), so they apply to every writer: the form, the API, an approved staged change, the AI. Both labels are stored, so a link still reads correctly after one end has been deleted, which is exactly when somebody is working out what it was about.
+
 ** Forge
 
 - *forge*, *forge_repo*, *forge_rule*, *ticket_link*, *forge_run*.
@@ -116,6 +126,18 @@ Create one through =venture_ticket_relation_create()= rather than by writing the
 A =forge= is a server you have an account on; it holds the access token and the webhook secret, and is owner-only everywhere for that reason. A =forge_repo= is one repository on it, named =owner/repo=. A =forge_rule= says what may happen automatically for a given repository and issue type. A =ticket_link= joins a ticket to a repository and carries the issue number, the branch and the pull request — one record rather than three fields on the ticket, because a ticket can be worked in two repositories at once. A =forge_run= is one attempt by a runner, and like the audit log it cannot be edited through the generic surfaces.
 
 Tickets gained two fields: =issue-type= (epic, story, task, subtask, research, bug) and =repo-id=. The issue type is a different question from the existing =kind=: kind says whose problem it is and decides who may read the replies, the issue type says what shape the work is. An external bug is both. See [[file:forge.org][Git forges]].
+
+** The software factory
+
+- *milestone*, *release*, *build*, *environment*, *deployment*, *incident*.
+
+The loop from a ticket to a running release and back, as records. A =milestone= is a planned increment; a =release= is a version that went out, with its changelog; a =build= is one CI run, written by the forge's webhook; an =environment= is somewhere a release runs; a =deployment= is a release arriving there; an =incident= is something going wrong there, pointing at the release and deployment it came from and the ticket that fixes it. Tickets gained =milestone-id= and =release-id=. See [[file:factory.org][The software factory]].
+
+A release's version is the field =number=, because every record already has a =version= — the optimistic-concurrency counter. A field table may not reuse a name the entity spine owns (=id=, =uuid=, =created-at=, =updated-at=, =version=); the installer refuses one at class initialisation.
+
+* Modules
+
+Every record type belongs to a module, and a module is a switch. A type whose module is off is hidden from the registry, and with it from REST, the schema, the forms, the AI and the CLI; its tables are not migrated; its reports are not offered. See [[file:modules.org][Modules]] for the table and the rules.
 
 * Adding a record type
 

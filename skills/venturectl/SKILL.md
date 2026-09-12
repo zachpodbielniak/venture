@@ -67,6 +67,9 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `forge set-secret ID` | set or generate its webhook secret |
 | `forge verify ID` | record which account the token belongs to |
 | `report [NAME] [PERIOD]` | list reports, or run one |
+| `links TYPE ID` | every link touching a record, read from it |
+| `link TYPE ID TYPE ID [kind=K] [note=T]` | link two records; kinds: related, blocks, blocked_by, depends_on, required_by, parent_of, child_of, duplicates, causes, caused_by, produces, produced_by, references, referenced_by, supersedes, superseded_by; unlink with `delete record_link ID` |
+| `modules` | which modules the server runs; `-f json` for types, reports and reasons |
 | `kb search QUERY` | search knowledge bases by meaning; `--kb SLUG`, `--limit N` |
 | `kb sync KB_ID` | re-read the base's source directory on the server |
 | `kb reindex [KB_ID] [--force]` | re-embed articles that need it |

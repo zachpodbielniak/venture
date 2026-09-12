@@ -224,9 +224,13 @@ test_report_registry_has_builtins(
 	registry = venture_context_get_report_registry(fixture->context);
 	reports = venture_report_registry_list(registry);
 
-	g_assert_cmpuint(reports->len, ==, 10);
+	/* Ten for the books and the CRM, three for the software factory. */
+	g_assert_cmpuint(reports->len, ==, 13);
 
 	g_assert_nonnull(venture_report_registry_lookup(registry, "pnl"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "releases"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "lead_time"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "incidents"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "ventures"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "categories"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "tax"));
@@ -247,7 +251,7 @@ test_report_registry_describe(
 
 	g_assert_nonnull(description);
 	array = json_node_get_array(description);
-	g_assert_cmpuint(json_array_get_length(array), ==, 10);
+	g_assert_cmpuint(json_array_get_length(array), ==, 13);
 
 	/* The description is what the AI's report tool advertises, so every
 	 * report has to carry one. */

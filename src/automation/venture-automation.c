@@ -878,13 +878,14 @@ venture_automation_new(
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 
-	g_object_get(venture_context_get_config(context),
-	             "automation-enabled", &enabled, NULL);
+	/* The module registry folds automation.enabled in. */
+	enabled = venture_context_module_enabled(context, "automation");
 
 	if (!enabled)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
-		                    "Automation is disabled in configuration");
+		                    "The automation module is disabled in "
+		                    "configuration");
 		return NULL;
 	}
 

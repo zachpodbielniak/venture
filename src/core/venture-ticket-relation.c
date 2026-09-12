@@ -45,15 +45,8 @@ venture_ticket_relation_create(
 	 */
 	if (G_TYPE_INVALID == subject_gtype)
 	{
-		g_autofree gchar *names = NULL;
-		g_auto(GStrv) known = NULL;
-
-		known = venture_entity_registry_list_names(registry);
-		names = g_strjoinv(", ", known);
-
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
-		            "There is no record type called \"%s\". Known types: %s",
-		            subject_type, names);
+		venture_entity_registry_set_unknown_type_error(registry, subject_type,
+		                                               error);
 		return NULL;
 	}
 
