@@ -511,3 +511,33 @@ than one that fails.
   enum value changes nothing, and it merges tags rather than replacing
   them. Nothing in this file posts a comment or saves a ticket -- the
   caller does, under the ordinary write policy.
+
+## The dashboard grid is a canvas
+
+- **The editor measures the cells; it does not do arithmetic on one cell's
+  size.** `.widget-grid` is `grid-auto-rows: minmax(150px, auto)`, so rows
+  are as tall as their contents and there is no such thing as "the" row
+  height. Multiplying a pointer offset by the first cell's height put a
+  card in row 15 of a nine-row page. `geometry()` reads every
+  `[data-cell]` rect and `slotAt()` hit-tests against them.
+- **A cell with no measurable box means the grid has collapsed** to one
+  column under 900px, where a position means nothing. `geometry()`
+  returns NULL and no drag starts. Without that guard the same
+  division-by-nothing produced nonsense placements on a phone.
+- **A move follows the pointer with a transform; a resize changes the
+  card's own span live.** The transform neither reflows the grid nor
+  fights the placement already in the card's style. Live resizing is safe
+  only because every card on an editable grid carries an explicit
+  `grid-column`/`grid-row`, so nothing flows around the one that is
+  growing -- do not rely on that anywhere cards are auto-placed.
+- **Swap exists because placement refuses a taken cell.** On a tidy page
+  there is no hole to move a card through, so dragging one card onto
+  another has to mean something. `venture_dashboard_swap_widgets()` writes
+  both in one transaction -- saving the first alone would land it on cells
+  the second still holds -- and refuses two of different sizes rather than
+  guessing where the odd one goes.
+- **The pointer gestures are a nicer way to reach the same endpoints.**
+  Every drag ends in the POST a nudge button sends, and the nudge forms
+  stay for the keyboard and for no scripting. Do not add placement rules
+  to the client: it may predict a refusal to colour the ghost, but the
+  server decides, and a refusal puts the card back where it was.

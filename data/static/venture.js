@@ -1836,6 +1836,22 @@
 	 * it would overlap or fall off the edge -- so the answer is never a
 	 * surprise. The nudge buttons in each card need none of this.
 	 */
+	/*
+	 * The dashboard grid, as a canvas.
+	 *
+	 * Cards are dragged with the pointer rather than dropped onto a
+	 * target, and resized by their corner rather than by eight buttons.
+	 * The first version of this used HTML5 drag-and-drop onto cells:
+	 * correct, and nothing like moving something. A drag has to follow
+	 * the cursor, show where the card will land before you let go, and
+	 * leave the page where it was afterwards.
+	 *
+	 * The rules stay the server's. Every gesture ends in the same POST a
+	 * nudge button sends, and the nudge buttons are still there for the
+	 * keyboard and for a browser with no scripting -- this is a nicer
+	 * way to reach the same endpoint, not a second implementation of
+	 * placement.
+	 */
 	function wireGridEditor() {
 		var grid = document.querySelector("[data-grid-editor]");
 
@@ -1844,141 +1860,431 @@
 		}
 
 		var columns = parseInt(grid.dataset.gridColumns, 10) || 1;
-		var dragging = null;
+		var slug = window.location.pathname.split("/")[2] || "";
+		var MAX_ROWS = 60;
+		var drag = null;
+		var ghost = null;
 
 		function cards() {
-			return Array.prototype.slice.call(grid.querySelectorAll("[data-widget]"));
+			return Array.prototype.slice.call(
+				grid.querySelectorAll("[data-widget]"));
 		}
 
-		function fits(card, col, row) {
-			var width = parseInt(card.dataset.width, 10) || 1;
-			var height = parseInt(card.dataset.height, 10) || 1;
+		function box(card) {
+			return {
+				col: parseInt(card.dataset.col, 10) || 1,
+				row: parseInt(card.dataset.row, 10) || 1,
+				width: parseInt(card.dataset.width, 10) || 1,
+				height: parseInt(card.dataset.height, 10) || 1
+			};
+		}
 
-			if (col < 1 || row < 1 || col + width - 1 > columns) {
-				return false;
-			}
+		/*
+		 * Where every column and row actually is, measured from the
+		 * cells the browser has already laid out.
+		 *
+		 * Not arithmetic from one cell's size, which is what this did
+		 * first and what made a drag land in row 15 of a nine-row page:
+		 * the rows are minmax(150px, auto), so a row holding a list is
+		 * half as tall again as one holding a count, and multiplying a
+		 * pointer offset by "the" row height is multiplying by a number
+		 * that does not exist. The cells are laid out by the same grid
+		 * as the cards, so their boxes are the answer rather than an
+		 * estimate of it.
+		 */
+		function geometry() {
+			var cells = Array.prototype.slice.call(
+				grid.querySelectorAll("[data-cell]"));
+			var cols = [];
+			var rows = [];
 
-			return cards().every(function (other) {
-				if (other === card) {
-					return true;
+			cells.forEach(function (cell) {
+				var col = parseInt(cell.dataset.col, 10);
+				var row = parseInt(cell.dataset.row, 10);
+				var rect = cell.getBoundingClientRect();
+
+				if (rect.width < 1 || rect.height < 1) {
+					return;
 				}
 
-				var oc = parseInt(other.dataset.col, 10);
-				var or = parseInt(other.dataset.row, 10);
-				var ow = parseInt(other.dataset.width, 10) || 1;
-				var oh = parseInt(other.dataset.height, 10) || 1;
+				if (row === 1) {
+					cols[col] = { start: rect.left, end: rect.right };
+				}
 
-				return !(col < oc + ow && oc < col + width
-					&& row < or + oh && or < row + height);
+				if (col === 1) {
+					rows[row] = { start: rect.top, end: rect.bottom };
+				}
+			});
+
+			/*
+			 * No measurable cell means the grid is not a grid right
+			 * now: under 900px every card collapses to one column and
+			 * the cells are hidden, so there is nowhere meaningful to
+			 * drop and no drag to start.
+			 */
+			if (!cols.length || !rows.length) {
+				return null;
+			}
+
+			return { cols: cols, rows: rows };
+		}
+
+		/*
+		 * Which column or row a coordinate falls in. Past either end it
+		 * clamps, so dragging off the edge pins to the edge rather than
+		 * doing nothing.
+		 */
+		function slotAt(track, position) {
+			var first = 0;
+			var last = 0;
+			var i;
+
+			for (i = 1; i < track.length; i++) {
+				if (!track[i]) {
+					continue;
+				}
+
+				if (!first) {
+					first = i;
+				}
+
+				last = i;
+
+				if (position < track[i].end) {
+					return Math.max(i, first);
+				}
+			}
+
+			return last || 1;
+		}
+
+		function clamp(value, low, high) {
+			return Math.max(low, Math.min(high, value));
+		}
+
+		/* Which card, if any, sits under a rectangle. */
+		function occupants(area, except) {
+			return cards().filter(function (card) {
+				var other = box(card);
+
+				if (card === except) {
+					return false;
+				}
+
+				return area.col < other.col + other.width
+					&& other.col < area.col + area.width
+					&& area.row < other.row + other.height
+					&& other.row < area.row + area.height;
 			});
 		}
 
-		function clearCells() {
-			Array.prototype.forEach.call(
-				grid.querySelectorAll("[data-cell]"),
-				function (cell) {
-					cell.classList.remove("drop-target", "drop-refused");
-				}
-			);
+		function fits(area) {
+			return area.col >= 1 && area.row >= 1 && area.width >= 1
+				&& area.height >= 1
+				&& area.col + area.width - 1 <= columns
+				&& area.row + area.height - 1 <= MAX_ROWS;
 		}
 
-		grid.addEventListener("dragstart", function (event) {
-			var card = event.target.closest("[data-widget]");
-
-			if (!card) {
-				return;
+		/*
+		 * The landing rectangle. Green where the card will go, amber
+		 * where it will trade places with the card already there, red
+		 * where it cannot go at all.
+		 */
+		function showGhost(area, state) {
+			if (!ghost) {
+				ghost = document.createElement("div");
+				ghost.className = "grid-ghost";
+				grid.appendChild(ghost);
 			}
 
-			dragging = card;
-			card.classList.add("dragging");
-			event.dataTransfer.effectAllowed = "move";
-			event.dataTransfer.setData("text/plain", card.dataset.widget);
-		});
+			ghost.style.gridColumn = area.col + " / span " + area.width;
+			ghost.style.gridRow = area.row + " / span " + area.height;
+			ghost.className = "grid-ghost " + state;
+		}
 
-		grid.addEventListener("dragend", function () {
-			if (dragging) {
-				dragging.classList.remove("dragging");
+		function hideGhost() {
+			if (ghost) {
+				ghost.remove();
+				ghost = null;
 			}
+		}
 
-			dragging = null;
-			clearCells();
-		});
+		function setCard(card, area) {
+			card.style.gridColumn = area.col + " / span " + area.width;
+			card.style.gridRow = area.row + " / span " + area.height;
+			card.dataset.col = String(area.col);
+			card.dataset.row = String(area.row);
+			card.dataset.width = String(area.width);
+			card.dataset.height = String(area.height);
 
-		grid.addEventListener("dragover", function (event) {
-			var cell = event.target.closest("[data-cell]");
+			var where = card.querySelector(".widget-where");
 
-			if (!cell || !dragging) {
-				return;
+			if (where) {
+				where.textContent = area.col + "," + area.row + " · "
+					+ area.width + "×" + area.height;
 			}
+		}
 
-			event.preventDefault();
-			clearCells();
-
-			var col = parseInt(cell.dataset.col, 10);
-			var row = parseInt(cell.dataset.row, 10);
-
-			if (fits(dragging, col, row)) {
-				event.dataTransfer.dropEffect = "move";
-				cell.classList.add("drop-target");
-			} else {
-				event.dataTransfer.dropEffect = "none";
-				cell.classList.add("drop-refused");
-			}
-		});
-
-		grid.addEventListener("drop", function (event) {
-			var cell = event.target.closest("[data-cell]");
-
-			if (!cell || !dragging) {
-				return;
-			}
-
-			event.preventDefault();
-
-			var card = dragging;
-			var col = parseInt(cell.dataset.col, 10);
-			var row = parseInt(cell.dataset.row, 10);
-			var slug = window.location.pathname.split("/")[2];
-			var data = new URLSearchParams();
-
-			clearCells();
-
-			if (!fits(card, col, row)) {
-				toast("That spot is taken, or the card would not fit.",
-				      "negative");
-				return;
-			}
-
-			/* Move it now; the server is asked to agree, and the page
-			 * reloads so the layout is the server's, not this guess. */
-			card.style.gridColumn = col + " / span " + card.dataset.width;
-			card.style.gridRow = row + " / span " + card.dataset.height;
-			card.dataset.col = String(col);
-			card.dataset.row = String(row);
-
-			data.set("col", String(col));
-			data.set("row", String(row));
+		/* Every gesture lands here: one POST, the server's answer wins. */
+		function send(card, path, data, area, before) {
 			data.set("async", "1");
 
 			fetch("/dashboards/" + encodeURIComponent(slug) + "/widgets/"
-				+ card.dataset.widget + "/place", {
+				+ card.dataset.widget + "/" + path, {
 				method: "POST",
 				headers: { "Content-Type": "application/x-www-form-urlencoded" },
 				body: data.toString(),
 				credentials: "same-origin"
 			}).then(function (response) {
-				if (!response.ok) {
-					return response.json().then(function (body) {
-						throw new Error((body && body.error && body.error.message)
-							|| "The move was refused");
-					});
+				if (response.ok) {
+					return null;
 				}
 
-				window.location.reload();
+				return response.json().then(function (body) {
+					throw new Error((body && body.error && body.error.message)
+						|| "That move was refused");
+				});
+			}).then(function () {
+				card.classList.add("settled");
+				window.setTimeout(function () {
+					card.classList.remove("settled");
+				}, 400);
 			}).catch(function (problem) {
-				toast(problem.message, "negative");
-				window.location.reload();
+				/* Put it back where it was and say why. The card the
+				 * pointer moved is wrong now, and leaving it wrong is
+				 * worse than a jump. */
+				setCard(card, before);
+
+				if (area && area.partner) {
+					setCard(area.partner.card, area.partner.before);
+				}
+
+				toast(problem.message, "negative", 6000);
 			});
+		}
+
+		function begin(event, card, mode) {
+			var g = geometry();
+			var rect;
+
+			/* Nothing to measure: the grid has collapsed to one column,
+			 * where a position on it means nothing. */
+			if (!g) {
+				return;
+			}
+
+			rect = card.getBoundingClientRect();
+
+			drag = {
+				card: card,
+				mode: mode,
+				geometry: g,
+				before: box(card),
+				startX: event.clientX,
+				startY: event.clientY,
+				originLeft: rect.left,
+				originTop: rect.top,
+				area: box(card),
+				state: "free",
+				moved: false
+			};
+
+			card.classList.add(mode === "resize" ? "resizing" : "lifting");
+			grid.classList.add("busy");
+
+			/*
+			 * Capture keeps the drag alive when the pointer leaves the
+			 * card, which it does immediately. It throws for a pointer
+			 * the browser does not consider active; the drag still
+			 * works without it as long as the pointer stays over the
+			 * grid, so a failure here is not worth abandoning for.
+			 */
+			try {
+				card.setPointerCapture(event.pointerId);
+			} catch (e) {
+				/* Carry on uncaptured. */
+			}
+
+			event.preventDefault();
+		}
+
+		function update(event) {
+			if (!drag) {
+				return;
+			}
+
+			var g = drag.geometry;
+			var area;
+
+			if (Math.abs(event.clientX - drag.startX) > 2
+			    || Math.abs(event.clientY - drag.startY) > 2) {
+				drag.moved = true;
+			}
+
+			if (drag.mode === "move") {
+				/*
+				 * The card follows the pointer with a transform, which
+				 * neither reflows the grid nor fights the placement
+				 * already in its style. Where it will land is worked
+				 * out from its own top-left corner, not the cursor, so
+				 * grabbing a card by its middle does not shift it.
+				 */
+				var dx = event.clientX - drag.startX;
+				var dy = event.clientY - drag.startY;
+
+				drag.card.style.transform = "translate(" + dx + "px," + dy + "px)";
+
+				/*
+				 * Measured from the card's own top-left corner plus a
+				 * few pixels, not from the cursor: grabbing a card by
+				 * its middle and having it jump so the cursor is its
+				 * corner is the thing that makes a drag feel wrong.
+				 */
+				area = {
+					col: clamp(slotAt(g.cols, drag.originLeft + dx + 4), 1,
+						columns - drag.before.width + 1),
+					row: clamp(slotAt(g.rows, drag.originTop + dy + 4), 1,
+						MAX_ROWS - drag.before.height + 1),
+					width: drag.before.width,
+					height: drag.before.height
+				};
+			} else {
+				/*
+				 * Resizing changes the card's own span as you drag. That
+				 * is safe here and nowhere else: every card on an
+				 * editable grid carries an explicit placement, so
+				 * nothing reflows around the one that is growing.
+				 */
+				/* The corner is dragged to the cell the card should end
+				 * at, so the size is that cell minus where it starts. */
+				area = {
+					col: drag.before.col,
+					row: drag.before.row,
+					width: clamp(slotAt(g.cols, event.clientX)
+						- drag.before.col + 1, 1,
+						columns - drag.before.col + 1),
+					height: clamp(slotAt(g.rows, event.clientY)
+						- drag.before.row + 1, 1, 8)
+				};
+
+				setCard(drag.card, area);
+			}
+
+			var taken = fits(area) ? occupants(area, drag.card) : [];
+
+			if (!fits(area)) {
+				drag.state = "refused";
+			} else if (taken.length === 0) {
+				drag.state = "free";
+			} else if (drag.mode === "move" && taken.length === 1
+			           && box(taken[0]).width === area.width
+			           && box(taken[0]).height === area.height) {
+				drag.state = "swap";
+				drag.partner = taken[0];
+			} else {
+				drag.state = "refused";
+			}
+
+			if (drag.state !== "swap") {
+				drag.partner = null;
+			}
+
+			drag.area = area;
+			showGhost(area, drag.state);
+		}
+
+		function finish(cancelled) {
+			if (!drag) {
+				return;
+			}
+
+			var card = drag.card;
+			var mode = drag.mode;
+			var area = drag.area;
+			var before = drag.before;
+			var state = drag.state;
+			var partner = drag.partner;
+			var moved = drag.moved;
+
+			card.classList.remove("lifting", "resizing");
+			grid.classList.remove("busy");
+			card.style.transform = "";
+			hideGhost();
+			drag = null;
+
+			if (cancelled || !moved) {
+				setCard(card, before);
+				return;
+			}
+
+			if (state === "refused") {
+				setCard(card, before);
+				toast(mode === "resize"
+					? "It will not fit at that size."
+					: "Something else is there, and they are not the same "
+					  + "size to trade.", "negative");
+				return;
+			}
+
+			if (state === "swap" && partner) {
+				var partnerBefore = box(partner);
+				var swap = new URLSearchParams();
+
+				setCard(card, partnerBefore);
+				setCard(partner, before);
+				swap.set("with", partner.dataset.widget);
+				send(card, "swap", swap, {
+					partner: { card: partner, before: partnerBefore }
+				}, before);
+				return;
+			}
+
+			var data = new URLSearchParams();
+
+			setCard(card, area);
+			data.set("col", String(area.col));
+			data.set("row", String(area.row));
+			data.set("width", String(area.width));
+			data.set("height", String(area.height));
+			send(card, "place", data, null, before);
+		}
+
+		grid.addEventListener("pointerdown", function (event) {
+			var card = event.target.closest("[data-widget]");
+
+			if (!card || event.button !== 0 || drag) {
+				return;
+			}
+
+			if (event.target.closest("[data-resize]")) {
+				begin(event, card, "resize");
+				return;
+			}
+
+			/* Anything you could click is not a handle. */
+			if (event.target.closest("a, button, input, select, textarea, "
+			                         + "label")) {
+				return;
+			}
+
+			begin(event, card, "move");
+		});
+
+		grid.addEventListener("pointermove", update);
+
+		grid.addEventListener("pointerup", function () {
+			finish(false);
+		});
+
+		grid.addEventListener("pointercancel", function () {
+			finish(true);
+		});
+
+		document.addEventListener("keydown", function (event) {
+			if (drag && event.key === "Escape") {
+				event.preventDefault();
+				finish(true);
+			}
 		});
 	}
 

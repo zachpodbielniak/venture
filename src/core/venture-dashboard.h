@@ -405,6 +405,39 @@ venture_dashboard_place_widget(
 );
 
 /**
+ * venture_dashboard_swap_widgets:
+ * @database: the database
+ * @dashboard: the dashboard both widgets are on
+ * @first: one widget
+ * @second: the other
+ * @actor: (nullable): who is responsible
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Exchanges two widgets' places on the grid, in one transaction.
+ *
+ * This exists because a placement that refuses a taken cell makes a full
+ * grid almost impossible to rearrange: every move wants a hole, and on a
+ * tidy page there is no hole. Dragging one card onto another and having
+ * them trade is what a person means by the gesture.
+ *
+ * Both must be the same size. A swap between a wide card and a narrow one
+ * is not an exchange -- one of them has to end up somewhere it was not --
+ * so it is refused rather than guessed at, and the caller moves the other
+ * card out of the way first.
+ *
+ * Returns: %TRUE if they were exchanged
+ */
+gboolean
+venture_dashboard_swap_widgets(
+	VentureDatabase		 *database,
+	VentureDashboard	 *dashboard,
+	VentureDashboardWidget	 *first,
+	VentureDashboardWidget	 *second,
+	const VentureActor	 *actor,
+	GError			**error
+);
+
+/**
  * venture_dashboard_nudge_widget:
  * @database: the database
  * @dashboard: the dashboard

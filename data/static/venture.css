@@ -2835,42 +2835,158 @@ a.bar-row:hover .bar-label { color: var(--accent); }
 	grid-auto-rows: minmax(var(--widget-row), auto);
 }
 
+/* The cells behind the cards, which is what makes the grid read as one. */
 .grid-cell {
 	border: 1px dashed var(--border-strong);
 	border-radius: var(--radius-lg);
 	min-height: var(--widget-row);
 	background: transparent;
-	transition: background var(--transition), border-color var(--transition);
+	pointer-events: none;
 }
 
-.grid-cell.drop-target {
-	background: var(--pale-blue);
+/*
+ * The landing rectangle, drawn over the cells and under the card being
+ * moved. Three states, because "where will this go" and "can it go
+ * there" are the two questions a drag has to answer before you let go.
+ */
+.grid-ghost {
+	border-radius: var(--radius-lg);
+	pointer-events: none;
+	z-index: 2;
+	border: 2px solid var(--accent);
+	background: var(--accent-soft);
+	transition: opacity var(--transition);
+}
+
+.grid-ghost.swap {
+	border-color: var(--warning);
+	background: var(--warning-soft);
+}
+
+.grid-ghost.refused {
+	border-color: var(--negative);
+	background: var(--negative-soft);
+	border-style: dashed;
+}
+
+/* A card on an editable grid is something you can pick up. */
+.widget.placeable {
+	cursor: grab;
+	position: relative;
+	z-index: 1;
+	touch-action: none;
+	user-select: none;
+	transition: box-shadow var(--transition), transform 0.12s ease-out;
+}
+
+.widget.placeable:hover { box-shadow: 0 2px 10px rgba(15, 15, 15, 0.06); }
+
+/*
+ * Lifted: no transition on the transform, because the card is following
+ * a pointer and any easing reads as lag. Pointer events off so the
+ * hit test under the cursor is the grid, not the card being carried.
+ */
+.widget.placeable.lifting {
+	cursor: grabbing;
+	z-index: 40;
+	transition: none;
+	box-shadow: var(--shadow-lg);
+	opacity: 0.92;
+}
+
+.widget.placeable.resizing { z-index: 40; transition: none; user-select: none; }
+
+/* A short flash where it came to rest, so a save that changed nothing
+ * visible still says it happened. */
+.widget.placeable.settled { box-shadow: 0 0 0 2px var(--accent); }
+
+/* The corner you drag. Bigger than it looks: the visible chevron is
+ * 12px and the target is 22px, which is the difference between a handle
+ * you can grab and one you have to aim at. */
+.widget-resize {
+	position: absolute;
+	right: 0;
+	bottom: 0;
+	width: 22px;
+	height: 22px;
+	cursor: nwse-resize;
+	z-index: 3;
+	touch-action: none;
+}
+
+.widget-resize::after {
+	content: "";
+	position: absolute;
+	right: 5px;
+	bottom: 5px;
+	width: 9px;
+	height: 9px;
+	border-right: 2px solid var(--border-strong);
+	border-bottom: 2px solid var(--border-strong);
+	border-bottom-right-radius: 3px;
+	transition: border-color var(--transition);
+}
+
+.widget.placeable:hover .widget-resize::after,
+.widget.placeable.resizing .widget-resize::after {
 	border-color: var(--accent);
 }
 
-.grid-cell.drop-refused {
-	background: var(--pale-red);
-	border-color: var(--negative);
+/* Where the card sits, in the corner rather than on a bar of its own. */
+.widget-where {
+	position: absolute;
+	right: var(--space-3);
+	bottom: 4px;
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	color: var(--text-faint);
+	pointer-events: none;
+	opacity: 0;
+	transition: opacity var(--transition);
 }
 
-.widget.placeable { cursor: grab; position: relative; z-index: 1; }
-.widget.placeable:active { cursor: grabbing; }
-.widget.placeable.dragging { opacity: 0.45; }
+.widget.placeable:hover .widget-where,
+.widget.placeable.lifting .widget-where,
+.widget.placeable.resizing .widget-where { opacity: 1; }
 
+/*
+ * The nudge buttons are the keyboard and no-script path to the same
+ * endpoints the pointer uses. Out of the way until the card is hovered
+ * or something inside it has focus, so a page being arranged is cards
+ * rather than rows of buttons.
+ */
 .widget-controls {
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
 	gap: var(--space-2);
-	padding: var(--space-2) var(--space-4);
-	border-bottom: 1px solid var(--border);
+	padding: 0 var(--space-4);
+	max-height: 0;
+	overflow: hidden;
+	border-bottom: 1px solid transparent;
 	background: var(--surface-sunken);
+	transition: max-height var(--transition), padding var(--transition);
+}
+
+.widget.placeable:hover .widget-controls,
+.widget-controls:focus-within {
+	max-height: 96px;
+	padding: var(--space-2) var(--space-4);
+	border-bottom-color: var(--border);
 }
 
 .widget-controls form.nudge { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px; margin: 0; }
 .widget-controls form.nudge .btn-sm { padding: 1px 6px; font-size: 11px; }
 .widget-controls form.inline { margin: 0; }
-.widget-controls .cell-note { margin-left: auto; font-family: var(--font-mono); }
+
+/* While something is moving, nothing else on the canvas reacts to the
+ * pointer: a hover shadow lighting up under a card being carried is
+ * noise pretending to be feedback. */
+.widget-grid.busy .widget.placeable:not(.lifting):not(.resizing) {
+	pointer-events: none;
+}
+
+.widget-grid.busy { cursor: grabbing; }
 
 /* The dashed cells have to be seen through the gaps and in the spare
  * row, so they are drawn a shade stronger than a card border. */

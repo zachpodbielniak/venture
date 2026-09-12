@@ -18050,7 +18050,7 @@ venture_web_append_widget_card(
 		editing ? " placeable" : "", id,
 		placement->col, placement->width, placement->row, placement->height,
 		id, placement->col, placement->row, placement->width,
-		placement->height, editing ? " draggable=\"true\"" : "");
+		placement->height, "");
 
 	/* A refresh is an ordinary HTMX poll; nothing here knows or cares
 	 * what the widget shows. Not while editing, where a reload would
@@ -18089,6 +18089,21 @@ venture_web_append_widget_card(
 	g_string_append(content, "</div></div>");
 
 	/*
+	 * The corner you drag to resize, and the cell the card currently
+	 * holds. Rendered rather than made in script so the card carries
+	 * its own affordance the moment the grid is editable.
+	 */
+	if (editing)
+	{
+		g_string_append_printf(content,
+			"<span class=\"widget-where\">%u,%u &middot; %u&times;%u</span>"
+			"<span class=\"widget-resize\" data-resize "
+			"title=\"Drag to resize\" aria-hidden=\"true\"></span>",
+			placement->col, placement->row, placement->width,
+			placement->height);
+	}
+
+	/*
 	 * The grid controls, on a bar of their own under the head: eight
 	 * nudge buttons do not fit beside a title in a one-column card. As
 	 * forms, so the grid is editable with no scripting and from the
@@ -18122,10 +18137,8 @@ venture_web_append_widget_card(
 			G_GINT64_FORMAT "/delete\" class=\"inline\">"
 			"<button class=\"btn btn-sm btn-danger\" type=\"submit\">"
 			"Remove</button></form>"
-			"<span class=\"muted small cell-note\">%u,%u &middot; %u&times;%u"
-			"</span></div>",
-			slug_attr, id, slug_attr, id, placement->col, placement->row,
-			placement->width, placement->height);
+			"</div>",
+			slug_attr, id, slug_attr, id);
 	}
 
 	g_string_append(content, "<div class=\"card-body\">");
@@ -18189,17 +18202,20 @@ venture_web_append_dashboard_grid(
 		editing ? " data-grid-editor" : "");
 
 	/*
-	 * While editing, every cell -- including one empty row below the
-	 * last widget -- is a drop target, drawn behind the cards. A taken
-	 * cell is still drawn so the grid reads as a grid; the server refuses
-	 * a drop onto one and the page says so.
+	 * While editing the cells are drawn behind the cards, two spare rows
+	 * past the last one. They are scenery rather than drop targets --
+	 * the editor works out where a card will land from the pointer's
+	 * coordinates, not from what is under it -- but they are what makes
+	 * a grid look like a grid to somebody moving things around on it.
 	 */
 	if (editing)
 	{
 		guint r;
 		guint c;
 
-		for (r = 1; r <= rows + 1; r++)
+		/* Two spare rows below the last card, so there is somewhere to
+		 * drag downward to and the canvas reads as having room. */
+		for (r = 1; r <= rows + 2; r++)
 			for (c = 1; c <= columns; c++)
 				g_string_append_printf(content,
 					"<div class=\"grid-cell\" data-cell data-col=\"%u\" "
@@ -18858,9 +18874,11 @@ venture_web_ui_dashboard_edit(
 		"title=\"Close the gaps: every widget to the first free cell, in "
 		"page order\">Tidy</button></form> "
 		"<a class=\"btn\" href=\"/dashboards/%s\">Done</a></div></div>"
-		"<p class=\"muted small\">Drag a card onto a free cell, or use its "
-		"arrows; W and H change its width and height. A card on a cell "
-		"another card holds is refused, never overlapped.</p>",
+		"<p class=\"muted small\">Drag a card anywhere on the grid, or its "
+		"corner to resize it. Drop it on a card the same size and the two "
+		"trade places; anywhere a card will not fit is shown in red and "
+		"nothing moves. Escape cancels a drag. The arrows on each card do "
+		"the same from the keyboard.</p>",
 		slug, slug, slug);
 
 	venture_web_append_dashboard_grid(self, request, principal, dashboard,
@@ -19556,6 +19574,69 @@ venture_web_ui_dashboard_widget_place(
 	venture_auth_to_actor(principal, &actor);
 	venture_dashboard_place_widget(venture_context_get_database(self->context),
 	                               dashboard, widget, col, row, width, height,
+	                               &actor, &error);
+
+	return venture_web_dashboard_grid_answer(request, slug, error);
+}
+
+/*
+ * POST /dashboards/:slug/widgets/:id/swap - two cards trade places.
+ *
+ * The gesture is dragging one card onto another, which on a full grid is
+ * the only way to rearrange anything: a placement refuses a taken cell,
+ * and a tidy page has no spare cell to move through.
+ */
+static HtmxResponse *
+venture_web_ui_dashboard_widget_swap(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(VentureEntity) first = NULL;
+	g_autoptr(VentureEntity) second = NULL;
+	g_autofree gchar *slug = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+	const gchar *with;
+
+	gate = venture_web_dashboard_load(self, request, params,
+	                                  VENTURE_USER_ROLE_EDITOR, FALSE,
+	                                  &principal, &dashboard);
+
+	if (NULL != gate)
+		return gate;
+
+	g_object_get(dashboard, "slug", &slug, NULL);
+
+	first = venture_database_get(venture_context_get_database(self->context),
+	                             VENTURE_TYPE_DASHBOARD_WIDGET,
+	                             g_ascii_strtoll(g_hash_table_lookup(params,
+	                                                                 "id"),
+	                                             NULL, 10),
+	                             &error);
+
+	if (NULL == first)
+		return venture_web_error_response(error);
+
+	with = htmx_request_get_form_value(request, "with");
+	second = venture_database_get(venture_context_get_database(self->context),
+	                              VENTURE_TYPE_DASHBOARD_WIDGET,
+	                              (NULL != with)
+	                              	? g_ascii_strtoll(with, NULL, 10) : 0,
+	                              &error);
+
+	if (NULL == second)
+		return venture_web_error_response(error);
+
+	venture_auth_to_actor(principal, &actor);
+	venture_dashboard_swap_widgets(venture_context_get_database(self->context),
+	                               dashboard,
+	                               VENTURE_DASHBOARD_WIDGET(first),
+	                               VENTURE_DASHBOARD_WIDGET(second),
 	                               &actor, &error);
 
 	return venture_web_dashboard_grid_answer(request, slug, error);
@@ -24523,6 +24604,8 @@ venture_web_server_new(
 	                 venture_web_ui_dashboard_widget_delete, self);
 	htmx_router_post(router, "/dashboards/:slug/widgets/:id/move",
 	                 venture_web_ui_dashboard_widget_move, self);
+	htmx_router_post(router, "/dashboards/:slug/widgets/:id/swap",
+	                 venture_web_ui_dashboard_widget_swap, self);
 	htmx_router_post(router, "/dashboards/:slug/widgets/:id/place",
 	                 venture_web_ui_dashboard_widget_place, self);
 	htmx_router_post(router, "/dashboards/:slug/arrange",

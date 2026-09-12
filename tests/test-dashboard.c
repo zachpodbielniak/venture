@@ -1795,6 +1795,88 @@ test_dashboard_http_module_off(
 	g_assert_nonnull(strstr(page, "<h1>Overview</h1>"));
 }
 
+/*
+ * Two cards trade places.
+ *
+ * The gesture exists because a placement refuses a taken cell, and a
+ * tidy page has no spare cell to move a card through: without a swap
+ * the only way to reorder a full grid is to shuffle everything to the
+ * bottom and back. Both writes are one transaction, or the first would
+ * land on cells the second still holds.
+ *
+ * What breaks if this regresses: a full dashboard that cannot be
+ * rearranged at all, or a swap that half-applies and leaves two cards
+ * on one cell.
+ */
+static void
+test_dashboard_swap(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(VentureDashboardWidget) a = NULL;
+	g_autoptr(VentureDashboardWidget) b = NULL;
+	g_autoptr(VentureDashboardWidget) wide = NULL;
+	g_autoptr(GPtrArray) placements = NULL;
+	g_autoptr(GError) error = NULL;
+	const VentureWidgetPlacement *placement;
+
+	(void)user_data;
+
+	dashboard = create_dashboard(fixture, "Swap");
+
+	a = create_widget(fixture, dashboard, "note", "title", "A",
+	                  "grid-col", (gint64)1, "grid-row", (gint64)1, NULL);
+	b = create_widget(fixture, dashboard, "note", "title", "B",
+	                  "grid-col", (gint64)3, "grid-row", (gint64)2, NULL);
+	wide = create_widget(fixture, dashboard, "note", "title", "Wide",
+	                     "grid-col", (gint64)1, "grid-row", (gint64)3,
+	                     "grid-width", (gint64)2, NULL);
+
+	g_assert_true(venture_dashboard_swap_widgets(fixture->database, dashboard,
+	                                             a, b, NULL, &error));
+	g_assert_no_error(error);
+
+	placements = venture_dashboard_layout(fixture->database, dashboard, NULL);
+	placement = placement_of(placements, a);
+	g_assert_cmpuint(placement->col, ==, 3);
+	g_assert_cmpuint(placement->row, ==, 2);
+	placement = placement_of(placements, b);
+	g_assert_cmpuint(placement->col, ==, 1);
+	g_assert_cmpuint(placement->row, ==, 1);
+
+	/* Both are still placed, and nothing landed on top of anything. */
+	g_assert_true(placement_of(placements, a)->placed);
+	g_assert_true(placement_of(placements, b)->placed);
+
+	/* Swapping back returns them, so the operation is its own inverse. */
+	g_assert_true(venture_dashboard_swap_widgets(fixture->database, dashboard,
+	                                             b, a, NULL, &error));
+	g_clear_pointer(&placements, g_ptr_array_unref);
+	placements = venture_dashboard_layout(fixture->database, dashboard, NULL);
+	g_assert_cmpuint(placement_of(placements, a)->col, ==, 1);
+	g_assert_cmpuint(placement_of(placements, b)->col, ==, 3);
+
+	/* Different sizes are not an exchange: one of them would have to
+	 * end up somewhere neither card asked for. */
+	g_assert_false(venture_dashboard_swap_widgets(fixture->database, dashboard,
+	                                              a, wide, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_assert_nonnull(strstr(error->message, "same size"));
+	g_clear_error(&error);
+
+	/* And the refusal changed nothing. */
+	g_clear_pointer(&placements, g_ptr_array_unref);
+	placements = venture_dashboard_layout(fixture->database, dashboard, NULL);
+	g_assert_cmpuint(placement_of(placements, a)->col, ==, 1);
+	g_assert_cmpuint(placement_of(placements, wide)->row, ==, 3);
+
+	/* A widget cannot trade with itself. */
+	g_assert_false(venture_dashboard_swap_widgets(fixture->database, dashboard,
+	                                              a, a, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+}
+
 int
 main(
 	int	 argc,
@@ -1822,6 +1904,7 @@ main(
 	    test_dashboard_templates_and_export);
 	ADD("/dashboard/move-widget", test_dashboard_move_widget);
 	ADD("/dashboard/grid-layout", test_dashboard_grid_layout);
+	ADD("/dashboard/swap", test_dashboard_swap);
 
 #undef ADD
 #define ADD(path, func) \

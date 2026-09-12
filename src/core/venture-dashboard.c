@@ -4131,6 +4131,112 @@ venture_dashboard_place_widget(
 }
 
 gboolean
+venture_dashboard_swap_widgets(
+	VentureDatabase		 *database,
+	VentureDashboard	 *dashboard,
+	VentureDashboardWidget	 *first,
+	VentureDashboardWidget	 *second,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	g_autoptr(GPtrArray) placements = NULL;
+	VentureWidgetPlacement *one = NULL;
+	VentureWidgetPlacement *two = NULL;
+	gint64 first_id;
+	gint64 second_id;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), FALSE);
+	g_return_val_if_fail(VENTURE_IS_DASHBOARD(dashboard), FALSE);
+	g_return_val_if_fail(VENTURE_IS_DASHBOARD_WIDGET(first), FALSE);
+	g_return_val_if_fail(VENTURE_IS_DASHBOARD_WIDGET(second), FALSE);
+
+	first_id = venture_entity_get_id(VENTURE_ENTITY(first));
+	second_id = venture_entity_get_id(VENTURE_ENTITY(second));
+
+	if (first_id == second_id)
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "A widget cannot swap with itself");
+		return FALSE;
+	}
+
+	/*
+	 * Resolved rather than read off the rows: a widget that has never
+	 * been placed has zeroes stored and a real position on the page, and
+	 * swapping with its stored zeroes would move it to the top left
+	 * rather than to where the other card is.
+	 */
+	placements = venture_dashboard_layout(database, dashboard, error);
+
+	if (NULL == placements)
+		return FALSE;
+
+	for (i = 0; i < placements->len; i++)
+	{
+		VentureWidgetPlacement *placement;
+		gint64 id;
+
+		placement = g_ptr_array_index(placements, i);
+		id = venture_entity_get_id(VENTURE_ENTITY(placement->widget));
+
+		if (id == first_id)
+			one = placement;
+		else if (id == second_id)
+			two = placement;
+	}
+
+	if ((NULL == one) || (NULL == two))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		                    "Both widgets have to be on this dashboard");
+		return FALSE;
+	}
+
+	if ((one->width != two->width) || (one->height != two->height))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+		            "Only two widgets of the same size can trade places; "
+		            "these are %ux%u and %ux%u. Move the other one out of "
+		            "the way first.",
+		            one->width, one->height, two->width, two->height);
+		return FALSE;
+	}
+
+	if (!venture_database_begin(database, error))
+		return FALSE;
+
+	/*
+	 * Both written before either is checked against the other, which is
+	 * the whole reason this is one transaction: saving the first alone
+	 * would land it on cells the second still holds, and the validator
+	 * has no way to know a second save is coming.
+	 */
+	g_object_set(first,
+	             "grid-col", (gint64)two->col,
+	             "grid-row", (gint64)two->row,
+	             "grid-width", (gint64)two->width,
+	             "grid-height", (gint64)two->height,
+	             NULL);
+	g_object_set(second,
+	             "grid-col", (gint64)one->col,
+	             "grid-row", (gint64)one->row,
+	             "grid-width", (gint64)one->width,
+	             "grid-height", (gint64)one->height,
+	             NULL);
+
+	if (!venture_database_save(database, VENTURE_ENTITY(first), actor, error) ||
+	    !venture_database_save(database, VENTURE_ENTITY(second), actor, error))
+	{
+		venture_database_rollback(database);
+		return FALSE;
+	}
+
+	return venture_database_commit(database, error);
+}
+
+gboolean
 venture_dashboard_nudge_widget(
 	VentureDatabase		 *database,
 	VentureDashboard	 *dashboard,
