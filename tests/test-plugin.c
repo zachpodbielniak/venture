@@ -588,7 +588,8 @@ test_plugin_manager_loads_native_plugin(
 		g_assert_no_error(error);
 
 		g_object_set(record, "name", "Object storage", "cadence", "monthly",
-		             "active", TRUE, NULL);
+		             "active", TRUE, "organization-id",
+		             venture_context_get_default_organization_id(fixture->context), NULL);
 		g_assert_true(venture_entity_set_field_from_string(record, "amount",
 			"12.00", NULL));
 
@@ -602,6 +603,25 @@ test_plugin_manager_loads_native_plugin(
 		g_assert_nonnull(loaded);
 		g_object_get(loaded, "amount", &amount, NULL);
 		g_assert_cmpint(venture_money_get_amount(amount), ==, 1200);
+
+		/* The implementation really came from the loaded .so, while
+		 * valuation, balance, persistence and immutability remain core. */
+		{
+			g_autoptr(VentureJournal) journal = NULL;
+			g_autoptr(GPtrArray) journals = NULL;
+			VenturePostingService *posting = venture_context_get_posting_service(fixture->context);
+
+			g_assert_nonnull(venture_posting_rule_registry_lookup(
+				venture_posting_service_get_rules(posting), "subscription-renewal"));
+			journal = venture_posting_service_post_document(posting,
+				"subscription-renewal", loaded, NULL, &error);
+			g_assert_no_error(error);
+			g_assert_nonnull(journal);
+			journals = venture_posting_service_find_source(posting, "subscription",
+				venture_entity_get_id(loaded), venture_entity_get_organization_id(loaded), &error);
+			g_assert_no_error(error);
+			g_assert_cmpuint(journals->len, ==, 1);
+		}
 	}
 }
 

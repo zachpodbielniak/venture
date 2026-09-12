@@ -11,6 +11,8 @@
  *     resource, a web list view, AI tools and CLI subcommands
  *   - register a report, which appears in the CLI, the web UI, the API and
  *     the AI's report tool
+ *   - register a posting rule, so an explicitly recorded renewal uses the
+ *     same atomic journal service as built-in documents
  *
  * Neither needs any routing, SQL, serialisation or form code, because every
  * consumer works from the registries rather than a hardcoded list. That is
@@ -59,6 +61,60 @@ static const VentureFieldDecl venture_subscription_fields[] = {
 
 VENTURE_DEFINE_ENTITY(VentureSubscription, venture_subscription,
                       venture_subscription_fields)
+
+/* An explicit renewal event, not an automatic posting of a standing
+ * commitment. The host owns journal validation and persistence. */
+G_DECLARE_FINAL_TYPE(VentureSubscriptionPostingRule, venture_subscription_posting_rule,
+	VENTURE, SUBSCRIPTION_POSTING_RULE, GObject)
+struct _VentureSubscriptionPostingRule { GObject parent_instance; };
+static void subscription_posting_iface(VenturePostingRuleInterface *iface);
+G_DEFINE_FINAL_TYPE_WITH_CODE(VentureSubscriptionPostingRule, venture_subscription_posting_rule, G_TYPE_OBJECT,
+	G_IMPLEMENT_INTERFACE(VENTURE_TYPE_POSTING_RULE, subscription_posting_iface))
+
+static const gchar *
+subscription_posting_name(VenturePostingRule *self)
+{
+	(void)self;
+	return "subscription-renewal";
+}
+
+static GPtrArray *
+subscription_posting_lines(VenturePostingRule *self, VentureDatabase *db, VentureEntity *source, GError **error)
+{
+	g_autoptr(VentureExpense) expense = venture_expense_new();
+	g_autoptr(VentureMoney) amount = NULL;
+	VenturePostingRule *expense_rule;
+
+	(void)self;
+	if (!VENTURE_IS_SUBSCRIPTION(source))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"A renewal must name a subscription");
+		return NULL;
+	}
+	g_object_get(source, "amount", &amount, NULL);
+	g_object_set(expense, "amount", amount, "organization-id",
+		venture_entity_get_organization_id(source), NULL);
+	expense_rule = venture_posting_rule_registry_lookup(venture_posting_service_get_rules(
+		venture_database_get_posting_service(db)), "expense");
+	if (NULL == expense_rule)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			"The expense posting rule is unavailable");
+		return NULL;
+	}
+	/* Reuse this install's account policy; the source link remains the
+	 * subscription, because post_document builds the journal header. */
+	return venture_posting_rule_build_lines(expense_rule, db, VENTURE_ENTITY(expense), error);
+}
+static void
+subscription_posting_iface(VenturePostingRuleInterface *iface)
+{
+	iface->get_name = subscription_posting_name;
+	iface->build_lines = subscription_posting_lines;
+}
+static void venture_subscription_posting_rule_init(VentureSubscriptionPostingRule *self) { (void)self; }
+static void venture_subscription_posting_rule_class_init(VentureSubscriptionPostingRuleClass *klass) { (void)klass; }
 
 /* ==========================================================================
  * A report over it
@@ -285,6 +341,10 @@ venture_plugin_register(
 			"subscriptions", "Recurring subscriptions",
 			"Active subscriptions with their annualised cost",
 			venture_subscription_report)));
+
+	venture_posting_rule_registry_add(venture_posting_service_get_rules(
+		venture_database_get_posting_service(venture_context_get_database(context))),
+		g_object_new(venture_subscription_posting_rule_get_type(), NULL));
 
 	/* The report was added after the module was applied; apply again so
 	 * a disabled module hides it too. */
