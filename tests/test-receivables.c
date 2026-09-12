@@ -8,6 +8,10 @@
 #include <venture.h>
 
 #include <string.h>
+#include <unistd.h>
+#include <libsoup/soup.h>
+
+#include "venture-test-util.h"
 
 typedef struct
 {
@@ -513,6 +517,66 @@ veto_transition(GObject *machine, VentureEntity *invoice, const gchar *from,
 	return FALSE;
 }
 
+/* The refund edges belong to derivation, not to a writer trying to erase
+ * a paid state while leaving the cash and allocations untouched. */
+static void
+test_direct_reopen_refused(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) date = NULL;
+	g_autofree gchar *before = NULL;
+	g_autofree gchar *after = NULL;
+
+	invoice = invoice_new(f, "REOPEN", "2026-07-01", "100 USD");
+	payment = payment_new(f, venture_entity_get_id(invoice), "100 USD", "2026-07-10");
+	save(f, payment);
+	stored = venture_database_get(f->database, VENTURE_TYPE_INVOICE,
+		venture_entity_get_id(invoice), NULL);
+	before = fingerprint(f);
+	if (data != NULL)
+	{
+		date = venture_time_now();
+		g_assert_false(venture_settlement_service_transition(
+			venture_settlement_service_get(f->database), VENTURE_INVOICE(stored),
+			"sent", date, NULL, &error));
+	}
+	else
+	{
+		g_object_set(stored, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+		g_assert_false(venture_database_save(f->database, stored, NULL, &error));
+	}
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	after = fingerprint(f);
+	g_assert_cmpstr(before, ==, after);
+	assert_status(f, invoice, "paid");
+}
+
+/* Calling the public service must preserve the issued document just as
+ * the generic save does; its mutable GObject is not a write permit. */
+static void
+test_transition_freezes_invoice(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) date = NULL;
+	g_autofree gchar *before = NULL;
+	g_autofree gchar *after = NULL;
+
+	invoice = invoice_new(f, "FROZEN", "2026-07-01", "100 USD");
+	before = fingerprint(f);
+	money_field(invoice, "due-at", "2026-07-20");
+	date = venture_time_now();
+	g_assert_false(venture_settlement_service_transition(
+		venture_settlement_service_get(f->database), VENTURE_INVOICE(invoice),
+		"void", date, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	after = fingerprint(f);
+	g_assert_cmpstr(before, ==, after);
+}
+
 static void
 test_transition_veto(Fixture *f, gconstpointer data)
 {
@@ -732,6 +796,312 @@ test_docs(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(doc, "venture_receivables_post_batch"));
 }
 
+typedef struct
+{
+	gboolean done;
+	GBytes *bytes;
+	GError *error;
+	gchar *out;
+	gchar *err;
+} SurfaceResult;
+
+static void
+http_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+	SurfaceResult *response;
+
+	response = data;
+	response->bytes = soup_session_send_and_read_finish(SOUP_SESSION(source), result, &response->error);
+	response->done = TRUE;
+}
+
+static guint
+http_request(VentureWebServer *server, const gchar *method, const gchar *path,
+	const gchar *content_type, const gchar *body, gchar **out)
+{
+	g_autoptr(SoupSession) session = NULL;
+	g_autoptr(SoupMessage) message = NULL;
+	g_autofree gchar *url = NULL;
+	SurfaceResult response;
+	guint status;
+
+	memset(&response, 0, sizeof(response));
+	session = soup_session_new_with_options("timeout", 15, NULL);
+	url = g_strconcat(venture_web_server_get_base_url(server), path, NULL);
+	message = soup_message_new(method, url);
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	if (body != NULL)
+	{
+		g_autoptr(GBytes) bytes = NULL;
+
+		bytes = g_bytes_new(body, strlen(body));
+		soup_message_set_request_body_from_bytes(message, content_type, bytes);
+	}
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, http_done, &response);
+	while (!response.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(response.error);
+	if (out != NULL)
+		*out = g_strndup(g_bytes_get_data(response.bytes, NULL), g_bytes_get_size(response.bytes));
+	status = soup_message_get_status(message);
+	g_clear_pointer(&response.bytes, g_bytes_unref);
+	return status;
+}
+
+static void
+cli_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+	SurfaceResult *response;
+
+	response = data;
+	g_subprocess_communicate_utf8_finish(G_SUBPROCESS(source), result, &response->out, &response->err, &response->error);
+	response->done = TRUE;
+}
+
+static gboolean
+cli_timeout(gpointer data)
+{
+	g_subprocess_force_exit(G_SUBPROCESS(data));
+	return G_SOURCE_CONTINUE;
+}
+
+static gchar *
+run_cli(const gchar *const *argv, const gchar *input, gboolean success)
+{
+	g_autoptr(GSubprocess) process = NULL;
+	g_autoptr(GSubprocessLauncher) launcher = NULL;
+	g_autoptr(GError) error = NULL;
+	SurfaceResult response;
+	guint timeout;
+
+	memset(&response, 0, sizeof(response));
+	launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
+	/* MCP insists on a token even when the private loopback fixture has
+	 * authentication disabled. Never inherit a real install's credential. */
+	g_subprocess_launcher_setenv(launcher, "VENTURE_TOKEN", "receivables-test-only", TRUE);
+	process = g_subprocess_launcher_spawnv(launcher, argv, &error);
+	g_assert_no_error(error);
+	timeout = g_timeout_add_seconds(30, cli_timeout, process);
+	g_subprocess_communicate_utf8_async(process, input, NULL, cli_done, &response);
+	while (!response.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_source_remove(timeout);
+	g_assert_no_error(response.error);
+	if (g_subprocess_get_successful(process) != success)
+		g_test_message("CLI stdout: %s; stderr: %s", response.out, response.err);
+	g_assert_cmpint(g_subprocess_get_successful(process), ==, success);
+	g_free(response.err);
+	return response.out;
+}
+
+static VentureWebServer *
+start_server(Fixture *f, gchar **state_dir)
+{
+	g_autoptr(GSocketListener) listener = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureWebServer *server;
+	guint16 port;
+
+	*state_dir = g_dir_make_tmp("venture-receivables-XXXXXX", &error);
+	g_assert_no_error(error);
+	listener = g_socket_listener_new();
+	port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
+	g_assert_no_error(error);
+	g_socket_listener_close(listener);
+	g_object_set(f->config, "state-dir", *state_dir, "server-bind-address", "127.0.0.1",
+		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
+	server = venture_web_server_new(f->context, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(server, &error));
+	g_assert_no_error(error);
+	return server;
+}
+
+/* IDs and business fields are compared exactly. UUIDs and write clocks are
+ * nondeterministic; audit actors deliberately differ between surfaces. */
+static gchar *
+settlement_rows(Fixture *f)
+{
+	static const gchar *const types[] = {
+		"invoice", "invoice_event", "payment", "customer_credit", "payment_allocation", "sale", "ledger_entry", NULL
+	};
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) root = NULL;
+	guint t;
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	for (t = 0; types[t] != NULL; t++)
+	{
+		g_autoptr(GPtrArray) records = NULL;
+		guint i;
+
+		records = rows(f, types[t]);
+		json_builder_set_member_name(builder, types[t]);
+		json_builder_begin_array(builder);
+		for (i = 0; i < records->len; i++)
+		{
+			JsonNode *node;
+			JsonObject *object;
+
+			node = venture_serializable_to_json(VENTURE_SERIALIZABLE(g_ptr_array_index(records, i)), FALSE);
+			object = json_node_get_object(node);
+			json_object_remove_member(object, "uuid");
+			json_object_remove_member(object, "created_at");
+			json_object_remove_member(object, "updated_at");
+			if (g_str_equal(types[t], "ledger_entry"))
+			{
+				g_autofree gchar *transaction = NULL;
+
+				transaction = g_strdup_printf("%s:%" G_GINT64_FORMAT,
+					json_object_get_string_member(object, "source_type"), json_object_get_int_member(object, "source_id"));
+				json_object_set_string_member(object, "transaction_id", transaction);
+			}
+			json_builder_add_value(builder, node);
+		}
+		json_builder_end_array(builder);
+	}
+	json_builder_end_object(builder);
+	root = json_builder_get_root(builder);
+	return venture_json_to_string(root, FALSE);
+}
+
+static void
+test_surfaces(Fixture *unused, gconstpointer data)
+{
+	g_autofree gchar *expected = NULL;
+	g_autofree gchar *date_text = NULL;
+	g_autofree gchar *cli_path = NULL;
+	guint surface;
+
+	cli_path = g_canonicalize_filename("build/debug/venturectl", NULL);
+	for (surface = 0; surface < 4; surface++)
+	{
+		Fixture f;
+		g_autoptr(VentureEntity) invoice = NULL;
+		g_autoptr(VentureWebServer) server = NULL;
+		g_autofree gchar *state_dir = NULL;
+		g_autofree gchar *json = NULL;
+		g_autofree gchar *actual = NULL;
+		g_autofree gchar *response = NULL;
+
+		set_up(&f, NULL);
+		invoice = invoice_new(&f, "SURFACE", "2026-07-01", "100 USD");
+		server = start_server(&f, &state_dir);
+		if (surface == 0)
+		{
+			g_autoptr(GPtrArray) payments = NULL;
+			g_autoptr(GDateTime) date = NULL;
+
+			g_assert_cmpuint(http_request(server, "POST", "/invoices/1/status", "application/x-www-form-urlencoded", "to=paid", NULL), ==, 302);
+			payments = rows(&f, "payment");
+			g_assert_cmpuint(payments->len, ==, 1);
+			g_object_get(g_ptr_array_index(payments, 0), "date", &date, NULL);
+			date_text = g_date_time_format_iso8601(date);
+		}
+		else
+		{
+			json = g_strdup_printf("{\"customer_id\":1,\"invoice_id\":1,\"date\":\"%s\",\"amount\":\"100 USD\",\"method\":\"manual\"}", date_text);
+			if (surface == 1)
+				g_assert_cmpuint(http_request(server, "POST", "/api/v1/payment", "application/json", json, &response), ==, 201);
+			else if (surface == 2)
+			{
+				g_autofree gchar *date_arg = NULL;
+				const gchar *health_argv[] = { cli_path, "--server", venture_web_server_get_base_url(server), "health", NULL };
+				const gchar *describe_argv[] = { cli_path, "--server", venture_web_server_get_base_url(server), "describe", "payment", NULL };
+				const gchar *argv[] = { cli_path, "--server", venture_web_server_get_base_url(server), "-f", "json",
+					"create", "payment", "customer_id=1", "invoice_id=1", "amount=100 USD", "method=manual", NULL, NULL };
+
+				response = run_cli(health_argv, NULL, TRUE);
+				g_clear_pointer(&response, g_free);
+				response = run_cli(describe_argv, NULL, TRUE);
+				g_assert_nonnull(strstr(response, "customer_id"));
+				g_clear_pointer(&response, g_free);
+				date_arg = g_strconcat("date=", date_text, NULL);
+				argv[G_N_ELEMENTS(argv) - 2] = date_arg;
+				response = run_cli(argv, NULL, TRUE);
+			}
+			else
+			{
+				g_autofree gchar *input = NULL;
+				const gchar *argv[] = { cli_path, "--server", venture_web_server_get_base_url(server), "mcp", "--apply-writes", NULL };
+
+				input = g_strdup_printf("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"settlement-test\",\"version\":\"1\"}}}\n"
+					"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n"
+					"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"venture_create\",\"arguments\":{\"type\":\"payment\",\"values\":%s}}}\n", json);
+				response = run_cli(argv, input, TRUE);
+				g_assert_null(strstr(response, "\"isError\":true"));
+			}
+		}
+		assert_status(&f, invoice, "paid");
+		actual = settlement_rows(&f);
+		if (expected == NULL)
+			expected = g_strdup(actual);
+		else
+			g_assert_cmpstr(actual, ==, expected);
+		/* A generic paid mutation is still refused at the same boundary. */
+		{
+			g_autoptr(VentureEntity) draft = NULL;
+
+			draft = record_new(&f, "invoice");
+			g_object_set(draft, "number", "NO-DIRECT-PAID", NULL);
+			save(&f, draft);
+			g_clear_pointer(&response, g_free);
+			g_assert_cmpuint(http_request(server, "PATCH", "/api/v1/invoice/2", "application/json", "{\"status\":\"paid\"}", &response), ==, 422);
+			g_assert_nonnull(strstr(response, "VentureSettlementService"));
+		}
+		venture_web_server_stop(server);
+		g_clear_object(&server);
+		tear_down(&f, NULL);
+		venture_test_remove_tree(state_dir);
+	}
+}
+
+static void
+test_module_switch(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autofree gchar *state_dir = NULL;
+	g_autofree gchar *body = NULL;
+	g_autoptr(VentureModuleRegistry) modules = NULL;
+	g_autoptr(VentureConfig) config = NULL;
+	g_autoptr(GError) error = NULL;
+
+	invoice = invoice_new(f, "SWITCH", "2026-07-01", "100 USD");
+	payment = payment_new(f, venture_entity_get_id(invoice), "40 USD", "2026-07-10");
+	save(f, payment);
+	server = start_server(f, &state_dir);
+	g_assert_cmpuint(http_request(server, "GET", "/e/invoice/1", NULL, NULL, &body), ==, 200);
+	g_assert_nonnull(strstr(body, "name=\"to\" value=\"paid\""));
+	g_clear_pointer(&body, g_free);
+	venture_config_set_module_enabled(f->config, "receivables", FALSE);
+	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(), "payment"), ==, G_TYPE_INVALID);
+	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "receivables"));
+	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "customer_statement"));
+	g_assert_cmpuint(http_request(server, "GET", "/api/v1/payment", NULL, NULL, NULL), ==, 404);
+	g_assert_cmpuint(http_request(server, "POST", "/invoices/1/status", "application/x-www-form-urlencoded", "to=paid", NULL), ==, 404);
+	g_assert_cmpuint(http_request(server, "GET", "/api/v1/schema", NULL, NULL, &body), ==, 200);
+	g_assert_null(strstr(body, "\"payment\""));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(http_request(server, "GET", "/e/invoice/1", NULL, NULL, &body), ==, 200);
+	g_assert_null(strstr(body, "name=\"to\" value=\"paid\""));
+	venture_config_set_module_enabled(f->config, "receivables", TRUE);
+	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(), "payment"), !=, G_TYPE_INVALID);
+	g_assert_nonnull(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "customer_statement"));
+	venture_web_server_stop(server);
+	g_clear_object(&server);
+	venture_test_remove_tree(state_dir);
+	modules = venture_module_registry_new();
+	venture_module_registry_register_builtins(modules);
+	config = venture_config_new();
+	venture_config_set_module_enabled(config, "invoicing", FALSE);
+	g_assert_false(venture_module_registry_configure(modules, config, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_assert_nonnull(strstr(error->message, "receivables"));
+}
+
 int
 main(int argc, char **argv)
 {
@@ -748,6 +1118,10 @@ main(int argc, char **argv)
 	ADD("duplicate", test_duplicate);
 	ADD("ledger-batches", test_ledger_batches);
 	ADD("transition-veto", test_transition_veto);
+	ADD("direct-reopen-refused", test_direct_reopen_refused);
+	g_test_add("/receivables/service-reopen-refused", Fixture, "service",
+		set_up, test_direct_reopen_refused, tear_down);
+	ADD("transition-freezes-invoice", test_transition_freezes_invoice);
 	ADD("batch", test_batch);
 	g_test_add("/receivables/batch-rollback", Fixture, "fail", set_up, test_batch, tear_down);
 	ADD("plugin-state", test_plugin_state);
@@ -756,6 +1130,8 @@ main(int argc, char **argv)
 	ADD("transition-cannot-edit-issued", test_transition_cannot_edit_issued);
 	ADD("statement", test_statement);
 	ADD("docs", test_docs);
+	ADD("surfaces", test_surfaces);
+	ADD("module-switch", test_module_switch);
 	g_test_add("/receivables/zero", Fixture, "0 USD", set_up, test_invalid_amount, tear_down);
 	g_test_add("/receivables/negative", Fixture, "-10 USD", set_up, test_invalid_amount, tear_down);
 	g_test_add("/receivables/wrong-currency", Fixture, "100 EUR", set_up, test_invalid_amount, tear_down);

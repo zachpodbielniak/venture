@@ -8248,6 +8248,12 @@ venture_web_append_invoice_block(
 		"<a class=\"btn\" href=\"/invoices/%" G_GINT64_FORMAT
 		"/print\" target=\"_blank\">Print</a>", id);
 
+	if (!venture_context_module_enabled(self->context, "receivables"))
+	{
+		g_string_append(content, "</div></div>");
+		return;
+	}
+
 	if (VENTURE_INVOICE_STATUS_DRAFT == status)
 		g_string_append_printf(content,
 			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
@@ -8255,12 +8261,13 @@ venture_web_append_invoice_block(
 			"<button class=\"btn btn-primary\" type=\"submit\">"
 			"Mark sent</button></form>", id);
 
-	if (VENTURE_INVOICE_STATUS_SENT == status)
+	if ((VENTURE_INVOICE_STATUS_SENT == status) ||
+	    (VENTURE_INVOICE_STATUS_PARTIALLY_PAID == status))
 		g_string_append_printf(content,
 			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
 			"/status\"><input type=\"hidden\" name=\"to\" value=\"paid\">"
 			"<button class=\"btn btn-primary\" type=\"submit\" "
-			"title=\"Stamps payment and records the revenue as a sale\">"
+			"title=\"Records a receipt for the outstanding balance\">"
 			"Mark paid</button></form>", id);
 
 	if ((VENTURE_INVOICE_STATUS_DRAFT == status) ||

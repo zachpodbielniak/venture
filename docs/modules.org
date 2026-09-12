@@ -68,7 +68,7 @@ VENTURE_MODULE_CRM=false venture
 For one run:
 
 #+begin_src sh
-venture --disable-module crm --disable-module invoicing
+venture --disable-module crm --disable-module invoicing --disable-module receivables
 #+end_src
 
 From a compiled C configuration, which is how a machine decides for itself:

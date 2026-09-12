@@ -1587,12 +1587,21 @@ test_auth_invoice_paid_creates_the_sale(
 	/* An invoice with two lines: 2 x $100.00 and 1 x $49.99. */
 	{
 		g_autoptr(VentureInvoice) invoice = NULL;
+		g_autoptr(VentureCompany) customer = NULL;
+		gint64 organization_id;
 		g_autoptr(VentureInvoiceLine) first = NULL;
 		g_autoptr(VentureInvoiceLine) second = NULL;
 		g_autoptr(VentureMoney) hundred = NULL;
 		g_autoptr(VentureMoney) fifty = NULL;
 
+		organization_id = venture_context_get_default_organization_id(fixture->context);
+		customer = venture_company_new();
+		g_object_set(customer, "name", "Invoice customer", NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(customer), organization_id);
+		g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(customer), NULL, NULL));
 		invoice = venture_invoice_new();
+		venture_entity_set_organization_id(VENTURE_ENTITY(invoice), organization_id);
+		g_object_set(invoice, "company-id", venture_entity_get_id(VENTURE_ENTITY(customer)), NULL);
 		g_object_set(invoice, "number", "INV-1",
 		             "status", VENTURE_INVOICE_STATUS_DRAFT, NULL);
 		g_assert_true(venture_database_save(fixture->database,
@@ -1600,6 +1609,7 @@ test_auth_invoice_paid_creates_the_sale(
 
 		hundred = venture_money_new(10000, "USD", 2);
 		first = venture_invoice_line_new();
+		venture_entity_set_organization_id(VENTURE_ENTITY(first), organization_id);
 		g_object_set(first, "invoice-id",
 		             venture_entity_get_id(VENTURE_ENTITY(invoice)),
 		             "description", "consulting", "quantity", 2.0,
@@ -1609,6 +1619,7 @@ test_auth_invoice_paid_creates_the_sale(
 
 		fifty = venture_money_new(4999, "USD", 2);
 		second = venture_invoice_line_new();
+		venture_entity_set_organization_id(VENTURE_ENTITY(second), organization_id);
 		g_object_set(second, "invoice-id",
 		             venture_entity_get_id(VENTURE_ENTITY(invoice)),
 		             "description", "rush fee", "quantity", 1.0,

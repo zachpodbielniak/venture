@@ -1,0 +1,135 @@
+#+title: Customer receivables
+#+description: Receipts, credits, refunds and reproducible customer balances
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-12]
+#+updated: [2026-09-12]
+#+version: 0.6.0
+
+* Receivables
+
+The =receivables= module requires =finance= and =invoicing=. Its records are
+field tables: the same declarations produce the database tables, forms,
+REST resources, CLI commands, AI schemas and audit entries. Switching the
+module off hides its records and both reports together.
+
+| Record | Meaning |
+|--------+---------|
+| =payment= | A customer's receipt: date, exact amount, method, reference and optional external ID |
+| =payment_allocation= | An amount applied from exactly one payment or credit to an invoice |
+| =customer_credit= | A credit note, deposit or overpayment, with a derived remaining balance |
+| =refund= | Cash returned against an allocation or unused credit |
+| =invoice_event= | The frozen issue amount and due date, or a subsequent workflow event |
+
+A nonempty payment external ID is unique within its organization. The
+service derives an immutable =external_key= from the organization and ID;
+that field has a database UNIQUE constraint. Callers supply =external_id=,
+not the derived key. An empty external ID is optional and may recur.
+
+* Receiving and allocating money
+
+=VentureSettlementService= owns every financial invoice transition. A
+generic write to =payment= reaches it through =venture_database_save()=,
+so a form, REST request, =venturectl create payment= and an approved AI
+write all perform the same transaction. The invoice page's Pay action
+records a manual receipt for the remaining balance through that service.
+Setting =status=paid= directly is refused with a validation error naming
+=VentureSettlementService=.
+
+For example, against an issued invoice for customer 1:
+
+#+begin_src sh
+venturectl create payment customer_id=1 invoice_id=1 \
+  'amount=40 USD' date=2026-07-10 method=transfer external_id=bank-42
+#+end_src
+
+Without =invoice_id= the receipt remains a deposit. Allocate it later by
+creating =payment_allocation= with =payment_id= or =credit_id=, an invoice,
+date and amount. A receipt may settle several invoices. C callers can pass
+an array of new allocations to =venture_settlement_service_apply_payment()=
+to make the receipt and all allocations one transaction. An amount beyond
+the invoice balance remains unused credit.
+
+Enter a standalone credit as =customer_credit= with =kind=credit_note=.
+Deposits and overpayments are created by receipts. The service derives
+=remaining=; changing the stored balance is refused. A credit note applied
+to an invoice reduces its balance without inventing a cash sale.
+
+A =refund= names exactly one =allocation_id= or =credit_id=. Refunding an
+applied receipt reopens the invoice by that amount and updates its cash
+sale's refunded amount. Refunding unused credit reduces the credit. An
+applied credit note is not a cash receipt and cannot be refunded through
+the allocation path.
+
+Every operation encloses its records, audit entries, cash sales, invoice
+state and ledger batches in one database transaction. Any refusal rolls
+the transaction back and restores caller-owned receipt/allocation objects.
+Amounts must be positive and fit both the source and destination balances.
+Customers and organizations must match. Issued invoice fields and lines,
+receipts, allocations, credits, refunds and events cannot be rewritten or
+deleted to change history. Dates cannot precede their source; invoice
+events must be entered in chronological order, so a later refund cannot
+fund an allocation in an earlier statement.
+
+* Lifecycle and extensions
+
+Create a draft, add lines, then send it. Sending freezes its amount and
+due date in an issue event. The state is =sent= before allocation,
+=partially_paid= after a partial allocation, and =paid= at zero balance.
+A refund derives the state again. Void is allowed for an unpaid invoice;
+refund its applied cash first. A direct transition cannot undo a paid
+state while retaining the allocation.
+
+=VentureInvoiceStateMachine= declares the built-in edges in one table.
+Its =transition= signal uses =G_SIGNAL_RUN_LAST=: ordinary handlers run
+before the class handler, and the first FALSE vetoes the whole operation.
+Keep external effects until after commit. Plugins can add named states
+with a draft or sent financial phase and declare their edges without
+editing the built-in table. Financial paid states stay derived.
+
+* Historical balances
+
+The =receivables= aging report reads issue events before the exclusive
+period endpoint, subtracts dated allocations and adds dated refunds. An
+invoice paid in August therefore remains in July's aging. An invoice first
+issued in August does not enter July's figures. Aging uses the due date
+frozen at issue and shows a separate bucket when none was supplied.
+
+=customer_statement= requires =customer_id= and accepts =organization_id=
+and =currency=. It shows the opening balance, dated movements and closing
+balance. Invoice issues increase what the customer owes; payments and
+credit notes reduce it; refunds increase it. Allocations move credit to
+invoices without changing the customer's net balance. The service's
+=venture_settlement_service_customer_balance()= reads the same events.
+
+Reports read retained history, including soft-deleted rows. They select
+one legal entity and currency and never convert or combine currencies.
+Historical reconstruction requires issue events recorded by this module;
+invoices predating its installation need an explicit migration of their
+issue and payment history. This module does not invent that history from
+the current status.
+
+* Posting boundary
+
+=venture_receivables_post_batch()= is the single posting seam. Today it
+wraps =venture_database_save_ledger_transaction()=; integration with the
+journal posting service replaces that one call. Receivables supplies
+source-document legs and does not implement ledger internals.
+
+Issuing debits receivables and credits income. A receipt debits cash and
+credits receivables. Unused receipts are credit balances in that control
+account; allocation and creation of the receipt's credit post balanced
+transfers within it. A credit note debits income and credits receivables;
+a refund debits receivables and credits cash. Voiding reverses issuance.
+
+The service properties =cash-account-id=, =receivable-account-id= and
+=income-account-id= select accounts. Zero resolves active accounts 1000,
+1100 and 4000 within the transaction's organization. Another organization
+must have suitable accounts configured; the service does not create them.
+The current ledger helper supports the configured default currency only,
+so other currencies are refused atomically at the posting boundary.
+
+Existing cash reports still read sales: each allocation of received cash
+creates its sale at the allocation date, and refunds update that sale.
+The ledger's accrual view and those existing cash reports remain different
+views; replacing the reporting basis belongs to journal integration.

@@ -31,6 +31,9 @@ enum
 
 G_DEFINE_FINAL_TYPE(VentureSettlementService, venture_settlement_service, G_TYPE_OBJECT)
 
+static gboolean check_invoice_edit(VentureSettlementService *self, VentureEntity *record,
+	VentureEntity *previous, GError **error);
+
 static gboolean
 refuse(GError **error, VentureError code, const gchar *message)
 {
@@ -318,6 +321,47 @@ check_amount(const VentureMoney *amount, GError **error)
 }
 
 static gboolean
+check_rows_not_later(GPtrArray *records, GDateTime *date, GError **error)
+{
+	guint i;
+
+	for (i = 0; i < records->len; i++)
+	{
+		g_autoptr(GDateTime) event_date = NULL;
+
+		g_object_get(g_ptr_array_index(records, i), "date", &event_date, NULL);
+		if (event_date != NULL && g_date_time_compare(event_date, date) > 0)
+			return refuse(error, VENTURE_ERROR_VALIDATION, "A settlement cannot precede a later event on the same invoice");
+	}
+	return TRUE;
+}
+
+static gboolean
+check_invoice_chronology(VentureSettlementService *self, gint64 invoice_id, GDateTime *date, GError **error)
+{
+	g_autoptr(GPtrArray) events = NULL;
+	g_autoptr(GPtrArray) allocations = NULL;
+	guint i;
+
+	events = find_rows(self, VENTURE_TYPE_INVOICE_EVENT, "invoice-id", invoice_id, NULL, error);
+	if (events == NULL || !check_rows_not_later(events, date, error))
+		return FALSE;
+	allocations = find_rows(self, VENTURE_TYPE_PAYMENT_ALLOCATION, "invoice-id", invoice_id, NULL, error);
+	if (allocations == NULL || !check_rows_not_later(allocations, date, error))
+		return FALSE;
+	for (i = 0; i < allocations->len; i++)
+	{
+		g_autoptr(GPtrArray) refunds = NULL;
+
+		refunds = find_rows(self, VENTURE_TYPE_REFUND, "allocation-id",
+			venture_entity_get_id(g_ptr_array_index(allocations, i)), NULL, error);
+		if (refunds == NULL || !check_rows_not_later(refunds, date, error))
+			return FALSE;
+	}
+	return TRUE;
+}
+
+static gboolean
 within(const VentureMoney *amount, const VentureMoney *available, GError **error)
 {
 	g_autoptr(VentureMoney) left = NULL;
@@ -581,6 +625,8 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 		return FALSE;
 	if (venture_entity_get_version(previous) != venture_entity_get_version(invoice))
 		return refuse(error, VENTURE_ERROR_CONFLICT, "The invoice changed; read it again");
+	if (!check_invoice_edit(self, invoice, previous, error))
+		return FALSE;
 	if (!venture_invoice_state_machine_get_phase(self->machine, state, &phase, error))
 		return FALSE;
 	if (phase == VENTURE_INVOICE_STATUS_PAID || phase == VENTURE_INVOICE_STATUS_PARTIALLY_PAID)
@@ -588,6 +634,8 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 	from = invoice_state(previous);
 	if (!venture_invoice_state_machine_get_phase(self->machine, from, &old_phase, error))
 		return FALSE;
+	if (old_phase == VENTURE_INVOICE_STATUS_PAID || old_phase == VENTURE_INVOICE_STATUS_PARTIALLY_PAID)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Refund allocations through VentureSettlementService to reopen a settled invoice");
 	if (old_phase != VENTURE_INVOICE_STATUS_DRAFT && phase == VENTURE_INVOICE_STATUS_DRAFT)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "An issued invoice cannot become a draft");
 	issued = issue_event(self, venture_entity_get_id(invoice), NULL, error);
@@ -596,6 +644,7 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 	if (issued != NULL)
 		g_object_get(issued, "date", &issue_date, "amount", &total, NULL);
 	if (!check_date(date, issue_date, error) ||
+		!check_invoice_chronology(self, venture_entity_get_id(invoice), date, error) ||
 		!venture_invoice_state_machine_check(self->machine, VENTURE_INVOICE(invoice), from, state, error))
 		return FALSE;
 	first_issue = issued == NULL && phase == VENTURE_INVOICE_STATUS_SENT;
@@ -767,6 +816,8 @@ perform_allocation(VentureSettlementService *self, VentureEntity *allocation,
 	g_object_get(credit, "date", &source_date, NULL);
 	g_object_get(issued, "date", &issue_date, NULL);
 	if (!check_date(date, source_date, error) || !check_date(date, issue_date, error))
+		return FALSE;
+	if (!check_invoice_chronology(self, venture_entity_get_id(invoice), date, error))
 		return FALSE;
 	remaining = credit_remaining(self, credit, NULL, error);
 	if (remaining == NULL || !within(amount, remaining, error))
@@ -1001,6 +1052,8 @@ perform_refund(VentureSettlementService *self, VentureEntity *refund,
 		return refuse(error, VENTURE_ERROR_VALIDATION, "The refund must belong to the source customer");
 	if (!check_date(date, source_date, error) || !within(amount, available, error))
 		return FALSE;
+	if (invoice != NULL && !check_invoice_chronology(self, venture_entity_get_id(invoice), date, error))
+		return FALSE;
 	if (!write_record(self, refund, actor, error) || !post(self, refund, date, amount, "1100", "1000", actor, error))
 		return FALSE;
 	if (allocation != NULL)
@@ -1119,6 +1172,13 @@ venture_receivables_check_removal(VentureDatabase *database, VentureEntity *reco
 		return FALSE;
 	if (VENTURE_IS_INVOICE_LINE(record))
 		return check_line(venture_settlement_service_get(database), stored, NULL, error);
+	{
+		g_autoptr(JsonNode) diff = NULL;
+
+		diff = venture_entity_diff(stored, record);
+		if (json_object_get_size(json_node_get_object(diff)) != 0)
+			return refuse(error, VENTURE_ERROR_VALIDATION, "Save invoice edits before requesting deletion");
+	}
 	g_object_get(stored, "status", &status, NULL);
 	if (status != VENTURE_INVOICE_STATUS_DRAFT)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Issued invoices are history; void them through VentureSettlementService");
