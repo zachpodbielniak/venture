@@ -225,7 +225,9 @@ venture --generate-c-config > ~/.config/venture/config.c
   the confirmation queue (see below)
 - *automation* — the pods file, module paths, shutdown timeout
 - *plugins* — paths, crispy, declarative venture types
-- *ui* — theme, accent, page size, the AI panel (=ui.chat_dock= gates the
+- *ui* — theme (=system=, =light=, =dark= or =mocha=, the Catppuccin
+  palette; the default until a person picks one with the toggle), accent,
+  page size, the AI panel (=ui.chat_dock= gates the
   launcher and panel entirely; =ui.chat_dock_expanded= starts the panel open)
 - *logging* — level, file, format
 - *modules* — which modules are on; see below and [[file:modules.org][Modules]]

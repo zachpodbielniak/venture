@@ -12,7 +12,11 @@
  * Theme resolution:
  *   :root                       light palette
  *   @media (prefers-color-scheme: dark)   dark palette, when unset
- *   [data-theme="light"|"dark"] explicit choice, wins over the media query
+ *   [data-theme="light"|"dark"|"mocha"] explicit choice, wins over the
+ *                               media query
+ *
+ * "mocha" is Catppuccin Mocha: the same rules again with that palette's
+ * values, so it is a third skin on one design rather than a second design.
  *
  * The explicit attribute is written to <html> by the theme toggle and
  * persisted in localStorage, so a reload does not flash the wrong theme.
@@ -228,6 +232,49 @@
 	--shadow: 0 2px 8px rgba(0, 0, 0, 0.24);
 	--shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.36);
 	--overlay: rgba(10, 10, 9, 0.6);
+}
+
+/*
+ * Catppuccin Mocha. Base, mantle and crust for the grounds; surface0/1 for
+ * borders; text, subtext0 and overlay0 for the type; the named accents for
+ * the pastels. The configured accent is lightened toward the palette's
+ * text colour, the way the dark theme lightens it toward white, so a
+ * configured hue still reads on the dark ground.
+ */
+:root[data-theme="mocha"] {
+	--ink: #cdd6f4;
+	--ink-hover: #f5e0dc;
+	--ink-contrast: #1e1e2e;
+
+	--accent: color-mix(in srgb, var(--accent-config) 45%, #cdd6f4);
+	--accent-hover: color-mix(in srgb, var(--accent-config) 30%, #cdd6f4);
+	--accent-soft: color-mix(in srgb, var(--accent-config) 18%, transparent);
+	--accent-contrast: #1e1e2e;
+
+	--pale-red: #33242f;
+	--pale-red-ink: #f38ba8;
+	--pale-blue: #24303f;
+	--pale-blue-ink: #89b4fa;
+	--pale-green: #26332f;
+	--pale-green-ink: #a6e3a1;
+	--pale-yellow: #34302c;
+	--pale-yellow-ink: #f9e2af;
+
+	--bg: #1e1e2e;
+	--surface: #181825;
+	--surface-raised: #24243a;
+	--surface-sunken: #11111b;
+	--surface-hover: #313244;
+	--border: #313244;
+	--border-strong: #45475a;
+	--text: #cdd6f4;
+	--text-muted: #a6adc8;
+	--text-faint: #6c7086;
+
+	--shadow-sm: 0 1px 2px rgba(17, 17, 27, 0.3);
+	--shadow: 0 2px 8px rgba(17, 17, 27, 0.36);
+	--shadow-lg: 0 8px 32px rgba(17, 17, 27, 0.5);
+	--overlay: rgba(17, 17, 27, 0.65);
 }
 
 /* ==========================================================================

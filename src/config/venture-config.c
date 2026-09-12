@@ -246,7 +246,8 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_STRV("plugins-required", "plugins", "required",
 	        "Plugins that must load or startup fails"),
 
-	VC_STR ("ui-theme", "ui", "theme", "system", "system, light or dark"),
+	VC_STR ("ui-theme", "ui", "theme", "system",
+	        "system, light, dark or mocha"),
 	VC_STR ("ui-accent", "ui", "accent", "#1f6c9f", "Accent colour"),
 	VC_INT ("ui-page-size", "ui", "page_size", 50, "Rows per page"),
 	VC_BOOL("ui-chat-dock", "ui", "chat_dock", TRUE, "Show the AI chat dock"),
@@ -781,6 +782,16 @@ venture_config_list_module_switches(VentureConfig *self)
 }
 
 gboolean
+venture_config_theme_is_valid(const gchar *theme)
+{
+	static const gchar *const themes[] = {
+		"system", "light", "dark", "mocha", NULL
+	};
+
+	return (NULL != theme) && g_strv_contains(themes, theme);
+}
+
+gboolean
 venture_config_apply_yaml_string(
 	VentureConfig	 *self,
 	const gchar	 *yaml,
@@ -1180,6 +1191,20 @@ venture_config_validate(
 	             "locale-default-currency", &currency,
 	             "locale-fiscal-year-start-month", &fiscal_month,
 	             NULL);
+
+	{
+		g_autofree gchar *theme = NULL;
+
+		g_object_get(self, "ui-theme", &theme, NULL);
+
+		if (!venture_config_theme_is_valid(theme))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			            "ui.theme must be system, light, dark or mocha, "
+			            "not \"%s\"", (NULL != theme) ? theme : "");
+			return FALSE;
+		}
+	}
 
 	if ((port < 1) || (port > 65535))
 	{

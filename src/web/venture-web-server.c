@@ -290,6 +290,46 @@ venture_web_ui_require_session(
 	HtmxRequest		*request
 );
 
+/*
+ * The inline theme script, emitted before the stylesheet so a dark-theme
+ * reload never flashes white. It has to be inline and synchronous; a
+ * deferred script would be too late.
+ *
+ * The configured ui.theme is the fallback when the browser has stored no
+ * choice, and is handed to venture.js in the same breath so the toggle
+ * starts its cycle from the right place. The value is a closed set --
+ * validated at configuration load -- so it goes into the script as a
+ * quoted literal without escaping beyond that check.
+ */
+static gboolean
+venture_web_theme_is_valid(const gchar *theme)
+{
+	return venture_config_theme_is_valid(theme);
+}
+
+static void
+venture_web_append_theme_script(
+	VentureWebServer	*self,
+	GString			*html
+){
+	g_autofree gchar *theme = NULL;
+
+	g_object_get(venture_context_get_config(self->context), "ui-theme", &theme,
+	             NULL);
+
+	if (!venture_web_theme_is_valid(theme))
+	{
+		g_free(theme);
+		theme = g_strdup("system");
+	}
+
+	g_string_append_printf(html,
+		"<script>(function(){var d='%s';window.VENTURE_THEME_DEFAULT=d;"
+		"try{var t=localStorage.getItem('venture.theme')||d;"
+		"if(t==='light'||t==='dark'||t==='mocha')document.documentElement"
+		".setAttribute('data-theme',t);}catch(e){}})();</script>", theme);
+}
+
 static gchar *
 venture_web_page(
 	VentureWebServer	*self,
@@ -1013,10 +1053,7 @@ venture_web_page(
 	 * never flashes white. This has to be inline and synchronous; a
 	 * deferred script would be too late.
 	 */
-	g_string_append(html,
-		"<script>(function(){try{var t=localStorage.getItem('venture.theme');"
-		"if(t==='light'||t==='dark')document.documentElement"
-		".setAttribute('data-theme',t);}catch(e){}})();</script>");
+	venture_web_append_theme_script(self, html);
 
 	g_string_append(html, "<style>");
 	g_string_append(html, venture_asset_venture_css);
@@ -5170,10 +5207,7 @@ venture_web_auth_page(
 	venture_html_escape_append(html, ui_title);
 	g_string_append(html, "</title>");
 
-	g_string_append(html,
-		"<script>(function(){try{var t=localStorage.getItem('venture.theme');"
-		"if(t==='light'||t==='dark')document.documentElement"
-		".setAttribute('data-theme',t);}catch(e){}})();</script>");
+	venture_web_append_theme_script(self, html);
 
 	g_string_append(html, "<style>");
 	g_string_append(html, venture_asset_venture_css);

@@ -63,7 +63,7 @@
 	function applyTheme(theme) {
 		var root = document.documentElement;
 
-		if (theme === "light" || theme === "dark") {
+		if (theme === "light" || theme === "dark" || theme === "mocha") {
 			root.setAttribute("data-theme", theme);
 		} else {
 			/* "system" means: remove the override and let the
@@ -77,11 +77,20 @@
 		});
 	}
 
+	/*
+	 * The configured default (ui.theme) is what applies until the person
+	 * picks one; the server hands it over in window.VENTURE_THEME_DEFAULT
+	 * from the same inline script that applies it before first paint.
+	 */
+	function defaultTheme() {
+		return window.VENTURE_THEME_DEFAULT || "system";
+	}
+
 	function storedTheme() {
 		try {
-			return window.localStorage.getItem(STORAGE_THEME) || "system";
+			return window.localStorage.getItem(STORAGE_THEME) || defaultTheme();
 		} catch (e) {
-			return "system";
+			return defaultTheme();
 		}
 	}
 
@@ -97,7 +106,7 @@
 	}
 
 	function cycleTheme() {
-		var order = ["system", "light", "dark"];
+		var order = ["system", "light", "dark", "mocha"];
 		var next = order[(order.indexOf(storedTheme()) + 1) % order.length];
 
 		setTheme(next);

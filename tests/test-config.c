@@ -38,6 +38,33 @@ test_config_defaults(void)
 	g_assert_cmpstr(currency, ==, "USD");
 }
 
+/*
+ * ui.theme is a closed set because the web layer writes it into an inline
+ * script. A theme name that is not one of the four is refused at
+ * validation, not rendered.
+ */
+static void
+test_config_theme_is_a_closed_set(void)
+{
+	g_autoptr(VentureConfig) config = NULL;
+	g_autoptr(GError) error = NULL;
+
+	config = venture_config_new();
+
+	g_assert_true(venture_config_theme_is_valid("mocha"));
+	g_assert_true(venture_config_theme_is_valid("system"));
+	g_assert_false(venture_config_theme_is_valid("latte"));
+	g_assert_false(venture_config_theme_is_valid(NULL));
+
+	g_object_set(config, "ui-theme", "mocha", NULL);
+	g_assert_true(venture_config_validate(config, &error));
+	g_assert_no_error(error);
+
+	g_object_set(config, "ui-theme", "');alert(1);//", NULL);
+	g_assert_false(venture_config_validate(config, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+}
+
 static void
 test_config_ai_policy_defaults_to_confirm(void)
 {
@@ -676,6 +703,8 @@ main(
 	g_test_add_func("/config/defaults", test_config_defaults);
 	g_test_add_func("/config/ai-policy-defaults-to-confirm",
 	                test_config_ai_policy_defaults_to_confirm);
+	g_test_add_func("/config/theme-is-a-closed-set",
+	                test_config_theme_is_a_closed_set);
 	g_test_add_func("/config/embedded-yaml-parses", test_config_embedded_yaml_parses);
 	g_test_add_func("/config/yaml-overrides", test_config_yaml_overrides);
 	g_test_add_func("/config/yaml-partial-leaves-rest",

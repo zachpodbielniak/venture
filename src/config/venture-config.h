@@ -340,6 +340,19 @@ GTimeZone *
 venture_config_get_timezone(VentureConfig *self);
 
 /**
+ * venture_config_theme_is_valid:
+ * @theme: (nullable): a theme name
+ *
+ * The closed set `ui.theme` accepts: system, light, dark, mocha. The web
+ * layer emits the value into an inline script, which is why it is a closed
+ * set rather than free text.
+ *
+ * Returns: %TRUE if @theme names a theme
+ */
+gboolean
+venture_config_theme_is_valid(const gchar *theme);
+
+/**
  * venture_config_set_module_enabled:
  * @self: a #VentureConfig
  * @module_name: a module name

@@ -323,8 +323,10 @@ modules:
   {}
 
 ui:
-  # system | light | dark. "system" follows the browser's preference and
-  # still lets the theme toggle override it.
+  # system | light | dark | mocha. "system" follows the browser's
+  # preference; "mocha" is Catppuccin Mocha. Whatever is set here is the
+  # default until a person picks one with the toggle, which is remembered
+  # per browser.
   theme: "system"
 
   # Accent colour. It tints links, the focus ring and the active nav row --
