@@ -1582,6 +1582,73 @@
 	}
 
 	/* ------------------------------------------------------------------ */
+	/* The agent harness                                                   */
+	/* ------------------------------------------------------------------ */
+
+	/*
+	 * A session's turn, as it happens.
+	 *
+	 * The page already renders the stored turns; this is only the one in
+	 * flight. When it finishes the page is reloaded rather than the turn
+	 * being rendered here, so there is one renderer for a transcript and
+	 * not two that drift.
+	 */
+	function wireHarness(root) {
+		var live = (root || document).querySelector("[data-harness-stream]");
+		var form = (root || document).querySelector("[data-harness-send]");
+
+		if (form && !form.ventureWired) {
+			form.ventureWired = true;
+
+			/* Ctrl+Enter sends, because a prompt for an agent is often
+			 * several lines and Enter has to make one. */
+			form.querySelector("textarea").addEventListener("keydown",
+				function (event) {
+					if (event.key === "Enter" && (event.ctrlKey
+					    || event.metaKey)) {
+						event.preventDefault();
+						form.requestSubmit
+							? form.requestSubmit()
+							: form.submit();
+					}
+				});
+		}
+
+		if (!live || live.ventureWired || !window.EventSource) {
+			return;
+		}
+
+		live.ventureWired = true;
+
+		var url = live.getAttribute("data-harness-stream");
+		var text = live.querySelector("[data-harness-text]");
+		var source = new EventSource(url, { withCredentials: true });
+
+		source.addEventListener("delta", function (event) {
+			live.hidden = false;
+			text.textContent += event.data;
+			live.scrollIntoView({ block: "end" });
+		});
+
+		source.addEventListener("done", function (event) {
+			source.close();
+
+			if (event.data && event.data !== "ok") {
+				toast(event.data, "negative", 8000);
+			}
+
+			/* The turn is a record now; let the server render it. */
+			window.location.reload();
+		});
+
+		source.addEventListener("error", function () {
+			/* A dropped stream is not a dropped turn: the agent is
+			 * still working and the page will show it on a reload. */
+			source.close();
+		});
+	}
+
+	/* ------------------------------------------------------------------ */
 	/* Pickers: a themed select, and searching for a record               */
 	/* ------------------------------------------------------------------ */
 
@@ -1864,6 +1931,7 @@
 		var hidden = host.querySelector("input[type=number]");
 		var form = host.closest("form");
 		var typeName = host.getAttribute("data-type-field");
+		var fixedType = host.getAttribute("data-type");
 		var typeSelect = form && typeName
 			? form.querySelector("[name=\"" + typeName + "\"]")
 			: null;
@@ -1947,7 +2015,7 @@
 		}
 
 		function search_now() {
-			var type = typeSelect ? typeSelect.value : "";
+			var type = fixedType || (typeSelect ? typeSelect.value : "");
 			var text = search.value.trim();
 
 			if (!type) {
@@ -3670,6 +3738,7 @@
 		wireChatStream(document);
 		wirePickers(document);
 		wireRecordPickers(document);
+		wireHarness(document);
 
 		document.addEventListener("mousedown", function (event) {
 			if (openPicker && !openPicker.wrap.contains(event.target)) {

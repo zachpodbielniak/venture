@@ -11,6 +11,7 @@
 #include <glib/gstdio.h>
 
 #include <string.h>
+#include <stdlib.h>
 
 /*
  * One unit of work, handed to the agent thread.
@@ -74,6 +75,15 @@ typedef struct
 	gboolean		 finished;
 } VentureWorkUpdate;
 
+enum
+{
+	VENTURE_WORK_SIGNAL_SESSION_OUTPUT,
+	VENTURE_WORK_SIGNAL_SESSION_FINISHED,
+	VENTURE_WORK_N_SIGNALS
+};
+
+static guint venture_work_signals[VENTURE_WORK_N_SIGNALS];
+
 struct _VentureWorkService
 {
 	GObject parent_instance;
@@ -93,6 +103,14 @@ struct _VentureWorkService
 
 	guint		 max_concurrent;
 	gboolean	 stopping;
+
+	/*
+	 * Sessions with a turn in flight, by session id, holding a
+	 * #GCancellable each. Separate from @live because a session is
+	 * interactive and must not be kept waiting behind the unattended
+	 * runs, and shares the same lock because both cross threads.
+	 */
+	GHashTable	*session_live;
 };
 
 G_DEFINE_FINAL_TYPE(VentureWorkService, venture_work_service, G_TYPE_OBJECT)
@@ -832,6 +850,7 @@ venture_work_service_finalize(GObject *object)
 	g_clear_pointer(&self->agent_context, g_main_context_unref);
 	g_clear_pointer(&self->started, g_async_queue_unref);
 	g_clear_pointer(&self->live, g_hash_table_unref);
+	g_clear_pointer(&self->session_live, g_hash_table_unref);
 	g_mutex_clear(&self->lock);
 	g_clear_object(&self->context);
 
@@ -842,6 +861,39 @@ static void
 venture_work_service_class_init(VentureWorkServiceClass *klass)
 {
 	G_OBJECT_CLASS(klass)->finalize = venture_work_service_finalize;
+
+	/**
+	 * VentureWorkService::session-output:
+	 * @self: the service
+	 * @session_id: which session
+	 * @text: a fragment of what the agent is saying
+	 *
+	 * Emitted on the main thread as a session's turn produces output.
+	 *
+	 * A turn takes minutes and a CLI agent narrates the whole way; a
+	 * harness that showed nothing until it finished would be
+	 * indistinguishable from one that had hung. The fragments are not
+	 * stored -- the finished turn is, once -- so a subscriber that
+	 * misses some has lost nothing but the watching.
+	 */
+	venture_work_signals[VENTURE_WORK_SIGNAL_SESSION_OUTPUT] =
+		g_signal_new("session-output", G_TYPE_FROM_CLASS(klass),
+		             G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+		             G_TYPE_NONE, 2, G_TYPE_INT64, G_TYPE_STRING);
+
+	/**
+	 * VentureWorkService::session-finished:
+	 * @self: the service
+	 * @session_id: which session
+	 * @failure: (nullable): why it failed, or %NULL if it did not
+	 *
+	 * Emitted on the main thread when a turn is over and its record is
+	 * written.
+	 */
+	venture_work_signals[VENTURE_WORK_SIGNAL_SESSION_FINISHED] =
+		g_signal_new("session-finished", G_TYPE_FROM_CLASS(klass),
+		             G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+		             G_TYPE_NONE, 2, G_TYPE_INT64, G_TYPE_STRING);
 }
 
 static void
@@ -850,6 +902,8 @@ venture_work_service_init(VentureWorkService *self)
 	g_mutex_init(&self->lock);
 	self->live = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
 	                                   g_object_unref);
+	self->session_live = g_hash_table_new_full(g_direct_hash, g_direct_equal,
+	                                           NULL, g_object_unref);
 	self->max_concurrent = 1;
 }
 
@@ -1133,4 +1187,692 @@ venture_work_service_start_for_ticket(
 	                           venture_work_run, data, venture_work_run_free);
 
 	return job->run_id;
+}
+
+
+/* ==========================================================================
+ * Harness sessions
+ *
+ * The other half of the same machinery. A run is one shot and unattended;
+ * a session is the same providers, on the same thread, driven a turn at a
+ * time by somebody reading the output.
+ *
+ * Every turn rebuilds everything -- the provider, the executor and the
+ * message list, from the turns stored on the record. Nothing about a
+ * session lives in memory between turns except a #GCancellable, which is
+ * what makes a session survive a restart: there is no state to lose. It
+ * also means the two threads exchange nothing but plain data, which is
+ * rule three at the top of this file and the one that keeps the agent
+ * thread away from the database.
+ * ========================================================================== */
+
+/* One stored turn, crossing to the agent thread as plain data. */
+typedef struct
+{
+	gboolean	 from_user;
+	gchar		*body;
+} SessionMessage;
+
+static void
+session_message_free(gpointer data)
+{
+	SessionMessage *message = data;
+
+	if (NULL == message)
+		return;
+
+	g_free(message->body);
+	g_free(message);
+}
+
+/* Everything one turn needs, assembled on the main thread. */
+typedef struct
+{
+	VentureWorkService	*self;
+	gint64			 session_id;
+	gchar			*provider;
+	gchar			*model;
+	gchar			*workspace;
+	gchar			*system_prompt;
+	GPtrArray		*history;
+	GCancellable		*cancellable;
+	gint			 max_turns;
+} SessionTurn;
+
+static void
+session_turn_free(gpointer data)
+{
+	SessionTurn *turn = data;
+
+	if (NULL == turn)
+		return;
+
+	g_clear_object(&turn->self);
+	g_clear_object(&turn->cancellable);
+	g_free(turn->provider);
+	g_free(turn->model);
+	g_free(turn->workspace);
+	g_free(turn->system_prompt);
+	g_clear_pointer(&turn->history, g_ptr_array_unref);
+	g_free(turn);
+}
+
+/* What comes back: a fragment while it runs, or the finished turn. */
+typedef struct
+{
+	VentureWorkService	*self;
+	gint64			 session_id;
+	gchar			*text;
+	gchar			*failure;
+	gint64			 input_tokens;
+	gint64			 output_tokens;
+	gboolean		 finished;
+} SessionUpdate;
+
+static void
+session_update_free(gpointer data)
+{
+	SessionUpdate *update = data;
+
+	if (NULL == update)
+		return;
+
+	g_clear_object(&update->self);
+	g_free(update->text);
+	g_free(update->failure);
+	g_free(update);
+}
+
+/*
+ * Applies a session update. On the main thread, always -- this and
+ * venture_work_service_apply() are the only functions here that touch a
+ * record.
+ */
+static gboolean
+venture_work_session_apply(gpointer user_data)
+{
+	SessionUpdate *update = user_data;
+	VentureWorkService *self = update->self;
+	g_autoptr(VentureEntity) session = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	VentureActor actor;
+
+	/* A fragment is only ever watched, never stored. */
+	if (!update->finished)
+	{
+		g_signal_emit(self,
+		              venture_work_signals[VENTURE_WORK_SIGNAL_SESSION_OUTPUT],
+		              0, update->session_id, update->text);
+		return G_SOURCE_REMOVE;
+	}
+
+	session = venture_database_get(venture_context_get_database(self->context),
+	                               VENTURE_TYPE_AGENT_SESSION,
+	                               update->session_id, NULL);
+
+	if (NULL == session)
+		return G_SOURCE_REMOVE;
+
+	now = venture_time_now();
+	actor.kind = VENTURE_ACTOR_KIND_SYSTEM;
+	actor.name = "harness";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+
+	/* The reply, stored as the turn it is. A turn that failed leaves no
+	 * assistant turn: there is nothing it said. */
+	if (venture_string_is_empty(update->failure) &&
+	    !venture_string_is_empty(update->text))
+	{
+		g_autoptr(VentureAgentTurn) reply = NULL;
+
+		reply = venture_agent_turn_new();
+		g_object_set(reply, "session-id", update->session_id,
+		             "role", VENTURE_CHAT_ROLE_ASSISTANT,
+		             "body", update->text, NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(reply),
+			venture_entity_get_organization_id(session));
+		venture_database_save(venture_context_get_database(self->context),
+		                      VENTURE_ENTITY(reply), &actor, NULL);
+	}
+
+	{
+		gint64 turns = 0;
+		gint64 input = 0;
+		gint64 output = 0;
+
+		g_object_get(session, "turns", &turns, "input-tokens", &input,
+		             "output-tokens", &output, NULL);
+
+		g_object_set(session,
+			"state", venture_string_is_empty(update->failure)
+				? VENTURE_AGENT_SESSION_STATE_IDLE
+				: VENTURE_AGENT_SESSION_STATE_FAILED,
+			"turns", turns + 1,
+			"input-tokens", input + update->input_tokens,
+			"output-tokens", output + update->output_tokens,
+			"last-activity-at", now, NULL);
+
+		if (!venture_string_is_empty(update->failure))
+			g_object_set(session, "failure-reason", update->failure, NULL);
+	}
+
+	venture_database_save(venture_context_get_database(self->context),
+	                      VENTURE_ENTITY(session), &actor, NULL);
+
+	g_mutex_lock(&self->lock);
+	g_hash_table_remove(self->session_live,
+	                    GINT_TO_POINTER(update->session_id));
+	g_mutex_unlock(&self->lock);
+
+	g_signal_emit(self,
+	              venture_work_signals[VENTURE_WORK_SIGNAL_SESSION_FINISHED],
+	              0, update->session_id, update->failure);
+
+	return G_SOURCE_REMOVE;
+}
+
+static void
+venture_work_session_post(
+	VentureWorkService	*self,
+	SessionUpdate		*update
+){
+	update->self = g_object_ref(self);
+	g_main_context_invoke_full(NULL, G_PRIORITY_DEFAULT,
+	                           venture_work_session_apply, update,
+	                           session_update_free);
+}
+
+/* Each fragment the provider emits, on its way to the browser. */
+static void
+venture_work_session_on_event(
+	AiEventSource	*source,
+	AiEvent		*event,
+	gpointer	 user_data
+){
+	SessionTurn *turn = user_data;
+	SessionUpdate *update;
+	const gchar *text;
+
+	(void)source;
+
+	switch (ai_event_get_kind(event))
+	{
+	case AI_EVENT_TEXT_DELTA:
+		text = ai_event_get_text(event);
+		break;
+
+	case AI_EVENT_TOOL_STARTED:
+	{
+		AiToolUse *use;
+
+		use = ai_event_get_tool_use(event);
+		text = (NULL != use) ? ai_tool_use_get_name(use) : NULL;
+
+		if (venture_string_is_empty(text))
+			return;
+
+		update = g_new0(SessionUpdate, 1);
+		update->session_id = turn->session_id;
+		update->text = g_strdup_printf("\n[%s]\n", text);
+		venture_work_session_post(turn->self, update);
+		return;
+	}
+
+	default:
+		return;
+	}
+
+	if (venture_string_is_empty(text))
+		return;
+
+	update = g_new0(SessionUpdate, 1);
+	update->session_id = turn->session_id;
+	update->text = g_strdup(text);
+	venture_work_session_post(turn->self, update);
+}
+
+/*
+ * One turn, on the agent thread.
+ *
+ * The provider is built here and thrown away here. A CLI provider is a
+ * subprocess either way, and an API provider costs a struct; keeping
+ * either between turns would be state on this thread that a restart
+ * silently loses, and the stored turns are the truth about a session.
+ */
+static gboolean
+venture_work_session_run(gpointer user_data)
+{
+	SessionTurn *turn = user_data;
+	g_autoptr(AiProvider) provider = NULL;
+	g_autoptr(AiToolExecutor) executor = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *reply = NULL;
+	SessionUpdate *update;
+	GList *messages = NULL;
+	GObject *object;
+	gulong handler = 0;
+	guint i;
+
+	object = ai_provider_factory_new_from_string(turn->provider, NULL, &error);
+
+	if (NULL == object)
+	{
+		update = g_new0(SessionUpdate, 1);
+		update->session_id = turn->session_id;
+		update->finished = TRUE;
+		update->failure = g_strdup((NULL != error) ? error->message
+		                                           : "no such provider");
+		venture_work_session_post(turn->self, update);
+		return G_SOURCE_REMOVE;
+	}
+
+	provider = AI_PROVIDER(object);
+
+	if (!venture_string_is_empty(turn->model) && AI_IS_CLIENT(object))
+		ai_client_set_model(AI_CLIENT(object), turn->model);
+
+	/*
+	 * A CLI provider is started in the workspace and brings its own
+	 * tools; an API provider gets VENTURE's confined ones, rooted there.
+	 * Neither gets ai-glib's built-ins, whose file tools take absolute
+	 * paths and whose bash tool is a shell in this process.
+	 */
+	executor = ai_tool_executor_new_empty();
+
+	if (AI_IS_CLI_CLIENT(object))
+	{
+		if (!venture_string_is_empty(turn->workspace))
+			ai_cli_client_set_working_directory(AI_CLI_CLIENT(object),
+			                                    turn->workspace);
+	}
+	else if (!venture_string_is_empty(turn->workspace))
+	{
+		venture_work_tools_register(executor, turn->workspace);
+	}
+
+	/* Streamed, so the browser sees the agent working rather than a
+	 * blank panel for the length of a turn. */
+	ai_tool_executor_set_stream(executor, TRUE);
+	handler = g_signal_connect(executor, "event",
+	                           G_CALLBACK(venture_work_session_on_event),
+	                           turn);
+
+	for (i = 0; i < turn->history->len; i++)
+	{
+		SessionMessage *message;
+
+		message = g_ptr_array_index(turn->history, i);
+
+		if (venture_string_is_empty(message->body))
+			continue;
+
+		messages = g_list_append(messages, message->from_user
+			? ai_message_new_user(message->body)
+			: ai_message_new_assistant(message->body));
+	}
+
+	reply = ai_tool_executor_run(executor, provider, messages,
+	                             turn->system_prompt, 8192,
+	                             turn->cancellable, &error);
+
+	g_list_free_full(messages, g_object_unref);
+	g_signal_handler_disconnect(executor, handler);
+
+	update = g_new0(SessionUpdate, 1);
+	update->session_id = turn->session_id;
+	update->finished = TRUE;
+
+	if (g_cancellable_is_cancelled(turn->cancellable))
+		update->failure = g_strdup("Stopped");
+	else if (NULL == reply)
+		update->failure = g_strdup((NULL != error) ? error->message
+		                                           : "the provider failed");
+	else
+		update->text = g_steal_pointer(&reply);
+
+	venture_work_session_post(turn->self, update);
+
+	return G_SOURCE_REMOVE;
+}
+
+/*
+ * Whether @path is somewhere a session may work.
+ *
+ * Under one of the configured roots, compared as resolved paths so that
+ * a symlink or a `..` cannot walk out of one. An empty list means no
+ * host path is allowed at all, which is the default: running a coding
+ * agent with write access to a tree on this machine is a grant an
+ * operator makes deliberately.
+ */
+static gboolean
+venture_work_session_path_allowed(
+	VentureWorkService	 *self,
+	const gchar		 *path,
+	gchar			**out_resolved,
+	GError			**error
+){
+	g_auto(GStrv) roots = NULL;
+	g_autofree gchar *resolved = NULL;
+	gsize i;
+
+	g_object_get(venture_context_get_config(self->context),
+	             "forge-workspace-roots", &roots, NULL);
+
+	if ((NULL == roots) || (NULL == roots[0]))
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_PERMISSION_DENIED,
+		                    "No workspace roots are configured, so a session "
+		                    "may only work in a checkout it clones. Set "
+		                    "forge.workspace_roots to allow a directory on "
+		                    "this machine.");
+		return FALSE;
+	}
+
+	if (!g_path_is_absolute(path))
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "A workspace must be an absolute path");
+		return FALSE;
+	}
+
+	resolved = realpath(path, NULL);
+
+	if (NULL == resolved)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "There is no directory at \"%s\"", path);
+		return FALSE;
+	}
+
+	for (i = 0; NULL != roots[i]; i++)
+	{
+		g_autofree gchar *root = NULL;
+
+		root = realpath(roots[i], NULL);
+
+		if (NULL == root)
+			continue;
+
+		/*
+		 * The separator matters: without it "/srv/venture-secrets"
+		 * counts as being under "/srv/venture".
+		 */
+		if ((0 == g_strcmp0(resolved, root)) ||
+		    (g_str_has_prefix(resolved, root) &&
+		     (G_DIR_SEPARATOR == resolved[strlen(root)])))
+		{
+			if (NULL != out_resolved)
+				*out_resolved = g_steal_pointer(&resolved);
+
+			return TRUE;
+		}
+	}
+
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+	            "\"%s\" is not under any configured workspace root", path);
+
+	return FALSE;
+}
+
+gint64
+venture_work_service_session_open(
+	VentureWorkService		 *self,
+	const VentureAgentSessionSpec	 *spec,
+	GError				**error
+){
+	g_autoptr(VentureAgentSession) session = NULL;
+	g_autofree gchar *workspace = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	VentureActor actor;
+	gboolean cloned;
+
+	g_return_val_if_fail(VENTURE_IS_WORK_SERVICE(self), 0);
+	g_return_val_if_fail(NULL != spec, 0);
+
+	if (venture_string_is_empty(spec->provider))
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "A session needs a provider");
+		return 0;
+	}
+
+	cloned = FALSE;
+
+	/*
+	 * Where it works, settled here rather than on the agent thread:
+	 * deciding it reads configuration and a repository record, and
+	 * neither is that thread's to touch.
+	 */
+	if (!venture_string_is_empty(spec->workspace))
+	{
+		if (!venture_work_session_path_allowed(self, spec->workspace,
+		                                       &workspace, error))
+			return 0;
+	}
+	else if (0 != spec->repo_id)
+	{
+		g_autoptr(VentureEntity) repo = NULL;
+		g_autofree gchar *repo_name = NULL;
+		g_autofree gchar *slug = NULL;
+
+		repo = venture_database_get(venture_context_get_database(self->context),
+		                            VENTURE_TYPE_FORGE_REPO, spec->repo_id,
+		                            error);
+
+		if (NULL == repo)
+			return 0;
+
+		g_object_get(repo, "name", &repo_name, NULL);
+		slug = venture_slugify(!venture_string_is_empty(repo_name)
+			? repo_name : "repo");
+		workspace = g_build_filename(
+			venture_config_get_state_dir(
+				venture_context_get_config(self->context)),
+			"forge", "sessions", slug, NULL);
+		cloned = TRUE;
+	}
+
+	now = venture_time_now();
+	session = venture_agent_session_new();
+	g_object_set(session,
+	             "name", !venture_string_is_empty(spec->name)
+	                     ? spec->name : "Session",
+	             "state", VENTURE_AGENT_SESSION_STATE_IDLE,
+	             "provider", spec->provider,
+	             "model", spec->model,
+	             "workspace", workspace,
+	             "cloned", cloned,
+	             "repo-id", spec->repo_id,
+	             "ticket-id", spec->ticket_id,
+	             "user-id", spec->user_id,
+	             "started-at", now,
+	             "last-activity-at", now,
+	             NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(session),
+		venture_context_get_default_organization_id(self->context));
+
+	actor.kind = VENTURE_ACTOR_KIND_SYSTEM;
+	actor.name = "harness";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           VENTURE_ENTITY(session), &actor, error))
+		return 0;
+
+	return venture_entity_get_id(VENTURE_ENTITY(session));
+}
+
+gboolean
+venture_work_service_session_send(
+	VentureWorkService	 *self,
+	gint64			  session_id,
+	const gchar		 *prompt,
+	GError			**error
+){
+	g_autoptr(VentureEntity) session = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) stored = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	VentureAgentSessionState state;
+	SessionTurn *turn;
+	VentureActor actor;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_WORK_SERVICE(self), FALSE);
+
+	if (venture_string_is_empty(prompt))
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Say what the agent should do");
+		return FALSE;
+	}
+
+	session = venture_database_get(venture_context_get_database(self->context),
+	                               VENTURE_TYPE_AGENT_SESSION, session_id,
+	                               error);
+
+	if (NULL == session)
+		return FALSE;
+
+	g_object_get(session, "state", &state, NULL);
+
+	if (VENTURE_AGENT_SESSION_STATE_CLOSED == state)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+		                    "That session is closed");
+		return FALSE;
+	}
+
+	g_mutex_lock(&self->lock);
+
+	if (g_hash_table_contains(self->session_live, GINT_TO_POINTER(session_id)))
+	{
+		g_mutex_unlock(&self->lock);
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+		                    "That session is still working on the last one");
+		return FALSE;
+	}
+
+	g_mutex_unlock(&self->lock);
+
+	actor.kind = VENTURE_ACTOR_KIND_SYSTEM;
+	actor.name = "harness";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+
+	/* Stored before the agent sees it, so a turn that never comes back
+	 * still says what was asked. */
+	{
+		g_autoptr(VentureAgentTurn) asked = NULL;
+
+		asked = venture_agent_turn_new();
+		g_object_set(asked, "session-id", session_id,
+		             "role", VENTURE_CHAT_ROLE_USER,
+		             "body", prompt, NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(asked),
+			venture_entity_get_organization_id(session));
+
+		if (!venture_database_save(venture_context_get_database(self->context),
+		                           VENTURE_ENTITY(asked), &actor, error))
+			return FALSE;
+	}
+
+	turn = g_new0(SessionTurn, 1);
+	turn->self = g_object_ref(self);
+	turn->session_id = session_id;
+	turn->cancellable = g_cancellable_new();
+	turn->history = g_ptr_array_new_with_free_func(session_message_free);
+	turn->system_prompt = g_strdup(
+		"You are an agent working for an operator who is reading your "
+		"output as it arrives. Say what you are about to do in one line, "
+		"do it, then say what changed. Make the smallest change that "
+		"achieves what was asked.");
+
+	g_object_get(session, "provider", &turn->provider, "model", &turn->model,
+	             "workspace", &turn->workspace, NULL);
+
+	/* The whole conversation, oldest first, as plain data. */
+	query = venture_query_new(VENTURE_TYPE_AGENT_TURN);
+	venture_query_add_filter_int(query, "session-id", VENTURE_FILTER_OP_EQ,
+	                             session_id, NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	stored = venture_database_find(venture_context_get_database(self->context),
+	                               query, NULL);
+
+	for (i = 0; (NULL != stored) && (i < stored->len); i++)
+	{
+		SessionMessage *message;
+		VentureChatRole role;
+
+		message = g_new0(SessionMessage, 1);
+		g_object_get(g_ptr_array_index(stored, i), "role", &role,
+		             "body", &message->body, NULL);
+		message->from_user = (VENTURE_CHAT_ROLE_USER == role);
+		g_ptr_array_add(turn->history, message);
+	}
+
+	now = venture_time_now();
+	g_object_set(session, "state", VENTURE_AGENT_SESSION_STATE_WORKING,
+	             "last-activity-at", now, NULL);
+	venture_database_save(venture_context_get_database(self->context),
+	                      VENTURE_ENTITY(session), &actor, NULL);
+
+	g_mutex_lock(&self->lock);
+	g_hash_table_insert(self->session_live, GINT_TO_POINTER(session_id),
+	                    g_object_ref(turn->cancellable));
+	g_mutex_unlock(&self->lock);
+
+	/* Onto the agent thread. Everything after this happens there. */
+	g_main_context_invoke_full(self->agent_context, G_PRIORITY_DEFAULT,
+	                           venture_work_session_run, turn,
+	                           session_turn_free);
+
+	return TRUE;
+}
+
+void
+venture_work_service_session_close(
+	VentureWorkService	*self,
+	gint64			 session_id
+){
+	g_autoptr(VentureEntity) session = NULL;
+	GCancellable *cancellable;
+	VentureActor actor;
+
+	g_return_if_fail(VENTURE_IS_WORK_SERVICE(self));
+
+	g_mutex_lock(&self->lock);
+	cancellable = g_hash_table_lookup(self->session_live,
+	                                  GINT_TO_POINTER(session_id));
+
+	if (NULL != cancellable)
+		g_cancellable_cancel(cancellable);
+
+	g_mutex_unlock(&self->lock);
+
+	session = venture_database_get(venture_context_get_database(self->context),
+	                               VENTURE_TYPE_AGENT_SESSION, session_id,
+	                               NULL);
+
+	if (NULL == session)
+		return;
+
+	actor.kind = VENTURE_ACTOR_KIND_SYSTEM;
+	actor.name = "harness";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+
+	g_object_set(session, "state", VENTURE_AGENT_SESSION_STATE_CLOSED, NULL);
+	venture_database_save(venture_context_get_database(self->context),
+	                      VENTURE_ENTITY(session), &actor, NULL);
 }

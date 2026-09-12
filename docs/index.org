@@ -30,6 +30,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:dashboards.org][Dashboards]] — pages of widgets, as many as you like, from any module's records and reports
 - [[file:webhooks.org][Webhooks out]] — telling something outside that a record changed: events, signing, deliveries
 - [[file:workdesk.org][The workdesk]] — the inbox and watching, saved views, service levels, macros, worklogs, sprints, bulk edits, the timeline, mission control and agent budgets
+- [[file:harness.org][The agent harness]] — a coding agent kept open in a workspace: sessions, providers, and what an operator has to switch on
 - [[file:interface.org][The interface]] — the design system behind the web UI: substrates, the two registers of type, geometry, and the tokens a plugin builds on
 - [[file:extending.org][Extending]] — plugins, crispy scripts, declarative venture types, plugin modules
 - [[file:containers.org][Containers]] — the Containerfile, local compose, and a deployment example

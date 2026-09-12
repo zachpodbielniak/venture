@@ -1200,6 +1200,7 @@ test_auth_api_refuses_anonymous_requests(
 		"/ui/chat/thread/1/export",
 		"/ui/chat/complete",
 		"/ui/chat/stream/whatever",
+		"/harness/1/stream",
 		/*
 		 * The knowledge bases. Search returns passages of whatever the
 		 * operator has filed -- contracts, policies, drafts -- and the
@@ -1279,6 +1280,15 @@ test_auth_api_refuses_anonymous_requests(
 	                                        "/ui/chat/thread/1/rename",
 	                                        NULL, "title=x", NULL, NULL),
 	                 ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/harness",
+		NULL, "provider=claude-code", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/harness/1/send", NULL, "prompt=x", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/harness/1/close", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
 
 	/* The comment composer redirects to login like the page it sits on. */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",

@@ -624,6 +624,30 @@ than one that fails.
   made a dashboard test find an error notice that was not on the page.
   Build dynamic notices as DOM nodes, and assert on markup
   (`<div class="notice negative">`), not on two words.
+## The agent harness
+
+- **Two different things are called a harness.** `/harness` is the agent
+  harness: a coding agent in a workspace, driven a turn at a time, in
+  `venture-work-service.c` alongside runs. `/assistant` lists the chat
+  harness's commands. Do not merge them; one changes files, the other
+  answers questions.
+- **A session keeps nothing in memory between turns.** Every turn rebuilds
+  the provider, the executor and the message list from the stored
+  `agent_turn` records, which is what makes a session survive a restart.
+  The only live state is a `GCancellable` in `session_live`.
+- **Where a session may work is decided on the main thread** in
+  `venture_work_service_session_open()`, because it reads config and a
+  repo record. `forge.workspace_roots` is empty by default; paths are
+  compared after `realpath()` and the separator check matters
+  (`/srv/venture-secrets` is not under `/srv/venture`).
+- **A CLI provider gets no tools from us** (its subprocess has its own);
+  an API provider gets `venture_work_tools_register()` rooted at the
+  workspace. Neither gets `ai_tool_executor_new()`'s built-ins.
+- **`session-output` and `session-finished` are emitted on the main
+  thread** and the SSE route forwards them, filtered by session id. The
+  `done` event makes the page reload rather than rendering the turn in
+  JavaScript, so a transcript has one renderer.
+
 - **The harness is `src/ai/venture-ai-harness.c`**, ai-glib's
   (`AiResourceRegistry` -> `AiCommandSet` -> `AiCompletionContext`, the
   shape `ai-tui` uses) wired to a browser. It owns completion for `/`,

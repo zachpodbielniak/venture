@@ -1,0 +1,76 @@
+#+title: The agent harness
+#+description: A coding agent, kept open, in a workspace: sessions, providers, workspaces and what is recorded
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-12]
+#+updated: [2026-09-12]
+#+version: 0.6.0
+
+* The agent harness
+
+A coding agent, kept open, working in a checkout, driven a turn at a time by somebody reading the output. It is at =/harness=, under *Software factory* in the sidebar.
+
+It is not the assistant panel. That answers questions about your records and stages writes for approval. This runs =claude-code= or =codex= against a directory and changes files.
+
+** What it is made of
+
+The same machinery a run uses. [[file:factory.org][The software factory]] already runs a coding agent against a ticket: a ticket goes in, a branch comes out, nobody watches. A session is the other half — the same providers, on the same background thread, under the same rules — with a person in the loop.
+
+Providers come from ai-glib's factory, so anything it knows is available:
+
+| =claude-code= | the =claude= CLI, in the workspace, with its own tools |
+| =codex=       | the =codex= CLI                                       |
+| =cursor=      | =cursor-agent=                                        |
+| =opencode=    | the =opencode= CLI                                    |
+| =claude=, =openai=, … | an API provider, given VENTURE's own confined file tools |
+
+A CLI provider is a subprocess started in the workspace and brings its own tools; an API provider gets the read/write/edit/glob/grep tools rooted at the workspace and nothing else. Neither gets ai-glib's built-ins, whose file tools take absolute paths and whose bash tool would be a shell inside the server.
+
+** Where a session works
+
+Two ways, chosen when the session is opened.
+
+*** A directory on this machine
+
+Type a path. It must be under one of =forge.workspace_roots=, which is empty by default — so out of the box there is no such path at all. Roots are compared after resolution, so a symlink or a =..= cannot walk out of one, and a sibling whose name merely starts with a root's ("/srv/venture-secrets" against "/srv/venture") is not under it.
+
+This is write access to a tree on your machine for a coding agent. It is switched on deliberately:
+
+#+begin_src yaml
+forge:
+  runs_enabled: true
+  workspace_roots:
+    - "/var/home/you/source/projects"
+#+end_src
+
+*** A repository the harness clones
+
+Name a =forge_repo= instead and the session works in a checkout under the state directory, the way a run does. Nothing outside it is writable, and the checkout is disposable.
+
+*** Neither
+
+A session with no workspace talks to the provider with no working directory. It can plan and it can answer; it cannot read or change a repository.
+
+** A turn
+
+Type what you want done and send; =Ctrl+Enter= sends too. What the agent says arrives as it says it, and a tool it calls shows as a line of its own — =[Bash]=, =[Edit]= — so a long turn reads as work rather than as a hang.
+
+One turn at a time per session. A second while one is in flight is refused rather than interleaved. Closing the tab does not cancel a turn: the agent is already working, and the turn is stored either way.
+
+Every turn rebuilds everything — the provider, the tools and the message list, from the turns on the record. Nothing about a session lives in memory between turns except the means to cancel it, which is why a session survives a restart of the server: there is no state to lose.
+
+** What is recorded
+
+- *agent_session* — name, provider, model, workspace, whether it was cloned, the repository and ticket it is about, who opened it, state, turns, tokens and cost.
+- *agent_turn* — one per turn, with its role and its text, in order.
+
+Both are ordinary records: they list, filter, export and audit like everything else. A transcript of what an agent was told to do in a repository is worth as much afterwards as a run's log, and for the same reasons.
+
+** Rules the implementation keeps
+
+These are in =src/forge/venture-work-service.c=, and the first three are the file's own:
+
+1. The agent thread runs its own =GMainContext=. The server's loop never waits on a subprocess.
+2. That thread never touches the database. Writing a record emits =entity-saved=, whose handler enters podomation on the default context.
+3. State crosses as plain data. A turn goes out as strings; output comes back as strings and is applied on the main thread.
+4. Where a session may work is settled on the main thread, before anything is dispatched: deciding it reads configuration and a repository record, and neither is the agent thread's to touch.

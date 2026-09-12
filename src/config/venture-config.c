@@ -234,6 +234,19 @@ static const VentureConfigSetting venture_config_settings[] = {
 	        "venture@localhost", "Author email recorded on those commits"),
 	VC_STRV("forge-cli-allowed-commands", "forge", "cli_allowed_commands",
 	        "Commands the CLI runner may spawn; anything else is refused"),
+	/*
+	 * Directories an agent-harness session may be pointed at.
+	 *
+	 * Empty -- the default -- means a session may only work in a
+	 * checkout it cloned itself, under the workspace directory. A path
+	 * listed here lets a session work directly in a tree on this
+	 * machine, which is what somebody running VENTURE beside their own
+	 * code wants and is also write access for a coding agent, so it is
+	 * something an operator turns on deliberately rather than a default.
+	 */
+	VC_STRV("forge-workspace-roots", "forge", "workspace_roots",
+	        "Directories a harness session may work in directly; empty "
+	        "means cloned checkouts only"),
 	VC_INT ("forge-poll-interval", "forge", "poll_interval", 3,
 	        "Seconds between run-status refreshes in the browser"),
 

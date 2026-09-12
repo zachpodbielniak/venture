@@ -438,6 +438,8 @@ static GType (*const venture_module_forge_types[]) (void) = {
 	venture_forge_rule_get_type,
 	venture_ticket_link_get_type,
 	venture_forge_run_get_type,
+	venture_agent_session_get_type,
+	venture_agent_turn_get_type,
 	venture_agent_budget_get_type,
 	NULL
 };

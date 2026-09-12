@@ -358,6 +358,29 @@ typedef enum
 } VentureForgeTrigger;
 
 /**
+ * VentureAgentSessionState:
+ * @VENTURE_AGENT_SESSION_STATE_IDLE: open, waiting for something to do
+ * @VENTURE_AGENT_SESSION_STATE_WORKING: a turn is in flight
+ * @VENTURE_AGENT_SESSION_STATE_CLOSED: ended deliberately
+ * @VENTURE_AGENT_SESSION_STATE_FAILED: the provider or the workspace gave
+ *   way, and the session cannot be continued
+ *
+ * Where an agent-harness session stands.
+ *
+ * Closed and failed are both terminal and are kept apart for the reason
+ * refused and failed are kept apart on a run: one is a decision and the
+ * other is a fault, and a list that shows them the same way cannot answer
+ * "what went wrong yesterday".
+ */
+typedef enum
+{
+	VENTURE_AGENT_SESSION_STATE_IDLE = 0,
+	VENTURE_AGENT_SESSION_STATE_WORKING,
+	VENTURE_AGENT_SESSION_STATE_CLOSED,
+	VENTURE_AGENT_SESSION_STATE_FAILED
+} VentureAgentSessionState;
+
+/**
  * VentureForgeRunState:
  * @VENTURE_FORGE_RUN_STATE_QUEUED: accepted, waiting for a slot
  * @VENTURE_FORGE_RUN_STATE_RUNNING: in progress
@@ -966,6 +989,7 @@ typedef enum
 #define VENTURE_TYPE_FORGE_RUNNER		(venture_forge_runner_get_type())
 #define VENTURE_TYPE_FORGE_RUN_OUTCOME		(venture_forge_run_outcome_get_type())
 #define VENTURE_TYPE_FORGE_TRIGGER		(venture_forge_trigger_get_type())
+#define VENTURE_TYPE_AGENT_SESSION_STATE	(venture_agent_session_state_get_type())
 #define VENTURE_TYPE_FORGE_RUN_STATE		(venture_forge_run_state_get_type())
 #define VENTURE_TYPE_FORGE_LINK_ORIGIN		(venture_forge_link_origin_get_type())
 #define VENTURE_TYPE_INVOICE_STATUS		(venture_invoice_status_get_type())
@@ -1007,6 +1031,7 @@ GType venture_forge_kind_get_type		(void) G_GNUC_CONST;
 GType venture_forge_runner_get_type		(void) G_GNUC_CONST;
 GType venture_forge_run_outcome_get_type	(void) G_GNUC_CONST;
 GType venture_forge_trigger_get_type		(void) G_GNUC_CONST;
+GType venture_agent_session_state_get_type	(void) G_GNUC_CONST;
 GType venture_forge_run_state_get_type		(void) G_GNUC_CONST;
 GType venture_forge_link_origin_get_type	(void) G_GNUC_CONST;
 GType venture_invoice_status_get_type		(void) G_GNUC_CONST;

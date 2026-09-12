@@ -350,6 +350,12 @@ VENTURE_DECLARE_ENTITY(VentureChatMessage, venture_chat_message, CHAT_MESSAGE)
 #define VENTURE_TYPE_AI_SKILL (venture_ai_skill_get_type())
 VENTURE_DECLARE_ENTITY(VentureAiSkill, venture_ai_skill, AI_SKILL)
 
+#define VENTURE_TYPE_AGENT_SESSION (venture_agent_session_get_type())
+VENTURE_DECLARE_ENTITY(VentureAgentSession, venture_agent_session, AGENT_SESSION)
+
+#define VENTURE_TYPE_AGENT_TURN (venture_agent_turn_get_type())
+VENTURE_DECLARE_ENTITY(VentureAgentTurn, venture_agent_turn, AGENT_TURN)
+
 /* --- Access -------------------------------------------------------------- */
 
 #define VENTURE_TYPE_USER (venture_user_get_type())

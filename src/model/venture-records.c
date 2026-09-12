@@ -2806,6 +2806,87 @@ static const VentureFieldDecl venture_ai_skill_fields[] = {
 VENTURE_DEFINE_ENTITY(VentureAiSkill, venture_ai_skill,
                       venture_ai_skill_fields)
 
+/*
+ * An agent-harness session: a coding agent, kept open, in a workspace.
+ *
+ * A forge_run is one shot -- a ticket goes in, a branch comes out, nobody
+ * is watching. A session is the other half of the same machinery: the
+ * same providers and the same thread, driven a turn at a time by somebody
+ * who is reading the output and deciding what to ask next. What makes it
+ * a record rather than a thing in memory is that the transcript of what
+ * an agent was told to do in a repository is worth as much afterwards as
+ * a run's log, and for the same reasons.
+ */
+static const VentureFieldDecl venture_agent_session_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "What this session is for"),
+	VENTURE_FIELD_ENUM("state", "State", NULL,
+	                   venture_agent_session_state_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("provider", "Provider",
+	              "claude-code, codex, cursor, opencode, or an API provider",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("model", "Model", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NONE),
+
+	/*
+	 * Where the agent works, resolved and absolute. Stored rather than
+	 * recomputed: a session opened against a checkout that has since
+	 * been removed from the allow-list should still say where it ran.
+	 */
+	VENTURE_FIELD("workspace", "Workspace", "The directory the agent works in",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("cloned", "Cloned",
+	              "The workspace is a checkout this session made, and is "
+	              "disposable", VENTURE_FIELD_KIND_BOOLEAN,
+	              VENTURE_COLUMN_FLAG_NONE),
+
+	/* What it is about, when it is about something. */
+	VENTURE_FIELD_REF("repo-id", "Repository", NULL, "forge_repo",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("ticket-id", "Ticket", NULL, "ticket",
+	                  VENTURE_COLUMN_FLAG_NONE),
+
+	VENTURE_FIELD("user-id", "User", "Who opened it", VENTURE_FIELD_KIND_INTEGER,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("started-at", "Started", NULL, VENTURE_FIELD_KIND_DATETIME,
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("last-activity-at", "Last activity", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("turns", "Turns", NULL, VENTURE_FIELD_KIND_INTEGER,
+	              VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("input-tokens", "Input tokens", NULL,
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("output-tokens", "Output tokens", NULL,
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("cost", "Cost", "What the provider charged"),
+	VENTURE_FIELD_TEXT("failure-reason", "Error", "Why it stopped, when it did")
+};
+
+VENTURE_DEFINE_ENTITY(VentureAgentSession, venture_agent_session,
+                      venture_agent_session_fields)
+
+/*
+ * One turn of a session: what was asked, or what came back.
+ *
+ * Split from the session rather than appended to a log field because a
+ * turn is the unit everything cares about -- replaying it to the model,
+ * showing it in the page, counting what a session cost -- and a text
+ * column that four things parse is a text column that three of them
+ * parse slightly differently.
+ */
+static const VentureFieldDecl venture_agent_turn_fields[] = {
+	VENTURE_FIELD_REF("session-id", "Session", NULL, "agent_session",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL |
+	                  VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_ENUM("role", "Role", NULL, venture_chat_role_get_type,
+	                   VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("body", "Body", NULL)
+};
+
+VENTURE_DEFINE_ENTITY(VentureAgentTurn, venture_agent_turn,
+                      venture_agent_turn_fields)
+
 /* ==========================================================================
  * Access
  * ========================================================================== */

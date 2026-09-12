@@ -254,6 +254,17 @@ forge:
   # Empty means the CLI runner is unavailable, which is the default.
   cli_allowed_commands: []
 
+  # Directories a harness session may work in directly, e.g.
+  # - "/var/home/you/source/projects"
+  #
+  # Empty -- the default -- means a session may only work in a checkout it
+  # cloned itself, under the workspace directory above. A path listed here
+  # lets a session run a coding agent straight in a tree on this machine,
+  # which is what somebody running VENTURE beside their own code wants and
+  # is also write access to that tree, so it is switched on deliberately.
+  # Paths are compared after resolution, so a symlink cannot walk out.
+  workspace_roots: []
+
   # Seconds between run-status refreshes in the browser. The run page polls
   # a fragment; the fragment stops asking once the run has finished.
   poll_interval: 3

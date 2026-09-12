@@ -144,6 +144,8 @@ typedef struct _VentureReportRegistry		VentureReportRegistry;
 
 typedef struct _VentureAiService		VentureAiService;
 typedef struct _VentureAiHarness		VentureAiHarness;
+typedef struct _VentureAgentSession		VentureAgentSession;
+typedef struct _VentureAgentTurn		VentureAgentTurn;
 typedef struct _VentureKbService		VentureKbService;
 typedef struct _VentureEmbedder		VentureEmbedder;
 typedef struct _VentureAiSession		VentureAiSession;

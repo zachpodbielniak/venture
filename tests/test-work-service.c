@@ -375,6 +375,207 @@ test_work_reconciles_interrupted_runs(
 	g_assert_cmpint(state, ==, VENTURE_FORGE_RUN_STATE_INTERRUPTED);
 }
 
+/*
+ * A harness session is opened, records what it is, and refuses to be
+ * pointed anywhere it was not allowed.
+ *
+ * The allow-list is the security-critical half of this feature: a session
+ * with a host path is a coding agent with write access to a tree on this
+ * machine, so the default is that there is no such path and every
+ * configured root is compared after resolution -- a symlink or a `..`
+ * must not walk out of one.
+ */
+static void
+test_work_session_workspace_is_gated(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureWorkService) service = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *allowed = NULL;
+	g_autofree gchar *inside = NULL;
+	g_autofree gchar *sibling = NULL;
+	g_autofree gchar *escape = NULL;
+	VentureAgentSessionSpec spec;
+	gint64 session_id;
+
+	(void)user_data;
+
+	service = venture_work_service_new(fixture->context, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(service);
+
+	allowed = g_build_filename(fixture->state_dir, "allowed", NULL);
+	inside = g_build_filename(allowed, "checkout", NULL);
+	sibling = g_build_filename(fixture->state_dir, "allowed-secrets", NULL);
+	g_assert_cmpint(g_mkdir_with_parents(inside, 0755), ==, 0);
+	g_assert_cmpint(g_mkdir_with_parents(sibling, 0755), ==, 0);
+
+	memset(&spec, 0, sizeof(spec));
+	spec.name = "Fix the checkout";
+	spec.provider = "claude-code";
+	spec.workspace = inside;
+
+	/* Nothing configured: a host path is refused outright, and the
+	 * message says what to set rather than only that it failed. */
+	session_id = venture_work_service_session_open(service, &spec, &error);
+	g_assert_cmpint(session_id, ==, 0);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_assert_nonnull(strstr(error->message, "workspace_roots"));
+	g_clear_error(&error);
+
+	{
+		const gchar *roots[] = { NULL, NULL };
+
+		roots[0] = allowed;
+		g_object_set(fixture->config, "forge-workspace-roots", roots, NULL);
+	}
+
+	/* Under the root: allowed, and the path is stored resolved. */
+	session_id = venture_work_service_session_open(service, &spec, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(session_id, >, 0);
+
+	{
+		g_autoptr(VentureEntity) session = NULL;
+		g_autofree gchar *workspace = NULL;
+		g_autofree gchar *provider = NULL;
+		gboolean cloned = TRUE;
+
+		session = venture_database_get(fixture->database,
+			VENTURE_TYPE_AGENT_SESSION, session_id, NULL);
+		g_assert_nonnull(session);
+		g_object_get(session, "workspace", &workspace, "provider", &provider,
+		             "cloned", &cloned, NULL);
+		g_assert_cmpstr(provider, ==, "claude-code");
+		g_assert_nonnull(strstr(workspace, "checkout"));
+		g_assert_false(cloned);
+	}
+
+	/*
+	 * A sibling whose name starts with the root's is not under it. Without
+	 * the separator check "/srv/venture-secrets" passes as "/srv/venture".
+	 */
+	spec.workspace = sibling;
+	g_assert_cmpint(venture_work_service_session_open(service, &spec, &error),
+	                ==, 0);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+
+	/* And a path that climbs out of the root is refused after it is
+	 * resolved, not before. */
+	escape = g_build_filename(allowed, "..", "allowed-secrets", NULL);
+	spec.workspace = escape;
+	g_assert_cmpint(venture_work_service_session_open(service, &spec, &error),
+	                ==, 0);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+
+	/* A relative path is not a workspace at all. */
+	spec.workspace = "checkout";
+	g_assert_cmpint(venture_work_service_session_open(service, &spec, &error),
+	                ==, 0);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+
+	/* A session with neither a path nor a repository is legal and has no
+	 * working directory: it can plan, not edit. */
+	spec.workspace = NULL;
+	spec.name = "Just thinking";
+	session_id = venture_work_service_session_open(service, &spec, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(session_id, >, 0);
+
+	/* A provider is not optional: a session without one has nothing to
+	 * run and would fail on its first turn instead of here. */
+	spec.provider = "";
+	g_assert_cmpint(venture_work_service_session_open(service, &spec, &error),
+	                ==, 0);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+}
+
+/*
+ * A turn is stored before the agent sees it, and a closed session takes
+ * no more.
+ */
+static void
+test_work_session_turns_are_recorded(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureWorkService) service = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) turns = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureAgentSessionSpec spec;
+	gint64 session_id;
+
+	(void)user_data;
+
+	service = venture_work_service_new(fixture->context, &error);
+	g_assert_no_error(error);
+
+	memset(&spec, 0, sizeof(spec));
+	spec.name = "Planning";
+	spec.provider = "claude-code";
+	session_id = venture_work_service_session_open(service, &spec, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(session_id, >, 0);
+
+	/* An empty prompt is not a turn. */
+	g_assert_false(venture_work_service_session_send(service, session_id, "",
+	                                                 &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+
+	g_assert_true(venture_work_service_session_send(service, session_id,
+		"list the files", &error));
+	g_assert_no_error(error);
+
+	/* Stored immediately, so a turn that never comes back still says
+	 * what was asked. */
+	query = venture_query_new(VENTURE_TYPE_AGENT_TURN);
+	g_assert_true(venture_query_add_filter_int(query, "session-id",
+		VENTURE_FILTER_OP_EQ, session_id, NULL));
+	turns = venture_database_find(fixture->database, query, NULL);
+	g_assert_nonnull(turns);
+	g_assert_cmpuint(turns->len, ==, 1);
+
+	{
+		g_autofree gchar *body = NULL;
+		VentureChatRole role;
+
+		g_object_get(g_ptr_array_index(turns, 0), "role", &role,
+		             "body", &body, NULL);
+		g_assert_cmpint(role, ==, VENTURE_CHAT_ROLE_USER);
+		g_assert_cmpstr(body, ==, "list the files");
+	}
+
+	/* A second turn while one is in flight is refused rather than
+	 * interleaved. */
+	g_assert_false(venture_work_service_session_send(service, session_id,
+		"and again", &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_clear_error(&error);
+
+	venture_work_service_session_close(service, session_id);
+
+	{
+		g_autoptr(VentureEntity) session = NULL;
+		VentureAgentSessionState state;
+
+		session = venture_database_get(fixture->database,
+			VENTURE_TYPE_AGENT_SESSION, session_id, NULL);
+		g_object_get(session, "state", &state, NULL);
+		g_assert_cmpint(state, ==, VENTURE_AGENT_SESSION_STATE_CLOSED);
+	}
+
+	g_assert_false(venture_work_service_session_send(service, session_id,
+		"one more", &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+}
+
 int
 main(
 	int	  argc,
@@ -384,6 +585,11 @@ main(
 
 #define ADD(path, func) \
 	g_test_add(path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)
+
+	ADD("/work/session-workspace-is-gated",
+	    test_work_session_workspace_is_gated);
+	ADD("/work/session-turns-are-recorded",
+	    test_work_session_turns_are_recorded);
 
 	ADD("/work/disabled-by-default", test_work_disabled_by_default);
 	ADD("/work/does-not-block-the-main-loop",

@@ -671,6 +671,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_forge_repo_get_type,
 		venture_forge_rule_get_type,
 		venture_ticket_link_get_type,
+		venture_agent_session_get_type,
+		venture_agent_turn_get_type,
 		venture_forge_run_get_type,
 
 		venture_milestone_get_type,

@@ -2188,6 +2188,58 @@ body.ai-resizing { user-select: none; cursor: ew-resize; }
 .record-result-id { font-family: var(--font-mono); font-size: 11px;
                     color: var(--text-faint); flex: none; }
 
+/* --- The agent harness ------------------------------------------------------ */
+
+.harness-log { display: flex; flex-direction: column; gap: var(--space-4); }
+
+.harness-turn { display: grid; grid-template-columns: 70px minmax(0, 1fr);
+                gap: var(--space-3); }
+
+.harness-who {
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.1em;
+	color: var(--text-faint);
+	padding-top: 2px;
+}
+
+.harness-turn.said .harness-who { color: var(--accent); }
+
+.harness-body {
+	margin: 0;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	background: var(--surface-sunken);
+	border: 1px solid var(--border);
+	padding: var(--space-3);
+	font-size: 12.5px;
+	line-height: 1.5;
+	max-height: 480px;
+	overflow-y: auto;
+}
+
+.harness-turn.asked .harness-body { background: transparent;
+                                    border-color: var(--border-strong); }
+
+/* The turn in flight, with a caret so a pause reads as thinking. */
+.harness-live { display: grid; grid-template-columns: 70px minmax(0, 1fr);
+                gap: var(--space-3); margin-top: var(--space-4); }
+.harness-live[hidden] { display: none; }
+.harness-live .harness-body { border-color: var(--accent); }
+.harness-live .harness-body::after {
+	content: "\2588";
+	color: var(--accent);
+	animation: stream-caret 1s ease-in-out infinite;
+}
+
+.harness-send { display: flex; flex-direction: column; gap: var(--space-2);
+                margin-top: var(--space-5); }
+.harness-send textarea { font-family: var(--font-mono); font-size: 12.5px; }
+.harness-send .btn { align-self: flex-start; }
+
+.harness-open .form-row { margin-bottom: var(--space-3); }
+
 /* ==========================================================================
    Request feedback
    ========================================================================== */

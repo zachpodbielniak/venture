@@ -317,6 +317,18 @@ VENTURE_DEFINE_ENUM_TYPE(venture_forge_run_state_get_type,
                          "VentureForgeRunState",
                          venture_forge_run_state_values)
 
+static const GEnumValue venture_agent_session_state_values[] = {
+	VE(VENTURE_AGENT_SESSION_STATE_IDLE,    "idle"),
+	VE(VENTURE_AGENT_SESSION_STATE_WORKING, "working"),
+	VE(VENTURE_AGENT_SESSION_STATE_CLOSED,  "closed"),
+	VE(VENTURE_AGENT_SESSION_STATE_FAILED,  "failed"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_agent_session_state_get_type,
+                         "VentureAgentSessionState",
+                         venture_agent_session_state_values)
+
 static const GEnumValue venture_forge_link_origin_values[] = {
 	VE(VENTURE_FORGE_LINK_ORIGIN_FORGE,   "forge"),
 	VE(VENTURE_FORGE_LINK_ORIGIN_VENTURE, "venture"),

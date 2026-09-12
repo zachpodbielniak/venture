@@ -1086,6 +1086,15 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"forge"
 	},
 	{
+		"/harness", "Harness",
+		VENTURE_ICON(
+			"<path d=\"M4 17l6-5-6-5\"/>"
+			"<path d=\"M12 19h8\"/>"
+		),
+		NULL,
+		"forge"
+	},
+	{
 		"/runs", "Runs",
 		VENTURE_ICON(
 			"<circle cx=\"12\" cy=\"12\" r=\"9\"/>"
@@ -1219,7 +1228,7 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"kb"
 	},
 	{
-		"/harness", "Harness",
+		"/assistant", "Assistant",
 		VENTURE_ICON(
 			"<path d=\"M13 3l-6 10h5l-1 8 6-10h-5z\"/>"
 		),
@@ -13093,7 +13102,7 @@ venture_web_harness_append_paths(
 }
 
 static HtmxResponse *
-venture_web_ui_harness(
+venture_web_ui_assistant(
 	HtmxRequest	*request,
 	GHashTable	*params,
 	gpointer	 user_data
@@ -13132,10 +13141,11 @@ venture_web_ui_harness(
 
 	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
 	                       "<span class=\"eyebrow\">Assistant</span>"
-	                       "<h1>Harness</h1><span class=\"subtitle\">"
+	                       "<h1>Commands</h1><span class=\"subtitle\">"
 	                       "What the assistant can be asked for: the skills "
 	                       "kept here, the command files this machine already "
-	                       "has, and what an @ can name."
+	                       "has, and what an @ can name. For an agent that "
+	                       "writes code, see the Harness."
 	                       "</span></div><div class=\"page-actions\">"
 	                       "<a class=\"btn btn-primary\" href=\"/e/ai_skill\">"
 	                       "Skills</a>"
@@ -13217,7 +13227,8 @@ venture_web_ui_harness(
 	                         "</div></div>");
 
 	return venture_web_html_response(
-		venture_web_page(self, request, "/harness", "Harness", content->str),
+		venture_web_page(self, request, "/assistant", "Assistant",
+		                 content->str),
 		200);
 }
 
@@ -13336,6 +13347,789 @@ venture_web_ui_records_search(
 	node = json_builder_get_root(builder);
 
 	return venture_web_json_response(node, 200);
+}
+
+/* ==========================================================================
+ * The agent harness
+ *
+ * A coding agent, kept open, in a workspace. Every turn is streamed: the
+ * page holds a connection open and the service's session-output signal is
+ * forwarded down it, so somebody watching sees the agent working rather
+ * than a blank panel for the length of a turn.
+ *
+ * Separate from the assistant panel on purpose. That answers questions
+ * about records; this runs `claude-code` or `codex` against a checkout and
+ * changes files.
+ * ========================================================================== */
+
+/* One browser watching one session. */
+typedef struct
+{
+	VentureWebServer	*self;
+	HtmxSseConnection	*connection;
+	gint64			 session_id;
+	gulong			 output_handler;
+	gulong			 finished_handler;
+	gboolean		 open;
+} VentureWebSessionWatch;
+
+static void
+venture_web_session_watch_free(VentureWebSessionWatch *watch)
+{
+	VentureWorkService *work;
+
+	if (NULL == watch)
+		return;
+
+	work = venture_context_get_work_service(watch->self->context);
+
+	if (NULL != work)
+	{
+		if (0 != watch->output_handler)
+			g_signal_handler_disconnect(work, watch->output_handler);
+
+		if (0 != watch->finished_handler)
+			g_signal_handler_disconnect(work, watch->finished_handler);
+	}
+
+	g_clear_object(&watch->connection);
+	g_free(watch);
+}
+
+/* A GClosureNotify, so the watch goes when the connection's handler does
+ * rather than needing a second place to remember it. */
+static void
+venture_web_session_watch_destroy(
+	gpointer	 data,
+	GClosure	*closure
+){
+	(void)closure;
+
+	venture_web_session_watch_free(data);
+}
+
+static void
+venture_web_session_watch_closed(
+	HtmxSseConnection	*connection,
+	gpointer		 user_data
+){
+	VentureWebSessionWatch *watch = user_data;
+
+	(void)connection;
+
+	/*
+	 * The tab went. The turn is not cancelled -- an agent halfway
+	 * through editing a file should finish and say so, and the turn is
+	 * stored either way -- but nothing more is written to this socket.
+	 */
+	watch->open = FALSE;
+}
+
+static void
+venture_web_session_watch_send(
+	VentureWebSessionWatch	*watch,
+	const gchar		*event,
+	const gchar		*data
+){
+	if (!watch->open || venture_string_is_empty(data))
+		return;
+
+	if (!htmx_sse_connection_is_connected(watch->connection))
+	{
+		watch->open = FALSE;
+		return;
+	}
+
+	htmx_sse_connection_send_event(watch->connection, event, data, NULL);
+}
+
+static void
+venture_web_session_on_output(
+	VentureWorkService	*work,
+	gint64			 session_id,
+	const gchar		*text,
+	gpointer		 user_data
+){
+	VentureWebSessionWatch *watch = user_data;
+
+	(void)work;
+
+	if (session_id != watch->session_id)
+		return;
+
+	venture_web_session_watch_send(watch, "delta", text);
+}
+
+static void
+venture_web_session_on_finished(
+	VentureWorkService	*work,
+	gint64			 session_id,
+	const gchar		*failure,
+	gpointer		 user_data
+){
+	VentureWebSessionWatch *watch = user_data;
+
+	(void)work;
+
+	if (session_id != watch->session_id)
+		return;
+
+	/*
+	 * The page reloads the transcript rather than being handed it: the
+	 * turn is a stored record now, and rendering it here would be a
+	 * second renderer to keep in step with the one the page already has.
+	 */
+	venture_web_session_watch_send(watch, "done",
+		venture_string_is_empty(failure) ? "ok" : failure);
+}
+
+/*
+ * Reads a session the caller is allowed to see.
+ *
+ * Sessions are not personal the way a chat thread is -- a coding agent
+ * working in a shared repository is the team's business -- so this is the
+ * ordinary per-type check rather than a per-user one.
+ *
+ * Returns: (transfer full) (nullable): the session
+ */
+static VentureEntity *
+venture_web_session_get(
+	VentureWebServer	 *self,
+	VentureAuthPrincipal	 *principal,
+	gint64			  session_id,
+	GError			**error
+){
+	if (!venture_web_require_for_type(self, principal,
+	                                  VENTURE_TYPE_AGENT_SESSION,
+	                                  VENTURE_USER_ROLE_EDITOR, error))
+		return NULL;
+
+	return venture_database_get(venture_context_get_database(self->context),
+	                            VENTURE_TYPE_AGENT_SESSION, session_id, error);
+}
+
+/* Renders the turns of one session. */
+static void
+venture_web_session_append_turns(
+	VentureWebServer	*self,
+	GString			*content,
+	gint64			 session_id
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) turns = NULL;
+	guint i;
+
+	query = venture_query_new(VENTURE_TYPE_AGENT_TURN);
+	venture_query_add_filter_int(query, "session-id", VENTURE_FILTER_OP_EQ,
+	                             session_id, NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	turns = venture_database_find(venture_context_get_database(self->context),
+	                              query, NULL);
+
+	for (i = 0; (NULL != turns) && (i < turns->len); i++)
+	{
+		g_autofree gchar *body = NULL;
+		VentureChatRole role;
+
+		g_object_get(g_ptr_array_index(turns, i), "role", &role,
+		             "body", &body, NULL);
+
+		g_string_append_printf(content, "<div class=\"harness-turn %s\">"
+		                                "<div class=\"harness-who\">%s</div>"
+		                                "<pre class=\"harness-body\">",
+		                       (VENTURE_CHAT_ROLE_USER == role)
+		                               ? "asked" : "said",
+		                       (VENTURE_CHAT_ROLE_USER == role)
+		                               ? "You" : "Agent");
+		venture_html_escape_append(content, body);
+		g_string_append(content, "</pre></div>");
+	}
+
+	if ((NULL == turns) || (0 == turns->len))
+		g_string_append(content, "<p class=\"muted\">Nothing asked yet. "
+		                         "Describe what you want done.</p>");
+}
+
+/*
+ * GET /harness - the sessions, and the form that opens one.
+ */
+static HtmxResponse *
+venture_web_ui_harness(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) sessions = NULL;
+	g_autoptr(GString) content = NULL;
+	g_auto(GStrv) roots = NULL;
+	HtmxResponse *redirect;
+	guint i;
+
+	self = user_data;
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "forge");
+
+		if (NULL != gate)
+			return gate;
+	}
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+	                       "<span class=\"eyebrow\">Software factory</span>"
+	                       "<h1>Harness</h1><span class=\"subtitle\">"
+	                       "A coding agent, kept open, working in a checkout. "
+	                       "Every turn is streamed as it happens."
+	                       "</span></div></div>");
+
+	if (NULL == venture_context_get_work_service(self->context))
+	{
+		g_string_append(content,
+			"<div class=\"notice warning\"><span>Coding runs are off, so "
+			"the harness has nothing to drive. Set "
+			"<code>forge.runs_enabled: true</code> and restart."
+			"</span></div>");
+
+		return venture_web_html_response(
+			venture_web_page(self, request, "/harness", "Harness",
+			                 content->str), 200);
+	}
+
+	/* What a session may be pointed at, said plainly: the commonest
+	 * first question is why a path was refused. */
+	g_object_get(venture_context_get_config(self->context),
+	             "forge-workspace-roots", &roots, NULL);
+
+	g_string_append(content, "<div class=\"card mb-4\">"
+	                         "<div class=\"card-head\"><h2>New session</h2>"
+	                         "</div><div class=\"card-body\">"
+	                         "<form method=\"post\" action=\"/harness\" "
+	                         "class=\"harness-open\">");
+
+	g_string_append(content, "<div class=\"form-row\">"
+	                         "<div class=\"field\"><label>"
+	                         "<span class=\"field-label\">Name</span>"
+	                         "<input type=\"text\" name=\"name\" "
+	                         "placeholder=\"What this is for\" required>"
+	                         "</label></div>"
+	                         "<div class=\"field\"><label>"
+	                         "<span class=\"field-label\">Provider</span>"
+	                         "<select name=\"provider\">"
+	                         "<option value=\"claude-code\">claude-code</option>"
+	                         "<option value=\"codex\">codex</option>"
+	                         "<option value=\"cursor\">cursor</option>"
+	                         "<option value=\"opencode\">opencode</option>"
+	                         "<option value=\"claude\">claude (API)</option>"
+	                         "<option value=\"openai\">openai (API)</option>"
+	                         "</select></label></div>"
+	                         "<div class=\"field\"><label>"
+	                         "<span class=\"field-label\">Model</span>"
+	                         "<input type=\"text\" name=\"model\" "
+	                         "placeholder=\"the provider's default\">"
+	                         "</label></div></div>");
+
+	g_string_append(content, "<div class=\"form-row\">"
+	                         "<div class=\"field\"><label>"
+	                         "<span class=\"field-label\">Directory</span>"
+	                         "<input type=\"text\" name=\"workspace\" "
+	                         "placeholder=\"/path/to/a/checkout\">"
+	                         "</label>"
+	                         "<span class=\"field-help\">");
+
+	if ((NULL == roots) || (NULL == roots[0]))
+	{
+		g_string_append(content,
+			"No workspace roots are configured, so a directory here will "
+			"be refused. Set <code>forge.workspace_roots</code>, or name a "
+			"repository instead and the harness will clone it.");
+	}
+	else
+	{
+		g_string_append(content, "Must be under: ");
+
+		for (i = 0; NULL != roots[i]; i++)
+		{
+			if (0 != i)
+				g_string_append(content, ", ");
+
+			g_string_append(content, "<code>");
+			venture_html_escape_append(content, roots[i]);
+			g_string_append(content, "</code>");
+		}
+	}
+
+	g_string_append(content, "</span></div>"
+	                         "<div class=\"field\"><label>"
+	                         "<span class=\"field-label\">Or a repository</span>"
+	                         "<span class=\"record-pick\" data-record-pick "
+	                         "data-type=\"forge_repo\">"
+	                         "<input type=\"number\" name=\"repo_id\" "
+	                         "min=\"1\"></span></label>"
+	                         "<span class=\"field-help\">Cloned into the "
+	                         "workspace directory, the way a run is.</span>"
+	                         "</div>"
+	                         "<div class=\"field\"><label>"
+	                         "<span class=\"field-label\">About a ticket</span>"
+	                         "<span class=\"record-pick\" data-record-pick "
+	                         "data-type=\"ticket\">"
+	                         "<input type=\"number\" name=\"ticket_id\" "
+	                         "min=\"1\"></span></label></div></div>");
+
+	g_string_append(content, "<div class=\"form-actions\">"
+	                         "<button class=\"btn btn-primary\" "
+	                         "type=\"submit\">Open session</button>"
+	                         "</div></form></div></div>");
+
+	query = venture_query_new(VENTURE_TYPE_AGENT_SESSION);
+	venture_query_add_order(query, "last-activity-at", VENTURE_SORT_DESCENDING,
+	                        NULL);
+	venture_query_set_limit(query, 50);
+	sessions = venture_database_find(venture_context_get_database(self->context),
+	                                 query, NULL);
+
+	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
+	                         "<h2>Sessions</h2></div>");
+
+	if ((NULL == sessions) || (0 == sessions->len))
+	{
+		g_string_append(content, "<div class=\"empty\">"
+		                         "<h3>No sessions yet</h3>"
+		                         "<p class=\"muted\">Open one above.</p>"
+		                         "</div></div>");
+	}
+	else
+	{
+		g_string_append(content, "<div class=\"table-wrap\">"
+		                         "<table class=\"data\"><thead><tr>"
+		                         "<th>Name</th><th>Provider</th>"
+		                         "<th>Workspace</th><th>State</th>"
+		                         "<th class=\"num\">Turns</th>"
+		                         "</tr></thead><tbody>");
+
+		for (i = 0; i < sessions->len; i++)
+		{
+			VentureEntity *session;
+			g_autofree gchar *name = NULL;
+			g_autofree gchar *provider = NULL;
+			g_autofree gchar *workspace = NULL;
+			VentureAgentSessionState state;
+			gint64 turns = 0;
+
+			session = g_ptr_array_index(sessions, i);
+			g_object_get(session, "name", &name, "provider", &provider,
+			             "workspace", &workspace, "state", &state,
+			             "turns", &turns, NULL);
+
+			g_string_append_printf(content,
+				"<tr><td><a href=\"/harness/%" G_GINT64_FORMAT "\">",
+				venture_entity_get_id(session));
+			venture_html_escape_append(content,
+				!venture_string_is_empty(name) ? name : "Session");
+			g_string_append(content, "</a></td><td><code>");
+			venture_html_escape_append(content, provider);
+			g_string_append(content, "</code></td><td class=\"truncate\">");
+			venture_html_escape_append(content,
+				!venture_string_is_empty(workspace) ? workspace : "\xe2\x80\x94");
+			g_string_append_printf(content, "</td><td>"
+				"<span class=\"badge %s\">",
+				(VENTURE_AGENT_SESSION_STATE_FAILED == state) ? "negative"
+					: (VENTURE_AGENT_SESSION_STATE_WORKING == state)
+						? "warning" : "");
+			venture_html_escape_append(content,
+				venture_enum_to_nick(VENTURE_TYPE_AGENT_SESSION_STATE,
+				                     (gint)state));
+			g_string_append_printf(content, "</span></td>"
+				"<td class=\"num\">%" G_GINT64_FORMAT "</td></tr>", turns);
+		}
+
+		g_string_append(content, "</tbody></table></div></div>");
+	}
+
+	return venture_web_html_response(
+		venture_web_page(self, request, "/harness", "Harness", content->str),
+		200);
+}
+
+/*
+ * GET /harness/:id - one session, and the box that drives it.
+ */
+static HtmxResponse *
+venture_web_ui_harness_session(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) session = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autofree gchar *name = NULL;
+	g_autofree gchar *provider = NULL;
+	g_autofree gchar *model = NULL;
+	g_autofree gchar *workspace = NULL;
+	g_autofree gchar *failure = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureAgentSessionState state;
+	HtmxResponse *redirect;
+	gint64 session_id;
+	gint64 turns = 0;
+
+	self = user_data;
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "forge");
+
+		if (NULL != gate)
+			return gate;
+	}
+
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	principal = venture_auth_authenticate(self->auth, request);
+	session_id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	session = venture_web_session_get(self, principal, session_id, &error);
+
+	if (NULL == session)
+		return venture_web_error_response(error);
+
+	g_object_get(session, "name", &name, "provider", &provider,
+	             "model", &model, "workspace", &workspace, "state", &state,
+	             "turns", &turns, "failure-reason", &failure, NULL);
+
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+	                       "<span class=\"eyebrow\">Harness</span><h1>");
+	venture_html_escape_append(content,
+		!venture_string_is_empty(name) ? name : "Session");
+	g_string_append(content, "</h1><span class=\"subtitle\"><code>");
+	venture_html_escape_append(content, provider);
+
+	if (!venture_string_is_empty(model))
+	{
+		g_string_append(content, "</code> <code>");
+		venture_html_escape_append(content, model);
+	}
+
+	g_string_append(content, "</code>");
+
+	if (!venture_string_is_empty(workspace))
+	{
+		g_string_append(content, " in <code>");
+		venture_html_escape_append(content, workspace);
+		g_string_append(content, "</code>");
+	}
+	else
+	{
+		g_string_append(content, " with no working directory, so it can "
+		                         "plan but not edit");
+	}
+
+	g_string_append(content, "</span></div><div class=\"page-actions\">"
+	                         "<a class=\"btn\" href=\"/harness\">"
+	                         "All sessions</a>");
+
+	if (VENTURE_AGENT_SESSION_STATE_CLOSED != state)
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/harness/%" G_GINT64_FORMAT
+			"/close\" class=\"inline\">"
+			"<button class=\"btn\" type=\"submit\">Close</button></form>",
+			session_id);
+
+	g_string_append(content, "</div></div>");
+
+	if (!venture_string_is_empty(failure))
+	{
+		g_string_append(content, "<div class=\"notice negative\"><span>");
+		venture_html_escape_append(content, failure);
+		g_string_append(content, "</span></div>");
+	}
+
+	/*
+	 * The transcript, then the live region the stream writes into, then
+	 * the box. The stream's own element carries the session id; the
+	 * script opens it and reloads the page when a turn finishes, which
+	 * is how the finished turn gets rendered by the one renderer that
+	 * exists rather than by a second one in JavaScript.
+	 */
+	g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
+	                         "<div class=\"harness-log\" id=\"harness-log\">");
+	venture_web_session_append_turns(self, content, session_id);
+	g_string_append(content, "</div>");
+
+	g_string_append_printf(content,
+		"<div class=\"harness-live\" id=\"harness-live\" hidden "
+		"data-harness-stream=\"/harness/%" G_GINT64_FORMAT "/stream\">"
+		"<div class=\"harness-who\">Agent</div>"
+		"<pre class=\"harness-body\" data-harness-text></pre></div>",
+		session_id);
+
+	if (VENTURE_AGENT_SESSION_STATE_CLOSED == state)
+	{
+		g_string_append(content, "<p class=\"muted\">This session is "
+		                         "closed.</p>");
+	}
+	else
+	{
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/harness/%" G_GINT64_FORMAT
+			"/send\" class=\"harness-send\" data-harness-send>"
+			"<textarea name=\"prompt\" rows=\"3\" required "
+			"placeholder=\"What should the agent do?\"></textarea>"
+			"<button class=\"btn btn-primary\" type=\"submit\">Send</button>"
+			"</form>", session_id);
+	}
+
+	g_string_append(content, "</div></div>");
+
+	return venture_web_html_response(
+		venture_web_page(self, request, "/harness", "Harness", content->str),
+		200);
+}
+
+/*
+ * POST /harness - open a session.
+ */
+static HtmxResponse *
+venture_web_ui_harness_open(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureAgentSessionSpec spec;
+	VentureWorkService *work;
+	g_autofree gchar *path = NULL;
+	gint64 session_id;
+
+	self = user_data;
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "forge");
+
+		if (NULL != gate)
+			return gate;
+	}
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	/* Opening a session is starting a coding agent against a checkout.
+	 * That is an editor's authority at least. */
+	if (!venture_web_require_for_type(self, principal,
+	                                  VENTURE_TYPE_AGENT_SESSION,
+	                                  VENTURE_USER_ROLE_EDITOR, &error))
+		return venture_web_error_response(error);
+
+	work = venture_context_get_work_service(self->context);
+
+	if (NULL == work)
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "Coding runs are off; set forge.runs_enabled");
+		return venture_web_error_response(error);
+	}
+
+	memset(&spec, 0, sizeof(spec));
+	spec.name = htmx_request_get_form_value(request, "name");
+	spec.provider = htmx_request_get_form_value(request, "provider");
+	spec.model = htmx_request_get_form_value(request, "model");
+	spec.workspace = htmx_request_get_form_value(request, "workspace");
+	spec.user_id = principal->user_id;
+
+	{
+		const gchar *repo;
+		const gchar *ticket;
+
+		repo = htmx_request_get_form_value(request, "repo_id");
+		ticket = htmx_request_get_form_value(request, "ticket_id");
+		spec.repo_id = (NULL != repo) ? g_ascii_strtoll(repo, NULL, 10) : 0;
+		spec.ticket_id = (NULL != ticket)
+			? g_ascii_strtoll(ticket, NULL, 10) : 0;
+	}
+
+	session_id = venture_work_service_session_open(work, &spec, &error);
+
+	if (0 == session_id)
+		return venture_web_error_response(error);
+
+	path = g_strdup_printf("/harness/%" G_GINT64_FORMAT, session_id);
+
+	return venture_web_redirect_to(path);
+}
+
+/*
+ * POST /harness/:id/send - one turn.
+ */
+static HtmxResponse *
+venture_web_ui_harness_send(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) session = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureWorkService *work;
+	g_autofree gchar *path = NULL;
+	gint64 session_id;
+
+	self = user_data;
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "forge");
+
+		if (NULL != gate)
+			return gate;
+	}
+
+	principal = venture_auth_authenticate(self->auth, request);
+	session_id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	session = venture_web_session_get(self, principal, session_id, &error);
+
+	if (NULL == session)
+		return venture_web_error_response(error);
+
+	work = venture_context_get_work_service(self->context);
+
+	if (NULL == work)
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "Coding runs are off; set forge.runs_enabled");
+		return venture_web_error_response(error);
+	}
+
+	if (!venture_work_service_session_send(work, session_id,
+		htmx_request_get_form_value(request, "prompt"), &error))
+		return venture_web_error_response(error);
+
+	path = g_strdup_printf("/harness/%" G_GINT64_FORMAT, session_id);
+
+	return venture_web_redirect_to(path);
+}
+
+/*
+ * POST /harness/:id/close - end one.
+ */
+static HtmxResponse *
+venture_web_ui_harness_close(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) session = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureWorkService *work;
+	g_autofree gchar *path = NULL;
+	gint64 session_id;
+
+	self = user_data;
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "forge");
+
+		if (NULL != gate)
+			return gate;
+	}
+
+	principal = venture_auth_authenticate(self->auth, request);
+	session_id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	session = venture_web_session_get(self, principal, session_id, &error);
+
+	if (NULL == session)
+		return venture_web_error_response(error);
+
+	work = venture_context_get_work_service(self->context);
+
+	if (NULL != work)
+		venture_work_service_session_close(work, session_id);
+
+	path = g_strdup_printf("/harness/%" G_GINT64_FORMAT, session_id);
+
+	return venture_web_redirect_to(path);
+}
+
+/*
+ * GET /harness/:id/stream - what the agent is saying, as it says it.
+ */
+static HtmxResponse *
+venture_web_ui_harness_stream(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) session = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureWebSessionWatch *watch;
+	VentureWorkService *work;
+	SoupServerMessage *message;
+	gint64 session_id;
+
+	self = user_data;
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "forge");
+
+		if (NULL != gate)
+			return gate;
+	}
+
+	principal = venture_auth_authenticate(self->auth, request);
+	session_id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	session = venture_web_session_get(self, principal, session_id, &error);
+
+	if (NULL == session)
+		return venture_web_error_response(error);
+
+	work = venture_context_get_work_service(self->context);
+	message = htmx_request_get_message(request);
+
+	if ((NULL == work) || (NULL == message))
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED,
+		                    "This request cannot be streamed");
+		return venture_web_error_response(error);
+	}
+
+	watch = g_new0(VentureWebSessionWatch, 1);
+	watch->self = self;
+	watch->session_id = session_id;
+	watch->open = TRUE;
+	watch->connection = htmx_sse_connection_new(message);
+
+	watch->output_handler = g_signal_connect(work, "session-output",
+		G_CALLBACK(venture_web_session_on_output), watch);
+	watch->finished_handler = g_signal_connect(work, "session-finished",
+		G_CALLBACK(venture_web_session_on_finished), watch);
+
+	/* The watch outlives this handler and goes when the socket does. */
+	g_signal_connect_data(watch->connection, "closed",
+		G_CALLBACK(venture_web_session_watch_closed), watch,
+		venture_web_session_watch_destroy, 0);
+
+	return htmx_response_new_streaming();
 }
 
 /* The completion kind, as the client names it. */
@@ -26712,7 +27506,17 @@ venture_web_server_new(
 	                self);
 	htmx_router_get(router, "/ui/chat/thread/:id", venture_web_ui_chat_thread,
 	                self);
+	htmx_router_get(router, "/assistant", venture_web_ui_assistant, self);
 	htmx_router_get(router, "/harness", venture_web_ui_harness, self);
+	htmx_router_post(router, "/harness", venture_web_ui_harness_open, self);
+	htmx_router_get(router, "/harness/:id", venture_web_ui_harness_session,
+	                self);
+	htmx_router_post(router, "/harness/:id/send", venture_web_ui_harness_send,
+	                 self);
+	htmx_router_post(router, "/harness/:id/close", venture_web_ui_harness_close,
+	                 self);
+	htmx_router_get(router, "/harness/:id/stream",
+	                venture_web_ui_harness_stream, self);
 	htmx_router_get(router, "/ui/records/search",
 	                venture_web_ui_records_search, self);
 	htmx_router_get(router, "/ui/chat/complete", venture_web_ui_chat_complete,
