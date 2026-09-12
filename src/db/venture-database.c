@@ -456,6 +456,16 @@ venture_database_execute(
 
 	g_rec_mutex_lock(&self->lock);
 
+	/* A failed nested post rolled back the outer transaction too. Never let
+	 * its caller's remaining writes escape into implicit autocommit. */
+	if (self->transaction_depth > 0 && NULL == self->transaction)
+	{
+		g_rec_mutex_unlock(&self->lock);
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+			"The transaction was already rolled back");
+		return FALSE;
+	}
+
 	ok = (NULL != params)
 		? orm_connection_execute_with_params(self->connection, sql,
 		                                     params, &local_error)
@@ -489,6 +499,15 @@ venture_database_query_raw(
 
 	g_rec_mutex_lock(&self->lock);
 
+	/* PostgreSQL inserts use RETURNING through this path as well. */
+	if (self->transaction_depth > 0 && NULL == self->transaction)
+	{
+		g_rec_mutex_unlock(&self->lock);
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+			"The transaction was already rolled back");
+		return NULL;
+	}
+
 	result = (NULL != params)
 		? orm_connection_query_with_params(self->connection, sql, params,
 		                                   &local_error)
@@ -519,6 +538,14 @@ venture_database_begin(
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 
 	g_rec_mutex_lock(&self->lock);
+
+	if (self->transaction_depth > 0 && NULL == self->transaction)
+	{
+		g_rec_mutex_unlock(&self->lock);
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+			"The transaction was already rolled back");
+		return FALSE;
+	}
 
 	self->transaction_depth++;
 
@@ -1013,6 +1040,7 @@ venture_database_save(
 	g_autoptr(JsonNode) diff = NULL;
 	gint64 expected_version;
 	gboolean created;
+	gboolean ledger_authorized;
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
@@ -1034,7 +1062,7 @@ venture_database_save(
 	g_rec_mutex_lock(&self->lock);
 
 	/* Before the empty-diff fast path: identity edits must not bypass this. */
-	if (!venture_ledger_check_write(self, entity, NULL, FALSE, error))
+	if (!venture_ledger_check_write(self, entity, NULL, FALSE, &ledger_authorized, error))
 	{
 		g_rec_mutex_unlock(&self->lock);
 		return FALSE;
@@ -1096,6 +1124,15 @@ venture_database_save(
 				return FALSE;
 			}
 		}
+	}
+
+	/* Validators may fill ordinary defaults, but cannot grant a generic
+	 * writer the service's authority to post or move protected lines. */
+	if (!ledger_authorized &&
+		!venture_ledger_check_write(self, entity, previous, FALSE, NULL, error))
+	{
+		g_rec_mutex_unlock(&self->lock);
+		return FALSE;
 	}
 
 	expected_version = venture_entity_get_version(entity);
@@ -1319,7 +1356,7 @@ venture_database_delete(
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
-	if (!venture_ledger_check_write(self, entity, NULL, TRUE, error))
+	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
 
 	if (!venture_entity_is_persisted(entity))
@@ -1373,7 +1410,7 @@ venture_database_restore(
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
-	if (!venture_ledger_check_write(self, entity, NULL, TRUE, error))
+	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
 
 	if (!venture_entity_is_deleted(entity))
@@ -1410,7 +1447,7 @@ venture_database_purge(
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
-	if (!venture_ledger_check_write(self, entity, NULL, TRUE, error))
+	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
 
 	if (!venture_entity_is_persisted(entity))

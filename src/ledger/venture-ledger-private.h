@@ -7,7 +7,7 @@
 
 /* Internal one-shot permits never cross the public posting boundary. */
 gboolean venture_ledger_check_write(VentureDatabase *db, VentureEntity *entity,
-	VentureEntity *previous, gboolean removing, GError **error);
+	VentureEntity *previous, gboolean removing, gboolean *authorized, GError **error);
 gboolean venture_ledger_wrap_source(VentureDatabase *db, VentureEntity *entity);
 gboolean venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 	const VentureActor *actor, GError **error);

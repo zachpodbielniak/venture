@@ -253,16 +253,20 @@ parent_is_draft(VentureDatabase *db, VentureEntity *line, GError **error)
 
 gboolean
 venture_ledger_check_write(VentureDatabase *db, VentureEntity *entity,
-	VentureEntity *previous, gboolean removing, GError **error)
+	VentureEntity *previous, gboolean removing, gboolean *authorized, GError **error)
 {
 	g_autoptr(VentureEntity) stored = NULL;
 	VenturePostingService *service;
 
+	if (NULL != authorized)
+		*authorized = FALSE;
 	service = g_object_get_data(G_OBJECT(db), "venture-posting-service");
 	if (NULL != service && service->write_permit == entity && !removing)
 	{
 		/* Consume BEFORE generic validators or signals can re-enter. */
 		service->write_permit = NULL;
+		if (NULL != authorized)
+			*authorized = TRUE;
 		return TRUE;
 	}
 	if (VENTURE_IS_LEDGER_ENTRY(entity))
@@ -320,6 +324,9 @@ save_authorized(VenturePostingService *self, VentureDatabase *db,
 		 * cannot change values that the posting service already balanced. */
 		diff = venture_entity_diff(expected, entity);
 		if (json_object_get_size(json_node_get_object(diff)) != 0 ||
+			g_strcmp0(venture_entity_get_uuid(expected), venture_entity_get_uuid(entity)) != 0 ||
+			(venture_entity_is_persisted(expected) &&
+			 venture_entity_get_id(expected) != venture_entity_get_id(entity)) ||
 			venture_entity_is_deleted(entity))
 		{
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
@@ -576,6 +583,7 @@ post_internal(VenturePostingService *self, VentureJournal *input, GPtrArray *inp
 			goto fail;
 		g_object_get(stored, "state", &state, NULL);
 		if (state != VENTURE_JOURNAL_DRAFT ||
+			g_strcmp0(venture_entity_get_uuid(stored), venture_entity_get_uuid(VENTURE_ENTITY(input))) != 0 ||
 			venture_entity_get_version(stored) != venture_entity_get_version(VENTURE_ENTITY(input)))
 		{
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
@@ -590,6 +598,15 @@ post_internal(VenturePostingService *self, VentureJournal *input, GPtrArray *inp
 		goto fail;
 	}
 	journal = VENTURE_JOURNAL(copy_record(VENTURE_ENTITY(input)));
+	/* Date and exchange policies are callbacks too. Protect a saved draft
+	 * before any extension can observe or change its already-read lines. */
+	if (g_hash_table_contains(self->active_journals, venture_entity_get_uuid(VENTURE_ENTITY(journal))))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "This journal is already being posted");
+		goto fail;
+	}
+	active_uuid = g_strdup(venture_entity_get_uuid(VENTURE_ENTITY(journal)));
+	g_hash_table_add(self->active_journals, g_strdup(active_uuid));
 	if (NULL != input_lines)
 	{
 		for (i = 0; i < input_lines->len; i++)
@@ -616,13 +633,6 @@ post_internal(VenturePostingService *self, VentureJournal *input, GPtrArray *inp
 	if (NULL == rows || !validate_header(self, db, journal, reversing, error) ||
 		!value_lines(db, journal, rows, policy, reversing, error))
 		goto fail;
-	if (g_hash_table_contains(self->active_journals, venture_entity_get_uuid(VENTURE_ENTITY(journal))))
-	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "This journal is already being posted");
-		goto fail;
-	}
-	active_uuid = g_strdup(venture_entity_get_uuid(VENTURE_ENTITY(journal)));
-	g_hash_table_add(self->active_journals, g_strdup(active_uuid));
 	{
 		GError *veto_error = NULL;
 		g_autoptr(VentureEntity) snapshot = copy_record(VENTURE_ENTITY(journal));

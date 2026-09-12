@@ -734,6 +734,135 @@ test_reentrant_integrity(Fixture *f, gconstpointer data)
 	}
 }
 
+static GError *
+nested_post(VenturePostingService *service, VentureJournal *journal, GPtrArray *rows, gpointer data)
+{
+	g_autoptr(VentureJournal) posted = NULL;
+	g_autoptr(GError) error = NULL;
+
+	(void)data;
+	posted = venture_posting_service_post(service, journal, rows, NULL, NULL, &error);
+	g_assert_null(posted);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	/* Even an observer that ignores the error cannot restart writes outside
+	 * the enclosing transaction that the nested failure rolled back. */
+	return NULL;
+}
+
+static void
+test_nested_failure(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureJournal) draft = header(f);
+	g_autoptr(GPtrArray) rows = lines(f, 10000, "USD");
+	g_autoptr(GError) error = NULL;
+	VenturePostingService *service = venture_database_get_posting_service(f->db);
+
+	(void)data;
+	g_signal_connect(service, "posting", G_CALLBACK(nested_post), NULL);
+	g_assert_null(venture_posting_service_post(service, draft, rows, NULL, NULL, &error));
+	g_assert_nonnull(error);
+	g_assert_cmpint(count(f, VENTURE_TYPE_JOURNAL), ==, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_JOURNAL_LINE), ==, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_LEDGER_ENTRY), ==, 0);
+}
+
+static GError *
+date_inject(VenturePostingService *service, gint64 org, GDateTime *when, gpointer data)
+{
+	Fixture *f = data;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_JOURNAL);
+	g_autoptr(VentureEntity) draft = venture_database_find_one(f->db, query, NULL);
+	g_autoptr(VentureJournalLine) row = line(f, "1000", VENTURE_LEDGER_SIDE_DEBIT, 1, "USD");
+	g_autoptr(GError) error = NULL;
+
+	(void)service;
+	(void)org;
+	(void)when;
+	g_object_set(row, "journal-id", venture_entity_get_id(draft), NULL);
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(row), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	return NULL;
+}
+
+static void
+test_date_integrity(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureJournal) draft = header(f);
+	g_autoptr(VentureJournal) posted = NULL;
+	g_autoptr(GPtrArray) rows = lines(f, 10000, "USD");
+	g_autoptr(GError) error = NULL;
+	VenturePostingService *service = venture_database_get_posting_service(f->db);
+	guint i;
+
+	(void)data;
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(draft), NULL, &error));
+	for (i = 0; i < rows->len; i++)
+	{
+		g_object_set(g_ptr_array_index(rows, i), "journal-id", venture_entity_get_id(VENTURE_ENTITY(draft)), NULL);
+		g_assert_true(venture_database_save(f->db, g_ptr_array_index(rows, i), NULL, &error));
+	}
+	g_signal_connect(service, "date-postable", G_CALLBACK(date_inject), f);
+	posted = venture_posting_service_post(service, draft, NULL, NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(posted);
+	g_assert_cmpint(count(f, VENTURE_TYPE_JOURNAL_LINE), ==, 2);
+}
+
+static gboolean
+forge_posted_state(VentureDatabase *db, VentureEntity *entity, VentureEntity *previous,
+	gpointer data, GError **error)
+{
+	(void)db;
+	(void)previous;
+	(void)data;
+	(void)error;
+	g_object_set(entity, "state", VENTURE_JOURNAL_POSTED, NULL);
+	return TRUE;
+}
+
+static void
+test_generic_validator_state(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureJournal) draft = header(f);
+	g_autoptr(GError) error = NULL;
+
+	(void)data;
+	venture_database_add_save_validator(f->db, VENTURE_TYPE_JOURNAL,
+		forge_posted_state, NULL, NULL);
+	/* All saves pass validators; a validator cannot turn an empty generic
+	 * draft into an authoritative posted journal behind the service. */
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(draft), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_assert_cmpint(count(f, VENTURE_TYPE_JOURNAL), ==, 0);
+}
+
+static gboolean
+forge_identity(VentureDatabase *db, VentureEntity *entity, VentureEntity *previous,
+	gpointer data, GError **error)
+{
+	(void)db;
+	(void)previous;
+	(void)data;
+	(void)error;
+	g_object_set(entity, "uuid", "unvalidated-identity", NULL);
+	return TRUE;
+}
+
+static void
+test_identity_integrity(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureJournal) draft = header(f);
+	g_autoptr(GPtrArray) rows = lines(f, 10000, "USD");
+	g_autoptr(GError) error = NULL;
+
+	(void)data;
+	venture_database_add_save_validator(f->db, VENTURE_TYPE_JOURNAL, forge_identity, NULL, NULL);
+	g_assert_null(venture_posting_service_post(venture_database_get_posting_service(f->db),
+		draft, rows, NULL, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_assert_cmpint(count(f, VENTURE_TYPE_JOURNAL), ==, 0);
+}
+
 static void
 test_batch_identity(Fixture *f, gconstpointer data)
 {
@@ -756,7 +885,7 @@ test_batch_identity(Fixture *f, gconstpointer data)
 			"amount", amount, NULL);
 		g_ptr_array_add(entries, entry);
 	}
-	if (g_strcmp0(which, "duplicate") != 0)
+	if (g_strcmp0(which, "duplicate") != 0 && g_strcmp0(which, "reverse-retry") != 0)
 	{
 		if (g_strcmp0(which, "date") == 0)
 			g_object_set(g_ptr_array_index(entries, 1), "occurred-at", NULL, NULL);
@@ -776,9 +905,21 @@ test_batch_identity(Fixture *f, gconstpointer data)
 	else
 	{
 		g_assert_true(venture_database_save_ledger_transaction(f->db, entries, NULL, &error));
+		if (g_strcmp0(which, "reverse-retry") == 0)
+		{
+			g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_JOURNAL);
+			g_autoptr(VentureEntity) original = venture_database_find_one(f->db, query, &error);
+			g_autoptr(VentureJournal) reversed = venture_posting_service_reverse(
+				venture_database_get_posting_service(f->db), venture_entity_get_id(original), when,
+				"Correct batch", NULL, &error);
+
+			g_assert_no_error(error);
+			g_assert_nonnull(reversed);
+		}
 		g_assert_false(venture_database_save_ledger_transaction(f->db, entries, NULL, &error));
 		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS);
-		g_assert_cmpint(count(f, VENTURE_TYPE_JOURNAL), ==, 1);
+		g_assert_cmpint(count(f, VENTURE_TYPE_JOURNAL), ==,
+			g_strcmp0(which, "reverse-retry") == 0 ? 2 : 1);
 	}
 }
 
@@ -801,6 +942,10 @@ main(int argc, char **argv)
 	ADD("trial-and-module-off", test_trial_and_module_off);
 	ADD("reentrant-integrity", test_reentrant_integrity);
 	ADD("batch-identity", test_batch_identity);
+	ADD("nested-failure", test_nested_failure);
+	ADD("date-integrity", test_date_integrity);
+	ADD("generic-validator-state", test_generic_validator_state);
+	ADD("identity-integrity", test_identity_integrity);
 #define CASE(group, name, fn) g_test_add("/ledger/" group "/" name, Fixture, name, setup, fn, teardown)
 	CASE("refuse", "unbalanced", test_refusals);
 	CASE("refuse", "currency", test_refusals);
@@ -833,6 +978,7 @@ main(int argc, char **argv)
 	CASE("batch", "date", test_batch_identity);
 	CASE("batch", "source-type", test_batch_identity);
 	CASE("batch", "empty-transaction", test_batch_identity);
+	CASE("batch", "reverse-retry", test_batch_identity);
 #undef CASE
 #undef ADD
 	return g_test_run();
