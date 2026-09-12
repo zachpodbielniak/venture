@@ -1096,6 +1096,7 @@ venture_posting_service_post_entries(VenturePostingService *self, GPtrArray *ent
 	gint64 source_id;
 	gint64 org;
 	guint i;
+	gboolean dated;
 	VentureEntity *first;
 
 	if (!ledger_enabled(error) || NULL == db)
@@ -1110,6 +1111,7 @@ venture_posting_service_post_entries(VenturePostingService *self, GPtrArray *ent
 	org = venture_entity_get_organization_id(first);
 	g_object_get(first, "transaction-id", &transaction, "source-type", &source_type,
 		"source-id", &source_id, "occurred-at", &when, NULL);
+	dated = NULL != when;
 	if (NULL == transaction || '\0' == *transaction)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "A batch needs a stable transaction-id");
@@ -1168,7 +1170,8 @@ venture_posting_service_post_entries(VenturePostingService *self, GPtrArray *ent
 		}
 		if (venture_entity_is_persisted(entry) || org != venture_entity_get_organization_id(entry) ||
 			g_strcmp0(txn, transaction) != 0 || g_strcmp0(row_source, source_type) != 0 ||
-			row_source_id != source_id || (NULL != row_date && !g_date_time_equal(row_date, when)))
+			row_source_id != source_id || (NULL != row_date) != dated ||
+			(NULL != row_date && !g_date_time_equal(row_date, when)))
 		{
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 				"A batch must contain new lines for one transaction, legal entity, source and date");
