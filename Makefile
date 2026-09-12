@@ -330,6 +330,24 @@ run: venture plugins pod-modules dep-podomation-modules
 	$(OUTDIR)/venture --database "sqlite://$(abspath $(BUILDDIR)/run)/venture.db" \
 	                  --state-dir "$(abspath $(BUILDDIR)/run)" $(RUNFLAGS)
 
+# A throwaway instance with example data, for showing VENTURE off.
+#
+# Follows BUILD_TYPE like every other target, so `make demo` uses the
+# release tree and `make DEBUG=1 demo` the debug one. The script owns
+# build/demo and deletes it on every run, so the demo is the same demo
+# every time and nothing anybody does to it matters.
+#
+# DEMOFLAGS reaches the script: `make DEMOFLAGS=-d demo` leaves it in the
+# background, `make DEMOFLAGS="--port 9100" demo` puts it elsewhere.
+.PHONY: demo
+demo: venture venturectl plugins pod-modules dep-podomation-modules
+	@BUILD_TYPE=$(BUILD_TYPE) tools/venture-demo.sh $(DEMOFLAGS)
+
+# Stop a demo left running with --detach, and remove its data.
+.PHONY: demo-stop
+demo-stop:
+	@BUILD_TYPE=$(BUILD_TYPE) tools/venture-demo.sh --stop
+
 # Print any make variable: make print-CFLAGS
 print-%:
 	@echo '$($*)'
@@ -380,6 +398,8 @@ help:
 	@echo "  show-config       Print the resolved build configuration"
 	@echo "  compile-commands  Write compile_commands.json for clangd"
 	@echo "  run               Run the server from the build tree"
+	@echo "  demo              Throwaway instance seeded with example data"
+	@echo "  demo-stop         Stop a detached demo and delete its data"
 	@echo "  print-VAR         Print the value of any make variable"
 	@echo ""
 	@echo "Agent skill:"

@@ -1040,6 +1040,47 @@ venture_query_append_filter(
 		return;
 	}
 
+	case VENTURE_FILTER_OP_EQ:
+	case VENTURE_FILTER_OP_NE:
+	{
+		const gchar *text;
+
+		text = (entry->values->len > 0)
+			? g_ptr_array_index(entry->values, 0) : NULL;
+
+		/*
+		 * "Nobody has it" is one question with two answers in the
+		 * table.
+		 *
+		 * A text column that was never written is NULL; one that was
+		 * written and then cleared is the empty string. Nothing about
+		 * a ticket's assignee makes those different -- both mean the
+		 * field is blank -- but `assignee=` matched only the second,
+		 * so a dashboard card counting unassigned work read zero
+		 * while the list beside it showed two. Which of the two a row
+		 * holds depends on whether the field was ever filled in,
+		 * which is not something anybody writing a filter knows or
+		 * should have to.
+		 *
+		 * So an empty value means empty: null or blank, and the
+		 * negation means neither.
+		 */
+		if ((G_TYPE_STRING == entry->value_type) &&
+		    ((NULL == text) || ('\0' == text[0])))
+		{
+			if (VENTURE_FILTER_OP_EQ == entry->op)
+				g_string_append_printf(sql,
+					"(%s IS NULL OR %s = '')", quoted, quoted);
+			else
+				g_string_append_printf(sql,
+					"(%s IS NOT NULL AND %s <> '')", quoted, quoted);
+
+			return;
+		}
+
+		G_GNUC_FALLTHROUGH;
+	}
+
 	default:
 		g_string_append_printf(sql, "%s %s ", quoted,
 		                       venture_query_op_sql(entry->op));

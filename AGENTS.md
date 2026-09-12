@@ -541,3 +541,30 @@ than one that fails.
   stay for the keyboard and for no scripting. Do not add placement rules
   to the client: it may predict a refusal to colour the ghost, but the
   server decides, and a refusal puts the card back where it was.
+
+## The demo
+
+- **`make demo` is `tools/venture-demo.sh`, and it seeds through the API.**
+  Every record goes in with `venturectl`, so a demo that seeds is also a
+  demonstration that the REST API can build one. Nothing in it reaches
+  past the server into the database.
+- **It listens on 8749.** 8747 is the config default and the container;
+  8748 is `just start`. It refuses to start when something else already
+  answers on its port, because seeding example data into a real instance
+  is the one mistake it must never make -- a demo of ours it will stop and
+  replace, anything else it will not touch.
+- **`build/demo` is deleted and rebuilt on every run.** The demo is the
+  same demo every time and nothing anybody does to it matters.
+- **Progress goes to stderr.** Several seeding functions hand an id back on
+  stdout; a progress line printed there becomes part of the answer, and
+  the first run tried to create a company called "==>".
+- **Every `cd` sets `CDPATH=''`.** A `cd` that resolves through CDPATH
+  prints where it landed, which inside a command substitution becomes
+  part of the result -- and CDPATH is set in any shell configured to jump
+  around by name. The repository root came back as two lines.
+- **The enum values are checked against `venturectl describe`, not
+  guessed.** Four of them were wrong on the first run: a campaign is
+  `running` not `active`, an idea is `researching` not `exploring`, a
+  build trigger is `webhook`/`rule` not `push`/`schedule`, and
+  `venture_type` is a registered type (`books`, `etsy`, `newsletter`),
+  not free text.

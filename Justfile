@@ -132,6 +132,23 @@ start: build
     tail -20 '{{ log }}' >&2
     exit 1
 
+# Separate from `start` in every way that matters: its own port, its own
+# database under build/demo, and that database deleted and rebuilt every
+# time -- so the demo can never be confused with the instance you are
+# actually working against.
+#
+# `just demo -d` leaves it running in the background.
+
+# A throwaway instance on 8749, seeded with example data.
+[group('run')]
+demo *args:
+    @make demo DEMOFLAGS="{{ args }}"
+
+# Stop the demo and delete its data.
+[group('run')]
+demo-stop:
+    @make demo-stop
+
 # Stop it.
 [group('run')]
 stop:

@@ -1,0 +1,60 @@
+{
+  "name": "The desk",
+  "slug": "desk",
+  "purpose": "work",
+  "layout": "four_columns",
+  "home": true,
+  "description": "What needs you now, what has been promised to whom, and how the desk is holding up.",
+  "widgets": [
+    { "kind": "count", "title": "Mine, open", "entity_type": "ticket",
+      "filter": "assignee={me}&status__not_in=done,cancelled", "position": 1 },
+    { "kind": "count", "title": "Nobody has it", "entity_type": "ticket",
+      "filter": "kind=external&assignee=&status__not_in=done,cancelled", "position": 2 },
+    { "kind": "count", "title": "Missed a promise", "entity_type": "ticket",
+      "filter": "sla_breached=true&status__not_in=done,cancelled", "position": 3 },
+    { "kind": "count", "title": "Waiting to triage", "entity_type": "ticket",
+      "filter": "status=triage", "position": 4 },
+
+    { "kind": "list", "title": "Nobody has answered these yet", "entity_type": "ticket",
+      "filter": "kind=external&first_responded_at__is_null=1&status__not_in=done,cancelled",
+      "order": "created_at", "columns": "priority,assignee,created_at", "limit": 6,
+      "span": "wide", "position": 5 },
+    { "kind": "list", "title": "Urgent and high, still open", "entity_type": "ticket",
+      "filter": "priority__in=urgent,high&status__not_in=done,cancelled",
+      "order": "resolution_due_at", "columns": "status,assignee,resolution_due_at",
+      "limit": 6, "span": "wide", "position": 6 },
+
+    { "kind": "upcoming", "title": "Promises falling due", "entity_type": "ticket",
+      "field": "resolution_due_at", "filter": "status__not_in=done,cancelled",
+      "options": "{\"days\": 3}", "limit": 6, "span": "wide", "position": 7 },
+    { "kind": "breakdown", "title": "Open work by status", "entity_type": "ticket",
+      "field": "status", "filter": "status__not_in=done,cancelled", "position": 8 },
+    { "kind": "breakdown", "title": "Open work by priority", "entity_type": "ticket",
+      "field": "priority", "filter": "status__not_in=done,cancelled", "position": 9 },
+
+    { "kind": "metric", "title": "Hours to first reply", "report_name": "support",
+      "period": "this_month", "field": "response", "position": 10 },
+    { "kind": "metric", "title": "Hours to resolve", "report_name": "support",
+      "period": "this_month", "field": "resolution", "position": 11 },
+    { "kind": "metric", "title": "Service level missed", "report_name": "support",
+      "period": "this_month", "field": "breach_rate", "position": 12 },
+    { "kind": "metric", "title": "Satisfaction", "report_name": "support",
+      "period": "this_month", "field": "csat", "position": 13 },
+
+    { "kind": "report", "title": "Who is carrying what", "report_name": "support",
+      "period": "this_month", "options": "{\"tiles\": false}", "limit": 8,
+      "span": "full", "position": 14 },
+
+    { "kind": "environments", "title": "Where it runs", "limit": 4,
+      "span": "wide", "position": 15 },
+    { "kind": "list", "title": "Incidents not closed out", "entity_type": "incident",
+      "filter": "status__not_in=resolved,postmortem", "order": "-started_at",
+      "columns": "severity,status,started_at", "limit": 5, "span": "wide",
+      "position": 16 },
+
+    { "kind": "activity", "title": "What changed", "entity_type": "ticket",
+      "limit": 8, "span": "wide", "position": 17 },
+    { "kind": "actions", "title": "From here", "span": "wide", "position": 18,
+      "body": "Open the inbox | /inbox\nRaise a ticket | /e/ticket/new\nThe ticket board | /tickets\nSprints | /sprints\nSupport report | /reports/support\nDelivery report | /reports/delivery\nCoding runs and spend | /runs\nWebhooks | /webhooks" }
+  ]
+}

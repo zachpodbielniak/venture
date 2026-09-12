@@ -680,6 +680,87 @@ test_database_query_filters(
 }
 
 /*
+ * An empty string filter means "blank", and blank is two things.
+ *
+ * A text column that was never written is NULL; one that was written and
+ * then cleared is the empty string. Nothing about a ticket's assignee
+ * makes those different to a person -- both mean nobody has it -- but
+ * `assignee=` used to match only the second, so a dashboard card
+ * counting unassigned work read zero while the list beside it showed
+ * two of them. Which of the two a row holds depends on whether the
+ * field was ever filled in and then emptied, which is not something
+ * anybody writing a filter knows.
+ *
+ * If this regresses, every "unassigned" view silently under-counts, and
+ * by an amount that depends on how each row happened to be created.
+ */
+static void
+test_database_empty_filter_matches_null_and_blank(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureTicket) never = NULL;
+	g_autoptr(VentureTicket) cleared = NULL;
+	g_autoptr(VentureTicket) taken = NULL;
+	g_autoptr(VentureQuery) blank = NULL;
+	g_autoptr(VentureQuery) named = NULL;
+	g_autoptr(GPtrArray) results = NULL;
+
+	(void)user_data;
+
+	/* Never given an assignee at all: the column is NULL. */
+	never = venture_ticket_new();
+	g_object_set(never, "title", "Nobody ever had it", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(never),
+		fixture->organization_id);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(never), NULL, NULL));
+
+	/* Given one and then cleared: the column is the empty string. */
+	cleared = venture_ticket_new();
+	g_object_set(cleared, "title", "Handed back", "assignee", "bob", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(cleared),
+		fixture->organization_id);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(cleared), NULL, NULL));
+	g_object_set(cleared, "assignee", "", NULL);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(cleared), NULL, NULL));
+
+	taken = venture_ticket_new();
+	g_object_set(taken, "title", "Carol has it", "assignee", "carol", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(taken),
+		fixture->organization_id);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(taken), NULL, NULL));
+
+	/* Both blank ones, and only those. */
+	blank = venture_query_new(VENTURE_TYPE_TICKET);
+	g_assert_true(venture_query_add_filter_string(blank, "assignee",
+		VENTURE_FILTER_OP_EQ, "", NULL));
+	results = venture_database_find(fixture->database, blank, NULL);
+	g_assert_nonnull(results);
+	g_assert_cmpuint(results->len, ==, 2);
+	g_assert_cmpint(venture_database_count(fixture->database, blank, NULL),
+	                ==, 2);
+
+	/* And the negation is the other one, not the other two. */
+	named = venture_query_new(VENTURE_TYPE_TICKET);
+	g_assert_true(venture_query_add_filter_string(named, "assignee",
+		VENTURE_FILTER_OP_NE, "", NULL));
+	g_clear_pointer(&results, g_ptr_array_unref);
+	results = venture_database_find(fixture->database, named, NULL);
+	g_assert_cmpuint(results->len, ==, 1);
+
+	{
+		g_autofree gchar *title = NULL;
+
+		g_object_get(g_ptr_array_index(results, 0), "title", &title, NULL);
+		g_assert_cmpstr(title, ==, "Carol has it");
+	}
+}
+
+/*
  * Counting by an enum column.
  *
  * Enum columns store their nick, not their ordinal, so "how many tickets are
@@ -1967,6 +2048,8 @@ main(
 	    test_database_keeps_old_reference_editable);
 
 	ADD("/database/query-filters", test_database_query_filters);
+	ADD("/database/empty-filter-matches-null-and-blank",
+	    test_database_empty_filter_matches_null_and_blank);
 	ADD("/database/counts-by-enum-column",
 	    test_database_counts_by_enum_column);
 	ADD("/database/rejects-an-ordinal-outside-the-enum",

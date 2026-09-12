@@ -1,0 +1,28 @@
+{
+  "name": "Month end",
+  "slug": "month-end",
+  "purpose": "reporting",
+  "layout": "three_columns",
+  "description": "What came in, what went out, and what is still owed.",
+  "widgets": [
+    { "kind": "metric", "title": "Revenue", "report_name": "pnl",
+      "period": "this_year", "field": "revenue", "position": 1 },
+    { "kind": "metric", "title": "Expenses", "report_name": "pnl",
+      "period": "this_year", "field": "expenses", "position": 2 },
+    { "kind": "metric", "title": "Profit", "report_name": "pnl",
+      "period": "this_year", "field": "profit", "position": 3 },
+    { "kind": "report", "title": "Profit and loss", "report_name": "pnl",
+      "period": "this_year", "span": "full", "position": 4 },
+    { "kind": "chart", "title": "Revenue by venture", "report_name": "ventures",
+      "period": "this_year", "field": "revenue", "columns": "venture",
+      "span": "wide", "limit": 8, "position": 5 },
+    { "kind": "report", "title": "Receivables", "report_name": "receivables",
+      "period": "all", "options": "{\"tiles\": false}", "limit": 8,
+      "span": "wide", "position": 6 },
+    { "kind": "breakdown", "title": "Deals by stage", "entity_type": "deal",
+      "field": "stage", "position": 7 },
+    { "kind": "report", "title": "Month by month", "report_name": "monthly",
+      "period": "this_year", "options": "{\"tiles\": false}",
+      "span": "full", "position": 8 }
+  ]
+}

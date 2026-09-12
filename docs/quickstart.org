@@ -3,9 +3,25 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-08-14]
-#+version: 0.1.0
+#+updated: [2026-09-12]
+#+version: 0.6.0
 
+
+* Seeing it with data in it
+
+An empty ERP tells you nothing about what it is for. =make demo= builds the debug binaries, starts a throwaway instance on 127.0.0.1:8749 and seeds a small but complete business into it:
+
+#+begin_src bash
+make demo               # build, seed, run in the foreground; Ctrl+C stops it
+make DEMOFLAGS=-d demo  # leave it running in the background
+make demo-stop          # stop that one and delete its data
+#+end_src
+
+It prints the URL and the owner password when it is ready. What is in there: two ventures, a year of sales and expenses, companies and contacts and a pipeline, two invoices with one overdue, a support desk with service-level policies, macros, a rota, a sprint, fourteen tickets with a conversation and logged time and one deliberately missed promise, a release that went out and the incident that followed, and two dashboards — one for the desk, one for the money. Every report has figures.
+
+Three things worth knowing about it. It listens on *8749*, not 8747 or 8748, so it cannot collide with a container or with =just start=; it refuses to start if something else is already answering there, because seeding example data into a real instance is the one mistake it must never make. The database is =build/demo/venture.db= and is *deleted and rebuilt on every run*, so nothing you do to the demo matters. And every record goes in through =venturectl= and the REST API rather than into the database directly, so a demo that seeds is also a demonstration that the API can build one.
+
+The script is =tools/venture-demo.sh= and takes =--help=. Everything it creates is readable there: it is the shortest description of what a working VENTURE looks like.
 
 * Running a local instance
 
