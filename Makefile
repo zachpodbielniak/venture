@@ -59,6 +59,8 @@ CORE_SRCS := \
 	$(wildcard src/boxed/*.c) \
 	$(wildcard src/interfaces/*.c) \
 	$(wildcard src/model/*.c) \
+	src/receivables/venture-receivable-records.c \
+	src/receivables/venture-invoice-state-machine.c \
 	$(wildcard src/config/*.c) \
 	$(wildcard src/util/*.c) \
 	$(wildcard src/mcp/*.c)
@@ -66,6 +68,8 @@ CORE_SRCS := \
 # Server-only subsystems.
 SERVER_ONLY_SRCS := \
 	$(filter-out src/ledger/venture-journal.c,$(wildcard src/ledger/*.c)) \
+	src/receivables/venture-settlement-service.c \
+	src/receivables/venture-receivable-reports.c \
 	$(wildcard src/core/*.c) \
 	$(wildcard src/db/*.c) \
 	$(wildcard src/report/*.c) \
@@ -92,6 +96,7 @@ PUBLIC_HDRS := \
 	$(wildcard src/boxed/*.h) \
 	$(wildcard src/interfaces/*.h) \
 	$(wildcard src/model/*.h) \
+	$(wildcard src/receivables/*.h) \
 	$(wildcard src/config/*.h) \
 	$(wildcard src/core/*.h) \
 	$(wildcard src/db/*.h) \
@@ -117,6 +122,9 @@ CLI_OBJS := $(patsubst src/%.c,$(OBJDIR)/core/%.o,$(CLI_SRCS))
 MAIN_OBJ := $(OBJDIR)/server/main.o
 TEST_OBJS := $(patsubst tests/%.c,$(OBJDIR)/tests/%.o,$(TEST_SRCS))
 TEST_BINS := $(patsubst tests/%.c,$(OUTDIR)/tests/%,$(TEST_SRCS))
+
+# The settlement test drives the real CLI and its MCP tool against HTTP.
+$(OUTDIR)/tests/test-receivables: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery

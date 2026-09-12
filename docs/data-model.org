@@ -81,11 +81,11 @@ Every record derives from =VentureEntity= and carries the same spine:
 - *invoice*, *invoice_line* — money owed, distinct from money arrived. A
   line's amount is quantity × unit price, computed as an exact rational and
   rounded half to even — never stored, so it cannot disagree with its
-  factors. The lifecycle is draft → sent → paid (void from anywhere
-  unpaid; paid is terminal), and marking paid creates the sale with the
-  invoice total as gross — the wiring that keeps invoicing and the books
-  from quietly disagreeing about revenue. =/invoices/:id/print= renders the
-  printable document.
+  factors. The receivables service freezes the amount at issue and derives
+  sent, partially paid and paid from allocations. Refunds reopen the
+  balance; void reverses an unpaid invoice. Applied cash creates its sale
+  in the same transaction. See [[file:receivables.org][customer receivables]].
+  =/invoices/:id/print= renders the printable document.
 
 ** Conversations
 

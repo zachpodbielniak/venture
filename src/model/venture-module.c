@@ -493,8 +493,16 @@ static const gchar *const venture_module_reports_finance[] = {
 	"pnl", "ventures", "monthly", "tax", NULL
 };
 static const gchar *const venture_module_reports_crm[] = { "pipeline", NULL };
-static const gchar *const venture_module_reports_invoicing[] = {
-	"receivables", NULL
+static const gchar *const venture_module_reports_receivables[] = {
+	"receivables", "customer_statement", NULL
+};
+static const gchar *const venture_module_requires_receivables[] = {
+	"finance", "invoicing", NULL
+};
+static GType (*const venture_module_receivables_types[]) (void) = {
+	venture_payment_get_type, venture_payment_allocation_get_type,
+	venture_customer_credit_get_type, venture_refund_get_type,
+	venture_invoice_event_get_type, NULL
 };
 static const gchar *const venture_module_reports_outreach[] = {
 	"campaigns", NULL
@@ -545,7 +553,14 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"Invoices and their lines, billed to a company and recorded as a "
 		"sale when paid.",
 		venture_module_requires_invoicing, NULL,
-		venture_module_invoicing_types, venture_module_reports_invoicing, NULL,
+		venture_module_invoicing_types, NULL, NULL,
+		FALSE
+	},
+	{
+		"receivables", "Receivables",
+		"Customer receipts, allocations, credits, refunds and historical balances.",
+		venture_module_requires_receivables, NULL,
+		venture_module_receivables_types, venture_module_reports_receivables, NULL,
 		FALSE
 	},
 	{

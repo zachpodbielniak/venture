@@ -686,6 +686,11 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 
 		venture_invoice_get_type,
 		venture_invoice_line_get_type,
+		venture_payment_get_type,
+		venture_payment_allocation_get_type,
+		venture_customer_credit_get_type,
+		venture_refund_get_type,
+		venture_invoice_event_get_type,
 
 		venture_dashboard_get_type,
 		venture_dashboard_widget_get_type,

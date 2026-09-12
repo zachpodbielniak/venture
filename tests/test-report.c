@@ -690,6 +690,7 @@ add_invoice(
 	gdouble			 quantity
 ){
 	g_autoptr(VentureInvoice) invoice = NULL;
+	g_autoptr(VentureCompany) customer = NULL;
 	g_autoptr(VentureInvoiceLine) line = NULL;
 	g_autoptr(GDateTime) now = NULL;
 	g_autoptr(GDateTime) due = NULL;
@@ -698,8 +699,13 @@ add_invoice(
 	now = venture_time_now();
 	due = g_date_time_add_days(now, due_in_days);
 
+	customer = venture_company_new();
+	g_object_set(customer, "name", "Invoice customer", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(customer), fixture->organization_id);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(customer), NULL, NULL));
 	invoice = venture_invoice_new();
-	g_object_set(invoice, "number", number, "status", status,
+	g_object_set(invoice, "number", number, "status", VENTURE_INVOICE_STATUS_DRAFT,
+	             "company-id", venture_entity_get_id(VENTURE_ENTITY(customer)), "issued-at", now,
 	             "venture-id", fixture->venture_id, "due-at", due, NULL);
 	venture_entity_set_organization_id(VENTURE_ENTITY(invoice),
 	                                   fixture->organization_id);
@@ -717,6 +723,14 @@ add_invoice(
 	g_assert_true(venture_database_save(fixture->database,
 	                                    VENTURE_ENTITY(line), NULL, NULL));
 
+	if (status != VENTURE_INVOICE_STATUS_DRAFT)
+	{
+		g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+		g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(invoice), NULL, NULL));
+	}
+	if (status == VENTURE_INVOICE_STATUS_PAID)
+		g_assert_true(venture_settlement_service_settle_invoice(
+			venture_settlement_service_get(fixture->database), invoice_id, now, NULL, NULL));
 	return invoice_id;
 }
 

@@ -1067,6 +1067,19 @@ venture_database_save(
 		g_rec_mutex_unlock(&self->lock);
 		return FALSE;
 	}
+	/* Financial records dispatch before the ordinary write, so receipts,
+	 * invoice state and ledger batches share one encompassing transaction. */
+	{
+		gboolean handled;
+		gboolean ok;
+
+		ok = venture_receivables_save_hook(self, entity, actor, &handled, error);
+		if (!ok || handled)
+		{
+			g_rec_mutex_unlock(&self->lock);
+			return ok;
+		}
+	}
 
 	if (!created)
 	{
@@ -1358,6 +1371,8 @@ venture_database_delete(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
+	if (!venture_receivables_check_removal(self, entity, error))
+		return FALSE;
 
 	if (!venture_entity_is_persisted(entity))
 	{
@@ -1412,6 +1427,8 @@ venture_database_restore(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
+	if (!venture_receivables_check_removal(self, entity, error))
+		return FALSE;
 
 	if (!venture_entity_is_deleted(entity))
 		return TRUE;
@@ -1448,6 +1465,8 @@ venture_database_purge(
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
+		return FALSE;
+	if (!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
 
 	if (!venture_entity_is_persisted(entity))

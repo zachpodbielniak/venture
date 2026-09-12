@@ -436,6 +436,7 @@ typedef enum
  * @VENTURE_INVOICE_STATUS_SENT: issued to the customer and awaiting payment
  * @VENTURE_INVOICE_STATUS_PAID: settled; the revenue is real
  * @VENTURE_INVOICE_STATUS_VOID: cancelled without payment
+ * @VENTURE_INVOICE_STATUS_PARTIALLY_PAID: some of the issued amount is allocated
  *
  * Where an invoice stands.
  *
@@ -448,7 +449,8 @@ typedef enum
 	VENTURE_INVOICE_STATUS_DRAFT = 0,
 	VENTURE_INVOICE_STATUS_SENT,
 	VENTURE_INVOICE_STATUS_PAID,
-	VENTURE_INVOICE_STATUS_VOID
+	VENTURE_INVOICE_STATUS_VOID,
+	VENTURE_INVOICE_STATUS_PARTIALLY_PAID
 } VentureInvoiceStatus;
 
 /**

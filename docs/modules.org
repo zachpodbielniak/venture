@@ -27,7 +27,8 @@ Written bottom-up, because a module may only require what precedes it:
 | =sales=      | core            | product, inventory_item, inventory_txn, sale; =categories=, =inventory= |               |
 | =finance=    | sales           | expense, account, ledger_entry, tax_category; =pnl=, =ventures=, =monthly=, =tax= |     |
 | =crm=        | core            | company, contact, interaction, deal; =pipeline=                   |                       |
-| =invoicing=  | finance, crm    | invoice, invoice_line; =receivables=                              |                       |
+| =invoicing=  | finance, crm    | invoice, invoice_line                                            |                       |
+| =receivables= | finance, invoicing | payment, payment_allocation, customer_credit, refund, invoice_event; =receivables=, =customer_statement= | |
 | =outreach=   | sales           | campaign, newsletter, subscriber, post; =campaigns=               |                       |
 | =ideas=      | core            | idea, research_note; =ideas=                                      |                       |
 | =kb=         | core            | knowledge_base, kb_article, kb_chunk, kb_link                     | =kb.enabled=          |
@@ -68,7 +69,7 @@ VENTURE_MODULE_CRM=false venture
 For one run:
 
 #+begin_src sh
-venture --disable-module crm --disable-module invoicing
+venture --disable-module crm --disable-module invoicing --disable-module receivables
 #+end_src
 
 From a compiled C configuration, which is how a machine decides for itself:

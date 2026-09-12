@@ -3380,13 +3380,8 @@ venture_web_invoice_total(
 );
 
 /*
- * POST /invoices/:id/status - one transition of the invoice lifecycle.
- *
- * The interesting one is paid. Paying an invoice is the moment owed money
- * becomes earned money, so the transition creates the sale itself -- gross
- * from the invoice total, venture from the invoice, memo naming the number.
- * Wired here rather than left to discipline, because the alternative is an
- * invoicing system and a set of books that quietly disagree about revenue.
+ * POST /invoices/:id/status - the same service reached by generated writes.
+ * The paid action records a receipt; status itself remains derived.
  */
 static HtmxResponse *
 venture_web_ui_invoice_status(
@@ -3400,20 +3395,17 @@ venture_web_ui_invoice_status(
 	g_autoptr(GDateTime) now = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *destination = NULL;
-	VentureInvoiceStatus status;
-	VentureInvoiceStatus target;
 	HtmxResponse *redirect;
 	VentureActor actor;
 	const gchar *to;
 	gint64 id;
-	gint value;
 
 	self = user_data;
 
 	{
 		HtmxResponse *gate;
 
-		gate = venture_web_require_module_ui(self, request, "invoicing");
+		gate = venture_web_require_module_ui(self, request, "receivables");
 
 		if (NULL != gate)
 			return gate;
@@ -3439,110 +3431,20 @@ venture_web_ui_invoice_status(
 
 	to = htmx_request_get_form_value(request, "to");
 
-	if (!venture_enum_from_nick(VENTURE_TYPE_INVOICE_STATUS, to, &value))
-	{
-		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		            "\"%s\" is not an invoice status", to);
-		return venture_web_error_response(error);
-	}
-
-	target = (VentureInvoiceStatus)value;
-	g_object_get(record, "status", &status, NULL);
-
-	/*
-	 * The lifecycle is a line, not a graph: draft -> sent -> paid, with
-	 * void an exit from anywhere unpaid. Paid is terminal -- un-paying
-	 * an invoice would strand the sale the payment created.
-	 */
-	{
-		gboolean allowed;
-
-		allowed =
-			((VENTURE_INVOICE_STATUS_DRAFT == status) &&
-			 (VENTURE_INVOICE_STATUS_SENT == target)) ||
-			((VENTURE_INVOICE_STATUS_SENT == status) &&
-			 (VENTURE_INVOICE_STATUS_PAID == target)) ||
-			(((VENTURE_INVOICE_STATUS_DRAFT == status) ||
-			  (VENTURE_INVOICE_STATUS_SENT == status)) &&
-			 (VENTURE_INVOICE_STATUS_VOID == target));
-
-		if (!allowed)
-		{
-			g_set_error(&error, VENTURE_ERROR,
-			            VENTURE_ERROR_VALIDATION,
-			            "An invoice cannot go from %s to %s",
-			            venture_enum_to_nick(
-			                VENTURE_TYPE_INVOICE_STATUS, (gint)status),
-			            venture_enum_to_nick(
-			                VENTURE_TYPE_INVOICE_STATUS, (gint)target));
-			return venture_web_error_response(error);
-		}
-	}
-
 	now = venture_time_now();
 	venture_auth_to_actor(principal, &actor);
 
-	g_object_set(record, "status", target, NULL);
-
-	if (VENTURE_INVOICE_STATUS_SENT == target)
+	if (g_strcmp0(to, "paid") == 0)
 	{
-		g_autoptr(GDateTime) issued = NULL;
-
-		/* Sending stamps the issue date unless one was set by hand. */
-		g_object_get(record, "issued-at", &issued, NULL);
-
-		if (NULL == issued)
-			g_object_set(record, "issued-at", now, NULL);
-	}
-
-	if (VENTURE_INVOICE_STATUS_PAID == target)
-		g_object_set(record, "paid-at", now, NULL);
-
-	if (!venture_database_save(venture_context_get_database(self->context),
-	                           record, &actor, &error))
-		return venture_web_error_response(error);
-
-	/* The revenue, recorded the moment it becomes real. */
-	if (VENTURE_INVOICE_STATUS_PAID == target)
-	{
-		g_autoptr(GPtrArray) lines = NULL;
-		g_autoptr(VentureMoney) total = NULL;
-
-		lines = venture_web_invoice_lines(self, id, NULL);
-		total = venture_web_invoice_total(lines, &error);
-
-		if ((NULL == total) && (NULL != error))
+		if (!venture_settlement_service_settle_invoice(
+			venture_settlement_service_get(venture_context_get_database(self->context)),
+			id, now, &actor, &error))
 			return venture_web_error_response(error);
-
-		if (NULL != total)
-		{
-			g_autoptr(VentureSale) sale = NULL;
-			g_autofree gchar *number = NULL;
-			g_autofree gchar *memo = NULL;
-			gint64 venture_id;
-
-			g_object_get(record, "number", &number,
-			             "venture-id", &venture_id, NULL);
-			memo = g_strdup_printf("Invoice %s", number);
-
-			sale = venture_sale_new();
-			g_object_set(sale,
-			             "venture-id", venture_id,
-			             "gross", total,
-			             "occurred-at", now,
-			             "channel", "invoice",
-			             "external-id", number,
-			             "notes", memo,
-			             NULL);
-			venture_entity_set_organization_id(VENTURE_ENTITY(sale),
-				venture_entity_get_organization_id(record));
-
-			if (!venture_database_save(
-				venture_context_get_database(self->context),
-				VENTURE_ENTITY(sale), &actor, &error))
-				return venture_web_error_response(error);
-		}
 	}
+	else if (!venture_settlement_service_transition(
+		venture_settlement_service_get(venture_context_get_database(self->context)),
+		VENTURE_INVOICE(record), to, now, &actor, &error))
+		return venture_web_error_response(error);
 
 	destination = g_strdup_printf("/e/invoice/%" G_GINT64_FORMAT, id);
 
@@ -8353,6 +8255,12 @@ venture_web_append_invoice_block(
 		"<a class=\"btn\" href=\"/invoices/%" G_GINT64_FORMAT
 		"/print\" target=\"_blank\">Print</a>", id);
 
+	if (!venture_context_module_enabled(self->context, "receivables"))
+	{
+		g_string_append(content, "</div></div>");
+		return;
+	}
+
 	if (VENTURE_INVOICE_STATUS_DRAFT == status)
 		g_string_append_printf(content,
 			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
@@ -8360,12 +8268,13 @@ venture_web_append_invoice_block(
 			"<button class=\"btn btn-primary\" type=\"submit\">"
 			"Mark sent</button></form>", id);
 
-	if (VENTURE_INVOICE_STATUS_SENT == status)
+	if ((VENTURE_INVOICE_STATUS_SENT == status) ||
+	    (VENTURE_INVOICE_STATUS_PARTIALLY_PAID == status))
 		g_string_append_printf(content,
 			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
 			"/status\"><input type=\"hidden\" name=\"to\" value=\"paid\">"
 			"<button class=\"btn btn-primary\" type=\"submit\" "
-			"title=\"Stamps payment and records the revenue as a sale\">"
+			"title=\"Records a receipt for the outstanding balance\">"
 			"Mark paid</button></form>", id);
 
 	if ((VENTURE_INVOICE_STATUS_DRAFT == status) ||

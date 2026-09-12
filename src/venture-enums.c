@@ -344,6 +344,7 @@ static const GEnumValue venture_invoice_status_values[] = {
 	VE(VENTURE_INVOICE_STATUS_SENT,  "sent"),
 	VE(VENTURE_INVOICE_STATUS_PAID,  "paid"),
 	VE(VENTURE_INVOICE_STATUS_VOID,  "void"),
+	VE(VENTURE_INVOICE_STATUS_PARTIALLY_PAID, "partially_paid"),
 	VE_END
 };
 
