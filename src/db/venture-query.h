@@ -39,6 +39,16 @@ G_BEGIN_DECLS
 G_DECLARE_FINAL_TYPE(VentureQuery, venture_query, VENTURE, QUERY, GObject)
 
 /**
+ * venture_query_set_as_of:
+ * @self: the query
+ * @as_of: (nullable): historical visibility cutoff; %NULL means live
+ *
+ * Includes rows whose soft deletion occurred strictly after @as_of.
+ * Business-date bounds remain independent; this is not a created-at filter.
+ */
+void venture_query_set_as_of(VentureQuery *self, GDateTime *as_of);
+
+/**
  * venture_query_new:
  * @entity_type: the record type to query
  *

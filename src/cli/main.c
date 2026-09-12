@@ -1119,6 +1119,26 @@ venture_cli_command_report(
 		g_string_append_uri_escaped(path, args[2], NULL, FALSE);
 	}
 
+	if (NULL != args[2])
+	{
+		guint i;
+		for (i = 3; NULL != args[i]; i++)
+		{
+			g_auto(GStrv) parts = g_strsplit(args[i], "=", 2);
+			if ((NULL == parts[1]) ||
+				((0 != g_strcmp0(parts[0], "as_of")) && (0 != g_strcmp0(parts[0], "organization_id"))))
+			{
+				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+					"Report options are as_of=DATE and organization_id=ID, after the period");
+				return -1;
+			}
+			g_string_append_c(path, '&');
+			g_string_append_uri_escaped(path, parts[0], NULL, FALSE);
+			g_string_append_c(path, '=');
+			g_string_append_uri_escaped(path, parts[1], NULL, FALSE);
+		}
+	}
+
 	/* The server already renders a report as CSV for the web export, so
 	 * -f csv passes the body through rather than re-deriving it here and
 	 * risking two renderings that disagree. */
@@ -3116,7 +3136,7 @@ main(
 		"  forge set-token ID           set a forge's access token (stdin)\n"
 		"  forge set-secret ID          set or generate its webhook secret\n"
 		"  forge verify ID              record which account the token is\n"
-		"  report [NAME] [PERIOD]       list reports, or run one\n"
+		"  report [NAME] [PERIOD]       run; optional as_of=DATE organization_id=ID\n"
 		"  kb search QUERY              search the knowledge bases by\n"
 		"                               meaning; --kb SLUG, --limit N\n"
 		"  kb sync KB_ID                bring a base into line with its\n"

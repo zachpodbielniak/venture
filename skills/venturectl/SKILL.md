@@ -66,7 +66,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `forge set-token ID` | set a forge's access token, read from stdin |
 | `forge set-secret ID` | set or generate its webhook secret |
 | `forge verify ID` | record which account the token belongs to |
-| `report [NAME] [PERIOD]` | list reports, or run one |
+| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID]` | list reports, or run one with an optional historical cutoff and legal entity |
 | `links TYPE ID` | every link touching a record, read from it |
 | `link TYPE ID TYPE ID [kind=K] [note=T]` | link two records; kinds: related, blocks, blocked_by, depends_on, required_by, parent_of, child_of, duplicates, causes, caused_by, produces, produced_by, references, referenced_by, supersedes, superseded_by; unlink with `delete record_link ID` |
 | `modules` | which modules the server runs; `-f json` for types, reports and reasons |
@@ -128,6 +128,16 @@ CRUD. Two things to know before using them:
   compared.
 
 Periods, anywhere one is accepted (`report NAME PERIOD`, `period=` filters):
+
+For historical financial visibility, pass `as_of` after the period, for
+example `venturectl report pnl 2026-08 as_of=2026-08-31 organization_id=1`.
+The date includes that UTC day; a timestamp is an exact cutoff. Rows deleted
+after it still count. Omit it for live visibility. Fiscal calendars are
+ordinary `fiscal_year` and `fiscal_period` records; creating a year generates
+its monthly or quarterly periods. Closed or locked dates refuse financial
+writes. Reopening needs `periods.reopen`, held by active administrators and
+owners, and locked periods cannot reopen. `report snapshot_vs_live PERIOD`
+compares preserved close totals with live reports.
 named (`today`, `yesterday`, `this_week`, `last_week`, `this_month`,
 `last_month`, `this_quarter`, `last_quarter`, `this_year`, `last_year`),
 to-date (`ytd`, `qtd`, `mtd`), fiscal (`fy`, `fy_2026`), rolling

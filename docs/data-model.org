@@ -42,8 +42,8 @@ Every record derives from =VentureEntity= and carries the same spine:
 ** Revenue
 
 - *sale* — gross, discount, shipping in and out, fees, tax collected and
-  remitted, refunds. =external_id= is indexed so re-importing a marketplace
-  export cannot duplicate sales.
+  remitted, refunds. =external_id= is unique per organization when nonempty, so re-importing
+  a marketplace export cannot duplicate sales, even after soft deletion.
 
 ** Money
 

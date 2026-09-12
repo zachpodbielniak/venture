@@ -24,6 +24,14 @@ VenturePeriodService *venture_period_service_get(VentureDatabase *database);
 VenturePeriodChecklist *venture_period_service_get_checklist(VenturePeriodService *self);
 
 /**
+ * venture_period_service_install:
+ * @context: the application context
+ *
+ * Connects its report registry to the repository's closing service.
+ */
+void venture_period_service_install(VentureContext *context);
+
+/**
  * venture_period_service_generate:
  * @self: the service
  * @organization_id: the legal entity

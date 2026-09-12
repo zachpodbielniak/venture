@@ -1015,6 +1015,7 @@ typedef struct
 	gchar	*name;
 	gchar	*title;
 	gchar	*description;
+	gboolean financial;
 } VentureReportPrivate;
 
 G_DEFINE_TYPE_WITH_PRIVATE(VentureReport, venture_report, G_TYPE_OBJECT)
@@ -1025,6 +1026,7 @@ enum
 	REPORT_PROP_NAME,
 	REPORT_PROP_TITLE,
 	REPORT_PROP_DESCRIPTION,
+	REPORT_PROP_FINANCIAL,
 	REPORT_N_PROPERTIES
 };
 
@@ -1053,6 +1055,9 @@ venture_report_get_property(
 
 	case REPORT_PROP_DESCRIPTION:
 		g_value_set_string(value, priv->description);
+		break;
+	case REPORT_PROP_FINANCIAL:
+		g_value_set_boolean(value, priv->financial);
 		break;
 
 	default:
@@ -1087,6 +1092,9 @@ venture_report_set_property(
 	case REPORT_PROP_DESCRIPTION:
 		g_free(priv->description);
 		priv->description = g_value_dup_string(value);
+		break;
+	case REPORT_PROP_FINANCIAL:
+		priv->financial = g_value_get_boolean(value);
 		break;
 
 	default:
@@ -1129,6 +1137,15 @@ venture_report_class_init(VentureReportClass *klass)
 		g_param_spec_string("description", "Description",
 		                    "What the report answers", NULL,
 		                    G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+	/**
+	 * VentureReport:financial:
+	 *
+	 * Include this report's exact result in period-close snapshots. Plugins
+	 * set this property when registering a financial report.
+	 */
+	venture_report_properties[REPORT_PROP_FINANCIAL] = g_param_spec_boolean(
+		"financial", "Financial", "Capture at period close", FALSE,
+		G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
 
 	g_object_class_install_properties(object_class, REPORT_N_PROPERTIES,
 	                                  venture_report_properties);
@@ -1205,15 +1222,32 @@ JsonNode *
 venture_report_describe_parameters(VentureReport *self)
 {
 	VentureReportClass *klass;
+	g_autoptr(JsonNode) parameters = NULL;
+	gboolean financial;
+	JsonObject *object;
+	JsonObject *properties;
+	JsonObject *as_of;
 
 	g_return_val_if_fail(VENTURE_IS_REPORT(self), NULL);
 
 	klass = VENTURE_REPORT_GET_CLASS(self);
 
-	if (NULL == klass->describe_parameters)
-		return NULL;
-
-	return klass->describe_parameters(self);
+	if (NULL != klass->describe_parameters)
+		parameters = klass->describe_parameters(self);
+	g_object_get(self, "financial", &financial, NULL);
+	if (!financial)
+		return g_steal_pointer(&parameters);
+	if (NULL == parameters)
+		parameters = venture_json_parse("{\"type\":\"object\",\"properties\":{}}", NULL);
+	object = json_node_get_object(parameters);
+	if (!json_object_has_member(object, "properties"))
+		json_object_set_object_member(object, "properties", json_object_new());
+	properties = json_object_get_object_member(object, "properties");
+	as_of = json_object_new();
+	json_object_set_string_member(as_of, "type", "string");
+	json_object_set_string_member(as_of, "description", "Historical cutoff (ISO date or timestamp); omit for live totals");
+	json_object_set_object_member(properties, "as_of", as_of);
+	return g_steal_pointer(&parameters);
 }
 
 /* --- Function-backed reports --------------------------------------------- */

@@ -49,6 +49,7 @@ struct _VentureQuery
 	 */
 	GArray		*organization_tree;
 	gboolean	 include_deleted;
+	GDateTime	*as_of;
 };
 
 G_DEFINE_FINAL_TYPE(VentureQuery, venture_query, G_TYPE_OBJECT)
@@ -87,14 +88,42 @@ venture_query_finalize(GObject *object)
 	g_clear_pointer(&self->orders, g_ptr_array_unref);
 	g_clear_pointer(&self->organization_tree, g_array_unref);
 	g_clear_pointer(&self->search, g_free);
+	g_clear_pointer(&self->as_of, g_date_time_unref);
 
 	G_OBJECT_CLASS(venture_query_parent_class)->finalize(object);
 }
 
 static void
+query_get_property(GObject *object, guint id, GValue *value, GParamSpec *pspec)
+{
+	if (1 == id) g_value_set_boxed(value, VENTURE_QUERY(object)->as_of);
+	else G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, pspec);
+}
+
+static void
+query_set_property(GObject *object, guint id, const GValue *value, GParamSpec *pspec)
+{
+	VentureQuery *self = VENTURE_QUERY(object);
+	if (1 == id)
+	{
+		g_clear_pointer(&self->as_of, g_date_time_unref);
+		self->as_of = g_value_dup_boxed(value);
+	}
+	else G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, pspec);
+}
+
+void venture_query_set_as_of(VentureQuery *self, GDateTime *as_of)
+{ g_object_set(self, "as-of", as_of, NULL); }
+
+static void
 venture_query_class_init(VentureQueryClass *klass)
 {
 	G_OBJECT_CLASS(klass)->finalize = venture_query_finalize;
+	G_OBJECT_CLASS(klass)->get_property = query_get_property;
+	G_OBJECT_CLASS(klass)->set_property = query_set_property;
+	g_object_class_install_property(G_OBJECT_CLASS(klass), 1,
+		g_param_spec_boxed("as-of", "As of", "Historical soft-deletion cutoff",
+			G_TYPE_DATE_TIME, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 }
 
 static void
@@ -1198,9 +1227,26 @@ venture_query_to_sql(
 
 	/* Soft deletion is invisible by default. Without this every list view
 	 * would show the records the operator thought they had removed. */
-	if (!self->include_deleted)
+	if (!self->include_deleted && (NULL == self->as_of))
 	{
 		g_string_append(sql, " WHERE \"deleted_at\" IS NULL");
+		first = FALSE;
+	}
+
+	if (NULL != self->as_of)
+	{
+		g_autoptr(GDateTime) utc = g_date_time_to_utc(self->as_of);
+		g_autofree gchar *as_of = g_date_time_format(utc, "%Y-%m-%dT%H:%M:%S.%fZ");
+		/* ISO output omits a zero fractional part. Pad those stored values
+		 * before comparing: otherwise .500000Z sorts before the same
+		 * second's Z and a later deletion disappears from the cutoff. */
+		g_string_append(sql, " WHERE (\"deleted_at\" IS NULL OR "
+			"(CASE WHEN LENGTH(\"deleted_at\") = 20 "
+			"THEN REPLACE(\"deleted_at\", 'Z', '.000000Z') "
+			"ELSE \"deleted_at\" END) > ");
+		venture_query_append_placeholder(sql, dialect, &index);
+		params = g_list_append(params, orm_value_new_string(as_of));
+		g_string_append_c(sql, ')');
 		first = FALSE;
 	}
 

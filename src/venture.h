@@ -110,6 +110,7 @@
 #include "automation/venture-automation.h"
 
 #include "report/venture-report.h"
+#include "periods/venture-period-report.h"
 
 /* The confirmation store comes first: the context owns one and names its
  * type in an accessor. */

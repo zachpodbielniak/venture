@@ -317,8 +317,15 @@ static GPtrArray *
 venture_report_fetch_all(
 	VentureContext	 *context,
 	VentureQuery	 *query,
+	JsonObject	 *options,
 	GError		**error
 ){
+	if (!venture_period_report_scope(query, options, error))
+		return NULL;
+	if ((NULL != options) && json_object_has_member(options, "organization_id") &&
+		(VENTURE_TYPE_INVOICE_LINE != venture_query_get_entity_type(query)) &&
+		(VENTURE_TYPE_INVENTORY_TXN != venture_query_get_entity_type(query)))
+		venture_query_set_organization(query, venture_json_object_get_int(options, "organization_id", 0));
 	venture_query_set_limit(query, 0);
 
 	return venture_database_find(venture_context_get_database(context),
@@ -367,12 +374,12 @@ venture_report_pnl(
 	if (NULL == expenses_query)
 		return NULL;
 
-	sales = venture_report_fetch_all(context, sales_query, error);
+	sales = venture_report_fetch_all(context, sales_query, options, error);
 
 	if (NULL == sales)
 		return NULL;
 
-	expenses = venture_report_fetch_all(context, expenses_query, error);
+	expenses = venture_report_fetch_all(context, expenses_query, options, error);
 
 	if (NULL == expenses)
 		return NULL;
@@ -500,7 +507,7 @@ venture_report_ventures(
 	venture_query_set_organization(ventures_query,
 		venture_context_get_default_organization_id(context));
 
-	ventures = venture_report_fetch_all(context, ventures_query, error);
+	ventures = venture_report_fetch_all(context, ventures_query, options, error);
 
 	if (NULL == ventures)
 		return NULL;
@@ -566,8 +573,8 @@ venture_report_ventures(
 		                                  period, error))
 			return NULL;
 
-		sales = venture_report_fetch_all(context, sales_query, error);
-		expenses = venture_report_fetch_all(context, expenses_query, error);
+		sales = venture_report_fetch_all(context, sales_query, options, error);
+		expenses = venture_report_fetch_all(context, expenses_query, options, error);
 
 		if ((NULL == sales) || (NULL == expenses))
 			return NULL;
@@ -643,7 +650,7 @@ venture_report_categories(
 	if (NULL == sales_query)
 		return NULL;
 
-	sales = venture_report_fetch_all(context, sales_query, error);
+	sales = venture_report_fetch_all(context, sales_query, options, error);
 
 	if (NULL == sales)
 		return NULL;
@@ -822,7 +829,7 @@ venture_report_inventory(
 	venture_query_set_organization(items_query,
 		venture_context_get_default_organization_id(context));
 
-	items = venture_report_fetch_all(context, items_query, error);
+	items = venture_report_fetch_all(context, items_query, options, error);
 
 	if (NULL == items)
 		return NULL;
@@ -888,7 +895,7 @@ venture_report_inventory(
 				return NULL;
 		}
 
-		transactions = venture_report_fetch_all(context, txn_query, error);
+		transactions = venture_report_fetch_all(context, txn_query, options, error);
 
 		if (NULL == transactions)
 			return NULL;
@@ -981,7 +988,7 @@ venture_report_tax(
 	if (NULL == expenses_query)
 		return NULL;
 
-	expenses = venture_report_fetch_all(context, expenses_query, error);
+	expenses = venture_report_fetch_all(context, expenses_query, options, error);
 
 	if (NULL == expenses)
 		return NULL;
@@ -1141,7 +1148,7 @@ venture_report_campaigns(
 	if (NULL == query)
 		return NULL;
 
-	campaigns = venture_report_fetch_all(context, query, error);
+	campaigns = venture_report_fetch_all(context, query, options, error);
 
 	if (NULL == campaigns)
 		return NULL;
@@ -1221,7 +1228,7 @@ venture_report_pipeline(
 	venture_query_set_organization(query,
 		venture_context_get_default_organization_id(context));
 
-	deals = venture_report_fetch_all(context, query, error);
+	deals = venture_report_fetch_all(context, query, options, error);
 
 	if (NULL == deals)
 		return NULL;
@@ -1371,8 +1378,8 @@ venture_report_monthly(
 		if (NULL == expenses_query)
 			return NULL;
 
-		sales = venture_report_fetch_all(context, sales_query, error);
-		expenses = venture_report_fetch_all(context, expenses_query, error);
+		sales = venture_report_fetch_all(context, sales_query, options, error);
+		expenses = venture_report_fetch_all(context, expenses_query, options, error);
 
 		if ((NULL == sales) || (NULL == expenses))
 			return NULL;
@@ -1415,7 +1422,7 @@ venture_report_ideas(
 	venture_query_set_organization(query,
 		venture_context_get_default_organization_id(context));
 
-	ideas = venture_report_fetch_all(context, query, error);
+	ideas = venture_report_fetch_all(context, query, options, error);
 
 	if (NULL == ideas)
 		return NULL;
@@ -1516,6 +1523,7 @@ static VentureMoney *
 venture_report_invoice_total(
 	VentureContext	 *context,
 	gint64		  invoice_id,
+	JsonObject	 *options,
 	guint		 *inout_skipped,
 	GError		**error
 ){
@@ -1530,7 +1538,7 @@ venture_report_invoice_total(
 	                                  VENTURE_FILTER_OP_EQ, invoice_id, error))
 		return NULL;
 
-	lines = venture_report_fetch_all(context, query, error);
+	lines = venture_report_fetch_all(context, query, options, error);
 
 	if (NULL == lines)
 		return NULL;
@@ -1586,6 +1594,7 @@ venture_report_receivables(
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) invoices = NULL;
 	g_autoptr(GDateTime) fallback_now = NULL;
+	g_autoptr(GDateTime) historical_as_of = NULL;
 	g_autoptr(GPtrArray) all_amounts = NULL;
 	g_autoptr(GPtrArray) overdue_amounts = NULL;
 	GPtrArray *bucket_amounts[G_N_ELEMENTS(buckets)];
@@ -1595,6 +1604,9 @@ venture_report_receivables(
 	gsize b;
 	guint i;
 
+	historical_as_of = venture_period_report_as_of(options, error);
+	if ((NULL != options) && json_object_has_member(options, "as_of") && (NULL == historical_as_of))
+		return NULL;
 	query = venture_report_scoped_query(context, VENTURE_TYPE_INVOICE, NULL,
 	                                    NULL, options, error);
 
@@ -1603,7 +1615,7 @@ venture_report_receivables(
 
 	/* Only a sent invoice is a claim on anybody: a draft is still being
 	 * written, and paid or void ones are settled history. */
-	if (!venture_query_add_filter_string(query, "status",
+	if ((NULL == historical_as_of) && !venture_query_add_filter_string(query, "status",
 	                                     VENTURE_FILTER_OP_EQ,
 	                                     venture_enum_to_nick(
 	                                         VENTURE_TYPE_INVOICE_STATUS,
@@ -1611,12 +1623,28 @@ venture_report_receivables(
 	                                     error))
 		return NULL;
 
-	invoices = venture_report_fetch_all(context, query, error);
+	invoices = venture_report_fetch_all(context, query, options, error);
 
 	if (NULL == invoices)
 		return NULL;
 
-	as_of = (NULL != period) ? venture_date_range_get_end(period) : NULL;
+	if (NULL != historical_as_of)
+	{
+		i = 0;
+		while (i < invoices->len)
+		{
+			gboolean outstanding;
+			if (!venture_period_report_invoice_outstanding(venture_context_get_database(context),
+				g_ptr_array_index(invoices, i), historical_as_of, &outstanding, error))
+				return NULL;
+			if (!outstanding)
+				g_ptr_array_remove_index(invoices, i);
+			else
+				i++;
+		}
+	}
+	as_of = (NULL != historical_as_of) ? historical_as_of :
+		((NULL != period) ? venture_date_range_get_end(period) : NULL);
 
 	/* Age as of the period's end, but never later than now.
 	 *
@@ -1634,7 +1662,7 @@ venture_report_receivables(
 	 */
 	fallback_now = venture_time_now();
 
-	if ((NULL == as_of) || (g_date_time_compare(as_of, fallback_now) > 0))
+	if ((NULL == historical_as_of) && ((NULL == as_of) || (g_date_time_compare(as_of, fallback_now) > 0)))
 		as_of = fallback_now;
 
 	result = venture_report_result_new("Receivables aging", period);
@@ -1670,7 +1698,7 @@ venture_report_receivables(
 
 		total = venture_report_invoice_total(context,
 		                                     venture_entity_get_id(invoice),
-		                                     &skipped, error);
+		                                     options, &skipped, error);
 
 		if (NULL == total)
 		{
@@ -1851,7 +1879,7 @@ venture_report_releases(
 	                             error))
 		return NULL;
 
-	releases = venture_report_fetch_all(context, query, error);
+	releases = venture_report_fetch_all(context, query, options, error);
 
 	if (NULL == releases)
 		return NULL;
@@ -1996,7 +2024,7 @@ venture_report_lead_time(
 	                             error))
 		return NULL;
 
-	releases = venture_report_fetch_all(context, query, error);
+	releases = venture_report_fetch_all(context, query, options, error);
 
 	if (NULL == releases)
 		return NULL;
@@ -2044,7 +2072,7 @@ venture_report_lead_time(
 		                                  venture_entity_get_id(release), error))
 			return NULL;
 
-		tickets = venture_report_fetch_all(context, tickets_query, error);
+		tickets = venture_report_fetch_all(context, tickets_query, options, error);
 
 		if (NULL == tickets)
 			return NULL;
@@ -2158,7 +2186,7 @@ venture_report_incidents(
 	                             error))
 		return NULL;
 
-	incidents = venture_report_fetch_all(context, query, error);
+	incidents = venture_report_fetch_all(context, query, options, error);
 
 	if (NULL == incidents)
 		return NULL;
@@ -2292,7 +2320,7 @@ venture_report_delivery(
 	env_query = venture_query_new(VENTURE_TYPE_ENVIRONMENT);
 	venture_query_set_organization(env_query,
 		venture_context_get_default_organization_id(context));
-	environments = venture_report_fetch_all(context, env_query, error);
+	environments = venture_report_fetch_all(context, env_query, options, error);
 
 	if (NULL == environments)
 		return NULL;
@@ -2322,7 +2350,7 @@ venture_report_delivery(
 
 	venture_query_add_order(deploy_query, "deployed-at", VENTURE_SORT_ASCENDING,
 	                        NULL);
-	deployments = venture_report_fetch_all(context, deploy_query, error);
+	deployments = venture_report_fetch_all(context, deploy_query, options, error);
 
 	if (NULL == deployments)
 		return NULL;
@@ -2335,7 +2363,7 @@ venture_report_delivery(
 	                                  error))
 		return NULL;
 
-	incidents = venture_report_fetch_all(context, incident_query, error);
+	incidents = venture_report_fetch_all(context, incident_query, options, error);
 
 	if (NULL == incidents)
 		return NULL;
@@ -2566,7 +2594,7 @@ venture_report_delivery(
 		                                  error))
 			return NULL;
 
-		runs = venture_report_fetch_all(context, run_query, error);
+		runs = venture_report_fetch_all(context, run_query, options, error);
 
 		if (NULL == runs)
 			return NULL;
@@ -2699,7 +2727,7 @@ venture_report_support(
 	    !venture_query_set_date_range(query, "created-at", period, error))
 		return NULL;
 
-	tickets = venture_report_fetch_all(context, query, error);
+	tickets = venture_report_fetch_all(context, query, options, error);
 
 	if (NULL == tickets)
 		return NULL;
@@ -2953,4 +2981,6 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 			                                       builtins[i].description,
 			                                       builtins[i].func)));
 	}
+	venture_period_reports_register(self);
+
 }

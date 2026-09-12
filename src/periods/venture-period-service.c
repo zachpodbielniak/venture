@@ -5,6 +5,7 @@ struct _VenturePeriodService
 {
 	GObject parent_instance;
 	GWeakRef database;
+	GWeakRef context;
 	VenturePeriodChecklist *checklist;
 	VentureEntity *saving;
 };
@@ -16,6 +17,8 @@ service_get_property(GObject *object, guint id, GValue *value, GParamSpec *pspec
 	VenturePeriodService *self = VENTURE_PERIOD_SERVICE(object);
 	if (1 == id)
 		g_value_take_object(value, g_weak_ref_get(&self->database));
+	else if (2 == id)
+		g_value_take_object(value, g_weak_ref_get(&self->context));
 	else
 		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, pspec);
 }
@@ -26,6 +29,8 @@ service_set_property(GObject *object, guint id, const GValue *value, GParamSpec 
 	VenturePeriodService *self = VENTURE_PERIOD_SERVICE(object);
 	if (1 == id)
 		g_weak_ref_set(&self->database, g_value_get_object(value));
+	else if (2 == id)
+		g_weak_ref_set(&self->context, g_value_get_object(value));
 	else
 		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, pspec);
 }
@@ -35,6 +40,7 @@ service_finalize(GObject *object)
 {
 	VenturePeriodService *self = VENTURE_PERIOD_SERVICE(object);
 	g_weak_ref_clear(&self->database);
+	g_weak_ref_clear(&self->context);
 	g_clear_object(&self->checklist);
 	G_OBJECT_CLASS(venture_period_service_parent_class)->finalize(object);
 }
@@ -49,17 +55,27 @@ venture_period_service_class_init(VenturePeriodServiceClass *klass)
 	g_object_class_install_property(object_class, 1,
 		g_param_spec_object("database", "Database", "Owning repository",
 			VENTURE_TYPE_DATABASE, G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_STRINGS));
+	g_object_class_install_property(object_class, 2,
+		g_param_spec_object("context", "Context", "Reporting context", VENTURE_TYPE_CONTEXT,
+			G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 }
 
 static void
 venture_period_service_init(VenturePeriodService *self)
 {
 	g_weak_ref_init(&self->database, NULL);
+	g_weak_ref_init(&self->context, NULL);
 	self->checklist = venture_period_checklist_new();
 }
 
 VenturePeriodChecklist *venture_period_service_get_checklist(VenturePeriodService *self)
 { return self->checklist; }
+
+void venture_period_service_install(VentureContext *context)
+{
+	VenturePeriodService *self = venture_period_service_get(venture_context_get_database(context));
+	g_object_set(self, "context", context, NULL);
+}
 
 VenturePeriodService *
 venture_period_service_get(VentureDatabase *database)
@@ -350,6 +366,7 @@ venture_periods_save(VentureDatabase *database, VentureEntity *entity,
 	VenturePeriodService *self;
 	g_autoptr(VentureEntity) working = NULL;
 	g_autoptr(VentureEntity) previous = NULL;
+	g_autoptr(GPtrArray) snapshots = NULL;
 	gboolean created;
 	gboolean ok;
 
@@ -361,6 +378,11 @@ venture_periods_save(VentureDatabase *database, VentureEntity *entity,
 	if (self->saving == entity)
 		return TRUE;
 	*handled = TRUE;
+	if (G_TYPE_INVALID == venture_entity_registry_lookup(venture_entity_registry_get_default(), "fiscal_year"))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "The periods module is disabled");
+		return FALSE;
+	}
 	if (VENTURE_IS_REPORT_SNAPSHOT(entity))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
@@ -401,8 +423,35 @@ venture_periods_save(VentureDatabase *database, VentureEntity *entity,
 	ok = validate_calendar(database, working, previous, error);
 	if (ok)
 		ok = validate_transition(self, database, working, previous, actor, error);
+	if (ok && !created && VENTURE_IS_FISCAL_PERIOD(working))
+	{
+		gint before;
+		gint after;
+		g_object_get(previous, "state", &before, NULL);
+		g_object_get(working, "state", &after, NULL);
+		if ((VENTURE_PERIOD_OPEN == before) && (VENTURE_PERIOD_CLOSED == after))
+		{
+			g_autoptr(VentureContext) context = g_weak_ref_get(&self->context);
+			if (NULL == context)
+			{
+				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "Period close needs a reporting context to preserve snapshots");
+				ok = FALSE;
+			}
+			else
+			{
+				snapshots = venture_period_report_snapshots(context, working, error);
+				ok = NULL != snapshots;
+			}
+		}
+	}
 	if (ok)
 		ok = save_internal(self, database, working, actor, error);
+	if (ok && (NULL != snapshots))
+	{
+		guint i;
+		for (i = 0; ok && (i < snapshots->len); i++)
+			ok = save_internal(self, database, g_ptr_array_index(snapshots, i), actor, error);
+	}
 	if (ok && created && VENTURE_IS_FISCAL_YEAR(entity))
 		ok = generate_periods(self, database, working, actor, error);
 	if (!ok)
