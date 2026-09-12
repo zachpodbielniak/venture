@@ -6,6 +6,7 @@
  */
 
 #include "venture.h"
+#include "ledger/venture-ledger-private.h"
 
 #include <string.h>
 
@@ -85,6 +86,7 @@ enum
 	SIGNAL_ENTITY_SAVED,
 	SIGNAL_ENTITY_DELETED,
 	SIGNAL_AUDIT,
+	SIGNAL_TRANSACTION_FINISHED,
 	N_SIGNALS
 };
 
@@ -155,6 +157,18 @@ venture_database_class_init(VentureDatabaseClass *klass)
 		g_signal_new("audit", G_TYPE_FROM_CLASS(klass),
 		             G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
 		             G_TYPE_NONE, 1, VENTURE_TYPE_ENTITY);
+
+	/**
+	 * VentureDatabase::transaction-finished:
+	 * @self: the database
+	 * @committed: TRUE only after a successful outermost commit
+	 *
+	 * An inner rollback emits FALSE immediately; an inner commit emits
+	 * nothing. Services use this to publish committed effects only.
+	 */
+	venture_database_signals[SIGNAL_TRANSACTION_FINISHED] =
+		g_signal_new("transaction-finished", G_TYPE_FROM_CLASS(klass),
+			G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_NONE, 1, G_TYPE_BOOLEAN);
 }
 
 static void
@@ -584,6 +598,8 @@ venture_database_commit(
 	self->transaction_owner = NULL;
 	g_rec_mutex_unlock(&self->lock);
 
+	g_signal_emit(self, venture_database_signals[SIGNAL_TRANSACTION_FINISHED], 0, ok);
+
 	if (!ok)
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
@@ -617,6 +633,7 @@ venture_database_rollback(VentureDatabase *self)
 	{
 		orm_transaction_rollback(self->transaction, NULL);
 		g_clear_object(&self->transaction);
+		g_signal_emit(self, venture_database_signals[SIGNAL_TRANSACTION_FINISHED], 0, FALSE);
 	}
 
 	if (0 == self->transaction_depth)
@@ -1000,6 +1017,10 @@ venture_database_save(
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
 
+	/* Source and posting share a transaction, whichever surface saved it. */
+	if (venture_ledger_wrap_source(self, entity))
+		return venture_ledger_save_source(self, entity, actor, error);
+
 	/* Validation happens before anything is written, never after: a
 	 * half-written invalid record is worse than a rejected one. */
 	if (!venture_entity_validate(entity, error))
@@ -1011,6 +1032,13 @@ venture_database_save(
 	created = !venture_entity_is_persisted(entity);
 
 	g_rec_mutex_lock(&self->lock);
+
+	/* Before the empty-diff fast path: identity edits must not bypass this. */
+	if (!venture_ledger_check_write(self, entity, NULL, FALSE, error))
+	{
+		g_rec_mutex_unlock(&self->lock);
+		return FALSE;
+	}
 
 	if (!created)
 	{
@@ -1284,10 +1312,15 @@ venture_database_delete(
 	GError			**error
 ){
 	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GRecMutexLocker) ledger_lock = NULL;
 	gint64 expected_version;
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+
+	ledger_lock = g_rec_mutex_locker_new(&self->lock);
+	if (!venture_ledger_check_write(self, entity, NULL, TRUE, error))
+		return FALSE;
 
 	if (!venture_entity_is_persisted(entity))
 	{
@@ -1334,9 +1367,14 @@ venture_database_restore(
 	GError			**error
 ){
 	gint64 expected_version;
+	g_autoptr(GRecMutexLocker) ledger_lock = NULL;
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+
+	ledger_lock = g_rec_mutex_locker_new(&self->lock);
+	if (!venture_ledger_check_write(self, entity, NULL, TRUE, error))
+		return FALSE;
 
 	if (!venture_entity_is_deleted(entity))
 		return TRUE;
@@ -1366,9 +1404,14 @@ venture_database_purge(
 	g_autofree gchar *table = NULL;
 	GList *params = NULL;
 	gboolean ok;
+	g_autoptr(GRecMutexLocker) ledger_lock = NULL;
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+
+	ledger_lock = g_rec_mutex_locker_new(&self->lock);
+	if (!venture_ledger_check_write(self, entity, NULL, TRUE, error))
+		return FALSE;
 
 	if (!venture_entity_is_persisted(entity))
 		return TRUE;
@@ -1484,20 +1527,8 @@ venture_database_save_ledger_transaction(
 		return FALSE;
 	}
 
-	if (!venture_database_begin(self, error))
-		return FALSE;
-
-	for (i = 0; i < entries->len; i++)
-	{
-		if (!venture_database_save(self, g_ptr_array_index(entries, i),
-		                           actor, error))
-		{
-			venture_database_rollback(self);
-			return FALSE;
-		}
-	}
-
-	return venture_database_commit(self, error);
+	/* Compatibility callers still cross the same journal posting boundary. */
+	return venture_ledger_post_legacy(self, entries, actor, error);
 }
 
 /* --- Aggregation --------------------------------------------------------- */

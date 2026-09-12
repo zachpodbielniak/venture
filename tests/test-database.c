@@ -1416,6 +1416,7 @@ test_database_sum_money(
 		sale = venture_sale_new();
 		gross = venture_money_new(amounts[i], "USD", 2);
 		g_object_set(sale,
+		             "organization-id", fixture->organization_id,
 		             "venture-id",
 		             venture_entity_get_id(VENTURE_ENTITY(venture)),
 		             "gross", gross,

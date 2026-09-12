@@ -637,6 +637,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_expense_get_type,
 		venture_account_get_type,
 		venture_ledger_entry_get_type,
+		venture_journal_get_type,
+		venture_journal_line_get_type,
 		venture_tax_category_get_type,
 
 		venture_contact_get_type,

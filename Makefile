@@ -52,6 +52,7 @@ endif
 # binary be built in isolation.
 
 CORE_SRCS := \
+	src/ledger/venture-journal.c \
 	src/venture-version.c \
 	src/venture-enums.c \
 	src/venture-error.c \
@@ -64,6 +65,7 @@ CORE_SRCS := \
 
 # Server-only subsystems.
 SERVER_ONLY_SRCS := \
+	$(filter-out src/ledger/venture-journal.c,$(wildcard src/ledger/*.c)) \
 	$(wildcard src/core/*.c) \
 	$(wildcard src/db/*.c) \
 	$(wildcard src/report/*.c) \
@@ -81,6 +83,7 @@ MAIN_SRC := src/main.c
 
 # Public headers: installed, and fed to the GIR scanner.
 PUBLIC_HDRS := \
+	$(filter-out %-private.h,$(wildcard src/ledger/*.h)) \
 	src/venture.h \
 	src/venture-types.h \
 	src/venture-enums.h \
