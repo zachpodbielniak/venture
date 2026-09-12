@@ -65,6 +65,32 @@ test_config_theme_is_a_closed_set(void)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
 }
 
+/*
+ * ui.look is a closed set for the same reason: the web layer picks a whole
+ * embedded stylesheet from it.
+ */
+static void
+test_config_look_is_a_closed_set(void)
+{
+	g_autoptr(VentureConfig) config = NULL;
+	g_autoptr(GError) error = NULL;
+
+	config = venture_config_new();
+
+	g_assert_true(venture_config_look_is_valid("classic"));
+	g_assert_true(venture_config_look_is_valid("industrial"));
+	g_assert_false(venture_config_look_is_valid("brutalist"));
+	g_assert_false(venture_config_look_is_valid(NULL));
+
+	g_object_set(config, "ui-look", "classic", NULL);
+	g_assert_true(venture_config_validate(config, &error));
+	g_assert_no_error(error);
+
+	g_object_set(config, "ui-look", "../venture.css", NULL);
+	g_assert_false(venture_config_validate(config, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+}
+
 static void
 test_config_ai_policy_defaults_to_confirm(void)
 {
@@ -705,6 +731,8 @@ main(
 	                test_config_ai_policy_defaults_to_confirm);
 	g_test_add_func("/config/theme-is-a-closed-set",
 	                test_config_theme_is_a_closed_set);
+	g_test_add_func("/config/look-is-a-closed-set",
+	                test_config_look_is_a_closed_set);
 	g_test_add_func("/config/embedded-yaml-parses", test_config_embedded_yaml_parses);
 	g_test_add_func("/config/yaml-overrides", test_config_yaml_overrides);
 	g_test_add_func("/config/yaml-partial-leaves-rest",

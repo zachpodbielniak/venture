@@ -330,6 +330,84 @@ venture_web_append_theme_script(
 		".setAttribute('data-theme',t);}catch(e){}})();</script>", theme);
 }
 
+/*
+ * Which of the two looks a page is drawn in.
+ *
+ * A look is a whole stylesheet: "classic" is the editorial design, white
+ * cards on a bone canvas with serif titles; "industrial" is the
+ * instrument panel. Each carries every theme. The browser's own choice is
+ * a plain cookie set by the switch in the sidebar, and the configured
+ * ui.look is what applies until it has made one. The cookie is read here
+ * rather than through the session because the sign-in page has no
+ * session and should still come up in the look the person last chose.
+ *
+ * The value is validated against the closed set on the way in, so a
+ * cookie somebody edited by hand falls back to the configuration rather
+ * than reaching the page.
+ */
+#define VENTURE_WEB_LOOK_COOKIE "venture_look"
+
+static const gchar *
+venture_web_look(
+	VentureWebServer	*self,
+	HtmxRequest		*request
+){
+	g_autofree gchar *configured = NULL;
+	SoupServerMessage *message;
+	const gchar *header;
+
+	message = (NULL != request) ? htmx_request_get_message(request) : NULL;
+	header = (NULL != message)
+		? soup_message_headers_get_list(
+			soup_server_message_get_request_headers(message), "Cookie")
+		: NULL;
+
+	if (NULL != header)
+	{
+		g_autoptr(GHashTable) cookies = NULL;
+
+		cookies = htmx_cookie_parse_request(header);
+
+		if (NULL != cookies)
+		{
+			const gchar *chosen;
+
+			chosen = g_hash_table_lookup(cookies, VENTURE_WEB_LOOK_COOKIE);
+
+			if (venture_config_look_is_valid(chosen))
+				return (0 == g_strcmp0(chosen, "classic"))
+					? "classic" : "industrial";
+		}
+	}
+
+	g_object_get(venture_context_get_config(self->context), "ui-look",
+	             &configured, NULL);
+
+	return (0 == g_strcmp0(configured, "classic")) ? "classic" : "industrial";
+}
+
+/*
+ * The stylesheet for the chosen look, inlined. One or the other, never
+ * both: they are each the whole design, and the page is the same weight
+ * it was when there was only one.
+ */
+static void
+venture_web_append_stylesheet(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	GString			*html
+){
+	const gchar *look;
+
+	look = venture_web_look(self, request);
+
+	g_string_append(html, "<style>");
+	g_string_append(html, (0 == g_strcmp0(look, "classic"))
+		? venture_asset_venture_classic_css
+		: venture_asset_venture_industrial_css);
+	g_string_append(html, "</style>");
+}
+
 static gchar *
 venture_web_page(
 	VentureWebServer	*self,
@@ -1172,9 +1250,7 @@ venture_web_page(
 	 */
 	venture_web_append_theme_script(self, html);
 
-	g_string_append(html, "<style>");
-	g_string_append(html, venture_asset_venture_css);
-	g_string_append(html, "</style>");
+	venture_web_append_stylesheet(self, request, html);
 
 	/*
 	 * The configured accent overrides the stylesheet's default without
@@ -1187,9 +1263,15 @@ venture_web_page(
 	 * dark theme's own :root[data-theme="dark"] rule, so the configured
 	 * colour would apply in light mode and silently disappear in dark.
 	 */
-	g_string_append(html, "<style>:root{--accent-config:");
-	venture_html_escape_append(html, accent);
-	g_string_append(html, ";}</style>");
+	/* An empty ui.accent means the look's own colour -- blue in the
+	 * classic stylesheet, red in the industrial -- so nothing is emitted
+	 * and each look keeps the accent it was drawn with. */
+	if (!venture_string_is_empty(accent))
+	{
+		g_string_append(html, "<style>:root{--accent-config:");
+		venture_html_escape_append(html, accent);
+		g_string_append(html, ";}</style>");
+	}
 
 	g_string_append(html, "</head><body><div class=\"app\">");
 
@@ -1288,6 +1370,41 @@ venture_web_page(
 				                     (gint)principal->role));
 			g_string_append(html, "</span></div>");
 		}
+	}
+
+	/*
+	 * The data plate: which build this is, and that it answered. A
+	 * <samp> because it is the program's own output rather than a
+	 * person's words, which is also what sets it in the mono.
+	 */
+	g_string_append(html, "<div class=\"sidebar-rev\">"
+	                      "<samp>REV " VENTURE_VERSION_S "</samp>"
+	                      "<samp class=\"live\">Online</samp></div>");
+
+	/*
+	 * The look switch: a form, so it works with scripting off and the
+	 * choice is a cookie the server reads before it draws anything. The
+	 * button names the look it switches to, and the current path rides
+	 * along so the same page comes back in the other design.
+	 */
+	{
+		const gchar *look;
+
+		look = venture_web_look(self, request);
+
+		g_string_append(html, "<form class=\"look-switch\" method=\"post\" "
+		                      "action=\"/look\">"
+		                      "<input type=\"hidden\" name=\"look\" value=\"");
+		g_string_append(html, (0 == g_strcmp0(look, "classic"))
+		                      ? "industrial" : "classic");
+		g_string_append(html, "\"><input type=\"hidden\" name=\"back\" value=\"");
+		venture_html_escape_append(html, htmx_request_get_path(request));
+		g_string_append(html, "\"><button class=\"btn btn-ghost btn-sm\" "
+		                      "type=\"submit\" title=\"Switch the design; "
+		                      "the themes are the same in both\">");
+		g_string_append(html, (0 == g_strcmp0(look, "classic"))
+		                      ? "Industrial look" : "Classic look");
+		g_string_append(html, "</button></form>");
 	}
 
 	g_string_append(html, "<button class=\"btn btn-ghost btn-sm\" "
@@ -5373,6 +5490,7 @@ venture_web_ui_report(
 static gchar *
 venture_web_auth_page(
 	VentureWebServer	*self,
+	HtmxRequest		*request,
 	const gchar		*body
 ){
 	g_autoptr(GString) html = NULL;
@@ -5394,13 +5512,17 @@ venture_web_auth_page(
 
 	venture_web_append_theme_script(self, html);
 
-	g_string_append(html, "<style>");
-	g_string_append(html, venture_asset_venture_css);
-	g_string_append(html, "</style>");
+	venture_web_append_stylesheet(self, request, html);
 
-	g_string_append(html, "<style>:root{--accent-config:");
-	venture_html_escape_append(html, accent);
-	g_string_append(html, ";}</style>");
+	/* An empty ui.accent means the look's own colour -- blue in the
+	 * classic stylesheet, red in the industrial -- so nothing is emitted
+	 * and each look keeps the accent it was drawn with. */
+	if (!venture_string_is_empty(accent))
+	{
+		g_string_append(html, "<style>:root{--accent-config:");
+		venture_html_escape_append(html, accent);
+		g_string_append(html, ";}</style>");
+	}
 
 	g_string_append(html, "</head><body><main class=\"auth\">"
 	                      "<div class=\"auth-inner\">");
@@ -5431,7 +5553,7 @@ venture_web_ui_login_form(
 
 	self = user_data;
 
-	html = venture_web_auth_page(self,
+	html = venture_web_auth_page(self, request,
 		"<form class=\"auth-form\" method=\"post\" action=\"/login\">"
 		"<div class=\"field\"><label for=\"u\">Username</label>"
 		"<input id=\"u\" type=\"text\" name=\"username\" "
@@ -5483,7 +5605,7 @@ venture_web_ui_login_submit(
 		                      "<a class=\"btn btn-primary btn-lg\" "
 		                      "href=\"/login\">Try again</a></div>");
 
-		html = venture_web_auth_page(self, body->str);
+		html = venture_web_auth_page(self, request, body->str);
 
 		return venture_web_html_response(g_steal_pointer(&html), 401);
 	}
@@ -5492,6 +5614,64 @@ venture_web_ui_login_submit(
 	htmx_response_set_status(response, 302);
 	htmx_response_add_header(response, "Location", "/");
 	htmx_response_add_header(response, "Set-Cookie", cookie);
+
+	return response;
+}
+
+/*
+ * POST /look: remember which design this browser wants.
+ *
+ * The choice is a plain cookie -- not HttpOnly, there is nothing in it
+ * worth hiding from a script, and not tied to the session, because the
+ * sign-in page is drawn in it too. A year, because a person who picked a
+ * look picked it for good. The page to go back to is the one the switch
+ * was on, checked to be a local path so the form cannot be used to send
+ * somebody elsewhere.
+ */
+static HtmxResponse *
+venture_web_ui_look(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	HtmxResponse *redirect;
+	HtmxResponse *response;
+	const gchar *look;
+	const gchar *back;
+
+	self = user_data;
+	redirect = venture_web_ui_require_session(self, request);
+
+	if (NULL != redirect)
+		return redirect;
+
+	look = htmx_request_get_form_value(request, "look");
+	back = htmx_request_get_form_value(request, "back");
+
+	if (venture_string_is_empty(back) || ('/' != back[0]) ||
+	    g_str_has_prefix(back, "//"))
+		back = "/";
+
+	response = venture_web_redirect_to(back);
+
+	if (venture_config_look_is_valid(look))
+	{
+		g_autoptr(HtmxCookie) cookie = NULL;
+		g_autofree gchar *header = NULL;
+		gboolean secure;
+
+		g_object_get(venture_context_get_config(self->context),
+		             "security-cookie-secure", &secure, NULL);
+
+		cookie = htmx_cookie_new(VENTURE_WEB_LOOK_COOKIE, look);
+		htmx_cookie_set_path(cookie, "/");
+		htmx_cookie_set_max_age(cookie, 365 * 24 * 3600);
+		htmx_cookie_set_same_site(cookie, HTMX_COOKIE_SAME_SITE_LAX);
+		htmx_cookie_set_secure(cookie, secure);
+		header = htmx_cookie_to_set_cookie(cookie);
+		htmx_response_add_header(response, "Set-Cookie", header);
+	}
 
 	return response;
 }
@@ -24749,6 +24929,7 @@ venture_web_server_new(
 	htmx_router_get(router, "/login", venture_web_ui_login_form, self);
 	htmx_router_post(router, "/login", venture_web_ui_login_submit, self);
 	htmx_router_get(router, "/logout", venture_web_ui_logout, self);
+	htmx_router_post(router, "/look", venture_web_ui_look, self);
 	htmx_router_post(router, "/ui/chat", venture_web_ui_chat, self);
 	htmx_router_get(router, "/ui/chat/threads", venture_web_ui_chat_threads,
 	                self);

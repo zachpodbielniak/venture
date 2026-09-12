@@ -203,7 +203,8 @@ $(OUTDIR)/venture-default-config.h: data/default-config.yaml data/default-config
 # whole UI with no data directory to install, no CDN and no build-time
 # download. See data/static/venture-hx.js for why the htmx runtime is our
 # own rather than vendored.
-ASSET_FILES := data/static/venture.css \
+ASSET_FILES := data/static/venture-classic.css \
+               data/static/venture-industrial.css \
                data/static/venture-hx.js \
                data/static/venture.js
 

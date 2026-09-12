@@ -248,7 +248,10 @@ static const VentureConfigSetting venture_config_settings[] = {
 
 	VC_STR ("ui-theme", "ui", "theme", "system",
 	        "system, light, dark or mocha"),
-	VC_STR ("ui-accent", "ui", "accent", "#1f6c9f", "Accent colour"),
+	VC_STR ("ui-look", "ui", "look", "industrial",
+	        "classic or industrial"),
+	VC_STR ("ui-accent", "ui", "accent", "",
+	        "Accent colour; empty means the look's own"),
 	VC_INT ("ui-page-size", "ui", "page_size", 50, "Rows per page"),
 	VC_BOOL("ui-chat-dock", "ui", "chat_dock", TRUE, "Show the AI chat dock"),
 	VC_BOOL("ui-chat-dock-expanded", "ui", "chat_dock_expanded", FALSE,
@@ -792,6 +795,14 @@ venture_config_theme_is_valid(const gchar *theme)
 }
 
 gboolean
+venture_config_look_is_valid(const gchar *look)
+{
+	static const gchar *const looks[] = { "classic", "industrial", NULL };
+
+	return (NULL != look) && g_strv_contains(looks, look);
+}
+
+gboolean
 venture_config_apply_yaml_string(
 	VentureConfig	 *self,
 	const gchar	 *yaml,
@@ -1202,6 +1213,20 @@ venture_config_validate(
 			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
 			            "ui.theme must be system, light, dark or mocha, "
 			            "not \"%s\"", (NULL != theme) ? theme : "");
+			return FALSE;
+		}
+	}
+
+	{
+		g_autofree gchar *look = NULL;
+
+		g_object_get(self, "ui-look", &look, NULL);
+
+		if (!venture_config_look_is_valid(look))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			            "ui.look must be classic or industrial, not \"%s\"",
+			            (NULL != look) ? look : "");
 			return FALSE;
 		}
 	}

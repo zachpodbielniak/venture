@@ -1109,6 +1109,8 @@ test_auth_pages_refuse_anonymous_requests(
 		NULL, "id=0", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/watch",
 		NULL, "type=ticket&id=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/look",
+		NULL, "look=classic", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/views",
 		NULL, "name=x&entity_type=ticket", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/views/1/delete",
@@ -3048,6 +3050,80 @@ test_auth_sidebar_marks_the_active_entry(
 }
 
 /*
+ * There are two looks, and the switch is a cookie the server reads before
+ * it draws anything. The default is the configured one (industrial, out of
+ * the box); posting the switch sets the cookie and sends you back where you
+ * were, and every page after that -- the sign-in page included, which has
+ * no session -- is drawn in the other stylesheet. A cookie somebody edited
+ * by hand falls back to the configuration, and the switch cannot be used
+ * to send a person off the site.
+ */
+static void
+test_auth_look_switch_is_a_cookie(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *both = NULL;
+	g_autofree gchar *forged = NULL;
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *set_cookie = NULL;
+	g_autofree gchar *body = NULL;
+
+	server_fixture_create_user(fixture, "adam", "a-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	cookie = server_fixture_login(fixture, "adam", "a-long-password");
+
+	/* Out of the box: the instrument panel, and the switch offers the
+	 * other one. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/", cookie,
+		NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "instrument panel"));
+	g_assert_null(strstr(page, "warm monochrome"));
+	g_assert_nonnull(strstr(page, "name=\"look\" value=\"classic\""));
+	g_assert_nonnull(strstr(page, ">Classic look</button>"));
+
+	/* The switch: a cookie, and back to the page it was pressed on. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/look", cookie,
+		"look=classic&back=/tickets", &body, &set_cookie),
+		==, SOUP_STATUS_FOUND);
+	g_assert_nonnull(set_cookie);
+	g_assert_nonnull(g_strstr_len(set_cookie, -1, "venture_look=classic"));
+
+	both = g_strdup_printf("%s; venture_look=classic", cookie);
+	g_free(page);
+	page = NULL;
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/", both,
+		NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "warm monochrome"));
+	g_assert_null(strstr(page, "instrument panel"));
+	g_assert_nonnull(strstr(page, ">Industrial look</button>"));
+
+	/* The sign-in page follows the cookie, session or no session. */
+	g_free(page);
+	page = NULL;
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/login",
+		"venture_look=classic", NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "warm monochrome"));
+
+	/* A forged value is the configuration again. */
+	forged = g_strdup_printf("%s; venture_look=../etc/passwd", cookie);
+	g_free(page);
+	page = NULL;
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/", forged,
+		NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "instrument panel"));
+
+	/* An off-site "back" lands on the home page instead. */
+	g_free(set_cookie);
+	set_cookie = NULL;
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/look", cookie,
+		"look=industrial&back=//evil.example/x", NULL, &set_cookie),
+		==, SOUP_STATUS_FOUND);
+	g_assert_nonnull(g_strstr_len(set_cookie, -1, "venture_look=industrial"));
+}
+
+/*
  * The database keeps a hash, never the secret -- the same property the
  * password table has, and the reason the reveal page can only ever run once.
  */
@@ -3171,6 +3247,9 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/sidebar-restores-its-scroll", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_sidebar_restores_its_scroll,
+	           server_fixture_tear_down);
+	g_test_add("/auth/look-switch-is-a-cookie", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_look_switch_is_a_cookie,
 	           server_fixture_tear_down);
 	g_test_add("/auth/sidebar-marks-the-active-entry", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_sidebar_marks_the_active_entry,

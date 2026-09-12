@@ -646,6 +646,15 @@ body::before {
 	font-weight: 450;
 }
 
+/* The revision plate belongs to the industrial look; here the footer is
+ * what it always was. */
+.sidebar-rev { display: none; }
+
+/* The look switch is a form so it works without scripting; it lays out
+ * as the row it is, the same as the buttons on either side of it. */
+.sidebar-footer .look-switch { margin: 0; display: flex; }
+.sidebar-footer .look-switch .btn { flex: 1; }
+
 /* Who you are signed in as, above the button that signs you out. */
 .sidebar-user {
 	display: flex;

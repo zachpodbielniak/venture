@@ -1,0 +1,95 @@
+#+title: The interface
+#+description: The design system behind the web UI: the substrates, the two registers of type, the geometry, and the tokens a plugin can build on
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-12]
+#+updated: [2026-09-12]
+#+version: 0.6.0
+
+* The interface
+
+VENTURE's web UI is drawn from one stylesheet at a time, embedded into the server binary at build time; there is no build step, no framework and no web font. This page is what the stylesheet is made of, so that a page added to the server, a widget added to a dashboard, or a plugin's own markup lands in the same design instead of beside it.
+
+** Two looks
+
+There are two designs, and every page exists in both. The switch at the bottom of the sidebar (a form, so it works without scripting) sets a cookie; =ui.look= in the configuration is the default until a browser has chosen.
+
+- *industrial* — the instrument panel this page describes. =data/static/venture-industrial.css=. The default.
+- *classic* — the editorial design VENTURE shipped with: serif page titles against a sans interface, white cards with rounded corners on a warm bone canvas, hairline grey rules, a configurable accent on links. =data/static/venture-classic.css=. It carries the same four themes and the same class names; it is a second reading of the same markup, not a second interface.
+
+The rest of this page is about the industrial look. The class inventory at the end applies to both, which is what lets a plugin or a widget be written once.
+
+** The substrates
+
+There are three themes and one design. The theme toggle in the sidebar footer (and the =t= key) cycles them; =ui.theme= in the configuration sets the default until a person picks one, and the choice is remembered in the browser.
+
+- *dark* — tactical telemetry. A deactivated CRT ground (=#0A0A0A=, never pure black), white phosphor text (=#EAEAEA=), scanlines and a film of grain over everything. This is the primary substrate and the one the design was drawn on.
+- *light* — Swiss industrial print. The same drawing on unbleached documentation paper (=#F4F4F0=) in carbon ink (=#111111=), with grain and no scanlines.
+- *mocha* — Catppuccin Mocha's palette on the telemetry substrate: a skin, not a second design.
+
+Every rule in the stylesheet is written once against custom properties; a theme is a block of property values. That is what keeps the three looking like one panel seen under different light, and it is the contract a plugin should rely on: use the tokens, never a literal colour.
+
+** Two registers of type
+
+The hierarchy is done by type alone. Nothing is boxed, tinted or iconed to say what it is.
+
+- *Macro* — headlines. The heavy grotesque, uppercase, tight (=letter-spacing: -0.035em=), leading under one, sized with =clamp()= so a page title scales with the viewport without ever wrapping badly. Only =h1=, =h2=, stat values and the dashboard's big figures are set this way.
+- *Micro* — readings. Small monospace, uppercase, tracked out (=10.5px=, =letter-spacing: 0.1em=). Every label in the interface is this: table headers, field captions, card heads, the navigation, badges, buttons, stat labels, timestamps, coordinates.
+- *Prose* — sentences. Plain sans at =13–14px= in sentence case: a ticket body, a comment, a description, a subtitle, a form's help text. An operator reads these, so they are never shouted.
+
+The rule for a new element is to ask which of the three it is. A thing that labels a value is micro. A thing a person reads is prose. A thing that names the page is macro.
+
+The machine-readable HTML elements are set in the mono automatically: =<code>=, =<samp>=, =<kbd>=, =<data>=, =<output>= and =<time>=. Use them for what they mean — a keystroke in =<kbd>=, a value the program produced in =<samp>=, a figure with a machine value in =<data>= — and the type follows.
+
+** Geometry
+
+Corners are ninety degrees. There is no =border-radius= anywhere, no gradient, no soft shadow; the =--radius-*= and =--shadow-*= tokens still exist for anything written against them and resolve to zero and none.
+
+Zones are compartments. A card is one rule around a surface with registration marks in its top corners. A grid of cards shares its rules: the cells sit one pixel apart and each carries a one-pixel outline, so neighbours have exactly one line between them and a short last row leaves the ground showing rather than a painted block. The same device draws the stat row, the service-level clocks and a record's definition list.
+
+A floating surface — the palette, a modal, a toast, the assistant's launcher — is separated from the page by a hard ring (=--ring=: one pixel of the ground, then one of the strong rule) rather than a blur.
+
+** One accent
+
+Hazard red is the only accent, and it means "look here": links, the focus ring, the active navigation rail, the unread mark, the keyboard cursor, the landing ghost on the dashboard canvas, the required marker on a field. Nothing large is ever filled with it. The primary button is ink on the ground, so a page with a Save and a Cancel still has exactly one solid rectangle.
+
+Green and amber are readings, not decoration: a positive figure, an overdue clock, a warning notice. They appear on a status and nowhere else.
+
+The operator may still set =ui.accent=, which then applies to both looks; left empty, each look keeps its own — red here, blue in classic. See [[file:configuration.org][Configuration]].
+
+** Framing
+
+ASCII does the framing that boxes used to. A section heading in the sidebar is =/// SECTION=. The page eyebrow is =>>> RECORD TYPE=. A card head is =[ TITLE ]=. The brand is =[ ▣ NAME ]=. A tag is =#tag=. These are drawn by the stylesheet from pseudo-elements, so the markup carries none of it and a test that inspects the HTML sees plain text.
+
+The sidebar footer carries the data plate: =REV 0.6.0= and an online mark, in =<samp>= because it is the program's own output.
+
+** Post-processing
+
+Two fixed, non-interactive layers sit over everything. On the dark substrates a =repeating-linear-gradient= draws the electron beam's sweep at low opacity; on every substrate an SVG turbulence tile, generated inline rather than downloaded, lays a film of grain. Both are felt rather than seen. They are above the palette and the assistant, because those are on the same tube as the rest, and they do not print.
+
+Motion is short and mechanical: a press moves a button one pixel down and right, a spinner is a square turning in eight steps, a card lifts by lighting its rule red. =prefers-reduced-motion= removes all of it.
+
+** The tokens
+
+A plugin page or a custom widget should use these and nothing else.
+
+| Token                              | Meaning                                                    |
+|------------------------------------+------------------------------------------------------------|
+| =--bg=                             | the ground                                                 |
+| =--surface=, =--surface-raised=    | a compartment; a floating one                              |
+| =--surface-sunken=, =--surface-hover= | a recessed field; a row under the pointer                |
+| =--border=, =--border-strong=      | the ordinary rule; the structural one                      |
+| =--text=, =--text-muted=, =--text-faint= | prose; a secondary reading; a label                  |
+| =--ink=, =--ink-contrast=          | the primary button and its label                           |
+| =--accent=, =--accent-soft=        | hazard red; its wash                                       |
+| =--positive=, =--warning=, =--negative=, =--info= | status readings, each with a =-soft= wash   |
+| =--ring=                           | the hard ring under a floating surface                     |
+| =--font=, =--font-display=, =--font-mono= | prose; macro; micro                                 |
+| =--micro-size=, =--micro-track=    | the micro register's size and tracking                     |
+| =--space-1= … =--space-8=          | 4, 8, 12, 16, 24, 40, 64, 96 pixels                        |
+
+The classes worth knowing when writing markup: =.card= with =.card-head= and =.card-body=; =.grid.cols-N= and =.bento= for compartments that share rules; =.stat= with =.stat-label= and =.stat-value=; =table.data=; =.badge= with =.positive= / =.negative= / =.warning= / =.info=; =.btn= with =.btn-primary=, =.btn-ghost=, =.btn-danger=, =.btn-sm=; =.notice= with the same four statuses; =.field= with =.field-label= and =.field-help=; =.page-head= with =.page-title=, =.eyebrow= and =.page-actions=.
+
+** Why this and not the usual
+
+A business tool is looked at for hours. The generic interface — rounded white cards, blue buttons, a drop shadow under everything — is designed to be glanced at, and it goes soft under sustained attention: nothing is aligned to anything, every element is lifted the same amount, and colour is spent on decoration so there is none left for meaning. A panel drawn with one pixel rules, two registers of type and one red is the opposite: everything sits on a line, the hierarchy is scale, and when something is red it is because you should look at it.

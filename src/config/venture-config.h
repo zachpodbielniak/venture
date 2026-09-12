@@ -353,6 +353,20 @@ gboolean
 venture_config_theme_is_valid(const gchar *theme);
 
 /**
+ * venture_config_look_is_valid:
+ * @look: (nullable): a look name
+ *
+ * The closed set `ui.look` accepts: classic, industrial. A look is a
+ * whole stylesheet -- the editorial design VENTURE shipped with, or the
+ * industrial instrument panel -- and the web layer picks which to embed
+ * from this value, so it is a closed set rather than a file name.
+ *
+ * Returns: %TRUE if @look names a look
+ */
+gboolean
+venture_config_look_is_valid(const gchar *look);
+
+/**
  * venture_config_set_module_enabled:
  * @self: a #VentureConfig
  * @module_name: a module name

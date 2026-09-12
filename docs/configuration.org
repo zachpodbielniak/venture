@@ -225,8 +225,10 @@ venture --generate-c-config > ~/.config/venture/config.c
   the confirmation queue (see below)
 - *automation* — the pods file, module paths, shutdown timeout
 - *plugins* — paths, crispy, declarative venture types
-- *ui* — theme (=system=, =light=, =dark= or =mocha=, the Catppuccin
-  palette; the default until a person picks one with the toggle), accent,
+- *ui* — look (=classic= or =industrial=, the two designs; the default
+  until a person picks one with the switch in the sidebar), theme
+  (=system=, =light=, =dark= or =mocha=, the Catppuccin palette; the
+  default until a person picks one with the toggle), accent,
   page size, the AI panel (=ui.chat_dock= gates the
   launcher and panel entirely; =ui.chat_dock_expanded= starts the panel open)
 - *logging* — level, file, format
@@ -265,27 +267,20 @@ notices until a card has vanished.
 An install with =ai.enabled: false= still has a working queue and still
 honours both settings. See [[file:api.org][Staging a write]].
 
+** =ui.look=: the two designs
+
+VENTURE ships two complete stylesheets and draws every page in one of them. =classic= is the editorial look it had first: serif titles, white cards on a bone canvas, hairline rules. =industrial= is the instrument panel: heavy uppercase headlines, monospace labels, hard one-pixel compartments, one red. Both carry all four themes, and every page, widget and plugin surface exists in both. See [[file:interface.org][The interface]].
+
+The setting is the default. The switch at the bottom of the sidebar — labelled with the look it changes /to/ — sets a plain cookie for a year, and the server reads that cookie before it draws anything, so the choice survives sign-out and applies to the sign-in page too. The value is a closed set; a cookie edited by hand falls back to the configuration.
+
 ** What =ui.accent= actually controls
 
-Less than the name suggests, and deliberately. The interface is warm
-monochrome: a bone canvas, white surfaces, one hairline grey for every
-border, and charcoal rather than black for text. Colour is spent only where
-it carries meaning.
+Less than the name suggests, and deliberately. Empty — the default — means each look keeps the accent it was drawn with: the classic look's blue (=#1f6c9f=) and the industrial look's hazard red (=#e61919=), which in that design has one meaning: look here. Set a hex colour and it applies in both looks. See [[file:interface.org][The interface]].
 
-So the accent tints links, the focus ring, the active sidebar row and the
-text selection. It does *not* fill primary buttons — those are near-black
-ink in the light theme and near-white in the dark one, which is what keeps a
-page with a Save and a Cancel on it down to one dark rectangle.
+So the accent tints links, the focus ring, the active sidebar rail, the unread mark, the keyboard cursor and the landing ghost on a dashboard canvas. It does *not* fill primary buttons — those are ink on the ground, near-white in the dark theme and carbon in the light one, which is what keeps a page with a Save and a Cancel on it down to one solid rectangle.
 
-The value reaches the page as =--accent-config=, and every other accent
-value is mixed from it: the hover shade, the soft wash behind an active
-row, and the lightened form the dark theme needs against a dark ground. Set
-one hex colour and both themes follow. Setting =--accent= directly would not
-work — the dark palette's own rule is more specific than the one the server
-emits, so a configured colour would apply in light mode and silently vanish
-in dark.
+The value reaches the page as =--accent-config=, and every other accent value is mixed from it: the hover shade, the soft wash behind an active row, and the brightened form the dark themes need against a dark ground. Set one hex colour and all three themes follow. Setting =--accent= directly would not work — the dark palette's own rule is more specific than the one the server emits, so a configured colour would apply in light mode and silently vanish in dark.
 
-Status colours are not configurable. Positive, negative, warning and
-informational each have a fixed pastel fill and a matching ink, because
-those four have to stay distinguishable from one another and from whatever
-accent an operator picks.
+An operator may set another hue. In the industrial look negative readings — an overdue clock, a failed delivery — are drawn in the accent, so a configured blue makes "overdue" blue too. That is the trade the setting makes.
+
+Status colours are not configurable. Positive, warning and informational each have a fixed colour and a matching wash, chosen per substrate, because they have to stay distinguishable from one another and from whatever accent an operator picks.

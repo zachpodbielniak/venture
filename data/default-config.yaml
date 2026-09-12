@@ -330,11 +330,21 @@ ui:
   # per browser.
   theme: "system"
 
+  # classic | industrial. Which of the two designs the pages are drawn
+  # in: "classic" is the editorial look -- serif titles, white cards on a
+  # bone canvas -- and "industrial" is the instrument panel -- monospace
+  # labels, hard rules, one red. Both carry every theme above. This is the
+  # default until a person picks one with the switch in the sidebar, which
+  # is remembered per browser.
+  look: "industrial"
+
   # Accent colour. It tints links, the focus ring and the active nav row --
-  # primary buttons are near-black ink regardless, so this is a highlight
-  # colour rather than a brand fill. The dark theme lightens whatever is set
-  # here rather than substituting its own.
-  accent: "#1f6c9f"
+  # primary buttons are ink regardless, so this is a highlight colour
+  # rather than a brand fill. Empty means each look keeps its own: the
+  # classic look's blue (#1f6c9f), the industrial look's hazard red
+  # (#e61919). Set a hex colour to use it in both. The dark themes lighten
+  # whatever is set here rather than substituting their own.
+  accent: ""
 
   # Rows per page in list views.
   page_size: 50

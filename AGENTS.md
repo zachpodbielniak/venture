@@ -568,3 +568,44 @@ than one that fails.
   build trigger is `webhook`/`rule` not `push`/`schedule`, and
   `venture_type` is a registered type (`books`, `etsy`, `newsletter`),
   not free text.
+
+## The interface
+
+- **Two looks, one markup.** `data/static/venture-industrial.css` is the
+  instrument panel (the default): tactical telemetry on the dark ground,
+  Swiss print on the light one, Catppuccin Mocha as a skin.
+  `data/static/venture-classic.css` is the editorial design that came
+  first. `ui.look` picks the default and the `venture_look` cookie (set by
+  POST `/look`, the switch in the sidebar footer) overrides it per browser;
+  `venture_web_append_stylesheet()` inlines exactly one. Both share every
+  class name and every theme, so a page or widget is written once and
+  must be checked in both -- the tests grep for "instrument panel" and
+  "warm monochrome", one comment unique to each file, to tell them apart.
+  Every rule is written once against tokens; a theme is a block of values.
+  Never write a literal colour into markup or a plugin stylesheet -- use
+  the tokens in `docs/interface.org`.
+- **Two registers of type, and prose.** Headlines are the heavy uppercase
+  grotesque (`h1`, `h2`, `.stat-value`, `.figure`). Every label is the
+  micro register: small uppercase mono, tracked out (`th`, `.field-label`,
+  `.card-head h2`, `.nav-item`, `.badge`, `.btn`). Anything a person reads
+  -- a body, a comment, a subtitle -- stays sentence-case sans. Do not
+  uppercase prose and do not set a label in the sans.
+- **No radius, no gradient, no shadow.** The `--radius-*` and `--shadow-*`
+  tokens exist and resolve to zero and none. A floating surface uses
+  `box-shadow: var(--ring)`, a hard double ring.
+- **Compartments share their rules.** `.grid`, `.bento`, `.stat-row` and
+  `.desk-sla` use `gap: 1px` with a one-pixel `outline` on every cell, so
+  neighbours have exactly one line between them. A painted parent
+  background would fill a short last row with a block; the outline trick
+  does not.
+- **Framing is CSS, not markup.** `/// SECTION`, `>>> EYEBROW`, `[ CARD
+  HEAD ]`, `#tag` are pseudo-elements. Tests that inspect the HTML see
+  plain text, and a test that asserted the brackets would be asserting the
+  stylesheet.
+- **Red means look here, and nothing else is red.** Links, focus, the
+  active rail, unread, the cursor row, the ghost. Negative readings are
+  the accent too, so there is one red. Green and amber appear only on a
+  status. The primary button is ink.
+- **The scanline and grain layers are `body::before` / `body::after`** at
+  z-index 9000, above every overlay, pointer-events none, hidden in
+  print. A new fixed overlay does not need to go above them.
