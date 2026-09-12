@@ -80,6 +80,12 @@ The seeded tax categories follow the same principle — travel defaults to =revi
 
 ** The ledger balances or nothing is written
 
+The =ledger= module now supplies the single posting service. It creates
+immutable journal headers and lines; =ledger_entry= is a read-only projection.
+The compatibility helper below forwards to the service. See
+[[file:ledger.org][the general journal]] for rules, reversals, exchange policy,
+balances and the integration call.
+
 =venture_database_save_ledger_transaction()= takes the lines of one transaction, totals the debits and credits, and refuses the whole set with =VENTURE_ERROR_BALANCE= if they differ. A half-posted transaction leaves the books wrong in a way nothing downstream can detect, which is far worse than an error the operator can see.
 
 =venture_account_kind_is_debit_normal()= encodes the one fact the rest of the ledger needs: assets and expenses grow with debits; liabilities, equity and income grow with credits.

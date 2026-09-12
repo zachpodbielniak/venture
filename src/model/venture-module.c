@@ -507,6 +507,12 @@ static const gchar *const venture_module_reports_factory[] = {
 	"releases", "lead_time", "incidents", "delivery", NULL
 };
 
+static GType (*const venture_module_ledger_types[]) (void) = {
+	venture_journal_get_type, venture_journal_line_get_type, NULL
+};
+static const gchar *const venture_module_requires_finance[] = { "finance", NULL };
+static const gchar *const venture_module_reports_ledger[] = { "trial_balance", NULL };
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -624,6 +630,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"or queue, arranged as you like, and more than one of them.",
 		venture_module_requires_core, NULL,
 		venture_module_dashboards_types, NULL, NULL, FALSE
+	},
+	{
+		"ledger", "General journal", "Immutable double-entry journals and account balances.",
+		venture_module_requires_finance, NULL, venture_module_ledger_types,
+		venture_module_reports_ledger, NULL, FALSE
 	}
 };
 

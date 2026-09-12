@@ -11,6 +11,7 @@
  */
 
 #include "venture.h"
+#include "ledger/venture-ledger-private.h"
 
 #include <string.h>
 
@@ -2944,6 +2945,8 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 	gsize i;
 
 	g_return_if_fail(VENTURE_IS_REPORT_REGISTRY(self));
+
+	venture_ledger_register_report(self);
 
 	for (i = 0; i < G_N_ELEMENTS(builtins); i++)
 	{

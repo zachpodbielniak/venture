@@ -220,6 +220,18 @@ Setting a hash directly is what hashing exists to prevent.
 **Audit entries and run records refuse writes entirely**, for everybody.
 They are the record of what happened.
 
+**Ledger entries are read-only journal projections.** Generic writes to
+**ledger_entry**, including staged writes, are refused. **journal** and
+**journal_line** can be edited while draft; posting and reversal use the ledger
+service, and generic updates cannot advance the journal state. Saving a sale
+with gross or an expense with an amount posts through that service and needs
+an organization. Correcting financial values creates reversal and replacement
+journals. Deleting a source record does not erase its journal.
+
+Use **report trial_balance PERIOD** for posted account balances at the period's
+end. It reports book currencies separately. The existing P&L still reads
+operational sales and expenses; it is not the authoritative journal balance.
+
 **`venturectl mcp` stages writes rather than applying them**, unless started
 with `--apply-writes`. A staged write sends the request with `?stage=1`, and
 the server mints a confirmation instead of applying the change. The tool

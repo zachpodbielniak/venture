@@ -1594,6 +1594,7 @@ test_auth_invoice_paid_creates_the_sale(
 
 		invoice = venture_invoice_new();
 		g_object_set(invoice, "number", "INV-1",
+		             "organization-id", venture_context_get_default_organization_id(fixture->context),
 		             "status", VENTURE_INVOICE_STATUS_DRAFT, NULL);
 		g_assert_true(venture_database_save(fixture->database,
 			VENTURE_ENTITY(invoice), NULL, NULL));
@@ -2184,6 +2185,16 @@ test_auth_audit_log_refuses_writes(
 		==, SOUP_STATUS_FORBIDDEN);
 	g_assert_cmpuint(server_fixture_request(fixture, "DELETE",
 		"/api/v1/audit_entry/1", cookie, NULL, NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+
+	/* REST is also the CLI/MCP transport: a staged bypass is refused too. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/ledger_entry", cookie,
+		"transaction_id=bypass&account_id=1&amount=1.00", NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/ledger_entry?stage=1", cookie,
+		"transaction_id=bypass&account_id=1&amount=1.00", NULL, NULL),
 		==, SOUP_STATUS_FORBIDDEN);
 }
 

@@ -1,0 +1,279 @@
+#+title: The general journal
+#+description: Posting once, preserving history, and reading authoritative balances
+#+authors: Zach Podbielniak
+#+created: [2026-09-12]
+
+* One posting boundary
+
+The =ledger= module requires =finance=. It owns =journal=, =journal_line=,
+the posting service and =trial_balance=. The two records are field tables:
+the table, JSON, REST, forms, audit, AI schema and CLI come from the ordinary
+record machinery. Switching ledger off hides its records and report and
+refuses service calls. Existing rows stay.
+
+A journal belongs to exactly one organization, which is the legal entity
+whose books it affects. Its accounting date and book currency are explicit.
+Every journal names its source by registered record type and id. Lines name
+their journal and account, debit or credit side, original amount and valued
+book amount. Money is =VentureMoney= throughout.
+
+| State      | What may happen                                             |
+|------------+-------------------------------------------------------------|
+| =draft=    | Edit the header and lines; excluded from every ledger balance |
+| =posted=   | Read; correct through a reversing journal                    |
+| =reversed= | Read; the original and its reversal remain evidence          |
+
+Posting freezes the header and its lines, including edits to identity,
+organization, deletion and reversal fields. Save, delete, restore and purge
+all enforce this at the database boundary. Moving a posted line to a draft,
+adding a line to a posted journal, or setting a draft's state through generic
+CRUD is refused. A reversing journal carries =reverses_id= pointing at the
+original. Its date cannot precede the original; a journal can be reversed
+once. The reversal itself is a new posted journal.
+
+* Calling the service
+
+The database owns one service and one posting-rule registry. Obtain it with
+=venture_database_get_posting_service(database)=, or use
+=venture_context_get_posting_service(context)=, which returns NULL when the
+module is off. Keep a reference if retaining it beyond the immediate call.
+The service's construct-only =database= property is a weak reference to its
+owner; use the canonical getter for posting.
+
+For a new journal, pass an unsaved header and an array of unsaved
+=VentureJournalLine= objects:
+
+#+begin_src C
+VentureJournal *venture_posting_service_post(
+    VenturePostingService *self,
+    VentureJournal *journal,
+    GPtrArray *lines,
+    VentureExchangePolicy *exchange_policy,
+    const VentureActor *actor,
+    GError **error);
+#+end_src
+
+The result is a new owned reference to the posted header. NULL means failure.
+Inputs remain untouched, even when persistence fails. For an existing saved
+draft, pass that header and NULL for =lines=: the service posts all its saved,
+live lines. Its version must still match. Do not pass replacement lines for a
+saved header. Generic CRUD remains the editor for drafts.
+
+The header needs =organization-id=, =occurred-at=, an uppercase three-letter
+=currency=, =source-type= and =source-id=. An original source must exist, be
+live and belong to the same organization. Lines need a live account from that
+organization and a nonnegative amount; zero is allowed. At least two lines
+are required. A zero line organization inherits the header's organization;
+a different nonzero organization is refused. An inactive account cannot be
+used for a new posting.
+
+** The integration seam for the accounting modules
+
+Receivables, periods, reconciliation and payables can keep their existing
+arrays of unsaved =VentureLedgerEntry= inputs and change their single wrapper
+call to:
+
+#+begin_src C
+return venture_posting_service_post_entries(
+    venture_database_get_posting_service(database),
+    entries, NULL, actor, error);
+#+end_src
+
+Its exact declaration is:
+
+#+begin_src C
+gboolean venture_posting_service_post_entries(
+    VenturePostingService *self,
+    GPtrArray *entries,
+    VentureExchangePolicy *exchange_policy,
+    const VentureActor *actor,
+    GError **error);
+#+end_src
+
+This is an input adapter to =venture_posting_service_post()=, not another
+writer. Each entry must carry the same nonempty =transaction-id=, organization,
+source type/id and date. All dates may be absent, meaning now; mixing absent
+and present dates is refused. The first amount selects the book currency.
+The stable transaction id is unique within the organization, even after
+reversal, so retries refuse with =VENTURE_ERROR_ALREADY_EXISTS=. Find the
+journal by source to recover the earlier result. Inputs stay untouched.
+
+For old manual batches with no source metadata, the source is the actual
+=organization= record. New document-producing modules should supply their
+real source type and id on every input line. The old
+=venture_database_save_ledger_transaction()= forwards to this adapter after
+its historical balance check; new integrations should call the service
+directly, including for non-USD amounts and exchange policies.
+
+** Transactions and signals
+
+Posting holds one database transaction across header, lines and compatibility
+projections. Source sale/expense saves join the same transaction. Nested
+begins join the caller's outer transaction. A failure rolls back the database
+transaction; an outer caller must propagate the failure and balance its own
+begin with rollback. As with other repository operations, discard objects
+returned by an operation if the enclosing transaction is later rolled back.
+
+The order is:
+
+1. Validate the draft and source; emit =date-postable= while the transaction
+   is held. A period module connects here. Ledger itself defines no periods.
+2. Validate and value all lines, and require total debits to equal credits in
+   the book currency. Overflow is an error, never a wrapped balance.
+3. Emit =posting=, =G_SIGNAL_RUN_LAST=, with detached snapshots of the header
+   and valued lines. Snapshot edits do not change the posting.
+4. Persist the draft, its lines and projections, then mark the header posted.
+   The normal database audit and record signals occur during these writes.
+5. Emit =posted=, in posting order, only after the outermost successful commit.
+   Rollback drops these queued signals.
+
+Both =posting= and =date-postable= handlers return an owned =GError *= to veto,
+or NULL to allow. The first error stops emission. Their callback signatures
+are:
+
+#+begin_src C
+GError *posting(VenturePostingService *, VentureJournal *, GPtrArray *, gpointer);
+GError *date_postable(VenturePostingService *, gint64 organization_id,
+                     GDateTime *, gpointer);
+void posted(VenturePostingService *, VentureJournal *, gpointer);
+#+end_src
+
+A period module may also call =venture_posting_service_is_date_postable()= to
+ask the same hook. A posting handler cannot bypass validation by re-entering
+generic writes while the journal is being assembled: in-flight headers and
+lines are protected, internal write permits are consumed before callbacks,
+and a save hook that changes an already validated value aborts the posting.
+The existing database =entity-saved= and audit signals are still synchronous
+within a transaction; external consumers needing committed ledger events
+must listen to =posted=.
+
+* Rules and exchange policy
+
+=VenturePostingRule= is a GInterface with =get_name= and =build_lines=.
+=VenturePostingRuleRegistry= follows the report registry: it owns registered
+implementations, lists them by name, and permits replacing a key so a plugin
+can supply an installation's accounting policy. There is no process-global
+rule registry.
+
+#+begin_src C
+venture_posting_rule_registry_add(
+    venture_posting_service_get_rules(posting), rule); /* transfers ownership */
+journal = venture_posting_service_post_document(
+    posting, "sale", source, actor, error);
+#+end_src
+
+The rule selects accounts and returns unsaved journal lines. The service
+builds the source link, dates and organization from the stored source,
+validates the lines and posts. A stale source version is refused. Posting
+the same source version with the same rule twice is refused, including if
+the earlier journal has since been reversed.
+
+The built-ins are deliberately explicit about their accounting conventions:
+
+| Rule                 | Debit                         | Credit                       |
+|----------------------+-------------------------------+------------------------------|
+| =sale=               | Cash (1000)                   | Sales (4000), at net proceeds |
+| =expense=            | General expenses (6900)       | Cash (1000)                  |
+| =invoice-settlement= | Cash (1000)                   | Accounts receivable (1100)    |
+
+The sale rule uses the existing documented =venture_sale_get_net()= formula.
+It does not settle the assessment's unresolved gross/tax semantics or
+introduce a tax-recognition policy. A negative amount swaps the sides. Expense
+posting records the full cost; tax deductibility is separate. Invoice
+settlement requires a paid invoice and totals its lines with exact money.
+Recognizing the receivable, partial payments, allocations and deciding when
+to invoke settlement belong to the receivables module. Ledger does not add
+another invoice-status handler.
+
+An existing active account with the conventional code in the organization
+is used first. When absent, the rule creates a default account with a code
+such as =2:1000= inside the posting transaction. The prefix respects the
+existing globally unique account-code constraint without borrowing a different
+organization's account. A replacement rule can select a different chart.
+
+Every save of a sale with gross, or an expense with an amount, uses the rule
+from the service registry at the database save boundary. Records whose amount
+has not yet been supplied remain operational records without a journal.
+If a source date is missing, its creation time supplies the stable accounting
+date. Metadata-only changes that produce the same accounts, sides, amounts
+and date do not post again. Financial changes reverse the earlier journal
+and post its replacement atomically. Clearing an existing amount is refused.
+Deleting a source leaves its posted journal intact; deleting is not a
+financial correction.
+
+The native example plugin registers =subscription-renewal= through the same
+interface. Its rule reuses the installation's expense account policy while
+retaining the subscription source link. It is invoked explicitly when a
+renewal is recorded, never when merely saving the standing commitment.
+=test-plugin= loads its real shared object and posts through that rule.
+
+Mixed original currencies are refused unless the caller passes a
+=VentureExchangePolicy= object. That GInterface identifies the rate set and
+converts amounts into the header's book currency with exact money. The service
+still requires balanced valued debits and credits, and checks that every
+valuation has the requested currency and is nonnegative. The policy cannot
+waive balance. Original amounts, book amounts and the policy identifier are
+stored; a reversal copies those valuations exactly without calling today's
+exchange policy. Ledger supplies no exchange-rate feed.
+
+* Reading the books
+
+=venture_posting_service_find_source()= returns all matching journals for
+one exact organization, including drafts, originals and reversals, ordered
+by id. It includes deleted drafts so the source trail stays visible.
+
+=venture_posting_service_account_balance()= takes an account id, exact
+organization id, book currency and inclusive as-of timestamp. It returns
+debits minus credits as =VentureMoney=. It reads only posted evidence:
+drafts, legacy standalone ledger entries, mutable account opening balances,
+sales and expenses are not inputs.
+
+A reversed original remains posted evidence. Its amount is counted on the
+original date; the reversing journal contributes the opposite amount on its
+own date. Dropping a row simply because its current state is reversed would
+rewrite the past. For a normal-side display, use
+=venture_account_kind_is_debit_normal()= to choose the sign.
+
+=trial_balance= is registered with the ordinary report registry, so the web,
+API, AI, CLI and exports can render it. It reads balances through the same
+query, from the beginning of history up to the period's exclusive end.
+=organization_id= selects one legal entity (the default organization when
+omitted). =currency= optionally selects one book currency. Otherwise it
+reports each currency separately, with debit, credit and zero-difference
+metrics for each; it never combines currencies or descendant companies.
+
+* Compatibility and limits
+
+=ledger_entry= is now a read-only projection, one per posted journal line,
+linked by =journal_line_id=. Keeping it makes old read-only consumers work.
+Generic REST, staged REST, CLI and approved AI writes cannot insert, edit,
+delete or restore its rows. The database enforces the refusal even for an
+internal caller. There is one authority because projections are never inputs
+to balances.
+
+Old standalone ledger rows and pre-existing operational documents are not
+automatically backfilled: they lack reliable immutable source and journal
+history. Review them and post explicit opening/correction journals when
+cutting over an existing installation. Merely setting =account.opening_balance=
+does not create evidence. The existing P&L remains an operational report over
+sales and expenses; it is not the authoritative ledger balance query and can
+still change after a source deletion.
+
+This module does not implement fiscal periods or close, payment/allocation
+records, bank reconciliation, vendor bills, tax recognition or consolidation.
+Their owners get the posting adapter, exact balance query and date-postable
+signal. Invoice status/sale creation still needs the receivables owner's
+atomic settlement integration; that workflow is not changed here.
+
+* Verification
+
+=test-ledger= covers state transitions, reversal dates and historical balances,
+source lookup, generic bypass attempts, missing and cross-entity references,
+currency policy, overflow, duplicates, atomic failures and outer rollback,
+posting and date vetoes, plugin rules, immutable projections, and re-entrant
+callback attacks. The native plugin test exercises an actual loaded rule;
+the HTTP auth test refuses both direct and staged generic ledger writes.
+
+Build and run with =make DEBUG=1 -j8 test=. On a sandbox with a read-only
+=/run/user/.../dconf=, set =GSETTINGS_BACKEND=memory= in the environment first;
+that avoids dconf filesystem access without changing the test behavior.

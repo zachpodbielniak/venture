@@ -693,6 +693,13 @@ venture_web_type_accepts_writes(
 	GType	  entity_type,
 	GError	**error
 ){
+	if (VENTURE_TYPE_LEDGER_ENTRY == entity_type)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+			"Ledger entries are read-only journal projections; use the posting service");
+		return FALSE;
+	}
+
 	if (VENTURE_TYPE_AUDIT_ENTRY == entity_type)
 	{
 		g_set_error_literal(error, VENTURE_ERROR,

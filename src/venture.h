@@ -68,6 +68,7 @@
 #include "model/venture-entity.h"
 #include "model/venture-entity-macros.h"
 #include "model/venture-records.h"
+#include "ledger/venture-journal.h"
 #include "model/venture-venture-type.h"
 #include "model/venture-entity-registry.h"
 #include "model/venture-module.h"
@@ -111,6 +112,8 @@
 #include "core/venture-confirmation-store.h"
 
 #include "core/venture-context.h"
+#include "ledger/venture-posting-rule.h"
+#include "ledger/venture-posting-service.h"
 #include "core/venture-ticket-relation.h"
 #include "core/venture-record-link.h"
 #include "core/venture-dashboard.h"

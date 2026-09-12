@@ -475,6 +475,9 @@ static const VentureFieldDecl venture_account_fields[] = {
 VENTURE_DEFINE_ENTITY(VentureAccount, venture_account, venture_account_fields)
 
 static const VentureFieldDecl venture_ledger_entry_fields[] = {
+	VENTURE_FIELD_REF("journal-line-id", "Journal line",
+		"Read-only projection of an authoritative journal line",
+		"journal_line", VENTURE_COLUMN_FLAG_INDEXED),
 	/* Lines sharing a transaction identifier form one double-entry
 	 * transaction, and the repository refuses to commit a set whose
 	 * debits and credits do not balance. */
