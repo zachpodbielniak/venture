@@ -428,6 +428,7 @@ static GType (*const venture_module_webhooks_types[]) (void) = {
 static GType (*const venture_module_chat_types[]) (void) = {
 	venture_chat_thread_get_type,
 	venture_chat_message_get_type,
+	venture_ai_skill_get_type,
 	NULL
 };
 

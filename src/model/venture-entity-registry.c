@@ -665,6 +665,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 
 		venture_chat_thread_get_type,
 		venture_chat_message_get_type,
+		venture_ai_skill_get_type,
 
 		venture_forge_get_type,
 		venture_forge_repo_get_type,

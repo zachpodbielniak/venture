@@ -178,6 +178,128 @@ fixture_tear_down(
 	                              venture_entity_registry_get_default());
 }
 
+/* --- Skills ---------------------------------------------------------------- */
+
+/*
+ * A skill is a prompt behind a slash. The built-ins are there without any
+ * record; a record adds one and, sharing a trigger, replaces a built-in;
+ * the trigger is matched without regard to case; the input fills {input}
+ * or is appended; and anything that is not a known trigger is not a skill.
+ */
+static void
+test_desk_skills_expand(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(GPtrArray) skills = NULL;
+	g_autofree gchar *builtin = NULL;
+	g_autofree gchar *with_input = NULL;
+	g_autofree gchar *filled = NULL;
+	g_autofree gchar *shadowed = NULL;
+	g_autofree gchar *disabled = NULL;
+	gboolean saw_summarise;
+	gboolean saw_chase;
+	guint i;
+
+	(void)user_data;
+
+	/* Built-ins alone. */
+	builtin = venture_ai_skills_expand(fixture->context, "/Summarise");
+	g_assert_nonnull(builtin);
+	g_assert_nonnull(strstr(builtin, "Summarise what I am looking at"));
+	g_assert_null(strstr(builtin, "Instructions:"));
+
+	with_input = venture_ai_skills_expand(fixture->context,
+	                                      "/reply   firm but kind");
+	g_assert_nonnull(with_input);
+	g_assert_nonnull(strstr(with_input, "Draft a reply"));
+	g_assert_nonnull(strstr(with_input, "\n\nInstructions: firm but kind"));
+
+	g_assert_null(venture_ai_skills_expand(fixture->context, "/nosuch x"));
+	g_assert_null(venture_ai_skills_expand(fixture->context, "/"));
+	g_assert_null(venture_ai_skills_expand(fixture->context, "summarise"));
+	g_assert_null(venture_ai_skills_expand(fixture->context, ""));
+	g_assert_null(venture_ai_skills_expand(fixture->context, NULL));
+
+	/* A record with a placeholder, and one that shadows a built-in. */
+	{
+		g_autoptr(VentureAiSkill) chase = NULL;
+		g_autoptr(VentureAiSkill) mine = NULL;
+		g_autoptr(VentureAiSkill) off = NULL;
+
+		mine = venture_ai_skill_new();
+		g_object_set(mine, "name", "Translate", "trigger", "Translate",
+		             "description", "Into a language",
+		             "prompt", "Translate this into {input}, keeping the tone.",
+		             "enabled", TRUE, NULL);
+		file_under_default(fixture, mine);
+		g_assert_true(venture_database_save(fixture->database,
+			VENTURE_ENTITY(mine), NULL, NULL));
+
+		chase = venture_ai_skill_new();
+		g_object_set(chase, "name", "Chase, our way", "trigger", "chase",
+		             "prompt", "Chase them the house way.", "enabled", TRUE,
+		             NULL);
+		file_under_default(fixture, chase);
+		g_assert_true(venture_database_save(fixture->database,
+			VENTURE_ENTITY(chase), NULL, NULL));
+
+		off = venture_ai_skill_new();
+		g_object_set(off, "name", "Off", "trigger", "off",
+		             "prompt", "Never.", "enabled", FALSE, NULL);
+		file_under_default(fixture, off);
+		g_assert_true(venture_database_save(fixture->database,
+			VENTURE_ENTITY(off), NULL, NULL));
+	}
+
+	filled = venture_ai_skills_expand(fixture->context, "/translate French");
+	g_assert_cmpstr(filled, ==, "Translate this into French, keeping the tone.");
+
+	shadowed = venture_ai_skills_expand(fixture->context, "/chase");
+	g_assert_cmpstr(shadowed, ==, "Chase them the house way.");
+
+	disabled = venture_ai_skills_expand(fixture->context, "/off");
+	g_assert_null(disabled);
+
+	/* The list: records and built-ins merged, one entry per trigger,
+	 * the record's entry for a shared trigger, sorted. */
+	skills = venture_ai_skills_list(fixture->context, NULL);
+	g_assert_nonnull(skills);
+	saw_summarise = FALSE;
+	saw_chase = FALSE;
+
+	for (i = 0; i < skills->len; i++)
+	{
+		VentureAiSkillInfo *info;
+
+		info = g_ptr_array_index(skills, i);
+
+		if (0 == g_strcmp0(info->trigger, "summarise"))
+		{
+			saw_summarise = TRUE;
+			g_assert_true(info->builtin);
+		}
+
+		if (0 == g_strcmp0(info->trigger, "chase"))
+		{
+			g_assert_false(saw_chase);
+			saw_chase = TRUE;
+			g_assert_false(info->builtin);
+			g_assert_cmpstr(info->name, ==, "Chase, our way");
+		}
+
+		g_assert_cmpstr(info->trigger, !=, "off");
+
+		if (i > 0)
+			g_assert_cmpint(g_strcmp0(
+				((VentureAiSkillInfo *)g_ptr_array_index(skills, i - 1))
+					->trigger, info->trigger), <, 0);
+	}
+
+	g_assert_true(saw_summarise);
+	g_assert_true(saw_chase);
+}
+
 /* --- Modules --------------------------------------------------------------- */
 
 /*
@@ -193,6 +315,10 @@ test_desk_types_belong_to_modules(void)
 
 	registry = venture_module_registry_new();
 	venture_module_registry_register_builtins(registry);
+
+	types = venture_module_get_entity_names(
+		venture_module_registry_lookup(registry, "chat"));
+	g_assert_true(g_strv_contains(types, "ai_skill"));
 
 	types = venture_module_get_entity_names(
 		venture_module_registry_lookup(registry, "core"));
@@ -1295,6 +1421,7 @@ main(
 #define ADD(path, func) \
 	g_test_add(path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)
 
+	ADD("/desk/skills-expand", test_desk_skills_expand);
 	ADD("/desk/inbox-is-fed-by-the-audit-trail",
 	    test_desk_inbox_is_fed_by_the_audit_trail);
 	ADD("/desk/broadcast-respects-roles", test_desk_broadcast_respects_roles);

@@ -34,7 +34,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =tickets=    | core            | ticket, ticket_comment, ticket_relation, sla_policy, macro, worklog, sprint, routing_rule; =support= | |
 | =webhooks=   | core            | webhook, webhook_delivery; the =/webhooks= page and its API        |                       |
 | =ai=         | core            | the assistant and its tools                                       | =ai.enabled=          |
-| =chat=       | ai              | chat_thread, chat_message                                         |                       |
+| =chat=       | ai              | chat_thread, chat_message, ai_skill                               |                       |
 | =automation= | core            | the podomation engine                                             | =automation.enabled=  |
 | =plugins=    | core            | plugins and declarative venture types                             | =plugins.enabled=     |
 | =forge=      | tickets         | forge, forge_repo, forge_rule, ticket_link, forge_run, agent_budget | =forge.enabled=     |

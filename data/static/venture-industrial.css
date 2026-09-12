@@ -1980,6 +1980,146 @@ body.ai-resizing { user-select: none; cursor: ew-resize; }
 
 @keyframes blink { 0%, 60%, 100% { opacity: 0.25; } 30% { opacity: 1; } }
 
+/* --- Starters, replies, the list's controls -------------------------------- */
+
+/* Ways in, while the conversation is empty. */
+.chat-starters {
+	flex: none;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 0 var(--space-4) var(--space-3);
+}
+
+.chat-starters[hidden] { display: none; }
+
+.chat-starters-label {
+	flex: 1 0 100%;
+	font-family: var(--font-mono);
+	font-size: 9.5px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: var(--micro-track);
+	color: var(--text-faint);
+}
+
+.chat-starters-label::before { content: "/// "; }
+
+.chat-starter {
+	font: inherit;
+	font-size: 12.5px;
+	text-align: left;
+	padding: 6px 10px;
+	border: 1px solid var(--border);
+	background: var(--surface);
+	color: var(--text);
+	cursor: pointer;
+	max-width: 100%;
+	transition: border-color var(--transition), background var(--transition);
+}
+
+.chat-starter::before { content: ">>> "; color: var(--accent);
+                        font-family: var(--font-mono); font-size: 10px; }
+.chat-starter:hover { border-color: var(--accent); background: var(--surface-hover); }
+
+/* The reply's own tools: a copy button that appears on hover. */
+.msg.ai .msg-content { position: relative; padding-right: var(--space-2); }
+
+.msg-copy {
+	position: absolute;
+	top: -2px;
+	right: 0;
+	font-family: var(--font-mono);
+	font-size: 9.5px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	padding: 1px 5px;
+	border: 1px solid var(--border);
+	background: var(--surface-raised);
+	color: var(--text-faint);
+	cursor: pointer;
+	opacity: 0;
+	transition: opacity var(--transition), color var(--transition);
+}
+
+.msg.ai .msg-content:hover .msg-copy, .msg-copy:focus-visible { opacity: 1; }
+.msg-copy:hover { color: var(--text); border-color: var(--border-strong); }
+
+.msg-content pre { margin: var(--space-2) 0; font-size: 12px; max-width: 100%; }
+.msg-content blockquote {
+	margin: var(--space-2) 0;
+	padding: 2px var(--space-3);
+	border-left: 2px solid var(--border-strong);
+	color: var(--text-muted);
+}
+.msg-content a { text-decoration: underline; text-underline-offset: 3px; }
+
+.chat-retry { display: flex; align-items: center; gap: var(--space-3);
+              margin-top: var(--space-2); }
+
+.thread-filter { margin-bottom: var(--space-2); }
+.thread-item[hidden] { display: none; }
+
+.thread-rename {
+	flex: none;
+	width: 28px;
+	border: none;
+	border-left: 1px solid var(--border);
+	background: none;
+	color: var(--text-faint);
+	cursor: pointer;
+	font: inherit;
+	font-size: 12px;
+}
+
+.thread-rename:hover { background: var(--surface-hover); color: var(--text); }
+
+/* A reply arrived while the panel was closed. */
+.ai-fab.unread .spark { background: var(--accent); color: var(--accent-contrast); }
+
+/* The composer's menu: knowledge bases after #, skills and commands
+ * after /. Sits on the composer's top edge, in the same compartment. */
+.chat-complete {
+	flex: none;
+	max-height: 260px;
+	overflow-y: auto;
+	margin: 0 var(--space-4);
+	border: 1px solid var(--border-strong);
+	background: var(--surface-raised);
+	box-shadow: var(--ring);
+}
+
+.chat-complete[hidden] { display: none; }
+
+.chat-complete-item {
+	display: grid;
+	grid-template-columns: max-content minmax(0, 1fr) max-content;
+	grid-template-areas: "label name group" "label desc group";
+	column-gap: var(--space-3);
+	align-items: baseline;
+	padding: 6px var(--space-3);
+	border-left: 2px solid transparent;
+	border-bottom: 1px solid var(--border);
+	cursor: pointer;
+	font-size: 12.5px;
+}
+
+.chat-complete-item:last-child { border-bottom: 0; }
+.chat-complete-item.active, .chat-complete-item:hover {
+	background: var(--surface-hover);
+	border-left-color: var(--accent);
+}
+
+.chat-complete-label { grid-area: label; font-family: var(--font-mono);
+                       font-size: 11.5px; font-weight: 600; color: var(--accent); }
+.chat-complete-name { grid-area: name; font-weight: 600; }
+.chat-complete-desc { grid-area: desc; color: var(--text-muted); font-size: 12px;
+                      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-complete-group { grid-area: group; font-family: var(--font-mono);
+                       font-size: 9.5px; text-transform: uppercase;
+                       letter-spacing: 0.08em; color: var(--text-faint); }
+
 /* ==========================================================================
    Request feedback
    ========================================================================== */

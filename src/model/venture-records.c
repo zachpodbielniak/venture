@@ -2777,6 +2777,35 @@ static const VentureFieldDecl venture_chat_message_fields[] = {
 VENTURE_DEFINE_ENTITY(VentureChatMessage, venture_chat_message,
                       venture_chat_message_fields)
 
+/*
+ * A skill is a saved way of asking: a slash trigger, and the prompt it
+ * expands to. "/reply firm" becomes the whole paragraph about drafting a
+ * reply, with "firm" as the instruction, and the record on the screen as
+ * context the way every question carries it. A handful are built in; the
+ * records add to them, and a record with a built-in's trigger replaces it.
+ */
+static const VentureFieldDecl venture_ai_skill_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "e.g. Chase an invoice"),
+	VENTURE_FIELD("trigger", "Trigger",
+	              "What to type after / in the chat; lowercase, no spaces",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE |
+	              VENTURE_COLUMN_FLAG_INDEXED |
+	              VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD("description", "Description",
+	              "One line, shown in the / menu",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD_TEXT("prompt", "Prompt",
+	                   "What the model is asked. {input} is replaced by "
+	                   "whatever follows the trigger; without it, the input "
+	                   "is appended as instructions."),
+	VENTURE_FIELD("enabled", "Enabled", NULL, VENTURE_FIELD_KIND_BOOLEAN,
+	              VENTURE_COLUMN_FLAG_NONE)
+};
+
+VENTURE_DEFINE_ENTITY(VentureAiSkill, venture_ai_skill,
+                      venture_ai_skill_fields)
+
 /* ==========================================================================
  * Access
  * ========================================================================== */

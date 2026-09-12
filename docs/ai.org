@@ -37,6 +37,42 @@ its close button hides it again. The panel overlays the page rather than
 reflowing it, so opening the assistant never disturbs the table you were
 reading.
 
+** It knows what you are looking at
+
+Every question carries the page it was asked from. On a record page the model is told the record — its type, id, name and the fields a person would read — ahead of the question, so "summarise this", "draft a reply" and "what should happen next" mean the thing on the screen. On any other page it is told the page: the inbox, the ticket board, a dashboard, a report. The same permission check the page itself made is made again, since the path arrives from the browser.
+
+This rides on the turn only. The stored transcript keeps one line, =[While viewing /e/ticket/12]=, when the question was asked from a record page, so it still makes sense read back a month later; a list or a dashboard leaves no trace.
+
+** Starters
+
+While a conversation is empty the panel offers a few questions for the page: a ticket wants summarising and answering, the inbox wants triage, the home page wants "what needs my attention today", and every page offers "what can you do, and what needs my approval". Clicking one sends it, with the page as context. They make way for the conversation once there is one.
+
+** Skills
+
+A skill is a saved way of asking: a slash trigger and the prompt it stands for. Type =/= at the start of the composer and a menu opens with every skill and command, filtered as you type; arrows move, =Enter= or =Tab= picks, =Escape= closes. "/reply firm" sends the whole paragraph about drafting a reply, with "firm" as the instruction; the record on the screen is the context, the way every question carries it. The transcript keeps what you typed.
+
+Eight are built in: =/summarise=, =/reply=, =/triage=, =/next=, =/standup=, =/weekly=, =/explain=, =/chase=. Your own are =ai_skill= records — name, trigger, one-line description, prompt, enabled — reachable from the *Skills* entry in the sidebar, the *Manage skills…* row at the bottom of the menu, the API and =venturectl=. In a prompt, ={input}= is replaced by whatever follows the trigger; without it the input is appended as instructions. A record whose trigger matches a built-in replaces it, which is how a house style overrides the stock wording. A disabled record is invisible.
+
+The menu also lists the composer's own commands — =/new=, =/threads=, =/export=, =/close=, =/help= — which run at once and never reach the model.
+
+** Naming a knowledge base
+
+Type =#= and a menu lists the knowledge bases you may read, by slug, with their names and descriptions; pick one and =#slug= lands in the box. The rest works as before: the passages retrieved from that base ride ahead of the question. The menu opens for a =#= at the start of a word only, so "C#" and "issue#3" leave it shut.
+
+** The composer
+
+- =Enter= sends; =Shift+Enter= is a new line.
+- =Up= in an empty box recalls the last question, to fix a word and send it again.
+- A half-typed question survives a click on a link: the draft is kept in the browser until it is sent.
+- One question at a time. While an answer is on its way a second send is held with a note rather than interleaving two replies; a reply that never arrives releases the box after three minutes.
+- Slash commands, none of which reach the model: =/new=, =/threads=, =/export=, =/close=, =/help=.
+
+** Replies
+
+The model's markdown is rendered — paragraphs, lists, bold, inline code — and never interpreted: everything it says is escaped first and formatted after, so a reply cannot carry markup into the page. Fenced code blocks come through whole, with nothing inside them treated as formatting. A markdown link becomes a link only to an =http(s)= URL or a local path; anything else stays text. A =>= line is a quote.
+
+Every reply has a *Copy* button on hover, which copies the text as shown. A provider failure is shown as a notice with a *Try again* button: the question was stored, and a retry sends it once more. When a reply lands while the panel is closed, the launcher lights up and a toast says so.
+
 ** Conversations persist
 
 Every exchange is stored as ordinary records — a =chat_thread= and its
@@ -53,9 +89,9 @@ buys three things at once:
 - *A record.* What you asked the thing with write access to your books is
   itself worth keeping.
 
-The ☰ button lists previous conversations, newest activity first; =+= starts
-a fresh one; each row has a delete button, and deletion is soft like every
-other delete here.
+The ☰ button lists previous conversations, newest activity first; =+= starts a fresh one; each row has a rename (✎) and a delete button, and deletion is soft like every other delete here. Past a handful of conversations the list gets a filter box. The ⤓ button — or =/export= — downloads the active conversation as an org file: the title, when it started, and each turn as a heading, the bodies verbatim.
+
+A long conversation is replayed to the model from its tail: the newest messages up to about forty thousand characters and never more than sixty. The stored transcript keeps everything; what the model is shown is the part that costs and can overflow a context window, and cutting it at a message boundary beats the provider refusing the one question that happened to be too many.
 
 ** Attachments
 

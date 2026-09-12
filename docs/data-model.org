@@ -92,6 +92,10 @@ Every record derives from =VentureEntity= and carries the same spine:
   account that had them: the chat routes serve only the caller's own
   threads, and the generic record surfaces for these two types are
   owner-only.
+- *ai_skill* — a saved way of asking the assistant: a slash trigger, a
+  prompt with an optional ={input}= placeholder, a description for the
+  menu, and an enabled flag. Eight are built in; a record with a built-in's
+  trigger replaces it. See [[file:ai.org][AI]].
 
 ** Access
 

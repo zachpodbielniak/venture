@@ -569,6 +569,41 @@ than one that fails.
   `venture_type` is a registered type (`books`, `etsy`, `newsletter`),
   not free text.
 
+## The assistant panel
+
+- **A question carries its page.** The composer posts `context` (the
+  path); `venture_web_chat_describe_context()` turns a record page into
+  the record's readable fields and any other page into its name, prepended
+  to the model's turn only. It repeats the page's own permission check
+  because the path comes from the browser. The transcript keeps
+  `[While viewing /e/<type>/<id>]` for record pages and nothing otherwise;
+  the client's optimistic echo mirrors that rule.
+- **Starters are server-rendered per path** in
+  `venture_web_chat_append_starters()`, only when an AI service exists;
+  the script hides them once the log has a message or the thread list.
+- **The reply renderer is escape-then-format.** Fences are cut out before
+  the prose pipeline so nothing inside them is a list or bold; links match
+  only `https?://` or `/` targets. `tests/test-auth.c`
+  chat-reply-rendering pins this, including that `<script>` in a fence
+  stays text.
+- **History is capped at the tail** (`VENTURE_WEB_CHAT_HISTORY_CHARS`,
+  `_MESSAGES`) as a view over the full list; the full list must outlive
+  the handler, which is why `all_history` and `history` are two arrays.
+- **Rename and export** are `/ui/chat/thread/:id/rename` (JSON) and
+  `/export` (org, verbatim bodies, `*`-led lines escaped with a comma),
+  scoped like reading: another person's thread is NOT_FOUND.
+- **Skills live in `src/ai/venture-ai-skills.c`.** Built-ins are a static
+  table there; `ai_skill` records (chat module) add to it and a record's
+  trigger shadows a built-in's. `venture_ai_skills_expand()` runs on the
+  typed message in `/ui/chat` and replaces only what the model sees; the
+  transcript keeps the slash line. `/ui/chat/complete` feeds the composer's
+  `/` and `#` menus (skills, and knowledge bases by slug for a viewer who
+  may read them); the client-side commands are listed in venture.js, not
+  the endpoint, so the menu cannot offer what typing could not do.
+- **The client guards one send at a time** with a capture-phase submit
+  listener that runs before the hx runtime; slash commands are handled
+  there too and never reach the server.
+
 ## The interface
 
 - **Two looks, one markup.** `data/static/venture-industrial.css` is the

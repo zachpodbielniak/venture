@@ -18,6 +18,13 @@
 	var STORAGE_PANEL = "venture.ai.open";
 	var STORAGE_THREAD = "venture.ai.thread";
 	var STORAGE_WIDTH = "venture.ai.width";
+	var STORAGE_DRAFT = "venture.ai.draft";
+	var STORAGE_LAST = "venture.ai.last";
+
+	/* A send in flight. One at a time: a second question before the
+	 * first answer would interleave two replies into one log. */
+	var chatBusy = false;
+	var chatBusyTimer = null;
 	var STORAGE_RECENT = "venture.palette.recent";
 
 	/* The moment a "g" was pressed, for the two-key jumps. */
@@ -170,6 +177,12 @@
 		el.classList.toggle("open", open);
 		document.body.classList.toggle("ai-open", open);
 
+		if (open) {
+			document.querySelectorAll(".ai-fab.unread").forEach(function (fab) {
+				fab.classList.remove("unread");
+			});
+		}
+
 		try {
 			window.localStorage.setItem(STORAGE_PANEL, open ? "1" : "0");
 		} catch (e) {
@@ -267,6 +280,295 @@
 			"#chat-log");
 	}
 
+	/*
+	 * The starter questions show while the conversation is empty and
+	 * make way for it once it exists. Decided from the log itself rather
+	 * than from state, so a replayed thread, a fresh one and a deleted
+	 * one all get it right without each remembering to say so.
+	 */
+	function syncStarters() {
+		var starters = document.getElementById("chat-starters");
+		var log = document.getElementById("chat-log");
+
+		if (!starters || !log) {
+			return;
+		}
+
+		starters.hidden = !!log.querySelector(".msg, .thread-list");
+	}
+
+	function setChatBusy(busy) {
+		var form = document.querySelector(".chat-input");
+		var send = form && form.querySelector("button[type=submit]");
+
+		chatBusy = busy;
+
+		if (send) {
+			send.disabled = busy;
+		}
+
+		window.clearTimeout(chatBusyTimer);
+
+		if (busy) {
+			/* A reply that never comes must not wedge the composer:
+			 * the server's own timeout is well inside this. */
+			chatBusyTimer = window.setTimeout(function () {
+				setChatBusy(false);
+				clearTyping();
+			}, 180000);
+		}
+	}
+
+	function currentPagePath() {
+		return window.location.pathname || "/";
+	}
+
+	function isRecordPath(path) {
+		return /^\/e\/[^/]+\/[1-9][0-9]*$/.test(path);
+	}
+
+	function rememberDraft(text) {
+		try {
+			if (text) {
+				window.localStorage.setItem(STORAGE_DRAFT, text);
+			} else {
+				window.localStorage.removeItem(STORAGE_DRAFT);
+			}
+		} catch (e) {
+			/* The draft lives in the box; it just will not survive
+			 * a navigation. */
+		}
+	}
+
+	function storedDraft() {
+		try {
+			return window.localStorage.getItem(STORAGE_DRAFT) || "";
+		} catch (e) {
+			return "";
+		}
+	}
+
+	function rememberLastQuestion(text) {
+		try {
+			window.localStorage.setItem(STORAGE_LAST, text);
+		} catch (e) {
+			/* Then Up will recall nothing. */
+		}
+	}
+
+	function lastQuestion() {
+		try {
+			return window.localStorage.getItem(STORAGE_LAST) || "";
+		} catch (e) {
+			return "";
+		}
+	}
+
+	/* Puts a question in the composer and sends it, as if typed. */
+	function askQuestion(text) {
+		var textarea = document.querySelector(".chat-input textarea");
+		var form = textarea && textarea.closest("form");
+
+		if (!textarea || !form || !text) {
+			return;
+		}
+
+		setPanelOpen(true);
+		textarea.value = text;
+		textarea.style.height = "auto";
+		textarea.style.height = textarea.scrollHeight + "px";
+		form.dispatchEvent(new Event("submit",
+			{ bubbles: true, cancelable: true }));
+	}
+
+	/*
+	 * Slash commands, for the hands that never leave the keyboard. Only
+	 * a handful, and none of them talks to the model: a line starting
+	 * with a slash that is not one of these is sent as a question.
+	 *
+	 * Returns true when the line was a command and has been handled.
+	 */
+	function runSlashCommand(line) {
+		var word = line.trim().split(/\s+/)[0].toLowerCase();
+
+		switch (word) {
+		case "/new":
+			startNewThread();
+			return true;
+		case "/threads":
+		case "/history":
+			if (window.htmx) {
+				window.htmx.ajax("GET", "/ui/chat/threads", "#chat-log");
+			}
+			return true;
+		case "/export":
+			exportThread();
+			return true;
+		case "/close":
+			setPanelOpen(false);
+			return true;
+		case "/help":
+			toast("Type / for skills and commands, # for a knowledge base. "
+				+ "Up recalls the last question; Shift+Enter is a new line.",
+				"info", 8000);
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	function exportThread() {
+		var id = threadInput() && threadInput().value;
+
+		if (!id) {
+			toast("Nothing to export yet: start a conversation first",
+			      "info");
+			return;
+		}
+
+		window.location.href = "/ui/chat/thread/" + encodeURIComponent(id)
+			+ "/export";
+	}
+
+	/*
+	 * Rename from the resume list. A prompt rather than an inline
+	 * editor: it is one line, it happens rarely, and the browser's own
+	 * dialog needs no markup that could get out of step with the list.
+	 */
+	function renameThread(id, current) {
+		var title = window.prompt("Name this conversation", current || "");
+
+		if (title === null || title.trim() === "") {
+			return;
+		}
+
+		var data = new URLSearchParams();
+
+		data.set("title", title.trim());
+
+		window.fetch("/ui/chat/thread/" + encodeURIComponent(id) + "/rename", {
+			method: "POST",
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			body: data.toString(),
+			credentials: "same-origin"
+		}).then(function (response) {
+			if (!response.ok) {
+				throw new Error("rename failed (" + response.status + ")");
+			}
+
+			return response.json();
+		}).then(function (body) {
+			var row = document.querySelector(
+				"[data-thread-item=\"" + body.id + "\"] .thread-title");
+			var input = threadInput();
+			var heading = document.getElementById("ai-panel-title");
+
+			if (row) {
+				row.textContent = body.title;
+			}
+
+			if (heading && input && String(input.value) === String(body.id)) {
+				heading.textContent = body.title;
+			}
+		}).catch(function (failure) {
+			toast("Could not rename: " + failure.message, "negative");
+		});
+	}
+
+	/*
+	 * A copy button on every reply, added after the fact so the server's
+	 * render and the stored replay stay identical. Copies the text as
+	 * displayed -- lists as lines, code as code -- not the markup.
+	 */
+	function wireReplyTools(root) {
+		(root || document).querySelectorAll(".msg.ai .msg-content")
+			.forEach(function (content) {
+				if (content.ventureCopyWired
+				    || content.closest(".typing-row")
+				    || !content.textContent.trim()) {
+					return;
+				}
+
+				content.ventureCopyWired = true;
+
+				var button = document.createElement("button");
+
+				button.type = "button";
+				button.className = "msg-copy";
+				button.title = "Copy this reply";
+				button.textContent = "Copy";
+				button.addEventListener("click", function () {
+					var text = content.innerText.replace(/\n?Copy$/, "");
+
+					if (navigator.clipboard && navigator.clipboard.writeText) {
+						navigator.clipboard.writeText(text).then(function () {
+							button.textContent = "Copied";
+							window.setTimeout(function () {
+								button.textContent = "Copy";
+							}, 1500);
+						}, function () {
+							toast("Could not copy", "negative");
+						});
+					}
+				});
+
+				content.appendChild(button);
+			});
+	}
+
+	function wireChatLogClicks() {
+		var log = document.getElementById("chat-log");
+
+		if (!log || log.ventureClicksWired) {
+			return;
+		}
+
+		log.ventureClicksWired = true;
+
+		/* One listener for the log: the rows are re-rendered on every
+		 * swap and would lose per-row handlers. */
+		log.addEventListener("click", function (event) {
+			var retry = event.target.closest("[data-ai-retry]");
+			var rename = event.target.closest("[data-ai-rename]");
+
+			if (retry) {
+				var last = lastQuestion();
+
+				if (last) {
+					retry.closest(".msg").remove();
+					askQuestion(last);
+				} else {
+					toast("Nothing to retry", "info");
+				}
+
+				return;
+			}
+
+			if (rename) {
+				var row = rename.closest("[data-thread-item]");
+				var current = row && row.querySelector(".thread-title");
+
+				renameThread(rename.getAttribute("data-ai-rename"),
+				             current ? current.textContent : "");
+			}
+		});
+
+		log.addEventListener("input", function (event) {
+			var filter = event.target.closest("[data-ai-filter]");
+
+			if (!filter) {
+				return;
+			}
+
+			var needle = filter.value.trim().toLowerCase();
+
+			log.querySelectorAll("[data-thread-item]").forEach(function (row) {
+				row.hidden = needle !== ""
+					&& row.textContent.toLowerCase().indexOf(needle) === -1;
+			});
+		});
+	}
+
 	function startNewThread() {
 		var input = threadInput();
 		var log = document.getElementById("chat-log");
@@ -282,6 +584,8 @@
 			log.innerHTML = "";
 		}
 
+		syncStarters();
+
 		if (title) {
 			title.textContent = "Ask VENTURE";
 		}
@@ -291,6 +595,304 @@
 		if (composer) {
 			composer.focus();
 		}
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* The composer's menus: # for a knowledge base, / for a skill        */
+	/* ------------------------------------------------------------------ */
+
+	/*
+	 * One popup for both. It watches the word at the caret: a word that
+	 * starts with # offers the knowledge bases, and a / at the very
+	 * start of the box offers the commands and the skills. What it
+	 * offers comes from /ui/chat/complete, fetched once and kept for a
+	 * minute, so opening the menu costs nothing after the first time.
+	 * Arrow keys move, Enter or Tab picks, Escape closes; a click picks
+	 * too. The commands are the ones the composer already understands,
+	 * so the menu can only offer what typing could do.
+	 */
+	var completeState = null;
+	var completeCache = null;
+	var completeFetched = 0;
+
+	var CLIENT_COMMANDS = [
+		{ trigger: "new", name: "New conversation", description: "Start fresh" },
+		{ trigger: "threads", name: "Conversations", description: "Resume an earlier one" },
+		{ trigger: "export", name: "Export", description: "Download this conversation as org" },
+		{ trigger: "close", name: "Close", description: "Hide the panel" },
+		{ trigger: "help", name: "Help", description: "What the composer understands" }
+	];
+
+	function fetchCompletions() {
+		if (completeCache && Date.now() - completeFetched < 60000) {
+			return Promise.resolve(completeCache);
+		}
+
+		return window.fetch("/ui/chat/complete", {
+			credentials: "same-origin"
+		}).then(function (response) {
+			return response.ok ? response.json() : { skills: [], bases: [] };
+		}).then(function (body) {
+			completeCache = body || { skills: [], bases: [] };
+			completeFetched = Date.now();
+			return completeCache;
+		}).catch(function () {
+			return completeCache || { skills: [], bases: [] };
+		});
+	}
+
+	/*
+	 * What is being completed, from the text before the caret: the
+	 * kind, the fragment typed so far, and where it starts.
+	 */
+	function completionAt(textarea) {
+		var caret = textarea.selectionStart;
+		var before = textarea.value.slice(0, caret);
+		var slash = /^\/([a-z0-9-]*)$/i.exec(before);
+		var hash = /(^|\s)#([a-z0-9_-]*)$/i.exec(before);
+
+		if (slash) {
+			return { kind: "skill", fragment: slash[1], start: 0, end: caret };
+		}
+
+		if (hash) {
+			return { kind: "base", fragment: hash[2],
+			         start: caret - hash[2].length - 1, end: caret };
+		}
+
+		return null;
+	}
+
+	function completeMenu() {
+		var menu = document.getElementById("chat-complete");
+
+		if (!menu) {
+			var form = document.querySelector(".chat-input");
+
+			if (!form) {
+				return null;
+			}
+
+			menu = document.createElement("div");
+			menu.id = "chat-complete";
+			menu.className = "chat-complete";
+			menu.hidden = true;
+			menu.setAttribute("role", "listbox");
+			form.parentNode.insertBefore(menu, form);
+		}
+
+		return menu;
+	}
+
+	function closeCompletion() {
+		var menu = document.getElementById("chat-complete");
+
+		completeState = null;
+
+		if (menu) {
+			menu.hidden = true;
+			menu.innerHTML = "";
+		}
+	}
+
+	function renderCompletion(textarea, spec, data) {
+		var menu = completeMenu();
+		var fragment = spec.fragment.toLowerCase();
+		var items = [];
+
+		if (!menu) {
+			return;
+		}
+
+		if (spec.kind === "base") {
+			(data.bases || []).forEach(function (base) {
+				items.push({ insert: "#" + base.slug + " ", label: "#" + base.slug,
+				             name: base.name, description: base.description || "",
+				             group: "Knowledge base" });
+			});
+		} else {
+			(data.skills || []).forEach(function (skill) {
+				items.push({ insert: "/" + skill.trigger + " ",
+				             label: "/" + skill.trigger, name: skill.name,
+				             description: skill.description || "",
+				             group: skill.builtin ? "Skill" : "Your skill" });
+			});
+			CLIENT_COMMANDS.forEach(function (command) {
+				items.push({ insert: "/" + command.trigger, label: "/" + command.trigger,
+				             name: command.name, description: command.description,
+				             group: "Command", command: true });
+			});
+		}
+
+		/*
+		 * What is typed matches the trigger first and the words second:
+		 * "/re" is /reply before it is anything with "re" in its
+		 * description. Both kinds are kept, prefix matches ahead.
+		 */
+		var sigil = spec.kind === "base" ? "#" : "/";
+		var prefixed = [];
+		var mentioned = [];
+
+		items.forEach(function (item) {
+			if (item.manage) {
+				return;
+			}
+
+			var label = item.label.toLowerCase();
+			var hay = (item.name + " " + item.description).toLowerCase();
+
+			if (fragment === "" || label.indexOf(sigil + fragment) === 0) {
+				prefixed.push(item);
+			} else if (hay.indexOf(fragment) !== -1) {
+				mentioned.push(item);
+			}
+		});
+
+		items = prefixed.concat(mentioned);
+
+		if (spec.kind === "skill") {
+			items.push({ manage: true, label: "Manage skills\u2026",
+			             name: "", description: "Add or edit /skills as records",
+			             group: "" });
+		}
+
+		/* No bases at all is worth saying, once, with the way to fix
+		 * it; a fragment that matches nothing just closes the menu. */
+		if (spec.kind === "base" && items.length === 0) {
+			if (fragment !== "") {
+				closeCompletion();
+				return;
+			}
+
+			items.push({ manage: true, href: "/kb",
+			             label: "No knowledge bases yet",
+			             name: "", description: "Create one under Knowledge",
+			             group: "" });
+		}
+
+		if (items.length === 0 || (items.length === 1 && items[0].manage
+		    && fragment !== "")) {
+			closeCompletion();
+			return;
+		}
+
+		completeState = { textarea: textarea, spec: spec, items: items, index: 0 };
+		menu.innerHTML = "";
+
+		items.forEach(function (item, i) {
+			var row = document.createElement("div");
+			var label = document.createElement("span");
+			var name = document.createElement("span");
+			var desc = document.createElement("span");
+			var group = document.createElement("span");
+
+			row.className = "chat-complete-item" + (i === 0 ? " active" : "");
+			row.setAttribute("role", "option");
+			row.dataset.index = String(i);
+			label.className = "chat-complete-label";
+			label.textContent = item.label;
+			name.className = "chat-complete-name";
+			name.textContent = item.name;
+			desc.className = "chat-complete-desc";
+			desc.textContent = item.description;
+			group.className = "chat-complete-group";
+			group.textContent = item.group;
+			row.appendChild(label);
+			row.appendChild(name);
+			row.appendChild(desc);
+			row.appendChild(group);
+			row.addEventListener("mousedown", function (event) {
+				/* mousedown, so the composer keeps focus. */
+				event.preventDefault();
+				pickCompletion(i);
+			});
+			menu.appendChild(row);
+		});
+
+		menu.hidden = false;
+	}
+
+	function moveCompletion(delta) {
+		var menu = document.getElementById("chat-complete");
+
+		if (!completeState || !menu) {
+			return;
+		}
+
+		var count = completeState.items.length;
+
+		completeState.index = (completeState.index + delta + count) % count;
+
+		menu.querySelectorAll(".chat-complete-item").forEach(function (row, i) {
+			row.classList.toggle("active", i === completeState.index);
+
+			if (i === completeState.index && row.scrollIntoView) {
+				row.scrollIntoView({ block: "nearest" });
+			}
+		});
+	}
+
+	function pickCompletion(index) {
+		if (!completeState) {
+			return;
+		}
+
+		var state = completeState;
+		var item = state.items[index === undefined ? state.index : index];
+		var textarea = state.textarea;
+
+		closeCompletion();
+
+		if (!item) {
+			return;
+		}
+
+		if (item.manage) {
+			window.location.href = item.href || "/e/ai_skill";
+			return;
+		}
+
+		var value = textarea.value;
+		var after = value.slice(state.spec.end);
+
+		textarea.value = value.slice(0, state.spec.start) + item.insert + after;
+
+		var caret = state.spec.start + item.insert.length;
+
+		textarea.setSelectionRange(caret, caret);
+		textarea.style.height = "auto";
+		textarea.style.height = textarea.scrollHeight + "px";
+		rememberDraft(textarea.value);
+
+		/* A command runs at once; a skill or a base waits for the rest
+		 * of the sentence. */
+		if (item.command) {
+			runSlashCommand(item.insert);
+			textarea.value = "";
+			textarea.style.height = "auto";
+			rememberDraft("");
+		}
+	}
+
+	function updateCompletion(textarea) {
+		var spec = completionAt(textarea);
+
+		if (!spec) {
+			closeCompletion();
+			return;
+		}
+
+		fetchCompletions().then(function (data) {
+			/* The caret may have moved on while the list was fetched. */
+			var now = completionAt(textarea);
+
+			if (!now || now.kind !== spec.kind) {
+				closeCompletion();
+				return;
+			}
+
+			renderCompletion(textarea, now, data);
+		});
 	}
 
 	/*
@@ -307,9 +909,21 @@
 
 		textarea.ventureWired = true;
 
+		/* A half-typed question survives a click on a link. */
+		if (textarea.value === "" && storedDraft()) {
+			textarea.value = storedDraft();
+		}
+
 		textarea.addEventListener("input", function () {
 			textarea.style.height = "auto";
 			textarea.style.height = textarea.scrollHeight + "px";
+			rememberDraft(textarea.value);
+			updateCompletion(textarea);
+		});
+
+		textarea.addEventListener("blur", function () {
+			/* After the click a menu row may be taking. */
+			window.setTimeout(closeCompletion, 150);
 		});
 
 		/*
@@ -328,6 +942,53 @@
 
 			if (form && !form.ventureClearWired) {
 				form.ventureClearWired = true;
+
+				/*
+				 * Before the hx runtime sees the submit: a second
+				 * send while one is in flight is dropped, and a
+				 * slash command never leaves the browser. Capture
+				 * phase, so this runs first whatever order the
+				 * runtime wired itself in.
+				 */
+				form.addEventListener("submit", function (event) {
+					var text = textarea.value.trim();
+
+					if (text.charAt(0) === "/" && runSlashCommand(text)) {
+						event.preventDefault();
+						event.stopImmediatePropagation();
+						textarea.value = "";
+						textarea.style.height = "auto";
+						rememberDraft("");
+						return;
+					}
+
+					if (chatBusy) {
+						event.preventDefault();
+						event.stopImmediatePropagation();
+						toast("Still answering the last one", "info", 2500);
+						return;
+					}
+
+					if (text === "") {
+						event.preventDefault();
+						event.stopImmediatePropagation();
+						return;
+					}
+
+					/* The page the question is about rides along;
+					 * the server turns it into what the model sees. */
+					var context = document.getElementById("chat-context");
+
+					if (context) {
+						context.value = currentPagePath();
+					}
+
+					setChatBusy(true);
+					rememberLastQuestion(text);
+					rememberDraft("");
+					closeCompletion();
+				}, true);
+
 				form.addEventListener("submit", function () {
 					var text = textarea.value.trim();
 					var log = document.getElementById("chat-log");
@@ -345,7 +1006,13 @@
 								+ ")]";
 						});
 
+						if (isRecordPath(currentPagePath())) {
+							echo += "\n[While viewing "
+								+ currentPagePath() + "]";
+						}
+
 						appendUserEcho(log, echo);
+						syncStarters();
 						appendTyping(log);
 						scrollChatToBottom();
 					}
@@ -360,6 +1027,34 @@
 		}
 
 		textarea.addEventListener("keydown", function (event) {
+			/* The menu, while it is open, owns these keys. */
+			if (completeState) {
+				if (event.key === "ArrowDown") {
+					event.preventDefault();
+					moveCompletion(1);
+					return;
+				}
+
+				if (event.key === "ArrowUp") {
+					event.preventDefault();
+					moveCompletion(-1);
+					return;
+				}
+
+				if (event.key === "Enter" || event.key === "Tab") {
+					event.preventDefault();
+					pickCompletion();
+					return;
+				}
+
+				if (event.key === "Escape") {
+					event.preventDefault();
+					event.stopPropagation();
+					closeCompletion();
+					return;
+				}
+			}
+
 			if (event.key === "Enter" && !event.shiftKey) {
 				event.preventDefault();
 
@@ -369,6 +1064,20 @@
 					form.dispatchEvent(new Event("submit",
 						{ bubbles: true, cancelable: true }));
 				}
+
+				return;
+			}
+
+			/* Up in an empty box recalls the last question, to fix a
+			 * word and send it again. */
+			if (event.key === "ArrowUp" && textarea.value === ""
+			    && lastQuestion()) {
+				event.preventDefault();
+				textarea.value = lastQuestion();
+				textarea.style.height = "auto";
+				textarea.style.height = textarea.scrollHeight + "px";
+				textarea.setSelectionRange(textarea.value.length,
+				                           textarea.value.length);
 			}
 		});
 	}
@@ -986,6 +1695,7 @@
 			["x", "Select the row, for a bulk edit"],
 			["Enter", "Open the row"],
 			["Ctrl + /", "Toggle the AI panel"],
+			["/help", "In the assistant: slash commands"],
 			["t", "Cycle theme"],
 			["Esc", "Close dialog or panel"],
 			["?", "This list"]
@@ -1146,8 +1856,27 @@
 			 * whatever it says now is the conversation to resume. */
 			syncThreadFromInput();
 
-			if (event.target.closest && event.target.closest(".chat-log")) {
+			/* The runtime raises the event on the element that asked --
+			 * the composer, the list button -- and names what it swapped
+			 * in detail.target. The log is what matters here. */
+			var swapped = (event.detail && event.detail.target) || event.target;
+
+			if (swapped.closest && swapped.closest(".chat-log")) {
+				setChatBusy(false);
+				syncStarters();
+				wireReplyTools(swapped);
 				scrollChatToBottom();
+
+				/* A reply that landed while the panel was closed is
+				 * easy to miss; the launcher says one is waiting. */
+				if (panel() && !panel().classList.contains("open")
+				    && swapped.querySelector(".msg.ai")) {
+					document.querySelectorAll(".ai-fab").forEach(function (fab) {
+						fab.classList.add("unread");
+					});
+					toast("The assistant replied \u2014 Ctrl+/ to read it",
+					      "info", 6000);
+				}
 			}
 		});
 
@@ -1159,6 +1888,7 @@
 			var status = event.detail && event.detail.status;
 
 			clearTyping();
+			setChatBusy(false);
 
 			/* A 422 carries field-level validation messages that the
 			 * server has already rendered into the form, so it should not
@@ -1170,6 +1900,7 @@
 
 		document.body.addEventListener("htmx:sendError", function () {
 			clearTyping();
+			setChatBusy(false);
 			toast("Cannot reach the server", "negative", 6000);
 		});
 	}
@@ -2315,6 +3046,19 @@
 			el.addEventListener("click", startNewThread);
 		});
 
+		document.querySelectorAll("[data-ai-export]").forEach(function (el) {
+			el.addEventListener("click", exportThread);
+		});
+
+		document.querySelectorAll("[data-ai-starter]").forEach(function (el) {
+			el.addEventListener("click", function () {
+				askQuestion(el.textContent);
+			});
+		});
+
+		wireChatLogClicks();
+		syncStarters();
+
 		try {
 			var stored = window.localStorage.getItem(STORAGE_PANEL);
 
@@ -2339,6 +3083,7 @@
 		wirePanelResize();
 		wireAttachments();
 		wirePodEditor();
+		wireReplyTools(document);
 
 	/*
 	 * The kanban board.

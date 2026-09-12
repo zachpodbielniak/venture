@@ -347,6 +347,9 @@ VENTURE_DECLARE_ENTITY(VentureChatThread, venture_chat_thread, CHAT_THREAD)
 #define VENTURE_TYPE_CHAT_MESSAGE (venture_chat_message_get_type())
 VENTURE_DECLARE_ENTITY(VentureChatMessage, venture_chat_message, CHAT_MESSAGE)
 
+#define VENTURE_TYPE_AI_SKILL (venture_ai_skill_get_type())
+VENTURE_DECLARE_ENTITY(VentureAiSkill, venture_ai_skill, AI_SKILL)
+
 /* --- Access -------------------------------------------------------------- */
 
 #define VENTURE_TYPE_USER (venture_user_get_type())

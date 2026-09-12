@@ -290,6 +290,19 @@ venture_web_ui_require_session(
 	HtmxRequest		*request
 );
 
+static void
+venture_web_chat_append_starters(
+	VentureWebServer	*self,
+	GString			*html,
+	const gchar		*path
+);
+
+static gboolean
+venture_web_field_is_machinery(const gchar *name);
+
+static gchar *
+venture_web_json_to_display(JsonNode *value);
+
 /*
  * The inline theme script, emitted before the stylesheet so a dark-theme
  * reload never flashes white. It has to be inline and synchronous; a
@@ -1146,6 +1159,14 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"kb"
 	},
 	{
+		"/e/ai_skill", "Skills",
+		VENTURE_ICON(
+			"<path d=\"M13 3l-6 10h5l-1 8 6-10h-5z\"/>"
+		),
+		NULL,
+		"chat"
+	},
+	{
 		"/account/tokens", "API tokens",
 		VENTURE_ICON(
 			"<path d=\"M14 7a4 4 0 1 0-3.9 5H14l2 2 2-2 2 2 2-2-2-2h-6z\"/>"
@@ -1521,6 +1542,9 @@ venture_web_page(
 			"<button type=\"button\" class=\"btn btn-ghost btn-sm\" "
 			"data-ai-new title=\"New conversation\">+</button>"
 			"<button type=\"button\" class=\"btn btn-ghost btn-sm\" "
+			"data-ai-export title=\"Download this conversation as org\">"
+			"\xe2\xa4\x93</button>"
+			"<button type=\"button\" class=\"btn btn-ghost btn-sm\" "
 			"data-ai-close title=\"Hide (Esc)\">\xc3\x97</button>"
 			"</div></div>");
 
@@ -1537,6 +1561,12 @@ venture_web_page(
 		}
 
 		g_string_append(html, "</div>");
+
+		/* Ways in, for the page this is. Shown while the conversation
+		 * is empty; the script hides them once there is one. */
+		venture_web_chat_append_starters(self, html,
+			htmx_request_get_path(request));
+
 		/* Pending attachments appear here as removable chips before the
 		 * message they will ride along with is sent. */
 		g_string_append(html, "<div class=\"chat-attachments\" "
@@ -1549,6 +1579,8 @@ venture_web_page(
 			"value=\"\">"
 			"<input type=\"hidden\" id=\"chat-attach-ids\" "
 			"name=\"attachments\" value=\"\">"
+			"<input type=\"hidden\" id=\"chat-context\" "
+			"name=\"context\" value=\"\">"
 			"<input type=\"file\" id=\"chat-attach-file\" multiple "
 			"class=\"hidden\" "
 			"accept=\".pdf,.txt,.md,.org,.csv,.json,.yaml,.yml,"
@@ -11997,16 +12029,16 @@ venture_web_chat_decode_entities(const gchar *text)
  * markup past the escape.
  */
 static void
-venture_web_chat_append_rich(
+venture_web_chat_append_prose(
 	GString		*html,
-	const gchar	*body
+	const gchar	*escaped
 ){
 	static gsize initialized = 0;
 	static GRegex *bold_regex = NULL;
 	static GRegex *code_regex = NULL;
-	g_autofree gchar *decoded = NULL;
-	g_autoptr(GString) escaped = NULL;
+	static GRegex *link_regex = NULL;
 	g_autofree gchar *with_bold = NULL;
+	g_autofree gchar *with_code = NULL;
 	g_autofree gchar *formatted = NULL;
 	g_auto(GStrv) blocks = NULL;
 	gsize b;
@@ -12015,18 +12047,24 @@ venture_web_chat_append_rich(
 	{
 		bold_regex = g_regex_new("\\*\\*([^*\\n]+)\\*\\*", 0, 0, NULL);
 		code_regex = g_regex_new("`([^`\\n]+)`", 0, 0, NULL);
+		/*
+		 * A markdown link, but only to somewhere that is a place: an
+		 * http(s) URL or a local path. The text is already escaped, so
+		 * a quote in the URL is &quot; and cannot close the attribute;
+		 * a javascript: URL never matches at all.
+		 */
+		link_regex = g_regex_new(
+			"\\[([^\\]\\n]+)\\]\\(((?:https?://|/)[^)\\s]+)\\)", 0, 0, NULL);
 		g_once_init_leave(&initialized, 1);
 	}
 
-	decoded = venture_web_chat_decode_entities(body);
-
-	escaped = g_string_new(NULL);
-	venture_html_escape_append(escaped, decoded);
-
-	with_bold = g_regex_replace(bold_regex, escaped->str, -1, 0,
+	with_bold = g_regex_replace(bold_regex, escaped, -1, 0,
 	                            "<strong>\\1</strong>", 0, NULL);
-	formatted = g_regex_replace(code_regex, with_bold, -1, 0,
+	with_code = g_regex_replace(code_regex, with_bold, -1, 0,
 	                            "<code>\\1</code>", 0, NULL);
+	formatted = g_regex_replace(link_regex, with_code, -1, 0,
+	                            "<a href=\"\\2\" rel=\"noopener\">\\1</a>",
+	                            0, NULL);
 
 	/* Blank lines separate blocks; within a block, consecutive list lines
 	 * group into one list and everything else joins with line breaks. */
@@ -12098,6 +12136,31 @@ venture_web_chat_append_rich(
 
 				g_string_append(html, "</ol>");
 			}
+			else if (g_str_has_prefix(line, "&gt; ") ||
+			         (0 == g_strcmp0(line, "&gt;")))
+			{
+				/* A quoted passage -- what the model is citing from
+				 * a document or a ticket -- set apart from what it
+				 * says about it. */
+				g_string_append(html, "<blockquote>");
+
+				while ((NULL != lines[i]) &&
+				       g_str_has_prefix(g_strstrip(lines[i]), "&gt;"))
+				{
+					const gchar *quoted;
+
+					quoted = g_strstrip(lines[i]) + 4;
+
+					if (' ' == *quoted)
+						quoted++;
+
+					g_string_append(html, quoted);
+					g_string_append(html, " ");
+					i++;
+				}
+
+				g_string_append(html, "</blockquote>");
+			}
 			else if ('#' == line[0])
 			{
 				/* A heading is a bold line; a chat bubble has no
@@ -12141,6 +12204,75 @@ venture_web_chat_append_rich(
 			}
 		}
 	}
+}
+
+/*
+ * Renders an assistant reply.
+ *
+ * The pipeline order is the security property: decode the entities the
+ * model emitted, escape *everything* for real, then apply formatting to the
+ * escaped text. Markdown syntax carries no HTML characters, so the patterns
+ * work unchanged on escaped text, and nothing the model says can smuggle
+ * markup past the escape.
+ *
+ * Fenced code is cut out first, whole: a block of YAML or a shell command
+ * the model wrote must come through byte for byte, with no list or bold
+ * rules applied to its insides, and a blank line in it must not split it
+ * into two paragraphs.
+ */
+static void
+venture_web_chat_append_rich(
+	GString		*html,
+	const gchar	*body
+){
+	g_autofree gchar *decoded = NULL;
+	g_autoptr(GString) escaped = NULL;
+	g_autoptr(GString) prose = NULL;
+	g_auto(GStrv) lines = NULL;
+	gsize i;
+
+	decoded = venture_web_chat_decode_entities(body);
+
+	escaped = g_string_new(NULL);
+	venture_html_escape_append(escaped, decoded);
+
+	prose = g_string_new(NULL);
+	lines = g_strsplit(escaped->str, "\n", -1);
+
+	for (i = 0; NULL != lines[i]; i++)
+	{
+		if (g_str_has_prefix(g_strstrip(lines[i]), "```"))
+		{
+			/* Everything before the fence is prose; everything up
+			 * to the closing fence is code. */
+			venture_web_chat_append_prose(html, prose->str);
+			g_string_truncate(prose, 0);
+
+			g_string_append(html, "<pre><code>");
+			i++;
+
+			while ((NULL != lines[i]) &&
+			       !g_str_has_prefix(g_strstrip(lines[i]), "```"))
+			{
+				g_string_append(html, lines[i]);
+				g_string_append_c(html, '\n');
+				i++;
+			}
+
+			g_string_append(html, "</code></pre>");
+
+			/* An unterminated fence ends with the message. */
+			if (NULL == lines[i])
+				break;
+
+			continue;
+		}
+
+		g_string_append(prose, lines[i]);
+		g_string_append_c(prose, '\n');
+	}
+
+	venture_web_chat_append_prose(html, prose->str);
 }
 
 static void
@@ -12209,6 +12341,316 @@ venture_web_chat_append_title(
 }
 
 /*
+ * What the operator is looking at, for the model.
+ *
+ * A record page becomes the record: its type, id, name and the fields a
+ * person would read, so "summarise this" and "what should I do about it"
+ * mean the thing on the screen rather than a guess. Every other page is
+ * named -- the inbox, the ticket board, a dashboard -- which is enough
+ * for "what needs me here". The same permission check the page itself
+ * made is made again, because the path arrives from the browser and a
+ * viewer could otherwise name a record type they may not read.
+ *
+ * Returns: (transfer full) (nullable): a paragraph for the model, or %NULL
+ *   when the path names nothing worth saying
+ */
+static gchar *
+venture_web_chat_describe_context(
+	VentureWebServer	*self,
+	VentureAuthPrincipal	*principal,
+	const gchar		*path
+){
+	g_autoptr(GString) out = NULL;
+	g_auto(GStrv) parts = NULL;
+
+	if (venture_string_is_empty(path) || ('/' != path[0]) ||
+	    g_str_has_prefix(path, "//") || (strlen(path) > 200))
+		return NULL;
+
+	parts = g_strsplit(path + 1, "/", -1);
+	out = g_string_new(NULL);
+
+	/* A record: /e/<type>/<id>. */
+	if ((0 == g_strcmp0(parts[0], "e")) && (NULL != parts[1]) &&
+	    (NULL != parts[2]) && (NULL == parts[3]) &&
+	    (0 != g_strcmp0(parts[2], "new")))
+	{
+		g_autoptr(VentureEntity) record = NULL;
+		g_autoptr(JsonNode) node = NULL;
+		g_autoptr(GError) error = NULL;
+		g_autofree gchar *name = NULL;
+		JsonObject *object;
+		GList *members;
+		GList *m;
+		GType type;
+		gint64 id;
+		guint shown;
+
+		type = venture_entity_registry_lookup(
+			venture_context_get_entity_registry(self->context), parts[1]);
+
+		if (G_TYPE_INVALID == type)
+			return NULL;
+
+		if (!venture_web_require_for_type(self, principal, type,
+		                                  VENTURE_USER_ROLE_VIEWER, &error))
+			return NULL;
+
+		id = g_ascii_strtoll(parts[2], NULL, 10);
+		record = venture_database_get(
+			venture_context_get_database(self->context), type, id, &error);
+
+		if (NULL == record)
+			return NULL;
+
+		name = venture_entity_get_display_name(record);
+		g_string_append_printf(out,
+			"The operator is looking at the %s record #%" G_GINT64_FORMAT
+			" (\"%s\", at %s). When they say \"this\" they mean it. "
+			"Its fields:\n", parts[1], id,
+			(NULL != name) ? name : "", path);
+
+		node = venture_serializable_to_json(VENTURE_SERIALIZABLE(record),
+		                                    FALSE);
+		object = json_node_get_object(node);
+		members = json_object_get_members(object);
+		shown = 0;
+
+		for (m = members; NULL != m; m = m->next)
+		{
+			g_autofree gchar *rendered = NULL;
+			JsonNode *value;
+
+			if (venture_web_field_is_machinery(m->data))
+				continue;
+
+			value = json_object_get_member(object, m->data);
+
+			if ((NULL == value) || JSON_NODE_HOLDS_NULL(value))
+				continue;
+
+			rendered = venture_web_json_to_display(value);
+
+			if (venture_string_is_empty(rendered))
+				continue;
+
+			/* A long text field is cut: the model has venture_get for
+			 * the rest, and the point here is orientation. */
+			if (strlen(rendered) > 600)
+			{
+				g_autofree gchar *cut = NULL;
+
+				cut = venture_truncate(rendered, 600);
+				g_string_append_printf(out, "- %s: %s\n",
+				                       (const gchar *)m->data, cut);
+			}
+			else
+			{
+				g_string_append_printf(out, "- %s: %s\n",
+				                       (const gchar *)m->data, rendered);
+			}
+
+			shown++;
+
+			if (out->len > 3000)
+			{
+				g_string_append(out, "- (more fields not shown)\n");
+				break;
+			}
+		}
+
+		g_list_free(members);
+
+		if (0 == shown)
+			g_string_append(out, "- (no fields set)\n");
+
+		return g_string_free(g_steal_pointer(&out), FALSE);
+	}
+
+	/* A list: /e/<type>. */
+	if ((0 == g_strcmp0(parts[0], "e")) && (NULL != parts[1]) &&
+	    (NULL == parts[2]))
+	{
+		if (G_TYPE_INVALID == venture_entity_registry_lookup(
+			venture_context_get_entity_registry(self->context), parts[1]))
+			return NULL;
+
+		g_string_append_printf(out,
+			"The operator is looking at the list of %s records (%s).",
+			parts[1], path);
+
+		return g_string_free(g_steal_pointer(&out), FALSE);
+	}
+
+	/* A named page, from the same table the sidebar is drawn from. */
+	{
+		const VentureWebNavLink *links;
+		gsize i;
+
+		links = venture_web_navigation();
+
+		for (i = 0; NULL != links[i].path; i++)
+		{
+			if (0 != g_strcmp0(links[i].path, path))
+				continue;
+
+			g_string_append_printf(out,
+				"The operator is on the %s page (%s).",
+				links[i].label, path);
+
+			return g_string_free(g_steal_pointer(&out), FALSE);
+		}
+	}
+
+	if (0 == g_strcmp0(path, "/"))
+		return g_strdup("The operator is on the home dashboard.");
+
+	if (g_str_has_prefix(path, "/dashboards/"))
+		return g_strdup_printf("The operator is looking at a dashboard (%s).",
+		                       path);
+
+	if (g_str_has_prefix(path, "/reports/"))
+		return g_strdup_printf("The operator is reading a report (%s).",
+		                       path);
+
+	return NULL;
+}
+
+/*
+ * Whether a path names one record, which is when the transcript keeps a
+ * line saying so: a question asked about "this" is meaningless a week
+ * later without it.
+ */
+static gboolean
+venture_web_chat_path_is_record(const gchar *path)
+{
+	g_auto(GStrv) parts = NULL;
+
+	if (venture_string_is_empty(path) || ('/' != path[0]))
+		return FALSE;
+
+	parts = g_strsplit(path + 1, "/", -1);
+
+	return (0 == g_strcmp0(parts[0], "e")) && (NULL != parts[1]) &&
+	       (NULL != parts[2]) && (NULL == parts[3]) &&
+	       (0 != g_strcmp0(parts[2], "new")) &&
+	       (g_ascii_strtoll(parts[2], NULL, 10) > 0);
+}
+
+/*
+ * Starter questions for the page, shown while the conversation is empty.
+ *
+ * Each is a button carrying the question it asks; the script puts it in
+ * the composer and sends it, with the page as context. They are the
+ * questions the page is for -- a ticket wants summarising and answering,
+ * the inbox wants triage, the home page wants "what needs me" -- plus one
+ * that explains what the assistant can do at all, because a blank box
+ * with a blinking cursor is the least useful thing to show somebody who
+ * has not used it yet.
+ */
+static void
+venture_web_chat_append_starters(
+	VentureWebServer	*self,
+	GString			*html,
+	const gchar		*path
+){
+	static const struct
+	{
+		const gchar *prefix;
+		gboolean exact;
+		const gchar *questions[4];
+	} starters[] = {
+		{ "/e/ticket/", FALSE,
+		  { "Summarise this ticket and what is still open on it",
+		    "Draft a reply to the requester",
+		    "What should happen next on this, and who should do it",
+		    NULL } },
+		{ "/e/", FALSE,
+		  { "Summarise this record",
+		    "What is related to this, and what needs attention",
+		    NULL, NULL } },
+		{ "/tickets", TRUE,
+		  { "Which tickets are overdue or about to breach their SLA",
+		    "Triage what is waiting: suggest priorities and owners",
+		    NULL, NULL } },
+		{ "/inbox", TRUE,
+		  { "What in my inbox needs an answer from me today",
+		    NULL, NULL, NULL } },
+		{ "/sprints", TRUE,
+		  { "How is the current sprint going, and what is at risk",
+		    NULL, NULL, NULL } },
+		{ "/runs", TRUE,
+		  { "What did the agents do today, and what did it cost",
+		    NULL, NULL, NULL } },
+		{ "/reports", FALSE,
+		  { "Explain the headline figures on this report",
+		    NULL, NULL, NULL } },
+		{ "/", TRUE,
+		  { "What needs my attention today",
+		    "What changed since yesterday",
+		    NULL, NULL } }
+	};
+	static const gchar *const always[] = {
+		"What can you do, and what needs my approval",
+		NULL
+	};
+	const gchar *const *questions;
+	gsize i;
+
+	if (NULL == venture_context_get_ai_service(self->context))
+		return;
+
+	questions = NULL;
+
+	for (i = 0; (NULL == questions) && (i < G_N_ELEMENTS(starters)); i++)
+	{
+		gboolean matches;
+
+		matches = starters[i].exact
+			? (0 == g_strcmp0(path, starters[i].prefix))
+			: ((NULL != path) &&
+			   g_str_has_prefix(path, starters[i].prefix));
+
+		/* A list page is /e/<type> with no id; the record starters
+		 * want an id after the type. */
+		if (matches && !starters[i].exact &&
+		    (0 == g_strcmp0(starters[i].prefix, "/e/")) &&
+		    !venture_web_chat_path_is_record(path))
+			matches = FALSE;
+
+		if (matches && !starters[i].exact &&
+		    (0 == g_strcmp0(starters[i].prefix, "/e/ticket/")) &&
+		    !venture_web_chat_path_is_record(path))
+			matches = FALSE;
+
+		if (matches)
+			questions = starters[i].questions;
+	}
+
+	g_string_append(html, "<div class=\"chat-starters\" id=\"chat-starters\">"
+	                      "<div class=\"chat-starters-label\">"
+	                      "Try asking</div>");
+
+	for (i = 0; (NULL != questions) && (NULL != questions[i]); i++)
+	{
+		g_string_append(html, "<button type=\"button\" "
+		                      "class=\"chat-starter\" data-ai-starter>");
+		venture_html_escape_append(html, questions[i]);
+		g_string_append(html, "</button>");
+	}
+
+	for (i = 0; NULL != always[i]; i++)
+	{
+		g_string_append(html, "<button type=\"button\" "
+		                      "class=\"chat-starter\" data-ai-starter>");
+		venture_html_escape_append(html, always[i]);
+		g_string_append(html, "</button>");
+	}
+
+	g_string_append(html, "</div>");
+}
+
+/*
  * Renders the resume list into @html.
  *
  * Returns: %TRUE on success
@@ -12242,6 +12684,15 @@ venture_web_chat_render_threads(
 
 	g_string_append(html, "<div class=\"thread-list\">");
 
+	/* A filter, once there are enough to lose one in. Client-side: the
+	 * list is already here, and a round trip per keystroke for a few
+	 * dozen titles would be the slower way to do the same thing. */
+	if (threads->len > 6)
+		g_string_append(html,
+			"<input type=\"search\" class=\"thread-filter\" "
+			"placeholder=\"Filter conversations\" data-ai-filter "
+			"aria-label=\"Filter conversations\">");
+
 	if (0 == threads->len)
 		g_string_append(html, "<div class=\"empty\">"
 		                      "<h3>No conversations yet</h3>"
@@ -12260,7 +12711,9 @@ venture_web_chat_render_threads(
 		g_object_get(thread, "title", &title,
 		             "last-activity-at", &last, NULL);
 
-		g_string_append(html, "<div class=\"thread-item\">");
+		g_string_append_printf(html, "<div class=\"thread-item\" "
+		                       "data-thread-item=\"%" G_GINT64_FORMAT "\">",
+		                       id);
 		g_string_append_printf(html,
 			"<button type=\"button\" class=\"thread-open\" "
 			"data-thread-id=\"%" G_GINT64_FORMAT "\" "
@@ -12287,6 +12740,11 @@ venture_web_chat_render_threads(
 		}
 
 		g_string_append(html, "</button>");
+		g_string_append_printf(html,
+			"<button type=\"button\" class=\"thread-rename\" "
+			"title=\"Rename conversation\" "
+			"data-ai-rename=\"%" G_GINT64_FORMAT "\">"
+			"\xe2\x9c\x8e</button>", id);
 		g_string_append_printf(html,
 			"<button type=\"button\" class=\"thread-delete\" "
 			"title=\"Delete conversation\" "
@@ -12502,6 +12960,322 @@ venture_web_ui_chat_thread_delete(
 	}
 }
 
+/*
+ * GET /ui/chat/complete - what the composer's menus offer.
+ *
+ * The skills, built in and stored, for the / menu; the knowledge bases
+ * for the # menu, only when the kb module is on and this person may read
+ * them. The client fetches it once and keeps it for a minute. The
+ * commands the composer handles itself are not here: the script is the
+ * authority on what it can do, and a menu offering a command the script
+ * did not understand would be a menu that lies.
+ */
+static HtmxResponse *
+venture_web_ui_chat_complete(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GPtrArray) skills = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	guint i;
+
+	self = user_data;
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "chat");
+
+		if (NULL != gate)
+			return gate;
+	}
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	skills = venture_ai_skills_list(self->context, &error);
+
+	if (NULL == skills)
+		return venture_web_error_response(error);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+
+	json_builder_set_member_name(builder, "skills");
+	json_builder_begin_array(builder);
+
+	for (i = 0; i < skills->len; i++)
+	{
+		VentureAiSkillInfo *skill;
+
+		skill = g_ptr_array_index(skills, i);
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "trigger");
+		json_builder_add_string_value(builder, skill->trigger);
+		json_builder_set_member_name(builder, "name");
+		json_builder_add_string_value(builder, skill->name);
+		json_builder_set_member_name(builder, "description");
+		json_builder_add_string_value(builder, skill->description);
+		json_builder_set_member_name(builder, "builtin");
+		json_builder_add_boolean_value(builder, skill->builtin);
+		json_builder_end_object(builder);
+	}
+
+	json_builder_end_array(builder);
+
+	json_builder_set_member_name(builder, "bases");
+	json_builder_begin_array(builder);
+
+	if ((G_TYPE_INVALID != venture_entity_registry_lookup(
+		venture_context_get_entity_registry(self->context),
+		"knowledge_base")) &&
+	    venture_web_require_for_type(self, principal,
+	                                 VENTURE_TYPE_KNOWLEDGE_BASE,
+	                                 VENTURE_USER_ROLE_VIEWER, NULL))
+	{
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) bases = NULL;
+
+		query = venture_query_new(VENTURE_TYPE_KNOWLEDGE_BASE);
+		bases = venture_database_find(
+			venture_context_get_database(self->context), query, NULL);
+
+		for (i = 0; (NULL != bases) && (i < bases->len); i++)
+		{
+			VentureEntity *base;
+			g_autofree gchar *slug = NULL;
+			g_autofree gchar *name = NULL;
+			g_autofree gchar *description = NULL;
+
+			base = g_ptr_array_index(bases, i);
+			g_object_get(base, "slug", &slug, "name", &name,
+			             "description", &description, NULL);
+
+			if (venture_string_is_empty(slug))
+				continue;
+
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "slug");
+			json_builder_add_string_value(builder, slug);
+			json_builder_set_member_name(builder, "name");
+			json_builder_add_string_value(builder,
+				(NULL != name) ? name : slug);
+			json_builder_set_member_name(builder, "description");
+			json_builder_add_string_value(builder,
+				(NULL != description) ? description : "");
+			json_builder_end_object(builder);
+		}
+	}
+
+	json_builder_end_array(builder);
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * POST /ui/chat/thread/:id/rename - give a conversation a name.
+ *
+ * The first question makes a serviceable title until the conversation
+ * turns into something else, which most useful ones do. Scoped the same
+ * way reading it is: another person's thread is NOT_FOUND. Answers JSON,
+ * because the list row and the panel heading are both updated in place by
+ * the script rather than re-rendered.
+ */
+static HtmxResponse *
+venture_web_ui_chat_thread_rename(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureChatThread) thread = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *title = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	const gchar *wanted;
+	gint64 thread_id;
+
+	self = user_data;
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "chat");
+
+		if (NULL != gate)
+			return gate;
+	}
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	thread_id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	thread = venture_web_chat_get_thread(self, principal, thread_id, &error);
+
+	if (NULL == thread)
+		return venture_web_error_response(error);
+
+	wanted = htmx_request_get_form_value(request, "title");
+
+	if (venture_string_is_empty(wanted))
+	{
+		g_set_error_literal(&error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "A conversation needs a title");
+		return venture_web_error_response(error);
+	}
+
+	title = venture_truncate(g_strstrip(g_strdup(wanted)), 120);
+	venture_auth_to_actor(principal, &actor);
+	g_object_set(thread, "title", title, NULL);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           VENTURE_ENTITY(thread), &actor, &error))
+		return venture_web_error_response(error);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "id");
+	json_builder_add_int_value(builder, thread_id);
+	json_builder_set_member_name(builder, "title");
+	json_builder_add_string_value(builder, title);
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * GET /ui/chat/thread/:id/export - the transcript as an org-mode file.
+ *
+ * A conversation with the thing that has write access to the books is
+ * worth keeping somewhere other than its own table: in the notes, in a
+ * ticket, in an email to whoever asked. Org because that is where notes
+ * go here; plain text so anything can read it. The bodies are verbatim --
+ * this is the stored record, not the rendered one.
+ */
+static HtmxResponse *
+venture_web_ui_chat_thread_export(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureChatThread) thread = NULL;
+	g_autoptr(GPtrArray) messages = NULL;
+	g_autoptr(GString) out = NULL;
+	g_autofree gchar *title = NULL;
+	g_autofree gchar *disposition = NULL;
+	g_autoptr(GDateTime) created = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *response;
+	gint64 thread_id;
+	guint i;
+
+	self = user_data;
+	{
+		HtmxResponse *gate;
+
+		gate = venture_web_require_module_ui(self, request, "chat");
+
+		if (NULL != gate)
+			return gate;
+	}
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	thread_id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	thread = venture_web_chat_get_thread(self, principal, thread_id, &error);
+
+	if (NULL == thread)
+		return venture_web_error_response(error);
+
+	messages = venture_web_chat_get_messages(self, thread_id, &error);
+
+	if (NULL == messages)
+		return venture_web_error_response(error);
+
+	g_object_get(thread, "title", &title, "created-at", &created, NULL);
+
+	out = g_string_new("#+title: ");
+	g_string_append(out, venture_string_is_empty(title) ? "Untitled" : title);
+	g_string_append(out, "\n#+description: A conversation with VENTURE\n");
+
+	if (NULL != created)
+	{
+		g_autofree gchar *stamp = NULL;
+
+		stamp = g_date_time_format_iso8601(created);
+		g_string_append_printf(out, "#+created: %s\n", stamp);
+	}
+
+	g_string_append_printf(out, "#+conversation: %" G_GINT64_FORMAT "\n\n",
+	                       thread_id);
+
+	for (i = 0; i < messages->len; i++)
+	{
+		VentureEntity *message;
+		g_autofree gchar *body = NULL;
+		VentureChatRole role;
+
+		message = g_ptr_array_index(messages, i);
+		g_object_get(message, "role", &role, "body", &body, NULL);
+
+		g_string_append(out, (VENTURE_CHAT_ROLE_ASSISTANT == role)
+		                     ? "* VENTURE\n\n" : "* You\n\n");
+
+		/* A line of the body that would read as an org heading gets a
+		 * leading comma, the way org itself escapes them in blocks. */
+		if (NULL != body)
+		{
+			g_auto(GStrv) lines = NULL;
+			gsize l;
+
+			lines = g_strsplit(body, "\n", -1);
+
+			for (l = 0; NULL != lines[l]; l++)
+			{
+				if ('*' == lines[l][0])
+					g_string_append_c(out, ',');
+
+				g_string_append(out, lines[l]);
+				g_string_append_c(out, '\n');
+			}
+		}
+
+		g_string_append_c(out, '\n');
+	}
+
+	response = htmx_response_new_with_content(out->str);
+	htmx_response_set_content_type(response, "text/x-org; charset=utf-8");
+	htmx_response_set_status(response, 200);
+	disposition = g_strdup_printf(
+		"attachment; filename=\"venture-conversation-%" G_GINT64_FORMAT
+		".org\"", thread_id);
+	htmx_response_add_header(response, "Content-Disposition", disposition);
+
+	return response;
+}
+
 /* --- Chat attachments ----------------------------------------------------- */
 
 /*
@@ -12513,6 +13287,15 @@ venture_web_ui_chat_thread_delete(
 
 /* Uploads above this are refused outright. */
 #define VENTURE_WEB_ATTACHMENT_MAX_BYTES (15 * 1024 * 1024)
+
+/*
+ * How much of a conversation is replayed to the model on each turn: the
+ * newest messages up to this many characters, and never more than this
+ * many messages. The stored transcript keeps everything; this is what
+ * the model is shown, which is the part that costs and can overflow.
+ */
+#define VENTURE_WEB_CHAT_HISTORY_CHARS (40000)
+#define VENTURE_WEB_CHAT_HISTORY_MESSAGES (60)
 
 /*
  * Whether a MIME type or filename names an image a vision model can read.
@@ -13297,6 +14080,7 @@ venture_web_ui_chat(
 	VentureWebServer *self;
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
 	g_autoptr(VentureChatThread) thread = NULL;
+	g_autoptr(GPtrArray) all_history = NULL;
 	g_autoptr(GPtrArray) history = NULL;
 	g_autoptr(GString) html = NULL;
 	g_autoptr(GString) stored_text = NULL;
@@ -13399,6 +14183,20 @@ venture_web_ui_chat(
 	stored_text = g_string_new(message);
 	model_text = g_string_new(message);
 	images = g_ptr_array_new_with_free_func((GDestroyNotify)g_bytes_unref);
+
+	/*
+	 * A slash and a known trigger is a skill: the model gets the prompt
+	 * it stands for, the transcript keeps what was typed. An unknown
+	 * trigger is just a question that starts with a slash.
+	 */
+	{
+		g_autofree gchar *expanded = NULL;
+
+		expanded = venture_ai_skills_expand(self->context, message);
+
+		if (NULL != expanded)
+			g_string_assign(model_text, expanded);
+	}
 	image_types = g_ptr_array_new_with_free_func(g_free);
 
 	if (!venture_web_chat_attach(self,
@@ -13408,6 +14206,36 @@ venture_web_ui_chat(
 
 	/* answer_with_images wants a NULL-terminated array of types. */
 	g_ptr_array_add(image_types, NULL);
+
+	/*
+	 * Where the question was asked from. The model is told what is on
+	 * the screen -- the record, or the page -- ahead of the question,
+	 * on this turn only; the transcript keeps one line naming a record
+	 * page, so "summarise this" still means something when the thread
+	 * is read back next month.
+	 */
+	{
+		const gchar *context_path;
+		g_autofree gchar *described = NULL;
+
+		context_path = htmx_request_get_form_value(request, "context");
+		described = venture_web_chat_describe_context(self, principal,
+		                                              context_path);
+
+		if (!venture_string_is_empty(described))
+		{
+			g_string_prepend(model_text, "\n\n");
+			g_string_prepend(model_text, described);
+			g_string_prepend(model_text, "[Context] ");
+
+			if (venture_web_chat_path_is_record(context_path))
+			{
+				g_string_append(stored_text, "\n[While viewing ");
+				g_string_append(stored_text, context_path);
+				g_string_append(stored_text, "]");
+			}
+		}
+	}
 
 	/* What was already waiting before this turn, so the reply shows the
 	 * changes this turn staged rather than every one outstanding. */
@@ -13430,10 +14258,50 @@ venture_web_ui_chat(
 
 	/* Fetched before the new question is stored, so the model is not
 	 * shown the question twice. */
-	history = venture_web_chat_get_messages(self, thread_id, &error);
+	all_history = venture_web_chat_get_messages(self, thread_id, &error);
 
-	if (NULL == history)
+	if (NULL == all_history)
 		return venture_web_error_response(error);
+
+	/*
+	 * A long conversation is replayed from its tail. Every provider has
+	 * a context window and every token of history is paid for on every
+	 * turn; a thread that has been going for a month would otherwise
+	 * grow until the provider refused it, and the failure would land on
+	 * whichever question happened to be one too many. The cut is by
+	 * size and by count, oldest first, and always at a message boundary.
+	 */
+	{
+		gsize budget;
+		guint kept;
+		guint i;
+
+		/* A view: the records stay owned by the full list. */
+		history = g_ptr_array_new();
+		budget = VENTURE_WEB_CHAT_HISTORY_CHARS;
+		kept = 0;
+
+		for (i = all_history->len; i > 0; i--)
+		{
+			VentureEntity *earlier;
+			g_autofree gchar *body = NULL;
+			gsize length;
+
+			earlier = g_ptr_array_index(all_history, i - 1);
+			g_object_get(earlier, "body", &body, NULL);
+			length = (NULL != body) ? strlen(body) : 0;
+
+			if ((kept >= VENTURE_WEB_CHAT_HISTORY_MESSAGES) ||
+			    ((kept > 0) && (length > budget)))
+				break;
+
+			budget -= MIN(length, budget);
+			kept++;
+		}
+
+		for (i = all_history->len - kept; i < all_history->len; i++)
+			g_ptr_array_add(history, g_ptr_array_index(all_history, i));
+	}
 
 	{
 		g_autoptr(VentureChatMessage) stored = NULL;
@@ -13470,9 +14338,16 @@ venture_web_ui_chat(
 						 VENTURE_SPARK
 						 "</span>"
 			                      "<div class=\"msg-content\">"
-			                      "<div class=\"notice negative\">");
+			                      "<div class=\"notice negative\">"
+			                      "<span>");
 			venture_html_escape_append(html, error->message);
-			g_string_append(html, "</div></div></div>");
+			g_string_append(html, "</span></div>"
+			                      "<div class=\"chat-retry\">"
+			                      "<button type=\"button\" class=\"btn btn-sm\" "
+			                      "data-ai-retry>Try again</button>"
+			                      "<span class=\"muted small\">The question is "
+			                      "kept; a retry sends it again.</span>"
+			                      "</div></div></div>");
 		}
 		else
 		{
@@ -24935,6 +25810,12 @@ venture_web_server_new(
 	                self);
 	htmx_router_get(router, "/ui/chat/thread/:id", venture_web_ui_chat_thread,
 	                self);
+	htmx_router_get(router, "/ui/chat/complete", venture_web_ui_chat_complete,
+	                self);
+	htmx_router_post(router, "/ui/chat/thread/:id/rename",
+	                 venture_web_ui_chat_thread_rename, self);
+	htmx_router_get(router, "/ui/chat/thread/:id/export",
+	                venture_web_ui_chat_thread_export, self);
 	htmx_router_post(router, "/ui/chat/thread/:id/delete",
 	                 venture_web_ui_chat_thread_delete, self);
 	htmx_router_post(router, "/ui/chat/upload", venture_web_ui_chat_upload,

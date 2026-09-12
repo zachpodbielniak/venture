@@ -1197,6 +1197,8 @@ test_auth_api_refuses_anonymous_requests(
 		 * about their own finances. */
 		"/ui/chat/threads",
 		"/ui/chat/thread/1",
+		"/ui/chat/thread/1/export",
+		"/ui/chat/complete",
 		/*
 		 * The knowledge bases. Search returns passages of whatever the
 		 * operator has filed -- contracts, policies, drafts -- and the
@@ -1271,6 +1273,10 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 	                                        "/ui/chat/thread/1/delete",
 	                                        NULL, "", NULL, NULL),
+	                 ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+	                                        "/ui/chat/thread/1/rename",
+	                                        NULL, "title=x", NULL, NULL),
 	                 ==, SOUP_STATUS_UNAUTHORIZED);
 
 	/* The comment composer redirects to login like the page it sits on. */
@@ -1799,6 +1805,202 @@ test_auth_chat_threads_are_scoped_per_user(
 	                                        "/api/v1/chat_message",
 	                                        bob_cookie, NULL, NULL, NULL),
 	                 ==, SOUP_STATUS_FORBIDDEN);
+}
+
+/*
+ * A conversation can be renamed and taken away as org, and both are scoped
+ * the way reading it is: another person's thread is NOT_FOUND, not
+ * FORBIDDEN. The export is the stored transcript verbatim, with a line that
+ * would read as an org heading escaped the way org escapes them.
+ */
+static void
+test_auth_chat_rename_and_export(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *alice_cookie = NULL;
+	g_autofree gchar *bob_cookie = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *export = NULL;
+	g_autofree gchar *rename_path = NULL;
+	g_autofree gchar *export_path = NULL;
+	gint64 alice_id;
+	gint64 thread_id;
+
+	server_fixture_create_user(fixture, "alice", "a-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, &alice_id);
+	server_fixture_create_user(fixture, "bob", "b-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+
+	{
+		g_autoptr(VentureChatThread) thread = NULL;
+		g_autoptr(VentureChatMessage) question = NULL;
+		g_autoptr(VentureChatMessage) answer = NULL;
+
+		thread = venture_chat_thread_new();
+		g_object_set(thread, "title", "first question", "user-id", alice_id,
+		             NULL);
+		g_assert_true(venture_database_save(fixture->database,
+			VENTURE_ENTITY(thread), NULL, NULL));
+		thread_id = venture_entity_get_id(VENTURE_ENTITY(thread));
+
+		question = venture_chat_message_new();
+		g_object_set(question, "thread-id", thread_id,
+		             "role", VENTURE_CHAT_ROLE_USER,
+		             "body", "what did march cost\n* not a heading", NULL);
+		g_assert_true(venture_database_save(fixture->database,
+			VENTURE_ENTITY(question), NULL, NULL));
+
+		answer = venture_chat_message_new();
+		g_object_set(answer, "thread-id", thread_id,
+		             "role", VENTURE_CHAT_ROLE_ASSISTANT,
+		             "body", "March cost 1,200.", NULL);
+		g_assert_true(venture_database_save(fixture->database,
+			VENTURE_ENTITY(answer), NULL, NULL));
+	}
+
+	alice_cookie = server_fixture_login(fixture, "alice", "a-long-password");
+	bob_cookie = server_fixture_login(fixture, "bob", "b-long-password");
+	rename_path = g_strdup_printf("/ui/chat/thread/%" G_GINT64_FORMAT
+	                              "/rename", thread_id);
+	export_path = g_strdup_printf("/ui/chat/thread/%" G_GINT64_FORMAT
+	                              "/export", thread_id);
+
+	/* Bob can neither rename nor export it, and cannot tell it exists. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", rename_path,
+		bob_cookie, "title=mine+now", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", export_path,
+		bob_cookie, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+
+	/* Alice renames it; an empty title is refused. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", rename_path,
+		alice_cookie, "title=", NULL, NULL), ==, SOUP_STATUS_BAD_REQUEST);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", rename_path,
+		alice_cookie, "title=March+costs", &body, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(body, "\"title\""));
+	g_assert_nonnull(strstr(body, "March costs"));
+
+	/* And the export carries the new title and both sides, verbatim. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", export_path,
+		alice_cookie, NULL, &export, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(export, "#+title: March costs"));
+	g_assert_nonnull(strstr(export, "* You\n\nwhat did march cost\n"
+	                                ",* not a heading\n"));
+	g_assert_nonnull(strstr(export, "* VENTURE\n\nMarch cost 1,200."));
+}
+
+/*
+ * The composer's menus are fed by one endpoint: the skills, built in and
+ * stored, and the knowledge bases this person may read, by slug.
+ */
+static void
+test_auth_chat_complete_lists_skills_and_bases(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *body = NULL;
+
+	server_fixture_create_user(fixture, "alice", "a-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+
+	{
+		g_autoptr(VentureKnowledgeBase) base = NULL;
+		g_autoptr(VentureAiSkill) skill = NULL;
+
+		base = venture_knowledge_base_new();
+		g_object_set(base, "name", "Contracts", "slug", "contracts",
+		             "description", "Signed agreements", NULL);
+		g_assert_true(venture_database_save(fixture->database,
+			VENTURE_ENTITY(base), NULL, NULL));
+
+		skill = venture_ai_skill_new();
+		g_object_set(skill, "name", "Chase, our way", "trigger", "chase",
+		             "description", "House style", "prompt", "Chase.",
+		             "enabled", TRUE, NULL);
+		g_assert_true(venture_database_save(fixture->database,
+			VENTURE_ENTITY(skill), NULL, NULL));
+	}
+
+	cookie = server_fixture_login(fixture, "alice", "a-long-password");
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/ui/chat/complete", cookie, NULL, &body, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(body, "\"trigger\" : \"summarise\""));
+	g_assert_nonnull(strstr(body, "\"trigger\" : \"chase\""));
+	g_assert_nonnull(strstr(body, "\"name\" : \"Chase, our way\""));
+	g_assert_nonnull(strstr(body, "\"slug\" : \"contracts\""));
+	g_assert_nonnull(strstr(body, "\"description\" : \"Signed agreements\""));
+}
+
+/*
+ * What the model says is rendered, never interpreted. Fenced code comes
+ * through whole and escaped, a markdown link becomes a link only to an
+ * http(s) URL or a local path, a quoted line is a quote, and markup in the
+ * reply is text.
+ */
+static void
+test_auth_chat_reply_rendering(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *path = NULL;
+	gint64 alice_id;
+	gint64 thread_id;
+
+	server_fixture_create_user(fixture, "alice", "a-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, &alice_id);
+
+	{
+		g_autoptr(VentureChatThread) thread = NULL;
+		g_autoptr(VentureChatMessage) answer = NULL;
+
+		thread = venture_chat_thread_new();
+		g_object_set(thread, "title", "rendering", "user-id", alice_id, NULL);
+		g_assert_true(venture_database_save(fixture->database,
+			VENTURE_ENTITY(thread), NULL, NULL));
+		thread_id = venture_entity_get_id(VENTURE_ENTITY(thread));
+
+		answer = venture_chat_message_new();
+		g_object_set(answer, "thread-id", thread_id,
+		             "role", VENTURE_CHAT_ROLE_ASSISTANT,
+		             "body",
+		             "Run this:\n\n```\n- not a list\n\n<script>x</script>\n```\n"
+		             "See [the ticket](/e/ticket/7) and "
+		             "[docs](https://example.org/a?b=1) but not "
+		             "[this](javascript:alert(1)).\n\n"
+		             "> quoted line\n> and another\n\n"
+		             "<b>bold</b> stays text.",
+		             NULL);
+		g_assert_true(venture_database_save(fixture->database,
+			VENTURE_ENTITY(answer), NULL, NULL));
+	}
+
+	cookie = server_fixture_login(fixture, "alice", "a-long-password");
+	path = g_strdup_printf("/ui/chat/thread/%" G_GINT64_FORMAT, thread_id);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, cookie,
+		NULL, &page, NULL), ==, SOUP_STATUS_OK);
+
+	/* The fence, whole: its list marker is not a list and its markup is
+	 * text. */
+	g_assert_nonnull(strstr(page,
+		"<pre><code>- not a list\n\n&lt;script&gt;x&lt;/script&gt;\n"
+		"</code></pre>"));
+	g_assert_null(strstr(page, "<script>x</script>"));
+
+	/* Links: local and https, never javascript. */
+	g_assert_nonnull(strstr(page,
+		"<a href=\"/e/ticket/7\" rel=\"noopener\">the ticket</a>"));
+	g_assert_nonnull(strstr(page,
+		"<a href=\"https://example.org/a?b=1\" rel=\"noopener\">docs</a>"));
+	g_assert_null(strstr(page, "href=\"javascript:"));
+
+	g_assert_nonnull(strstr(page,
+		"<blockquote>quoted line and another </blockquote>"));
+	g_assert_nonnull(strstr(page, "&lt;b&gt;bold&lt;/b&gt; stays text."));
 }
 
 /*
@@ -3298,6 +3500,16 @@ main(
 	g_test_add("/auth/chat-threads-are-scoped-per-user", ServerFixture, NULL,
 	           server_fixture_set_up,
 	           test_auth_chat_threads_are_scoped_per_user,
+	           server_fixture_tear_down);
+	g_test_add("/auth/chat-rename-and-export", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_chat_rename_and_export,
+	           server_fixture_tear_down);
+	g_test_add("/auth/chat-complete-lists-skills-and-bases", ServerFixture,
+	           NULL, server_fixture_set_up,
+	           test_auth_chat_complete_lists_skills_and_bases,
+	           server_fixture_tear_down);
+	g_test_add("/auth/chat-reply-rendering", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_chat_reply_rendering,
 	           server_fixture_tear_down);
 	g_test_add("/auth/audit-log-refuses-writes", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_audit_log_refuses_writes,
