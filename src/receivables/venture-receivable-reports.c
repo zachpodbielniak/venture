@@ -80,6 +80,7 @@ receivables_aging(VentureContext *context, VentureDateRange *period, JsonObject 
 	g_autoptr(GPtrArray) events = NULL;
 	g_autoptr(GPtrArray) amounts = NULL;
 	g_autoptr(GDateTime) end = NULL;
+	g_autoptr(GDateTime) aged_at = NULL;
 	g_autoptr(VentureMoney) outstanding = NULL;
 	g_autoptr(VentureMoney) overdue = NULL;
 	VentureSettlementService *service;
@@ -90,6 +91,9 @@ receivables_aging(VentureContext *context, VentureDateRange *period, JsonObject 
 	guint i;
 
 	end = cutoff(period);
+	/* The exclusive endpoint belongs to the next day/month. Age at the
+	 * final included instant, while filtering events with the endpoint. */
+	aged_at = g_date_time_add(end, -1);
 	events = report_events(context, VENTURE_TYPE_INVOICE_EVENT, options, end, error);
 	if (events == NULL)
 		return NULL;
@@ -131,7 +135,7 @@ receivables_aging(VentureContext *context, VentureDateRange *period, JsonObject 
 		{
 			gint64 days;
 
-			days = g_date_time_difference(end, due) / G_TIME_SPAN_DAY;
+			days = g_date_time_difference(aged_at, due) / G_TIME_SPAN_DAY;
 			bucket = days <= 0 ? 0 : (days <= 30 ? 1 : (days <= 60 ? 2 : (days <= 90 ? 3 : 4)));
 		}
 		next = venture_money_add(g_ptr_array_index(amounts, bucket), balance, error);

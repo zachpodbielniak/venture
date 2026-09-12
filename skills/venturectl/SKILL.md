@@ -180,6 +180,27 @@ deleted.
 
 ## What it cannot do, by design
 
+**Invoice financial state comes from settlement.** Create an invoice as a
+draft, add its lines, then `update invoice ID status=sent`. A direct
+`status=paid` or `status=partially_paid` write is refused. Record the money
+instead, after reading the field declarations:
+
+```bash
+venturectl describe payment
+venturectl create payment customer_id=1 invoice_id=1 \
+    'amount=40 USD' date=2026-07-10 method=transfer external_id=bank-42
+```
+
+The receipt and its allocation settle atomically. Omit `invoice_id` to keep
+a deposit, then create `payment_allocation` rows with `payment_id` or
+`credit_id`. Overpayments remain customer credit. Standalone credits use
+`customer_credit kind=credit_note`; a `refund` names an `allocation_id` or
+an unused `credit_id`. `remaining`, invoice `paid_at`, and `workflow_state`
+are derived. Issued invoice amounts and settlement history cannot be
+edited or deleted. External payment IDs are unique per organization.
+See [customer receivables](../../docs/receivables.org) for dates, reports,
+account configuration and the current posting currency restriction.
+
 **Sensitive fields are never accepted from a payload.** A forge access
 token, a webhook secret, a password hash — naming one in `create` or
 `update` is ignored, not an error, and the rest of the payload still

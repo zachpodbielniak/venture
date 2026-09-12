@@ -20,11 +20,31 @@ VENTURE_DECLARE_ENTITY(VentureRefund, venture_refund, REFUND)
 #define VENTURE_TYPE_INVOICE_EVENT (venture_invoice_event_get_type())
 VENTURE_DECLARE_ENTITY(VentureInvoiceEvent, venture_invoice_event, INVOICE_EVENT)
 
-/** venture_payment_new: Returns: (transfer full): a customer receipt. */
-/** venture_payment_allocation_new: Returns: (transfer full): an allocation of a receipt or credit. */
-/** venture_customer_credit_new: Returns: (transfer full): a credit note or unapplied receipt. */
-/** venture_refund_new: Returns: (transfer full): a refund against an allocation or unused credit. */
-/** venture_invoice_event_new: Returns: (transfer full): an immutable invoice lifecycle event. */
+/**
+ * venture_payment_new:
+ *
+ * Returns: (transfer full): a customer receipt
+ */
+/**
+ * venture_payment_allocation_new:
+ *
+ * Returns: (transfer full): an allocation of a receipt or credit
+ */
+/**
+ * venture_customer_credit_new:
+ *
+ * Returns: (transfer full): a credit note or unapplied receipt
+ */
+/**
+ * venture_refund_new:
+ *
+ * Returns: (transfer full): a refund against an allocation or unused credit
+ */
+/**
+ * venture_invoice_event_new:
+ *
+ * Returns: (transfer full): an immutable invoice lifecycle event
+ */
 
 G_END_DECLS
 #endif

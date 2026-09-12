@@ -53,6 +53,22 @@ Two tests exist specifically to prove injection is impossible: a filter naming a
 
 The arithmetic against known data, not merely that reports run. Also that an unreviewed expense counts as zero in the tax report and that the report says so, that CSV export defuses spreadsheet formula injection, and that HTML export escapes its content.
 
+** =test-receivables=
+
+Receipts, partial and complete allocations, deposits, credit notes and
+refunds; external IDs unique within an organization; immutable financial
+history; and the lifecycle signal's veto. Failures injected after a source
+write must leave every record and audit entry unchanged. Web, REST, the
+real =venturectl= process and its MCP tool produce identical financial
+rows, including a staged tool call applied after approval. Each source
+operation produces a balanced ledger batch. Historical balances and aging
+use dated events, including the exclusive month-end boundary. The module
+switch hides its records, reports and settlement actions together.
+
+In a sandbox without a writable dconf runtime directory, run the suite
+with =GSETTINGS_BACKEND=memory=. Leave =VENTURE_TEST_DB= unset for SQLite;
+that variable selects the external PostgreSQL fixture and its schema reset.
+
 ** =test-auth=
 
 The tests where a failure is a security hole. That the three login failure modes — wrong password, unknown user, deactivated account — are textually identical, so the form cannot be used to enumerate accounts. That a token stores only a hash. That password hashes are salted and the iteration count is floored. That comparison is constant time.
