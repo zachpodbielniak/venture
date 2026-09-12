@@ -618,15 +618,16 @@ test_invoice_rule(Fixture *f, gconstpointer data)
 
 	(void)data;
 	g_object_set(invoice, "number", "SETTLE-1", "organization-id", f->org,
-		"status", VENTURE_INVOICE_STATUS_PAID, NULL);
+		"status", VENTURE_INVOICE_STATUS_DRAFT, NULL);
 	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(invoice), NULL, &error));
 	g_object_set(row, "invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)),
 		"description", "Work", "unit-price", price, "quantity", 1.0, "organization-id", f->org, NULL);
 	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(row), NULL, &error));
 	posted = venture_posting_service_post_document(venture_database_get_posting_service(f->db),
 		"invoice-settlement", VENTURE_ENTITY(invoice), NULL, &error);
-	g_assert_no_error(error);
-	g_assert_nonnull(posted);
+	/* Settlement is owned by receivables; a document rule would double post. */
+	g_assert_null(posted);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
 }
 
 static void
@@ -1038,6 +1039,45 @@ test_balance_scope(Fixture *f, gconstpointer data)
 	g_assert_cmpint(balance->amount, ==, 0);
 }
 
+/* Moving an account must not remove one side of an immutable journal from
+ * the original organization's trial balance. */
+static void
+test_posted_account_ownership(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureJournal) draft = header(f);
+	g_autoptr(GPtrArray) rows = lines(f, 10000, "USD");
+	g_autoptr(VentureJournal) posted = NULL;
+	g_autoptr(VentureOrganization) other = venture_organization_new();
+	g_autoptr(VentureEntity) cash = NULL;
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureReport *report;
+
+	(void)data;
+	posted = venture_posting_service_post(venture_database_get_posting_service(f->db),
+		draft, rows, NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(posted);
+	g_object_set(other, "name", "Other entity", NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(other), NULL, &error));
+	cash = venture_database_get(f->db, VENTURE_TYPE_ACCOUNT, account(f, "1000"), &error);
+	venture_entity_set_organization_id(cash, venture_entity_get_id(VENTURE_ENTITY(other)));
+	g_assert_false(venture_database_save(f->db, cash, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	g_assert_false(venture_database_purge(f->db, cash, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	venture_entity_set_organization_id(cash, f->org);
+	g_object_set(cash, "name", "Renamed cash", NULL);
+	g_assert_true(venture_database_save(f->db, cash, NULL, &error));
+	g_assert_no_error(error);
+	report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "trial_balance");
+	result = venture_report_generate(report, f->context, NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1049,6 +1089,7 @@ main(int argc, char **argv)
 	ADD("post-and-lookup", test_post_and_lookup);
 	ADD("draft-transition", test_draft_transition);
 	ADD("reverse-and-balance", test_reverse_and_balance);
+	ADD("posted-account-ownership", test_posted_account_ownership);
 	ADD("plugin-rule", test_plugin_rule);
 	ADD("exchange", test_exchange);
 	ADD("source-saves", test_source_saves);

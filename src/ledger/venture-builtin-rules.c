@@ -53,49 +53,6 @@ default_account(VentureDatabase *db, gint64 org, const gchar *code,
 	return venture_entity_get_id(VENTURE_ENTITY(created));
 }
 
-static VentureMoney *
-invoice_amount(VentureDatabase *db, VentureEntity *source, GError **error)
-{
-	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVOICE_LINE);
-	g_autoptr(GPtrArray) rows = NULL;
-	g_autoptr(VentureMoney) amount = NULL;
-	VentureInvoiceStatus status;
-	guint i;
-
-	g_object_get(source, "status", &status, NULL);
-	if (status != VENTURE_INVOICE_STATUS_PAID)
-	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
-			"Invoice settlement requires a paid invoice");
-		return NULL;
-	}
-	venture_query_set_limit(query, 0);
-	venture_query_add_filter_int(query, "invoice-id", VENTURE_FILTER_OP_EQ,
-		venture_entity_get_id(source), NULL);
-	rows = venture_database_find(db, query, error);
-	if (NULL == rows)
-		return NULL;
-	for (i = 0; i < rows->len; i++)
-	{
-		g_autoptr(VentureMoney) value = venture_invoice_line_get_amount(g_ptr_array_index(rows, i), error);
-		g_autoptr(VentureMoney) total = NULL;
-
-		if (NULL == value)
-			return NULL;
-		if (NULL == amount)
-			amount = venture_money_new_zero(value->currency);
-		total = venture_money_add(amount, value, error);
-		if (NULL == total)
-			return NULL;
-		g_clear_pointer(&amount, venture_money_free);
-		amount = g_steal_pointer(&total);
-	}
-	if (NULL == amount)
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-			"An invoice without lines cannot be settled");
-	return g_steal_pointer(&amount);
-}
-
 static GPtrArray *
 builtin_build(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *source, GError **error)
 {
@@ -119,8 +76,6 @@ builtin_build(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *sour
 		amount = venture_sale_get_net(VENTURE_SALE(source), error);
 	else if (g_str_equal(name, "expense") && VENTURE_IS_EXPENSE(source))
 		g_object_get(source, "amount", &amount, NULL);
-	else if (g_str_equal(name, "invoice-settlement") && VENTURE_IS_INVOICE(source))
-		amount = invoice_amount(db, source, error);
 	else
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 			"This rule does not accept the source record type");
@@ -144,11 +99,7 @@ builtin_build(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *sour
 		debit = default_account(db, org, "1000", "Cash", VENTURE_ACCOUNT_KIND_ASSET, error);
 		if (debit == 0)
 			return NULL;
-		/* Settlement discharges receivables; recognising the invoice itself
-		 * is the receivables module's separate posting event. */
-		credit = VENTURE_IS_INVOICE(source) ?
-			default_account(db, org, "1100", "Accounts receivable", VENTURE_ACCOUNT_KIND_ASSET, error) :
-			default_account(db, org, "4000", "Sales", VENTURE_ACCOUNT_KIND_INCOME, error);
+		credit = default_account(db, org, "4000", "Sales", VENTURE_ACCOUNT_KIND_INCOME, error);
 	}
 	if (credit == 0)
 		return NULL;
@@ -209,7 +160,7 @@ static void venture_builtin_posting_rule_init(VentureBuiltinPostingRule *self) {
 void
 venture_ledger_register_rules(VenturePostingRuleRegistry *registry)
 {
-	static const gchar *const names[] = { "sale", "expense", "invoice-settlement" };
+	static const gchar *const names[] = { "sale", "expense" };
 	guint i;
 
 	for (i = 0; i < G_N_ELEMENTS(names); i++)

@@ -1041,6 +1041,7 @@ venture_database_save(
 	gint64 expected_version;
 	gboolean created;
 	gboolean ledger_authorized;
+	gboolean settlement_authorized = FALSE;
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
@@ -1079,7 +1080,7 @@ venture_database_save(
 		gboolean handled;
 		gboolean ok;
 
-		ok = venture_receivables_save_hook(self, entity, actor, &handled, error);
+		ok = venture_receivables_save_hook(self, entity, actor, &handled, &settlement_authorized, error);
 		if (!ok || handled)
 		{
 			g_rec_mutex_unlock(&self->lock);
@@ -1124,7 +1125,7 @@ venture_database_save(
 	}
 
 	/* Likewise the validators, for the same reason. */
-	if (!venture_periods_validate_financial(self, entity, previous, error))
+	if (!settlement_authorized && !venture_periods_validate_financial(self, entity, previous, error))
 	{
 		g_rec_mutex_unlock(&self->lock);
 		return FALSE;
@@ -1379,13 +1380,13 @@ venture_database_delete(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
-	if (!venture_periods_check_removal(self, entity, error))
-		return FALSE;
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
 	if (!venture_receivables_check_removal(self, entity, error))
+		return FALSE;
+	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
 
 	if (!venture_entity_is_persisted(entity))
@@ -1437,13 +1438,13 @@ venture_database_restore(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
-	if (!venture_periods_check_removal(self, entity, error))
-		return FALSE;
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
 	if (!venture_receivables_check_removal(self, entity, error))
+		return FALSE;
+	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
 
 	if (!venture_entity_is_deleted(entity))
@@ -1483,6 +1484,8 @@ venture_database_purge(
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
 	if (!venture_receivables_check_removal(self, entity, error))
+		return FALSE;
+	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
 
 	if (!venture_entity_is_persisted(entity))

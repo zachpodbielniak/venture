@@ -382,6 +382,7 @@ static GType (*const venture_module_crm_types[]) (void) = {
 static GType (*const venture_module_invoicing_types[]) (void) = {
 	venture_invoice_get_type,
 	venture_invoice_line_get_type,
+	venture_invoice_event_get_type,
 	NULL
 };
 
@@ -463,7 +464,7 @@ static GType (*const venture_module_dashboards_types[]) (void) = {
 static const gchar *const venture_module_requires_core[] = { "core", NULL };
 static const gchar *const venture_module_requires_sales[] = { "sales", NULL };
 static const gchar *const venture_module_requires_invoicing[] = {
-	"finance", "crm", NULL
+	"finance", "crm", "ledger", NULL
 };
 static const gchar *const venture_module_requires_tickets[] = { "tickets", NULL };
 static const gchar *const venture_module_requires_ai[] = { "ai", NULL };
@@ -501,8 +502,7 @@ static const gchar *const venture_module_requires_receivables[] = {
 };
 static GType (*const venture_module_receivables_types[]) (void) = {
 	venture_payment_get_type, venture_payment_allocation_get_type,
-	venture_customer_credit_get_type, venture_refund_get_type,
-	venture_invoice_event_get_type, NULL
+	venture_customer_credit_get_type, venture_refund_get_type, NULL
 };
 static const gchar *const venture_module_reports_outreach[] = {
 	"campaigns", NULL
@@ -546,6 +546,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		venture_module_requires_sales, NULL,
 		venture_module_finance_types, venture_module_reports_finance, NULL,
 		FALSE
+	},
+	{
+		"ledger", "General journal", "Immutable double-entry journals and account balances.",
+		venture_module_requires_finance, NULL, venture_module_ledger_types,
+		venture_module_reports_ledger, NULL, FALSE
 	},
 	{
 		"crm", "CRM",
@@ -651,11 +656,7 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		venture_module_requires_core, NULL,
 		venture_module_dashboards_types, NULL, NULL, FALSE
 	},
-	{
-		"ledger", "General journal", "Immutable double-entry journals and account balances.",
-		venture_module_requires_finance, NULL, venture_module_ledger_types,
-		venture_module_reports_ledger, NULL, FALSE
-	},
+
 	{
 		"periods", "Fiscal periods", "Fiscal calendars, closing controls and historical reports.",
 		venture_module_requires_finance, NULL,

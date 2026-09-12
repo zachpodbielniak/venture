@@ -1242,6 +1242,13 @@ settlement_rows(Fixture *f)
 
 			node = venture_serializable_to_json(VENTURE_SERIALIZABLE(g_ptr_array_index(records, i)), FALSE);
 			object = json_node_get_object(node);
+			if (g_str_equal(types[t], "sale"))
+			{
+				const gchar *external = json_object_get_string_member(object, "external_id");
+				g_assert_true(g_str_has_prefix(external, "allocation:"));
+				g_assert_true(g_uuid_string_is_valid(external + strlen("allocation:")));
+				json_object_set_string_member(object, "external_id", "allocation:<uuid>");
+			}
 			json_object_remove_member(object, "uuid");
 			json_object_remove_member(object, "created_at");
 			json_object_remove_member(object, "updated_at");
@@ -1413,6 +1420,153 @@ test_module_switch(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(error->message, "receivables"));
 }
 
+/* Invoicing remains enabled when its optional receivables dependent is off;
+ * sending a draft must therefore remain usable. */
+static void
+test_module_off_invoice(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+
+	(void)data;
+	venture_config_set_module_enabled(f->config, "receivables", FALSE);
+	invoice = invoice_new(f, "REVIEW-OFF", "2026-01-10", "100 USD");
+	g_assert_nonnull(invoice);
+	venture_config_set_module_enabled(f->config, "receivables", TRUE);
+}
+
+/* A report requiring customer_id must receive that option through its
+ * public endpoint, not only through direct C calls in its unit tests. */
+static void
+test_statement_options(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autofree gchar *state_dir = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *cli = g_canonicalize_filename("build/debug/venturectl", NULL);
+	g_autofree gchar *customer = g_strdup_printf("customer_id=%" G_GINT64_FORMAT, f->customer_id);
+	g_autofree gchar *response = NULL;
+	g_autoptr(JsonNode) expected = NULL;
+	g_autoptr(JsonNode) actual = NULL;
+	const gchar *argv[] = { cli, "--server", NULL, "-f", "json", "report", "customer_statement", "2026-01", customer, "currency=EUR", NULL };
+
+	(void)data;
+	invoice = invoice_new(f, "STATEMENT-OPTIONS", "2026-01-10", "100 EUR");
+	server = start_server(f, &state_dir);
+	path = g_strdup_printf("/api/v1/reports/customer_statement?period=2026-01&%s&currency=EUR", customer);
+	g_assert_cmpuint(http_request(server, "GET", path, NULL, NULL, &body), ==, 200);
+	g_assert_nonnull(strstr(body, "invoice_event #1"));
+	expected = venture_json_parse(body, NULL);
+	argv[2] = venture_web_server_get_base_url(server);
+	response = run_cli(argv, NULL, TRUE);
+	actual = venture_json_parse(response, NULL);
+	g_assert_nonnull(actual);
+	g_assert_true(json_node_equal(expected, actual));
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/reports/customer_statement?period=2026-01&%s&currency=EUR", customer);
+	g_assert_cmpuint(http_request(server, "GET", path, NULL, NULL, &body), ==, 200);
+	g_assert_nonnull(strstr(body, "invoice_event #1"));
+	g_assert_nonnull(strstr(body, "currency=EUR"));
+	venture_web_server_stop(server);
+	g_clear_object(&server);
+	venture_test_remove_tree(state_dir);
+}
+
+/* Read actual posted balances, not the settlement service's own rollups:
+ * a balanced duplicate journal is still a financially wrong result. */
+static void
+assert_book_balance(Fixture *f, const gchar *code, const gchar *cutoff, gint64 expected)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	g_autoptr(VentureEntity) account = NULL;
+	g_autoptr(GDateTime) date = venture_time_from_string(cutoff, NULL);
+	g_autoptr(VentureMoney) balance = NULL;
+	g_autoptr(GError) error = NULL;
+
+	venture_query_set_organization(query, f->organization_id);
+	venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, NULL);
+	account = venture_database_find_one(f->database, query, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(account);
+	balance = venture_posting_service_account_balance(venture_database_get_posting_service(f->database),
+		venture_entity_get_id(account), f->organization_id, "USD", date, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(balance->amount, ==, expected);
+}
+
+/* The integrated workflow must recognize each receipt once, accept a
+ * second partial payment, and refund in February without rewriting January. */
+static void
+test_accounting_cycle(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) first = NULL;
+	g_autoptr(VentureEntity) second = NULL;
+	g_autoptr(VentureEntity) refund = NULL;
+	g_autoptr(VentureEntity) sale = NULL;
+	g_autoptr(GPtrArray) allocations = NULL;
+	g_autoptr(GPtrArray) periods = NULL;
+	g_autoptr(VentureFiscalYear) year = NULL;
+	g_autoptr(GDateTime) start = venture_time_from_string("2026-01-01", NULL);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FISCAL_PERIOD);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureMoney) gross = venture_money_new_for_currency(99999, "USD");
+	VentureActor actor;
+
+	(void)data;
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "bookkeeper";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	year = venture_period_service_generate(venture_period_service_get(f->database),
+		f->organization_id, "2026", start, VENTURE_PERIOD_MONTHLY, &actor, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(year);
+	invoice = invoice_new(f, "INTEGRATED", "2026-01-10", "100 USD");
+	first = payment_new(f, venture_entity_get_id(invoice), "40 USD", "2026-01-15");
+	save(f, first);
+	assert_book_balance(f, "1000", "2026-01-31T23:59:59Z", 4000);
+	assert_book_balance(f, "1100", "2026-01-31T23:59:59Z", 6000);
+	assert_book_balance(f, "4000", "2026-01-31T23:59:59Z", -10000);
+	venture_query_set_organization(query, f->organization_id);
+	venture_query_add_order(query, "start-at", VENTURE_SORT_ASCENDING, NULL);
+	periods = venture_database_find(f->database, query, &error);
+	g_assert_no_error(error);
+	g_object_set(g_ptr_array_index(periods, 0), "state", VENTURE_PERIOD_CLOSED, NULL);
+	g_assert_true(venture_database_save(f->database, g_ptr_array_index(periods, 0), &actor, &error));
+	g_assert_no_error(error);
+	second = payment_new(f, venture_entity_get_id(invoice), "60 USD", "2026-02-01");
+	save(f, second);
+	assert_status(f, invoice, "paid");
+	assert_book_balance(f, "1000", "2026-02-02", 10000);
+	assert_book_balance(f, "1100", "2026-02-02", 0);
+	assert_book_balance(f, "4000", "2026-02-02", -10000);
+	allocations = rows(f, "payment_allocation");
+	refund = record_new(f, "refund");
+	g_object_set(refund, "customer-id", f->customer_id,
+		"allocation-id", venture_entity_get_id(g_ptr_array_index(allocations, 0)), NULL);
+	money_field(refund, "amount", "10 USD");
+	money_field(refund, "date", "2026-02-05");
+	save(f, refund);
+	assert_book_balance(f, "1000", "2026-02-06", 9000);
+	assert_book_balance(f, "1100", "2026-02-06", 1000);
+	assert_book_balance(f, "4000", "2026-02-06", -10000);
+	assert_book_balance(f, "1000", "2026-01-31T23:59:59Z", 4000);
+	{
+		gint64 sale_id;
+		g_object_get(g_ptr_array_index(allocations, 0), "sale-id", &sale_id, NULL);
+		sale = venture_database_get(f->database, VENTURE_TYPE_SALE, sale_id, &error);
+		g_assert_no_error(error);
+		g_assert_cmpint(amount_field(sale, "gross"), ==, 4000);
+		g_object_set(sale, "gross", gross, NULL);
+		g_assert_false(venture_database_save(f->database, sale, NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1426,6 +1580,9 @@ main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 #define ADD(name, function) g_test_add("/receivables/" name, Fixture, NULL, set_up, function, tear_down)
 	ADD("records", test_records);
+	ADD("accounting-cycle", test_accounting_cycle);
+	ADD("module-off-invoice", test_module_off_invoice);
+	ADD("statement-options", test_statement_options);
 	ADD("direct-paid-refused", test_direct_paid_refused);
 	ADD("partial-full", test_partial_full);
 	ADD("atomic-failure", test_atomic_failure);

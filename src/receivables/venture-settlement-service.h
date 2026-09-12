@@ -100,11 +100,12 @@ VentureMoney *venture_settlement_service_customer_balance(VentureSettlementServi
  * @record: the proposed record
  * @actor: (nullable): the audit actor
  * @handled: (out): TRUE if settlement owns this save
+ * @authorized: (out): TRUE if the service consumed its internal write permit
  * @error: (out) (optional): the error
  * Returns: TRUE if allowed or completed; the generic database save hook
  */
 gboolean venture_receivables_save_hook(VentureDatabase *database, VentureEntity *record,
-	const VentureActor *actor, gboolean *handled, GError **error);
+	const VentureActor *actor, gboolean *handled, gboolean *authorized, GError **error);
 
 /**
  * venture_receivables_check_removal: (skip)
@@ -123,5 +124,22 @@ gboolean venture_receivables_check_removal(VentureDatabase *database,
  * Registers aging and customer statements over the same dated subledger.
  */
 void venture_receivables_register_reports(VentureReportRegistry *registry);
+/**
+ * venture_receivables_is_projection_write: (skip)
+ * @database: the owning database
+ * @record: the proposed record
+ * Returns: TRUE only for the current service-owned cash report projection
+ */
+gboolean venture_receivables_is_projection_write(VentureDatabase *database, VentureEntity *record);
+
+/**
+ * venture_receivables_check_sale: (skip)
+ * @database: the owning database
+ * @record: a sale
+ * @error: (out) (optional): the error
+ * Returns: TRUE if the sale is not immutable settlement evidence
+ */
+gboolean venture_receivables_check_sale(VentureDatabase *database, VentureEntity *record, GError **error);
+
 G_END_DECLS
 #endif

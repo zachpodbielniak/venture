@@ -24,13 +24,21 @@ report_currency(JsonObject *options)
 }
 
 static GDateTime *
-cutoff(VentureDateRange *period)
+cutoff(VentureDateRange *period, JsonObject *options, GError **error)
 {
 	GDateTime *end;
 	g_autoptr(GDateTime) now = NULL;
 
 	end = period != NULL ? venture_date_range_get_end(period) : NULL;
-	now = venture_time_now();
+	if (options != NULL && json_object_has_member(options, "as_of"))
+	{
+		g_autoptr(GDateTime) as_of = venture_period_report_as_of(options, error);
+		if (as_of == NULL)
+			return NULL;
+		now = g_date_time_add(as_of, 1);
+	}
+	else
+		now = venture_time_now();
 	return end != NULL && g_date_time_compare(end, now) < 0 ? g_date_time_ref(end) : g_steal_pointer(&now);
 }
 
@@ -90,7 +98,9 @@ receivables_aging(VentureContext *context, VentureDateRange *period, JsonObject 
 	guint excluded;
 	guint i;
 
-	end = cutoff(period);
+	end = cutoff(period, options, error);
+	if (end == NULL)
+		return NULL;
 	/* The exclusive endpoint belongs to the next day/month. Age at the
 	 * final included instant, while filtering events with the endpoint. */
 	aged_at = g_date_time_add(end, -1);
@@ -234,7 +244,9 @@ customer_statement(VentureContext *context, VentureDateRange *period, JsonObject
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "A customer balance includes all ventures within one organization");
 		return NULL;
 	}
-	end = cutoff(period);
+	end = cutoff(period, options, error);
+	if (end == NULL)
+		return NULL;
 	start = period != NULL ? venture_date_range_get_start(period) : NULL;
 	currency = report_currency(options);
 	zero = venture_money_new_zero(currency);

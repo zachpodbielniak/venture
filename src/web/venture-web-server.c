@@ -2401,6 +2401,21 @@ venture_web_api_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
+		static const gchar *const strings[] = { "currency", "group_by", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", NULL };
+		guint i;
+		for (i = 0; strings[i] != NULL; i++)
+		{
+			const gchar *value = htmx_request_get_query_param(request, strings[i]);
+			if (!venture_string_is_empty(value))
+				json_object_set_string_member(report_options, strings[i], value);
+		}
+		for (i = 0; integers[i] != NULL; i++)
+		{
+			const gchar *value = htmx_request_get_query_param(request, integers[i]);
+			if (!venture_string_is_empty(value))
+				json_object_set_int_member(report_options, integers[i], g_ascii_strtoll(value, NULL, 10));
+		}
 		if (!venture_string_is_empty(as_of))
 			json_object_set_string_member(report_options, "as_of", as_of);
 		if (!venture_string_is_empty(organization))
@@ -3414,7 +3429,7 @@ venture_web_ui_invoice_status(
 	{
 		HtmxResponse *gate;
 
-		gate = venture_web_require_module_ui(self, request, "receivables");
+		gate = venture_web_require_module_ui(self, request, "invoicing");
 
 		if (NULL != gate)
 			return gate;
@@ -3445,6 +3460,9 @@ venture_web_ui_invoice_status(
 
 	if (g_strcmp0(to, "paid") == 0)
 	{
+		HtmxResponse *gate = venture_web_require_module_ui(self, request, "receivables");
+		if (NULL != gate)
+			return gate;
 		if (!venture_settlement_service_settle_invoice(
 			venture_settlement_service_get(venture_context_get_database(self->context)),
 			id, now, &actor, &error))
@@ -5460,6 +5478,21 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
+		static const gchar *const strings[] = { "currency", "group_by", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", NULL };
+		guint i;
+		for (i = 0; strings[i] != NULL; i++)
+		{
+			const gchar *value = htmx_request_get_query_param(request, strings[i]);
+			if (!venture_string_is_empty(value))
+				json_object_set_string_member(report_options, strings[i], value);
+		}
+		for (i = 0; integers[i] != NULL; i++)
+		{
+			const gchar *value = htmx_request_get_query_param(request, integers[i]);
+			if (!venture_string_is_empty(value))
+				json_object_set_int_member(report_options, integers[i], g_ascii_strtoll(value, NULL, 10));
+		}
 		if (!venture_string_is_empty(as_of))
 			json_object_set_string_member(report_options, "as_of", as_of);
 		if (!venture_string_is_empty(organization))
@@ -5480,6 +5513,18 @@ venture_web_ui_report(
 
 	{
 		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
+		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", NULL };
+		guint i;
+		for (i = 0; names[i] != NULL; i++)
+		{
+			const gchar *value = htmx_request_get_query_param(request, names[i]);
+			if (!venture_string_is_empty(value))
+			{
+				g_string_append_printf(historical_suffix, "&amp;%s=", names[i]);
+				g_string_append_uri_escaped(historical_suffix, value, NULL, FALSE);
+			}
+		}
+
 		if (NULL != as_of)
 		{
 			g_string_append(historical_suffix, "&amp;as_of=");
@@ -5534,6 +5579,20 @@ venture_web_ui_report(
 			if (json_object_has_member(report_options, "organization_id"))
 				g_string_append_printf(content, "<input type=\"hidden\" name=\"organization_id\" value=\"%" G_GINT64_FORMAT "\">",
 					venture_json_object_get_int(report_options, "organization_id", 0));
+			{
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", NULL };
+				guint i;
+				/* Preserve the question when changing only its cutoff. */
+				for (i = 0; names[i] != NULL; i++)
+				{
+					const gchar *value = htmx_request_get_query_param(request, names[i]);
+					if (value == NULL)
+						continue;
+					g_string_append_printf(content, "<input type=\"hidden\" name=\"%s\" value=\"", names[i]);
+					venture_html_escape_append(content, value);
+					g_string_append(content, "\">");
+				}
+			}
 			g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
 		}
 	}
@@ -8317,11 +8376,6 @@ venture_web_append_invoice_block(
 		"<a class=\"btn\" href=\"/invoices/%" G_GINT64_FORMAT
 		"/print\" target=\"_blank\">Print</a>", id);
 
-	if (!venture_context_module_enabled(self->context, "receivables"))
-	{
-		g_string_append(content, "</div></div>");
-		return;
-	}
 
 	if (VENTURE_INVOICE_STATUS_DRAFT == status)
 		g_string_append_printf(content,
@@ -8329,6 +8383,20 @@ venture_web_append_invoice_block(
 			"/status\"><input type=\"hidden\" name=\"to\" value=\"sent\">"
 			"<button class=\"btn btn-primary\" type=\"submit\">"
 			"Mark sent</button></form>", id);
+
+	if ((VENTURE_INVOICE_STATUS_DRAFT == status) ||
+	    (VENTURE_INVOICE_STATUS_SENT == status))
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
+			"/status\"><input type=\"hidden\" name=\"to\" value=\"void\">"
+			"<button class=\"btn\" type=\"submit\">Void</button></form>",
+			id);
+
+	if (!venture_context_module_enabled(self->context, "receivables"))
+	{
+		g_string_append(content, "</div></div>");
+		return;
+	}
 
 	if ((VENTURE_INVOICE_STATUS_SENT == status) ||
 	    (VENTURE_INVOICE_STATUS_PARTIALLY_PAID == status))
@@ -8338,14 +8406,6 @@ venture_web_append_invoice_block(
 			"<button class=\"btn btn-primary\" type=\"submit\" "
 			"title=\"Records a receipt for the outstanding balance\">"
 			"Mark paid</button></form>", id);
-
-	if ((VENTURE_INVOICE_STATUS_DRAFT == status) ||
-	    (VENTURE_INVOICE_STATUS_SENT == status))
-		g_string_append_printf(content,
-			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
-			"/status\"><input type=\"hidden\" name=\"to\" value=\"void\">"
-			"<button class=\"btn\" type=\"submit\">Void</button></form>",
-			id);
 
 	g_string_append(content, "</div></div>");
 }

@@ -1189,13 +1189,20 @@ test_report_states_json(void)
 	mock_transport_answer(mock, 200, "application/json",
 	                      "{\"metrics\": []}");
 
-	params = call_params("venture_report", "name", "pnl", NULL);
+	params = call_params("venture_report", "name", "customer_statement", "currency", "USD", "as_of", "2026-01-31", NULL);
+	json_object_set_int_member(json_object_get_object_member(json_node_get_object(params), "arguments"), "customer_id", 7);
+	json_object_set_int_member(json_object_get_object_member(json_node_get_object(params), "arguments"), "organization_id", 2);
 	request = rpc_request("tools/call", g_steal_pointer(&params));
 	response = venture_mcp_server_handle(server, request);
 
 	text = result_text(response, &is_error);
 
 	g_assert_false(is_error);
+	/* Losing any selector asks a different question at the HTTP boundary. */
+	g_assert_nonnull(strstr(mock->last_path, "customer_id=7"));
+	g_assert_nonnull(strstr(mock->last_path, "organization_id=2"));
+	g_assert_nonnull(strstr(mock->last_path, "currency=USD"));
+	g_assert_nonnull(strstr(mock->last_path, "as_of=2026-01-31"));
 	g_assert_nonnull(g_strstr_len(text, -1, "JSON"));
 	g_assert_null(g_strstr_len(mock->last_path, -1, "format=csv"));
 }

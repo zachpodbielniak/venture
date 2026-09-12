@@ -242,7 +242,7 @@ void
 venture_period_reports_register(VentureReportRegistry *registry)
 {
 	static const gchar *const financial[] = {
-		"pnl", "ventures", "categories", "inventory", "tax", "campaigns", "pipeline", "monthly", "receivables"
+		"pnl", "ventures", "categories", "inventory", "tax", "campaigns", "pipeline", "monthly", "receivables", "trial_balance"
 	};
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(financial); i++)

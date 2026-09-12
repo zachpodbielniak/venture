@@ -271,6 +271,38 @@ venture_ledger_check_write(VentureDatabase *db, VentureEntity *entity,
 	}
 	if (VENTURE_IS_LEDGER_ENTRY(entity))
 		return permission_error(error);
+	/* Account membership is part of the posted evidence. Moving or purging
+	 * it would remove a leg from the old organization's trial balance. */
+	if (VENTURE_IS_ACCOUNT(entity) && venture_entity_is_persisted(entity))
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_JOURNAL_LINE);
+		g_autoptr(GPtrArray) references = NULL;
+		guint i;
+
+		stored = required_record(db, VENTURE_TYPE_ACCOUNT, venture_entity_get_id(entity), error);
+		if (NULL == stored)
+			return FALSE;
+		if (!removing && venture_entity_get_organization_id(stored) == venture_entity_get_organization_id(entity))
+			return TRUE;
+		if (G_TYPE_INVALID == venture_entity_registry_lookup(venture_entity_registry_get_default(), "journal_line"))
+		{
+			g_autoptr(OrmInspector) inspector = orm_inspector_new(venture_database_get_connection(db), error);
+			g_autoptr(VentureJournalLine) prototype = venture_journal_line_new();
+			if (NULL == inspector)
+				return FALSE;
+			if (!orm_inspector_has_table(inspector, venture_entity_get_table_name(VENTURE_ENTITY(prototype)), NULL, error))
+				return NULL == error || NULL == *error;
+		}
+		venture_query_set_limit(query, 0);
+		venture_query_add_filter_int(query, "account-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(entity), NULL);
+		references = venture_database_find(db, query, error);
+		if (NULL == references)
+			return FALSE;
+		for (i = 0; i < references->len; i++)
+			if (!parent_is_draft(db, g_ptr_array_index(references, i), error))
+				return FALSE;
+		return TRUE;
+	}
 	if (!VENTURE_IS_JOURNAL(entity) && !VENTURE_IS_JOURNAL_LINE(entity))
 		return TRUE;
 	if (NULL == previous && venture_entity_is_persisted(entity))
@@ -342,6 +374,7 @@ venture_posting_service_is_date_postable(VenturePostingService *self,
 	gint64 org, GDateTime *when, GError **error)
 {
 	GError *veto_error = NULL;
+	g_autoptr(VentureDatabase) db = NULL;
 
 	g_return_val_if_fail(VENTURE_IS_POSTING_SERVICE(self), FALSE);
 	if (!ledger_enabled(error))
@@ -352,6 +385,15 @@ venture_posting_service_is_date_postable(VenturePostingService *self,
 			"A journal requires a legal entity and accounting date");
 		return FALSE;
 	}
+	db = g_weak_ref_get(&self->database);
+	if (NULL == db)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE, "The database has been closed");
+		return FALSE;
+	}
+	if (!venture_period_guard_is_postable(VENTURE_PERIOD_GUARD(venture_database_get_period_guard(db)),
+		db, org, when, error))
+		return FALSE;
 	g_signal_emit(self, signals[DATE_POSTABLE], 0, org, when, &veto_error);
 	if (NULL == veto_error)
 		return TRUE;
@@ -900,6 +942,15 @@ venture_posting_service_post_document(VenturePostingService *self, const gchar *
 	current = required_record(db, G_OBJECT_TYPE(source), venture_entity_get_id(source), error);
 	if (NULL == current)
 		goto fail;
+	/* Invoices are posted by issuance and allocation, never a second
+	 * document rule over the same receipt. */
+	if (VENTURE_IS_INVOICE(current))
+	{
+		permission_error(error);
+		goto fail;
+	}
+	if (VENTURE_IS_SALE(current) && !venture_receivables_check_sale(db, current, error))
+		goto fail;
 	if (venture_entity_get_version(current) != venture_entity_get_version(source))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "The source document changed");
@@ -946,6 +997,8 @@ venture_ledger_wrap_source(VentureDatabase *db, VentureEntity *entity)
 {
 	VenturePostingService *service = g_object_get_data(G_OBJECT(db), "venture-posting-service");
 
+	if (venture_receivables_is_projection_write(db, entity))
+		return FALSE;
 	if (NULL != service && service->source_permit == entity)
 	{
 		service->source_permit = NULL;

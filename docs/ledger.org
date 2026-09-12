@@ -174,16 +174,11 @@ The built-ins are deliberately explicit about their accounting conventions:
 |----------------------+-------------------------------+------------------------------|
 | =sale=               | Cash (1000)                   | Sales (4000), at net proceeds |
 | =expense=            | General expenses (6900)       | Cash (1000)                  |
-| =invoice-settlement= | Cash (1000)                   | Accounts receivable (1100)    |
 
 The sale rule uses the existing documented =venture_sale_get_net()= formula.
 It does not settle the assessment's unresolved gross/tax semantics or
 introduce a tax-recognition policy. A negative amount swaps the sides. Expense
-posting records the full cost; tax deductibility is separate. Invoice
-settlement requires a paid invoice and totals its lines with exact money.
-Recognizing the receivable, partial payments, allocations and deciding when
-to invoke settlement belong to the receivables module. Ledger does not add
-another invoice-status handler.
+posting records the full cost; tax deductibility is separate. Invoice issuance and settlement post through receivables; direct invoice document posting is refused to avoid duplicate recognition. Allocation and refund sales are protected cash-report projections and never invoke the sale rule.
 
 An existing active account with the conventional code in the organization
 is used first. When absent, the rule creates a default account with a code
@@ -259,11 +254,7 @@ does not create evidence. The existing P&L remains an operational report over
 sales and expenses; it is not the authoritative ledger balance query and can
 still change after a source deletion.
 
-This module does not implement fiscal periods or close, payment/allocation
-records, bank reconciliation, vendor bills, tax recognition or consolidation.
-Their owners get the posting adapter, exact balance query and date-postable
-signal. Invoice status/sale creation still needs the receivables owner's
-atomic settlement integration; that workflow is not changed here.
+The fiscal-period guard runs inside posting transactions at the journal's effective date. Receivables uses the same posting service for issuance, payments, credits and refunds. An account referenced by posted history cannot move to another organization or be removed, including through hard purge; descriptive edits remain allowed. Bank reconciliation, vendor bills, tax recognition and consolidation are separate work.
 
 * Verification
 

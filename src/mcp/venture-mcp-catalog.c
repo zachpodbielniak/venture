@@ -786,6 +786,10 @@ venture_mcp_catalog_add_tool_extras(
 			"The report to run. venture_reports lists them.");
 		venture_mcp_catalog_add_string_property(builder, "period",
 			"The period to run it over.");
+		venture_mcp_catalog_add_integer_property(builder, "customer_id", "Customer for a statement.");
+		venture_mcp_catalog_add_integer_property(builder, "organization_id", "Legal entity to report.");
+		venture_mcp_catalog_add_string_property(builder, "currency", "Book currency to report.");
+		venture_mcp_catalog_add_string_property(builder, "as_of", "Inclusive historical cutoff.");
 
 		json_builder_set_member_name(builder, "format");
 		json_builder_begin_object(builder);

@@ -44,6 +44,17 @@ trial_balance(VentureContext *context, VentureDateRange *period, JsonObject *opt
 		org = venture_context_get_default_organization_id(context);
 	requested_currency = options != NULL ? venture_json_object_get_string(options, "currency", NULL) : NULL;
 	as_of = period != NULL ? g_date_time_add(venture_date_range_get_end(period), -1) : venture_time_now();
+	if (options != NULL && json_object_has_member(options, "as_of"))
+	{
+		g_autoptr(GDateTime) requested = venture_period_report_as_of(options, error);
+		if (requested == NULL)
+			return NULL;
+		if (g_date_time_compare(requested, as_of) < 0)
+		{
+			g_clear_pointer(&as_of, g_date_time_unref);
+			as_of = g_steal_pointer(&requested);
+		}
+	}
 	if (!venture_database_begin(db, error))
 		return NULL;
 	query = venture_query_new(VENTURE_TYPE_JOURNAL);

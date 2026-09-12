@@ -307,6 +307,8 @@ static void
 test_snapshot_boundary(Fixture *fixture, gconstpointer data)
 {
 	g_autoptr(VentureInvoice) invoice = venture_invoice_new();
+	g_autoptr(VentureCompany) customer = venture_company_new();
+	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureDateRange) range = venture_date_range_new_month(2024, 1, NULL);
 	g_autoptr(JsonObject) options = json_object_new();
 	g_autoptr(VentureReportResult) expected = NULL;
@@ -316,9 +318,25 @@ test_snapshot_boundary(Fixture *fixture, gconstpointer data)
 	g_autoptr(JsonNode) b = NULL;
 	g_autofree gchar *totals = NULL;
 	VentureReport *report = venture_report_registry_lookup(venture_context_get_report_registry(fixture->context), "receivables");
-	g_object_set(invoice, "number", "FEB1", "organization-id", (gint64)1, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+	g_object_set(customer, "name", "February customer", "organization-id", (gint64)1, NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(customer), NULL, &error));
+	g_assert_no_error(error);
+	g_object_set(invoice, "company-id", venture_entity_get_id(VENTURE_ENTITY(customer)), NULL);
+	g_object_set(invoice, "number", "FEB1", "organization-id", (gint64)1, "status", VENTURE_INVOICE_STATUS_DRAFT, NULL);
 	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(invoice), "issued-at", "2024-02-01", NULL));
-	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(invoice), NULL, NULL));
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(invoice), NULL, &error));
+	g_assert_no_error(error);
+	{
+		g_autoptr(VentureInvoiceLine) line = venture_invoice_line_new();
+		g_autoptr(VentureMoney) price = venture_money_new_for_currency(10000, "USD");
+		g_object_set(line, "invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)),
+			"organization-id", (gint64)1, "description", "February work", "quantity", 1.0, "unit-price", price, NULL);
+		g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(line), NULL, NULL));
+	}
+	/* Issue through the shared lifecycle so the cutoff test has real evidence. */
+	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(invoice), NULL, &error));
+	g_assert_no_error(error);
 	json_object_set_string_member(options, "as_of", "2024-01-31");
 	expected = venture_report_generate(report, fixture->context, range, options, NULL);
 	g_assert_nonnull(expected);

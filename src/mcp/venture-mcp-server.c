@@ -1194,6 +1194,21 @@ venture_mcp_tool_report(
 		g_string_append_uri_escaped(path, period, NULL, FALSE);
 	}
 
+	{
+		static const gchar *const options[] = { "customer_id", "organization_id", "currency", "as_of", NULL };
+		guint i;
+		for (i = 0; options[i] != NULL; i++)
+		{
+			g_autofree gchar *value = NULL;
+			if (!json_object_has_member(arguments, options[i]))
+				continue;
+			value = venture_mcp_query_value(json_object_get_member(arguments, options[i]));
+			g_string_append_c(path, strchr(path->str, '?') != NULL ? '&' : '?');
+			g_string_append_printf(path, "%s=", options[i]);
+			g_string_append_uri_escaped(path, value, NULL, FALSE);
+		}
+	}
+
 	if (0 == g_strcmp0(format, "csv"))
 	{
 		g_string_append_c(path,

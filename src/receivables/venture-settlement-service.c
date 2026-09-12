@@ -149,6 +149,19 @@ find_rows(VentureSettlementService *self, GType type, const gchar *field,
 	gint64 id, GDateTime *cutoff, GError **error)
 {
 	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureEntity) prototype = g_object_new(type, NULL);
+
+	/* A never-enabled optional module has no tables. A disabled module
+	 * with existing history must still count toward invoice balances. */
+	if (G_TYPE_INVALID == venture_entity_registry_lookup(venture_entity_registry_get_default(),
+		venture_entity_get_entity_name(prototype)))
+	{
+		g_autoptr(OrmInspector) inspector = orm_inspector_new(venture_database_get_connection(self->database), error);
+		if (NULL == inspector)
+			return NULL;
+		if (!orm_inspector_has_table(inspector, venture_entity_get_table_name(prototype), NULL, error))
+			return (error != NULL && *error != NULL) ? NULL : g_ptr_array_new_with_free_func(g_object_unref);
+	}
 
 	query = venture_query_new(type);
 	venture_query_set_limit(query, 0);
@@ -390,6 +403,39 @@ write_record(VentureSettlementService *self, VentureEntity *record,
 	return ok;
 }
 
+gboolean
+venture_receivables_is_projection_write(VentureDatabase *database, VentureEntity *record)
+{
+	VentureSettlementService *self = g_object_get_data(G_OBJECT(database), "venture-settlement-service");
+
+	/* Only the current service-owned object may bypass source posting. The
+	 * database hook consumes the permit before validators or signals run. */
+	return VENTURE_IS_SALE(record) && self != NULL && self->busy && self->writing == record;
+}
+
+gboolean
+venture_receivables_check_sale(VentureDatabase *database, VentureEntity *record, GError **error)
+{
+	g_autoptr(GPtrArray) allocations = NULL;
+
+	if (!venture_entity_is_persisted(record))
+		return TRUE;
+	allocations = find_rows(venture_settlement_service_get(database), VENTURE_TYPE_PAYMENT_ALLOCATION,
+		"sale-id", venture_entity_get_id(record), NULL, error);
+	if (NULL == allocations)
+		return FALSE;
+	if (allocations->len != 0)
+		return refuse(error, VENTURE_ERROR_PERMISSION_DENIED, "Settlement sales are derived; change them through a refund");
+	g_clear_pointer(&allocations, g_ptr_array_unref);
+	allocations = find_rows(venture_settlement_service_get(database), VENTURE_TYPE_REFUND,
+		"sale-id", venture_entity_get_id(record), NULL, error);
+	if (allocations == NULL)
+		return FALSE;
+	if (allocations->len != 0)
+		return refuse(error, VENTURE_ERROR_PERMISSION_DENIED, "Refund cash adjustments are immutable");
+	return TRUE;
+}
+
 static gint64
 account_id(VentureSettlementService *self, gint64 configured, const gchar *code,
 	VentureAccountKind kind, gint64 organization_id, GError **error)
@@ -441,7 +487,8 @@ static gboolean
 venture_receivables_post_batch(VentureSettlementService *self, GPtrArray *entries,
 	const VentureActor *actor, GError **error)
 {
-	return venture_database_save_ledger_transaction(self->database, entries, actor, error);
+	return venture_posting_service_post_entries(venture_database_get_posting_service(self->database),
+		entries, NULL, actor, error);
 }
 
 /* These are source-document legs, not a second posting engine. Unapplied
@@ -460,11 +507,6 @@ post(VentureSettlementService *self, VentureEntity *source, GDateTime *date,
 
 	if (!check_amount(amount, error))
 		return FALSE;
-	/* The existing batch helper seeds its total in the default currency.
-	 * Refuse its unsupported case before writing, without changing global
-	 * currency state or building a competing posting implementation. */
-	if (g_strcmp0(venture_money_get_currency(amount), venture_money_get_default_currency()) != 0)
-		return refuse(error, VENTURE_ERROR_UNSUPPORTED, "The current ledger batch helper supports only the configured default currency");
 	codes[0] = debit_code;
 	codes[1] = credit_code;
 	for (i = 0; i < 2; i++)
@@ -497,13 +539,13 @@ post(VentureSettlementService *self, VentureEntity *source, GDateTime *date,
 }
 
 static gboolean
-begin_operation(VentureSettlementService *self, GError **error)
+begin_operation(VentureSettlementService *self, const gchar *type, GError **error)
 {
 	if (self->database == NULL)
 		return refuse(error, VENTURE_ERROR_DATABASE, "The database has been closed");
 	if (self->busy)
 		return refuse(error, VENTURE_ERROR_CONFLICT, "A settlement is already in progress");
-	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "payment") == G_TYPE_INVALID)
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), type) == G_TYPE_INVALID)
 		return refuse(error, VENTURE_ERROR_CONFIG, "The receivables module is disabled (modules.receivables.enabled)");
 	if (!venture_database_begin(self->database, error))
 		return FALSE;
@@ -696,7 +738,7 @@ venture_settlement_service_transition(VentureSettlementService *self,
 	g_autoptr(VentureEntity) original = NULL;
 	gboolean ok;
 
-	if (!begin_operation(self, error))
+	if (!begin_operation(self, "invoice", error))
 		return FALSE;
 	original = snapshot(VENTURE_ENTITY(invoice));
 	ok = perform_transition(self, VENTURE_ENTITY(invoice), state, date, actor, error);
@@ -831,14 +873,13 @@ perform_allocation(VentureSettlementService *self, VentureEntity *allocation,
 	if (get_id(credit, "payment-id") != 0)
 	{
 		g_autoptr(VentureSale) sale = NULL;
-		g_autofree gchar *number = NULL;
+		g_autofree gchar *external = g_strdup_printf("allocation:%s", venture_entity_get_uuid(allocation));
 
-		g_object_get(invoice, "number", &number, NULL);
 		sale = venture_sale_new();
 		g_object_set(sale, "venture-id", get_id(invoice, "venture-id"), "gross", amount,
-			"occurred-at", date, "channel", "invoice", "external-id", number, NULL);
+			"occurred-at", date, "channel", "invoice", "external-id", external, NULL);
 		venture_entity_set_organization_id(VENTURE_ENTITY(sale), venture_entity_get_organization_id(invoice));
-		if (!venture_database_save(self->database, VENTURE_ENTITY(sale), actor, error))
+		if (!write_record(self, VENTURE_ENTITY(sale), actor, error))
 			return FALSE;
 		g_object_set(allocation, "sale-id", venture_entity_get_id(VENTURE_ENTITY(sale)), NULL);
 	}
@@ -963,7 +1004,7 @@ venture_settlement_service_apply_payment(VentureSettlementService *self,
 	gboolean ok;
 	guint i;
 
-	if (!begin_operation(self, error))
+	if (!begin_operation(self, "payment", error))
 		return FALSE;
 	original = snapshot(VENTURE_ENTITY(payment));
 	originals = g_ptr_array_new_with_free_func(g_object_unref);
@@ -1002,6 +1043,8 @@ perform_refund(VentureSettlementService *self, VentureEntity *refund,
 	gint64 allocation_id;
 	gint64 credit_id;
 
+	if (get_id(refund, "sale-id") != 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "The refund cash adjustment is derived");
 	if (venture_entity_is_persisted(refund))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Refunds are immutable");
 	allocation_id = get_id(refund, "allocation-id");
@@ -1058,17 +1101,22 @@ perform_refund(VentureSettlementService *self, VentureEntity *refund,
 		return FALSE;
 	if (allocation != NULL)
 	{
-		g_autoptr(VentureEntity) sale = NULL;
-		g_autoptr(VentureMoney) refunded = NULL;
+		g_autoptr(VentureSale) adjustment = venture_sale_new();
+		g_autoptr(VentureMoney) zero = venture_money_new_zero(amount->currency);
+		g_autoptr(VentureMoney) negative = venture_money_subtract(zero, amount, error);
+		g_autofree gchar *external = g_strdup_printf("refund:%s", venture_entity_get_uuid(refund));
 
-		sale = venture_database_get(self->database, VENTURE_TYPE_SALE, get_id(allocation, "sale-id"), error);
-		if (sale == NULL)
+		/* A later refund belongs to its own cash-report period. Rewriting
+		 * the old sale would change the figures of an already closed month. */
+		if (negative == NULL)
 			return FALSE;
-		g_object_get(sale, "refunded", &refunded, NULL);
-		if (!accumulate(&refunded, amount, FALSE, error))
+		g_object_set(adjustment, "organization-id", venture_entity_get_organization_id(refund),
+			"venture-id", get_id(invoice, "venture-id"), "occurred-at", date,
+			"gross", negative, "channel", "invoice", "external-id", external, NULL);
+		if (!write_record(self, VENTURE_ENTITY(adjustment), actor, error))
 			return FALSE;
-		g_object_set(sale, "refunded", refunded, NULL);
-		if (!venture_database_save(self->database, sale, actor, error) || !derive_invoice(self, invoice, date, actor, error))
+		g_object_set(refund, "sale-id", venture_entity_get_id(VENTURE_ENTITY(adjustment)), NULL);
+		if (!write_record(self, refund, actor, error) || !derive_invoice(self, invoice, date, actor, error))
 			return FALSE;
 	}
 	return update_credit(self, credit, actor, error);
@@ -1162,6 +1210,8 @@ venture_receivables_check_removal(VentureDatabase *database, VentureEntity *reco
 	g_autoptr(VentureEntity) stored = NULL;
 	gint status;
 
+	if (VENTURE_IS_SALE(record))
+		return venture_receivables_check_sale(database, record, error);
 	if (is_history(record))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Settlement history cannot be deleted, restored or purged");
 	if (!VENTURE_IS_INVOICE(record) && !VENTURE_IS_INVOICE_LINE(record))
@@ -1187,7 +1237,7 @@ venture_receivables_check_removal(VentureDatabase *database, VentureEntity *reco
 
 gboolean
 venture_receivables_save_hook(VentureDatabase *database, VentureEntity *record,
-	const VentureActor *actor, gboolean *handled, GError **error)
+	const VentureActor *actor, gboolean *handled, gboolean *authorized, GError **error)
 {
 	VentureSettlementService *self;
 	g_autoptr(VentureEntity) previous = NULL;
@@ -1195,14 +1245,18 @@ venture_receivables_save_hook(VentureDatabase *database, VentureEntity *record,
 	gboolean ok;
 
 	*handled = FALSE;
-	if (!is_history(record) && !VENTURE_IS_INVOICE(record) && !VENTURE_IS_INVOICE_LINE(record))
+	*authorized = FALSE;
+	if (!is_history(record) && !VENTURE_IS_INVOICE(record) && !VENTURE_IS_INVOICE_LINE(record) && !VENTURE_IS_SALE(record))
 		return TRUE;
 	self = venture_settlement_service_get(database);
 	if (self->writing == record)
 	{
 		self->writing = NULL;
+		*authorized = TRUE;
 		return TRUE;
 	}
+	if (VENTURE_IS_SALE(record))
+		return venture_receivables_check_sale(database, record, error);
 	if (self->busy)
 		return refuse(error, VENTURE_ERROR_CONFLICT, "A settlement is already in progress");
 	if (venture_entity_is_persisted(record))
@@ -1240,7 +1294,7 @@ venture_receivables_save_hook(VentureDatabase *database, VentureEntity *record,
 	*handled = TRUE;
 	if (VENTURE_IS_PAYMENT(record))
 		return venture_settlement_service_apply_payment(self, VENTURE_PAYMENT(record), NULL, actor, error);
-	if (!begin_operation(self, error))
+	if (!begin_operation(self, "payment", error))
 		return FALSE;
 	original = snapshot(record);
 	if (VENTURE_IS_PAYMENT_ALLOCATION(record))
@@ -1266,7 +1320,7 @@ venture_settlement_service_settle_invoice(VentureSettlementService *self,
 	g_autoptr(VenturePayment) payment = NULL;
 	gboolean ok;
 
-	if (!begin_operation(self, error))
+	if (!begin_operation(self, "payment", error))
 		return FALSE;
 	invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, invoice_id, error);
 	ok = invoice != NULL;

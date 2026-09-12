@@ -1660,7 +1660,8 @@ test_auth_invoice_paid_creates_the_sale(
 		             "gross", &gross, "external-id", &external, NULL);
 		g_assert_nonnull(gross);
 		g_assert_cmpint(venture_money_get_amount(gross), ==, 24999);
-		g_assert_cmpstr(external, ==, "INV-1");
+		g_assert_true(g_str_has_prefix(external, "allocation:"));
+	g_assert_true(g_uuid_string_is_valid(external + strlen("allocation:")));
 	}
 
 	/* Paid is terminal. */

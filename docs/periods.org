@@ -78,19 +78,14 @@ The report page accepts those query parameters too, and the assistant's
 report tool describes them. Exact timestamps can select an instant within a
 day; malformed cutoffs are refused rather than treated as live reports.
 
-Historical receivables exclude invoices issued after the cutoff. Payment
-dates and later audited status changes reconstruct whether an invoice was
-outstanding; soft-deleted invoice lines use the same visibility cutoff.
-This is the seam for the payments module to replace with its authoritative
-allocation history. No payment posting or settlement service is implemented
-here.
+Historical receivables reconstruct balances from immutable issue events, allocations and refunds strictly before the selected cutoff. Later payments and refunds do not change a closed period's receivables snapshot. Invoice lifecycle updates performed by settlement may change a historical invoice's current status, while the journal guard validates the new transaction's date. Generic writes, soft deletion, restore and hard purge still enforce the original period's protection.
 
 * What a close preserves
 
 Closing a period generates each enabled report marked with the
 =VentureReport:financial= property and saves its exact result in a
 =report_snapshot=. Built-ins include P&L, venture and category performance,
-inventory, deductions, campaigns, pipeline, monthly series and receivables.
+inventory, deductions, campaigns, pipeline, monthly series, receivables and the authoritative trial balance.
 The snapshot keeps the organization, fiscal period, report name, effective
 cutoff, closing actor, metrics, table and explanatory notes. Money retains
 its exact serialized representation.

@@ -42,7 +42,8 @@ static const VentureFieldDecl refund_fields[] = {
 	VENTURE_FIELD_REF("credit-id", "Credit", NULL, "customer_credit", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("date", "Date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_MONEY("amount", "Amount", NULL),
-	VENTURE_FIELD("reference", "Reference", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE)
+	VENTURE_FIELD("reference", "Reference", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD_REF("sale-id", "Cash adjustment", "Derived cash report adjustment at the refund date", "sale", VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureRefund, venture_refund, refund_fields)
 

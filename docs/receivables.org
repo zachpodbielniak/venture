@@ -11,7 +11,7 @@
 The =receivables= module requires =finance= and =invoicing=. Its records are
 field tables: the same declarations produce the database tables, forms,
 REST resources, CLI commands, AI schemas and audit entries. Switching the
-module off hides its records and both reports together.
+module off hides payments, credits, refunds and both reports together. Invoice events belong to invoicing, whose ledger dependency preserves issuance and voiding when receivables is disabled. Payment operations remain unavailable while receivables is off.
 
 | Record | Meaning |
 |--------+---------|
@@ -111,10 +111,7 @@ the current status.
 
 * Posting boundary
 
-=venture_receivables_post_batch()= is the single posting seam. Today it
-wraps =venture_database_save_ledger_transaction()=; integration with the
-journal posting service replaces that one call. Receivables supplies
-source-document legs and does not implement ledger internals.
+=venture_receivables_post_batch()= supplies balanced source-document legs to =venture_posting_service_post_entries()=. Journals are the sole accounting authority; generated cash-report sales bypass automatic sale posting to avoid recognizing the same receipt twice. Invoice document rules are refused because issuance and settlement already post their own journals.
 
 Issuing debits receivables and credits income. A receipt debits cash and
 credits receivables. Unused receipts are credit balances in that control
@@ -126,10 +123,10 @@ The service properties =cash-account-id=, =receivable-account-id= and
 =income-account-id= select accounts. Zero resolves active accounts 1000,
 1100 and 4000 within the transaction's organization. Another organization
 must have suitable accounts configured; the service does not create them.
-The current ledger helper supports the configured default currency only,
-so other currencies are refused atomically at the posting boundary.
+Posting validates each batch's currency through the journal service. Different currencies are kept separate and are never converted. Every journal checks the fiscal calendar at its own effective date, so a February payment can settle a January invoice after January closes without rewriting January.
 
-Existing cash reports still read sales: each allocation of received cash
-creates its sale at the allocation date, and refunds update that sale.
-The ledger's accrual view and those existing cash reports remain different
-views; replacing the reporting basis belongs to journal integration.
+Existing cash reports still read sales: each cash allocation creates an immutable sale at the allocation date with external ID =allocation:<allocation UUID>=. Two partial payments therefore remain distinct even when their invoice number is the same. An allocation refund creates a negative sale at the refund date with external ID =refund:<refund UUID>= and records its ID in =refund.sale_id=. Neither operation rewrites the original receipt. Generic edits, deletion, purge and explicit document reposting of these projections are refused.
+
+* Integrated verification
+
+The accounting-cycle regression issues a $100 invoice, receives $40, closes January, receives the remaining $60 in February and refunds $10 later in February. It checks actual cash, receivables and income account balances after every step, preserves January's balance and refuses editing the original cash projection. Separate HTTP coverage verifies customer-statement options reach the report and module-off coverage verifies invoice issuance still works.

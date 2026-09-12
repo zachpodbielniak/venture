@@ -197,7 +197,7 @@ test_numbering_migration(void)
 	version = venture_entity_get_version(VENTURE_ENTITY(invoice));
 	uuid = g_strdup(venture_entity_get_uuid(VENTURE_ENTITY(invoice)));
 	line = venture_invoice_line_new();
-	g_object_set(line, "invoice-id", invoice_id, "description", "Original line", NULL);
+	g_object_set(line, "invoice-id", invoice_id, "description", "Original line", "organization-id", (gint64)1, NULL);
 	g_assert_true(venture_database_save(database, VENTURE_ENTITY(line), NULL, &error));
 	g_assert_no_error(error);
 	line_id = venture_entity_get_id(VENTURE_ENTITY(line));
@@ -465,10 +465,36 @@ test_guard_writes(Fixture *fixture, gconstpointer data)
 
 	g_assert_true(change_state(fixture, period, VENTURE_PERIOD_CLOSED, "closer", &error));
 	g_assert_no_error(error);
-	g_assert_false(venture_database_save(fixture->database, entity, NULL, &error));
+	if (VENTURE_IS_LEDGER_ENTRY(entity))
+	{
+		g_autoptr(GDateTime) date = venture_time_from_string("2024-01-15", NULL);
+		g_assert_false(venture_posting_service_is_date_postable(venture_database_get_posting_service(fixture->database),
+			fixture->organization_id, date, &error));
+	}
+	else
+		g_assert_false(venture_database_save(fixture->database, entity, NULL, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
 	g_assert_nonnull(strstr(error->message, "P01"));
 	g_assert_nonnull(strstr(error->message, "closed"));
+}
+
+/* Exercise close-time validation of damaged imports, which normal posting
+ * now rejects before any ledger row can be committed. */
+static void
+corrupt_imported_batch(Fixture *fixture, VentureEntity *entry)
+{
+	g_autoptr(GError) error = NULL;
+
+	g_autoptr(VentureEntity) expense = dated_record(fixture, "expense", "2024-01-15");
+	g_autofree gchar *sql = NULL;
+	g_assert_true(venture_entity_set_field_from_string(expense, "amount", "10 USD", &error));
+	g_assert_true(venture_database_save(fixture->database, expense, NULL, &error));
+	/* Simulate damaged imported history below the service boundary;
+	 * ordinary writers now refuse an unbalanced batch at posting. */
+	sql = g_strdup_printf("DELETE FROM %s WHERE id = (SELECT MIN(id) FROM %s)",
+		venture_entity_get_table_name(entry), venture_entity_get_table_name(entry));
+	g_assert_true(orm_connection_execute(venture_database_get_connection(fixture->database), sql, &error));
+	g_assert_no_error(error);
 }
 
 static void
@@ -477,7 +503,12 @@ test_close_check(Fixture *fixture, gconstpointer data)
 	g_autoptr(GPtrArray) periods = calendar(fixture);
 	g_autoptr(VentureEntity) entity = dated_record(fixture, data, "2024-01-15");
 	g_autoptr(GError) error = NULL;
-	g_assert_true(venture_database_save(fixture->database, entity, NULL, &error));
+	if (VENTURE_IS_LEDGER_ENTRY(entity))
+	{
+		corrupt_imported_batch(fixture, entity);
+	}
+	else
+		g_assert_true(venture_database_save(fixture->database, entity, NULL, &error));
 	g_assert_no_error(error);
 	g_assert_false(change_state(fixture, g_ptr_array_index(periods, 0), VENTURE_PERIOD_CLOSED, "closer", &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
@@ -549,6 +580,26 @@ test_historical_reports(Fixture *fixture, gconstpointer data)
 	g_assert_false(json_node_equal(a, c));
 }
 
+/* Historical reports consume issue events, so fixtures must use the same
+ * draft/line/issue lifecycle as a real invoice writer. */
+static void
+issue_invoice(Fixture *fixture, VentureEntity *invoice, VentureInvoiceLine *line)
+{
+	g_autoptr(VentureCompany) customer = venture_company_new();
+	g_autoptr(GError) error = NULL;
+	g_object_set(customer, "name", "History customer", "organization-id", fixture->organization_id, NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(customer), NULL, &error));
+	g_object_set(invoice, "company-id", venture_entity_get_id(VENTURE_ENTITY(customer)), NULL);
+	g_assert_true(venture_database_save(fixture->database, invoice, NULL, &error));
+	g_object_set(line, "invoice-id", venture_entity_get_id(invoice), "organization-id", fixture->organization_id,
+		"description", "Paper", "quantity", 1.0, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(line), "unit-price", "100 USD", &error));
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(line), NULL, &error));
+	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+	g_assert_true(venture_database_save(fixture->database, invoice, NULL, &error));
+	g_assert_no_error(error);
+}
+
 static void
 test_historical_receivables(Fixture *fixture, gconstpointer data)
 {
@@ -559,25 +610,36 @@ test_historical_receivables(Fixture *fixture, gconstpointer data)
 	g_autoptr(JsonNode) a = NULL;
 	g_autoptr(JsonNode) b = NULL;
 	g_autoptr(GError) error = NULL;
-	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
-	g_assert_true(venture_database_save(fixture->database, invoice, NULL, &error));
-	g_assert_no_error(error);
-	g_object_set(line, "invoice-id", venture_entity_get_id(invoice), "description", "Paper", "quantity", 1.0, NULL);
-	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(line), "unit-price", "100.00 USD", NULL));
-	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(line), NULL, &error));
-	g_assert_no_error(error);
+	issue_invoice(fixture, invoice, line);
 	before = run_report(fixture, "receivables", "2024-01-31");
 	if (GPOINTER_TO_INT(data))
 	{
-		g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_PAID, NULL);
-		g_assert_true(venture_entity_set_field_from_string(invoice, "paid-at", "2024-02-10", NULL));
-		g_assert_true(venture_database_save(fixture->database, invoice, NULL, &error));
+		g_autoptr(VenturePayment) payment = venture_payment_new();
+		gint64 customer;
+		g_object_get(invoice, "company-id", &customer, NULL);
+		g_object_set(payment, "customer-id", customer, "invoice-id", venture_entity_get_id(invoice),
+			"organization-id", fixture->organization_id, "method", "manual", NULL);
+		g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(payment), "date", "2024-02-10", &error));
+		g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(payment), "amount", "100 USD", &error));
+		{
+			gboolean saved = venture_database_save(fixture->database, VENTURE_ENTITY(payment), NULL, &error);
+			g_assert_no_error(error);
+			g_assert_true(saved);
+		}
 	}
 	else
 	{
-		g_assert_true(venture_database_delete(fixture->database, VENTURE_ENTITY(line), NULL, &error));
-		g_assert_no_error(error);
-		g_assert_true(venture_database_delete(fixture->database, invoice, NULL, &error));
+		g_autoptr(GDateTime) date = venture_time_from_string("2024-02-10", NULL);
+		/* Issued evidence is immutable. Void in February instead of
+		 * destroying January's lines or invoice. */
+		g_assert_false(venture_database_delete(fixture->database, VENTURE_ENTITY(line), NULL, &error));
+		g_assert_nonnull(error);
+		g_clear_error(&error);
+		g_assert_false(venture_database_delete(fixture->database, invoice, NULL, &error));
+		g_assert_nonnull(error);
+		g_clear_error(&error);
+		g_assert_true(venture_settlement_service_transition(venture_settlement_service_get(fixture->database),
+			VENTURE_INVOICE(invoice), "void", date, NULL, &error));
 	}
 	g_assert_no_error(error);
 	after = run_report(fixture, "receivables", "2024-01-31");
@@ -635,13 +697,13 @@ test_snapshots(Fixture *fixture, gconstpointer data)
 static void
 test_historical_issuance(Fixture *fixture, gconstpointer data)
 {
+	g_autoptr(VentureInvoiceLine) line = venture_invoice_line_new();
 	g_autoptr(VentureEntity) invoice = dated_record(fixture, "invoice", "2024-02-01");
 	g_autoptr(VentureReportResult) before = run_report(fixture, "receivables", "2024-01-31");
 	g_autoptr(VentureReportResult) after = NULL;
 	g_autoptr(JsonNode) a = report_metrics(before);
 	g_autoptr(JsonNode) b = NULL;
-	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
-	g_assert_true(venture_database_save(fixture->database, invoice, NULL, NULL));
+	issue_invoice(fixture, invoice, line);
 	after = run_report(fixture, "receivables", "2024-01-31");
 	b = report_metrics(after);
 	g_assert_true(json_node_equal(a, b));
@@ -833,7 +895,7 @@ test_write_surface(Fixture *fixture, gconstpointer data)
 				g_assert_nonnull(confirmation);
 				id = g_strdup(venture_confirmation_get_id(confirmation));
 				g_assert_false(venture_confirmation_store_approve(store, id, "closer", &error));
-				g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+				g_assert_error(error, VENTURE_ERROR, ((i == 3) ? VENTURE_ERROR_PERMISSION_DENIED : VENTURE_ERROR_CONFLICT));
 				response = g_strdup(error->message);
 				g_clear_error(&error);
 			}
@@ -849,7 +911,7 @@ test_write_surface(Fixture *fixture, gconstpointer data)
 				else if (2 == i) { argv[6] = "issued_at=2024-01-15"; argv[7] = "number=1"; }
 				else { argv[7] = "transaction_id=batch-1"; argv[8] = "account_id=1"; argv[9] = "amount=10.00 USD"; }
 				response = test_cli(argv, &status);
-				g_assert_cmpint(status, ==, 4);
+				g_assert_cmpint(status, ==, (i == 3) ? 5 : 4);
 			}
 			else
 			{
@@ -867,10 +929,19 @@ test_write_surface(Fixture *fixture, gconstpointer data)
 				}
 				response = test_request(&http, "POST", path,
 					(0 == surface) ? "application/x-www-form-urlencoded" : "application/json", body, &status);
-				g_assert_cmpuint(status, ==, 409);
+				g_assert_cmpuint(status, ==, (i == 3) ? 403 : 409);
 			}
-			g_assert_nonnull(strstr(response, "P01"));
-			g_assert_nonnull(strstr(response, state_name));
+			if (i != 3)
+			{
+				g_assert_nonnull(strstr(response, "P01"));
+				g_assert_nonnull(strstr(response, state_name));
+			}
+			else
+			{
+				g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_LEDGER_ENTRY);
+				g_assert_cmpint(venture_database_count(fixture->database, query, &error), ==, 0);
+				g_assert_no_error(error);
+			}
 		}
 	}
 }
@@ -961,7 +1032,7 @@ test_check_extension(Fixture *fixture, gconstpointer data)
 	g_signal_connect(checklist, "collect-checks", G_CALLBACK(collect_plugin_check), NULL);
 	g_assert_true(venture_database_save(fixture->database, invoice, NULL, &error));
 	g_assert_no_error(error);
-	g_assert_true(venture_database_save(fixture->database, entry, NULL, &error));
+	corrupt_imported_batch(fixture, entry);
 	g_assert_no_error(error);
 	g_assert_false(change_state(fixture, g_ptr_array_index(periods, 0), VENTURE_PERIOD_CLOSED, "closer", &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
@@ -1049,6 +1120,24 @@ test_duplicate_csv(Fixture *fixture, gconstpointer data)
 	g_assert_no_error(error);
 }
 
+/* A hard-delete caller must not bypass the same closed-period guard that
+ * protects ordinary saves and soft deletion. */
+static void
+test_closed_purge(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(GPtrArray) periods = calendar(fixture);
+	g_autoptr(VentureEntity) sale = dated_record(fixture, "sale", "2024-01-15");
+	g_autoptr(GError) error = NULL;
+
+	(void)data;
+	g_assert_true(venture_database_save(fixture->database, sale, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(change_state(fixture, g_ptr_array_index(periods, 0), VENTURE_PERIOD_CLOSED, "closer", &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_database_purge(fixture->database, sale, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1102,6 +1191,7 @@ main(int argc, char **argv)
 	g_test_add("/periods/checks/extension", Fixture, NULL, fixture_set_up, test_check_extension, fixture_tear_down);
 	g_test_add("/periods/guard/extension-switch", Fixture, NULL, fixture_set_up, test_guard_extension_and_switch, fixture_tear_down);
 	g_test_add("/periods/guard/delete", Fixture, GINT_TO_POINTER(0), fixture_set_up, test_guard_mutations, fixture_tear_down);
+	g_test_add("/periods/review-closed-purge", Fixture, NULL, fixture_set_up, test_closed_purge, fixture_tear_down);
 	g_test_add("/periods/guard/restore", Fixture, GINT_TO_POINTER(1), fixture_set_up, test_guard_mutations, fixture_tear_down);
 	g_test_add("/periods/import/sale", Fixture, "sale", fixture_set_up, test_duplicate_csv, fixture_tear_down);
 	g_test_add("/periods/import/expense", Fixture, "expense", fixture_set_up, test_duplicate_csv, fixture_tear_down);
