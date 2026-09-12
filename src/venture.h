@@ -128,6 +128,7 @@
 #include "ai/venture-ai-service.h"
 #include "ai/venture-ai-assist.h"
 #include "ai/venture-ai-skills.h"
+#include "ai/venture-ai-models.h"
 #include "ai/venture-ai-harness.h"
 
 /* --- Forge integration --------------------------------------------------- */

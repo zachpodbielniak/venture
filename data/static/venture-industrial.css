@@ -1065,6 +1065,14 @@ a.card:hover::before, a.card:hover::after { border-color: var(--accent); }
          margin-bottom: var(--space-4); }
 
 /*
+ * A display rule beats the hidden attribute, which is how a field the
+ * script had hidden stayed on the page looking operable. Every layout
+ * rule in here that sets display on something hideable needs this, so it
+ * is stated once and broadly rather than per element.
+ */
+[hidden] { display: none !important; }
+
+/*
  * A field label is in the micro register -- the same treatment as a
  * table header and a stat label.
  */

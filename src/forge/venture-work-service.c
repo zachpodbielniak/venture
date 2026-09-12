@@ -1232,6 +1232,7 @@ typedef struct
 	gint64			 session_id;
 	gchar			*provider;
 	gchar			*model;
+	gchar			*effort;
 	gchar			*workspace;
 	gchar			*system_prompt;
 	GPtrArray		*history;
@@ -1251,6 +1252,7 @@ session_turn_free(gpointer data)
 	g_clear_object(&turn->cancellable);
 	g_free(turn->provider);
 	g_free(turn->model);
+	g_free(turn->effort);
 	g_free(turn->workspace);
 	g_free(turn->system_prompt);
 	g_clear_pointer(&turn->history, g_ptr_array_unref);
@@ -1486,6 +1488,13 @@ venture_work_session_run(gpointer user_data)
 		if (!venture_string_is_empty(turn->workspace))
 			ai_cli_client_set_working_directory(AI_CLI_CLIENT(object),
 			                                    turn->workspace);
+
+		/* Only when it was chosen: the client's own default is
+		 * "medium", and setting that explicitly is indistinguishable
+		 * from a person having asked for it. */
+		if (!venture_string_is_empty(turn->effort))
+			ai_cli_client_set_effort_level(AI_CLI_CLIENT(object),
+			                               turn->effort);
 	}
 	else if (!venture_string_is_empty(turn->workspace))
 	{
@@ -1685,6 +1694,7 @@ venture_work_service_session_open(
 	             "state", VENTURE_AGENT_SESSION_STATE_IDLE,
 	             "provider", spec->provider,
 	             "model", spec->model,
+	             "effort", spec->effort,
 	             "workspace", workspace,
 	             "cloned", cloned,
 	             "repo-id", spec->repo_id,
@@ -1798,7 +1808,7 @@ venture_work_service_session_send(
 		"achieves what was asked.");
 
 	g_object_get(session, "provider", &turn->provider, "model", &turn->model,
-	             "workspace", &turn->workspace, NULL);
+	             "effort", &turn->effort, "workspace", &turn->workspace, NULL);
 
 	/* The whole conversation, oldest first, as plain data. */
 	query = venture_query_new(VENTURE_TYPE_AGENT_TURN);

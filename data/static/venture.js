@@ -1648,6 +1648,121 @@
 		});
 	}
 
+	/*
+	 * Provider, model, effort.
+	 *
+	 * The three are not independent: a model belongs to a provider, and
+	 * an effort level only exists for the CLI providers that take a flag
+	 * for it. So the last two are filled in from /ui/models whenever the
+	 * first changes, and the effort field is hidden outright when the
+	 * chosen provider has none -- a control that cannot do anything is
+	 * worse than no control, because it looks like it should.
+	 *
+	 * A provider ai-glib names no models for (ollama, whose models are
+	 * whatever has been pulled locally) keeps the text box it started
+	 * with, so an unknown model can still be typed. That is also what a
+	 * browser without scripting gets, and it still works: the service
+	 * takes a model by name.
+	 */
+	function wireProviderFields(root) {
+		var select = (root || document).querySelector("[data-provider-select]");
+
+		if (!select || select.ventureProviderWired) {
+			return;
+		}
+
+		select.ventureProviderWired = true;
+
+		var form = select.closest("form");
+		var modelField = form.querySelector("[data-model-field]");
+		var effortField = form.querySelector("[data-effort-field]");
+
+		/*
+		 * Replaces a text input with a select of what is on offer, or
+		 * puts the text input back when there is nothing to offer.
+		 * Rebuilt rather than repopulated because the two are different
+		 * elements, and because a picker has already been wired around
+		 * whichever one is there.
+		 */
+		function fill(field, name, options, fallback, placeholder) {
+			var current = field.querySelector("[name=\"" + name + "\"]");
+			var label = field.querySelector("label");
+			var chosen = current ? current.value : "";
+			var replacement;
+
+			/* The themed picker wraps the control; take the wrapper
+			 * with it so one is not left behind. */
+			var wrapper = current && current.closest(".picker");
+
+			if (options.length === 0) {
+				replacement = document.createElement("input");
+				replacement.type = "text";
+				replacement.placeholder = placeholder;
+			} else {
+				replacement = document.createElement("select");
+
+				var blank = document.createElement("option");
+
+				blank.value = "";
+				blank.textContent = fallback
+					? fallback + " (default)"
+					: "the provider's default";
+				replacement.appendChild(blank);
+
+				options.forEach(function (option) {
+					var el = document.createElement("option");
+
+					el.value = option;
+					el.textContent = option;
+					replacement.appendChild(el);
+				});
+			}
+
+			replacement.name = name;
+			replacement.setAttribute("data-" + name + "-input", "");
+
+			/* Keep what was chosen if the new list still has it. */
+			if (chosen) {
+				replacement.value = chosen;
+			}
+
+			(wrapper || current).replaceWith(replacement);
+			label.appendChild(replacement);
+			wirePickers(field);
+		}
+
+		function refresh() {
+			window.fetch("/ui/models?provider="
+				+ encodeURIComponent(select.value), {
+				credentials: "same-origin"
+			}).then(function (response) {
+				return response.ok ? response.json() : null;
+			}).then(function (body) {
+				if (!body) {
+					return;
+				}
+
+				fill(modelField, "model", body.models || [],
+				     body["default"], "the provider's default");
+
+				var efforts = body.efforts || [];
+
+				effortField.hidden = efforts.length === 0;
+
+				if (efforts.length > 0) {
+					fill(effortField, "effort", efforts, "medium",
+					     "the provider's default");
+				}
+			}).catch(function () {
+				/* The text boxes the page was rendered with still
+				 * work; they just will not have a list. */
+			});
+		}
+
+		select.addEventListener("change", refresh);
+		refresh();
+	}
+
 	/* ------------------------------------------------------------------ */
 	/* Pickers: a themed select, and searching for a record               */
 	/* ------------------------------------------------------------------ */
@@ -3739,6 +3854,7 @@
 		wirePickers(document);
 		wireRecordPickers(document);
 		wireHarness(document);
+		wireProviderFields(document);
 
 		document.addEventListener("mousedown", function (event) {
 			if (openPicker && !openPicker.wrap.contains(event.target)) {

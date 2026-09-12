@@ -28,6 +28,9 @@ $(CORE_OBJS) $(SERVER_OBJS) $(MAIN_OBJ): $(OUTDIR)/venture-default-config.h
 # Only the web server embeds the assets, and it is server-only.
 $(SERVER_OBJS): $(OUTDIR)/venture-assets.h
 
+# The model catalogue goes into both trees: the CLI lists providers too.
+$(CORE_OBJS) $(SERVER_OBJS): $(OUTDIR)/venture-models.h
+
 # The vendored dependencies must be built before anything that includes their
 # headers, because several of them GENERATE a header (htmx-version.h,
 # ai-version.h, pod-version.h, crispy-version.h) into their own build tree.
@@ -218,6 +221,14 @@ $(OUTDIR)/venture-assets.h: $(ASSET_FILES) | $(OUTDIR)
 		echo ";" >> $@; \
 		echo "" >> $@; \
 	done
+
+# The model catalogue, read out of ai-glib's provider headers rather than
+# written here. See tools/venture-models.sh for why.
+AI_PROVIDER_HEADERS := $(wildcard deps/ai-glib/src/providers/*.h)
+
+$(OUTDIR)/venture-models.h: tools/venture-models.sh $(AI_PROVIDER_HEADERS) | $(OUTDIR)
+	@echo "  GEN     $@"
+	$(Q)tools/venture-models.sh deps/ai-glib/src/providers > $@
 
 # pkg-config file.
 $(OUTDIR)/venture-$(API_VERSION).pc: venture.pc.in | $(OUTDIR)

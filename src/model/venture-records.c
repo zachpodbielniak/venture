@@ -2830,6 +2830,14 @@ static const VentureFieldDecl venture_agent_session_fields[] = {
 	              VENTURE_COLUMN_FLAG_NONE),
 
 	/*
+	 * How hard to think, for the CLI providers that take a flag for it.
+	 * An HTTP provider has none, and cursor bakes the level into the
+	 * model id, so for those this is empty and unused.
+	 */
+	VENTURE_FIELD("effort", "Effort", "low, medium, high or max",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+
+	/*
 	 * Where the agent works, resolved and absolute. Stored rather than
 	 * recomputed: a session opened against a checkout that has since
 	 * been removed from the allow-list should still say where it ran.

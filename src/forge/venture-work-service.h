@@ -126,6 +126,8 @@ venture_work_service_count_live(VentureWorkService *self);
  * @provider: a provider name ai-glib's factory knows -- `claude-code`,
  *   `codex`, `cursor`, `opencode`, or an API provider
  * @model: (nullable): a model, or %NULL for the provider's own default
+ * @effort: (nullable): how hard to think, for a CLI provider that takes
+ *   a flag for it; ignored by the rest
  * @workspace: (nullable): an absolute path on this machine to work in,
  *   which must lie under one of `forge.workspace_roots`
  * @repo_id: a forge_repo to clone instead, or 0
@@ -142,6 +144,7 @@ typedef struct
 	const gchar	*name;
 	const gchar	*provider;
 	const gchar	*model;
+	const gchar	*effort;
 	const gchar	*workspace;
 	gint64		 repo_id;
 	gint64		 ticket_id;

@@ -954,6 +954,14 @@ a.card:hover {
          margin-bottom: var(--space-4); }
 
 /*
+ * A display rule beats the hidden attribute, which is how a field the
+ * script had hidden stayed on the page looking operable. Every layout
+ * rule in here that sets display on something hideable needs this, so it
+ * is stated once and broadly rather than per element.
+ */
+[hidden] { display: none !important; }
+
+/*
  * A field label is small, tracked out and uppercase -- the same treatment as
  * a table header and a stat label, so every "this is what the value below
  * means" in the interface looks like the same thing.

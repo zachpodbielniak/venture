@@ -1199,6 +1199,7 @@ test_auth_api_refuses_anonymous_requests(
 		"/ui/chat/thread/1",
 		"/ui/chat/thread/1/export",
 		"/ui/chat/complete",
+		"/ui/models?provider=claude",
 		"/ui/chat/stream/whatever",
 		"/harness/1/stream",
 		/*
@@ -1898,6 +1899,58 @@ test_auth_chat_rename_and_export(
 	g_assert_nonnull(strstr(export, "* You\n\nwhat did march cost\n"
 	                                ",* not a heading\n"));
 	g_assert_nonnull(strstr(export, "* VENTURE\n\nMarch cost 1,200."));
+}
+
+/*
+ * The provider, model and effort dropdowns are fed by one endpoint, and
+ * what it offers depends on the provider: a CLI agent has an effort
+ * level, an HTTP provider does not, and one whose models nobody can
+ * enumerate offers none.
+ */
+static void
+test_auth_models_are_scoped_to_the_provider(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *cli = NULL;
+	g_autofree gchar *api = NULL;
+	g_autofree gchar *cursor = NULL;
+	g_autofree gchar *unknown = NULL;
+
+	server_fixture_create_user(fixture, "alice", "a-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	cookie = server_fixture_login(fixture, "alice", "a-long-password");
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/ui/models?provider=claude-code", cookie, NULL, &cli, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(cli, "\"cli\" : true"));
+	g_assert_nonnull(strstr(cli, "\"low\""));
+	g_assert_nonnull(strstr(cli, "\"max\""));
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/ui/models?provider=claude", cookie, NULL, &api, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(api, "\"cli\" : false"));
+	g_assert_nonnull(strstr(api, "\"efforts\" : []"));
+	g_assert_null(strstr(api, "\"low\""));
+
+	/* A CLI provider that bakes effort into the model id offers models
+	 * and no levels. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/ui/models?provider=cursor", cookie, NULL, &cursor, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(cursor, "\"cli\" : true"));
+	g_assert_nonnull(strstr(cursor, "\"efforts\" : []"));
+
+	/* And a name nothing knows is an empty answer, not an error: the
+	 * form asks about whatever is selected. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/ui/models?provider=nonsense", cookie, NULL, &unknown, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(unknown, "\"models\" : []"));
+	g_assert_nonnull(strstr(unknown, "\"efforts\" : []"));
 }
 
 /*
@@ -3603,6 +3656,10 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/chat-rename-and-export", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_chat_rename_and_export,
+	           server_fixture_tear_down);
+	g_test_add("/auth/models-are-scoped-to-the-provider", ServerFixture, NULL,
+	           server_fixture_set_up,
+	           test_auth_models_are_scoped_to_the_provider,
 	           server_fixture_tear_down);
 	g_test_add("/auth/chat-stream-token-is-one-shot", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_chat_stream_token_is_one_shot,

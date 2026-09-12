@@ -300,6 +300,93 @@ test_desk_skills_expand(
 	g_assert_true(saw_chase);
 }
 
+/* --- The model catalogue ---------------------------------------------------- */
+
+/*
+ * Which models a provider has, and which providers take an effort level.
+ *
+ * The catalogue is generated from ai-glib's headers at build time, so
+ * this does not pin particular model ids -- they move with the submodule
+ * and pinning them would make an upgrade fail here rather than where it
+ * mattered. What is pinned is the shape: a provider ai-glib knows has
+ * models, a CLI provider that takes a flag has effort levels, and the two
+ * that do not have neither.
+ */
+static void
+test_desk_model_catalogue(void)
+{
+	const gchar *const *providers;
+	gboolean saw_cli;
+	gboolean saw_api;
+	gsize i;
+
+	providers = venture_ai_providers();
+	g_assert_nonnull(providers);
+	g_assert_true(g_strv_contains(providers, "claude"));
+	g_assert_true(g_strv_contains(providers, "claude-code"));
+	g_assert_true(g_strv_contains(providers, "codex-cli"));
+	g_assert_true(g_strv_contains(providers, "opencode"));
+
+	/* The walk stops at the first name the library does not know, so an
+	 * "unknown" in the list would mean it ran off the end of the enum. */
+	g_assert_false(g_strv_contains(providers, "unknown"));
+
+	saw_cli = FALSE;
+	saw_api = FALSE;
+
+	for (i = 0; NULL != providers[i]; i++)
+	{
+		if (venture_ai_provider_is_cli(providers[i]))
+			saw_cli = TRUE;
+		else
+			saw_api = TRUE;
+	}
+
+	g_assert_true(saw_cli);
+	g_assert_true(saw_api);
+
+	/* A CLI agent has models and an effort level. */
+	{
+		const gchar *const *models;
+		const gchar *const *efforts;
+
+		g_assert_true(venture_ai_provider_is_cli("claude-code"));
+		models = venture_ai_provider_models("claude-code");
+		g_assert_nonnull(models);
+		g_assert_nonnull(models[0]);
+		g_assert_nonnull(venture_ai_provider_default_model("claude-code"));
+
+		efforts = venture_ai_provider_efforts("claude-code");
+		g_assert_nonnull(efforts);
+		g_assert_true(g_strv_contains(efforts, "low"));
+		g_assert_true(g_strv_contains(efforts, "max"));
+	}
+
+	/* An HTTP provider has models and no effort flag. */
+	g_assert_false(venture_ai_provider_is_cli("claude"));
+	g_assert_nonnull(venture_ai_provider_models("claude"));
+	g_assert_null(venture_ai_provider_efforts("claude"));
+
+	/*
+	 * Cursor is the awkward one: a CLI provider that takes no effort
+	 * flag, because the level is part of the model id. Offering it one
+	 * would be offering a control that does nothing.
+	 */
+	g_assert_true(venture_ai_provider_is_cli("cursor"));
+	g_assert_nonnull(venture_ai_provider_models("cursor"));
+	g_assert_null(venture_ai_provider_efforts("cursor"));
+
+	/* And one with no list at all: whatever the endpoint serves. */
+	g_assert_null(venture_ai_provider_models("openai-compatible"));
+
+	/* A name nothing knows answers nothing rather than crashing. */
+	g_assert_null(venture_ai_provider_models("not-a-provider"));
+	g_assert_null(venture_ai_provider_efforts("not-a-provider"));
+	g_assert_null(venture_ai_provider_default_model("not-a-provider"));
+	g_assert_false(venture_ai_provider_is_cli(NULL));
+	g_assert_null(venture_ai_provider_models(NULL));
+}
+
 /* --- The harness ----------------------------------------------------------- */
 
 /*
@@ -1536,6 +1623,7 @@ main(
 	                test_desk_types_belong_to_modules);
 	g_test_add_func("/desk/mentions-are-extracted",
 	                test_desk_mentions_are_extracted);
+	g_test_add_func("/desk/model-catalogue", test_desk_model_catalogue);
 
 #define ADD(path, func) \
 	g_test_add(path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)

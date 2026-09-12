@@ -640,6 +640,19 @@ than one that fails.
   repo record. `forge.workspace_roots` is empty by default; paths are
   compared after `realpath()` and the separator check matters
   (`/srv/venture-secrets` is not under `/srv/venture`).
+- **The model catalogue is generated, never written.**
+  `tools/venture-models.sh` reads `AI_*_MODEL_*` defines out of
+  `deps/ai-glib/src/providers/*.h` into `$(OUTDIR)/venture-models.h`; the
+  provider list is walked out of `AiProviderType` via
+  `ai_provider_type_to_string()`. Do not hand-edit either list -- add the
+  model to ai-glib. Prefix matching is longest-first, or
+  `AI_CLAUDE_CODE_MODEL_*` files under `claude`.
+- **Effort is per provider, not per model**, because that is how ai-glib
+  passes it (a CLI flag). `cursor` is the trap: a CLI provider with *no*
+  effort flag, since the level is in the model id.
+- **`[hidden]` needs `!important` here.** `.field` sets `display: flex`,
+  which beats the attribute; a field the script had hidden stayed on the
+  page looking operable until that rule was added.
 - **A CLI provider gets no tools from us** (its subprocess has its own);
   an API provider gets `venture_work_tools_register()` rooted at the
   workspace. Neither gets `ai_tool_executor_new()`'s built-ins.

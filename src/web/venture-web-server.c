@@ -13551,6 +13551,78 @@ venture_web_session_append_turns(
 }
 
 /*
+ * GET /ui/models?provider= - what a provider can be asked to run.
+ *
+ * The models and the effort levels both come from the catalogue, which is
+ * generated from ai-glib's own headers, so what a dropdown offers is what
+ * the library will actually accept. A provider ai-glib names no models for
+ * -- ollama, whose models are whatever has been pulled locally -- answers
+ * with an empty list and the form falls back to a text box.
+ */
+static HtmxResponse *
+venture_web_ui_models(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	const gchar *const *models;
+	const gchar *const *efforts;
+	const gchar *provider;
+	const gchar *fallback;
+	gsize i;
+
+	self = user_data;
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	provider = htmx_request_get_query_param(request, "provider");
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+
+	json_builder_set_member_name(builder, "provider");
+	json_builder_add_string_value(builder, (NULL != provider) ? provider : "");
+
+	json_builder_set_member_name(builder, "cli");
+	json_builder_add_boolean_value(builder,
+	                               venture_ai_provider_is_cli(provider));
+
+	fallback = venture_ai_provider_default_model(provider);
+	json_builder_set_member_name(builder, "default");
+	json_builder_add_string_value(builder, (NULL != fallback) ? fallback : "");
+
+	json_builder_set_member_name(builder, "models");
+	json_builder_begin_array(builder);
+	models = venture_ai_provider_models(provider);
+
+	for (i = 0; (NULL != models) && (NULL != models[i]); i++)
+		json_builder_add_string_value(builder, models[i]);
+
+	json_builder_end_array(builder);
+
+	json_builder_set_member_name(builder, "efforts");
+	json_builder_begin_array(builder);
+	efforts = venture_ai_provider_efforts(provider);
+
+	for (i = 0; (NULL != efforts) && (NULL != efforts[i]); i++)
+		json_builder_add_string_value(builder, efforts[i]);
+
+	json_builder_end_array(builder);
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
  * GET /harness - the sessions, and the form that opens one.
  */
 static HtmxResponse *
@@ -13624,17 +13696,58 @@ venture_web_ui_harness(
 	                         "</label></div>"
 	                         "<div class=\"field\"><label>"
 	                         "<span class=\"field-label\">Provider</span>"
-	                         "<select name=\"provider\">"
-	                         "<option value=\"claude-code\">claude-code</option>"
-	                         "<option value=\"codex\">codex</option>"
-	                         "<option value=\"cursor\">cursor</option>"
-	                         "<option value=\"opencode\">opencode</option>"
-	                         "<option value=\"claude\">claude (API)</option>"
-	                         "<option value=\"openai\">openai (API)</option>"
-	                         "</select></label></div>"
-	                         "<div class=\"field\"><label>"
+	                         "<select name=\"provider\" data-provider-select>");
+
+	/*
+	 * Every provider ai-glib can build, in its own order, with the CLI
+	 * ones said so: which kind it is decides whether the session can
+	 * edit files with the agent's own tools or VENTURE's, and it is not
+	 * inferable from a name like "antigravity".
+	 */
+	{
+		const gchar *const *providers;
+		gsize p;
+
+		providers = venture_ai_providers();
+
+		for (p = 0; (NULL != providers) && (NULL != providers[p]); p++)
+		{
+			g_string_append(content, "<option value=\"");
+			venture_html_escape_append(content, providers[p]);
+			g_string_append(content, "\"");
+
+			if (0 == g_strcmp0(providers[p], "claude-code"))
+				g_string_append(content, " selected");
+
+			g_string_append(content, ">");
+			venture_html_escape_append(content, providers[p]);
+			g_string_append(content,
+				venture_ai_provider_is_cli(providers[p])
+					? " (CLI)" : " (API)");
+			g_string_append(content, "</option>");
+		}
+	}
+
+	/*
+	 * The model and the effort are filled in from /ui/models when a
+	 * provider is chosen, and again whenever it changes. Rendered empty
+	 * rather than pre-filled for the default provider so there is one
+	 * path that populates them rather than two that can disagree; with
+	 * scripting off both fall back to a text box, which still works
+	 * because the service takes a model by name.
+	 */
+	g_string_append(content, "</select></label></div>"
+	                         "<div class=\"field\" data-model-field><label>"
 	                         "<span class=\"field-label\">Model</span>"
 	                         "<input type=\"text\" name=\"model\" "
+	                         "data-model-input "
+	                         "placeholder=\"the provider's default\">"
+	                         "</label></div>"
+	                         "<div class=\"field\" data-effort-field hidden>"
+	                         "<label>"
+	                         "<span class=\"field-label\">Effort</span>"
+	                         "<input type=\"text\" name=\"effort\" "
+	                         "data-effort-input "
 	                         "placeholder=\"the provider's default\">"
 	                         "</label></div></div>");
 
@@ -13825,6 +13938,19 @@ venture_web_ui_harness_session(
 
 	g_string_append(content, "</code>");
 
+	{
+		g_autofree gchar *effort = NULL;
+
+		g_object_get(session, "effort", &effort, NULL);
+
+		if (!venture_string_is_empty(effort))
+		{
+			g_string_append(content, " at <code>");
+			venture_html_escape_append(content, effort);
+			g_string_append(content, "</code> effort");
+		}
+	}
+
 	if (!venture_string_is_empty(workspace))
 	{
 		g_string_append(content, " in <code>");
@@ -13948,6 +14074,7 @@ venture_web_ui_harness_open(
 	spec.name = htmx_request_get_form_value(request, "name");
 	spec.provider = htmx_request_get_form_value(request, "provider");
 	spec.model = htmx_request_get_form_value(request, "model");
+	spec.effort = htmx_request_get_form_value(request, "effort");
 	spec.workspace = htmx_request_get_form_value(request, "workspace");
 	spec.user_id = principal->user_id;
 
@@ -27507,6 +27634,7 @@ venture_web_server_new(
 	htmx_router_get(router, "/ui/chat/thread/:id", venture_web_ui_chat_thread,
 	                self);
 	htmx_router_get(router, "/assistant", venture_web_ui_assistant, self);
+	htmx_router_get(router, "/ui/models", venture_web_ui_models, self);
 	htmx_router_get(router, "/harness", venture_web_ui_harness, self);
 	htmx_router_post(router, "/harness", venture_web_ui_harness_open, self);
 	htmx_router_get(router, "/harness/:id", venture_web_ui_harness_session,
