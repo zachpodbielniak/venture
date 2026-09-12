@@ -953,6 +953,218 @@ test_dashboard_move_widget(
 	g_assert_no_error(error);
 }
 
+/*
+ * The grid. Placed widgets keep their cells; unplaced ones flow into the
+ * first free cells; a placement that overlaps or falls off the edge is
+ * treated as unplaced rather than breaking the page; placing is refused
+ * onto a taken cell; nudging moves by one; arranging closes gaps.
+ *
+ * What breaks if this regresses: two cards drawn on top of each other,
+ * or a page that stops rendering because a layout lost a column.
+ */
+static const VentureWidgetPlacement *
+placement_of(
+	GPtrArray		*placements,
+	VentureDashboardWidget	*widget
+){
+	guint i;
+
+	for (i = 0; i < placements->len; i++)
+	{
+		const VentureWidgetPlacement *placement;
+
+		placement = g_ptr_array_index(placements, i);
+
+		if (venture_entity_get_id(VENTURE_ENTITY(placement->widget)) ==
+		    venture_entity_get_id(VENTURE_ENTITY(widget)))
+			return placement;
+	}
+
+	g_error("widget %" G_GINT64_FORMAT " is not in the layout",
+	        venture_entity_get_id(VENTURE_ENTITY(widget)));
+
+	return NULL;
+}
+
+static void
+test_dashboard_grid_layout(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(VentureDashboardWidget) a = NULL;
+	g_autoptr(VentureDashboardWidget) b = NULL;
+	g_autoptr(VentureDashboardWidget) c = NULL;
+	g_autoptr(VentureDashboardWidget) d = NULL;
+	g_autoptr(GPtrArray) placements = NULL;
+	g_autoptr(GError) error = NULL;
+	const VentureWidgetPlacement *placement;
+
+	(void)user_data;
+
+	dashboard = create_dashboard(fixture, "Grid");
+
+	/* Three columns. a is wide and unplaced, b is a single unplaced, c
+	 * asks for column 3 row 1 and gets it, d is full width. */
+	a = create_widget(fixture, dashboard, "note", "title", "A",
+	                  "span", VENTURE_WIDGET_SPAN_WIDE, NULL);
+	b = create_widget(fixture, dashboard, "note", "title", "B", NULL);
+	c = create_widget(fixture, dashboard, "note", "title", "C",
+	                  "grid-col", (gint64)3, "grid-row", (gint64)1, NULL);
+	d = create_widget(fixture, dashboard, "note", "title", "D",
+	                  "span", VENTURE_WIDGET_SPAN_FULL, NULL);
+
+	placements = venture_dashboard_layout(fixture->database, dashboard,
+	                                      &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(placements->len, ==, 4);
+
+	placement = placement_of(placements, c);
+	g_assert_true(placement->placed);
+	g_assert_cmpuint(placement->col, ==, 3);
+	g_assert_cmpuint(placement->row, ==, 1);
+
+	/* a flows into row 1 columns 1-2, beside c. */
+	placement = placement_of(placements, a);
+	g_assert_false(placement->placed);
+	g_assert_cmpuint(placement->col, ==, 1);
+	g_assert_cmpuint(placement->row, ==, 1);
+	g_assert_cmpuint(placement->width, ==, 2);
+
+	/* b goes to the first free cell, row 2 column 1; d needs a whole
+	 * row and takes row 3. */
+	placement = placement_of(placements, b);
+	g_assert_cmpuint(placement->row, ==, 2);
+	g_assert_cmpuint(placement->col, ==, 1);
+	placement = placement_of(placements, d);
+	g_assert_cmpuint(placement->row, ==, 3);
+	g_assert_cmpuint(placement->width, ==, 3);
+
+	/* The layout is sorted by row then column. */
+	g_assert_cmpint(venture_entity_get_id(VENTURE_ENTITY(
+		((VentureWidgetPlacement *)g_ptr_array_index(placements, 0))->widget)),
+		==, venture_entity_get_id(VENTURE_ENTITY(a)));
+
+	/* Placing b where c is: refused, naming c. */
+	g_assert_false(venture_dashboard_place_widget(fixture->database, dashboard,
+		b, 3, 1, 1, 1, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_assert_nonnull(strstr(error->message, "C"));
+	g_clear_error(&error);
+
+	/* Off the edge: refused. */
+	g_assert_false(venture_dashboard_place_widget(fixture->database, dashboard,
+		b, 3, 2, 2, 1, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+
+	/* Free: placed and saved. */
+	g_assert_true(venture_dashboard_place_widget(fixture->database, dashboard,
+		b, 2, 2, 2, 2, NULL, &error));
+	g_assert_no_error(error);
+	g_clear_pointer(&placements, g_ptr_array_unref);
+	placements = venture_dashboard_layout(fixture->database, dashboard, NULL);
+	placement = placement_of(placements, b);
+	g_assert_true(placement->placed);
+	g_assert_cmpuint(placement->col, ==, 2);
+	g_assert_cmpuint(placement->height, ==, 2);
+
+	/* d, unplaced and full width, now flows below b's two rows. */
+	placement = placement_of(placements, d);
+	g_assert_cmpuint(placement->row, ==, 4);
+
+	/* A stored placement that overlaps -- written straight to the row,
+	 * as the API could -- is treated as unplaced, and the page still
+	 * has one card per cell. */
+	g_object_set(c, "grid-col", (gint64)1, "grid-row", (gint64)1, NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(c),
+	                                    NULL, NULL));
+	g_clear_pointer(&placements, g_ptr_array_unref);
+	placements = venture_dashboard_layout(fixture->database, dashboard, NULL);
+	placement = placement_of(placements, c);
+	g_assert_true(placement->placed);
+	placement = placement_of(placements, a);
+	g_assert_false(placement->placed);
+	g_assert_true((placement->row != 1) || (placement->col == 3) ||
+	              (placement->col > 1));
+	{
+		guint i;
+		guint j;
+
+		for (i = 0; i < placements->len; i++)
+		{
+			const VentureWidgetPlacement *p;
+
+			p = g_ptr_array_index(placements, i);
+
+			for (j = i + 1; j < placements->len; j++)
+			{
+				const VentureWidgetPlacement *q;
+
+				q = g_ptr_array_index(placements, j);
+				g_assert_false((p->col < q->col + q->width) &&
+				               (q->col < p->col + p->width) &&
+				               (p->row < q->row + q->height) &&
+				               (q->row < p->row + p->height));
+			}
+		}
+	}
+
+	/* Nudging. b up lands on cells a merely flowed into, which is
+	 * allowed -- a flows on; b left would land on c, which asked for
+	 * its cell, and is refused; c left off the edge does nothing. */
+	g_assert_true(venture_dashboard_nudge_widget(fixture->database, dashboard,
+		b, "up", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_dashboard_nudge_widget(fixture->database, dashboard,
+		b, "left", NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_assert_nonnull(strstr(error->message, "C"));
+	g_clear_error(&error);
+	g_assert_true(venture_dashboard_nudge_widget(fixture->database, dashboard,
+		c, "left", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_dashboard_nudge_widget(fixture->database, dashboard,
+		c, "sideways", NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+
+	/* The layout losing a column: a placed column-3 widget no longer
+	 * fits and flows; nothing is lost. */
+	g_object_set(dashboard, "layout", VENTURE_DASHBOARD_LAYOUT_TWO_COLUMNS,
+	             NULL);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(dashboard), NULL, NULL));
+	g_object_set(c, "grid-col", (gint64)3, "grid-row", (gint64)1, NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(c),
+	                                    NULL, NULL));
+	g_clear_pointer(&placements, g_ptr_array_unref);
+	placements = venture_dashboard_layout(fixture->database, dashboard, NULL);
+	g_assert_cmpuint(placements->len, ==, 4);
+	placement = placement_of(placements, c);
+	g_assert_false(placement->placed);
+	g_assert_cmpuint(placement->col + placement->width - 1, <=, 2);
+	placement = placement_of(placements, d);
+	g_assert_cmpuint(placement->width, ==, 2);
+
+	/* Tidy: everything written down in flow order, no gaps. */
+	g_assert_true(venture_dashboard_arrange(fixture->database, dashboard, NULL,
+	                                        &error));
+	g_assert_no_error(error);
+	g_clear_pointer(&placements, g_ptr_array_unref);
+	placements = venture_dashboard_layout(fixture->database, dashboard, NULL);
+	{
+		guint i;
+
+		for (i = 0; i < placements->len; i++)
+			g_assert_true(((VentureWidgetPlacement *)
+				g_ptr_array_index(placements, i))->placed);
+	}
+	placement = placement_of(placements, a);
+	g_assert_cmpuint(placement->row, ==, 1);
+	g_assert_cmpuint(placement->col, ==, 1);
+}
+
 /* --- Over HTTP ------------------------------------------------------------ */
 
 typedef struct
@@ -1292,6 +1504,7 @@ test_dashboard_http_round_trip(
 		g_autofree gchar *path = NULL;
 		g_autoptr(JsonNode) moved = NULL;
 		g_autofree gchar *moved_body = NULL;
+		g_autofree gchar *editor_check = NULL;
 		JsonArray *after;
 
 		last = json_array_get_object_element(widgets,
@@ -1300,11 +1513,28 @@ test_dashboard_http_round_trip(
 		                "Newest");
 		g_assert_false(json_object_has_member(last, "data"));
 
+		/* Placed by the drag's route onto a free cell, the widget reads
+		 * back with the cell; onto a taken one, it is refused with the
+		 * other widget named, and nothing moves. */
 		path = g_strdup_printf("/dashboards/my-work/widgets/%" G_GINT64_FORMAT
-		                       "/move", json_object_get_int_member(last, "id"));
+		                       "/place", json_object_get_int_member(last, "id"));
+		{
+			g_autofree gchar *first_path = NULL;
+
+			/* The first widget claims its cell; a flowed neighbour
+			 * would not have blocked anything. */
+			first_path = g_strdup_printf("/dashboards/my-work/widgets/%"
+			                             G_GINT64_FORMAT "/place", first_widget);
+			g_clear_pointer(&location, g_free);
+			g_assert_cmpuint(server_post_form(fixture, first_path,
+				"col=1&row=1", &location), ==, SOUP_STATUS_FOUND);
+		}
+
 		g_clear_pointer(&location, g_free);
-		g_assert_cmpuint(server_post_form(fixture, path, "direction=up",
-		                                  &location), ==, SOUP_STATUS_FOUND);
+		g_assert_cmpuint(server_post_form(fixture, path,
+			"col=1&row=1&width=1&height=1", &location), ==, 409);
+		g_assert_cmpuint(server_post_form(fixture, path,
+			"col=2&row=9&async=1", &location), ==, SOUP_STATUS_OK);
 
 		g_assert_cmpuint(server_get(fixture,
 			"/api/v1/dashboards/my-work?data=0", &moved_body), ==,
@@ -1312,9 +1542,65 @@ test_dashboard_http_round_trip(
 		moved = venture_json_parse(moved_body, NULL);
 		after = json_object_get_array_member(json_node_get_object(moved),
 		                                     "widgets");
-		g_assert_cmpstr(json_object_get_string_member(
-			json_array_get_object_element(after,
-				json_array_get_length(after) - 2), "title"), ==, "Newest");
+		{
+			guint i;
+			gboolean seen = FALSE;
+
+			for (i = 0; i < json_array_get_length(after); i++)
+			{
+				JsonObject *w;
+
+				w = json_array_get_object_element(after, i);
+
+				if (0 == g_strcmp0(json_object_get_string_member(w, "title"),
+				                   "Newest"))
+				{
+					seen = TRUE;
+					g_assert_cmpint(json_object_get_int_member(w, "grid_col"),
+					                ==, 2);
+					g_assert_cmpint(json_object_get_int_member(w, "grid_row"),
+					                ==, 9);
+				}
+			}
+
+			g_assert_true(seen);
+		}
+
+		/* And nudged, as the buttons do: wider would run off the
+		 * three-column edge and is refused; taller is fine. */
+		g_clear_pointer(&path, g_free);
+		path = g_strdup_printf("/dashboards/my-work/widgets/%" G_GINT64_FORMAT
+		                       "/move", json_object_get_int_member(last, "id"));
+		g_clear_pointer(&location, g_free);
+		g_assert_cmpuint(server_post_form(fixture, path, "direction=wider",
+		                                  &location), ==, 422);
+		g_clear_pointer(&location, g_free);
+		g_assert_cmpuint(server_post_form(fixture, path, "direction=taller",
+		                                  &location), ==, SOUP_STATUS_FOUND);
+		g_assert_cmpstr(location, ==, "/dashboards/my-work/edit");
+
+		/* The editor draws the cells and the cards' places. */
+		{
+			g_autofree gchar *editor = NULL;
+
+			g_assert_cmpuint(server_get(fixture, "/dashboards/my-work/edit",
+			                            &editor), ==, SOUP_STATUS_OK);
+			g_assert_nonnull(strstr(editor, "data-grid-editor"));
+			g_assert_nonnull(strstr(editor, "data-cell data-col=\"1\" "
+			                                "data-row=\"1\""));
+			g_assert_nonnull(strstr(editor, "grid-column:2 / span 2;"
+			                                "grid-row:9 / span 2"));
+			g_assert_nonnull(strstr(editor, "Tidy"));
+		}
+
+		/* Tidy closes the gap row 9 left. */
+		g_clear_pointer(&location, g_free);
+		g_assert_cmpuint(server_post_form(fixture, "/dashboards/my-work/arrange",
+		                                  "", &location), ==, SOUP_STATUS_FOUND);
+		g_clear_pointer(&editor_check, g_free);
+		g_assert_cmpuint(server_get(fixture, "/dashboards/my-work",
+		                            &editor_check), ==, SOUP_STATUS_OK);
+		g_assert_null(strstr(editor_check, "grid-row:9 "));
 	}
 	g_clear_pointer(&body, g_free);
 	g_clear_pointer(&node, json_node_unref);
@@ -1535,6 +1821,7 @@ main(
 	ADD("/dashboard/templates-and-export",
 	    test_dashboard_templates_and_export);
 	ADD("/dashboard/move-widget", test_dashboard_move_widget);
+	ADD("/dashboard/grid-layout", test_dashboard_grid_layout);
 
 #undef ADD
 #define ADD(path, func) \

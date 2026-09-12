@@ -101,6 +101,8 @@ Everything else about the factory is the generic routes: =/api/v1/milestone=, =r
 
 ** Dashboards
 
+A widget's place on the grid is four fields, =grid_col=, =grid_row=, =grid_width= and =grid_height=, zero meaning "wherever fits"; the checked way to move one is the editor's =POST /dashboards/:slug/widgets/:id/place=, which refuses a taken cell with 409. See [[file:dashboards.org][Dashboards]].
+
 =GET /api/v1/dashboards/:slug= returns a dashboard with every widget evaluated: each widget's settings, its resolved title, its link, an =error= when it could not be answered, and =data= in a shape its kind decides. =?data=0= lists the widgets without evaluating them; =?organization_id=N= scopes every widget to that entity and those beneath it, as the sidebar picker does for a page. A personal dashboard belonging to somebody else answers 404. The generic routes =/api/v1/dashboard= and =/api/v1/dashboard_widget= work like any other type's, and a widget written through them is held to the same checks as one made in the editor. See [[file:dashboards.org][Dashboards]].
 
 ** Settings

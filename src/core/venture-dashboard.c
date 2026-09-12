@@ -2356,7 +2356,7 @@ venture_widget_kind_note(
 	result->data = json_node_new(JSON_NODE_VALUE);
 	json_node_set_string(result->data, (NULL != body) ? body : "");
 
-	html = g_string_new("<div class=\"widget-note\">");
+	html = g_string_new("<div class=\"note-body\">");
 
 	if (NULL == body)
 	{
@@ -2477,7 +2477,7 @@ venture_widget_kind_actions(
 
 	builder = json_builder_new();
 	json_builder_begin_array(builder);
-	html = g_string_new("<div class=\"widget-actions\">");
+	html = g_string_new("<div class=\"actions-body\">");
 	lines = g_strsplit((NULL != body) ? body : "", "\n", -1);
 	shown = 0;
 
@@ -2607,7 +2607,7 @@ venture_widget_kind_search(
 	json_builder_end_object(builder);
 	result->data = json_builder_get_root(builder);
 
-	html = g_string_new("<form class=\"widget-search\" method=\"get\" action=\"");
+	html = g_string_new("<form class=\"search-form\" method=\"get\" action=\"");
 	g_string_append(html, action);
 	g_string_append_printf(html,
 		"\"><input type=\"search\" name=\"%s\" placeholder=\"Search\xe2\x80\xa6\">"
@@ -3701,6 +3701,573 @@ venture_dashboard_list_widgets(
 	return venture_database_find(database, query, error);
 }
 
+/* ==========================================================================
+ * The grid
+ * ========================================================================== */
+
+#define VENTURE_GRID_MAX_HEIGHT (8)
+#define VENTURE_GRID_MAX_ROWS   (400)
+
+void
+venture_widget_placement_free(VentureWidgetPlacement *placement)
+{
+	if (NULL == placement)
+		return;
+
+	g_clear_object(&placement->widget);
+	g_free(placement);
+}
+
+/*
+ * A widget's wanted size, from its grid width or, failing that, its span:
+ * "wide" is two columns and "full" is every column, on whatever layout the
+ * dashboard has today. Always at least one cell and never wider than the
+ * grid, so a layout that lost a column still shows every widget.
+ */
+static void
+venture_grid_wanted_size(
+	VentureDashboardWidget	*widget,
+	guint			 columns,
+	guint			*out_width,
+	guint			*out_height
+){
+	VentureWidgetSpan span;
+	gint64 width = 0;
+	gint64 height = 0;
+
+	g_object_get(widget, "span", &span, "grid-width", &width,
+	             "grid-height", &height, NULL);
+
+	if (width <= 0)
+	{
+		switch (span)
+		{
+		case VENTURE_WIDGET_SPAN_WIDE: width = 2; break;
+		case VENTURE_WIDGET_SPAN_FULL: width = columns; break;
+		case VENTURE_WIDGET_SPAN_NORMAL:
+		default: width = 1; break;
+		}
+	}
+
+	*out_width = (guint)CLAMP(width, 1, (gint64)columns);
+	*out_height = (guint)CLAMP(height, 1, VENTURE_GRID_MAX_HEIGHT);
+}
+
+/*
+ * The occupancy map: one byte per cell, rows growing as needed.
+ */
+typedef struct
+{
+	GArray	*cells;		/* guint8, row-major */
+	guint	 columns;
+	guint	 rows;
+} VentureGrid;
+
+static void
+venture_grid_init(
+	VentureGrid	*grid,
+	guint		 columns
+){
+	grid->cells = g_array_new(FALSE, TRUE, sizeof(guint8));
+	grid->columns = MAX(columns, 1);
+	grid->rows = 0;
+}
+
+static void
+venture_grid_clear(VentureGrid *grid)
+{
+	g_clear_pointer(&grid->cells, g_array_unref);
+}
+
+static void
+venture_grid_ensure_rows(
+	VentureGrid	*grid,
+	guint		 rows
+){
+	if (rows <= grid->rows)
+		return;
+
+	g_array_set_size(grid->cells, rows * grid->columns);
+	grid->rows = rows;
+}
+
+static gboolean
+venture_grid_is_free(
+	VentureGrid	*grid,
+	guint		 col,
+	guint		 row,
+	guint		 width,
+	guint		 height
+){
+	guint r;
+	guint c;
+
+	if ((col < 1) || (row < 1) || (col + width - 1 > grid->columns))
+		return FALSE;
+
+	for (r = row; r < row + height; r++)
+	{
+		if (r > grid->rows)
+			continue;
+
+		for (c = col; c < col + width; c++)
+		{
+			if (0 != g_array_index(grid->cells, guint8,
+			                       (r - 1) * grid->columns + (c - 1)))
+				return FALSE;
+		}
+	}
+
+	return TRUE;
+}
+
+static void
+venture_grid_take(
+	VentureGrid	*grid,
+	guint		 col,
+	guint		 row,
+	guint		 width,
+	guint		 height
+){
+	guint r;
+	guint c;
+
+	venture_grid_ensure_rows(grid, row + height - 1);
+
+	for (r = row; r < row + height; r++)
+		for (c = col; c < col + width; c++)
+			g_array_index(grid->cells, guint8,
+			              (r - 1) * grid->columns + (c - 1)) = 1;
+}
+
+/*
+ * The first free spot in reading order for a block of this size.
+ */
+static void
+venture_grid_find_free(
+	VentureGrid	*grid,
+	guint		 width,
+	guint		 height,
+	guint		*out_col,
+	guint		*out_row
+){
+	guint row;
+
+	for (row = 1; row < VENTURE_GRID_MAX_ROWS; row++)
+	{
+		guint col;
+
+		for (col = 1; col + width - 1 <= grid->columns; col++)
+		{
+			if (venture_grid_is_free(grid, col, row, width, height))
+			{
+				*out_col = col;
+				*out_row = row;
+				return;
+			}
+		}
+	}
+
+	/* Four hundred rows of widgets is not a dashboard; put it at the
+	 * end rather than loop for ever. */
+	*out_col = 1;
+	*out_row = grid->rows + 1;
+}
+
+static gint
+venture_placement_compare(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	const VentureWidgetPlacement *left;
+	const VentureWidgetPlacement *right;
+
+	left = *(const VentureWidgetPlacement *const *)a;
+	right = *(const VentureWidgetPlacement *const *)b;
+
+	if (left->row != right->row)
+		return (left->row < right->row) ? -1 : 1;
+
+	if (left->col != right->col)
+		return (left->col < right->col) ? -1 : 1;
+
+	return 0;
+}
+
+/*
+ * Lays the widgets out, with @skip left off the grid -- for asking where
+ * a widget could go without it standing in its own way.
+ */
+static GPtrArray *
+venture_dashboard_layout_without(
+	VentureDatabase		 *database,
+	VentureDashboard	 *dashboard,
+	gint64			  skip_id,
+	guint			 *out_columns,
+	GError			**error
+){
+	g_autoptr(GPtrArray) widgets = NULL;
+	g_autoptr(GPtrArray) placements = NULL;
+	VentureDashboardLayout layout;
+	VentureGrid grid;
+	guint columns;
+	guint i;
+
+	widgets = venture_dashboard_list_widgets(database,
+		venture_entity_get_id(VENTURE_ENTITY(dashboard)), error);
+
+	if (NULL == widgets)
+		return NULL;
+
+	g_object_get(dashboard, "layout", &layout, NULL);
+	columns = venture_dashboard_layout_get_columns(layout);
+
+	if (NULL != out_columns)
+		*out_columns = columns;
+
+	placements = g_ptr_array_new_with_free_func(
+		(GDestroyNotify)venture_widget_placement_free);
+	venture_grid_init(&grid, columns);
+
+	/*
+	 * Two passes. The placed widgets claim their cells first, in page
+	 * order, so that when two ask for the same spot the earlier one keeps
+	 * it; then everything else flows into what is left. Doing both in one
+	 * pass would let an unplaced early widget take the cell a placed late
+	 * one asked for, which is the wrong way round: an explicit placement
+	 * is a decision, a flow is a default.
+	 */
+	for (i = 0; i < widgets->len; i++)
+	{
+		VentureDashboardWidget *widget;
+		VentureWidgetPlacement *placement;
+		gint64 col = 0;
+		gint64 row = 0;
+
+		widget = g_ptr_array_index(widgets, i);
+
+		if (venture_entity_get_id(VENTURE_ENTITY(widget)) == skip_id)
+			continue;
+
+		placement = g_new0(VentureWidgetPlacement, 1);
+		placement->widget = g_object_ref(widget);
+		venture_grid_wanted_size(widget, columns, &placement->width,
+		                         &placement->height);
+		g_object_get(widget, "grid-col", &col, "grid-row", &row, NULL);
+
+		if ((col > 0) && (row > 0) && (row < VENTURE_GRID_MAX_ROWS) &&
+		    venture_grid_is_free(&grid, (guint)col, (guint)row,
+		                         placement->width, placement->height))
+		{
+			placement->col = (guint)col;
+			placement->row = (guint)row;
+			placement->placed = TRUE;
+			venture_grid_take(&grid, placement->col, placement->row,
+			                  placement->width, placement->height);
+		}
+
+		g_ptr_array_add(placements, placement);
+	}
+
+	for (i = 0; i < placements->len; i++)
+	{
+		VentureWidgetPlacement *placement;
+
+		placement = g_ptr_array_index(placements, i);
+
+		if (placement->placed)
+			continue;
+
+		venture_grid_find_free(&grid, placement->width, placement->height,
+		                       &placement->col, &placement->row);
+		venture_grid_take(&grid, placement->col, placement->row,
+		                  placement->width, placement->height);
+	}
+
+	venture_grid_clear(&grid);
+	g_ptr_array_sort(placements, venture_placement_compare);
+
+	return g_steal_pointer(&placements);
+}
+
+GPtrArray *
+venture_dashboard_layout(
+	VentureDatabase		 *database,
+	VentureDashboard	 *dashboard,
+	GError			**error
+){
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
+	g_return_val_if_fail(VENTURE_IS_DASHBOARD(dashboard), NULL);
+
+	return venture_dashboard_layout_without(database, dashboard, 0, NULL,
+	                                        error);
+}
+
+/*
+ * Finds where a widget sits in a layout.
+ */
+static VentureWidgetPlacement *
+venture_dashboard_find_placement(
+	GPtrArray	*placements,
+	gint64		 widget_id
+){
+	guint i;
+
+	for (i = 0; i < placements->len; i++)
+	{
+		VentureWidgetPlacement *placement;
+
+		placement = g_ptr_array_index(placements, i);
+
+		if (venture_entity_get_id(VENTURE_ENTITY(placement->widget)) ==
+		    widget_id)
+			return placement;
+	}
+
+	return NULL;
+}
+
+gboolean
+venture_dashboard_place_widget(
+	VentureDatabase		 *database,
+	VentureDashboard	 *dashboard,
+	VentureDashboardWidget	 *widget,
+	guint			  col,
+	guint			  row,
+	guint			  width,
+	guint			  height,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	g_autoptr(GPtrArray) others = NULL;
+	guint columns;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), FALSE);
+	g_return_val_if_fail(VENTURE_IS_DASHBOARD(dashboard), FALSE);
+	g_return_val_if_fail(VENTURE_IS_DASHBOARD_WIDGET(widget), FALSE);
+
+	others = venture_dashboard_layout_without(database, dashboard,
+		venture_entity_get_id(VENTURE_ENTITY(widget)), &columns, error);
+
+	if (NULL == others)
+		return FALSE;
+
+	if ((width < 1) || (width > columns))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "A widget spans 1 to %u columns on this layout", columns);
+		return FALSE;
+	}
+
+	if ((height < 1) || (height > VENTURE_GRID_MAX_HEIGHT))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "A widget spans 1 to %d rows", VENTURE_GRID_MAX_HEIGHT);
+		return FALSE;
+	}
+
+	/* Placed somewhere in particular: it has to fit, and the cells have
+	 * to be free of everything else as it is laid out now. */
+	if ((col > 0) || (row > 0))
+	{
+		if ((col < 1) || (row < 1) || (col + width - 1 > columns) ||
+		    (row >= VENTURE_GRID_MAX_ROWS))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "Column %u, row %u with width %u does not fit a "
+			            "%u-column grid", col, row, width, columns);
+			return FALSE;
+		}
+
+		for (i = 0; i < others->len; i++)
+		{
+			VentureWidgetPlacement *other;
+
+			other = g_ptr_array_index(others, i);
+
+			/* Only a widget that asked for its cells stands in the
+			 * way; one that merely flowed there will flow around this
+			 * one once it is placed. */
+			if (!other->placed)
+				continue;
+
+			if ((col < other->col + other->width) &&
+			    (other->col < col + width) &&
+			    (row < other->row + other->height) &&
+			    (other->row < row + height))
+			{
+				g_autofree gchar *title = NULL;
+
+				g_object_get(other->widget, "title", &title, NULL);
+				g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+				            "That spot is taken by widget #%" G_GINT64_FORMAT
+				            "%s%s (column %u, row %u)",
+				            venture_entity_get_id(VENTURE_ENTITY(other->widget)),
+				            venture_string_is_empty(title) ? "" : " ",
+				            venture_string_is_empty(title) ? "" : title,
+				            other->col, other->row);
+				return FALSE;
+			}
+		}
+	}
+
+	g_object_set(widget,
+	             "grid-col", (gint64)col,
+	             "grid-row", (gint64)row,
+	             "grid-width", (gint64)width,
+	             "grid-height", (gint64)height,
+	             NULL);
+
+	return venture_database_save(database, VENTURE_ENTITY(widget), actor,
+	                             error);
+}
+
+gboolean
+venture_dashboard_nudge_widget(
+	VentureDatabase		 *database,
+	VentureDashboard	 *dashboard,
+	VentureDashboardWidget	 *widget,
+	const gchar		 *direction,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	g_autoptr(GPtrArray) placements = NULL;
+	VentureWidgetPlacement *here;
+	guint col;
+	guint row;
+	guint width;
+	guint height;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), FALSE);
+	g_return_val_if_fail(VENTURE_IS_DASHBOARD(dashboard), FALSE);
+	g_return_val_if_fail(VENTURE_IS_DASHBOARD_WIDGET(widget), FALSE);
+
+	placements = venture_dashboard_layout(database, dashboard, error);
+
+	if (NULL == placements)
+		return FALSE;
+
+	here = venture_dashboard_find_placement(placements,
+		venture_entity_get_id(VENTURE_ENTITY(widget)));
+
+	if (NULL == here)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		                    "The widget is not on its dashboard");
+		return FALSE;
+	}
+
+	col = here->col;
+	row = here->row;
+	width = here->width;
+	height = here->height;
+
+	if (0 == g_strcmp0(direction, "up"))
+		row = (row > 1) ? row - 1 : row;
+	else if (0 == g_strcmp0(direction, "down"))
+		row = row + 1;
+	else if (0 == g_strcmp0(direction, "left"))
+		col = (col > 1) ? col - 1 : col;
+	else if (0 == g_strcmp0(direction, "right"))
+		col = col + 1;
+	else if (0 == g_strcmp0(direction, "wider"))
+		width = width + 1;
+	else if (0 == g_strcmp0(direction, "narrower"))
+		width = (width > 1) ? width - 1 : width;
+	else if (0 == g_strcmp0(direction, "taller"))
+		height = height + 1;
+	else if (0 == g_strcmp0(direction, "shorter"))
+		height = (height > 1) ? height - 1 : height;
+	else
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "\"%s\" is not a direction: up, down, left, right, "
+		            "wider, narrower, taller or shorter",
+		            (NULL != direction) ? direction : "");
+		return FALSE;
+	}
+
+	/* Nothing to do is not an error: the button at the edge is inert. */
+	if ((col == here->col) && (row == here->row) && (width == here->width) &&
+	    (height == here->height))
+		return TRUE;
+
+	return venture_dashboard_place_widget(database, dashboard, widget, col,
+	                                      row, width, height, actor, error);
+}
+
+gboolean
+venture_dashboard_arrange(
+	VentureDatabase		 *database,
+	VentureDashboard	 *dashboard,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	g_autoptr(GPtrArray) widgets = NULL;
+	VentureDashboardLayout layout;
+	VentureGrid grid;
+	guint columns;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), FALSE);
+	g_return_val_if_fail(VENTURE_IS_DASHBOARD(dashboard), FALSE);
+
+	widgets = venture_dashboard_list_widgets(database,
+		venture_entity_get_id(VENTURE_ENTITY(dashboard)), error);
+
+	if (NULL == widgets)
+		return FALSE;
+
+	g_object_get(dashboard, "layout", &layout, NULL);
+	columns = venture_dashboard_layout_get_columns(layout);
+	venture_grid_init(&grid, columns);
+
+	/* Page order, first free cell each: the flow with every placement
+	 * forgotten, then written down so it stays. */
+	for (i = 0; i < widgets->len; i++)
+	{
+		VentureDashboardWidget *widget;
+		gint64 old_col = 0;
+		gint64 old_row = 0;
+		gint64 old_width = 0;
+		gint64 old_height = 0;
+		guint width;
+		guint height;
+		guint col;
+		guint row;
+
+		widget = g_ptr_array_index(widgets, i);
+		venture_grid_wanted_size(widget, columns, &width, &height);
+		venture_grid_find_free(&grid, width, height, &col, &row);
+		venture_grid_take(&grid, col, row, width, height);
+
+		g_object_get(widget, "grid-col", &old_col, "grid-row", &old_row,
+		             "grid-width", &old_width, "grid-height", &old_height,
+		             NULL);
+
+		if ((old_col == (gint64)col) && (old_row == (gint64)row) &&
+		    (old_width == (gint64)width) && (old_height == (gint64)height))
+			continue;
+
+		g_object_set(widget,
+		             "grid-col", (gint64)col, "grid-row", (gint64)row,
+		             "grid-width", (gint64)width, "grid-height", (gint64)height,
+		             NULL);
+
+		if (!venture_database_save(database, VENTURE_ENTITY(widget), actor,
+		                           error))
+		{
+			venture_grid_clear(&grid);
+			return FALSE;
+		}
+	}
+
+	venture_grid_clear(&grid);
+
+	return TRUE;
+}
+
 gboolean
 venture_dashboard_move_widget(
 	VentureDatabase		 *database,
@@ -3820,7 +4387,8 @@ venture_dashboard_widget_add_settings(
 		"order", "field", "columns", "body", "options", NULL
 	};
 	static const gchar *const integers[] = {
-		"position", "record-id", "limit", "refresh-seconds", NULL
+		"position", "record-id", "limit", "refresh-seconds",
+		"grid-col", "grid-row", "grid-width", "grid-height", NULL
 	};
 	VentureWidgetSpan span;
 	gsize i;
@@ -4612,6 +5180,30 @@ venture_dashboard_validate_widget(
 
 	if ((NULL == options) && (NULL != error) && (NULL != *error))
 		return FALSE;
+
+	/* The grid hints must at least be sane numbers; whether they fit the
+	 * layout is decided when the page is laid out, because the layout
+	 * can change after the widget was placed. */
+	{
+		gint64 col = 0;
+		gint64 row = 0;
+		gint64 width = 0;
+		gint64 height = 0;
+
+		g_object_get(widget, "grid-col", &col, "grid-row", &row,
+		             "grid-width", &width, "grid-height", &height, NULL);
+
+		if ((col < 0) || (row < 0) || (width < 0) || (height < 0) ||
+		    (col > 4) || (width > 4) || (height > VENTURE_GRID_MAX_HEIGHT) ||
+		    (row >= VENTURE_GRID_MAX_ROWS))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "The grid placement is out of range: columns run "
+			            "1 to 4, widths 1 to 4, heights 1 to %d, and 0 "
+			            "means automatic", VENTURE_GRID_MAX_HEIGHT);
+			return FALSE;
+		}
+	}
 
 	return TRUE;
 }

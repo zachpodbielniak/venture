@@ -2762,14 +2762,14 @@ a.bar-row:hover .bar-label { color: var(--accent); }
 
 .widget-fields dd { margin: 0; }
 
-.widget-note p { margin: 0 0 var(--space-3); font-size: 13px; line-height: 1.6; }
-.widget-note p:last-child { margin-bottom: 0; }
-.widget-note ul { margin: 0 0 var(--space-3); padding-left: 1.2em; font-size: 13px; }
+.note-body p { margin: 0 0 var(--space-3); font-size: 13px; line-height: 1.6; }
+.note-body p:last-child { margin-bottom: 0; }
+.note-body ul { margin: 0 0 var(--space-3); padding-left: 1.2em; font-size: 13px; }
 
-.widget-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.actions-body { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 
-.widget-search { display: flex; gap: var(--space-2); }
-.widget-search input { flex: 1 1 auto; min-width: 0; width: 100%; }
+.search-form { display: flex; gap: var(--space-2); }
+.search-form input { flex: 1 1 auto; min-width: 0; width: 100%; }
 
 .widget-lead { margin: 0 0 var(--space-3); font-size: 13px; }
 
@@ -2811,4 +2811,74 @@ a.bar-row:hover .bar-label { color: var(--accent); }
 	.widget-grid.cols-4 { grid-template-columns: minmax(0, 1fr); }
 	.widget-grid .span-wide,
 	.widget-grid .span-full { grid-column: span 1; }
+}
+
+/* ==========================================================================
+   The dashboard grid, placed
+   ========================================================================== */
+
+/*
+ * Cards sit at explicit grid lines now -- the server lays them out -- so
+ * the grid's rows are sized to a unit and a widget spanning two rows is
+ * twice as tall. A card that needs more than its rows scrolls inside.
+ */
+.widget-grid {
+	--widget-row: 150px;
+	grid-auto-rows: minmax(var(--widget-row), auto);
+	grid-auto-flow: row dense;
+}
+
+.widget-grid > .widget { min-height: 0; }
+
+/* Editing: the cells show through, and the cards can be picked up. */
+.widget-grid.editing {
+	grid-auto-rows: minmax(var(--widget-row), auto);
+}
+
+.grid-cell {
+	border: 1px dashed var(--border-strong);
+	border-radius: var(--radius-lg);
+	min-height: var(--widget-row);
+	background: transparent;
+	transition: background var(--transition), border-color var(--transition);
+}
+
+.grid-cell.drop-target {
+	background: var(--pale-blue);
+	border-color: var(--accent);
+}
+
+.grid-cell.drop-refused {
+	background: var(--pale-red);
+	border-color: var(--negative);
+}
+
+.widget.placeable { cursor: grab; position: relative; z-index: 1; }
+.widget.placeable:active { cursor: grabbing; }
+.widget.placeable.dragging { opacity: 0.45; }
+
+.widget-controls {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-2);
+	padding: var(--space-2) var(--space-4);
+	border-bottom: 1px solid var(--border);
+	background: var(--surface-sunken);
+}
+
+.widget-controls form.nudge { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px; margin: 0; }
+.widget-controls form.nudge .btn-sm { padding: 1px 6px; font-size: 11px; }
+.widget-controls form.inline { margin: 0; }
+.widget-controls .cell-note { margin-left: auto; font-family: var(--font-mono); }
+
+/* The dashed cells have to be seen through the gaps and in the spare
+ * row, so they are drawn a shade stronger than a card border. */
+.widget-grid.editing { background-image: none; }
+
+@media (max-width: 900px) {
+	/* One column: placement is meaningless, the cards stack in order. */
+	.widget-grid > .widget,
+	.widget-grid > .grid-cell { grid-column: auto !important; grid-row: auto !important; }
+	.widget-grid > .grid-cell { display: none; }
 }

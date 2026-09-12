@@ -17796,33 +17796,40 @@ venture_web_dashboard_scope(
  */
 static void
 venture_web_append_widget_card(
-	VentureWebServer	*self,
-	GString			*content,
-	const gchar		*slug,
-	VentureDashboardWidget	*widget,
-	VentureWidgetResult	*result,
-	gboolean		 editing
+	VentureWebServer		*self,
+	GString				*content,
+	const gchar			*slug,
+	const VentureWidgetPlacement	*placement,
+	VentureWidgetResult		*result,
+	gboolean			 editing
 ){
+	VentureDashboardWidget *widget;
 	g_autofree gchar *kind = NULL;
 	g_autofree gchar *slug_attr = NULL;
-	VentureWidgetSpan span;
 	gint64 refresh = 0;
 	gint64 id;
 
 	(void)self;
 
+	widget = placement->widget;
 	id = venture_entity_get_id(VENTURE_ENTITY(widget));
-	g_object_get(widget, "kind", &kind, "span", &span,
-	             "refresh-seconds", &refresh, NULL);
+	g_object_get(widget, "kind", &kind, "refresh-seconds", &refresh, NULL);
 	slug_attr = venture_attribute_escape(slug);
 
+	/* The place on the grid is written into the style, not a class, so
+	 * a card lands exactly where the layout put it whatever the row
+	 * count; the data attributes are what the editor's drag reads. */
 	g_string_append_printf(content,
 		"<div class=\"card dash-card widget widget-%s%s\" "
-		"id=\"widget-%" G_GINT64_FORMAT "\"",
+		"id=\"widget-%" G_GINT64_FORMAT "\" "
+		"style=\"grid-column:%u / span %u;grid-row:%u / span %u\" "
+		"data-widget=\"%" G_GINT64_FORMAT "\" data-col=\"%u\" data-row=\"%u\" "
+		"data-width=\"%u\" data-height=\"%u\"%s",
 		(NULL != kind) ? kind : "unknown",
-		(VENTURE_WIDGET_SPAN_FULL == span) ? " span-full"
-			: ((VENTURE_WIDGET_SPAN_WIDE == span) ? " span-wide" : ""),
-		id);
+		editing ? " placeable" : "", id,
+		placement->col, placement->width, placement->row, placement->height,
+		id, placement->col, placement->row, placement->width,
+		placement->height, editing ? " draggable=\"true\"" : "");
 
 	/* A refresh is an ordinary HTMX poll; nothing here knows or cares
 	 * what the widget shows. Not while editing, where a reload would
@@ -17842,19 +17849,8 @@ venture_web_append_widget_card(
 	if (editing)
 	{
 		g_string_append_printf(content,
-			"<form method=\"post\" action=\"/dashboards/%s/widgets/%"
-			G_GINT64_FORMAT "/move\" class=\"inline\">"
-			"<button class=\"btn btn-sm\" name=\"direction\" value=\"up\" "
-			"title=\"Move earlier\">&uarr;</button>"
-			"<button class=\"btn btn-sm\" name=\"direction\" value=\"down\" "
-			"title=\"Move later\">&darr;</button></form> "
 			"<a class=\"btn btn-sm\" href=\"/dashboards/%s/widgets/%"
-			G_GINT64_FORMAT "/edit\">Edit</a> "
-			"<form method=\"post\" action=\"/dashboards/%s/widgets/%"
-			G_GINT64_FORMAT "/delete\" class=\"inline\">"
-			"<button class=\"btn btn-sm btn-danger\" type=\"submit\">"
-			"Remove</button></form>",
-			slug_attr, id, slug_attr, id, slug_attr, id);
+			G_GINT64_FORMAT "/edit\">Edit</a>", slug_attr, id);
 	}
 	else if (NULL != result->link)
 	{
@@ -17869,7 +17865,49 @@ venture_web_append_widget_card(
 		g_string_append(content, "</a>");
 	}
 
-	g_string_append(content, "</div></div><div class=\"card-body\">");
+	g_string_append(content, "</div></div>");
+
+	/*
+	 * The grid controls, on a bar of their own under the head: eight
+	 * nudge buttons do not fit beside a title in a one-column card. As
+	 * forms, so the grid is editable with no scripting and from the
+	 * keyboard; the drag is the same route with a destination.
+	 */
+	if (editing)
+	{
+		g_string_append_printf(content,
+			"<div class=\"widget-controls\">"
+			"<form method=\"post\" action=\"/dashboards/%s/widgets/%"
+			G_GINT64_FORMAT "/move\" class=\"inline nudge\">"
+			"<span class=\"muted small\">Move</span>"
+			"<button class=\"btn btn-sm\" name=\"direction\" value=\"left\" "
+			"title=\"Move left\">&larr;</button>"
+			"<button class=\"btn btn-sm\" name=\"direction\" value=\"up\" "
+			"title=\"Move up\">&uarr;</button>"
+			"<button class=\"btn btn-sm\" name=\"direction\" value=\"down\" "
+			"title=\"Move down\">&darr;</button>"
+			"<button class=\"btn btn-sm\" name=\"direction\" value=\"right\" "
+			"title=\"Move right\">&rarr;</button>"
+			"<span class=\"muted small\">Size</span>"
+			"<button class=\"btn btn-sm\" name=\"direction\" "
+			"value=\"narrower\" title=\"Narrower\">W&minus;</button>"
+			"<button class=\"btn btn-sm\" name=\"direction\" value=\"wider\" "
+			"title=\"Wider\">W+</button>"
+			"<button class=\"btn btn-sm\" name=\"direction\" "
+			"value=\"shorter\" title=\"Shorter\">H&minus;</button>"
+			"<button class=\"btn btn-sm\" name=\"direction\" value=\"taller\" "
+			"title=\"Taller\">H+</button></form>"
+			"<form method=\"post\" action=\"/dashboards/%s/widgets/%"
+			G_GINT64_FORMAT "/delete\" class=\"inline\">"
+			"<button class=\"btn btn-sm btn-danger\" type=\"submit\">"
+			"Remove</button></form>"
+			"<span class=\"muted small cell-note\">%u,%u &middot; %u&times;%u"
+			"</span></div>",
+			slug_attr, id, slug_attr, id, placement->col, placement->row,
+			placement->width, placement->height);
+	}
+
+	g_string_append(content, "<div class=\"card-body\">");
 
 	if (NULL != result->error)
 	{
@@ -17897,36 +17935,70 @@ venture_web_append_dashboard_grid(
 	GString			*content,
 	gboolean		 editing
 ){
-	g_autoptr(GPtrArray) widgets = NULL;
+	g_autoptr(GPtrArray) placements = NULL;
 	g_autoptr(GArray) tree = NULL;
 	g_autofree gchar *slug = NULL;
 	VentureWidgetScope scope;
 	VentureDashboardLayout layout;
+	guint columns;
+	guint rows;
 	guint i;
 
 	g_object_get(dashboard, "slug", &slug, "layout", &layout, NULL);
+	columns = venture_dashboard_layout_get_columns(layout);
 	venture_web_dashboard_scope(self, request, principal, dashboard, &scope,
 	                            &tree);
 
-	widgets = venture_dashboard_list_widgets(
-		venture_context_get_database(self->context),
-		venture_entity_get_id(VENTURE_ENTITY(dashboard)), NULL);
+	placements = venture_dashboard_layout(
+		venture_context_get_database(self->context), dashboard, NULL);
+	rows = 0;
 
-	g_string_append_printf(content, "<div class=\"widget-grid cols-%u\">",
-	                       venture_dashboard_layout_get_columns(layout));
+	for (i = 0; (NULL != placements) && (i < placements->len); i++)
+	{
+		const VentureWidgetPlacement *placement;
 
-	for (i = 0; (NULL != widgets) && (i < widgets->len); i++)
+		placement = g_ptr_array_index(placements, i);
+		rows = MAX(rows, placement->row + placement->height - 1);
+	}
+
+	g_string_append_printf(content,
+		"<div class=\"widget-grid cols-%u%s\" data-grid-columns=\"%u\" "
+		"data-grid-rows=\"%u\"%s>",
+		columns, editing ? " editing" : "", columns, rows,
+		editing ? " data-grid-editor" : "");
+
+	/*
+	 * While editing, every cell -- including one empty row below the
+	 * last widget -- is a drop target, drawn behind the cards. A taken
+	 * cell is still drawn so the grid reads as a grid; the server refuses
+	 * a drop onto one and the page says so.
+	 */
+	if (editing)
+	{
+		guint r;
+		guint c;
+
+		for (r = 1; r <= rows + 1; r++)
+			for (c = 1; c <= columns; c++)
+				g_string_append_printf(content,
+					"<div class=\"grid-cell\" data-cell data-col=\"%u\" "
+					"data-row=\"%u\" style=\"grid-column:%u;grid-row:%u\">"
+					"</div>", c, r, c, r);
+	}
+
+	for (i = 0; (NULL != placements) && (i < placements->len); i++)
 	{
 		g_autoptr(VentureWidgetResult) result = NULL;
-		VentureDashboardWidget *widget;
+		const VentureWidgetPlacement *placement;
 
-		widget = g_ptr_array_index(widgets, i);
-		result = venture_dashboard_render_widget(self->context, widget, &scope);
-		venture_web_append_widget_card(self, content, slug, widget, result,
+		placement = g_ptr_array_index(placements, i);
+		result = venture_dashboard_render_widget(self->context,
+		                                         placement->widget, &scope);
+		venture_web_append_widget_card(self, content, slug, placement, result,
 		                               editing);
 	}
 
-	if ((NULL == widgets) || (0 == widgets->len))
+	if ((NULL == placements) || (0 == placements->len))
 	{
 		g_string_append_printf(content,
 			"<div class=\"empty span-full\"><h3>No widgets yet</h3>"
@@ -18485,9 +18557,38 @@ venture_web_ui_dashboard_widget(
 		VENTURE_DASHBOARD_WIDGET(widget), &scope);
 
 	content = g_string_new(NULL);
-	venture_web_append_widget_card(self, content, slug,
-	                               VENTURE_DASHBOARD_WIDGET(widget), result,
-	                               FALSE);
+
+	/* The card carries its place, so it is refreshed where it sits. */
+	{
+		g_autoptr(GPtrArray) placements = NULL;
+		const VentureWidgetPlacement *placement = NULL;
+		guint i;
+
+		placements = venture_dashboard_layout(
+			venture_context_get_database(self->context), dashboard, NULL);
+
+		for (i = 0; (NULL != placements) && (i < placements->len); i++)
+		{
+			const VentureWidgetPlacement *candidate;
+
+			candidate = g_ptr_array_index(placements, i);
+
+			if (candidate->widget == VENTURE_DASHBOARD_WIDGET(widget) ||
+			    (venture_entity_get_id(VENTURE_ENTITY(candidate->widget)) ==
+			     venture_entity_get_id(widget)))
+				placement = candidate;
+		}
+
+		if (NULL == placement)
+		{
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			                    "No such widget on this dashboard");
+			return venture_web_error_response(error);
+		}
+
+		venture_web_append_widget_card(self, content, slug, placement, result,
+		                               FALSE);
+	}
 
 	return venture_web_html_response(g_string_free(g_steal_pointer(&content),
 	                                               FALSE), 200);
@@ -18531,8 +18632,15 @@ venture_web_ui_dashboard_edit(
 		"<div class=\"page-actions\">"
 		"<a class=\"btn btn-primary\" href=\"/dashboards/%s/widgets/new\">"
 		"Add a widget</a> "
-		"<a class=\"btn\" href=\"/dashboards/%s\">Done</a></div></div>",
-		slug, slug);
+		"<form method=\"post\" action=\"/dashboards/%s/arrange\" "
+		"class=\"inline\"><button class=\"btn\" type=\"submit\" "
+		"title=\"Close the gaps: every widget to the first free cell, in "
+		"page order\">Tidy</button></form> "
+		"<a class=\"btn\" href=\"/dashboards/%s\">Done</a></div></div>"
+		"<p class=\"muted small\">Drag a card onto a free cell, or use its "
+		"arrows; W and H change its width and height. A card on a cell "
+		"another card holds is refused, never overlapped.</p>",
+		slug, slug, slug);
 
 	venture_web_append_dashboard_grid(self, request, principal, dashboard,
 	                                  content, TRUE);
@@ -19111,7 +19219,162 @@ venture_web_ui_dashboard_widget_delete(
 }
 
 /*
- * POST /dashboards/:slug/widgets/:id/move - direction=up|down
+ * Answers a grid change: a redirect back to the editor for a form, a JSON
+ * outcome for the drag, which sent async=1 and reloads on its own. A
+ * refusal is JSON either way so the message reaches the person.
+ */
+static HtmxResponse *
+venture_web_dashboard_grid_answer(
+	HtmxRequest	*request,
+	const gchar	*slug,
+	GError		*error
+){
+	g_autofree gchar *destination = NULL;
+
+	if (NULL != error)
+		return venture_web_error_response(error);
+
+	if (NULL != htmx_request_get_form_value(request, "async"))
+	{
+		g_autoptr(JsonBuilder) builder = NULL;
+		g_autoptr(JsonNode) node = NULL;
+
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "placed");
+		json_builder_add_boolean_value(builder, TRUE);
+		json_builder_end_object(builder);
+		node = json_builder_get_root(builder);
+
+		return venture_web_json_response(node, 200);
+	}
+
+	destination = g_strdup_printf("/dashboards/%s/edit", slug);
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * POST /dashboards/:slug/widgets/:id/place - col, row, width, height.
+ * The drag's destination; also what an API client with a form posts.
+ */
+static HtmxResponse *
+venture_web_ui_dashboard_widget_place(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(VentureDashboardWidget) widget = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *slug = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+	const gchar *text;
+	guint col;
+	guint row;
+	guint width;
+	guint height;
+
+	gate = venture_web_dashboard_load(self, request, params,
+	                                  VENTURE_USER_ROLE_EDITOR, FALSE,
+	                                  &principal, &dashboard);
+
+	if (NULL != gate)
+		return gate;
+
+	widget = venture_web_dashboard_widget_load(self, params, dashboard, &error);
+
+	if (NULL == widget)
+		return venture_web_error_response(error);
+
+	g_object_get(dashboard, "slug", &slug, NULL);
+
+	/* Width and height default to what the widget has, so a drag that
+	 * only moves sends only col and row. */
+	{
+		g_autoptr(GPtrArray) placements = NULL;
+		guint i;
+
+		width = 1;
+		height = 1;
+		placements = venture_dashboard_layout(
+			venture_context_get_database(self->context), dashboard, NULL);
+
+		for (i = 0; (NULL != placements) && (i < placements->len); i++)
+		{
+			const VentureWidgetPlacement *placement;
+
+			placement = g_ptr_array_index(placements, i);
+
+			if (venture_entity_get_id(VENTURE_ENTITY(placement->widget)) ==
+			    venture_entity_get_id(VENTURE_ENTITY(widget)))
+			{
+				width = placement->width;
+				height = placement->height;
+			}
+		}
+	}
+
+	text = htmx_request_get_form_value(request, "col");
+	col = (NULL != text) ? (guint)g_ascii_strtoull(text, NULL, 10) : 0;
+	text = htmx_request_get_form_value(request, "row");
+	row = (NULL != text) ? (guint)g_ascii_strtoull(text, NULL, 10) : 0;
+	text = htmx_request_get_form_value(request, "width");
+
+	if (!venture_string_is_empty(text))
+		width = (guint)g_ascii_strtoull(text, NULL, 10);
+
+	text = htmx_request_get_form_value(request, "height");
+
+	if (!venture_string_is_empty(text))
+		height = (guint)g_ascii_strtoull(text, NULL, 10);
+
+	venture_auth_to_actor(principal, &actor);
+	venture_dashboard_place_widget(venture_context_get_database(self->context),
+	                               dashboard, widget, col, row, width, height,
+	                               &actor, &error);
+
+	return venture_web_dashboard_grid_answer(request, slug, error);
+}
+
+/*
+ * POST /dashboards/:slug/arrange - close the gaps.
+ */
+static HtmxResponse *
+venture_web_ui_dashboard_arrange(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *slug = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+
+	gate = venture_web_dashboard_load(self, request, params,
+	                                  VENTURE_USER_ROLE_EDITOR, FALSE,
+	                                  &principal, &dashboard);
+
+	if (NULL != gate)
+		return gate;
+
+	g_object_get(dashboard, "slug", &slug, NULL);
+	venture_auth_to_actor(principal, &actor);
+	venture_dashboard_arrange(venture_context_get_database(self->context),
+	                          dashboard, &actor, &error);
+
+	return venture_web_dashboard_grid_answer(request, slug, error);
+}
+
+/*
+ * POST /dashboards/:slug/widgets/:id/move - direction=up|down|left|right|
+ * wider|narrower|taller|shorter, one cell each.
  */
 static HtmxResponse *
 venture_web_ui_dashboard_widget_move(
@@ -19125,7 +19388,6 @@ venture_web_ui_dashboard_widget_move(
 	g_autoptr(VentureDashboardWidget) widget = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *slug = NULL;
-	g_autofree gchar *destination = NULL;
 	VentureActor actor;
 	HtmxResponse *gate;
 	const gchar *direction;
@@ -19144,17 +19406,13 @@ venture_web_ui_dashboard_widget_move(
 
 	direction = htmx_request_get_form_value(request, "direction");
 	venture_auth_to_actor(principal, &actor);
-
-	if (!venture_dashboard_move_widget(venture_context_get_database(self->context),
-	                                   widget,
-	                                   (0 == g_strcmp0(direction, "up")) ? -1 : 1,
-	                                   &actor, &error))
-		return venture_web_error_response(error);
-
 	g_object_get(dashboard, "slug", &slug, NULL);
-	destination = g_strdup_printf("/dashboards/%s/edit", slug);
 
-	return venture_web_redirect_to(destination);
+	venture_dashboard_nudge_widget(venture_context_get_database(self->context),
+	                               dashboard, widget, direction, &actor,
+	                               &error);
+
+	return venture_web_dashboard_grid_answer(request, slug, error);
 }
 
 /* --- The dashboards API --------------------------------------------------- */
@@ -19574,6 +19832,10 @@ venture_web_server_new(
 	                 venture_web_ui_dashboard_widget_delete, self);
 	htmx_router_post(router, "/dashboards/:slug/widgets/:id/move",
 	                 venture_web_ui_dashboard_widget_move, self);
+	htmx_router_post(router, "/dashboards/:slug/widgets/:id/place",
+	                 venture_web_ui_dashboard_widget_place, self);
+	htmx_router_post(router, "/dashboards/:slug/arrange",
+	                 venture_web_ui_dashboard_arrange, self);
 	htmx_router_get(router, "/search", venture_web_ui_search, self);
 	htmx_router_get(router, "/automations", venture_web_ui_automations, self);
 	htmx_router_post(router, "/automations/validate",

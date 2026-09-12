@@ -322,6 +322,139 @@ venture_dashboard_list_widgets(
 );
 
 /**
+ * VentureWidgetPlacement:
+ * @widget: the widget
+ * @col: the 1-based column it occupies
+ * @row: the 1-based row
+ * @width: how many columns it spans
+ * @height: how many rows it spans
+ * @placed: %TRUE if the widget asked for this spot, %FALSE if it flowed
+ *   into the first free one
+ *
+ * Where a widget sits on a dashboard's grid, resolved.
+ */
+typedef struct
+{
+	VentureDashboardWidget	*widget;
+	guint			 col;
+	guint			 row;
+	guint			 width;
+	guint			 height;
+	gboolean		 placed;
+} VentureWidgetPlacement;
+
+/**
+ * venture_dashboard_layout:
+ * @database: the database
+ * @dashboard: the dashboard
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Resolves every widget's place on the grid. A widget with an explicit
+ * column and row keeps it when it fits the layout and touches nothing
+ * placed before it (page order); every other widget -- unplaced, off the
+ * edge after the layout lost a column, or overlapping -- flows into the
+ * first free cells in reading order. The result is always a valid
+ * tiling, whatever the rows hold, and is sorted by row then column.
+ *
+ * Returns: (transfer container) (element-type VentureWidgetPlacement):
+ *   the placements; each holds a reference to its widget
+ */
+GPtrArray *
+venture_dashboard_layout(
+	VentureDatabase		 *database,
+	VentureDashboard	 *dashboard,
+	GError			**error
+);
+
+/**
+ * venture_widget_placement_free:
+ * @placement: a placement
+ */
+void
+venture_widget_placement_free(VentureWidgetPlacement *placement);
+
+/**
+ * venture_dashboard_place_widget:
+ * @database: the database
+ * @dashboard: the dashboard
+ * @widget: the widget to place, saved on success
+ * @col: the 1-based column, or 0 to let it flow
+ * @row: the 1-based row, or 0 to let it flow
+ * @width: columns to span, 1 to the layout's count
+ * @height: rows to span, 1 to 8
+ * @actor: (nullable): who is responsible
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Puts a widget somewhere on the grid, refusing a spot that falls off
+ * the edge or is taken by another widget -- the refusal names it. This
+ * is what the editor's drag, its nudge buttons and the API all call.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+venture_dashboard_place_widget(
+	VentureDatabase		 *database,
+	VentureDashboard	 *dashboard,
+	VentureDashboardWidget	 *widget,
+	guint			  col,
+	guint			  row,
+	guint			  width,
+	guint			  height,
+	const VentureActor	 *actor,
+	GError			**error
+);
+
+/**
+ * venture_dashboard_nudge_widget:
+ * @database: the database
+ * @dashboard: the dashboard
+ * @widget: the widget
+ * @direction: `up`, `down`, `left`, `right`, `wider`, `narrower`, `taller`
+ *   or `shorter`
+ * @actor: (nullable): who is responsible
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Moves or resizes a widget by one cell, from where it currently sits --
+ * placed or flowed -- through venture_dashboard_place_widget(), so the
+ * same refusals apply. Growing into a taken cell is refused; shrinking
+ * below one cell, or moving off the top or left edge, is not an error
+ * and does nothing.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+venture_dashboard_nudge_widget(
+	VentureDatabase		 *database,
+	VentureDashboard	 *dashboard,
+	VentureDashboardWidget	 *widget,
+	const gchar		 *direction,
+	const VentureActor	 *actor,
+	GError			**error
+);
+
+/**
+ * venture_dashboard_arrange:
+ * @database: the database
+ * @dashboard: the dashboard
+ * @actor: (nullable): who is responsible
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Tidies the grid: every widget is placed where the flow would put it,
+ * in page order, and the placement is written down, so a page that
+ * grew holes as widgets were removed closes them. Only rows whose
+ * placement changes are saved.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+venture_dashboard_arrange(
+	VentureDatabase		 *database,
+	VentureDashboard	 *dashboard,
+	const VentureActor	 *actor,
+	GError			**error
+);
+
+/**
  * venture_dashboard_move_widget:
  * @database: the database
  * @widget: the widget to move

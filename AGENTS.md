@@ -410,6 +410,14 @@ than one that fails.
   the built-in page.** A test that asserts on the home page must know
   which it is looking at; `tests/test-auth.c` and `tests/test-plugin.c`
   list both.
+- **The grid is resolved at render, never trusted from the rows.**
+  `venture_dashboard_layout()` re-flows anything that overlaps or falls
+  off the edge; `venture_dashboard_place_widget()` is the only checked
+  writer and refuses a cell another *placed* widget holds -- a flowed
+  neighbour is not an obstacle, it flows around. Do not add a second
+  overlap check in the web layer, and do not make the save validator
+  refuse a placement that does not fit today's layout: the layout can
+  change after the widget was placed.
 - **Templates are written in the export format.** A template is what an
   export of the dashboard it makes would be, and `test-dashboard` imports
   every one, so a template naming a field that does not exist fails the

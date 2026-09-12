@@ -1311,6 +1311,12 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/dashboards/x/widgets/1/move", NULL, "direction=up", NULL, NULL),
 		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/dashboards/x/widgets/1/place", NULL, "col=1&row=1", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/dashboards/x/arrange", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
 		"/dashboards/x/edit"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture,

@@ -1163,6 +1163,163 @@
 		apply();
 	}
 
+	/* ------------------------------------------------------------------ */
+	/* The dashboard grid editor                                           */
+	/* ------------------------------------------------------------------ */
+
+	/*
+	 * Drag a card onto a cell; the server decides whether it fits and
+	 * says so. Occupancy is computed here only to colour the cells while
+	 * dragging -- green where the card's top-left could land, red where
+	 * it would overlap or fall off the edge -- so the answer is never a
+	 * surprise. The nudge buttons in each card need none of this.
+	 */
+	function wireGridEditor() {
+		var grid = document.querySelector("[data-grid-editor]");
+
+		if (!grid) {
+			return;
+		}
+
+		var columns = parseInt(grid.dataset.gridColumns, 10) || 1;
+		var dragging = null;
+
+		function cards() {
+			return Array.prototype.slice.call(grid.querySelectorAll("[data-widget]"));
+		}
+
+		function fits(card, col, row) {
+			var width = parseInt(card.dataset.width, 10) || 1;
+			var height = parseInt(card.dataset.height, 10) || 1;
+
+			if (col < 1 || row < 1 || col + width - 1 > columns) {
+				return false;
+			}
+
+			return cards().every(function (other) {
+				if (other === card) {
+					return true;
+				}
+
+				var oc = parseInt(other.dataset.col, 10);
+				var or = parseInt(other.dataset.row, 10);
+				var ow = parseInt(other.dataset.width, 10) || 1;
+				var oh = parseInt(other.dataset.height, 10) || 1;
+
+				return !(col < oc + ow && oc < col + width
+					&& row < or + oh && or < row + height);
+			});
+		}
+
+		function clearCells() {
+			Array.prototype.forEach.call(
+				grid.querySelectorAll("[data-cell]"),
+				function (cell) {
+					cell.classList.remove("drop-target", "drop-refused");
+				}
+			);
+		}
+
+		grid.addEventListener("dragstart", function (event) {
+			var card = event.target.closest("[data-widget]");
+
+			if (!card) {
+				return;
+			}
+
+			dragging = card;
+			card.classList.add("dragging");
+			event.dataTransfer.effectAllowed = "move";
+			event.dataTransfer.setData("text/plain", card.dataset.widget);
+		});
+
+		grid.addEventListener("dragend", function () {
+			if (dragging) {
+				dragging.classList.remove("dragging");
+			}
+
+			dragging = null;
+			clearCells();
+		});
+
+		grid.addEventListener("dragover", function (event) {
+			var cell = event.target.closest("[data-cell]");
+
+			if (!cell || !dragging) {
+				return;
+			}
+
+			event.preventDefault();
+			clearCells();
+
+			var col = parseInt(cell.dataset.col, 10);
+			var row = parseInt(cell.dataset.row, 10);
+
+			if (fits(dragging, col, row)) {
+				event.dataTransfer.dropEffect = "move";
+				cell.classList.add("drop-target");
+			} else {
+				event.dataTransfer.dropEffect = "none";
+				cell.classList.add("drop-refused");
+			}
+		});
+
+		grid.addEventListener("drop", function (event) {
+			var cell = event.target.closest("[data-cell]");
+
+			if (!cell || !dragging) {
+				return;
+			}
+
+			event.preventDefault();
+
+			var card = dragging;
+			var col = parseInt(cell.dataset.col, 10);
+			var row = parseInt(cell.dataset.row, 10);
+			var slug = window.location.pathname.split("/")[2];
+			var data = new URLSearchParams();
+
+			clearCells();
+
+			if (!fits(card, col, row)) {
+				toast("That spot is taken, or the card would not fit.",
+				      "negative");
+				return;
+			}
+
+			/* Move it now; the server is asked to agree, and the page
+			 * reloads so the layout is the server's, not this guess. */
+			card.style.gridColumn = col + " / span " + card.dataset.width;
+			card.style.gridRow = row + " / span " + card.dataset.height;
+			card.dataset.col = String(col);
+			card.dataset.row = String(row);
+
+			data.set("col", String(col));
+			data.set("row", String(row));
+			data.set("async", "1");
+
+			fetch("/dashboards/" + encodeURIComponent(slug) + "/widgets/"
+				+ card.dataset.widget + "/place", {
+				method: "POST",
+				headers: { "Content-Type": "application/x-www-form-urlencoded" },
+				body: data.toString(),
+				credentials: "same-origin"
+			}).then(function (response) {
+				if (!response.ok) {
+					return response.json().then(function (body) {
+						throw new Error((body && body.error && body.error.message)
+							|| "The move was refused");
+					});
+				}
+
+				window.location.reload();
+			}).catch(function (problem) {
+				toast(problem.message, "negative");
+				window.location.reload();
+			});
+		});
+	}
+
 	function init() {
 		applyTheme(storedTheme());
 
@@ -1445,6 +1602,7 @@
 		wireServerEvents();
 		wireReveal(document);
 		wireWidgetEditor();
+		wireGridEditor();
 		scrollChatToBottom();
 	}
 

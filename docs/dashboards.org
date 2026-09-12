@@ -74,6 +74,18 @@ A widget's *scope* is the viewer's: the entity picked in the sidebar and everyth
 
 Every widget is checked at the save, whichever door it came through: the kind must exist, the record type must exist (even one whose module is off — the widget outlives the switch), the report must exist, the options must be a JSON object. A widget that cannot be answered when the page renders — a report that errored, a module that is off, a record that was deleted — says so in its place. One bad widget never takes the page down.
 
+* The grid
+
+A dashboard is a grid of one to four columns, and every widget sits on it at a column, a row, a width in columns and a height in rows. The four are the widget's =grid_col=, =grid_row=, =grid_width= and =grid_height=; zero means "wherever fits", which is how a template lays out without knowing the layout: a widget with no placement flows into the first free cells after the placed ones, in page order, wide ones taking the room their =span= asks for.
+
+The layout is resolved on every render, and it is always a valid tiling whatever the rows say. A placed widget keeps its cells when they fit the layout and touch nothing placed before it; one that overlaps, or falls off the edge after the layout lost a column, is treated as unplaced and flows — nothing is ever drawn on top of anything, and nothing is ever lost.
+
+*In the editor*, drag a card onto a cell. The cells show through while editing, one spare row below the last widget; a cell turns blue where the card's top-left corner can land and red where it would overlap or not fit, and the server has the last word: a drop onto cells another placed widget holds is refused with that widget named, never overlapped. Each card also has arrows to move it a cell at a time and =W±= / =H±= to resize it — plain forms, so the grid is editable from the keyboard and with scripting off. *Tidy* closes the gaps: every widget to the first free cell in page order, written down.
+
+Over the API the same rules hold. =PATCH /api/v1/dashboard_widget/:id= with the four fields sets a placement — the save checks the numbers are in range; whether it fits is decided when the page renders, because the layout can change afterwards. =POST /dashboards/:slug/widgets/:id/place= (=col=, =row=, and optionally =width=, =height=) is the checked version the editor uses: it answers 409 naming the widget in the way, or 422 when the block would not fit. =POST /dashboards/:slug/widgets/:id/move= with =direction= up, down, left, right, wider, narrower, taller or shorter nudges by one; =POST /dashboards/:slug/arrange= tidies. Every evaluated widget in =GET /api/v1/dashboards/:slug= carries its resolved place too.
+
+On a narrow screen placement is set aside and the cards stack in layout order.
+
 * Export and import
 
 =/dashboards/:slug/export= and =GET /api/v1/dashboards/:slug/export= write a definition: the dashboard's settings and each widget's, in the wire spelling, with no ids, owners or timestamps.
@@ -171,6 +183,8 @@ The registry is process-wide, like the entity registry, so a kind registered onc
 *One function produces both renderings.* Every kind writes its JSON and its HTML from the same loop. Two implementations would be two answers, and the assistant reading one while the operator looks at the other is exactly the disagreement a dashboard exists to prevent.
 
 *Rendering never fails.* =venture_dashboard_render_widget()= returns a result with an error in it rather than nothing. A page is a set of independent questions; a report that started failing yesterday should be a red card, not a blank page.
+
+*The layout never fails.* A placement is a hint the editor keeps consistent, not an invariant the schema enforces: the resolver treats an impossible one as unplaced and flows it. A page that stopped rendering because someone shrank the layout from four columns to two, or PATCHed two widgets onto one cell, would be the wrong trade.
 
 *A widget outlives a module switch.* The validator accepts a record type that exists but is hidden, so a factory dashboard built while the factory is on survives it being turned off and is whole again when it comes back. Refusing would mean a configuration change deleted somebody's page.
 

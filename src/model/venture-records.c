@@ -1744,9 +1744,26 @@ static const VentureFieldDecl venture_dashboard_widget_fields[] = {
 	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("position", "Position", "Order on the page; lowest first",
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_ENUM("span", "Width", "One column, two, or the whole row",
+	VENTURE_FIELD_ENUM("span", "Width", "One column, two, or the whole row; "
+	                   "the grid width below overrides it when set",
 	                   venture_widget_span_get_type,
 	                   VENTURE_COLUMN_FLAG_NOT_NULL),
+	/*
+	 * Where on the grid. Zero means "wherever fits": a widget with no
+	 * placement flows into the first free cells after the placed ones,
+	 * which is how a template lays out without knowing the layout. The
+	 * page never fails on a bad placement -- one that overlaps or falls
+	 * off the edge is treated as unplaced -- so these are hints the
+	 * editor keeps consistent, not invariants the schema enforces.
+	 */
+	VENTURE_FIELD("grid-col", "Grid column", "1-based; 0 to place automatically",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("grid-row", "Grid row", "1-based; 0 to place automatically",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("grid-width", "Grid width", "Columns spanned; 0 follows Width",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("grid-height", "Grid height", "Rows spanned; 0 is one",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("entity-type", "Record type",
 	              "The record type the widget reads, e.g. ticket, release",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
