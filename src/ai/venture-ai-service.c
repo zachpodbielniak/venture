@@ -2490,6 +2490,7 @@ venture_ai_make_tool(
 	return tool;
 }
 
+#include "pipelines/venture-pipeline-ai.inc"
 #include "venture-ai-actions-private.h"
 
 static void
@@ -2713,6 +2714,7 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(desk, "limit", "integer",
 		"activity: at most this many entries", FALSE);
 
+	venture_ai_register_deal_move(self);
 	ai_tool_executor_register_callback(self->executor, inbox,
 		venture_ai_tool_inbox, self, NULL);
 	ai_tool_executor_register_callback(self->executor, runs,

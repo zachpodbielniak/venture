@@ -725,7 +725,22 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_mail_message_get_type
 		, venture_mail_template_get_type
 
+		, venture_bank_account_get_type
+		, venture_bank_statement_get_type
+		, venture_bank_transaction_get_type
+		, venture_bank_match_get_type
+		, venture_reconciliation_get_type
+
+		, venture_sequence_get_type
+		, venture_sequence_step_get_type
+		, venture_sequence_enrollment_get_type
+		, venture_sequence_delivery_get_type
+		, venture_suppression_get_type
 		, venture_posting_profile_get_type
+		, venture_pipeline_get_type,
+		venture_pipeline_stage_get_type,
+		venture_deal_stage_entry_get_type,
+		venture_loss_reason_get_type,
 	};
 	gsize i;
 

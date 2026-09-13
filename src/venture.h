@@ -71,6 +71,7 @@
 #include "model/venture-federation-records.h"
 #include "ledger/venture-journal.h"
 #include "receivables/venture-receivable-records.h"
+#include "banking/venture-bank-records.h"
 #include "receivables/venture-invoice-state-machine.h"
 #include "model/venture-venture-type.h"
 #include "model/venture-entity-registry.h"
@@ -78,6 +79,8 @@
 #include "periods/venture-period-records.h"
 #include "mail/venture-mail-records.h"
 
+#include "pipelines/venture-pipeline-records.h"
+#include "sequences/venture-sequence-records.h"
 #include "autojournal/venture-posting-profile.h"
 
 /* --- Configuration ------------------------------------------------------- */
@@ -123,6 +126,8 @@
 #include "mail/venture-smtp-mailer.h"
 #include "mail/venture-mail-outbox.h"
 #include "mail/venture-mail-template.h"
+#include "banking/venture-bank-match-service.h"
+#include "sequences/venture-sequence-service.h"
 #include "periods/venture-period-report.h"
 
 /* The confirmation store comes first: the context owns one and names its
@@ -134,6 +139,8 @@
 #include "core/venture-federation.h"
 #include "ledger/venture-posting-rule.h"
 #include "ledger/venture-posting-service.h"
+#include "pipelines/venture-deal-service.h"
+#include "pipelines/venture-pipeline-reports.h"
 #include "autojournal/venture-autojournal-service.h"
 #include "statements/venture-ledger-balances.h"
 #include "core/venture-ticket-relation.h"

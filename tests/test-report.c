@@ -227,6 +227,11 @@ test_report_registry_has_builtins(
 	/* Modules may append reports without replacing the established names. */
 	g_assert_cmpuint(reports->len, >=, 18);
 
+	g_assert_nonnull(venture_report_registry_lookup(registry, "stage_duration"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "funnel"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "forecast"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "loss_reasons"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "overdue_deals"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "pnl"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "releases"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "lead_time"));
@@ -236,6 +241,9 @@ test_report_registry_has_builtins(
 	g_assert_nonnull(venture_report_registry_lookup(registry, "tax"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "receivables"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "snapshot_vs_live"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "bank_reconciliation"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "sequence_performance"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "sequence_failures"));
 	g_assert_null(venture_report_registry_lookup(registry, "nonesuch"));
 }
 
