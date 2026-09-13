@@ -138,7 +138,7 @@ any open database transaction, after all source writes commit.
 * Upgrades and verification
 
 The field tables add the mail tables and per-organization unique index.
-The paired =000003_mail_outbox.sql= scripts verify that the uniqueness index
+The paired =000160_mail_outbox.sql= scripts verify that the uniqueness index
 exists when its table exists, including upgrades with mail disabled. They do
 not infer or send historical mail. Existing business rows are unchanged.
 
