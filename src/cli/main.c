@@ -3314,7 +3314,7 @@ main(
 	}
 
 	/*
-	 * Same rule, same reason. Only the three generic write verbs go
+	 * Same rule, same reason. The generic write verbs and lead conversion go
 	 * through a route that reads `stage`; on anything else the parameter
 	 * would be an unknown one, which a write route *ignores* -- so a
 	 * quietly accepted --stage would apply the change it was asked to
@@ -3322,10 +3322,11 @@ main(
 	 */
 	if (stage && (0 != g_strcmp0(args[0], "create")) &&
 	    (0 != g_strcmp0(args[0], "update")) &&
-	    (0 != g_strcmp0(args[0], "delete")))
+	    (0 != g_strcmp0(args[0], "delete")) &&
+	    !(0 == g_strcmp0(args[0], "lead") && 0 == g_strcmp0(args[1], "convert")))
 	{
 		g_printerr("venturectl: --stage only means something to create, "
-		           "update and delete. \"%s\" would ignore it.\n", args[0]);
+		           "update, delete and lead convert. \"%s\" would ignore it.\n", args[0]);
 		g_free(cli.base_url);
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);

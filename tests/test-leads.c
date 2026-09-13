@@ -367,14 +367,14 @@ test_cli_convert(Fixture *f, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *id = NULL;
 	CliReply reply = { FALSE, NULL, NULL, NULL };
-	(void)data;
+	gboolean staged = GPOINTER_TO_INT(data);
 	g_object_set(lead, "status", VENTURE_LEAD_QUALIFIED, NULL);
 	save(f, lead);
 	start_http(f);
 	id = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(lead));
 	process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE,
 		&error, "build/debug/venturectl", "--server", venture_web_server_get_base_url(f->server),
-		"lead", "convert", id, "deal=no", NULL);
+		staged ? "--stage" : "--quiet", "lead", "convert", id, "deal=no", NULL);
 	g_assert_no_error(error);
 	g_subprocess_communicate_utf8_async(process, NULL, NULL, cli_received, &reply);
 	while (!reply.done) g_main_context_iteration(NULL, TRUE);
@@ -382,6 +382,18 @@ test_cli_convert(Fixture *f, gconstpointer data)
 	g_test_message("CLI: %s", reply.err != NULL ? reply.err : "");
 	g_free(reply.out); g_free(reply.err);
 	g_assert_true(g_subprocess_get_successful(process));
+	if (staged)
+	{
+		VentureConfirmationStore *store = venture_context_get_confirmations(f->context);
+		g_autoptr(GPtrArray) pending = venture_confirmation_store_list_pending(store);
+		g_autofree gchar *confirmation = NULL;
+		/* --stage must reach the staging route without converting early. */
+		g_assert_cmpint(count(f, "contact"), ==, 0);
+		g_assert_cmpuint(pending->len, ==, 1);
+		confirmation = g_strdup(venture_confirmation_get_id(g_ptr_array_index(pending, 0)));
+		g_assert_true(venture_confirmation_store_approve(store, confirmation, "operator", &error));
+		g_assert_no_error(error);
+	}
 	g_assert_cmpint(count(f, "contact"), ==, 1);
 	g_assert_cmpint(count(f, "deal"), ==, 0);
 }
@@ -841,6 +853,7 @@ main(int argc, char **argv)
 	g_test_add("/leads/reports", Fixture, NULL, setup, test_reports, teardown);
 	g_test_add("/leads/staged-convert", Fixture, NULL, setup, test_staged_convert, teardown);
 	g_test_add("/leads/cli-convert", Fixture, NULL, setup, test_cli_convert, teardown);
+	g_test_add("/leads/cli-staged-convert", Fixture, GINT_TO_POINTER(1), setup, test_cli_convert, teardown);
 	g_test_add("/leads/report-values", Fixture, NULL, setup, test_report_values, teardown);
 	g_test_add("/leads/least-busy", Fixture, GINT_TO_POINTER(VENTURE_ROUTING_STRATEGY_LEAST_BUSY), setup, test_strategy, teardown);
 	g_test_add("/leads/first-assignment", Fixture, GINT_TO_POINTER(VENTURE_ROUTING_STRATEGY_FIRST), setup, test_strategy, teardown);
