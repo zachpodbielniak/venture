@@ -722,6 +722,10 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_fiscal_year_get_type
 		, venture_fiscal_period_get_type
 		, venture_report_snapshot_get_type
+		, venture_fixed_asset_get_type
+		, venture_depreciation_entry_get_type
+		, venture_deferral_get_type
+		, venture_deferral_entry_get_type
 	};
 	gsize i;
 

@@ -52,6 +52,7 @@ struct _VentureDatabase
 	 * through venture_database_save(), so every writer gets the check.
 	 */
 	GPtrArray		*validators;
+	VentureAssetService *asset_service;
 };
 
 typedef struct
@@ -107,6 +108,7 @@ venture_database_finalize(GObject *object)
 	g_clear_pointer(&self->uri, g_free);
 	g_rec_mutex_clear(&self->lock);
 	g_clear_pointer(&self->validators, g_ptr_array_unref);
+	g_clear_object(&self->asset_service);
 
 	G_OBJECT_CLASS(venture_database_parent_class)->finalize(object);
 }
@@ -1041,6 +1043,12 @@ venture_database_save(
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
 
 	/* Source and posting share a transaction, whichever surface saved it. */
+	{
+		gboolean handled = FALSE;
+		gboolean ok = venture_assets_save(self, entity, actor, &handled, error);
+		if (handled || !ok)
+			return ok;
+	}
 	if (venture_ledger_wrap_source(self, entity))
 		return venture_ledger_save_source(self, entity, actor, error);
 	{
@@ -1950,4 +1958,12 @@ venture_database_migrate(
 		!venture_database_seed_tax_categories(self, organization_id, error))
 		return FALSE;
 	return TRUE;
+}
+
+VentureAssetService *
+venture_asset_service_get(VentureDatabase *database)
+{
+	if (database->asset_service == NULL)
+		database->asset_service = g_object_new(VENTURE_TYPE_ASSET_SERVICE, "database", database, NULL);
+	return database->asset_service;
 }
