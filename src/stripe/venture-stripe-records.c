@@ -12,7 +12,22 @@ static const VentureFieldDecl customer_fields[] = {
 	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("stripe-customer-id", "Stripe customer", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION)
 };
-VENTURE_DEFINE_ENTITY(VentureStripeCustomerLink, venture_stripe_customer_link, customer_fields)
+static gboolean
+customer_before_save(VentureEntity *entity, GError **error)
+{
+	gint64 company, contact;
+	g_object_get(entity, "company-id", &company, "contact-id", &contact, NULL);
+	if ((company > 0) == (contact > 0))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"A Stripe customer link requires exactly one company or contact");
+		return FALSE;
+	}
+	return TRUE;
+}
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureStripeCustomerLink, venture_stripe_customer_link, customer_fields,
+	VENTURE_ENTITY_CLASS(klass)->before_save = customer_before_save;)
+
 
 static const VentureFieldDecl checkout_fields[] = {
 	VENTURE_FIELD_REF("invoice-id", "Invoice", NULL, "invoice", VENTURE_COLUMN_FLAG_NOT_NULL),

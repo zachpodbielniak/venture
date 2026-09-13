@@ -379,3 +379,17 @@ One shape for every failure:
 
 A =409= from a write means someone else changed the record since you loaded
 it. Reload, reapply, retry — do not force it.
+
+* Stripe payment actions
+
+=POST /api/v1/invoices/:id/checkout= requires the editor role and the Stripe
+module. It calls VentureStripeService and returns the stored Checkout record,
+including =url=. Invoice eligibility is checked in that service; generic
+Checkout and event writes are refused.
+
+=POST /webhooks/stripe= accepts an unauthenticated raw entity body and its
+=Stripe-Signature= header. Invalid signatures and refused events receive 400;
+processed, ignored and duplicate events receive 200. An unavailable provider
+receives 503. Authentication is the verified signature, never a browser
+session or a redirect. See [[file:stripe.org][Stripe payments]] for exact matching,
+deduplication and transactional settlement.

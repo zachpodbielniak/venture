@@ -18,6 +18,17 @@ struct _VentureStripeService
 G_DEFINE_TYPE(VentureStripeService, venture_stripe_service, G_TYPE_OBJECT)
 enum { PROP_0, PROP_DATABASE, PROP_ORGANIZATION, N_PROPS };
 
+/* Sorting equality warns and returns zero on rescaling overflow. Financial
+ * validation must instead propagate failure through checked arithmetic. */
+static gboolean
+money_equal(const VentureMoney *a, const VentureMoney *b)
+{
+	g_autoptr(VentureMoney) difference = NULL;
+	if (!a || !b) return FALSE;
+	difference = venture_money_subtract(a, b, NULL);
+	return difference && venture_money_get_amount(difference) == 0;
+}
+
 static gboolean
 refuse(GError **error, const gchar *rule)
 {
@@ -67,6 +78,31 @@ venture_stripe_service_class_init(VentureStripeServiceClass *klass)
 	g_object_class_install_property(oc, PROP_ORGANIZATION, g_param_spec_int64("organization-id", "Organization", "Endpoint legal entity", 1, G_MAXINT64, 1, G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_STRINGS));
 }
 static void venture_stripe_service_init(VentureStripeService *self) { (void)self; }
+
+typedef struct
+{
+	gchar *name;
+	JsonObject *payload;
+} Observation;
+
+static void
+observation_free(gpointer data)
+{
+	Observation *observation = data;
+	g_free(observation->name);
+	json_object_unref(observation->payload);
+	g_free(observation);
+}
+
+static void
+collect_event(StripeClient *client, const gchar *name, JsonObject *payload, gpointer data)
+{
+	Observation *observation = g_new0(Observation, 1);
+	(void)client;
+	observation->name = g_strdup(name);
+	observation->payload = json_object_ref(payload);
+	g_ptr_array_add(data, observation);
+}
 
 static void
 audit_event(StripeClient *client, const gchar *name, JsonObject *payload, gpointer data)
@@ -170,6 +206,8 @@ eligible(VentureStripeService *self, gint64 invoice_id, VentureEntity **invoice_
 	gint64 product;
 	gdouble quantity;
 
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "stripe_checkout") == G_TYPE_INVALID)
+		return refuse(error, "Stripe module is disabled (stripe.enabled)");
 	invoice = owned_get(self, VENTURE_TYPE_INVOICE, invoice_id, error);
 	if (!invoice) return FALSE;
 	g_object_get(invoice, "status", &status, NULL);
@@ -188,8 +226,7 @@ eligible(VentureStripeService *self, gint64 invoice_id, VentureEntity **invoice_
 	if (!amount) return FALSE;
 	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(self->database), invoice_id, NULL, error);
 	if (!balance) return FALSE;
-	if (venture_money_get_amount(balance) <= 0 || venture_money_get_amount(amount) != venture_money_get_amount(balance) ||
-	    g_strcmp0(venture_money_get_currency(amount), venture_money_get_currency(balance)))
+	if (venture_money_get_amount(balance) <= 0 || !money_equal(amount, balance))
 		return refuse(error, "Checkout line total must equal the positive open balance");
 	if (invoice_out) *invoice_out = g_steal_pointer(&invoice);
 	if (link_out) *link_out = g_object_ref(g_ptr_array_index(links, 0));
@@ -300,11 +337,14 @@ venture_stripe_service_handle_webhook(VentureStripeService *self, GBytes *raw,
 	const gchar *signature, GError **error)
 {
 	g_autoptr(StripeClient) verifier = NULL;
+	g_autoptr(GPtrArray) observations = g_ptr_array_new_with_free_func(observation_free);
+	guint observation_index;
 	g_autoptr(JsonObject) event = NULL;
 	g_autoptr(GPtrArray) prior = NULL;
 	g_autoptr(GPtrArray) sessions = NULL;
 	g_autoptr(VentureStripeEvent) record = NULL;
 	g_autoptr(VentureMoney) expected = NULL;
+	g_autoptr(VentureMoney) received = NULL;
 	g_autoptr(VentureEntity) invoice = NULL;
 	g_autoptr(VenturePayment) payment = NULL;
 	g_autoptr(GDateTime) now = venture_time_now();
@@ -316,14 +356,26 @@ venture_stripe_service_handle_webhook(VentureStripeService *self, GBytes *raw,
 	gint64 invoice_id, company_id;
 	gboolean mismatch = FALSE;
 
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "stripe_checkout") == G_TYPE_INVALID)
+		return refuse(error, "Stripe module is disabled (stripe.enabled)");
 	if (!venture_database_begin(self->database, error)) return FALSE;
 	/* Durable event IDs replace the library's per-client replay cache. Each
 	 * delivery is authenticated afresh, including identical signed retries. */
 	verifier = stripe_client_new(self->yaml, self->transport, NULL, error);
 	if (!verifier) goto fail;
-	g_signal_connect(verifier, "event", G_CALLBACK(audit_event), self);
+	g_signal_connect(verifier, "event", G_CALLBACK(collect_event), observations);
 	event = stripe_client_verify_webhook(verifier, raw, signature, NULL, error);
-	if (!event) goto fail;
+	if (!event)
+	{
+		for (observation_index = 0; observation_index < observations->len; observation_index++)
+		{
+			Observation *observation = g_ptr_array_index(observations, observation_index);
+			audit_event(verifier, observation->name, observation->payload, self);
+		}
+		/* Rejection evidence contains no raw body or signature. */
+		venture_database_commit(self->database, NULL);
+		return FALSE;
+	}
 	event_id = string_member(event, "id");
 	type = string_member(event, "type");
 	if (!event_id || !*event_id || !type) { refuse(error, "Webhook requires event id and type"); goto fail; }
@@ -331,9 +383,14 @@ venture_stripe_service_handle_webhook(VentureStripeService *self, GBytes *raw,
 	if (!prior) goto fail;
 	if (prior->len)
 	{
-		/* Drop the verification audit as well: a duplicate has no side effects. */
+		/* Do not forward observations for a duplicate: no audit side effects. */
 		venture_database_rollback(self->database);
 		return TRUE;
+	}
+	for (observation_index = 0; observation_index < observations->len; observation_index++)
+	{
+		Observation *observation = g_ptr_array_index(observations, observation_index);
+		audit_event(verifier, observation->name, observation->payload, self);
 	}
 	record = venture_stripe_event_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(record), self->organization_id);
@@ -353,9 +410,10 @@ venture_stripe_service_handle_webhook(VentureStripeService *self, GBytes *raw,
 	amount_node = json_object_get_member(object, "amount_total");
 	currency = string_member(object, "currency");
 	intent = string_member(object, "payment_intent");
-	if (!expected || !amount_node || json_node_get_value_type(amount_node) != G_TYPE_INT64 ||
-	    json_node_get_int(amount_node) != venture_money_get_amount(expected) || !currency ||
-	    g_ascii_strcasecmp(currency, venture_money_get_currency(expected)))
+	if (expected && amount_node && json_node_get_value_type(amount_node) == G_TYPE_INT64 &&
+	    currency && !g_ascii_strcasecmp(currency, venture_money_get_currency(expected)))
+		received = venture_money_new_for_currency(json_node_get_int(amount_node), currency);
+	if (!received || !money_equal(received, expected))
 	{
 		mismatch = TRUE;
 		g_object_set(record, "result", "mismatch", NULL);
