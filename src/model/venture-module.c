@@ -986,7 +986,7 @@ venture_module_registry_add(
 		}
 	}
 
-	venture_access_records_tag_module(info);
+	venture_access_records_tag_module(self, info);
 
 	module = venture_module_new(info, origin);
 

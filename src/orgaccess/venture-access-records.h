@@ -49,10 +49,11 @@ VENTURE_DECLARE_ENTITY(VentureTeamMembership, venture_team_membership, TEAM_MEMB
 void venture_access_type_set_financial(GType type, gboolean financial);
 /**
  * venture_access_records_tag_module:
+ * @registry: registry containing the declaration's earlier requirements
  * @info: registered module declaration
  *
- * Tags records declared by built-in financial modules.
+ * Tags records in finance and modules transitively requiring finance.
  */
-void venture_access_records_tag_module(const VentureModuleInfo *info);
+void venture_access_records_tag_module(VentureModuleRegistry *registry, const VentureModuleInfo *info);
 G_END_DECLS
 #endif

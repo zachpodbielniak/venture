@@ -237,6 +237,7 @@ test_role_matrix(gconstpointer data)
 	g_autoptr(VentureEntity) member = NULL;
 	g_autoptr(VentureEntity) company = NULL;
 	g_autoptr(VentureEntity) expense = NULL;
+	g_autoptr(VentureEntity) thread = NULL;
 	VentureAuthPrincipal actor = { 0 };
 	VentureAccessPolicy *policy;
 	gint role;
@@ -259,8 +260,22 @@ test_role_matrix(gconstpointer data)
 	actor.role = VENTURE_USER_ROLE_EDITOR;
 	policy = venture_database_get_access_policy(db);
 	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", actor.user_id, "organization-id", org, "active", TRUE, NULL);
+	{
+		g_autoptr(VentureModuleRegistry) modules = venture_module_registry_new();
+		static const gchar *const dependencies[] = { "receivables", NULL };
+		static GType (*const types[])(void) = { venture_expense_get_type, NULL };
+		static const VentureModuleInfo extension = {
+			"future-financial-extension", "Extension", "Financial extension",
+			dependencies, NULL, types, NULL, NULL, FALSE
+		};
+		/* Future modules inherit finance restrictions from their dependencies. */
+		venture_module_registry_register_builtins(modules);
+		venture_access_type_set_financial(VENTURE_TYPE_EXPENSE, FALSE);
+		venture_access_records_tag_module(modules, &extension);
+	}
 	company = g_object_new(VENTURE_TYPE_COMPANY, "organization-id", org, "owner-user-id", actor.user_id, NULL);
 	expense = g_object_new(VENTURE_TYPE_EXPENSE, "organization-id", org, NULL);
+	thread = g_object_new(VENTURE_TYPE_CHAT_THREAD, "organization-id", org, NULL);
 	for (role = VENTURE_ORGANIZATION_ROLE_VIEWER; role <= VENTURE_ORGANIZATION_ROLE_SUPPORT; role++)
 	{
 		gboolean finance = role == VENTURE_ORGANIZATION_ROLE_OWNER || role == VENTURE_ORGANIZATION_ROLE_ADMIN || role == VENTURE_ORGANIZATION_ROLE_FINANCE;
@@ -274,6 +289,12 @@ test_role_matrix(gconstpointer data)
 		g_assert_cmpint(venture_access_policy_can(policy, &actor, "delete", company, NULL), ==, role != VENTURE_ORGANIZATION_ROLE_VIEWER);
 		g_assert_cmpint(venture_access_policy_can(policy, &actor, "read", expense, NULL), ==, finance);
 		g_assert_cmpint(venture_access_policy_can(policy, &actor, "write", expense, NULL), ==, finance);
+		/* Organization administration must never grant another user's personal records. */
+		g_object_set(thread, "user-id", actor.user_id + 100, NULL);
+		g_assert_false(venture_access_policy_can(policy, &actor, "read", thread, NULL));
+		g_assert_false(venture_access_policy_can(policy, &actor, "write", thread, NULL));
+		g_object_set(thread, "user-id", actor.user_id, NULL);
+		g_assert_true(venture_access_policy_can(policy, &actor, "read", thread, NULL));
 		g_object_set(company, "owner-user-id", (gint64)0, NULL);
 		g_assert_cmpint(venture_access_policy_can(policy, &actor, "read", company, NULL), ==, all);
 	}
@@ -426,6 +447,38 @@ test_pagination_and_picker(void)
 	g_assert_cmpuint(venture_query_get_offset(query), ==, 1);
 }
 
+static void
+assert_protocol_authority(HtmxContext *http, gpointer data)
+{
+	VentureAccessPolicy *policy = data;
+	g_assert_null(venture_access_policy_get_actor(policy));
+}
+
+/* Webhooks may arrive inside a nested main loop driven by an unrelated
+ * authenticated request. Their protocol authority must be independent. */
+static void
+test_nested_protocol_scope(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureContext) context = venture_context_new(config, db);
+	g_autoptr(VentureAuth) auth = venture_auth_new(context);
+	g_autoptr(HtmxRequest) request = htmx_request_new_for_path(HTMX_METHOD_POST, "/hooks/forge/1");
+	g_autoptr(HtmxContext) http = htmx_context_new(request);
+	g_autoptr(VentureAccessScope) outer = NULL;
+	VentureAccessPolicy *policy = venture_database_get_access_policy(db);
+	VentureAuthPrincipal actor;
+	actor.user_id = 1;
+	actor.token_id = 0;
+	actor.role = VENTURE_USER_ROLE_EDITOR;
+	actor.name = NULL;
+	actor.authenticated = TRUE;
+	outer = venture_access_policy_enter(policy, &actor);
+	venture_orgaccess_web_dispatch(auth, context, http, assert_protocol_authority, policy);
+	g_assert_nonnull(venture_access_policy_get_actor(policy));
+	g_assert_cmpint(venture_access_policy_get_actor(policy)->user_id, ==, actor.user_id);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -441,5 +494,6 @@ main(int argc, char **argv)
 	g_test_add_func("/orgaccess/team-revocation", test_team_revocation);
 	g_test_add_func("/orgaccess/bootstrap-rollback", test_bootstrap_rollback);
 	g_test_add_func("/orgaccess/pagination-and-picker", test_pagination_and_picker);
+	g_test_add_func("/orgaccess/nested-protocol-scope", test_nested_protocol_scope);
 	return g_test_run();
 }

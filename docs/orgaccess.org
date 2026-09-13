@@ -16,7 +16,7 @@ an optional =team_id=. These are references, so generated forms, REST and
 
 * Upgrade
 
-The paired =000003_orgaccess.sql= migrations preserve each existing owner's
+The paired =000180_orgaccess.sql= migrations preserve each existing owner's
 access by adding owner memberships in all existing, live organizations.
 Other global roles receive no implicit memberships. The migration retains
 its access tables even when the module is disabled during upgrade, so an
@@ -38,7 +38,7 @@ also constrain records loaded by reports, widgets and reference pickers.
 Global owners and admins retain their data authority. Other users require an
 active membership in the record's exact organization; a parent organization
 is a presentation hierarchy and never grants a child's membership. Finance
-modules mark their types as financial class metadata. Those types require
+modules mark their types as financial class metadata; modules transitively requiring =finance= inherit this restriction, including plugin modules. Those types require
 organization finance, admin or owner authority. Sales, support and viewer
 members read assigned records or records attached to their assigned venture;
 team ownership requires a team and active team membership in the same
@@ -76,6 +76,8 @@ not inherit through =parent_id=. Personal chat, watch and notification
 records declare a personal owner reference in their field table and keep
 that user's boundary. This describes access to whole records; it does not
 introduce field permissions.
+
+Organization membership, including organization owner or admin, cannot grant access to another user's personal record. Global administrator authority remains unchanged.
 
 Filters supplied by callers only narrow access. The current implementation
 filters candidate records before applying offset and limit; its cost grows

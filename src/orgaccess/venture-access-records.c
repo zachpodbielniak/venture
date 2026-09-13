@@ -42,15 +42,34 @@ static const VentureFieldDecl team_membership_fields[] = {
 };
 VENTURE_DEFINE_ENTITY(VentureTeamMembership, venture_team_membership, team_membership_fields)
 
+/* Module declarations are topologically ordered, so traversing previously
+ * registered requirements is finite and also covers future finance plugins. */
+static gboolean
+requires_finance(VentureModuleRegistry *registry, const gchar *name)
+{
+	VentureModule *module;
+	const gchar *const *requires;
+	guint i;
+	if (g_strcmp0(name, "finance") == 0)
+		return TRUE;
+	module = venture_module_registry_lookup(registry, name);
+	if (module == NULL)
+		return FALSE;
+	requires = venture_module_get_requires(module);
+	for (i = 0; requires != NULL && requires[i] != NULL; i++)
+		if (requires_finance(registry, requires[i]))
+			return TRUE;
+	return FALSE;
+}
+
 void
-venture_access_records_tag_module(const VentureModuleInfo *info)
+venture_access_records_tag_module(VentureModuleRegistry *registry, const VentureModuleInfo *info)
 {
 	guint i;
-	if (0 != g_strcmp0(info->name, "finance") &&
-		0 != g_strcmp0(info->name, "ledger") &&
-		0 != g_strcmp0(info->name, "periods") &&
-		0 != g_strcmp0(info->name, "invoicing") &&
-		0 != g_strcmp0(info->name, "receivables"))
+	gboolean financial = g_strcmp0(info->name, "finance") == 0;
+	for (i = 0; !financial && info->requires != NULL && info->requires[i] != NULL; i++)
+		financial = requires_finance(registry, info->requires[i]);
+	if (!financial)
 		return;
 	for (i = 0; NULL != info->entity_types && NULL != info->entity_types[i]; i++)
 		venture_access_type_set_financial(info->entity_types[i](), TRUE);

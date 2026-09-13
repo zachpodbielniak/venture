@@ -230,6 +230,19 @@ personal_owner(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, Ven
 	return FALSE;
 }
 
+/* Personal ownership is a boundary, not an additional way to grant access.
+ * Falling through to organization membership exposes a colleague's thread. */
+static gboolean
+personal_record(VentureEntity *entity)
+{
+	g_autoptr(GPtrArray) fields = venture_entity_get_field_specs(entity);
+	guint i;
+	for (i = 0; i < fields->len; i++)
+		if (venture_field_spec_get_flags(g_ptr_array_index(fields, i)) & VENTURE_COLUMN_FLAG_PERSONAL_OWNER)
+			return TRUE;
+	return FALSE;
+}
+
 static gboolean
 owned(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, VentureEntity *entity)
 {
@@ -322,8 +335,12 @@ venture_access_policy_can(VentureAccessPolicy *self, const VentureAuthPrincipal 
 		 * The generic web type gate still requires the global owner role. */
 		if (VENTURE_IS_USER(entity) && venture_entity_get_id(entity) == actor->user_id && read)
 			goto allowed;
-		if (venture_access_policy_has_membership(self, actor) && personal_owner(self, actor, entity, 0))
-			goto allowed;
+		if (personal_record(entity))
+		{
+			if (venture_access_policy_has_membership(self, actor) && personal_owner(self, actor, entity, 0))
+				goto allowed;
+			return refuse(error, read);
+		}
 		org = VENTURE_IS_ORGANIZATION(entity) ? venture_entity_get_id(entity) : venture_entity_get_organization_id(entity);
 		if (org <= 0)
 			return refuse(error, TRUE);
@@ -463,9 +480,14 @@ venture_orgaccess_web_dispatch(VentureAuth *auth, VentureContext *context,
 	HtmxContext *http, HtmxMiddlewareNext next, gpointer next_data)
 {
 	g_autoptr(VentureAuthPrincipal) actor = NULL;
+	g_autoptr(VentureAccessScope) boundary = NULL;
 	g_autoptr(VentureAccessScope) scope = NULL;
 	HtmxRequest *request = htmx_context_get_request(http);
 	const gchar *path = htmx_request_get_path(request);
+	/* A nested main loop can dispatch a webhook underneath an authenticated
+	 * request. Protocol authority must never inherit the enclosing caller. */
+	boundary = venture_access_policy_enter(venture_database_get_access_policy(
+		venture_context_get_database(context)), NULL);
 	/* These protocols authenticate themselves, before accessing business
 	 * records. They do not acquire authority from browser credentials. */
 	if (!g_str_has_prefix(path, "/hooks/") && !g_str_has_prefix(path, "/federation/") &&
