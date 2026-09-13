@@ -225,6 +225,11 @@ window_time(VentureEntity *sequence, GDateTime *time, GError **error)
 		return NULL;
 	}
 	local = g_date_time_to_timezone(time, zone);
+	if (local == NULL)
+	{
+		refuse(error, VENTURE_ERROR_VALIDATION, "Sending time exceeds the supported date range");
+		return NULL;
+	}
 	for (i = 0; i < 8; i++)
 	{
 		gint hour = g_date_time_get_hour(local);
@@ -241,6 +246,12 @@ window_time(VentureEntity *sequence, GDateTime *time, GError **error)
 		}
 		{
 			g_autoptr(GDateTime) tomorrow = g_date_time_add_days(local, 1);
+			/* A valid input at year 9999 can still have no next sending day. */
+			if (tomorrow == NULL)
+			{
+				refuse(error, VENTURE_ERROR_VALIDATION, "Next sending day exceeds the supported date range");
+				return NULL;
+			}
 			g_clear_pointer(&local, g_date_time_unref);
 			local = g_date_time_new(zone, g_date_time_get_year(tomorrow),
 				g_date_time_get_month(tomorrow), g_date_time_get_day_of_month(tomorrow), 0, 0, 0);
@@ -260,6 +271,8 @@ schedule(VentureEntity *sequence, VentureEntity *step, VentureEntity *enrollment
 	g_autoptr(GDateTime) days = NULL;
 	g_autoptr(GDateTime) delayed = NULL;
 	g_autoptr(GDateTime) next = NULL;
+	if (local == NULL)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Enrollment time exceeds the supported date range");
 	days = g_date_time_add_days(local, (gint)number(step, "delay-days"));
 	if (days != NULL)
 		delayed = g_date_time_add_hours(days, (gint)number(step, "delay-hours"));

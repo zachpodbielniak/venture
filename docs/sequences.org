@@ -118,3 +118,5 @@ refusals, reply/deal/meeting exits, repeated sweeps, edited steps, rollback,
 manual controls, rendering failures, adapter evidence, report counts,
 staged approval, real HTTP and CLI calls, task notifications, module enable
 and file-backed restart.
+
+Sending or enrollment times beyond the representable calendar range are refused as validation errors; the sweep retains no delivery or progress from that failed transition.

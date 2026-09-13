@@ -767,6 +767,22 @@ test_suppression_unique(Fixture *f, gconstpointer unused)
 	save(f, second);
 }
 
+/* Calendar overflow is an ordinary validation error, never a GLib assertion. */
+static void
+test_date_limit(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) row = enrollment(f);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) queued = NULL;
+	(void)data;
+	save(f, row);
+	/* A valid ISO timestamp can have no representable next sending day. */
+	g_assert_cmpint(run(f, "9999-12-31T23:00:00Z", &error), ==, -1);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	queued = deliveries(f);
+	g_assert_cmpuint(queued->len, ==, 0);
+}
+
 /* Soft deletion retains references, but must never queue a later outreach. */
 static void
 test_deleted_reference(Fixture *f, gconstpointer data)
@@ -803,6 +819,7 @@ main(int argc, char **argv)
 	g_test_add("/sequences/reply", Fixture, NULL, setup, test_reply, teardown);
 	g_test_add("/sequences/won", Fixture, NULL, setup, test_won, teardown);
 	g_test_add("/sequences/sweep", Fixture, NULL, setup, test_sweep, teardown);
+	g_test_add("/sequences/date_limit", Fixture, NULL, setup, test_date_limit, teardown);
 	g_test_add("/sequences/deleted_contact", Fixture, NULL, setup, test_deleted_reference, teardown);
 	g_test_add("/sequences/deleted_sequence", Fixture, "disk", setup, test_deleted_reference, teardown);
 	g_test_add("/sequences/edit", Fixture, NULL, setup, test_edit, teardown);
