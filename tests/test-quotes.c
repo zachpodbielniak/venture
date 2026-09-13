@@ -382,6 +382,15 @@ http(SoupSession *session, const gchar *base, const gchar *method, const gchar *
 	return code;
 }
 
+typedef struct { gboolean done; gchar *out; gchar *err; GError *error; } CliResult;
+static void
+cli_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+	CliResult *r = data;
+	g_subprocess_communicate_utf8_finish(G_SUBPROCESS(source), result, &r->out, &r->err, &r->error);
+	r->done = TRUE;
+}
+
 static void
 test_http(Fixture *f, gconstpointer data)
 {
@@ -433,9 +442,183 @@ test_http(Fixture *f, gconstpointer data)
 		g_object_get(g_ptr_array_index(events, 1), "method", &method, NULL);
 		g_assert_cmpstr(method, ==, "web");
 	}
+	{
+		g_autoptr(VentureEntity) q2 = quote(f, "CLI");
+		g_autoptr(VentureEntity) l2 = line(f, q2);
+		g_autoptr(GSubprocessLauncher) launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
+		g_autoptr(GSubprocess) child = NULL;
+		g_autofree gchar *id = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(q2));
+		const gchar *args[] = { "build/debug/venturectl", "--server", base, "quote", "send", id, NULL };
+		CliResult r = { FALSE, NULL, NULL, NULL };
+		g_subprocess_launcher_unsetenv(launcher, "VENTURE_TOKEN");
+		child = g_subprocess_launcher_spawnv(launcher, args, &error);
+		g_assert_no_error(error);
+		g_subprocess_communicate_utf8_async(child, NULL, NULL, cli_done, &r);
+		while (!r.done) g_main_context_iteration(NULL, TRUE);
+		g_assert_no_error(r.error);
+		g_assert_true(g_subprocess_get_successful(child));
+		status(f, q2, "sent");
+		g_free(r.out);
+		g_free(r.err);
+	}
+	{
+		guint i;
+		guint code = 0;
+		for (i = 0; i < 32; i++)
+		{
+			g_clear_pointer(&body, g_free);
+			code = http(session, base, "GET", "/q/wrong-token", NULL, &body);
+		}
+		g_assert_cmpuint(code, ==, 429);
+	}
 	venture_web_server_stop(server);
 	g_clear_object(&server);
 	venture_test_remove_tree(dir);
+}
+
+static void
+test_report(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) q = quote(f, "Report");
+	g_autoptr(VentureEntity) l = line(f, q);
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *json = NULL;
+	VentureReport *report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "quotes");
+	g_assert_nonnull(report);
+	action(f, q, "send");
+	action(f, q, "accept");
+	result = venture_report_generate(report, f->context, NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	node = venture_report_result_to_json(result);
+	json = venture_json_to_string(node, FALSE);
+	g_assert_nonnull(strstr(json, "acceptance_rate"));
+	{
+		GPtrArray *metrics = venture_report_result_get_metrics(result);
+		guint i;
+		gboolean found = FALSE;
+		for (i = 0; i < metrics->len; i++)
+		{
+			VentureMetric *metric = g_ptr_array_index(metrics, i);
+			if (g_strcmp0(venture_metric_get_key(metric), "accepted_count") == 0)
+			{
+				g_assert_cmpfloat(metric->number, ==, 1.0);
+				found = TRUE;
+			}
+		}
+		g_assert_true(found);
+	}
+}
+
+static void
+test_staged(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) q = quote(f, "Staged");
+	g_autoptr(VentureEntity) l = line(f, q);
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureConfirmationStore *store = venture_context_get_confirmations(f->context);
+	VentureConfirmation *confirmation;
+	VentureActor origin;
+	origin.kind = VENTURE_ACTOR_KIND_AI;
+	origin.name = "assistant";
+	origin.prompt = "Accept the quote for Alex Buyer";
+	origin.request_id = NULL;
+	origin.approved_by = NULL;
+	action(f, q, "send");
+	a = request(f, q, "accept");
+	confirmation = venture_confirmation_store_stage(store, VENTURE_AUDIT_ACTION_CREATE, a, NULL, &origin, "assistant", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(confirmation);
+	status(f, q, "sent");
+	g_assert_true(venture_confirmation_store_approve(store, venture_confirmation_get_id(confirmation), "owner", &error));
+	g_assert_no_error(error);
+	status(f, q, "accepted");
+}
+
+static void
+test_expiry(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) q = quote(f, "Expiring");
+	g_autoptr(VentureEntity) l = line(f, q);
+	g_autoptr(VentureEntity) current = fresh(f, "quote", venture_entity_get_id(q));
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GDateTime) until = g_date_time_add_seconds(now, 1);
+	g_autoptr(GError) error = NULL;
+	g_object_set(current, "valid-until", until, NULL);
+	save(f, current);
+	action(f, q, "send");
+	g_usleep(1200000);
+	g_clear_pointer(&now, g_date_time_unref);
+	now = venture_time_now();
+	g_assert_cmpint(venture_quote_service_sweep(venture_database_get_quote_service(f->db), f->org, now, &error), ==, 1);
+	g_assert_no_error(error);
+	status(f, q, "expired");
+	g_assert_cmpint(venture_quote_service_sweep(venture_database_get_quote_service(f->db), f->org, now, &error), ==, 0);
+	g_assert_no_error(error);
+}
+
+static void
+test_decline(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) q = quote(f, "Declined");
+	g_autoptr(VentureEntity) l = line(f, q);
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(GError) error = NULL;
+	action(f, q, "send");
+	a = request(f, q, "decline");
+	g_object_set(a, "reason", "", NULL);
+	g_assert_false(venture_database_save(f->db, a, NULL, &error));
+	g_clear_error(&error);
+	action(f, q, "decline");
+	status(f, q, "declined");
+	g_clear_object(&a);
+	a = request(f, q, "accept");
+	g_assert_false(venture_database_save(f->db, a, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
+static void
+test_upgrade(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) org = NULL;
+	g_assert_true(venture_database_execute(f->db, "UPDATE organizations SET quote_valid_days = NULL; DELETE FROM schema_migrations WHERE version = 103", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	org = fresh(f, "organization", f->org);
+	{
+		gint64 days;
+		g_object_get(org, "quote-valid-days", &days, NULL);
+		g_assert_cmpint(days, ==, 30);
+	}
+	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+}
+
+static GError *
+veto_action(VentureQuoteService *service, VentureEntity *q, const gchar *action_name, gpointer data)
+{
+	return g_error_new_literal(VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "Approval required by quote policy");
+}
+
+static void
+test_veto(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) q = quote(f, "Policy");
+	g_autoptr(VentureEntity) l = line(f, q);
+	g_autoptr(VentureEntity) a = request(f, q, "send");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) events = NULL;
+	g_signal_connect(venture_database_get_quote_service(f->db), "before-action", G_CALLBACK(veto_action), NULL);
+	g_assert_false(venture_database_save(f->db, a, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	status(f, q, "draft");
+	events = rows(f, "quote_event");
+	g_assert_cmpuint(events->len, ==, 0);
 }
 
 int
@@ -452,5 +635,11 @@ main(int argc, char **argv)
 	g_test_add("/quotes/scope", Fixture, NULL, setup, test_scope, teardown);
 	g_test_add("/quotes/stale", Fixture, NULL, setup, test_stale, teardown);
 	g_test_add("/quotes/http", Fixture, NULL, setup, test_http, teardown);
+	g_test_add("/quotes/report", Fixture, NULL, setup, test_report, teardown);
+	g_test_add("/quotes/staged", Fixture, NULL, setup, test_staged, teardown);
+	g_test_add("/quotes/expiry", Fixture, NULL, setup, test_expiry, teardown);
+	g_test_add("/quotes/decline", Fixture, NULL, setup, test_decline, teardown);
+	g_test_add("/quotes/upgrade", Fixture, NULL, setup, test_upgrade, teardown);
+	g_test_add("/quotes/veto", Fixture, NULL, setup, test_veto, teardown);
 	return g_test_run();
 }

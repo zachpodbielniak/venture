@@ -52,5 +52,11 @@ gboolean venture_quotes_save_hook(VentureDatabase *database, VentureEntity *reco
  * Returns: TRUE if history is preserved
  */
 gboolean venture_quotes_check_removal(VentureDatabase *database, VentureEntity *record, GError **error);
+/**
+ * venture_quotes_register_reports:
+ * @registry: report registry
+ * Registers the issued-cohort quote report.
+ */
+void venture_quotes_register_reports(VentureReportRegistry *registry);
 G_END_DECLS
 #endif

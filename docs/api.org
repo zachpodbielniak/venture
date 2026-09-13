@@ -379,3 +379,17 @@ One shape for every failure:
 
 A =409= from a write means someone else changed the record since you loaded
 it. Reload, reapply, retry — do not force it.
+
+* Quotes
+
+=POST /api/v1/quotes/:id/send|accept|decline|revise= invokes
+=VentureQuoteService=. Acceptance takes ={"accepted_by":"Full Name"}=;
+decline takes ={"reason":"Explanation"}=. =?stage=1= queues an action and
+returns 202; direct success returns 200 with the action record, including
+=result_quote_id= for a revision. Generic quote status writes are refused.
+
+=GET /q/:token= renders the read-only public proposal and
+=POST /q/:token/accept= accepts a typed name without a session. Wrong tokens
+404; excessive public requests return 429. Public output contains no internal
+IDs or other records. All authenticated quote records also have the ordinary
+metadata-derived CRUD endpoints. See [[file:quotes.org][quotes]].

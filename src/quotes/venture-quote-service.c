@@ -50,6 +50,16 @@ finalize(GObject *object)
 	G_OBJECT_CLASS(venture_quote_service_parent_class)->finalize(object);
 }
 
+static gboolean
+first_error(GSignalInvocationHint *hint, GValue *accumulator, const GValue *value, gpointer data)
+{
+	(void)hint;
+	(void)data;
+	if (g_value_get_boxed(value) == NULL) return TRUE;
+	g_value_copy(value, accumulator);
+	return FALSE;
+}
+
 static void
 venture_quote_service_class_init(VentureQuoteServiceClass *klass)
 {
@@ -57,6 +67,18 @@ venture_quote_service_class_init(VentureQuoteServiceClass *klass)
 	object->get_property = get_property;
 	object->set_property = set_property;
 	object->finalize = finalize;
+	/**
+	 * VentureQuoteService::before-action:
+	 * @self: the service
+	 * @quote: detached snapshot of the current quote
+	 * @action: the requested business action
+	 *
+	 * Emitted inside the transaction after concurrency validation, before
+	 * evidence or financial writes. The first error vetoes the action.
+	 * Returns: (transfer full) (nullable): an error to veto, or NULL
+	 */
+	g_signal_new("before-action", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST,
+		0, first_error, NULL, NULL, G_TYPE_ERROR, 2, VENTURE_TYPE_ENTITY, G_TYPE_STRING);
 	g_object_class_install_property(object, 1,
 		g_param_spec_object("database", "Database", "Owning database", VENTURE_TYPE_DATABASE,
 		G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_STRINGS));
@@ -470,6 +492,18 @@ venture_quote_service_execute(VentureQuoteService *self, VentureEntity *request,
 	}
 	g_object_get(request, "action", &verb, "accepted-by", &by, "reason", &reason, NULL);
 	g_object_get(q, "valid-until", &until, NULL);
+	{
+		g_autoptr(VentureEntity) snapshot = g_object_new(G_OBJECT_TYPE(q), NULL);
+		GError *veto = NULL;
+		venture_entity_copy_properties_from(snapshot, q, FALSE);
+		g_signal_emit_by_name(self, "before-action", snapshot, verb, &veto);
+		if (veto != NULL)
+		{
+			g_propagate_error(error, veto);
+			goto done;
+		}
+	}
+	if (by != NULL) g_strstrip(by);
 	if (g_strcmp0(verb, "send") == 0 && state(q) == VENTURE_QUOTE_DRAFT)
 	{
 		g_autofree gchar *token = secret(error);

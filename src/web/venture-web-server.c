@@ -11,6 +11,7 @@
  */
 
 #include "venture.h"
+#include "quotes/venture-document-print-style.h"
 
 #include <string.h>
 
@@ -140,6 +141,7 @@ struct _VentureWebServer
 	 * access log.
 	 */
 	GHashTable	*chat_turns;
+	HtmxRateLimiter *quote_limiter;
 };
 
 G_DEFINE_FINAL_TYPE(VentureWebServer, venture_web_server, G_TYPE_OBJECT)
@@ -158,6 +160,7 @@ venture_web_server_finalize(GObject *object)
 
 	g_clear_object(&self->context);
 	g_clear_object(&self->auth);
+	g_clear_object(&self->quote_limiter);
 	g_clear_object(&self->server);
 	g_clear_pointer(&self->base_url, g_free);
 	g_clear_pointer(&self->reveals, g_hash_table_unref);
@@ -3562,6 +3565,8 @@ venture_web_ui_invoice_status(
  * chrome, no sidebar, just the document. The browser's print dialog is the
  * PDF generator; it is already installed everywhere.
  */
+static void quote_buttons(GString *html, VentureEntity *record);
+
 static HtmxResponse *
 venture_web_ui_invoice_print(
 	HtmxRequest	*request,
@@ -3631,23 +3636,7 @@ venture_web_ui_invoice_print(
 	venture_html_escape_append(html, number);
 	g_string_append(html,
 		"</title><style>"
-		"body{font:14px/1.5 system-ui,sans-serif;color:#111;"
-		"max-width:720px;margin:40px auto;padding:0 20px}"
-		"h1{font-size:22px;margin:0 0 4px}"
-		".head{display:flex;justify-content:space-between;"
-		"align-items:baseline;margin-bottom:28px}"
-		".meta{color:#555;font-size:13px}"
-		"table{width:100%;border-collapse:collapse;margin:20px 0}"
-		"th,td{text-align:left;padding:8px 10px;"
-		"border-bottom:1px solid #ddd}"
-		".num{text-align:right}"
-		"tfoot td{border-bottom:none;font-weight:700}"
-		".status{display:inline-block;padding:2px 10px;"
-		"border:1px solid #999;border-radius:999px;font-size:12px;"
-		"text-transform:uppercase;letter-spacing:0.06em}"
-		".terms{color:#555;font-size:13px;margin-top:24px;"
-		"white-space:pre-wrap}"
-		"@media print{body{margin:0 auto}}"
+		VENTURE_DOCUMENT_PRINT_STYLE
 		"</style></head><body>");
 
 	g_string_append(html, "<div class=\"head\"><div><h1>Invoice ");
@@ -8662,6 +8651,7 @@ venture_web_ui_detail(
 	 * composer below: an invoice without its total is a list of hints. */
 	if (VENTURE_TYPE_INVOICE == entity_type)
 		venture_web_append_invoice_block(self, content, record);
+	quote_buttons(content, record);
 
 	/* A forge's credentials, which the generated form cannot show. */
 	if (VENTURE_TYPE_FORGE == entity_type)
@@ -27538,6 +27528,8 @@ venture_web_api_ticket_draft(
 
 #include "venture-web-federation.inc"
 
+#include "quotes/venture-quote-web.inc"
+
 VentureWebServer *
 venture_web_server_new(
 	VentureContext	 *context,
@@ -27666,6 +27658,12 @@ venture_web_server_new(
 	                 venture_web_ui_invoice_status, self);
 	htmx_router_get(router, "/invoices/:id/print",
 	                 venture_web_ui_invoice_print, self);
+	htmx_router_get(router, "/quotes/:id/print", quote_route, self);
+	htmx_router_post(router, "/quotes/:id/:action", quote_route, self);
+	htmx_router_post(router, "/api/v1/quotes/:id/:action", quote_route, self);
+	htmx_router_get(router, "/q/:token", quote_public, self);
+	htmx_router_post(router, "/q/:token", quote_public, self);
+	htmx_router_post(router, "/q/:token/accept", quote_public, self);
 	htmx_router_get(router, "/reports", venture_web_ui_reports, self);
 	htmx_router_get(router, "/settings", venture_web_ui_settings, self);
 	htmx_router_get(router, "/entity/:id", venture_web_ui_switch_entity, self);
