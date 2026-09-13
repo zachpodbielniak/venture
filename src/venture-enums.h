@@ -958,6 +958,9 @@ typedef enum
  * @VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION: nonempty values are unique within
  *   an organization, including soft-deleted records
  *
+ * @VENTURE_COLUMN_FLAG_PERSONAL_OWNER: reference to the account or personal
+ *   parent that owns this whole record
+ *
  * Per-property persistence hints. These are attached to a GObject property
  * with venture_entity_class_set_column_flags(), which is how a plain
  * GObject subclass becomes a database table without writing any SQL.
@@ -973,7 +976,8 @@ typedef enum
 	VENTURE_COLUMN_FLAG_SENSITIVE   = 1 << 5,
 	VENTURE_COLUMN_FLAG_SEARCHABLE  = 1 << 6,
 	VENTURE_COLUMN_FLAG_TRANSIENT   = 1 << 7,
-	VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION = 1 << 8
+	VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION = 1 << 8,
+	VENTURE_COLUMN_FLAG_PERSONAL_OWNER = 1 << 9
 } VentureColumnFlags;
 
 /* --- GType registration -------------------------------------------------- */

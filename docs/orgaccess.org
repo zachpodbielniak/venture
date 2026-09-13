@@ -53,6 +53,37 @@ current membership authority. A later grant or promotion cannot expand an
 existing token. Legacy non-admin tokens with no snapshot need rotation.
 The initial owner and their memberships are created in one transaction.
 
+* Role matrix
+
+Global owner/admin retain their existing bypass. All other global roles
+still face the existing type and action restrictions, in addition to this
+matrix for their exact organization membership. "Assigned" means direct
+owner, active team member, or a child of an assigned venture.
+
+| Organization role | Business read/export | Business write/delete | Financial read/export/write/delete | Access administration |
+|-------------------+----------------------+-----------------------+------------------------------------+-----------------------|
+| owner             | all                  | all                   | all                                | write/delete          |
+| admin             | all                  | all                   | all                                | write/delete          |
+| editor            | all                  | all                   | denied; may propose journal post   | read only             |
+| finance           | all                  | all                   | all                                | read only             |
+| sales             | assigned             | assigned              | denied                             | read only             |
+| support           | assigned             | assigned              | denied                             | read only             |
+| viewer            | assigned             | propose creation only | denied; proposals need approval    | read only             |
+| no membership     | empty/404            | 404                   | empty/404                          | empty/404             |
+
+Members can read their organization's row for the picker. Membership does
+not inherit through =parent_id=. Personal chat, watch and notification
+records declare a personal owner reference in their field table and keep
+that user's boundary. This describes access to whole records; it does not
+introduce field permissions.
+
+Filters supplied by callers only narrow access. The current implementation
+filters candidate records before applying offset and limit; its cost grows
+with the candidate set. Reports and plugins must use the repository's typed
+read methods, not raw SQL, for user-requested data. Internal jobs without a
+request principal retain their service authority; a new user-facing tool must
+enter a policy scope with its caller, as the built-in assistant tools do.
+
 * Proposals and posting
 
 An organization viewer can propose a new record through the form or REST;

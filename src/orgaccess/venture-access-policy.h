@@ -176,5 +176,13 @@ HtmxResponse *venture_orgaccess_web_post(VentureAuth *auth, VentureContext *cont
  * Returns: whether the current principal may see the confirmation
  */
 gboolean venture_orgaccess_confirmation_visible(VentureDatabase *database, VentureEntity *staged, gint64 proposer, const gchar *via);
+/**
+ * venture_orgaccess_limit_token:
+ * @auth: existing role ordering
+ * @database: unscoped authentication repository
+ * @principal: token principal whose role may be reduced
+ * Returns: whether its minting user remains active
+ */
+gboolean venture_orgaccess_limit_token(VentureAuth *auth, VentureDatabase *database, VentureAuthPrincipal *principal);
 G_END_DECLS
 #endif

@@ -429,6 +429,12 @@ venture_auth_from_token(
 		principal->name = g_strdup_printf("token:%s",
 			(NULL != name) ? name : prefix);
 
+		if (!venture_orgaccess_limit_token(self, database, principal))
+		{
+			venture_auth_principal_free(principal);
+			continue;
+		}
+
 		/* Recording use makes a leaked token visible in the audit
 		 * trail and lets an unused one be retired with confidence. */
 		{

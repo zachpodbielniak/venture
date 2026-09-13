@@ -34,7 +34,7 @@ test_upgrade_restart(void)
 			"SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations", NULL, &error);
 		g_assert_no_error(error);
 		g_assert_true(orm_result_next(result));
-		g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 2);
+		g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 4);
 		g_clear_object(&result);
 		result = venture_database_query_raw(database,
 			"SELECT amount FROM historical_data", NULL, &error);

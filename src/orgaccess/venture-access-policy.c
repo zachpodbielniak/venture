@@ -197,6 +197,37 @@ reference(VentureEntity *entity, const gchar *name)
 		g_object_get(entity, name, &value, NULL);
 	return value;
 }
+/* Personal records declare their owner reference in the same field table
+ * as the rest of their schema. Parent chains are bounded and fail closed. */
+static gboolean
+personal_owner(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, VentureEntity *entity, guint depth)
+{
+	g_autoptr(GPtrArray) fields = venture_entity_get_field_specs(entity);
+	guint i;
+	if (depth > 8)
+		return FALSE;
+	for (i = 0; i < fields->len; i++)
+	{
+		VentureFieldSpec *field = g_ptr_array_index(fields, i);
+		g_autoptr(VentureEntity) parent = NULL;
+		g_autoptr(VentureAccessScope) internal = NULL;
+		GType type;
+		gint64 id;
+		if (!(venture_field_spec_get_flags(field) & VENTURE_COLUMN_FLAG_PERSONAL_OWNER))
+			continue;
+		id = reference(entity, venture_field_spec_get_name(field));
+		type = venture_entity_registry_lookup(venture_entity_registry_get_default(), venture_field_spec_get_reference_type(field));
+		if (type == VENTURE_TYPE_USER)
+			return id > 0 && id == actor->user_id;
+		if (type == G_TYPE_INVALID || id <= 0)
+			return FALSE;
+		internal = venture_access_policy_enter(self, NULL);
+		parent = venture_database_get(self->database, type, id, NULL);
+		return NULL != parent && !venture_entity_is_deleted(parent) && personal_owner(self, actor, parent, depth + 1);
+	}
+	return FALSE;
+}
+
 static gboolean
 owned(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, VentureEntity *entity)
 {
@@ -288,6 +319,8 @@ venture_access_policy_can(VentureAccessPolicy *self, const VentureAuthPrincipal 
 		/* Authentication and the account page need the caller's own row.
 		 * The generic web type gate still requires the global owner role. */
 		if (VENTURE_IS_USER(entity) && venture_entity_get_id(entity) == actor->user_id && read)
+			goto allowed;
+		if (venture_access_policy_has_membership(self, actor) && personal_owner(self, actor, entity, 0))
 			goto allowed;
 		org = VENTURE_IS_ORGANIZATION(entity) ? venture_entity_get_id(entity) : venture_entity_get_organization_id(entity);
 		if (org <= 0)
@@ -495,6 +528,7 @@ venture_orgaccess_prepare(VentureDatabase *database, VentureEntity *entity, GErr
 	}
 	if (VENTURE_IS_TEAM_MEMBERSHIP(entity))
 	{
+		gboolean active;
 		VentureAuthPrincipal actor;
 		g_autoptr(VentureEntity) member = NULL;
 		actor.user_id = reference(entity, "user-id");
@@ -503,7 +537,8 @@ venture_orgaccess_prepare(VentureDatabase *database, VentureEntity *entity, GErr
 		actor.name = NULL;
 		actor.authenticated = TRUE;
 		member = membership(venture_database_get_access_policy(database), &actor, org);
-		if (NULL == member)
+		g_object_get(entity, "active", &active, NULL);
+		if (active && NULL == member)
 		{
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Team membership requires an active organization membership");
 			return FALSE;
@@ -586,4 +621,25 @@ venture_orgaccess_confirmation_visible(VentureDatabase *database, VentureEntity 
 	return proposer > 0 && proposer == actor->user_id &&
 		venture_access_policy_requires_approval(policy, actor,
 			(NULL != via && g_str_has_prefix(via, "orgaccess:journal-post:")) ? "post" : "write", staged, NULL);
+}
+
+/* A bearer cannot outlive the user who minted it or retain a demoted role. */
+gboolean
+venture_orgaccess_limit_token(VentureAuth *auth, VentureDatabase *database, VentureAuthPrincipal *principal)
+{
+	g_autoptr(VentureEntity) user = NULL;
+	VentureAuthPrincipal current;
+	gboolean active;
+	if (principal->user_id <= 0)
+		return TRUE;
+	user = venture_database_get(database, VENTURE_TYPE_USER, principal->user_id, NULL);
+	if (NULL == user || venture_entity_is_deleted(user))
+		return FALSE;
+	current = *principal;
+	g_object_get(user, "active", &active, "role", &current.role, NULL);
+	if (!active)
+		return FALSE;
+	if (!venture_auth_require(auth, &current, principal->role, NULL))
+		principal->role = current.role;
+	return TRUE;
 }

@@ -1019,6 +1019,22 @@ server_fixture_create_user(
 		*out_id = venture_entity_get_id(VENTURE_ENTITY(user));
 }
 
+/* Existing global-role tests operate inside the default organization. */
+static void
+server_fixture_create_member(ServerFixture *fixture, const gchar *username,
+	const gchar *password, VentureUserRole role, gint64 *out_id)
+{
+	g_autoptr(VentureEntity) member = NULL;
+	gint64 id;
+	server_fixture_create_user(fixture, username, password, role, &id);
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP,
+		"user-id", id, "organization-id", venture_context_get_default_organization_id(fixture->context),
+		"role", VENTURE_ORGANIZATION_ROLE_FINANCE, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, member, NULL, NULL));
+	if (NULL != out_id)
+		*out_id = id;
+}
+
 /*
  * Signs in over HTTP and returns the session cookie, name=value only.
  */
@@ -1544,7 +1560,7 @@ test_auth_screenshot_upload_is_an_image(
 	g_autoptr(GBytes) body = NULL;
 	GByteArray *raw;
 
-	server_fixture_create_user(fixture, "grace", "g-long-password",
+	server_fixture_create_member(fixture, "grace", "g-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, NULL);
 	cookie = server_fixture_login(fixture, "grace", "g-long-password");
 
@@ -1589,7 +1605,7 @@ test_auth_invoice_paid_creates_the_sale(
 	g_autofree gchar *body = NULL;
 	guint status;
 
-	server_fixture_create_user(fixture, "erin", "e-long-password",
+	server_fixture_create_member(fixture, "erin", "e-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, NULL);
 	cookie = server_fixture_login(fixture, "erin", "e-long-password");
 
@@ -1721,7 +1737,7 @@ test_auth_csv_import_is_all_or_nothing(
 	g_autoptr(GBytes) bad = NULL;
 	g_autoptr(VentureQuery) query = NULL;
 
-	server_fixture_create_user(fixture, "frank", "f-long-password",
+	server_fixture_create_member(fixture, "frank", "f-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, NULL);
 	cookie = server_fixture_login(fixture, "frank", "f-long-password");
 
@@ -1779,9 +1795,9 @@ test_auth_chat_threads_are_scoped_per_user(
 	gint64 bob_id;
 	gint64 thread_id;
 
-	server_fixture_create_user(fixture, "alice", "a-long-password",
+	server_fixture_create_member(fixture, "alice", "a-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, &alice_id);
-	server_fixture_create_user(fixture, "bob", "b-long-password",
+	server_fixture_create_member(fixture, "bob", "b-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, &bob_id);
 
 	/* Alice's conversation, planted directly in the database. */
@@ -1861,9 +1877,9 @@ test_auth_chat_rename_and_export(
 	gint64 alice_id;
 	gint64 thread_id;
 
-	server_fixture_create_user(fixture, "alice", "a-long-password",
+	server_fixture_create_member(fixture, "alice", "a-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, &alice_id);
-	server_fixture_create_user(fixture, "bob", "b-long-password",
+	server_fixture_create_member(fixture, "bob", "b-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, NULL);
 
 	{
@@ -1940,7 +1956,7 @@ test_auth_models_are_scoped_to_the_provider(
 	g_autofree gchar *cursor = NULL;
 	g_autofree gchar *unknown = NULL;
 
-	server_fixture_create_user(fixture, "alice", "a-long-password",
+	server_fixture_create_member(fixture, "alice", "a-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, NULL);
 	cookie = server_fixture_login(fixture, "alice", "a-long-password");
 
@@ -1995,7 +2011,7 @@ test_auth_chat_stream_token_is_one_shot(
 	g_autofree gchar *streamed = NULL;
 	g_autofree gchar *missing = NULL;
 
-	server_fixture_create_user(fixture, "alice", "a-long-password",
+	server_fixture_create_member(fixture, "alice", "a-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, NULL);
 	cookie = server_fixture_login(fixture, "alice", "a-long-password");
 
@@ -2038,7 +2054,7 @@ test_auth_chat_complete_is_the_harness(
 	g_autofree gchar *bases = NULL;
 	g_autofree gchar *nothing = NULL;
 
-	server_fixture_create_user(fixture, "alice", "a-long-password",
+	server_fixture_create_member(fixture, "alice", "a-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, NULL);
 
 	{
@@ -2047,20 +2063,20 @@ test_auth_chat_complete_is_the_harness(
 		g_autoptr(VentureTicket) ticket = NULL;
 
 		base = venture_knowledge_base_new();
-		g_object_set(base, "name", "Contracts", "slug", "contracts",
+		g_object_set(base, "organization-id", venture_context_get_default_organization_id(fixture->context), "name", "Contracts", "slug", "contracts",
 		             "description", "Signed agreements", NULL);
 		g_assert_true(venture_database_save(fixture->database,
 			VENTURE_ENTITY(base), NULL, NULL));
 
 		skill = venture_ai_skill_new();
-		g_object_set(skill, "name", "Chase, our way", "trigger", "chase",
+		g_object_set(skill, "organization-id", venture_context_get_default_organization_id(fixture->context), "name", "Chase, our way", "trigger", "chase",
 		             "description", "House style", "prompt", "Chase.",
 		             "enabled", TRUE, NULL);
 		g_assert_true(venture_database_save(fixture->database,
 			VENTURE_ENTITY(skill), NULL, NULL));
 
 		ticket = venture_ticket_new();
-		g_object_set(ticket, "title", "Payments fail on renewal", NULL);
+		g_object_set(ticket, "organization-id", venture_context_get_default_organization_id(fixture->context), "title", "Payments fail on renewal", NULL);
 		g_assert_true(venture_database_save(fixture->database,
 			VENTURE_ENTITY(ticket), NULL, NULL));
 	}
@@ -2125,7 +2141,7 @@ test_auth_chat_reply_rendering(
 	gint64 alice_id;
 	gint64 thread_id;
 
-	server_fixture_create_user(fixture, "alice", "a-long-password",
+	server_fixture_create_member(fixture, "alice", "a-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, &alice_id);
 
 	{
@@ -2191,7 +2207,7 @@ test_auth_audit_log_refuses_writes(
 ){
 	g_autofree gchar *cookie = NULL;
 
-	server_fixture_create_user(fixture, "carol", "c-long-password",
+	server_fixture_create_member(fixture, "carol", "c-long-password",
 	                           VENTURE_USER_ROLE_OWNER, NULL);
 	cookie = server_fixture_login(fixture, "carol", "c-long-password");
 
@@ -2250,7 +2266,7 @@ test_auth_chat_upload_round_trip(
 	g_autoptr(GBytes) body = NULL;
 	GByteArray *raw;
 
-	server_fixture_create_user(fixture, "dave", "d-long-password",
+	server_fixture_create_member(fixture, "dave", "d-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, NULL);
 	cookie = server_fixture_login(fixture, "dave", "d-long-password");
 
@@ -2319,7 +2335,7 @@ test_auth_forge_records_are_owner_only(
 
 	(void)user_data;
 
-	server_fixture_create_user(fixture, "eddie", "e-long-password",
+	server_fixture_create_member(fixture, "eddie", "e-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, NULL);
 	editor = server_fixture_login(fixture, "eddie", "e-long-password");
 	g_assert_nonnull(editor);
@@ -2370,7 +2386,7 @@ test_auth_forge_records_are_owner_only(
 	                 ==, SOUP_STATUS_OK);
 
 	/* And a run record refuses writes from the owner too. */
-	server_fixture_create_user(fixture, "olive", "o-long-password",
+	server_fixture_create_member(fixture, "olive", "o-long-password",
 	                           VENTURE_USER_ROLE_OWNER, NULL);
 	owner = server_fixture_login(fixture, "olive", "o-long-password");
 	g_assert_nonnull(owner);
@@ -2409,7 +2425,7 @@ test_auth_approving_respects_the_records_own_role(
 
 	(void)user_data;
 
-	server_fixture_create_user(fixture, "edna", "e-long-password",
+	server_fixture_create_member(fixture, "edna", "e-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, NULL);
 	editor = server_fixture_login(fixture, "edna", "e-long-password");
 	g_assert_nonnull(editor);
@@ -2436,7 +2452,7 @@ test_auth_approving_respects_the_records_own_role(
 	{
 		g_autofree gchar *viewer = NULL;
 
-		server_fixture_create_user(fixture, "vic", "v-long-password",
+		server_fixture_create_member(fixture, "vic", "v-long-password",
 		                           VENTURE_USER_ROLE_VIEWER, NULL);
 		viewer = server_fixture_login(fixture, "vic", "v-long-password");
 
@@ -2483,7 +2499,7 @@ test_auth_staged_write_changes_nothing(
 
 	(void)user_data;
 
-	server_fixture_create_user(fixture, "eve", "e-long-password",
+	server_fixture_create_member(fixture, "eve", "e-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, NULL);
 	editor = server_fixture_login(fixture, "eve", "e-long-password");
 	g_assert_nonnull(editor);
@@ -2566,7 +2582,7 @@ test_auth_staged_write_can_be_rejected(
 
 	(void)user_data;
 
-	server_fixture_create_user(fixture, "erica", "e-long-password",
+	server_fixture_create_member(fixture, "erica", "e-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, NULL);
 	editor = server_fixture_login(fixture, "erica", "e-long-password");
 
@@ -2614,7 +2630,7 @@ test_auth_staging_needs_the_editor_role(
 
 	(void)user_data;
 
-	server_fixture_create_user(fixture, "val", "v-long-password",
+	server_fixture_create_member(fixture, "val", "v-long-password",
 	                           VENTURE_USER_ROLE_VIEWER, NULL);
 	viewer = server_fixture_login(fixture, "val", "v-long-password");
 
@@ -2641,7 +2657,7 @@ test_auth_unknown_stage_value_is_refused(
 
 	(void)user_data;
 
-	server_fixture_create_user(fixture, "ewan", "e-long-password",
+	server_fixture_create_member(fixture, "ewan", "e-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, NULL);
 	editor = server_fixture_login(fixture, "ewan", "e-long-password");
 
@@ -2671,7 +2687,7 @@ test_auth_staged_delete_leaves_the_record(
 
 	(void)user_data;
 
-	server_fixture_create_user(fixture, "ed", "e-long-password",
+	server_fixture_create_member(fixture, "ed", "e-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, NULL);
 	editor = server_fixture_login(fixture, "ed", "e-long-password");
 
@@ -2735,7 +2751,7 @@ test_auth_ticket_board_filters_compose(
 
 	(void)user_data;
 
-	server_fixture_create_user(fixture, "boardy", "b-long-password",
+	server_fixture_create_member(fixture, "boardy", "b-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, NULL);
 	cookie = server_fixture_login(fixture, "boardy", "b-long-password");
 	g_assert_nonnull(cookie);
@@ -2968,9 +2984,9 @@ test_auth_tokens_page_is_admin_only(
 	g_autofree gchar *admin_cookie = NULL;
 	g_autofree gchar *page = NULL;
 
-	server_fixture_create_user(fixture, "edna", "e-long-password",
+	server_fixture_create_member(fixture, "edna", "e-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, NULL);
-	server_fixture_create_user(fixture, "adam", "a-long-password",
+	server_fixture_create_member(fixture, "adam", "a-long-password",
 	                           VENTURE_USER_ROLE_ADMIN, NULL);
 
 	editor_cookie = server_fixture_login(fixture, "edna", "e-long-password");
@@ -3024,7 +3040,7 @@ test_auth_token_minted_in_browser_authenticates(
 	g_autofree gchar *secret = NULL;
 	g_autofree gchar *listing = NULL;
 
-	server_fixture_create_user(fixture, "adam", "a-long-password",
+	server_fixture_create_member(fixture, "adam", "a-long-password",
 	                           VENTURE_USER_ROLE_ADMIN, NULL);
 	cookie = server_fixture_login(fixture, "adam", "a-long-password");
 
@@ -3064,7 +3080,7 @@ test_auth_token_reveal_is_one_shot(
 	g_autofree gchar *reveal_path = NULL;
 	g_autofree gchar *replay = NULL;
 
-	server_fixture_create_user(fixture, "adam", "a-long-password",
+	server_fixture_create_member(fixture, "adam", "a-long-password",
 	                           VENTURE_USER_ROLE_ADMIN, NULL);
 	cookie = server_fixture_login(fixture, "adam", "a-long-password");
 
@@ -3098,7 +3114,7 @@ test_auth_token_revoke_stops_it_working(
 	g_autofree gchar *secret = NULL;
 	g_autofree gchar *listing = NULL;
 
-	server_fixture_create_user(fixture, "adam", "a-long-password",
+	server_fixture_create_member(fixture, "adam", "a-long-password",
 	                           VENTURE_USER_ROLE_ADMIN, NULL);
 	cookie = server_fixture_login(fixture, "adam", "a-long-password");
 
@@ -3144,7 +3160,7 @@ test_auth_token_expiry_is_recorded(
 	g_autofree gchar *secret = NULL;
 	gint64 days;
 
-	server_fixture_create_user(fixture, "adam", "a-long-password",
+	server_fixture_create_member(fixture, "adam", "a-long-password",
 	                           VENTURE_USER_ROLE_ADMIN, NULL);
 	cookie = server_fixture_login(fixture, "adam", "a-long-password");
 
@@ -3183,7 +3199,7 @@ test_auth_token_never_expires_by_default(
 	g_autofree gchar *cookie = NULL;
 	g_autofree gchar *secret = NULL;
 
-	server_fixture_create_user(fixture, "adam", "a-long-password",
+	server_fixture_create_member(fixture, "adam", "a-long-password",
 	                           VENTURE_USER_ROLE_ADMIN, NULL);
 	cookie = server_fixture_login(fixture, "adam", "a-long-password");
 
@@ -3222,7 +3238,7 @@ test_auth_redirect_notices_render(
 	g_autofree gchar *account = NULL;
 	g_autofree gchar *tokens = NULL;
 
-	server_fixture_create_user(fixture, "adam", "a-long-password",
+	server_fixture_create_member(fixture, "adam", "a-long-password",
 	                           VENTURE_USER_ROLE_ADMIN, NULL);
 	cookie = server_fixture_login(fixture, "adam", "a-long-password");
 
@@ -3255,7 +3271,7 @@ test_auth_kb_import_rejects_urlencoded(
 	g_autofree gchar *cookie = NULL;
 	g_autofree gchar *body = NULL;
 
-	server_fixture_create_user(fixture, "edna", "e-long-password",
+	server_fixture_create_member(fixture, "edna", "e-long-password",
 	                           VENTURE_USER_ROLE_EDITOR, NULL);
 	cookie = server_fixture_login(fixture, "edna", "e-long-password");
 
@@ -3322,7 +3338,7 @@ test_auth_kb_writes_need_the_editor_role(
 ){
 	g_autofree gchar *cookie = NULL;
 
-	server_fixture_create_user(fixture, "vera", "v-long-password",
+	server_fixture_create_member(fixture, "vera", "v-long-password",
 	                           VENTURE_USER_ROLE_VIEWER, NULL);
 	cookie = server_fixture_login(fixture, "vera", "v-long-password");
 
@@ -3366,7 +3382,7 @@ test_auth_sidebar_restores_its_scroll(
 	const gchar *footer;
 	const gchar *main_start;
 
-	server_fixture_create_user(fixture, "adam", "a-long-password",
+	server_fixture_create_member(fixture, "adam", "a-long-password",
 	                           VENTURE_USER_ROLE_ADMIN, NULL);
 	cookie = server_fixture_login(fixture, "adam", "a-long-password");
 
@@ -3423,7 +3439,7 @@ test_auth_sidebar_marks_the_active_entry(
 	g_autofree gchar *cookie = NULL;
 	g_autofree gchar *page = NULL;
 
-	server_fixture_create_user(fixture, "adam", "a-long-password",
+	server_fixture_create_member(fixture, "adam", "a-long-password",
 	                           VENTURE_USER_ROLE_ADMIN, NULL);
 	cookie = server_fixture_login(fixture, "adam", "a-long-password");
 
@@ -3457,7 +3473,7 @@ test_auth_look_switch_is_a_cookie(
 	g_autofree gchar *set_cookie = NULL;
 	g_autofree gchar *body = NULL;
 
-	server_fixture_create_user(fixture, "adam", "a-long-password",
+	server_fixture_create_member(fixture, "adam", "a-long-password",
 	                           VENTURE_USER_ROLE_ADMIN, NULL);
 	cookie = server_fixture_login(fixture, "adam", "a-long-password");
 
@@ -3525,7 +3541,7 @@ test_auth_browser_token_stores_only_a_hash(
 	g_autofree gchar *hash = NULL;
 	g_autofree gchar *prefix = NULL;
 
-	server_fixture_create_user(fixture, "adam", "a-long-password",
+	server_fixture_create_member(fixture, "adam", "a-long-password",
 	                           VENTURE_USER_ROLE_ADMIN, NULL);
 	cookie = server_fixture_login(fixture, "adam", "a-long-password");
 
@@ -3558,8 +3574,8 @@ test_federation_owner_boundary(ServerFixture *fixture, gconstpointer data)
 	g_object_set(fixture->config, "federation-enabled", TRUE, NULL);
 	g_assert_true(venture_database_migrate(fixture->database, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
-	server_fixture_create_user(fixture, "fed-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
-	server_fixture_create_user(fixture, "fed-owner", "owner-long-password", VENTURE_USER_ROLE_OWNER, NULL);
+	server_fixture_create_member(fixture, "fed-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	server_fixture_create_member(fixture, "fed-owner", "owner-long-password", VENTURE_USER_ROLE_OWNER, NULL);
 	editor = server_fixture_login(fixture, "fed-editor", "editor-long-password");
 	owner = server_fixture_login(fixture, "fed-owner", "owner-long-password");
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/federation_peer", editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
@@ -3659,7 +3675,10 @@ test_orgaccess_widget(ServerFixture *fixture, gconstpointer user_data)
 	gint64 user;
 	gint64 home = venture_context_get_default_organization_id(fixture->context);
 	g_assert_true(venture_database_save(fixture->database, org, NULL, NULL));
-	company = g_object_new(VENTURE_TYPE_COMPANY, "name", "PrivateBoundaryMarker", "organization-id", venture_entity_get_id(org), NULL);
+	if (NULL != user_data)
+		company = g_object_new(VENTURE_TYPE_USER, "username", "PrivateBoundaryMarker", "organization-id", home, "active", TRUE, NULL);
+	else
+		company = g_object_new(VENTURE_TYPE_COMPANY, "name", "PrivateBoundaryMarker", "organization-id", venture_entity_get_id(org), NULL);
 	g_assert_true(venture_database_save(fixture->database, company, NULL, NULL));
 	server_fixture_create_user(fixture, "widget-member", "password", VENTURE_USER_ROLE_EDITOR, &user);
 	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", user, "organization-id", home,
@@ -3668,10 +3687,10 @@ test_orgaccess_widget(ServerFixture *fixture, gconstpointer user_data)
 	dashboard = g_object_new(VENTURE_TYPE_DASHBOARD, "name", "Public dashboard", "slug", "access-probe", "organization-id", home, NULL);
 	g_assert_true(venture_database_save(fixture->database, dashboard, NULL, NULL));
 	widget = g_object_new(VENTURE_TYPE_DASHBOARD_WIDGET, "dashboard-id", venture_entity_get_id(dashboard),
-		"organization-id", home, "kind", "list", "entity-type", "company", NULL);
+		"organization-id", home, "kind", "list", "entity-type", NULL != user_data ? "user" : "company", NULL);
 	g_assert_true(venture_database_save(fixture->database, widget, NULL, NULL));
 	cookie = server_fixture_login(fixture, "widget-member", "password");
-	path = g_strdup_printf("/api/v1/dashboards/access-probe?organization_id=%" G_GINT64_FORMAT, venture_entity_get_id(org));
+	path = g_strdup_printf("/api/v1/dashboards/access-probe?organization_id=%" G_GINT64_FORMAT, NULL != user_data ? home : venture_entity_get_id(org));
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, cookie, NULL, &body, NULL), ==, 200);
 	g_assert_null(strstr(body, "PrivateBoundaryMarker"));
 }
@@ -3781,6 +3800,57 @@ test_orgaccess_journal_proposal(ServerFixture *fixture, gconstpointer user_data)
 	g_clear_pointer(&path, g_free);
 	path = g_strdup_printf("/api/v1/confirmations/%s/approve", venture_confirmation_get_id(g_ptr_array_index(pending, 0)));
 	g_assert_cmpuint(server_fixture_json(fixture, "POST", path, cookie, "{}", NULL), ==, 403);
+	if (NULL != user_data)
+	{
+		g_autoptr(VentureQuery) lines = venture_query_new(VENTURE_TYPE_JOURNAL_LINE);
+		g_autoptr(VentureEntity) line = NULL;
+		venture_query_add_filter_int(lines, "journal-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(journal), NULL);
+		line = venture_database_find_one(fixture->database, lines, NULL);
+		g_object_set(line, "memo", "Changed after proposal", NULL);
+		g_assert_true(venture_database_save(fixture->database, line, NULL, NULL));
+		if (0 == g_strcmp0(user_data, "refresh"))
+		{
+			g_autofree gchar *post_path = g_strdup_printf("/api/v1/journals/%" G_GINT64_FORMAT "/post", venture_entity_get_id(journal));
+			g_assert_cmpuint(server_fixture_json(fixture, "POST", post_path, cookie, "{}", NULL), ==, 202);
+		}
+	}
+	server_fixture_create_member(fixture, "journal-finance", "password", VENTURE_USER_ROLE_EDITOR, NULL);
+	g_clear_pointer(&cookie, g_free);
+	cookie = server_fixture_login(fixture, "journal-finance", "password");
+	g_assert_cmpuint(server_fixture_json(fixture, "POST", path, cookie, "{}", NULL), ==,
+		0 == g_strcmp0(user_data, "changed") ? 409 : 200);
+	g_clear_object(&stored);
+	stored = venture_database_get(fixture->database, VENTURE_TYPE_JOURNAL, venture_entity_get_id(journal), NULL);
+	g_object_get(stored, "state", &state, NULL);
+	g_assert_cmpint(state, ==, 0 == g_strcmp0(user_data, "changed") ? VENTURE_JOURNAL_DRAFT : VENTURE_JOURNAL_POSTED);
+
+}
+
+static void
+test_orgaccess_token_revocation(ServerFixture *fixture, gconstpointer data)
+{
+	g_autoptr(VentureEntity) user = NULL;
+	g_autoptr(VentureApiToken) token = venture_api_token_new();
+	g_autoptr(VentureEntity) company = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *path = NULL;
+	gint64 id;
+	server_fixture_create_user(fixture, "token-owner", "password", VENTURE_USER_ROLE_OWNER, &id);
+	g_object_set(token, "name", "owner-token", "user-id", id, "role", VENTURE_USER_ROLE_OWNER, NULL);
+	secret = venture_api_token_generate(token);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(token), NULL, NULL));
+	company = g_object_new(VENTURE_TYPE_COMPANY, "name", "Token boundary", "organization-id",
+		venture_context_get_default_organization_id(fixture->context), NULL);
+	g_assert_true(venture_database_save(fixture->database, company, NULL, NULL));
+	path = g_strdup_printf("/api/v1/company/%" G_GINT64_FORMAT, venture_entity_get_id(company));
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET", path, NULL, secret, NULL, NULL, NULL), ==, 200);
+	user = venture_database_get(fixture->database, VENTURE_TYPE_USER, id, NULL);
+	g_object_set(user, "role", VENTURE_USER_ROLE_EDITOR, NULL);
+	g_assert_true(venture_database_save(fixture->database, user, NULL, NULL));
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET", path, NULL, secret, NULL, NULL, NULL), ==, 404);
+	g_object_set(user, "active", FALSE, NULL);
+	g_assert_true(venture_database_save(fixture->database, user, NULL, NULL));
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET", path, NULL, secret, NULL, NULL, NULL), ==, 401);
 }
 
 static void
@@ -3996,5 +4066,9 @@ main(
 	g_test_add("/orgaccess/export-signal", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_export_signal, server_fixture_tear_down);
 	g_test_add("/orgaccess/account-only", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_account_only, server_fixture_tear_down);
 	g_test_add("/orgaccess/viewer-proposal", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_viewer_proposal, server_fixture_tear_down);
+	g_test_add("/orgaccess/token-revocation", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_token_revocation, server_fixture_tear_down);
+	g_test_add("/orgaccess/widget-type-role", ServerFixture, "user", server_fixture_set_up, test_orgaccess_widget, server_fixture_tear_down);
+	g_test_add("/orgaccess/journal-changed", ServerFixture, "changed", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
+	g_test_add("/orgaccess/journal-refreshed", ServerFixture, "refresh", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
 	return g_test_run();
 }

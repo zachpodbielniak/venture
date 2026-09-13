@@ -465,6 +465,8 @@ venture_confirmation_store_stage(
 		 */
 		g_set_object(&existing->staged, staged);
 		g_set_object(&existing->original, original);
+		g_free(existing->via);
+		existing->via = g_strdup(via);
 		g_clear_pointer(&existing->diff, json_node_unref);
 		existing->diff = (NULL != diff) ? json_node_ref(diff) : NULL;
 

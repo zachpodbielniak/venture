@@ -205,6 +205,98 @@ test_ai_boundary(void)
 	g_assert_null(strstr(result, "PrivateBoundaryMarker"));
 }
 
+static void
+test_role_matrix(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureEntity) user = g_object_new(VENTURE_TYPE_USER, "username", "matrix", "active", TRUE, NULL);
+	g_autoptr(VentureEntity) member = NULL;
+	g_autoptr(VentureEntity) company = NULL;
+	g_autoptr(VentureEntity) expense = NULL;
+	VentureAuthPrincipal actor = { 0 };
+	VentureAccessPolicy *policy;
+	gint role;
+	gint64 org;
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), NULL));
+	context = venture_context_new(config, db);
+	org = venture_context_get_default_organization_id(context);
+	g_assert_true(venture_database_save(db, user, NULL, NULL));
+	actor.authenticated = TRUE;
+	actor.user_id = venture_entity_get_id(user);
+	actor.role = VENTURE_USER_ROLE_EDITOR;
+	policy = venture_database_get_access_policy(db);
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", actor.user_id, "organization-id", org, "active", TRUE, NULL);
+	company = g_object_new(VENTURE_TYPE_COMPANY, "organization-id", org, "owner-user-id", actor.user_id, NULL);
+	expense = g_object_new(VENTURE_TYPE_EXPENSE, "organization-id", org, NULL);
+	for (role = VENTURE_ORGANIZATION_ROLE_VIEWER; role <= VENTURE_ORGANIZATION_ROLE_SUPPORT; role++)
+	{
+		gboolean finance = role == VENTURE_ORGANIZATION_ROLE_OWNER || role == VENTURE_ORGANIZATION_ROLE_ADMIN || role == VENTURE_ORGANIZATION_ROLE_FINANCE;
+		gboolean all = finance || role == VENTURE_ORGANIZATION_ROLE_EDITOR;
+		g_object_set(member, "role", role, NULL);
+		g_assert_true(venture_database_save(db, member, NULL, NULL));
+		g_object_set(company, "owner-user-id", actor.user_id, NULL);
+		g_assert_true(venture_access_policy_can(policy, &actor, "read", company, NULL));
+		g_assert_true(venture_access_policy_can(policy, &actor, "export", company, NULL));
+		g_assert_cmpint(venture_access_policy_can(policy, &actor, "write", company, NULL), ==, role != VENTURE_ORGANIZATION_ROLE_VIEWER);
+		g_assert_cmpint(venture_access_policy_can(policy, &actor, "delete", company, NULL), ==, role != VENTURE_ORGANIZATION_ROLE_VIEWER);
+		g_assert_cmpint(venture_access_policy_can(policy, &actor, "read", expense, NULL), ==, finance);
+		g_assert_cmpint(venture_access_policy_can(policy, &actor, "write", expense, NULL), ==, finance);
+		g_object_set(company, "owner-user-id", (gint64)0, NULL);
+		g_assert_cmpint(venture_access_policy_can(policy, &actor, "read", company, NULL), ==, all);
+	}
+	g_object_set(company, "owner-user-id", actor.user_id, "organization-id", org + 100, NULL);
+	g_assert_false(venture_access_policy_can(policy, &actor, "read", company, NULL));
+	actor.role = VENTURE_USER_ROLE_OWNER;
+	g_assert_true(venture_access_policy_can(policy, &actor, "delete", company, NULL));
+	actor.role = VENTURE_USER_ROLE_ADMIN;
+	g_assert_true(venture_access_policy_can(policy, &actor, "export", expense, NULL));
+}
+
+static void
+test_team_revocation(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureEntity) user = g_object_new(VENTURE_TYPE_USER, "username", "team-user", "active", TRUE, NULL);
+	g_autoptr(VentureEntity) member = NULL;
+	g_autoptr(VentureEntity) team = NULL;
+	g_autoptr(VentureEntity) teammate = NULL;
+	g_autoptr(VentureEntity) company = NULL;
+	VentureAuthPrincipal actor = { 0 };
+	VentureAccessPolicy *policy;
+	gint64 org;
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), NULL));
+	context = venture_context_new(config, db);
+	org = venture_context_get_default_organization_id(context);
+	g_assert_true(venture_database_save(db, user, NULL, NULL));
+	actor.authenticated = TRUE;
+	actor.user_id = venture_entity_get_id(user);
+	actor.role = VENTURE_USER_ROLE_EDITOR;
+	policy = venture_database_get_access_policy(db);
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", actor.user_id, "organization-id", org, "role", VENTURE_ORGANIZATION_ROLE_SALES, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(db, member, NULL, NULL));
+	team = g_object_new(VENTURE_TYPE_TEAM, "name", "Sales", "organization-id", org, NULL);
+	g_assert_true(venture_database_save(db, team, NULL, NULL));
+	teammate = g_object_new(VENTURE_TYPE_TEAM_MEMBERSHIP, "user-id", actor.user_id, "organization-id", org, "team-id", venture_entity_get_id(team), "active", TRUE, NULL);
+	g_assert_true(venture_database_save(db, teammate, NULL, NULL));
+	company = g_object_new(VENTURE_TYPE_COMPANY, "name", "Team account", "organization-id", org, "team-id", venture_entity_get_id(team), NULL);
+	g_assert_true(venture_access_policy_can(policy, &actor, "read", company, NULL));
+	g_object_set(member, "active", FALSE, NULL);
+	g_assert_true(venture_database_save(db, member, NULL, NULL));
+	g_assert_false(venture_access_policy_can(policy, &actor, "read", company, NULL));
+	/* Revoking organization access must not prevent cleaning up team access. */
+	g_object_set(teammate, "active", FALSE, NULL);
+	g_assert_true(venture_database_save(db, teammate, NULL, NULL));
+	g_object_set(member, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(db, member, NULL, NULL));
+	g_assert_false(venture_access_policy_can(policy, &actor, "read", company, NULL));
+	g_object_set(company, "organization-id", org + 100, NULL);
+	g_assert_false(venture_database_save(db, company, NULL, NULL));
+}
+
 int
 main(int argc, char **argv)
 {
@@ -215,5 +307,7 @@ main(int argc, char **argv)
 	g_test_add_func("/orgaccess/bootstrap", test_bootstrap);
 	g_test_add_func("/orgaccess/token-scope", test_token_scope);
 	g_test_add_func("/orgaccess/ai", test_ai_boundary);
+	g_test_add_func("/orgaccess/role-matrix", test_role_matrix);
+	g_test_add_func("/orgaccess/team-revocation", test_team_revocation);
 	return g_test_run();
 }

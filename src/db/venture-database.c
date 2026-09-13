@@ -683,6 +683,7 @@ venture_database_record_audit(
 	const VentureActor	*actor
 ){
 	g_autoptr(VentureAuditEntry) entry = NULL;
+	g_autoptr(VentureAccessScope) internal = NULL;
 	g_autoptr(GError) local_error = NULL;
 
 	/* An audit record about an audit record would recurse forever. */
@@ -708,6 +709,7 @@ venture_database_record_audit(
 
 	g_object_set(entry, "source", "database", NULL);
 
+	internal = venture_access_policy_enter(venture_database_get_access_policy(self), NULL);
 	if (!venture_database_save(self, VENTURE_ENTITY(entry), NULL,
 	                           &local_error))
 	{
@@ -717,6 +719,7 @@ venture_database_record_audit(
 		return;
 	}
 
+	g_clear_object(&internal);
 	g_signal_emit(self, venture_database_signals[SIGNAL_AUDIT], 0, entry);
 }
 

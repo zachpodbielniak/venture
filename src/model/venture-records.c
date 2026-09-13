@@ -1938,7 +1938,7 @@ VENTURE_DEFINE_ENTITY(VentureSavedView, venture_saved_view,
  */
 static const VentureFieldDecl venture_watch_fields[] = {
 	VENTURE_FIELD_REF("user-id", "User", NULL, "user",
-	                  VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	                  VENTURE_COLUMN_FLAG_PERSONAL_OWNER | VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("target-type", "Record type", NULL,
 	              VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
@@ -1958,7 +1958,7 @@ VENTURE_DEFINE_ENTITY(VentureWatch, venture_watch, venture_watch_fields)
  */
 static const VentureFieldDecl venture_notification_fields[] = {
 	VENTURE_FIELD_REF("user-id", "User", "Who it is for", "user",
-	                  VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	                  VENTURE_COLUMN_FLAG_PERSONAL_OWNER | VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_ENUM("kind", "Kind", NULL,
 	                   venture_notification_kind_get_type,
 	                   VENTURE_COLUMN_FLAG_INDEXED),
@@ -2778,7 +2778,7 @@ static const VentureFieldDecl venture_chat_thread_fields[] = {
 	VENTURE_FIELD_NAME("title", "Title",
 	                   "Taken from the first message unless renamed"),
 	VENTURE_FIELD_REF("user-id", "User", NULL, "user",
-	                  VENTURE_COLUMN_FLAG_NOT_NULL |
+	                  VENTURE_COLUMN_FLAG_PERSONAL_OWNER | VENTURE_COLUMN_FLAG_NOT_NULL |
 	                  VENTURE_COLUMN_FLAG_INDEXED),
 	/*
 	 * Denormalised from the newest message so the resume list can be one
@@ -2801,7 +2801,7 @@ VENTURE_DEFINE_ENTITY(VentureChatThread, venture_chat_thread,
  */
 static const VentureFieldDecl venture_chat_message_fields[] = {
 	VENTURE_FIELD_REF("thread-id", "Thread", NULL, "chat_thread",
-	                  VENTURE_COLUMN_FLAG_NOT_NULL |
+	                  VENTURE_COLUMN_FLAG_PERSONAL_OWNER | VENTURE_COLUMN_FLAG_NOT_NULL |
 	                  VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_ENUM("role", "Role", NULL, venture_chat_role_get_type,
 	                   VENTURE_COLUMN_FLAG_INDEXED),
