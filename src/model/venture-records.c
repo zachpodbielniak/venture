@@ -257,7 +257,8 @@ static const VentureFieldDecl venture_sale_fields[] = {
 	              VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("buyer-name", "Buyer name", NULL,
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD("refunded-at", "Refund date", "Falls back to the sale date", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureSale, venture_sale, venture_sale_fields,
@@ -578,7 +579,8 @@ static const VentureFieldDecl venture_company_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
 	              VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_REF("default-price-list-id", "Default price list", "Customer-specific quote pricing", "price_list", VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD_REF("default-price-list-id", "Default price list", "Customer-specific quote pricing", "price_list", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCompany, venture_company, venture_company_fields,
@@ -612,7 +614,8 @@ static const VentureFieldDecl venture_contact_fields[] = {
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("subscribed", "Subscribed", NULL,
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureContact, venture_contact, venture_contact_fields,
@@ -620,7 +623,7 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureContact, venture_contact, venture_contact
 
 static const VentureFieldDecl venture_interaction_fields[] = {
 	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact",
-	                  VENTURE_COLUMN_FLAG_NOT_NULL),
+	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("company-id", "Company", NULL, "company",
 	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_ENUM("kind", "Kind", NULL,
@@ -637,7 +640,8 @@ static const VentureFieldDecl venture_interaction_fields[] = {
 	VENTURE_FIELD_REF("campaign-id", "Campaign", NULL, "campaign",
 	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("outbound", "Outbound", "You initiated it",
-	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("lead-id", "Lead", "Inquiry before conversion", "lead", VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureInteraction, venture_interaction, venture_interaction_fields,
@@ -666,6 +670,7 @@ static const VentureFieldDecl venture_deal_fields[] = {
 	VENTURE_FIELD("source", "Source", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("pipeline-id", "Pipeline", NULL, "pipeline", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("stage-id", "Pipeline stage", "Use VentureDealService to move", "pipeline_stage", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("next-step", "Next step", NULL),

@@ -6,8 +6,10 @@
  */
 
 #include "venture.h"
+#include "sequences/venture-sequence-service-private.h"
 #include "ledger/venture-ledger-private.h"
 #include "db/venture-migrations.h"
+#include "activities/venture-activity-private.h"
 #include "pipelines/venture-pipelines-private.h"
 
 #include <string.h>
@@ -54,7 +56,13 @@ struct _VentureDatabase
 	 */
 	GPtrArray		*validators;
 	VentureQuoteService *quote_service;
+	VentureLeadService *lead_service;
+	VentureActivityService *activities;
+	VenturePayablesService *payables;
+	VentureBankMatchService *bank_match_service;
 	VentureDealService *deal_service;
+	VentureSequenceService *sequence_service;
+	VentureActionRegistry *actions;
 };
 
 typedef struct
@@ -99,8 +107,13 @@ venture_database_finalize(GObject *object)
 	self = VENTURE_DATABASE(object);
 
 	g_clear_object(&self->quote_service);
+	g_clear_object(&self->payables);
+	g_clear_object(&self->bank_match_service);
 	g_clear_object(&self->deal_service);
+	g_clear_object(&self->sequence_service);
+	g_clear_object(&self->actions);
 	g_clear_object(&self->transaction);
+	g_clear_object(&self->lead_service);
 
 	if (NULL != self->connection)
 	{
@@ -112,14 +125,28 @@ venture_database_finalize(GObject *object)
 	g_clear_pointer(&self->uri, g_free);
 	g_rec_mutex_clear(&self->lock);
 	g_clear_pointer(&self->validators, g_ptr_array_unref);
+	g_clear_object(&self->activities);
 
 	G_OBJECT_CLASS(venture_database_parent_class)->finalize(object);
+}
+
+static void
+venture_database_get_property(GObject *object, guint id, GValue *value, GParamSpec *spec)
+{
+	if (1 == id)
+		g_value_set_object(value, venture_database_get_action_registry(VENTURE_DATABASE(object)));
+	else
+		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
 }
 
 static void
 venture_database_class_init(VentureDatabaseClass *klass)
 {
 	G_OBJECT_CLASS(klass)->finalize = venture_database_finalize;
+	G_OBJECT_CLASS(klass)->get_property = venture_database_get_property;
+	g_object_class_install_property(G_OBJECT_CLASS(klass), 1,
+		g_param_spec_object("action-registry", "Action registry", "Shared record actions",
+			VENTURE_TYPE_ACTION_REGISTRY, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
 
 	/**
 	 * VentureDatabase::entity-saved:
@@ -178,6 +205,7 @@ venture_database_init(VentureDatabase *self)
 	g_rec_mutex_init(&self->lock);
 	self->validators = g_ptr_array_new_with_free_func(
 		venture_database_validator_free);
+	self->activities = venture_activity_service_new(self);
 }
 
 VentureQuoteService *
@@ -1036,6 +1064,11 @@ venture_database_check_references(
 	return TRUE;
 }
 
+/* Continue a service-wrapped write after the dispatch hooks.  This callback is
+ * private so callers cannot bypass a service's single-use authorization. */
+static gboolean database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
+	const VentureActor *actor, GError **error);
+
 gboolean
 venture_database_save(
 	VentureDatabase		 *self,
@@ -1043,18 +1076,22 @@ venture_database_save(
 	const VentureActor	 *actor,
 	GError			**error
 ){
-	g_autoptr(VentureEntity) previous = NULL;
-	g_autoptr(JsonNode) diff = NULL;
-	gint64 expected_version;
-	gboolean created;
-	gboolean ledger_authorized;
-	gboolean settlement_authorized = FALSE;
-
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
 
+	{
+		gboolean handled;
+		gboolean ok = venture_payables_expense_hook(self, entity, actor, &handled, error);
+		if (!ok || handled)
+			return ok;
+	}
+	if (!venture_bank_check_write(self, entity, FALSE, error))
+		return FALSE;
+
+
+	VENTURE_AUTOJOURNAL_SAVE_HOOK(self, entity, actor, error);
 	/* Source and posting share a transaction, whichever surface saved it. */
-	if (venture_ledger_wrap_source(self, entity))
+	if (!venture_payables_is_projection_write(self, entity) && venture_ledger_wrap_source(self, entity))
 		return venture_ledger_save_source(self, entity, actor, error);
 	{
 		gboolean handled;
@@ -1065,10 +1102,33 @@ venture_database_save(
 
 	{
 		gboolean handled;
+		gboolean ok = venture_lead_service_save_hook(venture_database_get_lead_service(self), entity, actor, &handled, error);
+		if (handled || !ok) return ok;
+	}
+
+	{
+		gboolean handled;
 		gboolean ok = venture_pipelines_save(self, entity, actor, &handled, error);
 		if (handled || !ok)
 			return ok;
+		ok = venture_sequences_save_hook(self, entity, actor, database_save_unwrapped, &handled, error);
+		if (handled || !ok)
+			return ok;
 	}
+
+	return database_save_unwrapped(self, entity, actor, error);
+}
+
+static gboolean
+database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) previous = NULL;
+	g_autoptr(JsonNode) diff = NULL;
+	gint64 expected_version;
+	gboolean created;
+	gboolean ledger_authorized;
+	gboolean settlement_authorized = FALSE;
 
 	/* Validation happens before anything is written, never after: a
 	 * half-written invalid record is worse than a rejected one. */
@@ -1101,6 +1161,18 @@ venture_database_save(
 		gboolean ok;
 
 		ok = venture_receivables_save_hook(self, entity, actor, &handled, &settlement_authorized, error);
+		if (!ok || handled)
+		{
+			g_rec_mutex_unlock(&self->lock);
+			return ok;
+		}
+	}
+
+	{
+		gboolean handled;
+		gboolean authorized;
+		gboolean ok = venture_payables_save_hook(self, entity, actor, &handled, &authorized, error);
+		settlement_authorized = settlement_authorized || authorized;
 		if (!ok || handled)
 		{
 			g_rec_mutex_unlock(&self->lock);
@@ -1412,7 +1484,11 @@ venture_database_delete(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
-	if (!venture_receivables_check_removal(self, entity, error))
+	if (!venture_bank_check_write(self, entity, TRUE, error) ||
+		!venture_payables_check_removal(self, entity, error) ||
+		!venture_receivables_check_removal(self, entity, error))
+		return FALSE;
+	if (!venture_sequences_check_removal(entity, error))
 		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
@@ -1480,7 +1556,11 @@ venture_database_restore(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
-	if (!venture_receivables_check_removal(self, entity, error))
+	if (!venture_bank_check_write(self, entity, TRUE, error) ||
+		!venture_payables_check_removal(self, entity, error) ||
+		!venture_receivables_check_removal(self, entity, error))
+		return FALSE;
+	if (!venture_sequences_check_removal(entity, error))
 		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
@@ -1531,7 +1611,11 @@ venture_database_purge(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
-	if (!venture_receivables_check_removal(self, entity, error))
+	if (!venture_bank_check_write(self, entity, TRUE, error) ||
+		!venture_payables_check_removal(self, entity, error) ||
+		!venture_receivables_check_removal(self, entity, error))
+		return FALSE;
+	if (!venture_sequences_check_removal(entity, error))
 		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
@@ -2009,6 +2093,42 @@ venture_database_migrate(
 	return TRUE;
 }
 
+VentureLeadService *
+venture_database_get_lead_service(VentureDatabase *self)
+{
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), NULL);
+	g_rec_mutex_lock(&self->lock);
+	if (self->lead_service == NULL)
+		self->lead_service = g_object_new(VENTURE_TYPE_LEAD_SERVICE, "database", self, NULL);
+	g_rec_mutex_unlock(&self->lock);
+	return self->lead_service;
+}
+
+VentureActivityService *
+venture_database_get_activity_service(VentureDatabase *database)
+{
+	return database->activities;
+}
+
+VenturePayablesService *
+venture_database_get_payables_service(VentureDatabase *database)
+{
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
+	if (database->payables == NULL)
+		database->payables = g_object_new(VENTURE_TYPE_PAYABLES_SERVICE, "database", database, NULL);
+	return database->payables;
+}
+
+VentureBankMatchService *
+venture_database_get_bank_match_service(VentureDatabase *database)
+{
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
+	if (database->bank_match_service == NULL)
+		database->bank_match_service = g_object_new(VENTURE_TYPE_BANK_MATCH_SERVICE,
+			"database", database, NULL);
+	return database->bank_match_service;
+}
+
 VentureDealService *
 venture_database_get_deal_service(VentureDatabase *self)
 {
@@ -2016,4 +2136,24 @@ venture_database_get_deal_service(VentureDatabase *self)
 	if (NULL == self->deal_service)
 		self->deal_service = g_object_new(VENTURE_TYPE_DEAL_SERVICE, "database", self, NULL);
 	return self->deal_service;
+}
+
+VentureSequenceService *
+venture_sequence_service_get(VentureDatabase *database)
+{
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
+	if (database->sequence_service == NULL)
+		database->sequence_service = g_object_new(VENTURE_TYPE_SEQUENCE_SERVICE, "database", database, NULL);
+	return database->sequence_service;
+}
+
+VentureActionRegistry *
+venture_database_get_action_registry(VentureDatabase *self)
+{
+	if (NULL == self->actions)
+	{
+		self->actions = g_object_new(VENTURE_TYPE_ACTION_REGISTRY, "database", self, NULL);
+		venture_journal_actions_register(self);
+	}
+	return self->actions;
 }

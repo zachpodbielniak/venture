@@ -136,3 +136,13 @@ The =pipelines= module adds =stage_duration=, =funnel=, =forecast=,
 =organization_id=, =pipeline_id= and =owner=. The existing =pipeline= report
 also accepts =pipeline_id=. Definitions and currency separation are described
 in [[file:pipelines.org][Sales pipelines]].
+* Ledger financial statements
+
+The =statements= module adds =balance_sheet=, =income_statement=, =cash_flow=,
+=general_ledger=, =account_balances= and =pnl_reconciliation=. These read posted
+ledger evidence per exact legal entity and currency; they never choose a
+majority currency. All accept =as_of= and =compare_to=, and general ledger also
+accepts =account_id=. They use the normal report pages, CSV export and
+financial close snapshots. See [[file:statements.org][definitions and the indirect cash-flow method]].
+The older =pnl= remains operational sales/expenses reporting; differences are
+explained by source document in =pnl_reconciliation=.

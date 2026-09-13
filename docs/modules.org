@@ -42,8 +42,15 @@ Written bottom-up, because a module may only require what precedes it:
 | =forge=      | tickets         | forge, forge_repo, forge_rule, ticket_link, forge_run, agent_budget | =forge.enabled=     |
 | =factory=    | forge           | milestone, release, build, environment, deployment, incident; =releases=, =lead_time=, =incidents=, =delivery= | |
 | =dashboards= | core            | dashboard, dashboard_widget; the =/dashboards= pages and their API | |
-| =ledger=     | finance         | journal, journal_line; posting service, =trial_balance=           |                       |
+| =payables= | finance, ledger, crm | vendor_bill, vendor_bill_line, bill_payment, bill_payment_allocation, vendor_credit, vendor_bill_event, bill_refund; =payables=, =vendor_statement= | |
+| =sequences= | crm | sequence, sequence_step, sequence_enrollment, sequence_delivery, suppression; =sequence_performance=, =sequence_failures= | |
+| =ledger=     | finance         | journal, journal_line; posting service, post/reverse/create-and-post actions, =trial_balance=           |                       |
+| =banking= | ledger | bank_account, bank_statement, bank_transaction, bank_match, reconciliation; =bank_reconciliation= | |
+
 | =pipelines= | crm | pipeline, pipeline_stage, deal_stage_entry, loss_reason; stage_duration, funnel, forecast, loss_reasons, overdue_deals; /deals | |
+| =statements= | ledger, periods | ledger balances query; balance sheet, income statement, cash flow, general ledger, account balances, P&L reconciliation | |
+| =activities= | crm | activity, activity_type; =worklist=, reminders, calendar export and =/worklist= | |
+| =leads= | crm | lead, lead_form, lead_assignment_rule; =lead_sources=, =lead_response_time=, =leads_recycled_due=; capture and conversion | |
 
 | =quotes= | crm, invoicing | price_list, price_list_item, quote, quote_line, quote_event, quote_delivery, quote_action; =quotes= report and proposal actions | |
 
@@ -160,3 +167,15 @@ The description must outlive the registry. A static does.
 - Every type it claims must be a concrete =VentureEntity= subclass.
 
 All five are checked at registration, and a built-in that breaks one aborts startup, because a registry missing a core module would fail in a hundred quieter ways later.
+
+
+Disable =leads= too when disabling =crm=. Campaign attribution is optional
+and uses outreach when available. See [[file:leads.org][leads]].
+* Automatic journals
+
+| Module | Requires | Owns |
+|--------+----------+------|
+| =autojournal= | ledger | posting_profile; detailed sale/expense rules, dated refund journals, =unposted= and =post backfill= |
+
+See [[file:autojournal.org][automatic journals]] for profile defaults and the
+source-save transaction boundary.

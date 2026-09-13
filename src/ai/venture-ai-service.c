@@ -55,6 +55,7 @@ struct _VentureAiService
 	 * and going asynchronous makes it something that has to be said.
 	 */
 	gboolean		 streaming;
+	GPtrArray *action_tools;
 };
 
 G_DEFINE_FINAL_TYPE(VentureAiService, venture_ai_service, G_TYPE_OBJECT)
@@ -73,6 +74,7 @@ venture_ai_service_finalize(GObject *object)
 	g_clear_object(&self->plain);
 	g_clear_pointer(&self->system_prompt, g_free);
 	g_clear_pointer(&self->current_prompt, g_free);
+	g_clear_pointer(&self->action_tools, g_ptr_array_unref);
 
 	G_OBJECT_CLASS(venture_ai_service_parent_class)->finalize(object);
 }
@@ -86,6 +88,7 @@ venture_ai_service_class_init(VentureAiServiceClass *klass)
 static void
 venture_ai_service_init(VentureAiService *self)
 {
+	self->action_tools = g_ptr_array_new_with_free_func(g_free);
 }
 
 VentureAiPolicy
@@ -2487,7 +2490,10 @@ venture_ai_make_tool(
 	return tool;
 }
 
+#include "leads/venture-lead-ai.inc"
+#include "activities/venture-activity-ai.inc"
 #include "pipelines/venture-pipeline-ai.inc"
+#include "venture-ai-actions-private.h"
 
 static void
 venture_ai_service_register_tools(VentureAiService *self)
@@ -2546,6 +2552,7 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"For the categories report, the product field to group by; "
 		"defaults to genre", FALSE);
 	ai_tool_add_parameter(report, "customer_id", "integer", "Customer for a statement", FALSE);
+	ai_tool_add_parameter(report, "vendor_id", "integer", "Supplier for a vendor statement", FALSE);
 	ai_tool_add_parameter(report, "currency", "string", "Book currency to report", FALSE);
 	ai_tool_add_parameter(report, "as_of", "string",
 		"Historical cutoff as an ISO date or timestamp; include rows deleted after it", FALSE);
@@ -2751,6 +2758,16 @@ venture_ai_service_register_tools(VentureAiService *self)
 	 */
 	if (VENTURE_AI_POLICY_READ_ONLY == self->policy)
 		return;
+
+	if (venture_context_module_enabled(self->context, "activities"))
+	{
+		g_autoptr(AiTool) activity = venture_ai_make_tool(self, "venture_activity_complete",
+			"Complete planned work with an outcome. Staged for approval unless autonomous; records history and advances recurrence atomically.");
+		ai_tool_add_parameter(activity, "id", "integer", "Activity id", TRUE);
+		ai_tool_add_parameter(activity, "outcome", "string", "What happened", FALSE);
+		ai_tool_executor_register_callback(self->executor, activity, venture_ai_tool_activity, self, NULL);
+	}
+
 
 	{
 		g_autoptr(AiTool) create = NULL;
@@ -3067,6 +3084,8 @@ venture_ai_service_new(
 	 */
 	self->plain = ai_tool_executor_new_empty();
 	venture_ai_service_register_tools(self);
+	venture_ai_register_lead_tool(self);
+	venture_ai_register_actions(self);
 	self->system_prompt = venture_ai_service_build_prompt(self);
 
 	return g_steal_pointer(&self);
@@ -3459,6 +3478,7 @@ venture_ai_service_answer_with_images(
 		return NULL;
 	}
 
+	venture_ai_register_actions(self);
 	/* Held for the duration so a tool call can record what prompted it. */
 	g_free(self->current_prompt);
 	self->current_prompt = g_strdup(message);
@@ -3630,6 +3650,7 @@ venture_ai_service_answer_stream_async(
 		return;
 	}
 
+	venture_ai_register_actions(self);
 	/* Held for the duration so a tool call can record what prompted it. */
 	g_free(self->current_prompt);
 	self->current_prompt = g_strdup(message);
@@ -3709,6 +3730,7 @@ venture_ai_service_describe_tools(VentureAiService *self)
 	builder = json_builder_new();
 	json_builder_begin_array(builder);
 
+	venture_ai_register_actions(self);
 	tools = ai_tool_executor_get_tools(self->executor);
 
 	for (iter = tools; NULL != iter; iter = iter->next)

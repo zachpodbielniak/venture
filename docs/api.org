@@ -393,3 +393,81 @@ returns 202; direct success returns 200 with the action record, including
 404; excessive public requests return 429. Public output contains no internal
 IDs or other records. All authenticated quote records also have the ordinary
 metadata-derived CRUD endpoints. See [[file:quotes.org][quotes]].
+* Leads
+
+=POST /f/:token= is public capture, accepting JSON and form encoding. The
+form fixes organization and venture; it controls fields and duplicate policy.
+A filled honeypot silently returns 200. Rate and request-size limits apply.
+See [[file:leads.org][leads]] for the embed snippet and capture responses.
+
+Authenticated editors use =POST /api/v1/leads/:id/convert= with a JSON
+object: optional =deal= boolean (default true), =company_id= and =contact_id=
+links. The lead must be qualified. It returns the converted lead; failures
+roll back every new CRM record. =?stage=1= returns a 202 confirmation without
+writing and approval rechecks eligibility and version.
+
+=POST /api/v1/leads/:id/reassign= accepts an optional =owner= string; omitted
+runs assignment rules. Staged reassignment is refused. Lead CRUD remains
+at the generated =/api/v1/lead= resource; qualification changes write history.
+Reports =lead_sources=, =lead_response_time= and =leads_recycled_due= use the
+ordinary report endpoint and accept =organization_id=.
+* Vendor payables
+
+=POST /api/v1/vendor_bill/:id/approve=, =/pay= and =/void= call
+=VenturePayablesService=. Bodies are JSON objects. =date= defaults to now;
+Pay accepts =amount= (default: outstanding), =method=, =reference=,
+=external_id= and optional =bank_account_id=. The path binds the bill,
+supplier and organization. Editor authority and the payables module are
+required. =?stage=1= returns the ordinary 202 confirmation response;
+applying it revalidates the operation at the database boundary.
+
+The field tables also provide ordinary resources for =vendor_bill=,
+=vendor_bill_line=, =bill_payment=, =bill_payment_allocation=,
+=vendor_credit=, =vendor_bill_event= and =bill_refund=. A generic bill
+status update is refused. An event request uses =kind=approve= or =void=;
+the service freezes and owns the resulting event. Payments and allocations
+created through generic REST or approved assistant writes use that service.
+
+=GET /api/v1/reports/payables?period=2026-01= reads historical aging.
+=GET /api/v1/reports/vendor_statement?period=2026-01&vendor_id=1=
+reads a vendor statement. Both accept =organization_id=, =currency= and
+=as_of=. See [[file:payables.org][vendor payables]] for monetary and date rules.
+* Follow-up sequences
+
+These editor actions belong to =sequences=, which requires =crm=:
+
+| Method | Path | Body and result |
+|--------+------+-----------------|
+| POST | /api/v1/sequence/:id/enroll | Enrollment fields, including =contact_id=; returns the scheduled enrollment (201). =?stage=1= stages it (202). |
+| POST | /api/v1/sequence_enrollment/:id/pause | Pause future steps. |
+| POST | /api/v1/sequence_enrollment/:id/resume | Resume a paused enrollment without discarding delivery history. |
+| POST | /api/v1/sequence_enrollment/:id/exit | Exit and cancel pending deliveries. |
+| POST | /api/v1/sequence_enrollment/:id/goal | Record an explicitly met goal and exit. |
+| POST | /api/v1/sequences/run | ={ "as_of": "2026-09-14T13:00:00Z", "organization_id": 1 }=; both fields optional, returns =processed=. |
+
+The five sequence records use ordinary schema-driven CRUD for configuration
+and reading. New enrollment writes route through =VentureSequenceService=;
+generic updates cannot manufacture progress or completion. A mail adapter
+may finish a pending delivery by updating only =state=, =error=,
+=executed_at= and =external_message_id=. It cannot reset a finished delivery
+or change its recipient context, step, rendered subject or body.
+
+Reports =sequence_performance= and =sequence_failures= use ordinary report
+endpoints and the selected period. See [[file:sequences.org][sequences]] for
+cohort definitions and the scheduling/adapter boundary.
+* Record actions
+
+=POST /api/v1/:type/:id/actions/:action= takes a JSON object of parameters.
+The registry checks the authenticated role and calls the declaring service.
+Unknown actions answer 404, insufficient roles 403, state conflicts 409 and
+invalid parameters 422, using the ordinary error JSON shape.
+
+=?stage=1= returns 202 with an action confirmation. Approval checks the
+current record, version, approver role and service eligibility again.
+=GET /api/v1/schema/:type= and the full schema include =actions= with
+labels, descriptions, minimum roles, =stageable=, parameters and input schemas.
+See [[file:actions.org][record actions]] for registration and signals.
+
+The ledger also exposes =POST /api/v1/journals/post= (header plus =lines=),
+including =?stage=1=. It dispatches the registered type-level
+=create_and_post= action. See [[file:ledger.org][posting from the outside]].

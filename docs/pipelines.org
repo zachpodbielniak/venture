@@ -84,3 +84,5 @@ stamp remains intact. The upgrade test reopens the fixture file and verifies
 that running startup again creates no duplicate history.
 
 New deals require an active pipeline and satisfy the initial stage's required fields; a lost initial stage requires an active loss reason. Closed initial stages receive a closing timestamp. Historical backfill preserves prior state.
+
+With sequences enabled, a won-stage move also applies enrollment exits in the same transaction. A refused exit rolls back the deal transition and stage history; callers continue to use the stage service rather than writing the legacy stage field.

@@ -204,8 +204,28 @@ test_lifecycle(Fixture *f, gconstpointer data)
 	g_autoptr(GPtrArray) deliveries = NULL;
 	g_autoptr(VentureMoney) balance = NULL;
 	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) contact = record(f, "contact");
+	g_autoptr(VentureEntity) sequence = record(f, "sequence");
+	g_autoptr(VentureEntity) step = record(f, "sequence_step");
+	g_autoptr(VentureEntity) enrollment = record(f, "sequence_enrollment");
 	g_object_set(deal, "name", "Services", "company-id", f->company, NULL);
 	save(f, deal);
+	/* Acceptance must also stop follow-ups through the same won transition. */
+	g_object_set(contact, "name", "Buyer", "email", "buyer@example.com", NULL);
+	save(f, contact);
+	g_object_set(deal, "contact-id", venture_entity_get_id(contact), NULL);
+	save(f, deal);
+	g_object_set(sequence, "name", "Proposal follow-up", "active", TRUE, "timezone", "UTC",
+		"send-window-start", (gint64)9, "send-window-end", (gint64)17,
+		"weekdays", "1,2,3,4,5", "exit-on-deal-won", TRUE, NULL);
+	save(f, sequence);
+	g_object_set(step, "sequence-id", venture_entity_get_id(sequence), "position", (gint64)1,
+		"active", TRUE, "subject", "Following up", "body", "Your proposal", NULL);
+	save(f, step);
+	g_object_set(enrollment, "sequence-id", venture_entity_get_id(sequence),
+		"contact-id", venture_entity_get_id(contact), "deal-id", venture_entity_get_id(deal),
+		"enrollment-reason", "Requested proposal", NULL);
+	save(f, enrollment);
 	g_object_set(current, "deal-id", venture_entity_get_id(deal), NULL);
 	save(f, current);
 	action(f, q, "send");
@@ -214,6 +234,14 @@ test_lifecycle(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(deliveries->len, ==, 1);
 	action(f, q, "accept");
 	status(f, q, "accepted");
+	{
+		g_autoptr(VentureEntity) exited = fresh(f, "sequence_enrollment", venture_entity_get_id(enrollment));
+		g_autofree gchar *reason = NULL;
+		gint enrollment_status;
+		g_object_get(exited, "status", &enrollment_status, "exit-reason", &reason, NULL);
+		g_assert_cmpint(enrollment_status, ==, 3);
+		g_assert_cmpstr(reason, ==, "deal_won");
+	}
 	invoices = rows(f, "invoice");
 	g_assert_cmpuint(invoices->len, ==, 1);
 	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db),
