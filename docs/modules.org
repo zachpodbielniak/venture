@@ -43,6 +43,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =factory=    | forge           | milestone, release, build, environment, deployment, incident; =releases=, =lead_time=, =incidents=, =delivery= | |
 | =dashboards= | core            | dashboard, dashboard_widget; the =/dashboards= pages and their API | |
 | =ledger=     | finance         | journal, journal_line; posting service, =trial_balance=           |                       |
+| =activities= | crm | activity, activity_type; =worklist=, reminders, calendar export and =/worklist= | |
 
 Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.
 
@@ -157,11 +158,3 @@ The description must outlive the registry. A static does.
 - Every type it claims must be a concrete =VentureEntity= subclass.
 
 All five are checked at registration, and a built-in that breaks one aborts startup, because a registry missing a core module would fail in a hundred quieter ways later.
-
-* Planned activities
-
-| Module | Requires | Owns |
-|--------+----------+------|
-| =activities= | crm | activity, activity_type; worklist report, reminders, calendar export and /worklist |
-
-See [[file:activities.org][planned activities]].

@@ -673,6 +673,107 @@ test_deleted_action(Fixture *f, gconstpointer data)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
 }
 
+static void
+test_organization_and_dates(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureOrganization) organization = venture_organization_new();
+	g_autoptr(VentureCompany) company = venture_company_new();
+	g_autoptr(VentureEntity) row = planned(f, "Scoped plan");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) start = venture_time_from_string("2026-09-13T10:00:00Z", NULL);
+	g_autoptr(GDateTime) end = venture_time_from_string("2026-09-13T09:00:00Z", NULL);
+	g_object_set(organization, "name", "Other books", "slug", "other-books", NULL);
+	g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(organization), NULL, NULL));
+	g_object_set(company, "name", "Other account", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(company), venture_entity_get_id(VENTURE_ENTITY(organization)));
+	g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(company), NULL, NULL));
+	g_object_set(row, "company-id", venture_entity_get_id(VENTURE_ENTITY(company)), NULL);
+	g_assert_false(venture_database_save(f->database, row, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_object_set(row, "company-id", (gint64)0, "related-type", "company", "related-id", venture_entity_get_id(VENTURE_ENTITY(company)), NULL);
+	g_assert_false(venture_database_save(f->database, row, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_object_set(row, "related-type", NULL, "related-id", (gint64)0, "starts-at", start, "ends-at", end, NULL);
+	g_assert_false(venture_database_save(f->database, row, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
+static void
+test_related_prefill_and_open(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureCompany) company = venture_company_new();
+	g_autoptr(VentureEntity) open = planned(f, "Open next action");
+	g_autoptr(VentureEntity) closed = planned(f, "Closed action");
+	g_autoptr(VentureEntity) done = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *open_link = NULL;
+	g_autofree gchar *closed_link = NULL;
+	g_object_set(company, "name", "Prefilled account", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(company), 1);
+	g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(company), NULL, NULL));
+	g_object_set(open, "company-id", venture_entity_get_id(VENTURE_ENTITY(company)), NULL);
+	g_object_set(closed, "company-id", venture_entity_get_id(VENTURE_ENTITY(company)), NULL);
+	g_assert_true(venture_database_save(f->database, open, NULL, NULL));
+	g_assert_true(venture_database_save(f->database, closed, NULL, NULL));
+	done = venture_activity_service_complete(venture_database_get_activity_service(f->database), closed, "Recorded", NULL, NULL);
+	g_assert_nonnull(done);
+	path = g_strdup_printf("/e/company/%" G_GINT64_FORMAT, venture_entity_get_id(VENTURE_ENTITY(company)));
+	open_link = g_strdup_printf("href=\"/e/activity/%" G_GINT64_FORMAT "\"", venture_entity_get_id(open));
+	closed_link = g_strdup_printf("href=\"/e/activity/%" G_GINT64_FORMAT "\"", venture_entity_get_id(closed));
+	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &body), ==, 200);
+	g_assert_nonnull(strstr(body, open_link));
+	g_assert_null(strstr(body, closed_link));
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/e/activity/new?company_id=%" G_GINT64_FORMAT, venture_entity_get_id(VENTURE_ENTITY(company)));
+	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &body), ==, 200);
+	{
+		const gchar *field = strstr(body, "<select name=\"company-id\">");
+		const gchar *end;
+		g_autofree gchar *options = NULL;
+		g_autofree gchar *selected = g_strdup_printf("value=\"%" G_GINT64_FORMAT "\" selected", venture_entity_get_id(VENTURE_ENTITY(company)));
+		g_assert_nonnull(field);
+		end = strstr(field, "</select>");
+		g_assert_nonnull(end);
+		options = g_strndup(field, end - field);
+		g_assert_nonnull(strstr(options, selected));
+	}
+}
+
+static void
+test_cli_queues(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) row = planned(f, "CLI queue item");
+	g_autoptr(GDateTime) past = venture_time_from_string("2020-01-01", NULL);
+	guint i;
+	const gchar *queues[] = { "mine", "overdue", "today" };
+	g_object_set(row, "due-at", past, NULL);
+	g_assert_true(venture_database_save(f->database, row, NULL, NULL));
+	for (i = 0; i < G_N_ELEMENTS(queues); i++)
+	{
+		g_autoptr(GSubprocess) child = NULL;
+		g_autoptr(GError) error = NULL;
+		CliResult result = { FALSE, NULL, NULL, NULL };
+		child = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE, &error,
+			"build/debug/venturectl", "--server", f->url, "activity", "list", queues[i], NULL);
+		g_assert_no_error(error);
+		g_subprocess_communicate_utf8_async(child, NULL, NULL, cli_done, &result);
+		while (!result.done)
+			g_main_context_iteration(NULL, TRUE);
+		g_assert_no_error(result.error);
+		g_assert_true(g_subprocess_get_successful(child));
+		if (i < 2)
+			g_assert_nonnull(strstr(result.out, "CLI queue item"));
+		else
+			g_assert_null(strstr(result.out, "CLI queue item"));
+		g_free(result.out);
+		g_free(result.err);
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -701,5 +802,8 @@ main(int argc, char **argv)
 	g_test_add("/activities/stale_approval", Fixture, NULL, fixture_set_up, test_stale_approval, fixture_tear_down);
 	g_test_add("/activities/polymorphic_deleted", Fixture, NULL, fixture_set_up, test_polymorphic_deleted, fixture_tear_down);
 	g_test_add("/activities/deleted_action", Fixture, NULL, fixture_set_up, test_deleted_action, fixture_tear_down);
+	g_test_add("/activities/organization_and_dates", Fixture, NULL, fixture_set_up, test_organization_and_dates, fixture_tear_down);
+	g_test_add("/activities/related_prefill_and_open", Fixture, NULL, fixture_set_up, test_related_prefill_and_open, fixture_tear_down);
+	g_test_add("/activities/cli_queues", Fixture, NULL, fixture_set_up, test_cli_queues, fixture_tear_down);
 	return g_test_run();
 }

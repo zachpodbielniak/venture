@@ -40,6 +40,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:extending.org][Extending]] — plugins, crispy scripts, declarative venture types, plugin modules
 - [[file:containers.org][Containers]] — the Containerfile, local compose, and a deployment example
 - [[file:testing.org][Testing]] — running the suite, and what it guarantees
+- [[file:activities.org][Planned activities]] — tasks, calls, meetings, reminders and the daily rep worklist
 
 ** The shape of the thing in one page
 
@@ -62,5 +63,3 @@ Any page you want, you build. A dashboard is a grid of widgets — a count, a li
 The AI reads freely and cannot write unsupervised. A tool call that would change a record stages a diff for approval instead; only approval applies it, and the applied write is audited with the prompt that caused it. Any REST write can do the same with =?stage=1=, so an outside agent proposes into the same queue and a person answers both from one page.
 
 Two binaries, both statically linked against every vendored dependency: =venture= is the server, =venturectl= is the client. Either builds alone.
-
-- [[file:activities.org][Planned activities]] — tasks, calls, meetings, reminders and the daily rep worklist
