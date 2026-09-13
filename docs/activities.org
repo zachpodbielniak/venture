@@ -67,8 +67,10 @@ Recurrence is =none=, =daily=, =weekly= or =monthly=. Completion advances
 all supplied scheduling fields from their previous dates, once, rather than
 from the completion time. It creates one planned successor with the same
 owner and relations and no completion or reminder-delivery stamps. Monthly
-advancement uses calendar months, clipping a day that does not exist in the
-next month; later occurrences advance from that clipped date. A recurring
+advancement uses the start time, or the due time when no start is supplied,
+as its anchor. Other timestamps retain their offsets so meeting duration
+and reminder lead time survive month-end clipping. Calendar months clip
+a day that does not exist in the next month; later occurrences advance from that clipped date. A recurring
 activity needs a due or start time.
 
 * My day and dashboards
@@ -105,6 +107,8 @@ A due =remind_at= produces one inbox notification for the active user whose
 username matches the owner in that organization. Delivery and =reminded_at=
 are saved together, so repeating the sweep does not repeat the notification.
 No matching active user leaves it pending. Snoozing explicitly rearms it.
+A reentrant sweep from a notification callback is refused before it can
+redeliver an in-flight reminder.
 The bounded sweep runs on the worklist, inbox and ticket board and can be called explicitly:
 
 =POST /api/v1/activities/sweep?organization_id=1=.

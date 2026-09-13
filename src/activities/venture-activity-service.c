@@ -306,8 +306,15 @@ venture_activity_service_act(VentureActivityService *self, VentureEntity *activi
 		if (recurrence != VENTURE_ACTIVITY_RECURRENCE_NONE)
 		{
 			g_autoptr(VentureEntity) next = venture_entity_duplicate(row);
+			g_autoptr(GDateTime) starts = NULL;
+			g_autoptr(GDateTime) due = NULL;
+			g_autoptr(GDateTime) anchor = NULL;
+			GTimeSpan advance;
 			const gchar *dates[] = { "due-at", "starts-at", "ends-at", "remind-at" };
 			guint i;
+			g_object_get(row, "starts-at", &starts, "due-at", &due, NULL);
+			anchor = next_date(starts ? starts : due, recurrence);
+			advance = g_date_time_difference(anchor, starts ? starts : due);
 			g_object_set(next, "status", VENTURE_ACTIVITY_STATUS_PLANNED, "completed-at", NULL,
 				"outcome", NULL, "reminded-at", NULL, NULL);
 			for (i = 0; i < G_N_ELEMENTS(dates); i++)
@@ -315,7 +322,9 @@ venture_activity_service_act(VentureActivityService *self, VentureEntity *activi
 				g_autoptr(GDateTime) date = NULL;
 				g_autoptr(GDateTime) shifted = NULL;
 				g_object_get(row, dates[i], &date, NULL);
-				shifted = next_date(date, recurrence);
+				/* One anchor preserves meeting duration and reminder lead time
+				 * when a month has fewer days than the original schedule. */
+				shifted = date ? g_date_time_add(date, advance) : NULL;
 				g_object_set(next, dates[i], shifted, NULL);
 			}
 			if (!venture_database_save(self->database, next, actor, error))
@@ -397,8 +406,15 @@ venture_activity_service_sweep(VentureActivityService *self, gint64 organization
 	g_autoptr(GDateTime) now = venture_time_now();
 	guint i;
 	gint delivered = 0;
+	gboolean committed;
+	if (self->database == NULL || self->busy)
+	{
+		refuse(error, VENTURE_ERROR_CONFLICT, "Service unavailable or reentrant reminder sweep");
+		return -1;
+	}
 	if (!venture_database_begin(self->database, error))
 		return -1;
+	self->busy = TRUE;
 	rows = venture_activity_service_list(self, organization, NULL, "mine", now, error);
 	if (rows == NULL)
 		goto fail;
@@ -434,9 +450,12 @@ venture_activity_service_sweep(VentureActivityService *self, gint64 organization
 			goto fail;
 		delivered++;
 	}
-	return venture_database_commit(self->database, error) ? delivered : -1;
+	committed = venture_database_commit(self->database, error);
+	self->busy = FALSE;
+	return committed ? delivered : -1;
 fail:
 	venture_database_rollback(self->database);
+	self->busy = FALSE;
 	return -1;
 }
 

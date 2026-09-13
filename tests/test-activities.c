@@ -774,6 +774,79 @@ test_cli_queues(Fixture *f, gconstpointer data)
 	}
 }
 
+typedef struct
+{
+	VentureActivityService *service;
+	gboolean called;
+	gint nested_result;
+} ReminderProbe;
+
+static void
+reminder_reentry(VentureDatabase *db, VentureEntity *row, gboolean created, gpointer data)
+{
+	ReminderProbe *probe = data;
+	g_autoptr(GError) error = NULL;
+	if (VENTURE_IS_NOTIFICATION(row) && !probe->called)
+	{
+		probe->called = TRUE;
+		probe->nested_result = venture_activity_service_sweep(probe->service, 1, 200, &error);
+	}
+}
+
+static void
+test_reminder_reentry(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) row = planned(f, "Reentrant reminder");
+	g_autoptr(VentureUser) user = venture_user_new();
+	g_autoptr(GDateTime) past = venture_time_from_string("2020-01-01", NULL);
+	g_autoptr(GError) error = NULL;
+	ReminderProbe probe = { NULL, FALSE, 0 };
+	gulong handler;
+	gint delivered;
+	probe.service = venture_database_get_activity_service(f->database);
+	g_object_set(user, "username", "local", "active", TRUE, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(user), 1);
+	g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(user), NULL, NULL));
+	g_object_set(row, "remind-at", past, NULL);
+	g_assert_true(venture_database_save(f->database, row, NULL, NULL));
+	handler = g_signal_connect(f->database, "entity-saved", G_CALLBACK(reminder_reentry), &probe);
+	delivered = venture_activity_service_sweep(probe.service, 1, 200, &error);
+	g_signal_handler_disconnect(f->database, handler);
+	g_assert_no_error(error);
+	g_assert_cmpint(delivered, ==, 1);
+	g_assert_true(probe.called);
+	g_assert_cmpint(probe.nested_result, ==, -1);
+	g_assert_cmpint(count_rows(f, VENTURE_TYPE_NOTIFICATION), ==, 1);
+}
+
+static void
+test_monthly_meeting_duration(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) row = planned(f, "Month-end meeting");
+	g_autoptr(VentureEntity) done = NULL;
+	g_autoptr(VentureEntity) next = NULL;
+	g_autoptr(GDateTime) starts = venture_time_from_string("2026-01-30T10:00:00Z", NULL);
+	g_autoptr(GDateTime) ends = venture_time_from_string("2026-01-31T10:00:00Z", NULL);
+	g_autoptr(GDateTime) next_starts = NULL;
+	g_autoptr(GDateTime) next_ends = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACTIVITY);
+	g_object_set(row, "kind", VENTURE_ACTIVITY_KIND_MEETING, "recurrence", VENTURE_ACTIVITY_RECURRENCE_MONTHLY,
+		"starts-at", starts, "ends-at", ends, "due-at", starts, NULL);
+	g_assert_true(venture_database_save(f->database, row, NULL, NULL));
+	done = venture_activity_service_complete(venture_database_get_activity_service(f->database), row, "Met", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(done);
+	venture_query_set_organization(query, 1);
+	venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ, "planned", NULL);
+	next = venture_database_find_one(f->database, query, &error);
+	g_assert_no_error(error);
+	g_object_get(next, "starts-at", &next_starts, "ends-at", &next_ends, NULL);
+	g_assert_cmpint(g_date_time_get_month(next_starts), ==, 2);
+	g_assert_cmpint(g_date_time_get_day_of_month(next_starts), ==, 28);
+	g_assert_cmpint(g_date_time_difference(next_ends, next_starts), ==, g_date_time_difference(ends, starts));
+}
+
 int
 main(int argc, char **argv)
 {
@@ -805,5 +878,7 @@ main(int argc, char **argv)
 	g_test_add("/activities/organization_and_dates", Fixture, NULL, fixture_set_up, test_organization_and_dates, fixture_tear_down);
 	g_test_add("/activities/related_prefill_and_open", Fixture, NULL, fixture_set_up, test_related_prefill_and_open, fixture_tear_down);
 	g_test_add("/activities/cli_queues", Fixture, NULL, fixture_set_up, test_cli_queues, fixture_tear_down);
+	g_test_add("/activities/reminder_reentry", Fixture, NULL, fixture_set_up, test_reminder_reentry, fixture_tear_down);
+	g_test_add("/activities/monthly_meeting_duration", Fixture, NULL, fixture_set_up, test_monthly_meeting_duration, fixture_tear_down);
 	return g_test_run();
 }
