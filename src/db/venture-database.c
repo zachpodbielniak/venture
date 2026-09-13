@@ -8,6 +8,7 @@
 #include "venture.h"
 #include "ledger/venture-ledger-private.h"
 #include "db/venture-migrations.h"
+#include "activities/venture-activity-private.h"
 
 #include <string.h>
 
@@ -52,6 +53,7 @@ struct _VentureDatabase
 	 * through venture_database_save(), so every writer gets the check.
 	 */
 	GPtrArray		*validators;
+	VentureActivityService *activities;
 };
 
 typedef struct
@@ -107,6 +109,7 @@ venture_database_finalize(GObject *object)
 	g_clear_pointer(&self->uri, g_free);
 	g_rec_mutex_clear(&self->lock);
 	g_clear_pointer(&self->validators, g_ptr_array_unref);
+	g_clear_object(&self->activities);
 
 	G_OBJECT_CLASS(venture_database_parent_class)->finalize(object);
 }
@@ -173,6 +176,7 @@ venture_database_init(VentureDatabase *self)
 	g_rec_mutex_init(&self->lock);
 	self->validators = g_ptr_array_new_with_free_func(
 		venture_database_validator_free);
+	self->activities = venture_activity_service_new(self);
 }
 
 /* --- Opening ------------------------------------------------------------- */
@@ -1950,4 +1954,10 @@ venture_database_migrate(
 		!venture_database_seed_tax_categories(self, organization_id, error))
 		return FALSE;
 	return TRUE;
+}
+
+VentureActivityService *
+venture_database_get_activity_service(VentureDatabase *database)
+{
+	return database->activities;
 }

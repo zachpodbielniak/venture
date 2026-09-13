@@ -42,6 +42,7 @@ struct _VentureConfirmation
 	 */
 	VentureEntity			*staged;
 	VentureEntity			*original;
+	gboolean activity_completion;
 };
 
 G_DEFINE_FINAL_TYPE(VentureConfirmation, venture_confirmation, G_TYPE_OBJECT)
@@ -672,6 +673,15 @@ venture_confirmation_store_approve(
 		ok = venture_database_delete(self->database, confirmation->staged,
 		                             &actor, &local_error);
 	}
+	else if (confirmation->activity_completion)
+	{
+		g_autofree gchar *outcome = NULL;
+		g_autoptr(VentureEntity) completed = NULL;
+		g_object_get(confirmation->staged, "outcome", &outcome, NULL);
+		completed = venture_activity_service_complete(venture_database_get_activity_service(self->database),
+			confirmation->original, outcome, &actor, &local_error);
+		ok = completed != NULL;
+	}
 	else
 	{
 		ok = venture_database_save(self->database, confirmation->staged,
@@ -810,4 +820,29 @@ venture_confirmation_parse_stage_flag(
 	            "it.", value);
 
 	return FALSE;
+}
+
+VentureConfirmation *
+venture_confirmation_store_stage_activity_complete(VentureConfirmationStore *self,
+	VentureEntity *activity, const gchar *outcome, const VentureActor *origin, const gchar *via, GError **error)
+{
+	g_autoptr(VentureEntity) staged = NULL;
+	VentureConfirmation *confirmation;
+	gint status;
+	g_return_val_if_fail(VENTURE_IS_ACTIVITY(activity), NULL);
+	g_object_get(activity, "status", &status, NULL);
+	if (status != VENTURE_ACTIVITY_STATUS_PLANNED)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+			"VentureActivityService: Only planned activities may be completed");
+		return NULL;
+	}
+	staged = g_object_new(VENTURE_TYPE_ACTIVITY, NULL);
+	venture_entity_copy_properties_from(staged, activity, FALSE);
+	g_object_set(staged, "status", VENTURE_ACTIVITY_STATUS_DONE, "outcome", outcome, NULL);
+	confirmation = venture_confirmation_store_stage(self, VENTURE_AUDIT_ACTION_UPDATE,
+		staged, activity, origin, via, error);
+	if (confirmation != NULL)
+		confirmation->activity_completion = TRUE;
+	return confirmation;
 }

@@ -6323,6 +6323,15 @@ venture_web_ui_form(
 		if (0 != (flags & VENTURE_COLUMN_FLAG_SENSITIVE))
 			continue;
 
+		if (id == 0 && venture_field_spec_get_kind(spec) == VENTURE_FIELD_KIND_REFERENCE)
+		{
+			g_autofree gchar *wire = g_strdup(venture_field_spec_get_name(spec));
+			const gchar *value;
+			g_strdelimit(wire, "-", '_');
+			value = htmx_request_get_query_param(request, wire);
+			if (value != NULL && !venture_entity_set_field_from_string(record, venture_field_spec_get_name(spec), value, &error))
+				return venture_web_error_response(error);
+		}
 		venture_web_append_form_field(self, content, spec, record);
 	}
 
@@ -7206,10 +7215,14 @@ venture_web_append_related(
 				venture_entity_get_id(record), NULL))
 				continue;
 
+			venture_query_set_organization(query, venture_entity_get_organization_id(record));
+			if (types[i] == VENTURE_TYPE_ACTIVITY)
+				venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ, "planned", NULL);
+
 			related = venture_database_find(
 				venture_context_get_database(self->context), query, NULL);
 
-			if ((NULL == related) || (0 == related->len))
+			if ((NULL == related) || (0 == related->len && types[i] != VENTURE_TYPE_ACTIVITY))
 				continue;
 
 			related_name = venture_entity_get_entity_name(prototype);
@@ -7243,9 +7256,14 @@ venture_web_append_related(
 				g_string_append(content, "</a></li>");
 			}
 
-			g_string_append_printf(content,
-				"</ul><a class=\"btn btn-sm\" href=\"/e/%s/new\">"
-				"Add %s</a></div></div>", related_name, related_name);
+			{
+				g_autofree gchar *wire = g_strdup(venture_field_spec_get_name(spec));
+				g_strdelimit(wire, "-", '_');
+				g_string_append_printf(content,
+					"</ul><a class=\"btn btn-sm\" href=\"/e/%s/new?%s=%" G_GINT64_FORMAT "&amp;organization_id=%" G_GINT64_FORMAT "\">"
+					"New %s</a></div></div>", related_name, wire, venture_entity_get_id(record),
+					venture_entity_get_organization_id(record), related_name);
+			}
 		}
 	}
 }
@@ -27537,6 +27555,7 @@ venture_web_api_ticket_draft(
 
 
 #include "venture-web-federation.inc"
+#include "activities/venture-activity-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -27831,6 +27850,12 @@ venture_web_server_new(
 	                 venture_web_api_ticket_draft, self);
 	htmx_router_post(router, "/api/v1/releases/:id/changelog",
 	                 venture_web_api_release_changelog, self);
+	htmx_router_get(router, "/worklist", activity_ui_worklist, self);
+	htmx_router_post(router, "/activities/:id/complete", activity_ui_done, self);
+	htmx_router_get(router, "/api/v1/activities.ics", activity_api_calendar, self);
+	htmx_router_get(router, "/api/v1/activities", activity_api_list, self);
+	htmx_router_post(router, "/api/v1/activities/sweep", activity_api_sweep, self);
+	htmx_router_post(router, "/api/v1/activities/:id/:action", activity_api_action, self);
 	htmx_router_post(router, "/api/v1/releases/:id/publish",
 	                 venture_web_api_release_publish, self);
 	htmx_router_get(router, "/api/v1/widget-kinds",
