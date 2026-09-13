@@ -85,6 +85,8 @@ SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard
 
 CORE_SRCS += src/pipelines/venture-pipeline-records.c
 SERVER_ONLY_SRCS += $(filter-out src/pipelines/venture-pipeline-records.c,$(wildcard src/pipelines/*.c))
+CORE_SRCS += src/sequences/venture-sequence-records.c
+SERVER_ONLY_SRCS += $(filter-out src/sequences/venture-sequence-records.c,$(wildcard src/sequences/*.c))
 CORE_SRCS += src/autojournal/venture-posting-profile.c
 SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wildcard src/autojournal/*.c))
 
@@ -124,6 +126,7 @@ PUBLIC_HDRS := \
 	$(wildcard src/mcp/*.h)
 
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/pipelines/*.h))
+PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/sequences/*.h))
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/statements/*.h))
 
 TEST_SRCS := $(wildcard tests/test-*.c)
@@ -141,6 +144,7 @@ TEST_BINS := $(patsubst tests/%.c,$(OUTDIR)/tests/%,$(TEST_SRCS))
 
 # The settlement test drives the real CLI and its MCP tool against HTTP.
 $(OUTDIR)/tests/test-receivables: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-sequences: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery

@@ -542,6 +542,13 @@ static const gchar *const venture_module_reports_pipelines[] = {
 	"stage_duration", "funnel", "forecast", "loss_reasons", "overdue_deals", NULL
 };
 
+static GType (*const sequence_types[]) (void) = {
+	venture_sequence_get_type, venture_sequence_step_get_type,
+	venture_sequence_enrollment_get_type, venture_sequence_delivery_get_type,
+	venture_suppression_get_type, NULL
+};
+static const gchar *const sequence_requires[] = { "crm", NULL };
+static const gchar *const sequence_reports[] = { "sequence_performance", "sequence_failures", NULL };
 static GType (*const autojournal_types[]) (void) = { venture_posting_profile_get_type, NULL };
 static const gchar *const autojournal_requires[] = { "ledger", NULL };
 static const gchar *const autojournal_reports[] = { "unposted", NULL };
@@ -696,6 +703,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"pipelines", "Sales pipelines", "Configurable stages, history and forecasts.",
 		venture_module_requires_crm, NULL, venture_module_pipelines_types,
 		venture_module_reports_pipelines, NULL, FALSE
+	},
+	{
+		"sequences", "Follow-up sequences", "Durable timed follow-ups and suppression.",
+		sequence_requires, NULL, sequence_types, sequence_reports, NULL, FALSE
 	},
 	{ "autojournal", "Automatic journals", "Configurable source accounting.",
 		autojournal_requires, NULL, autojournal_types, autojournal_reports, NULL, FALSE
