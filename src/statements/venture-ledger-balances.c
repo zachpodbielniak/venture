@@ -776,7 +776,11 @@ reconciliation(Books *books, VentureDatabase *db, gint64 org,
 			if (date == NULL || g_date_time_compare(date, books->start) < 0 || g_date_time_compare(date, books->end) >= 0)
 				continue;
 			if (t == 0)
+				{
 				amount = venture_sale_get_net(VENTURE_SALE(row), error);
+				if (amount == NULL)
+					return NULL;
+			}
 			else
 				g_object_get(row, "amount", &amount, NULL);
 			if (amount == NULL || (currency != NULL && g_strcmp0(amount->currency, currency) != 0))
@@ -818,6 +822,36 @@ row_money(VentureReportResult *r, guint row, const gchar *key)
 {
 	const GValue *v = venture_report_result_get_cell(r, row, key);
 	return v != NULL && G_VALUE_HOLDS(v, VENTURE_TYPE_MONEY) ? g_value_get_boxed(v) : NULL;
+}
+
+static void
+include_prior_sources(VentureReportResult *current, VentureReportResult *prior)
+{
+	g_auto(GStrv) columns = venture_report_result_get_column_keys(prior);
+	guint i, j, k;
+	for (i = 0; i < venture_report_result_get_row_count(prior); i++)
+	{
+		const gchar *currency = row_text(prior, i, "currency");
+		const gchar *key = row_text(prior, i, "key");
+		g_autoptr(VentureMoney) zero = venture_money_new_zero(currency);
+		for (j = 0; j < venture_report_result_get_row_count(current); j++)
+			if (g_strcmp0(key, row_text(current, j, "key")) == 0 &&
+				g_strcmp0(currency, row_text(current, j, "currency")) == 0)
+				break;
+		if (j != venture_report_result_get_row_count(current))
+			continue;
+		venture_report_result_begin_row(current);
+		for (k = 0; columns[k] != NULL; k++)
+		{
+			const GValue *value = venture_report_result_get_cell(prior, i, columns[k]);
+			if (value == NULL)
+				continue;
+			if (G_VALUE_HOLDS(value, VENTURE_TYPE_MONEY))
+				venture_report_result_set_money(current, columns[k], zero);
+			else if (G_VALUE_HOLDS_STRING(value))
+				venture_report_result_set_text(current, columns[k], g_value_get_string(value));
+		}
+	}
 }
 
 static VentureReportResult *
@@ -974,6 +1008,8 @@ generate(const gchar *name, VentureContext *context, VentureDateRange *period,
 			generate_one(name, previous, db, org, prior_period, previous_options, error);
 		if (prior == NULL)
 			goto fail;
+		if (g_str_equal(name, "pnl_reconciliation"))
+			include_prior_sources(result, prior);
 		compared = with_comparative(result, prior, period, balances ? "closing" : "current",
 			(balances || ledger) ? "closing" : "current", error);
 		if (compared == NULL)
@@ -990,33 +1026,61 @@ fail:
 	return NULL;
 }
 
-#define STATEMENT(name) \
-static VentureReportResult *report_##name(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error) \
-{ return generate(#name, context, period, options, error); }
-STATEMENT(balance_sheet)
-STATEMENT(income_statement)
-STATEMENT(cash_flow)
-STATEMENT(general_ledger)
-STATEMENT(account_balances)
-STATEMENT(pnl_reconciliation)
-#undef STATEMENT
+#define VENTURE_TYPE_STATEMENT_REPORT (venture_statement_report_get_type())
+G_DECLARE_FINAL_TYPE(VentureStatementReport, venture_statement_report, VENTURE, STATEMENT_REPORT, VentureReport)
+struct _VentureStatementReport { VentureReport parent_instance; };
+G_DEFINE_TYPE(VentureStatementReport, venture_statement_report, VENTURE_TYPE_REPORT)
+
+static VentureReportResult *
+statement_generate(VentureReport *self, VentureContext *context,
+	VentureDateRange *period, JsonObject *options, GError **error)
+{
+	return generate(venture_report_get_name(self), context, period, options, error);
+}
+
+static JsonNode *
+statement_parameters(VentureReport *self)
+{
+	(void)self;
+	return venture_json_parse(
+		"{\"type\":\"object\",\"properties\":{"
+		"\"organization_id\":{\"type\":\"integer\",\"description\":\"One exact legal entity; defaults to the context organization\"},"
+		"\"currency\":{\"type\":\"string\",\"description\":\"Uppercase book currency; omit to report every currency separately\"},"
+		"\"compare_to\":{\"type\":\"string\",\"description\":\"Prior period label, ending before this period starts\"},"
+		"\"account_id\":{\"type\":\"integer\",\"description\":\"General ledger only: one account in this organization\"}}}", NULL);
+}
+
+static void
+venture_statement_report_class_init(VentureStatementReportClass *klass)
+{
+	VentureReportClass *report_class = VENTURE_REPORT_CLASS(klass);
+	report_class->generate = statement_generate;
+	report_class->describe_parameters = statement_parameters;
+}
+
+static void
+venture_statement_report_init(VentureStatementReport *self)
+{
+	(void)self;
+}
 
 void
 venture_statements_register_reports(VentureReportRegistry *registry)
 {
-	static const struct { const gchar *name; const gchar *title; VentureReportFunc func; } reports[] = {
-		{ "balance_sheet", "Balance sheet", report_balance_sheet },
-		{ "income_statement", "Income statement", report_income_statement },
-		{ "cash_flow", "Cash flow", report_cash_flow },
-		{ "general_ledger", "General ledger", report_general_ledger },
-		{ "account_balances", "Account balances", report_account_balances },
-		{ "pnl_reconciliation", "P&L reconciliation", report_pnl_reconciliation }
+	static const struct { const gchar *name; const gchar *title; } reports[] = {
+		{ "balance_sheet", "Balance sheet" },
+		{ "income_statement", "Income statement" },
+		{ "cash_flow", "Cash flow" },
+		{ "general_ledger", "General ledger" },
+		{ "account_balances", "Account balances" },
+		{ "pnl_reconciliation", "P&L reconciliation" }
 	};
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(reports); i++)
 	{
-		VentureReport *report = VENTURE_REPORT(venture_func_report_new(reports[i].name,
-			reports[i].title, "Posted ledger evidence, per legal entity and currency, with date cutoffs and prior-period comparatives", reports[i].func));
+		VentureReport *report = g_object_new(VENTURE_TYPE_STATEMENT_REPORT,
+			"name", reports[i].name, "title", reports[i].title,
+			"description", "Posted ledger evidence, per legal entity and currency, with date cutoffs and prior-period comparatives", NULL);
 		g_object_set(report, "financial", TRUE, NULL);
 		venture_report_registry_add(registry, report);
 	}

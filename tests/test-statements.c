@@ -41,6 +41,8 @@ test_registration(Fixture *f, gconstpointer data)
 	VentureReport *report;
 	VentureModule *module;
 	gboolean financial = FALSE;
+	g_autoptr(JsonNode) parameters = NULL;
+	JsonObject *properties;
 	module = venture_module_registry_lookup(venture_context_get_modules(f->context), "statements");
 	g_assert_nonnull(module);
 	g_assert_true(g_strv_contains(venture_module_get_requires(module), "ledger"));
@@ -49,6 +51,10 @@ test_registration(Fixture *f, gconstpointer data)
 	g_assert_nonnull(report);
 	g_object_get(report, "financial", &financial, NULL);
 	g_assert_true(financial);
+	parameters = venture_report_describe_parameters(report);
+	properties = json_object_get_object_member(json_node_get_object(parameters), "properties");
+	g_assert_true(json_object_has_member(properties, "compare_to"));
+	g_assert_true(json_object_has_member(properties, "currency"));
 	venture_config_set_module_enabled(f->config, "statements", FALSE);
 	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), data));
 }
@@ -338,6 +344,56 @@ test_snapshots(Fixture *f, gconstpointer data)
 }
 
 static void
+test_controls(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureReportResult) r = NULL;
+	(void)data;
+	post(f, "2026-08-10T00:00:00Z", "USD", "1000", "4000", 20000);
+	post(f, "2026-08-11T00:00:00Z", "USD", "1200", "2000", 4000);
+	post(f, "2026-08-12T00:00:00Z", "USD", "1100", "4000", 1000);
+	post(f, "2026-08-13T00:00:00Z", "USD", "2000", "1000", 2000);
+	post(f, "2026-08-14T00:00:00Z", "USD", "1000", "2100", 500);
+	post(f, "2026-08-15T00:00:00Z", "USD", "1000", "3000", 7000);
+	r = report(f, "cash_flow", "2026-08", "USD", NULL);
+	g_assert_cmpint(cell(r, "net_income", "current"), ==, 21000);
+	g_assert_cmpint(cell(r, "receivables", "current"), ==, -1000);
+	g_assert_cmpint(cell(r, "payables", "current"), ==, 2000);
+	g_assert_cmpint(cell(r, "inventory", "current"), ==, -4000);
+	g_assert_cmpint(cell(r, "tax_payable", "current"), ==, 500);
+	g_assert_cmpint(cell(r, "cash_movement", "current"), ==, 25500);
+	g_assert_cmpint(cell(r, "difference", "current"), ==, 0);
+}
+
+static void
+test_source_reconciliation(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureVenture) venture = venture_venture_new();
+	g_autoptr(VentureSale) sale = venture_sale_new();
+	g_autoptr(VentureMoney) gross = venture_money_new_for_currency(1234, "USD");
+	g_autoptr(GDateTime) date = venture_time_from_string("2026-08-10", NULL);
+	g_autoptr(VentureReportResult) r = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *key = NULL;
+	(void)data;
+	g_object_set(venture, "name", "Books", "venture-type", "books", "organization-id", f->org, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(venture), NULL, &error));
+	g_object_set(sale, "venture-id", venture_entity_get_id(VENTURE_ENTITY(venture)),
+		"organization-id", f->org, "gross", gross, "occurred-at", date, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(sale), NULL, &error));
+	g_assert_no_error(error);
+	r = report(f, "pnl_reconciliation", "2026-08", "USD", NULL);
+	g_assert_cmpuint(venture_report_result_get_row_count(r), ==, 0);
+	g_assert_true(venture_database_delete(f->db, VENTURE_ENTITY(sale), NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&r);
+	r = report(f, "pnl_reconciliation", "2026-08", "USD", NULL);
+	key = g_strdup_printf("sale:%" G_GINT64_FORMAT, venture_entity_get_id(VENTURE_ENTITY(sale)));
+	g_assert_cmpint(cell(r, key, "difference"), ==, 1234);
+	g_assert_cmpint(cell(r, key, "ledger"), ==, 1234);
+	g_assert_cmpint(cell(r, key, "operational"), ==, 0);
+}
+
+static void
 test_prior_only(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureReportResult) r = NULL;
@@ -549,5 +605,7 @@ main(int argc, char **argv)
 	g_test_add("/statements/refusals", Fixture, NULL, setup, test_refusals, teardown);
 	g_test_add("/statements/organization", Fixture, NULL, setup, test_organization, teardown);
 	g_test_add("/statements/prior-only", Fixture, NULL, setup, test_prior_only, teardown);
+	g_test_add("/statements/controls", Fixture, NULL, setup, test_controls, teardown);
+	g_test_add("/statements/source-reconciliation", Fixture, NULL, setup, test_source_reconciliation, teardown);
 	return g_test_run();
 }

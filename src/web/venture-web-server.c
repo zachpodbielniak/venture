@@ -5664,13 +5664,13 @@ venture_web_ui_report(
 				g_string_append_printf(content, "<input type=\"hidden\" name=\"organization_id\" value=\"%" G_GINT64_FORMAT "\">",
 					venture_json_object_get_int(report_options, "organization_id", 0));
 			{
-				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "account_id", "compare_to", NULL };
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "account_id", NULL };
 				guint i;
 				/* Preserve the question when changing only its cutoff. */
 				for (i = 0; names[i] != NULL; i++)
 				{
 					const gchar *value = htmx_request_get_query_param(request, names[i]);
-					if (value == NULL || g_str_equal(names[i], "compare_to"))
+					if (value == NULL)
 						continue;
 					g_string_append_printf(content, "<input type=\"hidden\" name=\"%s\" value=\"", names[i]);
 					venture_html_escape_append(content, value);
