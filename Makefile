@@ -90,6 +90,8 @@ SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard
 
 SERVER_ONLY_SRCS += src/payables/venture-payables-service.c src/payables/venture-payable-reports.c
 
+CORE_SRCS += src/pipelines/venture-pipeline-records.c
+SERVER_ONLY_SRCS += $(filter-out src/pipelines/venture-pipeline-records.c,$(wildcard src/pipelines/*.c))
 CORE_SRCS += src/sequences/venture-sequence-records.c
 SERVER_ONLY_SRCS += $(filter-out src/sequences/venture-sequence-records.c,$(wildcard src/sequences/*.c))
 CORE_SRCS += src/autojournal/venture-posting-profile.c
@@ -132,8 +134,8 @@ PUBLIC_HDRS := \
 
 PUBLIC_HDRS += $(wildcard src/payables/*.h)
 PUBLIC_HDRS += $(wildcard src/banking/*.h)
-
-PUBLIC_HDRS += $(wildcard src/sequences/*.h)
+PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/pipelines/*.h))
+PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/sequences/*.h))
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/statements/*.h))
 
 TEST_SRCS := $(wildcard tests/test-*.c)

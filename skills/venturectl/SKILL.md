@@ -443,6 +443,14 @@ an account, auto/reconcile a statement, and match/unmatch/exclude/create a
 transaction. `bank match AUTO STATEMENT_ID` runs exact automatic matching.
 Match parameters are `{"parts":[{"type":"expense","id":1,"amount":"-10 USD"}]}`;
 exclude needs a reason, and receipt creation needs customer_id. See docs/banking.org.
+## Sales pipeline actions
+
+`venturectl deal move ID STAGE [NOTE]` calls the deal transition service.
+Use `describe pipeline_stage` and `list pipeline_stage` to find the destination.
+Fill required deal fields and a loss reason before moving to a lost stage.
+`update deal` cannot change either stage field or the closing timestamp.
+Reports: `stage_duration`, `funnel`, `forecast`, `loss_reasons`, `overdue_deals`;
+filter with `pipeline_id=N` and `owner=USERNAME`.
 ## Follow-up sequences
 
 Use `describe sequence`, `describe sequence_step` and

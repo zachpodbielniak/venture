@@ -70,4 +70,5 @@ The AI reads freely and cannot write unsupervised. A tool call that would change
 
 Two binaries, both statically linked against every vendored dependency: =venture= is the server, =venturectl= is the client. Either builds alone.
 
+- [[file:pipelines.org][Sales pipelines]] — configurable stages, next actions, history, loss reasons and forecasts
 - [[file:autojournal.org][Automatic journals]] — configurable sale/expense legs, dated refunds and backfill

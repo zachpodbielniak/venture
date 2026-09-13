@@ -78,6 +78,7 @@
 #include "model/venture-entity-registry.h"
 #include "model/venture-module.h"
 #include "periods/venture-period-records.h"
+#include "pipelines/venture-pipeline-records.h"
 #include "sequences/venture-sequence-records.h"
 #include "autojournal/venture-posting-profile.h"
 
@@ -132,6 +133,8 @@
 #include "core/venture-federation.h"
 #include "ledger/venture-posting-rule.h"
 #include "ledger/venture-posting-service.h"
+#include "pipelines/venture-deal-service.h"
+#include "pipelines/venture-pipeline-reports.h"
 #include "autojournal/venture-autojournal-service.h"
 #include "statements/venture-ledger-balances.h"
 #include "core/venture-ticket-relation.h"

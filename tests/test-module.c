@@ -159,6 +159,7 @@ test_module_dependency_conflict_is_refused(void)
 	venture_config_set_module_enabled(config, "invoicing", FALSE);
 	venture_config_set_module_enabled(config, "receivables", FALSE);
 	venture_config_set_module_enabled(config, "payables", FALSE);
+	venture_config_set_module_enabled(config, "pipelines", FALSE);
 	venture_config_set_module_enabled(config, "sequences", FALSE);
 	g_assert_true(venture_module_registry_configure(registry, config, &error));
 	g_assert_no_error(error);
@@ -597,6 +598,7 @@ fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "invoicing", FALSE);
 	venture_config_set_module_enabled(fixture->config, "receivables", FALSE);
 	venture_config_set_module_enabled(fixture->config, "payables", FALSE);
+	venture_config_set_module_enabled(fixture->config, "pipelines", FALSE);
 	venture_config_set_module_enabled(fixture->config, "sequences", FALSE);
 
 	fixture->database = venture_database_new("sqlite://:memory:", &error);
@@ -960,6 +962,7 @@ server_fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "invoicing", FALSE);
 	venture_config_set_module_enabled(fixture->config, "receivables", FALSE);
 	venture_config_set_module_enabled(fixture->config, "payables", FALSE);
+	venture_config_set_module_enabled(fixture->config, "pipelines", FALSE);
 	venture_config_set_module_enabled(fixture->config, "sequences", FALSE);
 	venture_config_set_module_enabled(fixture->config, "tickets", FALSE);
 	venture_config_set_module_enabled(fixture->config, "forge", FALSE);
