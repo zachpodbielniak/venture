@@ -6254,6 +6254,8 @@ venture_web_append_form_field(
  * only differences are the heading, where it posts and whether the fields
  * start filled.
  */
+static void venture_web_sequence_prefill(VentureEntity *record, HtmxRequest *request);
+
 static HtmxResponse *
 venture_web_ui_form(
 	HtmxRequest	*request,
@@ -6305,6 +6307,7 @@ venture_web_ui_form(
 	else
 	{
 		record = g_object_new(entity_type, NULL);
+		venture_web_sequence_prefill(record, request);
 	}
 
 	specs = venture_entity_get_field_specs(record);
@@ -8571,6 +8574,8 @@ venture_web_append_incident_block(
 	VentureEntity		*record
 );
 
+#include "sequences/venture-sequence-web.inc"
+
 static HtmxResponse *
 venture_web_ui_detail(
 	HtmxRequest	*request,
@@ -8673,6 +8678,7 @@ venture_web_ui_detail(
 
 	venture_web_append_record_actions(self, content, record, principal);
 	venture_web_append_related(self, content, record);
+	venture_web_sequence_panel(self, content, principal, record);
 
 	/* A link is not offered on a link; the audit log is not linkable. */
 	if ((VENTURE_TYPE_RECORD_LINK != entity_type) &&
@@ -27950,6 +27956,11 @@ venture_web_server_new(
 	htmx_router_get(router, "/federation/replicas/:id", venture_web_ui_federation_replica, self);
 	htmx_router_post(router, "/federation/pull", venture_web_ui_federation_write, self);
 	htmx_router_post(router, "/federation/replicas/:id/:action", venture_web_ui_federation_write, self);
+
+	htmx_router_post(router, "/api/v1/sequence/:id/enroll", venture_web_sequence_enroll, self);
+	htmx_router_post(router, "/api/v1/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
+	htmx_router_post(router, "/ui/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
+	htmx_router_post(router, "/api/v1/sequences/run", venture_web_sequence_run, self);
 
 	htmx_router_get(router, "/api/v1/:type", venture_web_api_list, self);
 	htmx_router_post(router, "/api/v1/:type", venture_web_api_create, self);

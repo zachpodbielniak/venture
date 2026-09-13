@@ -196,6 +196,25 @@ does the same for =create=, =update=, =delete= and =act= from the shell. It take
 =VENTURE_TOKEN= and refuses =--token= outright, since an MCP server is spawned
 from a config file. See [[file:mcp.org][venturectl mcp]].
 
+* Follow-up sequences
+
+=sequence enroll ID contact_id=ID [field=value ...]= enrolls through the
+sequence service. The ID names the sequence; other fields describe the
+=enrollment=, including =deal_id=, =lead_id=, =owner_id= and
+=enrollment_reason=. =--stage sequence enroll= proposes enrollment for
+approval. The ordinary =create sequence_enrollment= path has the same
+validation and supports the assistant's standard staged create tool.
+
+=sequence run [--as-of ISO_TIMESTAMP] [organization_id=ID]= executes up to
+1000 due enrollments in one organization, defaulting to the server's default
+organization. A timestamp must carry its timezone. Omit it for now.
+=sequence status ENROLLMENT_ID= reads the enrollment and its delivery history.
+The command returns pending delivery rows; it does not send mail.
+
+Configure sequences and their steps with ordinary =create= / =update=
+commands after =describe sequence= and =describe sequence_step=. Sending
+hours and weekdays are interpreted in the sequence timezone. See
+[[file:sequences.org][follow-up sequences]] for checkpoints and the adapter contract.
 * Record actions
 
 =venturectl act TYPE ID ACTION [key=value ...]= discovers the action and

@@ -236,6 +236,8 @@ test_report_registry_has_builtins(
 	g_assert_nonnull(venture_report_registry_lookup(registry, "tax"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "receivables"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "snapshot_vs_live"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "sequence_performance"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "sequence_failures"));
 	g_assert_null(venture_report_registry_lookup(registry, "nonesuch"));
 }
 
