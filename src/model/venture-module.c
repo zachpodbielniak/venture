@@ -533,6 +533,19 @@ static GType (*const venture_module_periods_types[]) (void) = {
 };
 static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live", NULL };
 
+static const gchar *const quotes_requires[] = { "crm", "invoicing", NULL };
+static const gchar *const quotes_reports[] = { "quotes", NULL };
+static GType (*const quotes_types[]) (void) = {
+	venture_price_list_get_type,
+	venture_price_list_item_get_type,
+	venture_quote_get_type,
+	venture_quote_line_get_type,
+	venture_quote_event_get_type,
+	venture_quote_delivery_get_type,
+	venture_quote_action_get_type,
+	NULL
+};
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -674,7 +687,9 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"periods", "Fiscal periods", "Fiscal calendars, closing controls and historical reports.",
 		venture_module_requires_finance, NULL,
 		venture_module_periods_types, venture_module_reports_periods, NULL, FALSE
-	}
+	},
+	{ "quotes", "Quotes", "Versioned commercial proposals and acceptance.",
+		quotes_requires, NULL, quotes_types, quotes_reports, NULL, FALSE }
 };
 
 const VentureModuleInfo *

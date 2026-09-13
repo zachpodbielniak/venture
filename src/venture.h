@@ -93,6 +93,8 @@
 #include "mcp/venture-mcp-catalog.h"
 #include "mcp/venture-mcp-server.h"
 
+ #include "quotes/venture-quote-records.h"
+
 /* --- Server-only subsystems ---------------------------------------------- */
 
 #ifdef VENTURE_SERVER_BUILD
@@ -115,6 +117,7 @@
 
 #include "report/venture-report.h"
 #include "receivables/venture-settlement-service.h"
+#include "quotes/venture-quote-service.h"
 #include "periods/venture-period-report.h"
 
 /* The confirmation store comes first: the context owns one and names its

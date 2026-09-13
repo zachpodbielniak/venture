@@ -60,7 +60,8 @@ static const VentureFieldDecl venture_organization_fields[] = {
 	              "Used when a record does not name an organisation",
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
-	              VENTURE_COLUMN_FLAG_INDEXED)
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("quote-valid-days", "Quote validity days", "Zero uses 30 days", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureOrganization, venture_organization, venture_organization_fields,
@@ -2687,7 +2688,9 @@ static const VentureFieldDecl venture_invoice_line_fields[] = {
 	              VENTURE_FIELD_KIND_DOUBLE, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("unit-price", "Unit price", NULL),
 	VENTURE_FIELD("position", "Position", "Order on the invoice",
-	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("discount-percent", "Discount percent", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("tax-percent", "Tax percent", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY(VentureInvoiceLine, venture_invoice_line,
@@ -2724,8 +2727,14 @@ venture_invoice_line_get_amount(
 	thousandths = (gint64)(quantity * 1000.0 +
 	                       ((quantity >= 0.0) ? 0.5 : -0.5));
 
-	return venture_money_multiply_rational(unit_price, thousandths, 1000,
-	                                       error);
+	{
+		g_autoptr(VentureMoney) subtotal = venture_money_multiply_rational(unit_price, thousandths, 1000, error);
+		gint64 discount_percent;
+		gint64 tax_percent;
+		g_object_get(self, "discount-percent", &discount_percent, "tax-percent", &tax_percent, NULL);
+		if (subtotal == NULL) return NULL;
+		return venture_quote_apply_percentages(subtotal, discount_percent, tax_percent, error);
+	}
 }
 
 /*

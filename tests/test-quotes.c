@@ -2,6 +2,8 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
 #include <string.h>
+#include <libsoup/soup.h>
+#include "venture-test-util.h"
 
 typedef struct {
 	VentureDatabase *db;
@@ -148,6 +150,7 @@ rows(Fixture *f, const gchar *name)
 	GPtrArray *result;
 	venture_query_set_organization(query, f->org);
 	venture_query_set_limit(query, 0);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
 	result = venture_database_find(f->db, query, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(result);
@@ -287,6 +290,154 @@ test_freeze(Fixture *f, gconstpointer data)
 	}
 }
 
+static void
+test_prices(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) q = quote(f, "Priced");
+	g_autoptr(VentureEntity) product = record(f, "product");
+	g_autoptr(VentureEntity) list = record(f, "price_list");
+	g_autoptr(VentureEntity) item = record(f, "price_list_item");
+	g_autoptr(VentureEntity) l = record(f, "quote_line");
+	g_object_set(product, "name", "Service", NULL);
+	field(product, "list-price", "50 USD");
+	save(f, product);
+	g_object_set(list, "name", "Default", "currency", "USD", "is-default", TRUE, NULL);
+	save(f, list);
+	g_object_set(item, "price-list-id", venture_entity_get_id(list), "product-id", venture_entity_get_id(product), NULL);
+	field(item, "unit-price", "42 USD");
+	field(item, "min-quantity", "2");
+	save(f, item);
+	g_object_set(l, "quote-id", venture_entity_get_id(q), "product-id", venture_entity_get_id(product), "description", "Service", NULL);
+	field(l, "quantity", "3");
+	save(f, l);
+	g_assert_cmpint(amount(l, "unit-price"), ==, 4200);
+}
+
+static void
+test_scope(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) q = quote(f, "Q-1");
+	g_autoptr(VentureEntity) duplicate = record(f, "quote");
+	g_autoptr(GError) error = NULL;
+	g_object_set(duplicate, "number", "Q-1", "currency", "USD", NULL);
+	g_assert_false(venture_database_save(f->db, duplicate, NULL, &error));
+	g_clear_error(&error);
+	{
+		g_autoptr(VentureEntity) org = record(f, "organization");
+		g_autoptr(VentureEntity) q2 = record(f, "quote");
+		g_object_set(org, "name", "Other", NULL);
+		save(f, org);
+		venture_entity_set_organization_id(q2, venture_entity_get_id(org));
+		g_object_set(q2, "number", "Q-1", "currency", "USD", NULL);
+		save(f, q2);
+		g_object_set(q2, "company-id", f->company, NULL);
+		g_assert_false(venture_database_save(f->db, q2, NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+	}
+}
+
+static void
+test_stale(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) q = quote(f, "Q-1");
+	g_autoptr(VentureEntity) l = line(f, q);
+	g_autoptr(VentureEntity) a = request(f, q, "send");
+	g_autoptr(GError) error = NULL;
+	field(l, "unit-price", "30 USD");
+	save(f, l);
+	g_assert_false(venture_database_save(f->db, a, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	status(f, q, "draft");
+}
+
+typedef struct { gboolean done; GBytes *body; GError *error; } HttpResult;
+
+static void
+http_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+	HttpResult *r = data;
+	r->body = soup_session_send_and_read_finish(SOUP_SESSION(source), result, &r->error);
+	r->done = TRUE;
+}
+
+static guint
+http(SoupSession *session, const gchar *base, const gchar *method, const gchar *path, const gchar *body, gchar **response)
+{
+	g_autofree gchar *url = g_strconcat(base, path, NULL);
+	g_autoptr(SoupMessage) message = soup_message_new(method, url);
+	HttpResult r = { FALSE, NULL, NULL };
+	guint code;
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	if (body != NULL)
+	{
+		g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
+		soup_message_set_request_body_from_bytes(message, "application/json", bytes);
+	}
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, http_done, &r);
+	while (!r.done) g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(r.error);
+	*response = g_strndup(g_bytes_get_data(r.body, NULL), g_bytes_get_size(r.body));
+	code = soup_message_get_status(message);
+	g_bytes_unref(r.body);
+	return code;
+}
+
+static void
+test_http(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) q = quote(f, "Public-proposal");
+	g_autoptr(VentureEntity) l = line(f, q);
+	g_autoptr(VentureEntity) current = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(SoupSession) session = soup_session_new();
+	g_autoptr(GSocketListener) probe = g_socket_listener_new();
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *dir = g_dir_make_tmp("venture-quotes-http-XXXXXX", NULL);
+	g_autofree gchar *base = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *token = NULL;
+	guint port = g_socket_listener_add_any_inet_port(probe, NULL, &error);
+	g_assert_no_error(error);
+	g_clear_object(&probe);
+	base = g_strdup_printf("http://127.0.0.1:%u", port);
+	g_object_set(f->config, "server-bind-address", "127.0.0.1", "server-port", (gint64)port,
+		"security-require-auth", FALSE, "state-dir", dir, NULL);
+	server = venture_web_server_new(f->context, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(server, &error));
+	g_assert_no_error(error);
+	path = g_strdup_printf("/api/v1/quotes/%" G_GINT64_FORMAT "/send", venture_entity_get_id(q));
+	g_assert_cmpuint(http(session, base, "POST", path, "{}", &body), ==, 200);
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(http(session, base, "GET", "/q/wrong-token", NULL, &body), ==, 404);
+	g_clear_pointer(&body, g_free);
+	current = fresh(f, "quote", venture_entity_get_id(q));
+	g_object_get(current, "acceptance-token", &token, NULL);
+	g_assert_cmpuint(strlen(token), ==, 64);
+	g_clear_pointer(&path, g_free);
+	path = g_strconcat("/q/", token, NULL);
+	g_assert_cmpuint(http(session, base, "GET", path, NULL, &body), ==, 200);
+	g_assert_nonnull(strstr(body, "Public-proposal"));
+	g_assert_nonnull(strstr(body, "56.67"));
+	g_assert_null(strstr(body, "company_id"));
+	g_assert_null(strstr(body, "/e/"));
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&path, g_free);
+	path = g_strconcat("/q/", token, "/accept", NULL);
+	g_assert_cmpuint(http(session, base, "POST", path, "{\"accepted_by\":\"Public Buyer\"}", &body), ==, 200);
+	status(f, q, "accepted");
+	{
+		g_autoptr(GPtrArray) events = rows(f, "quote_event");
+		g_autofree gchar *method = NULL;
+		g_object_get(g_ptr_array_index(events, 1), "method", &method, NULL);
+		g_assert_cmpstr(method, ==, "web");
+	}
+	venture_web_server_stop(server);
+	g_clear_object(&server);
+	venture_test_remove_tree(dir);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -297,5 +448,9 @@ main(int argc, char **argv)
 	g_test_add("/quotes/lifecycle", Fixture, NULL, setup, test_lifecycle, teardown);
 	g_test_add("/quotes/rollback", Fixture, NULL, setup, test_rollback, teardown);
 	g_test_add("/quotes/freeze-revision", Fixture, NULL, setup, test_freeze, teardown);
+	g_test_add("/quotes/prices", Fixture, NULL, setup, test_prices, teardown);
+	g_test_add("/quotes/scope", Fixture, NULL, setup, test_scope, teardown);
+	g_test_add("/quotes/stale", Fixture, NULL, setup, test_stale, teardown);
+	g_test_add("/quotes/http", Fixture, NULL, setup, test_http, teardown);
 	return g_test_run();
 }
