@@ -536,6 +536,12 @@ static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live
 static GType (*const venture_module_mail_types[]) (void) = {
 	venture_mail_message_get_type, venture_mail_template_get_type, NULL
 };
+static GType (*const venture_module_leads_types[]) (void) = {
+	venture_lead_get_type, venture_lead_form_get_type,
+	venture_lead_assignment_rule_get_type, NULL
+};
+static const gchar *const venture_module_reports_leads[] = { "lead_sources", "lead_response_time", "leads_recycled_due", NULL };
+static const gchar *const venture_module_requires_leads[] = { "crm", NULL };
 static GType (*const venture_module_activities_types[]) (void) = {
 	venture_activity_get_type, venture_activity_type_get_type, NULL
 };
@@ -726,6 +732,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"mail", "Transactional mail", "Durable outbound messages and templates.",
 		venture_module_requires_core, NULL, venture_module_mail_types, NULL, NULL, FALSE
+	},
+	{
+		"leads", "Leads", "Capture, qualify, assign and convert inquiries.",
+		venture_module_requires_leads, NULL, venture_module_leads_types,
+		venture_module_reports_leads, NULL, FALSE
 	},
 	{
 		"activities", "Planned activities", "Tasks, calls, meetings and the daily worklist.",

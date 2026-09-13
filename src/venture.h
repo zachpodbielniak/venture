@@ -80,6 +80,7 @@
 #include "periods/venture-period-records.h"
 #include "mail/venture-mail-records.h"
 
+#include "leads/venture-lead-records.h"
 #include "activities/venture-activity-records.h"
 #include "pipelines/venture-pipeline-records.h"
 #include "sequences/venture-sequence-records.h"
@@ -128,6 +129,7 @@
 #include "mail/venture-smtp-mailer.h"
 #include "mail/venture-mail-outbox.h"
 #include "mail/venture-mail-template.h"
+#include "leads/venture-lead-service.h"
 #include "payables/venture-payables-service.h"
 #include "banking/venture-bank-match-service.h"
 #include "sequences/venture-sequence-service.h"

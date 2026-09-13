@@ -56,6 +56,7 @@ struct _VentureDatabase
 	 * through venture_database_save(), so every writer gets the check.
 	 */
 	GPtrArray		*validators;
+	VentureLeadService *lead_service;
 	VentureActivityService *activities;
 	VenturePayablesService *payables;
 	VentureBankMatchService *bank_match_service;
@@ -112,6 +113,7 @@ venture_database_finalize(GObject *object)
 	g_clear_object(&self->sequence_service);
 	g_clear_object(&self->actions);
 	g_clear_object(&self->transaction);
+	g_clear_object(&self->lead_service);
 
 	if (NULL != self->connection)
 	{
@@ -1099,6 +1101,12 @@ venture_database_save(
 
 	{
 		gboolean handled;
+		gboolean ok = venture_lead_service_save_hook(venture_database_get_lead_service(self), entity, actor, &handled, error);
+		if (handled || !ok) return ok;
+	}
+
+	{
+		gboolean handled;
 		gboolean ok = venture_pipelines_save(self, entity, actor, &handled, error);
 		if (handled || !ok)
 			return ok;
@@ -2074,6 +2082,17 @@ VentureMailOutbox *venture_database_get_mail_outbox(VentureDatabase *self)
 	if (!self->mail_outbox)
 		self->mail_outbox = g_object_new(VENTURE_TYPE_MAIL_OUTBOX, "database", self, NULL);
 	return self->mail_outbox;
+}
+
+VentureLeadService *
+venture_database_get_lead_service(VentureDatabase *self)
+{
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), NULL);
+	g_rec_mutex_lock(&self->lock);
+	if (self->lead_service == NULL)
+		self->lead_service = g_object_new(VENTURE_TYPE_LEAD_SERVICE, "database", self, NULL);
+	g_rec_mutex_unlock(&self->lock);
+	return self->lead_service;
 }
 
 VentureActivityService *

@@ -141,9 +141,12 @@ struct _VentureWebServer
 	 * access log.
 	 */
 	GHashTable	*chat_turns;
+	HtmxRateLimiter *lead_limiter;
 };
 
 G_DEFINE_FINAL_TYPE(VentureWebServer, venture_web_server, G_TYPE_OBJECT)
+
+static void venture_web_append_lead_actions(GString *html, VentureEntity *record);
 
 /*
  * The server is reachable from route callbacks through the user_data pointer
@@ -163,6 +166,7 @@ venture_web_server_finalize(GObject *object)
 	g_clear_pointer(&self->base_url, g_free);
 	g_clear_pointer(&self->reveals, g_hash_table_unref);
 	g_clear_pointer(&self->chat_turns, g_hash_table_unref);
+	g_clear_object(&self->lead_limiter);
 
 	G_OBJECT_CLASS(venture_web_server_parent_class)->finalize(object);
 }
@@ -8742,6 +8746,8 @@ venture_web_ui_detail(
 	 * the forge rather than stored, so neither can drift from it. */
 	if (VENTURE_TYPE_FORGE_REPO == entity_type)
 		venture_web_append_repo_block(self, content, record);
+
+	if (VENTURE_IS_LEAD(record)) venture_web_append_lead_actions(content, record);
 
 	/* The factory's pages: what a release shipped and the actions on it,
 	 * a milestone's progress, what an environment is running. */
@@ -27620,6 +27626,8 @@ venture_web_api_ticket_draft(
 #include "mail/venture-mail-web.inc"
 #include "pipelines/venture-pipeline-web.inc"
 
+#include "leads/venture-lead-web.inc"
+
 VentureWebServer *
 venture_web_server_new(
 	VentureContext	 *context,
@@ -27878,6 +27886,9 @@ venture_web_server_new(
 
 	/* API */
 	htmx_router_get(router, "/api/v1/health", venture_web_api_health, self);
+	htmx_router_post(router, "/f/:token", venture_web_lead_capture, self);
+	htmx_router_post(router, "/api/v1/leads/:id/:action", venture_web_lead_action, self);
+	htmx_router_post(router, "/leads/:id/:action", venture_web_lead_action, self);
 	htmx_router_get(router, "/api/v1/factory", venture_web_api_factory, self);
 	htmx_router_post(router, "/api/v1/post/backfill", venture_web_autojournal_backfill, self);
 	htmx_router_get(router, "/api/v1/inbox", venture_web_api_inbox, self);

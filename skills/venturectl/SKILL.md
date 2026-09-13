@@ -430,6 +430,17 @@ submits due rows. `mail list state=uncertain` lists uncertain acceptance;
 uncertain rows. Actions reject `--stage`; propose an enqueue with the generic
 `--stage create mail_message` command when approval is required.
 
+## Leads
+
+Use `describe lead` before capture or qualification. `lead convert ID
+[deal=yes|no] [company_id=ID] [contact_id=ID]` requires a qualified lead and
+creates or links CRM records atomically. `--stage` proposes conversion for
+approval. Never set `status=converted` or conversion ids with generic updates.
+`lead reassign ID [owner=NAME]` assigns explicitly or reruns the matching
+rules; staged reassignment is refused. Recycle with `update lead ID
+status=recycled unqualified_reason=... recycle_until=YYYY-MM-DD`.
+Reports are `lead_sources`, `lead_response_time` and `leads_recycled_due`;
+see `docs/leads.org` for definitions and public capture forms.
 ## Planned activities
 
 `activity complete ID outcome=...` completes a planned activity, writes interaction history and advances recurrence atomically. `activity list mine|overdue|today` reads your daily worklist. Generic `create activity` and `update activity` edit the plan; generic `status=done` is refused. The existing `activity TYPE ID` command still reads a record timeline. Use `report worklist organization_id=ID` for the current UTC week per owner.
@@ -495,7 +506,7 @@ with header fields and a `lines` array. Both support `--stage`. Use real
 source and account IDs from the same organization. Invalid lines leave no
 draft behind; closed periods and repeat reversals are refused.
 
-The `--stage` help lists `create/update/delete/act/sequence enroll`; the same flag also
+The `--stage` help lists `create/update/delete/act/sequence enroll/lead convert`; the same flag also
 applies to a type-level journal creation at ID zero.
 
 ### Automatic journals

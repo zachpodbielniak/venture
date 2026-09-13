@@ -486,7 +486,7 @@ test_upgrade_restart(void)
 	id = venture_entity_get_id(VENTURE_ENTITY(company));
 	/* Recreate the previous migration history with real CRM data, and no
 	 * activity table because the module has always been disabled. */
-	g_assert_true(venture_database_execute(db, "DELETE FROM schema_migrations WHERE version=120; DROP INDEX activities_notification_target", NULL, &error));
+	g_assert_true(venture_database_execute(db, "DELETE FROM schema_migrations WHERE version>=120; DROP INDEX activities_notification_target", NULL, &error));
 	g_clear_object(&context);
 	g_clear_object(&db);
 	for (run = 0; run < 2; run++)

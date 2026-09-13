@@ -206,6 +206,15 @@ that row and Message-ID. All accept =organization_id=N= where relevant.
 See [[file:mail.org][mail]] for uncertainty and scheduling. Actions reject
 =--stage=; =--stage create mail_message= proposes an enqueue instead.
 
+* Leads
+
+=venturectl lead convert ID [deal=yes|no] [company_id=ID] [contact_id=ID]=
+converts a qualified inquiry atomically. =--stage= queues conversion for
+approval. =venturectl lead reassign ID [owner=NAME]= assigns explicitly or
+runs matching rules again. Generic =create/update lead= supports capture and
+qualification; converted state and references belong to the service.
+Recycle with =status=recycled unqualified_reason=... recycle_until=YYYY-MM-DD=.
+See [[file:leads.org][leads]] for capture forms, duplicate policies and reports.
 * Planned activities
 
 =venturectl activity complete ID outcome=...= completes planned work through
