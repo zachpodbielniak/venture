@@ -79,12 +79,16 @@ introduce field permissions.
 
 Organization membership, including organization owner or admin, cannot grant access to another user's personal record. Global administrator authority remains unchanged.
 
+Watch and notification rows also require current read access to their referenced business record, so retained labels and excerpts do not expose revoked access through the inbox.
+
 Filters supplied by callers only narrow access. The current implementation
 filters candidate records before applying offset and limit; its cost grows
 with the candidate set. Reports and plugins must use the repository's typed
 read methods, not raw SQL, for user-requested data. Internal jobs without a
 request principal retain their service authority; a new user-facing tool must
 enter a policy scope with its caller, as the built-in assistant tools do.
+
+Database audit, save, delete and transaction notifications invoke trusted service consumers independently of the triggering request's read scope, preserving notifications to other users and configured automation. Delayed webhook delivery and coding-progress callbacks likewise restore service authority before updating their records.
 
 * Proposals and posting
 

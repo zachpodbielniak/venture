@@ -621,7 +621,10 @@ venture_database_commit(
 	self->transaction_owner = NULL;
 	g_rec_mutex_unlock(&self->lock);
 
-	g_signal_emit(self, venture_database_signals[SIGNAL_TRANSACTION_FINISHED], 0, ok);
+	{
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(self), NULL);
+		g_signal_emit(self, venture_database_signals[SIGNAL_TRANSACTION_FINISHED], 0, ok);
+	}
 
 	if (!ok)
 	{
@@ -654,6 +657,7 @@ venture_database_rollback(VentureDatabase *self)
 	 */
 	if (NULL != self->transaction)
 	{
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(self), NULL);
 		orm_transaction_rollback(self->transaction, NULL);
 		g_clear_object(&self->transaction);
 		g_signal_emit(self, venture_database_signals[SIGNAL_TRANSACTION_FINISHED], 0, FALSE);
@@ -719,7 +723,8 @@ venture_database_record_audit(
 		return;
 	}
 
-	g_clear_object(&internal);
+	/* Notifications, outbound webhooks and automation are trusted service
+	 * reactions to an already-authorized write, including other recipients. */
 	g_signal_emit(self, venture_database_signals[SIGNAL_AUDIT], 0, entry);
 }
 
@@ -1188,8 +1193,11 @@ venture_database_save(
 		created ? VENTURE_AUDIT_ACTION_CREATE : VENTURE_AUDIT_ACTION_UPDATE,
 		entity, diff, actor);
 
-	g_signal_emit(self, venture_database_signals[SIGNAL_ENTITY_SAVED], 0,
-	              entity, created);
+	{
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(self), NULL);
+		g_signal_emit(self, venture_database_signals[SIGNAL_ENTITY_SAVED], 0,
+		              entity, created);
+	}
 
 	return TRUE;
 }
@@ -1428,8 +1436,11 @@ venture_database_delete(
 	venture_database_record_audit(self, VENTURE_AUDIT_ACTION_DELETE, entity,
 	                              NULL, actor);
 
-	g_signal_emit(self, venture_database_signals[SIGNAL_ENTITY_DELETED], 0,
-	              entity);
+	{
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(self), NULL);
+		g_signal_emit(self, venture_database_signals[SIGNAL_ENTITY_DELETED], 0,
+		              entity);
+	}
 
 	return TRUE;
 }

@@ -178,6 +178,9 @@ venture_work_service_apply(gpointer user_data)
 	ApplyData *data = user_data;
 	VentureWorkService *self = data->self;
 	VentureWorkUpdate *update = data->update;
+	/* Background progress carries service authority, never an incidental request. */
+	g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(
+		venture_database_get_access_policy(venture_context_get_database(self->context)), NULL);
 	g_autoptr(VentureEntity) run = NULL;
 	g_autoptr(GDateTime) now = NULL;
 	g_autoptr(GError) error = NULL;
@@ -1295,6 +1298,8 @@ venture_work_session_apply(gpointer user_data)
 {
 	SessionUpdate *update = user_data;
 	VentureWorkService *self = update->self;
+	g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(
+		venture_database_get_access_policy(venture_context_get_database(self->context)), NULL);
 	g_autoptr(VentureEntity) session = NULL;
 	g_autoptr(GDateTime) now = NULL;
 	VentureActor actor;

@@ -338,7 +338,30 @@ venture_access_policy_can(VentureAccessPolicy *self, const VentureAuthPrincipal 
 		if (personal_record(entity))
 		{
 			if (venture_access_policy_has_membership(self, actor) && personal_owner(self, actor, entity, 0))
+			{
+				/* Inbox rows retain labels and excerpts: ownership alone must
+				 * not expose a business record after its access is revoked. */
+				if (VENTURE_IS_NOTIFICATION(entity) || VENTURE_IS_WATCH(entity))
+				{
+					g_autofree gchar *target_type = NULL;
+					gint64 target_id = reference(entity, "target-id");
+					g_object_get(entity, "target-type", &target_type, NULL);
+					if (target_id > 0 && !venture_string_is_empty(target_type))
+					{
+						g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(self, NULL);
+						g_autoptr(VentureEntity) target = NULL;
+						GType type = venture_entity_registry_lookup(venture_entity_registry_get_default(), target_type);
+						if (type != G_TYPE_INVALID)
+							target = venture_database_get(self->database, type, target_id, NULL);
+						/* Personal targets are not published by the notifier;
+						 * refusing them also bounds malicious reference cycles. */
+						if (target == NULL || personal_record(target) ||
+							!venture_access_policy_can(self, actor, "read", target, NULL))
+							return refuse(error, read);
+					}
+				}
 				goto allowed;
+			}
 			return refuse(error, read);
 		}
 		org = VENTURE_IS_ORGANIZATION(entity) ? venture_entity_get_id(entity) : venture_entity_get_organization_id(entity);

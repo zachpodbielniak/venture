@@ -454,6 +454,64 @@ assert_protocol_authority(HtmxContext *http, gpointer data)
 	g_assert_null(venture_access_policy_get_actor(policy));
 }
 
+/* A writer's privacy boundary must not hide another user's watch from the
+ * trusted notification consumer, nor expose that watch to the writer. */
+static void
+test_watched_change_scope(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureEntity) writer = g_object_new(VENTURE_TYPE_USER, "username", "writer", "active", TRUE, NULL);
+	g_autoptr(VentureEntity) watcher = g_object_new(VENTURE_TYPE_USER, "username", "watcher", "active", TRUE, NULL);
+	g_autoptr(VentureEntity) member = NULL;
+	g_autoptr(VentureEntity) watcher_member = NULL;
+	g_autoptr(VentureEntity) company = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureAuthPrincipal principal;
+	VentureActor actor;
+	gchar writer_name[] = "writer";
+	gchar watcher_name[] = "watcher";
+	gint64 org;
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	context = venture_context_new(config, db);
+	org = venture_context_get_default_organization_id(context);
+	g_assert_true(venture_database_save(db, writer, NULL, &error));
+	g_assert_true(venture_database_save(db, watcher, NULL, &error));
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", venture_entity_get_id(writer), "organization-id", org, "active", TRUE, "role", VENTURE_ORGANIZATION_ROLE_EDITOR, NULL);
+	g_assert_true(venture_database_save(db, member, NULL, &error));
+	watcher_member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", venture_entity_get_id(watcher), "organization-id", org, "active", TRUE, "role", VENTURE_ORGANIZATION_ROLE_EDITOR, NULL);
+	g_assert_true(venture_database_save(db, watcher_member, NULL, &error));
+	company = g_object_new(VENTURE_TYPE_COMPANY, "name", "Before", "organization-id", org, NULL);
+	g_assert_true(venture_database_save(db, company, NULL, &error));
+	g_assert_true(venture_notify_watch(context, venture_entity_get_id(watcher), "company", venture_entity_get_id(company), &error));
+	principal.user_id = venture_entity_get_id(writer);
+	principal.token_id = 0;
+	principal.name = writer_name;
+	principal.role = VENTURE_USER_ROLE_EDITOR;
+	principal.authenticated = TRUE;
+	venture_auth_to_actor(&principal, &actor);
+	scope = venture_access_policy_enter(venture_database_get_access_policy(db), &principal);
+	g_object_set(company, "name", "After", NULL);
+	g_assert_true(venture_database_save(db, company, &actor, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_notify_unread_count(context, venture_entity_get_id(watcher)), ==, 0);
+	g_clear_object(&scope);
+	g_assert_cmpint(venture_notify_unread_count(context, venture_entity_get_id(watcher)), ==, 1);
+	principal.user_id = venture_entity_get_id(watcher);
+	principal.name = watcher_name;
+	scope = venture_access_policy_enter(venture_database_get_access_policy(db), &principal);
+	g_assert_cmpint(venture_notify_unread_count(context, principal.user_id), ==, 1);
+	g_clear_object(&scope);
+	/* A sales member without ownership still has membership, but cannot
+	 * read retained excerpts of the company they no longer administer. */
+	g_object_set(watcher_member, "role", VENTURE_ORGANIZATION_ROLE_SALES, NULL);
+	g_assert_true(venture_database_save(db, watcher_member, NULL, &error));
+	scope = venture_access_policy_enter(venture_database_get_access_policy(db), &principal);
+	g_assert_cmpint(venture_notify_unread_count(context, principal.user_id), ==, 0);
+}
+
 /* Webhooks may arrive inside a nested main loop driven by an unrelated
  * authenticated request. Their protocol authority must be independent. */
 static void
@@ -495,5 +553,6 @@ main(int argc, char **argv)
 	g_test_add_func("/orgaccess/bootstrap-rollback", test_bootstrap_rollback);
 	g_test_add_func("/orgaccess/pagination-and-picker", test_pagination_and_picker);
 	g_test_add_func("/orgaccess/nested-protocol-scope", test_nested_protocol_scope);
+	g_test_add_func("/orgaccess/watched-change-scope", test_watched_change_scope);
 	return g_test_run();
 }
