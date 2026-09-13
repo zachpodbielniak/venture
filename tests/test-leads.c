@@ -35,6 +35,7 @@ typedef struct {
 	SoupSession *session;
 	gchar *state_dir;
 	guint16 port;
+	gboolean require_auth;
 } Fixture;
 
 static void
@@ -184,7 +185,7 @@ start_http(Fixture *f)
 	f->state_dir = g_dir_make_tmp("venture-leads-XXXXXX", NULL);
 	f->port = (guint16)g_random_int_range(20000, 60000);
 	g_object_set(f->config, "state-dir", f->state_dir, "server-port", (gint64)f->port,
-		"server-bind-address", "127.0.0.1", "security-require-auth", FALSE, NULL);
+		"server-bind-address", "127.0.0.1", "security-require-auth", f->require_auth, NULL);
 	f->server = venture_web_server_new(f->context, &error);
 	g_assert_no_error(error);
 	started = venture_web_server_start(f->server, &error);
@@ -226,8 +227,9 @@ test_capture(Fixture *f, gconstpointer data)
 	(void)data;
 	g_object_set(form, "public-token", "capture-test", "active", TRUE, "on-duplicate", "merge", "honeypot", "fax", NULL);
 	save(f, form);
+	f->require_auth = TRUE;
 	start_http(f);
-	g_assert_cmpuint(post(f, "/f/capture-test", "name=Alice&email=Alice%2Bweb%40example.com", FALSE), ==, 200);
+	g_assert_cmpuint(post(f, "/f/capture-test", "name=Alice&email=Alice%2Bweb%40example.com&organization_id=999&owner=intruder&status=converted", FALSE), ==, 200);
 	g_assert_cmpuint(post(f, "/f/capture-test", "{\"name\":\"Alice\",\"email\":\"alice@example.com\"}", TRUE), ==, 200);
 	g_assert_cmpint(count(f, "lead"), ==, 1);
 	g_assert_cmpint(count(f, "interaction"), ==, 1);

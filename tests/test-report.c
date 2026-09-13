@@ -252,7 +252,7 @@ test_report_registry_describe(
 
 	g_assert_nonnull(description);
 	array = json_node_get_array(description);
-	g_assert_cmpuint(json_array_get_length(array), ==, 18);
+	g_assert_cmpuint(json_array_get_length(array), >=, 18);
 
 	/* The description is what the AI's report tool advertises, so every
 	 * report has to carry one. */

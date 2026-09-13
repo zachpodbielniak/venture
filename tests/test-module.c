@@ -592,6 +592,7 @@ fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "crm", FALSE);
 	venture_config_set_module_enabled(fixture->config, "invoicing", FALSE);
 	venture_config_set_module_enabled(fixture->config, "receivables", FALSE);
+	venture_config_set_module_enabled(fixture->config, "leads", FALSE);
 
 	fixture->database = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
@@ -953,6 +954,7 @@ server_fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "crm", FALSE);
 	venture_config_set_module_enabled(fixture->config, "invoicing", FALSE);
 	venture_config_set_module_enabled(fixture->config, "receivables", FALSE);
+	venture_config_set_module_enabled(fixture->config, "leads", FALSE);
 	venture_config_set_module_enabled(fixture->config, "tickets", FALSE);
 	venture_config_set_module_enabled(fixture->config, "forge", FALSE);
 	venture_config_set_module_enabled(fixture->config, "factory", FALSE);
