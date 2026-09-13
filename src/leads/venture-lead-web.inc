@@ -17,6 +17,7 @@ venture_web_lead_capture(HtmxRequest *request, GHashTable *params, gpointer data
 	g_autoptr(JsonObject) fields = NULL;
 	GBytes *bytes = htmx_request_get_body_bytes(request);
 	g_autofree gchar *address = venture_auth_remote_address(request);
+	g_autofree gchar *redirect = NULL;
 	gint64 max_mb = 0, rate = 0;
 	gsize length = bytes != NULL ? g_bytes_get_size(bytes) : 0;
 	const gchar *content_type = htmx_request_get_content_type(request);
@@ -50,7 +51,9 @@ venture_web_lead_capture(HtmxRequest *request, GHashTable *params, gpointer data
 	}
 	else return venture_web_lead_ack(415);
 	if (!venture_lead_service_capture(venture_database_get_lead_service(venture_context_get_database(self->context)),
-		g_hash_table_lookup(params, "token"), fields, &error)) return venture_web_error_response(error);
+		g_hash_table_lookup(params, "token"), fields, &redirect, &error)) return venture_web_error_response(error);
+	if (!venture_string_is_empty(redirect) && g_str_has_prefix(content_type, "application/x-www-form-urlencoded"))
+		return venture_web_redirect_to(redirect);
 	return venture_web_lead_ack(200);
 }
 
@@ -80,7 +83,7 @@ venture_web_lead_action(HtmxRequest *request, GHashTable *params, gpointer data)
 	if (gate != NULL) return gate;
 	id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
 	lead = venture_database_get(db, VENTURE_TYPE_LEAD, id, &error);
-	if (lead == NULL) return venture_web_error_response(error);
+	if (lead == NULL) return venture_web_lead_ack(404);
 	if (ui)
 	{
 		options = json_object_new();
@@ -111,6 +114,10 @@ venture_web_lead_action(HtmxRequest *request, GHashTable *params, gpointer data)
 	}
 	else if (g_strcmp0(action, "reassign") == 0)
 	{
+		gboolean stage = FALSE;
+		if (!venture_confirmation_parse_stage_flag(htmx_request_get_query_param(request, "stage"), &stage, &error))
+			return venture_web_error_response(error);
+		if (stage) return venture_web_lead_ack(501);
 		if (!venture_lead_service_reassign(service, lead, venture_json_object_get_string(options, "owner", NULL), &actor, &error))
 			return venture_web_error_response(error);
 		converted = g_object_ref(lead);

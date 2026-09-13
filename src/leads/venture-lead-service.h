@@ -30,10 +30,11 @@ gboolean venture_lead_service_save_hook(VentureLeadService *self, VentureEntity 
  * @self: the canonical service
  * @token: public form token
  * @fields: submitted fields in wire spelling
+ * @redirect_url: (out) (optional) (nullable) (transfer full): configured redirect after a real capture
  * @error: (out) (optional): error
  * Returns: whether the submission was accepted (including a honeypot)
  */
-gboolean venture_lead_service_capture(VentureLeadService *self, const gchar *token, JsonObject *fields, GError **error);
+gboolean venture_lead_service_capture(VentureLeadService *self, const gchar *token, JsonObject *fields, gchar **redirect_url, GError **error);
 /**
  * venture_lead_service_convert:
  * @self: the canonical service

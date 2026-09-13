@@ -7,8 +7,33 @@ struct _VentureLeadService {
 	GObject parent_instance;
 	VentureDatabase *database;
 	VentureEntity *writing;
+	GPtrArray *pending;
 };
 G_DEFINE_FINAL_TYPE(VentureLeadService, venture_lead_service, G_TYPE_OBJECT)
+
+enum { CONVERTING, CONVERTED, N_SIGNALS };
+static guint signals[N_SIGNALS];
+
+static gboolean
+first_error(GSignalInvocationHint *hint, GValue *accumulator, const GValue *value, gpointer data)
+{
+	(void)hint; (void)data;
+	if (g_value_get_boxed(value) == NULL) return TRUE;
+	g_value_copy(value, accumulator);
+	return FALSE;
+}
+
+static void
+transaction_finished(VentureDatabase *db, gboolean committed, VentureLeadService *self)
+{
+	g_autoptr(GPtrArray) pending = self->pending;
+	guint i;
+	(void)db;
+	self->pending = g_ptr_array_new_with_free_func(g_object_unref);
+	if (committed)
+		for (i = 0; i < pending->len; i++)
+			g_signal_emit(self, signals[CONVERTED], 0, g_ptr_array_index(pending, i));
+}
 
 static gboolean
 refuse(GError **error, VentureError code, const gchar *message)
@@ -34,6 +59,8 @@ set_property(GObject *object, guint id, const GValue *value, GParamSpec *spec)
 		self->database = g_value_get_object(value);
 		if (self->database != NULL)
 			g_object_add_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
+		if (self->database != NULL)
+			g_signal_connect_object(self->database, "transaction-finished", G_CALLBACK(transaction_finished), self, 0);
 	}
 	else G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
 }
@@ -44,6 +71,7 @@ finalize(GObject *object)
 	VentureLeadService *self = VENTURE_LEAD_SERVICE(object);
 	if (self->database != NULL)
 		g_object_remove_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
+	g_clear_pointer(&self->pending, g_ptr_array_unref);
 	G_OBJECT_CLASS(venture_lead_service_parent_class)->finalize(object);
 }
 
@@ -54,6 +82,25 @@ venture_lead_service_class_init(VentureLeadServiceClass *klass)
 	object->get_property = get_property;
 	object->set_property = set_property;
 	object->finalize = finalize;
+	/**
+	 * VentureLeadService::converting:
+	 * @self: the lead service
+	 * @lead: detached qualified lead snapshot
+	 *
+	 * Emitted inside the transaction before conversion writes. Return an owned
+	 * GError to veto; snapshot edits are ignored. First error stops emission.
+	 */
+	signals[CONVERTING] = g_signal_new("converting", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST,
+		0, first_error, NULL, NULL, G_TYPE_ERROR, 1, VENTURE_TYPE_ENTITY);
+	/**
+	 * VentureLeadService::converted:
+	 * @self: the lead service
+	 * @lead: converted lead snapshot
+	 *
+	 * Emitted only after the outermost transaction commits. Rollback discards it.
+	 */
+	signals[CONVERTED] = g_signal_new("converted", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST,
+		0, NULL, NULL, NULL, G_TYPE_NONE, 1, VENTURE_TYPE_ENTITY);
 	g_object_class_install_property(object, 1, g_param_spec_object("database", "Database",
 		"Owning repository", VENTURE_TYPE_DATABASE,
 		G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_STRINGS));
@@ -62,7 +109,7 @@ venture_lead_service_class_init(VentureLeadServiceClass *klass)
 static void
 venture_lead_service_init(VentureLeadService *self)
 {
-	(void)self;
+	self->pending = g_ptr_array_new_with_free_func(g_object_unref);
 }
 
 static gchar *
@@ -235,7 +282,7 @@ history(VentureLeadService *self, VentureEntity *subject, const gchar *title,
 	g_object_set(event, "organization-id", venture_entity_get_organization_id(subject),
 		reference, venture_entity_get_id(subject), "subject", title, "body", body,
 		"occurred-at", now, NULL);
-	return venture_database_save(self->database, VENTURE_ENTITY(event), actor, error);
+	return write_record(self, VENTURE_ENTITY(event), actor, error);
 }
 
 static gboolean
@@ -309,6 +356,11 @@ save_lead(VentureLeadService *self, VentureEntity *entity, const gchar *policy,
 				refuse(error, VENTURE_ERROR_ALREADY_EXISTS, "duplicate lead, contact or company");
 				goto fail;
 			}
+			if (VENTURE_IS_LEAD(duplicate))
+			{
+				g_object_set(duplicate, "last-activity-at", now, NULL);
+				if (!write_record(self, duplicate, actor, error)) goto fail;
+			}
 			if (!history(self, duplicate, "Lead capture", source, actor, error)) goto fail;
 			if (!venture_database_commit(self->database, error)) return NULL;
 			return g_steal_pointer(&duplicate);
@@ -342,9 +394,27 @@ validate_form(VentureLeadService *self, VentureEntity *entity, GError **error)
 {
 	g_autofree gchar *token = string_field(entity, "public-token");
 	g_autofree gchar *policy = string_field(entity, "on-duplicate");
+	g_autofree gchar *redirect = string_field(entity, "redirect-url");
+	g_autoptr(JsonNode) fields = NULL;
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_LEAD_FORM);
 	g_autoptr(GPtrArray) forms = NULL;
 	guint i;
+	g_object_get(entity, "fields", &fields, NULL);
+	if (fields != NULL && !JSON_NODE_HOLDS_NULL(fields))
+	{
+		JsonArray *array;
+		if (!JSON_NODE_HOLDS_ARRAY(fields)) return refuse(error, VENTURE_ERROR_VALIDATION, "form fields must be a JSON array of field names");
+		array = json_node_get_array(fields);
+		for (i = 0; i < json_array_get_length(array); i++)
+		{
+			JsonNode *field = json_array_get_element(array, i);
+			if (!JSON_NODE_HOLDS_VALUE(field) || json_node_get_value_type(field) != G_TYPE_STRING)
+				return refuse(error, VENTURE_ERROR_VALIDATION, "form field names must be strings");
+		}
+	}
+	if (!venture_string_is_empty(redirect) && !g_str_has_prefix(redirect, "https://") &&
+		!g_str_has_prefix(redirect, "http://") && !(redirect[0] == '/' && redirect[1] != '/'))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "redirect_url must be HTTP(S) or a local path");
 	if (venture_string_is_empty(policy)) g_object_set(entity, "on-duplicate", "merge", NULL);
 	else if (!g_str_equal(policy, "merge") && !g_str_equal(policy, "reject") && !g_str_equal(policy, "create"))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "on_duplicate must be reject, merge or create");
@@ -365,6 +435,35 @@ validate_form(VentureLeadService *self, VentureEntity *entity, GError **error)
 	return TRUE;
 }
 
+static gboolean
+save_interaction(VentureLeadService *self, VentureEntity *event, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) lead = NULL;
+	g_autoptr(GDateTime) date = NULL;
+	g_autoptr(GDateTime) previous = NULL;
+	gint64 id = 0;
+	g_object_get(event, "lead-id", &id, "occurred-at", &date, NULL);
+	if (!venture_database_begin(self->database, error)) return FALSE;
+	lead = venture_database_get(self->database, VENTURE_TYPE_LEAD, id, error);
+	if (lead == NULL || venture_entity_get_organization_id(lead) != venture_entity_get_organization_id(event))
+	{
+		if (error == NULL || *error == NULL) refuse(error, VENTURE_ERROR_VALIDATION, "interaction must name a lead in its organization");
+		goto fail;
+	}
+	if (date == NULL) { date = venture_time_now(); g_object_set(event, "occurred-at", date, NULL); }
+	if (!write_record(self, event, actor, error)) goto fail;
+	g_object_get(lead, "last-activity-at", &previous, NULL);
+	if (previous == NULL || g_date_time_compare(date, previous) > 0)
+	{
+		g_object_set(lead, "last-activity-at", date, NULL);
+		if (!write_record(self, lead, NULL, error)) goto fail;
+	}
+	return venture_database_commit(self->database, error);
+fail:
+	venture_database_rollback(self->database);
+	return FALSE;
+}
+
 gboolean
 venture_lead_service_save_hook(VentureLeadService *self, VentureEntity *entity,
 	const VentureActor *actor, gboolean *handled, GError **error)
@@ -373,6 +472,14 @@ venture_lead_service_save_hook(VentureLeadService *self, VentureEntity *entity,
 	*handled = FALSE;
 	if (self->writing == entity) { self->writing = NULL; return TRUE; }
 	if (VENTURE_IS_LEAD_FORM(entity)) return validate_form(self, entity, error);
+	if (VENTURE_IS_INTERACTION(entity))
+	{
+		gint64 lead_id = 0, company_id = 0, contact_id = 0;
+		g_object_get(entity, "lead-id", &lead_id, "company-id", &company_id, "contact-id", &contact_id, NULL);
+		if (lead_id == 0 && company_id == 0 && contact_id == 0)
+			return refuse(error, VENTURE_ERROR_VALIDATION, "interaction requires a lead, company or contact");
+		if (lead_id != 0) { *handled = TRUE; return save_interaction(self, entity, actor, error); }
+	}
 	if (!VENTURE_IS_LEAD(entity)) return TRUE;
 	*handled = TRUE;
 	saved = save_lead(self, entity, "reject", actor, error);
@@ -380,7 +487,7 @@ venture_lead_service_save_hook(VentureLeadService *self, VentureEntity *entity,
 }
 
 gboolean
-venture_lead_service_capture(VentureLeadService *self, const gchar *token, JsonObject *fields, GError **error)
+venture_lead_service_capture(VentureLeadService *self, const gchar *token, JsonObject *fields, gchar **redirect_url, GError **error)
 {
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) forms = NULL;
@@ -395,6 +502,7 @@ venture_lead_service_capture(VentureLeadService *self, const gchar *token, JsonO
 	gint64 venture = 0;
 	guint i;
 	const gchar *inputs[] = { "name", "company_name", "email", "phone", "website", "source", "notes" };
+	if (redirect_url != NULL) *redirect_url = NULL;
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "lead_form") == G_TYPE_INVALID)
 		return refuse(error, VENTURE_ERROR_NOT_FOUND, "capture form unavailable");
 	if (!venture_database_begin(self->database, error)) return FALSE;
@@ -436,7 +544,9 @@ venture_lead_service_capture(VentureLeadService *self, const gchar *token, JsonO
 	}
 	saved = save_lead(self, lead, policy != NULL ? policy : "merge", NULL, error);
 	if (saved == NULL) goto fail;
-	return venture_database_commit(self->database, error);
+	if (!venture_database_commit(self->database, error)) return FALSE;
+	if (redirect_url != NULL) *redirect_url = string_field(form, "redirect-url");
+	return TRUE;
 fail:
 	venture_database_rollback(self->database);
 	return FALSE;
@@ -452,6 +562,7 @@ conversion_record(VentureLeadService *self, VentureEntity *lead, GType type, gin
 	if (id != 0)
 	{
 		result = venture_database_get(self->database, type, id, error);
+		if (result == NULL && (error == NULL || *error == NULL)) refuse(error, VENTURE_ERROR_NOT_FOUND, "conversion link does not exist");
 		if (result != NULL && venture_entity_get_organization_id(result) != venture_entity_get_organization_id(lead))
 		{
 			g_object_unref(result);
@@ -476,6 +587,26 @@ conversion_record(VentureLeadService *self, VentureEntity *lead, GType type, gin
 	return result;
 }
 
+static gboolean
+validate_options(JsonObject *options, GError **error)
+{
+	const gchar *keys[] = { "company_id", "contact_id", "deal" };
+	guint i;
+	if (options == NULL) return TRUE;
+	for (i = 0; i < G_N_ELEMENTS(keys); i++)
+	{
+		JsonNode *node;
+		if (!json_object_has_member(options, keys[i])) continue;
+		node = json_object_get_member(options, keys[i]);
+		if (!JSON_NODE_HOLDS_VALUE(node) ||
+			json_node_get_value_type(node) != (i == 2 ? G_TYPE_BOOLEAN : G_TYPE_INT64))
+			return refuse(error, VENTURE_ERROR_VALIDATION, "conversion expects integer link ids and a boolean deal flag");
+		if (i != 2 && json_node_get_int(node) < 0)
+			return refuse(error, VENTURE_ERROR_VALIDATION, "conversion link ids must be nonnegative");
+	}
+	return TRUE;
+}
+
 VentureEntity *
 venture_lead_service_convert(VentureLeadService *self, VentureEntity *lead,
 	JsonObject *options, const VentureActor *actor, GError **error)
@@ -489,6 +620,7 @@ venture_lead_service_convert(VentureLeadService *self, VentureEntity *lead,
 	VentureLeadStatus state;
 	gint64 company_id, contact_id;
 	gboolean make_deal;
+	if (!validate_options(options, error)) return NULL;
 	if (!VENTURE_IS_LEAD(lead) || !venture_entity_is_persisted(lead))
 	{
 		refuse(error, VENTURE_ERROR_VALIDATION, "convert a saved lead"); return NULL;
@@ -499,7 +631,7 @@ venture_lead_service_convert(VentureLeadService *self, VentureEntity *lead,
 	}
 	if (!venture_database_begin(self->database, error)) return NULL;
 	current = venture_database_get(self->database, VENTURE_TYPE_LEAD, venture_entity_get_id(lead), error);
-	if (current == NULL) goto fail;
+	if (current == NULL) { refuse(error, VENTURE_ERROR_NOT_FOUND, "lead no longer exists"); goto fail; }
 	g_object_get(current, "status", &state, "name", &name, "company-name", &company_name, NULL);
 	if (venture_entity_get_version(current) != venture_entity_get_version(lead) || state == VENTURE_LEAD_CONVERTED)
 	{
@@ -508,6 +640,13 @@ venture_lead_service_convert(VentureLeadService *self, VentureEntity *lead,
 	if (state != VENTURE_LEAD_QUALIFIED)
 	{
 		refuse(error, VENTURE_ERROR_VALIDATION, "qualify the lead before conversion"); goto fail;
+	}
+	{
+		g_autoptr(VentureEntity) snapshot = VENTURE_ENTITY(venture_lead_new());
+		g_autoptr(GError) veto = NULL;
+		venture_entity_copy_properties_from(snapshot, current, FALSE);
+		g_signal_emit(self, signals[CONVERTING], 0, snapshot, &veto);
+		if (veto != NULL) { g_propagate_error(error, g_steal_pointer(&veto)); goto fail; }
 	}
 	company_id = options != NULL ? venture_json_object_get_int(options, "company_id", 0) : 0;
 	contact_id = options != NULL ? venture_json_object_get_int(options, "contact_id", 0) : 0;
@@ -534,11 +673,16 @@ venture_lead_service_convert(VentureLeadService *self, VentureEntity *lead,
 			"source", source, "campaign-id", campaign, NULL);
 		if (!venture_database_save(self->database, deal, actor, error)) goto fail;
 	}
+	{
+		g_autoptr(GDateTime) now = venture_time_now();
+		g_object_set(current, "last-activity-at", now, NULL);
+	}
 	g_object_set(current, "status", VENTURE_LEAD_CONVERTED, "converted-company-id", company_id,
 		"converted-contact-id", venture_entity_get_id(contact),
 		"converted-deal-id", deal != NULL ? venture_entity_get_id(deal) : (gint64)0, NULL);
 	if (!write_record(self, current, actor, error) ||
 		!history(self, current, "Lead converted", "Company and contact linked; attribution retained", actor, error)) goto fail;
+	g_ptr_array_add(self->pending, g_object_ref(current));
 	if (!venture_database_commit(self->database, error)) return NULL;
 	return g_steal_pointer(&current);
 fail:
@@ -570,7 +714,8 @@ venture_lead_service_stage_convert(VentureLeadService *self, VentureConfirmation
 	g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
 	g_autofree gchar *text = NULL;
 	VentureLeadStatus status;
-	(void)self;
+	if (!validate_options(options, error)) return NULL;
+	if (self->database == NULL) return NULL;
 	g_object_get(lead, "status", &status, NULL);
 	if (status != VENTURE_LEAD_QUALIFIED)
 	{

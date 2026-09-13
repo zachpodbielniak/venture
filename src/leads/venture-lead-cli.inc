@@ -4,6 +4,7 @@ venture_cli_command_lead(VentureCli *cli, gchar **args, GError **error)
 	g_autoptr(JsonNode) body = json_node_new(JSON_NODE_OBJECT);
 	g_autoptr(JsonNode) result = NULL;
 	g_autofree gchar *path = NULL;
+	g_autofree gchar *write_path = NULL;
 	JsonObject *options = json_object_new();
 	guint i;
 	json_node_take_object(body, options);
@@ -35,7 +36,8 @@ venture_cli_command_lead(VentureCli *cli, gchar **args, GError **error)
 		else goto invalid;
 	}
 	path = g_strdup_printf("/api/v1/leads/%s/%s", args[2], args[1]);
-	result = venture_cli_request(cli, "POST", path, body, error);
+	write_path = venture_cli_write_path(cli, path);
+	result = venture_cli_request(cli, "POST", write_path, body, error);
 	if (result == NULL) return -1;
 	venture_cli_output(cli, result);
 	return 0;

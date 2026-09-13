@@ -1,12 +1,181 @@
 #+title: Leads
+#+description: Capture, qualification, assignment and conversion before the opportunity
 
-* Inquiries before opportunities
+* An inquiry has its own lifecycle
 
-The =leads= module requires =crm=. Its =lead=, =lead_form= and
-=lead_assignment_rule= records use the ordinary generated forms, REST,
-CLI and import machinery. An inquiry has its own qualification state;
-a deal's existing stage remains the opportunity's stage.
+The =leads= module requires =crm=. It owns =lead=, =lead_form= and
+=lead_assignment_rule=. Their tables, forms, REST resources, CLI commands,
+CSV import and audit records derive from the field tables. Switching the
+module off hides its records and reports and refuses its actions. A deal's
+existing stage remains the opportunity's stage; leads add no pipeline.
 
 A lead belongs to one organization and may name a venture and a campaign.
-Its source, score, owner, contact details and notes describe the inquiry.
-Conversion references and timestamps preserve the eventual handoff.
+It carries name, company name, email, phone, website, source, integer score,
+owner, qualification state, notes, first-seen and last-activity timestamps.
+The score is entered by the operator or integration; there is no implicit
+scoring formula. Campaign references require outreach to be enabled when
+written, but leads otherwise work without outreach.
+
+| State | Meaning |
+|-------+---------|
+| =new= | Awaiting work |
+| =working= | Being worked |
+| =qualified= | Ready for conversion |
+| =unqualified= | Unsuitable, with =unqualified_reason= |
+| =recycled= | Return to nurturing, with =unqualified_reason= and =recycle_until= |
+| =converted= | Company/contact and optional deal linked by the service |
+
+Change qualification through the ordinary lead editor or generic API/CLI.
+State and owner changes append interactions. New dated lead interactions
+advance =last_activity_at= in the same transaction, without moving it
+backward for older events; reload a lead after logging an interaction. An interaction may now name a
+lead before there is a contact, or a company; existing contact interactions
+keep working. The lead's related-record section shows these interactions.
+
+* Public capture
+
+Create a form through the ordinary record editor. Set its organization,
+optional venture, =active=true= and =on_duplicate= (=merge= by default).
+=fields= is an optional JSON array of accepted field names; the permitted
+public inputs are =name=, =company_name=, =email=, =phone=, =website=,
+=source= and =notes=. Public callers cannot choose organization, venture,
+owner, qualification or conversion references. The form's name supplies the
+source when the submission does not provide one.
+
+A blank =public_token= generates a random UUID. Tokens are globally unique
+capabilities because the public URL has no organization component. Business
+matching and assignment remain scoped to the form's organization.
+
+#+begin_src sh
+venturectl create lead_form name='Website inquiry' organization_id=1 \
+  active=true on_duplicate=merge honeypot=fax \
+  'fields=["name","company_name","email","phone","notes"]'
+#+end_src
+
+Copy the returned =public_token= into an ordinary HTML form:
+
+#+begin_src html
+<form method="post" action="https://venture.example/f/PUBLIC_TOKEN">
+  <label>Name <input name="name" required></label>
+  <label>Company <input name="company_name"></label>
+  <label>Email <input name="email" type="email"></label>
+  <label>Phone <input name="phone" type="tel"></label>
+  <label>Message <textarea name="notes"></textarea></label>
+  <label hidden>Fax <input name="fax" tabindex="-1" autocomplete="off"></label>
+  <button type="submit">Send inquiry</button>
+</form>
+#+end_src
+
+=POST /f/:token= accepts form encoding and JSON without local credentials.
+The existing =security.login_rate_limit= budget supplies an independent
+per-peer-IP capture limiter; =server.max_request_size_mb= caps the body.
+A filled honeypot returns an empty 200 response and creates nothing. Other
+accepted captures return 200; form submissions redirect with 302 when the
+form has an HTTP(S) or local-path =redirect_url=. JSON submissions stay 200.
+Inactive, missing or disabled forms answer 404; rate exhaustion answers 429.
+
+* Duplicate handling and assignment
+
+=VentureLeadService= normalizes email to lowercase and removes the local
+part's =+tag=, phone to digits, and website to a lowercase host without
+=www.=. No country-code inference, provider-specific dot removal or fuzzy
+company-name matching is performed. Empty identifiers never match.
+
+Any equal normalized email, phone or website matches a live lead, contact
+or company in the same organization. Leads are considered first, then
+contacts, then companies, with the lowest id breaking ties.
+
+- =reject=: refuse with 409 and leave the transaction unchanged.
+- =merge=: retain the existing record and append a capture interaction
+  containing the new source. Existing customer details are not overwritten.
+- =create=: deliberately retain another inquiry.
+
+Generic REST, CLI and CSV creation use =reject=. A CSV import therefore
+rolls back as a whole when an inquiry duplicates existing data. Form capture
+uses the form's selected policy. Two submissions to a merging form create
+one lead and a second-source interaction.
+
+Active assignment rules filter by source and venture within the lead's
+organization. The rule with more filters wins; equal specificity uses the
+lowest id. =round_robin= advances a persisted cursor in the creation
+transaction; =least_busy= counts new, working and qualified leads; =first=
+uses the first nonempty username. An explicit owner is preserved. No
+matching rule leaves the lead unassigned; a matching empty rota is refused.
+Reassignment uses the same service from REST and CLI; editing Owner in the
+web form also records its history.
+
+* Conversion is one transaction
+
+Qualify first, then use the web Convert action, the REST action or:
+
+#+begin_src sh
+venturectl lead convert 42 deal=yes
+venturectl lead convert 42 deal=no company_id=7 contact_id=12
+venturectl --stage lead convert 42 deal=no
+venturectl lead reassign 42 owner=alex
+venturectl lead reassign 42
+venturectl update lead 42 status=recycled \
+  unqualified_reason='Budget next quarter' recycle_until=2026-12-01
+#+end_src
+
+=venture_lead_service_convert()= creates or links a company and contact and
+optionally creates a deal. New records inherit organization, venture,
+source and campaign. A missing company name uses the lead's name. Linked
+records must belong to the same organization; an existing contact cannot
+belong to another company. Existing linked records retain their attribution.
+Generic writes cannot forge conversion references or converted status.
+Converted leads are read-only; append interactions to continue their history.
+
+Company, contact, deal, lead state, conversion ids, interaction and audit
+writes share one transaction. A deal failure leaves no partial company or
+contact behind. A second conversion or stale lead version is a conflict.
+The input lead object remains unchanged by conversion; use its returned
+record or reload it. The new deal uses the existing default stage.
+
+The service emits =converting= inside the transaction before writes. Its
+=G_SIGNAL_RUN_LAST= handlers receive a detached snapshot and may return an
+owned =GError= to veto. =converted= is emitted only after the outermost
+commit; rollback drops queued notices. Keep external effects on that signal.
+
+The assistant's =venture_lead_convert= stages through the same confirmation
+queue as REST =?stage=1=; autonomous policy applies through the same service.
+Approval rechecks the stored version and eligibility. CLI =--stage= works
+for conversion. Staged reassignment is refused; ordinary reassignment is
+immediate. This module sends no mail and schedules no nurturing work.
+
+* Reports and dashboards
+
+=lead_sources= groups leads created in the requested period by source and
+campaign, showing count, current converted count and percentage converted.
+It measures a creation cohort, not a historical snapshot of qualification.
+
+=lead_response_time= measures creation to the earliest dated outbound
+interaction carrying =lead_id=. Inbound interactions do not count; unanswered
+leads are counted separately. It reports seconds and average seconds.
+
+=leads_recycled_due= exposes the =leads_recycled_due= count for recycled
+leads whose return date has arrived. It is a live queue, independent of the
+report period. Use the ordinary report metric dashboard widget with report
+=leads_recycled_due= and field =leads_recycled_due=.
+
+All three reports accept =organization_id= and default to the installation's
+default organization. They do not combine organizations. Interaction writers
+should retain =lead_id= for response-time attribution, including after
+conversion. A nurturing lane may consume recycled leads and their dates;
+this lane does not create enrollments or activities.
+
+* Upgrades and verification
+
+Paired migration =000101_leads.sql= verifies the additive lead and interaction
+schema after metadata reconciliation. It preserves existing CRM rows and
+accepts installations where leads are disabled and their table is absent;
+it does not infer historical inquiries or conversion history from deals.
+The SQLite upgrade test exercises old columns, repeated migration,
+preservation of contacts, invalid-schema refusal and a disabled-table path.
+The PostgreSQL script is shipped but has not been run against a live server.
+
+=test-leads= covers normalization, scoped matching, form policies, public
+capture, rate limiting, assignment, qualification history, recycling,
+conversion and injected rollback, lifecycle signals, REST staging and actual
+CLI execution, report values, module hiding and upgrades. =test-auth= checks
+that lead business actions refuse anonymous callers.

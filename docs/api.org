@@ -379,3 +379,22 @@ One shape for every failure:
 
 A =409= from a write means someone else changed the record since you loaded
 it. Reload, reapply, retry — do not force it.
+
+* Leads
+
+=POST /f/:token= is public capture, accepting JSON and form encoding. The
+form fixes organization and venture; it controls fields and duplicate policy.
+A filled honeypot silently returns 200. Rate and request-size limits apply.
+See [[file:leads.org][leads]] for the embed snippet and capture responses.
+
+Authenticated editors use =POST /api/v1/leads/:id/convert= with a JSON
+object: optional =deal= boolean (default true), =company_id= and =contact_id=
+links. The lead must be qualified. It returns the converted lead; failures
+roll back every new CRM record. =?stage=1= returns a 202 confirmation without
+writing and approval rechecks eligibility and version.
+
+=POST /api/v1/leads/:id/reassign= accepts an optional =owner= string; omitted
+runs assignment rules. Staged reassignment is refused. Lead CRUD remains
+at the generated =/api/v1/lead= resource; qualification changes write history.
+Reports =lead_sources=, =lead_response_time= and =leads_recycled_due= use the
+ordinary report endpoint and accept =organization_id=.

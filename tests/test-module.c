@@ -155,6 +155,7 @@ test_module_dependency_conflict_is_refused(void)
 	g_clear_error(&error);
 	venture_config_set_module_enabled(config, "invoicing", FALSE);
 	venture_config_set_module_enabled(config, "receivables", FALSE);
+	venture_config_set_module_enabled(config, "leads", FALSE);
 	g_assert_true(venture_module_registry_configure(registry, config, &error));
 	g_assert_no_error(error);
 	g_assert_true(venture_module_registry_is_enabled(registry, "sales"));

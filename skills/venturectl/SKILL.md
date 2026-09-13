@@ -418,3 +418,15 @@ venturectl federation '{"action":"resolve","id":1,"version":5,"field":"descripti
 ```
 
 Collection pulls return at most ten results, `next_offset` and `more`; continue pages while `more` is true and inspect per-record errors. Pull imports/merges without pushing; sync pushes conflict-free changes with an expected remote version. Edits require the local replica version. A conflict blocks that record until resolved; choosing remote can accept a removed/revoked field. Never update `federation_replica` through generic CRUD: its merge state belongs to the service. Copies remain usable during outages but are not authoritative local accounting rows. New source objects and binary attachments are not created/copied offline. See `docs/federation.org` for key exchange, grants, scheduling and revocation.
+
+## Leads
+
+Use `describe lead` before capture or qualification. `lead convert ID
+[deal=yes|no] [company_id=ID] [contact_id=ID]` requires a qualified lead and
+creates or links CRM records atomically. `--stage` proposes conversion for
+approval. Never set `status=converted` or conversion ids with generic updates.
+`lead reassign ID [owner=NAME]` assigns explicitly or reruns the matching
+rules; staged reassignment is refused. Recycle with `update lead ID
+status=recycled unqualified_reason=... recycle_until=YYYY-MM-DD`.
+Reports are `lead_sources`, `lead_response_time` and `leads_recycled_due`;
+see `docs/leads.org` for definitions and public capture forms.

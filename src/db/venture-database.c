@@ -1964,7 +1964,9 @@ VentureLeadService *
 venture_database_get_lead_service(VentureDatabase *self)
 {
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), NULL);
+	g_rec_mutex_lock(&self->lock);
 	if (self->lead_service == NULL)
 		self->lead_service = g_object_new(VENTURE_TYPE_LEAD_SERVICE, "database", self, NULL);
+	g_rec_mutex_unlock(&self->lock);
 	return self->lead_service;
 }
