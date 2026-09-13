@@ -536,6 +536,25 @@ static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live
 static GType (*const venture_module_assets_types[]) (void) = { venture_fixed_asset_get_type, venture_depreciation_entry_get_type, venture_deferral_get_type, venture_deferral_entry_get_type, NULL };
 static const gchar *const venture_module_requires_assets[] = { "ledger", "periods", NULL };
 static const gchar *const venture_module_reports_assets[] = { "fixed_assets", "deferrals", NULL };
+static GType (*const venture_module_orgaccess_types[]) (void) = {
+	venture_organization_membership_get_type,
+	venture_team_get_type,
+	venture_team_membership_get_type,
+	NULL
+};
+
+static const gchar *const billing_requires[] = { "invoicing", "receivables", NULL };
+static const gchar *const billing_reports[] = { "mrr", "churn", "subscriptions_due", NULL };
+static GType (*const billing_types[]) (void) = {
+	venture_plan_get_type,
+	venture_plan_price_get_type,
+	venture_customer_subscription_get_type,
+	venture_subscription_event_get_type,
+	venture_dunning_step_get_type,
+	venture_billing_notice_get_type,
+	venture_billing_request_get_type,
+	NULL
+};
 static GType (*const venture_module_mail_types[]) (void) = {
 	venture_mail_message_get_type, venture_mail_template_get_type, NULL
 };
@@ -750,6 +769,15 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		venture_module_reports_assets, NULL, FALSE },
 	{ "quotes", "Quotes", "Versioned commercial proposals and acceptance.",
 		quotes_requires, NULL, quotes_types, quotes_reports, NULL, FALSE },
+	{
+		"billing", "SaaS billing", "Customer subscriptions and recurring revenue.",
+		billing_requires, NULL, billing_types, billing_reports, NULL, FALSE
+	},
+	{
+		"orgaccess", "Organization access", "Membership, organization roles and team ownership.",
+		venture_module_requires_core, NULL,
+		venture_module_orgaccess_types, NULL, NULL, FALSE
+	},
 	{
 		"mail", "Transactional mail", "Durable outbound messages and templates.",
 		venture_module_requires_core, NULL, venture_module_mail_types, NULL, NULL, FALSE
@@ -1090,6 +1118,8 @@ venture_module_registry_add(
 			return FALSE;
 		}
 	}
+
+	venture_access_records_tag_module(self, info);
 
 	module = venture_module_new(info, origin);
 

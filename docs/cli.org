@@ -210,6 +210,49 @@ posts only remaining scheduled entries; a closed period is refused.
 The ordinary record commands manage draft =fixed_asset= and new =deferral=
 records. Lifecycle status and schedule history are service-owned. See
 [[file:assets.org][fixed assets and deferrals]] for profiles and examples.
+* Organization access and journal posting
+
+The ordinary =list/get/create/update/delete/describe= commands also manage
+=organization_membership=, =team= and =team_membership=. Tokens constrain all
+responses to their mint-time memberships intersected with current authority.
+Selecting =organization_id= only narrows that scope. Global owners keep the
+existing output formats and data authority.
+
+=venturectl journal post ID= calls the shared posting service. An organization
+editor receives a pending confirmation; finance and organization admin/owner
+can post directly. =venturectl --stage journal post ID= always proposes.
+A pending confirmation is not a posted journal. Generic =update journal=
+cannot advance state. See [[file:orgaccess.org][Organization access]].
+* SaaS billing
+
+=billing= actions change =customer_subscription= through the billing service:
+
+#+begin_src sh
+venturectl billing start organization_id=1 company_id=1 plan_price_id=1 seats=2
+venturectl billing change 1 plan_price=2 at_period_end=true
+venturectl billing change-seats 1 seats=3
+venturectl billing cancel 1 at_period_end=true
+venturectl billing pause 1
+venturectl billing resume 1
+venturectl billing mark-payment-failed 1
+venturectl billing recover 1
+venturectl billing renew --as-of 2026-04-01 --dry-run
+venturectl billing renew --as-of 2026-04-01
+venturectl billing dunning --as-of 2026-04-05
+venturectl --stage billing cancel 1
+venturectl report mrr 2026-03 organization_id=1 currency=USD
+venturectl report churn 2026-03 organization_id=1 currency=USD
+venturectl report subscriptions_due 2026-03 days=14 organization_id=1
+#+end_src
+
+=renew= without an ID sweeps all due subscriptions in the selected
+organization; =renew ID= renews one. =--as-of= sets the effective action
+or sweep date. =--dry-run= previews sweeps without writing anything.
+The generated =plan= and =plan_price= records configure the catalogue.
+Direct subscription state writes are refused. The assistant can stage
+=billing_request= through its generated create tool; all CLI billing
+actions also honor =--stage=. See [[file:billing.org][SaaS billing]] for prices,
+trial activation, proration, historical report definitions and limitations.
 * Transactional mail
 
 =venturectl mail send to=... subject=... body=...= enqueues; =--html FILE=

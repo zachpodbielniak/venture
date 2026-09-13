@@ -141,6 +141,25 @@ static void test_api_guards(Fixture *f, gconstpointer unused)
 	g_assert_cmpuint(request(f, "GET", "/api/v1/mail_message", NULL, NULL), ==, 404);
 	venture_config_set_module_enabled(f->config, "mail", TRUE);
 }
+/* A policy plugin can refuse mail even for an install owner; the SMTP test
+ * must check that refusal before contacting its transport. */
+static GError *deny_mail_write(VentureAccessPolicy *policy, const VentureAuthPrincipal *actor,
+	const gchar *action, VentureEntity *entity, gpointer unused)
+{
+	if (VENTURE_IS_MAIL_MESSAGE(entity) && !g_strcmp0(action, "write"))
+		return g_error_new_literal(VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "Mail denied by policy");
+	return NULL;
+}
+static void test_smtp_policy(Fixture *f, gconstpointer unused)
+{
+	VentureAccessPolicy *policy = venture_database_get_access_policy(f->db);
+	gulong handler = g_signal_connect(policy, "decide", G_CALLBACK(deny_mail_write), NULL);
+	g_assert_cmpuint(request(f, "POST", "/api/v1/mail/test", "{\"to\":\"reader@example.test\"}", NULL), ==, 403);
+	g_assert_cmpuint(venture_log_mailer_get_messages(f->mailer)->len, ==, 0);
+	g_signal_handler_disconnect(policy, handler);
+	g_assert_cmpuint(request(f, "POST", "/api/v1/mail/test", "{\"to\":\"reader@example.test\"}", NULL), ==, 200);
+	g_assert_cmpuint(venture_log_mailer_get_messages(f->mailer)->len, ==, 1);
+}
 static void test_automation_sweep(Fixture *f, gconstpointer unused)
 {
 	g_autoptr(VentureAutomation) automation = NULL;
@@ -162,5 +181,6 @@ int main(int argc, char **argv)
 	g_test_add("/mail-surfaces/cli-delivery", Fixture, NULL, setup, test_cli_delivery, teardown);
 	g_test_add("/mail-surfaces/api-guards", Fixture, NULL, setup, test_api_guards, teardown);
 	g_test_add("/mail-surfaces/automation-sweep", Fixture, NULL, setup, test_automation_sweep, teardown);
+	g_test_add("/mail-surfaces/smtp-policy", Fixture, NULL, setup, test_smtp_policy, teardown);
 	return g_test_run();
 }

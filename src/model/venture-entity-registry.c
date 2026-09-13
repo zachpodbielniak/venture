@@ -726,6 +726,16 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_depreciation_entry_get_type
 		, venture_deferral_get_type
 		, venture_deferral_entry_get_type
+		, venture_organization_membership_get_type
+		, venture_team_get_type
+		, venture_team_membership_get_type
+		, venture_plan_get_type
+		, venture_plan_price_get_type
+		, venture_customer_subscription_get_type
+		, venture_subscription_event_get_type
+		, venture_dunning_step_get_type
+		, venture_billing_notice_get_type
+		, venture_billing_request_get_type
 		, venture_mail_message_get_type
 		, venture_mail_template_get_type
 

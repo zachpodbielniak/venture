@@ -1,0 +1,118 @@
+#+title: Organization access
+#+description: Organization membership and record ownership
+
+* Access records
+
+The =orgaccess= module requires =core= and is on by default. It declares
+=organization_membership=, =team= and =team_membership= as ordinary records.
+An organization membership names a user and a role and can be deactivated.
+There is one membership per user and organization, including inactive and
+soft-deleted rows. Reactivate the existing membership when access resumes.
+A team belongs to one organization; a user can belong to several teams.
+
+Companies, contacts, deals, tickets and ventures carry =owner_user_id= and
+an optional =team_id=. These are references, so generated forms, REST and
+=venturectl describe= expose the same fields.
+
+* Upgrade
+
+The paired =000180_orgaccess.sql= migrations preserve each existing owner's
+access by adding owner memberships in all existing, live organizations.
+Other global roles receive no implicit memberships. The migration retains
+its access tables even when the module is disabled during upgrade, so an
+owner backfill is not lost by switching the module on later. Migration
+history prevents a subsequent restart from granting revoked access again.
+
+=test-orgaccess= covers generated fields, membership uniqueness, the module
+switch, and upgrading populated user and organization tables and restarting.
+
+* Request boundary
+
+=VentureAccessPolicy= is shared by the repository. A synchronous request
+scope carries a copy of its principal, restores the previous scope on exit,
+and never remains active while an asynchronous response waits. The repository
+checks individual reads and both the stored and proposed versions of writes.
+Queries filter before pagination, and counts ignore pagination. These checks
+also constrain records loaded by reports, widgets and reference pickers.
+
+Global owners and admins retain their data authority. Other users require an
+active membership in the record's exact organization; a parent organization
+is a presentation hierarchy and never grants a child's membership. Finance
+modules mark their types as financial class metadata; modules transitively requiring =finance= inherit this restriction, including plugin modules. Those types require
+organization finance, admin or owner authority. Sales, support and viewer
+members read assigned records or records attached to their assigned venture;
+team ownership requires a team and active team membership in the same
+organization. A viewer cannot apply writes.
+
+The =decide= signal runs after built-in checks, with =G_SIGNAL_RUN_LAST=.
+Handlers return an owned =GError= to veto; the first veto stops emission.
+Returning NULL cannot override a built-in refusal.
+
+Token membership snapshots are captured on creation and intersected with
+current membership authority. A later grant or promotion cannot expand an
+existing token. Legacy non-admin tokens with no snapshot need rotation.
+The initial owner and their memberships are created in one transaction.
+
+* Role matrix
+
+Global owner/admin retain their existing bypass. All other global roles
+still face the existing type and action restrictions, in addition to this
+matrix for their exact organization membership. "Assigned" means direct
+owner, active team member, or a child of an assigned venture.
+
+| Organization role | Business read/export | Business write/delete | Financial read/export/write/delete | Access administration |
+|-------------------+----------------------+-----------------------+------------------------------------+-----------------------|
+| owner             | all                  | all                   | all                                | write/delete          |
+| admin             | all                  | all                   | all                                | write/delete          |
+| editor            | all                  | all                   | denied; may propose journal post   | read only             |
+| finance           | all                  | all                   | all                                | read only             |
+| sales             | assigned             | assigned              | denied                             | read only             |
+| support           | assigned             | assigned              | denied                             | read only             |
+| viewer            | assigned             | propose creation only | denied; proposals need approval    | read only             |
+| no membership     | empty/404            | 404                   | empty/404                          | empty/404             |
+
+Members can read their organization's row for the picker. Membership does
+not inherit through =parent_id=. Personal chat, watch and notification
+records declare a personal owner reference in their field table and keep
+that user's boundary. This describes access to whole records; it does not
+introduce field permissions.
+
+Organization membership, including organization owner or admin, cannot grant access to another user's personal record. Global administrator authority remains unchanged.
+
+Watch and notification rows also require current read access to their referenced business record, so retained labels and excerpts do not expose revoked access through the inbox.
+
+Filters supplied by callers only narrow access. The current implementation
+filters candidate records before applying offset and limit; its cost grows
+with the candidate set. Reports and plugins must use the repository's typed
+read methods, not raw SQL, for user-requested data. Internal jobs without a
+request principal retain their service authority; a new user-facing tool must
+enter a policy scope with its caller, as the built-in assistant tools do.
+
+Database audit, save, delete and transaction notifications invoke trusted service consumers independently of the triggering request's read scope, preserving notifications to other users and configured automation. Delayed webhook delivery and coding-progress callbacks likewise restore service authority before updating their records.
+
+* Proposals and posting
+
+An organization viewer can propose a new record through the form or REST;
+these requests return 202 and enter the shared confirmation queue. Existing
+global role checks still apply. A viewer cannot update an existing record.
+The same authority check constrains assistant tools, including autonomous
+mode. Confirmations are visible only to authorized readers or their still
+authorized proposer. Approval rechecks current authority.
+
+=POST /api/v1/journals/:id/post=, =venturectl journal post ID= and the
+assistant tool =venture_journal_post= share the journal action. An organization editor
+proposes it; finance, organization admin/owner, or global administrators can
+apply it. REST =?stage=1=, CLI =--stage= and assistant =confirm_writes=
+always stage, even for finance. The proposal preserves the draft header version and a fingerprint
+of its lines. Changed lines cause a conflict, rather than approval of different
+amounts. Approval calls the existing posting service, which retains balance,
+currency, source, period and immutable-history checks. Generic writes to a
+journal's posted state remain refused.
+
+A user with no memberships is directed to their account page, which explains
+that an organization owner must grant access. Password changes and sign-out
+remain available. Business reads return no records.
+
+Public lead capture at =POST /f/:token= uses its form token authority even when the browser also carries a local session. That exact route receives an independent protocol scope; its token, active-form, field allowlist, body-size and rate-limit checks remain owned by the lead capture handler. Other =/f/= paths and methods receive ordinary request authority.
+
+Public quote viewing (=GET /q/:token=) and acceptance (=POST /q/:token= or =POST /q/:token/accept=) likewise use the quote capability independently of an incidental session. Other quote paths or methods retain local request authority; quote token validation, allowed states, revision checks and the public field allowlist still apply.

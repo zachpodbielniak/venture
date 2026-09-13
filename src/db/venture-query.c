@@ -1399,3 +1399,9 @@ venture_query_describe(VentureQuery *self)
 
 	return g_string_free(g_steal_pointer(&text), FALSE);
 }
+
+guint
+venture_query_get_offset(VentureQuery *self)
+{
+	return self->offset;
+}

@@ -2191,6 +2191,32 @@ venture_cli_command_assets(VentureCli *cli, gchar **args, GError **error)
 	venture_cli_output(cli, result);
 	return 0;
 }
+
+/* The service owns posting and proposal authority; the client only carries it. */
+static gint
+venture_cli_command_journal(VentureCli *cli, gchar **args, GError **error)
+{
+	g_autofree gchar *path = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	gchar *end = NULL;
+	gint64 id;
+	if (0 != g_strcmp0(args[1], "post") || NULL == args[2])
+		goto usage;
+	id = g_ascii_strtoll(args[2], &end, 10);
+	if (id <= 0 || NULL == end || '\0' != *end || NULL != args[3])
+		goto usage;
+	path = g_strdup_printf("/api/v1/journals/%" G_GINT64_FORMAT "/post%s", id, cli->stage ? "?stage=1" : "");
+	body = venture_json_parse("{}", error);
+	node = venture_cli_request(cli, "POST", path, body, error);
+	if (NULL == node)
+		return -1;
+	venture_cli_output(cli, node);
+	return 0;
+usage:
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "usage: venturectl [--stage] journal post ID");
+	return -1;
+}
 #include "leads/venture-lead-cli.inc"
 #include "activities/venture-activity-cli.inc"
 #include "pipelines/venture-pipeline-cli.inc"
@@ -3153,6 +3179,7 @@ venture_cli_command_mcp(
 	return 0;
 }
 
+#include "billing/venture-billing-cli.inc"
 #include "sequences/venture-sequence-cli.inc"
 
 /* --- Entry point --------------------------------------------------------- */
@@ -3269,7 +3296,7 @@ main(
 		{ "apply-writes", 0, 0, G_OPTION_ARG_NONE, &apply_writes,
 		  "mcp only: let write tools apply instead of staging", NULL },
 		{ "stage", 0, 0, G_OPTION_ARG_NONE, &stage,
-		  "create/update/delete/act/sequence enroll/lead convert: propose the change for approval "
+		  "create/update/delete/act/sequence enroll/lead convert/billing: propose the change for approval "
 		  "instead of making it", NULL },
 		{ "version", 'V', 0, G_OPTION_ARG_NONE, &show_version,
 		  "Print the version and exit", NULL },
@@ -3278,7 +3305,7 @@ main(
 		{ "html", 0, 0, G_OPTION_ARG_FILENAME, &mail_html, "mail send: HTML body file", "FILE" },
 		{ "limit", 0, 0, G_OPTION_ARG_STRING, &mail_limit, "mail deliver: maximum attempts", "N" },
 		{ "as-of", 0, 0, G_OPTION_ARG_STRING, &sequence_as_of,
-		  "sequence run: execution cutoff with timezone", "TIMESTAMP" },
+		  "sequence run or billing: effective cutoff", "TIMESTAMP" },
 		{ G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_STRING_ARRAY, &args,
 		  NULL, NULL },
 		{ "dry-run", 0, 0, G_OPTION_ARG_NONE, &dry_run,
@@ -3332,6 +3359,7 @@ main(
 		"                               its tickets; --replace overwrites\n"
 		"  asset place|dispose|write-off ID  manage an asset; proceeds=.. for disposal\n"
 		"  assets run-period YYYY-MM      post due schedules; --dry-run previews\n"
+		"  journal post ID              post a draft, or propose for approval\n"
 		"  mail list|send|test|deliver|retry  transactional mail\n"
 		"  quote send|accept|decline|revise ID [by=NAME] [reason=TEXT]\n"
 		"  bank ACTION ID [JSON|@FILE] banking action; bank match AUTO STATEMENT_ID\n"
@@ -3371,6 +3399,8 @@ main(
 		"  webhook secret ID            generate a new signing secret\n"
 		"  act TYPE ID ACTION [key=value ...]  perform a discovered action; --stage\n"
 		"  health                       check the server is up\n"
+		"  billing start|change|cancel   manage customer subscription terms\n"
+		"  billing renew|dunning        sweep; --as-of DATE, --dry-run\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
 		"\n"
@@ -3435,9 +3465,9 @@ main(
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 
-	if (dry_run && (g_strcmp0(args[0], "post") != 0 || g_strcmp0(args[1], "backfill") != 0))
+	if (dry_run && g_strcmp0(args[0], "billing") != 0 && (g_strcmp0(args[0], "post") != 0 || g_strcmp0(args[1], "backfill") != 0))
 	{
-		g_printerr("venturectl: --dry-run requires post backfill\n");
+		g_printerr("venturectl: --dry-run requires post backfill or billing\n");
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 
@@ -3484,12 +3514,14 @@ main(
 	if (stage && (0 != g_strcmp0(args[0], "create")) &&
 	    (0 != g_strcmp0(args[0], "update")) &&
 	    (0 != g_strcmp0(args[0], "delete")) &&
+	    (0 != g_strcmp0(args[0], "journal")) &&
+	    (0 != g_strcmp0(args[0], "billing")) &&
 	    !(0 == g_strcmp0(args[0], "lead") && 0 == g_strcmp0(args[1], "convert")) &&
 	    (0 != g_strcmp0(args[0], "act")) &&
 	    !((0 == g_strcmp0(args[0], "sequence")) && (0 == g_strcmp0(args[1], "enroll"))))
 	{
 		g_printerr("venturectl: --stage only means something to create, "
-		           "update, delete, act, sequence enroll and lead convert. \"%s\" would ignore it.\n", args[0]);
+		           "update, delete, act, journal post, sequence enroll, lead convert and billing. \"%s\" would ignore it.\n", args[0]);
 		g_free(cli.base_url);
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
@@ -3513,9 +3545,9 @@ main(
 		cli.format = (VentureOutputFormat)value;
 	}
 
-	if (sequence_as_of != NULL && (g_strcmp0(args[0], "sequence") != 0 || g_strcmp0(args[1], "run") != 0))
+	if (sequence_as_of != NULL && g_strcmp0(args[0], "billing") != 0 && (g_strcmp0(args[0], "sequence") != 0 || g_strcmp0(args[1], "run") != 0))
 	{
-		g_printerr("venturectl: --as-of is only valid for sequence run\n");
+		g_printerr("venturectl: --as-of is only valid for sequence run or billing\n");
 		g_free(cli.base_url);
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
@@ -3557,6 +3589,8 @@ main(
 		result = venture_cli_command_factory(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "asset") || 0 == g_strcmp0(args[0], "assets"))
 		result = venture_cli_command_assets(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "journal"))
+		result = venture_cli_command_journal(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "mail"))
 		result = venture_cli_command_mail(&cli, args, mail_html, mail_limit, &error);
 	else if (0 == g_strcmp0(args[0], "quote"))
@@ -3608,6 +3642,8 @@ main(
 		result = venture_cli_command_post(&cli, args, dry_run, &error);
 	else if (0 == g_strcmp0(args[0], "mcp"))
 		result = venture_cli_command_mcp(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "billing"))
+		result = venture_cli_command_billing(&cli, args, sequence_as_of, dry_run, &error);
 	else if (0 == g_strcmp0(args[0], "act"))
 		result = venture_cli_command_act(&cli, args, &error);
 	else

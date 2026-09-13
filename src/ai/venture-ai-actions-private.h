@@ -3,6 +3,7 @@ static gchar *
 venture_ai_tool_action(AiToolUse *tool_use, GCancellable *cancellable, GError **error, gpointer data)
 {
 	VentureAiService *self = data;
+	g_autoptr(VentureAccessScope) scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
 	VentureDatabase *db = venture_context_get_database(self->context);
 	VentureActionRegistry *registry = venture_database_get_action_registry(db);
 	g_auto(GStrv) types = venture_entity_registry_list_names(venture_context_get_entity_registry(self->context));
@@ -40,6 +41,16 @@ venture_ai_tool_action(AiToolUse *tool_use, GCancellable *cancellable, GError **
 				json_node_set_object(values, input);
 				params = venture_action_parameters_from_json(values, &local_error);
 				g_hash_table_remove(params, "id");
+				/* Generated tools share the organization posting proposal path,
+				 * and always retain the action catalog's staged-only contract. */
+				if (!g_strcmp0(types[i], "journal") && !g_strcmp0(name, "post"))
+				{
+					gboolean staged = FALSE;
+					if (!venture_action_validate_parameters(action, params, &local_error)) return venture_ai_tool_error("%s", local_error->message);
+					response = venture_orgaccess_post_journal(self->context, self->current_principal, id, TRUE, &staged, &local_error);
+					if (!response) return venture_ai_tool_error("%s", local_error->message);
+					return venture_json_to_string(response, FALSE);
+				}
 				if (!venture_ai_type_is_writable(type)) return venture_ai_tool_error("This type is unavailable to the assistant");
 				entity = !id && type_level ? g_object_new(type, NULL) : venture_database_get(db, type, id, &local_error);
 				if (!entity) return venture_ai_tool_error("%s", local_error->message);

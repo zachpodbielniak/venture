@@ -1058,6 +1058,11 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"periods"
 	},
 	{
+		"/e/customer_subscription", "Subscriptions",
+		VENTURE_ICON("<path d=\"M4 12a8 8 0 1 0 3-6\"/><path d=\"M3 3v6h6\"/>"),
+		NULL, "billing"
+	},
+	{
 		"/e/company", "Companies",
 		VENTURE_ICON(
 			"<path d=\"M3 21h18\"/>"
@@ -1953,6 +1958,13 @@ venture_web_api_list(
 }
 
 static HtmxResponse *
+venture_web_orgaccess_post(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+	VentureWebServer *self = user_data;
+	return venture_orgaccess_web_post(self->auth, self->context, request, params);
+}
+
+static HtmxResponse *
 venture_web_api_get(
 	HtmxRequest	*request,
 	GHashTable	*params,
@@ -2178,6 +2190,9 @@ venture_web_api_write(
 			venture_context_get_default_organization_id(self->context));
 	}
 
+	if (venture_access_policy_requires_approval(venture_database_get_access_policy(venture_context_get_database(self->context)), principal, "write", record, &error)) stage = TRUE;
+	if (NULL != error) return venture_web_error_response(error);
+
 	if (stage)
 	{
 		return venture_web_api_stage(self, record, original, principal,
@@ -2195,6 +2210,8 @@ venture_web_api_write(
 
 	return venture_web_json_response(node, created ? 201 : 200);
 }
+
+#include "billing/venture-billing-web.inc"
 
 static HtmxResponse *
 venture_web_api_create(
@@ -2516,7 +2533,7 @@ venture_web_api_report(
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -3017,7 +3034,7 @@ venture_web_not_found_middleware(
 
 	self = user_data;
 
-	next(context, next_data);
+	venture_orgaccess_web_dispatch(self->auth, self->context, context, next, next_data);
 
 	if (NULL != htmx_context_get_response(context))
 		return;
@@ -5585,7 +5602,7 @@ venture_web_ui_report(
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -6592,6 +6609,9 @@ venture_web_ui_save(
 
 	if (!venture_web_apply_form(self, request, record, specs, &error))
 		return venture_web_error_response(error);
+
+	if (venture_access_policy_requires_approval(venture_database_get_access_policy(venture_context_get_database(self->context)), principal, "write", record, &error)) return venture_web_api_stage(self, record, NULL, principal, VENTURE_AUDIT_ACTION_CREATE);
+	if (NULL != error) return venture_web_error_response(error);
 
 	venture_auth_to_actor(principal, &actor);
 
@@ -8708,6 +8728,7 @@ venture_web_ui_detail(
 		g_string_append(content, "</code><p><a class=\"btn\" href=\"/e/federation_grant/new\">Create sharing grant</a> <a href=\"/federation\">Federation workspace</a></p></section>");
 	}
 
+	venture_billing_web_buttons(self, content, record, principal);
 	venture_web_append_record_actions(self, content, record, principal);
 	venture_web_append_related(self, content, record);
 	venture_bank_append_actions(content, record);
@@ -10434,6 +10455,8 @@ venture_web_ui_account(
 
 	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
 	                       "<h1>Your account</h1></div></div>");
+
+	if (!venture_access_policy_has_membership(venture_database_get_access_policy(venture_context_get_database(self->context)), principal)) g_string_append(content, "<div class=\"notice info\">No organization membership. Ask an organization owner to grant access. You can manage your own account here.</div>");
 
 	notice = htmx_request_get_query_param(request, "notice");
 
@@ -27939,6 +27962,10 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/fixed_assets/:id/:operation", venture_web_asset_action, self);
 	htmx_router_post(router, "/assets/:id/:operation", venture_web_asset_action, self);
 	htmx_router_post(router, "/api/v1/assets/run-period", venture_web_assets_run, self);
+	htmx_router_post(router, "/api/v1/customer_subscriptions/:id/:action", venture_billing_web_action, self);
+	htmx_router_post(router, "/api/v1/billing/start", venture_billing_web_action, self);
+	htmx_router_post(router, "/api/v1/billing/:action", venture_billing_web_action, self);
+	htmx_router_post(router, "/billing/subscriptions/:id/action", venture_billing_web_action, self);
 	htmx_router_get(router, "/api/v1/widget-kinds",
 	                venture_web_api_widget_kinds, self);
 	htmx_router_get(router, "/api/v1/dashboard-templates",
@@ -27954,6 +27981,7 @@ venture_web_server_new(
 	htmx_router_get(router, "/api/v1/schema", venture_web_api_describe, self);
 	htmx_router_get(router, "/api/v1/schema/:type", venture_web_api_describe,
 	                self);
+	htmx_router_post(router, "/api/v1/journals/:id/post", venture_web_orgaccess_post, self);
 	htmx_router_get(router, "/api/v1/reports", venture_web_api_reports, self);
 	htmx_router_get(router, "/api/v1/reports/:name", venture_web_api_report,
 	                self);

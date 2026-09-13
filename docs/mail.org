@@ -152,3 +152,5 @@ anonymous action refusals.
 =VentureMailerRegistry= owns named transport implementations. The context uses
 its =smtp= slot; =venture_context_set_mailer()= replaces it for tests or plugins.
 Async send completes on the initiating main context and never accesses the database.
+
+SMTP tests enforce organization write authority and policy-plugin vetoes before invoking the mail transport, just as an outbox enqueue does.

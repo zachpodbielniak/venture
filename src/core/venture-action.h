@@ -147,5 +147,17 @@ VentureConfirmation *venture_confirmation_store_stage_action(VentureConfirmation
  */
 gboolean venture_confirmation_store_approve_as(VentureConfirmationStore *self,
 	const gchar *id, const gchar *approver, VentureUserRole role, GError **error);
+/**
+ * venture_action_prepare_target:
+ * @self: action declaration
+ * @entity: new action target
+ * @params: (element-type utf8 JsonNode): invocation values
+ * @error: (out) (optional): invalid subject
+ *
+ * Hydrates a type-level action's declared subject before access checks.
+ * Returns: TRUE when the target represents the declared input record
+ */
+gboolean venture_action_prepare_target(VentureAction *self, VentureEntity *entity,
+	GHashTable *params, GError **error);
 G_END_DECLS
 #endif
