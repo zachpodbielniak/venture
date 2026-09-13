@@ -7119,6 +7119,8 @@ venture_web_append_knowledge(
 	VentureEntity		*record
 );
 
+#include "banking/venture-bank-panel.inc"
+
 static void
 venture_web_append_related(
 	VentureWebServer	*self,
@@ -8648,6 +8650,7 @@ venture_web_ui_detail(
 	}
 
 	venture_web_append_related(self, content, record);
+	venture_bank_append_actions(content, record);
 
 	/* A link is not offered on a link; the audit log is not linkable. */
 	if ((VENTURE_TYPE_RECORD_LINK != entity_type) &&
@@ -27537,6 +27540,7 @@ venture_web_api_ticket_draft(
 
 
 #include "venture-web-federation.inc"
+#include "banking/venture-bank-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -27931,6 +27935,7 @@ venture_web_server_new(
 	htmx_router_delete(router, "/api/v1/:type/:id", venture_web_api_delete,
 	                   self);
 
+	venture_bank_web_register(router, self);
 	return g_steal_pointer(&self);
 }
 

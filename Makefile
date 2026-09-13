@@ -83,6 +83,8 @@ SERVER_ONLY_SRCS := \
 	$(wildcard src/forge/*.c) \
 	$(wildcard src/kb/*.c)
 
+SERVER_ONLY_SRCS += src/banking/venture-bank-match-service.c
+
 SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard src/periods/*.c))
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
