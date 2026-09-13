@@ -297,6 +297,85 @@ test_rollback(Fixture *f, gconstpointer data)
 	g_assert_cmpint(count(f, "audit_entry"), ==, audits);
 }
 
+static VentureReportResult *
+report(Fixture *f, const gchar *name, const gchar *period_text)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = venture_context_new(config, f->db);
+	g_autoptr(VentureDateRange) period = NULL;
+	g_autoptr(GTimeZone) timezone = g_time_zone_new_utc();
+	g_autoptr(GError) error = NULL;
+	VentureReport *r = venture_report_registry_lookup(venture_context_get_report_registry(context), name);
+	VentureReportResult *result;
+	g_assert_nonnull(r);
+	period = venture_date_range_parse(period_text, timezone, 1, &error);
+	g_assert_no_error(error);
+	result = venture_report_generate(r, context, period, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	return result;
+}
+
+static gint64
+metric_amount(VentureReportResult *r, const gchar *name)
+{
+	GPtrArray *metrics = venture_report_result_get_metrics(r);
+	guint i;
+	for (i = 0; i < metrics->len; i++)
+	{
+		VentureMetric *m = g_ptr_array_index(metrics, i);
+		if (g_strcmp0(venture_metric_get_key(m), name) == 0)
+			return venture_money_get_amount(venture_metric_get_money(m));
+	}
+	g_assert_not_reached();
+	return -1;
+}
+
+static void
+test_mrr(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(VentureReportResult) r = NULL;
+	gint64 id = start(f);
+	a = request(f, "change-seats", id, "2026-01-17");
+	g_object_set(a, "seats", (gint64)3, NULL);
+	save(f, a);
+	g_clear_object(&a);
+	a = request(f, "cancel", id, "2026-02-01");
+	save(f, a);
+	r = report(f, "mrr", "2026-01");
+	g_assert_cmpint(metric_amount(r, "mrr"), ==, 9000);
+	g_assert_cmpint(metric_amount(r, "arr"), ==, 108000);
+	g_assert_cmpint(metric_amount(r, "new"), ==, 6000);
+	g_assert_cmpint(metric_amount(r, "expansion"), ==, 3000);
+	g_clear_object(&r);
+	r = report(f, "mrr", "2026-02");
+	g_assert_cmpint(metric_amount(r, "mrr"), ==, 0);
+	g_assert_cmpint(metric_amount(r, "churn"), ==, 9000);
+}
+
+static void
+test_churn(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(VentureReportResult) r = NULL;
+	gint64 id = start(f);
+	a = request(f, "cancel", id, "2026-02-15");
+	save(f, a);
+	r = report(f, "churn", "2026-02");
+	g_assert_cmpint(metric_amount(r, "opening_mrr"), ==, 6000);
+	g_assert_cmpint(metric_amount(r, "lost_mrr"), ==, 6000);
+}
+
+static void
+test_due_report(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureReportResult) r = NULL;
+	start(f);
+	r = report(f, "subscriptions_due", "2026-01");
+	g_assert_cmpuint(venture_report_result_get_row_count(r), ==, 1);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -309,5 +388,8 @@ main(int argc, char **argv)
 	g_test_add("/billing/seats-proration", Fixture, NULL, setup, test_seats_proration, teardown);
 	g_test_add("/billing/dunning", Fixture, NULL, setup, test_dunning, teardown);
 	g_test_add("/billing/rollback", Fixture, NULL, setup, test_rollback, teardown);
+	g_test_add("/billing/mrr", Fixture, NULL, setup, test_mrr, teardown);
+	g_test_add("/billing/churn", Fixture, NULL, setup, test_churn, teardown);
+	g_test_add("/billing/due-report", Fixture, NULL, setup, test_due_report, teardown);
 	return g_test_run();
 }

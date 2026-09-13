@@ -11,6 +11,7 @@
  */
 
 #include "venture.h"
+#include "billing/venture-billing-reports.h"
 #include "ledger/venture-ledger-private.h"
 
 #include <string.h>
@@ -2712,5 +2713,6 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 
 	venture_receivables_register_reports(self);
 	venture_period_reports_register(self);
+	venture_billing_register_reports(self);
 
 }

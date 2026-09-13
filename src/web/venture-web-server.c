@@ -1048,6 +1048,11 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"periods"
 	},
 	{
+		"/e/customer_subscription", "Subscriptions",
+		VENTURE_ICON("<path d=\"M4 12a8 8 0 1 0 3-6\"/><path d=\"M3 3v6h6\"/>"),
+		NULL, "billing"
+	},
+	{
 		"/e/company", "Companies",
 		VENTURE_ICON(
 			"<path d=\"M3 21h18\"/>"
@@ -2178,6 +2183,8 @@ venture_web_api_write(
 
 	return venture_web_json_response(node, created ? 201 : 200);
 }
+
+#include "billing/venture-billing-web.inc"
 
 static HtmxResponse *
 venture_web_api_create(
@@ -8647,6 +8654,7 @@ venture_web_ui_detail(
 		g_string_append(content, "</code><p><a class=\"btn\" href=\"/e/federation_grant/new\">Create sharing grant</a> <a href=\"/federation\">Federation workspace</a></p></section>");
 	}
 
+	venture_billing_web_buttons(self, content, record, principal);
 	venture_web_append_related(self, content, record);
 
 	/* A link is not offered on a link; the audit log is not linkable. */
@@ -27833,6 +27841,10 @@ venture_web_server_new(
 	                 venture_web_api_release_changelog, self);
 	htmx_router_post(router, "/api/v1/releases/:id/publish",
 	                 venture_web_api_release_publish, self);
+	htmx_router_post(router, "/api/v1/customer_subscriptions/:id/:action", venture_billing_web_action, self);
+	htmx_router_post(router, "/api/v1/billing/start", venture_billing_web_action, self);
+	htmx_router_post(router, "/api/v1/billing/:action", venture_billing_web_action, self);
+	htmx_router_post(router, "/billing/subscriptions/:id/action", venture_billing_web_action, self);
 	htmx_router_get(router, "/api/v1/widget-kinds",
 	                venture_web_api_widget_kinds, self);
 	htmx_router_get(router, "/api/v1/dashboard-templates",

@@ -3098,6 +3098,8 @@ venture_cli_command_mcp(
 	return 0;
 }
 
+#include "billing/venture-billing-cli.inc"
+
 /* --- Entry point --------------------------------------------------------- */
 
 int
@@ -3119,6 +3121,8 @@ main(
 	gboolean apply_writes = FALSE;
 	gboolean stage = FALSE;
 	gint result;
+	g_autofree gchar *billing_as_of = NULL;
+	gboolean billing_dry_run = FALSE;
 
 	const GOptionEntry entries[] = {
 		{ "server", 's', 0, G_OPTION_ARG_STRING, &server,
@@ -3138,6 +3142,10 @@ main(
 		  "Print the version and exit", NULL },
 		{ "license", 0, 0, G_OPTION_ARG_NONE, &show_license,
 		  "Print licensing information and exit", NULL },
+		{ "as-of", 0, 0, G_OPTION_ARG_STRING, &billing_as_of,
+		  "billing: effective sweep date", "DATE" },
+		{ "dry-run", 0, 0, G_OPTION_ARG_NONE, &billing_dry_run,
+		  "billing: preview a sweep", NULL },
 		{ G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_STRING_ARRAY, &args,
 		  NULL, NULL },
 		{ NULL }
@@ -3212,6 +3220,8 @@ main(
 		"  webhook test ID              send a ping and wait for the answer\n"
 		"  webhook secret ID            generate a new signing secret\n"
 		"  health                       check the server is up\n"
+		"  billing start|change|cancel   manage customer subscription terms\n"
+		"  billing renew|dunning        sweep; --as-of DATE, --dry-run\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
 		"\n"
@@ -3411,6 +3421,8 @@ main(
 		result = venture_cli_command_webhooks(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "mcp"))
 		result = venture_cli_command_mcp(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "billing"))
+		result = venture_cli_command_billing(&cli, args, billing_as_of, billing_dry_run, &error);
 	else
 	{
 		g_printerr("venturectl: \"%s\" is not a command. Try --help.\n",
