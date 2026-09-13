@@ -100,6 +100,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `kb export KB_ID` | write an archive to stdout; `--format zip\|tar.gz` |
 | `kb crossref TYPE ID` | link the knowledge bearing on one record |
 | `kb article TYPE ID --kb N` | write a KB article from a record |
+| `act TYPE ID ACTION [key=value ...]` | discover and perform a business action; `--stage` proposes it |
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 
@@ -304,7 +305,7 @@ venturectl --stage create expense description="Cover art" amount=250.00
 #   approve: POST /api/v1/confirmations/a3f9c118/approve
 ```
 
-It is refused on any command other than `create`, `update` and `delete`,
+It is refused on any command other than `create`, `update`, `delete`, `act` and `sequence enroll`,
 because those are the only routes that read it -- and an unknown query
 parameter on a write route is ignored, so a quietly accepted `--stage` would
 apply the change it was asked to hold back.
@@ -437,6 +438,39 @@ method and date. MCP `venture_create` stages those records normally.
 vendor_id=ID` is the supplier statement. Both accept `organization_id`,
 `currency` and `as_of`. See `docs/payables.org` for credits, immutable
 history and the single-date limitation on optional paid-line expense conversion.
+## Follow-up sequences
+
+Use `describe sequence`, `describe sequence_step` and
+`describe sequence_enrollment` before configuring a journey.
+`sequence enroll ID contact_id=ID enrollment_reason=...` calls the service;
+`--stage sequence enroll` queues approval. Generic staged
+`create sequence_enrollment sequence_id=ID contact_id=ID` is equivalent.
+Approval rechecks suppression and duplicate enrollment at application time.
+
+`sequence run [--as-of TIMESTAMP] [organization_id=ID]` processes due steps
+for one organization. Use an ISO timestamp including timezone. Email steps
+create pending `sequence_delivery` rows; this command does not send mail.
+`sequence status ENROLLMENT_ID` shows progress and delivery history.
+Pause, resume and exit use the REST service actions documented in
+`docs/sequences.org`; generic enrollment edits are refused. Completed
+step identities are retained across restarts and sequence edits.
+## Record actions
+
+Use `venturectl -f json describe TYPE` to discover `actions`, their parameters
+and whether they can be staged. `venturectl act TYPE ID ACTION key=value`
+uses those declarations; `venturectl --stage act journal 42 post` proposes a
+posting. A staged result is awaiting approval, never completed. Generated
+action tools in the assistant and MCP always stage, including when other
+writes are configured to apply automatically.
+
+Journal reversal: `venturectl act journal 42 reverse occurred_at=2026-09-13 memo="Correction"`.
+Type-level creation: `venturectl act journal 0 create_and_post 'journal={...}'`,
+with header fields and a `lines` array. Both support `--stage`. Use real
+source and account IDs from the same organization. Invalid lines leave no
+draft behind; closed periods and repeat reversals are refused.
+
+The `--stage` help lists `create/update/delete/act/sequence enroll`; the same flag also
+applies to a type-level journal creation at ID zero.
 
 ### Automatic journals
 

@@ -2372,6 +2372,8 @@ venture_web_api_delete(
 	return venture_web_json_response(node, 200);
 }
 
+#include "venture-web-actions-private.h"
+
 static HtmxResponse *
 venture_web_api_describe(
 	HtmxRequest	*request,
@@ -2410,6 +2412,22 @@ venture_web_api_describe(
 		            "There is no record type called \"%s\"", name);
 		return venture_web_error_response(error);
 	}
+
+	if (JSON_NODE_HOLDS_ARRAY(node))
+	{
+		JsonArray *types = json_node_get_array(node);
+		guint i;
+		for (i = 0; i < json_array_get_length(types); i++)
+		{
+			JsonObject *object = json_array_get_object_element(types, i);
+			json_object_set_member(object, "actions", venture_action_registry_describe(
+				venture_database_get_action_registry(venture_context_get_database(self->context)),
+				json_object_get_string_member(object, "name")));
+		}
+	}
+	else
+		json_object_set_member(json_node_get_object(node), "actions", venture_action_registry_describe(
+			venture_database_get_action_registry(venture_context_get_database(self->context)), name));
 
 	return venture_web_json_response(node, 200);
 }
@@ -6238,6 +6256,8 @@ venture_web_append_form_field(
  * only differences are the heading, where it posts and whether the fields
  * start filled.
  */
+static void venture_web_sequence_prefill(VentureEntity *record, HtmxRequest *request);
+
 static HtmxResponse *
 venture_web_ui_form(
 	HtmxRequest	*request,
@@ -6289,6 +6309,7 @@ venture_web_ui_form(
 	else
 	{
 		record = g_object_new(entity_type, NULL);
+		venture_web_sequence_prefill(record, request);
 	}
 
 	specs = venture_entity_get_field_specs(record);
@@ -8555,6 +8576,8 @@ venture_web_append_incident_block(
 	VentureEntity		*record
 );
 
+#include "sequences/venture-sequence-web.inc"
+
 static HtmxResponse *
 venture_web_ui_detail(
 	HtmxRequest	*request,
@@ -8655,7 +8678,9 @@ venture_web_ui_detail(
 		g_string_append(content, "</code><p><a class=\"btn\" href=\"/e/federation_grant/new\">Create sharing grant</a> <a href=\"/federation\">Federation workspace</a></p></section>");
 	}
 
+	venture_web_append_record_actions(self, content, record, principal);
 	venture_web_append_related(self, content, record);
+	venture_web_sequence_panel(self, content, principal, record);
 
 	/* A link is not offered on a link; the audit log is not linkable. */
 	if ((VENTURE_TYPE_RECORD_LINK != entity_type) &&
@@ -15489,8 +15514,8 @@ venture_web_ui_chat_decide(
 	}
 
 	decided = approve
-		? venture_confirmation_store_approve(store, id,
-			(NULL != principal) ? principal->name : NULL, &error)
+		? venture_confirmation_store_approve_as(store, id,
+			principal->name, principal->role, &error)
 		: venture_confirmation_store_reject(store, id,
 			(NULL != principal) ? principal->name : NULL, &error);
 
@@ -17633,8 +17658,8 @@ venture_web_api_decide(
 	}
 
 	ok = approve
-		? venture_confirmation_store_approve(store, id,
-			(NULL != principal) ? principal->name : NULL, &error)
+		? venture_confirmation_store_approve_as(store, id,
+			principal->name, principal->role, &error)
 		: venture_confirmation_store_reject(store, id,
 			(NULL != principal) ? principal->name : NULL, &error);
 
@@ -27937,6 +27962,11 @@ venture_web_server_new(
 	htmx_router_post(router, "/federation/pull", venture_web_ui_federation_write, self);
 	htmx_router_post(router, "/federation/replicas/:id/:action", venture_web_ui_federation_write, self);
 
+	htmx_router_post(router, "/api/v1/sequence/:id/enroll", venture_web_sequence_enroll, self);
+	htmx_router_post(router, "/api/v1/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
+	htmx_router_post(router, "/ui/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
+	htmx_router_post(router, "/api/v1/sequences/run", venture_web_sequence_run, self);
+
 	htmx_router_get(router, "/api/v1/:type", venture_web_api_list, self);
 	htmx_router_post(router, "/api/v1/:type", venture_web_api_create, self);
 	htmx_router_get(router, "/api/v1/:type/:id", venture_web_api_get, self);
@@ -27944,6 +27974,9 @@ venture_web_server_new(
 	htmx_router_patch(router, "/api/v1/:type/:id", venture_web_api_update, self);
 	htmx_router_delete(router, "/api/v1/:type/:id", venture_web_api_delete,
 	                   self);
+
+	htmx_router_post(router, "/api/v1/:type/:id/actions/:action", venture_web_api_action, self);
+	htmx_router_post(router, "/api/v1/journals/post", venture_web_api_action, self);
 
 	return g_steal_pointer(&self);
 }

@@ -1077,6 +1077,47 @@ venture_mcp_catalog_get_tools(VentureMcpCatalog *self)
 		json_builder_end_object(builder);
 	}
 
+	for (i = 0; i < self->types->len; i++)
+	{
+		VentureMcpType *type = g_ptr_array_index(self->types, i);
+		JsonObject *description = json_node_get_object(type->description);
+		JsonArray *actions = json_object_has_member(description, "actions") ? json_object_get_array_member(description, "actions") : NULL;
+		guint j;
+		for (j = 0; actions && j < json_array_get_length(actions); j++)
+		{
+			JsonObject *action = json_array_get_object_element(actions, j);
+			g_autofree gchar *name = NULL;
+			g_autofree gchar *schema_text = NULL;
+			g_autoptr(JsonNode) schema = NULL;
+			JsonObject *properties;
+			JsonObject *id = json_object_new();
+			if (!json_object_get_boolean_member_with_default(action, "stageable", FALSE)) { json_object_unref(id); continue; }
+			name = g_strdup_printf("venture_%s_%s", type->canonical, json_object_get_string_member(action, "name"));
+			schema_text = venture_json_to_string(json_object_get_member(action, "input_schema"), FALSE);
+			schema = venture_json_parse(schema_text, NULL);
+			properties = json_object_get_object_member(json_node_get_object(schema), "properties");
+			json_object_set_string_member(id, "type", "integer");
+			json_object_set_int_member(id, "minimum", json_object_get_boolean_member_with_default(action, "type_level", FALSE) ? 0 : 1);
+			json_object_set_object_member(properties, "id", id);
+			if (!json_object_get_boolean_member_with_default(action, "type_level", FALSE))
+				json_array_add_string_element(json_object_get_array_member(json_node_get_object(schema), "required"), "id");
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "name");
+			json_builder_add_string_value(builder, name);
+			json_builder_set_member_name(builder, "description");
+			json_builder_add_string_value(builder, json_object_get_string_member(action, "description"));
+			json_builder_set_member_name(builder, "type_level");
+			json_builder_add_boolean_value(builder, json_object_get_boolean_member_with_default(action, "type_level", FALSE));
+			json_builder_set_member_name(builder, "action_type");
+			json_builder_add_string_value(builder, type->canonical);
+			json_builder_set_member_name(builder, "action_name");
+			json_builder_add_string_value(builder, json_object_get_string_member(action, "name"));
+			json_builder_set_member_name(builder, "inputSchema");
+			json_builder_add_value(builder, g_steal_pointer(&schema));
+			json_builder_end_object(builder);
+		}
+	}
+
 	json_builder_end_array(builder);
 
 	return json_builder_get_root(builder);
@@ -1098,6 +1139,13 @@ venture_mcp_catalog_has_tool(
 	{
 		if (0 == g_strcmp0(tool_defs[i].name, tool_name))
 			return TRUE;
+	}
+
+	{
+		g_autoptr(JsonNode) tools = venture_mcp_catalog_get_tools(self);
+		JsonArray *array = json_node_get_array(tools);
+		for (i = 0; i < json_array_get_length(array); i++)
+			if (0 == g_strcmp0(tool_name, json_object_get_string_member(json_array_get_object_element(array, i), "name"))) return TRUE;
 	}
 
 	return FALSE;

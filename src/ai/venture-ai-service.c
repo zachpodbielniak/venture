@@ -55,6 +55,7 @@ struct _VentureAiService
 	 * and going asynchronous makes it something that has to be said.
 	 */
 	gboolean		 streaming;
+	GPtrArray *action_tools;
 };
 
 G_DEFINE_FINAL_TYPE(VentureAiService, venture_ai_service, G_TYPE_OBJECT)
@@ -73,6 +74,7 @@ venture_ai_service_finalize(GObject *object)
 	g_clear_object(&self->plain);
 	g_clear_pointer(&self->system_prompt, g_free);
 	g_clear_pointer(&self->current_prompt, g_free);
+	g_clear_pointer(&self->action_tools, g_ptr_array_unref);
 
 	G_OBJECT_CLASS(venture_ai_service_parent_class)->finalize(object);
 }
@@ -86,6 +88,7 @@ venture_ai_service_class_init(VentureAiServiceClass *klass)
 static void
 venture_ai_service_init(VentureAiService *self)
 {
+	self->action_tools = g_ptr_array_new_with_free_func(g_free);
 }
 
 VentureAiPolicy
@@ -2487,6 +2490,8 @@ venture_ai_make_tool(
 	return tool;
 }
 
+#include "venture-ai-actions-private.h"
+
 static void
 venture_ai_service_register_tools(VentureAiService *self)
 {
@@ -3065,6 +3070,7 @@ venture_ai_service_new(
 	 */
 	self->plain = ai_tool_executor_new_empty();
 	venture_ai_service_register_tools(self);
+	venture_ai_register_actions(self);
 	self->system_prompt = venture_ai_service_build_prompt(self);
 
 	return g_steal_pointer(&self);
@@ -3457,6 +3463,7 @@ venture_ai_service_answer_with_images(
 		return NULL;
 	}
 
+	venture_ai_register_actions(self);
 	/* Held for the duration so a tool call can record what prompted it. */
 	g_free(self->current_prompt);
 	self->current_prompt = g_strdup(message);
@@ -3628,6 +3635,7 @@ venture_ai_service_answer_stream_async(
 		return;
 	}
 
+	venture_ai_register_actions(self);
 	/* Held for the duration so a tool call can record what prompted it. */
 	g_free(self->current_prompt);
 	self->current_prompt = g_strdup(message);
@@ -3707,6 +3715,7 @@ venture_ai_service_describe_tools(VentureAiService *self)
 	builder = json_builder_new();
 	json_builder_begin_array(builder);
 
+	venture_ai_register_actions(self);
 	tools = ai_tool_executor_get_tools(self->executor);
 
 	for (iter = tools; NULL != iter; iter = iter->next)

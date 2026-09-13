@@ -53,6 +53,8 @@ struct _VentureDatabase
 	 */
 	GPtrArray		*validators;
 	VenturePayablesService *payables;
+	VentureSequenceService *sequence_service;
+	VentureActionRegistry *actions;
 };
 
 typedef struct
@@ -97,6 +99,8 @@ venture_database_finalize(GObject *object)
 	self = VENTURE_DATABASE(object);
 
 	g_clear_object(&self->payables);
+	g_clear_object(&self->sequence_service);
+	g_clear_object(&self->actions);
 	g_clear_object(&self->transaction);
 
 	if (NULL != self->connection)
@@ -114,9 +118,22 @@ venture_database_finalize(GObject *object)
 }
 
 static void
+venture_database_get_property(GObject *object, guint id, GValue *value, GParamSpec *spec)
+{
+	if (1 == id)
+		g_value_set_object(value, venture_database_get_action_registry(VENTURE_DATABASE(object)));
+	else
+		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
+}
+
+static void
 venture_database_class_init(VentureDatabaseClass *klass)
 {
 	G_OBJECT_CLASS(klass)->finalize = venture_database_finalize;
+	G_OBJECT_CLASS(klass)->get_property = venture_database_get_property;
+	g_object_class_install_property(G_OBJECT_CLASS(klass), 1,
+		g_param_spec_object("action-registry", "Action registry", "Shared record actions",
+			VENTURE_TYPE_ACTION_REGISTRY, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
 
 	/**
 	 * VentureDatabase::entity-saved:
@@ -1061,6 +1078,13 @@ venture_database_save(
 			return ok;
 	}
 
+	{
+		gboolean handled;
+		gboolean ok = venture_sequences_save_hook(self, entity, actor, &handled, error);
+		if (handled || !ok)
+			return ok;
+	}
+
 	/* Validation happens before anything is written, never after: a
 	 * half-written invalid record is worse than a rejected one. */
 	if (!venture_entity_validate(entity, error))
@@ -1404,6 +1428,8 @@ venture_database_delete(
 	if (!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
+	if (!venture_sequences_check_removal(entity, error))
+		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
 
@@ -1463,6 +1489,8 @@ venture_database_restore(
 	if (!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
+	if (!venture_sequences_check_removal(entity, error))
+		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
 
@@ -1504,6 +1532,8 @@ venture_database_purge(
 		return FALSE;
 	if (!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error))
+		return FALSE;
+	if (!venture_sequences_check_removal(entity, error))
 		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
@@ -1985,4 +2015,24 @@ venture_database_get_payables_service(VentureDatabase *database)
 	if (database->payables == NULL)
 		database->payables = g_object_new(VENTURE_TYPE_PAYABLES_SERVICE, "database", database, NULL);
 	return database->payables;
+}
+
+VentureSequenceService *
+venture_sequence_service_get(VentureDatabase *database)
+{
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
+	if (database->sequence_service == NULL)
+		database->sequence_service = g_object_new(VENTURE_TYPE_SEQUENCE_SERVICE, "database", database, NULL);
+	return database->sequence_service;
+}
+
+VentureActionRegistry *
+venture_database_get_action_registry(VentureDatabase *self)
+{
+	if (NULL == self->actions)
+	{
+		self->actions = g_object_new(VENTURE_TYPE_ACTION_REGISTRY, "database", self, NULL);
+		venture_journal_actions_register(self);
+	}
+	return self->actions;
 }
