@@ -57,6 +57,8 @@ struct _VentureDatabase
 	 */
 	GPtrArray		*validators;
 	VentureBillingService *billing;
+	VentureQuoteService *quote_service;
+	VentureLeadService *lead_service;
 	VentureActivityService *activities;
 	VenturePayablesService *payables;
 	VentureBankMatchService *bank_match_service;
@@ -107,6 +109,7 @@ venture_database_finalize(GObject *object)
 	self = VENTURE_DATABASE(object);
 	g_clear_object(&self->mail_outbox);
 
+	g_clear_object(&self->quote_service);
 	g_clear_object(&self->payables);
 	g_clear_object(&self->bank_match_service);
 	g_clear_object(&self->deal_service);
@@ -114,6 +117,7 @@ venture_database_finalize(GObject *object)
 	g_clear_object(&self->actions);
 	g_clear_object(&self->transaction);
 	g_clear_object(&self->billing);
+	g_clear_object(&self->lead_service);
 
 	if (NULL != self->connection)
 	{
@@ -219,6 +223,14 @@ venture_database_init(VentureDatabase *self)
 	self->validators = g_ptr_array_new_with_free_func(
 		venture_database_validator_free);
 	self->activities = venture_activity_service_new(self);
+}
+
+VentureQuoteService *
+venture_database_get_quote_service(VentureDatabase *self)
+{
+	if (self->quote_service == NULL)
+		self->quote_service = g_object_new(VENTURE_TYPE_QUOTE_SERVICE, "database", self, NULL);
+	return self->quote_service;
 }
 
 /* --- Opening ------------------------------------------------------------- */
@@ -1114,6 +1126,12 @@ venture_database_save(
 
 	{
 		gboolean handled;
+		gboolean ok = venture_lead_service_save_hook(venture_database_get_lead_service(self), entity, actor, &handled, error);
+		if (handled || !ok) return ok;
+	}
+
+	{
+		gboolean handled;
 		gboolean ok = venture_pipelines_save(self, entity, actor, &handled, error);
 		if (handled || !ok)
 			return ok;
@@ -1143,6 +1161,12 @@ database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
 
 	if (!venture_entity_before_save(entity, error))
 		return FALSE;
+
+	{
+		gboolean handled;
+		gboolean ok = venture_quotes_save_hook(self, entity, actor, &handled, error);
+		if (handled || !ok) return ok;
+	}
 
 	created = !venture_entity_is_persisted(entity);
 
@@ -1485,6 +1509,12 @@ venture_database_delete(
 	if (!venture_pipelines_check_removal(entity, error))
 		return FALSE;
 
+	{
+		gboolean handled;
+		gboolean result = venture_quotes_remove_hook(self, entity, 0, actor, &handled, error);
+		if (handled || !result) return result;
+	}
+
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
@@ -1499,6 +1529,8 @@ venture_database_delete(
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_mail_check_removal(entity, error))
+		return FALSE;
+	if (!venture_quotes_check_removal(self, entity, error))
 		return FALSE;
 
 	if (!venture_entity_is_persisted(entity))
@@ -1553,6 +1585,12 @@ venture_database_restore(
 	if (!venture_pipelines_check_removal(entity, error))
 		return FALSE;
 
+	{
+		gboolean handled;
+		gboolean result = venture_quotes_remove_hook(self, entity, 1, actor, &handled, error);
+		if (handled || !result) return result;
+	}
+
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
@@ -1567,6 +1605,8 @@ venture_database_restore(
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_mail_check_removal(entity, error))
+		return FALSE;
+	if (!venture_quotes_check_removal(self, entity, error))
 		return FALSE;
 
 	if (!venture_entity_is_deleted(entity))
@@ -1604,6 +1644,12 @@ venture_database_purge(
 	if (!venture_pipelines_check_removal(entity, error))
 		return FALSE;
 
+	{
+		gboolean handled;
+		gboolean result = venture_quotes_remove_hook(self, entity, 2, actor, &handled, error);
+		if (handled || !result) return result;
+	}
+
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
@@ -1618,6 +1664,8 @@ venture_database_purge(
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_mail_check_removal(entity, error))
+		return FALSE;
+	if (!venture_quotes_check_removal(self, entity, error))
 		return FALSE;
 
 	if (!venture_entity_is_persisted(entity))
@@ -2105,6 +2153,17 @@ VentureMailOutbox *venture_database_get_mail_outbox(VentureDatabase *self)
 	if (!self->mail_outbox)
 		self->mail_outbox = g_object_new(VENTURE_TYPE_MAIL_OUTBOX, "database", self, NULL);
 	return self->mail_outbox;
+}
+
+VentureLeadService *
+venture_database_get_lead_service(VentureDatabase *self)
+{
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), NULL);
+	g_rec_mutex_lock(&self->lock);
+	if (self->lead_service == NULL)
+		self->lead_service = g_object_new(VENTURE_TYPE_LEAD_SERVICE, "database", self, NULL);
+	g_rec_mutex_unlock(&self->lock);
+	return self->lead_service;
 }
 
 VentureActivityService *

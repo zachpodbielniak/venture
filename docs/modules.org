@@ -53,6 +53,9 @@ Written bottom-up, because a module may only require what precedes it:
 | =pipelines= | crm | pipeline, pipeline_stage, deal_stage_entry, loss_reason; stage_duration, funnel, forecast, loss_reasons, overdue_deals; /deals | |
 | =statements= | ledger, periods | ledger balances query; balance sheet, income statement, cash flow, general ledger, account balances, P&L reconciliation | |
 | =activities= | crm | activity, activity_type; =worklist=, reminders, calendar export and =/worklist= | |
+| =leads= | crm | lead, lead_form, lead_assignment_rule; =lead_sources=, =lead_response_time=, =leads_recycled_due=; capture and conversion | |
+
+| =quotes= | crm, invoicing | price_list, price_list_item, quote, quote_line, quote_event, quote_delivery, quote_action; =quotes= report and proposal actions | |
 
 Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.
 
@@ -80,7 +83,7 @@ VENTURE_MODULE_CRM=false venture
 For one run:
 
 #+begin_src sh
-venture --disable-module crm --disable-module invoicing --disable-module receivables --disable-module pipelines
+venture --disable-module crm --disable-module invoicing --disable-module receivables --disable-module quotes --disable-module pipelines
 #+end_src
 
 From a compiled C configuration, which is how a machine decides for itself:
@@ -168,6 +171,9 @@ The description must outlive the registry. A static does.
 
 All five are checked at registration, and a built-in that breaks one aborts startup, because a registry missing a core module would fail in a hundred quieter ways later.
 
+
+Disable =leads= too when disabling =crm=. Campaign attribution is optional
+and uses outreach when available. See [[file:leads.org][leads]].
 * Automatic journals
 
 | Module | Requires | Owns |

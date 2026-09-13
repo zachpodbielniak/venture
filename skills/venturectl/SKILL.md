@@ -305,7 +305,7 @@ venturectl --stage create expense description="Cover art" amount=250.00
 #   approve: POST /api/v1/confirmations/a3f9c118/approve
 ```
 
-It is refused on any command other than `create`, `update`, `delete`, `act`, `sequence enroll` and `billing`,
+It is refused on any command other than `create`, `update`, `delete`, `act`, `sequence enroll`, `lead convert` and `billing`,
 because those are the only routes that read it -- and an unknown query
 parameter on a write route is ignored, so a quietly accepted `--stage` would
 apply the change it was asked to hold back.
@@ -454,6 +454,25 @@ submits due rows. `mail list state=uncertain` lists uncertain acceptance;
 uncertain rows. Actions reject `--stage`; propose an enqueue with the generic
 `--stage create mail_message` command when approval is required.
 
+### Commercial quote actions
+
+`quote send ID`, `quote accept ID 'by=Full Name'`,
+`quote decline ID 'reason=Explanation'`, and `quote revise ID` call the quote
+service. Acceptance creates and issues the invoice in the same transaction.
+For a staged action use `--stage create quote_action quote_id=ID action=accept
+expected_version=N 'accepted_by=Full Name'`; obtain the quote's current
+`version` first. `revision` is the separate commercial revision number.
+## Leads
+
+Use `describe lead` before capture or qualification. `lead convert ID
+[deal=yes|no] [company_id=ID] [contact_id=ID]` requires a qualified lead and
+creates or links CRM records atomically. `--stage` proposes conversion for
+approval. Never set `status=converted` or conversion ids with generic updates.
+`lead reassign ID [owner=NAME]` assigns explicitly or reruns the matching
+rules; staged reassignment is refused. Recycle with `update lead ID
+status=recycled unqualified_reason=... recycle_until=YYYY-MM-DD`.
+Reports are `lead_sources`, `lead_response_time` and `leads_recycled_due`;
+see `docs/leads.org` for definitions and public capture forms.
 ## Planned activities
 
 `activity complete ID outcome=...` completes a planned activity, writes interaction history and advances recurrence atomically. `activity list mine|overdue|today` reads your daily worklist. Generic `create activity` and `update activity` edit the plan; generic `status=done` is refused. The existing `activity TYPE ID` command still reads a record timeline. Use `report worklist organization_id=ID` for the current UTC week per owner.
@@ -519,7 +538,7 @@ with header fields and a `lines` array. Both support `--stage`. Use real
 source and account IDs from the same organization. Invalid lines leave no
 draft behind; closed periods and repeat reversals are refused.
 
-The `--stage` help lists `create/update/delete/act/sequence enroll/billing`; the same flag also
+The `--stage` help lists `create/update/delete/act/sequence enroll/lead convert/billing`; the same flag also
 applies to a type-level journal creation at ID zero.
 
 ### Automatic journals

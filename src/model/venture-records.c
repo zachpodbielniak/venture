@@ -60,7 +60,8 @@ static const VentureFieldDecl venture_organization_fields[] = {
 	              "Used when a record does not name an organisation",
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
-	              VENTURE_COLUMN_FLAG_INDEXED)
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("quote-valid-days", "Quote validity days", "Zero uses 30 days", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureOrganization, venture_organization, venture_organization_fields,
@@ -577,7 +578,9 @@ static const VentureFieldDecl venture_company_fields[] = {
 	VENTURE_FIELD_TEXT("address", "Address", NULL),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
-	              VENTURE_COLUMN_FLAG_INDEXED)
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("default-price-list-id", "Default price list", "Customer-specific quote pricing", "price_list", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCompany, venture_company, venture_company_fields,
@@ -611,7 +614,8 @@ static const VentureFieldDecl venture_contact_fields[] = {
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("subscribed", "Subscribed", NULL,
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureContact, venture_contact, venture_contact_fields,
@@ -636,7 +640,8 @@ static const VentureFieldDecl venture_interaction_fields[] = {
 	VENTURE_FIELD_REF("campaign-id", "Campaign", NULL, "campaign",
 	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("outbound", "Outbound", "You initiated it",
-	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("lead-id", "Lead", "Inquiry before conversion", "lead", VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureInteraction, venture_interaction, venture_interaction_fields,
@@ -665,6 +670,7 @@ static const VentureFieldDecl venture_deal_fields[] = {
 	VENTURE_FIELD("source", "Source", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("pipeline-id", "Pipeline", NULL, "pipeline", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("stage-id", "Pipeline stage", "Use VentureDealService to move", "pipeline_stage", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("next-step", "Next step", NULL),
@@ -2698,7 +2704,9 @@ static const VentureFieldDecl venture_invoice_line_fields[] = {
 	              VENTURE_FIELD_KIND_DOUBLE, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("unit-price", "Unit price", NULL),
 	VENTURE_FIELD("position", "Position", "Order on the invoice",
-	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("discount-percent", "Discount percent", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("tax-percent", "Tax percent", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY(VentureInvoiceLine, venture_invoice_line,
@@ -2735,8 +2743,14 @@ venture_invoice_line_get_amount(
 	thousandths = (gint64)(quantity * 1000.0 +
 	                       ((quantity >= 0.0) ? 0.5 : -0.5));
 
-	return venture_money_multiply_rational(unit_price, thousandths, 1000,
-	                                       error);
+	{
+		g_autoptr(VentureMoney) subtotal = venture_money_multiply_rational(unit_price, thousandths, 1000, error);
+		gint64 discount_percent;
+		gint64 tax_percent;
+		g_object_get(self, "discount-percent", &discount_percent, "tax-percent", &tax_percent, NULL);
+		if (subtotal == NULL) return NULL;
+		return venture_quote_apply_percentages(subtotal, discount_percent, tax_percent, error);
+	}
 }
 
 /*

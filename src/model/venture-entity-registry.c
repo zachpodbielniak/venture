@@ -732,6 +732,16 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_mail_message_get_type
 		, venture_mail_template_get_type
 
+		, venture_price_list_get_type
+		, venture_price_list_item_get_type
+		, venture_quote_get_type
+		, venture_quote_line_get_type
+		, venture_quote_event_get_type
+		, venture_quote_delivery_get_type
+		, venture_quote_action_get_type
+		, venture_lead_get_type
+		, venture_lead_form_get_type
+		, venture_lead_assignment_rule_get_type
 		, venture_activity_get_type
 		, venture_activity_type_get_type
 		, venture_vendor_bill_get_type

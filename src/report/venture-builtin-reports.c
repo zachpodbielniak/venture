@@ -2716,10 +2716,12 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 	}
 
 	venture_receivables_register_reports(self);
+	venture_quotes_register_reports(self);
 	venture_payables_register_reports(self);
 	venture_bank_register_reports(self);
 	venture_period_reports_register(self);
 	venture_billing_register_reports(self);
+	venture_leads_register_reports(self);
 	venture_activity_register_reports(self);
 	venture_pipeline_reports_register(self);
 	venture_sequences_register_reports(self);

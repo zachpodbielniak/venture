@@ -2490,6 +2490,7 @@ venture_ai_make_tool(
 	return tool;
 }
 
+#include "leads/venture-lead-ai.inc"
 #include "activities/venture-activity-ai.inc"
 #include "pipelines/venture-pipeline-ai.inc"
 #include "venture-ai-actions-private.h"
@@ -3083,6 +3084,7 @@ venture_ai_service_new(
 	 */
 	self->plain = ai_tool_executor_new_empty();
 	venture_ai_service_register_tools(self);
+	venture_ai_register_lead_tool(self);
 	venture_ai_register_actions(self);
 	self->system_prompt = venture_ai_service_build_prompt(self);
 

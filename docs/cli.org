@@ -236,6 +236,23 @@ that row and Message-ID. All accept =organization_id=N= where relevant.
 See [[file:mail.org][mail]] for uncertainty and scheduling. Actions reject
 =--stage=; =--stage create mail_message= proposes an enqueue instead.
 
+* Quote actions
+
+=venturectl quote send ID= freezes and queues a proposal.
+=venturectl quote accept ID 'by=Full Name'= accepts it and issues its invoice.
+=venturectl quote decline ID 'reason=Explanation'= records a refusal;
+=venturectl quote revise ID= clones the proposal and supersedes its source.
+For approval, use =--stage create quote_action quote_id=ID action=accept
+expected_version=N accepted_by=NAME=. See [[file:quotes.org][quotes]].
+* Leads
+
+=venturectl lead convert ID [deal=yes|no] [company_id=ID] [contact_id=ID]=
+converts a qualified inquiry atomically. =--stage= queues conversion for
+approval. =venturectl lead reassign ID [owner=NAME]= assigns explicitly or
+runs matching rules again. Generic =create/update lead= supports capture and
+qualification; converted state and references belong to the service.
+Recycle with =status=recycled unqualified_reason=... recycle_until=YYYY-MM-DD=.
+See [[file:leads.org][leads]] for capture forms, duplicate policies and reports.
 * Planned activities
 
 =venturectl activity complete ID outcome=...= completes planned work through

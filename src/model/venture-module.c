@@ -548,6 +548,25 @@ static GType (*const billing_types[]) (void) = {
 static GType (*const venture_module_mail_types[]) (void) = {
 	venture_mail_message_get_type, venture_mail_template_get_type, NULL
 };
+static const gchar *const quotes_requires[] = { "crm", "invoicing", NULL };
+static const gchar *const quotes_reports[] = { "quotes", NULL };
+static GType (*const quotes_types[]) (void) = {
+	venture_price_list_get_type,
+	venture_price_list_item_get_type,
+	venture_quote_get_type,
+	venture_quote_line_get_type,
+	venture_quote_event_get_type,
+	venture_quote_delivery_get_type,
+	venture_quote_action_get_type,
+	NULL
+};
+
+static GType (*const venture_module_leads_types[]) (void) = {
+	venture_lead_get_type, venture_lead_form_get_type,
+	venture_lead_assignment_rule_get_type, NULL
+};
+static const gchar *const venture_module_reports_leads[] = { "lead_sources", "lead_response_time", "leads_recycled_due", NULL };
+static const gchar *const venture_module_requires_leads[] = { "crm", NULL };
 static GType (*const venture_module_activities_types[]) (void) = {
 	venture_activity_get_type, venture_activity_type_get_type, NULL
 };
@@ -735,6 +754,8 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		venture_module_requires_finance, NULL,
 		venture_module_periods_types, venture_module_reports_periods, NULL, FALSE
 	},
+	{ "quotes", "Quotes", "Versioned commercial proposals and acceptance.",
+		quotes_requires, NULL, quotes_types, quotes_reports, NULL, FALSE },
 	{
 		"billing", "SaaS billing", "Customer subscriptions and recurring revenue.",
 		billing_requires, NULL, billing_types, billing_reports, NULL, FALSE
@@ -742,6 +763,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"mail", "Transactional mail", "Durable outbound messages and templates.",
 		venture_module_requires_core, NULL, venture_module_mail_types, NULL, NULL, FALSE
+	},
+	{
+		"leads", "Leads", "Capture, qualify, assign and convert inquiries.",
+		venture_module_requires_leads, NULL, venture_module_leads_types,
+		venture_module_reports_leads, NULL, FALSE
 	},
 	{
 		"activities", "Planned activities", "Tasks, calls, meetings and the daily worklist.",

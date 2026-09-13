@@ -67,6 +67,7 @@ CORE_SRCS := \
 	$(wildcard src/mcp/*.c)
 
 CORE_SRCS += src/billing/venture-billing-records.c
+CORE_SRCS += src/leads/venture-lead-records.c
 CORE_SRCS += src/activities/venture-activity-records.c
 CORE_SRCS += src/payables/venture-payable-records.c
 CORE_SRCS += src/banking/venture-bank-records.c
@@ -93,6 +94,9 @@ SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard
 SERVER_ONLY_SRCS += $(filter-out src/billing/venture-billing-records.c,$(wildcard src/billing/*.c))
 CORE_SRCS += src/mail/venture-mail-records.c
 SERVER_ONLY_SRCS += $(filter-out src/mail/venture-mail-records.c,$(wildcard src/mail/*.c))
+CORE_SRCS += src/quotes/venture-quote-records.c
+SERVER_ONLY_SRCS += $(filter-out src/quotes/venture-quote-records.c,$(wildcard src/quotes/*.c))
+SERVER_ONLY_SRCS += src/leads/venture-lead-service.c src/leads/venture-lead-reports.c
 SERVER_ONLY_SRCS += $(filter-out src/activities/venture-activity-records.c,$(wildcard src/activities/*.c))
 SERVER_ONLY_SRCS += src/payables/venture-payables-service.c src/payables/venture-payable-reports.c
 
@@ -125,6 +129,7 @@ PUBLIC_HDRS := \
 	$(wildcard src/model/*.h) \
 	$(wildcard src/receivables/*.h) \
 	$(wildcard src/periods/*.h) \
+	$(filter-out %-print-style.h,$(wildcard src/quotes/*.h)) \
 	$(wildcard src/config/*.h) \
 	$(wildcard src/core/*.h) \
 	$(wildcard src/db/*.h) \
@@ -163,6 +168,8 @@ TEST_BINS := $(patsubst tests/%.c,$(OUTDIR)/tests/%,$(TEST_SRCS))
 # The settlement test drives the real CLI and its MCP tool against HTTP.
 $(OUTDIR)/tests/test-receivables: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-billing-surfaces: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-quotes: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-leads: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-payables: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sequences: | $(OUTDIR)/venturectl

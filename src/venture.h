@@ -81,6 +81,7 @@
 #include "billing/venture-billing-records.h"
 #include "mail/venture-mail-records.h"
 
+#include "leads/venture-lead-records.h"
 #include "activities/venture-activity-records.h"
 #include "pipelines/venture-pipeline-records.h"
 #include "sequences/venture-sequence-records.h"
@@ -101,6 +102,8 @@
 
 #include "mcp/venture-mcp-catalog.h"
 #include "mcp/venture-mcp-server.h"
+
+ #include "quotes/venture-quote-records.h"
 
 /* --- Server-only subsystems ---------------------------------------------- */
 
@@ -129,6 +132,8 @@
 #include "mail/venture-smtp-mailer.h"
 #include "mail/venture-mail-outbox.h"
 #include "mail/venture-mail-template.h"
+#include "quotes/venture-quote-service.h"
+#include "leads/venture-lead-service.h"
 #include "payables/venture-payables-service.h"
 #include "banking/venture-bank-match-service.h"
 #include "sequences/venture-sequence-service.h"

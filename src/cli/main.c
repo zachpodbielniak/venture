@@ -2147,6 +2147,7 @@ venture_cli_command_release(
 	return 0;
 }
 
+#include "leads/venture-lead-cli.inc"
 #include "activities/venture-activity-cli.inc"
 #include "pipelines/venture-pipeline-cli.inc"
 
@@ -3113,6 +3114,7 @@ venture_cli_command_mcp(
 
 /* --- Entry point --------------------------------------------------------- */
 
+#include "quotes/venture-quote-cli.inc"
 static gint
 venture_cli_command_act(VentureCli *cli, gchar **args, GError **error)
 {
@@ -3224,7 +3226,7 @@ main(
 		{ "apply-writes", 0, 0, G_OPTION_ARG_NONE, &apply_writes,
 		  "mcp only: let write tools apply instead of staging", NULL },
 		{ "stage", 0, 0, G_OPTION_ARG_NONE, &stage,
-		  "create/update/delete/act/sequence enroll/billing: propose the change for approval "
+		  "create/update/delete/act/sequence enroll/lead convert/billing: propose the change for approval "
 		  "instead of making it", NULL },
 		{ "version", 'V', 0, G_OPTION_ARG_NONE, &show_version,
 		  "Print the version and exit", NULL },
@@ -3281,9 +3283,12 @@ main(
 		"  post backfill                post missing journals; --dry-run\n"
 		"  bill approve|pay|void ID [field=value ...]  supplier bill actions\n"
 		"  factory                      the software factory at a glance\n"
+		"  lead convert ID              qualify first; deal=yes|no, company_id=ID\n"
+		"  lead reassign ID             owner=NAME or run assignment rules\n"
 		"  release changelog ID         draft a release's changelog from\n"
 		"                               its tickets; --replace overwrites\n"
 		"  mail list|send|test|deliver|retry  transactional mail\n"
+		"  quote send|accept|decline|revise ID [by=NAME] [reason=TEXT]\n"
 		"  bank ACTION ID [JSON|@FILE] banking action; bank match AUTO STATEMENT_ID\n"
 		"  deal move ID STAGE [NOTE]     move a deal through its pipeline\n"
 		"  release publish ID           cut it on the forge; --prerelease\n"
@@ -3427,7 +3432,7 @@ main(
 	}
 
 	/*
-	 * Same rule, same reason. The generic write and action verbs go
+	 * Only commands whose routes implement staging accept this flag. They go
 	 * through a route that reads `stage`; on anything else the parameter
 	 * would be an unknown one, which a write route *ignores* -- so a
 	 * quietly accepted --stage would apply the change it was asked to
@@ -3437,11 +3442,12 @@ main(
 	    (0 != g_strcmp0(args[0], "update")) &&
 	    (0 != g_strcmp0(args[0], "delete")) &&
 	    (0 != g_strcmp0(args[0], "billing")) &&
+	    !(0 == g_strcmp0(args[0], "lead") && 0 == g_strcmp0(args[1], "convert")) &&
 	    (0 != g_strcmp0(args[0], "act")) &&
 	    !((0 == g_strcmp0(args[0], "sequence")) && (0 == g_strcmp0(args[1], "enroll"))))
 	{
 		g_printerr("venturectl: --stage only means something to create, "
-		           "update, delete, act, sequence enroll and billing. \"%s\" would ignore it.\n", args[0]);
+		           "update, delete, act, sequence enroll, lead convert and billing. \"%s\" would ignore it.\n", args[0]);
 		g_free(cli.base_url);
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
@@ -3509,6 +3515,10 @@ main(
 		result = venture_cli_command_factory(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "mail"))
 		result = venture_cli_command_mail(&cli, args, mail_html, mail_limit, &error);
+	else if (0 == g_strcmp0(args[0], "quote"))
+		result = venture_cli_command_quote(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "lead"))
+		result = venture_cli_command_lead(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "bill"))
 		result = venture_cli_command_bill(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "bank"))

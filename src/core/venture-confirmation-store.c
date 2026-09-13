@@ -710,8 +710,12 @@ venture_confirmation_store_approve_as(
 			confirmation->deal_stage_id, confirmation->deal_move_note, &actor, &local_error);
 		ok = NULL != moved;
 	}
-	else
-	if (VENTURE_AUDIT_ACTION_DELETE == confirmation->action)
+	else if (g_strcmp0(confirmation->via, "lead-convert") == 0)
+	{
+		ok = venture_lead_service_apply_staged(venture_database_get_lead_service(self->database),
+			confirmation->staged, &actor, &local_error);
+	}
+	else if (VENTURE_AUDIT_ACTION_DELETE == confirmation->action)
 	{
 		ok = venture_database_delete(self->database, confirmation->staged,
 		                             &actor, &local_error);
