@@ -72,6 +72,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `modules` | which modules the server runs; `-f json` for types, reports and reasons |
 | `factory` | the software factory at a glance: milestones with progress, releases, builds, environments and what they run, open incidents |
 | `release changelog ID [--replace]` | draft a release's changelog from the tickets marked fixed in it |
+| `journal post ID` | post a draft through the shared service; editors propose, `--stage` always proposes |
 | `release publish ID [--prerelease]` | cut the release on the forge; creates the tag, cannot be undone here |
 | `dashboards` | the dashboards the token may see |
 | `dashboard SLUG` | one dashboard, every widget evaluated; `-f json` for the whole answer |
@@ -304,7 +305,7 @@ venturectl --stage create expense description="Cover art" amount=250.00
 #   approve: POST /api/v1/confirmations/a3f9c118/approve
 ```
 
-It is refused on any command other than `create`, `update` and `delete`,
+It is refused on commands other than `create`, `update`, `delete` and `journal post`,
 because those are the only routes that read it -- and an unknown query
 parameter on a write route is ignored, so a quietly accepted `--stage` would
 apply the change it was asked to hold back.
@@ -418,3 +419,12 @@ venturectl federation '{"action":"resolve","id":1,"version":5,"field":"descripti
 ```
 
 Collection pulls return at most ten results, `next_offset` and `more`; continue pages while `more` is true and inspect per-record errors. Pull imports/merges without pushing; sync pushes conflict-free changes with an expected remote version. Edits require the local replica version. A conflict blocks that record until resolved; choosing remote can accept a removed/revoked field. Never update `federation_replica` through generic CRUD: its merge state belongs to the service. Copies remain usable during outages but are not authoritative local accounting rows. New source objects and binary attachments are not created/copied offline. See `docs/federation.org` for key exchange, grants, scheduling and revocation.
+
+## Organization membership
+
+Read `docs/orgaccess.org` for the role matrix. Membership and team records use
+generic CRUD. Tokens intersect mint-time memberships with current authority;
+new grants never widen an old token. Missing membership gives empty results or
+404; a refused in-organization write gives 403. Owner/admin data authority and
+output formats remain unchanged. `journal post ID` returns a confirmation for
+an organization editor. Treat that response as pending until finance approves.

@@ -143,11 +143,12 @@ gboolean venture_orgaccess_check_proposal(VentureDatabase *database, VentureEnti
  * @context: wiring
  * @principal: authenticated actor
  * @id: draft journal
+ * @force_proposal: stage even when the caller can apply directly
  * @staged_out: whether a confirmation was created
  * @error: refusal
  * Returns: (transfer full) (nullable): a confirmation or posted record
  */
-JsonNode *venture_orgaccess_post_journal(VentureContext *context, const VentureAuthPrincipal *principal, gint64 id, gboolean *staged_out, GError **error);
+JsonNode *venture_orgaccess_post_journal(VentureContext *context, const VentureAuthPrincipal *principal, gint64 id, gboolean force_proposal, gboolean *staged_out, GError **error);
 /**
  * venture_orgaccess_apply_post:
  * @database: repository

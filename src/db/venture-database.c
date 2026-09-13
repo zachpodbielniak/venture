@@ -1044,8 +1044,8 @@ venture_database_save(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
-	if (!venture_orgaccess_prepare(self, entity, error)) return FALSE;
 	if (!venture_access_policy_check_write(venture_database_get_access_policy(self), entity, "write", error)) return FALSE;
+	if (!venture_orgaccess_prepare(self, entity, error)) return FALSE;
 
 	/* Source and posting share a transaction, whichever surface saved it. */
 	if (venture_ledger_wrap_source(self, entity))

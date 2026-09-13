@@ -2512,6 +2512,26 @@ venture_ai_tool_desk(
 	return venture_ai_tool_error("\"%s\" is not a desk action", action);
 }
 
+static gchar *
+venture_ai_tool_journal_post(AiToolUse *tool_use, GCancellable *cancellable, GError **tool_error, gpointer user_data)
+{
+	VentureAiService *self = user_data;
+	g_autoptr(VentureAccessScope) scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	JsonObject *input = venture_ai_tool_input(tool_use);
+	gboolean staged;
+	if (VENTURE_AI_POLICY_READ_ONLY == self->policy)
+		return venture_ai_tool_error("The assistant is read-only on this install");
+	if (NULL == input)
+		return venture_ai_tool_error("The arguments must be an object");
+	node = venture_orgaccess_post_journal(self->context, self->current_principal,
+		venture_json_object_get_int(input, "id", 0), self->policy != VENTURE_AI_POLICY_AUTONOMOUS, &staged, &error);
+	if (NULL == node)
+		return venture_ai_tool_error("%s", error->message);
+	return venture_ai_tool_result(node);
+}
+
 static AiTool *
 venture_ai_make_tool(
 	VentureAiService	*self,
@@ -2543,6 +2563,13 @@ venture_ai_service_register_tools(VentureAiService *self)
 	g_autoptr(AiTool) inbox = NULL;
 	g_autoptr(AiTool) runs = NULL;
 	g_autoptr(AiTool) desk = NULL;
+	g_autoptr(AiTool) journal_post = NULL;
+
+	journal_post = venture_ai_make_tool(self, "venture_journal_post",
+		"Post a draft journal through the posting service. Editors propose for financial approval; "
+		"confirm_writes always stages. A confirmation is pending, not posted.");
+	ai_tool_add_parameter(journal_post, "id", "integer", "Draft journal id", TRUE);
+	ai_tool_executor_register_callback(self->executor, journal_post, venture_ai_tool_journal_post, self, NULL);
 
 	list_types = venture_ai_make_tool(self, "venture_list_types",
 		"List every record type in this VENTURE instance with its fields, "

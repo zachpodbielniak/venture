@@ -168,6 +168,28 @@ test_token_scope(void)
 	g_assert_false(venture_access_policy_can(venture_database_get_access_policy(db), &actor, "read", company, NULL));
 	venture_entity_set_organization_id(company, first);
 	g_assert_true(venture_access_policy_can(venture_database_get_access_policy(db), &actor, "read", company, NULL));
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+		g_autoptr(VentureEntity) original_member = NULL;
+		g_autoptr(VentureEntity) journal = g_object_new(VENTURE_TYPE_JOURNAL, "organization-id", first, NULL);
+		g_autoptr(GError) error = NULL;
+		venture_query_add_filter_int(query, "organization-id", VENTURE_FILTER_OP_EQ, first, NULL);
+		original_member = venture_database_find_one(db, query, NULL);
+		g_object_set(original_member, "role", VENTURE_ORGANIZATION_ROLE_VIEWER, NULL);
+		g_assert_true(venture_database_save(db, original_member, NULL, NULL));
+		g_clear_object(&token);
+		token = venture_api_token_new();
+		g_object_set(token, "name", "viewer-token", "user-id", actor.user_id, "role", VENTURE_USER_ROLE_EDITOR, NULL);
+		g_clear_pointer(&secret, g_free);
+		secret = venture_api_token_generate(token);
+		g_assert_true(venture_database_save(db, VENTURE_ENTITY(token), NULL, NULL));
+		actor.token_id = venture_entity_get_id(VENTURE_ENTITY(token));
+		g_object_set(original_member, "role", VENTURE_ORGANIZATION_ROLE_EDITOR, NULL);
+		g_assert_true(venture_database_save(db, original_member, NULL, NULL));
+		g_assert_false(venture_access_policy_requires_approval(venture_database_get_access_policy(db), &actor, "post", journal, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	}
+
 }
 
 static void
@@ -206,7 +228,7 @@ test_ai_boundary(void)
 }
 
 static void
-test_role_matrix(void)
+test_role_matrix(gconstpointer data)
 {
 	g_autoptr(VentureConfig) config = venture_config_new();
 	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
@@ -220,8 +242,17 @@ test_role_matrix(void)
 	gint role;
 	gint64 org;
 	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), NULL));
-	context = venture_context_new(config, db);
-	org = venture_context_get_default_organization_id(context);
+	if (NULL == data)
+	{
+		context = venture_context_new(config, db);
+		org = venture_context_get_default_organization_id(context);
+	}
+	else
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
+		g_autoptr(VentureEntity) first = venture_database_find_one(db, query, NULL);
+		org = venture_entity_get_id(first);
+	}
 	g_assert_true(venture_database_save(db, user, NULL, NULL));
 	actor.authenticated = TRUE;
 	actor.user_id = venture_entity_get_id(user);
@@ -295,6 +326,104 @@ test_team_revocation(void)
 	g_assert_false(venture_access_policy_can(policy, &actor, "read", company, NULL));
 	g_object_set(company, "organization-id", org + 100, NULL);
 	g_assert_false(venture_database_save(db, company, NULL, NULL));
+	g_object_set(company, "organization-id", org, NULL);
+	g_assert_true(venture_database_save(db, company, NULL, NULL));
+	g_assert_true(venture_database_delete(db, team, NULL, NULL));
+	g_object_set(company, "name", "Historical team reference", NULL);
+	g_assert_true(venture_database_save(db, company, NULL, NULL));
+
+}
+
+static gboolean
+fail_second_membership(VentureDatabase *db, VentureEntity *entity, VentureEntity *previous, gpointer data, GError **error)
+{
+	guint *writes = data;
+	if (++*writes == 2)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Injected second membership failure");
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static void
+test_bootstrap_rollback(void)
+{
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureEntity) second = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Second", "slug", "second", NULL);
+	g_autoptr(VentureUser) user = g_object_new(VENTURE_TYPE_USER, "username", "bootstrap", "role", VENTURE_USER_ROLE_OWNER, "active", TRUE, NULL);
+	g_autoptr(VentureQuery) users = venture_query_new(VENTURE_TYPE_USER);
+	g_autoptr(VentureQuery) members = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+	g_autoptr(GError) error = NULL;
+	guint writes = 0;
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), NULL));
+	g_assert_true(venture_database_save(db, second, NULL, NULL));
+	venture_database_add_save_validator(db, VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, fail_second_membership, &writes, NULL);
+	g_assert_false(venture_orgaccess_bootstrap_owner(db, user, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_cmpuint(writes, ==, 2);
+	g_assert_cmpint(venture_database_count(db, users, NULL), ==, 0);
+	g_assert_cmpint(venture_database_count(db, members, NULL), ==, 0);
+}
+
+static void
+test_pagination_and_picker(void)
+{
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureEntity) user = g_object_new(VENTURE_TYPE_USER, "username", "sales", "active", TRUE, NULL);
+	g_autoptr(VentureEntity) member = NULL;
+	g_autoptr(VentureEntity) home = NULL;
+	g_autoptr(VentureEntity) child = NULL;
+	g_autoptr(VentureQuery) orgs = venture_query_new(VENTURE_TYPE_ORGANIZATION);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_COMPANY);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	VentureAccessPolicy *policy;
+	VentureAuthPrincipal actor = { 0 };
+	guint i;
+	gint64 last = 0;
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), NULL));
+	home = venture_database_find_one(db, orgs, NULL);
+	child = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Hidden child", "slug", "child", "parent-id", venture_entity_get_id(home), NULL);
+	g_assert_true(venture_database_save(db, child, NULL, NULL));
+	g_assert_true(venture_database_save(db, user, NULL, NULL));
+	actor.authenticated = TRUE;
+	actor.user_id = venture_entity_get_id(user);
+	actor.role = VENTURE_USER_ROLE_EDITOR;
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", actor.user_id,
+		"organization-id", venture_entity_get_id(home), "active", TRUE, "role", VENTURE_ORGANIZATION_ROLE_SALES, NULL);
+	g_assert_true(venture_database_save(db, member, NULL, NULL));
+	for (i = 0; i < 3; i++)
+	{
+		g_autoptr(VentureEntity) company = g_object_new(VENTURE_TYPE_COMPANY, "name", "Page row",
+			"organization-id", venture_entity_get_id(home), "owner-user-id", i == 1 ? (gint64)0 : actor.user_id, NULL);
+		g_assert_true(venture_database_save(db, company, NULL, NULL));
+		last = venture_entity_get_id(company);
+	}
+	policy = venture_database_get_access_policy(db);
+	scope = venture_access_policy_enter(policy, &actor);
+	rows = venture_database_find(db, orgs, NULL);
+	g_assert_cmpuint(rows->len, ==, 1);
+	g_assert_cmpint(venture_entity_get_id(g_ptr_array_index(rows, 0)), ==, venture_entity_get_id(home));
+	g_assert_false(venture_access_policy_can(policy, &actor, "read", child, NULL));
+	g_clear_pointer(&rows, g_ptr_array_unref);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_set_limit(query, 1);
+	venture_query_set_offset(query, 1);
+	rows = venture_database_find(db, query, NULL);
+	g_assert_cmpuint(rows->len, ==, 1);
+	g_assert_cmpint(venture_entity_get_id(g_ptr_array_index(rows, 0)), ==, last);
+	g_assert_cmpint(venture_database_count(db, query, NULL), ==, 2);
+	{
+		g_autoptr(VentureAccessScope) nested = NULL;
+		VentureAuthPrincipal outsider = actor;
+		outsider.user_id += 100;
+		nested = venture_access_policy_enter(policy, &outsider);
+		g_assert_cmpint(venture_database_count(db, query, NULL), ==, 0);
+	}
+	g_assert_cmpint(venture_database_count(db, query, NULL), ==, 2);
+	g_assert_cmpuint(venture_query_get_limit(query), ==, 1);
+	g_assert_cmpuint(venture_query_get_offset(query), ==, 1);
 }
 
 int
@@ -307,7 +436,10 @@ main(int argc, char **argv)
 	g_test_add_func("/orgaccess/bootstrap", test_bootstrap);
 	g_test_add_func("/orgaccess/token-scope", test_token_scope);
 	g_test_add_func("/orgaccess/ai", test_ai_boundary);
-	g_test_add_func("/orgaccess/role-matrix", test_role_matrix);
+	g_test_add_data_func("/orgaccess/role-matrix", NULL, test_role_matrix);
+	g_test_add_data_func("/orgaccess/role-without-context", "standalone", test_role_matrix);
 	g_test_add_func("/orgaccess/team-revocation", test_team_revocation);
+	g_test_add_func("/orgaccess/bootstrap-rollback", test_bootstrap_rollback);
+	g_test_add_func("/orgaccess/pagination-and-picker", test_pagination_and_picker);
 	return g_test_run();
 }

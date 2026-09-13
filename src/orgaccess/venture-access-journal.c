@@ -62,10 +62,11 @@ failed:
 
 JsonNode *
 venture_orgaccess_post_journal(VentureContext *context, const VentureAuthPrincipal *principal,
-	gint64 id, gboolean *staged_out, GError **error)
+	gint64 id, gboolean force_proposal, gboolean *staged_out, GError **error)
 {
 	VentureDatabase *database = venture_context_get_database(context);
 	VentureAccessPolicy *policy = venture_database_get_access_policy(database);
+	g_autoptr(VentureAccessScope) request_scope = venture_orgaccess_enter_ai(context, principal);
 	g_autoptr(VentureAccessScope) internal = NULL;
 	g_autoptr(VentureEntity) journal = NULL;
 	g_autoptr(VentureEntity) proposed = NULL;
@@ -80,6 +81,11 @@ venture_orgaccess_post_journal(VentureContext *context, const VentureAuthPrincip
 	if (!venture_context_module_enabled(context, "orgaccess") || !venture_context_module_enabled(context, "ledger"))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Journal posting is unavailable");
+		return NULL;
+	}
+	if (NULL == principal || !principal->authenticated || principal->role == VENTURE_USER_ROLE_VIEWER)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "Journal posting requires the editor role or higher");
 		return NULL;
 	}
 	/* Membership is checked before any fetched content is returned. Editors
@@ -98,6 +104,7 @@ venture_orgaccess_post_journal(VentureContext *context, const VentureAuthPrincip
 		return NULL;
 	if (!propose && !venture_access_policy_can(policy, principal, "write", journal, error))
 		return NULL;
+	propose = propose || force_proposal;
 	g_object_get(journal, "state", &state, NULL);
 	if (state != VENTURE_JOURNAL_DRAFT)
 	{
@@ -140,9 +147,14 @@ venture_orgaccess_web_post(VentureAuth *auth, VentureContext *context, HtmxReque
 	HtmxResponse *response;
 	gboolean staged = FALSE;
 	guint status;
-	if (venture_auth_require(auth, principal, VENTURE_USER_ROLE_EDITOR, &error))
+	const gchar *stage = htmx_request_get_query_param(request, "stage");
+	if (NULL != stage && 0 != g_strcmp0(stage, "1") && 0 != g_strcmp0(stage, "true") &&
+		0 != g_strcmp0(stage, "0") && 0 != g_strcmp0(stage, "false"))
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "stage must be 1, true, 0 or false");
+	if (NULL == error && venture_auth_require(auth, principal, VENTURE_USER_ROLE_EDITOR, &error))
 		node = venture_orgaccess_post_journal(context, principal,
-			g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10), &staged, &error);
+			g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10),
+			0 == g_strcmp0(stage, "1") || 0 == g_strcmp0(stage, "true"), &staged, &error);
 	status = NULL != node ? (staged ? 202 : 200) : (NULL != error ? venture_error_to_http_status(error->code) : 500);
 	body = NULL != node ? venture_json_to_string(node, FALSE) : venture_json_error_to_string(error, FALSE);
 	response = htmx_response_new_with_content(body);

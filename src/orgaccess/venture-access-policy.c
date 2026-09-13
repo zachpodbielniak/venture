@@ -111,6 +111,8 @@ venture_access_scope_init(VentureAccessScope *self)
 VentureAccessPolicy *
 venture_access_policy_new(VentureDatabase *database)
 {
+	g_autoptr(VentureModuleRegistry) modules = venture_module_registry_new();
+	venture_module_registry_register_builtins(modules);
 	return g_object_new(VENTURE_TYPE_ACCESS_POLICY, "database", database, NULL);
 }
 VentureAccessScope *
@@ -344,11 +346,19 @@ allowed:
 	}
 	return TRUE;
 }
+static gboolean
+role_proposes(gint role, const gchar *action, VentureEntity *entity)
+{
+	return (role == VENTURE_ORGANIZATION_ROLE_EDITOR && VENTURE_IS_JOURNAL(entity) && 0 == g_strcmp0(action, "post")) ||
+		(role == VENTURE_ORGANIZATION_ROLE_VIEWER && !venture_entity_is_persisted(entity) && 0 == g_strcmp0(action, "write"));
+}
+
 gboolean
 venture_access_policy_requires_approval(VentureAccessPolicy *self, const VentureAuthPrincipal *actor,
 	const gchar *action, VentureEntity *entity, GError **error)
 {
 	g_autoptr(VentureEntity) member = NULL;
+	g_autoptr(GError) veto = NULL;
 	gint role;
 	if (administrator(actor))
 		return FALSE;
@@ -359,11 +369,21 @@ venture_access_policy_requires_approval(VentureAccessPolicy *self, const Venture
 		return FALSE;
 	}
 	g_object_get(member, "role", &role, NULL);
-	if (role == VENTURE_ORGANIZATION_ROLE_EDITOR && VENTURE_IS_JOURNAL(entity) && 0 == g_strcmp0(action, "post"))
-		return TRUE;
-	if (role == VENTURE_ORGANIZATION_ROLE_VIEWER && !venture_entity_is_persisted(entity) && 0 == g_strcmp0(action, "write"))
-		return TRUE;
-	return FALSE;
+	if (!role_proposes(role, action, entity))
+		return FALSE;
+	if (actor->token_id > 0)
+	{
+		gint minted = token_role(self, actor, venture_entity_get_organization_id(entity));
+		if (!role_proposes(minted, action, entity) && !role_allows(self, actor, "write", entity, minted))
+			return refuse(error, FALSE);
+	}
+	g_signal_emit(self, self->decide_signal, 0, actor, "write", entity, &veto);
+	if (NULL != veto)
+	{
+		g_propagate_error(error, g_steal_pointer(&veto));
+		return FALSE;
+	}
+	return TRUE;
 }
 GPtrArray *
 venture_access_policy_find(VentureAccessPolicy *self, VentureQuery *query, GError **error)
@@ -506,9 +526,12 @@ venture_orgaccess_prepare(VentureDatabase *database, VentureEntity *entity, GErr
 {
 	g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
 	g_autoptr(VentureEntity) team = NULL;
+	g_autoptr(VentureEntity) previous = NULL;
 	gint64 team_id = reference(entity, "team-id");
 	gint64 org = venture_entity_get_organization_id(entity);
-	if (team_id > 0)
+	if (venture_entity_is_persisted(entity))
+		previous = venture_database_get(database, G_OBJECT_TYPE(entity), venture_entity_get_id(entity), NULL);
+	if (team_id > 0 && (NULL == previous || team_id != reference(previous, "team-id") || org != venture_entity_get_organization_id(previous)))
 	{
 		team = venture_database_get(database, VENTURE_TYPE_TEAM, team_id, error);
 		if (NULL == team || venture_entity_is_deleted(team) || venture_entity_get_organization_id(team) != org)

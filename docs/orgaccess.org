@@ -93,9 +93,11 @@ The same authority check constrains assistant tools, including autonomous
 mode. Confirmations are visible only to authorized readers or their still
 authorized proposer. Approval rechecks current authority.
 
-=POST /api/v1/journals/:id/post= is the journal action. An organization editor
+=POST /api/v1/journals/:id/post=, =venturectl journal post ID= and the
+assistant tool =venture_journal_post= share the journal action. An organization editor
 proposes it; finance, organization admin/owner, or global administrators can
-apply it. The proposal preserves the draft header version and a fingerprint
+apply it. REST =?stage=1=, CLI =--stage= and assistant =confirm_writes=
+always stage, even for finance. The proposal preserves the draft header version and a fingerprint
 of its lines. Changed lines cause a conflict, rather than approval of different
 amounts. Approval calls the existing posting service, which retains balance,
 currency, source, period and immutable-history checks. Generic writes to a

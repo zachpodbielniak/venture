@@ -3695,6 +3695,12 @@ test_orgaccess_widget(ServerFixture *fixture, gconstpointer user_data)
 	g_assert_null(strstr(body, "PrivateBoundaryMarker"));
 }
 
+static GError *
+orgaccess_proposal_veto(VentureAccessPolicy *policy, gpointer actor, const gchar *action, VentureEntity *entity, gpointer data)
+{
+	return 0 == g_strcmp0(action, "write") ? g_error_new_literal(VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "Plugin refuses this proposal") : NULL;
+}
+
 static void
 test_orgaccess_viewer_proposal(ServerFixture *fixture, gconstpointer user_data)
 {
@@ -3710,12 +3716,14 @@ test_orgaccess_viewer_proposal(ServerFixture *fixture, gconstpointer user_data)
 		"role", VENTURE_ORGANIZATION_ROLE_VIEWER, "active", TRUE, NULL);
 	g_assert_true(venture_database_save(fixture->database, member, NULL, NULL));
 	cookie = server_fixture_login(fixture, "proposal-viewer", "password");
+	if (NULL != user_data)
+		g_signal_connect(venture_database_get_access_policy(fixture->database), "decide", G_CALLBACK(orgaccess_proposal_veto), NULL);
 	json = g_strdup_printf("{\"name\":\"REST proposal\",\"organization_id\":%" G_GINT64_FORMAT "}", org);
-	g_assert_cmpuint(server_fixture_json(fixture, "POST", "/api/v1/company", cookie, json, NULL), ==, 202);
+	g_assert_cmpuint(server_fixture_json(fixture, "POST", "/api/v1/company", cookie, json, NULL), ==, NULL != user_data ? 403 : 202);
 	form = g_strdup_printf("name=Form+proposal&organization_id=%" G_GINT64_FORMAT, org);
-	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/e/company", cookie, form, NULL, NULL), ==, 202);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/e/company", cookie, form, NULL, NULL), ==, NULL != user_data ? 403 : 202);
 	pending = venture_confirmation_store_list_pending(venture_context_get_confirmations(fixture->context));
-	g_assert_cmpuint(pending->len, ==, 2);
+	g_assert_cmpuint(pending->len, ==, NULL != user_data ? 0 : 2);
 }
 
 static void
@@ -3751,6 +3759,14 @@ test_orgaccess_export_signal(ServerFixture *fixture, gconstpointer user_data)
 	g_signal_connect(venture_database_get_access_policy(fixture->database), "decide", G_CALLBACK(orgaccess_export_veto), NULL);
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/e/company/export", cookie, NULL, &body, NULL), ==, 200);
 	g_assert_null(strstr(body, "PrivateBoundaryMarker"));
+}
+
+static void
+orgaccess_cli_wait(GObject *source, GAsyncResult *result, gpointer data)
+{
+	gboolean *done = data;
+	g_assert_true(g_subprocess_wait_finish(G_SUBPROCESS(source), result, NULL));
+	*done = TRUE;
 }
 
 static void
@@ -3791,7 +3807,45 @@ test_orgaccess_journal_proposal(ServerFixture *fixture, gconstpointer user_data)
 	}
 	cookie = server_fixture_login(fixture, "journal-editor", "password");
 	path = g_strdup_printf("/api/v1/journals/%" G_GINT64_FORMAT "/post", venture_entity_get_id(journal));
-	g_assert_cmpuint(server_fixture_json(fixture, "POST", path, cookie, "{}", &body), ==, 202);
+	if (0 == g_strcmp0(user_data, "ai"))
+	{
+		g_autoptr(VentureAiService) ai = NULL;
+		g_autoptr(AiToolUse) tool = NULL;
+		g_autofree gchar *arguments = g_strdup_printf("{\"id\":%" G_GINT64_FORMAT "}", venture_entity_get_id(journal));
+		g_autoptr(GError) error = NULL;
+		VentureAuthPrincipal principal = { 0 };
+		principal.authenticated = TRUE;
+		principal.user_id = user;
+		principal.role = VENTURE_USER_ROLE_EDITOR;
+		g_object_set(fixture->config, "ai-enabled", TRUE, "ai-provider", "ollama", NULL);
+		ai = venture_ai_service_new(fixture->context, &error);
+		g_assert_no_error(error);
+		tool = ai_tool_use_new_from_json_string("post", "venture_journal_post", arguments);
+		body = venture_ai_service_execute_tool(ai, tool, &principal, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(body);
+	}
+	else if (0 == g_strcmp0(user_data, "cli"))
+	{
+		g_autoptr(VentureApiToken) token = venture_api_token_new();
+		g_autoptr(GSubprocess) process = NULL;
+		g_autofree gchar *secret = NULL;
+		g_autofree gchar *url = g_strdup_printf("http://127.0.0.1:%u", fixture->port);
+		g_autofree gchar *id = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(journal));
+		gboolean done = FALSE;
+		g_object_set(token, "name", "cli", "user-id", user, "role", VENTURE_USER_ROLE_EDITOR, NULL);
+		secret = venture_api_token_generate(token);
+		g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(token), NULL, NULL));
+		process = g_subprocess_new(G_SUBPROCESS_FLAGS_NONE, NULL, "build/debug/venturectl",
+			"--server", url, "--token", secret, "journal", "post", id, NULL);
+		g_assert_nonnull(process);
+		g_subprocess_wait_async(process, NULL, orgaccess_cli_wait, &done);
+		while (!done)
+			g_main_context_iteration(NULL, TRUE);
+		g_assert_true(g_subprocess_get_successful(process));
+	}
+	else
+		g_assert_cmpuint(server_fixture_json(fixture, "POST", path, cookie, "{}", &body), ==, 202);
 	pending = venture_confirmation_store_list_pending(venture_context_get_confirmations(fixture->context));
 	g_assert_cmpuint(pending->len, ==, 1);
 	stored = venture_database_get(fixture->database, VENTURE_TYPE_JOURNAL, venture_entity_get_id(journal), NULL);
@@ -3800,7 +3854,7 @@ test_orgaccess_journal_proposal(ServerFixture *fixture, gconstpointer user_data)
 	g_clear_pointer(&path, g_free);
 	path = g_strdup_printf("/api/v1/confirmations/%s/approve", venture_confirmation_get_id(g_ptr_array_index(pending, 0)));
 	g_assert_cmpuint(server_fixture_json(fixture, "POST", path, cookie, "{}", NULL), ==, 403);
-	if (NULL != user_data)
+	if (0 == g_strcmp0(user_data, "changed") || 0 == g_strcmp0(user_data, "refresh"))
 	{
 		g_autoptr(VentureQuery) lines = venture_query_new(VENTURE_TYPE_JOURNAL_LINE);
 		g_autoptr(VentureEntity) line = NULL;
@@ -4070,5 +4124,8 @@ main(
 	g_test_add("/orgaccess/widget-type-role", ServerFixture, "user", server_fixture_set_up, test_orgaccess_widget, server_fixture_tear_down);
 	g_test_add("/orgaccess/journal-changed", ServerFixture, "changed", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
 	g_test_add("/orgaccess/journal-refreshed", ServerFixture, "refresh", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
+	g_test_add("/orgaccess/journal-ai", ServerFixture, "ai", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
+	g_test_add("/orgaccess/journal-cli", ServerFixture, "cli", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
+	g_test_add("/orgaccess/proposal-veto", ServerFixture, "veto", server_fixture_set_up, test_orgaccess_viewer_proposal, server_fixture_tear_down);
 	return g_test_run();
 }
