@@ -180,6 +180,10 @@ test_postgresql(void)
 	g_assert_no_error(error);
 	g_assert_true(venture_database_execute(database, setup, NULL, &error));
 	g_assert_no_error(error);
+	/* Production reconciles metadata tables before the SQL migration batch.
+	 * Exercise that order so enabled modules' SQL sees its actual tables. */
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
 	runner = venture_migrations_new(venture_database_get_connection(database), VENTURE_DATABASE_BACKEND_POSTGRES, &error);
 	g_assert_no_error(error);
 	g_assert_true(orm_migrator_up(runner, 0, &error));
