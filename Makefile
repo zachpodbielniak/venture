@@ -94,6 +94,8 @@ SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard
 
 CORE_SRCS += src/stripe/venture-stripe-records.c
 SERVER_ONLY_SRCS += $(filter-out src/stripe/venture-stripe-records.c,$(wildcard src/stripe/*.c))
+CORE_SRCS += src/assets/venture-asset-records.c
+SERVER_ONLY_SRCS += $(filter-out src/assets/venture-asset-records.c,$(wildcard src/assets/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/orgaccess/venture-access-records.c,$(wildcard src/orgaccess/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/billing/venture-billing-records.c,$(wildcard src/billing/*.c))
 CORE_SRCS += src/mail/venture-mail-records.c
@@ -148,6 +150,7 @@ PUBLIC_HDRS := \
 	$(wildcard src/util/*.h) \
 	$(wildcard src/mcp/*.h)
 
+PUBLIC_HDRS += $(wildcard src/assets/*.h)
 PUBLIC_HDRS += $(wildcard src/orgaccess/*.h)
 PUBLIC_HDRS += $(wildcard src/billing/*.h)
 PUBLIC_HDRS += $(wildcard src/mail/*.h)
@@ -174,6 +177,7 @@ TEST_BINS := $(patsubst tests/%.c,$(OUTDIR)/tests/%,$(TEST_SRCS))
 # The settlement test drives the real CLI and its MCP tool against HTTP.
 $(OUTDIR)/tests/test-stripe: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-receivables: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-assets: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-auth: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-billing-surfaces: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-quotes: | $(OUTDIR)/venturectl

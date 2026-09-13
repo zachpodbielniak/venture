@@ -8693,6 +8693,7 @@ venture_web_append_incident_block(
 	VentureEntity		*record
 );
 
+#include "assets/venture-assets-web.inc"
 #include "sequences/venture-sequence-web.inc"
 
 static HtmxResponse *
@@ -8816,6 +8817,9 @@ venture_web_ui_detail(
 		venture_web_append_invoice_block(self, content, record);
 	quote_buttons(content, record);
 	venture_web_append_payables_actions(self, content, record);
+
+	if (VENTURE_TYPE_FIXED_ASSET == entity_type)
+		venture_web_append_asset_actions(content, record);
 
 	/* A forge's credentials, which the generated form cannot show. */
 	if (VENTURE_TYPE_FORGE == entity_type)
@@ -28026,6 +28030,9 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/activities/:id/:action", activity_api_action, self);
 	htmx_router_post(router, "/api/v1/releases/:id/publish",
 	                 venture_web_api_release_publish, self);
+	htmx_router_post(router, "/api/v1/fixed_assets/:id/:operation", venture_web_asset_action, self);
+	htmx_router_post(router, "/assets/:id/:operation", venture_web_asset_action, self);
+	htmx_router_post(router, "/api/v1/assets/run-period", venture_web_assets_run, self);
 	htmx_router_post(router, "/api/v1/customer_subscriptions/:id/:action", venture_billing_web_action, self);
 	htmx_router_post(router, "/api/v1/billing/start", venture_billing_web_action, self);
 	htmx_router_post(router, "/api/v1/billing/:action", venture_billing_web_action, self);

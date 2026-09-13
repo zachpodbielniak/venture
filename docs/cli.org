@@ -198,6 +198,20 @@ does the same for =create=, =update=, =delete= and =act= from the shell. It take
 from a config file. See [[file:mcp.org][venturectl mcp]].
 
 =invoice checkout ID= calls the Stripe service and returns the stored Checkout record, including =url=. It requires the Stripe module and a sent invoice with one configured product line. See [[file:stripe.org][Stripe payments]].
+* Asset actions
+
+=venturectl asset place ID=, =asset dispose ID proceeds=AMOUNT= and
+=asset write-off ID= call the asset service. Optional =in_service_at= or
+=disposed_at= selects an effective date.
+
+=venturectl assets run-period YYYY-MM [organization_id=ID] [--dry-run]=
+posts the organization's scheduled depreciation and deferral releases in
+one transaction. The default organization is used when omitted. A retry
+posts only remaining scheduled entries; a closed period is refused.
+
+The ordinary record commands manage draft =fixed_asset= and new =deferral=
+records. Lifecycle status and schedule history are service-owned. See
+[[file:assets.org][fixed assets and deferrals]] for profiles and examples.
 * Organization access and journal posting
 
 The ordinary =list/get/create/update/delete/describe= commands also manage

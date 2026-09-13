@@ -225,7 +225,7 @@ test_report_registry_has_builtins(
 	reports = venture_report_registry_list(registry);
 
 	/* Modules may append reports without replacing the established names. */
-	g_assert_cmpuint(reports->len, >=, 18);
+	g_assert_cmpuint(reports->len, >=, 20);
 	g_assert_nonnull(venture_report_registry_lookup(registry, "worklist"));
 
 	g_assert_nonnull(venture_report_registry_lookup(registry, "stage_duration"));
@@ -242,6 +242,8 @@ test_report_registry_has_builtins(
 	g_assert_nonnull(venture_report_registry_lookup(registry, "tax"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "receivables"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "snapshot_vs_live"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "fixed_assets"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "deferrals"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "payables"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "vendor_statement"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "bank_reconciliation"));

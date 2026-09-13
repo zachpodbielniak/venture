@@ -28,6 +28,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:money.org][Money and accounting]] — exact arithmetic, allocation, deductibility, the ledger
 - [[file:ledger.org][General journal]] — atomic posting, immutable journals, rules, reversals and authoritative balances
 - [[file:stripe.org][Stripe payments]] — hosted Checkout and verified settlement
+- [[file:assets.org][Fixed assets and deferrals]] — book depreciation, monthly releases and period sweeps
 - [[file:receivables.org][Customer receivables]] — receipts, credits, refunds and historical customer balances
 - [[file:payables.org][Vendor payables]] — supplier bills, payments and dated liability evidence
 - [[file:reporting.org][Reporting]] — the built-in reports and how to write one

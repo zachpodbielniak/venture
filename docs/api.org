@@ -393,6 +393,27 @@ processed, ignored and duplicate events receive 200. An unavailable provider
 receives 503. Authentication is the verified signature, never a browser
 session or a redirect. See [[file:stripe.org][Stripe payments]] for exact matching,
 deduplication and transactional settlement.
+* Fixed asset and recurring journal actions
+
+The =assets= module adds editor-only actions:
+
+| POST endpoint | Body |
+|---------------+------|
+| =/api/v1/fixed_assets/:id/place-in-service= | Optional =in_service_at= |
+| =/api/v1/fixed_assets/:id/dispose= | =disposal_proceeds= and optional =disposed_at= |
+| =/api/v1/fixed_assets/:id/write-off= | Optional =disposed_at=; zero proceeds |
+| =/api/v1/assets/run-period= | =period= as YYYY-MM, optional =organization_id= and boolean =dry_run= |
+
+Send a JSON object, including ={}= when no parameters are needed. Asset
+actions support =?stage=1= and return a confirmation with status 202.
+Direct asset actions return the resulting record; a period run returns
+={"entries":N,"dry_run":false}=. The run uses one transaction for the
+whole organization and month, preserves journal source links, and is
+idempotent. Closed periods return the period guard's conflict.
+
+Draft records and new deferrals use generated CRUD. Direct status edits
+and schedule-history writes name the required service in their refusal.
+See [[file:assets.org][fixed assets and deferrals]].
 * Organization access
 
 With =orgaccess= enabled (the default), =organization_membership=, =team=
