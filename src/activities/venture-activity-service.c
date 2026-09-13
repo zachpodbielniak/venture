@@ -131,7 +131,8 @@ validate(VentureDatabase *db, VentureEntity *row, VentureEntity *previous, gpoin
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Recurring activities require a due or start time");
 	if ((related != NULL && *related != '\0') != (related_id > 0))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Related type and id must be supplied together");
-	if (related_id > 0 && (old_id != related_id || g_strcmp0(old_related, related) != 0))
+	if (related_id > 0 && (old_id != related_id || g_strcmp0(old_related, related) != 0 ||
+		(previous != NULL && venture_entity_get_organization_id(previous) != venture_entity_get_organization_id(row))))
 	{
 		g_autoptr(VentureEntity) target = NULL;
 		GType type = venture_entity_registry_lookup(venture_entity_registry_get_default(), related);
@@ -142,11 +143,19 @@ validate(VentureDatabase *db, VentureEntity *row, VentureEntity *previous, gpoin
 		target = venture_database_get(db, type, related_id, error);
 		if (target == NULL)
 			return FALSE;
+		if (venture_entity_is_deleted(target))
+			return refuse(error, VENTURE_ERROR_VALIDATION, "Related record is deleted");
 		if (venture_entity_get_organization_id(target) != venture_entity_get_organization_id(row))
 			return refuse(error, VENTURE_ERROR_VALIDATION, "Related record belongs to another organization");
 		for (i = 0; i < G_N_ELEMENTS(refs); i++)
 			if (g_str_equal(related, targets[i]))
+			{
+				gint64 explicit_id;
+				g_object_get(row, refs[i], &explicit_id, NULL);
+				if (explicit_id != 0 && explicit_id != related_id)
+					return refuse(error, VENTURE_ERROR_VALIDATION, "Related record conflicts with the explicit CRM reference");
 				g_object_set(row, refs[i], related_id, NULL);
+			}
 	}
 	for (i = 0; i < G_N_ELEMENTS(refs); i++)
 	{
@@ -220,7 +229,7 @@ venture_activity_service_act(VentureActivityService *self, VentureEntity *activi
 		goto done;
 	}
 	g_object_get(row, "status", &status, "recurrence", &recurrence, NULL);
-	if (status != VENTURE_ACTIVITY_STATUS_PLANNED)
+	if (status != VENTURE_ACTIVITY_STATUS_PLANNED || venture_entity_is_deleted(row))
 	{
 		refuse(error, VENTURE_ERROR_CONFLICT, "Only planned activities may be acted on");
 		goto done;
@@ -415,7 +424,7 @@ venture_activity_service_sweep(VentureActivityService *self, gint64 organization
 			continue;
 		notification = venture_notification_new();
 		venture_entity_set_organization_id(VENTURE_ENTITY(notification), organization);
-		g_object_set(notification, "user-id", venture_entity_get_id(user), "title", subject,
+		g_object_set(notification, "kind", VENTURE_NOTIFICATION_KIND_SYSTEM, "user-id", venture_entity_get_id(user), "title", subject,
 			"body", "Planned activity reminder", "target-type", "activity", "target-id", venture_entity_get_id(row),
 			"target-label", subject, "actor", "system", "occurred-at", now, NULL);
 		if (!venture_database_save(self->database, VENTURE_ENTITY(notification), NULL, error))

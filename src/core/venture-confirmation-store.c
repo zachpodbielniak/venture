@@ -679,7 +679,7 @@ venture_confirmation_store_approve(
 		g_autoptr(VentureEntity) completed = NULL;
 		g_object_get(confirmation->staged, "outcome", &outcome, NULL);
 		completed = venture_activity_service_complete(venture_database_get_activity_service(self->database),
-			confirmation->original, outcome, &actor, &local_error);
+			confirmation->staged, outcome, &actor, &local_error);
 		ok = completed != NULL;
 	}
 	else

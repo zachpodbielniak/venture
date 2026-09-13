@@ -1381,6 +1381,7 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		NULL,
 		"core"
 	},
+	{ "/worklist", "My day", VENTURE_ICON("<path d=\"M4 7h16M4 12h16M4 17h10\"/>"), "Activities", "activities" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 

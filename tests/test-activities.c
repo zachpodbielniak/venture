@@ -239,6 +239,14 @@ test_reminders(Fixture *f, gconstpointer data)
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(request(f, "POST", "/api/v1/activities/sweep", "application/json", "{}", &body), ==, 200);
 	g_assert_cmpint(count_rows(f, VENTURE_TYPE_NOTIFICATION), ==, 1);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_NOTIFICATION);
+		g_autoptr(VentureEntity) notice = venture_database_find_one(f->database, query, NULL);
+		gint kind;
+		g_object_get(notice, "kind", &kind, NULL);
+		g_assert_cmpint(kind, ==, VENTURE_NOTIFICATION_KIND_SYSTEM);
+	}
+
 }
 
 static void
@@ -534,6 +542,137 @@ test_widget_sources(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(result->html, "1"));
 }
 
+static void
+test_reference_retention(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) row = planned(f, "Keep old relation");
+	g_autoptr(VentureCompany) company = venture_company_new();
+	g_autoptr(GError) error = NULL;
+	g_object_set(company, "name", "Former account", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(company), 1);
+	g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(company), NULL, NULL));
+	g_object_set(row, "company-id", venture_entity_get_id(VENTURE_ENTITY(company)), NULL);
+	g_assert_true(venture_database_save(f->database, row, NULL, NULL));
+	g_assert_true(venture_database_delete(f->database, VENTURE_ENTITY(company), NULL, NULL));
+	g_object_set(row, "subject", "Keep historical reference editable", NULL);
+	g_assert_true(venture_database_save(f->database, row, NULL, &error));
+	g_assert_no_error(error);
+}
+
+static void
+test_recurrence_dates(Fixture *f, gconstpointer data)
+{
+	const gchar *expected[] = { "2026-02-01", "2026-02-07", "2026-02-28" };
+	guint r;
+	for (r = 0; r < 3; r++)
+	{
+		g_autoptr(VentureEntity) row = planned(f, "Repeat");
+		g_autoptr(VentureEntity) done = NULL;
+		g_autoptr(GDateTime) original = venture_time_from_string("2026-01-31T10:00:00Z", NULL);
+		g_autoptr(GDateTime) expected_date = venture_time_from_string(expected[r], NULL);
+		g_autoptr(GDateTime) due = NULL;
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACTIVITY);
+		g_autoptr(VentureEntity) next = NULL;
+		g_autoptr(GError) error = NULL;
+		g_object_set(row, "recurrence", (gint)r + 1, "due-at", original, NULL);
+		g_assert_true(venture_database_save(f->database, row, NULL, NULL));
+		done = venture_activity_service_complete(venture_database_get_activity_service(f->database), row, "Repeated", NULL, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(done);
+		venture_query_set_organization(query, 1);
+		venture_query_add_filter_int(query, "recurrence", VENTURE_FILTER_OP_EQ, r + 1, NULL);
+		venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ, "planned", NULL);
+		next = venture_database_find_one(f->database, query, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(next);
+		g_object_get(next, "due-at", &due, NULL);
+		g_assert_cmpint(g_date_time_get_year(due), ==, g_date_time_get_year(expected_date));
+		g_assert_cmpint(g_date_time_get_month(due), ==, g_date_time_get_month(expected_date));
+		g_assert_cmpint(g_date_time_get_day_of_month(due), ==, g_date_time_get_day_of_month(expected_date));
+		g_assert_cmpint(g_date_time_get_hour(due), ==, 10);
+	}
+}
+
+static void
+test_assistant_staged(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureAiService) ai = NULL;
+	g_autoptr(JsonNode) tools = NULL;
+	g_autofree gchar *text = NULL;
+	g_autoptr(VentureEntity) row = planned(f, "Assistant plan");
+	g_autoptr(GError) error = NULL;
+	VentureConfirmation *confirmation;
+	VentureActor actor;
+	g_object_set(f->config, "ai-enabled", TRUE, "ai-provider", "ollama", NULL);
+	ai = venture_ai_service_new(f->context, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(ai);
+	tools = venture_ai_service_describe_tools(ai);
+	text = venture_json_to_string(tools, FALSE);
+	g_assert_nonnull(strstr(text, "venture_activity_complete"));
+	actor.kind = VENTURE_ACTOR_KIND_AI;
+	actor.name = "assistant";
+	actor.prompt = "Complete the call";
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	confirmation = venture_confirmation_store_stage_activity_complete(venture_context_get_confirmations(f->context),
+		row, "Assistant outcome", &actor, "assistant", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(confirmation);
+	g_assert_true(venture_confirmation_store_approve(venture_context_get_confirmations(f->context),
+		venture_confirmation_get_id(confirmation), "local", &error));
+	g_assert_no_error(error);
+}
+
+static void
+test_stale_approval(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) row = planned(f, "Frozen approval version");
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *id = NULL;
+	VentureActor actor;
+	VentureConfirmation *confirmation;
+	actor.kind = VENTURE_ACTOR_KIND_AI;
+	actor.name = "assistant";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	confirmation = venture_confirmation_store_stage_activity_complete(venture_context_get_confirmations(f->context), row, "Done", &actor, "assistant", &error);
+	g_assert_no_error(error);
+	id = g_strdup(venture_confirmation_get_id(confirmation));
+	g_object_set(row, "subject", "Somebody changed this", NULL);
+	g_assert_true(venture_database_save(f->database, row, NULL, NULL));
+	g_assert_false(venture_confirmation_store_approve(venture_context_get_confirmations(f->context), id, "local", &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+}
+
+static void
+test_polymorphic_deleted(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureCompany) company = venture_company_new();
+	g_autoptr(VentureEntity) row = planned(f, "New relation to deleted account");
+	g_autoptr(GError) error = NULL;
+	g_object_set(company, "name", "Former account", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(company), 1);
+	g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(company), NULL, NULL));
+	g_assert_true(venture_database_delete(f->database, VENTURE_ENTITY(company), NULL, NULL));
+	g_object_set(row, "related-type", "company", "related-id", venture_entity_get_id(VENTURE_ENTITY(company)), NULL);
+	g_assert_false(venture_database_save(f->database, row, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
+static void
+test_deleted_action(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) row = planned(f, "Deleted activity");
+	g_autoptr(VentureEntity) done = NULL;
+	g_autoptr(GError) error = NULL;
+	g_assert_true(venture_database_delete(f->database, row, NULL, NULL));
+	done = venture_activity_service_complete(venture_database_get_activity_service(f->database), row, "Done", NULL, &error);
+	g_assert_null(done);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -556,5 +695,11 @@ main(int argc, char **argv)
 	g_test_add("/activities/veto", Fixture, NULL, fixture_set_up, test_veto, fixture_tear_down);
 	g_test_add("/activities/widget_sources", Fixture, NULL, fixture_set_up, test_widget_sources, fixture_tear_down);
 	g_test_add_func("/activities/upgrade_restart", test_upgrade_restart);
+	g_test_add("/activities/reference_retention", Fixture, NULL, fixture_set_up, test_reference_retention, fixture_tear_down);
+	g_test_add("/activities/recurrence_dates", Fixture, NULL, fixture_set_up, test_recurrence_dates, fixture_tear_down);
+	g_test_add("/activities/assistant_staged", Fixture, NULL, fixture_set_up, test_assistant_staged, fixture_tear_down);
+	g_test_add("/activities/stale_approval", Fixture, NULL, fixture_set_up, test_stale_approval, fixture_tear_down);
+	g_test_add("/activities/polymorphic_deleted", Fixture, NULL, fixture_set_up, test_polymorphic_deleted, fixture_tear_down);
+	g_test_add("/activities/deleted_action", Fixture, NULL, fixture_set_up, test_deleted_action, fixture_tear_down);
 	return g_test_run();
 }
