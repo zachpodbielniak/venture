@@ -221,3 +221,7 @@ It compares the run against itself rather than checking that =/tmp= is empty, be
 What it cannot see is a directory whose name is not a =g_dir_make_tmp()= string literal in =tests/test-*.c=; the prefixes are read from those literals rather than written down, so the list grows with the suite instead of drifting from it. =make test='s bare =rmdir= of its own =TMPDIR= is the second net: it succeeds only on an empty directory, so a run that left something under a name the scan cannot match still leaves its =TMPDIR= where somebody will find it.
 
 One more thing it surfaced, which was not litter: =test-work-service= started a coding run and returned without waiting for it, so the service's worker thread was still calling =g_mkdir_with_parents()= for the run's workspace while the teardown was removing the directory above it. =strace= shows the =mkdir= and the =rmdir= interleaved. =settle_runs()= drains the live set first. A test that starts background work and walks away leaves a thread writing into a directory nobody owns any more, whoever wins the race.
+
+* Standalone CLI dependency boundary
+
+The CLI must build without the mail server's GMime development package. Run =make DEBUG=1 -W src/cli/main.c venturectl= without any temporary server dependency prefix to compile and relink the CLI. Server-only pkg-config queries are deferred until a server or test recipe expands its flags; a successful CLI build that still emits missing server-package diagnostics fails this boundary.
