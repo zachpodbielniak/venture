@@ -571,6 +571,13 @@ test_eligibility(Fixture *f, gconstpointer data)
 			"UPDATE invoice_events SET amount_amount = 9999", &error));
 		g_assert_no_error(error);
 	}
+	if (!g_strcmp0(rule, "deleted"))
+	{
+		g_autoptr(VentureEntity) customer = venture_database_get(f->database, VENTURE_TYPE_COMPANY, f->customer_id, &error);
+		g_assert_no_error(error);
+		g_assert_true(venture_database_delete(f->database, customer, NULL, &error));
+		g_assert_no_error(error);
+	}
 	checkout = venture_stripe_service_checkout(service, venture_entity_get_id(invoice), NULL, &error);
 	g_assert_null(checkout);
 	g_assert_nonnull(error);
@@ -684,7 +691,7 @@ main(int argc, char **argv)
 	g_test_add("/stripe/module-start", Fixture, NULL, set_up, test_module_start, tear_down);
 
 	{
-		static const gchar *const rules[] = { "status sent", "exactly one", "stripe_price_link", "integral", "organization", "open balance" };
+		static const gchar *const rules[] = { "status sent", "exactly one", "stripe_price_link", "integral", "organization", "open balance", "deleted" };
 		guint i;
 		for (i = 0; i < G_N_ELEMENTS(rules); i++)
 		{

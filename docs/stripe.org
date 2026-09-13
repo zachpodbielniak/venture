@@ -27,6 +27,8 @@ redirects are navigation only; neither records a receipt.
 
 * Dashboard and catalog setup
 
+Checkout refuses deleted invoices and customers before creating provider objects, including historical references that remain on an issued invoice.
+
 1. In Stripe's dashboard, create a product and a one-time price in the
    invoice's currency. Its unit amount must match the Venture invoice line.
 2. Record the price identifier in a =stripe_price_link= with the Venture

@@ -183,6 +183,14 @@ static VentureEntity *
 owned_get(VentureStripeService *self, GType type, gint64 id, GError **error)
 {
 	VentureEntity *entity = venture_database_get(self->database, type, id, error);
+	/* Historical references stay editable, but must not create new provider
+	 * objects for a customer or invoice that the operator has removed. */
+	if (entity && venture_entity_is_deleted(entity))
+	{
+		g_object_unref(entity);
+		refuse(error, "Stripe record has been deleted");
+		return NULL;
+	}
 	if (entity && venture_entity_get_organization_id(entity) != self->organization_id)
 	{
 		g_object_unref(entity);
