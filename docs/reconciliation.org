@@ -146,7 +146,9 @@ writable =transaction-id= (int64), =target-type= (string), =target-id=
 and amount. The shared contract did not specify these field names; the
 banking lane must align this small adapter with its final field table.
 An incompatible registered shape is refused explicitly, never silently
-staged with dropped fields. No database migration is needed by this module,
+staged with dropped fields. If =transaction-id= declares a reference type,
+the source must have that exact registered type: equal IDs from different
+tables must never be treated as the same transaction. No database migration is needed by this module,
 because it creates no persistent types or columns.
 
 * Verification

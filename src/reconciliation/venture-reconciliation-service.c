@@ -81,9 +81,10 @@ collect_candidates(VentureContext *context, VentureEntity *transaction, GError *
 	return g_steal_pointer(&result);
 }
 static gboolean
-match_shape(GType type, GError **error)
+match_shape(GType type, VentureEntity *transaction, GError **error)
 {
 	g_autoptr(VentureEntity) prototype = g_object_new(type, NULL);
+	g_autoptr(GPtrArray) specs = venture_entity_get_field_specs(prototype);
 	GObjectClass *klass = G_OBJECT_GET_CLASS(prototype);
 	const gchar *names[] = { "transaction-id", "target-type", "target-id", "amount" };
 	GType types[4];
@@ -95,6 +96,20 @@ match_shape(GType type, GError **error)
 		if (pspec == NULL || G_PARAM_SPEC_VALUE_TYPE(pspec) != types[i] || !(pspec->flags & G_PARAM_WRITABLE))
 		{
 			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "bank_match requires writable %s for reconciliation staging", names[i]);
+			return FALSE;
+		}
+	}
+	for (i = 0; i < specs->len; i++)
+	{
+		VentureFieldSpec *spec = g_ptr_array_index(specs, i);
+		const gchar *reference = venture_field_spec_get_reference_type(spec);
+		if (g_str_equal(venture_field_spec_get_name(spec), "transaction-id") &&
+			reference != NULL && *reference != '\0' &&
+			venture_entity_registry_lookup(venture_entity_registry_get_default(), reference) != G_OBJECT_TYPE(transaction))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"bank_match.transaction-id references %s, not %s", reference,
+				venture_entity_get_entity_name(transaction));
 			return FALSE;
 		}
 	}
@@ -152,7 +167,7 @@ venture_reconciliation_service_suggest(VentureReconciliationService *self, const
 	suggestions = venture_reconciliation_registry_suggest_all(registry, db, transaction, candidates, NULL, error);
 	if (suggestions == NULL) return NULL;
 	match_type = venture_entity_registry_lookup(venture_context_get_entity_registry(context), "bank_match");
-	if (match_type != G_TYPE_INVALID && !match_shape(match_type, error)) return NULL;
+	if (match_type != G_TYPE_INVALID && !match_shape(match_type, transaction, error)) return NULL;
 	json_builder_begin_object(builder);
 	json_builder_set_member_name(builder, "suggestions");
 	json_builder_begin_array(builder);

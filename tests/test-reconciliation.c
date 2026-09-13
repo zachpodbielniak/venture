@@ -216,7 +216,7 @@ test_ai_answer(gconstpointer data)
 
 VENTURE_DECLARE_ENTITY(VentureBankMatch, venture_bank_match, BANK_MATCH)
 static const VentureFieldDecl match_fields[] = {
-	VENTURE_FIELD("transaction-id", "Transaction", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("transaction-id", "Transaction", NULL, "match_fixture", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("target-type", "Target type", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("target-id", "Target", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("amount", "Amount", NULL)
@@ -510,6 +510,41 @@ test_service_refuses_absent_source(gconstpointer data)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
 }
 
+VENTURE_DECLARE_ENTITY(VentureOtherMatchFixture, venture_other_match_fixture, OTHER_MATCH_FIXTURE)
+VENTURE_DEFINE_ENTITY(VentureOtherMatchFixture, venture_other_match_fixture, fixture_fields)
+static void
+test_source_reference_type(void)
+{
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = venture_context_new(config, db);
+	g_autoptr(VentureEntity) candidate = record(0, 10000, "USD", 5, "coffee");
+	g_autoptr(VentureMoney) amount = venture_money_new(10000, "USD", 2);
+	g_autoptr(GDateTime) date = g_date_time_new_utc(2026, 9, 5, 0, 0, 0);
+	g_autoptr(VentureEntity) transaction = g_object_new(venture_other_match_fixture_get_type(),
+		"organization-id", (gint64)1, "amount", amount, "date", date, "description", "coffee", NULL);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	VentureActor actor;
+	actor.kind = VENTURE_ACTOR_KIND_USER; actor.name = "tester";
+	actor.prompt = NULL; actor.request_id = NULL; actor.approved_by = NULL;
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "bank_match") == G_TYPE_INVALID)
+		g_assert_true(venture_entity_registry_register(venture_entity_registry_get_default(), venture_bank_match_get_type(), NULL));
+	g_assert_true(venture_entity_registry_register(venture_entity_registry_get_default(), venture_other_match_fixture_get_type(), NULL));
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_save(db, candidate, &actor, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_save(db, transaction, &actor, &error));
+	g_assert_no_error(error);
+	/* IDs are per type: source 1 must not become a reference to candidate 1. */
+	g_assert_cmpint(venture_entity_get_id(candidate), ==, venture_entity_get_id(transaction));
+	result = venture_reconciliation_service_suggest(venture_context_get_reconciliation_service(context),
+		venture_entity_get_entity_name(transaction), venture_entity_get_id(transaction), "exact", 80, &actor, "test", &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
 static void
 test_matcher_contract(void)
 {
@@ -567,5 +602,6 @@ main(int argc, char **argv)
 	g_test_add_data_func("/reconciliation/ai/clamp-low", "[{\"id\":2,\"confidence\":-20,\"why\":\"no match\"}]", test_ai_answer);
 	g_test_add_data_func("/reconciliation/refuses-missing-source", GINT_TO_POINTER(0), test_service_refuses_absent_source);
 	g_test_add_data_func("/reconciliation/refuses-deleted-source", GINT_TO_POINTER(1), test_service_refuses_absent_source);
+	g_test_add_func("/reconciliation/source-reference-type", test_source_reference_type);
 	return g_test_run();
 }
