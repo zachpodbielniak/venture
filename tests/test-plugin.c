@@ -882,18 +882,14 @@ test_web_navigation_links_all_resolve(
 	g_assert_cmpuint(i, >, 10);
 }
 
-/* ==========================================================================
- * Automation
- * ========================================================================== */
-
-
 /*
  * The accounting modules ship record types with list pages, but the
  * sidebar is a fixed table: a type that is registered and routed is still
- * invisible until somebody adds a row for it. That is how journals, payments
- * and fiscal periods were live for a day with no way to reach them but the
- * address bar. Each module's primary type must have a sidebar entry gated
- * on that module.
+ * invisible until somebody adds a row for it. Start calendars from a
+ * fiscal year, which generates its periods. Draft lines, allocations, credits
+ * and refunds need entries too: related-record panels are absent until the
+ * first row exists.
+ * Every entry must be gated on its owning module.
  */
 static void
 test_web_navigation_lists_accounting_types(
@@ -905,8 +901,12 @@ test_web_navigation_lists_accounting_types(
 		const gchar *module;
 	} expected[] = {
 		{ "/e/journal", "ledger" },
+		{ "/e/journal_line", "ledger" },
 		{ "/e/payment", "receivables" },
-		{ "/e/fiscal_period", "periods" },
+		{ "/e/fiscal_year", "periods" },
+		{ "/e/payment_allocation", "receivables" },
+		{ "/e/customer_credit", "receivables" },
+		{ "/e/refund", "receivables" },
 	};
 	const VentureWebNavLink *links;
 	gsize i;
@@ -932,6 +932,10 @@ test_web_navigation_lists_accounting_types(
 			g_error("sidebar has no entry for %s", expected[i].path);
 	}
 }
+
+/* ==========================================================================
+ * Automation
+ * ========================================================================== */
 
 static void
 test_automation_disabled_is_not_a_failure(
