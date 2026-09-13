@@ -1042,6 +1042,13 @@ venture_database_save(
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
 
+	{
+		gboolean handled;
+		gboolean ok = venture_payables_expense_hook(self, entity, actor, &handled, error);
+		if (!ok || handled)
+			return ok;
+	}
+
 	/* Source and posting share a transaction, whichever surface saved it. */
 	if (!venture_payables_is_projection_write(self, entity) && venture_ledger_wrap_source(self, entity))
 		return venture_ledger_save_source(self, entity, actor, error);

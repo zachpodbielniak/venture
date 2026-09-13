@@ -2481,7 +2481,7 @@ venture_web_api_report(
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -3481,6 +3481,8 @@ venture_web_invoice_total(
 	GPtrArray	 *lines,
 	GError		**error
 );
+
+#include "payables/venture-payables-web.inc"
 
 /*
  * POST /invoices/:id/status - the same service reached by generated writes.
@@ -5558,7 +5560,7 @@ venture_web_ui_report(
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -5592,7 +5594,7 @@ venture_web_ui_report(
 
 	{
 		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
-		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", NULL };
+		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", NULL };
 		guint i;
 		for (i = 0; names[i] != NULL; i++)
 		{
@@ -5659,7 +5661,7 @@ venture_web_ui_report(
 				g_string_append_printf(content, "<input type=\"hidden\" name=\"organization_id\" value=\"%" G_GINT64_FORMAT "\">",
 					venture_json_object_get_int(report_options, "organization_id", 0));
 			{
-				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", NULL };
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", NULL };
 				guint i;
 				/* Preserve the question when changing only its cutoff. */
 				for (i = 0; names[i] != NULL; i++)
@@ -8662,6 +8664,7 @@ venture_web_ui_detail(
 	 * composer below: an invoice without its total is a list of hints. */
 	if (VENTURE_TYPE_INVOICE == entity_type)
 		venture_web_append_invoice_block(self, content, record);
+	venture_web_append_payables_actions(self, content, record);
 
 	/* A forge's credentials, which the generated form cannot show. */
 	if (VENTURE_TYPE_FORGE == entity_type)
@@ -27664,6 +27667,8 @@ venture_web_server_new(
 	                 venture_web_ui_plugins_config, self);
 	htmx_router_post(router, "/invoices/:id/status",
 	                 venture_web_ui_invoice_status, self);
+	htmx_router_post(router, "/api/v1/vendor_bill/:id/:action", venture_web_payables_action, self);
+	htmx_router_post(router, "/bills/:id/:action", venture_web_payables_action, self);
 	htmx_router_get(router, "/invoices/:id/print",
 	                 venture_web_ui_invoice_print, self);
 	htmx_router_get(router, "/reports", venture_web_ui_reports, self);

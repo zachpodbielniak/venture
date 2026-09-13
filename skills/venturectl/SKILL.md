@@ -418,3 +418,22 @@ venturectl federation '{"action":"resolve","id":1,"version":5,"field":"descripti
 ```
 
 Collection pulls return at most ten results, `next_offset` and `more`; continue pages while `more` is true and inspect per-record errors. Pull imports/merges without pushing; sync pushes conflict-free changes with an expected remote version. Edits require the local replica version. A conflict blocks that record until resolved; choosing remote can accept a removed/revoked field. Never update `federation_replica` through generic CRUD: its merge state belongs to the service. Copies remain usable during outages but are not authoritative local accounting rows. New source objects and binary attachments are not created/copied offline. See `docs/federation.org` for key exchange, grants, scheduling and revocation.
+
+## Vendor payables
+
+Run `describe vendor_bill` and `describe vendor_bill_line` before creating
+a draft and its lines. Bill quantity is an exact decimal string, with at
+most three decimal places. Supplier companies have `kind=supplier`.
+
+Use `bill approve ID date=DATE`, `bill pay ID 'amount=40 USD' date=DATE`,
+and `bill void ID date=DATE` for financial actions. Omitted payment amount
+pays the outstanding balance. Direct bill status updates are refused.
+These CLI actions apply directly; to stage, use generated record creation:
+`vendor_bill_event` with `bill_id`, `vendor_id`, `kind=approve`,
+`state=approved`, and `date`, or `bill_payment` with vendor, bill, amount,
+method and date. MCP `venture_create` stages those records normally.
+
+`report payables PERIOD` is dated aging. `report vendor_statement PERIOD
+vendor_id=ID` is the supplier statement. Both accept `organization_id`,
+`currency` and `as_of`. See `docs/payables.org` for credits, immutable
+history and the single-date limitation on optional paid-line expense conversion.

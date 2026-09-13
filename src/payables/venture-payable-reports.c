@@ -342,8 +342,10 @@ vendor_statement(VentureContext *context, VentureDateRange *period, JsonObject *
 void
 venture_payables_register_reports(VentureReportRegistry *registry)
 {
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
-		"payables", "Payables aging", "Outstanding issued amounts less dated allocations, as of the period end.", payables_aging)));
+	VentureFuncReport *aging = venture_func_report_new("payables", "Payables aging",
+		"Approved amounts less dated allocations plus refunds, as of the period end.", payables_aging);
+	g_object_set(aging, "financial", TRUE, NULL);
+	venture_report_registry_add(registry, VENTURE_REPORT(aging));
 	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
 		"vendor_statement", "Vendor statement", "Dated vendor movements and balance in one organization and currency; requires vendor_id.", vendor_statement)));
 }

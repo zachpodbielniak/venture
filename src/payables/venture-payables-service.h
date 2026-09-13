@@ -141,5 +141,29 @@ gboolean venture_payables_check_sale(VentureDatabase *database, VentureEntity *r
  */
 VenturePayablesService *venture_database_get_payables_service(VentureDatabase *database);
 
+/**
+ * venture_payables_service_prepare_action:
+ * @self: the service
+ * @bill_id: the target bill
+ * @action: approve, pay, or void
+ * @options: (nullable): ordinary record field values
+ * @error: (out) (optional): validation error
+ * Returns: (transfer full) (nullable): an unsaved request for direct or staged save
+ */
+VentureEntity *venture_payables_service_prepare_action(VenturePayablesService *self,
+	gint64 bill_id, const gchar *action, JsonNode *options, GError **error);
+
+/**
+ * venture_payables_expense_hook: (skip)
+ * @database: the owner
+ * @record: a proposed expense or unrelated record
+ * @actor: (nullable): audit actor
+ * @handled: (out): whether the conversion saved the expense
+ * @error: (out) (optional): error
+ * Returns: TRUE on success or for unrelated records
+ */
+gboolean venture_payables_expense_hook(VentureDatabase *database, VentureEntity *record,
+	const VentureActor *actor, gboolean *handled, GError **error);
+
 G_END_DECLS
 #endif

@@ -195,3 +195,17 @@ server for somebody to approve, not merely described. =venturectl --stage=
 does the same for =create=, =update= and =delete= from the shell. It takes its credential from
 =VENTURE_TOKEN= and refuses =--token= outright, since an MCP server is spawned
 from a config file. See [[file:mcp.org][venturectl mcp]].
+
+* Vendor bills
+
+=venturectl bill approve ID [date=DATE]= approves a draft supplier bill.
+=bill pay ID [amount=MONEY] [date=DATE] [method=METHOD]= pays the outstanding
+amount or the supplied partial amount; excess cash remains vendor credit.
+=bill void ID [date=DATE]= reverses an unpaid approved bill. These call the
+same =VenturePayablesService= as the web and REST actions. Generic writes
+setting a bill's financial status are refused.
+
+=report payables PERIOD= reconstructs historical aging;
+=report vendor_statement PERIOD vendor_id=ID= reads the supplier's dated
+statement. Both accept =organization_id=, =currency= and =as_of=.
+See [[file:payables.org][vendor payables]] for credits and cash-report projections.

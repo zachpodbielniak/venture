@@ -1195,7 +1195,7 @@ venture_mcp_tool_report(
 	}
 
 	{
-		static const gchar *const options[] = { "customer_id", "organization_id", "currency", "as_of", NULL };
+		static const gchar *const options[] = { "customer_id", "organization_id", "currency", "as_of", "vendor_id", NULL };
 		guint i;
 		for (i = 0; options[i] != NULL; i++)
 		{
