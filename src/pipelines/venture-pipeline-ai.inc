@@ -3,6 +3,7 @@ static gchar *
 venture_ai_tool_deal_move(AiToolUse *use, GCancellable *cancellable, GError **error, gpointer data)
 {
 	VentureAiService *self = data;
+	g_autoptr(VentureAccessScope) scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
 	JsonObject *input = venture_ai_tool_input(use);
 	g_autoptr(VentureEntity) deal = NULL;
 	g_autoptr(JsonNode) node = NULL;
