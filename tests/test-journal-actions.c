@@ -384,6 +384,37 @@ test_cli(Fixture *fixture, gconstpointer data)
 
 }
 
+/* Even --apply-writes cannot turn a generated action tool into an
+ * unattended financial mutation. Exercise the real stdio client. */
+static void
+test_mcp_stages(Fixture *fixture, gconstpointer data)
+{
+	gint64 id = draft(fixture, TRUE);
+	g_autofree gchar *input = g_strdup_printf(
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n"
+		"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"venture_journal_post\",\"arguments\":{\"id\":%" G_GINT64_FORMAT "}}}\n", id);
+	g_autoptr(GSubprocessLauncher) launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
+	g_autoptr(GSubprocess) child = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) pending = NULL;
+	CliResult result = { FALSE, NULL, NULL, NULL };
+	const gchar *args[] = { "build/debug/venturectl", "--server", fixture->url,
+		"--apply-writes", "mcp", NULL };
+	g_subprocess_launcher_setenv(launcher, "VENTURE_TOKEN", "test-local-auth-disabled", TRUE);
+	child = g_subprocess_launcher_spawnv(launcher, args, &error);
+	g_assert_no_error(error);
+	g_subprocess_communicate_utf8_async(child, input, NULL, cli_done, &result);
+	while (!result.done) g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(result.error);
+	g_assert_true(g_subprocess_get_successful(child));
+	g_assert_cmpint(state(fixture, id), ==, VENTURE_JOURNAL_DRAFT);
+	pending = venture_confirmation_store_list_pending(venture_context_get_confirmations(fixture->context));
+	g_assert_cmpuint(pending->len, ==, 1);
+	g_assert_nonnull(strstr(result.out, "approval"));
+	g_free(result.out);
+	g_free(result.err);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -401,5 +432,6 @@ main(int argc, char **argv)
 	g_test_add("/journal-actions/cli-create-post", Fixture, GINT_TO_POINTER(2), fixture_set_up, test_cli, fixture_tear_down);
 	g_test_add("/journal-actions/cli-stage", Fixture, GINT_TO_POINTER(3), fixture_set_up, test_cli, fixture_tear_down);
 	g_test_add("/journal-actions/tools", Fixture, NULL, fixture_set_up, test_tools, fixture_tear_down);
+	g_test_add("/journal-actions/mcp-always-stages", Fixture, NULL, fixture_set_up, test_mcp_stages, fixture_tear_down);
 	return g_test_run();
 }
