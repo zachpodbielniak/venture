@@ -158,16 +158,31 @@ test_reply(Fixture *f, gconstpointer unused)
 	g_autoptr(VentureEntity) row = enrollment(f);
 	g_autoptr(VentureEntity) interaction = NULL;
 	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(VentureEntity) lead = NULL;
 	gint status;
-	(void)unused;
+	if (unused != NULL)
+	{
+		lead = g_object_new(VENTURE_TYPE_LEAD, "organization-id", (gint64)1, "name", "Inquiry", NULL);
+		save(f, lead);
+	}
 	save(f, row);
 	interaction = g_object_new(VENTURE_TYPE_INTERACTION, "organization-id", (gint64)1,
 		"contact-id", venture_entity_get_id(f->contact), "subject", "Reply", "outbound", FALSE, NULL);
+	/* Lead history and sequence exits must compose in one interaction save. */
+	if (lead != NULL)
+		g_object_set(interaction, "lead-id", venture_entity_get_id(lead), NULL);
 	save(f, interaction);
 	stored = venture_database_get(f->db, VENTURE_TYPE_SEQUENCE_ENROLLMENT,
 		venture_entity_get_id(row), NULL);
 	g_object_get(stored, "status", &status, NULL);
 	g_assert_cmpint(status, ==, 3);
+	if (lead != NULL)
+	{
+		g_autoptr(VentureEntity) updated = venture_database_get(f->db, VENTURE_TYPE_LEAD, venture_entity_get_id(lead), NULL);
+		g_autoptr(GDateTime) activity_at = NULL;
+		g_object_get(updated, "last-activity-at", &activity_at, NULL);
+		g_assert_nonnull(activity_at);
+	}
 }
 
 static void
@@ -833,6 +848,7 @@ main(int argc, char **argv)
 	g_test_add("/sequences/duplicate", Fixture, NULL, setup, test_duplicate, teardown);
 	g_test_add("/sequences/suppression", Fixture, NULL, setup, test_suppression, teardown);
 	g_test_add("/sequences/reply", Fixture, NULL, setup, test_reply, teardown);
+	g_test_add("/sequences/lead-reply", Fixture, GINT_TO_POINTER(1), setup, test_reply, teardown);
 	g_test_add("/sequences/won", Fixture, NULL, setup, test_won, teardown);
 	g_test_add("/sequences/sweep", Fixture, NULL, setup, test_sweep, teardown);
 	g_test_add("/sequences/date_limit", Fixture, NULL, setup, test_date_limit, teardown);
