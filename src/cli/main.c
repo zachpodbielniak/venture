@@ -1129,11 +1129,12 @@ venture_cli_command_report(
 			g_auto(GStrv) parts = g_strsplit(args[i], "=", 2);
 			if ((NULL == parts[1]) ||
 				((0 != g_strcmp0(parts[0], "as_of")) && (0 != g_strcmp0(parts[0], "organization_id")) &&
-				 (0 != g_strcmp0(parts[0], "customer_id")) && (0 != g_strcmp0(parts[0], "vendor_id")) && (0 != g_strcmp0(parts[0], "currency")) &&
-				 (0 != g_strcmp0(parts[0], "venture_id")) && (0 != g_strcmp0(parts[0], "group_by"))))
+				 (0 != g_strcmp0(parts[0], "customer_id")) && (0 != g_strcmp0(parts[0], "currency")) &&
+				 (0 != g_strcmp0(parts[0], "venture_id")) && (0 != g_strcmp0(parts[0], "group_by")) &&
+				 (0 != g_strcmp0(parts[0], "compare_to")) && (0 != g_strcmp0(parts[0], "account_id")) && (0 != g_strcmp0(parts[0], "vendor_id"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, vendor_id");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -3102,6 +3103,8 @@ venture_cli_command_mcp(
 
 /* --- Entry point --------------------------------------------------------- */
 
+#include "autojournal/venture-autojournal-cli.inc"
+
 int
 main(
 	int	  argc,
@@ -3120,6 +3123,7 @@ main(
 	gboolean quiet = FALSE;
 	gboolean apply_writes = FALSE;
 	gboolean stage = FALSE;
+	gboolean dry_run = FALSE;
 	gint result;
 
 	const GOptionEntry entries[] = {
@@ -3142,6 +3146,8 @@ main(
 		  "Print licensing information and exit", NULL },
 		{ G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_STRING_ARRAY, &args,
 		  NULL, NULL },
+		{ "dry-run", 0, 0, G_OPTION_ARG_NONE, &dry_run,
+		  "post backfill only: validate without retaining writes", NULL },
 		{ NULL }
 	};
 
@@ -3179,6 +3185,7 @@ main(
 		"  modules                      list the server's modules and which\n"
 		"                               are on; -f json for the detail\n"
 		"  federation JSON              identity, remote, pull, edit and sync\n"
+		"  post backfill                post missing journals; --dry-run\n"
 		"  bill approve|pay|void ID [field=value ...]  supplier bill actions\n"
 		"  factory                      the software factory at a glance\n"
 		"  release changelog ID         draft a release's changelog from\n"
@@ -3276,6 +3283,12 @@ main(
 		help = g_option_context_get_help(options, TRUE, NULL);
 		g_print("%s", help);
 
+		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
+	}
+
+	if (dry_run && (g_strcmp0(args[0], "post") != 0 || g_strcmp0(args[1], "backfill") != 0))
+	{
+		g_printerr("venturectl: --dry-run requires post backfill\n");
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 
@@ -3414,6 +3427,8 @@ main(
 	else if ((0 == g_strcmp0(args[0], "webhooks")) ||
 	         (0 == g_strcmp0(args[0], "webhook")))
 		result = venture_cli_command_webhooks(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "post"))
+		result = venture_cli_command_post(&cli, args, dry_run, &error);
 	else if (0 == g_strcmp0(args[0], "mcp"))
 		result = venture_cli_command_mcp(&cli, args, &error);
 	else

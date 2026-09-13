@@ -1049,6 +1049,8 @@ venture_database_save(
 			return ok;
 	}
 
+
+	VENTURE_AUTOJOURNAL_SAVE_HOOK(self, entity, actor, error);
 	/* Source and posting share a transaction, whichever surface saved it. */
 	if (!venture_payables_is_projection_write(self, entity) && venture_ledger_wrap_source(self, entity))
 		return venture_ledger_save_source(self, entity, actor, error);

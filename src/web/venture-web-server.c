@@ -11,6 +11,7 @@
  */
 
 #include "venture.h"
+#include "statements/venture-statements-private.h"
 
 #include <string.h>
 
@@ -2480,8 +2481,8 @@ venture_web_api_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "compare_to", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "account_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -5482,6 +5483,8 @@ venture_web_ui_reports(
 		VentureReport *report;
 
 		report = g_ptr_array_index(reports, i);
+		if (venture_statements_owns_report(self->context, venture_report_get_name(report)))
+			continue;
 
 		g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
 		                         "<h2>");
@@ -5500,6 +5503,8 @@ venture_web_ui_reports(
 	}
 
 	g_string_append(content, "</div>");
+
+	venture_statements_append_index(self->context, content);
 
 	return venture_web_html_response(
 		venture_web_page(self, request, "/reports", "Reports", content->str), 200);
@@ -5559,8 +5564,8 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "compare_to", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "account_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -5594,7 +5599,7 @@ venture_web_ui_report(
 
 	{
 		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
-		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", NULL };
+		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "account_id", "compare_to", NULL };
 		guint i;
 		for (i = 0; names[i] != NULL; i++)
 		{
@@ -5661,7 +5666,7 @@ venture_web_ui_report(
 				g_string_append_printf(content, "<input type=\"hidden\" name=\"organization_id\" value=\"%" G_GINT64_FORMAT "\">",
 					venture_json_object_get_int(report_options, "organization_id", 0));
 			{
-				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", NULL };
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "account_id", "compare_to", NULL };
 				guint i;
 				/* Preserve the question when changing only its cutoff. */
 				for (i = 0; names[i] != NULL; i++)
@@ -5674,6 +5679,7 @@ venture_web_ui_report(
 					g_string_append(content, "\">");
 				}
 			}
+			venture_statements_append_controls(self->context, report, report_options, content);
 			g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
 		}
 	}
@@ -27488,6 +27494,7 @@ venture_web_api_ticket_summary(
 	return venture_web_json_response(node, 200);
 }
 
+
 static HtmxResponse *
 venture_web_api_ticket_draft(
 	HtmxRequest	*request,
@@ -27540,6 +27547,7 @@ venture_web_api_ticket_draft(
 
 
 #include "venture-web-federation.inc"
+#include "autojournal/venture-autojournal-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -27800,6 +27808,7 @@ venture_web_server_new(
 	/* API */
 	htmx_router_get(router, "/api/v1/health", venture_web_api_health, self);
 	htmx_router_get(router, "/api/v1/factory", venture_web_api_factory, self);
+	htmx_router_post(router, "/api/v1/post/backfill", venture_web_autojournal_backfill, self);
 	htmx_router_get(router, "/api/v1/inbox", venture_web_api_inbox, self);
 	htmx_router_post(router, "/api/v1/inbox/read", venture_web_api_inbox_read,
 	                 self);

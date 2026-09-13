@@ -729,6 +729,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_vendor_credit_get_type
 		, venture_vendor_bill_event_get_type
 		, venture_bill_refund_get_type
+
+		, venture_posting_profile_get_type
 	};
 	gsize i;
 
