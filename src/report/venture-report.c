@@ -6,6 +6,7 @@
  */
 
 #include "venture.h"
+#include "statements/venture-statements-private.h"
 
 #include <yaml-glib.h>
 
@@ -775,7 +776,7 @@ venture_report_result_render_html_body(
 				g_string_append_printf(html, "<td class=\"%s\">",
 					(VENTURE_REPORT_COLUMN_TEXT == column->kind)
 						? "" : "num");
-				venture_html_escape_append(html, cell);
+				venture_statements_append_reference(html, column->key, cell);
 				g_string_append(html, "</td>");
 			}
 

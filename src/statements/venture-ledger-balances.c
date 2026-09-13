@@ -1,0 +1,1023 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+#include "venture.h"
+
+typedef struct
+{
+	gint64 account_id;
+	gint64 journal_id;
+	gint64 source_id;
+	gchar *source_type;
+	GDateTime *date;
+	VentureMoney *amount;
+	VentureLedgerSide side;
+} Evidence;
+
+typedef struct
+{
+	GPtrArray *accounts;
+	GPtrArray *entries;
+	GPtrArray *currencies;
+	GDateTime *start;
+	GDateTime *end;
+} Books;
+
+struct _VentureLedgerBalances
+{
+	GObject parent_instance;
+	VentureDatabase *database;
+};
+G_DEFINE_TYPE(VentureLedgerBalances, venture_ledger_balances, G_TYPE_OBJECT)
+
+static void
+balances_finalize(GObject *object)
+{
+	g_clear_object(&VENTURE_LEDGER_BALANCES(object)->database);
+	G_OBJECT_CLASS(venture_ledger_balances_parent_class)->finalize(object);
+}
+
+static void
+balances_get_property(GObject *object, guint id, GValue *value, GParamSpec *pspec)
+{
+	if (id == 1)
+		g_value_set_object(value, VENTURE_LEDGER_BALANCES(object)->database);
+	else
+		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, pspec);
+}
+
+static void
+balances_set_property(GObject *object, guint id, const GValue *value, GParamSpec *pspec)
+{
+	if (id == 1)
+		g_set_object(&VENTURE_LEDGER_BALANCES(object)->database, g_value_get_object(value));
+	else
+		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, pspec);
+}
+
+static void
+venture_ledger_balances_class_init(VentureLedgerBalancesClass *klass)
+{
+	GObjectClass *object_class = G_OBJECT_CLASS(klass);
+	object_class->finalize = balances_finalize;
+	object_class->get_property = balances_get_property;
+	object_class->set_property = balances_set_property;
+	/**
+	 * VentureLedgerBalances:database:
+	 *
+	 * The repository whose posted journals supply the query.
+	 */
+	g_object_class_install_property(object_class, 1, g_param_spec_object("database",
+		"Database", "Posted ledger repository", VENTURE_TYPE_DATABASE,
+		G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_STRINGS));
+}
+
+static void
+venture_ledger_balances_init(VentureLedgerBalances *self)
+{
+	(void)self;
+}
+
+VentureLedgerBalances *
+venture_ledger_balances_new(VentureDatabase *database)
+{
+	return g_object_new(VENTURE_TYPE_LEDGER_BALANCES, "database", database, NULL);
+}
+
+static void
+evidence_free(gpointer data)
+{
+	Evidence *e = data;
+	g_free(e->source_type);
+	g_date_time_unref(e->date);
+	venture_money_free(e->amount);
+	g_free(e);
+}
+
+static void
+books_free(Books *books)
+{
+	g_clear_pointer(&books->accounts, g_ptr_array_unref);
+	g_clear_pointer(&books->entries, g_ptr_array_unref);
+	g_clear_pointer(&books->currencies, g_ptr_array_unref);
+	g_clear_pointer(&books->start, g_date_time_unref);
+	g_clear_pointer(&books->end, g_date_time_unref);
+	g_free(books);
+}
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(Books, books_free)
+
+static gboolean
+add(VentureMoney **sum, const VentureMoney *amount, gboolean subtract, GError **error)
+{
+	VentureMoney *next = subtract ? venture_money_subtract(*sum, amount, error) :
+		venture_money_add(*sum, amount, error);
+	if (next == NULL)
+		return FALSE;
+	venture_money_free(*sum);
+	*sum = next;
+	return TRUE;
+}
+
+static VentureEntity *
+find_account(Books *books, gint64 id)
+{
+	guint i;
+	for (i = 0; i < books->accounts->len; i++)
+	{
+		VentureEntity *account = g_ptr_array_index(books->accounts, i);
+		if (venture_entity_get_id(account) == id)
+			return account;
+	}
+	return NULL;
+}
+
+static gboolean
+belongs(Books *books, gint64 child, gint64 ancestor)
+{
+	guint depth;
+	for (depth = 0; child != 0 && depth <= books->accounts->len; depth++)
+	{
+		VentureEntity *account;
+		if (child == ancestor)
+			return TRUE;
+		account = find_account(books, child);
+		if (account == NULL)
+			return FALSE;
+		g_object_get(account, "parent-id", &child, NULL);
+	}
+	return FALSE;
+}
+
+static gint
+compare_currency(gconstpointer a, gconstpointer b)
+{
+	return g_strcmp0(*(gchar * const *)a, *(gchar * const *)b);
+}
+
+static void
+add_currency(Books *books, const gchar *currency)
+{
+	guint i;
+	for (i = 0; i < books->currencies->len; i++)
+		if (g_str_equal(g_ptr_array_index(books->currencies, i), currency))
+			return;
+	g_ptr_array_add(books->currencies, g_strdup(currency));
+}
+
+static Books *
+read_books(VentureDatabase *db, gint64 org, const gchar *currency,
+	VentureDateRange *period, GDateTime *as_of, GError **error)
+{
+	g_autoptr(Books) books = g_new0(Books, 1);
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) journals = NULL;
+	guint i;
+	if (org <= 0 || period == NULL || (currency != NULL &&
+		(strlen(currency) != 3 || !g_ascii_isupper(currency[0]) ||
+		 !g_ascii_isupper(currency[1]) || !g_ascii_isupper(currency[2]))))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"Statements require a legal entity, period and uppercase book currency");
+		return NULL;
+	}
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "journal") == 0)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "The ledger module is disabled");
+		return NULL;
+	}
+	books->start = g_date_time_ref(venture_date_range_get_start(period));
+	books->end = g_date_time_ref(venture_date_range_get_end(period));
+	if (as_of != NULL && g_date_time_compare(as_of, books->end) < 0)
+	{
+		g_date_time_unref(books->end);
+		books->end = g_date_time_add(as_of, 1);
+	}
+	books->entries = g_ptr_array_new_with_free_func(evidence_free);
+	books->currencies = g_ptr_array_new_with_free_func(g_free);
+	query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	venture_query_set_limit(query, 0);
+	venture_query_set_include_deleted(query, TRUE);
+	venture_query_set_organization(query, org);
+	venture_query_add_order(query, "code", VENTURE_SORT_ASCENDING, NULL);
+	books->accounts = venture_database_find(db, query, error);
+	if (books->accounts == NULL)
+		return NULL;
+	/* A corrupt hierarchy must not silently double or drop a balance. */
+	for (i = 0; i < books->accounts->len; i++)
+	{
+		VentureEntity *account = g_ptr_array_index(books->accounts, i);
+		gint64 parent;
+		g_object_get(account, "parent-id", &parent, NULL);
+		if (parent != 0 && (find_account(books, parent) == NULL ||
+			belongs(books, parent, venture_entity_get_id(account))))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"Account parents must be acyclic and belong to the same organization");
+			return NULL;
+		}
+	}
+	g_clear_object(&query);
+	query = venture_query_new(VENTURE_TYPE_JOURNAL);
+	venture_query_set_limit(query, 0);
+	venture_query_set_include_deleted(query, TRUE);
+	venture_query_set_organization(query, org);
+	venture_query_add_order(query, "occurred-at", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	journals = venture_database_find(db, query, error);
+	if (journals == NULL)
+		return NULL;
+	for (i = 0; i < journals->len; i++)
+	{
+		VentureEntity *journal = g_ptr_array_index(journals, i);
+		g_autoptr(GDateTime) date = NULL;
+		g_autofree gchar *book_currency = NULL;
+		g_autoptr(GPtrArray) lines = NULL;
+		VentureJournalState state;
+		guint j;
+		g_object_get(journal, "state", &state, "occurred-at", &date, "currency", &book_currency, NULL);
+		if ((state != VENTURE_JOURNAL_POSTED && state != VENTURE_JOURNAL_REVERSED) ||
+			date == NULL || g_date_time_compare(date, books->end) >= 0 ||
+			(currency != NULL && g_strcmp0(currency, book_currency) != 0))
+			continue;
+		add_currency(books, book_currency);
+		g_clear_object(&query);
+		query = venture_query_new(VENTURE_TYPE_JOURNAL_LINE);
+		venture_query_set_limit(query, 0);
+		venture_query_set_include_deleted(query, TRUE);
+		venture_query_set_organization(query, org);
+		venture_query_add_filter_int(query, "journal-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(journal), NULL);
+		venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+		lines = venture_database_find(db, query, error);
+		if (lines == NULL)
+			return NULL;
+		for (j = 0; j < lines->len; j++)
+		{
+			Evidence *e = g_new0(Evidence, 1);
+			g_object_get(g_ptr_array_index(lines, j), "account-id", &e->account_id,
+				"side", &e->side, "book-amount", &e->amount, NULL);
+			g_object_get(journal, "source-type", &e->source_type, "source-id", &e->source_id, NULL);
+			e->journal_id = venture_entity_get_id(journal);
+			e->date = g_date_time_ref(date);
+			g_ptr_array_add(books->entries, e);
+		}
+	}
+	if (currency != NULL || books->currencies->len == 0)
+		add_currency(books, currency != NULL ? currency : venture_money_get_default_currency());
+	g_ptr_array_sort(books->currencies, compare_currency);
+	return g_steal_pointer(&books);
+}
+
+static gboolean
+measure(Books *books, gint64 id, const gchar *currency, gboolean rollup,
+	VentureMoney **opening, VentureMoney **debits, VentureMoney **credits,
+	VentureMoney **closing, GError **error)
+{
+	guint i;
+	*opening = venture_money_new_zero(currency);
+	*debits = venture_money_new_zero(currency);
+	*credits = venture_money_new_zero(currency);
+	for (i = 0; i < books->entries->len; i++)
+	{
+		Evidence *e = g_ptr_array_index(books->entries, i);
+		if (g_strcmp0(e->amount->currency, currency) != 0 ||
+			(e->account_id != id && (!rollup || !belongs(books, e->account_id, id))))
+			continue;
+		if (g_date_time_compare(e->date, books->start) < 0)
+		{
+			if (!add(opening, e->amount, e->side == VENTURE_LEDGER_SIDE_CREDIT, error))
+				return FALSE;
+		}
+		else if (!add(e->side == VENTURE_LEDGER_SIDE_DEBIT ? debits : credits, e->amount, FALSE, error))
+			return FALSE;
+	}
+	*closing = venture_money_add(*opening, *debits, error);
+	return *closing != NULL && add(closing, *credits, TRUE, error);
+}
+
+static void
+text_column(VentureReportResult *r, const gchar *key, const gchar *label)
+{
+	venture_report_result_add_column(r, key, label, VENTURE_REPORT_COLUMN_TEXT);
+}
+
+static void
+money_column(VentureReportResult *r, const gchar *key, const gchar *label)
+{
+	venture_report_result_add_column(r, key, label, VENTURE_REPORT_COLUMN_MONEY);
+}
+
+static void
+set_id(VentureReportResult *r, const gchar *key, gint64 id)
+{
+	g_autofree gchar *text = id != 0 ? g_strdup_printf("%" G_GINT64_FORMAT, id) : g_strdup("");
+	venture_report_result_set_text(r, key, text);
+}
+
+static void
+account_row(VentureReportResult *r, VentureEntity *account, const gchar *currency)
+{
+	g_autofree gchar *code = NULL;
+	g_autofree gchar *name = NULL;
+	g_object_get(account, "code", &code, "name", &name, NULL);
+	venture_report_result_begin_row(r);
+	venture_report_result_set_text(r, "key", code);
+	venture_report_result_set_text(r, "name", name);
+	venture_report_result_set_text(r, "currency", currency);
+	set_id(r, "account_id", venture_entity_get_id(account));
+}
+
+static VentureReportResult *
+balance_rows(Books *books, VentureDateRange *period, gboolean rollup, GError **error)
+{
+	g_autoptr(VentureReportResult) r = venture_report_result_new("Account balances", period);
+	guint c, i;
+	text_column(r, "key", "Code");
+	text_column(r, "name", "Account");
+	text_column(r, "account_id", "Account ID");
+	text_column(r, "currency", "Currency");
+	money_column(r, "opening", "Opening");
+	money_column(r, "debits", "Debits");
+	money_column(r, "credits", "Credits");
+	money_column(r, "closing", "Closing");
+	for (c = 0; c < books->currencies->len; c++)
+	{
+		const gchar *currency = g_ptr_array_index(books->currencies, c);
+		for (i = 0; i < books->accounts->len; i++)
+		{
+			VentureEntity *a = g_ptr_array_index(books->accounts, i);
+			g_autoptr(VentureMoney) opening = NULL, debits = NULL, credits = NULL, closing = NULL;
+			if (!measure(books, venture_entity_get_id(a), currency, rollup, &opening, &debits, &credits, &closing, error))
+				return NULL;
+			account_row(r, a, currency);
+			venture_report_result_set_money(r, "opening", opening);
+			venture_report_result_set_money(r, "debits", debits);
+			venture_report_result_set_money(r, "credits", credits);
+			venture_report_result_set_money(r, "closing", closing);
+		}
+	}
+	return g_steal_pointer(&r);
+}
+
+VentureReportResult *
+venture_ledger_balances_query(VentureLedgerBalances *self, gint64 organization_id,
+	const gchar *currency, VentureDateRange *period, GDateTime *as_of,
+	gboolean rollup, GError **error)
+{
+	g_autoptr(Books) books = NULL;
+	g_autoptr(VentureReportResult) result = NULL;
+	if (!venture_database_begin(self->database, error))
+		return NULL;
+	books = read_books(self->database, organization_id, currency, period, as_of, error);
+	if (books != NULL)
+		result = balance_rows(books, period, rollup, error);
+	if (result == NULL)
+	{
+		venture_database_rollback(self->database);
+		return NULL;
+	}
+	if (!venture_database_commit(self->database, error))
+		return NULL;
+	return g_steal_pointer(&result);
+}
+
+static void
+statement_columns(VentureReportResult *r)
+{
+	text_column(r, "key", "Code");
+	text_column(r, "name", "Line");
+	text_column(r, "account_id", "Account ID");
+	text_column(r, "currency", "Currency");
+	money_column(r, "current", "Current");
+}
+
+static void
+summary_row(VentureReportResult *r, const gchar *key, const gchar *name,
+	const VentureMoney *amount)
+{
+	venture_report_result_begin_row(r);
+	venture_report_result_set_text(r, "key", key);
+	venture_report_result_set_text(r, "name", name);
+	venture_report_result_set_text(r, "account_id", "");
+	venture_report_result_set_text(r, "currency", amount->currency);
+	venture_report_result_set_money(r, "current", amount);
+}
+
+static VentureAccountKind
+account_kind(VentureEntity *account)
+{
+	VentureAccountKind kind;
+	g_object_get(account, "kind", &kind, NULL);
+	return kind;
+}
+
+static gboolean
+is_profit_account(VentureEntity *account)
+{
+	VentureAccountKind kind = account_kind(account);
+	return kind == VENTURE_ACCOUNT_KIND_INCOME || kind == VENTURE_ACCOUNT_KIND_EXPENSE;
+}
+
+static VentureReportResult *
+financial_statement(Books *books, VentureDateRange *period, gboolean balance_sheet, GError **error)
+{
+	g_autoptr(VentureReportResult) r = venture_report_result_new(balance_sheet ? "Balance sheet" : "Income statement", period);
+	guint c, i;
+	statement_columns(r);
+	text_column(r, "section", "Section");
+	for (c = 0; c < books->currencies->len; c++)
+	{
+		const gchar *currency = g_ptr_array_index(books->currencies, c);
+		g_autoptr(VentureMoney) assets = venture_money_new_zero(currency);
+		g_autoptr(VentureMoney) liabilities = venture_money_new_zero(currency);
+		g_autoptr(VentureMoney) equity = venture_money_new_zero(currency);
+		g_autoptr(VentureMoney) income = venture_money_new_zero(currency);
+		g_autoptr(VentureMoney) expenses = venture_money_new_zero(currency);
+		g_autoptr(VentureMoney) retained = venture_money_new_zero(currency);
+		g_autoptr(VentureMoney) net = NULL;
+		g_autoptr(VentureMoney) difference = NULL;
+		for (i = 0; i < books->accounts->len; i++)
+		{
+			VentureEntity *a = g_ptr_array_index(books->accounts, i);
+			VentureAccountKind kind = account_kind(a);
+			g_autoptr(VentureMoney) opening = NULL, debits = NULL, credits = NULL, closing = NULL;
+			g_autoptr(VentureMoney) movement = NULL;
+			VentureMoney **total;
+			const gchar *section;
+			gboolean normal = venture_account_kind_is_debit_normal(kind);
+			if (!measure(books, venture_entity_get_id(a), currency, FALSE, &opening, &debits, &credits, &closing, error))
+				return NULL;
+			movement = venture_money_subtract(debits, credits, error);
+			if (movement == NULL)
+				return NULL;
+			if (is_profit_account(a) && !add(&retained, opening, TRUE, error))
+				return NULL;
+			switch (kind)
+			{
+			case VENTURE_ACCOUNT_KIND_ASSET: total = &assets; section = "Assets"; break;
+			case VENTURE_ACCOUNT_KIND_LIABILITY: total = &liabilities; section = "Liabilities"; break;
+			case VENTURE_ACCOUNT_KIND_EQUITY: total = &equity; section = "Equity"; break;
+			case VENTURE_ACCOUNT_KIND_INCOME: total = &income; section = "Income"; break;
+			default: total = &expenses; section = "Expenses"; break;
+			}
+			if (!add(total, is_profit_account(a) ? movement : closing, !normal, error))
+				return NULL;
+			if (balance_sheet == !is_profit_account(a))
+			{
+				g_autoptr(VentureMoney) ro = NULL, rd = NULL, rc = NULL, rb = NULL;
+				g_autoptr(VentureMoney) display = NULL;
+				if (!measure(books, venture_entity_get_id(a), currency, TRUE, &ro, &rd, &rc, &rb, error))
+					return NULL;
+				if (balance_sheet)
+					display = venture_money_multiply_int(rb, normal ? 1 : -1, error);
+				else
+				{
+					g_autoptr(VentureMoney) m = venture_money_subtract(rd, rc, error);
+					if (m != NULL)
+						display = venture_money_multiply_int(m, normal ? 1 : -1, error);
+				}
+				if (display == NULL)
+					return NULL;
+				account_row(r, a, currency);
+				venture_report_result_set_text(r, "section", section);
+				venture_report_result_set_money(r, "current", display);
+			}
+		}
+		net = venture_money_subtract(income, expenses, error);
+		if (net == NULL)
+			return NULL;
+		if (balance_sheet)
+		{
+			if (!add(&equity, retained, FALSE, error) || !add(&equity, net, FALSE, error))
+				return NULL;
+			summary_row(r, "retained_income", "Prior-period unclosed earnings", retained);
+			summary_row(r, "net_income", "Current-period net income", net);
+			summary_row(r, "assets", "Total assets", assets);
+			summary_row(r, "liabilities", "Total liabilities", liabilities);
+			summary_row(r, "equity", "Total equity including earnings", equity);
+			difference = venture_money_subtract(assets, liabilities, error);
+			if (difference == NULL || !add(&difference, equity, TRUE, error))
+				return NULL;
+			if (difference->amount != 0)
+			{
+				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_BALANCE, "Assets do not equal liabilities plus equity");
+				return NULL;
+			}
+			summary_row(r, "difference", "Assets less liabilities and equity", difference);
+		}
+		else
+		{
+			summary_row(r, "income", "Total income", income);
+			summary_row(r, "expenses", "Total expenses", expenses);
+			summary_row(r, "net_income", "Net income", net);
+		}
+	}
+	venture_report_result_append_note(r, "Account rows include descendants; section totals count each posted line once. Earnings are ledger income less ledger expenses for the selected period.");
+	return g_steal_pointer(&r);
+}
+
+static gboolean
+control_account(Books *books, gint64 id, const gchar *code)
+{
+	guint depth;
+	for (depth = 0; id != 0 && depth <= books->accounts->len; depth++)
+	{
+		VentureEntity *account = find_account(books, id);
+		g_autofree gchar *actual = NULL;
+		if (account == NULL)
+			return FALSE;
+		g_object_get(account, "code", &actual, "parent-id", &id, NULL);
+		if (g_strcmp0(actual, code) == 0)
+			return TRUE;
+		/* Posting rules may create organization-prefixed chart codes. */
+		if (actual != NULL && strchr(actual, ':') != NULL &&
+			g_strcmp0(strrchr(actual, ':') + 1, code) == 0)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+static VentureReportResult *
+cash_flow(Books *books, VentureDateRange *period, GError **error)
+{
+	static const gchar *const keys[] = { "receivables", "payables", "inventory", "tax_payable" };
+	static const gchar *const codes[] = { "1100", "2000", "1200", "2100" };
+	static const gchar *const labels[] = { "Change in receivables", "Change in payables", "Change in inventory", "Change in tax payable" };
+	g_autoptr(VentureReportResult) r = venture_report_result_new("Cash flow (indirect)", period);
+	guint c, i;
+	statement_columns(r);
+	for (c = 0; c < books->currencies->len; c++)
+	{
+		const gchar *currency = g_ptr_array_index(books->currencies, c);
+		g_autoptr(VentureMoney) start = venture_money_new_zero(currency);
+		g_autoptr(VentureMoney) end = venture_money_new_zero(currency);
+		g_autoptr(VentureMoney) net = venture_money_new_zero(currency);
+		g_autoptr(VentureMoney) adjustments = venture_money_new_zero(currency);
+		g_autoptr(VentureMoney) movement = NULL, calculated = NULL, difference = NULL;
+		g_autoptr(GPtrArray) controls = g_ptr_array_new_with_free_func((GDestroyNotify)venture_money_free);
+		guint k;
+		for (k = 0; k < G_N_ELEMENTS(keys); k++)
+			g_ptr_array_add(controls, venture_money_new_zero(currency));
+		for (i = 0; i < books->accounts->len; i++)
+		{
+			VentureEntity *a = g_ptr_array_index(books->accounts, i);
+			gint64 id = venture_entity_get_id(a);
+			g_autoptr(VentureMoney) opening = NULL, debits = NULL, credits = NULL, closing = NULL;
+			g_autoptr(VentureMoney) change = NULL;
+			if (!measure(books, id, currency, FALSE, &opening, &debits, &credits, &closing, error))
+				return NULL;
+			change = venture_money_subtract(credits, debits, error);
+			if (change == NULL)
+				return NULL;
+			if (control_account(books, id, "1000"))
+			{
+				if (!add(&start, opening, FALSE, error) || !add(&end, closing, FALSE, error))
+					return NULL;
+			}
+			else if (is_profit_account(a))
+			{
+				if (!add(&net, change, FALSE, error))
+					return NULL;
+			}
+			else
+			{
+				if (!add(&adjustments, change, FALSE, error))
+					return NULL;
+				for (k = 0; k < G_N_ELEMENTS(keys); k++)
+					if (control_account(books, id, codes[k]))
+						break;
+				if (k < G_N_ELEMENTS(keys))
+				{
+					VentureMoney *sum = g_ptr_array_index(controls, k);
+					VentureMoney *next = venture_money_add(sum, change, error);
+					if (next == NULL)
+						return NULL;
+					venture_money_free(sum);
+					g_ptr_array_index(controls, k) = next;
+				}
+				/* Direct account adjustments expose the evidence, including
+				 * investing/financing balances instead of a balancing plug. */
+				account_row(r, a, currency);
+				venture_report_result_set_money(r, "current", change);
+			}
+		}
+		summary_row(r, "net_income", "Net income", net);
+		for (k = 0; k < G_N_ELEMENTS(keys); k++)
+			summary_row(r, keys[k], labels[k], g_ptr_array_index(controls, k));
+		summary_row(r, "adjustments", "Total non-cash balance movements", adjustments);
+		calculated = venture_money_add(net, adjustments, error);
+		movement = venture_money_subtract(end, start, error);
+		if (calculated == NULL || movement == NULL)
+			return NULL;
+		difference = venture_money_subtract(calculated, movement, error);
+		if (difference == NULL)
+			return NULL;
+		if (difference->amount != 0)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_BALANCE, "Indirect cash flow does not tie to Cash");
+			return NULL;
+		}
+		summary_row(r, "cash_start", "Cash at start", start);
+		summary_row(r, "cash_end", "Cash at end", end);
+		summary_row(r, "cash_movement", "Net cash movement", calculated);
+		summary_row(r, "difference", "Difference from Cash movement", difference);
+	}
+	venture_report_result_append_note(r, "Indirect method: net income plus credit-minus-debit movements in every non-cash balance-sheet account. Control lines are subtotals of the account adjustments, not additional flows. Other asset, liability and equity movements include investing, financing and non-cash offsets; no cash-equivalent or FX conversion is assumed.");
+	return g_steal_pointer(&r);
+}
+
+static VentureReportResult *
+general_ledger(Books *books, VentureDateRange *period, gint64 requested, GError **error)
+{
+	g_autoptr(VentureReportResult) r = venture_report_result_new("General ledger", period);
+	guint c, i, j;
+	statement_columns(r);
+	text_column(r, "journal_id", "Journal ID");
+	text_column(r, "date", "Accounting date");
+	text_column(r, "source_type", "Source type");
+	text_column(r, "source_id", "Source ID");
+	money_column(r, "debits", "Debit");
+	money_column(r, "credits", "Credit");
+	if (requested != 0 && find_account(books, requested) == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Account does not belong to this organization");
+		return NULL;
+	}
+	for (c = 0; c < books->currencies->len; c++)
+	{
+		const gchar *currency = g_ptr_array_index(books->currencies, c);
+		for (i = 0; i < books->accounts->len; i++)
+		{
+			VentureEntity *a = g_ptr_array_index(books->accounts, i);
+			gint64 id = venture_entity_get_id(a);
+			g_autoptr(VentureMoney) running = NULL, debits = NULL, credits = NULL, closing = NULL;
+			g_autoptr(VentureMoney) zero = venture_money_new_zero(currency);
+			if (requested != 0 && requested != id)
+				continue;
+			if (!measure(books, id, currency, FALSE, &running, &debits, &credits, &closing, error))
+				return NULL;
+			for (j = 0; j < books->entries->len; j++)
+			{
+				Evidence *e = g_ptr_array_index(books->entries, j);
+				g_autofree gchar *date = NULL;
+				if (e->account_id != id || g_strcmp0(currency, e->amount->currency) != 0 ||
+					g_date_time_compare(e->date, books->start) < 0)
+					continue;
+				if (!add(&running, e->amount, e->side == VENTURE_LEDGER_SIDE_CREDIT, error))
+					return NULL;
+				account_row(r, a, currency);
+				set_id(r, "journal_id", e->journal_id);
+				set_id(r, "source_id", e->source_id);
+				venture_report_result_set_text(r, "source_type", e->source_type);
+				date = venture_time_to_string(e->date);
+				venture_report_result_set_text(r, "date", date);
+				venture_report_result_set_money(r, "debits", e->side == VENTURE_LEDGER_SIDE_DEBIT ? e->amount : zero);
+				venture_report_result_set_money(r, "credits", e->side == VENTURE_LEDGER_SIDE_CREDIT ? e->amount : zero);
+				venture_report_result_set_money(r, "current", running);
+			}
+		}
+	}
+	venture_report_result_append_note(r, "Running balances are debit minus credit, ordered by accounting date, journal ID and line ID within each account and currency.");
+	return g_steal_pointer(&r);
+}
+
+typedef struct
+{
+	gchar *key;
+	gchar *type;
+	gint64 id;
+	VentureMoney *ledger;
+	VentureMoney *operational;
+} Source;
+
+static void
+source_free(gpointer data)
+{
+	Source *s = data;
+	g_free(s->key);
+	g_free(s->type);
+	venture_money_free(s->ledger);
+	venture_money_free(s->operational);
+	g_free(s);
+}
+
+static Source *
+source_get(GPtrArray *sources, const gchar *type, gint64 id, const gchar *currency)
+{
+	Source *s;
+	guint i;
+	for (i = 0; i < sources->len; i++)
+	{
+		s = g_ptr_array_index(sources, i);
+		if (s->id == id && g_strcmp0(s->type, type) == 0 && g_strcmp0(s->ledger->currency, currency) == 0)
+			return s;
+	}
+	s = g_new0(Source, 1);
+	s->id = id;
+	s->type = g_strdup(type);
+	s->key = g_strdup_printf("%s:%" G_GINT64_FORMAT, type, id);
+	s->ledger = venture_money_new_zero(currency);
+	s->operational = venture_money_new_zero(currency);
+	g_ptr_array_add(sources, s);
+	return s;
+}
+
+static gint
+source_compare(gconstpointer a, gconstpointer b)
+{
+	const Source *sa = *(Source * const *)a;
+	const Source *sb = *(Source * const *)b;
+	gint compared = g_strcmp0(sa->ledger->currency, sb->ledger->currency);
+	return compared != 0 ? compared : g_strcmp0(sa->key, sb->key);
+}
+
+static VentureReportResult *
+reconciliation(Books *books, VentureDatabase *db, gint64 org,
+	VentureDateRange *period, JsonObject *options, GError **error)
+{
+	g_autoptr(GPtrArray) sources = g_ptr_array_new_with_free_func(source_free);
+	g_autoptr(VentureReportResult) r = venture_report_result_new("P&L reconciliation", period);
+	const gchar *currency = venture_json_object_get_string(options, "currency", NULL);
+	guint i, t;
+	statement_columns(r);
+	text_column(r, "source_type", "Source type");
+	text_column(r, "source_id", "Source ID");
+	money_column(r, "ledger", "Ledger profit contribution");
+	money_column(r, "operational", "Sales/expenses profit contribution");
+	money_column(r, "difference", "Difference");
+	for (i = 0; i < books->entries->len; i++)
+	{
+		Evidence *e = g_ptr_array_index(books->entries, i);
+		VentureEntity *a = find_account(books, e->account_id);
+		Source *s;
+		if (a == NULL || !is_profit_account(a) || g_date_time_compare(e->date, books->start) < 0)
+			continue;
+		s = source_get(sources, e->source_type, e->source_id, e->amount->currency);
+		if (!add(&s->ledger, e->amount, e->side == VENTURE_LEDGER_SIDE_DEBIT, error))
+			return NULL;
+	}
+	/* Operational documents are read only for reconciliation. They never
+	 * supply the statements' recognized revenue, costs or balances. */
+	for (t = 0; t < 2; t++)
+	{
+		g_autoptr(VentureQuery) q = venture_query_new(t == 0 ? VENTURE_TYPE_SALE : VENTURE_TYPE_EXPENSE);
+		g_autoptr(GPtrArray) rows = NULL;
+		venture_query_set_organization(q, org);
+		venture_query_set_limit(q, 0);
+		if (!venture_period_report_scope(q, options, error))
+			return NULL;
+		rows = venture_database_find(db, q, error);
+		if (rows == NULL)
+			return NULL;
+		for (i = 0; i < rows->len; i++)
+		{
+			VentureEntity *row = g_ptr_array_index(rows, i);
+			g_autoptr(GDateTime) date = NULL;
+			g_autoptr(VentureMoney) amount = NULL;
+			Source *s;
+			g_object_get(row, "occurred-at", &date, NULL);
+			if (date == NULL || g_date_time_compare(date, books->start) < 0 || g_date_time_compare(date, books->end) >= 0)
+				continue;
+			if (t == 0)
+				amount = venture_sale_get_net(VENTURE_SALE(row), error);
+			else
+				g_object_get(row, "amount", &amount, NULL);
+			if (amount == NULL || (currency != NULL && g_strcmp0(amount->currency, currency) != 0))
+				continue;
+			s = source_get(sources, t == 0 ? "sale" : "expense", venture_entity_get_id(row), amount->currency);
+			if (!add(&s->operational, amount, t != 0, error))
+				return NULL;
+		}
+	}
+	g_ptr_array_sort(sources, source_compare);
+	for (i = 0; i < sources->len; i++)
+	{
+		Source *s = g_ptr_array_index(sources, i);
+		g_autoptr(VentureMoney) difference = venture_money_subtract(s->ledger, s->operational, error);
+		if (difference == NULL)
+			return NULL;
+		if (difference->amount == 0)
+			continue;
+		summary_row(r, s->key, s->key, difference);
+		venture_report_result_set_text(r, "source_type", s->type);
+		set_id(r, "source_id", s->id);
+		venture_report_result_set_money(r, "ledger", s->ledger);
+		venture_report_result_set_money(r, "operational", s->operational);
+		venture_report_result_set_money(r, "difference", difference);
+	}
+	venture_report_result_append_note(r, "Differences by source document: posted income less posted expenses versus the operational sale net or full expense amount, in the same date range and currency. Invoice accruals, cash projections, manual journals and deleted documents can differ. This report does not replace the ledger.");
+	return g_steal_pointer(&r);
+}
+
+static const gchar *
+row_text(VentureReportResult *r, guint row, const gchar *key)
+{
+	const GValue *v = venture_report_result_get_cell(r, row, key);
+	return v != NULL && G_VALUE_HOLDS_STRING(v) ? g_value_get_string(v) : NULL;
+}
+
+static const VentureMoney *
+row_money(VentureReportResult *r, guint row, const gchar *key)
+{
+	const GValue *v = venture_report_result_get_cell(r, row, key);
+	return v != NULL && G_VALUE_HOLDS(v, VENTURE_TYPE_MONEY) ? g_value_get_boxed(v) : NULL;
+}
+
+static VentureReportResult *
+with_comparative(VentureReportResult *current, VentureReportResult *prior,
+	VentureDateRange *period, const gchar *value_key, const gchar *prior_key, GError **error)
+{
+	g_autoptr(VentureReportResult) r = venture_report_result_new(venture_report_result_get_title(current), period);
+	g_autoptr(JsonNode) json = venture_report_result_to_json(current);
+	JsonObject *object = json_node_get_object(json);
+	JsonArray *columns = json_object_get_array_member(object, "columns");
+	guint i, j, k;
+	GPtrArray *metrics = venture_report_result_get_metrics(current);
+	for (i = 0; i < metrics->len; i++)
+		venture_report_result_add_metric(r, venture_metric_copy(g_ptr_array_index(metrics, i)));
+	for (i = 0; i < json_array_get_length(columns); i++)
+	{
+		JsonObject *column = json_array_get_object_element(columns, i);
+		const gchar *key = json_object_get_string_member(column, "key");
+		const gchar *label = json_object_get_string_member(column, "label");
+		const gchar *kind = json_object_get_string_member(column, "kind");
+		venture_report_result_add_column(r, key, label,
+			g_str_equal(kind, "money") ? VENTURE_REPORT_COLUMN_MONEY : VENTURE_REPORT_COLUMN_TEXT);
+	}
+	money_column(r, "prior", "Prior");
+	money_column(r, "delta", "Delta");
+	for (j = 0; j < venture_report_result_get_row_count(current); j++)
+	{
+		const gchar *currency = row_text(current, j, "currency");
+		const gchar *key = row_text(current, j, "key");
+		const VentureMoney *value = row_money(current, j, value_key);
+		const VentureMoney *previous = NULL;
+		g_autoptr(VentureMoney) zero = venture_money_new_zero(currency);
+		g_autoptr(VentureMoney) delta = NULL;
+		for (k = 0; k < venture_report_result_get_row_count(prior); k++)
+			if (g_strcmp0(key, row_text(prior, k, "key")) == 0 &&
+				g_strcmp0(currency, row_text(prior, k, "currency")) == 0)
+				previous = row_money(prior, k, prior_key);
+		if (previous == NULL)
+			previous = zero;
+		delta = venture_money_subtract(value != NULL ? value : zero, previous, error);
+		if (delta == NULL)
+			return NULL;
+		venture_report_result_begin_row(r);
+		for (i = 0; i < json_array_get_length(columns); i++)
+		{
+			JsonObject *column = json_array_get_object_element(columns, i);
+			const gchar *column_key = json_object_get_string_member(column, "key");
+			const GValue *v = venture_report_result_get_cell(current, j, column_key);
+			if (v == NULL)
+				continue;
+			if (G_VALUE_HOLDS(v, VENTURE_TYPE_MONEY))
+				venture_report_result_set_money(r, column_key, g_value_get_boxed(v));
+			else if (G_VALUE_HOLDS_STRING(v))
+				venture_report_result_set_text(r, column_key, g_value_get_string(v));
+		}
+		venture_report_result_set_money(r, "prior", previous);
+		venture_report_result_set_money(r, "delta", delta);
+	}
+	if (json_object_has_member(object, "note"))
+		venture_report_result_set_note(r, json_object_get_string_member(object, "note"));
+	return g_steal_pointer(&r);
+}
+
+static VentureReportResult *
+generate_one(const gchar *name, Books *books, VentureDatabase *db, gint64 org,
+	VentureDateRange *period, JsonObject *options, GError **error)
+{
+	if (g_str_equal(name, "account_balances"))
+		return balance_rows(books, period, TRUE, error);
+	if (g_str_equal(name, "general_ledger"))
+		return general_ledger(books, period, venture_json_object_get_int(options, "account_id", 0), error);
+	if (g_str_equal(name, "cash_flow"))
+		return cash_flow(books, period, error);
+	if (g_str_equal(name, "pnl_reconciliation"))
+		return reconciliation(books, db, org, period, options, error);
+	return financial_statement(books, period, g_str_equal(name, "balance_sheet"), error);
+}
+
+static VentureReportResult *
+generate(const gchar *name, VentureContext *context, VentureDateRange *period,
+	JsonObject *options, GError **error)
+{
+	VentureDatabase *db = venture_context_get_database(context);
+	g_autoptr(JsonObject) defaults = json_object_new();
+	g_autoptr(JsonObject) previous_options = json_object_new();
+	g_autoptr(GDateTime) as_of = NULL;
+	g_autoptr(Books) books = NULL, previous = NULL;
+	g_autoptr(VentureDateRange) prior_period = NULL;
+	g_autoptr(VentureReportResult) result = NULL, prior = NULL;
+	const gchar *currency;
+	const gchar *compare;
+	gint64 org;
+	guint i;
+	if (options == NULL)
+		options = defaults;
+	org = venture_json_object_get_int(options, "organization_id", 0);
+	if (org == 0)
+		org = venture_context_get_default_organization_id(context);
+	currency = venture_json_object_get_string(options, "currency", NULL);
+	compare = venture_json_object_get_string(options, "compare_to", NULL);
+	if (json_object_has_member(options, "as_of"))
+	{
+		as_of = venture_period_report_as_of(options, error);
+		if (as_of == NULL)
+			return NULL;
+	}
+	if (compare != NULL)
+	{
+		prior_period = venture_context_parse_period(context, compare, error);
+		if (prior_period == NULL)
+			return NULL;
+		if (g_date_time_compare(venture_date_range_get_end(prior_period), venture_date_range_get_start(period)) > 0)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "compare_to must end before the current period starts");
+			return NULL;
+		}
+	}
+	if (!venture_database_begin(db, error))
+		return NULL;
+	books = read_books(db, org, currency, period, as_of, error);
+	if (books == NULL)
+		goto fail;
+	if (prior_period != NULL)
+	{
+		previous = read_books(db, org, currency, prior_period, NULL, error);
+		if (previous == NULL)
+			goto fail;
+		for (i = 0; i < previous->currencies->len; i++)
+			add_currency(books, g_ptr_array_index(previous->currencies, i));
+		for (i = 0; i < books->currencies->len; i++)
+			add_currency(previous, g_ptr_array_index(books->currencies, i));
+		g_ptr_array_sort(books->currencies, compare_currency);
+		g_ptr_array_sort(previous->currencies, compare_currency);
+	}
+	result = generate_one(name, books, db, org, period, options, error);
+	if (result == NULL)
+		goto fail;
+	if (g_str_equal(name, "income_statement"))
+	{
+		g_autoptr(VentureReportResult) differences = reconciliation(books, db, org, period, options, error);
+		if (differences == NULL)
+			goto fail;
+		if (venture_report_result_get_row_count(differences) > 0)
+			venture_report_result_append_note(result, "Ledger income differs by source from the sales/expenses P&L; see pnl_reconciliation for the documents and amounts.");
+	}
+	if (prior_period != NULL)
+	{
+		g_autoptr(VentureReportResult) compared = NULL;
+		gboolean balances = g_str_equal(name, "account_balances");
+		gboolean ledger = g_str_equal(name, "general_ledger");
+		if (currency != NULL)
+			json_object_set_string_member(previous_options, "currency", currency);
+		prior = ledger ? balance_rows(previous, prior_period, FALSE, error) :
+			generate_one(name, previous, db, org, prior_period, previous_options, error);
+		if (prior == NULL)
+			goto fail;
+		compared = with_comparative(result, prior, period, balances ? "closing" : "current",
+			(balances || ledger) ? "closing" : "current", error);
+		if (compared == NULL)
+			goto fail;
+		g_set_object(&result, compared);
+		if (ledger)
+			venture_report_result_append_note(result, "Prior is the account's prior-period closing balance; delta compares each current running balance with that closing balance.");
+	}
+	if (!venture_database_commit(db, error))
+		return NULL;
+	return g_steal_pointer(&result);
+fail:
+	venture_database_rollback(db);
+	return NULL;
+}
+
+#define STATEMENT(name) \
+static VentureReportResult *report_##name(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error) \
+{ return generate(#name, context, period, options, error); }
+STATEMENT(balance_sheet)
+STATEMENT(income_statement)
+STATEMENT(cash_flow)
+STATEMENT(general_ledger)
+STATEMENT(account_balances)
+STATEMENT(pnl_reconciliation)
+#undef STATEMENT
+
+void
+venture_statements_register_reports(VentureReportRegistry *registry)
+{
+	static const struct { const gchar *name; const gchar *title; VentureReportFunc func; } reports[] = {
+		{ "balance_sheet", "Balance sheet", report_balance_sheet },
+		{ "income_statement", "Income statement", report_income_statement },
+		{ "cash_flow", "Cash flow", report_cash_flow },
+		{ "general_ledger", "General ledger", report_general_ledger },
+		{ "account_balances", "Account balances", report_account_balances },
+		{ "pnl_reconciliation", "P&L reconciliation", report_pnl_reconciliation }
+	};
+	guint i;
+	for (i = 0; i < G_N_ELEMENTS(reports); i++)
+	{
+		VentureReport *report = VENTURE_REPORT(venture_func_report_new(reports[i].name,
+			reports[i].title, "Posted ledger evidence, per legal entity and currency, with date cutoffs and prior-period comparatives", reports[i].func));
+		g_object_set(report, "financial", TRUE, NULL);
+		venture_report_registry_add(registry, report);
+	}
+}

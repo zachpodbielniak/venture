@@ -195,3 +195,15 @@ server for somebody to approve, not merely described. =venturectl --stage=
 does the same for =create=, =update= and =delete= from the shell. It takes its credential from
 =VENTURE_TOKEN= and refuses =--token= outright, since an MCP server is spawned
 from a config file. See [[file:mcp.org][venturectl mcp]].
+
+* Ledger statements
+
+#+begin_src sh
+venturectl report balance_sheet 2026-08 organization_id=1 currency=USD
+venturectl report income_statement 2026-08 organization_id=1 currency=USD compare_to=2026-07
+venturectl -f csv report general_ledger 2026-08 organization_id=1 currency=USD account_id=1
+#+end_src
+
+The =statements= reports accept =compare_to= for a prior period, =as_of= for
+an accounting cutoff, and one =organization_id= and =currency=. General
+ledger optionally accepts =account_id=. See [[file:statements.org][financial statement definitions]].
