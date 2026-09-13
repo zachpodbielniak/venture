@@ -11,6 +11,7 @@
  */
 
 #include "venture.h"
+#include "billing/venture-billing-reports.h"
 #include "ledger/venture-ledger-private.h"
 
 #include <string.h>
@@ -1228,6 +1229,10 @@ venture_report_pipeline(
 	query = venture_query_new(VENTURE_TYPE_DEAL);
 	venture_query_set_organization(query,
 		venture_context_get_default_organization_id(context));
+
+	if (NULL != options && json_object_has_member(options, "pipeline_id"))
+		venture_query_add_filter_int(query, "pipeline-id", VENTURE_FILTER_OP_EQ,
+			venture_json_object_get_int(options, "pipeline_id", 0), NULL);
 
 	deals = venture_report_fetch_all(context, query, options, error);
 
@@ -2711,7 +2716,15 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 	}
 
 	venture_receivables_register_reports(self);
+	venture_quotes_register_reports(self);
+	venture_payables_register_reports(self);
+	venture_bank_register_reports(self);
 	venture_period_reports_register(self);
+	venture_billing_register_reports(self);
+	venture_leads_register_reports(self);
+	venture_activity_register_reports(self);
+	venture_pipeline_reports_register(self);
+	venture_sequences_register_reports(self);
 	venture_autojournal_register_reports(self);
 	venture_statements_register_reports(self);
 

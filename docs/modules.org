@@ -43,11 +43,20 @@ Written bottom-up, because a module may only require what precedes it:
 | =factory=    | forge           | milestone, release, build, environment, deployment, incident; =releases=, =lead_time=, =incidents=, =delivery= | |
 | =dashboards= | core            | dashboard, dashboard_widget; the =/dashboards= pages and their API | |
 | =orgaccess=  | core            | organization_membership, team, team_membership; record ownership | |
+| =billing= | invoicing, receivables | plan, plan_price, customer_subscription, subscription_event, dunning_step, billing_notice, billing_request; =mrr=, =churn=, =subscriptions_due= | |
 | =mail= | core | mail_message, mail_template; durable outbox and SMTP actions | |
 
+| =payables= | finance, ledger, crm | vendor_bill, vendor_bill_line, bill_payment, bill_payment_allocation, vendor_credit, vendor_bill_event, bill_refund; =payables=, =vendor_statement= | |
+| =sequences= | crm | sequence, sequence_step, sequence_enrollment, sequence_delivery, suppression; =sequence_performance=, =sequence_failures= | |
 | =ledger=     | finance         | journal, journal_line; posting service, post/reverse/create-and-post actions, =trial_balance=           |                       |
+| =banking= | ledger | bank_account, bank_statement, bank_transaction, bank_match, reconciliation; =bank_reconciliation= | |
 
+| =pipelines= | crm | pipeline, pipeline_stage, deal_stage_entry, loss_reason; stage_duration, funnel, forecast, loss_reasons, overdue_deals; /deals | |
 | =statements= | ledger, periods | ledger balances query; balance sheet, income statement, cash flow, general ledger, account balances, P&L reconciliation | |
+| =activities= | crm | activity, activity_type; =worklist=, reminders, calendar export and =/worklist= | |
+| =leads= | crm | lead, lead_form, lead_assignment_rule; =lead_sources=, =lead_response_time=, =leads_recycled_due=; capture and conversion | |
+
+| =quotes= | crm, invoicing | price_list, price_list_item, quote, quote_line, quote_event, quote_delivery, quote_action; =quotes= report and proposal actions | |
 
 Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.
 
@@ -75,7 +84,7 @@ VENTURE_MODULE_CRM=false venture
 For one run:
 
 #+begin_src sh
-venture --disable-module crm --disable-module invoicing --disable-module receivables
+venture --disable-module crm --disable-module invoicing --disable-module receivables --disable-module quotes --disable-module pipelines
 #+end_src
 
 From a compiled C configuration, which is how a machine decides for itself:
@@ -163,6 +172,9 @@ The description must outlive the registry. A static does.
 
 All five are checked at registration, and a built-in that breaks one aborts startup, because a registry missing a core module would fail in a hundred quieter ways later.
 
+
+Disable =leads= too when disabling =crm=. Campaign attribution is optional
+and uses outreach when available. See [[file:leads.org][leads]].
 * Automatic journals
 
 | Module | Requires | Owns |

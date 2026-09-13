@@ -1085,6 +1085,10 @@ test_auth_pages_refuse_anonymous_requests(
 		g_assert_cmpuint(status, ==, SOUP_STATUS_FOUND);
 	}
 
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/deals"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/deals/1/move", NULL, "stage_id=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/deals/1/move", NULL, "stage_id=1", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+
 	/* And a report, which renders real figures. */
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/reports/pnl"),
 	                 ==, SOUP_STATUS_FOUND);
@@ -1111,6 +1115,8 @@ test_auth_pages_refuse_anonymous_requests(
 	/* The workdesk: an inbox is one person's business; saved views say
 	 * what somebody watches; the sprints and the runs are the plan and
 	 * the spend. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/worklist"),
+	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/inbox"),
 	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/views"),
@@ -1263,6 +1269,8 @@ test_auth_api_refuses_anonymous_requests(
 		 * history, the plan, the spend, and the palette that lists
 		 * every page and record type this install has. */
 		"/api/v1/inbox",
+		"/api/v1/activities",
+		"/api/v1/activities.ics",
 		"/api/v1/watching/ticket/1",
 		"/api/v1/activity/ticket/1",
 		"/api/v1/tickets/1/sla",
@@ -1295,6 +1303,27 @@ test_auth_api_refuses_anonymous_requests(
 		status = server_fixture_get_anonymous(fixture, endpoints[i]);
 
 		g_assert_cmpuint(status, ==, SOUP_STATUS_UNAUTHORIZED);
+	}
+
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/vendor_bill/1/approve",
+		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/vendor_bill/1/pay",
+		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/bills/1/approve",
+		NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/bills/1/pay",
+		NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	/* Every banking action must authenticate before loading statement evidence. */
+	{
+		static const gchar *const banking[] = {
+			"/api/v1/bank_transactions/1/match",
+			"/api/v1/bank_statements/1/reconcile",
+			"/api/v1/bank_accounts/1/import",
+			"/banking/1/action"
+		};
+		for (i = 0; i < G_N_ELEMENTS(banking); i++)
+			g_assert_cmpuint(server_fixture_request(fixture, "POST", banking[i],
+				NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	}
 
 	/* The chat POSTs, which write records. */
@@ -1348,6 +1377,12 @@ test_auth_api_refuses_anonymous_requests(
 		==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
 		"/invoices/1/print"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+		"/quotes/1/print"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/quotes/1/send", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/quotes/1/accept", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
 		"/e/sale/import"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
@@ -1405,6 +1440,20 @@ test_auth_api_refuses_anonymous_requests(
 		"/runs/1/cancel", NULL, "", NULL, NULL),
 		==, SOUP_STATUS_FOUND);
 
+	/* Billing actions authenticate before reading the subscription or module. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/customer_subscriptions/1/renew", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/billing/renew-sweep", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/billing/subscriptions/1/action", NULL, "billing_action=cancel", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/leads/1/convert", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/leads/1/reassign", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/leads/1/convert", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/leads/1/reassign", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/journal/1/actions/post", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
@@ -1436,6 +1485,12 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/tickets/1/worklog", NULL, "{}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/activities/1/complete", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/activities/1/snooze", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/activities/sweep", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/sla/sweep", NULL, "{}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
@@ -1534,6 +1589,13 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/ui/chat/confirm/abc123/reject", NULL, "", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/sequence/1/enroll", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/sequence_enrollment/1/pause", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/sequence_enrollment/1/resume", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/sequence_enrollment/1/exit", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/sequences/run", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/ui/sequence_enrollment/1/pause", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+
 }
 
 /*

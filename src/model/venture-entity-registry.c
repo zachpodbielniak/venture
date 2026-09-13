@@ -725,10 +725,51 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_organization_membership_get_type
 		, venture_team_get_type
 		, venture_team_membership_get_type
+		, venture_plan_get_type
+		, venture_plan_price_get_type
+		, venture_customer_subscription_get_type
+		, venture_subscription_event_get_type
+		, venture_dunning_step_get_type
+		, venture_billing_notice_get_type
+		, venture_billing_request_get_type
 		, venture_mail_message_get_type
 		, venture_mail_template_get_type
 
+		, venture_price_list_get_type
+		, venture_price_list_item_get_type
+		, venture_quote_get_type
+		, venture_quote_line_get_type
+		, venture_quote_event_get_type
+		, venture_quote_delivery_get_type
+		, venture_quote_action_get_type
+		, venture_lead_get_type
+		, venture_lead_form_get_type
+		, venture_lead_assignment_rule_get_type
+		, venture_activity_get_type
+		, venture_activity_type_get_type
+		, venture_vendor_bill_get_type
+		, venture_vendor_bill_line_get_type
+		, venture_bill_payment_get_type
+		, venture_bill_payment_allocation_get_type
+		, venture_vendor_credit_get_type
+		, venture_vendor_bill_event_get_type
+		, venture_bill_refund_get_type
+		, venture_bank_account_get_type
+		, venture_bank_statement_get_type
+		, venture_bank_transaction_get_type
+		, venture_bank_match_get_type
+		, venture_reconciliation_get_type
+
+		, venture_sequence_get_type
+		, venture_sequence_step_get_type
+		, venture_sequence_enrollment_get_type
+		, venture_sequence_delivery_get_type
+		, venture_suppression_get_type
 		, venture_posting_profile_get_type
+		, venture_pipeline_get_type,
+		venture_pipeline_stage_get_type,
+		venture_deal_stage_entry_get_type,
+		venture_loss_reason_get_type,
 	};
 	gsize i;
 

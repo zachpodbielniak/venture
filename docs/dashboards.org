@@ -195,3 +195,13 @@ The registry is process-wide, like the entity registry, so a kind registered onc
 *A widget outlives a module switch.* The validator accepts a record type that exists but is hidden, so a factory dashboard built while the factory is on survives it being turned off and is whole again when it comes back. Refusing would mean a configuration change deleted somebody's page.
 
 *One home, at the save.* "Only one dashboard is home" is enforced by the dashboard's save validator, which unmarks the others — a write from inside a validator, allowed because the lock is recursive. It is there rather than in the web handler so the API and an import behave the same.
+
+* Planned activity sources
+
+Use =entity_type=activity= with =list= or =count= and
+=filter=status=planned&owner={me}=. The =upcoming= kind takes the same source
+with =field=due_at= and =options={"days":14}=.
+For current UTC day counts, use =kind=metric=, =report_name=worklist= and
+=field=activities_overdue= or =field=activities_today=. A =report= widget
+with =report_name=worklist= shows overdue, due today, due this week and
+done this week per owner. These sources require the activities module.

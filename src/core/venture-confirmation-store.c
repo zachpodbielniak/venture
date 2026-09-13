@@ -43,6 +43,9 @@ struct _VentureConfirmation
 	VentureEntity			*staged;
 	VentureEntity			*original;
 	gint64 proposer_user_id;
+	gboolean activity_completion;
+	gint64 deal_stage_id;
+	gchar *deal_move_note;
 	gchar *record_action;
 	GHashTable *parameters;
 };
@@ -66,6 +69,7 @@ venture_confirmation_finalize(GObject *object)
 	g_clear_pointer(&self->expires_at, g_date_time_unref);
 	g_clear_object(&self->staged);
 	g_clear_object(&self->original);
+	g_free(self->deal_move_note);
 	g_free(self->record_action);
 	g_clear_pointer(&self->parameters, g_hash_table_unref);
 
@@ -389,6 +393,8 @@ venture_confirmation_store_stage(
 
 	g_return_val_if_fail(VENTURE_IS_CONFIRMATION_STORE(self), NULL);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(staged), NULL);
+	if (VENTURE_IS_BILLING_REQUEST(staged) && !venture_billing_prepare_request(venture_billing_service_get(self->database), VENTURE_BILLING_REQUEST(staged), error))
+		return NULL;
 
 	if (!venture_orgaccess_check_proposal(self->database, staged, action, via, error)) return NULL;
 
@@ -709,10 +715,31 @@ venture_confirmation_store_approve_as(
 		if (!ok) g_propagate_error(error, g_steal_pointer(&local_error));
 		return ok;
 	}
+	else if (confirmation->deal_stage_id > 0)
+	{
+		g_autoptr(VentureDeal) moved = venture_deal_service_move_stage(
+			venture_database_get_deal_service(self->database), VENTURE_DEAL(confirmation->original),
+			confirmation->deal_stage_id, confirmation->deal_move_note, &actor, &local_error);
+		ok = NULL != moved;
+	}
+	else if (g_strcmp0(confirmation->via, "lead-convert") == 0)
+	{
+		ok = venture_lead_service_apply_staged(venture_database_get_lead_service(self->database),
+			confirmation->staged, &actor, &local_error);
+	}
 	else if (VENTURE_AUDIT_ACTION_DELETE == confirmation->action)
 	{
 		ok = venture_database_delete(self->database, confirmation->staged,
 		                             &actor, &local_error);
+	}
+	else if (confirmation->activity_completion)
+	{
+		g_autofree gchar *outcome = NULL;
+		g_autoptr(VentureEntity) completed = NULL;
+		g_object_get(confirmation->staged, "outcome", &outcome, NULL);
+		completed = venture_activity_service_complete(venture_database_get_activity_service(self->database),
+			confirmation->staged, outcome, &actor, &local_error);
+		ok = completed != NULL;
 	}
 	else
 	{
@@ -852,6 +879,57 @@ venture_confirmation_parse_stage_flag(
 	            "it.", value);
 
 	return FALSE;
+}
+
+VentureConfirmation *
+venture_confirmation_store_stage_activity_complete(VentureConfirmationStore *self,
+	VentureEntity *activity, const gchar *outcome, const VentureActor *origin, const gchar *via, GError **error)
+{
+	g_autoptr(VentureEntity) staged = NULL;
+	VentureConfirmation *confirmation;
+	gint status;
+	g_return_val_if_fail(VENTURE_IS_ACTIVITY(activity), NULL);
+	g_object_get(activity, "status", &status, NULL);
+	if (status != VENTURE_ACTIVITY_STATUS_PLANNED)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+			"VentureActivityService: Only planned activities may be completed");
+		return NULL;
+	}
+	staged = g_object_new(VENTURE_TYPE_ACTIVITY, NULL);
+	venture_entity_copy_properties_from(staged, activity, FALSE);
+	g_object_set(staged, "status", VENTURE_ACTIVITY_STATUS_DONE, "outcome", outcome, NULL);
+	confirmation = venture_confirmation_store_stage(self, VENTURE_AUDIT_ACTION_UPDATE,
+		staged, activity, origin, via, error);
+	if (confirmation != NULL)
+		confirmation->activity_completion = TRUE;
+	return confirmation;
+}
+
+VentureConfirmation *
+venture_confirmation_store_stage_deal_move(VentureConfirmationStore *self,
+	VentureDeal *deal, gint64 stage_id, const gchar *note,
+	const VentureActor *actor, const gchar *via, GError **error)
+{
+	g_autoptr(VentureDeal) staged = venture_deal_new();
+	VentureConfirmation *confirmation;
+	if (stage_id <= 0 || !venture_entity_is_persisted(VENTURE_ENTITY(deal)))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"VentureDealService: a persisted deal and destination stage are required");
+		return NULL;
+	}
+	venture_entity_copy_properties_from(VENTURE_ENTITY(staged), VENTURE_ENTITY(deal), FALSE);
+	g_object_set(staged, "stage-id", stage_id, NULL);
+	confirmation = venture_confirmation_store_stage(self, VENTURE_AUDIT_ACTION_UPDATE,
+		VENTURE_ENTITY(staged), VENTURE_ENTITY(deal), actor, via, error);
+	if (NULL != confirmation)
+	{
+		confirmation->deal_stage_id = stage_id;
+		g_free(confirmation->deal_move_note);
+		confirmation->deal_move_note = g_strdup(note);
+	}
+	return confirmation;
 }
 
 VentureConfirmation *

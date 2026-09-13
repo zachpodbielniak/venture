@@ -2548,6 +2548,9 @@ venture_ai_make_tool(
 	return tool;
 }
 
+#include "leads/venture-lead-ai.inc"
+#include "activities/venture-activity-ai.inc"
+#include "pipelines/venture-pipeline-ai.inc"
 #include "venture-ai-actions-private.h"
 
 static void
@@ -2614,6 +2617,7 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"For the categories report, the product field to group by; "
 		"defaults to genre", FALSE);
 	ai_tool_add_parameter(report, "customer_id", "integer", "Customer for a statement", FALSE);
+	ai_tool_add_parameter(report, "vendor_id", "integer", "Supplier for a vendor statement", FALSE);
 	ai_tool_add_parameter(report, "currency", "string", "Book currency to report", FALSE);
 	ai_tool_add_parameter(report, "as_of", "string",
 		"Historical cutoff as an ISO date or timestamp; include rows deleted after it", FALSE);
@@ -2778,6 +2782,7 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(desk, "limit", "integer",
 		"activity: at most this many entries", FALSE);
 
+	venture_ai_register_deal_move(self);
 	ai_tool_executor_register_callback(self->executor, inbox,
 		venture_ai_tool_inbox, self, NULL);
 	ai_tool_executor_register_callback(self->executor, runs,
@@ -2818,6 +2823,16 @@ venture_ai_service_register_tools(VentureAiService *self)
 	 */
 	if (VENTURE_AI_POLICY_READ_ONLY == self->policy)
 		return;
+
+	if (venture_context_module_enabled(self->context, "activities"))
+	{
+		g_autoptr(AiTool) activity = venture_ai_make_tool(self, "venture_activity_complete",
+			"Complete planned work with an outcome. Staged for approval unless autonomous; records history and advances recurrence atomically.");
+		ai_tool_add_parameter(activity, "id", "integer", "Activity id", TRUE);
+		ai_tool_add_parameter(activity, "outcome", "string", "What happened", FALSE);
+		ai_tool_executor_register_callback(self->executor, activity, venture_ai_tool_activity, self, NULL);
+	}
+
 
 	{
 		g_autoptr(AiTool) create = NULL;
@@ -3134,6 +3149,7 @@ venture_ai_service_new(
 	 */
 	self->plain = ai_tool_executor_new_empty();
 	venture_ai_service_register_tools(self);
+	venture_ai_register_lead_tool(self);
 	venture_ai_register_actions(self);
 	self->system_prompt = venture_ai_service_build_prompt(self);
 

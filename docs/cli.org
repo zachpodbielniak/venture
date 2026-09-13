@@ -209,6 +209,36 @@ editor receives a pending confirmation; finance and organization admin/owner
 can post directly. =venturectl --stage journal post ID= always proposes.
 A pending confirmation is not a posted journal. Generic =update journal=
 cannot advance state. See [[file:orgaccess.org][Organization access]].
+* SaaS billing
+
+=billing= actions change =customer_subscription= through the billing service:
+
+#+begin_src sh
+venturectl billing start organization_id=1 company_id=1 plan_price_id=1 seats=2
+venturectl billing change 1 plan_price=2 at_period_end=true
+venturectl billing change-seats 1 seats=3
+venturectl billing cancel 1 at_period_end=true
+venturectl billing pause 1
+venturectl billing resume 1
+venturectl billing mark-payment-failed 1
+venturectl billing recover 1
+venturectl billing renew --as-of 2026-04-01 --dry-run
+venturectl billing renew --as-of 2026-04-01
+venturectl billing dunning --as-of 2026-04-05
+venturectl --stage billing cancel 1
+venturectl report mrr 2026-03 organization_id=1 currency=USD
+venturectl report churn 2026-03 organization_id=1 currency=USD
+venturectl report subscriptions_due 2026-03 days=14 organization_id=1
+#+end_src
+
+=renew= without an ID sweeps all due subscriptions in the selected
+organization; =renew ID= renews one. =--as-of= sets the effective action
+or sweep date. =--dry-run= previews sweeps without writing anything.
+The generated =plan= and =plan_price= records configure the catalogue.
+Direct subscription state writes are refused. The assistant can stage
+=billing_request= through its generated create tool; all CLI billing
+actions also honor =--stage=. See [[file:billing.org][SaaS billing]] for prices,
+trial activation, proration, historical report definitions and limitations.
 * Transactional mail
 
 =venturectl mail send to=... subject=... body=...= enqueues; =--html FILE=
@@ -219,6 +249,77 @@ that row and Message-ID. All accept =organization_id=N= where relevant.
 See [[file:mail.org][mail]] for uncertainty and scheduling. Actions reject
 =--stage=; =--stage create mail_message= proposes an enqueue instead.
 
+* Quote actions
+
+=venturectl quote send ID= freezes and queues a proposal.
+=venturectl quote accept ID 'by=Full Name'= accepts it and issues its invoice.
+=venturectl quote decline ID 'reason=Explanation'= records a refusal;
+=venturectl quote revise ID= clones the proposal and supersedes its source.
+For approval, use =--stage create quote_action quote_id=ID action=accept
+expected_version=N accepted_by=NAME=. See [[file:quotes.org][quotes]].
+* Leads
+
+=venturectl lead convert ID [deal=yes|no] [company_id=ID] [contact_id=ID]=
+converts a qualified inquiry atomically. =--stage= queues conversion for
+approval. =venturectl lead reassign ID [owner=NAME]= assigns explicitly or
+runs matching rules again. Generic =create/update lead= supports capture and
+qualification; converted state and references belong to the service.
+Recycle with =status=recycled unqualified_reason=... recycle_until=YYYY-MM-DD=.
+See [[file:leads.org][leads]] for capture forms, duplicate policies and reports.
+* Planned activities
+
+=venturectl activity complete ID outcome=...= completes planned work through
+the activity service, records history and advances recurrence atomically.
+=venturectl activity list mine|overdue|today= reads the signed-in user's worklist.
+The existing =activity TYPE ID= still reads a record's timeline.
+Create and edit planned work with generic =create activity= and =update activity=;
+setting =status=done= through generic writes is refused. See [[file:activities.org][activities]].
+* Vendor bills
+
+=venturectl bill approve ID [date=DATE]= approves a draft supplier bill.
+=bill pay ID [amount=MONEY] [date=DATE] [method=METHOD]= pays the outstanding
+amount or the supplied partial amount; excess cash remains vendor credit.
+=bill void ID [date=DATE]= reverses an unpaid approved bill. These call the
+same =VenturePayablesService= as the web and REST actions. Generic writes
+setting a bill's financial status are refused.
+
+=report payables PERIOD= reconstructs historical aging;
+=report vendor_statement PERIOD vendor_id=ID= reads the supplier's dated
+statement. Both accept =organization_id=, =currency= and =as_of=.
+See [[file:payables.org][vendor payables]] for credits and cash-report projections.
+* Banking actions
+
+=venturectl bank ACTION ID [JSON|@FILE]= calls the banking service over REST.
+=import= takes a bank account ID; =auto= and =reconcile= take a statement ID;
+=match=, =unmatch=, =exclude= and =create= take a transaction ID.
+=venturectl bank match AUTO STATEMENT_ID= is the bulk exact-match action.
+See [[file:banking.org][Banking]] for import mappings and action parameters.
+* Sales pipeline actions
+
+=venturectl deal move ID STAGE [NOTE]= moves a deal through
+=VentureDealService=. STAGE is a =pipeline_stage= id in the deal's pipeline.
+Fill its required fields and loss reason first with ordinary =update deal=.
+Generic updates cannot change =stage=, =stage_id= or =closed_at=.
+See [[file:pipelines.org][Sales pipelines]] for configuration and forecasting.
+* Follow-up sequences
+
+=sequence enroll ID contact_id=ID [field=value ...]= enrolls through the
+sequence service. The ID names the sequence; other fields describe the
+=enrollment=, including =deal_id=, =lead_id=, =owner_id= and
+=enrollment_reason=. =--stage sequence enroll= proposes enrollment for
+approval. The ordinary =create sequence_enrollment= path has the same
+validation and supports the assistant's standard staged create tool.
+
+=sequence run [--as-of ISO_TIMESTAMP] [organization_id=ID]= executes up to
+1000 due enrollments in one organization, defaulting to the server's default
+organization. A timestamp must carry its timezone. Omit it for now.
+=sequence status ENROLLMENT_ID= reads the enrollment and its delivery history.
+The command returns pending delivery rows; it does not send mail.
+
+Configure sequences and their steps with ordinary =create= / =update=
+commands after =describe sequence= and =describe sequence_step=. Sending
+hours and weekdays are interpreted in the sequence timezone. See
+[[file:sequences.org][follow-up sequences]] for checkpoints and the adapter contract.
 * Record actions
 
 =venturectl act TYPE ID ACTION [key=value ...]= discovers the action and
