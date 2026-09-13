@@ -1,0 +1,145 @@
+#+title: Automatic journals
+#+description: Configurable sale, refund and expense posting
+#+authors: Zach Podbielniak
+#+created: [2026-09-13]
+
+* Profiles
+
+The =autojournal= module requires =ledger=. Every organization gets one
+=posting_profile= on first use. The profile is an ordinary field-table
+record, so forms, REST, JSON, audit, AI and generic CLI editing all use the
+same declaration. =profile_key= is derived as =default=; its organization
+uniqueness includes soft-deleted profiles. Restore a deleted profile rather
+than replacing the organization's policy silently.
+
+The service uses existing organization-scoped chart codes and creates missing accounts inside the source transaction. Existing bare codes are retained; organization-prefixed codes (=<organization-id>:<code>=) are reused or created when the bare code is absent, matching the base posting service. Changing a profile affects subsequent posts. It does not rewrite posted history. Accounts must be active and belong to the source organization; the posting service enforces both.
+
+| Leg | Profile field | Default code | Side |
+|-----+---------------+--------------+------|
+| Sales income | sales_account_id | 4000 | Credit |
+| Platform fees | fees_account_id | 6000 | Debit |
+| Sales tax collected | tax_account_id | 2100 | Credit |
+| Shipping collected | shipping_income_account_id | 4100 | Credit |
+| Shipping cost | shipping_expense_account_id | 6100 | Debit |
+| Discounts | discounts_account_id | 4200 | Debit (contra income) |
+| Refunds | refunds_account_id | 4300 | Debit (contra income) |
+| Cost of goods sold | cogs_account_id | 5000 | Debit |
+| Inventory consumed | inventory_account_id | 1200 | Credit |
+| Net receipts | cash_account_id | 1000 | Debit |
+| Unpaid expenses | payable_account_id | 2000 | Credit |
+| Uncategorized expense | default_expense_account_id | 6900 | Debit |
+
+Codes 4200, 4300 and 6900 supplement the standard chart. The expense category
+JSON object maps exact category strings to account IDs. Defaults cover
+ADVERTISING (6200), SOFTWARE (6300), SUPPLIES (6400), PROFESSIONAL (6500),
+HOME_OFFICE (6600), TRAVEL (6700), FEES (6000) and SHIPPING (6100).
+Tax-category code wins over the expense's category string, then the default
+expense account applies. Payment methods =credit=, =credit_card=,
+=accounts_payable= and =unpaid= credit accounts payable; other methods credit
+the configured cash/clearing account. Deductibility does not reduce the cost
+posted to the books.
+
+* A complete sale
+
+Gross is the item total before discounts, excluding sales tax and shipping.
+For gross $100, discount $5, fees $3, tax collected $8, shipping collected
+$10, shipping cost $6 and tax remitted $2, the sale journal is:
+
+| Debit account | Amount | Credit account | Amount |
+|---------------+--------+----------------+--------|
+| Cash | $104 | Sales | $100 |
+| Platform fees | $3 | Tax payable | $8 |
+| Discounts | $5 | Shipping income | $10 |
+| Shipping expense | $6 | | |
+| Tax payable | $2 | Cash | $2 |
+
+Debits and credits are both $120. Net cash is $102. Remitting tax reduces
+the liability and cash, leaving sales income at $100.
+
+If three units of a product costing $12.34 each were sold, add Dr COGS
+$37.02 / Cr Inventory $37.02. This values the sale; it does not create an
+inventory movement. Every calculation uses VentureMoney, with exact rational
+quantity multiplication, overflow checks and refusal of mixed currencies.
+Nonzero legs stay separate even when two profile fields select the same
+account. Negative amounts reverse the side. A wholly zero document has a
+balanced zero pair so its source version still has journal evidence.
+
+* Refunds have their own date
+
+A $15 refund creates another journal: Dr Refunds $15 / Cr Cash $15. Its
+rule name is =sale_refund= and its source is the sale. It is dated
+=refunded_at=, falling back to =occurred_at= and then the sale's creation
+time. The original sale journal does not include the refund.
+
+VentureAutojournalService wraps source saves in a transaction. The one
+connection in the database's pre-save boundary calls it with the original
+actor. The service delegates the source save to the existing posting path,
+then posts the refund through =venture_posting_service_post()= before commit.
+=entity-saved= cannot return a failure, and =posting= alone is insufficient:
+refund-only changes may leave the document lines unchanged and skip that
+signal. This pre-save wrapper covers those edits and propagates failures.
+A bad refund account rolls back the source, its sale journal, the refund and
+the audit writes together. Caller-owned source objects are copied back only
+after success.
+
+The service is a GObject with a construct-only weak database property. The
+database's existing posting-rule registry owns it as the =sale_refund= rule;
+there is no global service or second ownership cache. It installs replacement
+sale/expense rules while preserving explicit plugin overrides. Receivables'
+protected cash-report projections bypass it because settlement already posts.
+
+An unchanged refund amount creates no journal, including metadata-only edits.
+Changing the amount reverses the previous refund and posts the replacement
+at the new refund date. Clearing the amount reverses the previous refund.
+Corrections cannot precede the original refund. A source/version/rule posting
+key prevents repeat refund insertion. Period guards run through the posting
+service for both original and reversing dates. Committed listeners should
+use =posted=; ordinary record/audit signals remain synchronous.
+
+* Finding and posting gaps
+
+=unposted= lists live sales and expenses whose current version has no posted
+source journal, scoped to one organization and optionally
+the report period. Receivables projections are excluded. Metadata-only
+versions can appear even though their earlier financial journal remains
+valid. Incomplete documents without an amount are listed and skipped by
+backfill.
+
+#+begin_src sh
+venturectl report unposted all organization_id=1
+venturectl post backfill organization_id=1 --dry-run
+venturectl post backfill organization_id=1
+#+end_src
+
+Backfill runs the same service through =POST /api/v1/post/backfill=, requires
+an editor, and reports =candidates=, =posted= and =skipped=. Organization
+omission selects the context's default organization. It orders by source
+date, then type and ID. Existing active document journals are reversed before
+posting a missing current version, so a metadata-only version never doubles
+the balance. The batch is atomic and honours the period guard. A dry run
+executes validation and posting inside a transaction and rolls it back;
+no journal, profile, account or audit row survives it. Call dry-run backfill
+as a standalone operation: a nested rollback also rolls back its caller's
+transaction. The REST action always supplies that standalone boundary.
+
+Backfill is an explicit accounting cutover operation. Review legacy standalone
+ledger evidence before applying it: that evidence is not used as proof that a
+current source version was posted. The authoritative books are journals;
+existing operational P&L/net-proceeds reports retain their older source-record
+formula and are not changed by this module.
+
+* Upgrade and verification
+
+Migration 000060 checks the additive sale/profile columns on both backends,
+including absent optional-module tables and unreconciled historical sales
+tables while sales is disabled. Existing refund dates remain NULL;
+startup invents neither dates nor historical journals. Profiles seed lazily.
+Turning autojournal off hides its type, report and action and restores the
+legacy document rules. Posted evidence remains readable through ledger.
+
+=test-autojournal= covers exact sale lines, COGS, dated refunds and corrections,
+bad-account rollback, tax remittance, category routing, profile isolation and
+uniqueness, missing versions, dry-run backfill, period refusal, schema upgrade
+and restart, and module-off behavior. The auth suite refuses anonymous
+backfill requests. The ledger suite continues to verify authoritative trial
+balance arithmetic and settlement tests guard against duplicate posting.
