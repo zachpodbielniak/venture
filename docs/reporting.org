@@ -128,3 +128,14 @@ A plugin needing state can subclass =VentureReport= instead and override
 every consumer. Registering a name that already exists replaces it, so a
 plugin can deliberately override a built-in with a better version for its
 data.
+
+* Ledger financial statements
+
+The =statements= module adds =balance_sheet=, =income_statement=, =cash_flow=,
+=general_ledger=, =account_balances= and =pnl_reconciliation=. These read posted
+ledger evidence per exact legal entity and currency; they never choose a
+majority currency. All accept =as_of= and =compare_to=, and general ledger also
+accepts =account_id=. They use the normal report pages, CSV export and
+financial close snapshots. See [[file:statements.org][definitions and the indirect cash-flow method]].
+The older =pnl= remains operational sales/expenses reporting; differences are
+explained by source document in =pnl_reconciliation=.

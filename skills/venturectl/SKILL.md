@@ -66,7 +66,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `forge set-token ID` | set a forge's access token, read from stdin |
 | `forge set-secret ID` | set or generate its webhook secret |
 | `forge verify ID` | record which account the token belongs to |
-| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE]` | list reports, or run one with an optional historical cutoff and legal entity |
+| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID]` | list reports, or run one with an optional historical cutoff and legal entity |
 | `links TYPE ID` | every link touching a record, read from it |
 | `link TYPE ID TYPE ID [kind=K] [note=T]` | link two records; kinds: related, blocks, blocked_by, depends_on, required_by, parent_of, child_of, duplicates, causes, caused_by, produces, produced_by, references, referenced_by, supersedes, superseded_by; unlink with `delete record_link ID` |
 | `modules` | which modules the server runs; `-f json` for types, reports and reasons |
@@ -418,3 +418,14 @@ venturectl federation '{"action":"resolve","id":1,"version":5,"field":"descripti
 ```
 
 Collection pulls return at most ten results, `next_offset` and `more`; continue pages while `more` is true and inspect per-record errors. Pull imports/merges without pushing; sync pushes conflict-free changes with an expected remote version. Edits require the local replica version. A conflict blocks that record until resolved; choosing remote can accept a removed/revoked field. Never update `federation_replica` through generic CRUD: its merge state belongs to the service. Copies remain usable during outages but are not authoritative local accounting rows. New source objects and binary attachments are not created/copied offline. See `docs/federation.org` for key exchange, grants, scheduling and revocation.
+
+## Ledger statements
+
+`report balance_sheet`, `income_statement`, `cash_flow`, `general_ledger`,
+`account_balances` and `pnl_reconciliation` read posted evidence per exact
+organization and currency. Pass `compare_to=2026-07` after the selected period
+for prior/delta columns; general ledger also accepts `account_id=ID`.
+For example: `venturectl -f csv report balance_sheet 2026-08 organization_id=1 currency=USD compare_to=2026-07`.
+Synthetic totals have no single account ID; actual account/journal IDs link
+to their record pages. Cash-flow controls use the conventional chart codes
+documented in `docs/statements.org`.
