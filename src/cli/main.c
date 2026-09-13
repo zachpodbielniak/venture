@@ -43,8 +43,8 @@ typedef struct
 	/* `mcp` only: let its write tools apply rather than hold. */
 	gboolean		 apply_writes;
 
-	/* Propose a write instead of making it. Only create, update and
-	 * delete honour it, and passing it to anything else is refused. */
+	/* Propose a write instead of making it. Create, update, delete and
+	 * act honour it, and passing it to anything else is refused. */
 	gboolean		 stage;
 } VentureCli;
 
@@ -1128,10 +1128,11 @@ venture_cli_command_report(
 			if ((NULL == parts[1]) ||
 				((0 != g_strcmp0(parts[0], "as_of")) && (0 != g_strcmp0(parts[0], "organization_id")) &&
 				 (0 != g_strcmp0(parts[0], "customer_id")) && (0 != g_strcmp0(parts[0], "currency")) &&
-				 (0 != g_strcmp0(parts[0], "venture_id")) && (0 != g_strcmp0(parts[0], "group_by"))))
+				 (0 != g_strcmp0(parts[0], "venture_id")) && (0 != g_strcmp0(parts[0], "group_by")) &&
+				 (0 != g_strcmp0(parts[0], "compare_to")) && (0 != g_strcmp0(parts[0], "account_id"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -2090,6 +2091,8 @@ venture_cli_command_factory(
  * venturectl release changelog ID [--replace]
  * venturectl release publish ID [--prerelease]
  */
+#include "mail/venture-mail-cli.inc"
+
 static gint
 venture_cli_command_release(
 	VentureCli	 *cli,
@@ -3126,6 +3129,81 @@ venture_cli_command_mcp(
 
 /* --- Entry point --------------------------------------------------------- */
 
+static gint
+venture_cli_command_act(VentureCli *cli, gchar **args, GError **error)
+{
+	g_autofree gchar *type = NULL;
+	g_autofree gchar *id = NULL;
+	g_autofree gchar *action_name = NULL;
+	g_autofree gchar *path = NULL;
+	g_autoptr(JsonNode) schema = NULL;
+	g_autoptr(JsonNode) body = json_node_new(JSON_NODE_OBJECT);
+	g_autoptr(JsonNode) response = NULL;
+	JsonObject *values = json_object_new();
+	JsonObject *action = NULL;
+	JsonObject *properties;
+	JsonArray *actions;
+	guint i;
+	json_node_take_object(body, values);
+	if (g_strv_length(args) < 4)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "Usage: venturectl act TYPE ID ACTION [key=value ...]");
+		return -1;
+	}
+	type = g_uri_escape_string(args[1], NULL, FALSE);
+	id = g_uri_escape_string(args[2], NULL, FALSE);
+	action_name = g_uri_escape_string(args[3], NULL, FALSE);
+	path = g_strdup_printf("/api/v1/schema/%s", type);
+	schema = venture_cli_request(cli, "GET", path, NULL, error);
+	if (!schema) return -1;
+	actions = json_object_has_member(json_node_get_object(schema), "actions") ?
+		json_object_get_array_member(json_node_get_object(schema), "actions") : NULL;
+	for (i = 0; actions && i < json_array_get_length(actions); i++)
+	{
+		JsonObject *candidate = json_array_get_object_element(actions, i);
+		if (0 == g_strcmp0(args[3], venture_json_object_get_string(candidate, "name", NULL))) { action = candidate; break; }
+	}
+	if (!action)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "The schema does not offer that action");
+		return -1;
+	}
+	if (cli->stage && !json_object_get_boolean_member(action, "stageable"))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED, "This action cannot be staged");
+		return -1;
+	}
+	properties = json_object_get_object_member(json_object_get_object_member(action, "input_schema"), "properties");
+	for (i = 4; args[i]; i++)
+	{
+		g_auto(GStrv) pair = g_strsplit(args[i], "=", 2);
+		JsonObject *property;
+		const gchar *kind;
+		if (!pair[1] || !json_object_has_member(properties, pair[0]))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "Unknown action parameter: %s", pair[0]);
+			return -1;
+		}
+		property = json_object_get_object_member(properties, pair[0]);
+		kind = venture_json_object_get_string(property, "type", "string");
+		if (0 == g_strcmp0(kind, "string")) json_object_set_string_member(values, pair[0], pair[1]);
+		else
+		{
+			JsonNode *value = venture_json_parse(pair[1], error);
+			if (!value) return -1;
+			json_object_set_member(values, pair[0], value);
+		}
+	}
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/%s/%s/actions/%s%s", type, id, action_name, cli->stage ? "?stage=1" : "");
+	response = venture_cli_request(cli, "POST", path, body, error);
+	if (!response) return -1;
+	if (!venture_cli_report_staged(cli, response)) venture_cli_print_records(cli, response);
+	return 0;
+}
+
+#include "autojournal/venture-autojournal-cli.inc"
+
 int
 main(
 	int	  argc,
@@ -3139,11 +3217,14 @@ main(
 	g_autofree gchar *server = NULL;
 	g_autofree gchar *token = NULL;
 	g_autofree gchar *format = NULL;
+	g_autofree gchar *mail_html = NULL;
+	g_autofree gchar *mail_limit = NULL;
 	gboolean show_version = FALSE;
 	gboolean show_license = FALSE;
 	gboolean quiet = FALSE;
 	gboolean apply_writes = FALSE;
 	gboolean stage = FALSE;
+	gboolean dry_run = FALSE;
 	gint result;
 
 	const GOptionEntry entries[] = {
@@ -3158,14 +3239,18 @@ main(
 		{ "apply-writes", 0, 0, G_OPTION_ARG_NONE, &apply_writes,
 		  "mcp only: let write tools apply instead of staging", NULL },
 		{ "stage", 0, 0, G_OPTION_ARG_NONE, &stage,
-		  "create/update/delete only: propose the change for approval "
+		  "create/update/delete/act: propose the change for approval "
 		  "instead of making it", NULL },
 		{ "version", 'V', 0, G_OPTION_ARG_NONE, &show_version,
 		  "Print the version and exit", NULL },
 		{ "license", 0, 0, G_OPTION_ARG_NONE, &show_license,
 		  "Print licensing information and exit", NULL },
+		{ "html", 0, 0, G_OPTION_ARG_FILENAME, &mail_html, "mail send: HTML body file", "FILE" },
+		{ "limit", 0, 0, G_OPTION_ARG_STRING, &mail_limit, "mail deliver: maximum attempts", "N" },
 		{ G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_STRING_ARRAY, &args,
 		  NULL, NULL },
+		{ "dry-run", 0, 0, G_OPTION_ARG_NONE, &dry_run,
+		  "post backfill only: validate without retaining writes", NULL },
 		{ NULL }
 	};
 
@@ -3203,10 +3288,12 @@ main(
 		"  modules                      list the server's modules and which\n"
 		"                               are on; -f json for the detail\n"
 		"  federation JSON              identity, remote, pull, edit and sync\n"
+		"  post backfill                post missing journals; --dry-run\n"
 		"  factory                      the software factory at a glance\n"
 		"  release changelog ID         draft a release's changelog from\n"
 		"                               its tickets; --replace overwrites\n"
 		"  journal post ID              post a draft, or propose for approval\n"
+		"  mail list|send|test|deliver|retry  transactional mail\n"
 		"  release publish ID           cut it on the forge; --prerelease\n"
 		"  dashboards                   list the dashboards\n"
 		"  dashboard SLUG               a dashboard, every widget evaluated\n"
@@ -3238,6 +3325,7 @@ main(
 		"  webhooks                     outbound webhooks and their health\n"
 		"  webhook test ID              send a ping and wait for the answer\n"
 		"  webhook secret ID            generate a new signing secret\n"
+		"  act TYPE ID ACTION [key=value ...]  perform a discovered action; --stage\n"
 		"  health                       check the server is up\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
@@ -3303,6 +3391,12 @@ main(
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 
+	if (dry_run && (g_strcmp0(args[0], "post") != 0 || g_strcmp0(args[1], "backfill") != 0))
+	{
+		g_printerr("venturectl: --dry-run requires post backfill\n");
+		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
+	}
+
 	cli.base_url = (NULL != server)
 		? g_strdup(server)
 		: g_strdup((NULL != g_getenv("VENTURE_SERVER"))
@@ -3337,7 +3431,7 @@ main(
 	}
 
 	/*
-	 * Same rule, same reason. Only the three generic write verbs go
+	 * Same rule, same reason. The generic write and action verbs go
 	 * through a route that reads `stage`; on anything else the parameter
 	 * would be an unknown one, which a write route *ignores* -- so a
 	 * quietly accepted --stage would apply the change it was asked to
@@ -3346,10 +3440,11 @@ main(
 	if (stage && (0 != g_strcmp0(args[0], "create")) &&
 	    (0 != g_strcmp0(args[0], "update")) &&
 	    (0 != g_strcmp0(args[0], "delete")) &&
+	    (0 != g_strcmp0(args[0], "act")) &&
 	    (0 != g_strcmp0(args[0], "journal")))
 	{
 		g_printerr("venturectl: --stage only means something to create, "
-		           "update, delete and journal post. \"%s\" would ignore it.\n", args[0]);
+		           "update, delete, act and journal post. \"%s\" would ignore it.\n", args[0]);
 		g_free(cli.base_url);
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
@@ -3409,6 +3504,8 @@ main(
 		result = venture_cli_command_factory(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "journal"))
 		result = venture_cli_command_journal(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "mail"))
+		result = venture_cli_command_mail(&cli, args, mail_html, mail_limit, &error);
 	else if (0 == g_strcmp0(args[0], "release"))
 		result = venture_cli_command_release(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dashboards"))
@@ -3439,8 +3536,12 @@ main(
 	else if ((0 == g_strcmp0(args[0], "webhooks")) ||
 	         (0 == g_strcmp0(args[0], "webhook")))
 		result = venture_cli_command_webhooks(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "post"))
+		result = venture_cli_command_post(&cli, args, dry_run, &error);
 	else if (0 == g_strcmp0(args[0], "mcp"))
 		result = venture_cli_command_mcp(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "act"))
+		result = venture_cli_command_act(&cli, args, &error);
 	else
 	{
 		g_printerr("venturectl: \"%s\" is not a command. Try --help.\n",

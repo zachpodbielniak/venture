@@ -24,6 +24,8 @@ struct _VentureContext
 	VentureWorkService	*work;
 	VentureKbService	*kb;
 	VentureModuleRegistry	*modules;
+	VentureMailerRegistry *mailers;
+	VentureMailOutbox *mail_outbox;
 
 	GTimeZone		*timezone;
 	gint64			 default_organization_id;
@@ -44,6 +46,8 @@ venture_context_finalize(GObject *object)
 
 	self = VENTURE_CONTEXT(object);
 
+	g_clear_object(&self->mail_outbox);
+	g_clear_object(&self->mailers);
 	g_clear_object(&self->config);
 	g_clear_object(&self->database);
 	g_clear_object(&self->reports);
@@ -91,6 +95,15 @@ venture_context_new(
 	self->reports = venture_report_registry_new();
 	self->venture_types = venture_venture_type_registry_new();
 	self->timezone = venture_config_get_timezone(config);
+	self->mailers = venture_mailer_registry_new();
+	self->mail_outbox = venture_mail_outbox_new(database, NULL);
+	{
+		g_autofree gchar *state = NULL, *root = NULL;
+		g_object_get(config, "state-dir", &state, NULL);
+		if (!state || !*state) { g_free(state); state = g_build_filename(g_get_user_data_dir(), "venture", NULL); }
+		root = g_build_filename(state, "attachments", NULL);
+		g_object_set(self->mail_outbox, "attachment-root", root, NULL);
+	}
 
 	/* The cross-row checks a polymorphic link needs, on every writer. */
 	venture_record_link_install_validator(database);
@@ -245,6 +258,7 @@ venture_context_apply_modules(VentureContext *self)
 				self->reports, reports[j],
 				venture_module_is_enabled(module));
 	}
+	if (venture_context_module_enabled(self, "autojournal")) venture_database_get_autojournal_service(self->database);
 }
 
 VentureConfirmationStore *
@@ -478,4 +492,30 @@ venture_context_get_plugin_manager(VentureContext *self)
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), NULL);
 
 	return self->plugins;
+}
+
+VentureMailer *venture_context_get_mailer(VentureContext *self)
+{
+	if (!venture_context_module_enabled(self, "mail")) return NULL;
+	if (!venture_mailer_registry_lookup(self->mailers, "smtp")) {
+		g_autoptr(VentureSmtpMailer) smtp = venture_smtp_mailer_new(self->config);
+		venture_mailer_registry_add(self->mailers, "smtp", VENTURE_MAILER(smtp));
+	}
+	return venture_mailer_registry_lookup(self->mailers, "smtp");
+}
+VentureMailOutbox *venture_context_get_mail_outbox(VentureContext *self)
+{
+	VentureMailer *mailer = venture_context_get_mailer(self);
+	if (!mailer) return NULL;
+	g_object_set(self->mail_outbox, "mailer", mailer, NULL);
+	return self->mail_outbox;
+}
+
+void venture_context_set_mailer(VentureContext *self, VentureMailer *mailer)
+{
+	venture_mailer_registry_add(self->mailers, "smtp", mailer);
+}
+VentureMailerRegistry *venture_context_get_mailer_registry(VentureContext *self)
+{
+	return self->mailers;
 }
