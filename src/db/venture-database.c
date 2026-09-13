@@ -1390,6 +1390,8 @@ venture_database_delete(
 		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
+	if (!venture_assets_check_removal(entity, error))
+		return FALSE;
 
 	if (!venture_entity_is_persisted(entity))
 	{
@@ -1448,6 +1450,8 @@ venture_database_restore(
 		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
+	if (!venture_assets_check_removal(entity, error))
+		return FALSE;
 
 	if (!venture_entity_is_deleted(entity))
 		return TRUE;
@@ -1488,6 +1492,8 @@ venture_database_purge(
 	if (!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
+		return FALSE;
+	if (!venture_assets_check_removal(entity, error))
 		return FALSE;
 
 	if (!venture_entity_is_persisted(entity))

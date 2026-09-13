@@ -85,6 +85,9 @@ venture_deferral_status_get_type(void)
 	return type_id;
 }
 static const VentureFieldDecl fixed_asset_fields[] = {
+	VENTURE_FIELD_REF("proceeds-account-id", "Disposal cash account", NULL, "account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("gain-loss-account-id", "Disposal gain/loss account", "Defaults to depreciation expense for write-offs", "account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("schedule-note", "Schedule note", "Service explains a move to an open period", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("operation", "Operation", "Stage place, dispose or write-off through VentureAssetService", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_TRANSIENT),
 	VENTURE_FIELD_NAME("name", "Name", NULL),
 	VENTURE_FIELD("tag", "Tag", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
