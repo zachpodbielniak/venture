@@ -2140,6 +2140,8 @@ venture_cli_command_release(
 	return 0;
 }
 
+#include "leads/venture-lead-cli.inc"
+
 /* --- The workdesk ---------------------------------------------------------- */
 
 /*
@@ -3178,6 +3180,8 @@ main(
 		"                               are on; -f json for the detail\n"
 		"  federation JSON              identity, remote, pull, edit and sync\n"
 		"  factory                      the software factory at a glance\n"
+		"  lead convert ID              qualify first; deal=yes|no, company_id=ID\n"
+		"  lead reassign ID             owner=NAME or run assignment rules\n"
 		"  release changelog ID         draft a release's changelog from\n"
 		"                               its tickets; --replace overwrites\n"
 		"  release publish ID           cut it on the forge; --prerelease\n"
@@ -3379,6 +3383,8 @@ main(
 		result = venture_cli_command_federation(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "factory"))
 		result = venture_cli_command_factory(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "lead"))
+		result = venture_cli_command_lead(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "release"))
 		result = venture_cli_command_release(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dashboards"))

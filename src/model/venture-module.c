@@ -537,6 +537,7 @@ static GType (*const venture_module_leads_types[]) (void) = {
 	venture_lead_get_type, venture_lead_form_get_type,
 	venture_lead_assignment_rule_get_type, NULL
 };
+static const gchar *const venture_module_reports_leads[] = { "lead_sources", "lead_response_time", "leads_recycled_due", NULL };
 static const gchar *const venture_module_requires_leads[] = { "crm", NULL };
 
 static const VentureModuleInfo venture_module_builtins[] = {
@@ -684,7 +685,7 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"leads", "Leads", "Capture, qualify, assign and convert inquiries.",
 		venture_module_requires_leads, NULL, venture_module_leads_types,
-		NULL, NULL, FALSE
+		venture_module_reports_leads, NULL, FALSE
 	}
 };
 

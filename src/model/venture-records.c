@@ -576,7 +576,8 @@ static const VentureFieldDecl venture_company_fields[] = {
 	VENTURE_FIELD_TEXT("address", "Address", NULL),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
-	              VENTURE_COLUMN_FLAG_INDEXED)
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCompany, venture_company, venture_company_fields,
@@ -610,7 +611,8 @@ static const VentureFieldDecl venture_contact_fields[] = {
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("subscribed", "Subscribed", NULL,
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureContact, venture_contact, venture_contact_fields,
@@ -618,7 +620,7 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureContact, venture_contact, venture_contact
 
 static const VentureFieldDecl venture_interaction_fields[] = {
 	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact",
-	                  VENTURE_COLUMN_FLAG_NOT_NULL),
+	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("company-id", "Company", NULL, "company",
 	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_ENUM("kind", "Kind", NULL,
@@ -635,7 +637,8 @@ static const VentureFieldDecl venture_interaction_fields[] = {
 	VENTURE_FIELD_REF("campaign-id", "Campaign", NULL, "campaign",
 	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("outbound", "Outbound", "You initiated it",
-	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("lead-id", "Lead", "Inquiry before conversion", "lead", VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureInteraction, venture_interaction, venture_interaction_fields,
@@ -663,7 +666,8 @@ static const VentureFieldDecl venture_deal_fields[] = {
 	              VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("source", "Source", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureDeal, venture_deal, venture_deal_fields,

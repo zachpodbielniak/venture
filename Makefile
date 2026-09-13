@@ -85,6 +85,8 @@ SERVER_ONLY_SRCS := \
 
 SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard src/periods/*.c))
 
+SERVER_ONLY_SRCS += src/leads/venture-lead-service.c src/leads/venture-lead-reports.c
+
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
 CLI_SRCS := $(wildcard src/cli/*.c)
@@ -131,6 +133,7 @@ TEST_BINS := $(patsubst tests/%.c,$(OUTDIR)/tests/%,$(TEST_SRCS))
 
 # The settlement test drives the real CLI and its MCP tool against HTTP.
 $(OUTDIR)/tests/test-receivables: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-leads: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery

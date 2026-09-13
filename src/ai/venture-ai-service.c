@@ -2487,6 +2487,8 @@ venture_ai_make_tool(
 	return tool;
 }
 
+#include "leads/venture-lead-ai.inc"
+
 static void
 venture_ai_service_register_tools(VentureAiService *self)
 {
@@ -3064,6 +3066,7 @@ venture_ai_service_new(
 	 */
 	self->plain = ai_tool_executor_new_empty();
 	venture_ai_service_register_tools(self);
+	venture_ai_register_lead_tool(self);
 	self->system_prompt = venture_ai_service_build_prompt(self);
 
 	return g_steal_pointer(&self);
