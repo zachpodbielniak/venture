@@ -77,8 +77,8 @@ amount_relation(const VentureMoney *a, const VentureMoney *b)
 	bv = venture_money_get_amount(b);
 	ae = venture_money_get_exponent(a);
 	be = venture_money_get_exponent(b);
-	/* VentureMoney permits at most nine decimal places. */
-	if (ae > 9 || be > 9)
+	/* Bound widening by the money type's supported precision. */
+	if (ae > VENTURE_MONEY_MAX_EXPONENT || be > VENTURE_MONEY_MAX_EXPONENT)
 		return 0;
 	while (ae < be) { av *= 10; ae++; }
 	while (be < ae) { bv *= 10; be++; }
@@ -112,6 +112,7 @@ exact_suggest(VentureReconciliationMatcher *self, VentureDatabase *db,
 {
 	g_autoptr(GPtrArray) result = g_ptr_array_new_with_free_func(g_object_unref);
 	g_autoptr(VentureMoney) amount = venture_reconciliation_dup_field(transaction, "amount", VENTURE_TYPE_MONEY);
+	g_autoptr(GHashTable) seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	guint i, unique = 0;
 	(void)self;
 	(void)db;
@@ -122,7 +123,16 @@ exact_suggest(VentureReconciliationMatcher *self, VentureDatabase *db,
 		if (!same_scope(transaction, candidate)) continue;
 		other = venture_reconciliation_dup_field(candidate, "amount", VENTURE_TYPE_MONEY);
 		if (amount_relation(amount, other) == 2 && date_distance(transaction, candidate) <= 3)
-			unique++;
+		{
+			gint64 id = venture_entity_get_id(candidate);
+			g_autofree gchar *key = id != 0 ? g_strdup_printf("%s:%" G_GINT64_FORMAT, G_OBJECT_TYPE_NAME(candidate), id)
+				: g_strdup_printf("%p", (void *)candidate);
+			if (!g_hash_table_contains(seen, key))
+			{
+				g_hash_table_add(seen, g_steal_pointer(&key));
+				unique++;
+			}
+		}
 	}
 	for (i = 0; i < candidates->len; i++)
 	{

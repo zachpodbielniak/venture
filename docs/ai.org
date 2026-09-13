@@ -423,3 +423,12 @@ ai:
     business", assume the default organization. Never modify an expense that
     has already been included in a filed tax report.
 #+end_src
+
+* Reconciliation
+
+=venture_reconcile_suggest= takes =type=, =id=, optional =matcher= and
+=threshold=. It ranks book matches and stages confirmations above the
+threshold when =bank_match= exists. It never applies a match, even with
+=autonomous= policy; under =read_only= it is not offered. The =ai= matcher
+uses the separate tool-free completion path. See
+[[file:reconciliation.org][reconciliation suggestions]].

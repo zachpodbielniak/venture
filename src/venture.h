@@ -161,6 +161,7 @@
 #include "web/venture-web-server.h"
 
 #include "reconciliation/venture-reconciliation-matcher.h"
+#include "reconciliation/venture-reconciliation-service.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

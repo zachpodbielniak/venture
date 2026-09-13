@@ -195,3 +195,15 @@ server for somebody to approve, not merely described. =venturectl --stage=
 does the same for =create=, =update= and =delete= from the shell. It takes its credential from
 =VENTURE_TOKEN= and refuses =--token= outright, since an MCP server is spawned
 from a config file. See [[file:mcp.org][venturectl mcp]].
+
+* Reconciliation suggestions
+
+=venturectl reconcile suggest TYPE ID [--matcher NAME] [--threshold N]=
+prints ranked book-record matches for a saved bank line. Without =--matcher=
+it merges every registered matcher. The default threshold is 80; scores
+strictly above it stage ordinary =bank_match= confirmations when that type
+is available. With no banking records installed it returns suggestions
+only. It never applies a match. Use =-f json= to include the full confirmation
+objects, then review them in the ordinary confirmation queue. See
+[[file:reconciliation.org][reconciliation suggestions]] for matcher plugins
+and the banking seam.

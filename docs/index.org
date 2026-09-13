@@ -39,6 +39,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:interface.org][The interface]] — the design system behind the web UI: substrates, the two registers of type, geometry, and the tokens a plugin builds on
 - [[file:extending.org][Extending]] — plugins, crispy scripts, declarative venture types, plugin modules
 - [[file:containers.org][Containers]] — the Containerfile, local compose, and a deployment example
+- [[file:reconciliation.org][Reconciliation suggestions]] — pluggable matching and operator approval
 - [[file:testing.org][Testing]] — running the suite, and what it guarantees
 
 ** The shape of the thing in one page

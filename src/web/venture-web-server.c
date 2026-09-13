@@ -27537,6 +27537,7 @@ venture_web_api_ticket_draft(
 
 
 #include "venture-web-federation.inc"
+#include "reconciliation/venture-reconciliation-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -27923,6 +27924,7 @@ venture_web_server_new(
 	htmx_router_post(router, "/federation/pull", venture_web_ui_federation_write, self);
 	htmx_router_post(router, "/federation/replicas/:id/:action", venture_web_ui_federation_write, self);
 
+	htmx_router_post(router, "/api/v1/reconciliation/suggest", venture_web_api_reconciliation_suggest, self);
 	htmx_router_get(router, "/api/v1/:type", venture_web_api_list, self);
 	htmx_router_post(router, "/api/v1/:type", venture_web_api_create, self);
 	htmx_router_get(router, "/api/v1/:type/:id", venture_web_api_get, self);

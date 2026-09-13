@@ -218,3 +218,13 @@ Two protocol details that are load-bearing:
 =tests/test-mcp.c=, 27 tests, and every response comes from a fixture: the transport is an injection point, so the suite needs no VENTURE server, no network and no subprocess. =unshare -rn ./build/debug/tests/test-mcp= demonstrates it.
 
 The schema fixtures are =tests/fixtures/schema.json= and =tests/fixtures/schema-with-plugin-type.json=, which differ by one record type. Adding a type to the first extends the "every type is offered" assertion by itself, because that test walks the fixture rather than a list written in the test.
+
+* Reconciliation through the assistant and CLI
+
+The in-process assistant offers =venture_reconcile_suggest=. Shell clients
+use =venturectl reconcile suggest TYPE ID=, which calls
+=POST /api/v1/reconciliation/suggest=. Both always propose into the existing
+confirmation queue when banking is available; neither applies a match.
+The stdio MCP catalogue does not add a reconciliation-specific tool in this
+module. Existing generic confirmation tools can read and approve its staged
+records. See [[file:reconciliation.org][reconciliation suggestions]].

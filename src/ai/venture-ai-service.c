@@ -2487,6 +2487,8 @@ venture_ai_make_tool(
 	return tool;
 }
 
+#include "reconciliation/venture-reconciliation-ai.inc"
+
 static void
 venture_ai_service_register_tools(VentureAiService *self)
 {
@@ -3065,6 +3067,7 @@ venture_ai_service_new_with_provider(
 	 */
 	self->plain = ai_tool_executor_new_empty();
 	venture_ai_service_register_tools(self);
+	venture_ai_reconciliation_register(self);
 	self->system_prompt = venture_ai_service_build_prompt(self);
 
 	return g_steal_pointer(&self);
@@ -3465,6 +3468,7 @@ venture_ai_service_answer_with_images(
 	messages = venture_ai_service_build_turn(self, history, message, images,
 	                                         mime_types);
 
+	venture_ai_reconciliation_register(self);
 	reply = ai_tool_executor_run(self->executor, self->provider, messages,
 	                             self->system_prompt, self->max_tokens, NULL,
 	                             &local_error);
@@ -3652,6 +3656,7 @@ venture_ai_service_answer_stream_async(
 		G_CALLBACK(venture_ai_service_on_stream_event), call);
 	ai_tool_executor_set_stream(self->executor, TRUE);
 
+	venture_ai_reconciliation_register(self);
 	ai_tool_executor_run_async(self->executor, self->provider,
 	                           call->messages, self->system_prompt,
 	                           self->max_tokens, 0, cancellable,
@@ -3707,6 +3712,7 @@ venture_ai_service_describe_tools(VentureAiService *self)
 	builder = json_builder_new();
 	json_builder_begin_array(builder);
 
+	venture_ai_reconciliation_register(self);
 	tools = ai_tool_executor_get_tools(self->executor);
 
 	for (iter = tools; NULL != iter; iter = iter->next)

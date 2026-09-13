@@ -533,6 +533,9 @@ static GType (*const venture_module_periods_types[]) (void) = {
 };
 static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live", NULL };
 
+static const gchar *const reconciliation_requires[] = { "ledger", NULL };
+static const gchar *const reconciliation_suggests[] = { "banking", NULL };
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -674,6 +677,9 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"periods", "Fiscal periods", "Fiscal calendars, closing controls and historical reports.",
 		venture_module_requires_finance, NULL,
 		venture_module_periods_types, venture_module_reports_periods, NULL, FALSE
+	},
+	{ "reconciliation", "Reconciliation", "Staged bank matching suggestions.",
+		reconciliation_requires, reconciliation_suggests, NULL, NULL, NULL, FALSE
 	}
 };
 
