@@ -45,6 +45,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =payables= | finance, ledger, crm | vendor_bill, vendor_bill_line, bill_payment, bill_payment_allocation, vendor_credit, vendor_bill_event, bill_refund; =payables=, =vendor_statement= | |
 | =sequences= | crm | sequence, sequence_step, sequence_enrollment, sequence_delivery, suppression; =sequence_performance=, =sequence_failures= | |
 | =ledger=     | finance         | journal, journal_line; posting service, post/reverse/create-and-post actions, =trial_balance=           |                       |
+| =banking= | ledger | bank_account, bank_statement, bank_transaction, bank_match, reconciliation; =bank_reconciliation= | |
 
 | =statements= | ledger, periods | ledger balances query; balance sheet, income statement, cash flow, general ledger, account balances, P&L reconciliation | |
 

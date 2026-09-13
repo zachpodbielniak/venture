@@ -53,6 +53,7 @@ struct _VentureDatabase
 	 */
 	GPtrArray		*validators;
 	VenturePayablesService *payables;
+	VentureBankMatchService *bank_match_service;
 	VentureSequenceService *sequence_service;
 	VentureActionRegistry *actions;
 };
@@ -99,6 +100,7 @@ venture_database_finalize(GObject *object)
 	self = VENTURE_DATABASE(object);
 
 	g_clear_object(&self->payables);
+	g_clear_object(&self->bank_match_service);
 	g_clear_object(&self->sequence_service);
 	g_clear_object(&self->actions);
 	g_clear_object(&self->transaction);
@@ -1065,6 +1067,8 @@ venture_database_save(
 		if (!ok || handled)
 			return ok;
 	}
+	if (!venture_bank_check_write(self, entity, FALSE, error))
+		return FALSE;
 
 
 	VENTURE_AUTOJOURNAL_SAVE_HOOK(self, entity, actor, error);
@@ -1425,7 +1429,8 @@ venture_database_delete(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
-	if (!venture_payables_check_removal(self, entity, error) ||
+	if (!venture_bank_check_write(self, entity, TRUE, error) ||
+		!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_sequences_check_removal(entity, error))
@@ -1486,7 +1491,8 @@ venture_database_restore(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
-	if (!venture_payables_check_removal(self, entity, error) ||
+	if (!venture_bank_check_write(self, entity, TRUE, error) ||
+		!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_sequences_check_removal(entity, error))
@@ -1530,7 +1536,8 @@ venture_database_purge(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
-	if (!venture_payables_check_removal(self, entity, error) ||
+	if (!venture_bank_check_write(self, entity, TRUE, error) ||
+		!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_sequences_check_removal(entity, error))
@@ -2015,6 +2022,16 @@ venture_database_get_payables_service(VentureDatabase *database)
 	if (database->payables == NULL)
 		database->payables = g_object_new(VENTURE_TYPE_PAYABLES_SERVICE, "database", database, NULL);
 	return database->payables;
+}
+
+VentureBankMatchService *
+venture_database_get_bank_match_service(VentureDatabase *database)
+{
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
+	if (database->bank_match_service == NULL)
+		database->bank_match_service = g_object_new(VENTURE_TYPE_BANK_MATCH_SERVICE,
+			"database", database, NULL);
+	return database->bank_match_service;
 }
 
 VentureSequenceService *

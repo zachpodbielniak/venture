@@ -542,6 +542,13 @@ static GType (*const venture_module_payables_types[]) (void) = {
 static const gchar *const venture_module_requires_payables[] = { "finance", "ledger", "crm", NULL };
 static const gchar *const venture_module_reports_payables[] = { "payables", "vendor_statement", NULL };
 
+static const gchar *const banking_reports[] = { "bank_reconciliation", NULL };
+static const gchar *const banking_requires[] = { "ledger", NULL };
+static GType (*const banking_types[]) (void) = {
+	venture_bank_account_get_type, venture_bank_statement_get_type,
+	venture_bank_transaction_get_type, venture_bank_match_get_type,
+	venture_reconciliation_get_type, NULL
+};
 static GType (*const sequence_types[]) (void) = {
 	venture_sequence_get_type, venture_sequence_step_get_type,
 	venture_sequence_enrollment_get_type, venture_sequence_delivery_get_type,
@@ -705,6 +712,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		venture_module_reports_payables, NULL, FALSE
 	},
 
+	{
+		"banking", "Banking", "Statement import, matching and reconciliation.",
+		banking_requires, NULL, banking_types, banking_reports, NULL, FALSE
+	},
 	{
 		"sequences", "Follow-up sequences", "Durable timed follow-ups and suppression.",
 		sequence_requires, NULL, sequence_types, sequence_reports, NULL, FALSE

@@ -438,6 +438,11 @@ method and date. MCP `venture_create` stages those records normally.
 vendor_id=ID` is the supplier statement. Both accept `organization_id`,
 `currency` and `as_of`. See `docs/payables.org` for credits, immutable
 history and the single-date limitation on optional paid-line expense conversion.
+Banking business actions use `bank ACTION ID [JSON|@FILE]`. Import identifies
+an account, auto/reconcile a statement, and match/unmatch/exclude/create a
+transaction. `bank match AUTO STATEMENT_ID` runs exact automatic matching.
+Match parameters are `{"parts":[{"type":"expense","id":1,"amount":"-10 USD"}]}`;
+exclude needs a reason, and receipt creation needs customer_id. See docs/banking.org.
 ## Follow-up sequences
 
 Use `describe sequence`, `describe sequence_step` and

@@ -209,6 +209,13 @@ setting a bill's financial status are refused.
 =report vendor_statement PERIOD vendor_id=ID= reads the supplier's dated
 statement. Both accept =organization_id=, =currency= and =as_of=.
 See [[file:payables.org][vendor payables]] for credits and cash-report projections.
+* Banking actions
+
+=venturectl bank ACTION ID [JSON|@FILE]= calls the banking service over REST.
+=import= takes a bank account ID; =auto= and =reconcile= take a statement ID;
+=match=, =unmatch=, =exclude= and =create= take a transaction ID.
+=venturectl bank match AUTO STATEMENT_ID= is the bulk exact-match action.
+See [[file:banking.org][Banking]] for import mappings and action parameters.
 * Follow-up sequences
 
 =sequence enroll ID contact_id=ID [field=value ...]= enrolls through the

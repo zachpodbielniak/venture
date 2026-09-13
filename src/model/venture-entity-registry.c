@@ -729,6 +729,11 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_vendor_credit_get_type
 		, venture_vendor_bill_event_get_type
 		, venture_bill_refund_get_type
+		, venture_bank_account_get_type
+		, venture_bank_statement_get_type
+		, venture_bank_transaction_get_type
+		, venture_bank_match_get_type
+		, venture_reconciliation_get_type
 
 		, venture_sequence_get_type
 		, venture_sequence_step_get_type
