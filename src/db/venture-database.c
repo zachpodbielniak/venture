@@ -53,6 +53,7 @@ struct _VentureDatabase
 	 */
 	GPtrArray		*validators;
 	VentureBankMatchService *bank_match_service;
+	VentureActionRegistry *actions;
 };
 
 typedef struct
@@ -97,6 +98,7 @@ venture_database_finalize(GObject *object)
 	self = VENTURE_DATABASE(object);
 
 	g_clear_object(&self->bank_match_service);
+	g_clear_object(&self->actions);
 	g_clear_object(&self->transaction);
 
 	if (NULL != self->connection)
@@ -114,9 +116,22 @@ venture_database_finalize(GObject *object)
 }
 
 static void
+venture_database_get_property(GObject *object, guint id, GValue *value, GParamSpec *spec)
+{
+	if (1 == id)
+		g_value_set_object(value, venture_database_get_action_registry(VENTURE_DATABASE(object)));
+	else
+		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
+}
+
+static void
 venture_database_class_init(VentureDatabaseClass *klass)
 {
 	G_OBJECT_CLASS(klass)->finalize = venture_database_finalize;
+	G_OBJECT_CLASS(klass)->get_property = venture_database_get_property;
+	g_object_class_install_property(G_OBJECT_CLASS(klass), 1,
+		g_param_spec_object("action-registry", "Action registry", "Shared record actions",
+			VENTURE_TYPE_ACTION_REGISTRY, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
 
 	/**
 	 * VentureDatabase::entity-saved:
@@ -1971,4 +1986,15 @@ venture_database_get_bank_match_service(VentureDatabase *database)
 		database->bank_match_service = g_object_new(VENTURE_TYPE_BANK_MATCH_SERVICE,
 			"database", database, NULL);
 	return database->bank_match_service;
+}
+
+VentureActionRegistry *
+venture_database_get_action_registry(VentureDatabase *self)
+{
+	if (NULL == self->actions)
+	{
+		self->actions = g_object_new(VENTURE_TYPE_ACTION_REGISTRY, "database", self, NULL);
+		venture_journal_actions_register(self);
+	}
+	return self->actions;
 }

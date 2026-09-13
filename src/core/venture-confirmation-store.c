@@ -42,6 +42,8 @@ struct _VentureConfirmation
 	 */
 	VentureEntity			*staged;
 	VentureEntity			*original;
+	gchar *record_action;
+	GHashTable *parameters;
 };
 
 G_DEFINE_FINAL_TYPE(VentureConfirmation, venture_confirmation, G_TYPE_OBJECT)
@@ -63,6 +65,8 @@ venture_confirmation_finalize(GObject *object)
 	g_clear_pointer(&self->expires_at, g_date_time_unref);
 	g_clear_object(&self->staged);
 	g_clear_object(&self->original);
+	g_free(self->record_action);
+	g_clear_pointer(&self->parameters, g_hash_table_unref);
 
 	G_OBJECT_CLASS(venture_confirmation_parent_class)->finalize(object);
 }
@@ -133,7 +137,12 @@ venture_confirmation_to_json(VentureConfirmation *self)
 
 	json_builder_set_member_name(builder, "action");
 	json_builder_add_string_value(builder,
-		venture_enum_to_nick(VENTURE_TYPE_AUDIT_ACTION, (gint)self->action));
+		self->record_action ? "action" : venture_enum_to_nick(VENTURE_TYPE_AUDIT_ACTION, (gint)self->action));
+	if (self->record_action)
+	{
+		json_builder_set_member_name(builder, "action_name");
+		json_builder_add_string_value(builder, self->record_action);
+	}
 
 	json_builder_set_member_name(builder, "state");
 	json_builder_add_string_value(builder,
@@ -623,10 +632,11 @@ venture_confirmation_describe_drift(
 }
 
 gboolean
-venture_confirmation_store_approve(
+venture_confirmation_store_approve_as(
 	VentureConfirmationStore	 *self,
 	const gchar			 *confirmation_id,
 	const gchar			 *approver,
+	VentureUserRole role,
 	GError				**error
 ){
 	g_autoptr(GError) local_error = NULL;
@@ -667,7 +677,27 @@ venture_confirmation_store_approve(
 	actor.request_id = confirmation->id;
 	actor.approved_by = approver;
 
-	if (VENTURE_AUDIT_ACTION_DELETE == confirmation->action)
+	if (NULL != confirmation->record_action)
+	{
+		g_autoptr(VentureEntity) current = NULL;
+		g_autoptr(VentureEntity) result = NULL;
+		const gchar *type = venture_entity_get_entity_name(confirmation->staged);
+		current = venture_entity_get_id(confirmation->staged) ?
+			venture_database_get(self->database, G_OBJECT_TYPE(confirmation->staged), venture_entity_get_id(confirmation->staged), &local_error) :
+			g_object_new(G_OBJECT_TYPE(confirmation->staged), NULL);
+		if (current && venture_entity_get_version(current) != venture_entity_get_version(confirmation->staged))
+			g_set_error_literal(&local_error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "The action target changed; stage it again");
+		if (current && !local_error)
+			result = venture_action_registry_perform(venture_database_get_action_registry(self->database),
+				type, venture_entity_get_id(current), confirmation->record_action,
+				confirmation->parameters, &actor, role, &local_error);
+		ok = NULL != result;
+		/* An action proposal describes one attempt against a particular state. */
+		g_hash_table_remove(self->pending, confirmation_id);
+		if (!ok) g_propagate_error(error, g_steal_pointer(&local_error));
+		return ok;
+	}
+	else if (VENTURE_AUDIT_ACTION_DELETE == confirmation->action)
 	{
 		ok = venture_database_delete(self->database, confirmation->staged,
 		                             &actor, &local_error);
@@ -810,4 +840,86 @@ venture_confirmation_parse_stage_flag(
 	            "it.", value);
 
 	return FALSE;
+}
+
+VentureConfirmation *
+venture_confirmation_store_stage_action(VentureConfirmationStore *self, VentureAction *action,
+	VentureEntity *entity, GHashTable *params, const VentureActor *origin,
+	VentureUserRole role, const gchar *via, GError **error)
+{
+	g_autoptr(VentureEntity) current = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autofree gchar *name = NULL;
+	g_autofree gchar *label = NULL;
+	g_autoptr(JsonNode) values = json_node_new(JSON_NODE_OBJECT);
+	JsonObject *object = json_object_new();
+	GHashTableIter iter;
+	gpointer key, value;
+	VentureConfirmation *confirmation;
+	gboolean stageable;
+	g_object_get(action, "stageable", &stageable, "name", &name, "label", &label, NULL);
+	json_node_take_object(values, object);
+	if (!stageable)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED, "This action cannot be staged");
+		return NULL;
+	}
+	current = venture_entity_get_id(entity) ? venture_database_get(self->database, G_OBJECT_TYPE(entity), venture_entity_get_id(entity), error) : g_object_new(G_OBJECT_TYPE(entity), NULL);
+	if (!current || !venture_action_registry_allowed(venture_database_get_action_registry(self->database),
+		action, current, origin, role, error) || !venture_action_validate_parameters(action, params, error)) return NULL;
+	venture_confirmation_store_sweep(self);
+	if (self->limit > 0 && (gint64)g_hash_table_size(self->pending) >= self->limit)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "Confirmation queue is full");
+		return NULL;
+	}
+	g_hash_table_iter_init(&iter, params);
+	while (g_hash_table_iter_next(&iter, &key, &value))
+		json_object_set_member(object, key, json_node_ref(value));
+	confirmation = g_object_new(VENTURE_TYPE_CONFIRMATION, NULL);
+	confirmation->id = venture_generate_token(8);
+	confirmation->record_action = g_strdup(name);
+	confirmation->summary = g_strdup_printf("%s %s #%" G_GINT64_FORMAT, label,
+		venture_entity_get_entity_name(current), venture_entity_get_id(current));
+	confirmation->staged = g_steal_pointer(&current);
+	confirmation->parameters = venture_action_parameters_from_json(values, error);
+	confirmation->diff = json_node_ref(values);
+	confirmation->via = g_strdup(via);
+	confirmation->created_at = g_date_time_ref(now);
+	confirmation->expires_at = g_date_time_add_seconds(now, (gdouble)self->ttl_seconds);
+	if (origin)
+	{
+		confirmation->origin_kind = origin->kind;
+		confirmation->origin = g_strdup(origin->name);
+		confirmation->prompt = g_strdup(origin->prompt);
+	}
+	g_hash_table_insert(self->pending, g_strdup(confirmation->id), confirmation);
+	return confirmation;
+}
+
+gboolean
+venture_confirmation_store_approve(VentureConfirmationStore *self, const gchar *id,
+	const gchar *approver, GError **error)
+{
+	VentureConfirmation *confirmation = venture_confirmation_store_find(self, id);
+	VentureUserRole role = VENTURE_USER_ROLE_VIEWER;
+	if (confirmation && confirmation->record_action)
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_USER);
+		g_autoptr(VentureEntity) user = NULL;
+		gboolean active = FALSE;
+		if (approver)
+		{
+			venture_query_add_filter_string(query, "username", VENTURE_FILTER_OP_EQ, approver, NULL);
+			user = venture_database_find_one(self->database, query, error);
+			if (error && *error) return FALSE;
+			if (user) g_object_get(user, "role", &role, "active", &active, NULL);
+		}
+		if (!active)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "Action approval requires an active named user");
+			return FALSE;
+		}
+	}
+	return venture_confirmation_store_approve_as(self, id, approver, role, error);
 }

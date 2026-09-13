@@ -379,3 +379,20 @@ One shape for every failure:
 
 A =409= from a write means someone else changed the record since you loaded
 it. Reload, reapply, retry — do not force it.
+
+* Record actions
+
+=POST /api/v1/:type/:id/actions/:action= takes a JSON object of parameters.
+The registry checks the authenticated role and calls the declaring service.
+Unknown actions answer 404, insufficient roles 403, state conflicts 409 and
+invalid parameters 422, using the ordinary error JSON shape.
+
+=?stage=1= returns 202 with an action confirmation. Approval checks the
+current record, version, approver role and service eligibility again.
+=GET /api/v1/schema/:type= and the full schema include =actions= with
+labels, descriptions, minimum roles, =stageable=, parameters and input schemas.
+See [[file:actions.org][record actions]] for registration and signals.
+
+The ledger also exposes =POST /api/v1/journals/post= (header plus =lines=),
+including =?stage=1=. It dispatches the registered type-level
+=create_and_post= action. See [[file:ledger.org][posting from the outside]].
