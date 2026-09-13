@@ -71,6 +71,7 @@ venturectl link TYPE ID TYPE ID [kind=K] # link two records; note=... too
 venturectl modules                       # which modules the server runs
 venturectl factory                       # the software factory at a glance
 venturectl release changelog ID          # draft its changelog; --replace
+venturectl invoice checkout ID           # hosted Stripe payment URL; editor role
 venturectl release publish ID            # cut it on the forge; --prerelease
 venturectl inbox [--all]                 # what you have been told
 venturectl inbox read ID|all             # mark it read
@@ -196,6 +197,7 @@ does the same for =create=, =update=, =delete= and =act= from the shell. It take
 =VENTURE_TOKEN= and refuses =--token= outright, since an MCP server is spawned
 from a config file. See [[file:mcp.org][venturectl mcp]].
 
+=invoice checkout ID= calls the Stripe service and returns the stored Checkout record, including =url=. It requires the Stripe module and a sent invoice with one configured product line. See [[file:stripe.org][Stripe payments]].
 * Asset actions
 
 =venturectl asset place ID=, =asset dispose ID proceeds=AMOUNT= and

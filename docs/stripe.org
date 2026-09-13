@@ -1,0 +1,129 @@
+#+title: Stripe payments
+#+description: Hosted Checkout for issued invoices and verified settlement
+
+* Configure the endpoint
+
+Stripe is opt-in. Set =stripe.enabled: true= in Venture's configuration.
+The module requires =receivables= and fails startup if its deployment
+configuration is incomplete. One endpoint serves the default organization;
+a Stripe session belonging to another organization cannot settle here.
+
+The service builds an immutable StripeClient YAML configuration from these
+environment variables. No credential is stored in the repository or exposed
+through the settings API:
+
+| Variable | Meaning |
+|----------+---------|
+| =VENTURE_STRIPE_SECRET_KEY= | Server API credential |
+| =VENTURE_STRIPE_PUBLISHABLE_KEY= | Public credential required by StripeClient |
+| =VENTURE_STRIPE_WEBHOOK_SECRET= | This endpoint's signing secret |
+| =VENTURE_STRIPE_API_VERSION= | Explicit Stripe API version |
+| =VENTURE_STRIPE_SUCCESS_URL= | HTTPS destination after Checkout |
+| =VENTURE_STRIPE_CANCEL_URL= | HTTPS destination when the customer cancels |
+
+Supply credentials through the deployment's environment or secret manager,
+then restart. Do not put them in source-controlled YAML. Success and cancel
+redirects are navigation only; neither records a receipt.
+
+* Dashboard and catalog setup
+
+Checkout refuses deleted invoices and customers before creating provider objects, including historical references that remain on an issued invoice.
+
+Invoices emitted by the billing module currently have no product reference on their line, so they do not qualify for Checkout. Subscription catalog mapping and payment-driven recovery are not implemented; do not modify issued invoice evidence to make it pass eligibility.
+
+1. In Stripe's dashboard, create a product and a one-time price in the
+   invoice's currency. Its unit amount must match the Venture invoice line.
+2. Record the price identifier in a =stripe_price_link= with the Venture
+   =product_id= and organization. A product has one configured price per
+   organization, and the Stripe price identifier is unique within that
+   organization. Invoice lines now have an optional =product_id= reference.
+3. Configure an HTTPS webhook endpoint at =/webhooks/stripe= for
+   =checkout.session.completed=. Select the same explicit API version used
+   by the deployment, and inject its signing secret into the environment.
+4. Issue the Venture invoice through the normal settlement lifecycle.
+   Use *Pay with Stripe* on its page, or =venturectl invoice checkout ID=.
+
+The pinned library supports exactly one dashboard-configured price and a
+positive integral quantity. It cannot send an inline amount, create a Stripe
+Invoice, or describe several invoice lines. Checkout therefore requires a
+=sent= invoice with exactly one line, a price link for its product, and a
+line total equal to its positive open balance. Fractional quantities are
+refused. The existing receivables lifecycle requires a bill-to company.
+Configure the dashboard price without additional taxes, discounts or shipping
+that would change the total; unexpected totals are recorded as mismatches.
+
+* What is stored
+
+| Record | Purpose |
+|--------+---------|
+| =stripe_price_link= | Organization's product-to-price mapping |
+| =stripe_customer_link= | Company or contact's Stripe customer identifier |
+| =stripe_checkout= | Invoice, globally unique session ID, URL, status, expected exact money and settled payment |
+| =stripe_event= | Globally unique event ID, type, receipt/processing times, sensitive verified payload and result |
+
+Customer creation sends the Venture company UUID as supported customer
+metadata. The service reuses an existing customer link. Customer creation
+has a stable UUID-derived idempotency key; Checkout's key uses the invoice
+UUID and version. Repeating Checkout returns its existing stored row.
+
+Checkout sends no metadata: the pinned library does not support it for that
+operation. The stored session ID maps back to the invoice. An authenticated
+event naming an unknown session is stored with result =ignored= and changes
+no payment. This endpoint never accepts an invoice ID from webhook metadata.
+
+* Verification and settlement
+
+=VentureStripeService= is the provider boundary. Generic writes cannot create
+or edit Checkout or event evidence, and cannot delete, restore or purge it.
+The service sends requests synchronously through =StripeClient= and forwards
+its detailed, redacted =event::stripe.*= observations into the audit log.
+
+Every delivery is signature-verified over the original bytes. A fresh verifier
+uses the same immutable configuration for each delivery; durable event IDs
+provide replay protection so an identical valid retry can receive HTTP 200.
+An invalid signature receives 400 and leaves a redacted rejection audit. A duplicate event changes no rows, including
+audits. Unknown authenticated event types are recorded and ignored.
+
+A completion must report paid status, a payment-intent identifier, and an
+amount and currency equal to the expected VentureMoney. Comparison uses the
+Stripe's charge units and checked rescaling; overflow is a mismatch,
+not equality. There is no universal two-decimal assumption.
+Mismatches are recorded, refused, and need operator reconciliation.
+
+The event, receipt, allocations, postings and completed Checkout row share
+one database transaction. The receipt is applied through
+=venture_settlement_service_apply_payment()= with method =stripe= and the
+payment-intent ID as both reference and external ID. Settlement invokes the
+existing fiscal-period and journal guards. Failure rolls everything back;
+Stripe can retry the delivery. No invoice status or journal is written by
+provider code. A second event for an already settled session cannot create
+another payment.
+
+* Boundaries and verification
+
+There are no subscriptions, Billing Portal, refunds, Stripe Invoice creation,
+Connect accounts or generic provider interface. A future provider should own
+its transport and verified external-event mapping, then call the same
+settlement service. A future provider interface would sit in front of
+=VentureStripeService='s Checkout and webhook actions. SaaS billing must create
+and issue its Venture invoice first, then call this service; it must not set
+financial invoice state itself.
+
+There is no automatic expiration/replacement workflow for stored Checkout
+sessions in this version. Once a session expires at Stripe, an operator must
+reconcile it before requesting a replacement; repeating the action preserves
+the original session and idempotency identity.
+
+=test-stripe= uses a fake =StripeTransport= and locally signed webhook bytes;
+no network requests to Stripe and no stripe-mock are involved. It exercises
+eligibility, exact amounts, session linkage, duplicate delivery, rollback,
+immutable evidence, configuration and HTTP/CLI/web actions. The full suite
+runs with =GSETTINGS_BACKEND=memory make DEBUG=1 -j8 test=.
+
+Checkout enforces invoice write authority, including organization roles and policy-plugin vetoes, before any customer or session request reaches Stripe.
+
+A product link identifies a remote Price, not its value. Before creating a customer or Checkout session, Venture retrieves the Price and requires an active one-time per-unit integer amount with no quantity transformation. Its amount times the integral quantity must exactly equal the invoice's open balance in the same currency. Recurring, tiered and fractional-minor-unit prices are refused. Discounts, taxes and partial payments are not reconstructed in Checkout; any difference from the linked Price is refused before external writes.
+
+Both Price validation and signed webhook settlement use Stripe's charge currency units: the documented zero-decimal currencies (including MGA) use exponent zero, while ISK and UGX retain Stripe's two-decimal API representation and must be multiples of 100. See [[https://docs.stripe.com/currencies][Stripe supported currency rules]]. Checked integer arithmetic reconciles these units with an invoice's stored exponent; overflow is refusal, never equality.
+
+Only =POST /webhooks/stripe= uses independent signature authority; an incidental local browser session does not restrict or widen that capability. Signature, payload size and module guards still apply. Neighboring paths and other methods retain local authentication and organization policy.

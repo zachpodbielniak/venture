@@ -72,6 +72,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `modules` | which modules the server runs; `-f json` for types, reports and reasons |
 | `factory` | the software factory at a glance: milestones with progress, releases, builds, environments and what they run, open incidents |
 | `release changelog ID [--replace]` | draft a release's changelog from the tickets marked fixed in it |
+| `invoice checkout ID` | return a hosted Stripe Checkout URL for an eligible sent invoice; editor role, Stripe module required |
 | `journal post ID` | post a draft through the shared service; editors propose, `--stage` always proposes |
 | `release publish ID [--prerelease]` | cut the release on the forge; creates the tag, cannot be undone here |
 | `dashboards` | the dashboards the token may see |

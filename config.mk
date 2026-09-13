@@ -552,6 +552,16 @@ list-deps:
 	@echo "Fedora build dependencies:"
 	@for p in $(FEDORA_DEPS); do echo "  $$p"; done
 
+# Stripe uses the canonical YAML archive; telemetry stays at its nested pin.
+STRIPE_GLIB_DIR := $(DEPS_DIR)/stripe-glib
+STRIPE_GLIB_LIB := $(STRIPE_GLIB_DIR)/build/$(BUILD_TYPE)/libstripe-glib-1.0.a
+OTEL_GLIB_DIR := $(STRIPE_GLIB_DIR)/deps/otel-glib
+OTEL_GLIB_LIB := $(OTEL_GLIB_DIR)/build/$(BUILD_TYPE)/libotel-glib-1.0.a
+CFLAGS += -I$(STRIPE_GLIB_DIR)/src -I$(OTEL_GLIB_DIR)/src $(shell $(PKG_CONFIG) --cflags gnutls)
+TEST_CFLAGS += -I$(STRIPE_GLIB_DIR)/src -I$(OTEL_GLIB_DIR)/src $(shell $(PKG_CONFIG) --cflags gnutls)
+VENDOR_LIBS_SERVER := $(STRIPE_GLIB_LIB) $(OTEL_GLIB_LIB) $(VENDOR_LIBS_SERVER)
+LDFLAGS += $(shell $(PKG_CONFIG) --libs gnutls)
+TEST_LDFLAGS += $(shell $(PKG_CONFIG) --libs gnutls)
 # Transactional mail; keep the standalone CLI free of server dependencies.
 MAIL_GLIB_DIR := $(DEPS_DIR)/mail-glib
 MAIL_GLIB_LIB := $(MAIL_GLIB_DIR)/build/$(BUILD_TYPE)/libmail-glib-1.0.a

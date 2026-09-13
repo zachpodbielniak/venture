@@ -30,6 +30,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =crm=        | core            | company, contact, interaction, deal; =pipeline=                   |                       |
 | =invoicing=  | finance, crm    | invoice, invoice_line                                            |                       |
 | =receivables= | finance, invoicing | payment, payment_allocation, customer_credit, refund, invoice_event; =receivables=, =customer_statement= | |
+| =stripe= | receivables | stripe_price_link, stripe_customer_link, stripe_checkout, stripe_event | =stripe.enabled= (opt-in) |
 | =outreach=   | sales           | campaign, newsletter, subscriber, post; =campaigns=               |                       |
 | =ideas=      | core            | idea, research_note; =ideas=                                      |                       |
 | =kb=         | core            | knowledge_base, kb_article, kb_chunk, kb_link                     | =kb.enabled=          |
@@ -173,6 +174,7 @@ The description must outlive the registry. A static does.
 
 All five are checked at registration, and a built-in that breaks one aborts startup, because a registry missing a core module would fail in a hundred quieter ways later.
 
+Stripe is opt-in because startup requires deployment credentials. See [[file:stripe.org][Stripe payments]].
 
 Disable =leads= too when disabling =crm=. Campaign attribution is optional
 and uses outreach when available. See [[file:leads.org][leads]].

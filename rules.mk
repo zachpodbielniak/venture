@@ -553,6 +553,12 @@ $(OUTDIR)/venture-migration-sql.h: tools/venture-migrations.sh $(MIGRATION_FILES
 	@echo "  GEN     $@"
 	$(Q)tools/venture-migrations.sh migrations > $@.tmp && mv $@.tmp $@
 
+.PHONY: dep-stripe-glib
+dep-stripe-glib: $(YAML_GLIB_LIB)
+	$(Q)$(MAKE) -C $(OTEL_GLIB_DIR) static DEBUG=$(DEBUG) YAML_GLIB_DIR=$(YAML_GLIB_DIR) YAML_GLIB_STATIC=$(YAML_GLIB_LIB)
+	$(Q)$(MAKE) -C $(STRIPE_GLIB_DIR) static DEBUG=$(DEBUG) YAML_GLIB_DIR=$(YAML_GLIB_DIR) YAML_GLIB_STATIC=$(YAML_GLIB_LIB) YAML_NAMESPACE= OTEL_SHARED=$(OTEL_GLIB_LIB)
+$(STRIPE_GLIB_LIB) $(OTEL_GLIB_LIB): dep-stripe-glib
+	@test -f $@
 .PHONY: dep-mail-glib
 dep-mail-glib: $(YAML_GLIB_LIB)
 	$(Q)$(MAKE) --no-print-directory -C $(MAIL_GLIB_DIR) DEBUG=$(DEBUG) YAML_GLIB_STATIC=$(YAML_GLIB_LIB) static
