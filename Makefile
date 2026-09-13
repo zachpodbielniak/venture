@@ -83,6 +83,9 @@ SERVER_ONLY_SRCS := \
 
 SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard src/periods/*.c))
 
+CORE_SRCS += src/stripe/venture-stripe-records.c
+SERVER_ONLY_SRCS += $(filter-out src/stripe/venture-stripe-records.c,$(wildcard src/stripe/*.c))
+
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
 CLI_SRCS := $(wildcard src/cli/*.c)
@@ -100,6 +103,7 @@ PUBLIC_HDRS := \
 	$(wildcard src/interfaces/*.h) \
 	$(wildcard src/model/*.h) \
 	$(wildcard src/receivables/*.h) \
+	$(wildcard src/stripe/*.h) \
 	$(wildcard src/periods/*.h) \
 	$(wildcard src/config/*.h) \
 	$(wildcard src/core/*.h) \
@@ -128,6 +132,7 @@ TEST_OBJS := $(patsubst tests/%.c,$(OBJDIR)/tests/%.o,$(TEST_SRCS))
 TEST_BINS := $(patsubst tests/%.c,$(OUTDIR)/tests/%,$(TEST_SRCS))
 
 # The settlement test drives the real CLI and its MCP tool against HTTP.
+$(OUTDIR)/tests/test-stripe: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-receivables: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------

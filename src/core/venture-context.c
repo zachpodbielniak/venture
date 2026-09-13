@@ -23,6 +23,7 @@ struct _VentureContext
 	VenturePluginManager	*plugins;
 	VentureWorkService	*work;
 	VentureKbService	*kb;
+	VentureStripeService *stripe;
 	VentureModuleRegistry	*modules;
 
 	GTimeZone		*timezone;
@@ -55,6 +56,7 @@ venture_context_finalize(GObject *object)
 	g_clear_object(&self->plugins);
 	g_clear_object(&self->work);
 	g_clear_object(&self->kb);
+	g_clear_object(&self->stripe);
 	g_clear_object(&self->modules);
 	g_clear_pointer(&self->timezone, g_time_zone_unref);
 
@@ -478,4 +480,28 @@ venture_context_get_plugin_manager(VentureContext *self)
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), NULL);
 
 	return self->plugins;
+}
+
+VentureStripeService *
+venture_context_get_stripe_service(VentureContext *self)
+{
+	return venture_context_module_enabled(self, "stripe") ? self->stripe : NULL;
+}
+
+void
+venture_context_set_stripe_service(VentureContext *self, VentureStripeService *service)
+{
+	g_set_object(&self->stripe, service);
+}
+
+gboolean
+venture_context_start_stripe(VentureContext *self, GError **error)
+{
+	g_autoptr(VentureStripeService) provider = NULL;
+	if (!venture_context_module_enabled(self, "stripe")) return TRUE;
+	provider = venture_stripe_service_new(self->database,
+		self->default_organization_id, NULL, error);
+	if (!provider) return FALSE;
+	venture_context_set_stripe_service(self, provider);
+	return TRUE;
 }

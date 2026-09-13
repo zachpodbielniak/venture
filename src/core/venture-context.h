@@ -356,6 +356,28 @@ venture_context_set_plugin_manager(
 VenturePluginManager *
 venture_context_get_plugin_manager(VentureContext *self);
 
+/**
+ * venture_context_get_stripe_service:
+ * @self: context
+ * Returns: (transfer none) (nullable): the active provider; NULL when switched off
+ */
+VentureStripeService *venture_context_get_stripe_service(VentureContext *self);
+/**
+ * venture_context_set_stripe_service:
+ * @self: context
+ * @service: (nullable): configured provider
+ *
+ * Attaches the provider after configuration and schema startup.
+ */
+void venture_context_set_stripe_service(VentureContext *self, VentureStripeService *service);
+/**
+ * venture_context_start_stripe:
+ * @self: context
+ * @error: (out) (optional): module start error
+ * Returns: TRUE when disabled or successfully started from deployment environment
+ */
+gboolean venture_context_start_stripe(VentureContext *self, GError **error);
+
 G_END_DECLS
 
 #endif /* VENTURE_CONTEXT_H */

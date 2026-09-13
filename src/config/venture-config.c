@@ -216,6 +216,9 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_BOOL("automation-persist-state", "automation", "persist_state", TRUE,
 	        "Persist engine state across restarts"),
 
+	VC_BOOL("stripe-enabled", "stripe", "enabled", FALSE,
+	        "Enable hosted Stripe payments; requires deployment credentials"),
+
 	VC_BOOL("forge-enabled", "forge", "enabled", TRUE,
 	        "Enable git forge integration"),
 	VC_INT ("forge-request-timeout", "forge", "request_timeout", 30,

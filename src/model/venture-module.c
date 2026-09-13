@@ -522,6 +522,12 @@ static const gchar *const venture_module_reports_factory[] = {
 	"releases", "lead_time", "incidents", "delivery", NULL
 };
 
+static GType (*const venture_module_stripe_types[]) (void) = {
+	venture_stripe_price_link_get_type, venture_stripe_customer_link_get_type,
+	venture_stripe_checkout_get_type, venture_stripe_event_get_type, NULL
+};
+static const gchar *const venture_module_requires_stripe[] = { "receivables", NULL };
+
 static GType (*const venture_module_ledger_types[]) (void) = {
 	venture_journal_get_type, venture_journal_line_get_type, NULL
 };
@@ -579,6 +585,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		venture_module_requires_receivables, NULL,
 		venture_module_receivables_types, venture_module_reports_receivables, NULL,
 		FALSE
+	},
+	{
+		"stripe", "Stripe", "Hosted Checkout and verified payment settlement.",
+		venture_module_requires_stripe, NULL, venture_module_stripe_types,
+		NULL, "stripe-enabled", FALSE
 	},
 	{
 		"outreach", "Outreach",

@@ -3482,6 +3482,69 @@ venture_web_invoice_total(
 	GError		**error
 );
 
+static HtmxResponse *
+venture_web_stripe_checkout(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+	VentureWebServer *self = user_data;
+	VentureStripeService *service;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureStripeCheckout) checkout = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+	gboolean api = g_str_has_prefix(htmx_request_get_path(request), "/api/");
+	gint64 id;
+
+	gate = api ? venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR) : venture_web_ui_require_session(self, request);
+	if (gate) return gate;
+	principal = venture_auth_authenticate(self->auth, request);
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, &error)) return venture_web_error_response(error);
+	gate = venture_web_require_module_api(self, "stripe");
+	if (gate) return gate;
+	service = venture_context_get_stripe_service(self->context);
+	if (!service)
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "Stripe module has not started");
+		return venture_web_error_response(error);
+	}
+	id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	venture_auth_to_actor(principal, &actor);
+	checkout = venture_stripe_service_checkout(service, id, &actor, &error);
+	if (!checkout) return venture_web_error_response(error);
+	if (!api)
+	{
+		g_autofree gchar *url = NULL;
+		HtmxResponse *response = htmx_response_new();
+		g_object_get(checkout, "url", &url, NULL);
+		htmx_response_set_status(response, 303);
+		htmx_response_add_header(response, "Location", url);
+		return response;
+	}
+	node = venture_serializable_to_json(VENTURE_SERIALIZABLE(checkout), FALSE);
+	return venture_web_json_response(node, 200);
+}
+
+static HtmxResponse *
+venture_web_stripe_webhook(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+	VentureWebServer *self = user_data;
+	VentureStripeService *service = venture_context_get_stripe_service(self->context);
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *response = htmx_response_new();
+	GBytes *body = htmx_request_get_body_bytes(request);
+	SoupMessageHeaders *headers = soup_server_message_get_request_headers(htmx_request_get_message(request));
+	const gchar *signature = soup_message_headers_get_one(headers, "Stripe-Signature");
+	(void)params;
+	if (!service || !body)
+		htmx_response_set_status(response, service ? 400 : 503);
+	else if (!venture_stripe_service_handle_webhook(service, body, signature, &error))
+		htmx_response_set_status(response, 400);
+	else
+		htmx_response_set_status(response, 200);
+	return response;
+}
+
 /*
  * POST /invoices/:id/status - the same service reached by generated writes.
  * The paid action records a receipt; status itself remains derived.
@@ -8450,6 +8513,12 @@ venture_web_append_invoice_block(
 	/* The transitions this status allows, each a form so nothing here
 	 * depends on scripting. */
 	g_string_append(content, "<div class=\"card-body invoice-actions\">");
+	{
+		VentureStripeService *stripe = venture_context_get_stripe_service(self->context);
+		if (stripe && venture_stripe_service_can_checkout(stripe, id, NULL))
+			g_string_append_printf(content, "<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT "/checkout\"><button class=\"btn btn-primary\" type=\"submit\">Pay with Stripe</button></form>", id);
+	}
+
 
 	g_string_append_printf(content,
 		"<a class=\"btn\" href=\"/invoices/%" G_GINT64_FORMAT
@@ -27662,6 +27731,9 @@ venture_web_server_new(
 	htmx_router_get(router, "/modules", venture_web_ui_modules, self);
 	htmx_router_post(router, "/plugins/config",
 	                 venture_web_ui_plugins_config, self);
+	htmx_router_post(router, "/invoices/:id/checkout", venture_web_stripe_checkout, self);
+	htmx_router_post(router, "/api/v1/invoices/:id/checkout", venture_web_stripe_checkout, self);
+	htmx_router_post(router, "/webhooks/stripe", venture_web_stripe_webhook, self);
 	htmx_router_post(router, "/invoices/:id/status",
 	                 venture_web_ui_invoice_status, self);
 	htmx_router_get(router, "/invoices/:id/print",

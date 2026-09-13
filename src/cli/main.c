@@ -2091,6 +2091,23 @@ venture_cli_command_factory(
  * venturectl release publish ID [--prerelease]
  */
 static gint
+venture_cli_command_invoice(VentureCli *cli, gchar **args, GError **error)
+{
+	g_autofree gchar *path = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	if (!args[1] || g_strcmp0(args[1], "checkout") || !args[2] || args[3])
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "usage: venturectl invoice checkout ID");
+		return -1;
+	}
+	path = g_strdup_printf("/api/v1/invoices/%s/checkout", args[2]);
+	node = venture_cli_request(cli, "POST", path, NULL, error);
+	if (!node) return -1;
+	venture_cli_output(cli, node);
+	return 0;
+}
+
+static gint
 venture_cli_command_release(
 	VentureCli	 *cli,
 	gchar		**args,
@@ -3180,6 +3197,7 @@ main(
 		"  factory                      the software factory at a glance\n"
 		"  release changelog ID         draft a release's changelog from\n"
 		"                               its tickets; --replace overwrites\n"
+		"  invoice checkout ID          create a hosted Stripe payment URL\n"
 		"  release publish ID           cut it on the forge; --prerelease\n"
 		"  dashboards                   list the dashboards\n"
 		"  dashboard SLUG               a dashboard, every widget evaluated\n"
@@ -3379,6 +3397,8 @@ main(
 		result = venture_cli_command_federation(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "factory"))
 		result = venture_cli_command_factory(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "invoice"))
+		result = venture_cli_command_invoice(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "release"))
 		result = venture_cli_command_release(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dashboards"))
