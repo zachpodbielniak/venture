@@ -886,6 +886,53 @@ test_web_navigation_links_all_resolve(
  * Automation
  * ========================================================================== */
 
+
+/*
+ * The accounting modules ship record types with list pages, but the
+ * sidebar is a fixed table: a type that is registered and routed is still
+ * invisible until somebody adds a row for it. That is how journals, payments
+ * and fiscal periods were live for a day with no way to reach them but the
+ * address bar. Each module's primary type must have a sidebar entry gated
+ * on that module.
+ */
+static void
+test_web_navigation_lists_accounting_types(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	static const struct {
+		const gchar *path;
+		const gchar *module;
+	} expected[] = {
+		{ "/e/journal", "ledger" },
+		{ "/e/payment", "receivables" },
+		{ "/e/fiscal_period", "periods" },
+	};
+	const VentureWebNavLink *links;
+	gsize i;
+
+	links = venture_web_navigation();
+	g_assert_nonnull(links);
+
+	for (i = 0; i < G_N_ELEMENTS(expected); i++)
+	{
+		gsize j;
+		gboolean found;
+
+		found = FALSE;
+		for (j = 0; NULL != links[j].path; j++)
+		{
+			if (0 != g_strcmp0(links[j].path, expected[i].path))
+				continue;
+			found = TRUE;
+			g_assert_cmpstr(links[j].module, ==, expected[i].module);
+		}
+
+		if (!found)
+			g_error("sidebar has no entry for %s", expected[i].path);
+	}
+}
+
 static void
 test_automation_disabled_is_not_a_failure(
 	Fixture		*fixture,
@@ -1597,6 +1644,8 @@ main(
 
 	ADD("/web/navigation-links-all-resolve",
 	    test_web_navigation_links_all_resolve);
+	ADD("/web/navigation-lists-accounting-types",
+	    test_web_navigation_lists_accounting_types);
 
 	ADD("/automation/disabled-is-not-a-failure",
 	    test_automation_disabled_is_not_a_failure);

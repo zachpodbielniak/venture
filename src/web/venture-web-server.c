@@ -983,6 +983,34 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"finance"
 	},
 	{
+		"/e/journal", "Journals",
+		VENTURE_ICON(
+			"<path d=\"M4 4h12a2 2 0 0 1 2 2v14H6a2 2 0 0 1-2-2z\"/>"
+			"<path d=\"M4 4v14\"/><path d=\"M9 9h5\"/><path d=\"M9 13h5\"/>"
+		),
+		NULL,
+		"ledger"
+	},
+	{
+		"/e/payment", "Payments",
+		VENTURE_ICON(
+			"<rect x=\"3\" y=\"6\" width=\"18\" height=\"12\" rx=\"2\"/>"
+			"<path d=\"M3 10h18\"/><path d=\"M7 15h3\"/>"
+		),
+		NULL,
+		"receivables"
+	},
+	{
+		"/e/fiscal_period", "Periods",
+		VENTURE_ICON(
+			"<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\" rx=\"2\"/>"
+			"<path d=\"M3 10h18\"/><path d=\"M8 3v4\"/><path d=\"M16 3v4\"/>"
+			"<path d=\"M8 15l2 2 4-4\"/>"
+		),
+		NULL,
+		"periods"
+	},
+	{
 		"/e/company", "Companies",
 		VENTURE_ICON(
 			"<path d=\"M3 21h18\"/>"
