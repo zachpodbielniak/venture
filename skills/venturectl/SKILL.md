@@ -66,7 +66,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `forge set-token ID` | set a forge's access token, read from stdin |
 | `forge set-secret ID` | set or generate its webhook secret |
 | `forge verify ID` | record which account the token belongs to |
-| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE]` | list reports, or run one with an optional historical cutoff and legal entity |
+| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID]` | list reports, or run one with an optional historical cutoff and legal entity |
 | `links TYPE ID` | every link touching a record, read from it |
 | `link TYPE ID TYPE ID [kind=K] [note=T]` | link two records; kinds: related, blocks, blocked_by, depends_on, required_by, parent_of, child_of, duplicates, causes, caused_by, produces, produced_by, references, referenced_by, supersedes, superseded_by; unlink with `delete record_link ID` |
 | `modules` | which modules the server runs; `-f json` for types, reports and reasons |
@@ -435,3 +435,21 @@ create pending `sequence_delivery` rows; this command does not send mail.
 Pause, resume and exit use the REST service actions documented in
 `docs/sequences.org`; generic enrollment edits are refused. Completed
 step identities are retained across restarts and sequence edits.
+### Automatic journals
+
+`post backfill [organization_id=ID] [--dry-run]` is an editor action which posts
+missing sale/expense versions in date order. Use `report unposted all` to review
+candidates, then `post backfill --dry-run` to validate without retaining writes.
+The response includes `candidates`, `posted`, `skipped` and `dry_run`. Period
+refusals abort the entire batch. `posting_profile` uses the normal generic
+CRUD commands; consult `describe posting_profile` for its account mappings.
+## Ledger statements
+
+`report balance_sheet`, `income_statement`, `cash_flow`, `general_ledger`,
+`account_balances` and `pnl_reconciliation` read posted evidence per exact
+organization and currency. Pass `compare_to=2026-07` after the selected period
+for prior/delta columns; general ledger also accepts `account_id=ID`.
+For example: `venturectl -f csv report balance_sheet 2026-08 organization_id=1 currency=USD compare_to=2026-07`.
+Synthetic totals have no single account ID; actual account/journal IDs link
+to their record pages. Cash-flow controls use the conventional chart codes
+documented in `docs/statements.org`.

@@ -1042,6 +1042,7 @@ venture_database_save(
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
 
+	VENTURE_AUTOJOURNAL_SAVE_HOOK(self, entity, actor, error);
 	/* Source and posting share a transaction, whichever surface saved it. */
 	if (venture_ledger_wrap_source(self, entity))
 		return venture_ledger_save_source(self, entity, actor, error);

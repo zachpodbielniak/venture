@@ -727,6 +727,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_sequence_enrollment_get_type
 		, venture_sequence_delivery_get_type
 		, venture_suppression_get_type
+		, venture_posting_profile_get_type
 	};
 	gsize i;
 
