@@ -413,7 +413,7 @@ upgrade(Fixture *f, gconstpointer data)
 	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(record), NULL, &error));
 	/* A prior schema has refund totals, but no reliable separate refund dates. */
 	g_assert_true(venture_database_execute(f->db,
-		"ALTER TABLE sales DROP COLUMN refunded_at; DELETE FROM schema_migrations WHERE version = 60", NULL, &error));
+		"ALTER TABLE sales DROP COLUMN refunded_at; DELETE FROM schema_migrations WHERE version >= 60", NULL, &error));
 	g_assert_no_error(error);
 	for (i = 0; i < 2; i++) {
 		g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
@@ -442,7 +442,7 @@ module_off(Fixture *f, gconstpointer data)
 	money(record, "fees", 300);
 	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(record), NULL, &error));
 	g_assert_no_error(error); g_assert_cmpint(balance(f, "4000"), ==, -9700);
-	g_assert_true(venture_database_execute(f->db, "DROP TABLE posting_profiles; DELETE FROM schema_migrations WHERE version = 60", NULL, &error));
+	g_assert_true(venture_database_execute(f->db, "DROP TABLE posting_profiles; DELETE FROM schema_migrations WHERE version >= 60", NULL, &error));
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
 	venture_config_set_module_enabled(f->config, "autojournal", TRUE);
@@ -551,7 +551,7 @@ upgrade_disabled(Fixture *f, gconstpointer data)
 	/* A switched-off historical sales table is not reconciled at startup. */
 	venture_config_set_module_enabled(f->config, "sales", FALSE);
 	g_assert_true(venture_database_execute(f->db,
-		"DROP TABLE posting_profiles; ALTER TABLE sales DROP COLUMN refunded_at; DELETE FROM schema_migrations WHERE version = 60", NULL, &error));
+		"DROP TABLE posting_profiles; ALTER TABLE sales DROP COLUMN refunded_at; DELETE FROM schema_migrations WHERE version >= 60", NULL, &error));
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);

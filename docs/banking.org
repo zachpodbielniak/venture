@@ -118,3 +118,5 @@ The paired =000100_banking.sql= migrations verify that the field-table schema
 contains the complete banking evidence family, or no banking tables when the
 module is disabled. No bank history is fabricated from existing documents.
 The ordinary migration suite checks upgrade and restart with retained data.
+
+Matching refuses soft-deleted cash documents even though their records remain available for historical lookup. A failed match leaves the transaction and match evidence unchanged.
