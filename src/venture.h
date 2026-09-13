@@ -71,12 +71,18 @@
 #include "model/venture-federation-records.h"
 #include "ledger/venture-journal.h"
 #include "receivables/venture-receivable-records.h"
+#include "payables/venture-payable-records.h"
+#include "banking/venture-bank-records.h"
 #include "receivables/venture-invoice-state-machine.h"
 #include "model/venture-venture-type.h"
 #include "model/venture-entity-registry.h"
 #include "model/venture-module.h"
 #include "periods/venture-period-records.h"
 #include "leads/venture-lead-records.h"
+#include "activities/venture-activity-records.h"
+#include "pipelines/venture-pipeline-records.h"
+#include "sequences/venture-sequence-records.h"
+#include "autojournal/venture-posting-profile.h"
 
 /* --- Configuration ------------------------------------------------------- */
 
@@ -117,6 +123,9 @@
 #include "report/venture-report.h"
 #include "receivables/venture-settlement-service.h"
 #include "leads/venture-lead-service.h"
+#include "payables/venture-payables-service.h"
+#include "banking/venture-bank-match-service.h"
+#include "sequences/venture-sequence-service.h"
 #include "periods/venture-period-report.h"
 
 /* The confirmation store comes first: the context owns one and names its
@@ -127,6 +136,10 @@
 #include "core/venture-federation.h"
 #include "ledger/venture-posting-rule.h"
 #include "ledger/venture-posting-service.h"
+#include "pipelines/venture-deal-service.h"
+#include "pipelines/venture-pipeline-reports.h"
+#include "autojournal/venture-autojournal-service.h"
+#include "statements/venture-ledger-balances.h"
 #include "core/venture-ticket-relation.h"
 #include "core/venture-record-link.h"
 #include "core/venture-dashboard.h"
@@ -136,6 +149,10 @@
 #include "core/venture-desk.h"
 #include "core/venture-webhook.h"
 #include "core/venture-routing.h"
+#include "activities/venture-activity-service.h"
+#include "activities/venture-activity-reports.h"
+#include "core/venture-action.h"
+#include "ledger/venture-journal-actions.h"
 
 /* Auth comes before the AI service, which names VentureAuthPrincipal in its
  * signatures, and before the web server, which uses both. */

@@ -823,10 +823,11 @@ test_web_navigation_links_all_resolve(
 	gconstpointer	 user_data
 ){
 	static const gchar *const fixed_pages[] = {
+		"/worklist",
 		"/", "/reports", "/settings", "/account", "/account/tokens",
 		"/users", "/entities", "/tickets", "/login", "/logout", "/search",
 		"/automations", "/plugins", "/kb", "/modules", "/factory",
-		"/dashboards", "/overview", "/sprints", "/runs", "/webhooks", "/federation",
+		"/dashboards", "/overview", "/sprints", "/runs", "/webhooks", "/federation", "/deals",
 		"/harness", "/assistant", NULL
 	};
 	const VentureWebNavLink *links;

@@ -66,7 +66,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `forge set-token ID` | set a forge's access token, read from stdin |
 | `forge set-secret ID` | set or generate its webhook secret |
 | `forge verify ID` | record which account the token belongs to |
-| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE]` | list reports, or run one with an optional historical cutoff and legal entity |
+| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID]` | list reports, or run one with an optional historical cutoff and legal entity |
 | `links TYPE ID` | every link touching a record, read from it |
 | `link TYPE ID TYPE ID [kind=K] [note=T]` | link two records; kinds: related, blocks, blocked_by, depends_on, required_by, parent_of, child_of, duplicates, causes, caused_by, produces, produced_by, references, referenced_by, supersedes, superseded_by; unlink with `delete record_link ID` |
 | `modules` | which modules the server runs; `-f json` for types, reports and reasons |
@@ -100,6 +100,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `kb export KB_ID` | write an archive to stdout; `--format zip\|tar.gz` |
 | `kb crossref TYPE ID` | link the knowledge bearing on one record |
 | `kb article TYPE ID --kb N` | write a KB article from a record |
+| `act TYPE ID ACTION [key=value ...]` | discover and perform a business action; `--stage` proposes it |
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 
@@ -304,7 +305,7 @@ venturectl --stage create expense description="Cover art" amount=250.00
 #   approve: POST /api/v1/confirmations/a3f9c118/approve
 ```
 
-It is refused on any command other than `create`, `update` and `delete`,
+It is refused on any command other than `create`, `update`, `delete`, `act` and `sequence enroll`,
 because those are the only routes that read it -- and an unknown query
 parameter on a write route is ignored, so a quietly accepted `--stage` would
 apply the change it was asked to hold back.
@@ -430,3 +431,89 @@ rules; staged reassignment is refused. Recycle with `update lead ID
 status=recycled unqualified_reason=... recycle_until=YYYY-MM-DD`.
 Reports are `lead_sources`, `lead_response_time` and `leads_recycled_due`;
 see `docs/leads.org` for definitions and public capture forms.
+## Planned activities
+
+`activity complete ID outcome=...` completes a planned activity, writes interaction history and advances recurrence atomically. `activity list mine|overdue|today` reads your daily worklist. Generic `create activity` and `update activity` edit the plan; generic `status=done` is refused. The existing `activity TYPE ID` command still reads a record timeline. Use `report worklist organization_id=ID` for the current UTC week per owner.
+## Vendor payables
+
+Run `describe vendor_bill` and `describe vendor_bill_line` before creating
+a draft and its lines. Bill quantity is an exact decimal string, with at
+most three decimal places. Supplier companies have `kind=supplier`.
+
+Use `bill approve ID date=DATE`, `bill pay ID 'amount=40 USD' date=DATE`,
+and `bill void ID date=DATE` for financial actions. Omitted payment amount
+pays the outstanding balance. Direct bill status updates are refused.
+These CLI actions apply directly; to stage, use generated record creation:
+`vendor_bill_event` with `bill_id`, `vendor_id`, `kind=approve`,
+`state=approved`, and `date`, or `bill_payment` with vendor, bill, amount,
+method and date. MCP `venture_create` stages those records normally.
+
+`report payables PERIOD` is dated aging. `report vendor_statement PERIOD
+vendor_id=ID` is the supplier statement. Both accept `organization_id`,
+`currency` and `as_of`. See `docs/payables.org` for credits, immutable
+history and the single-date limitation on optional paid-line expense conversion.
+Banking business actions use `bank ACTION ID [JSON|@FILE]`. Import identifies
+an account, auto/reconcile a statement, and match/unmatch/exclude/create a
+transaction. `bank match AUTO STATEMENT_ID` runs exact automatic matching.
+Match parameters are `{"parts":[{"type":"expense","id":1,"amount":"-10 USD"}]}`;
+exclude needs a reason, and receipt creation needs customer_id. See docs/banking.org.
+## Sales pipeline actions
+
+`venturectl deal move ID STAGE [NOTE]` calls the deal transition service.
+Use `describe pipeline_stage` and `list pipeline_stage` to find the destination.
+Fill required deal fields and a loss reason before moving to a lost stage.
+`update deal` cannot change either stage field or the closing timestamp.
+Reports: `stage_duration`, `funnel`, `forecast`, `loss_reasons`, `overdue_deals`;
+filter with `pipeline_id=N` and `owner=USERNAME`.
+## Follow-up sequences
+
+Use `describe sequence`, `describe sequence_step` and
+`describe sequence_enrollment` before configuring a journey.
+`sequence enroll ID contact_id=ID enrollment_reason=...` calls the service;
+`--stage sequence enroll` queues approval. Generic staged
+`create sequence_enrollment sequence_id=ID contact_id=ID` is equivalent.
+Approval rechecks suppression and duplicate enrollment at application time.
+
+`sequence run [--as-of TIMESTAMP] [organization_id=ID]` processes due steps
+for one organization. Use an ISO timestamp including timezone. Email steps
+create pending `sequence_delivery` rows; this command does not send mail.
+`sequence status ENROLLMENT_ID` shows progress and delivery history.
+Pause, resume and exit use the REST service actions documented in
+`docs/sequences.org`; generic enrollment edits are refused. Completed
+step identities are retained across restarts and sequence edits.
+## Record actions
+
+Use `venturectl -f json describe TYPE` to discover `actions`, their parameters
+and whether they can be staged. `venturectl act TYPE ID ACTION key=value`
+uses those declarations; `venturectl --stage act journal 42 post` proposes a
+posting. A staged result is awaiting approval, never completed. Generated
+action tools in the assistant and MCP always stage, including when other
+writes are configured to apply automatically.
+
+Journal reversal: `venturectl act journal 42 reverse occurred_at=2026-09-13 memo="Correction"`.
+Type-level creation: `venturectl act journal 0 create_and_post 'journal={...}'`,
+with header fields and a `lines` array. Both support `--stage`. Use real
+source and account IDs from the same organization. Invalid lines leave no
+draft behind; closed periods and repeat reversals are refused.
+
+The `--stage` help lists `create/update/delete/act/sequence enroll/lead convert`; the same flag also
+applies to a type-level journal creation at ID zero.
+
+### Automatic journals
+
+`post backfill [organization_id=ID] [--dry-run]` is an editor action which posts
+missing sale/expense versions in date order. Use `report unposted all` to review
+candidates, then `post backfill --dry-run` to validate without retaining writes.
+The response includes `candidates`, `posted`, `skipped` and `dry_run`. Period
+refusals abort the entire batch. `posting_profile` uses the normal generic
+CRUD commands; consult `describe posting_profile` for its account mappings.
+## Ledger statements
+
+`report balance_sheet`, `income_statement`, `cash_flow`, `general_ledger`,
+`account_balances` and `pnl_reconciliation` read posted evidence per exact
+organization and currency. Pass `compare_to=2026-07` after the selected period
+for prior/delta columns; general ledger also accepts `account_id=ID`.
+For example: `venturectl -f csv report balance_sheet 2026-08 organization_id=1 currency=USD compare_to=2026-07`.
+Synthetic totals have no single account ID; actual account/journal IDs link
+to their record pages. Cash-flow controls use the conventional chart codes
+documented in `docs/statements.org`.

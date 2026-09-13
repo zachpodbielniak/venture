@@ -181,3 +181,5 @@ CLI execution, report values, module hiding and upgrades. =test-auth= checks
 that lead business actions refuse anonymous callers.
 
 Conversion refuses recursive conversion calls from its callbacks, and archived leads cannot be converted. Interaction history may reference a deal alone, including activity completion history.
+
+A reply linked to both a lead and an enrolled contact updates lead activity history and exits matching sequences atomically. Neither service repeats the other service's already-authorized write.

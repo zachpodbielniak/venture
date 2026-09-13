@@ -1195,7 +1195,7 @@ venture_mcp_tool_report(
 	}
 
 	{
-		static const gchar *const options[] = { "customer_id", "organization_id", "currency", "as_of", NULL };
+		static const gchar *const options[] = { "customer_id", "organization_id", "currency", "as_of", "vendor_id", NULL };
 		guint i;
 		for (i = 0; options[i] != NULL; i++)
 		{
@@ -2201,6 +2201,47 @@ venture_mcp_tool_factory(
 }
 
 static gchar *
+venture_mcp_tool_action(VentureMcpServer *self, const gchar *name, JsonObject *arguments, GError **error)
+{
+	g_autoptr(JsonNode) tools = venture_mcp_catalog_get_tools(self->catalog);
+	JsonArray *array = json_node_get_array(tools);
+	guint i;
+	for (i = 0; i < json_array_get_length(array); i++)
+	{
+		JsonObject *tool = json_array_get_object_element(array, i);
+		if (json_object_has_member(tool, "action_name") && 0 == g_strcmp0(name, json_object_get_string_member(tool, "name")))
+		{
+			g_autofree gchar *type = g_uri_escape_string(json_object_get_string_member(tool, "action_type"), NULL, FALSE);
+			g_autofree gchar *action = g_uri_escape_string(json_object_get_string_member(tool, "action_name"), NULL, FALSE);
+			g_autofree gchar *path = NULL;
+			g_autoptr(JsonNode) body = json_node_new(JSON_NODE_OBJECT);
+			g_autoptr(JsonNode) result = NULL;
+			g_autoptr(GList) members = NULL;
+			GList *item;
+			JsonObject *values = json_object_new();
+			gint64 id;
+			json_node_take_object(body, values);
+			if (!arguments || (!json_object_has_member(arguments, "id") && !json_object_get_boolean_member_with_default(tool, "type_level", FALSE)) ||
+				(json_object_has_member(arguments, "id") && G_TYPE_INT64 != json_node_get_value_type(json_object_get_member(arguments, "id"))))
+			{
+				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "An action requires an integer id");
+				return NULL;
+			}
+			id = json_object_get_int_member_with_default(arguments, "id", 0);
+			members = json_object_get_members(arguments);
+			for (item = members; item; item = item->next)
+				if (0 != g_strcmp0(item->data, "id")) json_object_set_member(values, item->data, json_node_ref(json_object_get_member(arguments, item->data)));
+			path = g_strdup_printf("/api/v1/%s/%" G_GINT64_FORMAT "/actions/%s?stage=1", type, id, action);
+			result = venture_mcp_server_request(self, "POST", path, body, error);
+			if (!result) return NULL;
+			return venture_mcp_staged_text(result);
+		}
+	}
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Unknown action tool");
+	return NULL;
+}
+
+static gchar *
 venture_mcp_dispatch_tool(
 	VentureMcpServer	 *self,
 	const gchar		 *name,
@@ -2264,10 +2305,8 @@ venture_mcp_dispatch_tool(
 	if (0 == g_strcmp0(name, "venture_desk"))
 		return venture_mcp_tool_desk(self, arguments, error);
 
-	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
-	            "There is no tool called \"%s\".", name);
+	return venture_mcp_tool_action(self, name, arguments, error);
 
-	return NULL;
 }
 
 static JsonNode *
