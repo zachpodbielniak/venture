@@ -71,6 +71,7 @@
 #include "model/venture-federation-records.h"
 #include "ledger/venture-journal.h"
 #include "receivables/venture-receivable-records.h"
+#include "payables/venture-payable-records.h"
 #include "receivables/venture-invoice-state-machine.h"
 #include "model/venture-venture-type.h"
 #include "model/venture-entity-registry.h"
