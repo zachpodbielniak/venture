@@ -882,6 +882,57 @@ test_web_navigation_links_all_resolve(
 	g_assert_cmpuint(i, >, 10);
 }
 
+/*
+ * The accounting modules ship record types with list pages, but the
+ * sidebar is a fixed table: a type that is registered and routed is still
+ * invisible until somebody adds a row for it. Start calendars from a
+ * fiscal year, which generates its periods. Draft lines, allocations, credits
+ * and refunds need entries too: related-record panels are absent until the
+ * first row exists.
+ * Every entry must be gated on its owning module.
+ */
+static void
+test_web_navigation_lists_accounting_types(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	static const struct {
+		const gchar *path;
+		const gchar *module;
+	} expected[] = {
+		{ "/e/journal", "ledger" },
+		{ "/e/journal_line", "ledger" },
+		{ "/e/payment", "receivables" },
+		{ "/e/fiscal_year", "periods" },
+		{ "/e/payment_allocation", "receivables" },
+		{ "/e/customer_credit", "receivables" },
+		{ "/e/refund", "receivables" },
+	};
+	const VentureWebNavLink *links;
+	gsize i;
+
+	links = venture_web_navigation();
+	g_assert_nonnull(links);
+
+	for (i = 0; i < G_N_ELEMENTS(expected); i++)
+	{
+		gsize j;
+		gboolean found;
+
+		found = FALSE;
+		for (j = 0; NULL != links[j].path; j++)
+		{
+			if (0 != g_strcmp0(links[j].path, expected[i].path))
+				continue;
+			found = TRUE;
+			g_assert_cmpstr(links[j].module, ==, expected[i].module);
+		}
+
+		if (!found)
+			g_error("sidebar has no entry for %s", expected[i].path);
+	}
+}
+
 /* ==========================================================================
  * Automation
  * ========================================================================== */
@@ -1597,6 +1648,8 @@ main(
 
 	ADD("/web/navigation-links-all-resolve",
 	    test_web_navigation_links_all_resolve);
+	ADD("/web/navigation-lists-accounting-types",
+	    test_web_navigation_lists_accounting_types);
 
 	ADD("/automation/disabled-is-not-a-failure",
 	    test_automation_disabled_is_not_a_failure);
