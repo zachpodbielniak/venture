@@ -726,6 +726,13 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_fiscal_year_get_type
 		, venture_fiscal_period_get_type
 		, venture_report_snapshot_get_type
+		, venture_organization_membership_get_type
+		, venture_team_get_type
+		, venture_team_membership_get_type
+		, venture_mail_message_get_type
+		, venture_mail_template_get_type
+
+		, venture_posting_profile_get_type
 	};
 	gsize i;
 

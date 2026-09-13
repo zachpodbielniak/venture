@@ -66,13 +66,14 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `forge set-token ID` | set a forge's access token, read from stdin |
 | `forge set-secret ID` | set or generate its webhook secret |
 | `forge verify ID` | record which account the token belongs to |
-| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE]` | list reports, or run one with an optional historical cutoff and legal entity |
+| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID]` | list reports, or run one with an optional historical cutoff and legal entity |
 | `links TYPE ID` | every link touching a record, read from it |
 | `link TYPE ID TYPE ID [kind=K] [note=T]` | link two records; kinds: related, blocks, blocked_by, depends_on, required_by, parent_of, child_of, duplicates, causes, caused_by, produces, produced_by, references, referenced_by, supersedes, superseded_by; unlink with `delete record_link ID` |
 | `modules` | which modules the server runs; `-f json` for types, reports and reasons |
 | `factory` | the software factory at a glance: milestones with progress, releases, builds, environments and what they run, open incidents |
 | `release changelog ID [--replace]` | draft a release's changelog from the tickets marked fixed in it |
 | `invoice checkout ID` | return a hosted Stripe Checkout URL for an eligible sent invoice; editor role, Stripe module required |
+| `journal post ID` | post a draft through the shared service; editors propose, `--stage` always proposes |
 | `release publish ID [--prerelease]` | cut the release on the forge; creates the tag, cannot be undone here |
 | `dashboards` | the dashboards the token may see |
 | `dashboard SLUG` | one dashboard, every widget evaluated; `-f json` for the whole answer |
@@ -101,6 +102,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `kb export KB_ID` | write an archive to stdout; `--format zip\|tar.gz` |
 | `kb crossref TYPE ID` | link the knowledge bearing on one record |
 | `kb article TYPE ID --kb N` | write a KB article from a record |
+| `act TYPE ID ACTION [key=value ...]` | discover and perform a business action; `--stage` proposes it |
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 
@@ -305,7 +307,7 @@ venturectl --stage create expense description="Cover art" amount=250.00
 #   approve: POST /api/v1/confirmations/a3f9c118/approve
 ```
 
-It is refused on any command other than `create`, `update` and `delete`,
+It is refused on commands other than `create`, `update`, `delete`, `act` and `journal post`,
 because those are the only routes that read it -- and an unknown query
 parameter on a write route is ignored, so a quietly accepted `--stage` would
 apply the change it was asked to hold back.
@@ -419,3 +421,58 @@ venturectl federation '{"action":"resolve","id":1,"version":5,"field":"descripti
 ```
 
 Collection pulls return at most ten results, `next_offset` and `more`; continue pages while `more` is true and inspect per-record errors. Pull imports/merges without pushing; sync pushes conflict-free changes with an expected remote version. Edits require the local replica version. A conflict blocks that record until resolved; choosing remote can accept a removed/revoked field. Never update `federation_replica` through generic CRUD: its merge state belongs to the service. Copies remain usable during outages but are not authoritative local accounting rows. New source objects and binary attachments are not created/copied offline. See `docs/federation.org` for key exchange, grants, scheduling and revocation.
+
+## Organization membership
+
+Read `docs/orgaccess.org` for the role matrix. Membership and team records use
+generic CRUD. Tokens intersect mint-time memberships with current authority;
+new grants never widen an old token. Missing membership gives empty results or
+404; a refused in-organization write gives 403. Owner/admin data authority and
+output formats remain unchanged. `journal post ID` returns a confirmation for
+an organization editor. Treat that response as pending until finance approves.
+## Transactional mail
+
+`mail send to=... subject=... body=...` queues mail; `--html FILE` supplies
+HTML. `mail test to=...` immediately tests real SMTP. `mail deliver --limit N`
+submits due rows. `mail list state=uncertain` lists uncertain acceptance;
+`mail retry ID` is a deliberate resend with the same Message-ID. Pass
+`organization_id=N` to scope another organization. Never automatically retry
+uncertain rows. Actions reject `--stage`; propose an enqueue with the generic
+`--stage create mail_message` command when approval is required.
+
+## Record actions
+
+Use `venturectl -f json describe TYPE` to discover `actions`, their parameters
+and whether they can be staged. `venturectl act TYPE ID ACTION key=value`
+uses those declarations; `venturectl --stage act journal 42 post` proposes a
+posting. A staged result is awaiting approval, never completed. Generated
+action tools in the assistant and MCP always stage, including when other
+writes are configured to apply automatically.
+
+Journal reversal: `venturectl act journal 42 reverse occurred_at=2026-09-13 memo="Correction"`.
+Type-level creation: `venturectl act journal 0 create_and_post 'journal={...}'`,
+with header fields and a `lines` array. Both support `--stage`. Use real
+source and account IDs from the same organization. Invalid lines leave no
+draft behind; closed periods and repeat reversals are refused.
+
+The `--stage` help lists `create/update/delete/act`; the same flag also
+applies to a type-level journal creation at ID zero.
+
+### Automatic journals
+
+`post backfill [organization_id=ID] [--dry-run]` is an editor action which posts
+missing sale/expense versions in date order. Use `report unposted all` to review
+candidates, then `post backfill --dry-run` to validate without retaining writes.
+The response includes `candidates`, `posted`, `skipped` and `dry_run`. Period
+refusals abort the entire batch. `posting_profile` uses the normal generic
+CRUD commands; consult `describe posting_profile` for its account mappings.
+## Ledger statements
+
+`report balance_sheet`, `income_statement`, `cash_flow`, `general_ledger`,
+`account_balances` and `pnl_reconciliation` read posted evidence per exact
+organization and currency. Pass `compare_to=2026-07` after the selected period
+for prior/delta columns; general ledger also accepts `account_id=ID`.
+For example: `venturectl -f csv report balance_sheet 2026-08 organization_id=1 currency=USD compare_to=2026-07`.
+Synthetic totals have no single account ID; actual account/journal IDs link
+to their record pages. Cash-flow controls use the conventional chart codes
+documented in `docs/statements.org`.

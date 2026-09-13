@@ -296,7 +296,16 @@ static const VentureConfigSetting venture_config_settings[] = {
 	        "Log every request line"),
 
 	/* Not part of the YAML document: set from --state-dir or derived. */
-	VC_STR ("state-dir", NULL, NULL, "", "Directory holding runtime state")
+	VC_STR ("state-dir", NULL, NULL, "", "Directory holding runtime state"),
+	VC_STR("mail-host", "mail", "host", "", "SMTP relay host"),
+	VC_INT("mail-port", "mail", "port", 587, "SMTP relay port"),
+	VC_STR("mail-security", "mail", "security", "starttls", "starttls, tls or none"),
+	VC_STR("mail-username", "mail", "username", "", "SMTP username; empty disables authentication"),
+	VC_STR("mail-password-env", "mail", "password_env", "VENTURE_SMTP_PASSWORD", "Environment variable NAME holding the SMTP password"),
+	VC_STR("mail-from-address", "mail", "from_address", "", "Sender address"),
+	VC_STR("mail-from-name", "mail", "from_name", "Venture", "Sender display name"),
+	VC_STR("mail-reply-to", "mail", "reply_to", "", "Default reply address"),
+
 };
 
 #define VENTURE_CONFIG_N_SETTINGS G_N_ELEMENTS(venture_config_settings)

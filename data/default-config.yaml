@@ -390,3 +390,14 @@ federation:
   key_file: ""           # Owner-only Ed25519 PEM identity, separate from TLS.
   ca_file: ""            # Empty uses system trust; never disables verification.
   sync_interval: 60      # One local replica per interval; 0 means manual only.
+
+# Transactional SMTP. The password is resolved only from this variable NAME.
+mail:
+  host: ""
+  port: 587
+  security: starttls                 # starttls | tls | none
+  username: ""                       # empty disables authentication
+  password_env: VENTURE_SMTP_PASSWORD
+  from_address: ""
+  from_name: Venture
+  reply_to: ""

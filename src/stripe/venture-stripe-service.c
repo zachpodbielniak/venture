@@ -269,6 +269,9 @@ venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 
 	if (!venture_database_begin(self->database, error)) return NULL;
 	if (!eligible(self, invoice_id, &invoice, &price, &quantity, &expected, error)) goto fail;
+	/* A remote customer/session cannot be undone by rolling back the local
+	 * transaction. Check the invoice write policy before contacting Stripe. */
+	if (!venture_access_policy_check_write(venture_database_get_access_policy(self->database), invoice, "write", error)) goto fail;
 	sessions = find_id(self, venture_stripe_checkout_get_type(), "invoice-id", invoice_id, error);
 	if (!sessions) goto fail;
 	if (sessions->len)

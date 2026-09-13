@@ -119,3 +119,5 @@ no network requests to Stripe and no stripe-mock are involved. It exercises
 eligibility, exact amounts, session linkage, duplicate delivery, rollback,
 immutable evidence, configuration and HTTP/CLI/web actions. The full suite
 runs with =GSETTINGS_BACKEND=memory make DEBUG=1 -j8 test=.
+
+Checkout enforces invoice write authority, including organization roles and policy-plugin vetoes, before any customer or session request reaches Stripe.

@@ -1,0 +1,156 @@
+#+title: Transactional mail
+
+* Delivery semantics
+
+The =mail= module requires =core=. =mail_message= is a durable outbox and
+=mail_template= stores organization templates. Both use the generated record
+surfaces. A nonempty =idempotency_key= is unique within its organization,
+including soft-deleted history. Enqueueing the same key returns the same row.
+
+The delivery contract is "at-least-once submission, at-most-once automatic
+retry, operator-resolved uncertainty". This does not promise duplicate-free
+SMTP delivery. A successful send means relay acceptance, not inbox delivery.
+
+A sweep commits =sending= with a lease before attempting submission. A
+definite failure before submission becomes =failed= with exponential backoff
+(60 seconds, 120 seconds, and so on), then =dead= at the attempt limit.
+A lost submission reply becomes =uncertain= and is never automatically
+retried. An expired =sending= lease also becomes =uncertain=: a process crash
+may have happened after the relay accepted the message. Deliberate retry
+reuses the same row and Message-ID; receiving MTAs may deduplicate it.
+
+* Enqueueing from another feature
+
+=venture_mail_outbox_enqueue()= accepts an unsaved =VentureMailMessage= with
+an exact organization, recipient, subject, text/HTML bodies and an
+idempotency key. Call it inside the transaction that writes the source
+record. It performs no network I/O. A delivery sweep must run after commit.
+
+=VentureMailer= is a GInterface with synchronous and async send/finish
+methods. =VentureLogMailer= records independent message snapshots in memory
+and supports injected errors for tests. No test should send real mail.
+
+The =sequence_delivery=, =billing_notice= and =quote_delivery= adapters each
+read one source row, construct the message, use a source-type/id-derived
+idempotency key and call enqueue. The source lane owns eligibility and
+content; the outbox owns submission. Those source-row adapters remain a
+cross-lane integration function, not additional SMTP implementations.
+
+* Templates
+
+Templates substitute ={field}= values from a record's public JSON fields
+into subject, text and HTML. HTML values are escaped. Unknown and sensitive
+fields are refused, and a template cannot render a different organization's
+record.
+
+* SMTP configuration
+
+#+begin_src yaml
+mail:
+  host: smtp.example.net
+  port: 587
+  security: starttls                 # starttls | tls | none
+  username: accounts@example.net     # empty means no authentication
+  password_env: VENTURE_SMTP_PASSWORD # NAME only; never a password
+  from_address: accounts@example.net
+  from_name: Accounts
+  reply_to: support@example.net
+#+end_src
+
+Set the named variable in the server's environment. Authentication over
+=none= is refused by mail-glib. TLS certificates are verified. The adapter
+uses mail-glib's one-attempt delivery interface; GMime composes the MIME and
+sets the durable Message-ID on the snapshot. Venture never implements SMTP.
+SMTP errors are recorded as fixed, credential-free outcome descriptions.
+
+The mailer reads a configuration snapshot when first requested. Restart the
+server after changing SMTP settings. =venture_context_get_mailer()= and
+=venture_context_get_mail_outbox()= return NULL when =modules.mail: false=.
+
+* Operator commands
+
+#+begin_src sh
+venturectl mail test to=operator@example.net
+venturectl mail send to=customer@example.net subject='Your receipt' body='Thank you.'
+venturectl mail send to=customer@example.net subject='Your invoice' --html invoice.html
+venturectl mail deliver --limit 100
+venturectl mail list state=uncertain
+venturectl mail retry 42
+#+end_src
+
+Supply =organization_id=N= for a legal entity other than the default.
+=mail test= performs one immediate submission through the configured mailer.
+=mail send= only enqueues. A =failed= row has a scheduled retry; an
+=uncertain= row needs a deliberate operator decision. Retry restarts its
+attempt budget, retaining its Message-ID and audit history. Mail rows cannot
+be deleted, restored or purged, preserving their idempotency keys.
+
+The generated web list is =/e/mail_message?state=uncertain=. The invoice
+page's Send button issues a draft through the settlement service and queues
+its HTML invoice, together with a nonfinancial =invoice_event= of kind
+=mail_queued=. Repeated Send presses return the same message. SMTP failure
+does not unissue the accounting document. The organization's =invoice=
+mail template supplies the subject and introductory text/HTML; the invoice
+line table and total follow it. The default template is saved on first use.
+
+User creation with an email queues a welcome notice. A subsequent password
+hash change queues a password-reset notification, with both writes in one
+transaction. No password is mailed. This uses the existing authenticated
+password-change/reset workflow; it does not add a public reset-token flow.
+Users without an email are skipped.
+
+* Scheduling
+
+Run a bounded sweep for each organization every minute. This podomation rule
+uses the same outbox service as REST and the CLI, on the main thread:
+
+#+begin_src text
+pod mail_minute = cron->new("* * * * *");
+mail_minute->on_schedule => venture->mail_deliver("1", "100");
+#+end_src
+
+The arguments are organization ID and attempt limit. Add a rule for each
+organization. Use a scheduled rule, after business transactions commit.
+
+* Attachments and durable snapshots
+
+=attachments= is a JSON field containing document references, for example
+=[{"type":"document","id":42}]=. Each document must exist, be live and
+belong to the message's organization. Its file must be under the server's
+=state-dir/attachments/= directory. At enqueue time the outbox copies the
+bytes and metadata into its retained message attributes. Later file edits or
+removal cannot change a retry. The combined attachment limit is 20 MiB.
+GMime encodes the attachment bytes; Bcc addresses stay envelope-only.
+
+* API
+
+- =POST /api/v1/mail/send=: message fields; returns the queued row (202).
+- =POST /api/v1/mail/test=: =to=; one immediate test submission.
+- =POST /api/v1/mail/deliver=: =organization_id= and =limit= (1–1000).
+- =POST /api/v1/mail_messages/:id/retry=: deliberate retry, optional organization.
+- =POST /api/v1/invoices/:id/send=: atomic issue/enqueue/event, returns the message.
+
+Actions require editor access; generated lists require ordinary read access.
+Mail actions refuse CLI =--stage=; use =--stage create mail_message= to stage
+an enqueue through the generic record machinery. Delivery must run outside
+any open database transaction, after all source writes commit.
+
+* Upgrades and verification
+
+The field tables add the mail tables and per-organization unique index.
+The paired =000160_mail_outbox.sql= scripts verify that the uniqueness index
+exists when its table exists, including upgrades with mail disabled. They do
+not infer or send historical mail. Existing business rows are unchanged.
+
+=test-mail= covers outbox states, retry exhaustion, retained keys, lease
+expiry, template escaping, SMTP uncertainty and Message-ID/Bcc behavior over
+a local socket, invoice/user consumers, atomic invoice/user rollback and attachment
+snapshots. =test-mail-surfaces= exercises the real CLI against a private HTTP
+server, action guards and the scheduled automation handler. =test-auth= covers
+anonymous action refusals.
+
+=VentureMailerRegistry= owns named transport implementations. The context uses
+its =smtp= slot; =venture_context_set_mailer()= replaces it for tests or plugins.
+Async send completes on the initiating main context and never accesses the database.
+
+SMTP tests enforce organization write authority and policy-plugin vetoes before invoking the mail transport, just as an outbox enqueue does.

@@ -141,5 +141,13 @@ gboolean venture_receivables_is_projection_write(VentureDatabase *database, Vent
  */
 gboolean venture_receivables_check_sale(VentureDatabase *database, VentureEntity *record, GError **error);
 
+/** venture_settlement_service_record_mail:
+ * @self: settlement service
+ * @invoice: issued invoice
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): persistence failure
+ * Returns: whether a nonfinancial mail-queued invoice event was recorded
+ */
+gboolean venture_settlement_service_record_mail(VentureSettlementService *self, VentureInvoice *invoice, const VentureActor *actor, GError **error);
 G_END_DECLS
 #endif

@@ -19,3 +19,6 @@
 [submodule "deps/stripe-glib"]
 	path = deps/stripe-glib
 	url = https://git.mcgoaty.com/ben/stripe-glib.git
+[submodule "deps/mail-glib"]
+	path = deps/mail-glib
+	url = git@gitlab.com:Creplav/mail-glib.git

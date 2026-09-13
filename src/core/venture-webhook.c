@@ -297,6 +297,7 @@ venture_webhook_record_delivery(
 ){
 	VentureDatabase *database;
 	g_autoptr(VentureWebhookDelivery) delivery = NULL;
+	g_autoptr(VentureAccessScope) internal = NULL;
 	g_autoptr(VentureEntity) webhook = NULL;
 	g_autoptr(GDateTime) now = NULL;
 	g_autofree gchar *excerpt = NULL;
@@ -304,6 +305,8 @@ venture_webhook_record_delivery(
 	gboolean succeeded;
 
 	database = venture_context_get_database(context);
+	/* A completion may run inside another request's nested main loop. */
+	internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
 	succeeded = (status >= 200) && (status < 300);
 	now = venture_time_now();
 	excerpt = venture_truncate(response, VENTURE_WEBHOOK_EXCERPT);

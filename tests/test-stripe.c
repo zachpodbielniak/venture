@@ -522,10 +522,22 @@ test_flow(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(audits_after->len, ==, audits_before->len);
 }
 
+/* Provider calls cannot be rolled back when local authorization later fails. */
+static GError *deny_invoice_write(VentureAccessPolicy *policy, const VentureAuthPrincipal *actor,
+	const gchar *action, VentureEntity *entity, gpointer unused)
+{
+	if (VENTURE_IS_INVOICE(entity) && !g_strcmp0(action, "write"))
+		return g_error_new_literal(VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "permission denied");
+	return NULL;
+}
+
 static void
 test_eligibility(Fixture *f, gconstpointer data)
 {
 	const gchar *rule = data;
+	g_autoptr(VentureAccessScope) access = NULL;
+	VentureAuthPrincipal principal = { 0 };
+	gulong policy_handler = 0;
 	g_autoptr(VentureEntity) invoice = record_new(f, "invoice");
 	g_autoptr(VentureEntity) price = record_new(f, "stripe_price_link");
 	g_autoptr(VentureStripeService) service = NULL;
@@ -578,11 +590,20 @@ test_eligibility(Fixture *f, gconstpointer data)
 		g_assert_true(venture_database_delete(f->database, customer, NULL, &error));
 		g_assert_no_error(error);
 	}
+	if (!g_strcmp0(rule, "permission"))
+	{
+		VentureAccessPolicy *policy = venture_database_get_access_policy(f->database);
+		principal.authenticated = TRUE;
+		principal.role = VENTURE_USER_ROLE_OWNER;
+		access = venture_access_policy_enter(policy, &principal);
+		policy_handler = g_signal_connect(policy, "decide", G_CALLBACK(deny_invoice_write), NULL);
+	}
 	checkout = venture_stripe_service_checkout(service, venture_entity_get_id(invoice), NULL, &error);
 	g_assert_null(checkout);
 	g_assert_nonnull(error);
 	g_assert_nonnull(strstr(error->message, rule));
 	g_assert_cmpuint(((FakeTransport *)transport)->calls, ==, 0);
+	if (policy_handler) g_signal_handler_disconnect(venture_database_get_access_policy(f->database), policy_handler);
 }
 
 static void
@@ -691,7 +712,7 @@ main(int argc, char **argv)
 	g_test_add("/stripe/module-start", Fixture, NULL, set_up, test_module_start, tear_down);
 
 	{
-		static const gchar *const rules[] = { "status sent", "exactly one", "stripe_price_link", "integral", "organization", "open balance", "deleted" };
+		static const gchar *const rules[] = { "status sent", "exactly one", "stripe_price_link", "integral", "organization", "open balance", "deleted", "permission" };
 		guint i;
 		for (i = 0; i < G_N_ELEMENTS(rules); i++)
 		{

@@ -365,7 +365,7 @@ clean-all: clean-deps
 # exactly what an orm-glib bump did.
 clean-deps:
 	$(Q)for d in $(YAML_GLIB_DIR) $(HTMX_GLIB_DIR) $(AI_GLIB_DIR) \
-	             $(CRISPY_DIR) $(PODOMATION_DIR) $(ORM_GLIB_DIR); do \
+	             $(CRISPY_DIR) $(PODOMATION_DIR) $(ORM_GLIB_DIR) $(MAIL_GLIB_DIR) $(MAIL_OTEL_DIR); do \
 		rm -rf $$d/build; \
 	done
 
@@ -559,3 +559,8 @@ dep-stripe-glib: $(YAML_GLIB_LIB)
 	$(Q)$(MAKE) -C $(STRIPE_GLIB_DIR) static DEBUG=$(DEBUG) YAML_GLIB_DIR=$(YAML_GLIB_DIR) YAML_GLIB_STATIC=$(YAML_GLIB_LIB) YAML_NAMESPACE= OTEL_SHARED=$(OTEL_GLIB_LIB)
 $(STRIPE_GLIB_LIB) $(OTEL_GLIB_LIB): dep-stripe-glib
 	@test -f $@
+.PHONY: dep-mail-glib
+dep-mail-glib: $(YAML_GLIB_LIB)
+	$(Q)$(MAKE) --no-print-directory -C $(MAIL_GLIB_DIR) DEBUG=$(DEBUG) YAML_GLIB_STATIC=$(YAML_GLIB_LIB) static
+	$(Q)$(MAKE) --no-print-directory -C $(MAIL_OTEL_DIR) DEBUG=$(DEBUG) YAML_GLIB_STATIC=$(YAML_GLIB_LIB) static
+$(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB): dep-mail-glib

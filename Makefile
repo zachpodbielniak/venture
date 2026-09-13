@@ -66,6 +66,8 @@ CORE_SRCS := \
 	$(wildcard src/util/*.c) \
 	$(wildcard src/mcp/*.c)
 
+CORE_SRCS += src/orgaccess/venture-access-records.c
+
 # Server-only subsystems.
 SERVER_ONLY_SRCS := \
 	$(filter-out src/ledger/venture-journal.c,$(wildcard src/ledger/*.c)) \
@@ -85,6 +87,15 @@ SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard
 
 CORE_SRCS += src/stripe/venture-stripe-records.c
 SERVER_ONLY_SRCS += $(filter-out src/stripe/venture-stripe-records.c,$(wildcard src/stripe/*.c))
+SERVER_ONLY_SRCS += $(filter-out src/orgaccess/venture-access-records.c,$(wildcard src/orgaccess/*.c))
+CORE_SRCS += src/mail/venture-mail-records.c
+SERVER_ONLY_SRCS += $(filter-out src/mail/venture-mail-records.c,$(wildcard src/mail/*.c))
+
+CORE_SRCS += src/autojournal/venture-posting-profile.c
+SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wildcard src/autojournal/*.c))
+
+PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
+SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
@@ -93,6 +104,7 @@ MAIN_SRC := src/main.c
 
 # Public headers: installed, and fed to the GIR scanner.
 PUBLIC_HDRS := \
+	$(PUBLIC_HDRS_AUTOJOURNAL) \
 	$(filter-out %-private.h,$(wildcard src/ledger/*.h)) \
 	src/venture.h \
 	src/venture-types.h \
@@ -118,6 +130,11 @@ PUBLIC_HDRS := \
 	$(wildcard src/util/*.h) \
 	$(wildcard src/mcp/*.h)
 
+PUBLIC_HDRS += $(wildcard src/orgaccess/*.h)
+PUBLIC_HDRS += $(wildcard src/mail/*.h)
+
+PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/statements/*.h))
+
 TEST_SRCS := $(wildcard tests/test-*.c)
 
 # ---------------------------------------------------------------------------
@@ -134,6 +151,7 @@ TEST_BINS := $(patsubst tests/%.c,$(OUTDIR)/tests/%,$(TEST_SRCS))
 # The settlement test drives the real CLI and its MCP tool against HTTP.
 $(OUTDIR)/tests/test-stripe: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-receivables: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-auth: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery
@@ -440,3 +458,7 @@ ifeq ($(filter clean clean-all clean-deps,$(MAKECMDGOALS)),)
 -include $(wildcard $(MAIN_OBJ:.o=.d))
 -include $(wildcard $(TEST_OBJS:.o=.d))
 endif
+
+deps: $(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB)
+
+$(OUTDIR)/tests/test-mail-surfaces: | $(OUTDIR)/venturectl

@@ -284,3 +284,11 @@ The value reaches the page as =--accent-config=, and every other accent value is
 An operator may set another hue. In the industrial look negative readings — an overdue clock, a failed delivery — are drawn in the accent, so a configured blue makes "overdue" blue too. That is the trade the setting makes.
 
 Status colours are not configurable. Positive, warning and informational each have a fixed colour and a matching wash, chosen per substrate, because they have to stay distinguishable from one another and from whatever accent an operator picks.
+
+** Transactional mail
+
+The =mail= section configures =host=, =port=, =security= (=starttls=, =tls= or
+=none=), =username=, =password_env=, =from_address=, =from_name= and
+=reply_to=. =password_env= is an environment variable name, never a literal
+password. Empty username disables authentication. Disable the whole outbox
+with =modules.mail: false=. See [[file:mail.org][transactional mail]].
