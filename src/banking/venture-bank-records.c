@@ -64,4 +64,3 @@ static const VentureFieldDecl reconciliation_fields[] = {
 	VENTURE_FIELD("reconciled-at", "Reconciled at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 };
 VENTURE_DEFINE_ENTITY(VentureReconciliation, venture_reconciliation, reconciliation_fields)
-

@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #ifndef VENTURE_BANK_RECORDS_H
 #define VENTURE_BANK_RECORDS_H
+#if !defined(VENTURE_INSIDE) && !defined(VENTURE_COMPILATION)
+#error "Only <venture.h> can be included directly."
+#endif
 G_BEGIN_DECLS
 #define VENTURE_TYPE_BANK_ACCOUNT (venture_bank_account_get_type())
 VENTURE_DECLARE_ENTITY(VentureBankAccount, venture_bank_account, BANK_ACCOUNT)

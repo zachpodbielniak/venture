@@ -67,7 +67,7 @@ amount candidate within three days; ambiguity leaves the line unmatched.
 
 A manual match takes =parts=, an array of record type, id and optional signed
 amount. The parts must sum exactly to the transaction. Multiple parts produce
-split evidence; a smaller document amount produces partial evidence. Exclusion
+split evidence; an amount smaller than the document produces partial evidence. Exclusion
 requires a reason. Unmatching retains the old match as soft-deleted audit history.
 
 Creating an expense saves an ordinary expense and invokes its registered
@@ -90,11 +90,31 @@ The REST action shapes are:
 - =POST /api/v1/bank_transactions/:id/match|unmatch|exclude|create=
 
 Bodies are JSON objects; actions without parameters accept ={}=. Editors may
-execute actions. Record detail pages contain an action selector and JSON
-parameter editor invoking the same service. The CLI accepts inline JSON or
+execute actions. Record detail pages contain action forms for statement contents, balances,
+matching, creation and exclusion, invoking the same service. The web match
+form offers three split rows; REST and CLI accept any number. The CLI accepts inline JSON or
 =@FILE= and sends the same REST request. Ordinary field-table forms and lists
 remain available for reading evidence and configuring bank accounts.
 
 The =bank_reconciliation= report takes =statement_id= and optional
 =organization_id=. It shows signed matched, unmatched and excluded totals,
 statement closing balance, current posted book balance and difference.
+
+* Accounting policy and upgrades
+
+An expense's configured posting rule must affect the bank account by the
+statement amount. The create action checks the actual posted balance change
+and rolls everything back if the rule selected another account. The built-in
+expense rule uses Cash (1000); another bank requires an installation posting
+rule selecting it. Receipt creation selects the linked bank directly through
+the settlement service's public cash-account property.
+
+To preserve an open review without finalizing it, call =reconcile= with
+={"state":"open"}=. This records the balances and difference without locking
+transactions. A normal reconciliation recomputes and checks them before
+recording reconciled evidence.
+
+The paired =000003_banking.sql= migrations verify that the field-table schema
+contains the complete banking evidence family, or no banking tables when the
+module is disabled. No bank history is fabricated from existing documents.
+The ordinary migration suite checks upgrade and restart with retained data.

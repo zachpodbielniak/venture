@@ -161,6 +161,14 @@ option(JsonObject *args, const gchar *name)
 		? json_node_get_string(node) : NULL;
 }
 
+static gint64
+option_id(JsonObject *args, const gchar *field)
+{
+	JsonNode *node = args != NULL ? json_object_get_member(args, field) : NULL;
+	return node != NULL && JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_INT64
+		? json_node_get_int(node) : 0;
+}
+
 static GDateTime *
 date_parse(const gchar *text)
 {
@@ -319,7 +327,7 @@ match_records(VentureBankMatchService *self, VentureEntity *transaction, JsonArr
 		if (name == NULL || !json_object_has_member(part, "id")) return refuse(error, "match requires type and id");
 		type = venture_entity_registry_lookup(venture_entity_registry_get_default(), name);
 		if (type == G_TYPE_INVALID) return refuse(error, "match record type is unavailable");
-		target = venture_database_get(self->database, type, json_object_get_int_member(part, "id"), error);
+		target = venture_database_get(self->database, type, option_id(part, "id"), error);
 		if (target == NULL) return FALSE;
 		if (venture_entity_get_organization_id(target) != org) return refuse(error, "match crosses organizations");
 		value = candidate_amount(target);
@@ -573,6 +581,9 @@ import_statement(VentureBankMatchService *self, VentureEntity *bank, JsonObject 
 	else if (!g_strcmp0(format, "ofx") || !g_strcmp0(format, "qfx"))
 	{
 		const gchar *p = data;
+		g_autofree gchar *declared_currency = ofx_value(data, "CURDEF");
+		if (declared_currency != NULL && g_strcmp0(declared_currency, currency))
+		{ refuse(error, "OFX currency differs from the bank account"); return NULL; }
 		while ((p = strstr(p, "<STMTTRN>")) != NULL)
 		{
 			const gchar *end_block = strstr(p, "</STMTTRN>");
@@ -593,7 +604,7 @@ import_statement(VentureBankMatchService *self, VentureEntity *bank, JsonObject 
 }
 
 static VentureEntity *
-reconcile(VentureBankMatchService *self, VentureEntity *statement, const VentureActor *actor, GError **error)
+reconcile(VentureBankMatchService *self, VentureEntity *statement, gboolean finalize_record, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) bank = venture_database_get(self->database, VENTURE_TYPE_BANK_ACCOUNT, number(statement, "bank-account-id"), error);
 	g_autoptr(GPtrArray) transactions = NULL;
@@ -613,7 +624,7 @@ reconcile(VentureBankMatchService *self, VentureEntity *statement, const Venture
 		VentureEntity *transaction = g_ptr_array_index(transactions, i);
 		g_autoptr(GDateTime) date = NULL;
 		g_object_get(transaction, "date", &date, NULL);
-		if (g_date_time_compare(date, end) <= 0 && state_is(transaction, "unmatched"))
+		if (finalize_record && g_date_time_compare(date, end) <= 0 && state_is(transaction, "unmatched"))
 		{ refuse(error, "unmatched bank transactions remain through the period end"); return NULL; }
 	}
 	book = venture_posting_service_account_balance(venture_database_get_posting_service(self->database),
@@ -621,12 +632,13 @@ reconcile(VentureBankMatchService *self, VentureEntity *statement, const Venture
 	if (book == NULL) return NULL;
 	difference = venture_money_subtract(closing, book, error);
 	if (difference == NULL) return NULL;
-	if (venture_money_get_amount(difference) != 0)
+	if (finalize_record && venture_money_get_amount(difference) != 0)
 	{ refuse(error, "statement and posted book balance differ"); return NULL; }
 	result = new_record(VENTURE_TYPE_RECONCILIATION, org);
 	g_object_set(result, "bank-account-id", venture_entity_get_id(bank), "period-end", end,
-		"statement-balance", closing, "book-balance", book, "difference", difference, "state", "reconciled",
-		"reconciled-by", actor != NULL ? actor->name : "system", "reconciled-at", now, NULL);
+		"statement-balance", closing, "book-balance", book, "difference", difference, "state", finalize_record ? "reconciled" : "open",
+		"reconciled-by", finalize_record ? (actor != NULL ? actor->name : "system") : NULL,
+		"reconciled-at", finalize_record ? now : NULL, NULL);
 	if (!save_owned(self, result, actor, error)) return NULL;
 	return g_steal_pointer(&result);
 }
@@ -687,6 +699,7 @@ create_document(VentureBankMatchService *self, VentureEntity *transaction, JsonO
 	g_autoptr(VentureEntity) record = NULL;
 	g_autoptr(VentureEntity) bank = NULL;
 	g_autoptr(VentureMoney) signed_amount = NULL, amount = NULL;
+	g_autoptr(VentureMoney) before = NULL, after = NULL, change = NULL;
 	g_autoptr(GDateTime) date = NULL;
 	g_autofree gchar *description = NULL;
 	g_autoptr(JsonArray) parts = NULL;
@@ -699,6 +712,9 @@ create_document(VentureBankMatchService *self, VentureEntity *transaction, JsonO
 		self->database, org, date, error)) return FALSE;
 	bank = venture_database_get(self->database, VENTURE_TYPE_BANK_ACCOUNT, number(transaction, "bank-account-id"), error);
 	if (bank == NULL) return FALSE;
+	before = venture_posting_service_account_balance(venture_database_get_posting_service(self->database),
+		number(bank, "account-id"), org, venture_money_get_currency(signed_amount), date, error);
+	if (before == NULL) return FALSE;
 	if (!g_strcmp0(type, "expense") && venture_money_get_amount(signed_amount) < 0)
 	{
 		amount = venture_money_multiply_int(signed_amount, -1, error);
@@ -709,12 +725,12 @@ create_document(VentureBankMatchService *self, VentureEntity *transaction, JsonO
 	}
 	else if ((!g_strcmp0(type, "receipt") || !g_strcmp0(type, "payment")) && venture_money_get_amount(signed_amount) > 0)
 	{
-		if (!json_object_has_member(args, "customer_id")) return refuse(error, "receipt requires customer_id");
+		if (option_id(args, "customer_id") <= 0) return refuse(error, "receipt requires customer_id");
 		if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "payment") == G_TYPE_INVALID)
 			return refuse(error, "receivables module is disabled");
 		record = new_record(VENTURE_TYPE_PAYMENT, org);
 		g_object_set(record, "amount", signed_amount, "date", date, "method", "bank",
-			"customer-id", json_object_get_int_member(args, "customer_id"), "reference", description, NULL);
+			"customer-id", option_id(args, "customer_id"), "reference", description, NULL);
 		/* The canonical service owns the write permit; use its configured cash
 		 * account and restore the property before returning to the caller. */
 		{
@@ -729,6 +745,13 @@ create_document(VentureBankMatchService *self, VentureEntity *transaction, JsonO
 		}
 	}
 	else return refuse(error, "negative lines create expenses; positive lines create receipts");
+	after = venture_posting_service_account_balance(venture_database_get_posting_service(self->database),
+		number(bank, "account-id"), org, venture_money_get_currency(signed_amount), date, error);
+	if (after == NULL) return FALSE;
+	change = venture_money_subtract(after, before, error);
+	if (change == NULL) return FALSE;
+	if (!venture_money_equal(change, signed_amount))
+		return refuse(error, "document posting rule must use this bank account; configure its cash account policy");
 	parts = parts_for(record);
 	return match_records(self, transaction, parts, actor, error);
 }
@@ -756,7 +779,7 @@ venture_bank_match_service_execute(VentureBankMatchService *self, const gchar *a
 	}
 	else if (!strcmp(action, "reconcile"))
 	{
-		result = reconcile(self, record, actor, error);
+		result = reconcile(self, record, g_strcmp0(option(args, "state"), "open") != 0, actor, error);
 		ok = result != NULL;
 	}
 	else if (!strcmp(action, "auto")) ok = auto_match(self, record, actor, error);

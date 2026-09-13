@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #ifndef VENTURE_BANK_MATCH_SERVICE_H
 #define VENTURE_BANK_MATCH_SERVICE_H
+#if !defined(VENTURE_INSIDE) && !defined(VENTURE_COMPILATION)
+#error "Only <venture.h> can be included directly."
+#endif
 G_BEGIN_DECLS
 #define VENTURE_TYPE_BANK_MATCH_SERVICE (venture_bank_match_service_get_type())
 G_DECLARE_FINAL_TYPE(VentureBankMatchService, venture_bank_match_service, VENTURE, BANK_MATCH_SERVICE, GObject)

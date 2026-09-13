@@ -439,7 +439,7 @@ test_surfaces(BankFixture *f, gconstpointer data)
 	body = run_cli(auto_argv, NULL, TRUE);
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_MATCH), ==, 1);
-	g_assert_cmpuint(http_request(server, "POST", "/banking/1/action", "application/x-www-form-urlencoded", "action=unmatch&parameters=%7B%7D", NULL), ==, 302);
+	g_assert_cmpuint(http_request(server, "POST", "/banking/1/action", "application/x-www-form-urlencoded", "action=unmatch", NULL), ==, 302);
 	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_MATCH), ==, 0);
 	g_assert_cmpuint(http_request(server, "POST", "/api/v1/bank_statements/1/auto", "application/json", "{}", NULL), ==, 200);
 	g_assert_cmpuint(http_request(server, "GET", "/api/v1/reports/bank_reconciliation?statement_id=1", NULL, NULL, &body), ==, 200);
@@ -594,11 +594,93 @@ test_candidate_windows(BankFixture *f, gconstpointer data)
 	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_MATCH), ==, 0);
 }
 
+static void
+test_ofx_currency(BankFixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) result = NULL;
+	(void)data;
+	result = bank_import(f, "ofx", "<OFX><CURDEF>EUR<STMTTRN><DTPOSTED>20260110<TRNAMT>-10<FITID>eur</STMTTRN></OFX>", "-10 USD", &error);
+	g_assert_null(result);
+	g_assert_nonnull(error);
+	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_STATEMENT), ==, 0);
+}
+
+static void
+test_bank_posting_account(BankFixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureAccount) account = venture_account_new();
+	g_autoptr(VentureEntity) statement = NULL, result = NULL;
+	(void)data;
+	g_object_set(account, "name", "Other bank", "code", "1010", "organization-id", f->org,
+		"kind", VENTURE_ACCOUNT_KIND_ASSET, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(account), NULL, &error));
+	g_clear_object(&f->bank);
+	f->bank = VENTURE_ENTITY(venture_bank_account_new());
+	g_object_set(f->bank, "name", "Other bank", "organization-id", f->org, "currency", "USD",
+		"account-id", venture_entity_get_id(VENTURE_ENTITY(account)), NULL);
+	g_assert_true(venture_database_save(f->database, f->bank, NULL, &error));
+	statement = bank_import(f, "ofx", "<OFX><STMTTRN><DTPOSTED>20260110<TRNAMT>-10<FITID>other</STMTTRN></OFX>", "-10 USD", &error);
+	g_assert_no_error(error);
+	/* A source rule that posts to another bank must not be matched here. */
+	result = bank_action(f, "create", 1, "{\"type\":\"expense\"}", &error);
+	g_assert_null(result); g_assert_nonnull(error);
+	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_EXPENSE), ==, 0);
+	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_JOURNAL), ==, 0);
+}
+
+static void
+test_open_reconciliation(BankFixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) statement = NULL, result = NULL;
+	g_autofree gchar *state = NULL;
+	(void)data;
+	statement = bank_import(f, "ofx", "<OFX><STMTTRN><DTPOSTED>20260110<TRNAMT>-10<FITID>open</STMTTRN></OFX>", "-10 USD", &error);
+	g_assert_no_error(error);
+	result = bank_action(f, "reconcile", venture_entity_get_id(statement), "{\"state\":\"open\"}", &error);
+	g_assert_no_error(error); g_assert_nonnull(result);
+	g_object_get(result, "state", &state, NULL);
+	g_assert_cmpstr(state, ==, "open");
+}
+
+static void
+test_disabled_upgrade(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", &error);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(OrmResult) result = NULL;
+	venture_config_set_module_enabled(config, "banking", FALSE);
+	context = venture_context_new(config, db);
+	g_assert_true(venture_database_execute(db, "CREATE TABLE banking_old_probe (amount BIGINT); INSERT INTO banking_old_probe VALUES (12345)", NULL, &error));
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	result = venture_database_query_raw(db, "SELECT CAST(COUNT(*) AS BIGINT) FROM sqlite_master WHERE name = 'bank_transactions'", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_result_next(result));
+	g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 0);
+	g_clear_object(&result);
+	venture_config_set_module_enabled(config, "banking", TRUE);
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	result = venture_database_query_raw(db, "SELECT amount FROM banking_old_probe", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_result_next(result));
+	g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 12345);
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	venture_entity_registry_register_builtins(venture_entity_registry_get_default());
+	g_test_add("/banking/ofx-currency", BankFixture, NULL, bank_setup, test_ofx_currency, bank_teardown);
+	g_test_add("/banking/posting-account", BankFixture, NULL, bank_setup, test_bank_posting_account, bank_teardown);
+	g_test_add("/banking/open-reconciliation", BankFixture, NULL, bank_setup, test_open_reconciliation, bank_teardown);
 	g_test_add("/banking/candidate-windows", BankFixture, NULL, bank_setup, test_candidate_windows, bank_teardown);
 	g_test_add("/banking/partial-installments", BankFixture, NULL, bank_setup, test_partial_installments, bank_teardown);
 	g_test_add("/banking/posting-rollback", BankFixture, NULL, bank_setup, test_posting_rollback, bank_teardown);
@@ -608,6 +690,7 @@ main(int argc, char **argv)
 	g_test_add("/banking/account-evidence", BankFixture, NULL, bank_setup, test_account_evidence_guard, bank_teardown);
 	g_test_add("/banking/ofx-rollback", BankFixture, NULL, bank_setup, test_ofx_rollback, bank_teardown);
 	g_test_add("/banking/split-atomic", BankFixture, NULL, bank_setup, test_split_and_atomic_creation, bank_teardown);
+	g_test_add_func("/banking/disabled-upgrade", test_disabled_upgrade);
 	g_test_add_func("/banking/records", test_records);
 	g_test_add_func("/banking/report", test_report_registration);
 	g_test_add_func("/banking/generic-match-refused", test_match_guard);
