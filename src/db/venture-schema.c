@@ -204,13 +204,15 @@ venture_schema_append_column(
 		g_autofree gchar *amount = NULL;
 		g_autofree gchar *currency = NULL;
 		g_autofree gchar *exponent = NULL;
+		g_autofree gchar *amount_column = g_strconcat(column, VENTURE_SCHEMA_MONEY_AMOUNT_SUFFIX, NULL);
+		g_autofree gchar *currency_column = g_strconcat(column, VENTURE_SCHEMA_MONEY_CURRENCY_SUFFIX, NULL);
+		g_autofree gchar *exponent_column = g_strconcat(column, VENTURE_SCHEMA_MONEY_EXPONENT_SUFFIX, NULL);
 
-		amount = venture_schema_quote_identifier(
-			g_strconcat(column, VENTURE_SCHEMA_MONEY_AMOUNT_SUFFIX, NULL));
-		currency = venture_schema_quote_identifier(
-			g_strconcat(column, VENTURE_SCHEMA_MONEY_CURRENCY_SUFFIX, NULL));
-		exponent = venture_schema_quote_identifier(
-			g_strconcat(column, VENTURE_SCHEMA_MONEY_EXPONENT_SUFFIX, NULL));
+		/* Quoting allocates a new string; it does not consume its input.
+		 * Keep both allocations scoped across repeated schema reconciliation. */
+		amount = venture_schema_quote_identifier(amount_column);
+		currency = venture_schema_quote_identifier(currency_column);
+		exponent = venture_schema_quote_identifier(exponent_column);
 
 		g_string_append_printf(context->sql,
 			"  %s %s,\n  %s TEXT,\n  %s %s",
