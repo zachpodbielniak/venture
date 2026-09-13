@@ -54,6 +54,7 @@ struct _VentureDatabase
 	 * through venture_database_save(), so every writer gets the check.
 	 */
 	GPtrArray		*validators;
+	VenturePayablesService *payables;
 	VentureBankMatchService *bank_match_service;
 	VentureDealService *deal_service;
 	VentureSequenceService *sequence_service;
@@ -101,6 +102,7 @@ venture_database_finalize(GObject *object)
 
 	self = VENTURE_DATABASE(object);
 
+	g_clear_object(&self->payables);
 	g_clear_object(&self->bank_match_service);
 	g_clear_object(&self->deal_service);
 	g_clear_object(&self->sequence_service);
@@ -1061,13 +1063,19 @@ venture_database_save(
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
 
+	{
+		gboolean handled;
+		gboolean ok = venture_payables_expense_hook(self, entity, actor, &handled, error);
+		if (!ok || handled)
+			return ok;
+	}
 	if (!venture_bank_check_write(self, entity, FALSE, error))
 		return FALSE;
 
 
 	VENTURE_AUTOJOURNAL_SAVE_HOOK(self, entity, actor, error);
 	/* Source and posting share a transaction, whichever surface saved it. */
-	if (venture_ledger_wrap_source(self, entity))
+	if (!venture_payables_is_projection_write(self, entity) && venture_ledger_wrap_source(self, entity))
 		return venture_ledger_save_source(self, entity, actor, error);
 	{
 		gboolean handled;
@@ -1125,6 +1133,18 @@ database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
 		gboolean ok;
 
 		ok = venture_receivables_save_hook(self, entity, actor, &handled, &settlement_authorized, error);
+		if (!ok || handled)
+		{
+			g_rec_mutex_unlock(&self->lock);
+			return ok;
+		}
+	}
+
+	{
+		gboolean handled;
+		gboolean authorized;
+		gboolean ok = venture_payables_save_hook(self, entity, actor, &handled, &authorized, error);
+		settlement_authorized = settlement_authorized || authorized;
 		if (!ok || handled)
 		{
 			g_rec_mutex_unlock(&self->lock);
@@ -1430,9 +1450,9 @@ venture_database_delete(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
-	if (!venture_bank_check_write(self, entity, TRUE, error))
-		return FALSE;
-	if (!venture_receivables_check_removal(self, entity, error))
+	if (!venture_bank_check_write(self, entity, TRUE, error) ||
+		!venture_payables_check_removal(self, entity, error) ||
+		!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_sequences_check_removal(entity, error))
 		return FALSE;
@@ -1494,9 +1514,9 @@ venture_database_restore(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
-	if (!venture_bank_check_write(self, entity, TRUE, error))
-		return FALSE;
-	if (!venture_receivables_check_removal(self, entity, error))
+	if (!venture_bank_check_write(self, entity, TRUE, error) ||
+		!venture_payables_check_removal(self, entity, error) ||
+		!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_sequences_check_removal(entity, error))
 		return FALSE;
@@ -1541,9 +1561,9 @@ venture_database_purge(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
-	if (!venture_bank_check_write(self, entity, TRUE, error))
-		return FALSE;
-	if (!venture_receivables_check_removal(self, entity, error))
+	if (!venture_bank_check_write(self, entity, TRUE, error) ||
+		!venture_payables_check_removal(self, entity, error) ||
+		!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_sequences_check_removal(entity, error))
 		return FALSE;
@@ -2019,6 +2039,15 @@ venture_database_migrate(
 		!venture_pipelines_migrate(self, error))
 		return FALSE;
 	return TRUE;
+}
+
+VenturePayablesService *
+venture_database_get_payables_service(VentureDatabase *database)
+{
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
+	if (database->payables == NULL)
+		database->payables = g_object_new(VENTURE_TYPE_PAYABLES_SERVICE, "database", database, NULL);
+	return database->payables;
 }
 
 VentureBankMatchService *

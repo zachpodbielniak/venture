@@ -71,6 +71,7 @@
 #include "model/venture-federation-records.h"
 #include "ledger/venture-journal.h"
 #include "receivables/venture-receivable-records.h"
+#include "payables/venture-payable-records.h"
 #include "banking/venture-bank-records.h"
 #include "receivables/venture-invoice-state-machine.h"
 #include "model/venture-venture-type.h"
@@ -119,6 +120,7 @@
 
 #include "report/venture-report.h"
 #include "receivables/venture-settlement-service.h"
+#include "payables/venture-payables-service.h"
 #include "banking/venture-bank-match-service.h"
 #include "sequences/venture-sequence-service.h"
 #include "periods/venture-period-report.h"

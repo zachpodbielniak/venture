@@ -533,6 +533,15 @@ static GType (*const venture_module_periods_types[]) (void) = {
 };
 static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live", NULL };
 
+static GType (*const venture_module_payables_types[]) (void) = {
+	venture_vendor_bill_get_type, venture_vendor_bill_line_get_type,
+	venture_bill_payment_get_type, venture_bill_payment_allocation_get_type,
+	venture_vendor_credit_get_type, venture_vendor_bill_event_get_type,
+	venture_bill_refund_get_type, NULL
+};
+static const gchar *const venture_module_requires_payables[] = { "finance", "ledger", "crm", NULL };
+static const gchar *const venture_module_reports_payables[] = { "payables", "vendor_statement", NULL };
+
 static const gchar *const banking_reports[] = { "bank_reconciliation", NULL };
 static const gchar *const banking_requires[] = { "ledger", NULL };
 static GType (*const banking_types[]) (void) = {
@@ -706,6 +715,12 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		venture_module_requires_finance, NULL,
 		venture_module_periods_types, venture_module_reports_periods, NULL, FALSE
 	},
+	{
+		"payables", "Payables", "Supplier bills, payments and dated vendor balances.",
+		venture_module_requires_payables, NULL, venture_module_payables_types,
+		venture_module_reports_payables, NULL, FALSE
+	},
+
 	{
 		"banking", "Banking", "Statement import, matching and reconciliation.",
 		banking_requires, NULL, banking_types, banking_reports, NULL, FALSE
