@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 static gint
-venture_cli_command_post(VentureCli *cli, gchar **args, GError **error)
+venture_cli_command_post(VentureCli *cli, gchar **args, gboolean dry_run, GError **error)
 {
 	g_autoptr(JsonNode) body = json_node_new(JSON_NODE_OBJECT);
 	g_autoptr(JsonObject) options = json_object_new();
 	g_autoptr(JsonNode) result = NULL;
 	guint i;
 	if (g_strcmp0(args[1], "backfill") != 0) goto usage;
+	json_object_set_boolean_member(options, "dry_run", dry_run);
 	for (i = 2; args[i] != NULL; i++) {
 		if (g_str_equal(args[i], "--dry-run")) json_object_set_boolean_member(options, "dry_run", TRUE);
 		else if (g_str_has_prefix(args[i], "organization_id=")) {

@@ -422,7 +422,7 @@ Collection pulls return at most ten results, `next_offset` and `more`; continue 
 ### Automatic journals
 
 `post backfill [organization_id=ID] [--dry-run]` is an editor action which posts
-missing sale/expense versions in date order. Use `report unposted` to review
+missing sale/expense versions in date order. Use `report unposted all` to review
 candidates, then `post backfill --dry-run` to validate without retaining writes.
 The response includes `candidates`, `posted`, `skipped` and `dry_run`. Period
 refusals abort the entire batch. `posting_profile` uses the normal generic

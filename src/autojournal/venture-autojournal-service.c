@@ -61,6 +61,9 @@ venture_autojournal_service_profile(VentureAutojournalService *self, gint64 org,
 	g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
 	g_autofree gchar *json = NULL;
 	guint i;
+	if (!enabled()) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "The autojournal module is disabled"); return NULL;
+	}
 	if (db == NULL || !venture_database_begin(db, error)) return NULL;
 	venture_query_set_organization(query, org);
 	found = venture_database_find_one(db, query, error);
@@ -433,7 +436,7 @@ venture_autojournal_service_unposted(VentureAutojournalService *self, gint64 org
 				g_autofree gchar *rule = NULL;
 				g_object_get(g_ptr_array_index(journals, k), "source-version", &version, "state", &state, "rule-name", &rule, NULL);
 				if (version == venture_entity_get_version(source) && state == VENTURE_JOURNAL_POSTED &&
-					g_strcmp0(rule, venture_entity_get_entity_name(source)) == 0) posted = TRUE;
+					g_strcmp0(rule, "reversal") != 0) posted = TRUE;
 			}
 			if (!posted) g_ptr_array_add(result, g_object_ref(source));
 		}

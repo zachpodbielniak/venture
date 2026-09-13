@@ -4,7 +4,7 @@ venture_web_autojournal_backfill(HtmxRequest *request, GHashTable *params, gpoin
 {
 	VentureWebServer *self = user_data;
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
-	g_autoptr(JsonParser) parser = json_parser_new();
+	g_autoptr(JsonNode) input = NULL;
 	g_autoptr(JsonNode) result = NULL;
 	g_autoptr(GError) error = NULL;
 	VentureActor actor;
@@ -16,14 +16,22 @@ venture_web_autojournal_backfill(HtmxRequest *request, GHashTable *params, gpoin
 	if (gate != NULL) return gate;
 	gate = venture_web_require_module_api(self, "autojournal");
 	if (gate != NULL) return gate;
-	if (!json_parser_load_from_data(parser, htmx_request_get_body(request), -1, &error))
-		return venture_web_error_response(error);
-	if (!JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser))) {
+	input = htmx_request_get_json(request, &error);
+	if (input == NULL) return venture_web_error_response(error);
+	if (!JSON_NODE_HOLDS_OBJECT(input)) {
 		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Backfill expects a JSON object");
 		return venture_web_error_response(error);
 	}
-	body = json_node_get_object(json_parser_get_root(parser));
+	body = json_node_get_object(input);
 	org = venture_json_object_get_int(body, "organization_id", 0);
+	if ((json_object_has_member(body, "organization_id") && org <= 0) ||
+		(json_object_has_member(body, "dry_run") &&
+		 (!JSON_NODE_HOLDS_VALUE(json_object_get_member(body, "dry_run")) ||
+		  json_node_get_value_type(json_object_get_member(body, "dry_run")) != G_TYPE_BOOLEAN))) {
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"organization_id must be positive and dry_run must be a boolean");
+		return venture_web_error_response(error);
+	}
 	if (org == 0) org = venture_context_get_default_organization_id(self->context);
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);

@@ -102,14 +102,14 @@ use =posted=; ordinary record/audit signals remain synchronous.
 * Finding and posting gaps
 
 =unposted= lists live sales and expenses whose current version has no posted
-journal under its document rule, scoped to one organization and optionally
+source journal, scoped to one organization and optionally
 the report period. Receivables projections are excluded. Metadata-only
 versions can appear even though their earlier financial journal remains
 valid. Incomplete documents without an amount are listed and skipped by
 backfill.
 
 #+begin_src sh
-venturectl report unposted organization_id=1
+venturectl report unposted all organization_id=1
 venturectl post backfill organization_id=1 --dry-run
 venturectl post backfill organization_id=1
 #+end_src
@@ -121,7 +121,9 @@ date, then type and ID. Existing active document journals are reversed before
 posting a missing current version, so a metadata-only version never doubles
 the balance. The batch is atomic and honours the period guard. A dry run
 executes validation and posting inside a transaction and rolls it back;
-no journal, profile, account or audit row survives it.
+no journal, profile, account or audit row survives it. Call dry-run backfill
+as a standalone operation: a nested rollback also rolls back its caller's
+transaction. The REST action always supplies that standalone boundary.
 
 Backfill is an explicit accounting cutover operation. Review legacy standalone
 ledger evidence before applying it: that evidence is not used as proof that a
@@ -132,7 +134,8 @@ formula and are not changed by this module.
 * Upgrade and verification
 
 Migration 000003 checks the additive sale/profile columns on both backends,
-including absent optional-module tables. Existing refund dates remain NULL;
+including absent optional-module tables and unreconciled historical sales
+tables while sales is disabled. Existing refund dates remain NULL;
 startup invents neither dates nor historical journals. Profiles seed lazily.
 Turning autojournal off hides its type, report and action and restores the
 legacy document rules. Posted evidence remains readable through ledger.
