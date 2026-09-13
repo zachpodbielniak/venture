@@ -195,3 +195,12 @@ server for somebody to approve, not merely described. =venturectl --stage=
 does the same for =create=, =update= and =delete= from the shell. It takes its credential from
 =VENTURE_TOKEN= and refuses =--token= outright, since an MCP server is spawned
 from a config file. See [[file:mcp.org][venturectl mcp]].
+
+* Backfilling journals
+
+=venturectl post backfill [organization_id=ID] [--dry-run]= posts missing
+current sale/expense versions through the automatic-journal service, in date
+order. It requires an editor and the =autojournal= module. Omission selects
+the default organization. The response reports candidates, posted and skipped
+incomplete documents. A dry run validates the complete batch and rolls it back.
+See [[file:autojournal.org][automatic journals]] before cutting over legacy books.

@@ -27485,6 +27485,7 @@ venture_web_api_ticket_summary(
 	return venture_web_json_response(node, 200);
 }
 
+
 static HtmxResponse *
 venture_web_api_ticket_draft(
 	HtmxRequest	*request,
@@ -27537,6 +27538,7 @@ venture_web_api_ticket_draft(
 
 
 #include "venture-web-federation.inc"
+#include "autojournal/venture-autojournal-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -27795,6 +27797,7 @@ venture_web_server_new(
 	/* API */
 	htmx_router_get(router, "/api/v1/health", venture_web_api_health, self);
 	htmx_router_get(router, "/api/v1/factory", venture_web_api_factory, self);
+	htmx_router_post(router, "/api/v1/post/backfill", venture_web_autojournal_backfill, self);
 	htmx_router_get(router, "/api/v1/inbox", venture_web_api_inbox, self);
 	htmx_router_post(router, "/api/v1/inbox/read", venture_web_api_inbox_read,
 	                 self);

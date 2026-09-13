@@ -225,7 +225,7 @@ test_report_registry_has_builtins(
 	reports = venture_report_registry_list(registry);
 
 	/* Ten for the books and the CRM, three for the software factory. */
-	g_assert_cmpuint(reports->len, ==, 18);
+	g_assert_cmpuint(reports->len, ==, 19);
 
 	g_assert_nonnull(venture_report_registry_lookup(registry, "pnl"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "releases"));

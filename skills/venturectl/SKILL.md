@@ -418,3 +418,12 @@ venturectl federation '{"action":"resolve","id":1,"version":5,"field":"descripti
 ```
 
 Collection pulls return at most ten results, `next_offset` and `more`; continue pages while `more` is true and inspect per-record errors. Pull imports/merges without pushing; sync pushes conflict-free changes with an expected remote version. Edits require the local replica version. A conflict blocks that record until resolved; choosing remote can accept a removed/revoked field. Never update `federation_replica` through generic CRUD: its merge state belongs to the service. Copies remain usable during outages but are not authoritative local accounting rows. New source objects and binary attachments are not created/copied offline. See `docs/federation.org` for key exchange, grants, scheduling and revocation.
+
+### Automatic journals
+
+`post backfill [organization_id=ID] [--dry-run]` is an editor action which posts
+missing sale/expense versions in date order. Use `report unposted` to review
+candidates, then `post backfill --dry-run` to validate without retaining writes.
+The response includes `candidates`, `posted`, `skipped` and `dry_run`. Period
+refusals abort the entire batch. `posting_profile` uses the normal generic
+CRUD commands; consult `describe posting_profile` for its account mappings.

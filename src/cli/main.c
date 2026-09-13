@@ -3100,6 +3100,8 @@ venture_cli_command_mcp(
 
 /* --- Entry point --------------------------------------------------------- */
 
+#include "autojournal/venture-autojournal-cli.inc"
+
 int
 main(
 	int	  argc,
@@ -3177,6 +3179,7 @@ main(
 		"  modules                      list the server's modules and which\n"
 		"                               are on; -f json for the detail\n"
 		"  federation JSON              identity, remote, pull, edit and sync\n"
+		"  post backfill                post missing journals; --dry-run\n"
 		"  factory                      the software factory at a glance\n"
 		"  release changelog ID         draft a release's changelog from\n"
 		"                               its tickets; --replace overwrites\n"
@@ -3409,6 +3412,8 @@ main(
 	else if ((0 == g_strcmp0(args[0], "webhooks")) ||
 	         (0 == g_strcmp0(args[0], "webhook")))
 		result = venture_cli_command_webhooks(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "post"))
+		result = venture_cli_command_post(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "mcp"))
 		result = venture_cli_command_mcp(&cli, args, &error);
 	else

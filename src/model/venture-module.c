@@ -533,6 +533,10 @@ static GType (*const venture_module_periods_types[]) (void) = {
 };
 static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live", NULL };
 
+static GType (*const autojournal_types[]) (void) = { venture_posting_profile_get_type, NULL };
+static const gchar *const autojournal_requires[] = { "ledger", NULL };
+static const gchar *const autojournal_reports[] = { "unposted", NULL };
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -674,6 +678,9 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"periods", "Fiscal periods", "Fiscal calendars, closing controls and historical reports.",
 		venture_module_requires_finance, NULL,
 		venture_module_periods_types, venture_module_reports_periods, NULL, FALSE
+	},
+	{ "autojournal", "Automatic journals", "Configurable source accounting.",
+		autojournal_requires, NULL, autojournal_types, autojournal_reports, NULL, FALSE
 	}
 };
 

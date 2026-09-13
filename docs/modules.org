@@ -157,3 +157,12 @@ The description must outlive the registry. A static does.
 - Every type it claims must be a concrete =VentureEntity= subclass.
 
 All five are checked at registration, and a built-in that breaks one aborts startup, because a registry missing a core module would fail in a hundred quieter ways later.
+
+* Automatic journals
+
+| Module | Requires | Owns |
+|--------+----------+------|
+| =autojournal= | ledger | posting_profile; detailed sale/expense rules, dated refund journals, =unposted= and =post backfill= |
+
+See [[file:autojournal.org][automatic journals]] for profile defaults and the
+source-save transaction boundary.

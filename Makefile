@@ -83,6 +83,11 @@ SERVER_ONLY_SRCS := \
 
 SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard src/periods/*.c))
 
+CORE_SRCS += src/autojournal/venture-posting-profile.c
+SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wildcard src/autojournal/*.c))
+
+PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
+
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
 CLI_SRCS := $(wildcard src/cli/*.c)
@@ -90,6 +95,7 @@ MAIN_SRC := src/main.c
 
 # Public headers: installed, and fed to the GIR scanner.
 PUBLIC_HDRS := \
+	$(PUBLIC_HDRS_AUTOJOURNAL) \
 	$(filter-out %-private.h,$(wildcard src/ledger/*.h)) \
 	src/venture.h \
 	src/venture-types.h \
