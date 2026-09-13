@@ -961,6 +961,9 @@ typedef enum
  * @VENTURE_COLUMN_FLAG_PERSONAL_OWNER: reference to the account or personal
  *   parent that owns this whole record
  *
+ * @VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME: string naming the assigned account;
+ *   grants ownership within that account's organization role
+ *
  * Per-property persistence hints. These are attached to a GObject property
  * with venture_entity_class_set_column_flags(), which is how a plain
  * GObject subclass becomes a database table without writing any SQL.
@@ -977,7 +980,8 @@ typedef enum
 	VENTURE_COLUMN_FLAG_SEARCHABLE  = 1 << 6,
 	VENTURE_COLUMN_FLAG_TRANSIENT   = 1 << 7,
 	VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION = 1 << 8,
-	VENTURE_COLUMN_FLAG_PERSONAL_OWNER = 1 << 9
+	VENTURE_COLUMN_FLAG_PERSONAL_OWNER = 1 << 9,
+	VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME = 1 << 10
 } VentureColumnFlags;
 
 /* --- GType registration -------------------------------------------------- */

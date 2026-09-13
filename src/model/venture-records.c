@@ -685,7 +685,7 @@ static const VentureFieldDecl venture_deal_fields[] = {
 	VENTURE_FIELD("next-action-at", "Next action", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("loss-reason-id", "Loss reason", NULL, "loss_reason", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("lost-note", "Lost note", NULL),
-	VENTURE_FIELD("owner", "Owner", "Username, like a ticket assignee", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("owner", "Owner", "Username, like a ticket assignee", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME),
 	VENTURE_FIELD("probability-overridden", "Override probability", "Keep the deal probability on stage moves", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("committed", "Committed", "Include in the committed forecast", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 
@@ -1218,7 +1218,7 @@ static const VentureFieldDecl venture_ticket_fields[] = {
 	                   VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_TEXT("description", "Description", NULL),
 	VENTURE_FIELD("assignee", "Assignee", "Who is doing it",
-	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME),
 	/* Who asked. Set for an external ticket, empty for your own work. */
 	VENTURE_FIELD_REF("contact-id", "Raised by", NULL, "contact",
 	                  VENTURE_COLUMN_FLAG_NONE),
