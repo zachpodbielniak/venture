@@ -2490,6 +2490,7 @@ venture_ai_make_tool(
 	return tool;
 }
 
+#include "activities/venture-activity-ai.inc"
 #include "pipelines/venture-pipeline-ai.inc"
 #include "venture-ai-actions-private.h"
 
@@ -2756,6 +2757,16 @@ venture_ai_service_register_tools(VentureAiService *self)
 	 */
 	if (VENTURE_AI_POLICY_READ_ONLY == self->policy)
 		return;
+
+	if (venture_context_module_enabled(self->context, "activities"))
+	{
+		g_autoptr(AiTool) activity = venture_ai_make_tool(self, "venture_activity_complete",
+			"Complete planned work with an outcome. Staged for approval unless autonomous; records history and advances recurrence atomically.");
+		ai_tool_add_parameter(activity, "id", "integer", "Activity id", TRUE);
+		ai_tool_add_parameter(activity, "outcome", "string", "What happened", FALSE);
+		ai_tool_executor_register_callback(self->executor, activity, venture_ai_tool_activity, self, NULL);
+	}
+
 
 	{
 		g_autoptr(AiTool) create = NULL;

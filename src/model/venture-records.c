@@ -619,7 +619,7 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureContact, venture_contact, venture_contact
 
 static const VentureFieldDecl venture_interaction_fields[] = {
 	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact",
-	                  VENTURE_COLUMN_FLAG_NOT_NULL),
+	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("company-id", "Company", NULL, "company",
 	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_ENUM("kind", "Kind", NULL,

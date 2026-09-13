@@ -196,6 +196,14 @@ does the same for =create=, =update=, =delete= and =act= from the shell. It take
 =VENTURE_TOKEN= and refuses =--token= outright, since an MCP server is spawned
 from a config file. See [[file:mcp.org][venturectl mcp]].
 
+* Planned activities
+
+=venturectl activity complete ID outcome=...= completes planned work through
+the activity service, records history and advances recurrence atomically.
+=venturectl activity list mine|overdue|today= reads the signed-in user's worklist.
+The existing =activity TYPE ID= still reads a record's timeline.
+Create and edit planned work with generic =create activity= and =update activity=;
+setting =status=done= through generic writes is refused. See [[file:activities.org][activities]].
 * Vendor bills
 
 =venturectl bill approve ID [date=DATE]= approves a draft supplier bill.

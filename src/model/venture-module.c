@@ -533,6 +533,11 @@ static GType (*const venture_module_periods_types[]) (void) = {
 };
 static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live", NULL };
 
+static GType (*const venture_module_activities_types[]) (void) = {
+	venture_activity_get_type, venture_activity_type_get_type, NULL
+};
+static const gchar *const venture_module_activities_requires[] = { "crm", NULL };
+static const gchar *const venture_module_activities_reports[] = { "worklist", NULL };
 static GType (*const venture_module_payables_types[]) (void) = {
 	venture_vendor_bill_get_type, venture_vendor_bill_line_get_type,
 	venture_bill_payment_get_type, venture_bill_payment_allocation_get_type,
@@ -714,6 +719,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"periods", "Fiscal periods", "Fiscal calendars, closing controls and historical reports.",
 		venture_module_requires_finance, NULL,
 		venture_module_periods_types, venture_module_reports_periods, NULL, FALSE
+	},
+	{
+		"activities", "Planned activities", "Tasks, calls, meetings and the daily worklist.",
+		venture_module_activities_requires, NULL, venture_module_activities_types,
+		venture_module_activities_reports, NULL, FALSE
 	},
 	{
 		"payables", "Payables", "Supplier bills, payments and dated vendor balances.",

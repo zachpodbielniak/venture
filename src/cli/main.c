@@ -2146,6 +2146,7 @@ venture_cli_command_release(
 	return 0;
 }
 
+#include "activities/venture-activity-cli.inc"
 #include "pipelines/venture-pipeline-cli.inc"
 
 /* --- The workdesk ---------------------------------------------------------- */
@@ -3290,6 +3291,8 @@ main(
 		"  inbox read ID|all            mark it read\n"
 		"  watch TYPE ID                be told when a record changes;\n"
 		"                               unwatch to stop\n"
+		"  activity complete ID outcome=...  complete planned work and record history\n"
+		"  activity list mine|overdue|today   the daily worklist\n"
 		"  activity TYPE ID             a record's timeline: changes,\n"
 		"                               comments, worklogs\n"
 		"  ticket ID sla                its service-level clocks\n"
@@ -3519,6 +3522,9 @@ main(
 	else if ((0 == g_strcmp0(args[0], "sprints")) ||
 	         (0 == g_strcmp0(args[0], "sprint")))
 		result = venture_cli_command_sprints(&cli, args, &error);
+	else if (g_strcmp0(args[0], "activity") == 0 &&
+	         (g_strcmp0(args[1], "complete") == 0 || g_strcmp0(args[1], "list") == 0))
+		result = venture_cli_command_activity(&cli, args, &error);
 	else if ((0 == g_strcmp0(args[0], "watch")) ||
 	         (0 == g_strcmp0(args[0], "unwatch")) ||
 	         (0 == g_strcmp0(args[0], "activity")))

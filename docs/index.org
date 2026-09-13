@@ -42,6 +42,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:containers.org][Containers]] — the Containerfile, local compose, and a deployment example
 - [[file:sequences.org][Follow-up sequences]] — enrollment, scheduling, exits, delivery evidence and the mail adapter seam
 - [[file:testing.org][Testing]] — running the suite, and what it guarantees
+- [[file:activities.org][Planned activities]] — tasks, calls, meetings, reminders and the daily rep worklist
 - [[file:actions.org][Record actions]] — shared business operations and approval
 
 - [[file:banking.org][Banking]] — statement import, matching and reconciliation

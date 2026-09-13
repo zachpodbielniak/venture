@@ -66,6 +66,7 @@ CORE_SRCS := \
 	$(wildcard src/util/*.c) \
 	$(wildcard src/mcp/*.c)
 
+CORE_SRCS += src/activities/venture-activity-records.c
 CORE_SRCS += src/payables/venture-payable-records.c
 CORE_SRCS += src/banking/venture-bank-records.c
 
@@ -88,6 +89,7 @@ SERVER_ONLY_SRCS += src/banking/venture-bank-match-service.c
 
 SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard src/periods/*.c))
 
+SERVER_ONLY_SRCS += $(filter-out src/activities/venture-activity-records.c,$(wildcard src/activities/*.c))
 SERVER_ONLY_SRCS += src/payables/venture-payables-service.c src/payables/venture-payable-reports.c
 
 CORE_SRCS += src/pipelines/venture-pipeline-records.c

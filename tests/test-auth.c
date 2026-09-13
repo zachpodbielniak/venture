@@ -1099,6 +1099,8 @@ test_auth_pages_refuse_anonymous_requests(
 	/* The workdesk: an inbox is one person's business; saved views say
 	 * what somebody watches; the sprints and the runs are the plan and
 	 * the spend. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/worklist"),
+	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/inbox"),
 	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/views"),
@@ -1244,6 +1246,8 @@ test_auth_api_refuses_anonymous_requests(
 		 * history, the plan, the spend, and the palette that lists
 		 * every page and record type this install has. */
 		"/api/v1/inbox",
+		"/api/v1/activities",
+		"/api/v1/activities.ics",
 		"/api/v1/watching/ticket/1",
 		"/api/v1/activity/ticket/1",
 		"/api/v1/tickets/1/sla",
@@ -1438,6 +1442,12 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/tickets/1/worklog", NULL, "{}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/activities/1/complete", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/activities/1/snooze", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/activities/sweep", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/sla/sweep", NULL, "{}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
