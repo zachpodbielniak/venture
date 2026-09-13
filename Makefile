@@ -118,6 +118,8 @@ PUBLIC_HDRS := \
 	$(wildcard src/util/*.h) \
 	$(wildcard src/mcp/*.h)
 
+PUBLIC_HDRS += $(wildcard src/payables/*.h)
+
 TEST_SRCS := $(wildcard tests/test-*.c)
 
 # ---------------------------------------------------------------------------
@@ -133,6 +135,7 @@ TEST_BINS := $(patsubst tests/%.c,$(OUTDIR)/tests/%,$(TEST_SRCS))
 
 # The settlement test drives the real CLI and its MCP tool against HTTP.
 $(OUTDIR)/tests/test-receivables: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-payables: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery

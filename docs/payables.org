@@ -115,3 +115,9 @@ frozen dates, partial and consolidated payments, credits, refunds, voiding,
 external-ID refusal, rollback after a payment write, January close followed
 by February settlement, historical reports, real web/REST/CLI and staged
 MCP actions, and immutable cash expense conversion without duplicate posting.
+
+After conversion, a later cash refund or repayment appends a negative or
+positive expense adjustment on its own date, with a =bill_cash:= source
+identity. Exact allocation across the frozen bill lines preserves cents;
+the original expense is never edited. A line not converted to a cash-report
+expense does not acquire these optional adjustments.

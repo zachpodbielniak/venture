@@ -22,7 +22,7 @@ enum
 	PROP_0,
 	PROP_DATABASE,
 	PROP_CASH_ACCOUNT,
-	PROP_RECEIVABLE_ACCOUNT,
+	PROP_PAYABLE_ACCOUNT,
 	PROP_EXPENSE_ACCOUNT,
 	N_PROPERTIES
 };
@@ -52,7 +52,7 @@ service_get_property(GObject *object, guint id, GValue *value, GParamSpec *spec)
 	{
 	case PROP_DATABASE: g_value_set_object(value, self->database); break;
 	case PROP_CASH_ACCOUNT: g_value_set_int64(value, self->cash_account); break;
-	case PROP_RECEIVABLE_ACCOUNT: g_value_set_int64(value, self->payable_account); break;
+	case PROP_PAYABLE_ACCOUNT: g_value_set_int64(value, self->payable_account); break;
 	case PROP_EXPENSE_ACCOUNT: g_value_set_int64(value, self->expense_account); break;
 	default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
 	}
@@ -74,7 +74,7 @@ service_set_property(GObject *object, guint id, const GValue *value, GParamSpec 
 			venture_database_add_save_validator(self->database, VENTURE_TYPE_JOURNAL, reject_projection_journal, NULL, NULL);
 		break;
 	case PROP_CASH_ACCOUNT: self->cash_account = g_value_get_int64(value); break;
-	case PROP_RECEIVABLE_ACCOUNT: self->payable_account = g_value_get_int64(value); break;
+	case PROP_PAYABLE_ACCOUNT: self->payable_account = g_value_get_int64(value); break;
 	case PROP_EXPENSE_ACCOUNT: self->expense_account = g_value_get_int64(value); break;
 	default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
 	}
@@ -106,7 +106,7 @@ venture_payables_service_class_init(VenturePayablesServiceClass *klass)
 	g_object_class_install_property(object_class, PROP_CASH_ACCOUNT,
 		g_param_spec_int64("cash-account-id", "Cash account", "Zero resolves code 1000 in the organization",
 			0, G_MAXINT64, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-	g_object_class_install_property(object_class, PROP_RECEIVABLE_ACCOUNT,
+	g_object_class_install_property(object_class, PROP_PAYABLE_ACCOUNT,
 		g_param_spec_int64("payable-account-id", "Receivable account", "Zero resolves code 2000; unused receipts are credit balances here",
 			0, G_MAXINT64, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 	g_object_class_install_property(object_class, PROP_EXPENSE_ACCOUNT,
@@ -446,11 +446,11 @@ is_bill_expense(VentureEntity *record)
 	if (!VENTURE_IS_EXPENSE(record))
 		return FALSE;
 	g_object_get(record, "external-id", &external, NULL);
-	return external != NULL && g_str_has_prefix(external, "bill_line:");
+	return external != NULL && (g_str_has_prefix(external, "bill_line:") || g_str_has_prefix(external, "bill_cash:"));
 }
 
 gboolean
-venture_payables_check_sale(VentureDatabase *database, VentureEntity *record, GError **error)
+venture_payables_check_expense(VentureDatabase *database, VentureEntity *record, GError **error)
 {
 	g_autoptr(VentureEntity) stored = NULL;
 	if (!venture_entity_is_persisted(record))
@@ -514,10 +514,8 @@ account_id(VenturePayablesService *self, gint64 configured, const gchar *code,
  * @actor: (nullable): the actor
  * @error: (out) (optional): the error
  *
- * The SINGLE posting seam for payables. Re-point this one call at the
- * journal posting service when it lands; no other payables code calls
- * venture_database_save_ledger_transaction(). The caller already owns the
- * encompassing settlement transaction.
+ * The single posting seam for payables. The caller owns the encompassing
+ * transaction; the journal service validates and persists the balanced legs.
  * Returns: TRUE if the balanced batch was saved
  */
 static gboolean
@@ -529,7 +527,7 @@ venture_payables_post_batch(VenturePayablesService *self, GPtrArray *entries,
 }
 
 /* These are source-document legs, not a second posting engine. Unapplied
- * cash is a credit balance in AR. Allocation transfers between the unused
+ * cash is a debit balance in AP. Allocation transfers between the unused
  * credit and the bill within that control account, with zero net GL. */
 static gboolean
 post(VenturePayablesService *self, VentureEntity *source, GDateTime *date,
@@ -859,6 +857,81 @@ update_credit(VenturePayablesService *self, VentureEntity *credit,
 }
 
 static gboolean
+project_cash_change(VenturePayablesService *self, VentureEntity *bill,
+	VentureEntity *source, const VentureMoney *amount, GDateTime *date,
+	gboolean refund, const VentureActor *actor, GError **error)
+{
+	g_autoptr(GPtrArray) lines = NULL;
+	g_autoptr(GPtrArray) shares = NULL;
+	g_autofree gint64 *ratios = NULL;
+	guint i;
+	lines = find_rows(self, VENTURE_TYPE_VENDOR_BILL_LINE, "bill-id", venture_entity_get_id(bill), NULL, error);
+	if (lines == NULL)
+		return FALSE;
+	ratios = g_new0(gint64, lines->len);
+	for (i = 0; i < lines->len; i++)
+	{
+		VentureEntity *line = g_ptr_array_index(lines, i);
+		g_autoptr(VentureMoney) value = NULL;
+		if (venture_entity_is_deleted(line))
+			continue;
+		value = venture_vendor_bill_line_get_amount(VENTURE_VENDOR_BILL_LINE(line), error);
+		if (value == NULL)
+			return FALSE;
+		ratios[i] = venture_money_get_amount(value);
+	}
+	shares = venture_money_allocate(amount, ratios, lines->len, error);
+	if (shares == NULL)
+		return FALSE;
+	for (i = 0; i < lines->len; i++)
+	{
+		VentureEntity *line = g_ptr_array_index(lines, i);
+		const VentureMoney *share = g_ptr_array_index(shares, i);
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_EXPENSE);
+		g_autoptr(VentureEntity) original = NULL;
+		g_autoptr(VentureExpense) adjustment = NULL;
+		g_autoptr(VentureMoney) value = NULL;
+		g_autofree gchar *key = g_strdup_printf("bill_line:%s", venture_entity_get_uuid(line));
+		g_autofree gchar *external = NULL;
+		g_autofree gchar *description = NULL;
+		g_autofree gchar *category = NULL;
+		g_autofree gchar *vendor = NULL;
+		gint deductibility;
+		gint64 business_use;
+		gint64 tax_category;
+		if (venture_money_is_zero(share))
+			continue;
+		venture_query_set_organization(query, venture_entity_get_organization_id(bill));
+		if (!venture_query_add_filter_string(query, "external-id", VENTURE_FILTER_OP_EQ, key, error))
+			return FALSE;
+		original = venture_database_find_one(self->database, query, error);
+		if (original == NULL)
+		{
+			if (error != NULL && *error != NULL)
+				return FALSE;
+			continue;
+		}
+		value = venture_money_multiply_int(share, refund ? -1 : 1, error);
+		if (value == NULL)
+			return FALSE;
+		external = g_strdup_printf("bill_cash:%s:%s:%s", venture_entity_get_entity_name(source),
+			venture_entity_get_uuid(source), venture_entity_get_uuid(line));
+		g_object_get(original, "description", &description, "category", &category, "vendor", &vendor,
+			"deductibility", &deductibility, "business-use-percent", &business_use, "tax-category-id", &tax_category, NULL);
+		adjustment = venture_expense_new();
+		g_object_set(adjustment, "organization-id", venture_entity_get_organization_id(bill),
+			"venture-id", get_id(original, "venture-id"), "description", description, "category", category,
+			"vendor", vendor, "deductibility", deductibility, "business-use-percent", business_use,
+			"tax-category-id", tax_category, "external-id", external, "amount", value, "occurred-at", date, NULL);
+		if (!venture_period_guard_is_postable(VENTURE_PERIOD_GUARD(venture_database_get_period_guard(self->database)),
+			self->database, venture_entity_get_organization_id(bill), date, error) ||
+			!write_record(self, VENTURE_ENTITY(adjustment), actor, error))
+			return FALSE;
+	}
+	return TRUE;
+}
+
+static gboolean
 perform_allocation(VenturePayablesService *self, VentureEntity *allocation,
 	const VentureActor *actor, GError **error)
 {
@@ -881,8 +954,6 @@ perform_allocation(VenturePayablesService *self, VentureEntity *allocation,
 	credit_id = get_id(allocation, "credit-id");
 	if ((payment_id == 0) == (credit_id == 0))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "An allocation requires exactly one payment or credit");
-	if (get_id(allocation, "expense-id") != 0)
-		return refuse(error, VENTURE_ERROR_VALIDATION, "The sale is derived by the settlement service");
 	credit = payment_id != 0 ? payment_credit(self, payment_id, error) :
 		venture_database_get(self->database, VENTURE_TYPE_VENDOR_CREDIT, credit_id, error);
 	if (credit == NULL)
@@ -912,6 +983,7 @@ perform_allocation(VenturePayablesService *self, VentureEntity *allocation,
 	if (balance == NULL || !within(amount, balance, error))
 		return FALSE;
 	return write_record(self, allocation, actor, error) &&
+		(get_id(credit, "payment-id") == 0 || project_cash_change(self, bill, allocation, amount, date, FALSE, actor, error)) &&
 		post(self, allocation, date, amount, "2000", "2000", actor, error) &&
 		update_credit(self, credit, actor, error) && derive_bill(self, bill, date, actor, error);
 }
@@ -1071,8 +1143,6 @@ perform_refund(VenturePayablesService *self, VentureEntity *refund,
 	gint64 allocation_id;
 	gint64 credit_id;
 
-	if (get_id(refund, "expense-id") != 0)
-		return refuse(error, VENTURE_ERROR_VALIDATION, "The refund cash adjustment is derived");
 	if (venture_entity_is_persisted(refund))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Refunds are immutable");
 	allocation_id = get_id(refund, "allocation-id");
@@ -1127,7 +1197,8 @@ perform_refund(VenturePayablesService *self, VentureEntity *refund,
 		return FALSE;
 	if (!write_record(self, refund, actor, error) || !post(self, refund, date, amount, "1000", "2000", actor, error))
 		return FALSE;
-	if (allocation != NULL && !derive_bill(self, bill, date, actor, error))
+	if (allocation != NULL && (!project_cash_change(self, bill, refund, amount, date, TRUE, actor, error) ||
+		!derive_bill(self, bill, date, actor, error)))
 		return FALSE;
 	return update_credit(self, credit, actor, error);
 }
@@ -1200,7 +1271,7 @@ venture_payables_check_removal(VentureDatabase *database, VentureEntity *record,
 	gint status;
 
 	if (VENTURE_IS_EXPENSE(record))
-		return venture_payables_check_sale(database, record, error);
+		return venture_payables_check_expense(database, record, error);
 	if (is_history(record))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Settlement history cannot be deleted, restored or purged");
 	if (!VENTURE_IS_VENDOR_BILL(record) && !VENTURE_IS_VENDOR_BILL_LINE(record))
@@ -1209,6 +1280,22 @@ venture_payables_check_removal(VentureDatabase *database, VentureEntity *record,
 		venture_entity_get_id(record), error);
 	if (stored == NULL)
 		return FALSE;
+	{
+		g_autoptr(VentureEntity) parent = NULL;
+		g_autoptr(GDateTime) date = NULL;
+		VentureEntity *bill = stored;
+		if (VENTURE_IS_VENDOR_BILL_LINE(stored))
+		{
+			parent = venture_database_get(database, VENTURE_TYPE_VENDOR_BILL, get_id(stored, "bill-id"), error);
+			if (parent == NULL)
+				return FALSE;
+			bill = parent;
+		}
+		g_object_get(bill, "bill-date", &date, NULL);
+		if (!venture_period_guard_is_postable(VENTURE_PERIOD_GUARD(venture_database_get_period_guard(database)),
+			database, venture_entity_get_organization_id(bill), date, error))
+			return FALSE;
+	}
 	if (VENTURE_IS_VENDOR_BILL_LINE(record))
 		return check_line(venture_payables_service_get(database), stored, NULL, error);
 	{
@@ -1245,7 +1332,7 @@ venture_payables_save_hook(VentureDatabase *database, VentureEntity *record,
 		return TRUE;
 	}
 	if (VENTURE_IS_EXPENSE(record))
-		return venture_payables_check_sale(database, record, error);
+		return venture_payables_check_expense(database, record, error);
 	if (self->busy)
 		return refuse(error, VENTURE_ERROR_CONFLICT, "A settlement is already in progress");
 	if (venture_entity_is_persisted(record))
@@ -1507,7 +1594,7 @@ venture_payables_expense_hook(VentureDatabase *database, VentureEntity *record,
 	if (self->writing == record)
 		return TRUE;
 	if (venture_entity_is_persisted(record))
-		return venture_payables_check_sale(database, record, error);
+		return venture_payables_check_expense(database, record, error);
 	if (!is_bill_expense(record))
 		return TRUE;
 	*handled = TRUE;
@@ -1515,6 +1602,11 @@ venture_payables_expense_hook(VentureDatabase *database, VentureEntity *record,
 		return FALSE;
 	original = snapshot(record);
 	g_object_get(record, "external-id", &external, NULL);
+	if (!g_str_has_prefix(external, "bill_line:"))
+	{
+		refuse(error, VENTURE_ERROR_PERMISSION_DENIED, "Only VenturePayablesService may create cash adjustments");
+		goto done;
+	}
 	line = venture_database_get_by_uuid(database, VENTURE_TYPE_VENDOR_BILL_LINE, external + strlen("bill_line:"), error);
 	if (line == NULL || !same_owner(record, line, error))
 		goto done;

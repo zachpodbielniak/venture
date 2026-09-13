@@ -493,6 +493,33 @@ test_paid_line_expense(Fixture *f, gconstpointer unused)
 	g_clear_error(&error);
 	g_assert_false(venture_database_delete(f->db, e, NULL, &error));
 	g_assert_nonnull(error);
+	g_clear_error(&error);
+	{
+		g_autoptr(VentureJournal) repost = venture_posting_service_post_document(
+			venture_database_get_posting_service(f->db), "expense", e, NULL, &error);
+		g_assert_null(repost);
+		g_assert_nonnull(error);
+		g_clear_error(&error);
+	}
+	{
+		g_autoptr(VentureEntity) refund = record(f, "bill_refund");
+		g_autoptr(VentureEntity) allocation = NULL;
+		g_autoptr(VentureQuery) aq = venture_query_new(VENTURE_TYPE_BILL_PAYMENT_ALLOCATION);
+		allocation = venture_database_find_one(f->db, aq, &error);
+		g_assert_no_error(error);
+		g_object_set(refund, "vendor-id", f->vendor, "allocation-id", venture_entity_get_id(allocation), NULL);
+		field(refund, "date", "2026-03-01");
+		field(refund, "amount", "10 USD");
+		save(f, refund);
+		g_assert_cmpint(count(f, "expense"), ==, 2);
+		g_assert_cmpint(count(f, "journal"), ==, journals + 1);
+		g_clear_object(&p);
+		p = payment(f, b, "10 USD", "2026-03-02");
+		save(f, p);
+		g_assert_cmpint(count(f, "expense"), ==, 3);
+		status(f, b, "paid");
+	}
+
 }
 
 static gint64
@@ -657,6 +684,175 @@ test_migration(Fixture *f, gconstpointer unused)
 	g_assert_cmpint(count(f, "vendor_bill_line"), ==, 1);
 }
 
+static void
+test_closed_draft_removal(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) b = bill(f, "CLOSED-DRAFT");
+	g_autoptr(VentureEntity) year = record(f, "fiscal_year");
+	g_autoptr(VentureEntity) period = NULL;
+	g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_FISCAL_PERIOD);
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "payables-test";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	g_object_set(year, "name", "2026", NULL);
+	field(year, "start-at", "2026-01-01");
+	save(f, year);
+	venture_query_set_organization(q, f->org);
+	venture_query_add_order(q, "start-at", VENTURE_SORT_ASCENDING, NULL);
+	period = venture_database_find_one(f->db, q, &error);
+	g_assert_no_error(error);
+	field(period, "state", "closed");
+	g_assert_true(venture_database_save(f->db, period, &actor, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_database_delete(f->db, b, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+}
+
+static void
+test_module_off(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) b = bill(f, "OFF");
+	g_autoptr(GDateTime) date = venture_time_from_string("2026-01-01", NULL);
+	g_autoptr(GError) error = NULL;
+	venture_config_set_module_enabled(f->config, "payables", FALSE);
+	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(), "vendor_bill"), ==, G_TYPE_INVALID);
+	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "payables"));
+	g_assert_false(venture_payables_service_transition(venture_payables_service_get(f->db), VENTURE_VENDOR_BILL(b), "approved", date, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	venture_config_set_module_enabled(f->config, "payables", TRUE);
+	status(f, b, "draft");
+}
+
+static void
+test_no_due_and_cutoff(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) b = bill(f, "NO-DUE");
+	g_autoptr(VentureEntity) later = bill(f, "LATER");
+	g_autoptr(VentureEntity) later_event = NULL;
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(GTimeZone) tz = g_time_zone_new_utc();
+	g_autoptr(VentureDateRange) period = venture_date_range_parse("2026-01", tz, 1, NULL);
+	g_autoptr(GError) error = NULL;
+	VentureReport *report;
+	const GValue *cell;
+	g_object_set(b, "due-date", NULL, NULL);
+	save(f, b);
+	approve(f, b);
+	later_event = event(f, later, "approve", "2026-03-01");
+	save(f, later_event);
+	report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "payables");
+	result = venture_report_generate(report, f->context, period, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_assert_cmpint(metric(result, "outstanding"), ==, 10000);
+	cell = venture_report_result_get_cell(result, 5, "age");
+	g_assert_cmpstr(g_value_get_string(cell), ==, "No due date");
+	cell = venture_report_result_get_cell(result, 5, "amount");
+	g_assert_cmpint(venture_money_get_amount(g_value_get_boxed(cell)), ==, 10000);
+}
+
+static void
+test_disabled_migration(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureModuleRegistry) modules = venture_module_registry_new();
+	g_autoptr(VentureEntityRegistry) registry = venture_entity_registry_new();
+	g_autoptr(VentureDatabase) db = NULL;
+	g_autoptr(OrmInspector) inspector = NULL;
+	g_autoptr(VentureOrganization) org = venture_organization_new();
+	g_autoptr(VentureCompany) vendor = venture_company_new();
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *directory = g_dir_make_tmp("venture-payables-upgrade-XXXXXX", &error);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/books.db", directory);
+	g_autofree gchar *name = NULL;
+	gint64 vendor_id;
+	g_assert_no_error(error);
+	venture_entity_registry_register_builtins(registry);
+	venture_module_registry_register_builtins(modules);
+	venture_config_set_module_enabled(config, "payables", FALSE);
+	g_assert_true(venture_module_registry_configure(modules, config, &error));
+	g_assert_no_error(error);
+	venture_module_registry_apply(modules, registry);
+	db = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(db, registry, &error));
+	g_assert_no_error(error);
+	inspector = orm_inspector_new(venture_database_get_connection(db), &error);
+	g_assert_no_error(error);
+	g_assert_false(orm_inspector_has_table(inspector, "vendor_bills", NULL, &error));
+	g_assert_no_error(error);
+	g_object_set(org, "name", "Legacy organization", "slug", "legacy-payables", NULL);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(org), NULL, &error));
+	g_assert_no_error(error);
+	g_object_set(vendor, "organization-id", venture_entity_get_id(VENTURE_ENTITY(org)), "name", "Legacy supplier",
+		"kind", VENTURE_COMPANY_KIND_SUPPLIER, NULL);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(vendor), NULL, &error));
+	g_assert_no_error(error);
+	vendor_id = venture_entity_get_id(VENTURE_ENTITY(vendor));
+	g_clear_object(&inspector);
+	g_clear_object(&db);
+	venture_config_set_module_enabled(config, "payables", TRUE);
+	g_assert_true(venture_module_registry_configure(modules, config, &error));
+	g_assert_no_error(error);
+	venture_module_registry_apply(modules, registry);
+	db = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(db, registry, &error));
+	g_assert_no_error(error);
+	stored = venture_database_get(db, VENTURE_TYPE_COMPANY, vendor_id, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(stored);
+	g_object_get(stored, "name", &name, NULL);
+	g_assert_cmpstr(name, ==, "Legacy supplier");
+	inspector = orm_inspector_new(venture_database_get_connection(db), &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_inspector_has_table(inspector, "vendor_bills", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&inspector);
+	g_clear_object(&db);
+	venture_test_remove_tree(directory);
+}
+
+static void
+test_organization_uniqueness(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) b = bill(f, "SHARED-NUMBER");
+	g_autoptr(VentureEntity) duplicate = record(f, "vendor_bill");
+	g_autoptr(VentureOrganization) organization = venture_organization_new();
+	g_autoptr(VentureCompany) vendor = venture_company_new();
+	g_autoptr(VentureEntity) other_bill = NULL;
+	g_autoptr(VentureEntity) p = NULL;
+	g_autoptr(GError) error = NULL;
+	Fixture other = *f;
+	g_object_set(duplicate, "number", "SHARED-NUMBER", "company-id", f->vendor, "status", "draft", "currency", "USD", NULL);
+	field(duplicate, "bill-date", "2026-01-01");
+	g_assert_false(venture_database_save(f->db, duplicate, NULL, &error));
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	g_object_set(organization, "name", "Second organization", "slug", "second-payables", NULL);
+	save(f, VENTURE_ENTITY(organization));
+	other.org = venture_entity_get_id(VENTURE_ENTITY(organization));
+	g_object_set(vendor, "organization-id", other.org, "name", "Other supplier", "kind", VENTURE_COMPANY_KIND_SUPPLIER, NULL);
+	save(f, VENTURE_ENTITY(vendor));
+	other.vendor = venture_entity_get_id(VENTURE_ENTITY(vendor));
+	other_bill = bill(&other, "SHARED-NUMBER");
+	approve(f, b);
+	approve(&other, other_bill);
+	g_assert_cmpint(count(f, "vendor_bill"), ==, 1);
+	g_assert_cmpint(count(&other, "vendor_bill"), ==, 1);
+	p = payment(f, other_bill, "10 USD", "2026-02-01");
+	g_assert_false(venture_database_save(f->db, p, NULL, &error));
+	g_assert_nonnull(error);
+	g_assert_cmpint(count(f, "bill_payment"), ==, 0);
+	status(f, b, "approved");
+	status(&other, other_bill, "approved");
+}
+
 int
 main(int argc, char **argv)
 {
@@ -675,5 +871,10 @@ main(int argc, char **argv)
 	g_test_add("/payables/credit-void-refund", Fixture, NULL, setup, test_credit_void_refund, teardown);
 	g_test_add("/payables/batch", Fixture, NULL, setup, test_batch, teardown);
 	g_test_add("/payables/migration", Fixture, NULL, setup, test_migration, teardown);
+	g_test_add("/payables/closed-draft-removal", Fixture, NULL, setup, test_closed_draft_removal, teardown);
+	g_test_add("/payables/module-off", Fixture, NULL, setup, test_module_off, teardown);
+	g_test_add("/payables/no-due-and-cutoff", Fixture, NULL, setup, test_no_due_and_cutoff, teardown);
+	g_test_add_func("/payables/disabled-migration-restart", test_disabled_migration);
+	g_test_add("/payables/organization-uniqueness", Fixture, NULL, setup, test_organization_uniqueness, teardown);
 	return g_test_run();
 }

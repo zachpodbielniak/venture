@@ -126,13 +126,13 @@ void venture_payables_register_reports(VentureReportRegistry *registry);
 gboolean venture_payables_is_projection_write(VentureDatabase *database, VentureEntity *record);
 
 /**
- * venture_payables_check_sale: (skip)
+ * venture_payables_check_expense: (skip)
  * @database: the owning database
- * @record: a sale
+ * @record: an expense
  * @error: (out) (optional): the error
  * Returns: TRUE if the sale is not immutable settlement evidence
  */
-gboolean venture_payables_check_sale(VentureDatabase *database, VentureEntity *record, GError **error);
+gboolean venture_payables_check_expense(VentureDatabase *database, VentureEntity *record, GError **error);
 
 /**
  * venture_database_get_payables_service:
