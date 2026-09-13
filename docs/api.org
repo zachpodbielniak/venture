@@ -379,3 +379,13 @@ One shape for every failure:
 
 A =409= from a write means someone else changed the record since you loaded
 it. Reload, reapply, retry — do not force it.
+
+* Transactional mail actions
+
+Editor actions: =POST /api/v1/mail/send= (message fields, returns 202),
+=/api/v1/mail/test= (=to=), =/api/v1/mail/deliver= (=organization_id=,
+=limit=), =/api/v1/mail_messages/:id/retry=, and
+=/api/v1/invoices/:id/send=. Sending an invoice issues a draft and atomically
+queues the rendered document and an invoice event. Listing messages and
+templates uses the generic record API. See [[file:mail.org][mail delivery]]
+for the distinction between =failed=, =dead= and =uncertain=.

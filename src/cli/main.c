@@ -2090,6 +2090,8 @@ venture_cli_command_factory(
  * venturectl release changelog ID [--replace]
  * venturectl release publish ID [--prerelease]
  */
+#include "mail/venture-mail-cli.inc"
+
 static gint
 venture_cli_command_release(
 	VentureCli	 *cli,
@@ -3180,6 +3182,7 @@ main(
 		"  factory                      the software factory at a glance\n"
 		"  release changelog ID         draft a release's changelog from\n"
 		"                               its tickets; --replace overwrites\n"
+		"  mail list|send|test|deliver|retry  transactional mail\n"
 		"  release publish ID           cut it on the forge; --prerelease\n"
 		"  dashboards                   list the dashboards\n"
 		"  dashboard SLUG               a dashboard, every widget evaluated\n"
@@ -3379,6 +3382,8 @@ main(
 		result = venture_cli_command_federation(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "factory"))
 		result = venture_cli_command_factory(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "mail"))
+		result = venture_cli_command_mail(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "release"))
 		result = venture_cli_command_release(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dashboards"))

@@ -117,6 +117,8 @@ PUBLIC_HDRS := \
 	$(wildcard src/util/*.h) \
 	$(wildcard src/mcp/*.h)
 
+PUBLIC_HDRS += $(wildcard src/mail/*.h)
+
 TEST_SRCS := $(wildcard tests/test-*.c)
 
 # ---------------------------------------------------------------------------
@@ -438,3 +440,5 @@ ifeq ($(filter clean clean-all clean-deps,$(MAKECMDGOALS)),)
 -include $(wildcard $(MAIN_OBJ:.o=.d))
 -include $(wildcard $(TEST_OBJS:.o=.d))
 endif
+
+deps: $(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB)

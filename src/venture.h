@@ -117,6 +117,7 @@
 #include "report/venture-report.h"
 #include "receivables/venture-settlement-service.h"
 #include "mail/venture-mailer.h"
+#include "mail/venture-smtp-mailer.h"
 #include "mail/venture-mail-outbox.h"
 #include "mail/venture-mail-template.h"
 #include "periods/venture-period-report.h"
@@ -126,6 +127,7 @@
 #include "core/venture-confirmation-store.h"
 
 #include "core/venture-context.h"
+#include "mail/venture-mail-consumers.h"
 #include "core/venture-federation.h"
 #include "ledger/venture-posting-rule.h"
 #include "ledger/venture-posting-service.h"

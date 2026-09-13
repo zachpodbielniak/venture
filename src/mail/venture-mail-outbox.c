@@ -1,11 +1,15 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
 #include <string.h>
+#include <stdlib.h>
+#include <glib/gstdio.h>
 struct _VentureMailOutbox {
 	GObject parent_instance;
 	VentureDatabase *database;
 	VentureMailer *mailer;
 	VentureEntity *permit;
+	VentureEntity *user_permit;
+	gchar *attachment_root;
 	guint max_attempts;
 };
 G_DEFINE_FINAL_TYPE(VentureMailOutbox, venture_mail_outbox, G_TYPE_OBJECT)
@@ -19,6 +23,62 @@ static gboolean enabled(VentureMailOutbox *self, gint64 org, GError **error)
 	if (!self->database || org <= 0) return refuse(error, "An exact organization is required");
 	if (!venture_entity_registry_lookup(venture_entity_registry_get_default(), "mail_message"))
 		return refuse(error, "The mail module is disabled");
+	return TRUE;
+}
+
+static gboolean snapshot_attachments(VentureMailOutbox *self, VentureEntity *entity, GError **error)
+{
+	g_autofree gchar *refs = NULL, *root = NULL, *prefix = NULL, *serialized = NULL;
+	g_autoptr(JsonNode) parsed = NULL, snapshot = NULL;
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+	JsonArray *array;
+	guint i;
+	gsize total = 0;
+	venture_entity_set_attribute(entity, "_mail_attachments", NULL);
+	g_object_get(entity, "attachments", &refs, NULL);
+	if (!refs || !*refs) return TRUE;
+	parsed = json_from_string(refs, error);
+	if (!parsed) return FALSE;
+	if (!JSON_NODE_HOLDS_ARRAY(parsed)) return refuse(error, "Attachments must be document references in a JSON array");
+	array = json_node_get_array(parsed);
+	if (!json_array_get_length(array)) return TRUE;
+	root = self->attachment_root ? realpath(self->attachment_root, NULL) : NULL;
+	if (!root) return refuse(error, "Attachment storage is not configured");
+	prefix = g_strconcat(root, G_DIR_SEPARATOR_S, NULL);
+	json_builder_begin_array(builder);
+	for (i = 0; i < json_array_get_length(array); i++) {
+		JsonNode *element = json_array_get_element(array, i);
+		JsonObject *ref;
+		g_autoptr(VentureEntity) document = NULL;
+		g_autofree gchar *path = NULL, *canonical = NULL, *title = NULL, *mime = NULL, *bytes = NULL, *encoded = NULL;
+		gsize length;
+		if (!JSON_NODE_HOLDS_OBJECT(element)) return refuse(error, "Invalid attachment reference");
+		ref = json_node_get_object(element);
+		if (g_strcmp0(venture_json_object_get_string(ref, "type", ""), "document")) return refuse(error, "Attachments must reference documents");
+		document = venture_database_get(self->database, VENTURE_TYPE_DOCUMENT, venture_json_object_get_int(ref, "id", 0), error);
+		if (!document || venture_entity_is_deleted(document)) { if (!error || !*error) refuse(error, "Attachment document not found"); return FALSE; }
+		if (venture_entity_get_organization_id(document) != venture_entity_get_organization_id(entity)) return refuse(error, "Attachment belongs to another organization");
+		g_object_get(document, "path", &path, "title", &title, "mime-type", &mime, NULL);
+		canonical = path ? realpath(path, NULL) : NULL;
+		if (!canonical || !g_str_has_prefix(canonical, prefix) || !g_file_test(canonical, G_FILE_TEST_IS_REGULAR)) return refuse(error, "Attachment must be a file in configured attachment storage");
+		{
+			GStatBuf info;
+			if (g_stat(canonical, &info) || info.st_size < 0 || info.st_size > 20 * 1024 * 1024) return refuse(error, "Attachment exceeds 20 MiB");
+		}
+		if (!g_file_get_contents(canonical, &bytes, &length, error)) return FALSE;
+		total += length;
+		if (total > 20 * 1024 * 1024) return refuse(error, "Combined attachments exceed 20 MiB");
+		encoded = g_base64_encode((guchar *)bytes, length);
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "name"); json_builder_add_string_value(builder, title && *title ? title : "attachment");
+		json_builder_set_member_name(builder, "mime"); json_builder_add_string_value(builder, mime && *mime ? mime : "application/octet-stream");
+		json_builder_set_member_name(builder, "data"); json_builder_add_string_value(builder, encoded);
+		json_builder_end_object(builder);
+	}
+	json_builder_end_array(builder);
+	snapshot = json_builder_get_root(builder);
+	serialized = json_to_string(snapshot, FALSE);
+	venture_entity_set_attribute(entity, "_mail_attachments", serialized);
 	return TRUE;
 }
 static gboolean validate(VentureDatabase *db, VentureEntity *entity, VentureEntity *previous, gpointer data, GError **error)
@@ -36,6 +96,7 @@ static gboolean validate(VentureDatabase *db, VentureEntity *entity, VentureEnti
 	g_object_get(entity, "state", &state, "message-id", &id, "idempotency-key", &key, "attempts", &attempts, NULL);
 	if ((state && *state && strcmp(state, "queued")) || (id && *id) || attempts)
 		return refuse(error, "Delivery state is managed by the outbox");
+	if (!snapshot_attachments(self, entity, error)) return FALSE;
 	if (!key || !*key) { g_free(key); key = g_uuid_string_random(); }
 	g_free(id);
 	id = g_strdup_printf("%s@venture.invalid", venture_entity_get_uuid(entity));
@@ -56,6 +117,7 @@ static void finalize(GObject *object)
 	VentureMailOutbox *self = VENTURE_MAIL_OUTBOX(object);
 	if (self->database) g_object_remove_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
 	g_clear_object(&self->mailer);
+	g_free(self->attachment_root);
 	G_OBJECT_CLASS(venture_mail_outbox_parent_class)->finalize(object);
 }
 static void set_property(GObject *object, guint id, const GValue *value, GParamSpec *pspec)
@@ -68,6 +130,7 @@ static void set_property(GObject *object, guint id, const GValue *value, GParamS
 		break;
 	case 2: g_set_object(&self->mailer, g_value_get_object(value)); break;
 	case 3: self->max_attempts = g_value_get_uint(value); break;
+	case 4: g_free(self->attachment_root); self->attachment_root = g_value_dup_string(value); break;
 	default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, pspec);
 	}
 }
@@ -78,25 +141,34 @@ static void get_property(GObject *object, guint id, GValue *value, GParamSpec *p
 	case 1: g_value_set_object(value, self->database); break;
 	case 2: g_value_set_object(value, self->mailer); break;
 	case 3: g_value_set_uint(value, self->max_attempts); break;
+	case 4: g_value_set_string(value, self->attachment_root); break;
 	default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, pspec);
 	}
+}
+static void constructed(GObject *object)
+{
+	VentureMailOutbox *self = VENTURE_MAIL_OUTBOX(object);
+	venture_database_add_save_validator(self->database, VENTURE_TYPE_MAIL_MESSAGE, validate, g_object_ref(self), g_object_unref);
+	G_OBJECT_CLASS(venture_mail_outbox_parent_class)->constructed(object);
 }
 static void venture_mail_outbox_class_init(VentureMailOutboxClass *klass)
 {
 	GObjectClass *object = G_OBJECT_CLASS(klass);
 	object->finalize = finalize;
+	object->constructed = constructed;
 	object->set_property = set_property;
 	object->get_property = get_property;
 	g_object_class_install_property(object, 1, g_param_spec_object("database", "Database", "Weak owning database", VENTURE_TYPE_DATABASE, G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_STRINGS));
 	g_object_class_install_property(object, 2, g_param_spec_object("mailer", "Mailer", "One-attempt transport", VENTURE_TYPE_MAILER, G_PARAM_READWRITE | G_PARAM_CONSTRUCT | G_PARAM_STATIC_STRINGS));
 	g_object_class_install_property(object, 3, g_param_spec_uint("max-attempts", "Maximum attempts", "Automatic retry budget", 1, 20, 5, G_PARAM_READWRITE | G_PARAM_CONSTRUCT | G_PARAM_STATIC_STRINGS));
+	g_object_class_install_property(object, 4, g_param_spec_string("attachment-root", "Attachment root", "Root containing uploaded document files", NULL, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 }
 static void venture_mail_outbox_init(VentureMailOutbox *self) { }
 VentureMailOutbox *venture_mail_outbox_new(VentureDatabase *database, VentureMailer *mailer)
 {
-	VentureMailOutbox *self = g_object_new(VENTURE_TYPE_MAIL_OUTBOX, "database", database, "mailer", mailer, NULL);
-	venture_database_add_save_validator(database, VENTURE_TYPE_MAIL_MESSAGE, validate, g_object_ref(self), g_object_unref);
-	return self;
+	VentureMailOutbox *self = venture_database_get_mail_outbox(database);
+	if (mailer) g_object_set(self, "mailer", mailer, NULL);
+	return g_object_ref(self);
 }
 VentureMailMessage *venture_mail_outbox_enqueue(VentureMailOutbox *self, VentureMailMessage *message, const VentureActor *actor, GError **error)
 {
@@ -134,9 +206,9 @@ static VentureEntity *get_row(VentureMailOutbox *self, gint64 org, gint64 id, GE
 	VentureEntity *row;
 	if (!enabled(self, org, error)) return NULL;
 	row = venture_database_get(self->database, VENTURE_TYPE_MAIL_MESSAGE, id, error);
-	if (row && venture_entity_get_organization_id(row) != org) {
+	if (!row || venture_entity_is_deleted(row) || venture_entity_get_organization_id(row) != org) {
 		g_clear_object(&row);
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Mail message not found");
+		if (!error || !*error) g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Mail message not found");
 	}
 	return row;
 }
@@ -153,6 +225,7 @@ VentureMailMessage *venture_mail_outbox_claim(VentureMailOutbox *self, gint64 or
 	g_autoptr(GDateTime) lease = NULL;
 	gint64 attempts;
 	if (!enabled(self, org, error)) return NULL;
+	if (venture_database_has_transaction(self->database)) { refuse(error, "Claim requires a committed database"); return NULL; }
 	if (!venture_database_begin(self->database, error)) return NULL;
 	row = get_row(self, org, id, error);
 	if (!row) goto fail;
@@ -176,7 +249,13 @@ gint venture_mail_outbox_deliver_due(VentureMailOutbox *self, gint64 org, guint 
 	gint count = 0;
 	if (!enabled(self, org, error)) return -1;
 	if (!self->mailer) { refuse(error, "No mail transport configured"); return -1; }
+	if (venture_database_has_transaction(self->database)) { refuse(error, "Delivery requires a committed database"); return -1; }
 	venture_query_set_organization(query, org);
+	{
+		g_autoptr(GPtrArray) states = g_ptr_array_new_with_free_func(g_free);
+		g_ptr_array_add(states, g_strdup("queued")); g_ptr_array_add(states, g_strdup("failed")); g_ptr_array_add(states, g_strdup("sending"));
+		venture_query_add_filter(query, "state", VENTURE_FILTER_OP_IN, states, NULL);
+	}
 	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
 	rows = venture_database_find(self->database, query, error);
 	if (!rows) return -1;
@@ -230,4 +309,50 @@ gboolean venture_mail_outbox_retry(VentureMailOutbox *self, gint64 org, gint64 i
 	if (g_strcmp0(state, "uncertain") && g_strcmp0(state, "failed") && g_strcmp0(state, "dead")) return refuse(error, "Only uncertain, failed or dead messages can be retried");
 	g_object_set(row, "state", "queued", "attempts", (gint64)0, "next-attempt-at", NULL, "lease-until", NULL, NULL);
 	return save(self, row, actor, error);
+}
+
+gboolean venture_mail_save_user(VentureMailOutbox *self, VentureEntity *user, const VentureActor *actor, gboolean *handled, GError **error)
+{
+	g_autoptr(VentureEntity) previous = NULL, original = NULL;
+	g_autoptr(VentureMailMessage) message = NULL, queued = NULL;
+	g_autofree gchar *email = NULL, *old_hash = NULL, *new_hash = NULL, *key = NULL;
+	gboolean reset, ok;
+	*handled = FALSE;
+	if (self->user_permit == user) { self->user_permit = NULL; return TRUE; }
+	if (!VENTURE_IS_USER(user) || !venture_entity_registry_lookup(venture_entity_registry_get_default(), "mail_message")) return TRUE;
+	g_object_get(user, "email", &email, "password-hash", &new_hash, NULL);
+	if (!email || !*email) return TRUE;
+	if (venture_entity_get_id(user)) {
+		previous = venture_database_get(self->database, VENTURE_TYPE_USER, venture_entity_get_id(user), error);
+		if (!previous) return FALSE;
+		g_object_get(previous, "password-hash", &old_hash, NULL);
+		if (!g_strcmp0(old_hash, new_hash)) return TRUE;
+	}
+	*handled = TRUE;
+	reset = previous != NULL;
+	original = g_object_new(VENTURE_TYPE_USER, NULL);
+	venture_entity_copy_properties_from(original, user, FALSE);
+	if (!venture_database_begin(self->database, error)) return FALSE;
+	self->user_permit = user;
+	ok = venture_database_save(self->database, user, actor, error);
+	self->user_permit = NULL;
+	if (!ok) goto fail_user;
+	message = venture_mail_message_new();
+	key = g_strdup_printf("user:%s:%s:%" G_GINT64_FORMAT, venture_entity_get_uuid(user), reset ? "reset" : "welcome", venture_entity_get_version(user));
+	g_object_set(message, "organization-id", venture_entity_get_organization_id(user), "to", email,
+		"subject", reset ? "Your password was reset" : "Welcome to Venture",
+		"text-body", reset ? "Your Venture password was changed. Contact your administrator if you did not request this change." : "Your Venture account is ready. Contact your administrator for sign-in instructions.",
+		"idempotency-key", key, "related-type", "user", "related-id", venture_entity_get_id(user), NULL);
+	queued = venture_mail_outbox_enqueue(self, message, actor, error);
+	if (!queued) goto fail_user;
+	return venture_database_commit(self->database, error);
+fail_user:
+	venture_database_rollback(self->database);
+	venture_entity_copy_properties_from(user, original, FALSE);
+	return FALSE;
+}
+
+gboolean venture_mail_check_removal(VentureEntity *entity, GError **error)
+{
+	return !VENTURE_IS_MAIL_MESSAGE(entity) || refuse(error, "Mail history and idempotency keys cannot be removed");
 }

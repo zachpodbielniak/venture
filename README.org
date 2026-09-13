@@ -73,6 +73,7 @@ All are git submodules under =deps/= and are treated as the canonical copies. Se
 | =orm-glib=  | ORM and serialization; SQLite and PostgreSQL dialects       |
 | =podomation=| Event-driven automation engine, embedded in the server       |
 | =crispy=    | Runtime C scripting, used for compiled config and plugins   |
+| =mail-glib= | Transactional MIME and SMTP delivery, with nested otel-glib |
 
 ** Design
 
@@ -256,7 +257,7 @@ compose.deploy.yaml    example deployment: PostgreSQL, named volumes
 
 Working and covered by tests:
 
-- the build system, both binaries, static linking of all six dependencies
+- the build system, both binaries, static linking of all seven dependencies
 - =VentureMoney= and the boxed types
 - =VentureEntity=, the record types (31 built in), the registry
 - configuration, including the compiled C configuration via crispy
@@ -325,10 +326,9 @@ Known limits, as opposed to missing pieces:
 - The suite runs against SQLite by default. PostgreSQL is exercised by
   bringing up =compose.deploy.yaml=; point =VENTURE_TEST_DB= at an instance
   to run the suite against that dialect too.
-- Newsletter and blog *outreach* is modelled — contacts, campaigns,
-  segments — but nothing sends mail. That is deliberate: sending is an
-  integration, and which provider comes first is a decision that has not
-  been made.
+- Transactional mail uses the durable SMTP outbox described in
+  [[file:docs/mail.org][mail]]. Outreach delivery adapters remain separate
+  from its campaign and subscriber records.
 
 ** Licence
 

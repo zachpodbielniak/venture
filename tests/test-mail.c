@@ -1,5 +1,9 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
+#include <string.h>
+#include <glib/gstdio.h>
+#include <unistd.h>
+#include "venture-test-util.h"
 
 /* A mail record must participate in every generated surface. */
 static void
@@ -136,6 +140,218 @@ static void test_template(void)
 	g_assert_cmpstr(html, ==, "<p>A &amp; B</p>");
 }
 
+static void test_smtp_configuration(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureSmtpMailer) mailer = NULL;
+	g_autoptr(VentureMailMessage) message = venture_mail_message_new();
+	g_autoptr(GError) error = NULL;
+	g_object_set(config, "mail-host", "127.0.0.1", "mail-port", (gint64)1,
+		"mail-security", "none", "mail-from-address", "sender@example.test", NULL);
+	mailer = venture_smtp_mailer_new(config);
+	g_object_set(message, "to", "reader@example.test", "subject", "Test", "text-body", "Hello", "message-id", "stable@example.test", NULL);
+	g_assert_false(venture_mailer_send(VENTURE_MAILER(mailer), message, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_MAIL_TRANSIENT);
+}
+
+typedef struct { GSocketListener *listener; gchar *bodies[2]; guint recipients; } SmtpFixture;
+static gpointer smtp_server(gpointer data)
+{
+	SmtpFixture *f = data;
+	guint n;
+	for (n = 0; n < 2; n++) {
+		g_autoptr(GSocketConnection) connection = g_socket_listener_accept(f->listener, NULL, NULL, NULL);
+		g_autoptr(GDataInputStream) input = NULL;
+		GOutputStream *output;
+		GString *body = g_string_new(NULL);
+		gboolean in_body = FALSE;
+		g_assert_nonnull(connection);
+		g_socket_set_timeout(g_socket_connection_get_socket(connection), 10);
+		input = g_data_input_stream_new(g_io_stream_get_input_stream(G_IO_STREAM(connection)));
+		g_data_input_stream_set_newline_type(input, G_DATA_STREAM_NEWLINE_TYPE_CR_LF);
+		output = g_io_stream_get_output_stream(G_IO_STREAM(connection));
+		g_assert_true(g_output_stream_write_all(output, "220 local test\r\n", 16, NULL, NULL, NULL));
+		while (TRUE) {
+			g_autofree gchar *line = g_data_input_stream_read_line(input, NULL, NULL, NULL);
+			const gchar *reply = "250 OK\r\n";
+			g_assert_nonnull(line);
+			if (in_body) {
+				if (!strcmp(line, ".")) {
+					in_body = FALSE;
+					if (n == 0) break;
+				} else { g_string_append_printf(body, "%s\n", line); continue; }
+			} else if (g_str_has_prefix(line, "EHLO")) reply = "250 local test\r\n";
+			else if (g_str_has_prefix(line, "RCPT")) f->recipients++;
+			else if (!strcmp(line, "DATA")) { reply = "354 Send data\r\n"; in_body = TRUE; }
+			else if (!strcmp(line, "QUIT")) break;
+			g_assert_true(g_output_stream_write_all(output, reply, strlen(reply), NULL, NULL, NULL));
+		}
+		f->bodies[n] = g_string_free(body, FALSE);
+		g_io_stream_close(G_IO_STREAM(connection), NULL, NULL);
+	}
+	return NULL;
+}
+static void test_smtp_uncertain_wire(void)
+{
+	SmtpFixture f;
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureSmtpMailer) mailer = NULL;
+	g_autoptr(VentureMailMessage) message = venture_mail_message_new();
+	g_autoptr(GError) error = NULL;
+	GThread *thread;
+	guint16 port;
+	f.listener = g_socket_listener_new(); f.bodies[0] = NULL; f.bodies[1] = NULL; f.recipients = 0;
+	port = g_socket_listener_add_any_inet_port(f.listener, NULL, &error);
+	g_assert_no_error(error);
+	g_object_set(config, "mail-host", "127.0.0.1", "mail-port", (gint64)port,
+		"mail-security", "none", "mail-from-address", "sender@example.test", NULL);
+	mailer = venture_smtp_mailer_new(config);
+	g_object_set(message, "to", "reader@example.test", "bcc", "private@example.test", "subject", "Test",
+		"text-body", "Hello", "html-body", "<p>Hello</p>", "message-id", "stable@example.test", NULL);
+	thread = g_thread_new("local-smtp", smtp_server, &f);
+	g_assert_false(venture_mailer_send(VENTURE_MAILER(mailer), message, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_MAIL_UNCERTAIN);
+	g_clear_error(&error);
+	g_assert_true(venture_mailer_send(VENTURE_MAILER(mailer), message, NULL, &error));
+	g_assert_no_error(error);
+	g_thread_join(thread);
+	g_assert_nonnull(strstr(f.bodies[0], "Message-Id: <stable@example.test>"));
+	g_assert_nonnull(strstr(f.bodies[1], "Message-Id: <stable@example.test>"));
+	g_assert_null(strstr(f.bodies[0], "Bcc:"));
+	g_assert_cmpuint(f.recipients, ==, 4);
+	g_free(f.bodies[0]); g_free(f.bodies[1]); g_object_unref(f.listener);
+}
+
+static void test_invoice_consumer(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = venture_context_new(config, f->db);
+	g_autoptr(VentureCompany) company = venture_company_new();
+	g_autoptr(VentureInvoice) invoice = venture_invoice_new();
+	g_autoptr(VentureInvoiceLine) line = venture_invoice_line_new();
+	g_autoptr(VentureMoney) price = venture_money_new(2500, "USD", 2);
+	g_autoptr(VentureMailMessage) message = NULL, again = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureQuery) events = venture_query_new(VENTURE_TYPE_INVOICE_EVENT);
+	g_autofree gchar *html = NULL;
+	g_object_set(company, "organization-id", f->org, "name", "Customer", "email", "customer@example.test", NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(company), NULL, &error));
+	g_assert_no_error(error);
+	g_object_set(invoice, "organization-id", f->org, "number", "MAIL-42", "terms", "Net 30", "company-id", venture_entity_get_id(VENTURE_ENTITY(company)), NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(invoice), NULL, &error));
+	g_assert_no_error(error);
+	g_object_set(line, "organization-id", f->org, "invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)), "description", "Consultation", "quantity", 1.0, "unit-price", price, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(line), NULL, &error));
+	g_assert_no_error(error);
+	message = venture_mail_send_invoice(context, f->org, venture_entity_get_id(VENTURE_ENTITY(invoice)), NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(message);
+	g_object_get(message, "html-body", &html, NULL);
+	g_assert_nonnull(strstr(html, "Consultation")); g_assert_nonnull(strstr(html, "25.00"));
+	again = venture_mail_send_invoice(context, f->org, venture_entity_get_id(VENTURE_ENTITY(invoice)), NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_entity_get_id(VENTURE_ENTITY(message)), ==, venture_entity_get_id(VENTURE_ENTITY(again)));
+	venture_query_set_organization(events, f->org);
+	venture_query_add_filter_string(events, "kind", VENTURE_FILTER_OP_EQ, "mail_queued", NULL);
+	g_assert_cmpint(venture_database_count(f->db, events, &error), ==, 1);
+	g_assert_no_error(error);
+}
+static void test_user_notices(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureUser) user = venture_user_new();
+	g_autoptr(VentureQuery) messages = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+	g_autoptr(GError) error = NULL;
+	g_object_set(user, "organization-id", f->org, "username", "mailuser", "email", "user@example.test", "password-hash", "first", NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(user), NULL, &error));
+	g_assert_no_error(error);
+	venture_query_set_organization(messages, f->org);
+	g_assert_cmpint(venture_database_count(f->db, messages, &error), ==, 1);
+	g_object_set(user, "password-hash", "second", NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(user), NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_database_count(f->db, messages, &error), ==, 2);
+}
+static void test_attachment_missing(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureMailMessage) message = venture_mail_message_new(), queued = NULL;
+	const gchar *refs = "[{\"type\":\"document\",\"id\":99999}]";
+	g_autoptr(GError) error = NULL;
+	g_object_set(f->outbox, "attachment-root", g_get_tmp_dir(), NULL);
+	g_object_set(message, "organization-id", f->org, "to", "reader@example.test", "subject", "Attachment", "text-body", "Test", "attachments", refs, NULL);
+	queued = venture_mail_outbox_enqueue(f->outbox, message, NULL, &error);
+	g_assert_null(queued);
+	g_assert_nonnull(error);
+}
+static void test_uncommitted_delivery(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureMailMessage) row = enqueue(f, "uncommitted");
+	g_autoptr(GError) error = NULL;
+	g_assert_true(venture_database_begin(f->db, NULL));
+	g_assert_cmpint(venture_mail_outbox_deliver_due(f->outbox, f->org, 10, NULL, NULL, &error), ==, -1);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_cmpuint(venture_log_mailer_get_messages(f->mailer)->len, ==, 0);
+	venture_database_rollback(f->db);
+}
+
+static void test_attachment_snapshot(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *path = NULL, *refs = NULL;
+	g_autoptr(VentureDocument) document = venture_document_new();
+	g_autoptr(VentureMailMessage) message = venture_mail_message_new(), queued = NULL;
+	g_autoptr(GError) error = NULL;
+	gint fd = g_file_open_tmp("venture-mail-attachment-XXXXXX", &path, &error);
+	g_assert_no_error(error); g_assert_cmpint(fd, >=, 0); close(fd);
+	g_assert_true(g_file_set_contents(path, "original attachment", -1, &error));
+	g_object_set(document, "organization-id", f->org, "title", "receipt.txt", "path", path, "mime-type", "text/plain", NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(document), NULL, &error));
+	g_assert_no_error(error);
+	refs = g_strdup_printf("[{\"type\":\"document\",\"id\":%" G_GINT64_FORMAT "}]", venture_entity_get_id(VENTURE_ENTITY(document)));
+	g_object_set(f->outbox, "attachment-root", g_get_tmp_dir(), NULL);
+	g_object_set(message, "organization-id", f->org, "to", "reader@example.test", "subject", "Attachment", "text-body", "Test", "attachments", refs, NULL);
+	queued = venture_mail_outbox_enqueue(f->outbox, message, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(queued);
+	g_assert_true(g_file_set_contents(path, "changed", -1, &error));
+	g_assert_nonnull(strstr(venture_entity_get_attribute(VENTURE_ENTITY(queued), "_mail_attachments"), "b3JpZ2luYWwgYXR0YWNobWVudA=="));
+	g_assert_cmpint(g_unlink(path), ==, 0);
+}
+static gboolean reject_mail(VentureDatabase *db, VentureEntity *record, VentureEntity *previous, gpointer data, GError **error)
+{
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Injected mail persistence failure");
+	return FALSE;
+}
+static void test_user_atomic_failure(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureUser) user = venture_user_new();
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_USER);
+	g_autoptr(GError) error = NULL;
+	g_object_set(user, "organization-id", f->org, "username", "rollback-user", "email", "rollback@example.test", NULL);
+	venture_query_add_filter_string(query, "username", VENTURE_FILTER_OP_EQ, "rollback-user", NULL);
+	venture_query_set_organization(query, f->org);
+	venture_database_add_save_validator(f->db, VENTURE_TYPE_MAIL_MESSAGE, reject_mail, NULL, NULL);
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(user), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_cmpint(venture_entity_get_id(VENTURE_ENTITY(user)), ==, 0);
+	g_assert_cmpint(venture_database_count(f->db, query, NULL), ==, 0);
+}
+static void test_module_off(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = venture_context_new(config, f->db);
+	venture_config_set_module_enabled(config, "mail", FALSE);
+	g_assert_null(venture_context_get_mailer(context));
+	g_assert_null(venture_context_get_mail_outbox(context));
+	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(), "mail_message"), ==, G_TYPE_INVALID);
+	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), NULL));
+	venture_config_set_module_enabled(config, "mail", TRUE);
+	g_assert_nonnull(venture_context_get_mailer(context));
+}
+static void test_retained_key(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureMailMessage) row = enqueue(f, "retained");
+	g_autoptr(GError) error = NULL;
+	g_assert_false(venture_database_purge(f->db, VENTURE_ENTITY(row), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -146,5 +362,15 @@ main(int argc, char **argv)
 	g_test_add("/mail/expired-lease", Fixture, NULL, setup, test_lease, teardown);
 	g_test_add("/mail/refuse-generic", Fixture, NULL, setup, test_refuse_generic, teardown);
 	g_test_add_func("/mail/template", test_template);
+	g_test_add_func("/mail/smtp-connection-failure", test_smtp_configuration);
+	g_test_add_func("/mail/smtp-uncertain-wire", test_smtp_uncertain_wire);
+	g_test_add("/mail/invoice-consumer", Fixture, NULL, setup, test_invoice_consumer, teardown);
+	g_test_add("/mail/user-notices", Fixture, NULL, setup, test_user_notices, teardown);
+	g_test_add("/mail/attachment-missing", Fixture, NULL, setup, test_attachment_missing, teardown);
+	g_test_add("/mail/uncommitted-delivery", Fixture, NULL, setup, test_uncommitted_delivery, teardown);
+	g_test_add("/mail/attachment-snapshot", Fixture, NULL, setup, test_attachment_snapshot, teardown);
+	g_test_add("/mail/user-atomic-failure", Fixture, NULL, setup, test_user_atomic_failure, teardown);
+	g_test_add("/mail/module-off", Fixture, NULL, setup, test_module_off, teardown);
+	g_test_add("/mail/retained-key", Fixture, NULL, setup, test_retained_key, teardown);
 	return g_test_run();
 }

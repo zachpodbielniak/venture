@@ -48,5 +48,11 @@ gint venture_mail_outbox_deliver_due(VentureMailOutbox *self, gint64 organizatio
  * Returns: whether the same row and Message-ID were queued again
  */
 gboolean venture_mail_outbox_retry(VentureMailOutbox *self, gint64 organization_id, gint64 id, const VentureActor *actor, GError **error);
+/** venture_mail_check_removal:
+ * @entity: record proposed for deletion, restoration or purge
+ * @error: (out) (optional): retained-outbox refusal
+ * Returns: whether removal is allowed; mail identities must remain retained
+ */
+gboolean venture_mail_check_removal(VentureEntity *entity, GError **error);
 G_END_DECLS
 #endif

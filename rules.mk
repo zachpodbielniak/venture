@@ -365,7 +365,7 @@ clean-all: clean-deps
 # exactly what an orm-glib bump did.
 clean-deps:
 	$(Q)for d in $(YAML_GLIB_DIR) $(HTMX_GLIB_DIR) $(AI_GLIB_DIR) \
-	             $(CRISPY_DIR) $(PODOMATION_DIR) $(ORM_GLIB_DIR); do \
+	             $(CRISPY_DIR) $(PODOMATION_DIR) $(ORM_GLIB_DIR) $(MAIL_GLIB_DIR) $(MAIL_OTEL_DIR); do \
 		rm -rf $$d/build; \
 	done
 

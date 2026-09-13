@@ -418,3 +418,13 @@ venturectl federation '{"action":"resolve","id":1,"version":5,"field":"descripti
 ```
 
 Collection pulls return at most ten results, `next_offset` and `more`; continue pages while `more` is true and inspect per-record errors. Pull imports/merges without pushing; sync pushes conflict-free changes with an expected remote version. Edits require the local replica version. A conflict blocks that record until resolved; choosing remote can accept a removed/revoked field. Never update `federation_replica` through generic CRUD: its merge state belongs to the service. Copies remain usable during outages but are not authoritative local accounting rows. New source objects and binary attachments are not created/copied offline. See `docs/federation.org` for key exchange, grants, scheduling and revocation.
+
+## Transactional mail
+
+`mail send to=... subject=... body=...` queues mail; `--html FILE` supplies
+HTML. `mail test to=...` immediately tests real SMTP. `mail deliver --limit N`
+submits due rows. `mail list state=uncertain` lists uncertain acceptance;
+`mail retry ID` is a deliberate resend with the same Message-ID. Pass
+`organization_id=N` to scope another organization. Never automatically retry
+uncertain rows. Actions reject `--stage`; propose an enqueue with the generic
+`--stage create mail_message` command when approval is required.

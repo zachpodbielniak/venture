@@ -34,6 +34,7 @@ struct _VentureDatabase
 	 * anything else touches the database.
 	 */
 	guint			 transaction_depth;
+	VentureMailOutbox *mail_outbox;
 	GThread			*transaction_owner;
 
 	/*
@@ -94,6 +95,7 @@ venture_database_finalize(GObject *object)
 	VentureDatabase *self;
 
 	self = VENTURE_DATABASE(object);
+	g_clear_object(&self->mail_outbox);
 
 	g_clear_object(&self->transaction);
 
@@ -1050,6 +1052,13 @@ venture_database_save(
 			return ok;
 	}
 
+	if (VENTURE_IS_MAIL_MESSAGE(entity)) venture_database_get_mail_outbox(self);
+	if (VENTURE_IS_USER(entity)) {
+		gboolean handled;
+		gboolean ok = venture_mail_save_user(venture_database_get_mail_outbox(self), entity, actor, &handled, error);
+		if (handled || !ok) return ok;
+	}
+
 	/* Validation happens before anything is written, never after: a
 	 * half-written invalid record is worse than a rejected one. */
 	if (!venture_entity_validate(entity, error))
@@ -1382,6 +1391,8 @@ venture_database_delete(
 		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
+	if (!venture_mail_check_removal(entity, error))
+		return FALSE;
 
 	if (!venture_entity_is_persisted(entity))
 	{
@@ -1440,6 +1451,8 @@ venture_database_restore(
 		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
+	if (!venture_mail_check_removal(entity, error))
+		return FALSE;
 
 	if (!venture_entity_is_deleted(entity))
 		return TRUE;
@@ -1480,6 +1493,8 @@ venture_database_purge(
 	if (!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
+		return FALSE;
+	if (!venture_mail_check_removal(entity, error))
 		return FALSE;
 
 	if (!venture_entity_is_persisted(entity))
@@ -1950,4 +1965,20 @@ venture_database_migrate(
 		!venture_database_seed_tax_categories(self, organization_id, error))
 		return FALSE;
 	return TRUE;
+}
+
+gboolean venture_database_has_transaction(VentureDatabase *self)
+{
+	gboolean active;
+	g_rec_mutex_lock(&self->lock);
+	active = self->transaction_depth != 0;
+	g_rec_mutex_unlock(&self->lock);
+	return active;
+}
+
+VentureMailOutbox *venture_database_get_mail_outbox(VentureDatabase *self)
+{
+	if (!self->mail_outbox)
+		self->mail_outbox = g_object_new(VENTURE_TYPE_MAIL_OUTBOX, "database", self, NULL);
+	return self->mail_outbox;
 }

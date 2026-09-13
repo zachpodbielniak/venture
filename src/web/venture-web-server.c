@@ -8455,6 +8455,11 @@ venture_web_append_invoice_block(
 		"<a class=\"btn\" href=\"/invoices/%" G_GINT64_FORMAT
 		"/print\" target=\"_blank\">Print</a>", id);
 
+	if (venture_context_module_enabled(self->context, "mail"))
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
+			"/send\"><button class=\"btn\" type=\"submit\">Send</button></form>", id);
+
 
 	if (VENTURE_INVOICE_STATUS_DRAFT == status)
 		g_string_append_printf(content,
@@ -27538,6 +27543,8 @@ venture_web_api_ticket_draft(
 
 #include "venture-web-federation.inc"
 
+#include "mail/venture-mail-web.inc"
+
 VentureWebServer *
 venture_web_server_new(
 	VentureContext	 *context,
@@ -27923,6 +27930,10 @@ venture_web_server_new(
 	htmx_router_post(router, "/federation/pull", venture_web_ui_federation_write, self);
 	htmx_router_post(router, "/federation/replicas/:id/:action", venture_web_ui_federation_write, self);
 
+	htmx_router_post(router, "/invoices/:id/send", venture_web_mail_invoice_ui, self);
+	htmx_router_post(router, "/api/v1/mail/:action", venture_web_mail_action, self);
+	htmx_router_post(router, "/api/v1/mail_messages/:id/retry", venture_web_mail_action, self);
+	htmx_router_post(router, "/api/v1/invoices/:id/send", venture_web_mail_invoice, self);
 	htmx_router_get(router, "/api/v1/:type", venture_web_api_list, self);
 	htmx_router_post(router, "/api/v1/:type", venture_web_api_create, self);
 	htmx_router_get(router, "/api/v1/:type/:id", venture_web_api_get, self);

@@ -24,6 +24,8 @@ struct _VentureContext
 	VentureWorkService	*work;
 	VentureKbService	*kb;
 	VentureModuleRegistry	*modules;
+	VentureMailer *mailer;
+	VentureMailOutbox *mail_outbox;
 
 	GTimeZone		*timezone;
 	gint64			 default_organization_id;
@@ -44,6 +46,8 @@ venture_context_finalize(GObject *object)
 
 	self = VENTURE_CONTEXT(object);
 
+	g_clear_object(&self->mail_outbox);
+	g_clear_object(&self->mailer);
 	g_clear_object(&self->config);
 	g_clear_object(&self->database);
 	g_clear_object(&self->reports);
@@ -91,6 +95,15 @@ venture_context_new(
 	self->reports = venture_report_registry_new();
 	self->venture_types = venture_venture_type_registry_new();
 	self->timezone = venture_config_get_timezone(config);
+	self->mail_outbox = venture_mail_outbox_new(database, NULL);
+	{
+		g_autofree gchar *state = NULL;
+		g_object_get(config, "state-dir", &state, NULL);
+		if (state && *state) {
+			g_autofree gchar *root = g_build_filename(state, "attachments", NULL);
+			g_object_set(self->mail_outbox, "attachment-root", root, NULL);
+		}
+	}
 
 	/* The cross-row checks a polymorphic link needs, on every writer. */
 	venture_record_link_install_validator(database);
@@ -478,4 +491,18 @@ venture_context_get_plugin_manager(VentureContext *self)
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), NULL);
 
 	return self->plugins;
+}
+
+VentureMailer *venture_context_get_mailer(VentureContext *self)
+{
+	if (!venture_context_module_enabled(self, "mail")) return NULL;
+	if (!self->mailer) self->mailer = VENTURE_MAILER(venture_smtp_mailer_new(self->config));
+	return self->mailer;
+}
+VentureMailOutbox *venture_context_get_mail_outbox(VentureContext *self)
+{
+	VentureMailer *mailer = venture_context_get_mailer(self);
+	if (!mailer) return NULL;
+	g_object_set(self->mail_outbox, "mailer", mailer, NULL);
+	return self->mail_outbox;
 }

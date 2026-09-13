@@ -195,3 +195,13 @@ server for somebody to approve, not merely described. =venturectl --stage=
 does the same for =create=, =update= and =delete= from the shell. It takes its credential from
 =VENTURE_TOKEN= and refuses =--token= outright, since an MCP server is spawned
 from a config file. See [[file:mcp.org][venturectl mcp]].
+
+* Transactional mail
+
+=venturectl mail send to=... subject=... body=...= enqueues; =--html FILE=
+adds HTML. =mail test to=...= tests the configured SMTP transport immediately.
+=mail deliver [--limit N]= sweeps due messages, =mail list state=uncertain=
+shows outcomes needing an operator, and =mail retry ID= deliberately reuses
+that row and Message-ID. All accept =organization_id=N= where relevant.
+See [[file:mail.org][mail]] for uncertainty and scheduling. Actions reject
+=--stage=; =--stage create mail_message= proposes an enqueue instead.
