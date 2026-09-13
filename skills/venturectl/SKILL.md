@@ -418,3 +418,20 @@ venturectl federation '{"action":"resolve","id":1,"version":5,"field":"descripti
 ```
 
 Collection pulls return at most ten results, `next_offset` and `more`; continue pages while `more` is true and inspect per-record errors. Pull imports/merges without pushing; sync pushes conflict-free changes with an expected remote version. Edits require the local replica version. A conflict blocks that record until resolved; choosing remote can accept a removed/revoked field. Never update `federation_replica` through generic CRUD: its merge state belongs to the service. Copies remain usable during outages but are not authoritative local accounting rows. New source objects and binary attachments are not created/copied offline. See `docs/federation.org` for key exchange, grants, scheduling and revocation.
+
+## Follow-up sequences
+
+Use `describe sequence`, `describe sequence_step` and
+`describe sequence_enrollment` before configuring a journey.
+`sequence enroll ID contact_id=ID enrollment_reason=...` calls the service;
+`--stage sequence enroll` queues approval. Generic staged
+`create sequence_enrollment sequence_id=ID contact_id=ID` is equivalent.
+Approval rechecks suppression and duplicate enrollment at application time.
+
+`sequence run [--as-of TIMESTAMP] [organization_id=ID]` processes due steps
+for one organization. Use an ISO timestamp including timezone. Email steps
+create pending `sequence_delivery` rows; this command does not send mail.
+`sequence status ENROLLMENT_ID` shows progress and delivery history.
+Pause, resume and exit use the REST service actions documented in
+`docs/sequences.org`; generic enrollment edits are refused. Completed
+step identities are retained across restarts and sequence edits.

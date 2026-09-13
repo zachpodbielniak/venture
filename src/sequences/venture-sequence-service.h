@@ -38,5 +38,37 @@ gboolean venture_sequences_save_hook(VentureDatabase *database, VentureEntity *r
  * Returns: TRUE if removal preserves sequence evidence
  */
 gboolean venture_sequences_check_removal(VentureEntity *record, GError **error);
+/**
+ * venture_sequence_service_run_due:
+ * @self: the service
+ * @organization_id: exactly one organization
+ * @as_of: inclusive execution cutoff
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): error
+ * Returns: steps processed, or -1 on a transactional failure
+ */
+gint venture_sequence_service_run_due(VentureSequenceService *self, gint64 organization_id,
+	GDateTime *as_of, const VentureActor *actor, GError **error);
+/**
+ * venture_sequence_service_transition:
+ * @self: the service
+ * @organization_id: exactly one organization
+ * @enrollment_id: target enrollment
+ * @action: pause, resume, exit or goal
+ * @reason: (nullable): operator explanation
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): error
+ * Returns: TRUE if the transition commits
+ */
+gboolean venture_sequence_service_transition(VentureSequenceService *self, gint64 organization_id,
+	gint64 enrollment_id, const gchar *action, const gchar *reason,
+	const VentureActor *actor, GError **error);
+/**
+ * venture_sequences_register_reports:
+ * @registry: the report registry
+ *
+ * Adds sequence cohort performance and failed delivery reports.
+ */
+void venture_sequences_register_reports(VentureReportRegistry *registry);
 G_END_DECLS
 #endif

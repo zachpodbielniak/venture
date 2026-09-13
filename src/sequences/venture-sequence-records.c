@@ -118,6 +118,7 @@ static const VentureFieldDecl sequence_step_fields[] = {
 };
 VENTURE_DEFINE_ENTITY(VentureSequenceStep, venture_sequence_step, sequence_step_fields)
 static const VentureFieldDecl sequence_enrollment_fields[] = {
+	VENTURE_FIELD("active-key", "Active key", "Derived enrollment uniqueness", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
 	VENTURE_FIELD_REF("sequence-id", "Sequence id", NULL, "sequence", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("contact-id", "Contact id", NULL, "contact", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("lead-id", "Lead id", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),

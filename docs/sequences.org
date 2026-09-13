@@ -34,3 +34,86 @@ A mail adapter picks up =sequence_delivery= rows with =channel=email= and
 =state=pending=, sends, and sets state/external id. The sequence engine does
 not send mail or depend on a mail implementation. The adapter must recheck
 pending state before sending, since an exit can cancel a queued delivery.
+
+* Running and inspecting steps
+
+Call =venture_sequence_service_run_due()=, =venturectl sequence run= or
+=POST /api/v1/sequences/run=. Execution is lazy and bounded to 1000 due
+enrollments per call; an operator or scheduled automation must invoke the
+sweep. There is no database worker thread. Each enrollment transition is
+one transaction. A failed transaction rolls back its delivery, inbox message,
+progress and audit records; other enrollments already committed by a sweep
+stay committed.
+
+Every enrollment/step identity has at most one delivery, enforced by a
+per-organization unique key. A second sweep or a process restart reads that
+history. A completed step moved later is still complete. Active steps found
+before the current position without history get =skipped= deliveries with
+an explanation. New steps after that position remain eligible. Editing a
+pending step does not rewrite a delivery already produced. The saved
+=next_run_at= is retained until the next transition; new delays apply when
+that transition schedules another step.
+
+Templates accept ={contact.name}=, ={company.name}=, ={deal.name}= and
+other readable fields from those records; an unqualified name means a
+contact field. Underscores and hyphens are accepted in field names.
+Unknown or unavailable placeholders fail the delivery visibly. Sensitive
+fields never enter the rendering context. A call or SMS step creates one
+plain inbox notification for the enrollment's =owner_id=; it performs no
+call or SMS. A missing owner fails the step. A wait step records its
+completion as skipped because no delivery is required.
+
+Email completion means queued for the adapter. The enrollment may reach
+=completed= while its last email is still pending. The adapter may update
+only a pending delivery's state, execution time, error and external message
+identifier. Failed completion requires an error and stops further steps.
+Resetting a finished delivery to pending or rewriting its payload is refused.
+Automatic provider retries are outside this engine; no failure silently
+re-enqueues a completed step.
+
+* Operator and assistant actions
+
+The contact page's *Enroll in sequence* action opens the ordinary generated
+enrollment form with the contact filled in. Contact and enrollment pages
+show the next position and scheduled time, enrollment reason, exit reason,
+and delivery history. Pause, resume and exit buttons call the same service
+as REST. Pausing preserves the checkpoint. Resuming never clears delivery
+history. Terminal enrollments cannot resume; a deliberate new enrollment
+is a separate journey.
+
+=POST /api/v1/sequence/:id/enroll= takes the enrollment fields. Append
+=?stage=1= to propose it. The assistant's ordinary staged create tool can
+create =sequence_enrollment= with =sequence_id= and =contact_id=; approval
+rechecks suppression and duplicates and calculates the schedule. It writes
+nothing until approved. =enrolled_at= can be supplied for deterministic
+imports; omitting it uses the approval/enrollment time.
+
+=POST /api/v1/sequence_enrollment/:id/pause=, =/resume= and =/exit= perform
+manual controls. The =/goal= action marks a custom goal met and exits.
+A meeting interaction satisfies a meeting goal regardless of its outbound
+flag; an inbound interaction satisfies a reply goal. A won deal satisfies a
+=deal_won= goal. Goal satisfaction stops future steps even when the
+corresponding optional exit switch is false.
+
+* Reporting and upgrades
+
+=sequence_performance= reports current outcomes for the cohort enrolled in
+the selected period: enrolled, completed, exited by reason, replies, and
+met goals for each sequence. It is not a reconstruction of past mutable
+statuses. =sequence_failures= lists errors from failed deliveries whose
+scheduled timestamps fall in the period. Both use one exact organization
+and ordinary report rendering/export.
+
+The paired =000003_sequences.sql= migrations verify the organization-scoped
+suppression, delivery and active-enrollment indexes made from the field
+metadata. They permit absent tables when the module is off and do not
+invent historical enrollments. Enabling the module later reconciles its
+field tables normally. SQLite upgrade/restart tests preserve existing
+contacts and delivery history. PostgreSQL SQL ships with the same contract;
+a live PostgreSQL integration run is separate from the SQLite suite.
+
+=test-sequences= covers enrollment windows, duplicate and suppressed
+refusals, reply/deal/meeting exits, repeated sweeps, edited steps, rollback,
+manual controls, rendering failures, adapter evidence, report counts,
+staged approval, real HTTP and CLI calls, task notifications, module enable
+and file-backed restart.

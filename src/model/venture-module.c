@@ -534,9 +534,9 @@ static GType (*const venture_module_periods_types[]) (void) = {
 static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live", NULL };
 
 static GType (*const sequence_types[]) (void) = {
-    venture_sequence_get_type, venture_sequence_step_get_type,
-    venture_sequence_enrollment_get_type, venture_sequence_delivery_get_type,
-    venture_suppression_get_type, NULL
+	venture_sequence_get_type, venture_sequence_step_get_type,
+	venture_sequence_enrollment_get_type, venture_sequence_delivery_get_type,
+	venture_suppression_get_type, NULL
 };
 static const gchar *const sequence_requires[] = { "crm", NULL };
 static const gchar *const sequence_reports[] = { "sequence_performance", "sequence_failures", NULL };
