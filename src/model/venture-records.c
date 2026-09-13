@@ -103,7 +103,9 @@ static const VentureFieldDecl venture_venture_fields[] = {
 	VENTURE_FIELD_REF("idea-id", "Originating idea",
 	                  "The idea this venture was promoted from", "idea",
 	                  VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("owner-user-id", "Owner", "Responsible user", "user", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureVenture, venture_venture, venture_venture_fields,
@@ -576,7 +578,9 @@ static const VentureFieldDecl venture_company_fields[] = {
 	VENTURE_FIELD_TEXT("address", "Address", NULL),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
-	              VENTURE_COLUMN_FLAG_INDEXED)
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("owner-user-id", "Owner", "Responsible user", "user", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCompany, venture_company, venture_company_fields,
@@ -610,7 +614,9 @@ static const VentureFieldDecl venture_contact_fields[] = {
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("subscribed", "Subscribed", NULL,
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("owner-user-id", "Owner", "Responsible user", "user", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureContact, venture_contact, venture_contact_fields,
@@ -663,7 +669,9 @@ static const VentureFieldDecl venture_deal_fields[] = {
 	              VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("source", "Source", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("owner-user-id", "Owner", "Responsible user", "user", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureDeal, venture_deal, venture_deal_fields,
@@ -1304,7 +1312,9 @@ static const VentureFieldDecl venture_ticket_fields[] = {
 	                   venture_satisfaction_get_type,
 	                   VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_TEXT("satisfaction-comment", "Satisfaction comment",
-	                   "What they said about it")
+	                   "What they said about it"),
+	VENTURE_FIELD_REF("owner-user-id", "Owner", "Responsible user", "user", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureTicket, venture_ticket, venture_ticket_fields,

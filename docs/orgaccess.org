@@ -1,0 +1,27 @@
+#+title: Organization access
+#+description: Organization membership and record ownership
+
+* Access records
+
+The =orgaccess= module requires =core= and is on by default. It declares
+=organization_membership=, =team= and =team_membership= as ordinary records.
+An organization membership names a user and a role and can be deactivated.
+There is one membership per user and organization, including inactive and
+soft-deleted rows. Reactivate the existing membership when access resumes.
+A team belongs to one organization; a user can belong to several teams.
+
+Companies, contacts, deals, tickets and ventures carry =owner_user_id= and
+an optional =team_id=. These are references, so generated forms, REST and
+=venturectl describe= expose the same fields.
+
+* Upgrade
+
+The paired =000003_orgaccess.sql= migrations preserve each existing owner's
+access by adding owner memberships in all existing, live organizations.
+Other global roles receive no implicit memberships. The migration retains
+its access tables even when the module is disabled during upgrade, so an
+owner backfill is not lost by switching the module on later. Migration
+history prevents a subsequent restart from granting revoked access again.
+
+=test-orgaccess= covers generated fields, membership uniqueness, the module
+switch, and upgrading populated user and organization tables and restarting.

@@ -1,0 +1,117 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+#include <venture.h>
+
+/* Access records must participate in the generated model, not a private
+ * authorization table that the forms and CLI cannot manage. */
+static void
+test_records(void)
+{
+	VentureEntityRegistry *registry;
+	g_autoptr(VentureDatabase) db = NULL;
+	g_autoptr(VentureEntity) user = NULL;
+	g_autoptr(VentureEntity) membership = NULL;
+	g_autoptr(VentureEntity) duplicate = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureEntity) org = NULL;
+	g_autoptr(GError) error = NULL;
+	GType type;
+	GType owned[5];
+	guint i;
+
+	registry = venture_entity_registry_get_default();
+	type = venture_entity_registry_lookup(registry, "organization_membership");
+	g_assert_cmpuint(type, !=, G_TYPE_INVALID);
+	g_assert_cmpuint(venture_entity_registry_lookup(registry, "team"), !=, G_TYPE_INVALID);
+	g_assert_cmpuint(venture_entity_registry_lookup(registry, "team_membership"), !=, G_TYPE_INVALID);
+	owned[0] = VENTURE_TYPE_COMPANY;
+	owned[1] = VENTURE_TYPE_CONTACT;
+	owned[2] = VENTURE_TYPE_DEAL;
+	owned[3] = VENTURE_TYPE_TICKET;
+	owned[4] = VENTURE_TYPE_VENTURE;
+	for (i = 0; i < G_N_ELEMENTS(owned); i++)
+	{
+		g_autoptr(VentureEntity) entity = g_object_new(owned[i], NULL);
+		g_assert_nonnull(g_object_class_find_property(G_OBJECT_GET_CLASS(entity), "owner-user-id"));
+		g_assert_nonnull(g_object_class_find_property(G_OBJECT_GET_CLASS(entity), "team-id"));
+	}
+	db = venture_database_new("sqlite://:memory:", &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(db, registry, &error));
+	g_assert_no_error(error);
+	query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
+	org = venture_database_find_one(db, query, &error);
+	g_assert_nonnull(org);
+	user = g_object_new(VENTURE_TYPE_USER, "username", "member", "active", TRUE, NULL);
+	g_assert_true(venture_database_save(db, user, NULL, &error));
+	membership = g_object_new(type, "user-id", venture_entity_get_id(user),
+		"organization-id", venture_entity_get_id(org), "active", TRUE, NULL);
+	g_assert_true(venture_database_save(db, membership, NULL, &error));
+	g_assert_no_error(error);
+	duplicate = g_object_new(type, "user-id", venture_entity_get_id(user),
+		"organization-id", venture_entity_get_id(org), "active", TRUE, NULL);
+	g_assert_false(venture_database_save(db, duplicate, NULL, &error));
+	g_assert_nonnull(error);
+}
+
+static void
+test_module(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureContext) context = venture_context_new(config, db);
+	g_assert_true(venture_context_module_enabled(context, "orgaccess"));
+	venture_config_set_module_enabled(config, "orgaccess", FALSE);
+	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(), "team"), ==, G_TYPE_INVALID);
+	venture_config_set_module_enabled(config, "orgaccess", TRUE);
+}
+
+/* Build only the two historical tables: this fixture has no access schema
+ * or migration history and contains two legal entities before upgrade. */
+static void
+test_upgrade(void)
+{
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	GType type;
+	guint i;
+	g_assert_true(venture_schema_create_table(venture_database_get_connection(db), VENTURE_TYPE_USER, &error));
+	g_assert_true(venture_schema_create_table(venture_database_get_connection(db), VENTURE_TYPE_ORGANIZATION, &error));
+	g_assert_true(venture_database_execute(db,
+		"INSERT INTO users (id, uuid, username, role, active) VALUES (17, 'old-owner', 'old-owner', 'owner', 1), (18, 'old-editor', 'old-editor', 'editor', 1);"
+		"INSERT INTO organizations (id, uuid, name, slug, active) VALUES (31, 'old-a', 'Entity A', 'a', 1), (32, 'old-b', 'Entity B', 'b', 1)", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	type = venture_entity_registry_lookup(venture_entity_registry_get_default(), "organization_membership");
+	query = venture_query_new(type);
+	rows = venture_database_find(db, query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(rows->len, ==, 2);
+	for (i = 0; i < rows->len; i++)
+	{
+		gint64 user_id;
+		gboolean active;
+		gint role;
+		VentureEntity *row = g_ptr_array_index(rows, i);
+		g_object_get(row, "user-id", &user_id, "active", &active, NULL);
+		g_object_get(row, "role", &role, NULL);
+		g_assert_cmpint(user_id, ==, 17);
+		g_assert_true(active);
+		g_assert_cmpint(role, ==, VENTURE_ORGANIZATION_ROLE_OWNER);
+	}
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_cmpint(venture_database_count(db, query, &error), ==, 2);
+	g_assert_no_error(error);
+}
+
+int
+main(int argc, char **argv)
+{
+	g_test_init(&argc, &argv, NULL);
+	g_test_add_func("/orgaccess/records", test_records);
+	g_test_add_func("/orgaccess/module", test_module);
+	g_test_add_func("/orgaccess/upgrade", test_upgrade);
+	return g_test_run();
+}
