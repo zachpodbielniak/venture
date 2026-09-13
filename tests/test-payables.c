@@ -543,6 +543,15 @@ test_paid_line_expense(Fixture *f, gconstpointer unused)
 	journals = count(f, "journal");
 	save(f, e);
 	g_assert_cmpint(count(f, "journal"), ==, journals);
+	/* Backfill must not offer the same paid cash projection for a second
+	 * posting, even when automatic source journals are enabled. */
+	{
+		g_autoptr(GPtrArray) unposted = venture_autojournal_service_unposted(
+			venture_database_get_autojournal_service(f->db), f->org, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(unposted);
+		g_assert_cmpuint(unposted->len, ==, 0);
+	}
 	field(e, "amount", "200 USD");
 	g_assert_false(venture_database_save(f->db, e, NULL, &error));
 	g_assert_nonnull(error);
