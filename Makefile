@@ -66,6 +66,8 @@ CORE_SRCS := \
 	$(wildcard src/util/*.c) \
 	$(wildcard src/mcp/*.c)
 
+CORE_SRCS += src/billing/venture-billing-records.c
+
 # Server-only subsystems.
 SERVER_ONLY_SRCS := \
 	$(filter-out src/ledger/venture-journal.c,$(wildcard src/ledger/*.c)) \

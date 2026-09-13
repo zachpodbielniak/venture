@@ -1,0 +1,20 @@
+#+title: SaaS billing
+#+description: Plans, subscription terms and recurring customer revenue
+
+* The billing module
+
+=billing= requires =invoicing= and =receivables=. Plans and prices describe
+what Lightsite sells: Starter and Pro, each with monthly and yearly prices.
+=customer_subscription= is the customer's commitment. The example plugin's
+=subscription= remains a recurring cost paid by the business.
+
+=plan= carries an organization, optional venture, name, code, description
+and active flag. Codes are unique within the organization. =plan_price=
+separates currency, interval, exact amount, seat pricing and trial length
+from the plan. =subscription_event= preserves changes to those commitments.
+=dunning_step= defines notice, retry, pause and cancel actions by overdue
+day; =billing_notice= records notices with an email channel.
+
+Revenue recognition schedules are a follow-up. A subscription's contracted
+recurring revenue, an issued invoice and a cash receipt are different facts.
+There is no payment provider, card storage or mail transport in this module.
