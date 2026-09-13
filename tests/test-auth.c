@@ -3860,6 +3860,67 @@ orgaccess_cli_wait(GObject *source, GAsyncResult *result, gpointer data)
 
 /* Type-level actions must carry the nested journal's organization into the
  * confirmation, enforce proposal vetoes, and recheck authority at approval. */
+/* Public capabilities are independent of unrelated local sessions. A signed
+ * in user without memberships must get the same form/quote rights as a guest. */
+static void
+test_orgaccess_public_capabilities(ServerFixture *fixture, gconstpointer unused)
+{
+	gint64 org = venture_context_get_default_organization_id(fixture->context);
+	g_autoptr(VentureEntity) form = g_object_new(VENTURE_TYPE_LEAD_FORM, "organization-id", org,
+		"name", "Capture", "public-token", "access-capture", "active", TRUE, NULL);
+	g_autoptr(VentureEntity) company = g_object_new(VENTURE_TYPE_COMPANY, "organization-id", org, "name", "Buyer", NULL);
+	g_autoptr(VentureEntity) quote = NULL;
+	g_autoptr(VentureEntity) line = NULL;
+	g_autoptr(VentureEntity) action = NULL;
+	g_autoptr(VentureMoney) amount = venture_money_new_for_currency(1000, "USD");
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *cookie = NULL, *token = NULL, *path = NULL, *accept = NULL;
+	gint state;
+	server_fixture_create_user(fixture, "outside-user", "password", VENTURE_USER_ROLE_EDITOR, NULL);
+	cookie = server_fixture_login(fixture, "outside-user", "password");
+	g_assert_true(venture_database_save(fixture->database, form, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(server_fixture_json(fixture, "POST", "/f/access-capture", cookie, "{\"name\":\"Incoming lead\"}", NULL), ==, 200);
+	g_assert_cmpuint(server_fixture_json(fixture, "POST", "/f/invalid-token", cookie, "{\"name\":\"No lead\"}", NULL), ==, 404);
+	g_assert_true(venture_database_save(fixture->database, company, NULL, &error));
+	g_assert_no_error(error);
+	quote = g_object_new(VENTURE_TYPE_QUOTE, "organization-id", org, "number", "CAPABILITY-1",
+		"company-id", venture_entity_get_id(company), "currency", "USD", NULL);
+	g_assert_true(venture_database_save(fixture->database, quote, NULL, &error));
+	g_assert_no_error(error);
+	line = g_object_new(VENTURE_TYPE_QUOTE_LINE, "organization-id", org,
+		"quote-id", venture_entity_get_id(quote), "description", "Service", "quantity", 1.0, "unit-price", amount, NULL);
+	g_assert_true(venture_database_save(fixture->database, line, NULL, &error));
+	g_assert_no_error(error);
+	{
+		g_autoptr(VentureEntity) current = venture_database_get(fixture->database, VENTURE_TYPE_QUOTE, venture_entity_get_id(quote), &error);
+		g_assert_no_error(error);
+		action = g_object_new(VENTURE_TYPE_QUOTE_ACTION, "organization-id", org,
+			"quote-id", venture_entity_get_id(quote), "action", "send", "expected-version", venture_entity_get_version(current), NULL);
+	}
+	g_assert_true(venture_database_save(fixture->database, action, NULL, &error));
+	g_assert_no_error(error);
+	{
+		gint64 id = venture_entity_get_id(quote);
+		g_clear_object(&quote);
+		quote = venture_database_get(fixture->database, VENTURE_TYPE_QUOTE, id, &error);
+	}
+	g_assert_no_error(error);
+	g_object_get(quote, "acceptance-token", &token, NULL);
+	g_assert_nonnull(token);
+	path = g_strconcat("/q/", token, NULL);
+	accept = g_strconcat(path, "/accept", NULL);
+	g_assert_cmpuint(server_fixture_json(fixture, "GET", path, cookie, NULL, NULL), ==, 200);
+	g_assert_cmpuint(server_fixture_json(fixture, "GET", "/q/invalid-token", cookie, NULL, NULL), ==, 404);
+	g_assert_cmpuint(server_fixture_json(fixture, "POST", accept, cookie, "{\"accepted_by\":\"Buyer\"}", NULL), ==, 200);
+	{
+		g_autoptr(VentureEntity) current = venture_database_get(fixture->database, VENTURE_TYPE_QUOTE, venture_entity_get_id(quote), &error);
+		g_assert_no_error(error);
+		g_object_get(current, "status", &state, NULL);
+		g_assert_cmpint(state, ==, VENTURE_QUOTE_ACCEPTED);
+	}
+}
+
 static void
 test_orgaccess_create_action(ServerFixture *fixture, gconstpointer user_data)
 {
@@ -4289,5 +4350,6 @@ main(
 	g_test_add("/orgaccess/action-create-revoked", ServerFixture, "revoked", server_fixture_set_up, test_orgaccess_create_action, server_fixture_tear_down);
 	g_test_add("/orgaccess/journal-action-veto", ServerFixture, "action-veto", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
 	g_test_add("/orgaccess/journal-header-changed", ServerFixture, "header-changed", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
+	g_test_add("/orgaccess/public-capabilities-session", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_public_capabilities, server_fixture_tear_down);
 	return g_test_run();
 }

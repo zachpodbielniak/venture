@@ -702,6 +702,7 @@ test_upgrade(Fixture *f, gconstpointer data)
 {
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureEntity) org = NULL;
+	/* Model the prior schema as a history prefix when later modules exist. */
 	g_assert_true(venture_database_execute(f->db, "UPDATE organizations SET quote_valid_days = NULL; DELETE FROM schema_migrations WHERE version >= 150", NULL, &error));
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));

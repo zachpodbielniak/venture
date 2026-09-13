@@ -68,4 +68,3 @@ static const VentureFieldDecl lead_assignment_rule_fields[] = {
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureLeadAssignmentRule, venture_lead_assignment_rule, lead_assignment_rule_fields)
-
