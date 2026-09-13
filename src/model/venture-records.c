@@ -2715,6 +2715,7 @@ static const VentureFieldDecl venture_invoice_line_fields[] = {
 	VENTURE_FIELD_MONEY("unit-price", "Unit price", NULL),
 	VENTURE_FIELD("position", "Position", "Order on the invoice",
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("product-id", "Product", "Catalog item priced by the payment provider", "product", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("discount-percent", "Discount percent", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("tax-percent", "Tax percent", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
 };

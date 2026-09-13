@@ -2098,6 +2098,23 @@ venture_cli_command_factory(
 #include "banking/venture-bank-cli.inc"
 
 static gint
+venture_cli_command_invoice(VentureCli *cli, gchar **args, GError **error)
+{
+	g_autofree gchar *path = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	if (!args[1] || g_strcmp0(args[1], "checkout") || !args[2] || args[3])
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "usage: venturectl invoice checkout ID");
+		return -1;
+	}
+	path = g_strdup_printf("/api/v1/invoices/%s/checkout", args[2]);
+	node = venture_cli_request(cli, "POST", path, NULL, error);
+	if (!node) return -1;
+	venture_cli_output(cli, node);
+	return 0;
+}
+
+static gint
 venture_cli_command_release(
 	VentureCli	 *cli,
 	gchar		**args,
@@ -3363,6 +3380,7 @@ main(
 		"  lead reassign ID             owner=NAME or run assignment rules\n"
 		"  release changelog ID         draft a release's changelog from\n"
 		"                               its tickets; --replace overwrites\n"
+		"  invoice checkout ID          create a hosted Stripe payment URL\n"
 		"  asset place|dispose|write-off ID  manage an asset; proceeds=.. for disposal\n"
 		"  assets run-period YYYY-MM      post due schedules; --dry-run previews\n"
 		"  journal post ID              post a draft, or propose for approval\n"
@@ -3595,6 +3613,8 @@ main(
 		result = venture_cli_command_reconcile(&cli, args, reconciliation_matcher, reconciliation_threshold, &error);
 	else if (0 == g_strcmp0(args[0], "factory"))
 		result = venture_cli_command_factory(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "invoice"))
+		result = venture_cli_command_invoice(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "asset") || 0 == g_strcmp0(args[0], "assets"))
 		result = venture_cli_command_assets(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "journal"))

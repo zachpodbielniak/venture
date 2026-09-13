@@ -297,10 +297,14 @@ venture_schema_append_index(
 		quoted_table = venture_schema_quote_identifier(context->table);
 		quoted_column = venture_schema_quote_identifier(column);
 		index_name = g_strdup_printf("uq_%s_organization_%s", context->table, column);
+		/* Empty strings are unset identifiers. References are integers:
+		 * comparing them to an empty string is invalid on PostgreSQL. */
+		target = G_PARAM_SPEC_VALUE_TYPE(pspec) == G_TYPE_STRING
+			? g_strdup_printf(" AND %s <> ''", quoted_column) : g_strdup("");
 		g_ptr_array_add(context->statements,
 			g_strdup_printf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s "
-				"(\"organization_id\", %s) WHERE %s IS NOT NULL AND %s <> ''",
-				index_name, quoted_table, quoted_column, quoted_column, quoted_column));
+				"(\"organization_id\", %s) WHERE %s IS NOT NULL%s",
+				index_name, quoted_table, quoted_column, quoted_column, target));
 		return;
 	}
 

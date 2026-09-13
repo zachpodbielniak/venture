@@ -547,6 +547,12 @@ main(
 		}
 	}
 
+	if (!venture_context_start_stripe(context, &error))
+	{
+		g_printerr("Stripe: %s\n", error->message);
+		return venture_error_to_exit_code(VENTURE_ERROR_CONFIG);
+	}
+
 	if (!venture_web_server_start(server, &error))
 	{
 		g_printerr("%s\n", error->message);

@@ -1184,6 +1184,14 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
 		"/tickets/1/assist?what=triage"), ==, SOUP_STATUS_UNAUTHORIZED);
 
+	/* Payment actions authenticate before exposing module configuration. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/invoices/1/checkout", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/invoices/1/checkout", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+
 	/* Two fragments, which 401 like the chat ones. */
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/inbox/count"),
 	                 ==, SOUP_STATUS_UNAUTHORIZED);

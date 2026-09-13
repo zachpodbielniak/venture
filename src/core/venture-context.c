@@ -23,6 +23,7 @@ struct _VentureContext
 	VenturePluginManager	*plugins;
 	VentureWorkService	*work;
 	VentureKbService	*kb;
+	VentureStripeService *stripe;
 	VentureModuleRegistry	*modules;
 	VentureMailerRegistry *mailers;
 	VentureMailOutbox *mail_outbox;
@@ -61,6 +62,7 @@ venture_context_finalize(GObject *object)
 	g_clear_object(&self->plugins);
 	g_clear_object(&self->work);
 	g_clear_object(&self->kb);
+	g_clear_object(&self->stripe);
 	g_clear_object(&self->modules);
 	g_clear_pointer(&self->timezone, g_time_zone_unref);
 	g_clear_object(&self->reconciliation_registry);
@@ -524,6 +526,30 @@ venture_context_get_reconciliation_service(VentureContext *self)
 	if (self->reconciliation_service == NULL)
 		self->reconciliation_service = venture_reconciliation_service_new(self);
 	return self->reconciliation_service;
+}
+
+VentureStripeService *
+venture_context_get_stripe_service(VentureContext *self)
+{
+	return venture_context_module_enabled(self, "stripe") ? self->stripe : NULL;
+}
+
+void
+venture_context_set_stripe_service(VentureContext *self, VentureStripeService *service)
+{
+	g_set_object(&self->stripe, service);
+}
+
+gboolean
+venture_context_start_stripe(VentureContext *self, GError **error)
+{
+	g_autoptr(VentureStripeService) provider = NULL;
+	if (!venture_context_module_enabled(self, "stripe")) return TRUE;
+	provider = venture_stripe_service_new(self->database,
+		venture_context_get_default_organization_id(self), NULL, error);
+	if (!provider) return FALSE;
+	venture_context_set_stripe_service(self, provider);
+	return TRUE;
 }
 
 VentureMailer *venture_context_get_mailer(VentureContext *self)

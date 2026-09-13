@@ -539,6 +539,7 @@ public_capability_request(HtmxRequest *request)
 	const gchar *path = htmx_request_get_path(request);
 	HtmxMethod method = htmx_request_get_method(request);
 	const gchar *suffix;
+	if (!g_strcmp0(path, "/webhooks/stripe")) return method == HTMX_METHOD_POST;
 	if (g_str_has_prefix(path, "/f/") && path[3] != '\0')
 		return method == HTMX_METHOD_POST && strchr(path + 3, '/') == NULL;
 	if (!g_str_has_prefix(path, "/q/") || path[3] == '\0' || path[3] == '/') return FALSE;

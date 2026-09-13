@@ -56,6 +56,7 @@ struct _VentureDatabase
 	 * through venture_database_save(), so every writer gets the check.
 	 */
 	GPtrArray		*validators;
+	VentureEntity *stripe_write_permit;
 	VentureAssetService *asset_service;
 	VentureAccessPolicy *access_policy;
 	VentureBillingService *billing;
@@ -1110,6 +1111,17 @@ venture_database_save(
 	if (!venture_access_policy_check_write(venture_database_get_access_policy(self), entity, "write", error)) return FALSE;
 	if (!venture_orgaccess_prepare(self, entity, error)) return FALSE;
 
+	if (G_OBJECT_TYPE(entity) == venture_stripe_checkout_get_type() ||
+	    G_OBJECT_TYPE(entity) == venture_stripe_event_get_type())
+	{
+		if (self->stripe_write_permit != entity)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"Stripe evidence must be written through VentureStripeService");
+			return FALSE;
+		}
+		self->stripe_write_permit = NULL;
+	}
 	{
 		gboolean handled;
 		gboolean ok = venture_payables_expense_hook(self, entity, actor, &handled, error);
@@ -1553,6 +1565,13 @@ venture_database_delete(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
+	if (G_OBJECT_TYPE(entity) == venture_stripe_checkout_get_type() ||
+	    G_OBJECT_TYPE(entity) == venture_stripe_event_get_type())
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"Stripe evidence is retained by VentureStripeService");
+		return FALSE;
+	}
 	if (!venture_billing_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_bank_check_write(self, entity, TRUE, error) ||
@@ -1635,6 +1654,13 @@ venture_database_restore(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
+	if (G_OBJECT_TYPE(entity) == venture_stripe_checkout_get_type() ||
+	    G_OBJECT_TYPE(entity) == venture_stripe_event_get_type())
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"Stripe evidence is retained by VentureStripeService");
+		return FALSE;
+	}
 	if (!venture_billing_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_bank_check_write(self, entity, TRUE, error) ||
@@ -1697,6 +1723,13 @@ venture_database_purge(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
+	if (G_OBJECT_TYPE(entity) == venture_stripe_checkout_get_type() ||
+	    G_OBJECT_TYPE(entity) == venture_stripe_event_get_type())
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"Stripe evidence is retained by VentureStripeService");
+		return FALSE;
+	}
 	if (!venture_billing_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_bank_check_write(self, entity, TRUE, error) ||
@@ -2183,6 +2216,20 @@ venture_database_migrate(
 		!venture_pipelines_migrate(self, error))
 		return FALSE;
 	return TRUE;
+}
+
+/* A one-use permit is consumed before callbacks can re-enter a generic save. */
+gboolean
+venture_stripe_save_owned(VentureDatabase *database, VentureEntity *entity,
+	const VentureActor *actor, GError **error)
+{
+	gboolean ok;
+	g_autoptr(GRecMutexLocker) locker = g_rec_mutex_locker_new(&database->lock);
+
+	database->stripe_write_permit = entity;
+	ok = venture_database_save(database, entity, actor, error);
+	database->stripe_write_permit = NULL;
+	return ok;
 }
 
 VentureAssetService *
