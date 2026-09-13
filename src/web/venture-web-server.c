@@ -8547,6 +8547,8 @@ venture_web_append_incident_block(
 	VentureEntity		*record
 );
 
+#include "assets/venture-assets-web.inc"
+
 static HtmxResponse *
 venture_web_ui_detail(
 	HtmxRequest	*request,
@@ -8662,6 +8664,9 @@ venture_web_ui_detail(
 	 * composer below: an invoice without its total is a list of hints. */
 	if (VENTURE_TYPE_INVOICE == entity_type)
 		venture_web_append_invoice_block(self, content, record);
+
+	if (VENTURE_TYPE_FIXED_ASSET == entity_type)
+		venture_web_append_asset_actions(content, record);
 
 	/* A forge's credentials, which the generated form cannot show. */
 	if (VENTURE_TYPE_FORGE == entity_type)
@@ -27833,6 +27838,9 @@ venture_web_server_new(
 	                 venture_web_api_release_changelog, self);
 	htmx_router_post(router, "/api/v1/releases/:id/publish",
 	                 venture_web_api_release_publish, self);
+	htmx_router_post(router, "/api/v1/fixed_assets/:id/:operation", venture_web_asset_action, self);
+	htmx_router_post(router, "/assets/:id/:operation", venture_web_asset_action, self);
+	htmx_router_post(router, "/api/v1/assets/run-period", venture_web_assets_run, self);
 	htmx_router_get(router, "/api/v1/widget-kinds",
 	                venture_web_api_widget_kinds, self);
 	htmx_router_get(router, "/api/v1/dashboard-templates",

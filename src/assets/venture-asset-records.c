@@ -88,7 +88,7 @@ static const VentureFieldDecl fixed_asset_fields[] = {
 	VENTURE_FIELD_REF("proceeds-account-id", "Disposal cash account", NULL, "account", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("gain-loss-account-id", "Disposal gain/loss account", "Defaults to depreciation expense for write-offs", "account", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("schedule-note", "Schedule note", "Service explains a move to an open period", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("operation", "Operation", "Stage place, dispose or write-off through VentureAssetService", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_TRANSIENT),
+	VENTURE_FIELD("operation", "Operation", "Stage place, dispose or write-off through VentureAssetService", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_NAME("name", "Name", NULL),
 	VENTURE_FIELD("tag", "Tag", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
 	VENTURE_FIELD_REF("venture-id", "Venture Id", NULL, "venture", VENTURE_COLUMN_FLAG_NONE),
@@ -117,6 +117,12 @@ static const VentureFieldDecl depreciation_entry_fields[] = {
 };
 VENTURE_DEFINE_ENTITY(VentureDepreciationEntry, venture_depreciation_entry, depreciation_entry_fields)
 static const VentureFieldDecl deferral_fields[] = {
+	VENTURE_FIELD("operation", "Operation", "Stage settle through VentureDeferralService", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("funding-account-id", "Funding account", "Required for a prepayment without a source expense", "account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("settlement-account-id", "Settlement account", "Cash account used on settlement", "account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("settlement-journal-id", "Settlement journal", NULL, "journal", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("settled-at", "Settled at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("schedule-note", "Schedule note", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_ENUM("kind", "Kind", NULL, venture_deferral_kind_get_type, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_NAME("description", "Description", NULL),
 	VENTURE_FIELD_MONEY("total", "Total", NULL),

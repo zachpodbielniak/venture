@@ -67,11 +67,12 @@ gint venture_asset_service_run_period(VentureAssetService *self, const gchar *pe
  gint64 organization_id, gboolean dry_run, const VentureActor *actor, GError **error);
 /**
  * venture_assets_check_removal:
+ * @database: repository holding the authoritative state
  * @entity: record being deleted, restored or purged
  * @error: (out) (optional): refusal details
  * Returns: %TRUE for removable draft assets or unrelated records
  */
-gboolean venture_assets_check_removal(VentureEntity *entity, GError **error);
+gboolean venture_assets_check_removal(VentureDatabase *database, VentureEntity *entity, GError **error);
 /**
  * venture_asset_service_dispose:
  * @self: service

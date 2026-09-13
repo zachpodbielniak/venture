@@ -2140,6 +2140,51 @@ venture_cli_command_release(
 	return 0;
 }
 
+/* Asset actions use the same service endpoints as the web controls. */
+static gint
+venture_cli_command_assets(VentureCli *cli, gchar **args, GError **error)
+{
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	g_autofree gchar *path = NULL;
+	const gchar *verb;
+	gint i;
+	if (args[1] == NULL || args[2] == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"usage: asset place|dispose|write-off ID [proceeds=..] or assets run-period YYYY-MM [organization_id=..] [--dry-run]");
+		return -1;
+	}
+	body = venture_cli_values_from_args(args, 3);
+	if (g_str_equal(args[0], "assets") && g_str_equal(args[1], "run-period"))
+	{
+		path = g_strdup("/api/v1/assets/run-period");
+		json_object_set_string_member(json_node_get_object(body), "period", args[2]);
+		for (i = 3; args[i] != NULL; i++)
+			if (g_str_equal(args[i], "--dry-run"))
+				json_object_set_boolean_member(json_node_get_object(body), "dry_run", TRUE);
+	}
+	else if (g_str_equal(args[0], "asset") &&
+		(g_str_equal(args[1], "place") || g_str_equal(args[1], "dispose") || g_str_equal(args[1], "write-off")))
+	{
+		verb = g_str_equal(args[1], "place") ? "place-in-service" : args[1];
+		path = g_strdup_printf("/api/v1/fixed_assets/%s/%s", args[2], verb);
+		if (json_object_has_member(json_node_get_object(body), "proceeds"))
+			json_object_set_string_member(json_node_get_object(body), "disposal_proceeds",
+				json_object_get_string_member(json_node_get_object(body), "proceeds"));
+	}
+	else
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "Unknown assets action");
+		return -1;
+	}
+	result = venture_cli_request(cli, "POST", path, body, error);
+	if (result == NULL)
+		return -1;
+	venture_cli_output(cli, result);
+	return 0;
+}
+
 /* --- The workdesk ---------------------------------------------------------- */
 
 /*
@@ -3180,6 +3225,8 @@ main(
 		"  factory                      the software factory at a glance\n"
 		"  release changelog ID         draft a release's changelog from\n"
 		"                               its tickets; --replace overwrites\n"
+		"  asset place|dispose|write-off ID  manage an asset; proceeds=.. for disposal\n"
+		"  assets run-period YYYY-MM      post due schedules; --dry-run previews\n"
 		"  release publish ID           cut it on the forge; --prerelease\n"
 		"  dashboards                   list the dashboards\n"
 		"  dashboard SLUG               a dashboard, every widget evaluated\n"
@@ -3379,6 +3426,8 @@ main(
 		result = venture_cli_command_federation(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "factory"))
 		result = venture_cli_command_factory(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "asset") || 0 == g_strcmp0(args[0], "assets"))
+		result = venture_cli_command_assets(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "release"))
 		result = venture_cli_command_release(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dashboards"))

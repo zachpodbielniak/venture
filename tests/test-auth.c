@@ -1382,6 +1382,18 @@ test_auth_api_refuses_anonymous_requests(
 		"/runs/1/cancel", NULL, "", NULL, NULL),
 		==, SOUP_STATUS_FOUND);
 
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/fixed_assets/1/place-in-service", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/fixed_assets/1/dispose", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/fixed_assets/1/write-off", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/assets/run-period", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
 	/* The factory's two actions over the API: a changelog is a write, a
 	 * publish creates a tag on the forge. */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
