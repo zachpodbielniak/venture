@@ -630,6 +630,8 @@ venture_cli_values_from_args(
 	return json_builder_get_root(builder);
 }
 
+#include "payables/venture-payables-cli.inc"
+
 static gint
 venture_cli_command_list(
 	VentureCli	 *cli,
@@ -1129,10 +1131,11 @@ venture_cli_command_report(
 				((0 != g_strcmp0(parts[0], "as_of")) && (0 != g_strcmp0(parts[0], "organization_id")) &&
 				 (0 != g_strcmp0(parts[0], "customer_id")) && (0 != g_strcmp0(parts[0], "currency")) &&
 				 (0 != g_strcmp0(parts[0], "venture_id")) && (0 != g_strcmp0(parts[0], "group_by")) &&
-				 (0 != g_strcmp0(parts[0], "compare_to")) && (0 != g_strcmp0(parts[0], "account_id"))))
+				 (0 != g_strcmp0(parts[0], "compare_to")) && (0 != g_strcmp0(parts[0], "account_id")) &&
+				 (0 != g_strcmp0(parts[0], "vendor_id")) && (0 != g_strcmp0(parts[0], "pipeline_id")) && (0 != g_strcmp0(parts[0], "owner"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -2092,6 +2095,7 @@ venture_cli_command_factory(
  * venturectl release publish ID [--prerelease]
  */
 #include "mail/venture-mail-cli.inc"
+#include "banking/venture-bank-cli.inc"
 
 static gint
 venture_cli_command_invoice(VentureCli *cli, gchar **args, GError **error)
@@ -2185,6 +2189,9 @@ usage:
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "usage: venturectl [--stage] journal post ID");
 	return -1;
 }
+#include "leads/venture-lead-cli.inc"
+#include "activities/venture-activity-cli.inc"
+#include "pipelines/venture-pipeline-cli.inc"
 
 /* --- The workdesk ---------------------------------------------------------- */
 
@@ -3144,8 +3151,12 @@ venture_cli_command_mcp(
 	return 0;
 }
 
+#include "billing/venture-billing-cli.inc"
+#include "sequences/venture-sequence-cli.inc"
+
 /* --- Entry point --------------------------------------------------------- */
 
+#include "quotes/venture-quote-cli.inc"
 static gint
 venture_cli_command_act(VentureCli *cli, gchar **args, GError **error)
 {
@@ -3236,6 +3247,7 @@ main(
 	g_autofree gchar *format = NULL;
 	g_autofree gchar *mail_html = NULL;
 	g_autofree gchar *mail_limit = NULL;
+	g_autofree gchar *sequence_as_of = NULL;
 	gboolean show_version = FALSE;
 	gboolean show_license = FALSE;
 	gboolean quiet = FALSE;
@@ -3256,7 +3268,7 @@ main(
 		{ "apply-writes", 0, 0, G_OPTION_ARG_NONE, &apply_writes,
 		  "mcp only: let write tools apply instead of staging", NULL },
 		{ "stage", 0, 0, G_OPTION_ARG_NONE, &stage,
-		  "create/update/delete/act: propose the change for approval "
+		  "create/update/delete/act/sequence enroll/lead convert/billing: propose the change for approval "
 		  "instead of making it", NULL },
 		{ "version", 'V', 0, G_OPTION_ARG_NONE, &show_version,
 		  "Print the version and exit", NULL },
@@ -3264,10 +3276,12 @@ main(
 		  "Print licensing information and exit", NULL },
 		{ "html", 0, 0, G_OPTION_ARG_FILENAME, &mail_html, "mail send: HTML body file", "FILE" },
 		{ "limit", 0, 0, G_OPTION_ARG_STRING, &mail_limit, "mail deliver: maximum attempts", "N" },
+		{ "as-of", 0, 0, G_OPTION_ARG_STRING, &sequence_as_of,
+		  "sequence run or billing: effective cutoff", "TIMESTAMP" },
 		{ G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_STRING_ARRAY, &args,
 		  NULL, NULL },
 		{ "dry-run", 0, 0, G_OPTION_ARG_NONE, &dry_run,
-		  "post backfill only: validate without retaining writes", NULL },
+		  "post backfill or billing: validate without retaining writes", NULL },
 		{ NULL }
 	};
 
@@ -3287,7 +3301,7 @@ main(
 		"  forge set-token ID           set a forge's access token (stdin)\n"
 		"  forge set-secret ID          set or generate its webhook secret\n"
 		"  forge verify ID              record which account the token is\n"
-		"  report [NAME] [PERIOD]       run; options: as_of, organization_id, customer_id, currency, venture_id, group_by\n"
+		"  report [NAME] [PERIOD]       run; options: as_of, organization_id, customer_id, currency, venture_id, group_by, vendor_id, pipeline_id, owner\n"
 		"  kb search QUERY              search the knowledge bases by\n"
 		"                               meaning; --kb SLUG, --limit N\n"
 		"  kb sync KB_ID                bring a base into line with its\n"
@@ -3305,13 +3319,22 @@ main(
 		"  modules                      list the server's modules and which\n"
 		"                               are on; -f json for the detail\n"
 		"  federation JSON              identity, remote, pull, edit and sync\n"
+		"  sequence enroll ID          enroll with contact_id=ID and options\n"
+		"  sequence run                execute due steps; --as-of TIMESTAMP\n"
+		"  sequence status ID          enrollment and delivery history\n"
 		"  post backfill                post missing journals; --dry-run\n"
+		"  bill approve|pay|void ID [field=value ...]  supplier bill actions\n"
 		"  factory                      the software factory at a glance\n"
+		"  lead convert ID              qualify first; deal=yes|no, company_id=ID\n"
+		"  lead reassign ID             owner=NAME or run assignment rules\n"
 		"  release changelog ID         draft a release's changelog from\n"
 		"                               its tickets; --replace overwrites\n"
 		"  invoice checkout ID          create a hosted Stripe payment URL\n"
 		"  journal post ID              post a draft, or propose for approval\n"
 		"  mail list|send|test|deliver|retry  transactional mail\n"
+		"  quote send|accept|decline|revise ID [by=NAME] [reason=TEXT]\n"
+		"  bank ACTION ID [JSON|@FILE] banking action; bank match AUTO STATEMENT_ID\n"
+		"  deal move ID STAGE [NOTE]     move a deal through its pipeline\n"
 		"  release publish ID           cut it on the forge; --prerelease\n"
 		"  dashboards                   list the dashboards\n"
 		"  dashboard SLUG               a dashboard, every widget evaluated\n"
@@ -3324,6 +3347,8 @@ main(
 		"  inbox read ID|all            mark it read\n"
 		"  watch TYPE ID                be told when a record changes;\n"
 		"                               unwatch to stop\n"
+		"  activity complete ID outcome=...  complete planned work and record history\n"
+		"  activity list mine|overdue|today   the daily worklist\n"
 		"  activity TYPE ID             a record's timeline: changes,\n"
 		"                               comments, worklogs\n"
 		"  ticket ID sla                its service-level clocks\n"
@@ -3345,6 +3370,8 @@ main(
 		"  webhook secret ID            generate a new signing secret\n"
 		"  act TYPE ID ACTION [key=value ...]  perform a discovered action; --stage\n"
 		"  health                       check the server is up\n"
+		"  billing start|change|cancel   manage customer subscription terms\n"
+		"  billing renew|dunning        sweep; --as-of DATE, --dry-run\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
 		"\n"
@@ -3409,9 +3436,9 @@ main(
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 
-	if (dry_run && (g_strcmp0(args[0], "post") != 0 || g_strcmp0(args[1], "backfill") != 0))
+	if (dry_run && g_strcmp0(args[0], "billing") != 0 && (g_strcmp0(args[0], "post") != 0 || g_strcmp0(args[1], "backfill") != 0))
 	{
-		g_printerr("venturectl: --dry-run requires post backfill\n");
+		g_printerr("venturectl: --dry-run requires post backfill or billing\n");
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 
@@ -3449,7 +3476,7 @@ main(
 	}
 
 	/*
-	 * Same rule, same reason. The generic write and action verbs go
+	 * Only commands whose routes implement staging accept this flag. They go
 	 * through a route that reads `stage`; on anything else the parameter
 	 * would be an unknown one, which a write route *ignores* -- so a
 	 * quietly accepted --stage would apply the change it was asked to
@@ -3458,11 +3485,14 @@ main(
 	if (stage && (0 != g_strcmp0(args[0], "create")) &&
 	    (0 != g_strcmp0(args[0], "update")) &&
 	    (0 != g_strcmp0(args[0], "delete")) &&
+	    (0 != g_strcmp0(args[0], "journal")) &&
+	    (0 != g_strcmp0(args[0], "billing")) &&
+	    !(0 == g_strcmp0(args[0], "lead") && 0 == g_strcmp0(args[1], "convert")) &&
 	    (0 != g_strcmp0(args[0], "act")) &&
-	    (0 != g_strcmp0(args[0], "journal")))
+	    !((0 == g_strcmp0(args[0], "sequence")) && (0 == g_strcmp0(args[1], "enroll"))))
 	{
 		g_printerr("venturectl: --stage only means something to create, "
-		           "update, delete, act and journal post. \"%s\" would ignore it.\n", args[0]);
+		           "update, delete, act, journal post, sequence enroll, lead convert and billing. \"%s\" would ignore it.\n", args[0]);
 		g_free(cli.base_url);
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
@@ -3484,6 +3514,14 @@ main(
 		}
 
 		cli.format = (VentureOutputFormat)value;
+	}
+
+	if (sequence_as_of != NULL && g_strcmp0(args[0], "billing") != 0 && (g_strcmp0(args[0], "sequence") != 0 || g_strcmp0(args[1], "run") != 0))
+	{
+		g_printerr("venturectl: --as-of is only valid for sequence run or billing\n");
+		g_free(cli.base_url);
+		g_free(cli.token);
+		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 
 	cli.session = soup_session_new();
@@ -3526,6 +3564,16 @@ main(
 		result = venture_cli_command_journal(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "mail"))
 		result = venture_cli_command_mail(&cli, args, mail_html, mail_limit, &error);
+	else if (0 == g_strcmp0(args[0], "quote"))
+		result = venture_cli_command_quote(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "lead"))
+		result = venture_cli_command_lead(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "bill"))
+		result = venture_cli_command_bill(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "bank"))
+		result = venture_cli_command_bank(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "deal"))
+		result = venture_cli_command_deal(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "release"))
 		result = venture_cli_command_release(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dashboards"))
@@ -3545,6 +3593,9 @@ main(
 	else if ((0 == g_strcmp0(args[0], "sprints")) ||
 	         (0 == g_strcmp0(args[0], "sprint")))
 		result = venture_cli_command_sprints(&cli, args, &error);
+	else if (g_strcmp0(args[0], "activity") == 0 &&
+	         (g_strcmp0(args[1], "complete") == 0 || g_strcmp0(args[1], "list") == 0))
+		result = venture_cli_command_activity(&cli, args, &error);
 	else if ((0 == g_strcmp0(args[0], "watch")) ||
 	         (0 == g_strcmp0(args[0], "unwatch")) ||
 	         (0 == g_strcmp0(args[0], "activity")))
@@ -3556,10 +3607,14 @@ main(
 	else if ((0 == g_strcmp0(args[0], "webhooks")) ||
 	         (0 == g_strcmp0(args[0], "webhook")))
 		result = venture_cli_command_webhooks(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "sequence"))
+		result = venture_cli_command_sequence(&cli, args, sequence_as_of, &error);
 	else if (0 == g_strcmp0(args[0], "post"))
 		result = venture_cli_command_post(&cli, args, dry_run, &error);
 	else if (0 == g_strcmp0(args[0], "mcp"))
 		result = venture_cli_command_mcp(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "billing"))
+		result = venture_cli_command_billing(&cli, args, sequence_as_of, dry_run, &error);
 	else if (0 == g_strcmp0(args[0], "act"))
 		result = venture_cli_command_act(&cli, args, &error);
 	else

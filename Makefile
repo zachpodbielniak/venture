@@ -67,6 +67,11 @@ CORE_SRCS := \
 	$(wildcard src/mcp/*.c)
 
 CORE_SRCS += src/orgaccess/venture-access-records.c
+CORE_SRCS += src/billing/venture-billing-records.c
+CORE_SRCS += src/leads/venture-lead-records.c
+CORE_SRCS += src/activities/venture-activity-records.c
+CORE_SRCS += src/payables/venture-payable-records.c
+CORE_SRCS += src/banking/venture-bank-records.c
 
 # Server-only subsystems.
 SERVER_ONLY_SRCS := \
@@ -83,14 +88,26 @@ SERVER_ONLY_SRCS := \
 	$(wildcard src/forge/*.c) \
 	$(wildcard src/kb/*.c)
 
+SERVER_ONLY_SRCS += src/banking/venture-bank-match-service.c
+
 SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard src/periods/*.c))
 
 CORE_SRCS += src/stripe/venture-stripe-records.c
 SERVER_ONLY_SRCS += $(filter-out src/stripe/venture-stripe-records.c,$(wildcard src/stripe/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/orgaccess/venture-access-records.c,$(wildcard src/orgaccess/*.c))
+SERVER_ONLY_SRCS += $(filter-out src/billing/venture-billing-records.c,$(wildcard src/billing/*.c))
 CORE_SRCS += src/mail/venture-mail-records.c
 SERVER_ONLY_SRCS += $(filter-out src/mail/venture-mail-records.c,$(wildcard src/mail/*.c))
+CORE_SRCS += src/quotes/venture-quote-records.c
+SERVER_ONLY_SRCS += $(filter-out src/quotes/venture-quote-records.c,$(wildcard src/quotes/*.c))
+SERVER_ONLY_SRCS += src/leads/venture-lead-service.c src/leads/venture-lead-reports.c
+SERVER_ONLY_SRCS += $(filter-out src/activities/venture-activity-records.c,$(wildcard src/activities/*.c))
+SERVER_ONLY_SRCS += src/payables/venture-payables-service.c src/payables/venture-payable-reports.c
 
+CORE_SRCS += src/pipelines/venture-pipeline-records.c
+SERVER_ONLY_SRCS += $(filter-out src/pipelines/venture-pipeline-records.c,$(wildcard src/pipelines/*.c))
+CORE_SRCS += src/sequences/venture-sequence-records.c
+SERVER_ONLY_SRCS += $(filter-out src/sequences/venture-sequence-records.c,$(wildcard src/sequences/*.c))
 CORE_SRCS += src/autojournal/venture-posting-profile.c
 SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wildcard src/autojournal/*.c))
 
@@ -117,6 +134,7 @@ PUBLIC_HDRS := \
 	$(wildcard src/receivables/*.h) \
 	$(wildcard src/stripe/*.h) \
 	$(wildcard src/periods/*.h) \
+	$(filter-out %-print-style.h,$(wildcard src/quotes/*.h)) \
 	$(wildcard src/config/*.h) \
 	$(wildcard src/core/*.h) \
 	$(wildcard src/db/*.h) \
@@ -131,8 +149,13 @@ PUBLIC_HDRS := \
 	$(wildcard src/mcp/*.h)
 
 PUBLIC_HDRS += $(wildcard src/orgaccess/*.h)
+PUBLIC_HDRS += $(wildcard src/billing/*.h)
 PUBLIC_HDRS += $(wildcard src/mail/*.h)
 
+PUBLIC_HDRS += $(wildcard src/payables/*.h)
+PUBLIC_HDRS += $(wildcard src/banking/*.h)
+PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/pipelines/*.h))
+PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/sequences/*.h))
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/statements/*.h))
 
 TEST_SRCS := $(wildcard tests/test-*.c)
@@ -152,6 +175,12 @@ TEST_BINS := $(patsubst tests/%.c,$(OUTDIR)/tests/%,$(TEST_SRCS))
 $(OUTDIR)/tests/test-stripe: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-receivables: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-auth: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-billing-surfaces: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-quotes: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-leads: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-payables: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-sequences: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery

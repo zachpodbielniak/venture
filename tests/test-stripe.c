@@ -289,7 +289,7 @@ test_missing_key(void)
 	g_setenv("VENTURE_STRIPE_SECRET_KEY", "offline", TRUE);
 }
 
-typedef struct { GObject parent; guint calls; guint checkouts; gchar *key; } FakeTransport;
+typedef struct { GObject parent; guint calls; guint customers; guint checkouts; gchar *key; const gchar *price_json; gint64 price_amount; } FakeTransport;
 typedef struct { GObjectClass parent; } FakeTransportClass;
 GType fake_transport_get_type(void);
 static void fake_iface(StripeTransportInterface *iface);
@@ -302,8 +302,16 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	FakeTransport *self = (FakeTransport *)transport;
 	(void)cancellable; (void)error;
 	self->calls++;
+	if (g_str_has_suffix(request->url, "/prices/price_offline"))
+	{
+		g_autofree gchar *body = NULL;
+		g_assert_cmpstr(request->method, ==, "GET");
+		body = g_strdup_printf("{\"id\":\"price_offline\",\"object\":\"price\",\"active\":true,\"type\":\"one_time\",\"billing_scheme\":\"per_unit\",\"unit_amount\":%" G_GINT64_FORMAT ",\"currency\":\"usd\"}", self->price_amount ? self->price_amount : 10000);
+		return stripe_response_new(200, self->price_json ? self->price_json : body, NULL, NULL);
+	}
 	if (g_str_has_suffix(request->url, "/customers"))
 	{
+		self->customers++;
 		g_assert_nonnull(strstr(request->body, "venture_company_uuid"));
 		return stripe_response_new(200, "{\"id\":\"cus_offline\",\"object\":\"customer\"}", NULL, NULL);
 	}
@@ -353,6 +361,17 @@ fail_posting(VenturePostingService *posting, VentureJournal *journal, GPtrArray 
 	return g_error_new_literal(VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Injected settlement failure");
 }
 
+/* Signature-authenticated delivery must not inherit an incidental browser's
+ * local write veto. The exact HTTP capability boundary supplies its authority. */
+static GError *
+deny_stripe_event(VentureAccessPolicy *policy, const VentureAuthPrincipal *actor,
+	const gchar *action, VentureEntity *entity, gpointer unused)
+{
+	if (G_OBJECT_TYPE(entity) == venture_stripe_event_get_type() && !g_strcmp0(action, "write"))
+		return g_error_new_literal(VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "local event write denied");
+	return NULL;
+}
+
 static void
 test_flow(Fixture *f, gconstpointer data)
 {
@@ -378,6 +397,8 @@ test_flow(Fixture *f, gconstpointer data)
 	service = venture_stripe_service_new(f->database, f->organization_id, STRIPE_TRANSPORT(transport), &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(service);
+	if (!g_strcmp0(mode, "precision-mismatch") || !g_strcmp0(mode, "overflow-mismatch"))
+		((FakeTransport *)transport)->price_amount = 100;
 	invoice = invoice_new(f, "stripe-test", "2026-01-01", (!g_strcmp0(mode, "precision-mismatch") || !g_strcmp0(mode, "overflow-mismatch")) ? "1.0000 USD" : "100 USD");
 	price = record_new(f, "stripe_price_link");
 	g_object_set(price, "product-id", f->product_id, "stripe-price-id", "price_offline", NULL);
@@ -405,12 +426,14 @@ test_flow(Fixture *f, gconstpointer data)
 		path = g_strdup_printf("/e/invoice/%s", id);
 		g_assert_cmpuint(http_request(server, "GET", path, NULL, NULL, &out), ==, 200);
 		g_assert_nonnull(strstr(out, "Pay with Stripe"));
+		handler = g_signal_connect(venture_database_get_access_policy(f->database), "decide", G_CALLBACK(deny_stripe_event), NULL);
 		g_object_set(f->config, "security-require-auth", TRUE, NULL);
 		g_assert_cmpuint(http_request(server, "POST", "/webhooks/stripe", "application/json", "{}", NULL), ==, 400);
 		g_assert_cmpuint(http_request(server, "POST", "/webhooks/stripe", "application/json",
 			"{\"id\":\"evt_http\",\"type\":\"checkout.session.completed\",\"data\":{\"object\":{\"id\":\"cs_unknown\"}}}", NULL), ==, 200);
 		g_assert_cmpuint(http_request(server, "POST", "/webhooks/stripe", "application/json",
 			"{\"id\":\"evt_http\",\"type\":\"checkout.session.completed\",\"data\":{\"object\":{\"id\":\"cs_unknown\"}}}", NULL), ==, 200);
+		g_signal_handler_disconnect(venture_database_get_access_policy(f->database), handler);
 		g_object_set(f->config, "security-require-auth", FALSE, NULL);
 		venture_config_set_module_enabled(f->config, "stripe", FALSE);
 		g_clear_pointer(&out, g_free);
@@ -433,7 +456,7 @@ test_flow(Fixture *f, gconstpointer data)
 		g_autoptr(VentureStripeCheckout) second_checkout = venture_stripe_service_checkout(service, venture_entity_get_id(second), NULL, &error);
 		g_assert_no_error(error);
 		g_assert_nonnull(second_checkout);
-		g_assert_cmpuint(((FakeTransport *)transport)->calls, ==, 3);
+		g_assert_cmpuint(((FakeTransport *)transport)->calls, ==, 5);
 		return;
 	}
 	if (!g_strcmp0(mode, "module-off"))
@@ -454,7 +477,7 @@ test_flow(Fixture *f, gconstpointer data)
 	{
 		g_autoptr(VentureStripeCheckout) again = venture_stripe_service_checkout(service, venture_entity_get_id(invoice), NULL, &error);
 		g_assert_no_error(error);
-		g_assert_cmpuint(((FakeTransport *)transport)->calls, ==, 2);
+		g_assert_cmpuint(((FakeTransport *)transport)->calls, ==, 3);
 		g_assert_cmpint(venture_entity_get_id(VENTURE_ENTITY(again)), ==, venture_entity_get_id(VENTURE_ENTITY(checkout)));
 		return;
 	}
@@ -723,6 +746,86 @@ test_module_start(Fixture *f, gconstpointer data)
 	venture_config_set_module_enabled(f->config, "receivables", TRUE);
 }
 
+/* A linked remote Price must charge exactly the local invoice, including
+ * quantity and API currency exponents. Every refusal precedes remote writes. */
+static void
+test_remote_price(Fixture *f, gconstpointer data)
+{
+	const gchar *mode = data;
+	const gchar *currency = "USD";
+	const gchar *unit_text = "100.0000 USD";
+	gboolean success = !g_strcmp0(mode, "exact") || !g_strcmp0(mode, "quantity") ||
+		!g_strcmp0(mode, "JPY") || !g_strcmp0(mode, "ISK") || !g_strcmp0(mode, "UGX") || !g_strcmp0(mode, "MGA");
+	gint64 remote_amount = 10000;
+	g_autoptr(VentureEntity) invoice = record_new(f, "invoice");
+	g_autoptr(VentureEntity) line = record_new(f, "invoice_line");
+	g_autoptr(VentureEntity) price = record_new(f, "stripe_price_link");
+	g_autoptr(GObject) transport = g_object_new(fake_transport_get_type(), NULL);
+	FakeTransport *fake = (FakeTransport *)transport;
+	g_autoptr(VentureStripeService) service = NULL;
+	g_autoptr(VentureStripeCheckout) checkout = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *json = NULL;
+	g_autofree gchar *amount_text = NULL;
+
+	if (!g_strcmp0(mode, "JPY") || !g_strcmp0(mode, "MGA")) remote_amount = 100;
+	if (!g_strcmp0(mode, "JPY") || !g_strcmp0(mode, "ISK") || !g_strcmp0(mode, "UGX") || !g_strcmp0(mode, "MGA"))
+	{
+		currency = mode;
+		amount_text = g_strdup_printf("100 %s", currency);
+		unit_text = amount_text;
+	}
+	if (!g_strcmp0(mode, "amount")) remote_amount = 10001;
+	if (!g_strcmp0(mode, "overflow")) remote_amount = G_MAXINT64;
+	g_object_set(invoice, "number", "remote-price", "company-id", f->customer_id, NULL);
+	money_field(invoice, "issued-at", "2026-01-01");
+	save(f, invoice);
+	g_object_set(line, "invoice-id", venture_entity_get_id(invoice), "product-id", f->product_id,
+		"description", "Price validation", "quantity", (!g_strcmp0(mode, "quantity") || !g_strcmp0(mode, "overflow")) ? 2.0 : 1.0, NULL);
+	money_field(line, "unit-price", unit_text);
+	if (!g_strcmp0(mode, "discount")) g_object_set(line, "discount-percent", (gint64)1, NULL);
+	if (!g_strcmp0(mode, "tax")) g_object_set(line, "tax-percent", (gint64)1, NULL);
+	save(f, line);
+	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+	save(f, invoice);
+	g_object_set(price, "product-id", f->product_id, "stripe-price-id", "price_offline", NULL);
+	save(f, price);
+	json = g_strdup_printf("{\"id\":\"price_offline\",\"object\":\"price\",\"active\":%s,\"type\":\"%s\",\"billing_scheme\":\"%s\",\"unit_amount\":%" G_GINT64_FORMAT ",\"currency\":\"%s\",\"transform_quantity\":%s}",
+		!g_strcmp0(mode, "inactive") ? "false" : "true", !g_strcmp0(mode, "recurring") ? "recurring" : "one_time",
+		!g_strcmp0(mode, "tiered") ? "tiered" : "per_unit", remote_amount, !g_strcmp0(mode, "currency") ? "EUR" : currency,
+		!g_strcmp0(mode, "transform") ? "{\"divide_by\":10,\"round\":\"up\"}" : "null");
+	fake->price_json = !g_strcmp0(mode, "decimal") ? "{\"id\":\"price_offline\",\"object\":\"price\",\"active\":true,\"type\":\"one_time\",\"billing_scheme\":\"per_unit\",\"unit_amount\":null,\"unit_amount_decimal\":\"10000.5\",\"currency\":\"usd\"}" : json;
+	service = venture_stripe_service_new(f->database, f->organization_id, STRIPE_TRANSPORT(transport), &error);
+	g_assert_no_error(error);
+	checkout = venture_stripe_service_checkout(service, venture_entity_get_id(invoice), NULL, &error);
+	if (success)
+	{
+		g_assert_no_error(error);
+		g_assert_nonnull(checkout);
+		g_assert_cmpuint(fake->customers, ==, 1);
+		g_assert_cmpuint(fake->checkouts, ==, 1);
+		{
+			g_autofree gchar *body = g_strdup_printf("{\"id\":\"evt_units\",\"type\":\"checkout.session.completed\",\"data\":{\"object\":{\"id\":\"cs_offline\",\"amount_total\":%" G_GINT64_FORMAT ",\"currency\":\"%s\",\"payment_status\":\"paid\",\"payment_intent\":\"pi_units\"}}}", remote_amount * (!g_strcmp0(mode, "quantity") ? 2 : 1), currency);
+			g_autofree gchar *sig = signature(body);
+			g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
+			g_autoptr(VentureMoney) balance = NULL;
+			g_assert_true(venture_stripe_service_handle_webhook(service, bytes, sig, &error));
+			g_assert_no_error(error);
+			balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->database), venture_entity_get_id(invoice), NULL, &error);
+			g_assert_no_error(error);
+			g_assert_cmpint(venture_money_get_amount(balance), ==, 0);
+		}
+	}
+	else
+	{
+		g_assert_nonnull(error);
+		g_assert_null(checkout);
+		g_assert_cmpuint(fake->calls, ==, 1);
+		g_assert_cmpuint(fake->customers, ==, 0);
+		g_assert_cmpuint(fake->checkouts, ==, 0);
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -752,6 +855,15 @@ main(int argc, char **argv)
 		{
 			g_autofree gchar *path = g_strconcat("/stripe/", cases[i], NULL);
 			g_test_add(path, Fixture, cases[i], set_up, test_flow, tear_down);
+		}
+	}
+	{
+		static const gchar *const cases[] = { "exact", "quantity", "amount", "currency", "inactive", "recurring", "tiered", "transform", "decimal", "overflow", "discount", "tax", "JPY", "ISK", "UGX", "MGA" };
+		guint i;
+		for (i = 0; i < G_N_ELEMENTS(cases); i++)
+		{
+			g_autofree gchar *path = g_strconcat("/stripe/remote-price/", cases[i], NULL);
+			g_test_add(path, Fixture, cases[i], set_up, test_remote_price, tear_down);
 		}
 	}
 	environment();

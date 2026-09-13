@@ -307,7 +307,7 @@ venturectl --stage create expense description="Cover art" amount=250.00
 #   approve: POST /api/v1/confirmations/a3f9c118/approve
 ```
 
-It is refused on commands other than `create`, `update`, `delete`, `act` and `journal post`,
+It is refused on any command other than `create`, `update`, `delete`, `act`, `journal post`, `sequence enroll`, `lead convert` and `billing`,
 because those are the only routes that read it -- and an unknown query
 parameter on a write route is ignored, so a quietly accepted `--stage` would
 apply the change it was asked to hold back.
@@ -430,6 +430,30 @@ new grants never widen an old token. Missing membership gives empty results or
 404; a refused in-organization write gives 403. Owner/admin data authority and
 output formats remain unchanged. `journal post ID` returns a confirmation for
 an organization editor. Treat that response as pending until finance approves.
+## SaaS billing actions
+
+Use `billing start company_id=N plan_price_id=N seats=N` to start a
+`customer_subscription`. Read `describe plan_price` and the price first:
+non-trial starts issue an invoice immediately, while trials bill at activation.
+Use `billing change ID plan_price=N [at_period_end=true]`,
+`billing change-seats ID seats=N`, `billing cancel ID [at_period_end=true]`,
+`billing pause ID`, `billing resume ID`, `billing mark-payment-failed ID`
+and `billing recover ID` for lifecycle actions. Never update subscription
+status directly; the service refuses it.
+
+`billing renew --as-of DATE [--dry-run]` sweeps due periods;
+`billing dunning --as-of DATE [--dry-run]` records dunning notices/actions.
+Pass `organization_id=N` to choose the legal entity. Dry runs write nothing.
+`--stage` holds a billing action for approval. The assistant's generated
+create tool can instead stage `billing_request` with `action`, `at`,
+`organization_id` and the relevant subscription/customer/price fields.
+Approval refuses a subscription changed since staging.
+
+`report mrr PERIOD currency=USD`, `report churn PERIOD currency=USD`, and
+`report subscriptions_due PERIOD days=14` read the registered reports.
+Read their notes: MRR is contracted revenue, not cash or recognized income;
+churn rates are in basis points. Proration adjustments are settled on the
+next renewal. Billing sends no mail and integrates no card provider.
 ## Transactional mail
 
 `mail send to=... subject=... body=...` queues mail; `--html FILE` supplies
@@ -440,6 +464,75 @@ submits due rows. `mail list state=uncertain` lists uncertain acceptance;
 uncertain rows. Actions reject `--stage`; propose an enqueue with the generic
 `--stage create mail_message` command when approval is required.
 
+### Commercial quote actions
+
+`quote send ID`, `quote accept ID 'by=Full Name'`,
+`quote decline ID 'reason=Explanation'`, and `quote revise ID` call the quote
+service. Acceptance creates and issues the invoice in the same transaction.
+For a staged action use `--stage create quote_action quote_id=ID action=accept
+expected_version=N 'accepted_by=Full Name'`; obtain the quote's current
+`version` first. `revision` is the separate commercial revision number.
+## Leads
+
+Use `describe lead` before capture or qualification. `lead convert ID
+[deal=yes|no] [company_id=ID] [contact_id=ID]` requires a qualified lead and
+creates or links CRM records atomically. `--stage` proposes conversion for
+approval. Never set `status=converted` or conversion ids with generic updates.
+`lead reassign ID [owner=NAME]` assigns explicitly or reruns the matching
+rules; staged reassignment is refused. Recycle with `update lead ID
+status=recycled unqualified_reason=... recycle_until=YYYY-MM-DD`.
+Reports are `lead_sources`, `lead_response_time` and `leads_recycled_due`;
+see `docs/leads.org` for definitions and public capture forms.
+## Planned activities
+
+`activity complete ID outcome=...` completes a planned activity, writes interaction history and advances recurrence atomically. `activity list mine|overdue|today` reads your daily worklist. Generic `create activity` and `update activity` edit the plan; generic `status=done` is refused. The existing `activity TYPE ID` command still reads a record timeline. Use `report worklist organization_id=ID` for the current UTC week per owner.
+## Vendor payables
+
+Run `describe vendor_bill` and `describe vendor_bill_line` before creating
+a draft and its lines. Bill quantity is an exact decimal string, with at
+most three decimal places. Supplier companies have `kind=supplier`.
+
+Use `bill approve ID date=DATE`, `bill pay ID 'amount=40 USD' date=DATE`,
+and `bill void ID date=DATE` for financial actions. Omitted payment amount
+pays the outstanding balance. Direct bill status updates are refused.
+These CLI actions apply directly; to stage, use generated record creation:
+`vendor_bill_event` with `bill_id`, `vendor_id`, `kind=approve`,
+`state=approved`, and `date`, or `bill_payment` with vendor, bill, amount,
+method and date. MCP `venture_create` stages those records normally.
+
+`report payables PERIOD` is dated aging. `report vendor_statement PERIOD
+vendor_id=ID` is the supplier statement. Both accept `organization_id`,
+`currency` and `as_of`. See `docs/payables.org` for credits, immutable
+history and the single-date limitation on optional paid-line expense conversion.
+Banking business actions use `bank ACTION ID [JSON|@FILE]`. Import identifies
+an account, auto/reconcile a statement, and match/unmatch/exclude/create a
+transaction. `bank match AUTO STATEMENT_ID` runs exact automatic matching.
+Match parameters are `{"parts":[{"type":"expense","id":1,"amount":"-10 USD"}]}`;
+exclude needs a reason, and receipt creation needs customer_id. See docs/banking.org.
+## Sales pipeline actions
+
+`venturectl deal move ID STAGE [NOTE]` calls the deal transition service.
+Use `describe pipeline_stage` and `list pipeline_stage` to find the destination.
+Fill required deal fields and a loss reason before moving to a lost stage.
+`update deal` cannot change either stage field or the closing timestamp.
+Reports: `stage_duration`, `funnel`, `forecast`, `loss_reasons`, `overdue_deals`;
+filter with `pipeline_id=N` and `owner=USERNAME`.
+## Follow-up sequences
+
+Use `describe sequence`, `describe sequence_step` and
+`describe sequence_enrollment` before configuring a journey.
+`sequence enroll ID contact_id=ID enrollment_reason=...` calls the service;
+`--stage sequence enroll` queues approval. Generic staged
+`create sequence_enrollment sequence_id=ID contact_id=ID` is equivalent.
+Approval rechecks suppression and duplicate enrollment at application time.
+
+`sequence run [--as-of TIMESTAMP] [organization_id=ID]` processes due steps
+for one organization. Use an ISO timestamp including timezone. Email steps
+create pending `sequence_delivery` rows; this command does not send mail.
+`sequence status ENROLLMENT_ID` shows progress and delivery history.
+Pause, resume and exit use the REST service actions documented in
+`docs/sequences.org`; generic enrollment edits are refused. Completed
+step identities are retained across restarts and sequence edits.
 ## Record actions
 
 Use `venturectl -f json describe TYPE` to discover `actions`, their parameters
@@ -455,7 +548,7 @@ with header fields and a `lines` array. Both support `--stage`. Use real
 source and account IDs from the same organization. Invalid lines leave no
 draft behind; closed periods and repeat reversals are refused.
 
-The `--stage` help lists `create/update/delete/act`; the same flag also
+The `--stage` help lists `create/update/delete/act/sequence enroll/lead convert/billing`; the same flag also
 applies to a type-level journal creation at ID zero.
 
 ### Automatic journals

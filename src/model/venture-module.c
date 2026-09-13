@@ -546,10 +546,77 @@ static GType (*const venture_module_orgaccess_types[]) (void) = {
 	NULL
 };
 
+static const gchar *const billing_requires[] = { "invoicing", "receivables", NULL };
+static const gchar *const billing_reports[] = { "mrr", "churn", "subscriptions_due", NULL };
+static GType (*const billing_types[]) (void) = {
+	venture_plan_get_type,
+	venture_plan_price_get_type,
+	venture_customer_subscription_get_type,
+	venture_subscription_event_get_type,
+	venture_dunning_step_get_type,
+	venture_billing_notice_get_type,
+	venture_billing_request_get_type,
+	NULL
+};
 static GType (*const venture_module_mail_types[]) (void) = {
 	venture_mail_message_get_type, venture_mail_template_get_type, NULL
 };
+static const gchar *const quotes_requires[] = { "crm", "invoicing", NULL };
+static const gchar *const quotes_reports[] = { "quotes", NULL };
+static GType (*const quotes_types[]) (void) = {
+	venture_price_list_get_type,
+	venture_price_list_item_get_type,
+	venture_quote_get_type,
+	venture_quote_line_get_type,
+	venture_quote_event_get_type,
+	venture_quote_delivery_get_type,
+	venture_quote_action_get_type,
+	NULL
+};
 
+static GType (*const venture_module_leads_types[]) (void) = {
+	venture_lead_get_type, venture_lead_form_get_type,
+	venture_lead_assignment_rule_get_type, NULL
+};
+static const gchar *const venture_module_reports_leads[] = { "lead_sources", "lead_response_time", "leads_recycled_due", NULL };
+static const gchar *const venture_module_requires_leads[] = { "crm", NULL };
+static GType (*const venture_module_activities_types[]) (void) = {
+	venture_activity_get_type, venture_activity_type_get_type, NULL
+};
+static const gchar *const venture_module_activities_requires[] = { "crm", NULL };
+static const gchar *const venture_module_activities_reports[] = { "worklist", NULL };
+static GType (*const venture_module_payables_types[]) (void) = {
+	venture_vendor_bill_get_type, venture_vendor_bill_line_get_type,
+	venture_bill_payment_get_type, venture_bill_payment_allocation_get_type,
+	venture_vendor_credit_get_type, venture_vendor_bill_event_get_type,
+	venture_bill_refund_get_type, NULL
+};
+static const gchar *const venture_module_requires_payables[] = { "finance", "ledger", "crm", NULL };
+static const gchar *const venture_module_reports_payables[] = { "payables", "vendor_statement", NULL };
+
+static const gchar *const banking_reports[] = { "bank_reconciliation", NULL };
+static const gchar *const banking_requires[] = { "ledger", NULL };
+static GType (*const banking_types[]) (void) = {
+	venture_bank_account_get_type, venture_bank_statement_get_type,
+	venture_bank_transaction_get_type, venture_bank_match_get_type,
+	venture_reconciliation_get_type, NULL
+};
+static GType (*const venture_module_pipelines_types[]) (void) = {
+	venture_pipeline_get_type, venture_pipeline_stage_get_type,
+	venture_deal_stage_entry_get_type, venture_loss_reason_get_type, NULL
+};
+static const gchar *const venture_module_requires_crm[] = { "crm", NULL };
+static const gchar *const venture_module_reports_pipelines[] = {
+	"stage_duration", "funnel", "forecast", "loss_reasons", "overdue_deals", NULL
+};
+
+static GType (*const sequence_types[]) (void) = {
+	venture_sequence_get_type, venture_sequence_step_get_type,
+	venture_sequence_enrollment_get_type, venture_sequence_delivery_get_type,
+	venture_suppression_get_type, NULL
+};
+static const gchar *const sequence_requires[] = { "crm", NULL };
+static const gchar *const sequence_reports[] = { "sequence_performance", "sequence_failures", NULL };
 static GType (*const autojournal_types[]) (void) = { venture_posting_profile_get_type, NULL };
 static const gchar *const autojournal_requires[] = { "ledger", NULL };
 static const gchar *const autojournal_reports[] = { "unposted", NULL };
@@ -705,6 +772,12 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		venture_module_requires_finance, NULL,
 		venture_module_periods_types, venture_module_reports_periods, NULL, FALSE
 	},
+	{ "quotes", "Quotes", "Versioned commercial proposals and acceptance.",
+		quotes_requires, NULL, quotes_types, quotes_reports, NULL, FALSE },
+	{
+		"billing", "SaaS billing", "Customer subscriptions and recurring revenue.",
+		billing_requires, NULL, billing_types, billing_reports, NULL, FALSE
+	},
 	{
 		"orgaccess", "Organization access", "Membership, organization roles and team ownership.",
 		venture_module_requires_core, NULL,
@@ -714,7 +787,35 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"mail", "Transactional mail", "Durable outbound messages and templates.",
 		venture_module_requires_core, NULL, venture_module_mail_types, NULL, NULL, FALSE
 	},
+	{
+		"leads", "Leads", "Capture, qualify, assign and convert inquiries.",
+		venture_module_requires_leads, NULL, venture_module_leads_types,
+		venture_module_reports_leads, NULL, FALSE
+	},
+	{
+		"activities", "Planned activities", "Tasks, calls, meetings and the daily worklist.",
+		venture_module_activities_requires, NULL, venture_module_activities_types,
+		venture_module_activities_reports, NULL, FALSE
+	},
+	{
+		"payables", "Payables", "Supplier bills, payments and dated vendor balances.",
+		venture_module_requires_payables, NULL, venture_module_payables_types,
+		venture_module_reports_payables, NULL, FALSE
+	},
 
+	{
+		"banking", "Banking", "Statement import, matching and reconciliation.",
+		banking_requires, NULL, banking_types, banking_reports, NULL, FALSE
+	},
+	{
+		"pipelines", "Sales pipelines", "Configurable stages, history and forecasts.",
+		venture_module_requires_crm, NULL, venture_module_pipelines_types,
+		venture_module_reports_pipelines, NULL, FALSE
+	},
+	{
+		"sequences", "Follow-up sequences", "Durable timed follow-ups and suppression.",
+		sequence_requires, NULL, sequence_types, sequence_reports, NULL, FALSE
+	},
 	{ "autojournal", "Automatic journals", "Configurable source accounting.",
 		autojournal_requires, NULL, autojournal_types, autojournal_reports, NULL, FALSE
 	},
@@ -723,6 +824,7 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		venture_module_requires_statements, NULL, NULL,
 		venture_module_reports_statements, NULL, FALSE
 	}
+
 };
 
 const VentureModuleInfo *

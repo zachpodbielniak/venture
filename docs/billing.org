@@ -1,0 +1,213 @@
+#+title: SaaS billing
+#+description: Plans, subscription terms and recurring customer revenue
+
+* Selling Lightsite
+
+=billing= requires =invoicing= and =receivables=. A =plan= describes Starter
+or Pro; a =plan_price= describes one version of its monthly or yearly terms.
+The customer's commitment is a =customer_subscription=. The example
+plugin's =subscription= remains a recurring cost paid by the business.
+
+The field tables supply ordinary lists, forms, REST resources, CLI records,
+assistant schemas and audit history. Plans and prices are edited through
+those generated surfaces. Subscription state is changed through
+=VentureBillingService=, including when an instruction comes from a form,
+the CLI, REST, automation or an approved assistant proposal.
+
+| Record | Meaning |
+|--------+---------|
+| =plan= | Organization, optional venture, name, organization-unique code, description, active flag |
+| =plan_price= | Plan, currency, month/year interval, exact amount, per-seat flag, trial days, active flag |
+| =customer_subscription= | Customer/contact, price, state, seats, period, trial and cancellation dates, external identity; pending terms and adjustment |
+| =subscription_event= | Immutable effective-dated change, old/new terms and seats, proration, invoice and frozen MRR |
+| =dunning_step= | Active notice, retry, pause or cancel action at an overdue-day offset |
+| =billing_notice= | Durable email-channel notice; no email is sent |
+| =billing_request= | Stageable instruction and, after execution, its immutable result |
+
+Plan codes and nonempty subscription external IDs are unique within their
+organization, including retained history. Empty external IDs are optional.
+A price used by a subscription or event is immutable except for its active
+flag: make a new price version rather than changing an existing customer's
+terms underneath them. Customer, contact and price must belong to the same
+organization, and the contact must belong to the customer company.
+
+For example, with organization 1, Lightsite venture 1 and customer company 1
+already present (use the IDs returned by each create):
+
+#+begin_src sh
+venturectl create plan organization_id=1 venture_id=1 name=Starter code=starter active=true
+venturectl create plan organization_id=1 venture_id=1 name=Pro code=pro active=true
+venturectl create plan_price organization_id=1 plan_id=1 currency=USD interval=month amount='30 USD' per_seat=true trial_days=14 active=true
+venturectl create plan_price organization_id=1 plan_id=1 currency=USD interval=year amount='300 USD' per_seat=true active=true
+venturectl create plan_price organization_id=1 plan_id=2 currency=USD interval=month amount='60 USD' per_seat=true active=true
+venturectl create plan_price organization_id=1 plan_id=2 currency=USD interval=year amount='600 USD' per_seat=true active=true
+venturectl billing start organization_id=1 company_id=1 plan_price_id=1 seats=2 external_id=lightsite-customer-1 --as-of 2026-01-01
+venturectl billing renew --as-of 2026-01-15 --dry-run
+venturectl billing renew --as-of 2026-01-15
+venturectl billing change 1 plan_price=3 at_period_end=true --as-of 2026-01-20
+#+end_src
+
+A non-trial start issues its first period's invoice immediately. A trial
+start issues nothing until its trial ends; renewal then activates it and
+issues its first paid period. Seats default to one and must be positive.
+Non-seat prices ignore seat count when calculating charges.
+
+* Actions and transactions
+
+=billing start= creates a subscription. The other single-record actions take
+its ID: =renew=, =change=, =change-seats=, =pause=, =resume=, =cancel=,
+=mark-payment-failed= and =recover=. =change= accepts =plan_price= as a CLI
+alias for =plan_price_id=. =change= and =cancel= accept
+=at_period_end=true=. Seat changes are immediate.
+
+A scheduled plan change keeps today's price until renewal. Scheduled
+cancellation keeps the subscription active until its boundary, when a
+renewal sweep cancels it without another period invoice. Immediate
+cancellation ends the commitment at the action date. Events are
+chronological; a request pinned to an older subscription version is refused.
+
+Each instruction holds one transaction across subscriptions, events,
+invoices, invoice lines, settlement, journals, notices and audit entries.
+An injected failure after an invoice draft is saved rolls everything back.
+The service works on detached request data and only copies results back
+after success. Generic subscription, event, notice and completed-request
+writes, deletion, restoration and purge are refused naming the service.
+
+The =changing= signal runs after the tentative subscription write and
+before event persistence, inside the transaction. It receives a detached
+event snapshot. Handlers run before the class closure and may return an
+owned =GError= to veto; the whole transaction rolls back. Handlers must not
+send mail or perform another external effect before commit.
+
+Invoices use the subscription's company and contact, and the plan's venture.
+Their lines carry exactly the price currency; there is no conversion. A
+stable subscription/period invoice number also prevents a period being
+invoiced twice. Every invoice is issued through =VentureSettlementService=.
+The fiscal-period guard checks its issue date. A late sweep dates invoices
+at the supplied effective date while retaining the service period in the
+stable invoice identity. The organization needs the settlement accounts
+configured in [[file:receivables.org][receivables]].
+
+* Proration
+
+Periods are half-open. Changes allocate the full-period price difference
+with =VentureMoney= over its calendar days, then sum only the remaining
+days. Remainder cents stay on their originally assigned days. Monthly
+boundaries retain their original day: January 31, February 28, March 31.
+
+Worked example: two Starter seats at $30 per seat were billed $60 on
+January 1 for January 1 through February 1. A third seat is added January 17.
+The full-period difference is $30, or 3,000 cents. Allocating over 31 days
+gives 97 cents to the first 24 days and 96 cents to the last seven. The
+remaining fifteen days receive =8 * 97 + 7 * 96 = 1,448= cents: *$14.48*.
+The subscription's MRR becomes $90 immediately. Its next invoice charges
+$90 plus the $14.48 pending adjustment: *$104.48*.
+
+A decrease of one seat on the same day produces *-$14.48*. Renewal issues
+its ordinary $30 invoice, creates a $14.48 customer credit through
+settlement, and applies it, leaving *$15.52* outstanding. Credit beyond an
+invoice's amount remains customer credit. Adjustments accumulate exactly
+until renewal. Trials and scheduled changes add no immediate adjustment.
+
+Price versions may use different minor-unit exponents in the same currency; credit allocation compares their monetary values with checked rescaling.
+Changing currency is refused. A change between monthly and yearly terms
+normalizes both prices to the service period already in progress before
+allocation, including repeated interval changes within that period.
+
+Cancellation does not automatically refund an already invoiced period.
+Pending adjustments remain explicit on a subscription cancelled before
+renewal and require a deliberate final invoice or credit decision. There
+is no implicit refund or payment-provider request.
+
+* Renewal and dunning sweeps
+
+#+begin_src sh
+venturectl billing renew --as-of 2026-04-01 --dry-run
+venturectl billing renew --as-of 2026-04-01
+venturectl billing dunning --as-of 2026-04-05
+#+end_src
+
+Omitting the date uses the server's clock. Sweeps select one organization
+(the configured default unless =organization_id= is supplied). Renewal
+catches up every due period, capped at 1,200 periods per subscription in
+one instruction; repeating a completed sweep creates no invoices. Dry run
+returns the number of operations without writing records or audit entries.
+Schedule the CLI or POST the sweep endpoint from the installation's
+scheduler; no separate billing thread touches the database.
+
+=mark-payment-failed= records the failure date and moves active to
+=past_due=. Dunning measures whole overdue days from that date. Each
+subscription/failure episode/step has one durable =billing_notice= with
+=channel=email=. Notice and retry actions record that intent only; pause
+and cancel also call the subscription lifecycle service. Steps run by day
+offset, then ID; escalation continues after a dunning pause until cancellation.
+A late sweep catches up all eligible steps in that order. =resume= clears
+the failure episode. =recover= moves
+=past_due= back to active. The operator or a future collection adapter
+reports failure and recovery; an unpaid invoice alone does not fabricate a
+failed provider attempt.
+
+The mail lane must wire the =billing_notice= adapter to =VentureMailer=.
+This module imports no mail header and sends no mail. It integrates no
+payment provider and stores no card data.
+
+* Surfaces and approval
+
+The Money sidebar links to the subscriptions list. Subscription pages have
+renew, pause, resume, cancel and change actions. REST uses
+=POST /api/v1/customer_subscriptions/:id/renew|change|cancel|pause|resume=;
+additional service verbs use the same shape. Start and sweeps use
+=POST /api/v1/billing/start|renew-sweep|dunning-sweep=. Bodies use underscores.
+
+Every action accepts =?stage=1=; CLI actions accept =--stage=. The assistant
+can stage a =billing_request= through its ordinary generated create tool.
+The request's fields show the proposed action rather than granting a generic
+writer permission to set a derived subscription status. Staging pins the
+subscription version; approval rechecks version, state, currency and fiscal
+period. Approval after another action is refused as a conflict.
+
+* Report definitions
+
+All three reports live in the report registry and accept =organization_id=.
+=mrr= and =churn= select one =currency= (the configured default unless
+supplied); they never add currencies. Their notes carry these definitions:
+
+- =mrr=: contracted active and past-due MRR immediately before the exclusive
+  period endpoint, per plan and in total. Trials, pauses, cancellation and
+  expiry contribute zero. Annual prices divide by twelve with half-even
+  rounding; ARR is twelve times rounded MRR. Frozen event amounts preserve
+  the answer after later changes. =as_of= can narrow the endpoint.
+- Movements within the period: =new= is first positive MRR, =reactivation=
+  a subsequent return from zero, =expansion= and =contraction= changes
+  between positive amounts, =churn= a fall to zero, including pause.
+  All movement metrics are positive magnitudes.
+- =churn=: opening companies with positive MRR are the cohort. A logo is
+  lost when its combined closing subscriptions have zero MRR. Revenue loss
+  sums positive opening-minus-closing differences per opening company,
+  including contraction, excluding new companies and gains. Rates are
+  also returned in basis points (10,000 = 100%); an empty denominator has
+  no rate metric. Numerators and denominators remain visible.
+- =subscriptions_due=: the current operational renewal queue from the
+  period endpoint through the next =days=, default 30, inclusive. It
+  excludes scheduled cancellations and paused/past-due subscriptions.
+  It is a forward-looking queue, not reconstructed historical schedules.
+
+These are contracted revenue metrics, not cash receipts or accounting
+revenue recognition. Usage metering, entitlements, payment integration and
+revenue recognition schedules remain separate follow-ups.
+
+* Upgrade and verification
+
+Migration =000170_billing_schema.sql= is paired for SQLite and PostgreSQL.
+After metadata adds tables and indexes, it verifies organization-scoped
+plan/subscription identities when those tables exist. Disabled billing is
+supported. Existing operational data remains untouched; there is no
+inference of historical subscription or financial events.
+
+=test-billing= covers the records, first invoice, trials, state transitions,
+proration and credits, renewal retries and backlog, dry runs, dunning,
+rollback, price history, customer scope, period refusal, currency refusal,
+annual normalization, scheduled terms, migrations and report definitions.
+=test-billing-surfaces= exercises real REST, web actions, CLI subprocesses,
+staged approval and stale assistant proposals. The shared module, report,
+migration and authentication suites cover their integration points.

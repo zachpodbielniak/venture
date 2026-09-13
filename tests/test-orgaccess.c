@@ -514,6 +514,137 @@ test_watched_change_scope(void)
 
 /* Webhooks may arrive inside a nested main loop driven by an unrelated
  * authenticated request. Their protocol authority must be independent. */
+/* Assignment is metadata-driven and additive to explicit ownership. A token
+ * label is deliberately not the username; matching it would deny valid tokens. */
+static void
+test_assignment_ownership(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureContext) context = venture_context_new(config, db);
+	g_autoptr(VentureEntity) user = g_object_new(VENTURE_TYPE_USER, "username", "assigned-user", "active", TRUE, "role", VENTURE_USER_ROLE_EDITOR, NULL);
+	g_autoptr(VentureEntity) member = NULL;
+	g_autoptr(VentureApiToken) token = venture_api_token_new();
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *label = g_strdup("token:assignment-token");
+	VentureAccessPolicy *policy = venture_database_get_access_policy(db);
+	VentureAuthPrincipal actor;
+	GType types[] = { VENTURE_TYPE_LEAD, VENTURE_TYPE_ACTIVITY, VENTURE_TYPE_DEAL, VENTURE_TYPE_TICKET };
+	gint64 org;
+	guint i;
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), NULL));
+	org = venture_context_get_default_organization_id(context);
+	g_assert_true(venture_database_save(db, user, NULL, NULL));
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", venture_entity_get_id(user),
+		"organization-id", org, "role", VENTURE_ORGANIZATION_ROLE_SALES, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(db, member, NULL, NULL));
+	g_object_set(token, "name", "assignment-token", "user-id", venture_entity_get_id(user), "role", VENTURE_USER_ROLE_EDITOR, NULL);
+	secret = venture_api_token_generate(token);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(token), NULL, NULL));
+	actor.authenticated = TRUE;
+	actor.user_id = venture_entity_get_id(user);
+	actor.token_id = venture_entity_get_id(VENTURE_ENTITY(token));
+	actor.role = VENTURE_USER_ROLE_EDITOR;
+	actor.name = label;
+	for (i = 0; i < G_N_ELEMENTS(types); i++)
+	{
+		const gchar *field = types[i] == VENTURE_TYPE_TICKET ? "assignee" : "owner";
+		g_autoptr(VentureEntity) row = g_object_new(types[i], "organization-id", org, field, "assigned-user", NULL);
+		g_assert_true(venture_access_policy_can(policy, &actor, "read", row, NULL));
+		g_assert_true(venture_access_policy_can(policy, &actor, "write", row, NULL));
+		g_object_set(row, field, "someone-else", NULL);
+		g_assert_false(venture_access_policy_can(policy, &actor, "read", row, NULL));
+		g_object_set(row, field, label, NULL);
+		g_assert_false(venture_access_policy_can(policy, &actor, "read", row, NULL));
+		if (g_object_class_find_property(G_OBJECT_GET_CLASS(row), "owner-user-id"))
+		{
+			g_object_set(row, "owner-user-id", actor.user_id, NULL);
+			g_assert_true(venture_access_policy_can(policy, &actor, "read", row, NULL));
+			g_object_set(row, "owner-user-id", (gint64)0, NULL);
+		}
+		g_object_set(row, field, "assigned-user", "organization-id", org + 10000, NULL);
+		g_assert_false(venture_access_policy_can(policy, &actor, "read", row, NULL));
+		g_object_set(row, "organization-id", org, NULL);
+		g_object_set(member, "role", VENTURE_ORGANIZATION_ROLE_VIEWER, NULL);
+		g_assert_true(venture_database_save(db, member, NULL, NULL));
+		g_assert_true(venture_access_policy_can(policy, &actor, "read", row, NULL));
+		g_assert_false(venture_access_policy_can(policy, &actor, "write", row, NULL));
+		g_object_set(member, "role", VENTURE_ORGANIZATION_ROLE_SALES, NULL);
+		g_assert_true(venture_database_save(db, member, NULL, NULL));
+	}
+}
+
+/* The custom CRM tools must establish their principal before any typed read
+ * or service call, including when the AI policy applies writes immediately. */
+static void
+test_crm_ai_scopes(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureContext) context = venture_context_new(config, db);
+	g_autoptr(VentureEntity) user = g_object_new(VENTURE_TYPE_USER, "username", "crm-user", "active", TRUE, "role", VENTURE_USER_ROLE_EDITOR, NULL);
+	g_autoptr(VentureEntity) member = NULL;
+	g_autoptr(GPtrArray) rows = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autoptr(GDateTime) due = venture_time_from_string("2026-09-13T10:00:00Z", NULL);
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *username = g_strdup("crm-user");
+	const gchar *tools[] = { "venture_lead_convert", "venture_activity_complete", "venture_deal_move" };
+	VentureAuthPrincipal principal;
+	gint64 org;
+	guint i, mode;
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	org = venture_context_get_default_organization_id(context);
+	g_assert_true(venture_database_save(db, user, NULL, &error));
+	g_assert_no_error(error);
+	g_ptr_array_add(rows, g_object_new(VENTURE_TYPE_LEAD, "organization-id", org, "name", "Private lead", "owner", username, "status", VENTURE_LEAD_QUALIFIED, NULL));
+	g_ptr_array_add(rows, g_object_new(VENTURE_TYPE_ACTIVITY, "organization-id", org, "subject", "Private activity", "owner", username, "due-at", due, NULL));
+	g_ptr_array_add(rows, g_object_new(VENTURE_TYPE_DEAL, "organization-id", org, "name", "Private deal", "owner", username, NULL));
+	for (i = 0; i < rows->len; i++)
+	{
+		g_assert_true(venture_database_save(db, g_ptr_array_index(rows, i), NULL, &error));
+		g_assert_no_error(error);
+	}
+	principal.authenticated = TRUE;
+	principal.user_id = venture_entity_get_id(user);
+	principal.token_id = 0;
+	principal.role = VENTURE_USER_ROLE_EDITOR;
+	principal.name = username;
+	for (mode = 0; mode < 4; mode++)
+	{
+		g_autoptr(VentureAiService) ai = NULL;
+		g_object_set(config, "ai-enabled", TRUE, "ai-provider", "ollama",
+			"ai-policy", mode % 2 ? VENTURE_AI_POLICY_AUTONOMOUS : VENTURE_AI_POLICY_CONFIRM_WRITES, NULL);
+		if (mode == 2)
+		{
+			member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", principal.user_id,
+				"organization-id", org, "role", VENTURE_ORGANIZATION_ROLE_VIEWER, "active", TRUE, NULL);
+			g_assert_true(venture_database_save(db, member, NULL, &error));
+			g_assert_no_error(error);
+		}
+		ai = venture_ai_service_new(context, &error);
+		g_assert_no_error(error);
+		for (i = 0; i < rows->len; i++)
+		{
+			VentureEntity *row = g_ptr_array_index(rows, i);
+			g_autoptr(VentureEntity) current = NULL;
+			g_autoptr(GPtrArray) pending = NULL;
+			g_autofree gchar *input = g_strdup_printf("{\"id\":%" G_GINT64_FORMAT "%s}", venture_entity_get_id(row), i == 1 ? ",\"outcome\":\"Done\"" : i == 2 ? ",\"stage_id\":2" : "");
+			g_autoptr(AiToolUse) use = ai_tool_use_new_from_json_string("scope", tools[i], input);
+			g_autofree gchar *response = venture_ai_service_execute_tool(ai, use, &principal, &error);
+			g_assert_no_error(error);
+			g_assert_nonnull(response);
+			g_assert_nonnull(strstr(response, "error"));
+			if (mode < 2) g_assert_nonnull(strstr(response, "No such record"));
+			pending = venture_confirmation_store_list_pending(venture_context_get_confirmations(context));
+			g_assert_cmpuint(pending->len, ==, 0);
+			current = venture_database_get(db, G_OBJECT_TYPE(row), venture_entity_get_id(row), &error);
+			g_assert_no_error(error);
+			g_assert_cmpint(venture_entity_get_version(current), ==, venture_entity_get_version(row));
+		}
+	}
+}
+
 typedef struct {
 	const gchar *name;
 	HtmxMethod method;
@@ -521,6 +652,8 @@ typedef struct {
 	gboolean protocol;
 } ProtocolCase;
 static const ProtocolCase protocol_cases[] = {
+	{ "/orgaccess/stripe-webhook-scope", HTMX_METHOD_POST, "/webhooks/stripe", TRUE },
+	{ "/orgaccess/private-stripe-webhook-get", HTMX_METHOD_GET, "/webhooks/stripe", FALSE },
 	{ "/orgaccess/nested-protocol-scope", HTMX_METHOD_POST, "/hooks/forge/1", TRUE },
 	{ "/orgaccess/public-capture-scope", HTMX_METHOD_POST, "/f/token", TRUE },
 	{ "/orgaccess/public-quote-get", HTMX_METHOD_GET, "/q/token", TRUE },
@@ -583,5 +716,7 @@ main(int argc, char **argv)
 	for (i = 0; i < G_N_ELEMENTS(protocol_cases); i++)
 		g_test_add_data_func(protocol_cases[i].name, &protocol_cases[i], test_nested_protocol_scope);
 	g_test_add_func("/orgaccess/watched-change-scope", test_watched_change_scope);
+	g_test_add_func("/orgaccess/assignment-ownership", test_assignment_ownership);
+	g_test_add_func("/orgaccess/crm-ai-scopes", test_crm_ai_scopes);
 	return g_test_run();
 }

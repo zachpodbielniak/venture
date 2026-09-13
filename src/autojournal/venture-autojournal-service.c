@@ -367,7 +367,8 @@ venture_autojournal_save_hook(VentureDatabase *db, VentureEntity *entity, const 
 	g_autofree gchar *uuid = NULL;
 	*handled = FALSE;
 	if ((!VENTURE_IS_SALE(entity) && !VENTURE_IS_EXPENSE(entity)) || !enabled() ||
-		venture_receivables_is_projection_write(db, entity)) return TRUE;
+		venture_receivables_is_projection_write(db, entity) ||
+		venture_payables_is_projection_write(db, entity)) return TRUE;
 	self = venture_database_get_autojournal_service(db);
 	uuid = g_strdup(venture_entity_get_uuid(entity));
 	if (g_hash_table_contains(self->saving, uuid)) return TRUE;
@@ -435,6 +436,11 @@ venture_autojournal_service_unposted(VentureAutojournalService *self, gint64 org
 			gboolean posted = FALSE;
 			guint k;
 			if (VENTURE_IS_SALE(source) && !venture_receivables_check_sale(db, source, &projection)) {
+				if (g_error_matches(projection, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED)) continue;
+				g_propagate_error(error, g_steal_pointer(&projection)); return NULL;
+			}
+			/* Payable cash projections already have source-linked journals. */
+			if (VENTURE_IS_EXPENSE(source) && !venture_payables_check_expense(db, source, &projection)) {
 				if (g_error_matches(projection, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED)) continue;
 				g_propagate_error(error, g_steal_pointer(&projection)); return NULL;
 			}

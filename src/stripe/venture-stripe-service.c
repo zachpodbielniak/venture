@@ -29,6 +29,25 @@ money_equal(const VentureMoney *a, const VentureMoney *b)
 	return difference && venture_money_get_amount(difference) == 0;
 }
 
+/* Stripe charge units differ from ISO for MGA and the legacy ISK/UGX
+ * representation. Use the same mapper for Prices and signed settlement data;
+ * https://docs.stripe.com/currencies documents these API exceptions. */
+static VentureMoney *
+charge_money(gint64 amount, const gchar *currency)
+{
+	static const gchar *const zero[] = { "BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF", "VND", "VUV", "XAF", "XOF", "XPF" };
+	guint8 exponent = venture_currency_get_exponent(currency);
+	guint i;
+	for (i = 0; i < G_N_ELEMENTS(zero); i++)
+		if (!g_ascii_strcasecmp(currency, zero[i])) exponent = 0;
+	if (!g_ascii_strcasecmp(currency, "ISK") || !g_ascii_strcasecmp(currency, "UGX"))
+	{
+		if (amount % 100) return NULL;
+		exponent = 2;
+	}
+	return venture_money_new(amount, currency, exponent);
+}
+
 static gboolean
 refuse(GError **error, const gchar *rule)
 {
@@ -249,6 +268,43 @@ venture_stripe_service_can_checkout(VentureStripeService *self, gint64 invoice_i
 	return eligible(self, invoice_id, NULL, NULL, NULL, NULL, error);
 }
 
+/* A local product link identifies a Price; it does not establish its amount.
+ * Validate the immutable provider price before either external write. Refuse
+ * quantity transforms, recurring/tiered pricing and fractional minor units
+ * because this checkout has no exact representation for those contracts. */
+static gboolean
+check_price(VentureStripeService *self, VentureEntity *price, guint quantity,
+	const VentureMoney *expected, GError **error)
+{
+	g_autoptr(StripeRequest) request = stripe_request_new(STRIPE_PRICE_RETRIEVE);
+	g_autoptr(StripeResource) resource = NULL;
+	g_autoptr(JsonObject) object = NULL;
+	g_autoptr(StripeMoney) remote = NULL;
+	g_autoptr(VentureMoney) unit = NULL;
+	g_autoptr(VentureMoney) total = NULL;
+	JsonNode *active, *transform;
+
+	g_object_get(price, "stripe-price-id", &request->id, NULL);
+	resource = stripe_client_execute(self->client, request, NULL, error);
+	if (!resource) return FALSE;
+	object = stripe_resource_get_json(resource);
+	active = json_object_get_member(object, "active");
+	transform = json_object_get_member(object, "transform_quantity");
+	if (!active || json_node_get_value_type(active) != G_TYPE_BOOLEAN || !json_node_get_boolean(active) ||
+	    g_strcmp0(stripe_resource_get_string(resource, "id"), request->id) ||
+	    g_strcmp0(stripe_resource_get_string(resource, "type"), "one_time") ||
+	    g_strcmp0(stripe_resource_get_string(resource, "billing_scheme"), "per_unit") ||
+	    (transform && !JSON_NODE_HOLDS_NULL(transform)))
+		return refuse(error, "Checkout requires an active one-time per-unit Stripe Price without quantity transforms");
+	remote = stripe_resource_get_money(resource, STRIPE_UNIT_AMOUNT, error);
+	if (!remote) return FALSE;
+	unit = charge_money(stripe_money_get_amount(remote), stripe_money_get_currency(remote));
+	if (unit) total = venture_money_multiply_int(unit, quantity, NULL);
+	if (!total || !money_equal(total, expected))
+		return refuse(error, "Stripe Price times quantity must exactly equal the invoice open balance and currency");
+	return TRUE;
+}
+
 VentureStripeCheckout *
 venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 	const VentureActor *actor, GError **error)
@@ -287,6 +343,7 @@ venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 	if (!customer) goto fail;
 	links = find_id(self, venture_stripe_customer_link_get_type(), party_field, party_id, error);
 	if (!links) goto fail;
+	if (!check_price(self, price, quantity, expected, error)) goto fail;
 	if (links->len) g_object_get(g_ptr_array_index(links, 0), "stripe-customer-id", &customer_id, NULL);
 	else
 	{
@@ -423,7 +480,7 @@ venture_stripe_service_handle_webhook(VentureStripeService *self, GBytes *raw,
 	intent = string_member(object, "payment_intent");
 	if (expected && amount_node && json_node_get_value_type(amount_node) == G_TYPE_INT64 &&
 	    currency && !g_ascii_strcasecmp(currency, venture_money_get_currency(expected)))
-		received = venture_money_new_for_currency(json_node_get_int(amount_node), currency);
+		received = charge_money(json_node_get_int(amount_node), currency);
 	if (!received || !money_equal(received, expected))
 	{
 		mismatch = TRUE;

@@ -86,7 +86,7 @@ audits. Unknown authenticated event types are recorded and ignored.
 
 A completion must report paid status, a payment-intent identifier, and an
 amount and currency equal to the expected VentureMoney. Comparison uses the
-currency's natural minor units and checked rescaling; overflow is a mismatch,
+Stripe's charge units and checked rescaling; overflow is a mismatch,
 not equality. There is no universal two-decimal assumption.
 Mismatches are recorded, refused, and need operator reconciliation.
 
@@ -121,3 +121,9 @@ immutable evidence, configuration and HTTP/CLI/web actions. The full suite
 runs with =GSETTINGS_BACKEND=memory make DEBUG=1 -j8 test=.
 
 Checkout enforces invoice write authority, including organization roles and policy-plugin vetoes, before any customer or session request reaches Stripe.
+
+A product link identifies a remote Price, not its value. Before creating a customer or Checkout session, Venture retrieves the Price and requires an active one-time per-unit integer amount with no quantity transformation. Its amount times the integral quantity must exactly equal the invoice's open balance in the same currency. Recurring, tiered and fractional-minor-unit prices are refused. Discounts, taxes and partial payments are not reconstructed in Checkout; any difference from the linked Price is refused before external writes.
+
+Both Price validation and signed webhook settlement use Stripe's charge currency units: the documented zero-decimal currencies (including MGA) use exponent zero, while ISK and UGX retain Stripe's two-decimal API representation and must be multiples of 100. See [[https://docs.stripe.com/currencies][Stripe supported currency rules]]. Checked integer arithmetic reconciles these units with an invoice's stored exponent; overflow is refusal, never equality.
+
+Only =POST /webhooks/stripe= uses independent signature authority; an incidental local browser session does not restrict or widen that capability. Signature, payload size and module guards still apply. Neighboring paths and other methods retain local authentication and organization policy.
