@@ -2982,7 +2982,7 @@ venture_web_not_found_middleware(
 
 	self = user_data;
 
-	next(context, next_data);
+	venture_orgaccess_web_dispatch(self->auth, self->context, context, next, next_data);
 
 	if (NULL != htmx_context_get_response(context))
 		return;
@@ -10362,6 +10362,8 @@ venture_web_ui_account(
 
 	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
 	                       "<h1>Your account</h1></div></div>");
+
+	if (!venture_access_policy_has_membership(venture_database_get_access_policy(venture_context_get_database(self->context)), principal)) g_string_append(content, "<div class=\"notice info\">No organization membership. Ask an organization owner to grant access. You can manage your own account here.</div>");
 
 	notice = htmx_request_get_query_param(request, "notice");
 

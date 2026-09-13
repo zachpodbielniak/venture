@@ -450,6 +450,7 @@ venture_auth_authenticate(
 	VentureAuth	*self,
 	HtmxRequest	*request
 ){
+	g_autoptr(VentureAccessScope) access_internal = venture_access_policy_enter(venture_database_get_access_policy(venture_context_get_database(self->context)), NULL);
 	VentureAuthPrincipal *principal;
 	const gchar *token;
 
@@ -822,7 +823,7 @@ venture_auth_ensure_owner(
 	                               self->password_iterations, error))
 		return NULL;
 
-	if (!venture_database_save(database, VENTURE_ENTITY(user), NULL, error))
+	if (!venture_orgaccess_bootstrap_owner(database, user, error))
 		return NULL;
 
 	return g_steal_pointer(&generated);

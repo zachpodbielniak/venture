@@ -3571,6 +3571,70 @@ test_federation_owner_boundary(ServerFixture *fixture, gconstpointer data)
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/federation/v1/request", NULL, "", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
 }
 
+/* Each surface must hide rows outside the caller's membership even when
+ * an explicit organization or record id is supplied. */
+static void
+test_orgaccess_surface(ServerFixture *fixture, gconstpointer user_data)
+{
+	g_autoptr(VentureEntity) company = NULL;
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *body = NULL;
+	gint64 org;
+	guint status;
+	const gchar *surface = user_data;
+
+	org = venture_context_get_default_organization_id(fixture->context);
+	company = g_object_new(VENTURE_TYPE_COMPANY, "name", "PrivateBoundaryMarker",
+		"organization-id", org, NULL);
+	g_assert_true(venture_database_save(fixture->database, company, NULL, NULL));
+	server_fixture_create_user(fixture, "outsider", "password", VENTURE_USER_ROLE_EDITOR, NULL);
+	cookie = server_fixture_login(fixture, "outsider", "password");
+	if (0 == g_strcmp0(surface, "read"))
+		path = g_strdup_printf("/api/v1/company/%" G_GINT64_FORMAT, venture_entity_get_id(company));
+	else if (0 == g_strcmp0(surface, "list"))
+		path = g_strdup_printf("/api/v1/company?organization_id=%" G_GINT64_FORMAT, org);
+	else if (0 == g_strcmp0(surface, "search"))
+		path = g_strdup("/ui/records/search?type=company&q=PrivateBoundaryMarker");
+	else if (0 == g_strcmp0(surface, "export"))
+		path = g_strdup("/e/company/export");
+	else
+		path = g_strdup("/account");
+	status = server_fixture_request(fixture, "GET", path, cookie, NULL, &body, NULL);
+	if (0 == g_strcmp0(surface, "read"))
+		g_assert_cmpuint(status, ==, 404);
+	else
+	{
+		g_assert_cmpuint(status, ==, 200);
+		g_assert_null(strstr(body, "PrivateBoundaryMarker"));
+		if (0 == g_strcmp0(surface, "account"))
+			g_assert_nonnull(strstr(body, "No organization membership"));
+	}
+}
+
+static void
+test_orgaccess_wrong_role(ServerFixture *fixture, gconstpointer user_data)
+{
+	g_autoptr(VentureEntity) company = NULL;
+	g_autoptr(VentureEntity) member = NULL;
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *path = NULL;
+	gint64 org;
+	gint64 user;
+	org = venture_context_get_default_organization_id(fixture->context);
+	server_fixture_create_user(fixture, "viewer-member", "password", VENTURE_USER_ROLE_EDITOR, &user);
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", user,
+		"organization-id", org, "role", VENTURE_ORGANIZATION_ROLE_VIEWER, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, member, NULL, NULL));
+	company = g_object_new(VENTURE_TYPE_COMPANY, "name", "PrivateBoundaryMarker",
+		"organization-id", org, "owner-user-id", user, NULL);
+	g_assert_true(venture_database_save(fixture->database, company, NULL, NULL));
+	cookie = server_fixture_login(fixture, "viewer-member", "password");
+	path = g_strdup_printf("/api/v1/company/%" G_GINT64_FORMAT, venture_entity_get_id(company));
+	g_assert_cmpuint(server_fixture_json(fixture, "PATCH", path, cookie,
+		"{\"name\":\"Not permitted\"}", NULL), ==, 403);
+}
+
 int
 main(
 	int	  argc,
@@ -3748,5 +3812,11 @@ main(
 #undef ADD
 
 	g_test_add("/auth/federation-owner-boundary", ServerFixture, NULL, server_fixture_set_up, test_federation_owner_boundary, server_fixture_tear_down);
+	g_test_add("/orgaccess/surface/read", ServerFixture, "read", server_fixture_set_up, test_orgaccess_surface, server_fixture_tear_down);
+	g_test_add("/orgaccess/surface/list", ServerFixture, "list", server_fixture_set_up, test_orgaccess_surface, server_fixture_tear_down);
+	g_test_add("/orgaccess/surface/search", ServerFixture, "search", server_fixture_set_up, test_orgaccess_surface, server_fixture_tear_down);
+	g_test_add("/orgaccess/surface/export", ServerFixture, "export", server_fixture_set_up, test_orgaccess_surface, server_fixture_tear_down);
+	g_test_add("/orgaccess/surface/account", ServerFixture, "account", server_fixture_set_up, test_orgaccess_surface, server_fixture_tear_down);
+	g_test_add("/orgaccess/wrong-role", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_wrong_role, server_fixture_tear_down);
 	return g_test_run();
 }

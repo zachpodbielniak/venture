@@ -986,6 +986,8 @@ venture_module_registry_add(
 		}
 	}
 
+	venture_access_records_tag_module(info);
+
 	module = venture_module_new(info, origin);
 
 	/* A type can belong to one module only, or two switches would fight

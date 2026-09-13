@@ -3036,7 +3036,8 @@ static const VentureFieldDecl venture_api_token_fields[] = {
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
 	              VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_TEXT("description", "Description", NULL)
+	VENTURE_FIELD_TEXT("description", "Description", NULL),
+	VENTURE_FIELD("membership-snapshot", "Minted memberships", "Organization authority at token creation", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_SENSITIVE | VENTURE_COLUMN_FLAG_IMMUTABLE)
 };
 
 VENTURE_DEFINE_ENTITY(VentureApiToken, venture_api_token,

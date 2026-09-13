@@ -106,6 +106,70 @@ test_upgrade(void)
 	g_assert_no_error(error);
 }
 
+static void
+test_bootstrap(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureAuth) auth = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *password = NULL;
+	g_setenv("ORGACCESS_TEST_SECRET", "test-only-secret", TRUE);
+	g_object_set(config, "security-session-secret-env", "ORGACCESS_TEST_SECRET", "security-password-iterations", (gint64)100000, NULL);
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	context = venture_context_new(config, db);
+	auth = venture_auth_new(context);
+	password = venture_auth_ensure_owner(auth, "test-password", &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_database_count(db, query, &error), ==, 1);
+	g_unsetenv("ORGACCESS_TEST_SECRET");
+}
+
+static void
+test_token_scope(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureEntity) user = NULL;
+	g_autoptr(VentureEntity) org = NULL;
+	g_autoptr(VentureEntity) member = NULL;
+	g_autoptr(VentureEntity) company = NULL;
+	g_autoptr(VentureApiToken) token = venture_api_token_new();
+	g_autofree gchar *secret = NULL;
+	VentureAuthPrincipal actor;
+	gchar actor_name[] = "token";
+	gint64 first;
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), NULL));
+	context = venture_context_new(config, db);
+	first = venture_context_get_default_organization_id(context);
+	user = g_object_new(VENTURE_TYPE_USER, "username", "token-minter", "role", VENTURE_USER_ROLE_EDITOR, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(db, user, NULL, NULL));
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "organization-id", first,
+		"user-id", venture_entity_get_id(user), "active", TRUE, "role", VENTURE_ORGANIZATION_ROLE_EDITOR, NULL);
+	g_assert_true(venture_database_save(db, member, NULL, NULL));
+	g_object_set(token, "name", "limited", "user-id", venture_entity_get_id(user), "role", VENTURE_USER_ROLE_EDITOR, NULL);
+	secret = venture_api_token_generate(token);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(token), NULL, NULL));
+	org = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Later grant", "slug", "later", NULL);
+	g_assert_true(venture_database_save(db, org, NULL, NULL));
+	g_clear_object(&member);
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "organization-id", venture_entity_get_id(org),
+		"user-id", venture_entity_get_id(user), "active", TRUE, "role", VENTURE_ORGANIZATION_ROLE_EDITOR, NULL);
+	g_assert_true(venture_database_save(db, member, NULL, NULL));
+	company = g_object_new(VENTURE_TYPE_COMPANY, "name", "Later data", "organization-id", venture_entity_get_id(org), NULL);
+	actor.user_id = venture_entity_get_id(user);
+	actor.token_id = venture_entity_get_id(VENTURE_ENTITY(token));
+	actor.role = VENTURE_USER_ROLE_EDITOR;
+	actor.name = actor_name;
+	actor.authenticated = TRUE;
+	g_assert_false(venture_access_policy_can(venture_database_get_access_policy(db), &actor, "read", company, NULL));
+	venture_entity_set_organization_id(company, first);
+	g_assert_true(venture_access_policy_can(venture_database_get_access_policy(db), &actor, "read", company, NULL));
+}
+
 int
 main(int argc, char **argv)
 {
@@ -113,5 +177,7 @@ main(int argc, char **argv)
 	g_test_add_func("/orgaccess/records", test_records);
 	g_test_add_func("/orgaccess/module", test_module);
 	g_test_add_func("/orgaccess/upgrade", test_upgrade);
+	g_test_add_func("/orgaccess/bootstrap", test_bootstrap);
+	g_test_add_func("/orgaccess/token-scope", test_token_scope);
 	return g_test_run();
 }

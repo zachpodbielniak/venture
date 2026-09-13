@@ -52,6 +52,7 @@ struct _VentureDatabase
 	 * through venture_database_save(), so every writer gets the check.
 	 */
 	GPtrArray		*validators;
+	VentureAccessPolicy *access_policy;
 };
 
 typedef struct
@@ -95,6 +96,7 @@ venture_database_finalize(GObject *object)
 
 	self = VENTURE_DATABASE(object);
 
+	g_clear_object(&self->access_policy);
 	g_clear_object(&self->transaction);
 
 	if (NULL != self->connection)
@@ -1039,6 +1041,8 @@ venture_database_save(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_orgaccess_prepare(self, entity, error)) return FALSE;
+	if (!venture_access_policy_check_write(venture_database_get_access_policy(self), entity, "write", error)) return FALSE;
 
 	/* Source and posting share a transaction, whichever surface saved it. */
 	if (venture_ledger_wrap_source(self, entity))
@@ -1252,6 +1256,7 @@ venture_database_get(
 	if ((NULL == entities) || (0 == entities->len))
 		return NULL;
 
+	if (!venture_access_policy_check_read(venture_database_get_access_policy(self), g_ptr_array_index(entities, 0), error)) return NULL;
 	return g_object_ref(g_ptr_array_index(entities, 0));
 }
 
@@ -1285,6 +1290,7 @@ venture_database_get_by_uuid(
 	if ((NULL == entities) || (0 == entities->len))
 		return NULL;
 
+	if (!venture_access_policy_check_read(venture_database_get_access_policy(self), g_ptr_array_index(entities, 0), error)) return NULL;
 	return g_object_ref(g_ptr_array_index(entities, 0));
 }
 
@@ -1300,6 +1306,8 @@ venture_database_find(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), NULL);
 	g_return_val_if_fail(VENTURE_IS_QUERY(query), NULL);
+
+	if (NULL != venture_access_policy_get_actor(venture_database_get_access_policy(self))) return venture_access_policy_find(self->access_policy, query, error);
 
 	sql = venture_query_to_sql(query, venture_database_dialect(self), FALSE,
 	                           &params);
@@ -1344,6 +1352,8 @@ venture_database_count(
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), -1);
 	g_return_val_if_fail(VENTURE_IS_QUERY(query), -1);
 
+	if (NULL != venture_access_policy_get_actor(venture_database_get_access_policy(self))) return venture_access_policy_count(self->access_policy, query, error);
+
 	sql = venture_query_to_sql(query, venture_database_dialect(self), TRUE,
 	                           &params);
 	result = venture_database_query_raw(self, sql, params, error);
@@ -1374,6 +1384,7 @@ venture_database_delete(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_access_policy_check_write(venture_database_get_access_policy(self), entity, "delete", error)) return FALSE;
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
@@ -1432,6 +1443,7 @@ venture_database_restore(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_access_policy_check_write(venture_database_get_access_policy(self), entity, "write", error)) return FALSE;
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
@@ -1473,6 +1485,7 @@ venture_database_purge(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_access_policy_check_write(venture_database_get_access_policy(self), entity, "delete", error)) return FALSE;
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
@@ -1950,4 +1963,12 @@ venture_database_migrate(
 		!venture_database_seed_tax_categories(self, organization_id, error))
 		return FALSE;
 	return TRUE;
+}
+
+VentureAccessPolicy *
+venture_database_get_access_policy(VentureDatabase *self)
+{
+	if (NULL == self->access_policy)
+		self->access_policy = venture_access_policy_new(self);
+	return self->access_policy;
 }

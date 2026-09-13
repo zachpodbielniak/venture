@@ -41,3 +41,22 @@ static const VentureFieldDecl team_membership_fields[] = {
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED)
 };
 VENTURE_DEFINE_ENTITY(VentureTeamMembership, venture_team_membership, team_membership_fields)
+
+void
+venture_access_records_tag_module(const VentureModuleInfo *info)
+{
+	guint i;
+	if (0 != g_strcmp0(info->name, "finance") &&
+		0 != g_strcmp0(info->name, "ledger") &&
+		0 != g_strcmp0(info->name, "periods") &&
+		0 != g_strcmp0(info->name, "invoicing") &&
+		0 != g_strcmp0(info->name, "receivables"))
+		return;
+	for (i = 0; NULL != info->entity_types && NULL != info->entity_types[i]; i++)
+		venture_access_type_set_financial(info->entity_types[i](), TRUE);
+}
+void
+venture_access_type_set_financial(GType type, gboolean financial)
+{
+	g_type_set_qdata(type, g_quark_from_static_string("venture-access-financial"), GINT_TO_POINTER(financial));
+}

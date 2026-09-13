@@ -75,8 +75,9 @@
 #include "model/venture-venture-type.h"
 #include "model/venture-entity-registry.h"
 #include "model/venture-module.h"
-#include "periods/venture-period-records.h"
 #include "orgaccess/venture-access-records.h"
+#include "periods/venture-period-records.h"
+
 
 /* --- Configuration ------------------------------------------------------- */
 
@@ -139,6 +140,7 @@
 /* Auth comes before the AI service, which names VentureAuthPrincipal in its
  * signatures, and before the web server, which uses both. */
 #include "web/venture-auth.h"
+#include "orgaccess/venture-access-policy.h"
 
 #include "ai/venture-ai-service.h"
 #include "ai/venture-ai-assist.h"

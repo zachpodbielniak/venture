@@ -25,3 +25,30 @@ history prevents a subsequent restart from granting revoked access again.
 
 =test-orgaccess= covers generated fields, membership uniqueness, the module
 switch, and upgrading populated user and organization tables and restarting.
+
+* Request boundary
+
+=VentureAccessPolicy= is shared by the repository. A synchronous request
+scope carries a copy of its principal, restores the previous scope on exit,
+and never remains active while an asynchronous response waits. The repository
+checks individual reads and both the stored and proposed versions of writes.
+Queries filter before pagination, and counts ignore pagination. These checks
+also constrain records loaded by reports, widgets and reference pickers.
+
+Global owners and admins retain their data authority. Other users require an
+active membership in the record's exact organization; a parent organization
+is a presentation hierarchy and never grants a child's membership. Finance
+modules mark their types as financial class metadata. Those types require
+organization finance, admin or owner authority. Sales, support and viewer
+members read assigned records or records attached to their assigned venture;
+team ownership requires a team and active team membership in the same
+organization. A viewer cannot apply writes.
+
+The =decide= signal runs after built-in checks, with =G_SIGNAL_RUN_LAST=.
+Handlers return an owned =GError= to veto; the first veto stops emission.
+Returning NULL cannot override a built-in refusal.
+
+Token membership snapshots are captured on creation and intersected with
+current membership authority. A later grant or promotion cannot expand an
+existing token. Legacy non-admin tokens with no snapshot need rotation.
+The initial owner and their memberships are created in one transaction.

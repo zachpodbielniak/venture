@@ -39,5 +39,20 @@ VENTURE_DECLARE_ENTITY(VentureOrganizationMembership, venture_organization_membe
 VENTURE_DECLARE_ENTITY(VentureTeam, venture_team, TEAM)
 #define VENTURE_TYPE_TEAM_MEMBERSHIP (venture_team_membership_get_type())
 VENTURE_DECLARE_ENTITY(VentureTeamMembership, venture_team_membership, TEAM_MEMBERSHIP)
+/**
+ * venture_access_type_set_financial:
+ * @type: registered record type
+ * @financial: whether financial authority is required
+ *
+ * Class metadata for built-in and plugin record types.
+ */
+void venture_access_type_set_financial(GType type, gboolean financial);
+/**
+ * venture_access_records_tag_module:
+ * @info: registered module declaration
+ *
+ * Tags records declared by built-in financial modules.
+ */
+void venture_access_records_tag_module(const VentureModuleInfo *info);
 G_END_DECLS
 #endif
