@@ -17,7 +17,7 @@ venture_ai_tool_deal_move(AiToolUse *use, GCancellable *cancellable, GError **er
 	deal = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_DEAL,
 		venture_json_object_get_int(input, "id", 0), &local_error);
 	if (NULL == deal)
-		return venture_ai_tool_error("%s", local_error->message);
+		return venture_ai_tool_error("%s", NULL != local_error ? local_error->message : "Record not found or action refused");
 	stage_id = venture_json_object_get_int(input, "stage_id", 0);
 	actor.kind = VENTURE_ACTOR_KIND_AI;
 	actor.name = NULL != self->current_principal ? self->current_principal->name : "ai";
@@ -27,7 +27,7 @@ venture_ai_tool_deal_move(AiToolUse *use, GCancellable *cancellable, GError **er
 	confirmation = venture_confirmation_store_stage_deal_move(venture_context_get_confirmations(self->context),
 		VENTURE_DEAL(deal), stage_id, venture_json_object_get_string(input, "note", NULL), &actor, "assistant", &local_error);
 	if (NULL == confirmation)
-		return venture_ai_tool_error("%s", local_error->message);
+		return venture_ai_tool_error("%s", NULL != local_error ? local_error->message : "Record not found or action refused");
 	node = venture_confirmation_to_json(confirmation);
 	json_object_set_string_member(json_node_get_object(node), "status", "awaiting_approval");
 	return venture_ai_tool_result(g_steal_pointer(&node));

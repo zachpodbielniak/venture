@@ -38,7 +38,7 @@ invention of earlier stage transitions.
 
 * Upgrade and reports
 
-The paired =000003_pipelines.sql= migration records a durable pending backfill.
+The paired =000090_pipelines.sql= migration records a durable pending backfill.
 After metadata reconciliation and organization seeding, startup creates a
 default for every organization and attaches retained deals through the same
 initialization code. The backfill and clearing its pending marker share one
@@ -82,3 +82,5 @@ Archived deals receive their pipeline and stage references during upgrade,
 without a fabricated entry referencing a deleted record. Their deletion
 stamp remains intact. The upgrade test reopens the fixture file and verifies
 that running startup again creates no duplicate history.
+
+New deals require an active pipeline and satisfy the initial stage's required fields; a lost initial stage requires an active loss reason. Closed initial stages receive a closing timestamp. Historical backfill preserves prior state.

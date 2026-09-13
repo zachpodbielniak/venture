@@ -146,6 +146,9 @@ write_entry(VentureDealService *self, VentureDatabase *db, VentureDeal *deal,
 	return save_permitted(self, db, VENTURE_ENTITY(entry), actor, error);
 }
 
+static VentureEntity *live_reference(VentureDatabase *db, GType type, gint64 id, gint64 org, GError **error);
+static gboolean required_populated(VentureDeal *deal, const gchar *list, GError **error);
+
 static gboolean
 initialize_deal(VentureDealService *self, VentureDatabase *db, VentureEntity *input,
 	const VentureActor *actor, GError **error)
@@ -153,6 +156,7 @@ initialize_deal(VentureDealService *self, VentureDatabase *db, VentureEntity *in
 	g_autoptr(VentureDeal) deal = venture_deal_new();
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PIPELINE_STAGE);
 	g_autoptr(VentureEntity) stage = NULL;
+	g_autoptr(VentureEntity) process = NULL;
 	g_autoptr(GDateTime) now = g_date_time_new_now_utc();
 	gint64 org, pipeline;
 	gint legacy;
@@ -168,6 +172,21 @@ initialize_deal(VentureDealService *self, VentureDatabase *db, VentureEntity *in
 		pipeline = venture_deal_service_ensure_default(self, org, error);
 	if (0 == pipeline)
 		goto fail;
+	/* New records must meet the same pipeline admission rules as moves.
+	 * Existing rows are a backfill and retain their historical state. */
+	if (!venture_entity_is_persisted(input))
+	{
+		gboolean active;
+		process = live_reference(db, VENTURE_TYPE_PIPELINE, pipeline, org, error);
+		if (NULL == process)
+			goto fail;
+		g_object_get(process, "active", &active, NULL);
+		if (!active)
+		{
+			refuse(error, "new deals require an active pipeline");
+			goto fail;
+		}
+	}
 	g_object_get(input, "stage", &legacy, NULL);
 	venture_query_set_organization(query, org);
 	venture_query_add_filter_int(query, "pipeline-id", VENTURE_FILTER_OP_EQ, pipeline, NULL);
@@ -193,6 +212,28 @@ initialize_deal(VentureDealService *self, VentureDatabase *db, VentureEntity *in
 	{
 		gint kind;
 		g_object_get(stage, "kind", &kind, NULL);
+		if (!venture_entity_is_persisted(input))
+		{
+			g_autofree gchar *required = NULL;
+			g_object_get(stage, "required-fields", &required, NULL);
+			if (!required_populated(VENTURE_DEAL(input), required, error))
+				goto fail;
+			if (2 == kind)
+			{
+				g_autoptr(VentureEntity) reason = live_reference(db, VENTURE_TYPE_LOSS_REASON,
+					integer(G_OBJECT(input), "loss-reason-id"), org, error);
+				gboolean active;
+				if (NULL == reason)
+					goto fail;
+				g_object_get(reason, "active", &active, NULL);
+				if (!active)
+				{
+					refuse(error, "loss reason must be active");
+					goto fail;
+				}
+			}
+			g_object_set(deal, "closed-at", 0 == kind ? NULL : now, NULL);
+		}
 		legacy = kind == 1 ? VENTURE_DEAL_STAGE_WON : (kind == 2 ? VENTURE_DEAL_STAGE_LOST : (gint)CLAMP(integer(G_OBJECT(stage), "position"), 0, 3));
 	}
 	g_object_set(deal, "pipeline-id", pipeline, "stage-id", venture_entity_get_id(stage), "stage", legacy, NULL);
@@ -250,7 +291,11 @@ live_reference(VentureDatabase *db, GType type, gint64 id, gint64 org, GError **
 {
 	g_autoptr(VentureEntity) entity = venture_database_get(db, type, id, error);
 	if (NULL == entity)
+	{
+		if (NULL == error || NULL == *error)
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "VentureDealService: reference not found");
 		return NULL;
+	}
 	if (venture_entity_is_deleted(entity) || venture_entity_get_organization_id(entity) != org)
 	{
 		refuse(error, "reference is deleted or belongs to another organization");

@@ -397,10 +397,59 @@ test_custom_pipeline(void)
 	venture_config_set_module_enabled(config, "pipelines", TRUE);
 }
 
+/* Creation must not bypass a process's required fields or inactive switch. */
+static void
+test_initial_admission(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", &error);
+	g_autoptr(VenturePipeline) pipeline = venture_pipeline_new();
+	g_autoptr(VenturePipelineStage) stage = venture_pipeline_stage_new();
+	g_autoptr(VentureDeal) deal = venture_deal_new();
+	g_autoptr(GDateTime) closed = NULL;
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_object_set(pipeline, "organization-id", (gint64)1, "name", "Admission", NULL);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(pipeline), NULL, &error));
+	g_object_set(stage, "organization-id", (gint64)1, "pipeline-id", venture_entity_get_id(VENTURE_ENTITY(pipeline)),
+		"name", "Start", "required-fields", "owner", NULL);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(stage), NULL, &error));
+	g_object_set(deal, "organization-id", (gint64)1, "name", "New", "pipeline-id", venture_entity_get_id(VENTURE_ENTITY(pipeline)), NULL);
+	g_assert_false(venture_database_save(db, VENTURE_ENTITY(deal), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_object_set(pipeline, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(pipeline), NULL, &error));
+	g_assert_false(venture_database_save(db, VENTURE_ENTITY(deal), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_object_set(deal, "owner", "operator", NULL);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(deal), NULL, &error));
+	g_assert_no_error(error);
+	/* Initial terminal stages need the same closing stamp as a move. */
+	g_object_set(stage, "kind", 1, NULL);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(stage), NULL, &error));
+	g_clear_object(&deal);
+	deal = venture_deal_new();
+	g_object_set(deal, "organization-id", (gint64)1, "name", "Already won", "owner", "operator",
+		"pipeline-id", venture_entity_get_id(VENTURE_ENTITY(pipeline)), NULL);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(deal), NULL, &error));
+	g_object_get(deal, "closed-at", &closed, NULL);
+	g_assert_nonnull(closed);
+	g_object_set(stage, "kind", 2, NULL);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(stage), NULL, &error));
+	g_clear_object(&deal);
+	deal = venture_deal_new();
+	g_object_set(deal, "organization-id", (gint64)1, "name", "Already lost", "owner", "operator",
+		"pipeline-id", venture_entity_get_id(VENTURE_ENTITY(pipeline)), NULL);
+	g_assert_false(venture_database_save(db, VENTURE_ENTITY(deal), NULL, &error));
+	g_assert_nonnull(error);
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
+	g_test_add_func("/pipelines/initial-admission", test_initial_admission);
 	g_test_add_func("/pipelines/records", test_records);
 	g_test_add_func("/pipelines/deal-fields", test_deal_fields);
 	g_test_add_func("/pipelines/first-use", test_first_use);
