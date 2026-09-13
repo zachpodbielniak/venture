@@ -8,8 +8,7 @@ venture_ai_tool_action(AiToolUse *tool_use, GCancellable *cancellable, GError **
 	g_auto(GStrv) types = venture_entity_registry_list_names(venture_context_get_entity_registry(self->context));
 	JsonObject *input = venture_ai_tool_input(tool_use);
 	guint i, j;
-	if (!input || !json_object_has_member(input, "id") || G_TYPE_INT64 != json_node_get_value_type(json_object_get_member(input, "id")))
-		return venture_ai_tool_error("An action requires an integer id");
+	if (!input) return venture_ai_tool_error("Action parameters must be an object");
 	for (i = 0; types[i]; i++)
 	{
 		g_autoptr(GPtrArray) actions = venture_action_registry_list_for_type(registry, types[i]);
@@ -29,14 +28,20 @@ venture_ai_tool_action(AiToolUse *tool_use, GCancellable *cancellable, GError **
 				g_autoptr(GError) local_error = NULL;
 				VentureConfirmation *confirmation;
 				VentureActor actor;
-				JsonObject *object = json_object_new();
+				JsonObject *object;
+				gboolean type_level;
+				gint64 id;
 				GType type = venture_entity_registry_lookup(venture_context_get_entity_registry(self->context), types[i]);
+				g_object_get(action, "type-level", &type_level, NULL);
+				if ((!json_object_has_member(input, "id") && !type_level) ||
+					(json_object_has_member(input, "id") && G_TYPE_INT64 != json_node_get_value_type(json_object_get_member(input, "id"))))
+					return venture_ai_tool_error("An action requires an integer id");
+				id = json_object_get_int_member_with_default(input, "id", 0);
 				json_node_set_object(values, input);
 				params = venture_action_parameters_from_json(values, &local_error);
-				json_object_unref(object);
 				g_hash_table_remove(params, "id");
 				if (!venture_ai_type_is_writable(type)) return venture_ai_tool_error("This type is unavailable to the assistant");
-				entity = venture_database_get(db, type, json_object_get_int_member(input, "id"), &local_error);
+				entity = !id && type_level ? g_object_new(type, NULL) : venture_database_get(db, type, id, &local_error);
 				if (!entity) return venture_ai_tool_error("%s", local_error->message);
 				actor.kind = VENTURE_ACTOR_KIND_AI;
 				actor.name = self->current_principal ? self->current_principal->name : "ai";
@@ -66,6 +71,10 @@ venture_ai_register_actions(VentureAiService *self)
 	VentureActionRegistry *registry = venture_database_get_action_registry(venture_context_get_database(self->context));
 	g_auto(GStrv) types = venture_entity_registry_list_names(venture_context_get_entity_registry(self->context));
 	guint i, j, k;
+	if (self->streaming) return;
+	for (i = 0; i < self->action_tools->len; i++)
+		ai_tool_executor_unregister(self->executor, g_ptr_array_index(self->action_tools, i));
+	g_ptr_array_set_size(self->action_tools, 0);
 	if (VENTURE_AI_POLICY_READ_ONLY == self->policy) return;
 	for (i = 0; types[i]; i++)
 	{
@@ -80,13 +89,13 @@ venture_ai_register_actions(VentureAiService *self)
 			g_autofree gchar *staged_description = NULL;
 			g_autoptr(GPtrArray) parameters = NULL;
 			g_autoptr(AiTool) tool = NULL;
-			gboolean stageable;
-			g_object_get(action, "name", &name, "description", &description, "parameters", &parameters, "stageable", &stageable, NULL);
+			gboolean stageable, type_level;
+			g_object_get(action, "name", &name, "description", &description, "parameters", &parameters, "stageable", &stageable, "type-level", &type_level, NULL);
 			if (!stageable) continue;
 			tool_name = g_strdup_printf("venture_%s_%s", types[i], name);
 			staged_description = g_strconcat(description, ". Always staged for approval; nothing changes until approved.", NULL);
 			tool = ai_tool_new(tool_name, staged_description);
-			ai_tool_add_parameter(tool, "id", "integer", "Record identifier", TRUE);
+			ai_tool_add_parameter(tool, "id", "integer", "Record identifier (zero for a type-level action)", !type_level);
 			for (k = 0; k < parameters->len; k++)
 			{
 				VentureFieldSpec *spec = g_ptr_array_index(parameters, k);
@@ -96,6 +105,7 @@ venture_ai_register_actions(VentureAiService *self)
 					venture_field_spec_get_label(spec), spec->required);
 			}
 			ai_tool_executor_register_callback(self->executor, tool, venture_ai_tool_action, self, NULL);
+			g_ptr_array_add(self->action_tools, g_strdup(tool_name));
 		}
 	}
 }

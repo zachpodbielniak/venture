@@ -392,3 +392,7 @@ current record, version, approver role and service eligibility again.
 =GET /api/v1/schema/:type= and the full schema include =actions= with
 labels, descriptions, minimum roles, =stageable=, parameters and input schemas.
 See [[file:actions.org][record actions]] for registration and signals.
+
+The ledger also exposes =POST /api/v1/journals/post= (header plus =lines=),
+including =?stage=1=. It dispatches the registered type-level
+=create_and_post= action. See [[file:ledger.org][posting from the outside]].

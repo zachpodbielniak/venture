@@ -75,3 +75,18 @@ actions. They always propose actions for approval, even under an autonomous
 policy or MCP's =--apply-writes=. Non-stageable actions have no generated
 assistant tool. Existing hand-written release, forge, ticket and KB actions
 remain unchanged; migrating their declarations is follow-up work.
+
+* Type-level actions
+
+A =type-level= declaration acts on an unsaved instance and uses target ID
+zero. It is omitted from existing record pages. Its generated tool makes
+=id= optional; its generic REST and CLI paths accept zero. The confirmation
+holds parameters without writing a draft, and approval invokes the registry
+with a new instance. Journal's =create_and_post= is the first example.
+
+Parameter names are unique lowercase wire names. =id= is reserved for the
+target; sensitive parameter declarations are refused because generic
+schema and approval discovery would expose them. Declarations are copied
+at construction and when their parameter metadata is read. Enum choices
+and other field-spec constraints apply alongside kind and required checks.
+Assistant tools refresh from the registry before discovery and new turns.

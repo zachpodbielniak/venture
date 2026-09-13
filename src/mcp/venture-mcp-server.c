@@ -2221,13 +2221,13 @@ venture_mcp_tool_action(VentureMcpServer *self, const gchar *name, JsonObject *a
 			JsonObject *values = json_object_new();
 			gint64 id;
 			json_node_take_object(body, values);
-			if (!arguments || !json_object_has_member(arguments, "id") ||
-				G_TYPE_INT64 != json_node_get_value_type(json_object_get_member(arguments, "id")))
+			if (!arguments || (!json_object_has_member(arguments, "id") && !json_object_get_boolean_member_with_default(tool, "type_level", FALSE)) ||
+				(json_object_has_member(arguments, "id") && G_TYPE_INT64 != json_node_get_value_type(json_object_get_member(arguments, "id"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "An action requires an integer id");
 				return NULL;
 			}
-			id = json_object_get_int_member(arguments, "id");
+			id = json_object_get_int_member_with_default(arguments, "id", 0);
 			members = json_object_get_members(arguments);
 			for (item = members; item; item = item->next)
 				if (0 != g_strcmp0(item->data, "id")) json_object_set_member(values, item->data, json_node_ref(json_object_get_member(arguments, item->data)));

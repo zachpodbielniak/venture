@@ -27951,6 +27951,7 @@ venture_web_server_new(
 	                   self);
 
 	htmx_router_post(router, "/api/v1/:type/:id/actions/:action", venture_web_api_action, self);
+	htmx_router_post(router, "/api/v1/journals/post", venture_web_api_action, self);
 
 	return g_steal_pointer(&self);
 }

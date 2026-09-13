@@ -682,8 +682,9 @@ venture_confirmation_store_approve_as(
 		g_autoptr(VentureEntity) current = NULL;
 		g_autoptr(VentureEntity) result = NULL;
 		const gchar *type = venture_entity_get_entity_name(confirmation->staged);
-		current = venture_database_get(self->database, G_OBJECT_TYPE(confirmation->staged),
-			venture_entity_get_id(confirmation->staged), &local_error);
+		current = venture_entity_get_id(confirmation->staged) ?
+			venture_database_get(self->database, G_OBJECT_TYPE(confirmation->staged), venture_entity_get_id(confirmation->staged), &local_error) :
+			g_object_new(G_OBJECT_TYPE(confirmation->staged), NULL);
 		if (current && venture_entity_get_version(current) != venture_entity_get_version(confirmation->staged))
 			g_set_error_literal(&local_error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "The action target changed; stage it again");
 		if (current && !local_error)
@@ -863,7 +864,7 @@ venture_confirmation_store_stage_action(VentureConfirmationStore *self, VentureA
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED, "This action cannot be staged");
 		return NULL;
 	}
-	current = venture_database_get(self->database, G_OBJECT_TYPE(entity), venture_entity_get_id(entity), error);
+	current = venture_entity_get_id(entity) ? venture_database_get(self->database, G_OBJECT_TYPE(entity), venture_entity_get_id(entity), error) : g_object_new(G_OBJECT_TYPE(entity), NULL);
 	if (!current || !venture_action_registry_allowed(venture_database_get_action_registry(self->database),
 		action, current, origin, role, error) || !venture_action_validate_parameters(action, params, error)) return NULL;
 	venture_confirmation_store_sweep(self);

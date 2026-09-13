@@ -98,6 +98,49 @@ test_dispatch(void)
 	g_assert_null(venture_confirmation_store_find(store, confirmation_id));
 }
 
+static void
+test_parameter_contract(void)
+{
+	g_autoptr(GPtrArray) specs = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
+	g_autoptr(GPtrArray) exposed = NULL;
+	g_autoptr(VentureAction) action = NULL;
+	g_autoptr(GHashTable) values = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)json_node_unref);
+	g_autoptr(GError) error = NULL;
+	VentureFieldSpec *choice = venture_field_spec_new("decision", "Decision", VENTURE_FIELD_KIND_ENUM);
+	JsonNode *value = json_node_new(JSON_NODE_VALUE);
+	choice->required = TRUE;
+	choice->choices = g_strsplit("yes,no", ",", -1);
+	g_ptr_array_add(specs, choice);
+	action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "organization", "name", "decide",
+		"label", "Decide", "description", "Record a decision", "parameters", specs, NULL);
+	json_node_set_string(value, "invented");
+	g_hash_table_insert(values, g_strdup("decision"), value);
+	g_assert_false(venture_action_validate_parameters(action, values, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_object_get(action, "parameters", &exposed, NULL);
+	g_ptr_array_set_size(exposed, 0);
+	g_hash_table_remove_all(values);
+	g_assert_false(venture_action_validate_parameters(action, values, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
+static void
+test_parameter_registration(void)
+{
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(GPtrArray) specs = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
+	g_autoptr(VentureAction) action = NULL;
+	g_autoptr(GError) error = NULL;
+	guint calls = 0;
+	g_ptr_array_add(specs, venture_field_spec_new("id", "Identity", VENTURE_FIELD_KIND_INTEGER));
+	action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "organization", "name", "bad",
+		"label", "Bad", "description", "Cannot override the target ID", "parameters", specs, NULL);
+	g_assert_false(venture_action_registry_register(venture_database_get_action_registry(db), action,
+		allow, invoke, &calls, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -105,5 +148,7 @@ main(int argc, char **argv)
 	venture_entity_registry_register_builtins(venture_entity_registry_get_default());
 	g_test_add_func("/actions/database-registry", test_database_registry);
 	g_test_add_func("/actions/dispatch-role-veto", test_dispatch);
+	g_test_add_func("/actions/parameter-contract", test_parameter_contract);
+	g_test_add_func("/actions/parameter-registration", test_parameter_registration);
 	return g_test_run();
 }

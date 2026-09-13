@@ -202,3 +202,7 @@ from a config file. See [[file:mcp.org][venturectl mcp]].
 its parameter kinds from =GET /api/v1/schema/TYPE=, then sends the generic
 action route. =--stage= proposes it for approval. Unknown names are refused.
 For example: =venturectl --stage act journal 42 post=.
+
+Journal actions are =post= and =reverse= (optional =occurred_at= and =memo=).
+Type-level =create_and_post= uses ID zero and a =journal= JSON-text parameter
+containing the header and =lines= array. All three support =--stage=.

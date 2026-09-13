@@ -1096,14 +1096,17 @@ venture_mcp_catalog_get_tools(VentureMcpCatalog *self)
 			schema = venture_json_parse(schema_text, NULL);
 			properties = json_object_get_object_member(json_node_get_object(schema), "properties");
 			json_object_set_string_member(id, "type", "integer");
-			json_object_set_int_member(id, "minimum", 1);
+			json_object_set_int_member(id, "minimum", json_object_get_boolean_member_with_default(action, "type_level", FALSE) ? 0 : 1);
 			json_object_set_object_member(properties, "id", id);
-			json_array_add_string_element(json_object_get_array_member(json_node_get_object(schema), "required"), "id");
+			if (!json_object_get_boolean_member_with_default(action, "type_level", FALSE))
+				json_array_add_string_element(json_object_get_array_member(json_node_get_object(schema), "required"), "id");
 			json_builder_begin_object(builder);
 			json_builder_set_member_name(builder, "name");
 			json_builder_add_string_value(builder, name);
 			json_builder_set_member_name(builder, "description");
 			json_builder_add_string_value(builder, json_object_get_string_member(action, "description"));
+			json_builder_set_member_name(builder, "type_level");
+			json_builder_add_boolean_value(builder, json_object_get_boolean_member_with_default(action, "type_level", FALSE));
 			json_builder_set_member_name(builder, "action_type");
 			json_builder_add_string_value(builder, type->canonical);
 			json_builder_set_member_name(builder, "action_name");

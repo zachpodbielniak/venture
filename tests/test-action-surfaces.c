@@ -253,11 +253,11 @@ test_assistant(Fixture *fixture, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	g_autoptr(JsonNode) tools = NULL;
 	g_autofree gchar *text = NULL;
-	install(fixture);
 	g_object_set(fixture->config, "ai-provider", "ollama", NULL);
 	service = venture_ai_service_new(fixture->context, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(service);
+	install(fixture);
 	tools = venture_ai_service_describe_tools(service);
 	text = venture_json_to_string(tools, FALSE);
 	g_assert_nonnull(strstr(text, "venture_organization_review"));

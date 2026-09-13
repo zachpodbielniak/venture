@@ -428,3 +428,9 @@ uses those declarations; `venturectl --stage act journal 42 post` proposes a
 posting. A staged result is awaiting approval, never completed. Generated
 action tools in the assistant and MCP always stage, including when other
 writes are configured to apply automatically.
+
+Journal reversal: `venturectl act journal 42 reverse occurred_at=2026-09-13 memo="Correction"`.
+Type-level creation: `venturectl act journal 0 create_and_post 'journal={...}'`,
+with header fields and a `lines` array. Both support `--stage`. Use real
+source and account IDs from the same organization. Invalid lines leave no
+draft behind; closed periods and repeat reversals are refused.

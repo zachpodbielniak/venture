@@ -17,6 +17,9 @@ venture_web_append_record_actions(VentureWebServer *self, GString *html,
 		g_autofree gchar *label = NULL;
 		g_autoptr(GPtrArray) parameters = NULL;
 		VentureUserRole role;
+		gboolean type_level;
+		g_object_get(action, "type-level", &type_level, NULL);
+		if (type_level) continue;
 		g_object_get(action, "name", &name, "label", &label, "parameters", &parameters, "roles", &role, NULL);
 		if (!venture_web_require_for_type(self, principal, G_OBJECT_TYPE(entity), role, NULL) ||
 			!venture_action_registry_allowed(registry, action, entity, &actor, principal->role, NULL)) continue;
@@ -66,10 +69,18 @@ venture_web_api_action(HtmxRequest *request, GHashTable *path, gpointer data)
 	VentureActor actor;
 	GType type;
 	gboolean stage, form;
+	gboolean journal_alias = NULL == type_name;
 	gint64 id;
 	gchar *end = NULL;
 	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER, &error)) return venture_web_error_response(error);
-	if (!venture_web_resolve_type(self, path, &type, &error)) return venture_web_error_response(error);
+	if (journal_alias)
+	{
+		type_name = "journal";
+		name = "create_and_post";
+		id_text = "0";
+		type = venture_entity_registry_lookup(venture_context_get_entity_registry(self->context), type_name);
+	}
+	else if (!venture_web_resolve_type(self, path, &type, &error)) return venture_web_error_response(error);
 	action = venture_action_registry_lookup(registry, type_name, name);
 	if (!action)
 	{
@@ -80,7 +91,7 @@ venture_web_api_action(HtmxRequest *request, GHashTable *path, gpointer data)
 	if (!venture_web_require_for_type(self, principal, type, role, &error)) return venture_web_error_response(error);
 	if (!venture_confirmation_parse_stage_flag(htmx_request_get_query_param(request, "stage"), &stage, &error)) return venture_web_error_response(error);
 	id = g_ascii_strtoll(id_text ? id_text : "", &end, 10);
-	if (id <= 0 || !end || *end)
+	if (id < 0 || !end || *end || end == id_text)
 	{
 		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "A positive record ID is required");
 		return venture_web_error_response(error);
@@ -118,6 +129,13 @@ venture_web_api_action(HtmxRequest *request, GHashTable *path, gpointer data)
 	}
 	else body = htmx_request_get_json(request, &error);
 	if (!body) return venture_web_error_response(error);
+	if (journal_alias)
+	{
+		JsonObject *object = json_object_new();
+		json_object_set_member(object, "journal", g_steal_pointer(&body));
+		body = json_node_new(JSON_NODE_OBJECT);
+		json_node_take_object(body, object);
+	}
 	params = venture_action_parameters_from_json(body, &error);
 	if (!params) return venture_web_error_response(error);
 	venture_auth_to_actor(principal, &actor);
@@ -125,7 +143,7 @@ venture_web_api_action(HtmxRequest *request, GHashTable *path, gpointer data)
 	{
 		VentureConfirmation *confirmation;
 		JsonObject *object;
-		entity = venture_database_get(db, type, id, &error);
+		entity = id ? venture_database_get(db, type, id, &error) : g_object_new(type, NULL);
 		if (!entity) return venture_web_error_response(error);
 		confirmation = venture_confirmation_store_stage_action(venture_context_get_confirmations(self->context),
 			action, entity, params, &actor, principal->role, "rest-api", &error);
@@ -150,5 +168,5 @@ venture_web_api_action(HtmxRequest *request, GHashTable *path, gpointer data)
 		return redirect;
 	}
 	response = venture_serializable_to_json(VENTURE_SERIALIZABLE(result), FALSE);
-	return venture_web_json_response(response, 200);
+	return venture_web_json_response(response, journal_alias ? 201 : 200);
 }
