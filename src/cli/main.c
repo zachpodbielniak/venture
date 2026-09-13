@@ -3196,6 +3196,7 @@ venture_cli_command_mcp(
 	return 0;
 }
 
+#include "reconciliation/venture-reconciliation-cli.inc"
 #include "billing/venture-billing-cli.inc"
 #include "sequences/venture-sequence-cli.inc"
 
@@ -3298,6 +3299,8 @@ main(
 	gboolean quiet = FALSE;
 	gboolean apply_writes = FALSE;
 	gboolean stage = FALSE;
+	g_autofree gchar *reconciliation_matcher = NULL;
+	gint reconciliation_threshold = 80;
 	gboolean dry_run = FALSE;
 	gint result;
 
@@ -3319,6 +3322,8 @@ main(
 		  "Print the version and exit", NULL },
 		{ "license", 0, 0, G_OPTION_ARG_NONE, &show_license,
 		  "Print licensing information and exit", NULL },
+		{ "matcher", 0, 0, G_OPTION_ARG_STRING, &reconciliation_matcher, "reconcile: matcher name", "NAME" },
+		{ "threshold", 0, 0, G_OPTION_ARG_INT, &reconciliation_threshold, "reconcile: staging threshold", "N" },
 		{ "html", 0, 0, G_OPTION_ARG_FILENAME, &mail_html, "mail send: HTML body file", "FILE" },
 		{ "limit", 0, 0, G_OPTION_ARG_STRING, &mail_limit, "mail deliver: maximum attempts", "N" },
 		{ "as-of", 0, 0, G_OPTION_ARG_STRING, &sequence_as_of,
@@ -3334,6 +3339,7 @@ main(
 	g_option_context_add_main_entries(options, entries, NULL);
 	g_option_context_set_description(options,
 		"Commands:\n"
+		"  reconcile suggest TYPE ID   ranked matches; --matcher NAME, --threshold N\n"
 		"  types [TYPE]                 list record types, or describe one\n"
 		"  describe TYPE                same as `types TYPE`: fields, references,\n"
 		"                               enum choices and what each one means\n"
@@ -3603,6 +3609,8 @@ main(
 		result = venture_cli_command_links(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "federation"))
 		result = venture_cli_command_federation(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "reconcile"))
+		result = venture_cli_command_reconcile(&cli, args, reconciliation_matcher, reconciliation_threshold, &error);
 	else if (0 == g_strcmp0(args[0], "factory"))
 		result = venture_cli_command_factory(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "invoice"))

@@ -209,8 +209,8 @@ unlocked(VentureBankMatchService *self, VentureEntity *transaction, GError **err
 
 /* An adapter selects only registered cash documents. New vendor payment
  * records participate by the public record name and amount/date metadata. */
-static VentureMoney *
-candidate_amount(VentureEntity *record)
+VentureMoney *
+venture_bank_candidate_amount(VentureEntity *record)
 {
 	const gchar *name = venture_entity_get_entity_name(record);
 	VentureMoney *amount = NULL;
@@ -229,8 +229,8 @@ candidate_amount(VentureEntity *record)
 	return amount;
 }
 
-static GDateTime *
-candidate_date(VentureEntity *record)
+GDateTime *
+venture_bank_candidate_date(VentureEntity *record)
 {
 	GDateTime *date = NULL;
 	const gchar *field = g_object_class_find_property(G_OBJECT_GET_CLASS(record), "occurred-at") != NULL
@@ -283,8 +283,8 @@ venture_bank_transaction_candidates(VentureDatabase *db, VentureEntity *transact
 		for (j = 0; j < records->len; j++)
 		{
 			VentureEntity *record = g_ptr_array_index(records, j);
-			g_autoptr(VentureMoney) value = candidate_amount(record);
-			g_autoptr(GDateTime) when = candidate_date(record);
+			g_autoptr(VentureMoney) value = venture_bank_candidate_amount(record);
+			g_autoptr(GDateTime) when = venture_bank_candidate_date(record);
 			g_autoptr(VentureMoney) delta = NULL;
 			gboolean used = FALSE;
 			guint k;
@@ -342,10 +342,11 @@ match_records(VentureBankMatchService *self, VentureEntity *transaction, JsonArr
 		if (type == G_TYPE_INVALID) return refuse(error, "match record type is unavailable");
 		target = venture_database_get(self->database, type, option_id(part, "id"), error);
 		if (target == NULL) return FALSE;
-		/* Lookup retains history; matching requires a live cash document. */
+		/* A proposal may outlive its document. Historical get() results do
+		 * not authorize creating new reconciliation evidence for deleted rows. */
 		if (venture_entity_is_deleted(target)) return refuse(error, "match document has been deleted");
 		if (venture_entity_get_organization_id(target) != org) return refuse(error, "match crosses organizations");
-		value = candidate_amount(target);
+		value = venture_bank_candidate_amount(target);
 		if (value == NULL) return refuse(error, "record is not a supported cash document");
 		contribution = option(part, "amount") != NULL ? venture_money_from_string(option(part, "amount"), venture_money_get_currency(value), error) : venture_money_copy(value);
 		if (contribution == NULL) return FALSE;
@@ -691,8 +692,8 @@ auto_match(VentureBankMatchService *self, VentureEntity *statement, const Ventur
 		for (j = 0; j < candidates->len; j++)
 		{
 			VentureEntity *candidate = g_ptr_array_index(candidates, j);
-			g_autoptr(VentureMoney) value = candidate_amount(candidate);
-			g_autoptr(GDateTime) when = candidate_date(candidate);
+			g_autoptr(VentureMoney) value = venture_bank_candidate_amount(candidate);
+			g_autoptr(GDateTime) when = venture_bank_candidate_date(candidate);
 			if (venture_money_equal(value, amount) &&
 				calendar_distance(when, date) <= 3 && calendar_distance(when, date) >= -3)
 			{ only = candidate; count++; }

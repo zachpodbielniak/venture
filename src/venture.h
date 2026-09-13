@@ -200,6 +200,9 @@
 #include "web/venture-web-server.h"
 #include "assets/venture-asset-service.h"
 
+#include "reconciliation/venture-reconciliation-matcher.h"
+#include "reconciliation/venture-reconciliation-service.h"
+
 #endif /* VENTURE_SERVER_BUILD */
 
 #undef VENTURE_INSIDE

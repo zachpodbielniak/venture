@@ -553,10 +553,12 @@ $(OUTDIR)/venture-migration-sql.h: tools/venture-migrations.sh $(MIGRATION_FILES
 	@echo "  GEN     $@"
 	$(Q)tools/venture-migrations.sh migrations > $@.tmp && mv $@.tmp $@
 
+# The parent builds the shared YAML archive. Stripe must not rebuild it
+# from private objects while the standalone CLI is linking against it.
 .PHONY: dep-stripe-glib
 dep-stripe-glib: $(YAML_GLIB_LIB)
 	$(Q)$(MAKE) -C $(OTEL_GLIB_DIR) static DEBUG=$(DEBUG) YAML_GLIB_DIR=$(YAML_GLIB_DIR) YAML_GLIB_STATIC=$(YAML_GLIB_LIB)
-	$(Q)$(MAKE) -C $(STRIPE_GLIB_DIR) static DEBUG=$(DEBUG) YAML_GLIB_DIR=$(YAML_GLIB_DIR) YAML_GLIB_STATIC=$(YAML_GLIB_LIB) YAML_NAMESPACE= OTEL_SHARED=$(OTEL_GLIB_LIB)
+	$(Q)$(MAKE) -C $(STRIPE_GLIB_DIR) static DEBUG=$(DEBUG) YAML_GLIB_DIR=$(YAML_GLIB_DIR) YAML_GLIB_STATIC=$(YAML_GLIB_LIB) YAML_OBJECTS= YAML_NAMESPACE= OTEL_SHARED=$(OTEL_GLIB_LIB)
 $(STRIPE_GLIB_LIB) $(OTEL_GLIB_LIB): dep-stripe-glib
 	@test -f $@
 .PHONY: dep-mail-glib

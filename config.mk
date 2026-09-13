@@ -397,14 +397,14 @@ CFLAGS_CORE := $(CFLAGS_BASE) $(CFLAGS_BUILD) $(CFLAGS_SAN) $(CFLAGS_INC) \
 # shared sources that reach for a server-only dependency -- most notably the
 # crispy-compiled C configuration path in src/config, which is simply absent
 # from libventure-core.a.
-CFLAGS := $(CFLAGS_BASE) $(CFLAGS_BUILD) $(CFLAGS_SAN) $(CFLAGS_INC) \
+CFLAGS = $(CFLAGS_BASE) $(CFLAGS_BUILD) $(CFLAGS_SAN) $(CFLAGS_INC) \
           -DVENTURE_SERVER_BUILD=1 -DVENTURE_HAVE_CRISPY=1 \
           $(CFLAGS_YAML_GLIB) $(CFLAGS_HTMX_GLIB) $(CFLAGS_AI_GLIB) \
           $(CFLAGS_CRISPY) $(CFLAGS_PODOMATION) $(CFLAGS_ORM_GLIB) \
           $(CFLAGS_DEPS_SERVER)
 
 LDFLAGS_CLI := $(LDFLAGS_SAN) $(LDFLAGS_DEPS_CLI)
-LDFLAGS := $(LDFLAGS_SAN) $(LDFLAGS_DEPS_SERVER) $(LIBS_EXTRA) -Wl,--export-dynamic
+LDFLAGS = $(LDFLAGS_SAN) $(LDFLAGS_DEPS_SERVER) $(LIBS_EXTRA) -Wl,--export-dynamic
 
 # ---------------------------------------------------------------------------
 # Library names
@@ -453,10 +453,10 @@ TYPELIB_FILE := $(GIR_NAMESPACE)-$(GIR_VERSION).typelib
 # Fixtures are found through a define, never by guessing at the working
 # directory: `make test` runs each binary from the tree root and `make
 # test-one` may not.
-TEST_CFLAGS := $(CFLAGS) -I$(CURDIR)/tests \
+TEST_CFLAGS = $(CFLAGS) -I$(CURDIR)/tests \
                -DVENTURE_TEST_FIXTURES=\"$(CURDIR)/tests/fixtures\" \
                -DVENTURE_TEST_EXAMPLES=\"$(CURDIR)/data/examples\"
-TEST_LDFLAGS := $(LDFLAGS)
+TEST_LDFLAGS = $(LDFLAGS)
 
 # ---------------------------------------------------------------------------
 # show-config
@@ -563,16 +563,16 @@ VENDOR_LIBS_SERVER := $(STRIPE_GLIB_LIB) $(OTEL_GLIB_LIB) $(VENDOR_LIBS_SERVER)
 LDFLAGS += $(shell $(PKG_CONFIG) --libs gnutls)
 TEST_LDFLAGS += $(shell $(PKG_CONFIG) --libs gnutls)
 # Transactional mail; keep the standalone CLI free of server dependencies.
+# Server and test flags remain recursive so these pkg-config calls run only
+# when a server or test recipe expands them, never while parsing CLI targets.
 MAIL_GLIB_DIR := $(DEPS_DIR)/mail-glib
 MAIL_GLIB_LIB := $(MAIL_GLIB_DIR)/build/$(BUILD_TYPE)/libmail-glib-1.0.a
 MAIL_OTEL_DIR := $(MAIL_GLIB_DIR)/deps/otel-glib
 MAIL_OTEL_LIB := $(MAIL_OTEL_DIR)/build/$(BUILD_TYPE)/libotel-glib-1.0.a
 DEPS_SERVER += gmime-3.0 gnutls
-CFLAGS_MAIL := -I$(MAIL_GLIB_DIR)/src -I$(MAIL_OTEL_DIR)/src $(shell $(PKG_CONFIG) --cflags gmime-3.0 gnutls)
+CFLAGS_MAIL = -I$(MAIL_GLIB_DIR)/src -I$(MAIL_OTEL_DIR)/src $(shell $(PKG_CONFIG) --cflags gmime-3.0 gnutls)
 CFLAGS += $(CFLAGS_MAIL)
-TEST_CFLAGS += $(CFLAGS_MAIL)
 LDFLAGS += $(shell $(PKG_CONFIG) --libs gmime-3.0 gnutls)
-TEST_LDFLAGS += $(shell $(PKG_CONFIG) --libs gmime-3.0 gnutls)
 VENDOR_LIBS_SERVER += $(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB)
 FEDORA_DEPS += gmime30-devel gnutls-devel
 DEBIAN_DEPS += libgmime-3.0-dev libgnutls28-dev

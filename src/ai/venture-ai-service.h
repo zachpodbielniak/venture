@@ -304,6 +304,15 @@ venture_ai_service_complete(
 	GError			**error
 );
 
+/** venture_ai_service_new_with_provider:
+ * @context: application context
+ * @provider: (nullable): injected provider; NULL uses configuration
+ * @error: (out) (optional): error location
+ * Returns: (transfer full) (nullable): service using the supplied transport
+ */
+VentureAiService *venture_ai_service_new_with_provider(VentureContext *context,
+	AiProvider *provider, GError **error);
+
 /**
  * venture_ai_service_execute_tool:
  * @self: assistant service

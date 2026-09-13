@@ -2548,6 +2548,7 @@ venture_ai_make_tool(
 	return tool;
 }
 
+#include "reconciliation/venture-reconciliation-ai.inc"
 #include "leads/venture-lead-ai.inc"
 #include "activities/venture-activity-ai.inc"
 #include "pipelines/venture-pipeline-ai.inc"
@@ -3092,8 +3093,9 @@ venture_ai_service_create_provider(
 }
 
 VentureAiService *
-venture_ai_service_new(
+venture_ai_service_new_with_provider(
 	VentureContext	 *context,
+	AiProvider *provider,
 	GError		**error
 ){
 	g_autoptr(VentureAiService) self = NULL;
@@ -3122,7 +3124,7 @@ venture_ai_service_new(
 	g_object_get(config, "ai-max-tokens", &max_tokens, NULL);
 	self->max_tokens = (gint)max_tokens;
 
-	self->provider = venture_ai_service_create_provider(self, error);
+	self->provider = provider != NULL ? g_object_ref(provider) : venture_ai_service_create_provider(self, error);
 
 	if (NULL == self->provider)
 		return NULL;
@@ -3149,6 +3151,7 @@ venture_ai_service_new(
 	 */
 	self->plain = ai_tool_executor_new_empty();
 	venture_ai_service_register_tools(self);
+	venture_ai_reconciliation_register(self);
 	venture_ai_register_lead_tool(self);
 	venture_ai_register_actions(self);
 	self->system_prompt = venture_ai_service_build_prompt(self);
@@ -3552,6 +3555,7 @@ venture_ai_service_answer_with_images(
 	messages = venture_ai_service_build_turn(self, history, message, images,
 	                                         mime_types);
 
+	venture_ai_reconciliation_register(self);
 	reply = ai_tool_executor_run(self->executor, self->provider, messages,
 	                             self->system_prompt, self->max_tokens, NULL,
 	                             &local_error);
@@ -3740,6 +3744,7 @@ venture_ai_service_answer_stream_async(
 		G_CALLBACK(venture_ai_service_on_stream_event), call);
 	ai_tool_executor_set_stream(self->executor, TRUE);
 
+	venture_ai_reconciliation_register(self);
 	ai_tool_executor_run_async(self->executor, self->provider,
 	                           call->messages, self->system_prompt,
 	                           self->max_tokens, 0, cancellable,
@@ -3795,6 +3800,7 @@ venture_ai_service_describe_tools(VentureAiService *self)
 	builder = json_builder_new();
 	json_builder_begin_array(builder);
 
+	venture_ai_reconciliation_register(self);
 	venture_ai_register_actions(self);
 	tools = ai_tool_executor_get_tools(self->executor);
 
@@ -3813,6 +3819,12 @@ venture_ai_service_describe_tools(VentureAiService *self)
 	json_builder_end_array(builder);
 
 	return json_builder_get_root(builder);
+}
+
+VentureAiService *
+venture_ai_service_new(VentureContext *context, GError **error)
+{
+	return venture_ai_service_new_with_provider(context, NULL, error);
 }
 
 gchar *

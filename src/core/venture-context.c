@@ -30,6 +30,8 @@ struct _VentureContext
 
 	GTimeZone		*timezone;
 	gint64			 default_organization_id;
+	VentureReconciliationRegistry *reconciliation_registry;
+	VentureReconciliationService *reconciliation_service;
 };
 
 G_DEFINE_FINAL_TYPE(VentureContext, venture_context, G_TYPE_OBJECT)
@@ -63,6 +65,8 @@ venture_context_finalize(GObject *object)
 	g_clear_object(&self->stripe);
 	g_clear_object(&self->modules);
 	g_clear_pointer(&self->timezone, g_time_zone_unref);
+	g_clear_object(&self->reconciliation_registry);
+	g_clear_object(&self->reconciliation_service);
 
 	/* The entity registry is the process-wide default and is not owned. */
 
@@ -395,6 +399,12 @@ venture_context_set_ai_service(
 	g_return_if_fail(VENTURE_IS_CONTEXT(self));
 
 	g_set_object(&self->ai, service);
+	if (self->reconciliation_registry != NULL)
+	{
+		venture_reconciliation_registry_remove(self->reconciliation_registry, "ai");
+		if (service != NULL)
+			venture_reconciliation_registry_add(self->reconciliation_registry, VENTURE_RECONCILIATION_MATCHER(venture_ai_matcher_new(service)));
+	}
 }
 
 void
@@ -494,6 +504,28 @@ venture_context_get_plugin_manager(VentureContext *self)
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), NULL);
 
 	return self->plugins;
+}
+
+VentureReconciliationRegistry *
+venture_context_get_reconciliation_registry(VentureContext *self)
+{
+	if (!venture_context_module_enabled(self, "reconciliation")) return NULL;
+	if (self->reconciliation_registry == NULL)
+	{
+		self->reconciliation_registry = venture_reconciliation_registry_new();
+		venture_reconciliation_registry_add(self->reconciliation_registry, VENTURE_RECONCILIATION_MATCHER(venture_exact_matcher_new()));
+		if (self->ai != NULL)
+			venture_reconciliation_registry_add(self->reconciliation_registry, VENTURE_RECONCILIATION_MATCHER(venture_ai_matcher_new(self->ai)));
+	}
+	return self->reconciliation_registry;
+}
+VentureReconciliationService *
+venture_context_get_reconciliation_service(VentureContext *self)
+{
+	if (!venture_context_module_enabled(self, "reconciliation")) return NULL;
+	if (self->reconciliation_service == NULL)
+		self->reconciliation_service = venture_reconciliation_service_new(self);
+	return self->reconciliation_service;
 }
 
 VentureStripeService *

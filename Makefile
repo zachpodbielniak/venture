@@ -92,6 +92,7 @@ SERVER_ONLY_SRCS += src/banking/venture-bank-match-service.c
 
 SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard src/periods/*.c))
 
+SERVER_ONLY_SRCS += $(wildcard src/reconciliation/*.c)
 CORE_SRCS += src/stripe/venture-stripe-records.c
 SERVER_ONLY_SRCS += $(filter-out src/stripe/venture-stripe-records.c,$(wildcard src/stripe/*.c))
 CORE_SRCS += src/assets/venture-asset-records.c
@@ -150,6 +151,7 @@ PUBLIC_HDRS := \
 	$(wildcard src/util/*.h) \
 	$(wildcard src/mcp/*.h)
 
+PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/reconciliation/*.h))
 PUBLIC_HDRS += $(wildcard src/assets/*.h)
 PUBLIC_HDRS += $(wildcard src/orgaccess/*.h)
 PUBLIC_HDRS += $(wildcard src/billing/*.h)

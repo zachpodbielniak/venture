@@ -1131,7 +1131,6 @@ venture_database_save(
 	if (!venture_bank_check_write(self, entity, FALSE, error))
 		return FALSE;
 
-
 	VENTURE_AUTOJOURNAL_SAVE_HOOK(self, entity, actor, error);
 	/* Source and posting share a transaction, whichever surface saved it. */
 	{

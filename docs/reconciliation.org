@@ -1,0 +1,144 @@
+#+title: Reconciliation suggestions
+#+description: Pluggable bank matching with operator approval
+#+authors: Zach Podbielniak
+#+created: [2026-09-13]
+
+* Propose, review, approve
+
+The =reconciliation= module requires =ledger= and suggests =banking=. It
+owns no persisted record types. =VentureReconciliationService= is the shared
+business action behind REST, the CLI and the assistant. Turning the module
+off refuses its action and hides its service and matcher registry.
+
+#+begin_src sh
+venturectl reconcile suggest bank_transaction 12
+venturectl reconcile suggest bank_transaction 12 --matcher exact --threshold 80
+venturectl -f json reconcile suggest bank_transaction 12 --matcher ai
+#+end_src
+
+=POST /api/v1/reconciliation/suggest= accepts an object containing =type=
+and a positive =id=, with optional =matcher= and =threshold=. The threshold
+is an integer from 0 through 100, default 80. The endpoint requires an editor
+and checks the transaction type's ordinary access requirements. Its HTTP 200
+response contains a =suggestions= array, ranked by confidence, and a =note=.
+Missing and soft-deleted transaction IDs are refused as not found.
+Each suggestion names the candidate type and ID, confidence, rationale and
+kind. A staged suggestion also contains its ordinary =confirmation= object.
+
+For a =bank_transaction= with banking enabled, suggestions strictly above the threshold stage the =match= record action in the existing confirmation store. A threshold of 100 stages nothing. Other plugin transaction types and disabled banking return suggestions only. Approval invokes =VentureBankMatchService= with the displayed =parts=, rechecks the transaction version and eligibility, and atomically saves the match evidence and transaction state. Direct writes to =bank_match= remain forbidden. No match is applied by requesting suggestions, even under the assistant's =autonomous= policy. =venture_reconcile_suggest= is not offered under =read_only=. Approval remains in the ordinary confirmation UI/API.
+
+The confirmation queue is the existing expiring in-memory queue. The
+reconciliation service does not write journals, alter transactions, or
+bypass the banking module's validation at approval. Review alternative
+candidates before approving; a high score is a proposal, not evidence of a
+completed reconciliation.
+
+* Deterministic matching
+
+The built-in =exact= matcher reads =amount=, =date= and =description= from plain =VentureEntity= property metadata. Supported cash documents use the banking service's signed amounts and accounting dates: expenses are negative bank outflows and =occurred_at= is recognized. This is the same interpretation used when approval validates the match. A missing field is absent evidence, not a GObject warning. Sensitive fields are never used. Different organizations and currencies do not match. Dates are compared as calendar dates, including across a daylight-saving boundary.
+
+| Confidence | Evidence |
+|------------+----------|
+| 100 | Equal amount, within three calendar days, exactly one qualifying candidate |
+| 70 | Equal amount within ten calendar days, including ambiguous close candidates |
+| 40 | Amount within 2% of the transaction and a shared description token |
+
+The rules are tried in that order. Token matching is case folded and uses
+whole words. The 2% test uses widened integer arithmetic, including for
+negative amounts and integer limits. Currency exponents are normalized
+without floating point. Missing amount or currency evidence never produces
+a guess. =kind= is =exact= for equal amounts, =partial= for approximate
+amounts, or =none= for a zero-confidence AI suggestion.
+
+* Model matching
+
+=ai= is registered when a context has an AI service. It calls
+=venture_ai_service_complete()=, the existing tool-free completion path.
+The prompt contains the transaction and at most twenty candidates, with
+columns for ID, date, exact amount, description and reference. Rows are
+JSON-escaped; descriptions are capped at 240 characters and references at
+80. Sensitive properties are omitted. Table values are explicitly untrusted
+data, and the completion receives no tools.
+
+The answer must be a JSON array of objects with exactly integer =id=,
+integer =confidence= and string =why=. Invalid JSON or malformed entries
+produce =VENTURE_ERROR_AI=. Scores are clamped to 0–100. IDs absent from the
+offered twenty candidates are dropped, as are ambiguous IDs shared by more
+than one offered candidate. An empty array is a valid no-match answer.
+There is no repair prompt or automatic application.
+
+=venture_ai_service_new_with_provider()= accepts an =AiProvider= so tests
+and installations can inject a transport without changing model behavior.
+The tests use a GObject fake provider returning canned responses and actual
+tool calls; they never contact a model.
+
+* Extending the matcher registry
+
+Implement =VentureReconciliationMatcher=, a GInterface with a readable
+=name= property and the following method:
+
+#+begin_src C
+GPtrArray *venture_reconciliation_matcher_suggest(
+    VentureReconciliationMatcher *self, VentureDatabase *db,
+    VentureEntity *transaction, GPtrArray *candidates,
+    GCancellable *cancellable, GError **error);
+#+end_src
+
+Return an owned array with =g_object_unref= as its free function, containing
+owned =VentureMatchSuggestion= objects. Their =candidate=, =confidence=,
+=rationale= and =kind= properties are construct-only. Return an empty array
+for no match, NULL with a GError for failure. Never mutate the input records.
+
+Register a plugin's implementation on the context's registry:
+
+#+begin_src C
+VentureReconciliationRegistry *registry;
+registry = venture_context_get_reconciliation_registry(context);
+if (registry != NULL)
+    venture_reconciliation_registry_add(registry, matcher); /* transfer full */
+#+end_src
+
+A name replaces the existing implementation. Lookup and removal use that
+name; listing is ordered by name. =suggest_all()= runs every implementation,
+merges their results, sorts by descending confidence and retains only the
+highest-scoring suggestion for each candidate type/ID. Unsaved candidates
+are identified by object identity. A matcher error fails the request rather
+than presenting a partial answer as the complete ranking.
+
+The interface also exposes =suggest_async()= and =suggest_finish()=.
+Implementations may supply both async vfuncs. The fallback schedules the
+synchronous method on the calling main context and retains its inputs until
+completion. It never sends the database to a worker thread. The current AI
+service's completion is synchronous; cancellation is checked before and
+after that completion rather than interrupting its transport.
+
+* Banking integration
+
+For a =bank_transaction=, the service calls the banking candidate selector:
+
+#+begin_src C
+GPtrArray *venture_bank_transaction_candidates(VentureDatabase *db,
+    VentureEntity *bank_transaction, GError **error);
+#+end_src
+
+For other transaction types, metadata supplies a fallback: enabled types declaring
+non-sensitive =date= and =amount= fields, up to 200 rows per type ordered by
+ID, scoped to the transaction's organization and excluding the transaction
+itself. This bounded fallback is useful for plugins and tests; the banking
+lane's date-and-amount window is the production candidate selector. The
+fallback does not translate =gross= or =occurred-at= into different fields.
+
+The service registers the =bank_transaction.match= record action when banking suggestions first need it. Its =parts= JSON parameter names candidate type, ID and signed amount. A candidate proposal covers the entire bank line; the banking service refuses insufficient remaining amount, currency mismatch, closed statement, deleted candidate or already matched transaction at approval. Alternative proposals become stale after the first applies. Plugin sources never become bank transactions merely because their numeric IDs coincide. No database migration is needed by this module because it creates no persistent types or columns.
+
+* Verification
+
+=tests/test-reconciliation.c= registers its own plain-entity fixtures and
+covers contract, scoring boundaries, ambiguous and repeated candidates,
+registry ordering and deduplication, async completion and cancellation,
+model-response validation, the twenty-candidate cap, suggestions-only and
+staging paths, ordinary approval, real HTTP requests, the real CLI process,
+and a model tool call that stages without applying. =test-auth= includes
+the anonymous POST refusal. Run with
+=GSETTINGS_BACKEND=memory make DEBUG=1 -j8 test=.
+
+The assistant callback enters the authenticated caller's organization scope before reading a bank line or candidates. Anonymous callers and users with no applicable membership cannot stage a match; finance access permits staging and approval through the same action and banking services. Organization access is rechecked when the proposal is applied.
