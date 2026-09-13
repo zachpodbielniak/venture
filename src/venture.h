@@ -76,6 +76,7 @@
 #include "model/venture-entity-registry.h"
 #include "model/venture-module.h"
 #include "periods/venture-period-records.h"
+#include "activities/venture-activity-records.h"
 
 /* --- Configuration ------------------------------------------------------- */
 
