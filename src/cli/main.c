@@ -43,8 +43,8 @@ typedef struct
 	/* `mcp` only: let its write tools apply rather than hold. */
 	gboolean		 apply_writes;
 
-	/* Propose a write instead of making it. Only create, update and
-	 * delete honour it, and passing it to anything else is refused. */
+	/* Propose a write instead of making it. Create, update, delete and
+	 * act honour it, and passing it to anything else is refused. */
 	gboolean		 stage;
 } VentureCli;
 
@@ -3205,7 +3205,7 @@ main(
 		{ "apply-writes", 0, 0, G_OPTION_ARG_NONE, &apply_writes,
 		  "mcp only: let write tools apply instead of staging", NULL },
 		{ "stage", 0, 0, G_OPTION_ARG_NONE, &stage,
-		  "create/update/delete only: propose the change for approval "
+		  "create/update/delete/act: propose the change for approval "
 		  "instead of making it", NULL },
 		{ "version", 'V', 0, G_OPTION_ARG_NONE, &show_version,
 		  "Print the version and exit", NULL },
@@ -3384,7 +3384,7 @@ main(
 	}
 
 	/*
-	 * Same rule, same reason. Only the three generic write verbs go
+	 * Same rule, same reason. The generic write and action verbs go
 	 * through a route that reads `stage`; on anything else the parameter
 	 * would be an unknown one, which a write route *ignores* -- so a
 	 * quietly accepted --stage would apply the change it was asked to

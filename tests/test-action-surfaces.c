@@ -173,7 +173,7 @@ test_web(Fixture *fixture, gconstpointer data)
 	g_assert_cmpuint(request(fixture, "GET", "/e/organization/1", NULL, NULL, &body), ==, 200);
 	g_assert_nonnull(strstr(body, "data-record-action=\"review\""));
 	g_clear_pointer(&body, g_free);
-	g_assert_cmpuint(request(fixture, "POST", "/api/v1/organization/1/actions/review", "application/json", "{}", &body), ==, 200);
+	g_assert_cmpuint(request(fixture, "POST", "/api/v1/organization/1/actions/review", "application/x-www-form-urlencoded", "", &body), ==, 303);
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(request(fixture, "GET", "/e/organization/1", NULL, NULL, &body), ==, 200);
 	g_assert_null(strstr(body, "data-record-action=\"review\""));

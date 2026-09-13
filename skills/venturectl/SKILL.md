@@ -434,3 +434,6 @@ Type-level creation: `venturectl act journal 0 create_and_post 'journal={...}'`,
 with header fields and a `lines` array. Both support `--stage`. Use real
 source and account IDs from the same organization. Invalid lines leave no
 draft behind; closed periods and repeat reversals are refused.
+
+The `--stage` help lists `create/update/delete/act`; the same flag also
+applies to a type-level journal creation at ID zero.

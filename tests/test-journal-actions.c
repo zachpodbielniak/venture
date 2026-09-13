@@ -254,11 +254,25 @@ static void
 test_create_post(Fixture *fixture, gconstpointer data)
 {
 	g_autofree gchar *body = NULL;
-	g_autofree gchar *input = g_strdup_printf("{\"organization_id\":1,\"source_type\":\"organization\",\"source_id\":1,\"currency\":\"USD\",\"occurred_at\":\"2026-01-10\",\"lines\":[{\"account_id\":%" G_GINT64_FORMAT ",\"side\":\"debit\",\"amount\":\"10 USD\"},{\"account_id\":%" G_GINT64_FORMAT ",\"side\":\"credit\",\"amount\":\"10 USD\"}]}", account(fixture, "1000"), GPOINTER_TO_INT(data) ? (gint64)999999 : account(fixture, "4000"));
+	g_autofree gchar *input = g_strdup_printf("{\"organization_id\":1,\"source_type\":\"organization\",\"source_id\":1,\"currency\":\"USD\",\"occurred_at\":\"2026-01-10\",\"lines\":[{\"account_id\":%" G_GINT64_FORMAT ",\"side\":\"debit\",\"amount\":\"10 USD\"},{\"account_id\":%" G_GINT64_FORMAT ",\"side\":\"credit\",\"amount\":\"10 USD\"}]}", account(fixture, "1000"), GPOINTER_TO_INT(data) == 1 ? (gint64)999999 : account(fixture, "4000"));
 	g_autoptr(VentureQuery) journals = venture_query_new(VENTURE_TYPE_JOURNAL);
 	g_autoptr(VentureQuery) lines = venture_query_new(VENTURE_TYPE_JOURNAL_LINE);
-	guint status = request(fixture, "POST", "/api/v1/journals/post", "application/json", input, &body);
-	if (GPOINTER_TO_INT(data))
+	guint status = request(fixture, "POST", GPOINTER_TO_INT(data) == 2 ? "/api/v1/journals/post?stage=1" : "/api/v1/journals/post", "application/json", input, &body);
+	if (GPOINTER_TO_INT(data) == 2)
+	{
+		g_autoptr(JsonNode) response = venture_json_parse(body, NULL);
+		JsonObject *confirmation = json_object_get_object_member(json_node_get_object(response), "confirmation");
+		g_autofree gchar *path = g_strdup_printf("/api/v1/confirmations/%s/approve", json_object_get_string_member(confirmation, "id"));
+		g_assert_cmpuint(status, ==, 202);
+		g_assert_cmpint(venture_database_count(fixture->database, journals, NULL), ==, 0);
+		g_assert_cmpint(venture_database_count(fixture->database, lines, NULL), ==, 0);
+		g_clear_pointer(&body, g_free);
+		g_assert_cmpuint(request(fixture, "POST", path, "application/json", "{}", &body), ==, 200);
+		g_assert_cmpint(venture_database_count(fixture->database, journals, NULL), ==, 1);
+		g_assert_cmpint(venture_database_count(fixture->database, lines, NULL), ==, 2);
+		return;
+	}
+	if (GPOINTER_TO_INT(data) == 1)
 	{
 		g_assert_cmpuint(status, >=, 400);
 		g_assert_cmpint(venture_database_count(fixture->database, journals, NULL), ==, 0);
@@ -380,6 +394,7 @@ main(int argc, char **argv)
 	g_test_add("/journal-actions/confirmation", Fixture, NULL, fixture_set_up, test_confirmation, fixture_tear_down);
 	g_test_add("/journal-actions/closed-period", Fixture, GINT_TO_POINTER(1), fixture_set_up, test_confirmation, fixture_tear_down);
 	g_test_add("/journal-actions/create-post", Fixture, NULL, fixture_set_up, test_create_post, fixture_tear_down);
+	g_test_add("/journal-actions/create-post-staged", Fixture, GINT_TO_POINTER(2), fixture_set_up, test_create_post, fixture_tear_down);
 	g_test_add("/journal-actions/atomic-failure", Fixture, GINT_TO_POINTER(1), fixture_set_up, test_create_post, fixture_tear_down);
 	g_test_add("/journal-actions/cli", Fixture, NULL, fixture_set_up, test_cli, fixture_tear_down);
 	g_test_add("/journal-actions/cli-reverse", Fixture, GINT_TO_POINTER(1), fixture_set_up, test_cli, fixture_tear_down);
