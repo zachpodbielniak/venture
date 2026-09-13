@@ -527,7 +527,7 @@ test_restart(Fixture *f, gconstpointer unused)
 	g_assert_no_error(error);
 	found = deliveries(f);
 	g_assert_cmpuint(found->len, ==, 1);
-	migration = venture_database_query_raw(f->db, "SELECT name FROM schema_migrations WHERE version = 3", NULL, &error);
+	migration = venture_database_query_raw(f->db, "SELECT name FROM schema_migrations WHERE version = 80", NULL, &error);
 	g_assert_no_error(error);
 	g_assert_true(orm_result_next(migration));
 	g_assert_nonnull(strstr(orm_row_get_string(orm_result_get_row(migration), 0), "sequences"));
@@ -767,6 +767,31 @@ test_suppression_unique(Fixture *f, gconstpointer unused)
 	save(f, second);
 }
 
+/* Soft deletion retains references, but must never queue a later outreach. */
+static void
+test_deleted_reference(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) row = enrollment(f);
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(GPtrArray) queued = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *reason = NULL;
+	gint status;
+	VentureEntity *deleted = data != NULL ? f->sequence : f->contact;
+	save(f, row);
+	g_assert_true(venture_database_delete(f->db, deleted, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(run(f, "2026-09-14T14:00:00Z", &error), ==, 0);
+	g_assert_no_error(error);
+	queued = deliveries(f);
+	g_assert_cmpuint(queued->len, ==, 0);
+	stored = venture_database_get(f->db, VENTURE_TYPE_SEQUENCE_ENROLLMENT, venture_entity_get_id(row), &error);
+	g_assert_no_error(error);
+	g_object_get(stored, "status", &status, "exit-reason", &reason, NULL);
+	g_assert_cmpint(status, ==, 3);
+	g_assert_cmpstr(reason, ==, data != NULL ? "sequence_deleted" : "contact_deleted");
+}
+
 int
 main(int argc, char **argv)
 {
@@ -778,6 +803,8 @@ main(int argc, char **argv)
 	g_test_add("/sequences/reply", Fixture, NULL, setup, test_reply, teardown);
 	g_test_add("/sequences/won", Fixture, NULL, setup, test_won, teardown);
 	g_test_add("/sequences/sweep", Fixture, NULL, setup, test_sweep, teardown);
+	g_test_add("/sequences/deleted_contact", Fixture, NULL, setup, test_deleted_reference, teardown);
+	g_test_add("/sequences/deleted_sequence", Fixture, "disk", setup, test_deleted_reference, teardown);
 	g_test_add("/sequences/edit", Fixture, NULL, setup, test_edit, teardown);
 	g_test_add("/sequences/atomic", Fixture, NULL, setup, test_atomic, teardown);
 	g_test_add("/sequences/manual", Fixture, NULL, setup, test_manual, teardown);

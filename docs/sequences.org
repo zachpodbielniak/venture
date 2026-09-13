@@ -44,6 +44,7 @@ sweep. There is no database worker thread. Each enrollment transition is
 one transaction. A failed transaction rolls back its delivery, inbox message,
 progress and audit records; other enrollments already committed by a sweep
 stay committed.
+A due enrollment whose contact or sequence has been deleted exits with =contact_deleted= or =sequence_deleted= and cancels pending deliveries; retained historical references never authorize new outreach.
 
 Every enrollment/step identity has at most one delivery, enforced by a
 per-organization unique key. A second sweep or a process restart reads that
@@ -104,7 +105,7 @@ statuses. =sequence_failures= lists errors from failed deliveries whose
 scheduled timestamps fall in the period. Both use one exact organization
 and ordinary report rendering/export.
 
-The paired =000003_sequences.sql= migrations verify the organization-scoped
+The paired =000080_sequences.sql= migrations verify the organization-scoped
 suppression, delivery and active-enrollment indexes made from the field
 metadata. They permit absent tables when the module is off and do not
 invent historical enrollments. Enabling the module later reconciles its

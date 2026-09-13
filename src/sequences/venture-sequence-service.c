@@ -868,11 +868,17 @@ run_one(VentureSequenceService *self, gint64 org, gint64 id, GDateTime *as_of,
 	sequence = reference(self, VENTURE_TYPE_SEQUENCE, number(row, "sequence-id"), org, error);
 	if (sequence == NULL)
 		return -1;
+	/* get() retains soft-deleted records for history; deletion must still
+	 * stop a previously enrolled journey before any message is queued. */
+	if (venture_entity_is_deleted(sequence))
+		return exit_row(self, row, "sequence_deleted", FALSE, actor, error) ? 0 : -1;
 	if (!flag(sequence, "active"))
 		return 0;
 	contact = reference(self, VENTURE_TYPE_CONTACT, number(row, "contact-id"), org, error);
 	if (contact == NULL || !is_suppressed(self, contact, &suppressed, error))
 		return -1;
+	if (venture_entity_is_deleted(contact))
+		return exit_row(self, row, "contact_deleted", FALSE, actor, error) ? 0 : -1;
 	if (suppressed)
 		return exit_row(self, row, "suppressed", FALSE, actor, error) ? 0 : -1;
 	window = window_time(sequence, as_of, error);
