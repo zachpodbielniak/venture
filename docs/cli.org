@@ -195,3 +195,18 @@ server for somebody to approve, not merely described. =venturectl --stage=
 does the same for =create=, =update= and =delete= from the shell. It takes its credential from
 =VENTURE_TOKEN= and refuses =--token= outright, since an MCP server is spawned
 from a config file. See [[file:mcp.org][venturectl mcp]].
+
+* Asset actions
+
+=venturectl asset place ID=, =asset dispose ID proceeds=AMOUNT= and
+=asset write-off ID= call the asset service. Optional =in_service_at= or
+=disposed_at= selects an effective date.
+
+=venturectl assets run-period YYYY-MM [organization_id=ID] [--dry-run]=
+posts the organization's scheduled depreciation and deferral releases in
+one transaction. The default organization is used when omitted. A retry
+posts only remaining scheduled entries; a closed period is refused.
+
+The ordinary record commands manage draft =fixed_asset= and new =deferral=
+records. Lifecycle status and schedule history are service-owned. See
+[[file:assets.org][fixed assets and deferrals]] for profiles and examples.

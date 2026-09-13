@@ -25,6 +25,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:periods.org][Fiscal periods]] — calendars, closing controls and historical reports
 - [[file:money.org][Money and accounting]] — exact arithmetic, allocation, deductibility, the ledger
 - [[file:ledger.org][General journal]] — atomic posting, immutable journals, rules, reversals and authoritative balances
+- [[file:assets.org][Fixed assets and deferrals]] — book depreciation, monthly releases and period sweeps
 - [[file:receivables.org][Customer receivables]] — receipts, credits, refunds and historical customer balances
 - [[file:reporting.org][Reporting]] — the built-in reports and how to write one
 - [[file:forge.org][Git forges]] — linking tickets to repositories, and letting an agent do the work

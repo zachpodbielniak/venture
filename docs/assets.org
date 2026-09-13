@@ -1,0 +1,204 @@
+#+title: Fixed assets and recurring journals
+#+description: Book depreciation, prepayments and accrual releases
+#+created: [2026-09-13]
+
+* Assets
+
+The =assets= module requires =ledger= and =periods=. Its four field tables
+are =fixed_asset=, =depreciation_entry=, =deferral= and =deferral_entry=.
+Their registers, forms, JSON, REST, related panels, assistant schemas and
+ordinary CLI access come from the entity registry. Turning the module off
+hides the records and both reports; service actions are refused.
+
+A fixed asset records its organization, optional venture, name, tag,
+category, acquisition date, exact cost and salvage value, useful life in
+months, method, account choices, lifecycle dates and source expense.
+Tags are unique within one organization, including retained deleted drafts.
+Another organization may use the same tag.
+
+The asset's profile must supply active accounts in that organization:
+=asset_account_id=, =accumulated_depreciation_account_id= and
+=depreciation_expense_account_id=. A sale of the asset also needs
+=proceeds_account_id= and may select =gain_loss_account_id=. A write-off
+uses the depreciation expense account when no separate loss account is
+selected. This module adds no seeded accounts.
+
+=venture_asset_service_create_from_expense()= accepts a saved capital
+expense and returns a draft with its cost, acquisition date, venture and
+source link filled. Select the remaining profile fields before placement.
+Creating the draft does not rewrite the expense journal. Placement reads
+its current posted debit accounts and transfers the matching cost into the
+selected asset account through a new posting-service journal. A profile
+that already capitalized the purchase needs no transfer. Multiple active
+source journals, mismatched amounts or a purchase already placed under
+another asset are refused. An asset entered without a source expense must
+already have its acquisition recorded through an explicit posting-service
+journal or the installation's acquisition policy.
+
+* Placing an asset in service
+
+=VentureAssetService= owns the transition from =draft= to =in_service= and
+creates the entire schedule in one transaction. A missing service date means
+now. Dates before acquisition, invalid lives, negative amounts, salvage
+above cost, mixed currencies and unusable accounts are refused. Lives are
+bounded to 1-1200 months.
+
+If the requested service date is closed, placement chooses the first open
+fiscal period and stores the explanation in =schedule_note=. It never posts
+into the closed period. A calendar that does not cover the starting date,
+or has no later open period, must be corrected first. Future schedule rows
+can extend beyond the current fiscal year; posting them still requires
+calendar coverage when their month is run.
+
+| Method | Monthly calculation |
+|--------+---------------------|
+| =straight_line= | Split cost less salvage equally; move residual cents to the last month |
+| =declining_balance= | Double-declining book rate =2 / useful_life_months= on remaining carrying value; cap at salvage and release the remaining depreciable amount in the final month |
+| =none= | No depreciation entries |
+
+All calculations use =VentureMoney=. Straight-line and deferral splits use
+=venture_money_allocate_evenly()= and redistribute its residual minor units
+to the final installment, preserving the exact original total. There is no
+floating-point money, currency conversion or daily proration.
+
+These are book methods, not tax depreciation rules. No jurisdictional
+allowances, accelerated tax schedules or tax elections are inferred.
+
+** A worked laptop
+
+A $1,100 laptop with zero salvage and a 36-month life, placed in January
+2026, has 35 charges of $30.55 and a final December 2028 charge of $30.75:
+=35 * 3055 + 3075 = 110000= cents. January's posted journal debits
+depreciation expense and credits accumulated depreciation by $30.55.
+Its January net book value is $1,069.45.
+
+** Disposal and write-off
+
+=dispose= removes original cost and accumulated posted depreciation,
+debits proceeds to the chosen cash account, and recognizes the difference
+as gain or loss. =write-off= performs the same operation with zero proceeds.
+The disposal date cannot precede service or posted depreciation, and its
+period must be open. The journal, terminal asset state and skipped future
+schedule rows commit together. Posted history is retained.
+
+Generic writes cannot change an asset's lifecycle status or rewrite a
+placed asset. They name =VentureAssetService= in the refusal. Deletion,
+restoration and purge cannot remove placed assets or schedule history.
+The removal check reads the stored state, not a caller's proposed state.
+
+* Prepayments and accruals
+
+=VentureDeferralService= creates the source and full exact-sum schedule in
+one transaction. A deferral has its organization, kind, description, total,
+start date, number of months, source and target account IDs, optional source
+expense/invoice references and derived active/complete status.
+
+For a prepayment without a source expense, supply =funding_account_id=:
+creation debits prepaid and credits funding. If =source_expense_id= is
+supplied, its organization and amount must match; creation instead debits
+prepaid and credits the selected expense account to reclassify that cost.
+The selected target must be the expense account used by the source's
+posting policy. Each release debits target expense and credits prepaid.
+
+An expense accrual has no initial journal. Each release debits target
+expense and credits the accrued liability. Once every release is posted,
+=operation=settle= with a =settlement_account_id= posts debit accrued /
+credit settlement cash, records =settled_at= and =settlement_journal_id=,
+and refuses a second settlement. A missing settlement date means now;
+settlement cannot precede any release. Generic edits to schedule amounts,
+journal links or derived state are refused.
+
+When the target is an income account, the legs are reversed: an accrued
+income release debits accrued assets and credits income; settlement debits
+cash and credits accrued assets. A deferred-income source debits its funding
+account and credits deferred income, then releases debit deferred / credit
+income. Source references must belong to the same organization.
+
+The deferral report's remaining balance means the amount still to release;
+it is zero once all installments are posted. An accrued liability awaiting
+cash settlement is visible in its ledger account.
+
+* Running a month
+
+#+begin_src sh
+venturectl assets run-period 2026-01 organization_id=1 --dry-run
+venturectl assets run-period 2026-01 organization_id=1
+venturectl asset place 12
+venturectl asset dispose 12 'proceeds=500 USD' disposed_at=2026-07-15
+venturectl asset write-off 12 disposed_at=2026-07-15
+#+end_src
+
+The period is exactly =YYYY-MM=. An omitted organization selects the
+installation's default legal entity. The sweep posts every scheduled
+asset and deferral entry in that month, dated at the end of the UTC month.
+It checks the period guard even if no entries remain. A closed or locked
+period returns the guard's error; the sweep itself never silently moves a
+requested month.
+
+One transaction spans the entire run. If any entry fails after another has
+posted, every journal, entry update and audit write from that run rolls
+back. Successful entries retain their journal IDs and source links;
+running the same month again posts nothing. Dry-run checks the schedule,
+parent states, accounts and period without creating journals.
+
+** Scheduling with an automation rule
+
+The registered =assets_run_period= handler accepts a month and optional
+organization ID as strings. =last_month=, or an omitted month, selects the
+previous calendar month when the handler runs:
+
+#+begin_src
+pod monthly_assets = cron->new("0 8 1 * *");
+monthly_assets->on_schedule => venture->assets_run_period("last_month", "1");
+#+end_src
+
+This calls the same service on the automation engine's main thread and
+records the automation actor. Keep the prior month open until the run has
+succeeded, then close it. Retries are safe. Preview with the CLI before
+turning on a new monthly rule.
+
+* Surfaces and approval
+
+=POST /api/v1/fixed_assets/:id/place-in-service=, =/dispose= and
+=/write-off= require an editor and accept a JSON object containing the
+action's dates and =disposal_proceeds=. Add =?stage=1= to propose the action.
+The asset page has the same controls; its related-record panel lists the
+schedule through the declared =asset_id= reference.
+
+=POST /api/v1/assets/run-period= accepts
+={"period":"2026-01","organization_id":1,"dry_run":false}= and returns
+={"entries":N,"dry_run":false}=. It uses the same editor and module guards.
+
+The assistant can stage an ordinary =fixed_asset= update with
+=operation=place=, =dispose= or =write-off=, or a =deferral= update with
+=operation=settle=. The command appears in the approval diff. Approval
+calls the same service and rechecks the current state and period.
+=operation=run-period:YYYY-MM= on an asset runs its organization's whole
+month and can also be staged. Status remains service-owned.
+
+Both services expose a =transition= signal with =G_SIGNAL_RUN_LAST=.
+It receives a detached source snapshot and action name inside the transaction,
+before financial writes. Snapshot edits are ignored; the first owned
+=GError *= returned by a handler vetoes the operation. External consumers
+needing committed journal effects should use the posting service's
+=posted= signal.
+
+* Reports and upgrades
+
+=fixed_assets= shows cost, accumulated depreciation and net book value per
+asset, plus category totals separated by currency. Disposal removes carrying
+value on its effective date. =deferrals= shows total, released and remaining
+per source. Both honor =organization_id=, =currency= and =as_of= with the
+reporting period's exclusive endpoint. Later releases do not rewrite earlier
+balances. Both are financial reports and are captured at period close.
+
+The paired =000103_assets.sql= migrations verify that the module is either
+absent or has all four metadata-created tables. They do not infer asset
+history from old expenses. Upgrade and restart preserve existing records;
+a partial table set fails transactionally. PostgreSQL uses the current
+schema, matching isolated-schema installations.
+
+=test-assets= covers schedules, lifecycle refusals, source conversion,
+settlement, historical reporting, atomic/idempotent sweeps, dry-run,
+staged approval, migration failure/retry and lifecycle vetoes. HTTP auth
+coverage lives in =test-auth=.

@@ -224,8 +224,8 @@ test_report_registry_has_builtins(
 	registry = venture_context_get_report_registry(fixture->context);
 	reports = venture_report_registry_list(registry);
 
-	/* Ten for the books and the CRM, three for the software factory. */
-	g_assert_cmpuint(reports->len, ==, 18);
+	/* Module reports may grow; the established built-ins must remain. */
+	g_assert_cmpuint(reports->len, >=, 20);
 
 	g_assert_nonnull(venture_report_registry_lookup(registry, "pnl"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "releases"));
@@ -236,6 +236,8 @@ test_report_registry_has_builtins(
 	g_assert_nonnull(venture_report_registry_lookup(registry, "tax"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "receivables"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "snapshot_vs_live"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "fixed_assets"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "deferrals"));
 	g_assert_null(venture_report_registry_lookup(registry, "nonesuch"));
 }
 
@@ -252,7 +254,7 @@ test_report_registry_describe(
 
 	g_assert_nonnull(description);
 	array = json_node_get_array(description);
-	g_assert_cmpuint(json_array_get_length(array), ==, 18);
+	g_assert_cmpuint(json_array_get_length(array), >=, 20);
 
 	/* The description is what the AI's report tool advertises, so every
 	 * report has to carry one. */

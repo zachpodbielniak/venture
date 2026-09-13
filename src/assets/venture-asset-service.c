@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
 
+static gboolean capitalize(VentureDatabase *db, VentureEntity *asset, GDateTime *date, const VentureActor *actor, GError **error);
 static gboolean deferral_settle(VentureDeferralService *service, VentureEntity *deferral, const VentureActor *actor, GError **error);
 
 struct _VentureAssetService
@@ -16,6 +17,20 @@ refuse(GError **error, const gchar *message)
 {
 	venture_set_error_validation(error, "assets", "%s", message);
 	return FALSE;
+}
+
+static VentureEntity *
+load_record(VentureDatabase *db, GType type, gint64 id, GError **error)
+{
+	VentureEntity *entity = venture_database_get(db, type, id, error);
+	if (entity == NULL || venture_entity_is_deleted(entity))
+	{
+		g_clear_object(&entity);
+		if (error == NULL || *error == NULL)
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+				"No live %s record with id %" G_GINT64_FORMAT, g_type_name(type), id);
+	}
+	return entity;
 }
 
 static gboolean
@@ -152,13 +167,27 @@ save_internal(VentureAssetService *self, VentureDatabase *db, VentureEntity *ent
 static gboolean
 check_account(VentureDatabase *db, gint64 id, gint64 org, GError **error)
 {
-	g_autoptr(VentureEntity) account = venture_database_get(db, VENTURE_TYPE_ACCOUNT, id, error);
+	g_autoptr(VentureEntity) account = load_record(db, VENTURE_TYPE_ACCOUNT, id, error);
 	gboolean active;
 	if (account == NULL)
 		return FALSE;
 	g_object_get(account, "active", &active, NULL);
 	if (!active || venture_entity_get_organization_id(account) != org)
 		return refuse(error, "Choose active accounts in the asset's organization");
+	return TRUE;
+}
+
+static gboolean
+income_account(VentureDatabase *db, gint64 id, gboolean *income, GError **error)
+{
+	g_autoptr(VentureEntity) account = load_record(db, VENTURE_TYPE_ACCOUNT, id, error);
+	gint kind;
+	if (account == NULL)
+		return FALSE;
+	g_object_get(account, "kind", &kind, NULL);
+	if (kind != VENTURE_ACCOUNT_KIND_EXPENSE && kind != VENTURE_ACCOUNT_KIND_INCOME)
+		return refuse(error, "A deferral target must be an expense or income account");
+	*income = kind == VENTURE_ACCOUNT_KIND_INCOME;
 	return TRUE;
 }
 
@@ -240,7 +269,7 @@ venture_asset_service_place_in_service(VentureAssetService *self,
 		return refuse(error, "The assets module is disabled");
 	if (!venture_database_begin(db, error))
 		return FALSE;
-	current = venture_database_get(db, VENTURE_TYPE_FIXED_ASSET, venture_entity_get_id(asset), error);
+	current = load_record(db, VENTURE_TYPE_FIXED_ASSET, venture_entity_get_id(asset), error);
 	if (current == NULL)
 		goto fail;
 	g_object_get(current, "status", &state, NULL);
@@ -319,7 +348,7 @@ venture_asset_service_place_in_service(VentureAssetService *self,
 			g_ptr_array_index(parts, i) = g_steal_pointer(&charge);
 		}
 	}
-	if (!transition(G_OBJECT(self), current, "place", error))
+	if (!transition(G_OBJECT(self), current, "place", error) || !capitalize(db, current, start, actor, error))
 		goto fail;
 	for (i = 0; method != VENTURE_ASSET_METHOD_NONE && i < parts->len; i++)
 	{
@@ -335,6 +364,7 @@ venture_asset_service_place_in_service(VentureAssetService *self,
 	g_object_set(current, "status", VENTURE_ASSET_STATUS_IN_SERVICE, "in-service-at", start, NULL);
 	if (!save_internal(self, db, current, actor, error) || !venture_database_commit(db, error))
 		goto fail;
+	venture_entity_copy_properties_from(asset, current, FALSE);
 	return TRUE;
 fail:
 	venture_database_rollback(db);
@@ -351,6 +381,8 @@ venture_assets_save(VentureDatabase *db, VentureEntity *entity,
 	if (!VENTURE_IS_FIXED_ASSET(entity) && !VENTURE_IS_DEPRECIATION_ENTRY(entity) &&
 		!VENTURE_IS_DEFERRAL(entity) && !VENTURE_IS_DEFERRAL_ENTRY(entity))
 		return TRUE;
+	if (!venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "fixed_asset"))
+		return refuse(error, "The assets module is disabled");
 	self = venture_asset_service_get(db);
 	if (VENTURE_IS_DEFERRAL(entity) && self->permit != entity && venture_entity_get_id(entity) == 0)
 	{
@@ -488,7 +520,9 @@ venture_deferral_service_schedule(VentureDeferralService *service, VentureEntity
 	g_autoptr(VentureMoney) total = NULL;
 	g_autoptr(GDateTime) start = NULL;
 	g_autoptr(GPtrArray) parts = NULL;
-	gint64 months, source, target, funding, expense_id;
+	gint64 months, source, target, funding, expense_id, invoice_id;
+	gboolean income;
+	g_autofree gchar *schedule_note = NULL;
 	gint kind, status;
 	gint64 org = venture_entity_get_organization_id(deferral);
 	guint i;
@@ -498,18 +532,38 @@ venture_deferral_service_schedule(VentureDeferralService *service, VentureEntity
 		return refuse(error, "The assets module is disabled");
 	g_object_get(deferral, "total", &total, "start", &start, "months", &months,
 		"source-account-id", &source, "target-account-id", &target, "kind", &kind, "status", &status,
-		"funding-account-id", &funding, "source-expense-id", &expense_id, NULL);
+		"funding-account-id", &funding, "source-expense-id", &expense_id, "source-invoice-id", &invoice_id, NULL);
 	if (total == NULL || total->amount <= 0 || start == NULL || months < 1 || months > 1200 ||
 		status != VENTURE_DEFERRAL_STATUS_ACTIVE)
 		return refuse(error, "VentureDeferralService requires a positive total, start, 1-1200 months and active status");
 	if (!venture_database_begin(db, error))
 		return FALSE;
-	if (!check_account(db, source, org, error) || !check_account(db, target, org, error))
+	if (!check_account(db, source, org, error) || !check_account(db, target, org, error) ||
+		!income_account(db, target, &income, error))
 		goto fail;
+	if (expense_id != 0 || invoice_id != 0)
+	{
+		g_autoptr(VentureEntity) linked = load_record(db,
+			expense_id != 0 ? VENTURE_TYPE_EXPENSE : VENTURE_TYPE_INVOICE,
+			expense_id != 0 ? expense_id : invoice_id, error);
+		if (linked == NULL)
+			goto fail;
+		if ((expense_id != 0 && invoice_id != 0) || venture_entity_get_organization_id(linked) != org)
+		{
+			refuse(error, "Choose at most one source document in the same organization");
+			goto fail;
+		}
+	}
 	{
 		g_autoptr(GDateTime) effective = first_open(db, org, start, error);
 		if (effective == NULL)
 			goto fail;
+		if (g_date_time_compare(effective, start) != 0)
+		{
+			g_autofree gchar *old_label = g_date_time_format(start, "%Y-%m");
+			g_autofree gchar *new_label = g_date_time_format(effective, "%Y-%m");
+			schedule_note = g_strdup_printf("Requested %s was closed; scheduled into first open period %s.", old_label, new_label);
+		}
 		g_clear_pointer(&start, g_date_time_unref);
 		start = g_steal_pointer(&effective);
 	}
@@ -517,7 +571,7 @@ venture_deferral_service_schedule(VentureDeferralService *service, VentureEntity
 	if (parts == NULL)
 		goto fail;
 	venture_entity_copy_properties_from(row, deferral, TRUE);
-	g_object_set(row, "start", start, "operation", NULL, NULL);
+	g_object_set(row, "start", start, "operation", NULL, "schedule-note", schedule_note, NULL);
 	if (!transition(G_OBJECT(service), row, "schedule", error))
 		goto fail;
 	if (!save_internal(self, db, row, actor, error))
@@ -527,12 +581,12 @@ venture_deferral_service_schedule(VentureDeferralService *service, VentureEntity
 		g_autofree gchar *transaction = g_strdup_printf("deferral-source:%" G_GINT64_FORMAT, venture_entity_get_id(row));
 		if (expense_id != 0)
 		{
-			g_autoptr(VentureEntity) expense = venture_database_get(db, VENTURE_TYPE_EXPENSE, expense_id, error);
+			g_autoptr(VentureEntity) expense = load_record(db, VENTURE_TYPE_EXPENSE, expense_id, error);
 			g_autoptr(VentureMoney) amount = NULL;
 			if (expense == NULL)
 				goto fail;
 			g_object_get(expense, "amount", &amount, NULL);
-			if (venture_entity_get_organization_id(expense) != org || !venture_money_equal(amount, total))
+			if (income || venture_entity_get_organization_id(expense) != org || !venture_money_equal(amount, total))
 			{
 				refuse(error, "A source expense must belong to the organization and match the prepayment total");
 				goto fail;
@@ -545,7 +599,7 @@ venture_deferral_service_schedule(VentureDeferralService *service, VentureEntity
 				refuse(error, "A prepayment requires a funding account or matching source expense");
 			goto fail;
 		}
-		if (!post_pair(db, row, "deferral", transaction, start, source, funding, total, actor, error))
+		if (!post_pair(db, row, "deferral", transaction, start, income ? funding : source, income ? source : funding, total, actor, error))
 			goto fail;
 	}
 	for (i = 0; i < parts->len; i++)
@@ -650,7 +704,7 @@ venture_asset_service_run_period(VentureAssetService *self, const gchar *period,
 			gint64 parent_id, debit, credit;
 			gint state;
 			g_object_get(row, kind == 0 ? "asset-id" : "deferral-id", &parent_id, "amount", &amount, NULL);
-			parent = venture_database_get(db, kind == 0 ? VENTURE_TYPE_FIXED_ASSET : VENTURE_TYPE_DEFERRAL, parent_id, error);
+			parent = load_record(db, kind == 0 ? VENTURE_TYPE_FIXED_ASSET : VENTURE_TYPE_DEFERRAL, parent_id, error);
 			if (parent == NULL)
 				goto fail;
 			g_object_get(parent, "status", &state,
@@ -665,6 +719,18 @@ venture_asset_service_run_period(VentureAssetService *self, const gchar *period,
 			}
 			if (!check_account(db, debit, org, error) || !check_account(db, credit, org, error))
 				goto fail;
+			if (kind == 1)
+			{
+				gboolean income;
+				if (!income_account(db, debit, &income, error))
+					goto fail;
+				if (income)
+				{
+					gint64 swap = debit;
+					debit = credit;
+					credit = swap;
+				}
+			}
 			count++;
 			if (dry_run)
 				continue;
@@ -719,7 +785,7 @@ venture_assets_check_removal(VentureDatabase *database, VentureEntity *entity, G
 	{
 		g_autoptr(VentureEntity) stored = venture_database_get(database, VENTURE_TYPE_FIXED_ASSET, venture_entity_get_id(entity), error);
 		if (stored == NULL)
-			return FALSE;
+			return refuse(error, "The stored asset no longer exists");
 		g_object_get(stored, "status", &state, NULL);
 		if (state != VENTURE_ASSET_STATUS_DRAFT)
 			return refuse(error, "Retain asset history; use VentureAssetService disposal or write-off");
@@ -753,7 +819,7 @@ venture_asset_service_dispose(VentureAssetService *self, VentureEntity *asset,
 		return refuse(error, "The assets module is disabled");
 	if (!venture_database_begin(db, error))
 		return FALSE;
-	current = venture_database_get(db, VENTURE_TYPE_FIXED_ASSET, venture_entity_get_id(asset), error);
+	current = load_record(db, VENTURE_TYPE_FIXED_ASSET, venture_entity_get_id(asset), error);
 	if (current == NULL)
 		goto fail;
 	org = venture_entity_get_organization_id(current);
@@ -847,6 +913,7 @@ venture_asset_service_dispose(VentureAssetService *self, VentureEntity *asset,
 		"disposed-at", date, "disposal-proceeds", proceeds, NULL);
 	if (!save_internal(self, db, current, actor, error) || !venture_database_commit(db, error))
 		goto fail;
+	venture_entity_copy_properties_from(asset, current, FALSE);
 	return TRUE;
 fail:
 	venture_database_rollback(db);
@@ -868,7 +935,7 @@ venture_asset_service_create_from_expense(VentureAssetService *self, VentureEnti
 	gint64 venture;
 	if (!venture_database_begin(db, error))
 		return NULL;
-	source = venture_database_get(db, VENTURE_TYPE_EXPENSE, venture_entity_get_id(expense), error);
+	source = load_record(db, VENTURE_TYPE_EXPENSE, venture_entity_get_id(expense), error);
 	if (source == NULL)
 		goto fail;
 	g_object_get(source, "amount", &amount, "occurred-at", &date, "description", &name,
@@ -905,16 +972,17 @@ deferral_settle(VentureDeferralService *service, VentureEntity *deferral,
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(GPtrArray) journals = NULL;
 	g_autofree gchar *transaction = NULL;
-	gint64 source, cash, org;
+	gint64 source, cash, org, target;
+	gboolean income;
 	gint kind, status;
 	guint i;
 	if (!venture_database_begin(db, error))
 		return FALSE;
-	current = venture_database_get(db, VENTURE_TYPE_DEFERRAL, venture_entity_get_id(deferral), error);
+	current = load_record(db, VENTURE_TYPE_DEFERRAL, venture_entity_get_id(deferral), error);
 	if (current == NULL)
 		goto fail;
 	org = venture_entity_get_organization_id(current);
-	g_object_get(current, "kind", &kind, "status", &status, "source-account-id", &source, "total", &total, "settled-at", &prior, NULL);
+	g_object_get(current, "kind", &kind, "status", &status, "source-account-id", &source, "total", &total, "settled-at", &prior, "target-account-id", &target, NULL);
 	g_object_get(deferral, "settlement-account-id", &cash, "settled-at", &date, NULL);
 	if (date == NULL)
 		date = venture_time_now();
@@ -948,7 +1016,8 @@ deferral_settle(VentureDeferralService *service, VentureEntity *deferral,
 	if (!transition(G_OBJECT(service), current, "settle", error))
 		goto fail;
 	transaction = g_strdup_printf("assets:settlement:%" G_GINT64_FORMAT, venture_entity_get_id(current));
-	if (!post_pair(db, current, "deferral", transaction, date, source, cash, total, actor, error))
+	if (!income_account(db, target, &income, error) ||
+		!post_pair(db, current, "deferral", transaction, date, income ? cash : source, income ? source : cash, total, actor, error))
 		goto fail;
 	journals = venture_posting_service_find_source(venture_database_get_posting_service(db), "deferral", venture_entity_get_id(current), org, error);
 	if (journals == NULL || journals->len != 1)
@@ -961,8 +1030,111 @@ deferral_settle(VentureDeferralService *service, VentureEntity *deferral,
 		"settlement-journal-id", venture_entity_get_id(g_ptr_array_index(journals, 0)), "operation", NULL, NULL);
 	if (!save_internal(self, db, current, actor, error) || !venture_database_commit(db, error))
 		goto fail;
+	venture_entity_copy_properties_from(deferral, current, FALSE);
 	return TRUE;
 fail:
 	venture_database_rollback(db);
 	return FALSE;
+}
+
+/* Reclassify the actual source debit accounts, rather than guessing the
+ * expense rule's chart. A profile that already capitalized needs no transfer. */
+static gboolean
+capitalize(VentureDatabase *db, VentureEntity *asset, GDateTime *date,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) expense = NULL;
+	g_autoptr(VentureMoney) cost = NULL;
+	g_autoptr(VentureMoney) source_amount = NULL;
+	g_autoptr(VentureMoney) debits = NULL;
+	g_autoptr(GPtrArray) journals = NULL;
+	g_autoptr(GPtrArray) lines = NULL;
+	g_autoptr(GPtrArray) entries = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autoptr(VentureQuery) query = NULL;
+	g_autofree gchar *transaction = NULL;
+	gint64 source_id, asset_account, journal_id = 0;
+	gint64 org = venture_entity_get_organization_id(asset);
+	gint deductibility;
+	gboolean already_capitalized = TRUE;
+	guint i;
+	g_object_get(asset, "source-expense-id", &source_id, "asset-account-id", &asset_account, "cost", &cost, NULL);
+	if (source_id == 0)
+		return TRUE;
+	expense = load_record(db, VENTURE_TYPE_EXPENSE, source_id, error);
+	if (expense == NULL)
+		return FALSE;
+	g_object_get(expense, "amount", &source_amount, "deductibility", &deductibility, NULL);
+	if (venture_entity_get_organization_id(expense) != org || !venture_money_equal(source_amount, cost) || deductibility != VENTURE_DEDUCTIBILITY_CAPITAL)
+		return refuse(error, "The source capital expense must match the asset's organization and cost");
+	{
+		g_autoptr(VentureQuery) used_query = venture_query_new(VENTURE_TYPE_FIXED_ASSET);
+		g_autoptr(GPtrArray) used = NULL;
+		venture_query_set_organization(used_query, org);
+		venture_query_set_include_deleted(used_query, TRUE);
+		venture_query_set_limit(used_query, 0);
+		if (!venture_query_add_filter_int(used_query, "source-expense-id", VENTURE_FILTER_OP_EQ, source_id, error))
+			return FALSE;
+		used = venture_database_find(db, used_query, error);
+		if (used == NULL)
+			return FALSE;
+		for (i = 0; i < used->len; i++)
+		{
+			VentureEntity *other = g_ptr_array_index(used, i);
+			gint state;
+			g_object_get(other, "status", &state, NULL);
+			if (venture_entity_get_id(other) != venture_entity_get_id(asset) && state != VENTURE_ASSET_STATUS_DRAFT)
+				return refuse(error, "The expense has already been placed in an asset register");
+		}
+	}
+	journals = venture_posting_service_find_source(venture_database_get_posting_service(db), "expense", source_id, org, error);
+	if (journals == NULL)
+		return FALSE;
+	for (i = 0; i < journals->len; i++)
+	{
+		VentureEntity *journal = g_ptr_array_index(journals, i);
+		gint state;
+		gint64 reverses;
+		g_object_get(journal, "state", &state, "reverses-id", &reverses, NULL);
+		if (state == VENTURE_JOURNAL_POSTED && reverses == 0)
+		{
+			if (journal_id != 0)
+				return refuse(error, "The source expense has multiple active journals; review its capitalization");
+			journal_id = venture_entity_get_id(journal);
+		}
+	}
+	if (journal_id == 0)
+		return refuse(error, "The source expense needs a current posted journal before capitalization");
+	query = venture_query_new(VENTURE_TYPE_JOURNAL_LINE);
+	venture_query_set_organization(query, org);
+	venture_query_set_limit(query, 0);
+	if (!venture_query_add_filter_int(query, "journal-id", VENTURE_FILTER_OP_EQ, journal_id, error))
+		return FALSE;
+	lines = venture_database_find(db, query, error);
+	if (lines == NULL)
+		return FALSE;
+	debits = venture_money_new(0, cost->currency, cost->exponent);
+	transaction = g_strdup_printf("assets:capitalization:%" G_GINT64_FORMAT, venture_entity_get_id(asset));
+	leg(entries, asset, "fixed_asset", transaction, date, asset_account, VENTURE_LEDGER_SIDE_DEBIT, cost);
+	for (i = 0; i < lines->len; i++)
+	{
+		VentureEntity *line = g_ptr_array_index(lines, i);
+		gint side;
+		gint64 account_id;
+		g_autoptr(VentureMoney) amount = NULL;
+		g_autoptr(VentureMoney) next = NULL;
+		g_object_get(line, "side", &side, "account-id", &account_id, "book-amount", &amount, NULL);
+		if (side != VENTURE_LEDGER_SIDE_DEBIT)
+			continue;
+		next = venture_money_add(debits, amount, error);
+		if (next == NULL)
+			return FALSE;
+		g_clear_pointer(&debits, venture_money_free);
+		debits = g_steal_pointer(&next);
+		if (account_id != asset_account)
+			already_capitalized = FALSE;
+		leg(entries, asset, "fixed_asset", transaction, date, account_id, VENTURE_LEDGER_SIDE_CREDIT, amount);
+	}
+	if (!venture_money_equal(debits, cost))
+		return refuse(error, "Source journal debits do not match the asset's book cost");
+	return already_capitalized || venture_posting_service_post_entries(venture_database_get_posting_service(db), entries, NULL, actor, error);
 }

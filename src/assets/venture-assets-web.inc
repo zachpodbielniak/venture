@@ -35,11 +35,19 @@ venture_web_asset_action(HtmxRequest *request, GHashTable *params, gpointer data
 		return venture_web_error_response(error);
 	}
 	asset = venture_database_get(db, VENTURE_TYPE_FIXED_ASSET, id, &error);
-	if (asset == NULL)
+	if (asset == NULL || venture_entity_is_deleted(asset))
+	{
+		if (error == NULL)
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Fixed asset was not found");
 		return venture_web_error_response(error);
+	}
 	original = venture_database_get(db, VENTURE_TYPE_FIXED_ASSET, id, &error);
 	if (original == NULL)
+	{
+		if (error == NULL)
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Fixed asset was not found");
 		return venture_web_error_response(error);
+	}
 	if (api)
 	{
 		body = htmx_request_get_json(request, &error);
@@ -49,8 +57,17 @@ venture_web_asset_action(HtmxRequest *request, GHashTable *params, gpointer data
 				venture_set_error_validation(&error, "body", "Expected a JSON object");
 			return venture_web_error_response(error);
 		}
-		if (!venture_serializable_from_json(VENTURE_SERIALIZABLE(asset), body, &error))
-			return venture_web_error_response(error);
+		{
+			g_autoptr(JsonNode) fields = venture_json_parse("{}", NULL);
+			const gchar *names[] = { "in_service_at", "disposed_at", "disposal_proceeds" };
+			guint i;
+			for (i = 0; i < G_N_ELEMENTS(names); i++)
+				if (json_object_has_member(json_node_get_object(body), names[i]))
+					json_object_set_member(json_node_get_object(fields), names[i],
+						json_node_copy(json_object_get_member(json_node_get_object(body), names[i])));
+			if (!venture_serializable_from_json(VENTURE_SERIALIZABLE(asset), fields, &error))
+				return venture_web_error_response(error);
+		}
 	}
 	else
 	{
@@ -75,8 +92,12 @@ venture_web_asset_action(HtmxRequest *request, GHashTable *params, gpointer data
 		return venture_web_error_response(error);
 	g_clear_object(&asset);
 	asset = venture_database_get(db, VENTURE_TYPE_FIXED_ASSET, id, &error);
-	if (asset == NULL)
+	if (asset == NULL || venture_entity_is_deleted(asset))
+	{
+		if (error == NULL)
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Fixed asset was not found");
 		return venture_web_error_response(error);
+	}
 	if (api)
 	{
 		result = venture_serializable_to_json(VENTURE_SERIALIZABLE(asset), FALSE);
@@ -115,8 +136,38 @@ venture_web_assets_run(HtmxRequest *request, GHashTable *params, gpointer data)
 		return venture_web_error_response(error);
 	}
 	object = json_node_get_object(body);
-	org = venture_json_object_get_int(object, "organization_id", venture_context_get_default_organization_id(self->context));
-	dry_run = venture_json_object_get_bool(object, "dry_run", FALSE);
+	org = venture_context_get_default_organization_id(self->context);
+	dry_run = FALSE;
+	if (json_object_has_member(object, "organization_id"))
+	{
+		GValue value = G_VALUE_INIT;
+		gboolean ok = venture_json_value_from_node(json_object_get_member(object, "organization_id"), G_TYPE_INT64, &value, &error);
+		if (ok)
+			org = g_value_get_int64(&value);
+		g_value_unset(&value);
+		if (!ok)
+			return venture_web_error_response(error);
+	}
+	if (json_object_has_member(object, "dry_run"))
+	{
+		GValue value = G_VALUE_INIT;
+		gboolean ok = venture_json_value_from_node(json_object_get_member(object, "dry_run"), G_TYPE_BOOLEAN, &value, &error);
+		if (ok)
+			dry_run = g_value_get_boolean(&value);
+		g_value_unset(&value);
+		if (!ok)
+			return venture_web_error_response(error);
+	}
+	{
+		gboolean stage = FALSE;
+		if (!venture_confirmation_parse_stage_flag(htmx_request_get_query_param(request, "stage"), &stage, &error))
+			return venture_web_error_response(error);
+		if (stage)
+		{
+			venture_set_error_validation(&error, "stage", "Stage a fixed_asset operation=run-period:YYYY-MM to approve a sweep");
+			return venture_web_error_response(error);
+		}
+	}
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
 	count = venture_asset_service_run_period(venture_asset_service_get(venture_context_get_database(self->context)),
