@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #ifndef VENTURE_BILLING_REPORTS_H
 #define VENTURE_BILLING_REPORTS_H
+#if !defined(VENTURE_INSIDE) && !defined(VENTURE_COMPILATION)
+#error "Only <venture.h> can be included directly."
+#endif
 /**
  * venture_billing_register_reports:
  * @registry: the report registry

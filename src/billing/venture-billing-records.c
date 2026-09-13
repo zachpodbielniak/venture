@@ -113,6 +113,8 @@ static const VentureFieldDecl customer_subscription_fields[] = {
 	VENTURE_FIELD("external-id", "External id", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
 	VENTURE_FIELD_REF("pending-plan-price-id", "Pending plan price id", NULL, "plan_price", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("past-due-at", "Past due at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("pending-adjustment", "Pending adjustment", "Proration settled on the next renewal"),
+	VENTURE_FIELD("billing-anchor", "Billing anchor", "Original calendar day for renewal boundaries", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("last-event-at", "Last event at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 };
 VENTURE_DEFINE_ENTITY(VentureCustomerSubscription, venture_customer_subscription, customer_subscription_fields)

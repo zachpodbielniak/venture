@@ -118,6 +118,8 @@ PUBLIC_HDRS := \
 	$(wildcard src/util/*.h) \
 	$(wildcard src/mcp/*.h)
 
+PUBLIC_HDRS += $(wildcard src/billing/*.h)
+
 TEST_SRCS := $(wildcard tests/test-*.c)
 
 # ---------------------------------------------------------------------------

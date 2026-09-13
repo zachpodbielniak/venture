@@ -13,12 +13,18 @@ venture_billing_web_action(HtmxRequest *request, GHashTable *params, gpointer us
 	const gchar *id_text = g_hash_table_lookup(params, "id");
 	const gchar *verb = g_hash_table_lookup(params, "action");
 	const gchar *form_action = htmx_request_get_form_value(request, "billing_action");
-	gboolean ui = form_action != NULL;
+	gboolean ui = g_str_has_prefix(htmx_request_get_path(request), "/billing/");
 	gboolean stage = FALSE;
 	VentureActor actor;
 	HtmxResponse *gate;
 	gint64 id = 0;
 	gint64 org;
+	if (ui)
+	{
+		gate = venture_web_ui_require_session(self, request);
+		if (gate != NULL)
+			return gate;
+	}
 	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, &error))
 		return venture_web_error_response(error);
 	gate = venture_web_require_module_api(self, "billing");
@@ -116,5 +122,38 @@ venture_billing_web_buttons(VentureWebServer *self, GString *html, VentureEntity
 	{
 		g_string_append_printf(html, "<form method=\"post\" action=\"/billing/subscriptions/%" G_GINT64_FORMAT "/action\"><input type=\"hidden\" name=\"billing_action\" value=\"%s\"><button class=\"btn\" type=\"submit\">%s</button></form>", id, actions[i], actions[i]);
 	}
-	g_string_append_printf(html, "<form method=\"post\" action=\"/billing/subscriptions/%" G_GINT64_FORMAT "/action\"><input type=\"hidden\" name=\"billing_action\" value=\"change\"><label>New plan price ID <input name=\"plan-price-id\" type=\"number\" min=\"1\" required></label><label><input name=\"at-period-end\" type=\"checkbox\" value=\"true\">At period end</label><button class=\"btn\" type=\"submit\">Change plan</button></form></section>", id);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PLAN_PRICE);
+		g_autoptr(GPtrArray) prices = NULL;
+		venture_query_set_organization(query, venture_entity_get_organization_id(record));
+		venture_query_set_limit(query, 0);
+		prices = venture_database_find(venture_context_get_database(self->context), query, NULL);
+		g_string_append_printf(html, "<form method=\"post\" action=\"/billing/subscriptions/%" G_GINT64_FORMAT "/action\"><input type=\"hidden\" name=\"billing_action\" value=\"change\"><label>New plan <select name=\"plan-price-id\" required>", id);
+		for (i = 0; prices != NULL && i < prices->len; i++)
+		{
+			VentureEntity *price = g_ptr_array_index(prices, i);
+			g_autoptr(VentureEntity) plan = NULL;
+			g_autoptr(VentureMoney) amount = NULL;
+			g_autofree gchar *name = NULL;
+			g_autofree gchar *formatted = NULL;
+			gint64 plan_id;
+			gint interval;
+			gboolean active;
+			gboolean per_seat;
+			g_object_get(price, "plan-id", &plan_id, "amount", &amount, "interval", &interval, "active", &active, "per-seat", &per_seat, NULL);
+			if (!active || amount == NULL)
+				continue;
+			plan = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_PLAN, plan_id, NULL);
+			if (plan == NULL)
+				continue;
+			g_object_get(plan, "name", &name, NULL);
+			formatted = venture_money_to_string(amount);
+			g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\">", venture_entity_get_id(price));
+			venture_html_escape_append(html, name);
+			g_string_append(html, " — ");
+			venture_html_escape_append(html, formatted);
+			g_string_append_printf(html, " / %s%s</option>", interval == 1 ? "year" : "month", per_seat ? " / seat" : "");
+		}
+		g_string_append(html, "</select></label><label><input name=\"at-period-end\" type=\"checkbox\" value=\"true\">At period end</label><button class=\"btn\" type=\"submit\">Change plan</button></form></section>");
+	}
 }

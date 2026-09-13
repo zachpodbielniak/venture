@@ -126,7 +126,7 @@ test_rest(Fixture *f, gconstpointer data)
 	g_autofree gchar *path = g_strdup_printf("/api/v1/customer_subscriptions/%" G_GINT64_FORMAT "/renew", f->subscription);
 	g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_INVOICE);
 	g_assert_cmpuint(request(f, "POST", path, "application/json", "{\"at\":\"2026-02-01\"}", &body), ==, 200);
-	g_assert_cmpint(venture_database_count(f->database, q, NULL), ==, 1);
+	g_assert_cmpint(venture_database_count(f->database, q, NULL), ==, 2);
 }
 
 static void
@@ -203,8 +203,47 @@ test_cli(Fixture *f, gconstpointer data)
 		g_assert_true(g_subprocess_get_successful(child));
 		g_free(result.out);
 		g_free(result.err);
-		g_assert_cmpint(venture_database_count(f->database, q, NULL), ==, i == 0 ? 0 : 1);
+		g_assert_cmpint(venture_database_count(f->database, q, NULL), ==, i == 0 ? 1 : 2);
 	}
+}
+
+static void
+test_assistant_stale(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureBillingRequest) proposed = venture_billing_request_new();
+	g_autoptr(VentureBillingRequest) pause = venture_billing_request_new();
+	g_autoptr(GError) error = NULL;
+	VentureConfirmationStore *store = venture_context_get_confirmations(f->context);
+	VentureConfirmation *confirmation;
+	VentureActor actor;
+	actor.kind = VENTURE_ACTOR_KIND_AI;
+	actor.name = "assistant";
+	actor.prompt = "Cancel the Lightsite subscription";
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	g_object_set(proposed, "organization-id", (gint64)1, "subscription-id", f->subscription, "action", "cancel", NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(proposed), "at", "2026-01-10", NULL));
+	confirmation = venture_confirmation_store_stage(store, VENTURE_AUDIT_ACTION_CREATE,
+		VENTURE_ENTITY(proposed), NULL, &actor, "assistant", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(confirmation);
+	g_object_set(pause, "subscription-id", f->subscription, "action", "pause", NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(pause), "at", "2026-01-05", NULL));
+	save(f, VENTURE_ENTITY(pause));
+	g_assert_false(venture_confirmation_store_approve(store, venture_confirmation_get_id(confirmation), "owner", &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+}
+
+static void
+test_report_days(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *body = NULL;
+	g_autoptr(JsonParser) parser = json_parser_new();
+	JsonArray *rows;
+	g_assert_cmpuint(request(f, "GET", "/api/v1/reports/subscriptions_due?period=2025-12&days=365", NULL, NULL, &body), ==, 200);
+	g_assert_true(json_parser_load_from_data(parser, body, -1, NULL));
+	rows = json_object_get_array_member(json_node_get_object(json_parser_get_root(parser)), "rows");
+	g_assert_cmpuint(json_array_get_length(rows), ==, 1);
 }
 
 int
@@ -215,5 +254,7 @@ main(int argc, char **argv)
 	g_test_add("/billing-surfaces/web", Fixture, NULL, setup, test_web, teardown);
 	g_test_add("/billing-surfaces/staged", Fixture, NULL, setup, test_staged, teardown);
 	g_test_add("/billing-surfaces/cli", Fixture, NULL, setup, test_cli, teardown);
+	g_test_add("/billing-surfaces/assistant-stale", Fixture, NULL, setup, test_assistant_stale, teardown);
+	g_test_add("/billing-surfaces/report-days", Fixture, NULL, setup, test_report_days, teardown);
 	return g_test_run();
 }

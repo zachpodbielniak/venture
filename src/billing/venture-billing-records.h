@@ -2,6 +2,9 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later */
 #ifndef VENTURE_BILLING_RECORDS_H
 #define VENTURE_BILLING_RECORDS_H
+#if !defined(VENTURE_INSIDE) && !defined(VENTURE_COMPILATION)
+#error "Only <venture.h> can be included directly."
+#endif
 G_BEGIN_DECLS
 /**
  * venture_billing_interval_get_type:

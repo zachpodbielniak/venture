@@ -59,7 +59,8 @@ set_property(GObject *object, guint id, const GValue *value, GParamSpec *spec)
 	if (id == 1)
 	{
 		self->database = g_value_get_object(value);
-		g_object_add_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
+		if (self->database != NULL)
+			g_object_add_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
 	}
 	else
 		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
@@ -98,7 +99,7 @@ venture_billing_service_class_init(VentureBillingServiceClass *klass)
 	 * @self: the service
 	 * @event: a detached snapshot of the validated proposed event
 	 *
-	 * Emitted before subscription and event persistence, inside the transaction.
+	 * Emitted after the tentative subscription save and before event persistence, inside the transaction.
 	 * Handlers run before the class closure; the first owned GError veto rolls
 	 * back the complete operation. Do not perform external effects here.
 	 * Returns: (transfer full) (nullable): an error to veto
@@ -189,6 +190,19 @@ next_period(VentureEntity *price, GDateTime *at)
 	return g_date_time_add_months(at, choice(price, "interval") == 1 ? 12 : 1);
 }
 
+static GDateTime *
+anchored_period(VentureEntity *sub, VentureEntity *price, GDateTime *start)
+{
+	g_autoptr(GDateTime) anchor = NULL;
+	gint months;
+	g_object_get(sub, "billing-anchor", &anchor, NULL);
+	if (anchor == NULL)
+		return next_period(price, start);
+	months = (g_date_time_get_year(start) - g_date_time_get_year(anchor)) * 12 +
+		g_date_time_get_month(start) - g_date_time_get_month(anchor);
+	return g_date_time_add_months(anchor, months + (choice(price, "interval") == 1 ? 12 : 1));
+}
+
 static gboolean
 price_available(VentureBillingService *self, VentureEntity *price, gint64 org, GError **error)
 {
@@ -250,13 +264,14 @@ proration(VentureEntity *old_price, VentureEntity *new_price, gint64 old_seats,
 
 static gboolean
 issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
-	GDateTime *at, const VentureActor *actor, gint64 *invoice_id, GError **error)
+	GDateTime *at, GDateTime *period_start, const VentureActor *actor, gint64 *invoice_id, GError **error)
 {
 	g_autoptr(VentureEntity) invoice = NULL;
 	g_autoptr(VentureEntity) line = NULL;
 	g_autoptr(VentureEntity) plan = NULL;
 	g_autoptr(VentureMoney) amount = NULL;
-	g_autofree gchar *date = g_date_time_format(at, "%F");
+	g_autoptr(VentureMoney) adjustment = NULL;
+	g_autofree gchar *date = g_date_time_format(period_start, "%F");
 	g_autofree gchar *invoice_number = NULL;
 	gint64 org = venture_entity_get_organization_id(sub);
 	if (!venture_period_guard_is_postable(VENTURE_PERIOD_GUARD(venture_database_get_period_guard(self->database)),
@@ -265,6 +280,15 @@ issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 	amount = price_amount(price, number(sub, "seats"), error);
 	if (amount == NULL)
 		return FALSE;
+	g_object_get(sub, "pending-adjustment", &adjustment, NULL);
+	if (adjustment != NULL && venture_money_get_amount(adjustment) > 0)
+	{
+		VentureMoney *combined = venture_money_add(amount, adjustment, error);
+		if (combined == NULL)
+			return FALSE;
+		g_clear_pointer(&amount, venture_money_free);
+		amount = combined;
+	}
 	plan = load(self, VENTURE_TYPE_PLAN, number(price, "plan-id"), org, error);
 	if (plan == NULL)
 		return FALSE;
@@ -284,6 +308,27 @@ issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 		!venture_settlement_service_transition(venture_settlement_service_get(self->database),
 			VENTURE_INVOICE(invoice), "sent", at, actor, error))
 		return FALSE;
+	if (adjustment != NULL && venture_money_get_amount(adjustment) < 0)
+	{
+		g_autoptr(VentureEntity) credit = new_record(VENTURE_TYPE_CUSTOMER_CREDIT, org);
+		g_autoptr(VentureEntity) allocation = new_record(VENTURE_TYPE_PAYMENT_ALLOCATION, org);
+		g_autoptr(VentureMoney) credit_amount = venture_money_multiply_rational(adjustment, -1, 1, error);
+		const VentureMoney *applied;
+		if (credit_amount == NULL)
+			return FALSE;
+		g_object_set(credit, "customer-id", number(sub, "company-id"), "kind", "credit_note", "date", at,
+			"amount", credit_amount, "reference", "Subscription proration", NULL);
+		if (!venture_database_save(self->database, credit, actor, error))
+			return FALSE;
+		applied = venture_money_get_amount(credit_amount) < venture_money_get_amount(amount) ? credit_amount : amount;
+		if (!venture_money_is_zero(applied))
+		{
+			g_object_set(allocation, "credit-id", venture_entity_get_id(credit), "invoice-id", venture_entity_get_id(invoice),
+				"date", at, "amount", applied, NULL);
+			if (!venture_database_save(self->database, allocation, actor, error))
+				return FALSE;
+		}
+	}
 	*invoice_id = venture_entity_get_id(invoice);
 	return TRUE;
 }
@@ -325,6 +370,14 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 		gint64 trial;
 		if (customer == NULL)
 			return FALSE;
+		if (number(request, "contact-id") != 0)
+		{
+			g_autoptr(VentureEntity) contact = load(self, VENTURE_TYPE_CONTACT, number(request, "contact-id"), org, error);
+			if (contact == NULL)
+				return FALSE;
+			if (number(contact, "company-id") != number(request, "company-id"))
+				return refuse(error, VENTURE_ERROR_VALIDATION, "billing contact must belong to the subscription customer");
+		}
 		price = load(self, VENTURE_TYPE_PLAN_PRICE, number(request, "plan-price-id"), org, error);
 		if (price == NULL || !price_available(self, price, org, error))
 			return FALSE;
@@ -341,7 +394,7 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 		end = trial > 0 ? g_date_time_add_days(at, (gint)trial) : next_period(price, at);
 		g_object_set(sub, "company-id", number(request, "company-id"), "contact-id", number(request, "contact-id"),
 			"plan-price-id", venture_entity_get_id(price), "external-id", external,
-			"current-period-start", start, "current-period-end", end, "trial-end", trial > 0 ? end : NULL, NULL);
+			"current-period-start", start, "current-period-end", end, "trial-end", trial > 0 ? end : NULL, "billing-anchor", trial > 0 ? end : start, NULL);
 		old_seats = 0;
 		old_price = 0;
 		old_state = 0;
@@ -370,16 +423,16 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 		if (g_strcmp0(verb, "renew") == 0)
 		{
 			GDateTime *next;
-			if (state != 0 && state != 1)
+			if (state != 0 && state != 1 && !(state < 4 && flag(sub, "cancel-at-period-end")))
 				return refuse(error, VENTURE_ERROR_VALIDATION, "only active or trialing subscriptions renew");
 			if (g_date_time_compare(at, end) < 0)
 				return TRUE;
-			g_clear_pointer(&at, g_date_time_unref);
-			at = g_date_time_ref(end);
-			if (last != NULL && g_date_time_compare(at, last) < 0)
-				return refuse(error, VENTURE_ERROR_VALIDATION, "renew overdue periods before entering later events");
 			if (flag(sub, "cancel-at-period-end"))
 			{
+				if (last != NULL && g_date_time_compare(end, last) < 0)
+					return refuse(error, VENTURE_ERROR_VALIDATION, "scheduled cancellation predates a later action; cancel immediately instead");
+				g_clear_pointer(&at, g_date_time_unref);
+				at = g_date_time_ref(end);
 				state = 4;
 				kind = 7;
 				g_object_set(sub, "cancelled-at", at, "cancel-at-period-end", FALSE, NULL);
@@ -392,12 +445,12 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 					if (next_price == NULL)
 						return FALSE;
 					g_set_object(&price, next_price);
-					g_object_set(sub, "plan-price-id", venture_entity_get_id(price), "pending-plan-price-id", (gint64)0, NULL);
+					g_object_set(sub, "plan-price-id", venture_entity_get_id(price), "pending-plan-price-id", (gint64)0, "billing-anchor", end, NULL);
 				}
-				if (!issue(self, sub, price, at, actor, &invoice_id, error))
+				if (!issue(self, sub, price, at, end, actor, &invoice_id, error))
 					return FALSE;
-				next = next_period(price, at);
-				g_object_set(sub, "current-period-start", at, "current-period-end", next, NULL);
+				next = anchored_period(sub, price, end);
+				g_object_set(sub, "current-period-start", end, "current-period-end", next, "pending-adjustment", NULL, NULL);
 				g_date_time_unref(next);
 				state = 1;
 				kind = 1;
@@ -479,9 +532,23 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 		return FALSE;
 	if (prorated == NULL)
 		prorated = venture_money_new_zero(venture_money_get_currency(after));
+	if (!venture_money_is_zero(prorated))
+	{
+		g_autoptr(VentureMoney) pending = NULL;
+		g_autoptr(VentureMoney) combined = NULL;
+		g_object_get(sub, "pending-adjustment", &pending, NULL);
+		if (pending == NULL)
+			pending = venture_money_new_zero(venture_money_get_currency(prorated));
+		combined = venture_money_add(pending, prorated, error);
+		if (combined == NULL)
+			return FALSE;
+		g_object_set(sub, "pending-adjustment", combined, NULL);
+	}
 	g_object_set(sub, "status", state, "seats", seats, "last-event-at", at, NULL);
 	/* Insertion gives the event a real referent; veto still rolls it back. */
 	if (!write_record(self, sub, actor, error))
+		return FALSE;
+	if (old_price == 0 && state == 1 && !issue(self, sub, price, at, start, actor, &invoice_id, error))
 		return FALSE;
 	event = new_record(VENTURE_TYPE_SUBSCRIPTION_EVENT, org);
 	g_object_set(event, "subscription-id", venture_entity_get_id(sub), "kind", kind, "at", at,
@@ -534,16 +601,53 @@ sweep(VentureBillingService *self, VentureEntity *request, const VentureActor *a
 		gint64 id = venture_entity_get_id(sub);
 		if (steps == NULL)
 		{
-			if (state != 0 && state != 1)
+			if (state != 0 && state != 1 && !(state < 4 && flag(sub, "cancel-at-period-end")))
 				continue;
 			g_object_get(sub, "current-period-end", &date, NULL);
 			if (date == NULL || g_date_time_compare(date, at) > 0)
 				continue;
-			action = new_record(VENTURE_TYPE_BILLING_REQUEST, org);
-			g_object_set(action, "action", "renew", "subscription-id", id, "at", at, NULL);
-			if (!dry && !perform(self, action, actor, error))
-				return FALSE;
-			processed++;
+			{
+				g_autoptr(VentureEntity) current = g_object_ref(sub);
+				guint periods = 0;
+				while (g_date_time_compare(date, at) <= 0)
+				{
+					g_autoptr(VentureEntity) price = NULL;
+					GDateTime *next;
+					if (++periods > 1200)
+						return refuse(error, VENTURE_ERROR_VALIDATION, "renewal sweep exceeds 1200 periods per subscription");
+					if (!dry)
+					{
+						g_clear_object(&action);
+						action = new_record(VENTURE_TYPE_BILLING_REQUEST, org);
+						g_object_set(action, "action", "renew", "subscription-id", id, "at", at, NULL);
+						if (!perform(self, action, actor, error))
+							return FALSE;
+						g_clear_object(&current);
+						current = load(self, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, id, org, error);
+						if (current == NULL)
+							return FALSE;
+					}
+					processed++;
+					if (flag(current, "cancel-at-period-end") || choice(current, "status") >= 4)
+						break;
+					if (dry)
+					{
+						gint64 price_id = number(current, "pending-plan-price-id");
+						price = load(self, VENTURE_TYPE_PLAN_PRICE,
+							price_id != 0 ? price_id : number(current, "plan-price-id"), org, error);
+						if (price == NULL)
+							return FALSE;
+						next = anchored_period(current, price, date);
+						g_clear_pointer(&date, g_date_time_unref);
+						date = next;
+					}
+					else
+					{
+						g_clear_pointer(&date, g_date_time_unref);
+						g_object_get(current, "current-period-end", &date, NULL);
+					}
+				}
+			}
 		}
 		else if (state == 2)
 		{
@@ -610,13 +714,19 @@ venture_billing_service_execute(VentureBillingService *self, VentureBillingReque
 		return refuse(error, VENTURE_ERROR_VALIDATION, "completed requests are immutable");
 	copy = g_object_new(VENTURE_TYPE_BILLING_REQUEST, NULL);
 	venture_entity_copy_properties_from(copy, VENTURE_ENTITY(request), FALSE);
+	if (!venture_entity_validate(copy, error))
+		return FALSE;
+	if (venture_entity_get_organization_id(copy) <= 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "a valid instruction and one organization are required");
 	g_object_get(copy, "action", &verb, NULL);
+	if (flag(copy, "dry-run") && g_strcmp0(verb, "renew-sweep") != 0 && g_strcmp0(verb, "dunning-sweep") != 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "dry-run is available for sweeps only");
 	if (!venture_database_begin(self->database, error))
 		return FALSE;
 	self->busy = TRUE;
 	ok = g_strcmp0(verb, "renew-sweep") == 0 || g_strcmp0(verb, "dunning-sweep") == 0 ?
 		sweep(self, copy, actor, error) : perform(self, copy, actor, error);
-	if (ok)
+	if (ok && !flag(copy, "dry-run"))
 		ok = write_record(self, copy, actor, error);
 	if (ok)
 		ok = venture_database_commit(self->database, error);
@@ -626,6 +736,32 @@ venture_billing_service_execute(VentureBillingService *self, VentureBillingReque
 	if (ok)
 		venture_entity_copy_properties_from(VENTURE_ENTITY(request), copy, FALSE);
 	return ok;
+}
+
+static gboolean
+price_used(VentureDatabase *db, VentureEntity *price, gboolean *used, GError **error)
+{
+	static const gchar *const fields[] = { "plan-price-id", "pending-plan-price-id", "from-plan-price-id", "to-plan-price-id" };
+	guint i;
+	*used = FALSE;
+	for (i = 0; i < G_N_ELEMENTS(fields); i++)
+	{
+		g_autoptr(VentureQuery) q = venture_query_new(i < 2 ? VENTURE_TYPE_CUSTOMER_SUBSCRIPTION : VENTURE_TYPE_SUBSCRIPTION_EVENT);
+		gint64 count;
+		venture_query_set_organization(q, venture_entity_get_organization_id(price));
+		venture_query_set_include_deleted(q, TRUE);
+		if (!venture_query_add_filter_int(q, fields[i], VENTURE_FILTER_OP_EQ, venture_entity_get_id(price), error))
+			return FALSE;
+		count = venture_database_count(db, q, error);
+		if (count < 0)
+			return FALSE;
+		if (count > 0)
+		{
+			*used = TRUE;
+			return TRUE;
+		}
+	}
+	return TRUE;
 }
 
 gboolean
@@ -652,6 +788,19 @@ venture_billing_save_hook(VentureDatabase *database, VentureEntity *record,
 	}
 	if (type == VENTURE_TYPE_CUSTOMER_SUBSCRIPTION || type == VENTURE_TYPE_SUBSCRIPTION_EVENT || type == VENTURE_TYPE_BILLING_NOTICE)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "subscription state and history may only be written through the service");
+	if (type == VENTURE_TYPE_PLAN_PRICE && venture_entity_is_persisted(record))
+	{
+		g_autoptr(VentureEntity) previous = venture_database_get(database, type, venture_entity_get_id(record), error);
+		g_autoptr(JsonNode) diff = NULL;
+		gboolean used;
+		if (previous == NULL || !price_used(database, previous, &used, error))
+			return FALSE;
+		g_object_set(previous, "active", flag(record, "active"), NULL);
+		diff = venture_entity_diff(previous, record);
+		if (used && (json_object_get_size(json_node_get_object(diff)) != 0 ||
+			venture_entity_get_organization_id(previous) != venture_entity_get_organization_id(record)))
+			return refuse(error, VENTURE_ERROR_VALIDATION, "referenced prices are immutable; create a new price version");
+	}
 	if (type == VENTURE_TYPE_PLAN_PRICE)
 	{
 		g_autoptr(VentureMoney) amount = price_amount(record, 1, error);
@@ -673,8 +822,34 @@ gboolean
 venture_billing_check_removal(VentureDatabase *database, VentureEntity *record, GError **error)
 {
 	GType type = G_OBJECT_TYPE(record);
+	if (type == VENTURE_TYPE_PLAN_PRICE)
+	{
+		gboolean used;
+		if (!price_used(database, record, &used, error))
+			return FALSE;
+		if (used)
+			return refuse(error, VENTURE_ERROR_VALIDATION, "referenced prices cannot be removed");
+	}
 	if (type == VENTURE_TYPE_CUSTOMER_SUBSCRIPTION || type == VENTURE_TYPE_SUBSCRIPTION_EVENT ||
 		type == VENTURE_TYPE_BILLING_NOTICE || type == VENTURE_TYPE_BILLING_REQUEST)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "billing history cannot be deleted, restored or purged");
+	return TRUE;
+}
+
+gboolean
+venture_billing_prepare_request(VentureBillingService *self, VentureBillingRequest *request, GError **error)
+{
+	g_autoptr(VentureEntity) sub = NULL;
+	VentureEntity *e = VENTURE_ENTITY(request);
+	gint64 id = number(e, "subscription-id");
+	gint64 expected = number(e, "expected-version");
+	if (id == 0)
+		return TRUE;
+	sub = load(self, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, id, venture_entity_get_organization_id(e), error);
+	if (sub == NULL)
+		return FALSE;
+	if (expected != 0 && expected != venture_entity_get_version(sub))
+		return refuse(error, VENTURE_ERROR_CONFLICT, "subscription changed before this action could be staged");
+	g_object_set(e, "expected-version", venture_entity_get_version(sub), NULL);
 	return TRUE;
 }

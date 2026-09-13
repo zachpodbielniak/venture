@@ -3136,14 +3136,14 @@ main(
 		{ "apply-writes", 0, 0, G_OPTION_ARG_NONE, &apply_writes,
 		  "mcp only: let write tools apply instead of staging", NULL },
 		{ "stage", 0, 0, G_OPTION_ARG_NONE, &stage,
-		  "create/update/delete only: propose the change for approval "
+		  "create/update/delete/billing: propose the change for approval "
 		  "instead of making it", NULL },
 		{ "version", 'V', 0, G_OPTION_ARG_NONE, &show_version,
 		  "Print the version and exit", NULL },
 		{ "license", 0, 0, G_OPTION_ARG_NONE, &show_license,
 		  "Print licensing information and exit", NULL },
 		{ "as-of", 0, 0, G_OPTION_ARG_STRING, &billing_as_of,
-		  "billing: effective sweep date", "DATE" },
+		  "billing: effective action or sweep date", "DATE" },
 		{ "dry-run", 0, 0, G_OPTION_ARG_NONE, &billing_dry_run,
 		  "billing: preview a sweep", NULL },
 		{ G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_STRING_ARRAY, &args,
@@ -3328,7 +3328,8 @@ main(
 	 */
 	if (stage && (0 != g_strcmp0(args[0], "create")) &&
 	    (0 != g_strcmp0(args[0], "update")) &&
-	    (0 != g_strcmp0(args[0], "delete")))
+	    (0 != g_strcmp0(args[0], "delete")) &&
+	    (0 != g_strcmp0(args[0], "billing")))
 	{
 		g_printerr("venturectl: --stage only means something to create, "
 		           "update and delete. \"%s\" would ignore it.\n", args[0]);

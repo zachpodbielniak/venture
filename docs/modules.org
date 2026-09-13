@@ -43,7 +43,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =factory=    | forge           | milestone, release, build, environment, deployment, incident; =releases=, =lead_time=, =incidents=, =delivery= | |
 | =dashboards= | core            | dashboard, dashboard_widget; the =/dashboards= pages and their API | |
 | =ledger=     | finance         | journal, journal_line; posting service, =trial_balance=           |                       |
-| =billing= | invoicing, receivables | plan, plan_price, customer_subscription, subscription_event, dunning_step, billing_notice | |
+| =billing= | invoicing, receivables | plan, plan_price, customer_subscription, subscription_event, dunning_step, billing_notice, billing_request; =mrr=, =churn=, =subscriptions_due= | |
 
 Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.
 

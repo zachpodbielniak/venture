@@ -136,6 +136,7 @@
 #include "core/venture-webhook.h"
 #include "core/venture-routing.h"
 #include "billing/venture-billing-service.h"
+#include "billing/venture-billing-reports.h"
 
 /* Auth comes before the AI service, which names VentureAuthPrincipal in its
  * signatures, and before the web server, which uses both. */

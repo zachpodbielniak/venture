@@ -379,6 +379,8 @@ venture_confirmation_store_stage(
 
 	g_return_val_if_fail(VENTURE_IS_CONFIRMATION_STORE(self), NULL);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(staged), NULL);
+	if (VENTURE_IS_BILLING_REQUEST(staged) && !venture_billing_prepare_request(venture_billing_service_get(self->database), VENTURE_BILLING_REQUEST(staged), error))
+		return NULL;
 
 	venture_confirmation_store_sweep(self);
 

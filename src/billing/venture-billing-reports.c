@@ -283,6 +283,21 @@ churn(VentureContext *context, VentureDateRange *period, JsonObject *options, GE
 	venture_report_result_add_metric(result, venture_metric_new_count("lost_logos", "Lost customers", lost_logos));
 	venture_report_result_add_metric(result, venture_metric_new_money("opening_mrr", "Opening MRR", initial));
 	venture_report_result_add_metric(result, venture_metric_new_money("lost_mrr", "Lost MRR", lost));
+	if (logos > 0)
+	{
+		g_autoptr(VentureMoney) numerator = venture_money_new(lost_logos, "XXX", 0);
+		g_autoptr(VentureMoney) rate = venture_money_multiply_rational(numerator, 10000, logos, error);
+		if (rate == NULL)
+			return NULL;
+		venture_report_result_add_metric(result, venture_metric_new_count("logo_churn_bps", "Logo churn (basis points)", venture_money_get_amount(rate)));
+	}
+	if (venture_money_get_amount(initial) > 0)
+	{
+		g_autoptr(VentureMoney) rate = venture_money_multiply_rational(lost, 10000, venture_money_get_amount(initial), error);
+		if (rate == NULL)
+			return NULL;
+		venture_report_result_add_metric(result, venture_metric_new_count("revenue_churn_bps", "Revenue churn (basis points)", venture_money_get_amount(rate)));
+	}
 	venture_report_result_set_note(result, "Opening cohort is companies with positive contracted MRR before period start. Logo churn is lost_logos / opening_logos; lost logos have zero closing MRR across all subscriptions. Revenue churn is lost_mrr / opening_mrr, summing positive opening-minus-closing losses per opening company (including contractions, excluding new customers and gains). Zero denominators mean undefined churn. Both boundaries use dated events, one organization and currency. Pauses count as loss; past_due remains contracted MRR.");
 	return g_steal_pointer(&result);
 }
@@ -334,10 +349,42 @@ due(VentureContext *context, VentureDateRange *period, JsonObject *options, GErr
 	return g_steal_pointer(&result);
 }
 
+static gboolean
+options_valid(VentureContext *context, JsonObject *options, GError **error)
+{
+	g_autofree gchar *upper = g_ascii_strup(currency(options), -1);
+	if (organization(context, options) <= 0 || !venture_currency_is_valid(currency(options)) ||
+		g_strcmp0(upper, currency(options)) != 0)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"Billing reports require one positive organization ID and an uppercase currency code");
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static VentureReportResult *
+recurring_checked(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
+{
+	return options_valid(context, options, error) ? recurring(context, period, options, error) : NULL;
+}
+
+static VentureReportResult *
+churn_checked(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
+{
+	return options_valid(context, options, error) ? churn(context, period, options, error) : NULL;
+}
+
+static VentureReportResult *
+due_checked(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
+{
+	return options_valid(context, options, error) ? due(context, period, options, error) : NULL;
+}
+
 void
 venture_billing_register_reports(VentureReportRegistry *registry)
 {
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("mrr", "Recurring revenue", "Contracted MRR, ARR and dated movements", recurring)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("churn", "Customer churn", "Opening customer cohort and recurring revenue losses", churn)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("subscriptions_due", "Subscriptions due", "Renewals in the next days", due)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("mrr", "Recurring revenue", "Contracted MRR, ARR and dated movements", recurring_checked)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("churn", "Customer churn", "Opening customer cohort and recurring revenue losses", churn_checked)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("subscriptions_due", "Subscriptions due", "Renewals in the next days", due_checked)));
 }

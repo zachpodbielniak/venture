@@ -174,7 +174,7 @@ test_renewal(Fixture *f, gconstpointer data)
 	gint64 id = start(f);
 	a = request(f, "renew", id, "2026-02-01");
 	save(f, a);
-	g_assert_cmpint(count(f, "invoice"), ==, 1);
+	g_assert_cmpint(count(f, "invoice"), ==, 2);
 	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db), integer(a, "invoice-id"), NULL, NULL);
 	g_assert_nonnull(balance);
 	g_assert_cmpint(venture_money_get_amount(balance), ==, 6000);
@@ -188,7 +188,7 @@ test_renewal(Fixture *f, gconstpointer data)
 	g_clear_object(&a);
 	a = request(f, "renew-sweep", 0, "2026-02-01");
 	save(f, a);
-	g_assert_cmpint(count(f, "invoice"), ==, 1);
+	g_assert_cmpint(count(f, "invoice"), ==, 2);
 }
 
 /* Trial activation must not bill before the trial expires. */
@@ -292,7 +292,7 @@ test_rollback(Fixture *f, gconstpointer data)
 	a = request(f, "renew", id, "2026-02-01");
 	g_assert_false(venture_database_save(f->db, a, NULL, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
-	g_assert_cmpint(count(f, "invoice"), ==, 0);
+	g_assert_cmpint(count(f, "invoice"), ==, 1);
 	g_assert_cmpint(count(f, "subscription_event"), ==, 1);
 	g_assert_cmpint(count(f, "audit_entry"), ==, audits);
 }
@@ -376,6 +376,328 @@ test_due_report(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(venture_report_result_get_row_count(r), ==, 1);
 }
 
+static void
+test_late_sweep(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = NULL;
+	guint i;
+	start(f);
+	for (i = 0; i < 2; i++)
+	{
+		g_clear_object(&a);
+		a = request(f, "renew-sweep", 0, "2026-04-01");
+		save(f, a);
+		g_assert_cmpint(count(f, "invoice"), ==, 4);
+	}
+}
+
+static void
+test_dry_run_no_writes(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = NULL;
+	gint64 audits;
+	gint64 requests;
+	start(f);
+	audits = count(f, "audit_entry");
+	requests = count(f, "billing_request");
+	a = request(f, "renew-sweep", 0, "2026-02-01");
+	g_object_set(a, "dry-run", TRUE, NULL);
+	save(f, a);
+	g_assert_cmpint(integer(a, "processed"), ==, 1);
+	g_assert_cmpint(count(f, "audit_entry"), ==, audits);
+	g_assert_cmpint(count(f, "billing_request"), ==, requests);
+}
+
+static void
+test_price_history(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = NULL;
+	g_autoptr(GError) error = NULL;
+	start(f);
+	p = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	field(p, "amount", "100 USD");
+	g_assert_false(venture_database_save(f->db, p, NULL, &error));
+	g_assert_nonnull(g_strstr_len(error->message, -1, "VentureBillingService"));
+}
+
+static void
+test_contact_scope(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) other = record(f, "company");
+	g_autoptr(VentureEntity) contact = record(f, "contact");
+	g_autoptr(VentureEntity) a = request(f, "start", 0, "2026-01-01");
+	g_autoptr(GError) error = NULL;
+	g_object_set(other, "name", "Different customer", NULL);
+	save(f, other);
+	g_object_set(contact, "name", "Other customer's contact", "company-id", venture_entity_get_id(other), NULL);
+	save(f, contact);
+	g_object_set(a, "company-id", f->company, "contact-id", venture_entity_get_id(contact),
+		"plan-price-id", f->price, NULL);
+	g_assert_false(venture_database_save(f->db, a, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_cmpint(count(f, "customer_subscription"), ==, 0);
+}
+
+static void
+test_churn_rates(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(VentureReportResult) r = NULL;
+	GPtrArray *metrics;
+	guint i;
+	guint found = 0;
+	gint64 id = start(f);
+	a = request(f, "cancel", id, "2026-02-15");
+	save(f, a);
+	r = report(f, "churn", "2026-02");
+	metrics = venture_report_result_get_metrics(r);
+	for (i = 0; i < metrics->len; i++)
+	{
+		VentureMetric *m = g_ptr_array_index(metrics, i);
+		if (g_strcmp0(venture_metric_get_key(m), "logo_churn_bps") == 0 ||
+			g_strcmp0(venture_metric_get_key(m), "revenue_churn_bps") == 0)
+		{
+			g_assert_cmpfloat(venture_metric_get_number(m), ==, 10000.0);
+			found++;
+		}
+	}
+	g_assert_cmpuint(found, ==, 2);
+}
+
+static void
+test_initial_invoice(Fixture *f, gconstpointer data)
+{
+	start(f);
+	g_assert_cmpint(count(f, "invoice"), ==, 1);
+}
+
+static void
+test_migration(Fixture *f, gconstpointer data)
+{
+	g_autoptr(OrmResult) result = venture_database_query_raw(f->db,
+		"SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations WHERE version = 103", NULL, NULL);
+	g_assert_true(orm_result_next(result));
+	g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 1);
+}
+
+static void
+test_proration_billed(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	gint64 id = start(f);
+	a = request(f, "change-seats", id, "2026-01-17");
+	g_object_set(a, "seats", (gint64)3, NULL);
+	save(f, a);
+	g_clear_object(&a);
+	a = request(f, "renew", id, "2026-02-01");
+	save(f, a);
+	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db), integer(a, "invoice-id"), NULL, NULL);
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 10448);
+}
+
+static void
+test_proration_credit(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	gint64 id = start(f);
+	a = request(f, "change-seats", id, "2026-01-17");
+	g_object_set(a, "seats", (gint64)1, NULL);
+	save(f, a);
+	g_clear_object(&a);
+	a = request(f, "renew", id, "2026-02-01");
+	save(f, a);
+	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db), integer(a, "invoice-id"), NULL, NULL);
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 1552);
+	g_assert_cmpint(count(f, "customer_credit"), ==, 1);
+}
+
+static void
+test_month_end(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = request(f, "start", 0, "2026-01-31");
+	g_autoptr(VentureEntity) s = NULL;
+	g_autoptr(GDateTime) end = NULL;
+	g_autofree gchar *text = NULL;
+	gint64 id;
+	g_object_set(a, "company-id", f->company, "plan-price-id", f->price, NULL);
+	save(f, a);
+	id = integer(a, "subscription-id");
+	g_clear_object(&a);
+	a = request(f, "renew", id, "2026-02-28");
+	save(f, a);
+	s = subscription(f, id);
+	g_object_get(s, "current-period-end", &end, NULL);
+	text = g_date_time_format(end, "%F");
+	g_assert_cmpstr(text, ==, "2026-03-31");
+}
+
+static void
+test_documentation(void)
+{
+	static const gchar *const files[] = { "docs/billing.org", "docs/cli.org", "docs/api.org", "skills/venturectl/SKILL.md" };
+	guint i;
+	for (i = 0; i < G_N_ELEMENTS(files); i++)
+	{
+		g_autofree gchar *text = NULL;
+		g_assert_true(g_file_get_contents(files[i], &text, NULL, NULL));
+		g_assert_nonnull(g_strstr_len(text, -1, "billing"));
+		g_assert_nonnull(g_strstr_len(text, -1, "customer_subscription"));
+	}
+}
+
+static void
+test_closed_period(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = venture_context_new(config, f->db);
+	g_autoptr(GDateTime) begin = venture_time_from_string("2026-01-01", NULL);
+	g_autoptr(VentureFiscalYear) year = NULL;
+	g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_FISCAL_PERIOD);
+	g_autoptr(GPtrArray) periods = NULL;
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	gint64 id = start(f);
+	guint i;
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "owner";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	year = venture_period_service_generate(venture_period_service_get(f->db), f->org, "FY2026", begin, VENTURE_PERIOD_MONTHLY, &actor, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(year);
+	venture_query_set_organization(q, f->org);
+	g_assert_true(venture_query_add_order(q, "start-at", VENTURE_SORT_ASCENDING, &error));
+	periods = venture_database_find(f->db, q, &error);
+	g_assert_no_error(error);
+	for (i = 0; i < 2; i++)
+	{
+		VentureEntity *p = g_ptr_array_index(periods, i);
+		g_object_set(p, "state", VENTURE_PERIOD_CLOSED, NULL);
+		g_assert_true(venture_database_save(f->db, p, &actor, &error));
+		g_assert_no_error(error);
+	}
+	a = request(f, "renew", id, "2026-02-01");
+	g_assert_false(venture_database_save(f->db, a, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_assert_cmpint(count(f, "invoice"), ==, 1);
+	g_assert_cmpint(count(f, "subscription_event"), ==, 1);
+}
+
+static void
+test_currency(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) original = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) price = record(f, "plan_price");
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(VentureEntity) s = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 id = start(f);
+	g_object_set(price, "plan-id", integer(original, "plan-id"), "currency", "EUR", "active", TRUE, NULL);
+	field(price, "amount", "60 USD");
+	g_assert_false(venture_database_save(f->db, price, NULL, &error));
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	field(price, "amount", "60 EUR");
+	save(f, price);
+	a = request(f, "change", id, "2026-01-17");
+	g_object_set(a, "plan-price-id", venture_entity_get_id(price), NULL);
+	g_assert_false(venture_database_save(f->db, a, NULL, &error));
+	g_assert_nonnull(error);
+	s = subscription(f, id);
+	g_assert_cmpint(integer(s, "plan-price-id"), ==, f->price);
+	g_assert_cmpint(count(f, "invoice"), ==, 1);
+}
+
+static void
+test_yearly(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureReportResult) r = NULL;
+	field(p, "interval", "year");
+	field(p, "amount", "120 USD");
+	save(f, p);
+	start(f);
+	r = report(f, "mrr", "2026-01");
+	g_assert_cmpint(metric_amount(r, "mrr"), ==, 2000);
+	g_assert_cmpint(metric_amount(r, "arr"), ==, 24000);
+}
+
+static void
+test_scheduled_change_cancel(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) original = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) p = record(f, "plan_price");
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(VentureEntity) s = NULL;
+	g_autoptr(VentureReportResult) r = NULL;
+	gint64 id = start(f);
+	g_object_set(p, "plan-id", integer(original, "plan-id"), "currency", "USD", "active", TRUE, "per-seat", TRUE, NULL);
+	field(p, "amount", "60 USD");
+	save(f, p);
+	a = request(f, "change", id, "2026-01-17");
+	g_object_set(a, "plan-price-id", venture_entity_get_id(p), "at-period-end", TRUE, NULL);
+	save(f, a);
+	s = subscription(f, id);
+	g_assert_cmpint(integer(s, "plan-price-id"), ==, f->price);
+	g_assert_cmpint(integer(s, "pending-plan-price-id"), ==, venture_entity_get_id(p));
+	g_clear_object(&a);
+	a = request(f, "renew", id, "2026-02-01");
+	save(f, a);
+	g_clear_object(&s);
+	s = subscription(f, id);
+	g_assert_cmpint(integer(s, "plan-price-id"), ==, venture_entity_get_id(p));
+	g_assert_cmpint(integer(s, "pending-plan-price-id"), ==, 0);
+	g_clear_object(&a);
+	a = request(f, "cancel", id, "2026-02-15");
+	g_object_set(a, "at-period-end", TRUE, NULL);
+	save(f, a);
+	status_is(f, id, "active");
+	g_clear_object(&a);
+	a = request(f, "renew-sweep", 0, "2026-03-01");
+	save(f, a);
+	status_is(f, id, "cancelled");
+	g_assert_cmpint(count(f, "invoice"), ==, 2);
+	r = report(f, "mrr", "2026-01");
+	g_assert_cmpint(metric_amount(r, "mrr"), ==, 6000);
+}
+
+static void
+test_scheduled_cancel_past_due(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(VentureReportResult) r = NULL;
+	gint64 id = start(f);
+	a = request(f, "mark-payment-failed", id, "2026-01-17");
+	save(f, a);
+	g_clear_object(&a);
+	a = request(f, "cancel", id, "2026-01-20");
+	g_object_set(a, "at-period-end", TRUE, NULL);
+	save(f, a);
+	g_clear_object(&a);
+	a = request(f, "renew-sweep", 0, "2026-04-01");
+	save(f, a);
+	status_is(f, id, "cancelled");
+	r = report(f, "mrr", "2026-02");
+	g_assert_cmpint(metric_amount(r, "mrr"), ==, 0);
+}
+
+static void
+test_sweep_scope(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(GError) error = NULL;
+	start(f);
+	a = request(f, "renew-sweep", 0, "2026-02-01");
+	venture_entity_set_organization_id(a, 0);
+	g_assert_false(venture_database_save(f->db, a, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_cmpint(count(f, "invoice"), ==, 1);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -391,5 +713,22 @@ main(int argc, char **argv)
 	g_test_add("/billing/mrr", Fixture, NULL, setup, test_mrr, teardown);
 	g_test_add("/billing/churn", Fixture, NULL, setup, test_churn, teardown);
 	g_test_add("/billing/due-report", Fixture, NULL, setup, test_due_report, teardown);
+	g_test_add("/billing/late-sweep", Fixture, NULL, setup, test_late_sweep, teardown);
+	g_test_add("/billing/dry-run-no-writes", Fixture, NULL, setup, test_dry_run_no_writes, teardown);
+	g_test_add("/billing/price-history", Fixture, NULL, setup, test_price_history, teardown);
+	g_test_add("/billing/contact-scope", Fixture, NULL, setup, test_contact_scope, teardown);
+	g_test_add("/billing/churn-rates", Fixture, NULL, setup, test_churn_rates, teardown);
+	g_test_add("/billing/initial-invoice", Fixture, NULL, setup, test_initial_invoice, teardown);
+	g_test_add("/billing/migration", Fixture, NULL, setup, test_migration, teardown);
+	g_test_add("/billing/proration-billed", Fixture, NULL, setup, test_proration_billed, teardown);
+	g_test_add("/billing/proration-credit", Fixture, NULL, setup, test_proration_credit, teardown);
+	g_test_add("/billing/month-end", Fixture, NULL, setup, test_month_end, teardown);
+	g_test_add_func("/billing/documentation", test_documentation);
+	g_test_add("/billing/closed-period", Fixture, NULL, setup, test_closed_period, teardown);
+	g_test_add("/billing/currency", Fixture, NULL, setup, test_currency, teardown);
+	g_test_add("/billing/yearly", Fixture, NULL, setup, test_yearly, teardown);
+	g_test_add("/billing/scheduled-change-cancel", Fixture, NULL, setup, test_scheduled_change_cancel, teardown);
+	g_test_add("/billing/scheduled-cancel-past-due", Fixture, NULL, setup, test_scheduled_cancel_past_due, teardown);
+	g_test_add("/billing/sweep-scope", Fixture, NULL, setup, test_sweep_scope, teardown);
 	return g_test_run();
 }
