@@ -533,6 +533,15 @@ static GType (*const venture_module_periods_types[]) (void) = {
 };
 static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live", NULL };
 
+static GType (*const venture_module_pipelines_types[]) (void) = {
+	venture_pipeline_get_type, venture_pipeline_stage_get_type,
+	venture_deal_stage_entry_get_type, venture_loss_reason_get_type, NULL
+};
+static const gchar *const venture_module_requires_crm[] = { "crm", NULL };
+static const gchar *const venture_module_reports_pipelines[] = {
+	"stage_duration", "funnel", "forecast", "loss_reasons", "overdue_deals", NULL
+};
+
 static GType (*const sequence_types[]) (void) = {
 	venture_sequence_get_type, venture_sequence_step_get_type,
 	venture_sequence_enrollment_get_type, venture_sequence_delivery_get_type,
@@ -691,6 +700,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		venture_module_periods_types, venture_module_reports_periods, NULL, FALSE
 	},
 	{
+		"pipelines", "Sales pipelines", "Configurable stages, history and forecasts.",
+		venture_module_requires_crm, NULL, venture_module_pipelines_types,
+		venture_module_reports_pipelines, NULL, FALSE
+	},
+	{
 		"sequences", "Follow-up sequences", "Durable timed follow-ups and suppression.",
 		sequence_requires, NULL, sequence_types, sequence_reports, NULL, FALSE
 	},
@@ -702,6 +716,7 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		venture_module_requires_statements, NULL, NULL,
 		venture_module_reports_statements, NULL, FALSE
 	}
+
 };
 
 const VentureModuleInfo *

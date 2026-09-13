@@ -196,6 +196,13 @@ does the same for =create=, =update=, =delete= and =act= from the shell. It take
 =VENTURE_TOKEN= and refuses =--token= outright, since an MCP server is spawned
 from a config file. See [[file:mcp.org][venturectl mcp]].
 
+* Sales pipeline actions
+
+=venturectl deal move ID STAGE [NOTE]= moves a deal through
+=VentureDealService=. STAGE is a =pipeline_stage= id in the deal's pipeline.
+Fill its required fields and loss reason first with ordinary =update deal=.
+Generic updates cannot change =stage=, =stage_id= or =closed_at=.
+See [[file:pipelines.org][Sales pipelines]] for configuration and forecasting.
 * Follow-up sequences
 
 =sequence enroll ID contact_id=ID [field=value ...]= enrolls through the

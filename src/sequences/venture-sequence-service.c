@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
+#include "sequences/venture-sequence-service-private.h"
 #include <string.h>
 
 struct _VentureSequenceService
@@ -495,7 +496,8 @@ adapter_update(VentureSequenceService *self, VentureEntity *row, VentureEntity *
 }
 
 static gboolean
-process_save(VentureSequenceService *self, VentureEntity *row, const VentureActor *actor, GError **error)
+process_save(VentureSequenceService *self, VentureEntity *row, const VentureActor *actor,
+	VentureSequenceSaveContinuation save, GError **error)
 {
 	g_autoptr(VentureEntity) previous = NULL;
 	GType type = G_OBJECT_TYPE(row);
@@ -569,12 +571,17 @@ process_save(VentureSequenceService *self, VentureEntity *row, const VentureActo
 			at = g_date_time_new_now_utc();
 		g_object_set(row, "email", email, "at", at, NULL);
 	}
+	/* A deal has already passed the pipeline hook. Re-entering the dispatcher
+	 * would spend its consumed permit twice. Keep validators and signals in
+	 * the ordinary downstream write, within this sequence transaction. */
+	if (type == VENTURE_TYPE_DEAL)
+		return save(self->database, row, actor, error) && apply_exits(self, row, previous, actor, error);
 	return persist(self, row, actor, error) && apply_exits(self, row, previous, actor, error);
 }
 
 gboolean
 venture_sequences_save_hook(VentureDatabase *database, VentureEntity *record,
-	const VentureActor *actor, gboolean *handled, GError **error)
+	const VentureActor *actor, VentureSequenceSaveContinuation save, gboolean *handled, GError **error)
 {
 	VentureSequenceService *self;
 	g_autoptr(VentureEntity) original = NULL;
@@ -601,7 +608,7 @@ venture_sequences_save_hook(VentureDatabase *database, VentureEntity *record,
 	original = g_object_new(type, NULL);
 	venture_entity_copy_properties_from(original, record, FALSE);
 	self->busy = TRUE;
-	ok = process_save(self, record, actor, error);
+	ok = process_save(self, record, actor, save, error);
 	self->busy = FALSE;
 	if (!ok)
 	{

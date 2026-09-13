@@ -227,6 +227,11 @@ test_report_registry_has_builtins(
 	/* Modules may append reports without replacing the established names. */
 	g_assert_cmpuint(reports->len, >=, 18);
 
+	g_assert_nonnull(venture_report_registry_lookup(registry, "stage_duration"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "funnel"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "forecast"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "loss_reasons"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "overdue_deals"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "pnl"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "releases"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "lead_time"));
