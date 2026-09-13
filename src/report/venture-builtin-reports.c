@@ -2713,5 +2713,6 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 	venture_receivables_register_reports(self);
 	venture_period_reports_register(self);
 	venture_autojournal_register_reports(self);
+	venture_statements_register_reports(self);
 
 }

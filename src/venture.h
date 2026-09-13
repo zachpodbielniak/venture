@@ -127,6 +127,7 @@
 #include "ledger/venture-posting-rule.h"
 #include "ledger/venture-posting-service.h"
 #include "autojournal/venture-autojournal-service.h"
+#include "statements/venture-ledger-balances.h"
 #include "core/venture-ticket-relation.h"
 #include "core/venture-record-link.h"
 #include "core/venture-dashboard.h"

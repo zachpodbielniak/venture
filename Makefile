@@ -87,6 +87,7 @@ CORE_SRCS += src/autojournal/venture-posting-profile.c
 SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wildcard src/autojournal/*.c))
 
 PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
+SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
@@ -119,6 +120,8 @@ PUBLIC_HDRS := \
 	$(wildcard src/kb/*.h) \
 	$(wildcard src/util/*.h) \
 	$(wildcard src/mcp/*.h)
+
+PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/statements/*.h))
 
 TEST_SRCS := $(wildcard tests/test-*.c)
 
