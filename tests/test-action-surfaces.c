@@ -11,7 +11,7 @@ typedef struct
 	VentureContext *context;
 	VentureWebServer *server;
 	SoupSession *session;
-	
+
 	gchar *state_dir;
 	gchar *url;
 } Fixture;
@@ -20,11 +20,11 @@ static void
 fixture_set_up(Fixture *fixture, gconstpointer data)
 {
 	g_autoptr(GError) error = NULL;
-	
-	
-	
+
+
+
 	g_autoptr(GSocketListener) probe = g_socket_listener_new();
-	
+
 	gboolean started;
 	guint port;
 	/* Find an available port: concurrent PID namespaces have equal PIDs,
@@ -59,7 +59,7 @@ fixture_tear_down(Fixture *fixture, gconstpointer data)
 	venture_web_server_stop(fixture->server);
 	g_clear_object(&fixture->session);
 	g_clear_object(&fixture->server);
-	
+
 	g_clear_object(&fixture->context);
 	g_clear_object(&fixture->database);
 	g_clear_object(&fixture->config);
