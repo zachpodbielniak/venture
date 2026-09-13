@@ -109,7 +109,8 @@ settlement, and applies it, leaving *$15.52* outstanding. Credit beyond an
 invoice's amount remains customer credit. Adjustments accumulate exactly
 until renewal. Trials and scheduled changes add no immediate adjustment.
 Changing currency is refused. A change between monthly and yearly terms
-normalizes the new price to the current interval before allocation.
+normalizes both prices to the service period already in progress before
+allocation, including repeated interval changes within that period.
 
 Cancellation does not automatically refund an already invoiced period.
 Pending adjustments remain explicit on a subscription cancelled before
@@ -136,7 +137,10 @@ scheduler; no separate billing thread touches the database.
 =past_due=. Dunning measures whole overdue days from that date. Each
 subscription/failure episode/step has one durable =billing_notice= with
 =channel=email=. Notice and retry actions record that intent only; pause
-and cancel also call the subscription lifecycle service. =recover= moves
+and cancel also call the subscription lifecycle service. Steps run by day
+offset, then ID; escalation continues after a dunning pause until cancellation.
+A late sweep catches up all eligible steps in that order. =resume= clears
+the failure episode. =recover= moves
 =past_due= back to active. The operator or a future collection adapter
 reports failure and recovery; an unpaid invoice alone does not fabricate a
 failed provider attempt.

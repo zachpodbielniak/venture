@@ -153,6 +153,9 @@ rows(VentureBillingService *self, GType type, gint64 org, GError **error)
 	g_autoptr(VentureQuery) q = venture_query_new(type);
 	venture_query_set_organization(q, org);
 	venture_query_set_limit(q, 0);
+	if (type == VENTURE_TYPE_DUNNING_STEP &&
+		!venture_query_add_order(q, "day-offset", VENTURE_SORT_ASCENDING, error))
+		return NULL;
 	if (!venture_query_add_order(q, "id", VENTURE_SORT_ASCENDING, error))
 		return NULL;
 	return venture_database_find(self->database, q, error);
@@ -221,23 +224,32 @@ proration(VentureEntity *old_price, VentureEntity *new_price, gint64 old_seats,
 	g_autoptr(VentureMoney) old_amount = price_amount(old_price, old_seats, error);
 	g_autoptr(VentureMoney) new_amount = NULL;
 	g_autoptr(VentureMoney) comparable = NULL;
+	g_autoptr(VentureMoney) normalized_old = NULL;
 	g_autoptr(VentureMoney) delta = NULL;
 	g_autoptr(GPtrArray) parts = NULL;
 	VentureMoney *total;
 	gint64 days;
 	gint64 elapsed;
+	gint period_months;
 	gint64 i;
 	if (old_amount == NULL)
 		return NULL;
 	new_amount = price_amount(new_price, new_seats, error);
 	if (new_amount == NULL)
 		return NULL;
-	comparable = venture_money_multiply_rational(new_amount,
-		choice(old_price, "interval") == 1 ? 12 : 1,
+	/* A price change does not change the period already being served. */
+	period_months = (g_date_time_get_year(end) - g_date_time_get_year(start)) * 12 +
+		g_date_time_get_month(end) - g_date_time_get_month(start);
+	period_months = period_months == 12 ? 12 : 1;
+	normalized_old = venture_money_multiply_rational(old_amount, period_months,
+		choice(old_price, "interval") == 1 ? 12 : 1, error);
+	if (normalized_old == NULL)
+		return NULL;
+	comparable = venture_money_multiply_rational(new_amount, period_months,
 		choice(new_price, "interval") == 1 ? 12 : 1, error);
 	if (comparable == NULL)
 		return NULL;
-	delta = venture_money_subtract(comparable, old_amount, error);
+	delta = venture_money_subtract(comparable, normalized_old, error);
 	if (delta == NULL)
 		return NULL;
 	days = g_date_time_difference(end, start) / G_TIME_SPAN_DAY;
@@ -498,6 +510,7 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 		{
 			state = 1;
 			kind = 6;
+			g_object_set(sub, "past-due-at", NULL, NULL);
 		}
 		else if (g_strcmp0(verb, "cancel") == 0 && state < 4)
 		{
@@ -649,7 +662,7 @@ sweep(VentureBillingService *self, VentureEntity *request, const VentureActor *a
 				}
 			}
 		}
-		else if (state == 2)
+		else if (state == 2 || state == 3)
 		{
 			guint j;
 			g_object_get(sub, "past-due-at", &date, NULL);
@@ -680,7 +693,7 @@ sweep(VentureBillingService *self, VentureEntity *request, const VentureActor *a
 						"channel", "email", "at", at, "past-due-at", date, "delivery-key", key, NULL);
 					if (!write_record(self, notice, actor, error))
 						return FALSE;
-					if (action_kind >= 2)
+					if (action_kind == 3 || (action_kind == 2 && state == 2))
 					{
 						g_clear_object(&action);
 						action = new_record(VENTURE_TYPE_BILLING_REQUEST, org);
@@ -690,7 +703,9 @@ sweep(VentureBillingService *self, VentureEntity *request, const VentureActor *a
 					}
 				}
 				processed++;
-				if (action_kind >= 2)
+				if (action_kind == 2)
+					state = 3;
+				if (action_kind == 3)
 					break;
 			}
 		}

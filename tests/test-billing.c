@@ -1,6 +1,7 @@
 /* Copyright (C) 2026 Zach Podbielniak
  * SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
+#include "venture-test-util.h"
 
 /* Billing must coexist with the example plugin's recurring-cost record. */
 static void
@@ -271,6 +272,51 @@ test_dunning(Fixture *f, gconstpointer data)
 	save(f, a);
 	g_assert_cmpint(count(f, "billing_notice"), ==, 1);
 	status_is(f, id, "paused");
+}
+
+static void
+test_dunning_sequence(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) cancel = record(f, "dunning_step");
+	g_autoptr(VentureEntity) pause = record(f, "dunning_step");
+	g_autoptr(VentureEntity) notice = record(f, "dunning_step");
+	g_autoptr(VentureEntity) a = NULL;
+	gint64 id = start(f);
+	gint64 late;
+	/* Configuration insertion order must not change escalation order. */
+	g_object_set(cancel, "day-offset", (gint64)7, "active", TRUE, NULL);
+	field(cancel, "action", "cancel");
+	save(f, cancel);
+	g_object_set(pause, "day-offset", (gint64)3, "active", TRUE, NULL);
+	field(pause, "action", "pause");
+	save(f, pause);
+	g_object_set(notice, "day-offset", (gint64)1, "active", TRUE, NULL);
+	save(f, notice);
+	a = request(f, "mark-payment-failed", id, "2026-01-02");
+	save(f, a);
+	g_clear_object(&a);
+	a = request(f, "dunning-sweep", 0, "2026-01-05");
+	save(f, a);
+	status_is(f, id, "paused");
+	g_assert_cmpint(count(f, "billing_notice"), ==, 2);
+	g_clear_object(&a);
+	a = request(f, "dunning-sweep", 0, "2026-01-09");
+	save(f, a);
+	status_is(f, id, "cancelled");
+	g_assert_cmpint(count(f, "billing_notice"), ==, 3);
+	late = start(f);
+	g_clear_object(&a);
+	a = request(f, "mark-payment-failed", late, "2026-01-02");
+	save(f, a);
+	g_clear_object(&a);
+	a = request(f, "dunning-sweep", 0, "2026-01-09");
+	save(f, a);
+	status_is(f, late, "cancelled");
+	g_assert_cmpint(count(f, "billing_notice"), ==, 6);
+	g_clear_object(&a);
+	a = request(f, "dunning-sweep", 0, "2026-01-09");
+	save(f, a);
+	g_assert_cmpint(count(f, "billing_notice"), ==, 6);
 }
 
 /* A veto after the invoice's draft write must roll every row back. */
@@ -698,6 +744,108 @@ test_sweep_scope(Fixture *f, gconstpointer data)
 	g_assert_cmpint(count(f, "invoice"), ==, 1);
 }
 
+static void
+test_interval_changes(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) monthly = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) annual = record(f, "plan_price");
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	gint64 id;
+	g_object_set(annual, "plan-id", integer(monthly, "plan-id"), "currency", "USD", "active", TRUE, "per-seat", TRUE, NULL);
+	field(annual, "interval", "year");
+	field(annual, "amount", "300 USD");
+	save(f, annual);
+	id = start(f);
+	a = request(f, "change", id, "2026-01-17");
+	g_object_set(a, "plan-price-id", venture_entity_get_id(annual), NULL);
+	save(f, a);
+	g_clear_object(&a);
+	a = request(f, "change", id, "2026-01-18");
+	g_object_set(a, "plan-price-id", f->price, NULL);
+	save(f, a);
+	g_clear_object(&a);
+	a = request(f, "renew", id, "2026-02-01");
+	save(f, a);
+	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db), integer(a, "invoice-id"), NULL, NULL);
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 5968);
+}
+
+static void
+test_upgrade_disabled_restart(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-billing-upgrade-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/books.db", directory);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureDatabase) db = NULL;
+	g_autoptr(VentureCompany) company = venture_company_new();
+	g_autoptr(GError) error = NULL;
+	gint64 id;
+	guint i;
+	venture_config_set_module_enabled(config, "billing", FALSE);
+	db = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	context = venture_context_new(config, db);
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(), "customer_subscription"), ==, G_TYPE_INVALID);
+	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(context), "mrr"));
+	g_object_set(company, "name", "Pre-billing Lightsite customer", "organization-id", (gint64)1, NULL);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(company), NULL, &error));
+	g_assert_no_error(error);
+	id = venture_entity_get_id(VENTURE_ENTITY(company));
+	/* Simulate the pre-feature script history while retaining real core rows. */
+	g_assert_true(venture_database_execute(db, "DELETE FROM schema_migrations WHERE version = 103", NULL, &error));
+	g_assert_no_error(error);
+	venture_config_set_module_enabled(config, "billing", TRUE);
+	g_clear_object(&context);
+	g_clear_object(&db);
+	for (i = 0; i < 2; i++)
+	{
+		g_autoptr(VentureEntity) saved = NULL;
+		g_autofree gchar *name = NULL;
+		db = venture_database_new(uri, &error);
+		g_assert_no_error(error);
+		context = venture_context_new(config, db);
+		g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		saved = venture_database_get(db, VENTURE_TYPE_COMPANY, id, &error);
+		g_assert_no_error(error);
+		g_object_get(saved, "name", &name, NULL);
+		g_assert_cmpstr(name, ==, "Pre-billing Lightsite customer");
+		g_assert_nonnull(venture_report_registry_lookup(venture_context_get_report_registry(context), "mrr"));
+		g_clear_object(&context);
+		g_clear_object(&db);
+	}
+	venture_test_remove_tree(directory);
+}
+
+static void
+test_uniqueness(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) duplicate = record(f, "plan");
+	g_autoptr(VentureEntity) org = record(f, "organization");
+	g_autoptr(VentureEntity) first = request(f, "start", 0, "2026-01-01");
+	g_autoptr(VentureEntity) second = request(f, "start", 0, "2026-01-01");
+	g_autoptr(GError) error = NULL;
+	g_object_set(duplicate, "name", "Duplicate Starter", "code", "starter", NULL);
+	g_assert_false(venture_database_save(f->db, duplicate, NULL, &error));
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	g_object_set(org, "name", "Another organization", NULL);
+	save(f, org);
+	venture_entity_set_organization_id(duplicate, venture_entity_get_id(org));
+	save(f, duplicate);
+	g_object_set(first, "company-id", f->company, "plan-price-id", f->price, "external-id", "lightsite-42", NULL);
+	save(f, first);
+	g_object_set(second, "company-id", f->company, "plan-price-id", f->price, "external-id", "lightsite-42", NULL);
+	g_assert_false(venture_database_save(f->db, second, NULL, &error));
+	g_assert_nonnull(error);
+	g_assert_cmpint(count(f, "customer_subscription"), ==, 1);
+	g_assert_cmpint(count(f, "invoice"), ==, 1);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -708,6 +856,7 @@ main(int argc, char **argv)
 	g_test_add("/billing/trial", Fixture, NULL, setup, test_trial, teardown);
 	g_test_add("/billing/lifecycle", Fixture, NULL, setup, test_lifecycle, teardown);
 	g_test_add("/billing/seats-proration", Fixture, NULL, setup, test_seats_proration, teardown);
+	g_test_add("/billing/dunning-sequence", Fixture, NULL, setup, test_dunning_sequence, teardown);
 	g_test_add("/billing/dunning", Fixture, NULL, setup, test_dunning, teardown);
 	g_test_add("/billing/rollback", Fixture, NULL, setup, test_rollback, teardown);
 	g_test_add("/billing/mrr", Fixture, NULL, setup, test_mrr, teardown);
@@ -730,5 +879,8 @@ main(int argc, char **argv)
 	g_test_add("/billing/scheduled-change-cancel", Fixture, NULL, setup, test_scheduled_change_cancel, teardown);
 	g_test_add("/billing/scheduled-cancel-past-due", Fixture, NULL, setup, test_scheduled_cancel_past_due, teardown);
 	g_test_add("/billing/sweep-scope", Fixture, NULL, setup, test_sweep_scope, teardown);
+	g_test_add("/billing/interval-changes", Fixture, NULL, setup, test_interval_changes, teardown);
+	g_test_add("/billing/uniqueness", Fixture, NULL, setup, test_uniqueness, teardown);
+	g_test_add_func("/billing/upgrade-disabled-restart", test_upgrade_disabled_restart);
 	return g_test_run();
 }
