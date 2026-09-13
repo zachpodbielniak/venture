@@ -585,6 +585,28 @@ test_partial_installments(BankFixture *f, gconstpointer data)
 	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_MATCH), ==, 2);
 }
 
+/* Retained deleted records are audit evidence, never live match targets. */
+static void
+test_deleted_match_target(BankFixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) statement = NULL, result = NULL;
+	g_autoptr(VentureExpense) expense = venture_expense_new();
+	g_autoptr(VentureMoney) ten = venture_money_new_for_currency(1000, "USD");
+	g_autoptr(GDateTime) date = g_date_time_new_utc(2026, 1, 10, 0, 0, 0);
+	(void)data;
+	g_object_set(expense, "description", "Deleted", "organization-id", f->org, "amount", ten, "occurred-at", date, NULL);
+	g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(expense), NULL, &error));
+	g_assert_true(venture_database_delete(f->database, VENTURE_ENTITY(expense), NULL, &error));
+	statement = bank_import(f, "csv", "date,amount,memo,ref,id\n2026-01-10,-10,Fee,x,deleted-match\n", "-10 USD", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(statement);
+	result = bank_action(f, "match", 1, "{\"parts\":[{\"type\":\"expense\",\"id\":1}]}", &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_MATCH), ==, 0);
+}
+
 static void
 test_candidate_windows(BankFixture *f, gconstpointer data)
 {
@@ -699,6 +721,7 @@ main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 	venture_entity_registry_register_builtins(venture_entity_registry_get_default());
 	g_test_add("/banking/invalid-calendar-day", BankFixture, NULL, bank_setup, test_invalid_calendar_day, bank_teardown);
+	g_test_add("/banking/deleted-match-target", BankFixture, NULL, bank_setup, test_deleted_match_target, bank_teardown);
 	g_test_add("/banking/ofx-currency", BankFixture, NULL, bank_setup, test_ofx_currency, bank_teardown);
 	g_test_add("/banking/posting-account", BankFixture, NULL, bank_setup, test_bank_posting_account, bank_teardown);
 	g_test_add("/banking/open-reconciliation", BankFixture, NULL, bank_setup, test_open_reconciliation, bank_teardown);

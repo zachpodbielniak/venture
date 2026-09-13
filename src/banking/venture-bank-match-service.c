@@ -342,6 +342,8 @@ match_records(VentureBankMatchService *self, VentureEntity *transaction, JsonArr
 		if (type == G_TYPE_INVALID) return refuse(error, "match record type is unavailable");
 		target = venture_database_get(self->database, type, option_id(part, "id"), error);
 		if (target == NULL) return FALSE;
+		/* Lookup retains history; matching requires a live cash document. */
+		if (venture_entity_is_deleted(target)) return refuse(error, "match document has been deleted");
 		if (venture_entity_get_organization_id(target) != org) return refuse(error, "match crosses organizations");
 		value = candidate_amount(target);
 		if (value == NULL) return refuse(error, "record is not a supported cash document");
