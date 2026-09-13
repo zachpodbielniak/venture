@@ -2501,7 +2501,7 @@ venture_web_api_report(
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "pipeline_id", "account_id", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "pipeline_id", "statement_id", "account_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -5582,7 +5582,7 @@ venture_web_ui_report(
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "pipeline_id", "account_id", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "pipeline_id", "statement_id", "account_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -7147,6 +7147,8 @@ venture_web_append_knowledge(
 	VentureEntity		*record
 );
 
+#include "banking/venture-bank-panel.inc"
+
 static void
 venture_web_append_related(
 	VentureWebServer	*self,
@@ -8679,6 +8681,7 @@ venture_web_ui_detail(
 
 	venture_web_append_record_actions(self, content, record, principal);
 	venture_web_append_related(self, content, record);
+	venture_bank_append_actions(content, record);
 	venture_web_sequence_panel(self, content, principal, record);
 
 	/* A link is not offered on a link; the audit log is not linkable. */
@@ -27570,6 +27573,8 @@ venture_web_api_ticket_draft(
 
 
 #include "venture-web-federation.inc"
+#include "banking/venture-bank-web.inc"
+
 #include "autojournal/venture-autojournal-web.inc"
 
 #include "pipelines/venture-pipeline-web.inc"
@@ -27976,6 +27981,7 @@ venture_web_server_new(
 	htmx_router_delete(router, "/api/v1/:type/:id", venture_web_api_delete,
 	                   self);
 
+	venture_bank_web_register(router, self);
 	htmx_router_post(router, "/api/v1/:type/:id/actions/:action", venture_web_api_action, self);
 	htmx_router_post(router, "/api/v1/journals/post", venture_web_api_action, self);
 

@@ -196,6 +196,13 @@ does the same for =create=, =update=, =delete= and =act= from the shell. It take
 =VENTURE_TOKEN= and refuses =--token= outright, since an MCP server is spawned
 from a config file. See [[file:mcp.org][venturectl mcp]].
 
+* Banking actions
+
+=venturectl bank ACTION ID [JSON|@FILE]= calls the banking service over REST.
+=import= takes a bank account ID; =auto= and =reconcile= take a statement ID;
+=match=, =unmatch=, =exclude= and =create= take a transaction ID.
+=venturectl bank match AUTO STATEMENT_ID= is the bulk exact-match action.
+See [[file:banking.org][Banking]] for import mappings and action parameters.
 * Sales pipeline actions
 
 =venturectl deal move ID STAGE [NOTE]= moves a deal through

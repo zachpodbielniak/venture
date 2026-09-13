@@ -43,6 +43,8 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:testing.org][Testing]] — running the suite, and what it guarantees
 - [[file:actions.org][Record actions]] — shared business operations and approval
 
+- [[file:banking.org][Banking]] — statement import, matching and reconciliation
+
 - [[file:statements.org][Financial statements]] — posted ledger balances, statements, comparatives and P&L reconciliation
 
 ** The shape of the thing in one page

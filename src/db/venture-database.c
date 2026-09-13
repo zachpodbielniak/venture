@@ -54,6 +54,7 @@ struct _VentureDatabase
 	 * through venture_database_save(), so every writer gets the check.
 	 */
 	GPtrArray		*validators;
+	VentureBankMatchService *bank_match_service;
 	VentureDealService *deal_service;
 	VentureSequenceService *sequence_service;
 	VentureActionRegistry *actions;
@@ -100,6 +101,7 @@ venture_database_finalize(GObject *object)
 
 	self = VENTURE_DATABASE(object);
 
+	g_clear_object(&self->bank_match_service);
 	g_clear_object(&self->deal_service);
 	g_clear_object(&self->sequence_service);
 	g_clear_object(&self->actions);
@@ -1059,6 +1061,10 @@ venture_database_save(
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
 
+	if (!venture_bank_check_write(self, entity, FALSE, error))
+		return FALSE;
+
+
 	VENTURE_AUTOJOURNAL_SAVE_HOOK(self, entity, actor, error);
 	/* Source and posting share a transaction, whichever surface saved it. */
 	if (venture_ledger_wrap_source(self, entity))
@@ -1424,6 +1430,8 @@ venture_database_delete(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
+	if (!venture_bank_check_write(self, entity, TRUE, error))
+		return FALSE;
 	if (!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_sequences_check_removal(entity, error))
@@ -1486,6 +1494,8 @@ venture_database_restore(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
+	if (!venture_bank_check_write(self, entity, TRUE, error))
+		return FALSE;
 	if (!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_sequences_check_removal(entity, error))
@@ -1530,6 +1540,8 @@ venture_database_purge(
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
+		return FALSE;
+	if (!venture_bank_check_write(self, entity, TRUE, error))
 		return FALSE;
 	if (!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
@@ -2007,6 +2019,16 @@ venture_database_migrate(
 		!venture_pipelines_migrate(self, error))
 		return FALSE;
 	return TRUE;
+}
+
+VentureBankMatchService *
+venture_database_get_bank_match_service(VentureDatabase *database)
+{
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
+	if (database->bank_match_service == NULL)
+		database->bank_match_service = g_object_new(VENTURE_TYPE_BANK_MATCH_SERVICE,
+			"database", database, NULL);
+	return database->bank_match_service;
 }
 
 VentureDealService *
