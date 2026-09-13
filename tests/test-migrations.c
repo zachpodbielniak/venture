@@ -4,6 +4,22 @@
 #include "db/venture-migrations.h"
 #include "venture-test-util.h"
 
+/* Every shipped migration must be recorded, even as modules add migrations. */
+static guint
+migration_count(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDir) directory = g_dir_open("migrations/sqlite", 0, &error);
+	const gchar *name;
+	guint count = 0;
+	g_assert_no_error(error);
+	g_assert_nonnull(directory);
+	while ((name = g_dir_read_name(directory)) != NULL)
+		if (g_str_has_suffix(name, ".sql"))
+			count++;
+	return count;
+}
+
 /* Use a file and reconnect: an in-memory second run cannot demonstrate
  * that a deployed release recognizes another process's migration history. */
 static void
@@ -34,7 +50,7 @@ test_upgrade_restart(void)
 			"SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations", NULL, &error);
 		g_assert_no_error(error);
 		g_assert_true(orm_result_next(result));
-		g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 4);
+		g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, migration_count());
 		g_clear_object(&result);
 		result = venture_database_query_raw(database,
 			"SELECT amount FROM historical_data", NULL, &error);
@@ -179,6 +195,10 @@ test_postgresql(void)
 	database = venture_database_new(uri, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_execute(database, setup, NULL, &error));
+	g_assert_no_error(error);
+	/* Production reconciles metadata tables before the SQL migration batch.
+	 * Exercise that order so enabled modules' SQL sees its actual tables. */
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
 	runner = venture_migrations_new(venture_database_get_connection(database), VENTURE_DATABASE_BACKEND_POSTGRES, &error);
 	g_assert_no_error(error);
