@@ -225,3 +225,5 @@ One more thing it surfaced, which was not litter: =test-work-service= started a 
 * Standalone CLI dependency boundary
 
 The CLI must build without the mail server's GMime development package. Run =make DEBUG=1 -W src/cli/main.c venturectl= without any temporary server dependency prefix to compile and relink the CLI. Server-only pkg-config queries are deferred until a server or test recipe expands its flags; a successful CLI build that still emits missing server-package diagnostics fails this boundary.
+
+The Stripe sub-build consumes the YAML archive produced by the parent build. It must not recompile private YAML objects into that shared archive: a parallel =make DEBUG=1 -j4= may be linking =venturectl= against it. =YAML_OBJECTS== on the Stripe sub-make keeps archive ownership with =dep-yaml-glib= while retaining the declared archive prerequisite.
