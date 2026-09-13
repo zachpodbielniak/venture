@@ -124,6 +124,8 @@ static VentureEntity *
 get(VentureQuoteService *self, GType type, gint64 org, gint64 id, GError **error)
 {
 	VentureEntity *r = venture_database_get(self->database, type, id, error);
+	if (r == NULL && (error == NULL || *error == NULL))
+		refuse(error, VENTURE_ERROR_NOT_FOUND, "record not found in this organization");
 	if (r != NULL && (venture_entity_get_organization_id(r) != org || venture_entity_is_deleted(r)))
 	{
 		g_object_unref(r);

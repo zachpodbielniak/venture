@@ -159,7 +159,11 @@ quote_route(HtmxRequest *request, GHashTable *params, gpointer data)
 	gate = venture_web_require_module_api(self, "quotes");
 	if (gate != NULL) return gate;
 	quote = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_QUOTE, id, &error);
-	if (quote == NULL) return venture_web_error_response(error);
+	if (quote == NULL || venture_entity_is_deleted(quote))
+	{
+		if (error == NULL) g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Quote not found");
+		return venture_web_error_response(error);
+	}
 	if (verb == NULL) return quote_document(self, quote, FALSE);
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);

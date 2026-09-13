@@ -441,6 +441,8 @@ test_http(Fixture *f, gconstpointer data)
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(http(session, base, "GET", "/q/wrong-token", NULL, &body), ==, 404);
 	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(http(session, base, "POST", "/api/v1/quotes/999999/send", "{}", &body), ==, 404);
+	g_clear_pointer(&body, g_free);
 	current = fresh(f, "quote", venture_entity_get_id(q));
 	g_object_get(current, "acceptance-token", &token, NULL);
 	g_assert_cmpuint(strlen(token), ==, 64);
