@@ -222,6 +222,26 @@ test_account_evidence_guard(BankFixture *f, gconstpointer data)
 	g_assert_nonnull(error);
 }
 
+/* GDateDay is narrower than an input integer: validate before converting,
+ * or an invalid CSV day can pass GDate and abort in GDateTime. */
+static void
+test_invalid_calendar_day(BankFixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) statement = NULL;
+	(void)data;
+	g_object_set(f->bank, "date-format", "%m/%d/%Y", NULL);
+	g_assert_true(venture_database_save(f->database, f->bank, NULL, &error));
+	g_assert_no_error(error);
+	statement = bank_import(f, "csv",
+		"date,amount,memo,ref,id\n01/257/2026,-1,Fee,January,invalid-date\n",
+		"-1 USD", &error);
+	g_assert_null(statement);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_STATEMENT), ==, 0);
+	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_TRANSACTION), ==, 0);
+}
+
 static void
 test_ofx_rollback(BankFixture *f, gconstpointer data)
 {
@@ -678,6 +698,7 @@ main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	venture_entity_registry_register_builtins(venture_entity_registry_get_default());
+	g_test_add("/banking/invalid-calendar-day", BankFixture, NULL, bank_setup, test_invalid_calendar_day, bank_teardown);
 	g_test_add("/banking/ofx-currency", BankFixture, NULL, bank_setup, test_ofx_currency, bank_teardown);
 	g_test_add("/banking/posting-account", BankFixture, NULL, bank_setup, test_bank_posting_account, bank_teardown);
 	g_test_add("/banking/open-reconciliation", BankFixture, NULL, bank_setup, test_open_reconciliation, bank_teardown);

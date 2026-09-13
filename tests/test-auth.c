@@ -1274,6 +1274,19 @@ test_auth_api_refuses_anonymous_requests(
 		g_assert_cmpuint(status, ==, SOUP_STATUS_UNAUTHORIZED);
 	}
 
+	/* Every banking action must authenticate before loading statement evidence. */
+	{
+		static const gchar *const banking[] = {
+			"/api/v1/bank_transactions/1/match",
+			"/api/v1/bank_statements/1/reconcile",
+			"/api/v1/bank_accounts/1/import",
+			"/banking/1/action"
+		};
+		for (i = 0; i < G_N_ELEMENTS(banking); i++)
+			g_assert_cmpuint(server_fixture_request(fixture, "POST", banking[i],
+				NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	}
+
 	/* The chat POSTs, which write records. */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/ui/chat",
 	                                        NULL, "message=hi", NULL, NULL),

@@ -114,7 +114,7 @@ To preserve an open review without finalizing it, call =reconcile= with
 transactions. A normal reconciliation recomputes and checks them before
 recording reconciled evidence.
 
-The paired =000003_banking.sql= migrations verify that the field-table schema
+The paired =000100_banking.sql= migrations verify that the field-table schema
 contains the complete banking evidence family, or no banking tables when the
 module is disabled. No bank history is fabricated from existing documents.
 The ordinary migration suite checks upgrade and restart with retained data.
