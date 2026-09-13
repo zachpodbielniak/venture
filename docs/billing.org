@@ -108,6 +108,8 @@ its ordinary $30 invoice, creates a $14.48 customer credit through
 settlement, and applies it, leaving *$15.52* outstanding. Credit beyond an
 invoice's amount remains customer credit. Adjustments accumulate exactly
 until renewal. Trials and scheduled changes add no immediate adjustment.
+
+Price versions may use different minor-unit exponents in the same currency; credit allocation compares their monetary values with checked rescaling.
 Changing currency is refused. A change between monthly and yearly terms
 normalizes both prices to the service period already in progress before
 allocation, including repeated interval changes within that period.
@@ -196,7 +198,7 @@ revenue recognition schedules remain separate follow-ups.
 
 * Upgrade and verification
 
-Migration =000103_billing_schema.sql= is paired for SQLite and PostgreSQL.
+Migration =000170_billing_schema.sql= is paired for SQLite and PostgreSQL.
 After metadata adds tables and indexes, it verifies organization-scoped
 plan/subscription identities when those tables exist. Disabled billing is
 supported. Existing operational data remains untouched; there is no

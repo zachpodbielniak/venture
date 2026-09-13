@@ -521,7 +521,7 @@ static void
 test_migration(Fixture *f, gconstpointer data)
 {
 	g_autoptr(OrmResult) result = venture_database_query_raw(f->db,
-		"SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations WHERE version = 103", NULL, NULL);
+		"SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations WHERE version = 170", NULL, NULL);
 	g_assert_true(orm_result_next(result));
 	g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 1);
 }
@@ -556,6 +556,36 @@ test_proration_credit(Fixture *f, gconstpointer data)
 	save(f, a);
 	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db), integer(a, "invoice-id"), NULL, NULL);
 	g_assert_cmpint(venture_money_get_amount(balance), ==, 1552);
+	g_assert_cmpint(count(f, "customer_credit"), ==, 1);
+}
+
+/* A downgrade credit keeps the higher precision of the old price; comparing
+ * raw coefficients would overallocate the new invoice and reject renewal. */
+static void
+test_proration_credit_precision(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) old = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) price = record(f, "plan_price");
+	g_autoptr(VentureEntity) action = NULL;
+	g_autoptr(VentureMoney) precise = venture_money_new(31000, "USD", 3);
+	g_autoptr(VentureMoney) balance = NULL;
+	gint64 id;
+	g_object_set(old, "amount", precise, NULL);
+	save(f, old);
+	g_object_set(price, "plan-id", integer(old, "plan-id"), "currency", "USD", "active", TRUE, "per-seat", TRUE, NULL);
+	field(price, "amount", "20 USD");
+	save(f, price);
+	id = start(f);
+	action = request(f, "change", id, "2026-01-17");
+	g_object_set(action, "plan-price-id", venture_entity_get_id(price), NULL);
+	save(f, action);
+	g_clear_object(&action);
+	action = request(f, "renew", id, "2026-02-01");
+	save(f, action);
+	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db), integer(action, "invoice-id"), NULL, NULL);
+	g_assert_nonnull(balance);
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 29360);
+	g_assert_cmpint(venture_money_get_exponent(balance), ==, 3);
 	g_assert_cmpint(count(f, "customer_credit"), ==, 1);
 }
 
@@ -796,7 +826,7 @@ test_upgrade_disabled_restart(void)
 	g_assert_no_error(error);
 	id = venture_entity_get_id(VENTURE_ENTITY(company));
 	/* Simulate the pre-feature script history while retaining real core rows. */
-	g_assert_true(venture_database_execute(db, "DELETE FROM schema_migrations WHERE version = 103", NULL, &error));
+	g_assert_true(venture_database_execute(db, "DELETE FROM schema_migrations WHERE version = 170", NULL, &error));
 	g_assert_no_error(error);
 	venture_config_set_module_enabled(config, "billing", TRUE);
 	g_clear_object(&context);
@@ -871,6 +901,7 @@ main(int argc, char **argv)
 	g_test_add("/billing/migration", Fixture, NULL, setup, test_migration, teardown);
 	g_test_add("/billing/proration-billed", Fixture, NULL, setup, test_proration_billed, teardown);
 	g_test_add("/billing/proration-credit", Fixture, NULL, setup, test_proration_credit, teardown);
+	g_test_add("/billing/proration-credit-precision", Fixture, NULL, setup, test_proration_credit_precision, teardown);
 	g_test_add("/billing/month-end", Fixture, NULL, setup, test_month_end, teardown);
 	g_test_add_func("/billing/documentation", test_documentation);
 	g_test_add("/billing/closed-period", Fixture, NULL, setup, test_closed_period, teardown);

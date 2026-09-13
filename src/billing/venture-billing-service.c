@@ -325,6 +325,7 @@ issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 		g_autoptr(VentureEntity) credit = new_record(VENTURE_TYPE_CUSTOMER_CREDIT, org);
 		g_autoptr(VentureEntity) allocation = new_record(VENTURE_TYPE_PAYMENT_ALLOCATION, org);
 		g_autoptr(VentureMoney) credit_amount = venture_money_multiply_rational(adjustment, -1, 1, error);
+		g_autoptr(VentureMoney) difference = NULL;
 		const VentureMoney *applied;
 		if (credit_amount == NULL)
 			return FALSE;
@@ -332,7 +333,12 @@ issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 			"amount", credit_amount, "reference", "Subscription proration", NULL);
 		if (!venture_database_save(self->database, credit, actor, error))
 			return FALSE;
-		applied = venture_money_get_amount(credit_amount) < venture_money_get_amount(amount) ? credit_amount : amount;
+		/* Price versions may use different exponents in the same currency.
+		 * Compare their values, never their unscaled integer coefficients. */
+		difference = venture_money_subtract(credit_amount, amount, error);
+		if (difference == NULL)
+			return FALSE;
+		applied = venture_money_get_amount(difference) < 0 ? credit_amount : amount;
 		if (!venture_money_is_zero(applied))
 		{
 			g_object_set(allocation, "credit-id", venture_entity_get_id(credit), "invoice-id", venture_entity_get_id(invoice),
