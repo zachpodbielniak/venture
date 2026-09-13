@@ -606,6 +606,29 @@ test_eligibility(Fixture *f, gconstpointer data)
 	if (policy_handler) g_signal_handler_disconnect(venture_database_get_access_policy(f->database), policy_handler);
 }
 
+/* An invalid legacy catalog must preserve its rows and close its migration
+ * transaction; otherwise startup replaces the useful error with a warning. */
+static void
+test_price_migration_rollback(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *sql = g_strdup_printf(
+		"DROP INDEX uq_stripe_price_links_organization_product_id;"
+		"INSERT INTO stripe_price_links (uuid, organization_id, product_id, stripe_price_id) VALUES ('legacy-price-a', %" G_GINT64_FORMAT ", %" G_GINT64_FORMAT ", 'price_a'), ('legacy-price-b', %" G_GINT64_FORMAT ", %" G_GINT64_FORMAT ", 'price_b')",
+		f->organization_id, f->product_id, f->organization_id, f->product_id);
+	g_autoptr(OrmResult) rows = NULL;
+	g_assert_true(venture_database_execute(f->database, sql, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_period_constraints_migrate(venture_database_get_connection(f->database), venture_stripe_price_link_get_type(), &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_MIGRATION);
+	g_clear_error(&error);
+	g_assert_false(orm_connection_in_transaction(venture_database_get_connection(f->database)));
+	rows = venture_database_query_raw(f->database, "SELECT CAST(COUNT(*) AS BIGINT) FROM stripe_price_links", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_result_next(rows));
+	g_assert_cmpint(orm_row_get_integer(orm_result_get_row(rows), 0), ==, 2);
+}
+
 static void
 test_no_keys(void)
 {
@@ -732,5 +755,6 @@ main(int argc, char **argv)
 		}
 	}
 	environment();
+	g_test_add("/stripe/price-migration-rollback", Fixture, NULL, set_up, test_price_migration_rollback, tear_down);
 	return g_test_run();
 }

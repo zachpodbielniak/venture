@@ -315,7 +315,10 @@ venture_period_constraints_migrate(OrmConnection *connection,
 			return FALSE;
 	}
 	if (!orm_connection_execute(connection, "SAVEPOINT venture_periods_unique", error))
+	{
+		if (transaction) orm_transaction_rollback(transaction, NULL);
 		return FALSE;
+	}
 	ok = (ORM_DIALECT_SQLITE == dialect)
 		? sqlite_migrate(connection, table, columns, &local_error)
 		: postgres_migrate(connection, table, columns, &local_error);
@@ -326,6 +329,8 @@ venture_period_constraints_migrate(OrmConnection *connection,
 	{
 		orm_connection_execute(connection, "ROLLBACK TO SAVEPOINT venture_periods_unique", NULL);
 		orm_connection_execute(connection, "RELEASE SAVEPOINT venture_periods_unique", NULL);
+		/* Close only the transaction we started; preserve caller ownership. */
+		if (transaction) orm_transaction_rollback(transaction, NULL);
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_MIGRATION,
 			"Organization uniqueness migration for %s refused; rows are unchanged. "
 			"Resolve duplicate nonempty identifiers before retrying: %s", table,
@@ -333,6 +338,9 @@ venture_period_constraints_migrate(OrmConnection *connection,
 		return FALSE;
 	}
 	if (!orm_connection_execute(connection, "RELEASE SAVEPOINT venture_periods_unique", error))
+	{
+		if (transaction) orm_transaction_rollback(transaction, NULL);
 		return FALSE;
+	}
 	return (NULL == transaction) || orm_transaction_commit(transaction, error);
 }
