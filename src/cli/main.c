@@ -2094,6 +2094,7 @@ venture_cli_command_factory(
  * venturectl release changelog ID [--replace]
  * venturectl release publish ID [--prerelease]
  */
+#include "mail/venture-mail-cli.inc"
 #include "banking/venture-bank-cli.inc"
 
 static gint
@@ -3201,6 +3202,8 @@ main(
 	g_autofree gchar *server = NULL;
 	g_autofree gchar *token = NULL;
 	g_autofree gchar *format = NULL;
+	g_autofree gchar *mail_html = NULL;
+	g_autofree gchar *mail_limit = NULL;
 	g_autofree gchar *sequence_as_of = NULL;
 	gboolean show_version = FALSE;
 	gboolean show_license = FALSE;
@@ -3228,6 +3231,8 @@ main(
 		  "Print the version and exit", NULL },
 		{ "license", 0, 0, G_OPTION_ARG_NONE, &show_license,
 		  "Print licensing information and exit", NULL },
+		{ "html", 0, 0, G_OPTION_ARG_FILENAME, &mail_html, "mail send: HTML body file", "FILE" },
+		{ "limit", 0, 0, G_OPTION_ARG_STRING, &mail_limit, "mail deliver: maximum attempts", "N" },
 		{ "as-of", 0, 0, G_OPTION_ARG_STRING, &sequence_as_of,
 		  "sequence run: execution cutoff with timezone", "TIMESTAMP" },
 		{ G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_STRING_ARRAY, &args,
@@ -3281,6 +3286,7 @@ main(
 		"  lead reassign ID             owner=NAME or run assignment rules\n"
 		"  release changelog ID         draft a release's changelog from\n"
 		"                               its tickets; --replace overwrites\n"
+		"  mail list|send|test|deliver|retry  transactional mail\n"
 		"  quote send|accept|decline|revise ID [by=NAME] [reason=TEXT]\n"
 		"  bank ACTION ID [JSON|@FILE] banking action; bank match AUTO STATEMENT_ID\n"
 		"  deal move ID STAGE [NOTE]     move a deal through its pipeline\n"
@@ -3503,6 +3509,8 @@ main(
 		result = venture_cli_command_federation(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "factory"))
 		result = venture_cli_command_factory(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "mail"))
+		result = venture_cli_command_mail(&cli, args, mail_html, mail_limit, &error);
 	else if (0 == g_strcmp0(args[0], "quote"))
 		result = venture_cli_command_quote(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "lead"))

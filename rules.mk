@@ -365,7 +365,7 @@ clean-all: clean-deps
 # exactly what an orm-glib bump did.
 clean-deps:
 	$(Q)for d in $(YAML_GLIB_DIR) $(HTMX_GLIB_DIR) $(AI_GLIB_DIR) \
-	             $(CRISPY_DIR) $(PODOMATION_DIR) $(ORM_GLIB_DIR); do \
+	             $(CRISPY_DIR) $(PODOMATION_DIR) $(ORM_GLIB_DIR) $(MAIL_GLIB_DIR) $(MAIL_OTEL_DIR); do \
 		rm -rf $$d/build; \
 	done
 
@@ -552,3 +552,9 @@ $(OBJDIR)/server/db/venture-migrations.o: $(OUTDIR)/venture-migration-sql.h
 $(OUTDIR)/venture-migration-sql.h: tools/venture-migrations.sh $(MIGRATION_FILES) migrations/sqlite migrations/postgresql | $(OUTDIR)
 	@echo "  GEN     $@"
 	$(Q)tools/venture-migrations.sh migrations > $@.tmp && mv $@.tmp $@
+
+.PHONY: dep-mail-glib
+dep-mail-glib: $(YAML_GLIB_LIB)
+	$(Q)$(MAKE) --no-print-directory -C $(MAIL_GLIB_DIR) DEBUG=$(DEBUG) YAML_GLIB_STATIC=$(YAML_GLIB_LIB) static
+	$(Q)$(MAKE) --no-print-directory -C $(MAIL_OTEL_DIR) DEBUG=$(DEBUG) YAML_GLIB_STATIC=$(YAML_GLIB_LIB) static
+$(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB): dep-mail-glib

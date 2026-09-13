@@ -90,6 +90,8 @@ SERVER_ONLY_SRCS += src/banking/venture-bank-match-service.c
 
 SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard src/periods/*.c))
 
+CORE_SRCS += src/mail/venture-mail-records.c
+SERVER_ONLY_SRCS += $(filter-out src/mail/venture-mail-records.c,$(wildcard src/mail/*.c))
 CORE_SRCS += src/quotes/venture-quote-records.c
 SERVER_ONLY_SRCS += $(filter-out src/quotes/venture-quote-records.c,$(wildcard src/quotes/*.c))
 SERVER_ONLY_SRCS += src/leads/venture-lead-service.c src/leads/venture-lead-reports.c
@@ -138,6 +140,8 @@ PUBLIC_HDRS := \
 	$(wildcard src/kb/*.h) \
 	$(wildcard src/util/*.h) \
 	$(wildcard src/mcp/*.h)
+
+PUBLIC_HDRS += $(wildcard src/mail/*.h)
 
 PUBLIC_HDRS += $(wildcard src/payables/*.h)
 PUBLIC_HDRS += $(wildcard src/banking/*.h)
@@ -471,3 +475,7 @@ ifeq ($(filter clean clean-all clean-deps,$(MAKECMDGOALS)),)
 -include $(wildcard $(MAIN_OBJ:.o=.d))
 -include $(wildcard $(TEST_OBJS:.o=.d))
 endif
+
+deps: $(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB)
+
+$(OUTDIR)/tests/test-mail-surfaces: | $(OUTDIR)/venturectl

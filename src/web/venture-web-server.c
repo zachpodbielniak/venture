@@ -1389,6 +1389,11 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		NULL,
 		"core"
 	},
+	{
+		"/e/mail_message", "Mail outbox",
+		VENTURE_ICON("<path d=\"M3 5h18v14H3zM3 5l9 7 9-7\"/>"),
+		NULL, "mail"
+	},
 	{ "/worklist", "My day", VENTURE_ICON("<path d=\"M4 7h16M4 12h16M4 17h10\"/>"), "Activities", "activities" },
 	{ "/deals", "Sales board", VENTURE_ICON("<path d=\"M4 4v16M12 4v16M20 4v16\"/>"), "Sales pipelines", "pipelines" },
 	{ NULL, NULL, NULL, NULL, NULL }
@@ -8502,6 +8507,11 @@ venture_web_append_invoice_block(
 	g_string_append_printf(content,
 		"<a class=\"btn\" href=\"/invoices/%" G_GINT64_FORMAT
 		"/print\" target=\"_blank\">Print</a>", id);
+
+	if (venture_context_module_enabled(self->context, "mail"))
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
+			"/send\"><button class=\"btn\" type=\"submit\">Send</button></form>", id);
 
 
 	if (VENTURE_INVOICE_STATUS_DRAFT == status)
@@ -27603,6 +27613,7 @@ venture_web_api_ticket_draft(
 
 #include "autojournal/venture-autojournal-web.inc"
 
+#include "mail/venture-mail-web.inc"
 #include "quotes/venture-quote-web.inc"
 #include "pipelines/venture-pipeline-web.inc"
 
@@ -28011,6 +28022,10 @@ venture_web_server_new(
 	htmx_router_post(router, "/federation/pull", venture_web_ui_federation_write, self);
 	htmx_router_post(router, "/federation/replicas/:id/:action", venture_web_ui_federation_write, self);
 
+	htmx_router_post(router, "/invoices/:id/send", venture_web_mail_invoice_ui, self);
+	htmx_router_post(router, "/api/v1/mail/:action", venture_web_mail_action, self);
+	htmx_router_post(router, "/api/v1/mail_messages/:id/retry", venture_web_mail_action, self);
+	htmx_router_post(router, "/api/v1/invoices/:id/send", venture_web_mail_invoice, self);
 	htmx_router_post(router, "/api/v1/deals/:id/move", venture_web_deal_move, self);
 	htmx_router_post(router, "/deals/:id/move", venture_web_deal_move_ui, self);
 	htmx_router_get(router, "/deals", venture_web_deals_board, self);

@@ -533,6 +533,9 @@ static GType (*const venture_module_periods_types[]) (void) = {
 };
 static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live", NULL };
 
+static GType (*const venture_module_mail_types[]) (void) = {
+	venture_mail_message_get_type, venture_mail_template_get_type, NULL
+};
 static const gchar *const quotes_requires[] = { "crm", "invoicing", NULL };
 static const gchar *const quotes_reports[] = { "quotes", NULL };
 static GType (*const quotes_types[]) (void) = {
@@ -741,6 +744,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	},
 	{ "quotes", "Quotes", "Versioned commercial proposals and acceptance.",
 		quotes_requires, NULL, quotes_types, quotes_reports, NULL, FALSE },
+	{
+		"mail", "Transactional mail", "Durable outbound messages and templates.",
+		venture_module_requires_core, NULL, venture_module_mail_types, NULL, NULL, FALSE
+	},
 	{
 		"leads", "Leads", "Capture, qualify, assign and convert inquiries.",
 		venture_module_requires_leads, NULL, venture_module_leads_types,

@@ -37,6 +37,7 @@ struct _VentureDatabase
 	 * anything else touches the database.
 	 */
 	guint			 transaction_depth;
+	VentureMailOutbox *mail_outbox;
 	GThread			*transaction_owner;
 
 	/*
@@ -105,6 +106,7 @@ venture_database_finalize(GObject *object)
 	VentureDatabase *self;
 
 	self = VENTURE_DATABASE(object);
+	g_clear_object(&self->mail_outbox);
 
 	g_clear_object(&self->quote_service);
 	g_clear_object(&self->payables);
@@ -1100,6 +1102,13 @@ venture_database_save(
 			return ok;
 	}
 
+	if (VENTURE_IS_MAIL_MESSAGE(entity)) venture_database_get_mail_outbox(self);
+	if (VENTURE_IS_USER(entity)) {
+		gboolean handled;
+		gboolean ok = venture_mail_save_user(venture_database_get_mail_outbox(self), entity, actor, &handled, error);
+		if (handled || !ok) return ok;
+	}
+
 	{
 		gboolean handled;
 		gboolean ok = venture_lead_service_save_hook(venture_database_get_lead_service(self), entity, actor, &handled, error);
@@ -1492,6 +1501,8 @@ venture_database_delete(
 		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
+	if (!venture_mail_check_removal(entity, error))
+		return FALSE;
 	if (!venture_quotes_check_removal(self, entity, error))
 		return FALSE;
 
@@ -1564,6 +1575,8 @@ venture_database_restore(
 		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
+	if (!venture_mail_check_removal(entity, error))
+		return FALSE;
 	if (!venture_quotes_check_removal(self, entity, error))
 		return FALSE;
 
@@ -1618,6 +1631,8 @@ venture_database_purge(
 	if (!venture_sequences_check_removal(entity, error))
 		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
+		return FALSE;
+	if (!venture_mail_check_removal(entity, error))
 		return FALSE;
 	if (!venture_quotes_check_removal(self, entity, error))
 		return FALSE;
@@ -2091,6 +2106,22 @@ venture_database_migrate(
 		!venture_pipelines_migrate(self, error))
 		return FALSE;
 	return TRUE;
+}
+
+gboolean venture_database_has_transaction(VentureDatabase *self)
+{
+	gboolean active;
+	g_rec_mutex_lock(&self->lock);
+	active = self->transaction_depth != 0;
+	g_rec_mutex_unlock(&self->lock);
+	return active;
+}
+
+VentureMailOutbox *venture_database_get_mail_outbox(VentureDatabase *self)
+{
+	if (!self->mail_outbox)
+		self->mail_outbox = g_object_new(VENTURE_TYPE_MAIL_OUTBOX, "database", self, NULL);
+	return self->mail_outbox;
 }
 
 VentureLeadService *

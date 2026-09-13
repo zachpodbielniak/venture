@@ -1396,3 +1396,18 @@ venture_settlement_service_customer_balance(VentureSettlementService *self,
 	}
 	return g_steal_pointer(&total);
 }
+
+gboolean venture_settlement_service_record_mail(VentureSettlementService *self, VentureInvoice *invoice, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureInvoiceEvent) event = venture_invoice_event_new();
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autofree gchar *state = invoice_state(VENTURE_ENTITY(invoice));
+	gboolean ok;
+	if (!begin_operation(self, "invoice", error)) return FALSE;
+	g_object_set(event, "organization-id", venture_entity_get_organization_id(VENTURE_ENTITY(invoice)),
+		"invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)),
+		"customer-id", get_id(VENTURE_ENTITY(invoice), "company-id"), "date", now,
+		"kind", "mail_queued", "state", state, NULL);
+	ok = check_customer(self, VENTURE_ENTITY(event), error) && write_record(self, VENTURE_ENTITY(event), actor, error);
+	return finish_operation(self, ok, error);
+}

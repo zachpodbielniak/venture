@@ -507,6 +507,18 @@ venture_database_query_raw(
 	GError		**error
 );
 
+/** venture_database_has_transaction:
+ * @self: database
+ * Returns: whether a transaction is open; external effects require no transaction
+ */
+gboolean venture_database_has_transaction(VentureDatabase *self);
+
+/** venture_database_get_mail_outbox:
+ * @self: owning database
+ * Returns: (transfer none): canonical mail outbox; transport may be configured later
+ */
+struct _VentureMailOutbox *venture_database_get_mail_outbox(VentureDatabase *self);
+
 G_END_DECLS
 
 #endif /* VENTURE_DATABASE_H */
