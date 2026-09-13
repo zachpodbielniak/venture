@@ -7,6 +7,18 @@ venture_reconciliation_dup_field(VentureEntity *entity, const gchar *name, GType
 {
 	g_autoptr(GPtrArray) specs = venture_entity_get_field_specs(entity);
 	guint i;
+	/* The banking service owns cash signs and operational date aliases;
+	 * matchers must compare the very amounts its approval will validate. */
+	if (g_str_equal(name, "amount") && type == VENTURE_TYPE_MONEY)
+	{
+		VentureMoney *amount = venture_bank_candidate_amount(entity);
+		if (amount != NULL) return amount;
+	}
+	if (g_str_equal(name, "date") && type == G_TYPE_DATE_TIME)
+	{
+		g_autoptr(VentureMoney) amount = venture_bank_candidate_amount(entity);
+		if (amount != NULL) return venture_bank_candidate_date(entity);
+	}
 	for (i = 0; i < specs->len; i++)
 	{
 		VentureFieldSpec *spec = g_ptr_array_index(specs, i);

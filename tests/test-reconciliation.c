@@ -214,14 +214,76 @@ test_ai_answer(gconstpointer data)
 	}
 }
 
-VENTURE_DECLARE_ENTITY(VentureBankMatch, venture_bank_match, BANK_MATCH)
-static const VentureFieldDecl match_fields[] = {
-	VENTURE_FIELD_REF("transaction-id", "Transaction", NULL, "match_fixture", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("target-type", "Target type", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("target-id", "Target", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_MONEY("amount", "Amount", NULL)
-};
-VENTURE_DEFINE_ENTITY(VentureBankMatch, venture_bank_match, match_fields)
+/* Import real banking evidence: a fake bank_match would bypass its write guard. */
+static void
+bank_records(VentureDatabase *db, VentureEntity **transaction, VentureEntity **candidate)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	g_autoptr(VentureEntity) cash = NULL;
+	g_autoptr(VentureEntity) bank = g_object_new(VENTURE_TYPE_BANK_ACCOUNT,
+		"organization-id", (gint64)1, "name", "Test bank", "currency", "USD",
+		"date-column", "Date", "amount-column", "Amount", "description-column", "Memo",
+		"reference-column", "Ref", "external-id-column", "ID", "date-format", "%Y-%m-%d", "sign-convention", "normal", NULL);
+	g_autoptr(JsonObject) args = json_object_new();
+	g_autoptr(VentureEntity) statement = NULL;
+	g_autoptr(GDateTime) date = g_date_time_new_utc(2026, 9, 5, 0, 0, 0);
+	g_autoptr(VentureMoney) amount = venture_money_new_for_currency(10000, "USD");
+	g_autoptr(GError) error = NULL;
+	venture_query_set_organization(query, 1);
+	venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, "1000", NULL);
+	cash = venture_database_find_one(db, query, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(cash);
+	g_object_set(bank, "account-id", venture_entity_get_id(cash), NULL);
+	g_assert_true(venture_database_save(db, bank, NULL, &error));
+	json_object_set_string_member(args, "period_start", "2026-09-01");
+	json_object_set_string_member(args, "period_end", "2026-09-30");
+	json_object_set_string_member(args, "opening_balance", "0 USD");
+	json_object_set_string_member(args, "closing_balance", "-100 USD");
+	json_object_set_string_member(args, "format", "csv");
+	json_object_set_string_member(args, "data", "Date,Amount,Memo,Ref,ID\n2026-09-05,-100,coffee,coffee,coffee-1\n");
+	statement = venture_bank_match_service_execute(venture_database_get_bank_match_service(db), "import", venture_entity_get_id(bank), args, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(statement);
+	g_clear_object(&query);
+	query = venture_query_new(VENTURE_TYPE_BANK_TRANSACTION);
+	g_clear_object(transaction);
+	*transaction = venture_database_find_one(db, query, &error);
+	g_clear_object(candidate);
+	*candidate = g_object_new(VENTURE_TYPE_EXPENSE, "organization-id", (gint64)1,
+		"amount", amount, "occurred-at", date, "description", "coffee", NULL);
+	g_assert_true(venture_database_save(db, *candidate, NULL, &error));
+	g_assert_no_error(error);
+}
+
+static void
+test_deleted_candidate(void)
+{
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = venture_context_new(config, db);
+	g_autoptr(VentureEntity) transaction = NULL, candidate = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	g_autoptr(GPtrArray) pending = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_BANK_MATCH);
+	g_autoptr(GError) error = NULL;
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	bank_records(db, &transaction, &candidate);
+	result = venture_reconciliation_service_suggest(venture_context_get_reconciliation_service(context),
+		"bank_transaction", venture_entity_get_id(transaction), "exact", 80, NULL, "test", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	pending = venture_confirmation_store_list_pending(venture_context_get_confirmations(context));
+	g_assert_cmpuint(pending->len, ==, 1);
+	g_assert_true(venture_database_delete(db, candidate, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_confirmation_store_approve_as(venture_context_get_confirmations(context),
+		venture_confirmation_get_id(g_ptr_array_index(pending, 0)), "operator", VENTURE_USER_ROLE_EDITOR, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_assert_cmpint(venture_database_count(db, query, &error), ==, 0);
+	g_assert_no_error(error);
+}
 
 static void
 test_staging(void)
@@ -236,6 +298,7 @@ test_staging(void)
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GError) error = NULL;
 	VentureReconciliationService *service;
+	g_autofree gchar *alternative_id = NULL;
 	VentureConfirmationStore *store = venture_context_get_confirmations(context);
 	VentureActor origin;
 	const gchar *type;
@@ -261,10 +324,8 @@ test_staging(void)
 	g_assert_cmpuint(pending->len, ==, 0);
 	g_clear_pointer(&pending, g_ptr_array_unref);
 	g_clear_pointer(&result, json_node_unref);
-	g_assert_true(venture_entity_registry_register(venture_entity_registry_get_default(), venture_bank_match_get_type(), &error));
-	g_assert_no_error(error);
-	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
-	g_assert_no_error(error);
+	bank_records(db, &transaction, &candidate);
+	type = venture_entity_get_entity_name(transaction);
 	result = venture_reconciliation_service_suggest(service, type, venture_entity_get_id(transaction), "exact", 80, &origin, "test", &error);
 	g_assert_no_error(error);
 	pending = venture_confirmation_store_list_pending(store);
@@ -272,10 +333,34 @@ test_staging(void)
 	query = venture_query_new(venture_bank_match_get_type());
 	g_assert_cmpint(venture_database_count(db, query, &error), ==, 0);
 	g_assert_no_error(error);
-	g_assert_true(venture_confirmation_store_approve(store, venture_confirmation_get_id(g_ptr_array_index(pending, 0)), "operator", &error));
+	/* Two proposals for one line cannot both apply after its state changes. */
+	{
+		g_autoptr(JsonNode) alternative = venture_reconciliation_service_suggest(service, type,
+			venture_entity_get_id(transaction), "exact", 80, &origin, "test", &error);
+		JsonObject *suggestion;
+		g_assert_no_error(error);
+		g_assert_nonnull(alternative);
+		suggestion = json_array_get_object_element(json_object_get_array_member(json_node_get_object(alternative), "suggestions"), 0);
+		alternative_id = g_strdup(json_object_get_string_member(json_object_get_object_member(suggestion, "confirmation"), "id"));
+	}
+	g_assert_true(venture_confirmation_store_approve_as(store, venture_confirmation_get_id(g_ptr_array_index(pending, 0)), "operator", VENTURE_USER_ROLE_EDITOR, &error));
 	g_assert_no_error(error);
 	g_assert_cmpint(venture_database_count(db, query, &error), ==, 1);
 	g_assert_no_error(error);
+	g_assert_false(venture_confirmation_store_approve_as(store, alternative_id, "operator", VENTURE_USER_ROLE_EDITOR, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_clear_error(&error);
+	{
+		g_autoptr(VentureEntity) matched = venture_database_get(db, VENTURE_TYPE_BANK_TRANSACTION, venture_entity_get_id(transaction), &error);
+		g_autoptr(VentureEntity) forbidden = g_object_new(VENTURE_TYPE_BANK_MATCH, NULL);
+		g_autofree gchar *state = NULL;
+		g_assert_no_error(error);
+		g_object_get(matched, "state", &state, NULL);
+		g_assert_cmpstr(state, ==, "matched");
+		g_assert_false(venture_database_save(db, forbidden, &origin, &error));
+		g_assert_nonnull(error);
+		g_clear_error(&error);
+	}
 	venture_config_set_module_enabled(config, "reconciliation", FALSE);
 	g_assert_null(venture_context_get_reconciliation_service(context));
 }
@@ -352,6 +437,7 @@ test_http(gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_true(venture_database_save(db, candidate, NULL, &error));
 	g_assert_no_error(error);
+	if (stage) bank_records(db, &transaction, &candidate);
 	server = venture_web_server_new(context, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error));
@@ -397,6 +483,7 @@ test_assistant_stages(gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_true(venture_database_save(db, candidate, NULL, &error));
 	g_assert_no_error(error);
+	bank_records(db, &transaction, &candidate);
 	g_object_set(config, "ai-policy", GPOINTER_TO_INT(data), NULL);
 	provider->answer = g_strdup("Awaiting operator approval");
 	provider->tool_input = g_strdup_printf("{\"type\":\"%s\",\"id\":%" G_GINT64_FORMAT ",\"matcher\":\"exact\"}", venture_entity_get_entity_name(transaction), venture_entity_get_id(transaction));
@@ -541,8 +628,12 @@ test_source_reference_type(void)
 	g_assert_cmpint(venture_entity_get_id(candidate), ==, venture_entity_get_id(transaction));
 	result = venture_reconciliation_service_suggest(venture_context_get_reconciliation_service(context),
 		venture_entity_get_entity_name(transaction), venture_entity_get_id(transaction), "exact", 80, &actor, "test", &error);
-	g_assert_null(result);
-	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(result);
+	g_assert_no_error(error);
+	{
+		g_autoptr(GPtrArray) pending = venture_confirmation_store_list_pending(venture_context_get_confirmations(context));
+		g_assert_cmpuint(pending->len, ==, 0);
+	}
 }
 
 static void
@@ -593,6 +684,7 @@ main(int argc, char **argv)
 	g_test_add_data_func("/reconciliation/ai/wrong-confidence", "[{\"id\":3,\"confidence\":\"90\",\"why\":\"bad\"}]", test_ai_answer);
 	g_test_add_data_func("/reconciliation/http-only", GINT_TO_POINTER(0), test_http);
 	g_test_add_func("/reconciliation/staging", test_staging);
+	g_test_add_func("/reconciliation/deleted-candidate", test_deleted_candidate);
 	g_test_add_data_func("/reconciliation/http-staged", GINT_TO_POINTER(1), test_http);
 	g_test_add_data_func("/reconciliation/assistant-stages", GINT_TO_POINTER(VENTURE_AI_POLICY_CONFIRM_WRITES), test_assistant_stages);
 	g_test_add_data_func("/reconciliation/assistant-autonomous-stages", GINT_TO_POINTER(VENTURE_AI_POLICY_AUTONOMOUS), test_assistant_stages);

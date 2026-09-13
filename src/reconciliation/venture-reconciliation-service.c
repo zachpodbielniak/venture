@@ -2,10 +2,6 @@
 #include "venture.h"
 #include "venture-reconciliation-private.h"
 
-/* Optional banking seam, deliberately declared without banking headers. */
-extern GPtrArray *venture_bank_transaction_candidates(VentureDatabase *db,
-	VentureEntity *transaction, GError **error) __attribute__((weak));
-
 struct _VentureReconciliationService { GObject parent_instance; GWeakRef context; };
 G_DEFINE_FINAL_TYPE(VentureReconciliationService, venture_reconciliation_service, G_TYPE_OBJECT)
 static void
@@ -46,8 +42,7 @@ collect_candidates(VentureContext *context, VentureEntity *transaction, GError *
 	g_autoptr(GPtrArray) result = g_ptr_array_new_with_free_func(g_object_unref);
 	g_autofree GType *types = NULL;
 	guint n, i, j;
-	if (venture_bank_transaction_candidates != NULL &&
-		g_str_equal(venture_entity_get_entity_name(transaction), "bank_transaction"))
+	if (VENTURE_IS_BANK_TRANSACTION(transaction))
 		return venture_bank_transaction_candidates(db, transaction, error);
 	types = venture_entity_registry_list_types(venture_context_get_entity_registry(context), &n);
 	for (i = 0; i < n; i++)
@@ -81,39 +76,47 @@ collect_candidates(VentureContext *context, VentureEntity *transaction, GError *
 	return g_steal_pointer(&result);
 }
 static gboolean
-match_shape(GType type, VentureEntity *transaction, GError **error)
+match_allowed(VentureAction *action, VentureEntity *transaction, const VentureActor *actor, GError **error)
 {
-	g_autoptr(VentureEntity) prototype = g_object_new(type, NULL);
-	g_autoptr(GPtrArray) specs = venture_entity_get_field_specs(prototype);
-	GObjectClass *klass = G_OBJECT_GET_CLASS(prototype);
-	const gchar *names[] = { "transaction-id", "target-type", "target-id", "amount" };
-	GType types[4];
-	guint i;
-	types[0] = G_TYPE_INT64; types[1] = G_TYPE_STRING; types[2] = G_TYPE_INT64; types[3] = VENTURE_TYPE_MONEY;
-	for (i = 0; i < G_N_ELEMENTS(names); i++)
-	{
-		GParamSpec *pspec = g_object_class_find_property(klass, names[i]);
-		if (pspec == NULL || G_PARAM_SPEC_VALUE_TYPE(pspec) != types[i] || !(pspec->flags & G_PARAM_WRITABLE))
-		{
-			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "bank_match requires writable %s for reconciliation staging", names[i]);
-			return FALSE;
-		}
-	}
-	for (i = 0; i < specs->len; i++)
-	{
-		VentureFieldSpec *spec = g_ptr_array_index(specs, i);
-		const gchar *reference = venture_field_spec_get_reference_type(spec);
-		if (g_str_equal(venture_field_spec_get_name(spec), "transaction-id") &&
-			reference != NULL && *reference != '\0' &&
-			venture_entity_registry_lookup(venture_entity_registry_get_default(), reference) != G_OBJECT_TYPE(transaction))
-		{
-			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-				"bank_match.transaction-id references %s, not %s", reference,
-				venture_entity_get_entity_name(transaction));
-			return FALSE;
-		}
-	}
-	return TRUE;
+	g_autofree gchar *state = NULL;
+	(void)action;
+	(void)actor;
+	g_object_get(transaction, "state", &state, NULL);
+	if (g_strcmp0(state, "unmatched") == 0) return TRUE;
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "Matching requires an unmatched bank transaction");
+	return FALSE;
+}
+
+static VentureEntity *
+match_invoke(VentureAction *action, VentureEntity *transaction, GHashTable *params,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(JsonObject) args = json_object_new();
+	JsonNode *parts = g_hash_table_lookup(params, "parts");
+	if (parts != NULL) json_object_set_member(args, "parts", json_node_copy(parts));
+	/* Only the bank service may create match evidence and update its line. */
+	return venture_bank_match_service_execute(venture_action_get_data(action), "match",
+		venture_entity_get_id(transaction), args, actor, error);
+}
+
+static VentureAction *
+match_action(VentureDatabase *db, GError **error)
+{
+	VentureActionRegistry *registry = venture_database_get_action_registry(db);
+	VentureAction *existing = venture_action_registry_lookup(registry, "bank_transaction", "match");
+	g_autoptr(VentureAction) action = NULL;
+	g_autoptr(GPtrArray) parameters = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
+	VentureFieldSpec *parts;
+	if (existing != NULL) return existing;
+	parts = venture_field_spec_new("parts", "Matching documents", VENTURE_FIELD_KIND_JSON);
+	parts->required = TRUE;
+	g_ptr_array_add(parameters, parts);
+	action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "bank_transaction", "name", "match",
+		"label", "Match", "description", "Match cash documents through the banking service",
+		"parameters", parameters, "stageable", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+	if (!venture_action_registry_register(registry, action, match_allowed, match_invoke,
+		g_object_ref(venture_database_get_bank_match_service(db)), g_object_unref, error)) return NULL;
+	return venture_action_registry_lookup(registry, "bank_transaction", "match");
 }
 JsonNode *
 venture_reconciliation_service_suggest(VentureReconciliationService *self, const gchar *type,
@@ -127,7 +130,8 @@ venture_reconciliation_service_suggest(VentureReconciliationService *self, const
 	g_autoptr(JsonBuilder) builder = json_builder_new();
 	VentureReconciliationRegistry *registry;
 	VentureDatabase *db;
-	GType record_type, match_type;
+	GType record_type;
+	VentureAction *action = NULL;
 	guint i;
 	if (context == NULL || !venture_context_module_enabled(context, "reconciliation"))
 	{
@@ -166,8 +170,11 @@ venture_reconciliation_service_suggest(VentureReconciliationService *self, const
 	}
 	suggestions = venture_reconciliation_registry_suggest_all(registry, db, transaction, candidates, NULL, error);
 	if (suggestions == NULL) return NULL;
-	match_type = venture_entity_registry_lookup(venture_context_get_entity_registry(context), "bank_match");
-	if (match_type != G_TYPE_INVALID && !match_shape(match_type, transaction, error)) return NULL;
+	if (VENTURE_IS_BANK_TRANSACTION(transaction) && venture_context_module_enabled(context, "banking"))
+	{
+		action = match_action(db, error);
+		if (action == NULL) return NULL;
+	}
 	json_builder_begin_object(builder);
 	json_builder_set_member_name(builder, "suggestions");
 	json_builder_begin_array(builder);
@@ -183,19 +190,31 @@ venture_reconciliation_service_suggest(VentureReconciliationService *self, const
 		json_builder_set_member_name(builder, "confidence"); json_builder_add_int_value(builder, confidence);
 		json_builder_set_member_name(builder, "rationale"); json_builder_add_string_value(builder, why != NULL ? why : "");
 		json_builder_set_member_name(builder, "kind"); json_builder_add_string_value(builder, kind == VENTURE_MATCH_EXACT ? "exact" : kind == VENTURE_MATCH_PARTIAL ? "partial" : "none");
-		if (match_type != G_TYPE_INVALID && confidence > threshold && kind != VENTURE_MATCH_NONE)
+		if (action != NULL && confidence > threshold && kind != VENTURE_MATCH_NONE)
 		{
 			g_autoptr(VentureMoney) amount = venture_reconciliation_dup_field(transaction, "amount", VENTURE_TYPE_MONEY);
-			g_autoptr(VentureEntity) match = NULL;
+			g_autoptr(JsonNode) proposal = json_node_new(JSON_NODE_OBJECT);
+			g_autoptr(GHashTable) parameters = NULL;
+			g_autofree gchar *text = NULL;
+			JsonObject *args = json_object_new();
+			JsonArray *parts = json_array_new();
+			JsonObject *part = json_object_new();
 			VentureConfirmation *confirmation;
+			json_node_take_object(proposal, args);
+			json_object_set_array_member(args, "parts", parts);
+			json_array_add_object_element(parts, part);
 			if (amount == NULL)
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "A transaction amount is required to stage a match"); return NULL;
 			}
-			match = g_object_new(match_type, "organization-id", venture_entity_get_organization_id(transaction),
-				"transaction-id", id, "target-type", venture_entity_get_entity_name(candidate), "target-id", venture_entity_get_id(candidate), "amount", amount, NULL);
-			if (!venture_entity_validate(match, error)) return NULL;
-			confirmation = venture_confirmation_store_stage(venture_context_get_confirmations(context), VENTURE_AUDIT_ACTION_CREATE, match, NULL, actor, via, error);
+			text = venture_money_to_string(amount);
+			json_object_set_string_member(part, "type", venture_entity_get_entity_name(candidate));
+			json_object_set_int_member(part, "id", venture_entity_get_id(candidate));
+			json_object_set_string_member(part, "amount", text);
+			parameters = venture_action_parameters_from_json(proposal, error);
+			if (parameters == NULL) return NULL;
+			confirmation = venture_confirmation_store_stage_action(venture_context_get_confirmations(context), action,
+				transaction, parameters, actor, VENTURE_USER_ROLE_EDITOR, via, error);
 			if (confirmation == NULL) return NULL;
 			json_builder_set_member_name(builder, "confirmation");
 			json_builder_add_value(builder, venture_confirmation_to_json(confirmation));
@@ -204,7 +223,7 @@ venture_reconciliation_service_suggest(VentureReconciliationService *self, const
 	}
 	json_builder_end_array(builder);
 	json_builder_set_member_name(builder, "note");
-	json_builder_add_string_value(builder, match_type == G_TYPE_INVALID ? "Suggestions only: bank_match is not registered. Nothing applied." : "Matches above the threshold await confirmation. Nothing applied.");
+	json_builder_add_string_value(builder, action == NULL ? "Suggestions only: no banking action applies to this source. Nothing applied." : "Matches above the threshold await confirmation. Nothing applied.");
 	json_builder_end_object(builder);
 	return json_builder_get_root(builder);
 }

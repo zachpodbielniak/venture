@@ -25,14 +25,7 @@ Missing and soft-deleted transaction IDs are refused as not found.
 Each suggestion names the candidate type and ID, confidence, rationale and
 kind. A staged suggestion also contains its ordinary =confirmation= object.
 
-When the entity registry offers =bank_match=, suggestions with confidence
-strictly above the threshold are staged as creates in the existing
-confirmation store. A threshold of 100 therefore stages nothing. If
-=bank_match= is absent or disabled, the same call returns suggestions only.
-No match is applied by requesting suggestions, even under the assistant's
-=autonomous= policy. =venture_reconcile_suggest= is not offered under
-=read_only=. All approval remains in the ordinary confirmation UI/API, and
-approval calls the normal database save with its normal validators.
+For a =bank_transaction= with banking enabled, suggestions strictly above the threshold stage the =match= record action in the existing confirmation store. A threshold of 100 stages nothing. Other plugin transaction types and disabled banking return suggestions only. Approval invokes =VentureBankMatchService= with the displayed =parts=, rechecks the transaction version and eligibility, and atomically saves the match evidence and transaction state. Direct writes to =bank_match= remain forbidden. No match is applied by requesting suggestions, even under the assistant's =autonomous= policy. =venture_reconcile_suggest= is not offered under =read_only=. Approval remains in the ordinary confirmation UI/API.
 
 The confirmation queue is the existing expiring in-memory queue. The
 reconciliation service does not write journals, alter transactions, or
@@ -42,11 +35,7 @@ completed reconciliation.
 
 * Deterministic matching
 
-The built-in =exact= matcher reads =amount=, =date= and =description= from
-plain =VentureEntity= property metadata. A missing field is absent evidence,
-not a GObject warning. Sensitive fields are never used. Different
-organizations and currencies do not match. Dates are compared as calendar
-dates, including across a daylight-saving boundary.
+The built-in =exact= matcher reads =amount=, =date= and =description= from plain =VentureEntity= property metadata. Supported cash documents use the banking service's signed amounts and accounting dates: expenses are negative bank outflows and =occurred_at= is recognized. This is the same interpretation used when approval validates the match. A missing field is absent evidence, not a GObject warning. Sensitive fields are never used. Different organizations and currencies do not match. Dates are compared as calendar dates, including across a daylight-saving boundary.
 
 | Confidence | Evidence |
 |------------+----------|
@@ -125,31 +114,21 @@ after that completion rather than interrupting its transport.
 
 * Banking integration
 
-No banking header or record implementation is included here. For a
-=bank_transaction=, the service calls the optional linked seam:
+For a =bank_transaction=, the service calls the banking candidate selector:
 
 #+begin_src C
 GPtrArray *venture_bank_transaction_candidates(VentureDatabase *db,
     VentureEntity *bank_transaction, GError **error);
 #+end_src
 
-Without that symbol, metadata supplies a fallback: enabled types declaring
+For other transaction types, metadata supplies a fallback: enabled types declaring
 non-sensitive =date= and =amount= fields, up to 200 rows per type ordered by
 ID, scoped to the transaction's organization and excluding the transaction
 itself. This bounded fallback is useful for plugins and tests; the banking
 lane's date-and-amount window is the production candidate selector. The
 fallback does not translate =gross= or =occurred-at= into different fields.
 
-The match-construction adapter currently expects =bank_match= to declare
-writable =transaction-id= (int64), =target-type= (string), =target-id=
-(int64) and =amount= (VentureMoney). It sets the transaction's organization
-and amount. The shared contract did not specify these field names; the
-banking lane must align this small adapter with its final field table.
-An incompatible registered shape is refused explicitly, never silently
-staged with dropped fields. If =transaction-id= declares a reference type,
-the source must have that exact registered type: equal IDs from different
-tables must never be treated as the same transaction. No database migration is needed by this module,
-because it creates no persistent types or columns.
+The service registers the =bank_transaction.match= record action when banking suggestions first need it. Its =parts= JSON parameter names candidate type, ID and signed amount. A candidate proposal covers the entire bank line; the banking service refuses insufficient remaining amount, currency mismatch, closed statement, deleted candidate or already matched transaction at approval. Alternative proposals become stale after the first applies. Plugin sources never become bank transactions merely because their numeric IDs coincide. No database migration is needed by this module because it creates no persistent types or columns.
 
 * Verification
 

@@ -224,7 +224,7 @@ The schema fixtures are =tests/fixtures/schema.json= and =tests/fixtures/schema-
 The in-process assistant offers =venture_reconcile_suggest=. Shell clients
 use =venturectl reconcile suggest TYPE ID=, which calls
 =POST /api/v1/reconciliation/suggest=. Both always propose into the existing
-confirmation queue when banking is available; neither applies a match.
+confirmation queue for bank transactions when banking is available; neither applies a match.
 The stdio MCP catalogue does not add a reconciliation-specific tool in this
 module. Existing generic confirmation tools can read and approve its staged
-records. See [[file:reconciliation.org][reconciliation suggestions]].
+actions. Approval calls the banking service and rechecks the line's version and eligibility. See [[file:reconciliation.org][reconciliation suggestions]].

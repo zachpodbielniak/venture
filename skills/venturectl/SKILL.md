@@ -69,7 +69,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE]` | list reports, or run one with an optional historical cutoff and legal entity |
 | `links TYPE ID` | every link touching a record, read from it |
 | `link TYPE ID TYPE ID [kind=K] [note=T]` | link two records; kinds: related, blocks, blocked_by, depends_on, required_by, parent_of, child_of, duplicates, causes, caused_by, produces, produced_by, references, referenced_by, supersedes, superseded_by; unlink with `delete record_link ID` |
-| `reconcile suggest TYPE ID [--matcher NAME] [--threshold N]` | rank matching book records; scores above the threshold (default 80) stage confirmations when banking is installed; never applies |
+| `reconcile suggest TYPE ID [--matcher NAME] [--threshold N]` | rank matching book records; scores above the threshold (default 80) stage bank transaction action confirmations when banking is installed; never applies |
 | `modules` | which modules the server runs; `-f json` for types, reports and reasons |
 | `factory` | the software factory at a glance: milestones with progress, releases, builds, environments and what they run, open incidents |
 | `release changelog ID [--replace]` | draft a release's changelog from the tickets marked fixed in it |

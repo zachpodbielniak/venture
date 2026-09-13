@@ -31,6 +31,18 @@ gboolean venture_bank_check_write(VentureDatabase *database, VentureEntity *reco
  */
 GPtrArray *venture_bank_transaction_candidates(VentureDatabase *database, VentureEntity *transaction, GError **error);
 /**
+ * venture_bank_candidate_amount:
+ * @record: proposed cash document
+ * Returns: (transfer full) (nullable): signed bank contribution, or NULL for an unsupported document
+ */
+VentureMoney *venture_bank_candidate_amount(VentureEntity *record);
+/**
+ * venture_bank_candidate_date:
+ * @record: proposed cash document
+ * Returns: (transfer full) (nullable): the document's accounting date
+ */
+GDateTime *venture_bank_candidate_date(VentureEntity *record);
+/**
  * venture_bank_match_service_execute:
  * @self: service
  * @action: import, auto, match, unmatch, exclude, create or reconcile
