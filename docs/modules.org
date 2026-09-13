@@ -44,6 +44,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =dashboards= | core            | dashboard, dashboard_widget; the =/dashboards= pages and their API | |
 | =ledger=     | finance         | journal, journal_line; posting service, =trial_balance=           |                       |
 | =reconciliation= | ledger | matcher registry, deterministic and AI matchers, staged suggestions; suggests banking | |
+| =banking= | ledger | bank_account, bank_statement, bank_transaction, bank_match, reconciliation; =bank_reconciliation= | |
 
 Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.
 

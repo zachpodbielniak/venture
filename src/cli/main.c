@@ -2090,6 +2090,8 @@ venture_cli_command_factory(
  * venturectl release changelog ID [--replace]
  * venturectl release publish ID [--prerelease]
  */
+#include "banking/venture-bank-cli.inc"
+
 static gint
 venture_cli_command_release(
 	VentureCli	 *cli,
@@ -3187,6 +3189,7 @@ main(
 		"  factory                      the software factory at a glance\n"
 		"  release changelog ID         draft a release's changelog from\n"
 		"                               its tickets; --replace overwrites\n"
+		"  bank ACTION ID [JSON|@FILE] banking action; bank match AUTO STATEMENT_ID\n"
 		"  release publish ID           cut it on the forge; --prerelease\n"
 		"  dashboards                   list the dashboards\n"
 		"  dashboard SLUG               a dashboard, every widget evaluated\n"
@@ -3388,6 +3391,8 @@ main(
 		result = venture_cli_command_reconcile(&cli, args, reconciliation_matcher, reconciliation_threshold, &error);
 	else if (0 == g_strcmp0(args[0], "factory"))
 		result = venture_cli_command_factory(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "bank"))
+		result = venture_cli_command_bank(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "release"))
 		result = venture_cli_command_release(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dashboards"))

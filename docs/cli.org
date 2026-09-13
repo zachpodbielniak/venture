@@ -207,3 +207,10 @@ only. It never applies a match. Use =-f json= to include the full confirmation
 objects, then review them in the ordinary confirmation queue. See
 [[file:reconciliation.org][reconciliation suggestions]] for matcher plugins
 and the banking seam.
+* Banking actions
+
+=venturectl bank ACTION ID [JSON|@FILE]= calls the banking service over REST.
+=import= takes a bank account ID; =auto= and =reconcile= take a statement ID;
+=match=, =unmatch=, =exclude= and =create= take a transaction ID.
+=venturectl bank match AUTO STATEMENT_ID= is the bulk exact-match action.
+See [[file:banking.org][Banking]] for import mappings and action parameters.

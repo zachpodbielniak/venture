@@ -52,6 +52,7 @@ struct _VentureDatabase
 	 * through venture_database_save(), so every writer gets the check.
 	 */
 	GPtrArray		*validators;
+	VentureBankMatchService *bank_match_service;
 };
 
 typedef struct
@@ -95,6 +96,7 @@ venture_database_finalize(GObject *object)
 
 	self = VENTURE_DATABASE(object);
 
+	g_clear_object(&self->bank_match_service);
 	g_clear_object(&self->transaction);
 
 	if (NULL != self->connection)
@@ -1040,6 +1042,9 @@ venture_database_save(
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
 
+	if (!venture_bank_check_write(self, entity, FALSE, error))
+		return FALSE;
+
 	/* Source and posting share a transaction, whichever surface saved it. */
 	if (venture_ledger_wrap_source(self, entity))
 		return venture_ledger_save_source(self, entity, actor, error);
@@ -1378,6 +1383,8 @@ venture_database_delete(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
+	if (!venture_bank_check_write(self, entity, TRUE, error))
+		return FALSE;
 	if (!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
@@ -1436,6 +1443,8 @@ venture_database_restore(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
+	if (!venture_bank_check_write(self, entity, TRUE, error))
+		return FALSE;
 	if (!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
@@ -1476,6 +1485,8 @@ venture_database_purge(
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
+		return FALSE;
+	if (!venture_bank_check_write(self, entity, TRUE, error))
 		return FALSE;
 	if (!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
@@ -1950,4 +1961,14 @@ venture_database_migrate(
 		!venture_database_seed_tax_categories(self, organization_id, error))
 		return FALSE;
 	return TRUE;
+}
+
+VentureBankMatchService *
+venture_database_get_bank_match_service(VentureDatabase *database)
+{
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
+	if (database->bank_match_service == NULL)
+		database->bank_match_service = g_object_new(VENTURE_TYPE_BANK_MATCH_SERVICE,
+			"database", database, NULL);
+	return database->bank_match_service;
 }

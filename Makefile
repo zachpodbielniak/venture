@@ -66,6 +66,8 @@ CORE_SRCS := \
 	$(wildcard src/util/*.c) \
 	$(wildcard src/mcp/*.c)
 
+CORE_SRCS += src/banking/venture-bank-records.c
+
 # Server-only subsystems.
 SERVER_ONLY_SRCS := \
 	$(filter-out src/ledger/venture-journal.c,$(wildcard src/ledger/*.c)) \
@@ -80,6 +82,8 @@ SERVER_ONLY_SRCS := \
 	$(wildcard src/web/*.c) \
 	$(wildcard src/forge/*.c) \
 	$(wildcard src/kb/*.c)
+
+SERVER_ONLY_SRCS += src/banking/venture-bank-match-service.c
 
 SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard src/periods/*.c))
 
@@ -117,6 +121,7 @@ PUBLIC_HDRS := \
 	$(wildcard src/mcp/*.h)
 
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/reconciliation/*.h))
+PUBLIC_HDRS += $(wildcard src/banking/*.h)
 
 TEST_SRCS := $(wildcard tests/test-*.c)
 
@@ -133,6 +138,7 @@ TEST_BINS := $(patsubst tests/%.c,$(OUTDIR)/tests/%,$(TEST_SRCS))
 
 # The settlement test drives the real CLI and its MCP tool against HTTP.
 $(OUTDIR)/tests/test-receivables: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery
