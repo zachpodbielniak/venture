@@ -137,5 +137,13 @@ GPtrArray *venture_reconciliation_registry_list(VentureReconciliationRegistry *s
 GPtrArray *venture_reconciliation_registry_suggest_all(VentureReconciliationRegistry *self,
 	VentureDatabase *db, VentureEntity *transaction, GPtrArray *candidates,
 	GCancellable *cancellable, GError **error);
+#define VENTURE_TYPE_AI_MATCHER (venture_ai_matcher_get_type())
+G_DECLARE_FINAL_TYPE(VentureAiMatcher, venture_ai_matcher, VENTURE, AI_MATCHER, GObject)
+/** venture_ai_matcher_new:
+ * @service: tool-free completion service
+ * Returns: (transfer full): an AI matcher; holds a weak reference to the service
+ */
+VentureAiMatcher *venture_ai_matcher_new(VentureAiService *service);
+
 G_END_DECLS
 #endif

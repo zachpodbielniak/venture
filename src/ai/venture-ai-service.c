@@ -3007,8 +3007,9 @@ venture_ai_service_create_provider(
 }
 
 VentureAiService *
-venture_ai_service_new(
+venture_ai_service_new_with_provider(
 	VentureContext	 *context,
+	AiProvider *provider,
 	GError		**error
 ){
 	g_autoptr(VentureAiService) self = NULL;
@@ -3037,7 +3038,7 @@ venture_ai_service_new(
 	g_object_get(config, "ai-max-tokens", &max_tokens, NULL);
 	self->max_tokens = (gint)max_tokens;
 
-	self->provider = venture_ai_service_create_provider(self, error);
+	self->provider = provider != NULL ? g_object_ref(provider) : venture_ai_service_create_provider(self, error);
 
 	if (NULL == self->provider)
 		return NULL;
@@ -3723,4 +3724,10 @@ venture_ai_service_describe_tools(VentureAiService *self)
 	json_builder_end_array(builder);
 
 	return json_builder_get_root(builder);
+}
+
+VentureAiService *
+venture_ai_service_new(VentureContext *context, GError **error)
+{
+	return venture_ai_service_new_with_provider(context, NULL, error);
 }
