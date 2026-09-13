@@ -78,6 +78,8 @@
 #include "periods/venture-period-records.h"
 #include "mail/venture-mail-records.h"
 
+#include "autojournal/venture-posting-profile.h"
+
 /* --- Configuration ------------------------------------------------------- */
 
 #include "config/venture-config.h"
@@ -132,6 +134,8 @@
 #include "core/venture-federation.h"
 #include "ledger/venture-posting-rule.h"
 #include "ledger/venture-posting-service.h"
+#include "autojournal/venture-autojournal-service.h"
+#include "statements/venture-ledger-balances.h"
 #include "core/venture-ticket-relation.h"
 #include "core/venture-record-link.h"
 #include "core/venture-dashboard.h"
@@ -141,6 +145,8 @@
 #include "core/venture-desk.h"
 #include "core/venture-webhook.h"
 #include "core/venture-routing.h"
+#include "core/venture-action.h"
+#include "ledger/venture-journal-actions.h"
 
 /* Auth comes before the AI service, which names VentureAuthPrincipal in its
  * signatures, and before the web server, which uses both. */
