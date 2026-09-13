@@ -11,6 +11,8 @@
  */
 
 #include "venture.h"
+#include "quotes/venture-document-print-style.h"
+#include "statements/venture-statements-private.h"
 
 #include <string.h>
 
@@ -140,9 +142,13 @@ struct _VentureWebServer
 	 * access log.
 	 */
 	GHashTable	*chat_turns;
+	HtmxRateLimiter *quote_limiter;
+	HtmxRateLimiter *lead_limiter;
 };
 
 G_DEFINE_FINAL_TYPE(VentureWebServer, venture_web_server, G_TYPE_OBJECT)
+
+static void venture_web_append_lead_actions(GString *html, VentureEntity *record);
 
 /*
  * The server is reachable from route callbacks through the user_data pointer
@@ -158,10 +164,12 @@ venture_web_server_finalize(GObject *object)
 
 	g_clear_object(&self->context);
 	g_clear_object(&self->auth);
+	g_clear_object(&self->quote_limiter);
 	g_clear_object(&self->server);
 	g_clear_pointer(&self->base_url, g_free);
 	g_clear_pointer(&self->reveals, g_hash_table_unref);
 	g_clear_pointer(&self->chat_turns, g_hash_table_unref);
+	g_clear_object(&self->lead_limiter);
 
 	G_OBJECT_CLASS(venture_web_server_parent_class)->finalize(object);
 }
@@ -356,6 +364,8 @@ venture_web_chat_append_starters(
 	GString			*html,
 	const gchar		*path
 );
+
+static void activity_lazy_sweep(VentureWebServer *self, HtmxRequest *request);
 
 static gboolean
 venture_web_field_is_machinery(const gchar *name);
@@ -1379,6 +1389,13 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		NULL,
 		"core"
 	},
+	{
+		"/e/mail_message", "Mail outbox",
+		VENTURE_ICON("<path d=\"M3 5h18v14H3zM3 5l9 7 9-7\"/>"),
+		NULL, "mail"
+	},
+	{ "/worklist", "My day", VENTURE_ICON("<path d=\"M4 7h16M4 12h16M4 17h10\"/>"), "Activities", "activities" },
+	{ "/deals", "Sales board", VENTURE_ICON("<path d=\"M4 4v16M12 4v16M20 4v16\"/>"), "Sales pipelines", "pipelines" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 
@@ -2371,6 +2388,8 @@ venture_web_api_delete(
 	return venture_web_json_response(node, 200);
 }
 
+#include "venture-web-actions-private.h"
+
 static HtmxResponse *
 venture_web_api_describe(
 	HtmxRequest	*request,
@@ -2409,6 +2428,22 @@ venture_web_api_describe(
 		            "There is no record type called \"%s\"", name);
 		return venture_web_error_response(error);
 	}
+
+	if (JSON_NODE_HOLDS_ARRAY(node))
+	{
+		JsonArray *types = json_node_get_array(node);
+		guint i;
+		for (i = 0; i < json_array_get_length(types); i++)
+		{
+			JsonObject *object = json_array_get_object_element(types, i);
+			json_object_set_member(object, "actions", venture_action_registry_describe(
+				venture_database_get_action_registry(venture_context_get_database(self->context)),
+				json_object_get_string_member(object, "name")));
+		}
+	}
+	else
+		json_object_set_member(json_node_get_object(node), "actions", venture_action_registry_describe(
+			venture_database_get_action_registry(venture_context_get_database(self->context)), name));
 
 	return venture_web_json_response(node, 200);
 }
@@ -2480,8 +2515,8 @@ venture_web_api_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -3482,6 +3517,8 @@ venture_web_invoice_total(
 	GError		**error
 );
 
+#include "payables/venture-payables-web.inc"
+
 /*
  * POST /invoices/:id/status - the same service reached by generated writes.
  * The paid action records a receipt; status itself remains derived.
@@ -3562,6 +3599,8 @@ venture_web_ui_invoice_status(
  * chrome, no sidebar, just the document. The browser's print dialog is the
  * PDF generator; it is already installed everywhere.
  */
+static void quote_buttons(GString *html, VentureEntity *record);
+
 static HtmxResponse *
 venture_web_ui_invoice_print(
 	HtmxRequest	*request,
@@ -3631,23 +3670,7 @@ venture_web_ui_invoice_print(
 	venture_html_escape_append(html, number);
 	g_string_append(html,
 		"</title><style>"
-		"body{font:14px/1.5 system-ui,sans-serif;color:#111;"
-		"max-width:720px;margin:40px auto;padding:0 20px}"
-		"h1{font-size:22px;margin:0 0 4px}"
-		".head{display:flex;justify-content:space-between;"
-		"align-items:baseline;margin-bottom:28px}"
-		".meta{color:#555;font-size:13px}"
-		"table{width:100%;border-collapse:collapse;margin:20px 0}"
-		"th,td{text-align:left;padding:8px 10px;"
-		"border-bottom:1px solid #ddd}"
-		".num{text-align:right}"
-		"tfoot td{border-bottom:none;font-weight:700}"
-		".status{display:inline-block;padding:2px 10px;"
-		"border:1px solid #999;border-radius:999px;font-size:12px;"
-		"text-transform:uppercase;letter-spacing:0.06em}"
-		".terms{color:#555;font-size:13px;margin-top:24px;"
-		"white-space:pre-wrap}"
-		"@media print{body{margin:0 auto}}"
+		VENTURE_DOCUMENT_PRINT_STYLE
 		"</style></head><body>");
 
 	g_string_append(html, "<div class=\"head\"><div><h1>Invoice ");
@@ -5480,6 +5503,8 @@ venture_web_ui_reports(
 		VentureReport *report;
 
 		report = g_ptr_array_index(reports, i);
+		if (venture_statements_owns_report(self->context, venture_report_get_name(report)))
+			continue;
 
 		g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
 		                         "<h2>");
@@ -5498,6 +5523,8 @@ venture_web_ui_reports(
 	}
 
 	g_string_append(content, "</div>");
+
+	venture_statements_append_index(self->context, content);
 
 	return venture_web_html_response(
 		venture_web_page(self, request, "/reports", "Reports", content->str), 200);
@@ -5557,8 +5584,8 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -5592,7 +5619,7 @@ venture_web_ui_report(
 
 	{
 		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
-		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", NULL };
+		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", NULL };
 		guint i;
 		for (i = 0; names[i] != NULL; i++)
 		{
@@ -5659,7 +5686,7 @@ venture_web_ui_report(
 				g_string_append_printf(content, "<input type=\"hidden\" name=\"organization_id\" value=\"%" G_GINT64_FORMAT "\">",
 					venture_json_object_get_int(report_options, "organization_id", 0));
 			{
-				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", NULL };
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", NULL };
 				guint i;
 				/* Preserve the question when changing only its cutoff. */
 				for (i = 0; names[i] != NULL; i++)
@@ -5672,6 +5699,7 @@ venture_web_ui_report(
 					g_string_append(content, "\">");
 				}
 			}
+			venture_statements_append_controls(self->context, report, report_options, content);
 			g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
 		}
 	}
@@ -6230,6 +6258,8 @@ venture_web_append_form_field(
  * only differences are the heading, where it posts and whether the fields
  * start filled.
  */
+static void venture_web_sequence_prefill(VentureEntity *record, HtmxRequest *request);
+
 static HtmxResponse *
 venture_web_ui_form(
 	HtmxRequest	*request,
@@ -6281,6 +6311,7 @@ venture_web_ui_form(
 	else
 	{
 		record = g_object_new(entity_type, NULL);
+		venture_web_sequence_prefill(record, request);
 	}
 
 	specs = venture_entity_get_field_specs(record);
@@ -6323,6 +6354,15 @@ venture_web_ui_form(
 		if (0 != (flags & VENTURE_COLUMN_FLAG_SENSITIVE))
 			continue;
 
+		if (id == 0 && venture_field_spec_get_kind(spec) == VENTURE_FIELD_KIND_REFERENCE)
+		{
+			g_autofree gchar *wire = g_strdup(venture_field_spec_get_name(spec));
+			const gchar *value;
+			g_strdelimit(wire, "-", '_');
+			value = htmx_request_get_query_param(request, wire);
+			if (value != NULL && !venture_entity_set_field_from_string(record, venture_field_spec_get_name(spec), value, &error))
+				return venture_web_error_response(error);
+		}
 		venture_web_append_form_field(self, content, spec, record);
 	}
 
@@ -6341,6 +6381,8 @@ venture_web_ui_form(
 		current_organization = (0 != id)
 			? venture_entity_get_organization_id(record)
 			: venture_web_active_organization(self, request);
+		if (id == 0 && htmx_request_get_query_param(request, "organization_id") != NULL)
+			current_organization = g_ascii_strtoll(htmx_request_get_query_param(request, "organization_id"), NULL, 10);
 
 		if (0 == current_organization)
 		{
@@ -7119,6 +7161,8 @@ venture_web_append_knowledge(
 	VentureEntity		*record
 );
 
+#include "banking/venture-bank-panel.inc"
+
 static void
 venture_web_append_related(
 	VentureWebServer	*self,
@@ -7206,10 +7250,14 @@ venture_web_append_related(
 				venture_entity_get_id(record), NULL))
 				continue;
 
+			venture_query_set_organization(query, venture_entity_get_organization_id(record));
+			if (types[i] == VENTURE_TYPE_ACTIVITY)
+				venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ, "planned", NULL);
+
 			related = venture_database_find(
 				venture_context_get_database(self->context), query, NULL);
 
-			if ((NULL == related) || (0 == related->len))
+			if ((NULL == related) || (0 == related->len && types[i] != VENTURE_TYPE_ACTIVITY))
 				continue;
 
 			related_name = venture_entity_get_entity_name(prototype);
@@ -7243,9 +7291,14 @@ venture_web_append_related(
 				g_string_append(content, "</a></li>");
 			}
 
-			g_string_append_printf(content,
-				"</ul><a class=\"btn btn-sm\" href=\"/e/%s/new\">"
-				"Add %s</a></div></div>", related_name, related_name);
+			{
+				g_autofree gchar *wire = g_strdup(venture_field_spec_get_name(spec));
+				g_strdelimit(wire, "-", '_');
+				g_string_append_printf(content,
+					"</ul><a class=\"btn btn-sm\" href=\"/e/%s/new?%s=%" G_GINT64_FORMAT "&amp;organization_id=%" G_GINT64_FORMAT "\">"
+					"New %s</a></div></div>", related_name, wire, venture_entity_get_id(record),
+					venture_entity_get_organization_id(record), related_name);
+			}
 		}
 	}
 }
@@ -8455,6 +8508,11 @@ venture_web_append_invoice_block(
 		"<a class=\"btn\" href=\"/invoices/%" G_GINT64_FORMAT
 		"/print\" target=\"_blank\">Print</a>", id);
 
+	if (venture_context_module_enabled(self->context, "mail"))
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
+			"/send\"><button class=\"btn\" type=\"submit\">Send</button></form>", id);
+
 
 	if (VENTURE_INVOICE_STATUS_DRAFT == status)
 		g_string_append_printf(content,
@@ -8548,6 +8606,7 @@ venture_web_append_incident_block(
 );
 
 #include "assets/venture-assets-web.inc"
+#include "sequences/venture-sequence-web.inc"
 
 static HtmxResponse *
 venture_web_ui_detail(
@@ -8649,7 +8708,10 @@ venture_web_ui_detail(
 		g_string_append(content, "</code><p><a class=\"btn\" href=\"/e/federation_grant/new\">Create sharing grant</a> <a href=\"/federation\">Federation workspace</a></p></section>");
 	}
 
+	venture_web_append_record_actions(self, content, record, principal);
 	venture_web_append_related(self, content, record);
+	venture_bank_append_actions(content, record);
+	venture_web_sequence_panel(self, content, principal, record);
 
 	/* A link is not offered on a link; the audit log is not linkable. */
 	if ((VENTURE_TYPE_RECORD_LINK != entity_type) &&
@@ -8664,6 +8726,8 @@ venture_web_ui_detail(
 	 * composer below: an invoice without its total is a list of hints. */
 	if (VENTURE_TYPE_INVOICE == entity_type)
 		venture_web_append_invoice_block(self, content, record);
+	quote_buttons(content, record);
+	venture_web_append_payables_actions(self, content, record);
 
 	if (VENTURE_TYPE_FIXED_ASSET == entity_type)
 		venture_web_append_asset_actions(content, record);
@@ -8676,6 +8740,8 @@ venture_web_ui_detail(
 	 * the forge rather than stored, so neither can drift from it. */
 	if (VENTURE_TYPE_FORGE_REPO == entity_type)
 		venture_web_append_repo_block(self, content, record);
+
+	if (VENTURE_IS_LEAD(record)) venture_web_append_lead_actions(content, record);
 
 	/* The factory's pages: what a release shipped and the actions on it,
 	 * a milestone's progress, what an environment is running. */
@@ -9174,6 +9240,7 @@ venture_web_ui_tickets(
 	/* Anything that has fallen due is marked before the board is drawn,
 	 * so a breached card is red the first time anybody looks. */
 	venture_sla_sweep(self->context, 50, NULL);
+	activity_lazy_sweep(self, request);
 
 	query = venture_web_ticket_query(self, request, &error);
 
@@ -15485,8 +15552,8 @@ venture_web_ui_chat_decide(
 	}
 
 	decided = approve
-		? venture_confirmation_store_approve(store, id,
-			(NULL != principal) ? principal->name : NULL, &error)
+		? venture_confirmation_store_approve_as(store, id,
+			principal->name, principal->role, &error)
 		: venture_confirmation_store_reject(store, id,
 			(NULL != principal) ? principal->name : NULL, &error);
 
@@ -17629,8 +17696,8 @@ venture_web_api_decide(
 	}
 
 	ok = approve
-		? venture_confirmation_store_approve(store, id,
-			(NULL != principal) ? principal->name : NULL, &error)
+		? venture_confirmation_store_approve_as(store, id,
+			principal->name, principal->role, &error)
 		: venture_confirmation_store_reject(store, id,
 			(NULL != principal) ? principal->name : NULL, &error);
 
@@ -23713,6 +23780,7 @@ venture_web_ui_inbox(
 	/* Anything that has fallen due since the last look is marked now,
 	 * so the inbox never says "nothing" about a breach an hour old. */
 	venture_sla_sweep(self->context, 50, NULL);
+	activity_lazy_sweep(self, request);
 
 	filter = htmx_request_get_query_param(request, "show");
 	unread_only = (0 != g_strcmp0(filter, "all"));
@@ -23937,6 +24005,7 @@ venture_web_api_inbox(
 	}
 
 	venture_sla_sweep(self->context, 50, NULL);
+	activity_lazy_sweep(self, request);
 
 	unread = htmx_request_get_query_param(request, "unread");
 	limit = htmx_request_get_query_param(request, "limit");
@@ -27490,6 +27559,7 @@ venture_web_api_ticket_summary(
 	return venture_web_json_response(node, 200);
 }
 
+
 static HtmxResponse *
 venture_web_api_ticket_draft(
 	HtmxRequest	*request,
@@ -27542,6 +27612,16 @@ venture_web_api_ticket_draft(
 
 
 #include "venture-web-federation.inc"
+#include "activities/venture-activity-web.inc"
+#include "banking/venture-bank-web.inc"
+
+#include "autojournal/venture-autojournal-web.inc"
+
+#include "mail/venture-mail-web.inc"
+#include "quotes/venture-quote-web.inc"
+#include "pipelines/venture-pipeline-web.inc"
+
+#include "leads/venture-lead-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -27669,8 +27749,16 @@ venture_web_server_new(
 	                 venture_web_ui_plugins_config, self);
 	htmx_router_post(router, "/invoices/:id/status",
 	                 venture_web_ui_invoice_status, self);
+	htmx_router_post(router, "/api/v1/vendor_bill/:id/:action", venture_web_payables_action, self);
+	htmx_router_post(router, "/bills/:id/:action", venture_web_payables_action, self);
 	htmx_router_get(router, "/invoices/:id/print",
 	                 venture_web_ui_invoice_print, self);
+	htmx_router_get(router, "/quotes/:id/print", quote_route, self);
+	htmx_router_post(router, "/quotes/:id/:action", quote_route, self);
+	htmx_router_post(router, "/api/v1/quotes/:id/:action", quote_route, self);
+	htmx_router_get(router, "/q/:token", quote_public, self);
+	htmx_router_post(router, "/q/:token", quote_public, self);
+	htmx_router_post(router, "/q/:token/accept", quote_public, self);
 	htmx_router_get(router, "/reports", venture_web_ui_reports, self);
 	htmx_router_get(router, "/settings", venture_web_ui_settings, self);
 	htmx_router_get(router, "/entity/:id", venture_web_ui_switch_entity, self);
@@ -27799,7 +27887,11 @@ venture_web_server_new(
 
 	/* API */
 	htmx_router_get(router, "/api/v1/health", venture_web_api_health, self);
+	htmx_router_post(router, "/f/:token", venture_web_lead_capture, self);
+	htmx_router_post(router, "/api/v1/leads/:id/:action", venture_web_lead_action, self);
+	htmx_router_post(router, "/leads/:id/:action", venture_web_lead_action, self);
 	htmx_router_get(router, "/api/v1/factory", venture_web_api_factory, self);
+	htmx_router_post(router, "/api/v1/post/backfill", venture_web_autojournal_backfill, self);
 	htmx_router_get(router, "/api/v1/inbox", venture_web_api_inbox, self);
 	htmx_router_post(router, "/api/v1/inbox/read", venture_web_api_inbox_read,
 	                 self);
@@ -27836,6 +27928,12 @@ venture_web_server_new(
 	                 venture_web_api_ticket_draft, self);
 	htmx_router_post(router, "/api/v1/releases/:id/changelog",
 	                 venture_web_api_release_changelog, self);
+	htmx_router_get(router, "/worklist", activity_ui_worklist, self);
+	htmx_router_post(router, "/activities/:id/complete", activity_ui_done, self);
+	htmx_router_get(router, "/api/v1/activities.ics", activity_api_calendar, self);
+	htmx_router_get(router, "/api/v1/activities", activity_api_list, self);
+	htmx_router_post(router, "/api/v1/activities/sweep", activity_api_sweep, self);
+	htmx_router_post(router, "/api/v1/activities/:id/:action", activity_api_action, self);
 	htmx_router_post(router, "/api/v1/releases/:id/publish",
 	                 venture_web_api_release_publish, self);
 	htmx_router_post(router, "/api/v1/fixed_assets/:id/:operation", venture_web_asset_action, self);
@@ -27931,6 +28029,18 @@ venture_web_server_new(
 	htmx_router_post(router, "/federation/pull", venture_web_ui_federation_write, self);
 	htmx_router_post(router, "/federation/replicas/:id/:action", venture_web_ui_federation_write, self);
 
+	htmx_router_post(router, "/invoices/:id/send", venture_web_mail_invoice_ui, self);
+	htmx_router_post(router, "/api/v1/mail/:action", venture_web_mail_action, self);
+	htmx_router_post(router, "/api/v1/mail_messages/:id/retry", venture_web_mail_action, self);
+	htmx_router_post(router, "/api/v1/invoices/:id/send", venture_web_mail_invoice, self);
+	htmx_router_post(router, "/api/v1/deals/:id/move", venture_web_deal_move, self);
+	htmx_router_post(router, "/deals/:id/move", venture_web_deal_move_ui, self);
+	htmx_router_get(router, "/deals", venture_web_deals_board, self);
+	htmx_router_post(router, "/api/v1/sequence/:id/enroll", venture_web_sequence_enroll, self);
+	htmx_router_post(router, "/api/v1/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
+	htmx_router_post(router, "/ui/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
+	htmx_router_post(router, "/api/v1/sequences/run", venture_web_sequence_run, self);
+
 	htmx_router_get(router, "/api/v1/:type", venture_web_api_list, self);
 	htmx_router_post(router, "/api/v1/:type", venture_web_api_create, self);
 	htmx_router_get(router, "/api/v1/:type/:id", venture_web_api_get, self);
@@ -27938,6 +28048,10 @@ venture_web_server_new(
 	htmx_router_patch(router, "/api/v1/:type/:id", venture_web_api_update, self);
 	htmx_router_delete(router, "/api/v1/:type/:id", venture_web_api_delete,
 	                   self);
+
+	venture_bank_web_register(router, self);
+	htmx_router_post(router, "/api/v1/:type/:id/actions/:action", venture_web_api_action, self);
+	htmx_router_post(router, "/api/v1/journals/post", venture_web_api_action, self);
 
 	return g_steal_pointer(&self);
 }

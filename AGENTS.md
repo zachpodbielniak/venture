@@ -290,9 +290,9 @@ Most CLI mistakes are a field name guessed rather than read.
 
 ## Dependencies
 
-Six git submodules under `deps/`, all linked statically, all treated as the
+Seven git submodules under `deps/`, all linked statically, all treated as the
 canonical copies: `yaml-glib`, `htmx-glib`, `ai-glib`, `orm-glib`,
-`podomation`, `crispy`. Fixing a bug in one and pushing it upstream is
+`podomation`, `crispy`, `mail-glib`. Fixing a bug in one and pushing it upstream is
 expected and has happened several times.
 
 Fedora build packages are printed by `make list-deps`, plus `libetpan-devel`

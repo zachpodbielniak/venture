@@ -1,0 +1,139 @@
+#+title: Commercial quotes
+#+description: Price lists, revisions and an atomic handoff to billing
+
+* A proposal is a commitment
+
+The =quotes= module requires =crm= and =invoicing=. It owns =price_list=,
+=price_list_item=, =quote=, =quote_line=, =quote_event=, =quote_delivery= and
+=quote_action=. Field tables supply their generic forms, REST resources,
+CLI operations, serialization and assistant schemas.
+
+Create a draft quote with a number, organization, currency and customer.
+Numbers are unique within the organization, including retained history.
+=revision= is the commercial counter; =version= remains the entity's
+optimistic concurrency field. A revision names its parent quote. Related
+records must belong to the same organization.
+
+Lines take whole-unit =quantity=, exact =unit_price=, integer
+=discount_percent= and =tax_percent= between zero and 100, and =position=.
+The discount rounds half to even before tax is applied to the discounted
+amount. Three units at $19.99 with 10% discount and 5% tax give subtotal
+$59.97, discount $6.00, tax $2.70 and total $56.67. All arithmetic uses
+=VentureMoney=, including overflow and cross-currency refusal.
+
+A line with a product and no supplied price uses the company's
+=default_price_list_id=, or the organization's default list for the quote
+currency. The highest applicable =min_quantity=
+selects the tier; without a matching tier it uses the product's =list_price=.
+A supplied price remains an explicit commercial choice. Lists and prices
+are records, so changing tomorrow's list cannot change an existing line.
+Fractional quantities and fractional percentages are not included.
+
+* Lifecycle
+
+=VentureQuoteService= performs every status transition. Generic writes cannot
+set a quote's status or rewrite sent proposals, events or deliveries.
+Changing, deleting or restoring a draft line recomputes the header in the
+same transaction. A validator cannot change the service-owned fields while
+they are being saved.
+
+- =send= freezes totals in an event, stamps issuance, creates a secure random
+  per-quote acceptance secret and writes one =quote_delivery= with
+  =channel=email=. A missing validity date uses the organization's
+  =quote_valid_days=, with zero meaning 30 days.
+- =revise= duplicates the commercial fields and all lines into a draft,
+  increments =revision= and supersedes the source. The new number appends
+  =-R<n>= to its parent's number. Accepted or already superseded quotes
+  cannot be revised.
+- =accept= requires a typed name and an unexpired sent quote. One transaction
+  records acceptance, creates an invoice with matching quantities, prices,
+  discounts and taxes, issues it through =VentureSettlementService=, moves
+  the attached deal to =won= and marks the quote accepted. Any failure,
+  including posting or invoice validation, rolls everything back.
+- =decline= requires a reason. =venture_quote_service_sweep()= expires sent
+  quotes whose validity elapsed, within one exact organization.
+
+The invoice number is =QUOTE-= followed by the quote number. Existing
+invoice-number conflicts are errors and roll back acceptance. Invoice lines
+now declare discount and tax percentages; existing lines default to zero.
+The ordinary invoice amount function applies the same money rounding.
+Issuance uses settlement's configured accounts and fiscal-period guard.
+Quote validity is not a payment due date; invoice due dates remain unset.
+
+A =before-action= signal on the service runs inside the transaction, after
+version validation and before any action records. It is =G_SIGNAL_RUN_LAST=;
+handlers receive a detached quote and action name and return an owned
+=GError *= to veto or NULL to allow. A policy plugin can enforce discount
+approval here. External delivery must wait for committed records.
+
+* The same action at every surface
+
+#+begin_src sh
+venturectl quote send 1
+venturectl quote accept 1 'by=Alex Buyer'
+venturectl quote decline 1 'reason=Budget deferred'
+venturectl quote revise 1
+#+end_src
+
+REST actions are =POST /api/v1/quotes/:id/send=, =accept=, =decline= and
+=revise=. JSON uses =accepted_by= and =reason=. Add =?stage=1= to propose
+an action for approval. The quote detail page has the same buttons and
+=/quotes/:id/print= shares the invoice print stylesheet.
+
+The assistant uses its generated create tool with =type=quote_action=,
+=quote_id=, =action=, =expected_version= and, for acceptance, =accepted_by=.
+The expected version is the quote's latest =version=, not its =revision=.
+The ordinary confirmation store holds the request until approval; approval
+calls the same service and refuses a quote changed since staging.
+=venturectl --stage create quote_action ...= offers the same mechanism.
+Action records and acceptance events cannot be replayed or rewritten.
+
+* Public acceptance and delivery
+
+=GET /q/:token= is read-only without authentication. Its document contains
+only commercial quote fields and line descriptions; no internal identifiers,
+notes, customer records or navigation links. =POST /q/:token/accept= accepts
+=accepted_by= as JSON or form data. The no-script form can also post to the
+same document URL. Acceptance records the real socket peer address and
+=method=web=; a manual action cannot claim that method through generic fields.
+
+Tokens contain 256 bits from the operating system's secure random source.
+Unknown tokens return 404. Public requests share a per-peer token bucket of
+30 requests, refilling at one request per two seconds. The token and delivery
+URL are sensitive fields omitted from generic output and audit diffs.
+
+This module does not send mail. The mail lane must wire one adapter from
+committed =quote_delivery= rows to =VentureMailer=, resolve the quote's
+customer/contact email, and combine its relative acceptance URL with the
+installation's public base URL. No electronic signature beyond a typed name,
+contracts, statements of work or delivery projects are created.
+
+* Reporting and upgrades
+
+=quotes= reports current sent, accepted, declined and expired counts and
+values for quotes issued in the selected period. It reports acceptance rate
+as accepted divided by all four outcomes and average elapsed days from send
+to acceptance. Drafts and superseded revisions are excluded. Select exact
+=organization_id= and =currency=; the defaults are the default organization
+and USD. Other currencies are excluded, never converted. This is a current
+outcome report for an issued cohort, not historical status reconstruction.
+
+Migration =000150_quote_validity= backfills the 30-day setting for existing
+organizations on SQLite and PostgreSQL. Additive metadata reconciliation
+creates quote tables and invoice percentage columns. It creates no
+historical acceptance events or invoices. The core organization table keeps
+the SQL valid with quotes disabled.
+
+=test-quotes= covers records, worked rounding, accepted invoices and deals,
+rollback, immutable sent lines, revision cloning, price lookup, organization
+scope, stale requests, real HTTP and CLI calls, public wrong-token and rate
+limits, staged approval, expiry, decline, reporting, upgrade restart and
+policy veto. The full suite also exercises existing invoice behavior with
+zero percentages. PostgreSQL SQL is shipped but requires a live PostgreSQL
+integration run separately.
+
+Action routes validate =stage= with the shared confirmation parser; invalid values are refused before any action executes.
+
+When pipelines is enabled, acceptance moves the linked deal to its own pipeline's first won stage (ordered by position, then id). The stage must satisfy the ordinary transition rules; a refusal rolls back acceptance and invoice issuance together. The stage history records the move. When pipelines is disabled, acceptance retains the legacy won-stage transition.
+
+With follow-up sequences enabled, acceptance's won-stage transition also exits the deal's matching enrollments in the same transaction as the invoice and quote acceptance.

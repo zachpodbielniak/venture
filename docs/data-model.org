@@ -413,3 +413,10 @@ deleted sale is still part of last quarter's figures.
 ** Shipping database changes
 
 Every persistent feature also ships paired SQLite/PostgreSQL migration SQL, representative upgrade tests and documentation. See [[file:migrations.org][database migrations]] for startup ordering and the append-only history contract; field tables define the schema, while SQL carries existing data into the new behavior.
+
+* Leads before opportunities
+
+=lead=, =lead_form= and =lead_assignment_rule= belong to =leads=, requiring
+=crm=. Interactions may reference a lead before there is a contact; company,
+contact and deal gain original =campaign_id= attribution. Lead conversion
+references are service-owned. See [[file:leads.org][leads]].

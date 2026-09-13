@@ -224,9 +224,15 @@ test_report_registry_has_builtins(
 	registry = venture_context_get_report_registry(fixture->context);
 	reports = venture_report_registry_list(registry);
 
-	/* Module reports may grow; the established built-ins must remain. */
+	/* Modules may append reports without replacing the established names. */
 	g_assert_cmpuint(reports->len, >=, 20);
+	g_assert_nonnull(venture_report_registry_lookup(registry, "worklist"));
 
+	g_assert_nonnull(venture_report_registry_lookup(registry, "stage_duration"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "funnel"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "forecast"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "loss_reasons"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "overdue_deals"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "pnl"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "releases"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "lead_time"));
@@ -238,6 +244,11 @@ test_report_registry_has_builtins(
 	g_assert_nonnull(venture_report_registry_lookup(registry, "snapshot_vs_live"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "fixed_assets"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "deferrals"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "payables"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "vendor_statement"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "bank_reconciliation"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "sequence_performance"));
+	g_assert_nonnull(venture_report_registry_lookup(registry, "sequence_failures"));
 	g_assert_null(venture_report_registry_lookup(registry, "nonesuch"));
 }
 
@@ -248,13 +259,15 @@ test_report_registry_describe(
 ){
 	g_autoptr(JsonNode) description = NULL;
 	JsonArray *array;
+	g_autoptr(GPtrArray) reports = venture_report_registry_list(
+		venture_context_get_report_registry(fixture->context));
 
 	description = venture_report_registry_describe(
 		venture_context_get_report_registry(fixture->context));
 
 	g_assert_nonnull(description);
 	array = json_node_get_array(description);
-	g_assert_cmpuint(json_array_get_length(array), >=, 20);
+	g_assert_cmpuint(json_array_get_length(array), ==, reports->len);
 
 	/* The description is what the AI's report tool advertises, so every
 	 * report has to carry one. */
