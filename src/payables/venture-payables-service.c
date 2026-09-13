@@ -469,6 +469,7 @@ account_id(VenturePayablesService *self, gint64 configured, const gchar *code,
 {
 	g_autoptr(VentureEntity) account = NULL;
 	g_autoptr(VentureQuery) query = NULL;
+	g_autofree gchar *scoped_code = NULL;
 	gboolean active;
 	gint actual_kind;
 
@@ -481,11 +482,23 @@ account_id(VenturePayablesService *self, gint64 configured, const gchar *code,
 		if (!venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, error))
 			return 0;
 		account = venture_database_find_one(self->database, query, error);
+		/* Core posting rules namespace secondary charts. Reuse that account
+		 * before creating another control account for the same legal entity. */
+		if (account == NULL && (error == NULL || *error == NULL))
+		{
+			scoped_code = g_strdup_printf("%" G_GINT64_FORMAT ":%s", organization_id, code);
+			g_clear_object(&query);
+			query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+			venture_query_set_organization(query, organization_id);
+			if (!venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, scoped_code, error))
+				return 0;
+			account = venture_database_find_one(self->database, query, error);
+		}
 	}
 	if (account == NULL && configured == 0 && (error == NULL || *error == NULL))
 	{
 		account = VENTURE_ENTITY(venture_account_new());
-		g_object_set(account, "organization-id", organization_id, "code", code,
+		g_object_set(account, "organization-id", organization_id, "code", scoped_code,
 			"name", g_str_equal(code, "6900") ? "General expenses" :
 			(g_str_equal(code, "2000") ? "Accounts payable" : "Cash"),
 			"kind", kind, "active", TRUE, NULL);

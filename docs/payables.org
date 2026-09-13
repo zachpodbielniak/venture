@@ -105,7 +105,7 @@ ordinary default; the projection does not invent a tax classification.
 
 * Schema and verification
 
-Migration =000103_payables_schema.sql= is paired for SQLite and PostgreSQL.
+Migration =000110_payables_schema.sql= is paired for SQLite and PostgreSQL.
 It verifies the metadata-created bill columns and the complete seven-table
 set, or the absent set of a never-enabled module. It creates no accounting
 history. Re-enabling the module uses ordinary additive schema reconciliation.
@@ -121,3 +121,5 @@ positive expense adjustment on its own date, with a =bill_cash:= source
 identity. Exact allocation across the frozen bill lines preserves cents;
 the original expense is never edited. A line not converted to a cash-report
 expense does not acquire these optional adjustments.
+
+Default posting accounts reuse the organization's existing legacy code or its =organization-id:code= chart entry. Missing defaults use the namespaced form, so payables and the core posting rules retain one control-account balance per organization.

@@ -159,6 +159,38 @@ test_state_guard(Fixture *f, gconstpointer unused)
 	status(f, b, "draft");
 }
 
+/* A secondary organization's chart is namespaced by the core posting rules.
+ * Approval must reuse it or the same payable balance splits across accounts. */
+static void
+test_existing_namespaced_chart(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) organization = record(f, "organization");
+	g_autoptr(VentureEntity) vendor = NULL;
+	g_autoptr(VentureEntity) b = NULL;
+	const gchar *codes[] = { "2000", "6900" };
+	guint i;
+	field(organization, "name", "Secondary organization");
+	save(f, organization);
+	f->org = venture_entity_get_id(organization);
+	vendor = record(f, "company");
+	field(vendor, "name", "Secondary supplier");
+	field(vendor, "kind", "supplier");
+	save(f, vendor);
+	f->vendor = venture_entity_get_id(vendor);
+	for (i = 0; i < G_N_ELEMENTS(codes); i++)
+	{
+		g_autoptr(VentureEntity) account = record(f, "account");
+		g_autofree gchar *code = g_strdup_printf("%" G_GINT64_FORMAT ":%s", f->org, codes[i]);
+		g_object_set(account, "code", code, "name", codes[i], "active", TRUE, NULL);
+		field(account, "kind", i == 0 ? "liability" : "expense");
+		save(f, account);
+	}
+	b = bill(f, "SCOPED");
+	approve(f, b);
+	status(f, b, "approved");
+	g_assert_cmpint(count(f, "account"), ==, 2);
+}
+
 static void
 test_approval(Fixture *f, gconstpointer unused)
 {
@@ -558,6 +590,16 @@ account_balance(Fixture *f, const gchar *code, const gchar *date)
 	venture_query_add_filter_string(q, "code", VENTURE_FILTER_OP_EQ, code, NULL);
 	account = venture_database_find_one(f->db, q, &error);
 	g_assert_no_error(error);
+	if (account == NULL)
+	{
+		g_autofree gchar *scoped = g_strdup_printf("%" G_GINT64_FORMAT ":%s", f->org, code);
+		g_clear_object(&q);
+		q = venture_query_new(VENTURE_TYPE_ACCOUNT);
+		venture_query_set_organization(q, f->org);
+		g_assert_true(venture_query_add_filter_string(q, "code", VENTURE_FILTER_OP_EQ, scoped, &error));
+		account = venture_database_find_one(f->db, q, &error);
+		g_assert_no_error(error);
+	}
 	g_assert_nonnull(account);
 	money = venture_posting_service_account_balance(venture_database_get_posting_service(f->db),
 		venture_entity_get_id(account), f->org, "USD", cutoff, &error);
@@ -697,7 +739,7 @@ test_migration(Fixture *f, gconstpointer unused)
 	g_autoptr(OrmResult) result = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureEntity) b = bill(f, "MIGRATION");
-	result = venture_database_query_raw(f->db, "SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations WHERE version = 103", NULL, &error);
+	result = venture_database_query_raw(f->db, "SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations WHERE version = 110", NULL, &error);
 	g_assert_no_error(error);
 	g_assert_true(orm_result_next(result));
 	g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 1);
@@ -885,6 +927,7 @@ main(int argc, char **argv)
 	g_test_add_func("/payables/records", test_records);
 	g_test_add("/payables/state-guard", Fixture, NULL, setup, test_state_guard, teardown);
 	g_test_add("/payables/approval", Fixture, NULL, setup, test_approval, teardown);
+	g_test_add("/payables/existing-namespaced-chart", Fixture, NULL, setup, test_existing_namespaced_chart, teardown);
 	g_test_add("/payables/partial-payment", Fixture, NULL, setup, test_partial_payment, teardown);
 	g_test_add("/payables/currency", Fixture, NULL, setup, test_currency, teardown);
 	g_test_add("/payables/atomic", Fixture, NULL, setup, test_atomic, teardown);
