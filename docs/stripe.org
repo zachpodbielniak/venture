@@ -29,6 +29,8 @@ redirects are navigation only; neither records a receipt.
 
 Checkout refuses deleted invoices and customers before creating provider objects, including historical references that remain on an issued invoice.
 
+Invoices emitted by the billing module currently have no product reference on their line, so they do not qualify for Checkout. Subscription catalog mapping and payment-driven recovery are not implemented; do not modify issued invoice evidence to make it pass eligibility.
+
 1. In Stripe's dashboard, create a product and a one-time price in the
    invoice's currency. Its unit amount must match the Venture invoice line.
 2. Record the price identifier in a =stripe_price_link= with the Venture
