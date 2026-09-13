@@ -13,10 +13,19 @@ leads(VentureContext *context, VentureDateRange *period, JsonObject *options, GE
 	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
 	if (period != NULL)
 	{
-		g_autofree gchar *start = g_date_time_format_iso8601(venture_date_range_get_start(period));
-		g_autofree gchar *end = g_date_time_format_iso8601(venture_date_range_get_end(period));
-		if (!venture_query_add_filter_string(query, "created-at", VENTURE_FILTER_OP_GTE, start, error) ||
-			!venture_query_add_filter_string(query, "created-at", VENTURE_FILTER_OP_LT, end, error)) return NULL;
+		/* All-time and one-sided ranges deliberately have absent bounds. */
+		GDateTime *start = venture_date_range_get_start(period);
+		GDateTime *end = venture_date_range_get_end(period);
+		if (start != NULL)
+		{
+			g_autofree gchar *text = g_date_time_format_iso8601(start);
+			if (!venture_query_add_filter_string(query, "created-at", VENTURE_FILTER_OP_GTE, text, error)) return NULL;
+		}
+		if (end != NULL)
+		{
+			g_autofree gchar *text = g_date_time_format_iso8601(end);
+			if (!venture_query_add_filter_string(query, "created-at", VENTURE_FILTER_OP_LT, text, error)) return NULL;
+		}
 	}
 	return venture_database_find(venture_context_get_database(context), query, error);
 }

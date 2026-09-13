@@ -310,7 +310,14 @@ static void
 test_reports(Fixture *f, gconstpointer data)
 {
 	VentureReportRegistry *registry = venture_context_get_report_registry(f->context);
+	g_autoptr(VentureDateRange) period = venture_date_range_new_all_time();
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(GError) error = NULL;
 	(void)data;
+	/* The API supplies an all-time object, not a NULL period. */
+	result = venture_report_generate(venture_report_registry_lookup(registry, "lead_sources"), f->context, period, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
 	g_assert_nonnull(venture_report_registry_lookup(registry, "lead_sources"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "lead_response_time"));
 	g_assert_nonnull(venture_report_registry_lookup(registry, "leads_recycled_due"));
@@ -625,11 +632,11 @@ test_upgrade(Fixture *f, gconstpointer data)
 	g_autoptr(VentureEntity) loaded = NULL;
 	gint64 id;
 	(void)data;
-	g_assert_true(g_file_get_contents("migrations/sqlite/000101_leads.sql", &sql, NULL, &error));
+	g_assert_true(g_file_get_contents("migrations/sqlite/000140_leads.sql", &sql, NULL, &error));
 	g_assert_no_error(error);
 	save(f, contact); id = venture_entity_get_id(contact);
 	venture_database_execute(f->db,
-		"DELETE FROM schema_migrations WHERE version=101; DROP TABLE leads; DROP INDEX idx_interactions_lead_id; ALTER TABLE interactions DROP COLUMN lead_id", NULL, &error);
+		"DELETE FROM schema_migrations WHERE version=140; DROP TABLE leads; DROP INDEX idx_interactions_lead_id; ALTER TABLE interactions DROP COLUMN lead_id", NULL, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
@@ -770,11 +777,57 @@ test_assistant_tool(Fixture *f, gconstpointer data)
 	g_unsetenv("VENTURE_LEADS_TEST_KEY");
 }
 
+/* Deal-only CRM history remains valid when leads is enabled. */
+static void
+test_deal_history(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) deal = record(f, "deal", "Deal history");
+	g_autoptr(VentureInteraction) event = venture_interaction_new();
+	(void)data;
+	save(f, deal);
+	g_object_set(event, "organization-id", f->org, "deal-id", venture_entity_get_id(deal), "subject", "Follow up", NULL);
+	save(f, VENTURE_ENTITY(event));
+	g_assert_cmpint(count(f, "interaction"), ==, 1);
+}
+
+/* Without the guard this callback recursively emits converting indefinitely. */
+static GError *
+try_reentrant_conversion(VentureLeadService *service, VentureEntity *lead, gpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) result = venture_lead_service_convert(service, lead, NULL, NULL, &error);
+	(void)data;
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	return NULL;
+}
+
+static void
+test_conversion_reentry(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) lead = record(f, "lead", "Reentry");
+	g_autoptr(VentureEntity) converted = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureLeadService *service = venture_database_get_lead_service(f->db);
+	(void)data;
+	g_object_set(lead, "status", VENTURE_LEAD_QUALIFIED, NULL);
+	save(f, lead);
+	g_signal_connect(service, "converting", G_CALLBACK(try_reentrant_conversion), NULL);
+	converted = venture_lead_service_convert(service, lead, NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(converted);
+	g_assert_cmpint(count(f, "company"), ==, 1);
+	g_assert_cmpint(count(f, "contact"), ==, 1);
+	g_assert_cmpint(count(f, "deal"), ==, 1);
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	venture_entity_registry_register_builtins(venture_entity_registry_get_default());
+	g_test_add("/leads/deal-history", Fixture, NULL, setup, test_deal_history, teardown);
+	g_test_add("/leads/conversion-reentry", Fixture, NULL, setup, test_conversion_reentry, teardown);
 	g_test_add_func("/leads/records", test_records);
 	g_test_add("/leads/normalize", Fixture, NULL, setup, test_normalize, teardown);
 	g_test_add("/leads/assignment", Fixture, NULL, setup, test_assignment, teardown);

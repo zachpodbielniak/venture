@@ -18,7 +18,7 @@ venture_ai_tool_lead_convert(AiToolUse *tool_use, GCancellable *cancellable,
 	if (input == NULL) return venture_ai_tool_error("A lead id is required");
 	lead = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_LEAD,
 		venture_json_object_get_int(input, "id", 0), &local_error);
-	if (lead == NULL) return venture_ai_tool_error("%s", local_error->message);
+	if (lead == NULL) return venture_ai_tool_error("%s", NULL != local_error ? local_error->message : "Record not found or action refused");
 	actor.kind = VENTURE_ACTOR_KIND_AI;
 	actor.name = self->current_principal != NULL ? self->current_principal->name : "ai";
 	actor.prompt = self->current_prompt;
@@ -28,14 +28,14 @@ venture_ai_tool_lead_convert(AiToolUse *tool_use, GCancellable *cancellable,
 	if (self->policy == VENTURE_AI_POLICY_AUTONOMOUS)
 	{
 		converted = venture_lead_service_convert(service, lead, input, &actor, &local_error);
-		if (converted == NULL) return venture_ai_tool_error("%s", local_error->message);
+		if (converted == NULL) return venture_ai_tool_error("%s", NULL != local_error ? local_error->message : "Record not found or action refused");
 		result = venture_serializable_to_json(VENTURE_SERIALIZABLE(converted), FALSE);
 	}
 	else
 	{
 		confirmation = venture_lead_service_stage_convert(service, venture_context_get_confirmations(self->context),
 			lead, input, &actor, &local_error);
-		if (confirmation == NULL) return venture_ai_tool_error("%s", local_error->message);
+		if (confirmation == NULL) return venture_ai_tool_error("%s", NULL != local_error ? local_error->message : "Record not found or action refused");
 		result = venture_confirmation_to_json(confirmation);
 		json_object_set_string_member(json_node_get_object(result), "status", "awaiting_approval");
 		json_object_set_string_member(json_node_get_object(result), "note", "Nothing has changed; conversion awaits approval.");

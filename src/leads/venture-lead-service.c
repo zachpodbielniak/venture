@@ -8,6 +8,7 @@ struct _VentureLeadService {
 	VentureDatabase *database;
 	VentureEntity *writing;
 	GPtrArray *pending;
+	gboolean converting;
 };
 G_DEFINE_FINAL_TYPE(VentureLeadService, venture_lead_service, G_TYPE_OBJECT)
 
@@ -474,10 +475,10 @@ venture_lead_service_save_hook(VentureLeadService *self, VentureEntity *entity,
 	if (VENTURE_IS_LEAD_FORM(entity)) return validate_form(self, entity, error);
 	if (VENTURE_IS_INTERACTION(entity))
 	{
-		gint64 lead_id = 0, company_id = 0, contact_id = 0;
-		g_object_get(entity, "lead-id", &lead_id, "company-id", &company_id, "contact-id", &contact_id, NULL);
-		if (lead_id == 0 && company_id == 0 && contact_id == 0)
-			return refuse(error, VENTURE_ERROR_VALIDATION, "interaction requires a lead, company or contact");
+		gint64 lead_id = 0, company_id = 0, contact_id = 0, deal_id = 0;
+		g_object_get(entity, "lead-id", &lead_id, "company-id", &company_id, "contact-id", &contact_id, "deal-id", &deal_id, NULL);
+		if (lead_id == 0 && company_id == 0 && contact_id == 0 && deal_id == 0)
+			return refuse(error, VENTURE_ERROR_VALIDATION, "interaction requires a lead, company, contact or deal");
 		if (lead_id != 0) { *handled = TRUE; return save_interaction(self, entity, actor, error); }
 	}
 	if (!VENTURE_IS_LEAD(entity)) return TRUE;
@@ -620,6 +621,13 @@ venture_lead_service_convert(VentureLeadService *self, VentureEntity *lead,
 	VentureLeadStatus state;
 	gint64 company_id, contact_id;
 	gboolean make_deal;
+	/* A converting callback must not start a second conversion before the
+	 * first has written its status, including conversion of another lead. */
+	if (self->database == NULL || self->converting)
+	{
+		refuse(error, VENTURE_ERROR_CONFLICT, "conversion unavailable or reentered");
+		return NULL;
+	}
 	if (!validate_options(options, error)) return NULL;
 	if (!VENTURE_IS_LEAD(lead) || !venture_entity_is_persisted(lead))
 	{
@@ -630,8 +638,17 @@ venture_lead_service_convert(VentureLeadService *self, VentureEntity *lead,
 		refuse(error, VENTURE_ERROR_VALIDATION, "leads module is disabled"); return NULL;
 	}
 	if (!venture_database_begin(self->database, error)) return NULL;
+	self->converting = TRUE;
 	current = venture_database_get(self->database, VENTURE_TYPE_LEAD, venture_entity_get_id(lead), error);
-	if (current == NULL) { refuse(error, VENTURE_ERROR_NOT_FOUND, "lead no longer exists"); goto fail; }
+	if (current == NULL)
+	{
+		if (error == NULL || *error == NULL) refuse(error, VENTURE_ERROR_NOT_FOUND, "lead no longer exists");
+		goto fail;
+	}
+	if (venture_entity_is_deleted(current))
+	{
+		refuse(error, VENTURE_ERROR_NOT_FOUND, "lead no longer exists"); goto fail;
+	}
 	g_object_get(current, "status", &state, "name", &name, "company-name", &company_name, NULL);
 	if (venture_entity_get_version(current) != venture_entity_get_version(lead) || state == VENTURE_LEAD_CONVERTED)
 	{
@@ -683,10 +700,16 @@ venture_lead_service_convert(VentureLeadService *self, VentureEntity *lead,
 	if (!write_record(self, current, actor, error) ||
 		!history(self, current, "Lead converted", "Company and contact linked; attribution retained", actor, error)) goto fail;
 	g_ptr_array_add(self->pending, g_object_ref(current));
-	if (!venture_database_commit(self->database, error)) return NULL;
+	if (!venture_database_commit(self->database, error))
+	{
+		self->converting = FALSE;
+		return NULL;
+	}
+	self->converting = FALSE;
 	return g_steal_pointer(&current);
 fail:
 	venture_database_rollback(self->database);
+	self->converting = FALSE;
 	return NULL;
 }
 

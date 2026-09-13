@@ -166,7 +166,7 @@ this lane does not create enrollments or activities.
 
 * Upgrades and verification
 
-Paired migration =000101_leads.sql= verifies the additive lead and interaction
+Paired migration =000140_leads.sql= verifies the additive lead and interaction
 schema after metadata reconciliation. It preserves existing CRM rows and
 accepts installations where leads are disabled and their table is absent;
 it does not infer historical inquiries or conversion history from deals.
@@ -179,3 +179,5 @@ capture, rate limiting, assignment, qualification history, recycling,
 conversion and injected rollback, lifecycle signals, REST staging and actual
 CLI execution, report values, module hiding and upgrades. =test-auth= checks
 that lead business actions refuse anonymous callers.
+
+Conversion refuses recursive conversion calls from its callbacks, and archived leads cannot be converted. Interaction history may reference a deal alone, including activity completion history.
