@@ -96,7 +96,7 @@ approval already recognized the expense and payment already moved cash.
 An explicit document repost is refused at the journal save boundary too.
 
 This conversion is deliberately optional and narrow. One immutable expense
-has one amount and one date. It can represent cash allocations on one date,
+has one amount and one date. It can represent cash allocations at one effective timestamp,
 without credit-note settlement or refunds; it cannot correctly represent
 partial payments on different dates. Those conversions are refused instead
 of assigning all earlier cash to the final payment date. Use the dated AP

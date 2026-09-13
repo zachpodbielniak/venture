@@ -107,7 +107,7 @@ venture_payables_service_class_init(VenturePayablesServiceClass *klass)
 		g_param_spec_int64("cash-account-id", "Cash account", "Zero resolves code 1000 in the organization",
 			0, G_MAXINT64, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 	g_object_class_install_property(object_class, PROP_PAYABLE_ACCOUNT,
-		g_param_spec_int64("payable-account-id", "Receivable account", "Zero resolves code 2000; unused receipts are credit balances here",
+		g_param_spec_int64("payable-account-id", "Payable account", "Zero resolves code 2000; unapplied supplier payments reduce this liability",
 			0, G_MAXINT64, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 	g_object_class_install_property(object_class, PROP_EXPENSE_ACCOUNT,
 		g_param_spec_int64("expense-account-id", "Expense account", "Zero resolves code 6900 in the organization",
@@ -800,7 +800,7 @@ payment_credit(VenturePayablesService *self, gint64 payment_id, GError **error)
 		return NULL;
 	if (credits->len != 1)
 	{
-		refuse(error, VENTURE_ERROR_VALIDATION, "The receipt has no unique source credit");
+		refuse(error, VENTURE_ERROR_VALIDATION, "The payment has no unique source credit");
 		return NULL;
 	}
 	return g_object_ref(g_ptr_array_index(credits, 0));
@@ -1064,7 +1064,7 @@ perform_payment(VenturePayablesService *self, VentureEntity *payment,
 
 			allocation = g_ptr_array_index(allocations, i);
 			if (!VENTURE_IS_BILL_PAYMENT_ALLOCATION(allocation) || get_id(allocation, "payment-id") != 0 || get_id(allocation, "credit-id") != 0)
-				return refuse(error, VENTURE_ERROR_VALIDATION, "A receipt batch requires new allocations without an existing source");
+				return refuse(error, VENTURE_ERROR_VALIDATION, "A payment batch requires new allocations without an existing source");
 			g_object_set(allocation, "payment-id", venture_entity_get_id(payment), "date", date, NULL);
 			venture_entity_set_organization_id(allocation, venture_entity_get_organization_id(payment));
 			if (!perform_allocation(self, allocation, actor, error))
@@ -1165,7 +1165,7 @@ perform_refund(VenturePayablesService *self, VentureEntity *refund,
 		if (credit == NULL)
 			return FALSE;
 		if (get_id(credit, "payment-id") == 0)
-			return refuse(error, VENTURE_ERROR_VALIDATION, "An applied credit note is not a cash receipt to refund");
+			return refuse(error, VENTURE_ERROR_VALIDATION, "An applied credit note has no cash payment to refund");
 		bill = venture_database_get(self->database, VENTURE_TYPE_VENDOR_BILL, get_id(allocation, "bill-id"), error);
 		if (bill == NULL)
 			return FALSE;

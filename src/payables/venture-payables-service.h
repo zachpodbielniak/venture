@@ -21,13 +21,13 @@ VenturePayablesService *venture_payables_service_get(VentureDatabase *database);
 /**
  * venture_payables_service_apply_payment:
  * @self: the service
- * @payment: an unsaved receipt
+ * @payment: an unsaved supplier payment
  * @allocations: (nullable) (element-type VentureBillPaymentAllocation): unsaved allocations;
- *   NULL uses payment.bill-id, or leaves the receipt as a deposit
+ *   NULL uses payment.bill-id, or leaves the payment as a deposit
  * @actor: (nullable): the audit actor
  * @error: (out) (optional): the error
  *
- * All allocations, credit balances, bill states, sales and postings are
+ * All allocations, credit balances, bill states, expenses and postings are
  * written in one transaction. Failure also restores the caller's objects.
  * Returns: TRUE on success
  */
@@ -52,11 +52,11 @@ gboolean venture_payables_service_transition(VenturePayablesService *self,
  * venture_payables_service_settle_bill:
  * @self: the service
  * @bill_id: the bill
- * @date: the receipt time
+ * @date: the payment time
  * @actor: (nullable): the audit actor
  * @error: (out) (optional): the error
  *
- * The web Pay action: records a manual receipt for the outstanding amount.
+ * The web Pay action: records a manual payment for the outstanding amount.
  * Returns: TRUE on success
  */
 gboolean venture_payables_service_settle_bill(VenturePayablesService *self,
@@ -130,7 +130,7 @@ gboolean venture_payables_is_projection_write(VentureDatabase *database, Venture
  * @database: the owning database
  * @record: an expense
  * @error: (out) (optional): the error
- * Returns: TRUE if the sale is not immutable settlement evidence
+ * Returns: TRUE if the expense is not immutable settlement evidence
  */
 gboolean venture_payables_check_expense(VentureDatabase *database, VentureEntity *record, GError **error);
 

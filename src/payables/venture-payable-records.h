@@ -23,17 +23,17 @@ VENTURE_DECLARE_ENTITY(VentureVendorBillEvent, venture_vendor_bill_event, VENDOR
 /**
  * venture_bill_payment_new:
  *
- * Returns: (transfer full): a vendor receipt
+ * Returns: (transfer full): a vendor payment
  */
 /**
  * venture_bill_payment_allocation_new:
  *
- * Returns: (transfer full): an allocation of a receipt or credit
+ * Returns: (transfer full): an allocation of a payment or credit
  */
 /**
  * venture_vendor_credit_new:
  *
- * Returns: (transfer full): a credit note or unapplied receipt
+ * Returns: (transfer full): a credit note or unapplied payment
  */
 /**
  * venture_bill_refund_new:
@@ -43,7 +43,7 @@ VENTURE_DECLARE_ENTITY(VentureVendorBillEvent, venture_vendor_bill_event, VENDOR
 /**
  * venture_vendor_bill_event_new:
  *
- * Returns: (transfer full): an immutable invoice lifecycle event
+ * Returns: (transfer full): an immutable bill lifecycle event
  */
 
 #define VENTURE_TYPE_VENDOR_BILL (venture_vendor_bill_get_type())
