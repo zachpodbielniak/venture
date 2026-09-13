@@ -27538,6 +27538,8 @@ venture_web_api_ticket_draft(
 
 #include "venture-web-federation.inc"
 
+#include "pipelines/venture-pipeline-web.inc"
+
 VentureWebServer *
 venture_web_server_new(
 	VentureContext	 *context,
@@ -27922,6 +27924,10 @@ venture_web_server_new(
 	htmx_router_get(router, "/federation/replicas/:id", venture_web_ui_federation_replica, self);
 	htmx_router_post(router, "/federation/pull", venture_web_ui_federation_write, self);
 	htmx_router_post(router, "/federation/replicas/:id/:action", venture_web_ui_federation_write, self);
+
+	htmx_router_post(router, "/api/v1/deals/:id/move", venture_web_deal_move, self);
+	htmx_router_post(router, "/deals/:id/move", venture_web_deal_move_ui, self);
+	htmx_router_get(router, "/deals", venture_web_deals_board, self);
 
 	htmx_router_get(router, "/api/v1/:type", venture_web_api_list, self);
 	htmx_router_post(router, "/api/v1/:type", venture_web_api_create, self);

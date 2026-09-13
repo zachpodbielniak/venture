@@ -1384,6 +1384,8 @@ venture_database_delete(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_pipelines_check_removal(entity, error))
+		return FALSE;
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
@@ -1442,6 +1444,8 @@ venture_database_restore(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_pipelines_check_removal(entity, error))
+		return FALSE;
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
@@ -1483,6 +1487,8 @@ venture_database_purge(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_pipelines_check_removal(entity, error))
+		return FALSE;
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
@@ -1957,7 +1963,8 @@ venture_database_migrate(
 
 	organization_id = venture_database_seed_default_organization(self, error);
 	if (organization_id == 0 || !venture_database_seed_accounts(self, organization_id, error) ||
-		!venture_database_seed_tax_categories(self, organization_id, error))
+		!venture_database_seed_tax_categories(self, organization_id, error) ||
+		!venture_pipelines_migrate(self, error))
 		return FALSE;
 	return TRUE;
 }

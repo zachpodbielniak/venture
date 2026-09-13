@@ -377,3 +377,63 @@ fail:
 	venture_database_rollback(db);
 	return NULL;
 }
+
+gboolean
+venture_pipelines_migrate(VentureDatabase *db, GError **error)
+{
+	g_autoptr(OrmResult) pending = NULL;
+	g_autoptr(VentureQuery) organizations_query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
+	g_autoptr(GPtrArray) organizations = NULL;
+	VentureDealService *self;
+	guint i;
+
+	if (!enabled())
+		return TRUE;
+	if (!venture_database_begin(db, error))
+		return FALSE;
+	pending = venture_database_query_raw(db, "SELECT pending FROM venture_pipeline_upgrade", NULL, error);
+	if (NULL == pending)
+		goto fail;
+	if (!orm_result_next(pending))
+		return venture_database_commit(db, error);
+	g_clear_object(&pending);
+	self = venture_database_get_deal_service(db);
+	organizations = venture_database_find(db, organizations_query, error);
+	if (NULL == organizations)
+		goto fail;
+	for (i = 0; i < organizations->len; i++)
+	{
+		VentureEntity *org = g_ptr_array_index(organizations, i);
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_DEAL);
+		g_autoptr(GPtrArray) deals = NULL;
+		guint j;
+		gint64 org_id = venture_entity_get_id(org);
+		if (0 == venture_deal_service_ensure_default(self, org_id, error))
+			goto fail;
+		venture_query_set_organization(query, org_id);
+		deals = venture_database_find(db, query, error);
+		if (NULL == deals)
+			goto fail;
+		for (j = 0; j < deals->len; j++)
+		{
+			VentureEntity *deal = g_ptr_array_index(deals, j);
+			if (0 == integer(G_OBJECT(deal), "stage-id") &&
+				!initialize_deal(self, db, deal, NULL, error))
+				goto fail;
+		}
+	}
+	if (!venture_database_execute(db, "DELETE FROM venture_pipeline_upgrade", NULL, error))
+		goto fail;
+	return venture_database_commit(db, error);
+fail:
+	venture_database_rollback(db);
+	return FALSE;
+}
+
+gboolean
+venture_pipelines_check_removal(VentureEntity *entity, GError **error)
+{
+	if (VENTURE_IS_DEAL_STAGE_ENTRY(entity))
+		return refuse(error, "stage history cannot be deleted, restored or purged");
+	return TRUE;
+}

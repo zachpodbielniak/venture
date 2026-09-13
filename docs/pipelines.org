@@ -35,3 +35,45 @@ legacy stages. New deals retain their initial legacy stage and probability
 for compatibility with existing import callers; subsequent changes use the
 service. The initial history entry is an observation at creation, not an
 invention of earlier stage transitions.
+
+* Upgrade and reports
+
+The paired =000003_pipelines.sql= migration records a durable pending backfill.
+After metadata reconciliation and organization seeding, startup creates a
+default for every organization and attaches retained deals through the same
+initialization code. The backfill and clearing its pending marker share one
+transaction. With pipelines disabled the marker remains pending; enabling it
+on a later startup completes the work without creating optional tables early.
+A retained deal's initial stage timestamp means observed at upgrade.
+
+Reports accept =organization_id=, =pipeline_id= and =owner=. Forecast rows
+are separate per pipeline, owner and currency: =open_weighted= is current
+open value times probability; =committed= is full open value when probability
+is at least 90 or the committed flag is set; =closed_value= is won value
+whose =closed_at= falls in the period. These are sales forecasts, not invoices,
+recognized revenue or cash.
+
+=stage_duration= measures each stage visit's occupancy clipped to the period,
+including open visits up to now, and reports average and median days.
+=funnel= counts visits entered in the period and visits whose next transition
+advanced to a higher open position or won before the period end. Repeated
+visits count separately. =loss_reasons= groups lost deal count and value by
+reason and currency in the closing period. The legacy =pipeline= report
+also accepts =pipeline_id=.
+
+=overdue_deals= exposes a metric with that key: current open deals whose
+latest entry is older than their stage's positive =rotting_days=. A dashboard
+=metric= widget with =report_name=overdue_deals= and =field=overdue_deals=
+shows the count without a scheduled sweep.
+
+* Entry points
+
+=POST /api/v1/deals/:id/move= takes ={ "stage_id": 2, "note": "Qualified" }=.
+Add =?stage=1= to propose it; approval rechecks the saved deal version and
+stage rules through the service. Generic staged changes cannot bypass it.
+The assistant's =venture_deal_move= always proposes a confirmation.
+
+=venturectl deal move ID STAGE [NOTE]= calls the same action. The =/deals=
+board groups cards by stage and provides a stage selector and Move button.
+Set any required fields or loss reason through the deal's ordinary edit form
+before moving it.

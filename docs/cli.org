@@ -195,3 +195,11 @@ server for somebody to approve, not merely described. =venturectl --stage=
 does the same for =create=, =update= and =delete= from the shell. It takes its credential from
 =VENTURE_TOKEN= and refuses =--token= outright, since an MCP server is spawned
 from a config file. See [[file:mcp.org][venturectl mcp]].
+
+* Sales pipeline actions
+
+=venturectl deal move ID STAGE [NOTE]= moves a deal through
+=VentureDealService=. STAGE is a =pipeline_stage= id in the deal's pipeline.
+Fill its required fields and loss reason first with ordinary =update deal=.
+Generic updates cannot change =stage=, =stage_id= or =closed_at=.
+See [[file:pipelines.org][Sales pipelines]] for configuration and forecasting.

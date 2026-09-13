@@ -157,3 +157,5 @@ The description must outlive the registry. A static does.
 - Every type it claims must be a concrete =VentureEntity= subclass.
 
 All five are checked at registration, and a built-in that breaks one aborts startup, because a registry missing a core module would fail in a hundred quieter ways later.
+
+| =pipelines= | crm | pipeline, pipeline_stage, deal_stage_entry, loss_reason; stage_duration, funnel, forecast, loss_reasons, overdue_deals; /deals | |

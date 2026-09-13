@@ -127,6 +127,7 @@
 #include "ledger/venture-posting-rule.h"
 #include "ledger/venture-posting-service.h"
 #include "pipelines/venture-deal-service.h"
+#include "pipelines/venture-pipeline-reports.h"
 #include "core/venture-ticket-relation.h"
 #include "core/venture-record-link.h"
 #include "core/venture-dashboard.h"
