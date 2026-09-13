@@ -149,6 +149,7 @@ quote_route(HtmxRequest *request, GHashTable *params, gpointer data)
 	VentureActor actor;
 	gint64 id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
 	gboolean api = g_str_has_prefix(htmx_request_get_path(request), "/api/");
+	gboolean staged = FALSE;
 	if (!api)
 	{
 		gate = venture_web_ui_require_session(self, request);
@@ -179,7 +180,9 @@ quote_route(HtmxRequest *request, GHashTable *params, gpointer data)
 	venture_entity_set_organization_id(action, venture_entity_get_organization_id(quote));
 	g_object_set(action, "quote-id", id, "action", verb, "expected-version", venture_entity_get_version(quote),
 		"accepted-by", by, "reason", reason, NULL);
-	if (g_strcmp0(htmx_request_get_query_param(request, "stage"), "1") == 0)
+	if (!venture_confirmation_parse_stage_flag(htmx_request_get_query_param(request, "stage"), &staged, &error))
+		return venture_web_error_response(error);
+	if (staged)
 		return venture_web_api_stage(self, action, NULL, principal, VENTURE_AUDIT_ACTION_CREATE);
 	if (!venture_quote_service_execute(venture_database_get_quote_service(venture_context_get_database(self->context)),
 		action, "manual", NULL, &actor, &error)) return venture_web_error_response(error);

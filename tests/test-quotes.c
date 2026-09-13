@@ -436,6 +436,12 @@ test_http(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error));
 	g_assert_no_error(error);
+	/* An invalid staging flag must never publish a draft immediately. */
+	path = g_strdup_printf("/api/v1/quotes/%" G_GINT64_FORMAT "/send?stage=typo", venture_entity_get_id(q));
+	g_assert_cmpuint(http(session, base, "POST", path, "{}", &body), ==, 400);
+	status(f, q, "draft");
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&path, g_free);
 	path = g_strdup_printf("/api/v1/quotes/%" G_GINT64_FORMAT "/send", venture_entity_get_id(q));
 	g_assert_cmpuint(http(session, base, "POST", path, "{}", &body), ==, 200);
 	g_clear_pointer(&body, g_free);
@@ -528,11 +534,12 @@ test_report(Fixture *f, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	g_autoptr(JsonNode) node = NULL;
 	g_autofree gchar *json = NULL;
+	g_autoptr(VentureDateRange) period = venture_date_range_new_all_time();
 	VentureReport *report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "quotes");
 	g_assert_nonnull(report);
 	action(f, q, "send");
 	action(f, q, "accept");
-	result = venture_report_generate(report, f->context, NULL, NULL, &error);
+	result = venture_report_generate(report, f->context, period, NULL, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(result);
 	node = venture_report_result_to_json(result);
@@ -628,7 +635,7 @@ test_upgrade(Fixture *f, gconstpointer data)
 {
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureEntity) org = NULL;
-	g_assert_true(venture_database_execute(f->db, "UPDATE organizations SET quote_valid_days = NULL; DELETE FROM schema_migrations WHERE version = 103", NULL, &error));
+	g_assert_true(venture_database_execute(f->db, "UPDATE organizations SET quote_valid_days = NULL; DELETE FROM schema_migrations WHERE version = 150", NULL, &error));
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);

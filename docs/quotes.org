@@ -118,7 +118,7 @@ to acceptance. Drafts and superseded revisions are excluded. Select exact
 and USD. Other currencies are excluded, never converted. This is a current
 outcome report for an issued cohort, not historical status reconstruction.
 
-Migration =000103_quote_validity= backfills the 30-day setting for existing
+Migration =000150_quote_validity= backfills the 30-day setting for existing
 organizations on SQLite and PostgreSQL. Additive metadata reconciliation
 creates quote tables and invoice percentage columns. It creates no
 historical acceptance events or invoices. The core organization table keeps
@@ -131,3 +131,5 @@ limits, staged approval, expiry, decline, reporting, upgrade restart and
 policy veto. The full suite also exercises existing invoice behavior with
 zero percentages. PostgreSQL SQL is shipped but requires a live PostgreSQL
 integration run separately.
+
+Action routes validate =stage= with the shared confirmation parser; invalid values are refused before any action executes.
