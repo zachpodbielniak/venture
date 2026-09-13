@@ -40,7 +40,7 @@ G_DEFINE_FINAL_TYPE_WITH_CODE(VentureLogMailer, venture_log_mailer, G_TYPE_OBJEC
 static gboolean log_send(VentureMailer *mailer, VentureMailMessage *message, GCancellable *cancellable, GError **error)
 {
 	VentureLogMailer *self = VENTURE_LOG_MAILER(mailer);
-	
+
 	VentureMailMessage *copy = venture_mail_message_new();
 	gboolean ok;
 	venture_entity_copy_properties_from(VENTURE_ENTITY(copy), VENTURE_ENTITY(message), FALSE);

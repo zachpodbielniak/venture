@@ -50,6 +50,8 @@ static HtmxResponse *venture_web_mail_action(HtmxRequest *request, GHashTable *p
 		}
 		g_object_set(message, "organization-id", org, NULL);
 		if (!g_strcmp0(action, "test")) {
+			/* This transport call has no save to enforce organization or plugin authority. */
+			if (!venture_access_policy_check_write(venture_database_get_access_policy(venture_context_get_database(self->context)), VENTURE_ENTITY(message), "write", &error)) return venture_web_error_response(error);
 			venture_entity_set_attribute(VENTURE_ENTITY(message), "_mail_attachments", NULL);
 			g_object_set(message, "subject", "Venture mail test", "text-body", "Your Venture SMTP configuration is working.", NULL);
 			if (!venture_mailer_send(venture_context_get_mailer(self->context), message, NULL, &error)) return venture_web_error_response(error);

@@ -12,6 +12,8 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 
 ** Documents
 
+- [[file:orgaccess.org][Organization access]] — membership, organization roles and record ownership
+
 - [[file:architecture.org][Architecture]] — how the pieces fit, and why the design is shaped this way
 - [[file:quickstart.org][Quickstart]] — build it, run it, record your first sale
 - [[file:federation.org][Federation and offline sync]] — opt-in sharing, pinned hosts, separate federation URLs, local working copies and conflict-aware reconnects

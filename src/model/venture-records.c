@@ -104,7 +104,9 @@ static const VentureFieldDecl venture_venture_fields[] = {
 	VENTURE_FIELD_REF("idea-id", "Originating idea",
 	                  "The idea this venture was promoted from", "idea",
 	                  VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("owner-user-id", "Owner", "Responsible user", "user", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureVenture, venture_venture, venture_venture_fields,
@@ -579,6 +581,8 @@ static const VentureFieldDecl venture_company_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
 	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("owner-user-id", "Owner", "Responsible user", "user", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("default-price-list-id", "Default price list", "Customer-specific quote pricing", "price_list", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE)
 };
@@ -615,6 +619,8 @@ static const VentureFieldDecl venture_contact_fields[] = {
 	VENTURE_FIELD("subscribed", "Subscribed", NULL,
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("owner-user-id", "Owner", "Responsible user", "user", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE)
 };
 
@@ -670,6 +676,8 @@ static const VentureFieldDecl venture_deal_fields[] = {
 	VENTURE_FIELD("source", "Source", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("owner-user-id", "Owner", "Responsible user", "user", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("pipeline-id", "Pipeline", NULL, "pipeline", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("stage-id", "Pipeline stage", "Use VentureDealService to move", "pipeline_stage", VENTURE_COLUMN_FLAG_NONE),
@@ -677,7 +685,7 @@ static const VentureFieldDecl venture_deal_fields[] = {
 	VENTURE_FIELD("next-action-at", "Next action", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("loss-reason-id", "Loss reason", NULL, "loss_reason", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("lost-note", "Lost note", NULL),
-	VENTURE_FIELD("owner", "Owner", "Username, like a ticket assignee", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("owner", "Owner", "Username, like a ticket assignee", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME),
 	VENTURE_FIELD("probability-overridden", "Override probability", "Keep the deal probability on stage moves", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("committed", "Committed", "Include in the committed forecast", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 
@@ -1210,7 +1218,7 @@ static const VentureFieldDecl venture_ticket_fields[] = {
 	                   VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_TEXT("description", "Description", NULL),
 	VENTURE_FIELD("assignee", "Assignee", "Who is doing it",
-	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME),
 	/* Who asked. Set for an external ticket, empty for your own work. */
 	VENTURE_FIELD_REF("contact-id", "Raised by", NULL, "contact",
 	                  VENTURE_COLUMN_FLAG_NONE),
@@ -1321,7 +1329,9 @@ static const VentureFieldDecl venture_ticket_fields[] = {
 	                   venture_satisfaction_get_type,
 	                   VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_TEXT("satisfaction-comment", "Satisfaction comment",
-	                   "What they said about it")
+	                   "What they said about it"),
+	VENTURE_FIELD_REF("owner-user-id", "Owner", "Responsible user", "user", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureTicket, venture_ticket, venture_ticket_fields,
@@ -1945,7 +1955,7 @@ VENTURE_DEFINE_ENTITY(VentureSavedView, venture_saved_view,
  */
 static const VentureFieldDecl venture_watch_fields[] = {
 	VENTURE_FIELD_REF("user-id", "User", NULL, "user",
-	                  VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	                  VENTURE_COLUMN_FLAG_PERSONAL_OWNER | VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("target-type", "Record type", NULL,
 	              VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
@@ -1965,7 +1975,7 @@ VENTURE_DEFINE_ENTITY(VentureWatch, venture_watch, venture_watch_fields)
  */
 static const VentureFieldDecl venture_notification_fields[] = {
 	VENTURE_FIELD_REF("user-id", "User", "Who it is for", "user",
-	                  VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	                  VENTURE_COLUMN_FLAG_PERSONAL_OWNER | VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_ENUM("kind", "Kind", NULL,
 	                   venture_notification_kind_get_type,
 	                   VENTURE_COLUMN_FLAG_INDEXED),
@@ -2793,7 +2803,7 @@ static const VentureFieldDecl venture_chat_thread_fields[] = {
 	VENTURE_FIELD_NAME("title", "Title",
 	                   "Taken from the first message unless renamed"),
 	VENTURE_FIELD_REF("user-id", "User", NULL, "user",
-	                  VENTURE_COLUMN_FLAG_NOT_NULL |
+	                  VENTURE_COLUMN_FLAG_PERSONAL_OWNER | VENTURE_COLUMN_FLAG_NOT_NULL |
 	                  VENTURE_COLUMN_FLAG_INDEXED),
 	/*
 	 * Denormalised from the newest message so the resume list can be one
@@ -2816,7 +2826,7 @@ VENTURE_DEFINE_ENTITY(VentureChatThread, venture_chat_thread,
  */
 static const VentureFieldDecl venture_chat_message_fields[] = {
 	VENTURE_FIELD_REF("thread-id", "Thread", NULL, "chat_thread",
-	                  VENTURE_COLUMN_FLAG_NOT_NULL |
+	                  VENTURE_COLUMN_FLAG_PERSONAL_OWNER | VENTURE_COLUMN_FLAG_NOT_NULL |
 	                  VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_ENUM("role", "Role", NULL, venture_chat_role_get_type,
 	                   VENTURE_COLUMN_FLAG_INDEXED),
@@ -3051,7 +3061,8 @@ static const VentureFieldDecl venture_api_token_fields[] = {
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
 	              VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_TEXT("description", "Description", NULL)
+	VENTURE_FIELD_TEXT("description", "Description", NULL),
+	VENTURE_FIELD("membership-snapshot", "Minted memberships", "Organization authority at token creation", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_SENSITIVE | VENTURE_COLUMN_FLAG_IMMUTABLE)
 };
 
 VENTURE_DEFINE_ENTITY(VentureApiToken, venture_api_token,

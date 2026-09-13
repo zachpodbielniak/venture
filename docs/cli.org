@@ -196,6 +196,19 @@ does the same for =create=, =update=, =delete= and =act= from the shell. It take
 =VENTURE_TOKEN= and refuses =--token= outright, since an MCP server is spawned
 from a config file. See [[file:mcp.org][venturectl mcp]].
 
+* Organization access and journal posting
+
+The ordinary =list/get/create/update/delete/describe= commands also manage
+=organization_membership=, =team= and =team_membership=. Tokens constrain all
+responses to their mint-time memberships intersected with current authority.
+Selecting =organization_id= only narrows that scope. Global owners keep the
+existing output formats and data authority.
+
+=venturectl journal post ID= calls the shared posting service. An organization
+editor receives a pending confirmation; finance and organization admin/owner
+can post directly. =venturectl --stage journal post ID= always proposes.
+A pending confirmation is not a posted journal. Generic =update journal=
+cannot advance state. See [[file:orgaccess.org][Organization access]].
 * SaaS billing
 
 =billing= actions change =customer_subscription= through the billing service:

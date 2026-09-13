@@ -125,7 +125,7 @@ Everything else about the factory is the generic routes: =/api/v1/milestone=, =r
 
 A widget's place on the grid is four fields, =grid_col=, =grid_row=, =grid_width= and =grid_height=, zero meaning "wherever fits"; the checked way to move one is the editor's =POST /dashboards/:slug/widgets/:id/place=, which refuses a taken cell with 409. See [[file:dashboards.org][Dashboards]].
 
-=GET /api/v1/dashboards/:slug= returns a dashboard with every widget evaluated: each widget's settings, its resolved title, its link, an =error= when it could not be answered, and =data= in a shape its kind decides. =?data=0= lists the widgets without evaluating them; =?organization_id=N= scopes every widget to that entity and those beneath it, as the sidebar picker does for a page. A personal dashboard belonging to somebody else answers 404. The generic routes =/api/v1/dashboard= and =/api/v1/dashboard_widget= work like any other type's, and a widget written through them is held to the same checks as one made in the editor. See [[file:dashboards.org][Dashboards]].
+=GET /api/v1/dashboards/:slug= returns a dashboard with every widget evaluated: each widget's settings, its resolved title, its link, an =error= when it could not be answered, and =data= in a shape its kind decides. =?data=0= lists the widgets without evaluating them; =?organization_id=N= narrows every widget to that entity and authorized descendants; membership is still required for each organization. A personal dashboard belonging to somebody else answers 404. The generic routes =/api/v1/dashboard= and =/api/v1/dashboard_widget= work like any other type's, and a widget written through them is held to the same checks as one made in the editor. See [[file:dashboards.org][Dashboards]].
 
 ** The workdesk
 
@@ -380,6 +380,30 @@ One shape for every failure:
 A =409= from a write means someone else changed the record since you loaded
 it. Reload, reapply, retry — do not force it.
 
+* Organization access
+
+With =orgaccess= enabled (the default), =organization_membership=, =team=
+and =team_membership= use the ordinary CRUD routes. Company, contact, deal,
+ticket and venture accept =owner_user_id= and optional =team_id=. A team must
+belong to the record's organization. See [[file:orgaccess.org][the role matrix]].
+
+The server intersects requested organizations with the caller's current
+memberships. Lists, searches, exports, reports and dashboard widgets return
+only authorized records; a direct read outside membership returns 404.
+An in-organization write refused by its role returns 403. Parent organization
+filters never grant access to children without membership.
+
+Tokens retain the minting role and a snapshot of memberships at mint time,
+intersected with current roles and memberships. New grants cannot expand an
+existing token. Disabling its user rejects it; demotion reduces its authority.
+Legacy non-admin tokens without a snapshot must be rotated. Global owner and
+admin behavior remains compatible with existing clients.
+
+Organization viewers with a global role that permits proposals receive 202
+for creates, even without =?stage=1=. An editor's
+=POST /api/v1/journals/:id/post= also returns 202 and a confirmation. Approval
+requires financial authority and rechecks the captured draft and lines.
+Generic journal-state updates continue to be refused by the posting service.
 * SaaS billing actions
 
 =billing= requires invoicing and receivables. Its =plan=, =plan_price=,

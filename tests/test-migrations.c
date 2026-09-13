@@ -196,9 +196,14 @@ test_postgresql(void)
 	g_assert_no_error(error);
 	g_assert_true(venture_database_execute(database, setup, NULL, &error));
 	g_assert_no_error(error);
-	/* Production reconciles metadata tables before the SQL migration batch.
-	 * Exercise that order so enabled modules' SQL sees its actual tables. */
-	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	/* Startup reconciles generated tables before applying data migrations.
+	 * Access backfills need the users/organizations/token schema present. */
+	g_assert_true(venture_schema_create_all(venture_database_get_connection(database),
+		venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO users (id, uuid, username, role, active) VALUES (17, 'pg-owner', 'pg-owner', 'owner', TRUE);"
+		"INSERT INTO organizations (id, uuid, name, slug, active) VALUES (31, 'pg-org', 'Legacy organization', 'pg-org', TRUE)", NULL, &error));
 	g_assert_no_error(error);
 	runner = venture_migrations_new(venture_database_get_connection(database), VENTURE_DATABASE_BACKEND_POSTGRES, &error);
 	g_assert_no_error(error);
@@ -206,6 +211,12 @@ test_postgresql(void)
 	g_assert_no_error(error);
 	g_assert_true(orm_migrator_up(runner, 0, &error));
 	g_assert_no_error(error);
+	result = venture_database_query_raw(database,
+		"SELECT CAST(COUNT(*) AS BIGINT) FROM organization_memberships WHERE user_id = 17 AND organization_id = 31 AND role = 'owner' AND active", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_result_next(result));
+	g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 1);
+	g_clear_object(&result);
 	result = venture_database_query_raw(database, "SELECT CAST(COUNT(*) AS BIGINT) FROM venture_schema_version", NULL, &error);
 	g_assert_no_error(error);
 	g_assert_true(orm_result_next(result));

@@ -429,6 +429,12 @@ venture_auth_from_token(
 		principal->name = g_strdup_printf("token:%s",
 			(NULL != name) ? name : prefix);
 
+		if (!venture_orgaccess_limit_token(self, database, principal))
+		{
+			venture_auth_principal_free(principal);
+			continue;
+		}
+
 		/* Recording use makes a leaked token visible in the audit
 		 * trail and lets an unused one be retired with confidence. */
 		{
@@ -450,6 +456,7 @@ venture_auth_authenticate(
 	VentureAuth	*self,
 	HtmxRequest	*request
 ){
+	g_autoptr(VentureAccessScope) access_internal = venture_access_policy_enter(venture_database_get_access_policy(venture_context_get_database(self->context)), NULL);
 	VentureAuthPrincipal *principal;
 	const gchar *token;
 
@@ -822,7 +829,7 @@ venture_auth_ensure_owner(
 	                               self->password_iterations, error))
 		return NULL;
 
-	if (!venture_database_save(database, VENTURE_ENTITY(user), NULL, error))
+	if (!venture_orgaccess_bootstrap_owner(database, user, error))
 		return NULL;
 
 	return g_steal_pointer(&generated);

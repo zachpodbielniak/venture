@@ -103,3 +103,21 @@ Where a form wants a record's id, the same idea applies twice over: a search box
 ** Why this and not the usual
 
 A business tool is looked at for hours. The generic interface — rounded white cards, blue buttons, a drop shadow under everything — is designed to be glanced at, and it goes soft under sustained attention: nothing is aligned to anything, every element is lifted the same amount, and colour is spent on decoration so there is none left for meaning. A panel drawn with one pixel rules, two registers of type and one red is the opposite: everything sits on a line, the hierarchy is scale, and when something is red it is because you should look at it.
+
+* Organization access
+
+The organization picker lists only the caller's memberships, unless their
+global owner/admin role permits all organizations. Selecting a parent does
+not grant its children's data. Lists, search results, reference choices,
+reports, exports and dashboard widgets share the same record policy.
+
+A user without memberships lands on their account page with a message asking
+an organization owner to grant access. They can change their own password and
+sign out. Hidden records answer 404; the interface never distinguishes an
+unknown record from a record outside the caller's organizations.
+
+The generated access-record forms manage memberships and teams. Company,
+contact, deal, ticket and venture forms expose owner and team references.
+An organization viewer's new-record submission becomes a confirmation;
+applying it still requires an authorized approver. See
+[[file:orgaccess.org][Organization access]] for the full role matrix.

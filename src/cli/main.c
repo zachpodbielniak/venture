@@ -2147,6 +2147,31 @@ venture_cli_command_release(
 	return 0;
 }
 
+/* The service owns posting and proposal authority; the client only carries it. */
+static gint
+venture_cli_command_journal(VentureCli *cli, gchar **args, GError **error)
+{
+	g_autofree gchar *path = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	gchar *end = NULL;
+	gint64 id;
+	if (0 != g_strcmp0(args[1], "post") || NULL == args[2])
+		goto usage;
+	id = g_ascii_strtoll(args[2], &end, 10);
+	if (id <= 0 || NULL == end || '\0' != *end || NULL != args[3])
+		goto usage;
+	path = g_strdup_printf("/api/v1/journals/%" G_GINT64_FORMAT "/post%s", id, cli->stage ? "?stage=1" : "");
+	body = venture_json_parse("{}", error);
+	node = venture_cli_request(cli, "POST", path, body, error);
+	if (NULL == node)
+		return -1;
+	venture_cli_output(cli, node);
+	return 0;
+usage:
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "usage: venturectl [--stage] journal post ID");
+	return -1;
+}
 #include "leads/venture-lead-cli.inc"
 #include "activities/venture-activity-cli.inc"
 #include "pipelines/venture-pipeline-cli.inc"
@@ -3287,6 +3312,7 @@ main(
 		"  lead reassign ID             owner=NAME or run assignment rules\n"
 		"  release changelog ID         draft a release's changelog from\n"
 		"                               its tickets; --replace overwrites\n"
+		"  journal post ID              post a draft, or propose for approval\n"
 		"  mail list|send|test|deliver|retry  transactional mail\n"
 		"  quote send|accept|decline|revise ID [by=NAME] [reason=TEXT]\n"
 		"  bank ACTION ID [JSON|@FILE] banking action; bank match AUTO STATEMENT_ID\n"
@@ -3441,13 +3467,14 @@ main(
 	if (stage && (0 != g_strcmp0(args[0], "create")) &&
 	    (0 != g_strcmp0(args[0], "update")) &&
 	    (0 != g_strcmp0(args[0], "delete")) &&
+	    (0 != g_strcmp0(args[0], "journal")) &&
 	    (0 != g_strcmp0(args[0], "billing")) &&
 	    !(0 == g_strcmp0(args[0], "lead") && 0 == g_strcmp0(args[1], "convert")) &&
 	    (0 != g_strcmp0(args[0], "act")) &&
 	    !((0 == g_strcmp0(args[0], "sequence")) && (0 == g_strcmp0(args[1], "enroll"))))
 	{
 		g_printerr("venturectl: --stage only means something to create, "
-		           "update, delete, act, sequence enroll, lead convert and billing. \"%s\" would ignore it.\n", args[0]);
+		           "update, delete, act, journal post, sequence enroll, lead convert and billing. \"%s\" would ignore it.\n", args[0]);
 		g_free(cli.base_url);
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
@@ -3513,6 +3540,8 @@ main(
 		result = venture_cli_command_federation(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "factory"))
 		result = venture_cli_command_factory(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "journal"))
+		result = venture_cli_command_journal(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "mail"))
 		result = venture_cli_command_mail(&cli, args, mail_html, mail_limit, &error);
 	else if (0 == g_strcmp0(args[0], "quote"))

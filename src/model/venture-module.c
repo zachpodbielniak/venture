@@ -533,6 +533,13 @@ static GType (*const venture_module_periods_types[]) (void) = {
 };
 static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live", NULL };
 
+static GType (*const venture_module_orgaccess_types[]) (void) = {
+	venture_organization_membership_get_type,
+	venture_team_get_type,
+	venture_team_membership_get_type,
+	NULL
+};
+
 static const gchar *const billing_requires[] = { "invoicing", "receivables", NULL };
 static const gchar *const billing_reports[] = { "mrr", "churn", "subscriptions_due", NULL };
 static GType (*const billing_types[]) (void) = {
@@ -759,6 +766,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"billing", "SaaS billing", "Customer subscriptions and recurring revenue.",
 		billing_requires, NULL, billing_types, billing_reports, NULL, FALSE
+	},
+	{
+		"orgaccess", "Organization access", "Membership, organization roles and team ownership.",
+		venture_module_requires_core, NULL,
+		venture_module_orgaccess_types, NULL, NULL, FALSE
 	},
 	{
 		"mail", "Transactional mail", "Durable outbound messages and templates.",
@@ -1100,6 +1112,8 @@ venture_module_registry_add(
 			return FALSE;
 		}
 	}
+
+	venture_access_records_tag_module(self, info);
 
 	module = venture_module_new(info, origin);
 

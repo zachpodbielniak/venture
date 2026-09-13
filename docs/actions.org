@@ -92,3 +92,9 @@ schema and approval discovery would expose them. Declarations are copied
 at construction and when their parameter metadata is read. Enum choices
 and other field-spec constraints apply alongside kind and required checks.
 Assistant tools refresh from the registry before discovery and new turns.
+
+The generated journal post action shares organization access posting policy with =journal post=: an organization editor automatically proposes, and a finance approver posts after header/version and line-fingerprint checks. Generated assistant actions carry the current principal and always stage, including under the autonomous policy.
+
+Type-level actions whose input contains a new record declare =subject-parameter= naming that JSON parameter (=journal= for =create_and_post=). The registry hydrates that record before policy checks and plugin callbacks, and the confirmation retains its organization for scoped visibility. Staging checks write authority too; approval rehydrates the independent parameter snapshot and rechecks current write authority. Subject records must be new and unversioned.
+
+A plugin type-level action that writes an organization-scoped record must declare its subject parameter. Without it the proposed target retains organization zero and scoped users are refused; the registry never guesses the organization from unrelated parameters or from the current sidebar selection.

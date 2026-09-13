@@ -826,7 +826,7 @@ test_upgrade_disabled_restart(void)
 	g_assert_no_error(error);
 	id = venture_entity_get_id(VENTURE_ENTITY(company));
 	/* Simulate the pre-feature script history while retaining real core rows. */
-	g_assert_true(venture_database_execute(db, "DELETE FROM schema_migrations WHERE version = 170", NULL, &error));
+	g_assert_true(venture_database_execute(db, "DELETE FROM schema_migrations WHERE version >= 170", NULL, &error));
 	g_assert_no_error(error);
 	venture_config_set_module_enabled(config, "billing", TRUE);
 	g_clear_object(&context);
