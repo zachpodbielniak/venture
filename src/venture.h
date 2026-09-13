@@ -77,10 +77,18 @@
 #include "model/venture-venture-type.h"
 #include "model/venture-entity-registry.h"
 #include "model/venture-module.h"
+#include "orgaccess/venture-access-records.h"
 #include "periods/venture-period-records.h"
+#include "assets/venture-asset-records.h"
+#include "billing/venture-billing-records.h"
+#include "mail/venture-mail-records.h"
+
+#include "leads/venture-lead-records.h"
+#include "activities/venture-activity-records.h"
 #include "pipelines/venture-pipeline-records.h"
 #include "sequences/venture-sequence-records.h"
 #include "autojournal/venture-posting-profile.h"
+
 
 /* --- Configuration ------------------------------------------------------- */
 
@@ -97,6 +105,8 @@
 
 #include "mcp/venture-mcp-catalog.h"
 #include "mcp/venture-mcp-server.h"
+
+ #include "quotes/venture-quote-records.h"
 
 /* --- Server-only subsystems ---------------------------------------------- */
 
@@ -120,6 +130,13 @@
 
 #include "report/venture-report.h"
 #include "receivables/venture-settlement-service.h"
+#include "mail/venture-mailer.h"
+#include "mail/venture-mailer-registry.h"
+#include "mail/venture-smtp-mailer.h"
+#include "mail/venture-mail-outbox.h"
+#include "mail/venture-mail-template.h"
+#include "quotes/venture-quote-service.h"
+#include "leads/venture-lead-service.h"
 #include "payables/venture-payables-service.h"
 #include "banking/venture-bank-match-service.h"
 #include "sequences/venture-sequence-service.h"
@@ -130,6 +147,7 @@
 #include "core/venture-confirmation-store.h"
 
 #include "core/venture-context.h"
+#include "mail/venture-mail-consumers.h"
 #include "core/venture-federation.h"
 #include "ledger/venture-posting-rule.h"
 #include "ledger/venture-posting-service.h"
@@ -146,12 +164,17 @@
 #include "core/venture-desk.h"
 #include "core/venture-webhook.h"
 #include "core/venture-routing.h"
+#include "billing/venture-billing-service.h"
+#include "billing/venture-billing-reports.h"
+#include "activities/venture-activity-service.h"
+#include "activities/venture-activity-reports.h"
 #include "core/venture-action.h"
 #include "ledger/venture-journal-actions.h"
 
 /* Auth comes before the AI service, which names VentureAuthPrincipal in its
  * signatures, and before the web server, which uses both. */
 #include "web/venture-auth.h"
+#include "orgaccess/venture-access-policy.h"
 
 #include "ai/venture-ai-service.h"
 #include "ai/venture-ai-assist.h"
@@ -173,6 +196,7 @@
 #include "forge/venture-work-service.h"
 
 #include "web/venture-web-server.h"
+#include "assets/venture-asset-service.h"
 
 #include "reconciliation/venture-reconciliation-matcher.h"
 #include "reconciliation/venture-reconciliation-service.h"

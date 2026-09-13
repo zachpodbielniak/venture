@@ -140,3 +140,5 @@ staging paths, ordinary approval, real HTTP requests, the real CLI process,
 and a model tool call that stages without applying. =test-auth= includes
 the anonymous POST refusal. Run with
 =GSETTINGS_BACKEND=memory make DEBUG=1 -j8 test=.
+
+The assistant callback enters the authenticated caller's organization scope before reading a bank line or candidates. Anonymous callers and users with no applicable membership cannot stage a match; finance access permits staging and approval through the same action and banking services. Organization access is rechecked when the proposal is applied.

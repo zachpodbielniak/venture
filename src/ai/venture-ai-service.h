@@ -313,6 +313,17 @@ venture_ai_service_complete(
 VentureAiService *venture_ai_service_new_with_provider(VentureContext *context,
 	AiProvider *provider, GError **error);
 
+/**
+ * venture_ai_service_execute_tool:
+ * @self: assistant service
+ * @tool_use: an invocation of a registered tool
+ * @principal: authenticated caller
+ * @error: failure
+ *
+ * Executes the same callback used by a model turn, without a provider call.
+ * Returns: (transfer full) (nullable): the tool's response
+ */
+gchar *venture_ai_service_execute_tool(VentureAiService *self, AiToolUse *tool_use, VentureAuthPrincipal *principal, GError **error);
 G_END_DECLS
 
 #endif /* VENTURE_AI_SERVICE_H */

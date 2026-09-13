@@ -722,6 +722,35 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_fiscal_year_get_type
 		, venture_fiscal_period_get_type
 		, venture_report_snapshot_get_type
+		, venture_fixed_asset_get_type
+		, venture_depreciation_entry_get_type
+		, venture_deferral_get_type
+		, venture_deferral_entry_get_type
+		, venture_organization_membership_get_type
+		, venture_team_get_type
+		, venture_team_membership_get_type
+		, venture_plan_get_type
+		, venture_plan_price_get_type
+		, venture_customer_subscription_get_type
+		, venture_subscription_event_get_type
+		, venture_dunning_step_get_type
+		, venture_billing_notice_get_type
+		, venture_billing_request_get_type
+		, venture_mail_message_get_type
+		, venture_mail_template_get_type
+
+		, venture_price_list_get_type
+		, venture_price_list_item_get_type
+		, venture_quote_get_type
+		, venture_quote_line_get_type
+		, venture_quote_event_get_type
+		, venture_quote_delivery_get_type
+		, venture_quote_action_get_type
+		, venture_lead_get_type
+		, venture_lead_form_get_type
+		, venture_lead_assignment_rule_get_type
+		, venture_activity_get_type
+		, venture_activity_type_get_type
 		, venture_vendor_bill_get_type
 		, venture_vendor_bill_line_get_type
 		, venture_bill_payment_get_type

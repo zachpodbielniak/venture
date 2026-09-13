@@ -42,6 +42,8 @@ struct _VentureConfirmation
 	 */
 	VentureEntity			*staged;
 	VentureEntity			*original;
+	gint64 proposer_user_id;
+	gboolean activity_completion;
 	gint64 deal_stage_id;
 	gchar *deal_move_note;
 	gchar *record_action;
@@ -391,6 +393,10 @@ venture_confirmation_store_stage(
 
 	g_return_val_if_fail(VENTURE_IS_CONFIRMATION_STORE(self), NULL);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(staged), NULL);
+	if (VENTURE_IS_BILLING_REQUEST(staged) && !venture_billing_prepare_request(venture_billing_service_get(self->database), VENTURE_BILLING_REQUEST(staged), error))
+		return NULL;
+
+	if (!venture_orgaccess_check_proposal(self->database, staged, action, via, error)) return NULL;
 
 	venture_confirmation_store_sweep(self);
 
@@ -474,6 +480,8 @@ venture_confirmation_store_stage(
 		 */
 		g_set_object(&existing->staged, staged);
 		g_set_object(&existing->original, original);
+		g_free(existing->via);
+		existing->via = g_strdup(via);
 		g_clear_pointer(&existing->diff, json_node_unref);
 		existing->diff = (NULL != diff) ? json_node_ref(diff) : NULL;
 
@@ -505,6 +513,7 @@ venture_confirmation_store_stage(
 	confirmation->staged = g_object_ref(staged);
 	confirmation->original = (NULL != original) ? g_object_ref(original) : NULL;
 	confirmation->via = g_strdup(via);
+	if (NULL != venture_access_policy_get_actor(venture_database_get_access_policy(self->database))) confirmation->proposer_user_id = venture_access_policy_get_actor(venture_database_get_access_policy(self->database))->user_id;
 
 	if (NULL != origin)
 	{
@@ -557,7 +566,7 @@ venture_confirmation_store_list_pending(VentureConfirmationStore *self)
 	g_hash_table_iter_init(&iter, self->pending);
 
 	while (g_hash_table_iter_next(&iter, NULL, &value))
-		g_ptr_array_add(pending, value);
+		if (venture_orgaccess_confirmation_visible(self->database, ((VentureConfirmation *)value)->staged, ((VentureConfirmation *)value)->proposer_user_id, ((VentureConfirmation *)value)->via)) g_ptr_array_add(pending, value);
 
 	/* A hash table has no order, and a decision queue that reshuffles
 	 * itself between two reads is one nobody can work through. */
@@ -578,7 +587,10 @@ venture_confirmation_store_find(
 
 	venture_confirmation_store_sweep(self);
 
-	return g_hash_table_lookup(self->pending, confirmation_id);
+	{
+		VentureConfirmation *confirmation = g_hash_table_lookup(self->pending, confirmation_id);
+		return NULL != confirmation && venture_orgaccess_confirmation_visible(self->database, confirmation->staged, confirmation->proposer_user_id, confirmation->via) ? confirmation : NULL;
+	}
 }
 
 /*
@@ -652,7 +664,7 @@ venture_confirmation_store_approve_as(
 
 	venture_confirmation_store_sweep(self);
 
-	confirmation = g_hash_table_lookup(self->pending, confirmation_id);
+	confirmation = venture_confirmation_store_find(self, confirmation_id);
 
 	if (NULL == confirmation)
 	{
@@ -680,6 +692,9 @@ venture_confirmation_store_approve_as(
 	actor.request_id = confirmation->id;
 	actor.approved_by = approver;
 
+	if (NULL != confirmation->via && g_str_has_prefix(confirmation->via, "orgaccess:journal-post:"))
+		ok = venture_orgaccess_apply_post(self->database, confirmation->original, confirmation->via, &actor, role, &local_error);
+	else
 	if (NULL != confirmation->record_action)
 	{
 		g_autoptr(VentureEntity) current = NULL;
@@ -707,11 +722,24 @@ venture_confirmation_store_approve_as(
 			confirmation->deal_stage_id, confirmation->deal_move_note, &actor, &local_error);
 		ok = NULL != moved;
 	}
-	else
-	if (VENTURE_AUDIT_ACTION_DELETE == confirmation->action)
+	else if (g_strcmp0(confirmation->via, "lead-convert") == 0)
+	{
+		ok = venture_lead_service_apply_staged(venture_database_get_lead_service(self->database),
+			confirmation->staged, &actor, &local_error);
+	}
+	else if (VENTURE_AUDIT_ACTION_DELETE == confirmation->action)
 	{
 		ok = venture_database_delete(self->database, confirmation->staged,
 		                             &actor, &local_error);
+	}
+	else if (confirmation->activity_completion)
+	{
+		g_autofree gchar *outcome = NULL;
+		g_autoptr(VentureEntity) completed = NULL;
+		g_object_get(confirmation->staged, "outcome", &outcome, NULL);
+		completed = venture_activity_service_complete(venture_database_get_activity_service(self->database),
+			confirmation->staged, outcome, &actor, &local_error);
+		ok = completed != NULL;
 	}
 	else
 	{
@@ -780,7 +808,7 @@ venture_confirmation_store_reject(
 
 	venture_confirmation_store_sweep(self);
 
-	confirmation = g_hash_table_lookup(self->pending, confirmation_id);
+	confirmation = venture_confirmation_store_find(self, confirmation_id);
 
 	if (NULL == confirmation)
 	{
@@ -854,6 +882,31 @@ venture_confirmation_parse_stage_flag(
 }
 
 VentureConfirmation *
+venture_confirmation_store_stage_activity_complete(VentureConfirmationStore *self,
+	VentureEntity *activity, const gchar *outcome, const VentureActor *origin, const gchar *via, GError **error)
+{
+	g_autoptr(VentureEntity) staged = NULL;
+	VentureConfirmation *confirmation;
+	gint status;
+	g_return_val_if_fail(VENTURE_IS_ACTIVITY(activity), NULL);
+	g_object_get(activity, "status", &status, NULL);
+	if (status != VENTURE_ACTIVITY_STATUS_PLANNED)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+			"VentureActivityService: Only planned activities may be completed");
+		return NULL;
+	}
+	staged = g_object_new(VENTURE_TYPE_ACTIVITY, NULL);
+	venture_entity_copy_properties_from(staged, activity, FALSE);
+	g_object_set(staged, "status", VENTURE_ACTIVITY_STATUS_DONE, "outcome", outcome, NULL);
+	confirmation = venture_confirmation_store_stage(self, VENTURE_AUDIT_ACTION_UPDATE,
+		staged, activity, origin, via, error);
+	if (confirmation != NULL)
+		confirmation->activity_completion = TRUE;
+	return confirmation;
+}
+
+VentureConfirmation *
 venture_confirmation_store_stage_deal_move(VentureConfirmationStore *self,
 	VentureDeal *deal, gint64 stage_id, const gchar *note,
 	const VentureActor *actor, const gchar *via, GError **error)
@@ -903,8 +956,11 @@ venture_confirmation_store_stage_action(VentureConfirmationStore *self, VentureA
 		return NULL;
 	}
 	current = venture_entity_get_id(entity) ? venture_database_get(self->database, G_OBJECT_TYPE(entity), venture_entity_get_id(entity), error) : g_object_new(G_OBJECT_TYPE(entity), NULL);
-	if (!current || !venture_action_registry_allowed(venture_database_get_action_registry(self->database),
-		action, current, origin, role, error) || !venture_action_validate_parameters(action, params, error)) return NULL;
+	if (!current || !venture_action_validate_parameters(action, params, error) ||
+		!venture_action_prepare_target(action, current, params, error) ||
+		!venture_action_registry_allowed(venture_database_get_action_registry(self->database),
+			action, current, origin, role, error) ||
+		!venture_access_policy_check_write(venture_database_get_access_policy(self->database), current, "write", error)) return NULL;
 	venture_confirmation_store_sweep(self);
 	if (self->limit > 0 && (gint64)g_hash_table_size(self->pending) >= self->limit)
 	{
@@ -926,6 +982,7 @@ venture_confirmation_store_stage_action(VentureConfirmationStore *self, VentureA
 	snapshot = venture_json_to_string(values, FALSE);
 	confirmation->diff = venture_json_parse(snapshot, NULL);
 	confirmation->via = g_strdup(via);
+	if (NULL != venture_access_policy_get_actor(venture_database_get_access_policy(self->database))) confirmation->proposer_user_id = venture_access_policy_get_actor(venture_database_get_access_policy(self->database))->user_id;
 	confirmation->created_at = g_date_time_ref(now);
 	confirmation->expires_at = g_date_time_add_seconds(now, (gdouble)self->ttl_seconds);
 	if (origin)
@@ -944,7 +1001,7 @@ venture_confirmation_store_approve(VentureConfirmationStore *self, const gchar *
 {
 	VentureConfirmation *confirmation = venture_confirmation_store_find(self, id);
 	VentureUserRole role = VENTURE_USER_ROLE_VIEWER;
-	if (confirmation && confirmation->record_action)
+	if (confirmation && (confirmation->record_action || (confirmation->via && g_str_has_prefix(confirmation->via, "orgaccess:journal-post:"))))
 	{
 		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_USER);
 		g_autoptr(VentureEntity) user = NULL;

@@ -73,6 +73,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `modules` | which modules the server runs; `-f json` for types, reports and reasons |
 | `factory` | the software factory at a glance: milestones with progress, releases, builds, environments and what they run, open incidents |
 | `release changelog ID [--replace]` | draft a release's changelog from the tickets marked fixed in it |
+| `journal post ID` | post a draft through the shared service; editors propose, `--stage` always proposes |
 | `release publish ID [--prerelease]` | cut the release on the forge; creates the tag, cannot be undone here |
 | `dashboards` | the dashboards the token may see |
 | `dashboard SLUG` | one dashboard, every widget evaluated; `-f json` for the whole answer |
@@ -306,7 +307,7 @@ venturectl --stage create expense description="Cover art" amount=250.00
 #   approve: POST /api/v1/confirmations/a3f9c118/approve
 ```
 
-It is refused on any command other than `create`, `update`, `delete`, `act` and `sequence enroll`,
+It is refused on any command other than `create`, `update`, `delete`, `act`, `journal post`, `sequence enroll`, `lead convert` and `billing`,
 because those are the only routes that read it -- and an unknown query
 parameter on a write route is ignored, so a quietly accepted `--stage` would
 apply the change it was asked to hold back.
@@ -421,6 +422,83 @@ venturectl federation '{"action":"resolve","id":1,"version":5,"field":"descripti
 
 Collection pulls return at most ten results, `next_offset` and `more`; continue pages while `more` is true and inspect per-record errors. Pull imports/merges without pushing; sync pushes conflict-free changes with an expected remote version. Edits require the local replica version. A conflict blocks that record until resolved; choosing remote can accept a removed/revoked field. Never update `federation_replica` through generic CRUD: its merge state belongs to the service. Copies remain usable during outages but are not authoritative local accounting rows. New source objects and binary attachments are not created/copied offline. See `docs/federation.org` for key exchange, grants, scheduling and revocation.
 
+## Fixed assets and recurring journals
+
+Use `asset place ID`, `asset dispose ID proceeds=AMOUNT`, or `asset write-off ID`.
+Set dates with `in_service_at=` or `disposed_at=`; ordinary profile fields
+are configured on the draft first.
+
+Run `assets run-period YYYY-MM organization_id=ID --dry-run` to preview,
+then omit `--dry-run` to post. The whole month commits or rolls back; retries
+post once. A closed period is refused. Use generic `create deferral` to
+build a prepayment/accrual schedule, and stage `operation=settle` with a
+settlement account after an accrual's releases complete. Never set derived
+status or edit schedule rows directly. `report fixed_assets` and
+`report deferrals` accept the ordinary period and `as_of` options.
+## Organization membership
+
+Read `docs/orgaccess.org` for the role matrix. Membership and team records use
+generic CRUD. Tokens intersect mint-time memberships with current authority;
+new grants never widen an old token. Missing membership gives empty results or
+404; a refused in-organization write gives 403. Owner/admin data authority and
+output formats remain unchanged. `journal post ID` returns a confirmation for
+an organization editor. Treat that response as pending until finance approves.
+## SaaS billing actions
+
+Use `billing start company_id=N plan_price_id=N seats=N` to start a
+`customer_subscription`. Read `describe plan_price` and the price first:
+non-trial starts issue an invoice immediately, while trials bill at activation.
+Use `billing change ID plan_price=N [at_period_end=true]`,
+`billing change-seats ID seats=N`, `billing cancel ID [at_period_end=true]`,
+`billing pause ID`, `billing resume ID`, `billing mark-payment-failed ID`
+and `billing recover ID` for lifecycle actions. Never update subscription
+status directly; the service refuses it.
+
+`billing renew --as-of DATE [--dry-run]` sweeps due periods;
+`billing dunning --as-of DATE [--dry-run]` records dunning notices/actions.
+Pass `organization_id=N` to choose the legal entity. Dry runs write nothing.
+`--stage` holds a billing action for approval. The assistant's generated
+create tool can instead stage `billing_request` with `action`, `at`,
+`organization_id` and the relevant subscription/customer/price fields.
+Approval refuses a subscription changed since staging.
+
+`report mrr PERIOD currency=USD`, `report churn PERIOD currency=USD`, and
+`report subscriptions_due PERIOD days=14` read the registered reports.
+Read their notes: MRR is contracted revenue, not cash or recognized income;
+churn rates are in basis points. Proration adjustments are settled on the
+next renewal. Billing sends no mail and integrates no card provider.
+## Transactional mail
+
+`mail send to=... subject=... body=...` queues mail; `--html FILE` supplies
+HTML. `mail test to=...` immediately tests real SMTP. `mail deliver --limit N`
+submits due rows. `mail list state=uncertain` lists uncertain acceptance;
+`mail retry ID` is a deliberate resend with the same Message-ID. Pass
+`organization_id=N` to scope another organization. Never automatically retry
+uncertain rows. Actions reject `--stage`; propose an enqueue with the generic
+`--stage create mail_message` command when approval is required.
+
+### Commercial quote actions
+
+`quote send ID`, `quote accept ID 'by=Full Name'`,
+`quote decline ID 'reason=Explanation'`, and `quote revise ID` call the quote
+service. Acceptance creates and issues the invoice in the same transaction.
+For a staged action use `--stage create quote_action quote_id=ID action=accept
+expected_version=N 'accepted_by=Full Name'`; obtain the quote's current
+`version` first. `revision` is the separate commercial revision number.
+## Leads
+
+Use `describe lead` before capture or qualification. `lead convert ID
+[deal=yes|no] [company_id=ID] [contact_id=ID]` requires a qualified lead and
+creates or links CRM records atomically. `--stage` proposes conversion for
+approval. Never set `status=converted` or conversion ids with generic updates.
+`lead reassign ID [owner=NAME]` assigns explicitly or reruns the matching
+rules; staged reassignment is refused. Recycle with `update lead ID
+status=recycled unqualified_reason=... recycle_until=YYYY-MM-DD`.
+Reports are `lead_sources`, `lead_response_time` and `leads_recycled_due`;
+see `docs/leads.org` for definitions and public capture forms.
+## Planned activities
+
+`activity complete ID outcome=...` completes a planned activity, writes interaction history and advances recurrence atomically. `activity list mine|overdue|today` reads your daily worklist. Generic `create activity` and `update activity` edit the plan; generic `status=done` is refused. The existing `activity TYPE ID` command still reads a record timeline. Use `report worklist organization_id=ID` for the current UTC week per owner.
 ## Vendor payables
 
 Run `describe vendor_bill` and `describe vendor_bill_line` before creating
@@ -483,7 +561,7 @@ with header fields and a `lines` array. Both support `--stage`. Use real
 source and account IDs from the same organization. Invalid lines leave no
 draft behind; closed periods and repeat reversals are refused.
 
-The `--stage` help lists `create/update/delete/act/sequence enroll`; the same flag also
+The `--stage` help lists `create/update/delete/act/sequence enroll/lead convert/billing`; the same flag also
 applies to a type-level journal creation at ID zero.
 
 ### Automatic journals

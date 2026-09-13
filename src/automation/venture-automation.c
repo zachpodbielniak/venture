@@ -51,7 +51,7 @@ static const gchar *const venture_pod_module_events[] = {
 };
 
 static const gchar *const venture_pod_module_handlers[] = {
-	"query", "count", "report", "create", "low_stock", NULL
+	"query", "count", "report", "create", "low_stock", "assets_run_period", "mail_deliver", NULL
 };
 
 /* --- Event source --------------------------------------------------------- */
@@ -550,6 +550,9 @@ venture_pod_module_handle_low_stock(
 	return TRUE;
 }
 
+#include "assets/venture-assets-automation.inc"
+#include "mail/venture-mail-automation.inc"
+
 static gboolean
 venture_pod_module_handle_event(
 	PodEventHandler	 *handler,
@@ -584,6 +587,11 @@ venture_pod_module_handle_event(
 
 	if (0 == g_strcmp0(event_name, "low_stock"))
 		return venture_pod_module_handle_low_stock(self, params, result);
+
+	if (0 == g_strcmp0(event_name, "assets_run_period"))
+		return venture_pod_module_assets_run(self, params, result);
+	if (0 == g_strcmp0(event_name, "mail_deliver"))
+		return venture_pod_module_handle_mail(self, params, result);
 
 	g_warning("venture has no handler called \"%s\"", event_name);
 

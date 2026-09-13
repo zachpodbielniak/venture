@@ -294,7 +294,19 @@ test_webhook_delivers_signed(
 
 	webhook = create_webhook(fixture, "ticket.*", "a-shared-secret");
 	ticket = create_ticket(fixture, "Printer on fire");
-	settle(fixture, 1);
+	{
+		VentureAuthPrincipal unrelated;
+		g_autoptr(VentureAccessScope) scope = NULL;
+		/* Completion must keep its service authority while a nested loop
+		 * happens to be serving an unrelated unprivileged principal. */
+		unrelated.user_id = 0;
+		unrelated.token_id = 0;
+		unrelated.name = NULL;
+		unrelated.role = VENTURE_USER_ROLE_VIEWER;
+		unrelated.authenticated = FALSE;
+		scope = venture_access_policy_enter(venture_database_get_access_policy(fixture->database), &unrelated);
+		settle(fixture, 1);
+	}
 
 	g_assert_cmpuint(fixture->received, ==, 1);
 	g_assert_cmpstr(fixture->last_event, ==, "ticket.created");

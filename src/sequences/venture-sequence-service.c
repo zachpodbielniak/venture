@@ -571,10 +571,11 @@ process_save(VentureSequenceService *self, VentureEntity *row, const VentureActo
 			at = g_date_time_new_now_utc();
 		g_object_set(row, "email", email, "at", at, NULL);
 	}
-	/* A deal has already passed the pipeline hook. Re-entering the dispatcher
-	 * would spend its consumed permit twice. Keep validators and signals in
-	 * the ordinary downstream write, within this sequence transaction. */
-	if (type == VENTURE_TYPE_DEAL)
+	/* Deals and interactions have already passed their pipeline/lead hooks.
+	 * Re-entering the dispatcher would spend a consumed permit twice. Keep
+	 * validators and signals in the ordinary downstream write, within this
+	 * sequence transaction. */
+	if (type == VENTURE_TYPE_DEAL || type == VENTURE_TYPE_INTERACTION)
 		return save(self->database, row, actor, error) && apply_exits(self, row, previous, actor, error);
 	return persist(self, row, actor, error) && apply_exits(self, row, previous, actor, error);
 }

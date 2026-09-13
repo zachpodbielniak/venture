@@ -362,6 +362,12 @@ venture_query_to_sql(
 gchar *
 venture_query_describe(VentureQuery *self);
 
+/**
+ * venture_query_get_offset:
+ * @self: query
+ * Returns: number of rows skipped after authorization
+ */
+guint venture_query_get_offset(VentureQuery *self);
 G_END_DECLS
 
 #endif /* VENTURE_QUERY_H */

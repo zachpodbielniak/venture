@@ -66,6 +66,10 @@ CORE_SRCS := \
 	$(wildcard src/util/*.c) \
 	$(wildcard src/mcp/*.c)
 
+CORE_SRCS += src/orgaccess/venture-access-records.c
+CORE_SRCS += src/billing/venture-billing-records.c
+CORE_SRCS += src/leads/venture-lead-records.c
+CORE_SRCS += src/activities/venture-activity-records.c
 CORE_SRCS += src/payables/venture-payable-records.c
 CORE_SRCS += src/banking/venture-bank-records.c
 
@@ -89,6 +93,16 @@ SERVER_ONLY_SRCS += src/banking/venture-bank-match-service.c
 SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard src/periods/*.c))
 
 SERVER_ONLY_SRCS += $(wildcard src/reconciliation/*.c)
+CORE_SRCS += src/assets/venture-asset-records.c
+SERVER_ONLY_SRCS += $(filter-out src/assets/venture-asset-records.c,$(wildcard src/assets/*.c))
+SERVER_ONLY_SRCS += $(filter-out src/orgaccess/venture-access-records.c,$(wildcard src/orgaccess/*.c))
+SERVER_ONLY_SRCS += $(filter-out src/billing/venture-billing-records.c,$(wildcard src/billing/*.c))
+CORE_SRCS += src/mail/venture-mail-records.c
+SERVER_ONLY_SRCS += $(filter-out src/mail/venture-mail-records.c,$(wildcard src/mail/*.c))
+CORE_SRCS += src/quotes/venture-quote-records.c
+SERVER_ONLY_SRCS += $(filter-out src/quotes/venture-quote-records.c,$(wildcard src/quotes/*.c))
+SERVER_ONLY_SRCS += src/leads/venture-lead-service.c src/leads/venture-lead-reports.c
+SERVER_ONLY_SRCS += $(filter-out src/activities/venture-activity-records.c,$(wildcard src/activities/*.c))
 SERVER_ONLY_SRCS += src/payables/venture-payables-service.c src/payables/venture-payable-reports.c
 
 CORE_SRCS += src/pipelines/venture-pipeline-records.c
@@ -120,6 +134,7 @@ PUBLIC_HDRS := \
 	$(wildcard src/model/*.h) \
 	$(wildcard src/receivables/*.h) \
 	$(wildcard src/periods/*.h) \
+	$(filter-out %-print-style.h,$(wildcard src/quotes/*.h)) \
 	$(wildcard src/config/*.h) \
 	$(wildcard src/core/*.h) \
 	$(wildcard src/db/*.h) \
@@ -134,8 +149,13 @@ PUBLIC_HDRS := \
 	$(wildcard src/mcp/*.h)
 
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/reconciliation/*.h))
-PUBLIC_HDRS += $(wildcard src/banking/*.h)
+PUBLIC_HDRS += $(wildcard src/assets/*.h)
+PUBLIC_HDRS += $(wildcard src/orgaccess/*.h)
+PUBLIC_HDRS += $(wildcard src/billing/*.h)
+PUBLIC_HDRS += $(wildcard src/mail/*.h)
+
 PUBLIC_HDRS += $(wildcard src/payables/*.h)
+PUBLIC_HDRS += $(wildcard src/banking/*.h)
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/pipelines/*.h))
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/sequences/*.h))
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/statements/*.h))
@@ -155,6 +175,11 @@ TEST_BINS := $(patsubst tests/%.c,$(OUTDIR)/tests/%,$(TEST_SRCS))
 
 # The settlement test drives the real CLI and its MCP tool against HTTP.
 $(OUTDIR)/tests/test-receivables: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-assets: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-auth: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-billing-surfaces: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-quotes: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-leads: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-payables: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sequences: | $(OUTDIR)/venturectl
@@ -464,3 +489,7 @@ ifeq ($(filter clean clean-all clean-deps,$(MAKECMDGOALS)),)
 -include $(wildcard $(MAIN_OBJ:.o=.d))
 -include $(wildcard $(TEST_OBJS:.o=.d))
 endif
+
+deps: $(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB)
+
+$(OUTDIR)/tests/test-mail-surfaces: | $(OUTDIR)/venturectl

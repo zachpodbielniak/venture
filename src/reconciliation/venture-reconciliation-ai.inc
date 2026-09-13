@@ -3,6 +3,9 @@ static gchar *
 venture_ai_tool_reconcile_suggest(AiToolUse *tool_use, GCancellable *cancellable, GError **error, gpointer data)
 {
 	VentureAiService *self = data;
+	/* Model callbacks must carry the caller through every scoped read and
+	 * proposed action; NULL represents anonymous access, never internal work. */
+	g_autoptr(VentureAccessScope) scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
 	JsonObject *input = venture_ai_tool_input(tool_use);
 	g_autoptr(GError) local_error = NULL;
 	g_autoptr(JsonNode) result = NULL;

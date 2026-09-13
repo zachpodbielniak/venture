@@ -284,7 +284,18 @@ test_work_records_the_run(
 	g_object_get(run, "ticket-id", &ticket_id, NULL);
 	g_assert_cmpint(ticket_id, ==, fixture->ticket_id);
 
-	settle_runs(service);
+	{
+		VentureAuthPrincipal unrelated;
+		g_autoptr(VentureAccessScope) scope = NULL;
+		/* Background completion must drain even inside an unrelated request. */
+		unrelated.user_id = 0;
+		unrelated.token_id = 0;
+		unrelated.name = NULL;
+		unrelated.role = VENTURE_USER_ROLE_VIEWER;
+		unrelated.authenticated = FALSE;
+		scope = venture_access_policy_enter(venture_database_get_access_policy(fixture->database), &unrelated);
+		settle_runs(service);
+	}
 }
 
 /*

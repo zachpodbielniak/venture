@@ -475,6 +475,11 @@ test_assistant_stages(gconstpointer data)
 	g_autoptr(GPtrArray) pending = NULL;
 	g_autoptr(VentureQuery) query = NULL;
 	g_autofree gchar *answer = NULL;
+	gchar principal_name[] = "owner";
+	VentureAuthPrincipal principal;
+	principal.user_id = 1; principal.token_id = 0;
+	principal.name = principal_name; principal.role = VENTURE_USER_ROLE_OWNER;
+	principal.authenticated = TRUE;
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "bank_match") == G_TYPE_INVALID)
 		g_assert_true(venture_entity_registry_register(venture_entity_registry_get_default(), venture_bank_match_get_type(), NULL));
 	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
@@ -489,7 +494,7 @@ test_assistant_stages(gconstpointer data)
 	provider->tool_input = g_strdup_printf("{\"type\":\"%s\",\"id\":%" G_GINT64_FORMAT ",\"matcher\":\"exact\"}", venture_entity_get_entity_name(transaction), venture_entity_get_id(transaction));
 	ai = venture_ai_service_new_with_provider(context, AI_PROVIDER(provider), &error);
 	g_assert_no_error(error);
-	answer = venture_ai_service_answer(ai, "Suggest the matching record", NULL, &error);
+	answer = venture_ai_service_answer(ai, "Suggest the matching record", &principal, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(answer);
 	g_assert_cmpuint(provider->calls, ==, 2);
@@ -498,6 +503,68 @@ test_assistant_stages(gconstpointer data)
 	query = venture_query_new(venture_bank_match_get_type());
 	g_assert_cmpint(venture_database_count(db, query, &error), ==, 0);
 	g_assert_no_error(error);
+}
+
+/* Tool callbacks need their own scope: direct invocation otherwise inherits
+ * trusted internal access, exposing bank evidence to anonymous/nonmembers. */
+static void
+test_assistant_scope(gconstpointer data)
+{
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = venture_context_new(config, db);
+	g_autoptr(VentureEntity) transaction = NULL;
+	g_autoptr(VentureEntity) candidate = NULL;
+	g_autoptr(VentureEntity) user = NULL;
+	g_autoptr(VentureEntity) membership = NULL;
+	g_autoptr(CannedProvider) provider = g_object_new(TYPE_CANNED_PROVIDER, NULL);
+	g_autoptr(VentureAiService) ai = NULL;
+	g_autoptr(AiToolUse) tool = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) pending = NULL;
+	g_autofree gchar *input = NULL;
+	g_autofree gchar *answer = NULL;
+	gchar principal_name[] = "scoped-matcher";
+	VentureAuthPrincipal principal;
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	bank_records(db, &transaction, &candidate);
+	user = g_object_new(VENTURE_TYPE_USER, "username", "scoped-matcher", "active", TRUE,
+		"role", VENTURE_USER_ROLE_EDITOR, NULL);
+	g_assert_true(venture_database_save(db, user, NULL, &error));
+	principal.user_id = venture_entity_get_id(user); principal.token_id = 0;
+	principal.name = principal_name; principal.role = VENTURE_USER_ROLE_EDITOR;
+	principal.authenticated = TRUE;
+	g_object_set(config, "ai-policy", VENTURE_AI_POLICY_AUTONOMOUS, NULL);
+	ai = venture_ai_service_new_with_provider(context, AI_PROVIDER(provider), &error);
+	input = g_strdup_printf("{\"type\":\"bank_transaction\",\"id\":%" G_GINT64_FORMAT ",\"matcher\":\"exact\"}", venture_entity_get_id(transaction));
+	tool = ai_tool_use_new_from_json_string("scope-check", "venture_reconcile_suggest", input);
+	answer = venture_ai_service_execute_tool(ai, tool, data ? &principal : NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(answer);
+	pending = venture_confirmation_store_list_pending(venture_context_get_confirmations(context));
+	g_assert_cmpuint(pending->len, ==, 0);
+	g_clear_pointer(&pending, g_ptr_array_unref);
+	g_clear_pointer(&answer, g_free);
+	/* A current finance grant permits staging; application still follows
+	 * the same action registry and bank service under that principal. */
+	membership = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP,
+		"organization-id", venture_entity_get_organization_id(transaction),
+		"user-id", principal.user_id, "active", TRUE,
+		"role", VENTURE_ORGANIZATION_ROLE_FINANCE, NULL);
+	g_assert_true(venture_database_save(db, membership, NULL, &error));
+	answer = venture_ai_service_execute_tool(ai, tool, &principal, &error);
+	g_assert_no_error(error);
+	pending = venture_confirmation_store_list_pending(venture_context_get_confirmations(context));
+	g_assert_cmpuint(pending->len, ==, 1);
+	{
+		g_autoptr(VentureAccessScope) scope = venture_access_policy_enter(venture_database_get_access_policy(db), &principal);
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_BANK_MATCH);
+		g_assert_true(venture_confirmation_store_approve_as(venture_context_get_confirmations(context),
+			venture_confirmation_get_id(g_ptr_array_index(pending, 0)), principal.name, principal.role, &error));
+		g_assert_no_error(error);
+		g_assert_cmpint(venture_database_count(db, query, &error), ==, 1);
+		g_assert_no_error(error);
+	}
 }
 
 static void
@@ -688,6 +755,8 @@ main(int argc, char **argv)
 	g_test_add_data_func("/reconciliation/http-staged", GINT_TO_POINTER(1), test_http);
 	g_test_add_data_func("/reconciliation/assistant-stages", GINT_TO_POINTER(VENTURE_AI_POLICY_CONFIRM_WRITES), test_assistant_stages);
 	g_test_add_data_func("/reconciliation/assistant-autonomous-stages", GINT_TO_POINTER(VENTURE_AI_POLICY_AUTONOMOUS), test_assistant_stages);
+	g_test_add_data_func("/reconciliation/assistant-anonymous-scope", NULL, test_assistant_scope);
+	g_test_add_data_func("/reconciliation/assistant-nonmember-scope", GINT_TO_POINTER(1), test_assistant_scope);
 	g_test_add_func("/reconciliation/exact/duplicate-identity", test_exact_duplicate_identity);
 	g_test_add_func("/reconciliation/registry-merges-matchers", test_registry_merges_matchers);
 	g_test_add_func("/reconciliation/exact/scope-extremes", test_scope_and_extremes);
