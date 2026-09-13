@@ -41,6 +41,8 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:containers.org][Containers]] — the Containerfile, local compose, and a deployment example
 - [[file:testing.org][Testing]] — running the suite, and what it guarantees
 
+- [[file:statements.org][Financial statements]] — posted ledger balances, statements, comparatives and P&L reconciliation
+
 ** The shape of the thing in one page
 
 Everything derives from GObject properties. A record type is a field table; from that VENTURE builds the database table, the REST resource, the JSON and YAML serialisation, the web form, the AI tool schema, the audit diff and the CLI subcommands. Adding a field is a line; adding a record type is a registration.
@@ -64,3 +66,4 @@ The AI reads freely and cannot write unsupervised. A tool call that would change
 Two binaries, both statically linked against every vendored dependency: =venture= is the server, =venturectl= is the client. Either builds alone.
 
 - [[file:pipelines.org][Sales pipelines]] — configurable stages, next actions, history, loss reasons and forecasts
+- [[file:autojournal.org][Automatic journals]] — configurable sale/expense legs, dated refunds and backfill

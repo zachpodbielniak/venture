@@ -722,6 +722,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_fiscal_year_get_type
 		, venture_fiscal_period_get_type
 		, venture_report_snapshot_get_type
+		, venture_posting_profile_get_type
 		, venture_pipeline_get_type,
 		venture_pipeline_stage_get_type,
 		venture_deal_stage_entry_get_type,

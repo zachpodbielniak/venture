@@ -542,6 +542,14 @@ static const gchar *const venture_module_reports_pipelines[] = {
 	"stage_duration", "funnel", "forecast", "loss_reasons", "overdue_deals", NULL
 };
 
+static GType (*const autojournal_types[]) (void) = { venture_posting_profile_get_type, NULL };
+static const gchar *const autojournal_requires[] = { "ledger", NULL };
+static const gchar *const autojournal_reports[] = { "unposted", NULL };
+static const gchar *const venture_module_requires_statements[] = { "ledger", "periods", NULL };
+static const gchar *const venture_module_reports_statements[] = {
+	"balance_sheet", "income_statement", "cash_flow", "general_ledger", "account_balances", "pnl_reconciliation", NULL
+};
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -688,6 +696,14 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"pipelines", "Sales pipelines", "Configurable stages, history and forecasts.",
 		venture_module_requires_crm, NULL, venture_module_pipelines_types,
 		venture_module_reports_pipelines, NULL, FALSE
+	},
+	{ "autojournal", "Automatic journals", "Configurable source accounting.",
+		autojournal_requires, NULL, autojournal_types, autojournal_reports, NULL, FALSE
+	},
+	{
+		"statements", "Statements", "Financial statements from posted ledger evidence.",
+		venture_module_requires_statements, NULL, NULL,
+		venture_module_reports_statements, NULL, FALSE
 	}
 
 };

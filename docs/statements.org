@@ -1,0 +1,144 @@
+#+title: Financial statements
+#+description: Posted ledger statements, comparisons and source reconciliation
+
+* Authority and scope
+
+The =statements= module requires =ledger= and =periods=. It registers
+=balance_sheet=, =income_statement=, =cash_flow=, =general_ledger=,
+=account_balances= and =pnl_reconciliation=. No new persistent records are
+introduced. =VentureLedgerBalances= is the reusable query object; its
+construct-only =database= property selects the repository.
+
+All amounts come from journal lines' book amounts. Drafts, standalone legacy
+ledger entries and mutable =account.opening_balance= fields do not contribute.
+A reversed original still contributes at its original accounting date; its
+reversal contributes on its own date. Opening evidence must be posted as a
+balanced journal. No posting, journal or trial-balance behavior is changed.
+
+=organization_id= selects exactly one legal entity, defaulting to the context's
+default organization. Selecting a parent company does not consolidate its
+children. =currency= selects one uppercase book currency. Without it, each
+currency has separate rows and totals; no exchange conversion or cross-currency
+netting occurs. An empty ledger reports zero in the configured default currency.
+
+* Dates and comparisons
+
+The existing period parser selects an inclusive start and exclusive end in
+the configured reporting timezone. =as_of= optionally caps the accounting
+cutoff: an ISO date includes that UTC day, and an ISO timestamp includes that
+instant. Entries after the earlier of that cutoff and period end are excluded.
+As-of dates do not undo subsequent edits to account descriptions or hierarchy.
+
+Every report accepts =compare_to= with a prior period label. It must end at or
+before the current period starts. =prior= and =delta= compare the row's primary
+amount: the statement value, account closing balance, reconciliation difference,
+or general-ledger running balance. The prior period uses its own endpoint;
+the current as-of cutoff does not truncate that prior period.
+
+General-ledger rows compare each running balance with that account's closing
+balance in the prior period. They do not pretend that unrelated journals in
+two periods are matching transactions. IDs are decimal strings, preserving
+all integer digits in JSON and CSV.
+
+* Definitions
+
+** Balance sheet
+
+Asset, liability and equity rows show closing balances on their normal side:
+assets are debits minus credits; liabilities and equity are credits minus
+debits. Each account row includes descendants. Section totals count direct
+account balances once, so parent subtotals are never added again.
+
+=retained_income= is income less expenses before the selected period that
+remains in income/expense accounts. =net_income= is income less expenses during
+the selected period. Both are included in total equity alongside posted equity
+balances; an explicit closing transfer is therefore not counted twice.
+=assets=, =liabilities= and =equity= are section totals. =difference= is assets
+less liabilities and equity, required to equal zero exactly.
+
+** Income statement and reconciliation
+
+Income is credits minus debits in income accounts; expenses are debits minus
+credits in expense accounts, during the selected period. =net_income= is income
+less expenses. This is recognized ledger activity, independent of payment or
+operational document status. Parent account rows roll up; totals do not repeat
+the rollups.
+
+A note directs readers to =pnl_reconciliation= when sources disagree with the
+operational P&L. That supporting report groups posted profit contributions by
+source type, source ID and currency, then compares them with the source's sale
+net or full expense amount in the same range. Only this reconciliation reads
+sales/expenses; they never supply statement totals. Deleted documents, invoice
+accruals, receipts represented by cash-report sales and manual journals can
+explain differences. Positive =difference= means ledger profit is greater.
+=ledger= and =operational= show both contributions; =current= repeats the
+difference for comparisons. Zero-difference documents are omitted.
+
+** Cash flow, indirect
+
+Start with ledger net income. Add credits minus debits in every non-cash
+balance-sheet account: increasing receivables or inventory reduces cash;
+increasing payables or tax payable increases it. Account rows expose each
+adjustment. The four control subtotals use conventional chart codes and their
+descendants: receivables =1100=, payables =2000=, inventory =1200= and tax payable
+=2100=. Cash is =1000= and its descendants. Organization-prefixed conventional
+codes created by the posting rules are also recognized.
+
+=adjustments= totals all non-cash balance-sheet movements, including the four
+control groups and other asset, liability and equity accounts. The latter
+include investing, financing and non-cash offsets; this statement does not
+classify a full statutory operating/investing/financing presentation.
+Control subtotals summarize the account rows and must not be added a second
+time. There is no unexplained residual or balancing plug.
+
+=cash_start= and =cash_end= are Cash balances at the range boundaries.
+=cash_movement= is net income plus adjustments. =difference= compares this
+with Cash closing less Cash opening and must be zero exactly. Non-cash offsets
+cancel through the same ledger identity. No FX cash-flow adjustment or
+cash-equivalent classification is inferred. A custom chart must retain the
+conventional control codes or provide a replacement report through the registry.
+
+** Account balances and general ledger
+
+=account_balances= lists every account with =opening=, unsigned =debits=,
+unsigned =credits= and =closing=. Opening and closing use debit minus credit.
+The opening is posted evidence before the start; closing is opening plus
+debits less credits. Parent rows include descendants. The query API's =rollup=
+argument can instead select direct account amounts. Cyclic or cross-organization
+parent hierarchies are refused rather than silently changing totals.
+
+=general_ledger= lists every posted line in the range, optionally narrowed
+by =account_id=. Within each account and currency, order is accounting date,
+journal ID and line ID. =current= is the running debit-minus-credit balance
+including opening evidence. Debit, credit, accounting date, journal ID and
+source type/ID accompany each line.
+
+* Surfaces and preserved evidence
+
+The Statements section on =/reports= uses the registered reports and existing
+report pages. Period, as-of and comparison controls preserve the report options
+in links and CSV exports. Actual account rows carry =account_id=; general-ledger
+rows also carry =journal_id=. The shared HTML renderer links these IDs to their
+record pages, including =/e/journal/ID=. Synthetic totals have an empty account
+ID because no single account owns them.
+
+#+begin_src sh
+venturectl report balance_sheet 2026-08 organization_id=1 currency=USD
+venturectl report income_statement 2026-08 organization_id=1 currency=USD compare_to=2026-07
+venturectl -f csv report general_ledger 2026-08 organization_id=1 currency=USD account_id=1
+#+end_src
+
+All six reports are financial and participate in the existing close transaction.
+Period close saves their exact results in =report_snapshot=; =snapshot_vs_live=
+compares them through the registry. A later open-period reversal changes that
+later period, retaining the closed statement and its original posted evidence.
+Reopening and editing account descriptions can still produce report drift;
+a snapshot is preserved evidence, not a versioned chart of accounts.
+
+* Verification
+
+=test-statements= covers balances, parent rollups, two currencies, exact legal
+entity scope, statement totals, comparative columns, month-end cutoffs,
+reconciliation, running balances, HTML journal links, the real report pages,
+the CLI CSV subprocess, module disablement, fiscal snapshots and later
+reversals, invalid inputs, cyclic hierarchy and monetary overflow.

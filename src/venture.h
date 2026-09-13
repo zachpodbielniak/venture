@@ -77,6 +77,7 @@
 #include "model/venture-module.h"
 #include "periods/venture-period-records.h"
 #include "pipelines/venture-pipeline-records.h"
+#include "autojournal/venture-posting-profile.h"
 
 /* --- Configuration ------------------------------------------------------- */
 
@@ -128,6 +129,8 @@
 #include "ledger/venture-posting-service.h"
 #include "pipelines/venture-deal-service.h"
 #include "pipelines/venture-pipeline-reports.h"
+#include "autojournal/venture-autojournal-service.h"
+#include "statements/venture-ledger-balances.h"
 #include "core/venture-ticket-relation.h"
 #include "core/venture-record-link.h"
 #include "core/venture-dashboard.h"
