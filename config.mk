@@ -551,3 +551,19 @@ endif
 list-deps:
 	@echo "Fedora build dependencies:"
 	@for p in $(FEDORA_DEPS); do echo "  $$p"; done
+
+# Transactional mail; keep the standalone CLI free of server dependencies.
+MAIL_GLIB_DIR := $(DEPS_DIR)/mail-glib
+MAIL_GLIB_LIB := $(MAIL_GLIB_DIR)/build/$(BUILD_TYPE)/libmail-glib-1.0.a
+MAIL_OTEL_DIR := $(MAIL_GLIB_DIR)/deps/otel-glib
+MAIL_OTEL_LIB := $(MAIL_OTEL_DIR)/build/$(BUILD_TYPE)/libotel-glib-1.0.a
+DEPS_SERVER += gmime-3.0 gnutls
+CFLAGS_MAIL := -I$(MAIL_GLIB_DIR)/src -I$(MAIL_OTEL_DIR)/src $(shell $(PKG_CONFIG) --cflags gmime-3.0 gnutls)
+CFLAGS += $(CFLAGS_MAIL)
+TEST_CFLAGS += $(CFLAGS_MAIL)
+LDFLAGS += $(shell $(PKG_CONFIG) --libs gmime-3.0 gnutls)
+TEST_LDFLAGS += $(shell $(PKG_CONFIG) --libs gmime-3.0 gnutls)
+VENDOR_LIBS_SERVER += $(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB)
+FEDORA_DEPS += gmime30-devel gnutls-devel
+DEBIAN_DEPS += libgmime-3.0-dev libgnutls28-dev
+ARCH_DEPS += gmime3 gnutls

@@ -533,6 +533,10 @@ static GType (*const venture_module_periods_types[]) (void) = {
 };
 static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live", NULL };
 
+static GType (*const venture_module_mail_types[]) (void) = {
+	venture_mail_message_get_type, venture_mail_template_get_type, NULL
+};
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -674,6 +678,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"periods", "Fiscal periods", "Fiscal calendars, closing controls and historical reports.",
 		venture_module_requires_finance, NULL,
 		venture_module_periods_types, venture_module_reports_periods, NULL, FALSE
+	},
+	{
+		"mail", "Transactional mail", "Durable outbound messages and templates.",
+		venture_module_requires_core, NULL, venture_module_mail_types, NULL, NULL, FALSE
 	}
 };
 

@@ -1,0 +1,44 @@
+#+title: Transactional mail
+
+* Delivery semantics
+
+The =mail= module requires =core=. =mail_message= is a durable outbox and
+=mail_template= stores organization templates. Both use the generated record
+surfaces. A nonempty =idempotency_key= is unique within its organization,
+including soft-deleted history. Enqueueing the same key returns the same row.
+
+The delivery contract is "at-least-once submission, at-most-once automatic
+retry, operator-resolved uncertainty". This does not promise duplicate-free
+SMTP delivery. A successful send means relay acceptance, not inbox delivery.
+
+A sweep commits =sending= with a lease before attempting submission. A
+definite failure before submission becomes =failed= with exponential backoff
+(60 seconds, 120 seconds, and so on), then =dead= at the attempt limit.
+A lost submission reply becomes =uncertain= and is never automatically
+retried. An expired =sending= lease also becomes =uncertain=: a process crash
+may have happened after the relay accepted the message. Deliberate retry
+reuses the same row and Message-ID; receiving MTAs may deduplicate it.
+
+* Enqueueing from another feature
+
+=venture_mail_outbox_enqueue()= accepts an unsaved =VentureMailMessage= with
+an exact organization, recipient, subject, text/HTML bodies and an
+idempotency key. Call it inside the transaction that writes the source
+record. It performs no network I/O. A delivery sweep must run after commit.
+
+=VentureMailer= is a GInterface with synchronous and async send/finish
+methods. =VentureLogMailer= records independent message snapshots in memory
+and supports injected errors for tests. No test should send real mail.
+
+The =sequence_delivery=, =billing_notice= and =quote_delivery= adapters each
+read one source row, construct the message, use a source-type/id-derived
+idempotency key and call enqueue. The source lane owns eligibility and
+content; the outbox owns submission. Those source-row adapters remain a
+cross-lane integration function, not additional SMTP implementations.
+
+* Templates
+
+Templates substitute ={field}= values from a record's public JSON fields
+into subject, text and HTML. HTML values are escaped. Unknown and sensitive
+fields are refused, and a template cannot render a different organization's
+record.
