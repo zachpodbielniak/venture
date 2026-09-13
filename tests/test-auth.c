@@ -1440,6 +1440,27 @@ test_auth_api_refuses_anonymous_requests(
 		"/runs/1/cancel", NULL, "", NULL, NULL),
 		==, SOUP_STATUS_FOUND);
 
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/fixed_assets/1/place-in-service", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/fixed_assets/1/dispose", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/fixed_assets/1/write-off", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/assets/run-period", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/assets/1/place-in-service", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/assets/1/dispose", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/assets/1/write-off", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
 	/* Billing actions authenticate before reading the subscription or module. */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/customer_subscriptions/1/renew", NULL, "{}", NULL, NULL),

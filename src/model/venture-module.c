@@ -533,6 +533,9 @@ static GType (*const venture_module_periods_types[]) (void) = {
 };
 static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live", NULL };
 
+static GType (*const venture_module_assets_types[]) (void) = { venture_fixed_asset_get_type, venture_depreciation_entry_get_type, venture_deferral_get_type, venture_deferral_entry_get_type, NULL };
+static const gchar *const venture_module_requires_assets[] = { "ledger", "periods", NULL };
+static const gchar *const venture_module_reports_assets[] = { "fixed_assets", "deferrals", NULL };
 static GType (*const venture_module_orgaccess_types[]) (void) = {
 	venture_organization_membership_get_type,
 	venture_team_get_type,
@@ -761,6 +764,9 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		venture_module_requires_finance, NULL,
 		venture_module_periods_types, venture_module_reports_periods, NULL, FALSE
 	},
+	{ "assets", "Fixed assets and deferrals", "Book depreciation and recurring journals.",
+		venture_module_requires_assets, NULL, venture_module_assets_types,
+		venture_module_reports_assets, NULL, FALSE },
 	{ "quotes", "Quotes", "Versioned commercial proposals and acceptance.",
 		quotes_requires, NULL, quotes_types, quotes_reports, NULL, FALSE },
 	{

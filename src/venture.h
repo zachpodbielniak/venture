@@ -79,6 +79,7 @@
 #include "model/venture-module.h"
 #include "orgaccess/venture-access-records.h"
 #include "periods/venture-period-records.h"
+#include "assets/venture-asset-records.h"
 #include "billing/venture-billing-records.h"
 #include "mail/venture-mail-records.h"
 
@@ -195,6 +196,7 @@
 #include "forge/venture-work-service.h"
 
 #include "web/venture-web-server.h"
+#include "assets/venture-asset-service.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

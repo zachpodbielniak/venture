@@ -421,6 +421,19 @@ venturectl federation '{"action":"resolve","id":1,"version":5,"field":"descripti
 
 Collection pulls return at most ten results, `next_offset` and `more`; continue pages while `more` is true and inspect per-record errors. Pull imports/merges without pushing; sync pushes conflict-free changes with an expected remote version. Edits require the local replica version. A conflict blocks that record until resolved; choosing remote can accept a removed/revoked field. Never update `federation_replica` through generic CRUD: its merge state belongs to the service. Copies remain usable during outages but are not authoritative local accounting rows. New source objects and binary attachments are not created/copied offline. See `docs/federation.org` for key exchange, grants, scheduling and revocation.
 
+## Fixed assets and recurring journals
+
+Use `asset place ID`, `asset dispose ID proceeds=AMOUNT`, or `asset write-off ID`.
+Set dates with `in_service_at=` or `disposed_at=`; ordinary profile fields
+are configured on the draft first.
+
+Run `assets run-period YYYY-MM organization_id=ID --dry-run` to preview,
+then omit `--dry-run` to post. The whole month commits or rolls back; retries
+post once. A closed period is refused. Use generic `create deferral` to
+build a prepayment/accrual schedule, and stage `operation=settle` with a
+settlement account after an accrual's releases complete. Never set derived
+status or edit schedule rows directly. `report fixed_assets` and
+`report deferrals` accept the ordinary period and `as_of` options.
 ## Organization membership
 
 Read `docs/orgaccess.org` for the role matrix. Membership and team records use
