@@ -135,3 +135,5 @@ snooze/reassign/cancel, two reminder sweeps, staged approval, calendar text,
 the worklist report, related panels, CLI completion and route authentication.
 PostgreSQL is supported by the shared repository; the default suite runs
 SQLite and does not constitute a live PostgreSQL integration run.
+
+An explicit CRM reference must continue to match the related subject when edited; changing only the explicit reference is refused so completion history cannot attach to a different customer.

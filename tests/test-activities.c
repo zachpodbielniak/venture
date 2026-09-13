@@ -486,7 +486,7 @@ test_upgrade_restart(void)
 	id = venture_entity_get_id(VENTURE_ENTITY(company));
 	/* Recreate the previous migration history with real CRM data, and no
 	 * activity table because the module has always been disabled. */
-	g_assert_true(venture_database_execute(db, "DELETE FROM schema_migrations WHERE version=103; DROP INDEX activities_notification_target", NULL, &error));
+	g_assert_true(venture_database_execute(db, "DELETE FROM schema_migrations WHERE version=120; DROP INDEX activities_notification_target", NULL, &error));
 	g_clear_object(&context);
 	g_clear_object(&db);
 	for (run = 0; run < 2; run++)
@@ -504,7 +504,7 @@ test_upgrade_restart(void)
 		g_assert_no_error(error);
 		g_object_get(existing, "name", &name, NULL);
 		g_assert_cmpstr(name, ==, "Existing customer");
-		result = venture_database_query_raw(db, "SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations WHERE version=103", NULL, &error);
+		result = venture_database_query_raw(db, "SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations WHERE version=120", NULL, &error);
 		g_assert_no_error(error);
 		g_assert_true(orm_result_next(result));
 		g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 1);
@@ -847,6 +847,26 @@ test_monthly_meeting_duration(Fixture *f, gconstpointer data)
 	g_assert_cmpint(g_date_time_difference(next_ends, next_starts), ==, g_date_time_difference(ends, starts));
 }
 
+/* A retained subject must not log completion against another company. */
+static void
+test_related_edit(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureCompany) company = venture_company_new();
+	g_autoptr(VentureCompany) other = venture_company_new();
+	g_autoptr(VentureEntity) row = planned(f, "Consistent subject");
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	g_object_set(company, "organization-id", (gint64)1, "name", "Original", NULL);
+	g_object_set(other, "organization-id", (gint64)1, "name", "Other", NULL);
+	g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(company), NULL, &error));
+	g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(other), NULL, &error));
+	g_object_set(row, "related-type", "company", "related-id", venture_entity_get_id(VENTURE_ENTITY(company)), NULL);
+	g_assert_true(venture_database_save(f->database, row, NULL, &error));
+	g_object_set(row, "company-id", venture_entity_get_id(VENTURE_ENTITY(other)), NULL);
+	g_assert_false(venture_database_save(f->database, row, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -858,6 +878,7 @@ main(int argc, char **argv)
 	g_test_add("/activities/reminders", Fixture, NULL, fixture_set_up, test_reminders, fixture_tear_down);
 	g_test_add("/activities/calendar", Fixture, NULL, fixture_set_up, test_calendar, fixture_tear_down);
 	g_test_add("/activities/worklist", Fixture, NULL, fixture_set_up, test_worklist, fixture_tear_down);
+	g_test_add("/activities/related-edit", Fixture, NULL, fixture_set_up, test_related_edit, fixture_tear_down);
 	g_test_add("/activities/related", Fixture, NULL, fixture_set_up, test_related, fixture_tear_down);
 	g_test_add("/activities/rollback", Fixture, NULL, fixture_set_up, test_rollback, fixture_tear_down);
 	g_test_add("/activities/staged", Fixture, NULL, fixture_set_up, test_staged, fixture_tear_down);

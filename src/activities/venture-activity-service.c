@@ -157,6 +157,16 @@ validate(VentureDatabase *db, VentureEntity *row, VentureEntity *previous, gpoin
 				g_object_set(row, refs[i], related_id, NULL);
 			}
 	}
+	/* Editing only the explicit reference must not detach it from a retained
+	 * polymorphic subject; completion writes history using explicit refs. */
+	for (i = 0; related_id > 0 && i < G_N_ELEMENTS(refs); i++)
+		if (g_strcmp0(related, targets[i]) == 0)
+		{
+			gint64 explicit_id;
+			g_object_get(row, refs[i], &explicit_id, NULL);
+			if (explicit_id != related_id)
+				return refuse(error, VENTURE_ERROR_VALIDATION, "Related record conflicts with the explicit CRM reference");
+		}
 	for (i = 0; i < G_N_ELEMENTS(refs); i++)
 	{
 		gint64 id;
@@ -222,7 +232,11 @@ venture_activity_service_act(VentureActivityService *self, VentureEntity *activi
 	self->busy = TRUE;
 	row = venture_database_get(self->database, VENTURE_TYPE_ACTIVITY, venture_entity_get_id(activity), error);
 	if (row == NULL)
+	{
+		if (error == NULL || *error == NULL)
+			refuse(error, VENTURE_ERROR_NOT_FOUND, "Activity no longer exists");
 		goto done;
+	}
 	if (venture_entity_get_version(row) != venture_entity_get_version(activity))
 	{
 		refuse(error, VENTURE_ERROR_CONFLICT, "Activity changed; reload before acting");

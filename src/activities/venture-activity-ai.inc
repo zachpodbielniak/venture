@@ -19,7 +19,7 @@ venture_ai_tool_activity(AiToolUse *tool_use, GCancellable *cancellable, GError 
 		return venture_ai_tool_error("An activity id is required");
 	row = venture_database_get(db, VENTURE_TYPE_ACTIVITY, venture_json_object_get_int(input, "id", 0), &failure);
 	if (row == NULL)
-		return venture_ai_tool_error("%s", failure->message);
+		return venture_ai_tool_error("%s", NULL != failure ? failure->message : "Record not found or action refused");
 	outcome = venture_json_object_get_string(input, "outcome", "");
 	actor.kind = VENTURE_ACTOR_KIND_AI;
 	actor.name = self->current_principal ? self->current_principal->name : "ai";
@@ -30,7 +30,7 @@ venture_ai_tool_activity(AiToolUse *tool_use, GCancellable *cancellable, GError 
 	{
 		completed = venture_activity_service_complete(venture_database_get_activity_service(db), row, outcome, &actor, &failure);
 		if (completed == NULL)
-			return venture_ai_tool_error("%s", failure->message);
+			return venture_ai_tool_error("%s", NULL != failure ? failure->message : "Record not found or action refused");
 		node = venture_serializable_to_json(VENTURE_SERIALIZABLE(completed), FALSE);
 	}
 	else
@@ -38,7 +38,7 @@ venture_ai_tool_activity(AiToolUse *tool_use, GCancellable *cancellable, GError 
 		VentureConfirmation *confirmation = venture_confirmation_store_stage_activity_complete(
 			venture_context_get_confirmations(self->context), row, outcome, &actor, "assistant", &failure);
 		if (confirmation == NULL)
-			return venture_ai_tool_error("%s", failure->message);
+			return venture_ai_tool_error("%s", NULL != failure ? failure->message : "Record not found or action refused");
 		node = venture_confirmation_to_json(confirmation);
 	}
 	return venture_ai_tool_result(g_steal_pointer(&node));
