@@ -40,6 +40,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:extending.org][Extending]] — plugins, crispy scripts, declarative venture types, plugin modules
 - [[file:containers.org][Containers]] — the Containerfile, local compose, and a deployment example
 - [[file:testing.org][Testing]] — running the suite, and what it guarantees
+- [[file:actions.org][Record actions]] — shared business operations and approval
 
 - [[file:statements.org][Financial statements]] — posted ledger balances, statements, comparatives and P&L reconciliation
 

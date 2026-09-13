@@ -268,3 +268,46 @@ the HTTP auth test refuses both direct and staged generic ledger writes.
 Build and run with =make DEBUG=1 -j8 test=. On a sandbox with a read-only
 =/run/user/.../dconf=, set =GSETTINGS_BACKEND=memory= in the environment first;
 that avoids dconf filesystem access without changing the test behavior.
+
+* Posting from the outside
+
+Drafts remain editable through generic CRUD. To post their saved live lines:
+
+#+begin_src sh
+venturectl act journal 42 post
+venturectl --stage act journal 42 post
+venturectl act journal 42 reverse occurred_at=2026-09-13 memo='Correction'
+#+end_src
+
+The equivalent routes are =POST /api/v1/journal/42/actions/post= with ={}=
+and =POST /api/v1/journal/42/actions/reverse= with optional =occurred_at=
+and =memo=. An omitted reversal date means now. Dates before the original,
+repeat reversals, non-draft posts, unbalanced lines and closed periods are
+refused by the posting boundary. A deleted draft cannot be posted.
+
+=POST /api/v1/journals/post= creates and posts a complete journal in one
+transaction. The JSON body is the ordinary header plus a =lines= array:
+
+#+begin_src json
+{"organization_id":1,"source_type":"organization","source_id":1,
+ "currency":"USD","occurred_at":"2026-09-13",
+ "lines":[{"account_id":1,"side":"debit","amount":"10 USD"},
+          {"account_id":2,"side":"credit","amount":"10 USD"}]}
+#+end_src
+
+Use actual accounts in that organization. A bad second account leaves no
+header, line or projection behind. The source organization is the manual
+journal's source document; modules should name their real source record.
+
+This convenience route dispatches the registered type-level
+=create_and_post= action, whose =journal= parameter accepts a JSON object
+or JSON text. It is also available as =venturectl act journal 0
+create_and_post 'journal={...}'=. It can be staged, including through
+=/api/v1/journals/post?stage=1=; approval then creates and posts atomically.
+
+The ledger registers all three actions through =venture_journal_actions_register()=
+on the database's registry. Schema discovery, record-page post/reverse buttons,
+CLI, assistant and MCP use those declarations. Generated assistant tools,
+including =venture_journal_post=, always stage actions. Approval reloads the
+record and checks its version, role and eligibility; a period closed after
+staging still refuses the posting. The ledger module switch hides all three.
