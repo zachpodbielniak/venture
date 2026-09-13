@@ -3889,7 +3889,7 @@ test_orgaccess_public_capabilities(ServerFixture *fixture, gconstpointer unused)
 	g_assert_true(venture_database_save(fixture->database, quote, NULL, &error));
 	g_assert_no_error(error);
 	line = g_object_new(VENTURE_TYPE_QUOTE_LINE, "organization-id", org,
-		"quote-id", venture_entity_get_id(quote), "description", "Service", "quantity", 1.0, "unit-price", amount, NULL);
+		"quote-id", venture_entity_get_id(quote), "description", "Service", "quantity", (gint64)1, "unit-price", amount, NULL);
 	g_assert_true(venture_database_save(fixture->database, line, NULL, &error));
 	g_assert_no_error(error);
 	{
