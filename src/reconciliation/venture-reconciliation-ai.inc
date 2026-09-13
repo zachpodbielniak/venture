@@ -22,8 +22,8 @@ venture_ai_tool_reconcile_suggest(AiToolUse *tool_use, GCancellable *cancellable
 	actor.request_id = NULL;
 	actor.approved_by = NULL;
 	result = venture_reconciliation_service_request(venture_context_get_reconciliation_service(self->context), input, &actor, "assistant", &local_error);
-	if (result == NULL) return venture_ai_tool_error("%s", local_error->message);
-	return venture_ai_tool_result(g_steal_pointer(&result));
+	if (result == NULL) return venture_ai_tool_error("%s", local_error != NULL ? local_error->message : "The matcher failed without an explanation");
+	return venture_ai_tool_result(result);
 }
 static void
 venture_ai_reconciliation_register(VentureAiService *self)

@@ -479,6 +479,38 @@ test_scope_and_extremes(void)
 }
 
 static void
+test_service_refuses_absent_source(gconstpointer data)
+{
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = venture_context_new(config, db);
+	g_autoptr(VentureEntity) transaction = record(0, 10000, "USD", 5, "coffee");
+	g_autoptr(VentureEntity) candidate = record(0, 10000, "USD", 5, "coffee");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	gint64 id = 999;
+	VentureActor actor;
+	actor.kind = VENTURE_ACTOR_KIND_USER; actor.name = "tester";
+	actor.prompt = NULL; actor.request_id = NULL; actor.approved_by = NULL;
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	if (GPOINTER_TO_INT(data))
+	{
+		g_assert_true(venture_database_save(db, transaction, &actor, &error));
+		g_assert_no_error(error);
+		g_assert_true(venture_database_save(db, candidate, &actor, &error));
+		g_assert_no_error(error);
+		id = venture_entity_get_id(transaction);
+		g_assert_true(venture_database_delete(db, transaction, &actor, &error));
+		g_assert_no_error(error);
+	}
+	result = venture_reconciliation_service_suggest(venture_context_get_reconciliation_service(context),
+		venture_entity_get_entity_name(transaction), id, "exact", 80, &actor, "test", &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+}
+
+static void
 test_matcher_contract(void)
 {
 	g_type_ensure(VENTURE_TYPE_RECONCILIATION_MATCHER);
@@ -533,5 +565,7 @@ main(int argc, char **argv)
 	g_test_add_func("/reconciliation/registry-merges-matchers", test_registry_merges_matchers);
 	g_test_add_func("/reconciliation/exact/scope-extremes", test_scope_and_extremes);
 	g_test_add_data_func("/reconciliation/ai/clamp-low", "[{\"id\":2,\"confidence\":-20,\"why\":\"no match\"}]", test_ai_answer);
+	g_test_add_data_func("/reconciliation/refuses-missing-source", GINT_TO_POINTER(0), test_service_refuses_absent_source);
+	g_test_add_data_func("/reconciliation/refuses-deleted-source", GINT_TO_POINTER(1), test_service_refuses_absent_source);
 	return g_test_run();
 }

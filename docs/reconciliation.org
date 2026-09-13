@@ -21,6 +21,7 @@ and a positive =id=, with optional =matcher= and =threshold=. The threshold
 is an integer from 0 through 100, default 80. The endpoint requires an editor
 and checks the transaction type's ordinary access requirements. Its HTTP 200
 response contains a =suggestions= array, ranked by confidence, and a =note=.
+Missing and soft-deleted transaction IDs are refused as not found.
 Each suggestion names the candidate type and ID, confidence, rationale and
 kind. A staged suggestion also contains its ordinary =confirmation= object.
 

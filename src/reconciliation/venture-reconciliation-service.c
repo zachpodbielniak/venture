@@ -129,7 +129,12 @@ venture_reconciliation_service_suggest(VentureReconciliationService *self, const
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Unknown reconciliation transaction type"); return NULL;
 	}
 	transaction = venture_database_get(db, record_type, id, error);
-	if (transaction == NULL) return NULL;
+	if (transaction == NULL || venture_entity_is_deleted(transaction))
+	{
+		if (error == NULL || *error == NULL)
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "The reconciliation transaction does not exist or was deleted");
+		return NULL;
+	}
 	candidates = collect_candidates(context, transaction, error);
 	if (candidates == NULL) return NULL;
 	registry = venture_context_get_reconciliation_registry(context);
