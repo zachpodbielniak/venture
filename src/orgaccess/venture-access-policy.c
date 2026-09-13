@@ -244,6 +244,37 @@ personal_record(VentureEntity *entity)
 }
 
 static gboolean
+assigned_username(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, VentureEntity *entity)
+{
+	g_autoptr(GPtrArray) fields = venture_entity_get_field_specs(entity);
+	g_autoptr(VentureEntity) user = NULL;
+	g_autofree gchar *username = NULL;
+	guint i;
+	gboolean active = FALSE;
+	for (i = 0; i < fields->len; i++)
+	{
+		VentureFieldSpec *field = g_ptr_array_index(fields, i);
+		g_autofree gchar *assigned = NULL;
+		GParamSpec *property;
+		if (!(venture_field_spec_get_flags(field) & VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME)) continue;
+		property = g_object_class_find_property(G_OBJECT_GET_CLASS(entity), field->name);
+		if (!property || G_PARAM_SPEC_VALUE_TYPE(property) != G_TYPE_STRING) continue;
+		/* Bearer display names are token labels, not usernames. Resolve the
+		 * authenticated account id instead of granting on a display string. */
+		if (!user)
+		{
+			user = venture_database_get(self->database, VENTURE_TYPE_USER, actor->user_id, NULL);
+			if (!user || venture_entity_is_deleted(user)) return FALSE;
+			g_object_get(user, "username", &username, "active", &active, NULL);
+			if (!active || venture_string_is_empty(username)) return FALSE;
+		}
+		g_object_get(entity, field->name, &assigned, NULL);
+		if (!venture_string_is_empty(assigned) && !g_strcmp0(username, assigned)) return TRUE;
+	}
+	return FALSE;
+}
+
+static gboolean
 owned(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, VentureEntity *entity)
 {
 	g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(self, NULL);
@@ -252,6 +283,8 @@ owned(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, VentureEntit
 	g_autoptr(VentureEntity) parent = NULL;
 	gint64 team_id = reference(entity, "team-id");
 	gint64 venture_id = reference(entity, "venture-id");
+	if (assigned_username(self, actor, entity))
+		return TRUE;
 	if (actor->user_id == reference(entity, "owner-user-id"))
 		return TRUE;
 	if (team_id > 0)

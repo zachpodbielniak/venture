@@ -3,6 +3,7 @@ static gchar *
 venture_ai_tool_activity(AiToolUse *tool_use, GCancellable *cancellable, GError **error, gpointer data)
 {
 	VentureAiService *self = data;
+	g_autoptr(VentureAccessScope) scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
 	JsonObject *input = venture_ai_tool_input(tool_use);
 	VentureDatabase *db = venture_context_get_database(self->context);
 	g_autoptr(VentureEntity) row = NULL;

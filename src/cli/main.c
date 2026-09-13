@@ -3309,7 +3309,7 @@ main(
 		{ G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_STRING_ARRAY, &args,
 		  NULL, NULL },
 		{ "dry-run", 0, 0, G_OPTION_ARG_NONE, &dry_run,
-		  "post backfill only: validate without retaining writes", NULL },
+		  "post backfill or billing: validate without retaining writes", NULL },
 		{ NULL }
 	};
 
