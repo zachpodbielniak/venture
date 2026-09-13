@@ -16,6 +16,8 @@ months, method, account choices, lifecycle dates and source expense.
 Tags are unique within one organization, including retained deleted drafts.
 Another organization may use the same tag.
 
+Deleted drafts retain their tag for uniqueness but are excluded from the fixed-asset report and its category totals.
+
 The asset's profile must supply active accounts in that organization:
 =asset_account_id=, =accumulated_depreciation_account_id= and
 =depreciation_expense_account_id=. A sale of the asset also needs
@@ -192,7 +194,7 @@ per source. Both honor =organization_id=, =currency= and =as_of= with the
 reporting period's exclusive endpoint. Later releases do not rewrite earlier
 balances. Both are financial reports and are captured at period close.
 
-The paired =000103_assets.sql= migrations verify that the module is either
+The paired =000190_assets.sql= migrations verify that the module is either
 absent or has all four metadata-created tables. They do not infer asset
 history from old expenses. Upgrade and restart preserve existing records;
 a partial table set fails transactionally. PostgreSQL uses the current

@@ -123,6 +123,15 @@ register_report(VentureContext *context, VentureDateRange *period, JsonObject *o
 		g_autofree gchar *category = NULL;
 		g_autofree gchar *key = NULL;
 		Category *aggregate;
+		/* Drafts may be discarded before placement; retained uniqueness rows
+		 * must not contribute assets that the operator explicitly removed. */
+		if (assets && venture_entity_is_deleted(row))
+		{
+			gint state;
+			g_object_get(row, "status", &state, NULL);
+			if (state == VENTURE_ASSET_STATUS_DRAFT)
+				continue;
+		}
 		g_object_get(row, assets ? "cost" : "total", &cost, assets ? "acquired-at" : "start", &acquired,
 			assets ? "name" : "description", &label, NULL);
 		if (cost == NULL || acquired == NULL || g_date_time_compare(acquired, cutoff) > 0 ||

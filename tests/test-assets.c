@@ -438,7 +438,7 @@ test_migration_script(void)
 	g_autofree gchar *sql = NULL;
 	g_autoptr(VentureDatabase) db = NULL;
 	g_autoptr(GError) error = NULL;
-	g_assert_true(g_file_get_contents("migrations/sqlite/000103_assets.sql", &sql, NULL, &error));
+	g_assert_true(g_file_get_contents("migrations/sqlite/000190_assets.sql", &sql, NULL, &error));
 	g_assert_no_error(error);
 	db = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
@@ -835,6 +835,7 @@ static void
 test_register_values(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureEntity) entity = asset(f, "REGISTER");
+	g_autoptr(VentureEntity) discarded = venture_entity_duplicate(entity);
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureDateRange) period = venture_context_parse_period(f->context, "2026-01", &error);
 	g_autoptr(VentureReportResult) result = NULL;
@@ -842,6 +843,11 @@ test_register_values(Fixture *f, gconstpointer data)
 	JsonArray *rows;
 	guint i;
 	(void)data;
+	/* A soft-deleted draft retains its tag but contributes no book value. */
+	g_object_set(discarded, "tag", "DISCARDED", NULL);
+	save(f, discarded);
+	g_assert_true(venture_database_delete(f->db, discarded, NULL, &error));
+	g_assert_no_error(error);
 	g_object_set(entity, "category", "Computers", NULL);
 	save(f, entity);
 	place(f, entity);
