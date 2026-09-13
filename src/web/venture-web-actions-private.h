@@ -148,6 +148,15 @@ venture_web_api_action(HtmxRequest *request, GHashTable *path, gpointer data)
 		if (!venture_action_validate_parameters(action, params, &error)) return venture_web_error_response(error);
 		response = venture_orgaccess_post_journal(self->context, principal, id, stage, &proposed, &error);
 		if (!response) return venture_web_error_response(error);
+		if (proposed)
+		{
+			JsonObject *object = json_object_new();
+			json_object_set_string_member(object, "status", "awaiting_approval");
+			json_object_set_boolean_member(object, "staged", TRUE);
+			json_object_set_member(object, "confirmation", g_steal_pointer(&response));
+			response = json_node_new(JSON_NODE_OBJECT);
+			json_node_take_object(response, object);
+		}
 		return venture_web_json_response(response, proposed ? 202 : 200);
 	}
 	if (stage)
