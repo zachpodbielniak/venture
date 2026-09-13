@@ -542,6 +542,13 @@ static GType (*const banking_types[]) (void) = {
 	venture_bank_transaction_get_type, venture_bank_match_get_type,
 	venture_reconciliation_get_type, NULL
 };
+static GType (*const sequence_types[]) (void) = {
+	venture_sequence_get_type, venture_sequence_step_get_type,
+	venture_sequence_enrollment_get_type, venture_sequence_delivery_get_type,
+	venture_suppression_get_type, NULL
+};
+static const gchar *const sequence_requires[] = { "crm", NULL };
+static const gchar *const sequence_reports[] = { "sequence_performance", "sequence_failures", NULL };
 static GType (*const autojournal_types[]) (void) = { venture_posting_profile_get_type, NULL };
 static const gchar *const autojournal_requires[] = { "ledger", NULL };
 static const gchar *const autojournal_reports[] = { "unposted", NULL };
@@ -698,6 +705,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"banking", "Banking", "Statement import, matching and reconciliation.",
 		banking_requires, NULL, banking_types, banking_reports, NULL, FALSE
+	},
+	{
+		"sequences", "Follow-up sequences", "Durable timed follow-ups and suppression.",
+		sequence_requires, NULL, sequence_types, sequence_reports, NULL, FALSE
 	},
 	{ "autojournal", "Automatic journals", "Configurable source accounting.",
 		autojournal_requires, NULL, autojournal_types, autojournal_reports, NULL, FALSE

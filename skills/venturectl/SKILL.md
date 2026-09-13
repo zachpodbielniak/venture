@@ -306,7 +306,7 @@ venturectl --stage create expense description="Cover art" amount=250.00
 #   approve: POST /api/v1/confirmations/a3f9c118/approve
 ```
 
-It is refused on any command other than `create`, `update`, `delete` and `act`,
+It is refused on any command other than `create`, `update`, `delete`, `act` and `sequence enroll`,
 because those are the only routes that read it -- and an unknown query
 parameter on a write route is ignored, so a quietly accepted `--stage` would
 apply the change it was asked to hold back.
@@ -426,6 +426,22 @@ an account, auto/reconcile a statement, and match/unmatch/exclude/create a
 transaction. `bank match AUTO STATEMENT_ID` runs exact automatic matching.
 Match parameters are `{"parts":[{"type":"expense","id":1,"amount":"-10 USD"}]}`;
 exclude needs a reason, and receipt creation needs customer_id. See docs/banking.org.
+## Follow-up sequences
+
+Use `describe sequence`, `describe sequence_step` and
+`describe sequence_enrollment` before configuring a journey.
+`sequence enroll ID contact_id=ID enrollment_reason=...` calls the service;
+`--stage sequence enroll` queues approval. Generic staged
+`create sequence_enrollment sequence_id=ID contact_id=ID` is equivalent.
+Approval rechecks suppression and duplicate enrollment at application time.
+
+`sequence run [--as-of TIMESTAMP] [organization_id=ID]` processes due steps
+for one organization. Use an ISO timestamp including timezone. Email steps
+create pending `sequence_delivery` rows; this command does not send mail.
+`sequence status ENROLLMENT_ID` shows progress and delivery history.
+Pause, resume and exit use the REST service actions documented in
+`docs/sequences.org`; generic enrollment edits are refused. Completed
+step identities are retained across restarts and sequence edits.
 ## Record actions
 
 Use `venturectl -f json describe TYPE` to discover `actions`, their parameters
@@ -441,7 +457,7 @@ with header fields and a `lines` array. Both support `--stage`. Use real
 source and account IDs from the same organization. Invalid lines leave no
 draft behind; closed periods and repeat reversals are refused.
 
-The `--stage` help lists `create/update/delete/act`; the same flag also
+The `--stage` help lists `create/update/delete/act/sequence enroll`; the same flag also
 applies to a type-level journal creation at ID zero.
 
 ### Automatic journals

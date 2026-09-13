@@ -53,6 +53,7 @@ struct _VentureDatabase
 	 */
 	GPtrArray		*validators;
 	VentureBankMatchService *bank_match_service;
+	VentureSequenceService *sequence_service;
 	VentureActionRegistry *actions;
 };
 
@@ -98,6 +99,7 @@ venture_database_finalize(GObject *object)
 	self = VENTURE_DATABASE(object);
 
 	g_clear_object(&self->bank_match_service);
+	g_clear_object(&self->sequence_service);
 	g_clear_object(&self->actions);
 	g_clear_object(&self->transaction);
 
@@ -1071,6 +1073,13 @@ venture_database_save(
 			return ok;
 	}
 
+	{
+		gboolean handled;
+		gboolean ok = venture_sequences_save_hook(self, entity, actor, &handled, error);
+		if (handled || !ok)
+			return ok;
+	}
+
 	/* Validation happens before anything is written, never after: a
 	 * half-written invalid record is worse than a rejected one. */
 	if (!venture_entity_validate(entity, error))
@@ -1403,6 +1412,8 @@ venture_database_delete(
 		return FALSE;
 	if (!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
+	if (!venture_sequences_check_removal(entity, error))
+		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
 
@@ -1463,6 +1474,8 @@ venture_database_restore(
 		return FALSE;
 	if (!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
+	if (!venture_sequences_check_removal(entity, error))
+		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
 
@@ -1505,6 +1518,8 @@ venture_database_purge(
 	if (!venture_bank_check_write(self, entity, TRUE, error))
 		return FALSE;
 	if (!venture_receivables_check_removal(self, entity, error))
+		return FALSE;
+	if (!venture_sequences_check_removal(entity, error))
 		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
@@ -1987,6 +2002,15 @@ venture_database_get_bank_match_service(VentureDatabase *database)
 		database->bank_match_service = g_object_new(VENTURE_TYPE_BANK_MATCH_SERVICE,
 			"database", database, NULL);
 	return database->bank_match_service;
+}
+
+VentureSequenceService *
+venture_sequence_service_get(VentureDatabase *database)
+{
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
+	if (database->sequence_service == NULL)
+		database->sequence_service = g_object_new(VENTURE_TYPE_SEQUENCE_SERVICE, "database", database, NULL);
+	return database->sequence_service;
 }
 
 VentureActionRegistry *

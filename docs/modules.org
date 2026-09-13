@@ -44,6 +44,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =dashboards= | core            | dashboard, dashboard_widget; the =/dashboards= pages and their API | |
 | =reconciliation= | ledger | matcher registry, deterministic and AI matchers, staged suggestions; suggests banking | |
 | =banking= | ledger | bank_account, bank_statement, bank_transaction, bank_match, reconciliation; =bank_reconciliation= | |
+| =sequences= | crm | sequence, sequence_step, sequence_enrollment, sequence_delivery, suppression; =sequence_performance=, =sequence_failures= | |
 | =ledger=     | finance         | journal, journal_line; posting service, post/reverse/create-and-post actions, =trial_balance=           |                       |
 
 | =statements= | ledger, periods | ledger balances query; balance sheet, income statement, cash flow, general ledger, account balances, P&L reconciliation | |

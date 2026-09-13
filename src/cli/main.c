@@ -3102,6 +3102,7 @@ venture_cli_command_mcp(
 }
 
 #include "reconciliation/venture-reconciliation-cli.inc"
+#include "sequences/venture-sequence-cli.inc"
 
 /* --- Entry point --------------------------------------------------------- */
 
@@ -3193,6 +3194,7 @@ main(
 	g_autofree gchar *server = NULL;
 	g_autofree gchar *token = NULL;
 	g_autofree gchar *format = NULL;
+	g_autofree gchar *sequence_as_of = NULL;
 	gboolean show_version = FALSE;
 	gboolean show_license = FALSE;
 	gboolean quiet = FALSE;
@@ -3215,7 +3217,7 @@ main(
 		{ "apply-writes", 0, 0, G_OPTION_ARG_NONE, &apply_writes,
 		  "mcp only: let write tools apply instead of staging", NULL },
 		{ "stage", 0, 0, G_OPTION_ARG_NONE, &stage,
-		  "create/update/delete/act: propose the change for approval "
+		  "create/update/delete/act/sequence enroll: propose the change for approval "
 		  "instead of making it", NULL },
 		{ "version", 'V', 0, G_OPTION_ARG_NONE, &show_version,
 		  "Print the version and exit", NULL },
@@ -3223,6 +3225,8 @@ main(
 		  "Print licensing information and exit", NULL },
 		{ "matcher", 0, 0, G_OPTION_ARG_STRING, &reconciliation_matcher, "reconcile: matcher name", "NAME" },
 		{ "threshold", 0, 0, G_OPTION_ARG_INT, &reconciliation_threshold, "reconcile: staging threshold", "N" },
+		{ "as-of", 0, 0, G_OPTION_ARG_STRING, &sequence_as_of,
+		  "sequence run: execution cutoff with timezone", "TIMESTAMP" },
 		{ G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_STRING_ARRAY, &args,
 		  NULL, NULL },
 		{ "dry-run", 0, 0, G_OPTION_ARG_NONE, &dry_run,
@@ -3265,6 +3269,9 @@ main(
 		"  modules                      list the server's modules and which\n"
 		"                               are on; -f json for the detail\n"
 		"  federation JSON              identity, remote, pull, edit and sync\n"
+		"  sequence enroll ID          enroll with contact_id=ID and options\n"
+		"  sequence run                execute due steps; --as-of TIMESTAMP\n"
+		"  sequence status ID          enrollment and delivery history\n"
 		"  post backfill                post missing journals; --dry-run\n"
 		"  factory                      the software factory at a glance\n"
 		"  release changelog ID         draft a release's changelog from\n"
@@ -3416,10 +3423,11 @@ main(
 	if (stage && (0 != g_strcmp0(args[0], "create")) &&
 	    (0 != g_strcmp0(args[0], "update")) &&
 	    (0 != g_strcmp0(args[0], "delete")) &&
-	    (0 != g_strcmp0(args[0], "act")))
+	    (0 != g_strcmp0(args[0], "act")) &&
+	    !((0 == g_strcmp0(args[0], "sequence")) && (0 == g_strcmp0(args[1], "enroll"))))
 	{
 		g_printerr("venturectl: --stage only means something to create, "
-		           "update, delete and act. \"%s\" would ignore it.\n", args[0]);
+		           "update, delete, act and sequence enroll. \"%s\" would ignore it.\n", args[0]);
 		g_free(cli.base_url);
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
@@ -3441,6 +3449,14 @@ main(
 		}
 
 		cli.format = (VentureOutputFormat)value;
+	}
+
+	if (sequence_as_of != NULL && (g_strcmp0(args[0], "sequence") != 0 || g_strcmp0(args[1], "run") != 0))
+	{
+		g_printerr("venturectl: --as-of is only valid for sequence run\n");
+		g_free(cli.base_url);
+		g_free(cli.token);
+		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 
 	cli.session = soup_session_new();
@@ -3511,6 +3527,8 @@ main(
 	else if ((0 == g_strcmp0(args[0], "webhooks")) ||
 	         (0 == g_strcmp0(args[0], "webhook")))
 		result = venture_cli_command_webhooks(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "sequence"))
+		result = venture_cli_command_sequence(&cli, args, sequence_as_of, &error);
 	else if (0 == g_strcmp0(args[0], "post"))
 		result = venture_cli_command_post(&cli, args, dry_run, &error);
 	else if (0 == g_strcmp0(args[0], "mcp"))
