@@ -10,5 +10,5 @@ BEGIN
  IF to_regclass('sequence_enrollments') IS NOT NULL AND to_regclass('uq_sequence_enrollments_organization_active_key') IS NULL THEN
   RAISE EXCEPTION 'Missing active sequence enrollment uniqueness';
  END IF;
-END
+END;
 $sequence_checks$;
