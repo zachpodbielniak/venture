@@ -367,6 +367,16 @@ VentureMailer *venture_context_get_mailer(VentureContext *self);
  */
 VentureMailOutbox *venture_context_get_mail_outbox(VentureContext *self);
 
+/** venture_context_set_mailer:
+ * @self: context
+ * @mailer: replacement SMTP implementation; retained by the registry
+ */
+void venture_context_set_mailer(VentureContext *self, VentureMailer *mailer);
+/** venture_context_get_mailer_registry:
+ * @self: context
+ * Returns: (transfer none): implementation registry, with the active "smtp" slot
+ */
+VentureMailerRegistry *venture_context_get_mailer_registry(VentureContext *self);
 G_END_DECLS
 
 #endif /* VENTURE_CONTEXT_H */

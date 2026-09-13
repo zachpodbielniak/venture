@@ -20,6 +20,10 @@ static HtmxResponse *venture_web_mail_action(HtmxRequest *request, GHashTable *p
 	if (gate) return gate;
 	gate = venture_web_require_module_api(self, "mail");
 	if (gate) return gate;
+	if (htmx_request_get_query_param(request, "stage")) {
+		venture_set_error_validation(&error, "stage", "Use generic mail_message creation to stage an enqueue");
+		return venture_web_error_response(error);
+	}
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
 	body = htmx_request_get_json(request, NULL);
@@ -74,6 +78,10 @@ static HtmxResponse *venture_web_mail_invoice(HtmxRequest *request, GHashTable *
 	if (gate) return gate;
 	gate = venture_web_require_module_api(self, "mail"); if (gate) return gate;
 	gate = venture_web_require_module_api(self, "invoicing"); if (gate) return gate;
+	if (htmx_request_get_query_param(request, "stage")) {
+		venture_set_error_validation(&error, "stage", "Invoice sending is an immediate enqueue action");
+		return venture_web_error_response(error);
+	}
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
 	invoice = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_INVOICE,

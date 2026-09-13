@@ -1379,6 +1379,11 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		NULL,
 		"core"
 	},
+	{
+		"/e/mail_message", "Mail outbox",
+		VENTURE_ICON("<path d=\"M3 5h18v14H3zM3 5l9 7 9-7\"/>"),
+		NULL, "mail"
+	},
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 

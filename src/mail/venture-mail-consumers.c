@@ -8,19 +8,38 @@ static gchar *invoice_html(VentureDatabase *db, VentureEntity *invoice, GError *
 	g_autoptr(VentureMoney) total = NULL;
 	g_autoptr(GString) html = g_string_new("<!doctype html><html><body><h1>Invoice ");
 	g_autofree gchar *number = NULL, *terms = NULL;
+	g_autoptr(GDateTime) issued = NULL, due = NULL;
+	gint64 company_id;
 	guint i;
-	g_object_get(invoice, "number", &number, "terms", &terms, NULL);
+	g_object_get(invoice, "number", &number, "terms", &terms, "issued-at", &issued, "due-at", &due, "company-id", &company_id, NULL);
 	venture_query_set_organization(query, venture_entity_get_organization_id(invoice));
 	venture_query_add_filter_int(query, "invoice-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(invoice), NULL);
 	venture_query_add_order(query, "position", VENTURE_SORT_ASCENDING, NULL);
 	lines = venture_database_find(db, query, error);
 	if (!lines) return NULL;
 	venture_html_escape_append(html, number);
-	g_string_append(html, "</h1><table><thead><tr><th>Description</th><th>Amount</th></tr></thead><tbody>");
+	g_string_append(html, "</h1><p>");
+	{
+		g_autoptr(VentureEntity) company = venture_database_get(db, VENTURE_TYPE_COMPANY, company_id, error);
+		g_autofree gchar *name = company ? venture_entity_get_display_name(company) : NULL;
+		if (error && *error) return NULL;
+		g_string_append(html, "Billed to: "); venture_html_escape_append(html, name);
+	}
+	if (issued) {
+		g_autofree gchar *date = g_date_time_format(issued, "%Y-%m-%d");
+		g_string_append(html, "<br>Issued: "); venture_html_escape_append(html, date);
+	}
+	if (due) {
+		g_autofree gchar *date = g_date_time_format(due, "%Y-%m-%d");
+		g_string_append(html, "<br>Due: "); venture_html_escape_append(html, date);
+	}
+	g_string_append(html, "</p><table><thead><tr><th>Description</th><th>Quantity</th><th>Unit price</th><th>Amount</th></tr></thead><tbody>");
 	for (i = 0; i < lines->len; i++) {
 		VentureInvoiceLine *line = g_ptr_array_index(lines, i);
 		g_autoptr(VentureMoney) amount = venture_invoice_line_get_amount(line, error);
 		g_autofree gchar *description = NULL, *formatted = NULL;
+		g_autoptr(VentureMoney) unit = NULL;
+		g_autoptr(JsonNode) json = venture_serializable_to_json(VENTURE_SERIALIZABLE(line), FALSE);
 		if (!amount) return NULL;
 		if (!total) total = venture_money_copy(amount);
 		else {
@@ -31,10 +50,22 @@ static gchar *invoice_html(VentureDatabase *db, VentureEntity *invoice, GError *
 		g_object_get(line, "description", &description, NULL);
 		formatted = venture_money_to_display_string(amount, TRUE);
 		g_string_append(html, "<tr><td>"); venture_html_escape_append(html, description);
+		g_string_append(html, "</td><td>");
+		{
+			JsonNode *quantity = json_object_get_member(json_node_get_object(json), "quantity");
+			g_autofree gchar *value = quantity ? json_to_string(quantity, FALSE) : g_strdup("");
+			venture_html_escape_append(html, value);
+		}
+		g_string_append(html, "</td><td>");
+		g_object_get(line, "unit-price", &unit, NULL);
+		if (unit) {
+			g_autofree gchar *value = venture_money_to_display_string(unit, TRUE);
+			venture_html_escape_append(html, value);
+		}
 		g_string_append(html, "</td><td>"); venture_html_escape_append(html, formatted);
 		g_string_append(html, "</td></tr>");
 	}
-	g_string_append(html, "</tbody><tfoot><tr><th>Total</th><td>");
+	g_string_append(html, "</tbody><tfoot><tr><th colspan=\"3\">Total</th><td>");
 	if (total) {
 		g_autofree gchar *formatted = venture_money_to_display_string(total, TRUE);
 		venture_html_escape_append(html, formatted);
@@ -106,7 +137,12 @@ VentureMailMessage *venture_mail_send_invoice(VentureContext *context, gint64 or
 	{
 		g_autofree gchar *intro = NULL, *body = NULL;
 		g_object_get(message, "html-body", &intro, NULL);
-		body = g_strconcat(intro ? intro : "", html, NULL);
+		{
+			g_autoptr(GString) composed = g_string_new(html);
+			const gchar *start = strstr(html, "<body>");
+			g_string_insert(composed, start ? start - html + 6 : 0, intro ? intro : "");
+			body = g_string_free(g_steal_pointer(&composed), FALSE);
+		}
 		g_object_set(message, "to", email, "html-body", body, "idempotency-key", key,
 			"related-type", "invoice", "related-id", invoice_id, NULL);
 	}

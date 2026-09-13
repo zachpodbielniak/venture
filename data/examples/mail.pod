@@ -1,0 +1,3 @@
+# Sweep organization 1 every minute, at most 100 attempts.
+pod mail_minute = cron->new("* * * * *");
+mail_minute->on_schedule => venture->mail_deliver("1", "100");

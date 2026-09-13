@@ -115,10 +115,15 @@ static gboolean smtp_send(VentureMailer *mailer, VentureMailMessage *message, GC
 			if (!attachments || !JSON_NODE_HOLDS_ARRAY(attachments)) goto out;
 			array = json_node_get_array(attachments);
 			for (i = 0; i < json_array_get_length(array); i++) {
-				JsonObject *attachment = json_array_get_object_element(array, i);
+				JsonNode *element = json_array_get_element(array, i);
+				JsonObject *attachment;
 				gsize size;
 				guchar *decoded;
 				g_autoptr(GBytes) content = NULL;
+				if (!JSON_NODE_HOLDS_OBJECT(element)) {
+					g_set_error_literal(&local, MAIL_ERROR, MAIL_ERROR_MESSAGE, "Invalid attachment snapshot"); goto out;
+				}
+				attachment = json_node_get_object(element);
 				decoded = g_base64_decode(venture_json_object_get_string(attachment, "data", ""), &size);
 				content = g_bytes_new_take(decoded, size);
 				if (!mail_message_add_attachment(mail, venture_json_object_get_string(attachment, "name", "attachment"),

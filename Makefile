@@ -442,3 +442,5 @@ ifeq ($(filter clean clean-all clean-deps,$(MAKECMDGOALS)),)
 endif
 
 deps: $(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB)
+
+$(OUTDIR)/tests/test-mail-surfaces: | $(OUTDIR)/venturectl

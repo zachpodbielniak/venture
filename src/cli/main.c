@@ -3115,6 +3115,8 @@ main(
 	g_autofree gchar *server = NULL;
 	g_autofree gchar *token = NULL;
 	g_autofree gchar *format = NULL;
+	g_autofree gchar *mail_html = NULL;
+	g_autofree gchar *mail_limit = NULL;
 	gboolean show_version = FALSE;
 	gboolean show_license = FALSE;
 	gboolean quiet = FALSE;
@@ -3140,6 +3142,8 @@ main(
 		  "Print the version and exit", NULL },
 		{ "license", 0, 0, G_OPTION_ARG_NONE, &show_license,
 		  "Print licensing information and exit", NULL },
+		{ "html", 0, 0, G_OPTION_ARG_FILENAME, &mail_html, "mail send: HTML body file", "FILE" },
+		{ "limit", 0, 0, G_OPTION_ARG_STRING, &mail_limit, "mail deliver: maximum attempts", "N" },
 		{ G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_STRING_ARRAY, &args,
 		  NULL, NULL },
 		{ NULL }
@@ -3383,7 +3387,7 @@ main(
 	else if (0 == g_strcmp0(args[0], "factory"))
 		result = venture_cli_command_factory(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "mail"))
-		result = venture_cli_command_mail(&cli, args, &error);
+		result = venture_cli_command_mail(&cli, args, mail_html, mail_limit, &error);
 	else if (0 == g_strcmp0(args[0], "release"))
 		result = venture_cli_command_release(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dashboards"))

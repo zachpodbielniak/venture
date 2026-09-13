@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
-static gint venture_cli_command_mail(VentureCli *cli, gchar **args, GError **error)
+static gint venture_cli_command_mail(VentureCli *cli, gchar **args, const gchar *html_file, const gchar *limit_arg, GError **error)
 {
 	g_autoptr(JsonNode) body = NULL, response = NULL;
 	g_autofree gchar *path = NULL;
@@ -38,6 +38,18 @@ static gint venture_cli_command_mail(VentureCli *cli, gchar **args, GError **err
 			if (*end || limit < 1 || limit > 1000) goto usage;
 			json_object_set_int_member(object, "limit", limit);
 		}
+	}
+	if (html_file) {
+		g_autofree gchar *contents = NULL;
+		if (g_strcmp0(verb, "send")) goto usage;
+		if (!g_file_get_contents(html_file, &contents, NULL, error)) return -1;
+		json_object_set_string_member(object, "html_body", contents);
+	}
+	if (limit_arg) {
+		gchar *end;
+		gint64 limit = g_ascii_strtoll(limit_arg, &end, 10);
+		if (g_strcmp0(verb, "deliver") || *end || limit < 1 || limit > 1000) goto usage;
+		json_object_set_int_member(object, "limit", limit);
 	}
 	if (!g_strcmp0(verb, "retry")) {
 		g_autofree gchar *id = g_uri_escape_string(args[2], NULL, FALSE);

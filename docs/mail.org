@@ -101,15 +101,16 @@ Users without an email are skipped.
 
 * Scheduling
 
-Run a bounded sweep for each organization every minute. For example, a
-podomation rule can invoke the installed CLI through its HTTP-authenticated
-client. Keep =VENTURE_SERVER= and =VENTURE_TOKEN= in that process's environment:
+Run a bounded sweep for each organization every minute. This podomation rule
+uses the same outbox service as REST and the CLI, on the main thread:
 
 #+begin_src text
-# Illustrative scheduler invocation; use the cron/exec_pipe module syntax
-# supplied by your installed podomation version.
-venturectl mail deliver organization_id=1 --limit 100
+pod mail_minute = cron->new("* * * * *");
+mail_minute->on_schedule => venture->mail_deliver("1", "100");
 #+end_src
+
+The arguments are organization ID and attempt limit. Add a rule for each
+organization. Use a scheduled rule, after business transactions commit.
 
 * Attachments and durable snapshots
 
@@ -143,5 +144,11 @@ not infer or send historical mail. Existing business rows are unchanged.
 
 =test-mail= covers outbox states, retry exhaustion, retained keys, lease
 expiry, template escaping, SMTP uncertainty and Message-ID/Bcc behavior over
-a local socket, invoice/user consumers, atomic user rollback and attachment
-snapshots. =test-auth= covers anonymous action refusals.
+a local socket, invoice/user consumers, atomic invoice/user rollback and attachment
+snapshots. =test-mail-surfaces= exercises the real CLI against a private HTTP
+server, action guards and the scheduled automation handler. =test-auth= covers
+anonymous action refusals.
+
+=VentureMailerRegistry= owns named transport implementations. The context uses
+its =smtp= slot; =venture_context_set_mailer()= replaces it for tests or plugins.
+Async send completes on the initiating main context and never accesses the database.
