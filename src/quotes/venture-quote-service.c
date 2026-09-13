@@ -9,6 +9,7 @@ struct _VentureQuoteService {
 	GObject parent_instance;
 	VentureDatabase *database;
 	VentureEntity *writing;
+	VentureEntity *removing;
 	gboolean busy;
 };
 G_DEFINE_FINAL_TYPE(VentureQuoteService, venture_quote_service, G_TYPE_OBJECT)
@@ -123,7 +124,7 @@ static VentureEntity *
 get(VentureQuoteService *self, GType type, gint64 org, gint64 id, GError **error)
 {
 	VentureEntity *r = venture_database_get(self->database, type, id, error);
-	if (r != NULL && venture_entity_get_organization_id(r) != org)
+	if (r != NULL && (venture_entity_get_organization_id(r) != org || venture_entity_is_deleted(r)))
 	{
 		g_object_unref(r);
 		refuse(error, VENTURE_ERROR_NOT_FOUND, "record not found in this organization");
@@ -136,10 +137,21 @@ get(VentureQuoteService *self, GType type, gint64 org, gint64 id, GError **error
 static gboolean
 write_record(VentureQuoteService *self, VentureEntity *r, const VentureActor *actor, GError **error)
 {
+	g_autoptr(VentureEntity) snapshot = g_object_new(G_OBJECT_TYPE(r), NULL);
+	g_autoptr(JsonNode) diff = NULL;
 	gboolean ok;
+	venture_entity_copy_properties_from(snapshot, r, FALSE);
 	self->writing = r;
 	ok = venture_database_save(self->database, r, actor, error);
 	self->writing = NULL;
+	if (ok)
+	{
+		diff = venture_entity_diff(snapshot, r);
+		if (json_object_get_size(json_node_get_object(diff)) != 0 ||
+			venture_entity_get_organization_id(snapshot) != venture_entity_get_organization_id(r))
+			ok = refuse(error, VENTURE_ERROR_VALIDATION, "a callback changed service-owned fields during persistence");
+	}
+	if (!ok) venture_entity_copy_properties_from(r, snapshot, FALSE);
 	return ok;
 }
 
@@ -248,10 +260,26 @@ price(VentureQuoteService *self, VentureEntity *line, VentureEntity *q, GError *
 	gint64 product = integer(line, "product-id");
 	gint64 org = venture_entity_get_organization_id(q);
 	gint64 best = -1;
+	gint64 selected = 0;
 	guint i;
 	g_object_get(line, "unit-price", &unit, NULL);
 	if (unit != NULL || product == 0) return TRUE;
 	g_object_get(q, "currency", &currency, NULL);
+	if (integer(q, "company-id") != 0)
+	{
+		g_autoptr(VentureEntity) company = get(self, VENTURE_TYPE_COMPANY, org, integer(q, "company-id"), error);
+		if (company == NULL) return FALSE;
+		selected = integer(company, "default-price-list-id");
+		if (selected != 0)
+		{
+			g_autoptr(VentureEntity) chosen = get(self, VENTURE_TYPE_PRICE_LIST, org, selected, error);
+			g_autofree gchar *chosen_currency = NULL;
+			if (chosen == NULL) return FALSE;
+			g_object_get(chosen, "currency", &chosen_currency, NULL);
+			if (g_strcmp0(chosen_currency, currency) != 0)
+				return refuse(error, VENTURE_ERROR_VALIDATION, "customer price list currency differs from the quote");
+		}
+	}
 	lists = find(self, VENTURE_TYPE_PRICE_LIST, org, NULL, 0, error);
 	if (lists == NULL) return FALSE;
 	for (i = 0; i < lists->len; i++)
@@ -262,7 +290,7 @@ price(VentureQuoteService *self, VentureEntity *line, VentureEntity *q, GError *
 		g_autoptr(GPtrArray) items = NULL;
 		guint j;
 		g_object_get(list, "is-default", &is_default, "currency", &lc, NULL);
-		if (!is_default || g_strcmp0(lc, currency) != 0) continue;
+		if ((selected != 0 ? venture_entity_get_id(list) != selected : !is_default) || g_strcmp0(lc, currency) != 0) continue;
 		items = find(self, VENTURE_TYPE_PRICE_LIST_ITEM, org, "price-list-id", venture_entity_get_id(list), error);
 		if (items == NULL) return FALSE;
 		for (j = 0; j < items->len; j++)
@@ -617,13 +645,17 @@ venture_quotes_check_removal(VentureDatabase *db, VentureEntity *r, GError **err
 		return refuse(error, VENTURE_ERROR_VALIDATION, "service evidence cannot be removed");
 	if (VENTURE_IS_QUOTE(r) || VENTURE_IS_QUOTE_LINE(r))
 	{
-		g_autoptr(VentureEntity) q = venture_database_get(db, VENTURE_TYPE_QUOTE,
-			VENTURE_IS_QUOTE(r) ? venture_entity_get_id(r) : integer(r, "quote-id"), error);
+		g_autoptr(VentureEntity) stored = venture_database_get(db, G_OBJECT_TYPE(r), venture_entity_get_id(r), error);
+		g_autoptr(VentureEntity) q = NULL;
+		if (stored == NULL) return refuse(error, VENTURE_ERROR_NOT_FOUND, "record not found");
+		if (VENTURE_IS_QUOTE_LINE(r) && integer(r, "quote-id") != integer(stored, "quote-id"))
+			return refuse(error, VENTURE_ERROR_VALIDATION, "a removal cannot move a line");
+		q = venture_database_get(db, VENTURE_TYPE_QUOTE,
+			VENTURE_IS_QUOTE(stored) ? venture_entity_get_id(stored) : integer(stored, "quote-id"), error);
 		if (q == NULL) return FALSE;
 		if (state(q) != VENTURE_QUOTE_DRAFT)
 			return refuse(error, VENTURE_ERROR_VALIDATION, "sent quote history cannot be removed");
-		if (VENTURE_IS_QUOTE_LINE(r))
-			return refuse(error, VENTURE_ERROR_VALIDATION, "revise line factors instead of removing a priced line");
+
 	}
 	return TRUE;
 }
@@ -650,4 +682,41 @@ venture_quote_service_sweep(VentureQuoteService *self, gint64 org, GDateTime *no
 		count++;
 	}
 	return count;
+}
+
+/* Removal and the new draft total share the same transaction. */
+gboolean
+venture_quotes_remove_hook(VentureDatabase *db, VentureEntity *r, guint operation,
+	const VentureActor *actor, gboolean *handled, GError **error)
+{
+	VentureQuoteService *self;
+	g_autoptr(VentureEntity) q = NULL;
+	g_autoptr(VentureEntity) snapshot = NULL;
+	gboolean ok = FALSE;
+	*handled = FALSE;
+	if (!VENTURE_IS_QUOTE_LINE(r)) return TRUE;
+	self = venture_database_get_quote_service(db);
+	if (self->removing == r)
+	{
+		self->removing = NULL;
+		return TRUE;
+	}
+	*handled = TRUE;
+	if (!venture_database_begin(db, error)) return FALSE;
+	if (!venture_quotes_check_removal(db, r, error)) goto done;
+	q = get(self, VENTURE_TYPE_QUOTE, venture_entity_get_organization_id(r), integer(r, "quote-id"), error);
+	if (q == NULL) goto done;
+	snapshot = g_object_new(G_OBJECT_TYPE(r), NULL);
+	venture_entity_copy_properties_from(snapshot, r, FALSE);
+	self->removing = r;
+	if (operation == 0) ok = venture_database_delete(db, r, actor, error);
+	else if (operation == 1) ok = venture_database_restore(db, r, actor, error);
+	else ok = venture_database_purge(db, r, actor, error);
+	self->removing = NULL;
+	if (ok) ok = compute(self, q, error) && write_record(self, q, actor, error);
+done:
+	if (ok) return venture_database_commit(db, error);
+	venture_database_rollback(db);
+	if (snapshot != NULL) venture_entity_copy_properties_from(r, snapshot, FALSE);
+	return FALSE;
 }

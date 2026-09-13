@@ -311,6 +311,26 @@ test_prices(Fixture *f, gconstpointer data)
 	field(l, "quantity", "3");
 	save(f, l);
 	g_assert_cmpint(amount(l, "unit-price"), ==, 4200);
+	{
+		g_autoptr(VentureEntity) customer = fresh(f, "company", f->company);
+		g_autoptr(VentureEntity) special = record(f, "price_list");
+		g_autoptr(VentureEntity) tier = record(f, "price_list_item");
+		g_autoptr(VentureEntity) next = record(f, "quote_line");
+		g_autofree gchar *id = NULL;
+		g_object_set(special, "name", "Customer terms", "currency", "USD", NULL);
+		save(f, special);
+		g_object_set(tier, "price-list-id", venture_entity_get_id(special), "product-id", venture_entity_get_id(product), NULL);
+		field(tier, "unit-price", "35 USD");
+		save(f, tier);
+		id = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(special));
+		field(customer, "default-price-list-id", id);
+		save(f, customer);
+		g_object_set(next, "quote-id", venture_entity_get_id(q), "product-id", venture_entity_get_id(product), "description", "Customer rate", NULL);
+		field(next, "quantity", "3");
+		save(f, next);
+		g_assert_cmpint(amount(next, "unit-price"), ==, 3500);
+	}
+
 }
 
 static void
@@ -461,6 +481,21 @@ test_http(Fixture *f, gconstpointer data)
 		g_free(r.out);
 		g_free(r.err);
 	}
+	venture_web_server_stop(server);
+	g_clear_object(&server);
+	g_object_set(f->config, "security-require-auth", TRUE, NULL);
+	server = venture_web_server_new(f->context, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(server, &error));
+	g_assert_no_error(error);
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&path, g_free);
+	path = g_strconcat("/q/", token, NULL);
+	g_assert_cmpuint(http(session, base, "GET", path, NULL, &body), ==, 200);
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(http(session, base, "GET", "/quotes/1/print", NULL, &body), ==, 302);
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(http(session, base, "POST", "/api/v1/quotes/1/send", "{}", &body), ==, 401);
 	{
 		guint i;
 		guint code = 0;
@@ -471,6 +506,12 @@ test_http(Fixture *f, gconstpointer data)
 		}
 		g_assert_cmpuint(code, ==, 429);
 	}
+	venture_config_set_module_enabled(f->config, "quotes", FALSE);
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(http(session, base, "GET", path, NULL, &body), ==, 404);
+	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(), "quote"), ==, G_TYPE_INVALID);
+	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "quotes"));
+	venture_config_set_module_enabled(f->config, "quotes", TRUE);
 	venture_web_server_stop(server);
 	g_clear_object(&server);
 	venture_test_remove_tree(dir);
@@ -621,6 +662,43 @@ test_veto(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(events->len, ==, 0);
 }
 
+static void
+test_draft_removal(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) q = quote(f, "Editable");
+	g_autoptr(VentureEntity) l = line(f, q);
+	g_autoptr(VentureEntity) current = NULL;
+	g_autoptr(GError) error = NULL;
+	g_assert_true(venture_database_delete(f->db, l, NULL, &error));
+	g_assert_no_error(error);
+	current = fresh(f, "quote", venture_entity_get_id(q));
+	g_assert_cmpint(amount(current, "total"), ==, 0);
+	g_assert_true(venture_database_restore(f->db, l, NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&current);
+	current = fresh(f, "quote", venture_entity_get_id(q));
+	g_assert_cmpint(amount(current, "total"), ==, 5667);
+}
+
+static gboolean
+forge_state(VentureDatabase *db, VentureEntity *r, VentureEntity *previous, gpointer data, GError **error)
+{
+	g_object_set(r, "status", VENTURE_QUOTE_ACCEPTED, NULL);
+	return TRUE;
+}
+
+static void
+test_validator_boundary(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) q = quote(f, "Protected");
+	g_autoptr(GError) error = NULL;
+	venture_database_add_save_validator(f->db, VENTURE_TYPE_QUOTE, forge_state, NULL, NULL);
+	g_object_set(q, "terms", "Changed", NULL);
+	g_assert_false(venture_database_save(f->db, q, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	status(f, q, "draft");
+}
+
 int
 main(int argc, char **argv)
 {
@@ -641,5 +719,7 @@ main(int argc, char **argv)
 	g_test_add("/quotes/decline", Fixture, NULL, setup, test_decline, teardown);
 	g_test_add("/quotes/upgrade", Fixture, NULL, setup, test_upgrade, teardown);
 	g_test_add("/quotes/veto", Fixture, NULL, setup, test_veto, teardown);
+	g_test_add("/quotes/draft-removal", Fixture, NULL, setup, test_draft_removal, teardown);
+	g_test_add("/quotes/validator-boundary", Fixture, NULL, setup, test_validator_boundary, teardown);
 	return g_test_run();
 }

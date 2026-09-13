@@ -1391,6 +1391,12 @@ venture_database_delete(
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
 
+	{
+		gboolean handled;
+		gboolean result = venture_quotes_remove_hook(self, entity, 0, actor, &handled, error);
+		if (handled || !result) return result;
+	}
+
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
@@ -1451,6 +1457,12 @@ venture_database_restore(
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
 
+	{
+		gboolean handled;
+		gboolean result = venture_quotes_remove_hook(self, entity, 1, actor, &handled, error);
+		if (handled || !result) return result;
+	}
+
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
@@ -1493,6 +1505,12 @@ venture_database_purge(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+
+	{
+		gboolean handled;
+		gboolean result = venture_quotes_remove_hook(self, entity, 2, actor, &handled, error);
+		if (handled || !result) return result;
+	}
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))

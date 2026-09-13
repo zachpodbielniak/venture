@@ -148,6 +148,12 @@ quote_route(HtmxRequest *request, GHashTable *params, gpointer data)
 	HtmxResponse *gate;
 	VentureActor actor;
 	gint64 id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	gboolean api = g_str_has_prefix(htmx_request_get_path(request), "/api/");
+	if (!api)
+	{
+		gate = venture_web_ui_require_session(self, request);
+		if (gate != NULL) return gate;
+	}
 	gate = venture_web_api_require(self, request, verb == NULL ? VENTURE_USER_ROLE_VIEWER : VENTURE_USER_ROLE_EDITOR);
 	if (gate != NULL) return gate;
 	gate = venture_web_require_module_api(self, "quotes");
@@ -173,6 +179,14 @@ quote_route(HtmxRequest *request, GHashTable *params, gpointer data)
 		return venture_web_api_stage(self, action, NULL, principal, VENTURE_AUDIT_ACTION_CREATE);
 	if (!venture_quote_service_execute(venture_database_get_quote_service(venture_context_get_database(self->context)),
 		action, "manual", NULL, &actor, &error)) return venture_web_error_response(error);
+	if (!api)
+	{
+		gint64 result_id = 0;
+		g_autofree gchar *destination = NULL;
+		g_object_get(action, "result-quote-id", &result_id, NULL);
+		destination = g_strdup_printf("/e/quote/%" G_GINT64_FORMAT, result_id != 0 ? result_id : id);
+		return venture_web_redirect_to(destination);
+	}
 	result = venture_serializable_to_json(VENTURE_SERIALIZABLE(action), FALSE);
 	return venture_web_json_response(result, 200);
 }

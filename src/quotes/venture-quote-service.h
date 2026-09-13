@@ -58,5 +58,17 @@ gboolean venture_quotes_check_removal(VentureDatabase *database, VentureEntity *
  * Registers the issued-cohort quote report.
  */
 void venture_quotes_register_reports(VentureReportRegistry *registry);
+/**
+ * venture_quotes_remove_hook: (skip)
+ * @database: storage
+ * @record: target
+ * @operation: 0 delete, 1 restore, 2 purge
+ * @actor: (nullable): attribution
+ * @handled: (out): whether the removal was performed
+ * @error: (out) (optional): refusal
+ * Returns: TRUE on success
+ */
+gboolean venture_quotes_remove_hook(VentureDatabase *database, VentureEntity *record,
+	guint operation, const VentureActor *actor, gboolean *handled, GError **error);
 G_END_DECLS
 #endif

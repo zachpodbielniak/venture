@@ -21,20 +21,21 @@ amount. Three units at $19.99 with 10% discount and 5% tax give subtotal
 $59.97, discount $6.00, tax $2.70 and total $56.67. All arithmetic uses
 =VentureMoney=, including overflow and cross-currency refusal.
 
-A line with a product and no supplied price uses the organization's default
-price list for the quote currency. The highest applicable =min_quantity=
+A line with a product and no supplied price uses the company's
+=default_price_list_id=, or the organization's default list for the quote
+currency. The highest applicable =min_quantity=
 selects the tier; without a matching tier it uses the product's =list_price=.
 A supplied price remains an explicit commercial choice. Lists and prices
 are records, so changing tomorrow's list cannot change an existing line.
-Customer-specific lists and fractional quantities are not included.
+Fractional quantities and fractional percentages are not included.
 
 * Lifecycle
 
 =VentureQuoteService= performs every status transition. Generic writes cannot
 set a quote's status or rewrite sent proposals, events or deliveries.
-Changing a draft line recomputes the header in the same transaction. Draft
-line removal is currently refused; revise its factors or create a replacement
-proposal. This keeps a displayed header from retaining a removed amount.
+Changing, deleting or restoring a draft line recomputes the header in the
+same transaction. A validator cannot change the service-owned fields while
+they are being saved.
 
 - =send= freezes totals in an event, stamps issuance, creates a secure random
   per-quote acceptance secret and writes one =quote_delivery= with
