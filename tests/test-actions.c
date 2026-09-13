@@ -141,6 +141,45 @@ test_parameter_registration(void)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
 }
 
+/* The approval card and the eventual invocation must retain the same input,
+ * even if a caller reuses its nested JSON object after staging. */
+static void
+test_confirmation_snapshot(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", &error);
+	g_autoptr(GPtrArray) specs = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
+	g_autoptr(VentureAction) action = NULL;
+	g_autoptr(VentureEntity) entity = NULL;
+	g_autoptr(VentureConfirmationStore) store = NULL;
+	g_autoptr(JsonNode) input = venture_json_parse("{\"payload\":{\"amount\":10}}", &error);
+	g_autoptr(GHashTable) params = venture_action_parameters_from_json(input, &error);
+	g_autoptr(JsonNode) view = NULL;
+	VentureConfirmation *confirmation;
+	JsonObject *payload;
+	JsonObject *diff;
+	guint calls = 0;
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_ptr_array_add(specs, venture_field_spec_new("payload", "Payload", VENTURE_FIELD_KIND_JSON));
+	action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "organization", "name", "snapshot",
+		"label", "Snapshot", "description", "Retain proposed parameters", "parameters", specs,
+		"stageable", TRUE, NULL);
+	g_assert_true(venture_action_registry_register(venture_database_get_action_registry(db), action,
+		allow, invoke, &calls, NULL, &error));
+	entity = venture_database_get(db, VENTURE_TYPE_ORGANIZATION, 1, &error);
+	store = venture_confirmation_store_new(db, 3600, 10);
+	confirmation = venture_confirmation_store_stage_action(store, action, entity, params, NULL,
+		VENTURE_USER_ROLE_OWNER, "test", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(confirmation);
+	payload = json_node_get_object(g_hash_table_lookup(params, "payload"));
+	json_object_set_int_member(payload, "amount", 999);
+	view = venture_confirmation_to_json(confirmation);
+	diff = json_object_get_object_member(json_node_get_object(view), "diff");
+	g_assert_cmpint(json_object_get_int_member(json_object_get_object_member(diff, "payload"), "amount"), ==, 10);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -150,5 +189,6 @@ main(int argc, char **argv)
 	g_test_add_func("/actions/dispatch-role-veto", test_dispatch);
 	g_test_add_func("/actions/parameter-contract", test_parameter_contract);
 	g_test_add_func("/actions/parameter-registration", test_parameter_registration);
+	g_test_add_func("/actions/confirmation-snapshot", test_confirmation_snapshot);
 	return g_test_run();
 }

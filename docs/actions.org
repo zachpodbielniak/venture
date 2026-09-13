@@ -55,6 +55,8 @@ nothing. Approval reloads the target, refuses a changed version and calls
 the same registry dispatch, including =allowed= and the role check. A
 refused action attempt is dropped and must be proposed again.
 
+The approval card and invocation each retain a detached snapshot of nested parameter values. Reusing or modifying the caller's JSON after staging cannot change what the operator sees or what approval executes.
+
 Trusted transports use =venture_confirmation_store_approve_as()= with the
 authenticated approver's role. Internal callers using =approve()= must name
 an active user; that user's current role is looked up at approval time.

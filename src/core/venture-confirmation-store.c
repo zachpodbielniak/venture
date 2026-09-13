@@ -852,6 +852,7 @@ venture_confirmation_store_stage_action(VentureConfirmationStore *self, VentureA
 	g_autofree gchar *name = NULL;
 	g_autofree gchar *label = NULL;
 	g_autoptr(JsonNode) values = json_node_new(JSON_NODE_OBJECT);
+	g_autofree gchar *snapshot = NULL;
 	JsonObject *object = json_object_new();
 	GHashTableIter iter;
 	gpointer key, value;
@@ -883,7 +884,10 @@ venture_confirmation_store_stage_action(VentureConfirmationStore *self, VentureA
 		venture_entity_get_entity_name(current), venture_entity_get_id(current));
 	confirmation->staged = g_steal_pointer(&current);
 	confirmation->parameters = venture_action_parameters_from_json(values, error);
-	confirmation->diff = json_node_ref(values);
+	/* The approval card must own its nested values just as the invocation
+	 * does; retaining caller nodes lets later edits misrepresent the action. */
+	snapshot = venture_json_to_string(values, FALSE);
+	confirmation->diff = venture_json_parse(snapshot, NULL);
 	confirmation->via = g_strdup(via);
 	confirmation->created_at = g_date_time_ref(now);
 	confirmation->expires_at = g_date_time_add_seconds(now, (gdouble)self->ttl_seconds);
