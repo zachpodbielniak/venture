@@ -1,0 +1,36 @@
+#+title: Durable follow-up sequences
+
+* Enrollment and exits
+
+The =sequences= module requires =crm=. Its five records are =sequence=,
+=sequence_step=, =sequence_enrollment=, =sequence_delivery= and =suppression=.
+Their fields drive the ordinary record surfaces. A sequence belongs to one
+organization; its contacts, steps and optional deal must belong there too.
+The optional =lead_id= is an external identifier, with no dependency on a
+lead module.
+
+=VentureSequenceService= owns enrollment and the database save hook routes
+ordinary enrollment creation through it, including approved assistant writes.
+Active and paused enrollment duplicates are refused. Suppressed addresses
+cannot enroll. Addresses are trimmed and ASCII case-folded, unique per
+organization. Suppression records are retained.
+
+A sequence declares its IANA timezone, a same-day send window with an
+inclusive start hour and exclusive end hour, and comma-separated ISO weekdays
+(1 is Monday, 7 Sunday). Calendar-day delays use that timezone; hour delays
+are elapsed hours. The stored next-run timestamp is UTC. An enrollment keeps
+its reason and the actor who enrolled it.
+
+An inbound interaction exits matching reply-sensitive enrollments; a meeting
+can meet a meeting goal. A deal changing to won exits matching enrollments
+without relying on a pipeline service. Suppression stops the email's
+enrollments regardless of their unsubscribe switch. Each exit retains the
+current step and an exit reason and cancels pending deliveries in the same
+transaction. Already sent messages remain evidence.
+
+* Mail adapter seam
+
+A mail adapter picks up =sequence_delivery= rows with =channel=email= and
+=state=pending=, sends, and sets state/external id. The sequence engine does
+not send mail or depend on a mail implementation. The adapter must recheck
+pending state before sending, since an exit can cancel a queued delivery.

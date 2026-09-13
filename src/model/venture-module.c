@@ -533,6 +533,14 @@ static GType (*const venture_module_periods_types[]) (void) = {
 };
 static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live", NULL };
 
+static GType (*const sequence_types[]) (void) = {
+    venture_sequence_get_type, venture_sequence_step_get_type,
+    venture_sequence_enrollment_get_type, venture_sequence_delivery_get_type,
+    venture_suppression_get_type, NULL
+};
+static const gchar *const sequence_requires[] = { "crm", NULL };
+static const gchar *const sequence_reports[] = { "sequence_performance", "sequence_failures", NULL };
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -674,6 +682,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"periods", "Fiscal periods", "Fiscal calendars, closing controls and historical reports.",
 		venture_module_requires_finance, NULL,
 		venture_module_periods_types, venture_module_reports_periods, NULL, FALSE
+	},
+	{
+		"sequences", "Follow-up sequences", "Durable timed follow-ups and suppression.",
+		sequence_requires, NULL, sequence_types, sequence_reports, NULL, FALSE
 	}
 };
 
