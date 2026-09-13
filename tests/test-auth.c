@@ -3291,6 +3291,14 @@ test_auth_kb_import_rejects_urlencoded(
  * anonymous GET sweep above, because both are POSTs.
  */
 static void
+test_auth_autojournal_refuses_anonymous(ServerFixture *fixture, gconstpointer data)
+{
+	(void)data;
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/post/backfill", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+}
+
+static void
 test_auth_kb_writes_refuse_anonymous(
 	ServerFixture	*fixture,
 	gconstpointer	 user_data
@@ -3660,6 +3668,8 @@ main(
 	g_test_add("/auth/kb-import-rejects-urlencoded", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_kb_import_rejects_urlencoded,
 	           server_fixture_tear_down);
+	g_test_add("/auth/autojournal-refuses-anonymous", ServerFixture, NULL,
+		server_fixture_set_up, test_auth_autojournal_refuses_anonymous, server_fixture_tear_down);
 	g_test_add("/auth/kb-writes-refuse-anonymous", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_kb_writes_refuse_anonymous,
 	           server_fixture_tear_down);

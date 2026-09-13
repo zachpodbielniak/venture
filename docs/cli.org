@@ -208,3 +208,23 @@ Type-level =create_and_post= uses ID zero and a =journal= JSON-text parameter
 containing the header and =lines= array. All three support =--stage=.
 
 =venturectl --help= includes =act= among the commands accepting =--stage=.
+
+* Backfilling journals
+
+=venturectl post backfill [organization_id=ID] [--dry-run]= posts missing
+current sale/expense versions through the automatic-journal service, in date
+order. It requires an editor and the =autojournal= module. Omission selects
+the default organization. The response reports candidates, posted and skipped
+incomplete documents. A dry run validates the complete batch and rolls it back.
+See [[file:autojournal.org][automatic journals]] before cutting over legacy books.
+* Ledger statements
+
+#+begin_src sh
+venturectl report balance_sheet 2026-08 organization_id=1 currency=USD
+venturectl report income_statement 2026-08 organization_id=1 currency=USD compare_to=2026-07
+venturectl -f csv report general_ledger 2026-08 organization_id=1 currency=USD account_id=1
+#+end_src
+
+The =statements= reports accept =compare_to= for a prior period, =as_of= for
+an accounting cutoff, and one =organization_id= and =currency=. General
+ledger optionally accepts =account_id=. See [[file:statements.org][financial statement definitions]].
