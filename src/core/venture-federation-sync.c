@@ -175,6 +175,14 @@ sync_merge(VentureEntity *replica, JsonNode *remote, GError **error)
 		JsonNode *rv = json_object_get_member(r, name);
 		gboolean unresolved = old_conflicts && JSON_NODE_HOLDS_OBJECT(old_conflicts) &&
 			json_object_has_member(json_node_get_object(old_conflicts), name);
+		/* The fetched base advances for non-conflicting fields, but a conflict
+		 * retains its original common ancestor until explicitly resolved. */
+		if (unresolved)
+		{
+			JsonNode *previous = json_object_get_member(json_node_get_object(old_conflicts), name);
+			if (JSON_NODE_HOLDS_OBJECT(previous))
+				bv = json_object_get_member(json_node_get_object(previous), "base");
+		}
 		if (sync_equal(lv, rv))
 			continue;
 		if (!unresolved && sync_equal(lv, bv))

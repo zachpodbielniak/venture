@@ -166,3 +166,30 @@ Ed25519 uses OpenSSL EVP's one-shot sign/verify APIs, not handwritten cryptograp
 
 - [[https://docs.openssl.org/3.0/man7/EVP_SIGNATURE-ED25519/][OpenSSL Ed25519 EVP signature documentation]]
 - [[https://www.rfc-editor.org/rfc/rfc9421.html][RFC 9421: HTTP Message Signatures, replay and application requirements]]
+
+** Merge regression coverage
+
+The federation suite contains 34 behavior tests. Fixtures use two independent file-backed databases, separate Ed25519 identities and real loopback HTTPS listeners with certificate verification. They never contact production peers. The nine-case merge matrix crosses unchanged, independent and equal edits on each side; each case attempts synchronization three times while the home listener is down, reconnects, and synchronizes three more times. Assertions inspect persisted local drafts, authoritative remote values, remote versions and an unshared private field. Equal edits and repeated successful synchronization must not create duplicate remote updates.
+
+Additional regressions cover:
+
+- Disjoint field edits across an outage and automatic scheduled synchronization.
+- Same-field conflicts with further remote changes: the conflict retains its original common ancestor, local draft and latest remote value. One unresolved conflict blocks the entire record's push.
+- Both explicit resolution choices, stale resolution versions and stale concurrent local edits.
+- A local edit injected during the HTTP client's main-loop wait and a remote edit injected between pull persistence and update submission. These are deterministic synchronization-boundary tests rather than timing-dependent sleeps.
+- Nullable UUID references, withdrawn grants, revoked fields, changed peer pins and preservation of pending work after refusal.
+- Database restart after an acknowledged-at-source but unrecorded-at-replica update; fetching reconciles the already-committed value without another remote version increment.
+- Request tampering, replay, global/private scope, signed response binding, key permissions, discovery limits, hidden references, credential-bearing URIs, collections, plugin type extensibility and private upgrade defaults.
+
+The conflict-history regression first failed against the earlier merge implementation: on the second sync its displayed base became the first remote edit. The fix retains the original base in the conflict entry while advancing the fetched snapshot for other fields. This preserves the evidence needed for human resolution.
+
+Run the suite with =make DEBUG=1 test-one T=test-federation=, and run =make DEBUG=1 all= followed by =make DEBUG=1 test= for integration coverage. Sanitizer builds must use a separate output directory or a clean rebuild so ordinary objects are not mistaken for instrumented objects. Test fixture teardown removes successful run directories; failed-run directories remain as diagnostic evidence.
+
+The isolated sanitizer run instruments VENTURE and the federation test; vendored dependencies retain their ordinary DEBUG builds. It also runs leak detection with no suppressions. Reproduce it with:
+
+#+begin_src sh
+make DEBUG=1 ASAN=1 UBSAN=1 OBJDIR=build/federation-sanitized/obj OUTDIR=build/federation-sanitized MAKEOVERRIDES= -j8 build/federation-sanitized/tests/test-federation
+G_DEBUG=fatal-warnings UBSAN_OPTIONS=halt_on_error=1 build/federation-sanitized/tests/test-federation
+#+end_src
+
+The expanded run also exposed a pre-existing schema-allocation leak: quoting money-column names allocated new strings without consuming the temporary unquoted names. Scoped ownership now releases both. The migration-heavy HTTPS fixtures exercise that path repeatedly, so the sanitizer run is the memory regression check as well as merge coverage.

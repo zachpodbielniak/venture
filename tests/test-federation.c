@@ -440,6 +440,359 @@ test_conflict(Fixture *fixture, gconstpointer data)
 	assert_field(synced, "name", "Agreed");
 }
 
+/* Read from disk and from the authoritative server: an in-memory result alone
+ * cannot prove that a merge was persisted or that its remote write happened. */
+static void
+assert_status(VentureEntity *replica, const gchar *expected)
+{
+	g_autofree gchar *status = NULL;
+	g_object_get(replica, "status", &status, NULL);
+	g_assert_cmpstr(status, ==, expected);
+}
+
+static void
+assert_home(Fixture *fixture, const gchar *expected, gint64 version)
+{
+	g_autoptr(VentureEntity) home = venture_database_get(fixture->database[0],
+		VENTURE_TYPE_VENTURE, venture_entity_get_id(fixture->record), NULL);
+	g_autofree gchar *name = NULL;
+	g_autofree gchar *notes = NULL;
+	g_assert_nonnull(home);
+	g_object_get(home, "name", &name, "notes", &notes, NULL);
+	g_assert_cmpstr(name, ==, expected);
+	g_assert_cmpstr(notes, ==, "PRIVATE");
+	g_assert_cmpint(venture_entity_get_version(home), ==, version);
+}
+
+static void
+restart_home(Fixture *fixture)
+{
+	g_autoptr(GUri) origin = g_uri_parse(fixture->origin[0], G_URI_FLAGS_NONE, NULL);
+	g_autoptr(GError) error = NULL;
+	g_object_set(fixture->config[0], "server-port", (gint64)g_uri_get_port(origin), NULL);
+	g_clear_object(&fixture->server[0]);
+	fixture->server[0] = venture_web_server_new(fixture->context[0], &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(fixture->server[0], &error));
+	g_assert_no_error(error);
+}
+
+/* Cartesian product: unchanged, independently changed, and convergently
+ * changed. Every case crosses a real outage, then repeats sync to pin
+ * idempotence, conflict blocking and the authoritative row version. */
+static void
+test_merge_matrix(Fixture *fixture, gconstpointer data)
+{
+	guint code = GPOINTER_TO_UINT(data);
+	guint local = code / 3;
+	guint remote = code % 3;
+	const gchar *local_values[] = {"Shared business", "Local", "Agreed"};
+	const gchar *remote_values[] = {"Shared business", "Remote", "Agreed"};
+	gboolean conflict = local && remote && g_strcmp0(local_values[local], remote_values[remote]);
+	const gchar *expected = local ? local_values[local] : remote_values[remote];
+	g_autoptr(VentureEntity) replica = pull(fixture);
+	g_autoptr(VentureEntity) current = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 id = venture_entity_get_id(replica);
+	gint64 remote_version;
+	guint i;
+	venture_web_server_stop(fixture->server[0]);
+	if (local)
+	{
+		g_autofree gchar *json = g_strdup_printf("{\"name\":\"%s\"}", local_values[local]);
+		current = edit(fixture, replica, json);
+		g_clear_object(&current);
+	}
+	for (i = 0; i < 3; i++)
+	{
+		current = venture_federation_replica_sync(fixture->context[1], id, NULL, &error);
+		g_assert_null(current);
+		g_assert_nonnull(error);
+		g_clear_error(&error);
+		current = venture_database_get(fixture->database[1], VENTURE_TYPE_FEDERATION_REPLICA, id, NULL);
+		assert_field(current, "name", local_values[local]);
+		g_clear_object(&current);
+	}
+	g_object_set(fixture->record, "name", remote_values[remote], NULL);
+	save(fixture, 0, fixture->record);
+	remote_version = venture_entity_get_version(fixture->record);
+	if (local && !remote) remote_version++;
+	restart_home(fixture);
+	for (i = 0; i < 3; i++)
+	{
+		current = venture_federation_replica_sync(fixture->context[1], id, NULL, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(current);
+		assert_status(current, conflict ? "conflict" : "clean");
+		assert_field(current, "name", expected);
+		assert_home(fixture, conflict ? remote_values[remote] : expected, remote_version);
+		g_clear_object(&current);
+	}
+}
+
+/* A repeated conflict must retain the original common ancestor, even if
+ * the remote side changes again. Otherwise the operator sees false history. */
+static void
+test_conflict_history(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(VentureEntity) replica = pull(fixture);
+	g_autoptr(VentureEntity) edited = edit(fixture, replica, "{\"name\":\"Local\",\"description\":\"Pending too\"}");
+	g_autoptr(VentureEntity) synced = NULL;
+	g_autoptr(GError) error = NULL;
+	guint i;
+	(void)data;
+	for (i = 0; i < 3; i++)
+	{
+		g_autofree gchar *remote = g_strdup_printf("Remote %u", i);
+		g_autofree gchar *text = NULL;
+		g_autoptr(JsonNode) conflicts = NULL;
+		JsonObject *detail;
+		g_object_set(fixture->record, "name", remote, NULL);
+		save(fixture, 0, fixture->record);
+		g_clear_object(&synced);
+		synced = venture_federation_replica_sync(fixture->context[1], venture_entity_get_id(edited), NULL, &error);
+		g_assert_no_error(error);
+		g_object_get(synced, "conflicts", &text, NULL);
+		conflicts = venture_json_parse(text, NULL);
+		detail = json_object_get_object_member(json_node_get_object(conflicts), "name");
+		g_assert_cmpstr(json_object_get_string_member(detail, "base"), ==, "Shared business");
+		g_assert_cmpstr(json_object_get_string_member(detail, "local"), ==, "Local");
+		g_assert_cmpstr(json_object_get_string_member(detail, "remote"), ==, remote);
+		assert_home(fixture, remote, venture_entity_get_version(fixture->record));
+		/* One conflict blocks even the non-conflicting field's push. */
+		assert_field(synced, "description", "Pending too");
+	}
+}
+
+static void
+test_stale_edit(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(VentureEntity) replica = pull(fixture);
+	g_autoptr(VentureEntity) edited = edit(fixture, replica, "{\"name\":\"First editor\"}");
+	g_autoptr(VentureEntity) refused = NULL;
+	g_autoptr(VentureEntity) current = NULL;
+	g_autoptr(JsonNode) fields = venture_json_parse("{\"name\":\"Stale editor\"}", NULL);
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	refused = venture_federation_replica_edit(fixture->context[1], venture_entity_get_id(replica),
+		venture_entity_get_version(replica), fields, NULL, &error);
+	g_assert_null(refused);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	current = venture_database_get(fixture->database[1], VENTURE_TYPE_FEDERATION_REPLICA, venture_entity_get_id(edited), NULL);
+	assert_field(current, "name", "First editor");
+	assert_home(fixture, "Shared business", venture_entity_get_version(fixture->record));
+}
+
+/* The idle runs inside the client's nested main loop, after pull has read
+ * its local version. A later local edit must never be overwritten by pull. */
+typedef struct
+{
+	Fixture *fixture;
+	VentureEntity *replica;
+	gboolean fired;
+} MergeRace;
+
+static gboolean
+local_edit_during_request(gpointer data)
+{
+	MergeRace *race = data;
+	g_autoptr(VentureEntity) edited = edit(race->fixture, race->replica, "{\"name\":\"Concurrent local\"}");
+	race->fired = TRUE;
+	return G_SOURCE_REMOVE;
+}
+
+static void
+test_local_race(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(VentureEntity) replica = pull(fixture);
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(GError) error = NULL;
+	MergeRace race;
+	(void)data;
+	race.fixture = fixture;
+	race.replica = replica;
+	race.fired = FALSE;
+	g_idle_add(local_edit_during_request, &race);
+	result = venture_federation_replica_sync(fixture->context[1], venture_entity_get_id(replica), NULL, &error);
+	g_assert_true(race.fired);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_clear_error(&error);
+	result = venture_database_get(fixture->database[1], VENTURE_TYPE_FEDERATION_REPLICA, venture_entity_get_id(replica), NULL);
+	assert_field(result, "name", "Concurrent local");
+	g_clear_object(&result);
+	result = venture_federation_replica_sync(fixture->context[1], venture_entity_get_id(replica), NULL, &error);
+	g_assert_no_error(error);
+	assert_status(result, "clean");
+	assert_home(fixture, "Concurrent local", venture_entity_get_version(fixture->record) + 1);
+}
+
+/* Write at the exact boundary between persisted pull and outbound update.
+ * No timing guess or worker thread is involved. */
+static void
+remote_edit_after_pull(VentureDatabase *database, VentureEntity *entity,
+	gboolean created, gpointer data)
+{
+	MergeRace *race = data;
+	(void)database;
+	(void)created;
+	if (race->fired || !G_TYPE_CHECK_INSTANCE_TYPE(entity, VENTURE_TYPE_FEDERATION_REPLICA)) return;
+	race->fired = TRUE;
+	g_object_set(race->fixture->record, "name", "Concurrent remote", NULL);
+	save(race->fixture, 0, race->fixture->record);
+}
+
+static void
+test_remote_race(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(VentureEntity) replica = pull(fixture);
+	g_autoptr(VentureEntity) edited = edit(fixture, replica, "{\"name\":\"Pending local\"}");
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(GError) error = NULL;
+	gulong handler;
+	MergeRace race;
+	(void)data;
+	race.fixture = fixture;
+	race.replica = edited;
+	race.fired = FALSE;
+	g_object_set(fixture->record, "description", "Trigger a persisted pull", NULL);
+	save(fixture, 0, fixture->record);
+	handler = g_signal_connect(fixture->database[1], "entity-saved", G_CALLBACK(remote_edit_after_pull), &race);
+	result = venture_federation_replica_sync(fixture->context[1], venture_entity_get_id(edited), NULL, &error);
+	g_signal_handler_disconnect(fixture->database[1], handler);
+	g_assert_true(race.fired);
+	g_assert_null(result);
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	assert_home(fixture, "Concurrent remote", venture_entity_get_version(fixture->record));
+	result = venture_federation_replica_sync(fixture->context[1], venture_entity_get_id(edited), NULL, &error);
+	g_assert_no_error(error);
+	assert_status(result, "conflict");
+	assert_field(result, "name", "Pending local");
+}
+
+/* Permission withdrawal during an outage never authorizes a stale pending
+ * update, and it must not destroy the local draft needed for recovery. */
+static void
+test_pending_revocation(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(VentureEntity) replica = pull(fixture);
+	g_autoptr(VentureEntity) edited = edit(fixture, replica, "{\"name\":\"Keep my draft\"}");
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	g_object_set(fixture->grant, "active", FALSE, NULL);
+	save(fixture, 0, fixture->grant);
+	result = venture_federation_replica_sync(fixture->context[1], venture_entity_get_id(edited), NULL, &error);
+	g_assert_null(result);
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	result = venture_database_get(fixture->database[1], VENTURE_TYPE_FEDERATION_REPLICA, venture_entity_get_id(edited), NULL);
+	assert_field(result, "name", "Keep my draft");
+	assert_home(fixture, "Shared business", venture_entity_get_version(fixture->record));
+	g_object_set(fixture->grant, "active", TRUE, NULL);
+	save(fixture, 0, fixture->grant);
+	g_clear_object(&result);
+	result = venture_federation_replica_sync(fixture->context[1], venture_entity_get_id(edited), NULL, &error);
+	g_assert_no_error(error);
+	assert_status(result, "clean");
+	assert_home(fixture, "Keep my draft", venture_entity_get_version(fixture->record) + 1);
+}
+
+/* A nullable reference is a structured UUID projection. Null must survive a
+ * three-way merge as a value, while a revoked field is genuinely absent. */
+static void
+test_null_reference_merge(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(VentureEntity) idea = VENTURE_ENTITY(venture_idea_new());
+	g_autoptr(VentureEntity) grant = VENTURE_ENTITY(venture_federation_grant_new());
+	g_autoptr(VentureEntity) replica = NULL;
+	g_autoptr(VentureEntity) edited = NULL;
+	g_autoptr(VentureEntity) synced = NULL;
+	g_autoptr(VentureEntity) home = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *text = NULL;
+	g_autoptr(JsonNode) snapshot = NULL;
+	gint64 reference;
+	(void)data;
+	g_object_set(idea, "title", "Shared idea", NULL);
+	save(fixture, 0, idea);
+	g_object_set(grant, "name", "Reference grant", "peer-id", fixture->peer[0],
+		"record-type", "idea", "record-uuid", venture_entity_get_uuid(idea),
+		"fields", "title", "active", TRUE, NULL);
+	save(fixture, 0, grant);
+	g_object_set(fixture->grant, "fields", "name,description,idea_id", "write-fields", "name,description,idea_id", NULL);
+	save(fixture, 0, fixture->grant);
+	g_object_set(fixture->record, "idea-id", venture_entity_get_id(idea), NULL);
+	save(fixture, 0, fixture->record);
+	replica = pull(fixture);
+	edited = edit(fixture, replica, "{\"idea_id\":null}");
+	g_object_set(fixture->record, "description", "Remote description", NULL);
+	save(fixture, 0, fixture->record);
+	synced = venture_federation_replica_sync(fixture->context[1], venture_entity_get_id(edited), NULL, &error);
+	g_assert_no_error(error);
+	assert_status(synced, "clean");
+	assert_field(synced, "description", "Remote description");
+	g_object_get(synced, "working", &text, NULL);
+	snapshot = venture_json_parse(text, NULL);
+	g_assert_true(JSON_NODE_HOLDS_NULL(json_object_get_member(
+		json_object_get_object_member(json_node_get_object(snapshot), "fields"), "idea_id")));
+	home = venture_database_get(fixture->database[0], VENTURE_TYPE_VENTURE, venture_entity_get_id(fixture->record), NULL);
+	g_object_get(home, "idea-id", &reference, NULL);
+	g_assert_cmpint(reference, ==, 0);
+}
+
+static void
+test_pin_change_pending(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(VentureEntity) replica = pull(fixture);
+	g_autoptr(VentureEntity) edited = edit(fixture, replica, "{\"name\":\"Original source only\"}");
+	g_autoptr(VentureEntity) peer = venture_database_get(fixture->database[1], VENTURE_TYPE_FEDERATION_PEER, fixture->peer[1], NULL);
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	/* An owner changing the pin cannot silently retarget existing drafts. */
+	g_object_set(peer, "public-key", fixture->pub[1], NULL);
+	save(fixture, 1, peer);
+	result = venture_federation_replica_sync(fixture->context[1], venture_entity_get_id(edited), NULL, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	result = venture_database_get(fixture->database[1], VENTURE_TYPE_FEDERATION_REPLICA, venture_entity_get_id(edited), NULL);
+	assert_field(result, "name", "Original source only");
+	assert_home(fixture, "Shared business", venture_entity_get_version(fixture->record));
+}
+
+static void
+test_resolve_choice(Fixture *fixture, gconstpointer data)
+{
+	gboolean keep_local = GPOINTER_TO_INT(data);
+	g_autoptr(VentureEntity) replica = pull(fixture);
+	g_autoptr(VentureEntity) edited = edit(fixture, replica, "{\"name\":\"Local choice\"}");
+	g_autoptr(VentureEntity) synced = NULL;
+	g_autoptr(VentureEntity) resolved = NULL;
+	g_autoptr(GError) error = NULL;
+	g_object_set(fixture->record, "name", "Remote choice", NULL);
+	save(fixture, 0, fixture->record);
+	synced = venture_federation_replica_sync(fixture->context[1], venture_entity_get_id(edited), NULL, &error);
+	g_assert_no_error(error);
+	/* A stale conflict screen cannot resolve a newer local version. */
+	resolved = venture_federation_replica_resolve(fixture->context[1], venture_entity_get_id(synced),
+		venture_entity_get_version(edited), "name", keep_local, NULL, &error);
+	g_assert_null(resolved);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_clear_error(&error);
+	resolved = venture_federation_replica_resolve(fixture->context[1], venture_entity_get_id(synced),
+		venture_entity_get_version(synced), "name", keep_local, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(resolved);
+	g_clear_object(&synced);
+	synced = venture_federation_replica_sync(fixture->context[1], venture_entity_get_id(resolved), NULL, &error);
+	g_assert_no_error(error);
+	assert_status(synced, "clean");
+	assert_home(fixture, keep_local ? "Local choice" : "Remote choice",
+		venture_entity_get_version(fixture->record) + (keep_local ? 1 : 0));
+}
+
 static void
 test_response_proof(Fixture *fixture, gconstpointer data)
 {
@@ -663,6 +1016,23 @@ int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
+	{
+		guint i;
+		for (i = 0; i < 9; i++)
+		{
+			g_autofree gchar *path = g_strdup_printf("/federation/merge-matrix/%u-%u", i / 3, i % 3);
+			g_test_add(path, Fixture, GUINT_TO_POINTER(i), setup, test_merge_matrix, teardown);
+		}
+	}
+	g_test_add("/federation/conflict-history", Fixture, NULL, setup, test_conflict_history, teardown);
+	g_test_add("/federation/stale-edit", Fixture, NULL, setup, test_stale_edit, teardown);
+	g_test_add("/federation/local-race", Fixture, NULL, setup, test_local_race, teardown);
+	g_test_add("/federation/remote-race", Fixture, NULL, setup, test_remote_race, teardown);
+	g_test_add("/federation/pending-revocation", Fixture, NULL, setup, test_pending_revocation, teardown);
+	g_test_add("/federation/null-reference-merge", Fixture, NULL, setup, test_null_reference_merge, teardown);
+	g_test_add("/federation/pin-change-pending", Fixture, NULL, setup, test_pin_change_pending, teardown);
+	g_test_add("/federation/resolve-local", Fixture, GINT_TO_POINTER(1), setup, test_resolve_choice, teardown);
+	g_test_add("/federation/resolve-remote", Fixture, NULL, setup, test_resolve_choice, teardown);
 	g_test_add("/federation/https-scope", Fixture, NULL, setup, test_https_and_scope, teardown);
 	g_test_add("/federation/signature-replay", Fixture, NULL, setup, test_signature_replay, teardown);
 	g_test_add("/federation/revocation-global", Fixture, NULL, setup, test_revocation_and_global, teardown);
