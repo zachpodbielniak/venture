@@ -178,13 +178,29 @@ test_won(Fixture *f, gconstpointer unused)
 		"organization-id", (gint64)1, "name", "Purchase",
 		"contact-id", venture_entity_get_id(f->contact), NULL);
 	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(VentureQuery) stages_query = venture_query_new(VENTURE_TYPE_PIPELINE_STAGE);
+	g_autoptr(GPtrArray) stages = NULL;
+	g_autoptr(VentureDeal) moved = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 pipeline_id;
 	gint status;
 	(void)unused;
 	save(f, deal);
 	g_object_set(row, "deal-id", venture_entity_get_id(deal), NULL);
 	save(f, row);
-	g_assert_true(venture_entity_set_field_from_string(deal, "stage", "won", NULL));
-	save(f, deal);
+	/* Winning through the pipeline service must atomically exit sequences;
+	 * nested service wrappers must not consume the stage permit twice. */
+	g_object_get(deal, "pipeline-id", &pipeline_id, NULL);
+	g_assert_true(venture_query_add_filter_int(stages_query, "pipeline-id", VENTURE_FILTER_OP_EQ, pipeline_id, &error));
+	g_assert_true(venture_query_add_filter_string(stages_query, "kind", VENTURE_FILTER_OP_EQ, "won", &error));
+	stages = venture_database_find(f->db, stages_query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(stages->len, ==, 1);
+	moved = venture_deal_service_move_stage(venture_database_get_deal_service(f->db),
+		VENTURE_DEAL(deal), venture_entity_get_id(g_ptr_array_index(stages, 0)),
+		"Customer accepted", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(moved);
 	stored = venture_database_get(f->db, VENTURE_TYPE_SEQUENCE_ENROLLMENT,
 		venture_entity_get_id(row), NULL);
 	g_object_get(stored, "status", &status, NULL);

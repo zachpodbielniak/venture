@@ -2491,6 +2491,7 @@ venture_ai_make_tool(
 }
 
 #include "reconciliation/venture-reconciliation-ai.inc"
+#include "pipelines/venture-pipeline-ai.inc"
 #include "venture-ai-actions-private.h"
 
 static void
@@ -2550,6 +2551,7 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"For the categories report, the product field to group by; "
 		"defaults to genre", FALSE);
 	ai_tool_add_parameter(report, "customer_id", "integer", "Customer for a statement", FALSE);
+	ai_tool_add_parameter(report, "vendor_id", "integer", "Supplier for a vendor statement", FALSE);
 	ai_tool_add_parameter(report, "currency", "string", "Book currency to report", FALSE);
 	ai_tool_add_parameter(report, "as_of", "string",
 		"Historical cutoff as an ISO date or timestamp; include rows deleted after it", FALSE);
@@ -2714,6 +2716,7 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(desk, "limit", "integer",
 		"activity: at most this many entries", FALSE);
 
+	venture_ai_register_deal_move(self);
 	ai_tool_executor_register_callback(self->executor, inbox,
 		venture_ai_tool_inbox, self, NULL);
 	ai_tool_executor_register_callback(self->executor, runs,

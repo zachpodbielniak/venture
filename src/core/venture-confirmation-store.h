@@ -275,6 +275,23 @@ venture_confirmation_parse_stage_flag(
 	GError		**error
 );
 
+/**
+ * venture_confirmation_store_stage_deal_move:
+ * @self: the confirmation queue
+ * @deal: persisted deal snapshot
+ * @stage_id: requested destination
+ * @note: (nullable): explanation
+ * @actor: (nullable): requester
+ * @via: entry point
+ * @error: (out) (optional): refusal
+ *
+ * Approval calls VentureDealService and revalidates the current process.
+ * Returns: (transfer none) (nullable): the pending proposal
+ */
+VentureConfirmation *venture_confirmation_store_stage_deal_move(
+	VentureConfirmationStore *self, VentureDeal *deal, gint64 stage_id,
+	const gchar *note, const VentureActor *actor, const gchar *via, GError **error);
+
 G_END_DECLS
 
 #endif /* VENTURE_CONFIRMATION_STORE_H */

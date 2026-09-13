@@ -1069,6 +1069,10 @@ test_auth_pages_refuse_anonymous_requests(
 		g_assert_cmpuint(status, ==, SOUP_STATUS_FOUND);
 	}
 
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/deals"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/deals/1/move", NULL, "stage_id=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/deals/1/move", NULL, "stage_id=1", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+
 	/* And a report, which renders real figures. */
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/reports/pnl"),
 	                 ==, SOUP_STATUS_FOUND);
@@ -1277,6 +1281,14 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/reconciliation/suggest", NULL, "", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/vendor_bill/1/approve",
+		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/vendor_bill/1/pay",
+		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/bills/1/approve",
+		NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/bills/1/pay",
+		NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	/* Every banking action must authenticate before loading statement evidence. */
 	{
 		static const gchar *const banking[] = {

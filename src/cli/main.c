@@ -630,6 +630,8 @@ venture_cli_values_from_args(
 	return json_builder_get_root(builder);
 }
 
+#include "payables/venture-payables-cli.inc"
+
 static gint
 venture_cli_command_list(
 	VentureCli	 *cli,
@@ -1129,10 +1131,11 @@ venture_cli_command_report(
 				((0 != g_strcmp0(parts[0], "as_of")) && (0 != g_strcmp0(parts[0], "organization_id")) &&
 				 (0 != g_strcmp0(parts[0], "customer_id")) && (0 != g_strcmp0(parts[0], "currency")) &&
 				 (0 != g_strcmp0(parts[0], "venture_id")) && (0 != g_strcmp0(parts[0], "group_by")) &&
-				 (0 != g_strcmp0(parts[0], "compare_to")) && (0 != g_strcmp0(parts[0], "account_id"))))
+				 (0 != g_strcmp0(parts[0], "compare_to")) && (0 != g_strcmp0(parts[0], "account_id")) &&
+				 (0 != g_strcmp0(parts[0], "vendor_id")) && (0 != g_strcmp0(parts[0], "pipeline_id")) && (0 != g_strcmp0(parts[0], "owner"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -2142,6 +2145,8 @@ venture_cli_command_release(
 
 	return 0;
 }
+
+#include "pipelines/venture-pipeline-cli.inc"
 
 /* --- The workdesk ---------------------------------------------------------- */
 
@@ -3251,7 +3256,7 @@ main(
 		"  forge set-token ID           set a forge's access token (stdin)\n"
 		"  forge set-secret ID          set or generate its webhook secret\n"
 		"  forge verify ID              record which account the token is\n"
-		"  report [NAME] [PERIOD]       run; options: as_of, organization_id, customer_id, currency, venture_id, group_by\n"
+		"  report [NAME] [PERIOD]       run; options: as_of, organization_id, customer_id, currency, venture_id, group_by, vendor_id, pipeline_id, owner\n"
 		"  kb search QUERY              search the knowledge bases by\n"
 		"                               meaning; --kb SLUG, --limit N\n"
 		"  kb sync KB_ID                bring a base into line with its\n"
@@ -3273,10 +3278,12 @@ main(
 		"  sequence run                execute due steps; --as-of TIMESTAMP\n"
 		"  sequence status ID          enrollment and delivery history\n"
 		"  post backfill                post missing journals; --dry-run\n"
+		"  bill approve|pay|void ID [field=value ...]  supplier bill actions\n"
 		"  factory                      the software factory at a glance\n"
 		"  release changelog ID         draft a release's changelog from\n"
 		"                               its tickets; --replace overwrites\n"
 		"  bank ACTION ID [JSON|@FILE] banking action; bank match AUTO STATEMENT_ID\n"
+		"  deal move ID STAGE [NOTE]     move a deal through its pipeline\n"
 		"  release publish ID           cut it on the forge; --prerelease\n"
 		"  dashboards                   list the dashboards\n"
 		"  dashboard SLUG               a dashboard, every widget evaluated\n"
@@ -3495,8 +3502,12 @@ main(
 		result = venture_cli_command_reconcile(&cli, args, reconciliation_matcher, reconciliation_threshold, &error);
 	else if (0 == g_strcmp0(args[0], "factory"))
 		result = venture_cli_command_factory(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "bill"))
+		result = venture_cli_command_bill(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "bank"))
 		result = venture_cli_command_bank(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "deal"))
+		result = venture_cli_command_deal(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "release"))
 		result = venture_cli_command_release(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dashboards"))

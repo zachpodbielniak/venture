@@ -380,6 +380,27 @@ One shape for every failure:
 A =409= from a write means someone else changed the record since you loaded
 it. Reload, reapply, retry — do not force it.
 
+* Vendor payables
+
+=POST /api/v1/vendor_bill/:id/approve=, =/pay= and =/void= call
+=VenturePayablesService=. Bodies are JSON objects. =date= defaults to now;
+Pay accepts =amount= (default: outstanding), =method=, =reference=,
+=external_id= and optional =bank_account_id=. The path binds the bill,
+supplier and organization. Editor authority and the payables module are
+required. =?stage=1= returns the ordinary 202 confirmation response;
+applying it revalidates the operation at the database boundary.
+
+The field tables also provide ordinary resources for =vendor_bill=,
+=vendor_bill_line=, =bill_payment=, =bill_payment_allocation=,
+=vendor_credit=, =vendor_bill_event= and =bill_refund=. A generic bill
+status update is refused. An event request uses =kind=approve= or =void=;
+the service freezes and owns the resulting event. Payments and allocations
+created through generic REST or approved assistant writes use that service.
+
+=GET /api/v1/reports/payables?period=2026-01= reads historical aging.
+=GET /api/v1/reports/vendor_statement?period=2026-01&vendor_id=1=
+reads a vendor statement. Both accept =organization_id=, =currency= and
+=as_of=. See [[file:payables.org][vendor payables]] for monetary and date rules.
 * Follow-up sequences
 
 These editor actions belong to =sequences=, which requires =crm=:

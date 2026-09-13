@@ -535,6 +535,15 @@ static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live
 
 static const gchar *const reconciliation_requires[] = { "ledger", NULL };
 static const gchar *const reconciliation_suggests[] = { "banking", NULL };
+static GType (*const venture_module_payables_types[]) (void) = {
+	venture_vendor_bill_get_type, venture_vendor_bill_line_get_type,
+	venture_bill_payment_get_type, venture_bill_payment_allocation_get_type,
+	venture_vendor_credit_get_type, venture_vendor_bill_event_get_type,
+	venture_bill_refund_get_type, NULL
+};
+static const gchar *const venture_module_requires_payables[] = { "finance", "ledger", "crm", NULL };
+static const gchar *const venture_module_reports_payables[] = { "payables", "vendor_statement", NULL };
+
 static const gchar *const banking_reports[] = { "bank_reconciliation", NULL };
 static const gchar *const banking_requires[] = { "ledger", NULL };
 static GType (*const banking_types[]) (void) = {
@@ -542,6 +551,15 @@ static GType (*const banking_types[]) (void) = {
 	venture_bank_transaction_get_type, venture_bank_match_get_type,
 	venture_reconciliation_get_type, NULL
 };
+static GType (*const venture_module_pipelines_types[]) (void) = {
+	venture_pipeline_get_type, venture_pipeline_stage_get_type,
+	venture_deal_stage_entry_get_type, venture_loss_reason_get_type, NULL
+};
+static const gchar *const venture_module_requires_crm[] = { "crm", NULL };
+static const gchar *const venture_module_reports_pipelines[] = {
+	"stage_duration", "funnel", "forecast", "loss_reasons", "overdue_deals", NULL
+};
+
 static GType (*const sequence_types[]) (void) = {
 	venture_sequence_get_type, venture_sequence_step_get_type,
 	venture_sequence_enrollment_get_type, venture_sequence_delivery_get_type,
@@ -703,8 +721,19 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		reconciliation_requires, reconciliation_suggests, NULL, NULL, NULL, FALSE
 	},
 	{
+		"payables", "Payables", "Supplier bills, payments and dated vendor balances.",
+		venture_module_requires_payables, NULL, venture_module_payables_types,
+		venture_module_reports_payables, NULL, FALSE
+	},
+
+	{
 		"banking", "Banking", "Statement import, matching and reconciliation.",
 		banking_requires, NULL, banking_types, banking_reports, NULL, FALSE
+	},
+	{
+		"pipelines", "Sales pipelines", "Configurable stages, history and forecasts.",
+		venture_module_requires_crm, NULL, venture_module_pipelines_types,
+		venture_module_reports_pipelines, NULL, FALSE
 	},
 	{
 		"sequences", "Follow-up sequences", "Durable timed follow-ups and suppression.",
@@ -718,6 +747,7 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		venture_module_requires_statements, NULL, NULL,
 		venture_module_reports_statements, NULL, FALSE
 	}
+
 };
 
 const VentureModuleInfo *

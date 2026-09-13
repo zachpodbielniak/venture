@@ -1,0 +1,88 @@
+#+title: Sales pipelines
+
+* Configurable processes
+
+The =pipelines= module requires =crm=. Its =pipeline=, =pipeline_stage=,
+=deal_stage_entry= and =loss_reason= records use the ordinary field tables,
+so their forms, JSON, lists and CLI CRUD share the same metadata.
+
+A pipeline belongs to an organization. Its kind is =sales=, =renewal=,
+=partnership= or =custom=. Stages have an ascending position, a probability,
+a kind (=open=, =won=, =lost=), comma-separated required deal fields and a
+rotting threshold in days. Zero disables that threshold.
+
+Deals carry a pipeline, stage, owner username, next step, next-action time,
+loss reason and loss note. =probability_overridden= preserves an explicitly
+chosen probability on moves. =committed= marks a deal for the forecast.
+
+* Moving
+
+=venture_deal_service_move_stage()= is the transition boundary. It checks
+organization and pipeline membership, required fields and active loss
+reasons, refuses a stale deal version, and writes the deal and history in
+one transaction. Inputs are unchanged; the return value is the updated deal.
+A move to the existing stage creates no duplicate history. Generic updates
+to either stage representation, pipeline or closing timestamp are refused
+with =VentureDealService= named in the error.
+
+The legacy enum remains. Won and lost stage kinds map to their matching
+legacy outcomes. Open stages map positions 0, 1, 2 and 3 to =lead=,
+=qualified=, =proposal= and =negotiation=; later positions map to
+=negotiation=. Closing stamps =closed_at= and reopening clears it.
+
+First use creates an organization's default Sales pipeline with all six
+legacy stages. New deals retain their initial legacy stage and probability
+for compatibility with existing import callers; subsequent changes use the
+service. The initial history entry is an observation at creation, not an
+invention of earlier stage transitions.
+
+* Upgrade and reports
+
+The paired =000090_pipelines.sql= migration records a durable pending backfill.
+After metadata reconciliation and organization seeding, startup creates a
+default for every organization and attaches retained deals through the same
+initialization code. The backfill and clearing its pending marker share one
+transaction. With pipelines disabled the marker remains pending; enabling it
+on a later startup completes the work without creating optional tables early.
+A retained deal's initial stage timestamp means observed at upgrade.
+
+Reports accept =organization_id=, =pipeline_id= and =owner=. Forecast rows
+are separate per pipeline, owner and currency: =open_weighted= is current
+open value times probability; =committed= is full open value when probability
+is at least 90 or the committed flag is set; =closed_value= is won value
+whose =closed_at= falls in the period. These are sales forecasts, not invoices,
+recognized revenue or cash.
+
+=stage_duration= measures each stage visit's occupancy clipped to the period,
+including open visits up to now, and reports average and median days.
+=funnel= counts visits entered in the period and visits whose next transition
+advanced to a higher open position or won before the period end. Repeated
+visits count separately. =loss_reasons= groups lost deal count and value by
+reason and currency in the closing period. The legacy =pipeline= report
+also accepts =pipeline_id=.
+
+=overdue_deals= exposes a metric with that key: current open deals whose
+latest entry is older than their stage's positive =rotting_days=. A dashboard
+=metric= widget with =report_name=overdue_deals= and =field=overdue_deals=
+shows the count without a scheduled sweep.
+
+* Entry points
+
+=POST /api/v1/deals/:id/move= takes ={ "stage_id": 2, "note": "Qualified" }=.
+Add =?stage=1= to propose it; approval rechecks the saved deal version and
+stage rules through the service. Generic staged changes cannot bypass it.
+The assistant's =venture_deal_move= always proposes a confirmation.
+
+=venturectl deal move ID STAGE [NOTE]= calls the same action. The =/deals=
+board groups cards by stage and provides a stage selector and Move button.
+Set any required fields or loss reason through the deal's ordinary edit form
+before moving it.
+
+Archived deals receive their pipeline and stage references during upgrade,
+without a fabricated entry referencing a deleted record. Their deletion
+stamp remains intact. The upgrade test reopens the fixture file and verifies
+that running startup again creates no duplicate history.
+
+New deals require an active pipeline and satisfy the initial stage's required fields; a lost initial stage requires an active loss reason. Closed initial stages receive a closing timestamp. Historical backfill preserves prior state.
+
+With sequences enabled, a won-stage move also applies enrollment exits in the same transaction. A refused exit rolls back the deal transition and stage history; callers continue to use the stage service rather than writing the legacy stage field.
