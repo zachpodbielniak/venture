@@ -418,3 +418,9 @@ venturectl federation '{"action":"resolve","id":1,"version":5,"field":"descripti
 ```
 
 Collection pulls return at most ten results, `next_offset` and `more`; continue pages while `more` is true and inspect per-record errors. Pull imports/merges without pushing; sync pushes conflict-free changes with an expected remote version. Edits require the local replica version. A conflict blocks that record until resolved; choosing remote can accept a removed/revoked field. Never update `federation_replica` through generic CRUD: its merge state belongs to the service. Copies remain usable during outages but are not authoritative local accounting rows. New source objects and binary attachments are not created/copied offline. See `docs/federation.org` for key exchange, grants, scheduling and revocation.
+
+Banking business actions use `bank ACTION ID [JSON|@FILE]`. Import identifies
+an account, auto/reconcile a statement, and match/unmatch/exclude/create a
+transaction. `bank match AUTO STATEMENT_ID` runs exact automatic matching.
+Match parameters are `{"parts":[{"type":"expense","id":1,"amount":"-10 USD"}]}`;
+exclude needs a reason, and receipt creation needs customer_id. See docs/banking.org.

@@ -39,5 +39,11 @@ GPtrArray *venture_bank_transaction_candidates(VentureDatabase *database, Ventur
  */
 VentureEntity *venture_bank_match_service_execute(VentureBankMatchService *self, const gchar *action,
 	gint64 id, JsonObject *args, const VentureActor *actor, GError **error);
+/**
+ * venture_bank_register_reports:
+ * @registry: report registry
+ * Registers statement evidence and posted-balance reporting.
+ */
+void venture_bank_register_reports(VentureReportRegistry *registry);
 G_END_DECLS
 #endif

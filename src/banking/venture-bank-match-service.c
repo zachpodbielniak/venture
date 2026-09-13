@@ -85,12 +85,31 @@ venture_bank_check_write(VentureDatabase *database, VentureEntity *record, gbool
 		g_autoptr(VentureEntity) account = NULL;
 		g_autofree gchar *currency = NULL;
 		gint64 id = 0;
+		g_autoptr(VentureEntity) previous = NULL;
+		g_autoptr(VentureMoney) supplied = NULL;
+		g_autoptr(GDateTime) supplied_date = NULL;
+		g_object_get(record, "last-statement-balance", &supplied, "last-statement-date", &supplied_date, NULL);
+		if (venture_entity_is_persisted(record))
+		{
+			g_autoptr(JsonNode) diff = NULL;
+			JsonObject *changes;
+			previous = venture_database_get(database, VENTURE_TYPE_BANK_ACCOUNT, venture_entity_get_id(record), error);
+			if (previous == NULL) return FALSE;
+			diff = venture_entity_diff(previous, record);
+			changes = json_node_get_object(diff);
+			if (json_object_has_member(changes, "last_statement_balance") || json_object_has_member(changes, "last_statement_date") ||
+				json_object_has_member(changes, "account_id") || json_object_has_member(changes, "currency") ||
+				venture_entity_get_organization_id(previous) != venture_entity_get_organization_id(record))
+				return refuse(error, "bank identity and statement balances are service-owned");
+		}
+		else if (supplied != NULL || supplied_date != NULL)
+			return refuse(error, "statement balances are derived by import");
 		g_object_get(record, "account-id", &id, "currency", &currency, NULL);
 		account = venture_database_get(database, VENTURE_TYPE_ACCOUNT, id, error);
 		if (account == NULL) return FALSE;
 		if (venture_entity_get_organization_id(account) != venture_entity_get_organization_id(record))
 			return refuse(error, "ledger account belongs to another organization");
-		if (currency == NULL || strlen(currency) != 3)
+		if (!venture_currency_is_valid(currency))
 			return refuse(error, "bank currency is required");
 		return TRUE;
 	}
@@ -290,6 +309,7 @@ match_records(VentureBankMatchService *self, VentureEntity *transaction, JsonArr
 		g_autoptr(VentureEntity) match = NULL;
 		g_autoptr(VentureMoney) value = NULL;
 		g_autoptr(VentureMoney) contribution = NULL;
+		g_autoptr(VentureMoney) remaining = NULL;
 		g_autoptr(VentureMoney) next = NULL;
 		g_autoptr(GPtrArray) existing = NULL;
 		guint j;
@@ -312,14 +332,26 @@ match_records(VentureBankMatchService *self, VentureEntity *transaction, JsonArr
 			return refuse(error, "match amount exceeds the document");
 		existing = rows(self->database, VENTURE_TYPE_BANK_MATCH, org, "record-id", venture_entity_get_id(target), error);
 		if (existing == NULL) return FALSE;
+		remaining = venture_money_copy(value);
 		for (j = 0; j < existing->len + pending->len; j++)
 		{
 			VentureEntity *old = j < existing->len ? g_ptr_array_index(existing, j) : g_ptr_array_index(pending, j - existing->len);
 			g_autofree gchar *old_type = NULL;
 			g_object_get(old, "record-type", &old_type, NULL);
 			if (!g_strcmp0(old_type, name) && number(old, "record-id") == venture_entity_get_id(target))
-				return refuse(error, "record already matched");
+			{
+				g_autoptr(VentureMoney) used = NULL;
+				VentureMoney *available;
+				g_object_get(old, "amount", &used, NULL);
+				available = venture_money_subtract(remaining, used, error);
+				if (available == NULL) return FALSE;
+				g_clear_pointer(&remaining, venture_money_free);
+				remaining = available;
+			}
 		}
+		if ((venture_money_get_amount(value) > 0 && venture_money_compare(contribution, remaining) > 0) ||
+			(venture_money_get_amount(value) < 0 && venture_money_compare(contribution, remaining) < 0))
+			return refuse(error, "match exceeds the document's remaining unmatched amount");
 		next = venture_money_add(sum, contribution, error);
 		if (next == NULL) return FALSE;
 		g_clear_pointer(&sum, venture_money_free);
@@ -659,7 +691,8 @@ create_document(VentureBankMatchService *self, VentureEntity *transaction, JsonO
 	g_autofree gchar *description = NULL;
 	g_autoptr(JsonArray) parts = NULL;
 	gint64 org = venture_entity_get_organization_id(transaction);
-	if (!unlocked(self, transaction, error) || !state_is(transaction, "unmatched"))
+	if (!unlocked(self, transaction, error)) return FALSE;
+	if (!state_is(transaction, "unmatched"))
 		return refuse(error, "creation requires an unreconciled unmatched transaction");
 	g_object_get(transaction, "amount", &signed_amount, "date", &date, "description", &description, NULL);
 	if (!venture_period_guard_is_postable(VENTURE_PERIOD_GUARD(venture_database_get_period_guard(self->database)),
@@ -759,9 +792,68 @@ venture_bank_match_service_execute(VentureBankMatchService *self, const gchar *a
 finish:
 	if (!ok)
 	{
+		if (error != NULL && *error == NULL) refuse(error, "required record was not found");
 		venture_database_rollback(self->database);
 		return NULL;
 	}
 	if (!venture_database_commit(self->database, error)) return NULL;
 	return result != NULL ? g_steal_pointer(&result) : g_steal_pointer(&record);
+}
+
+static VentureReportResult *
+bank_report(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
+{
+	VentureDatabase *db = venture_context_get_database(context);
+	g_autoptr(VentureEntity) statement = NULL, bank = NULL;
+	g_autoptr(GPtrArray) transactions = NULL;
+	g_autoptr(VentureMoney) matched = NULL, unmatched = NULL, excluded = NULL;
+	g_autoptr(VentureMoney) book = NULL, closing = NULL, difference = NULL;
+	g_autoptr(GDateTime) end = NULL;
+	g_autofree gchar *currency = NULL;
+	g_autoptr(VentureReportResult) result = NULL;
+	gint64 id = options != NULL ? venture_json_object_get_int(options, "statement_id", 0) : 0;
+	gint64 org = options != NULL ? venture_json_object_get_int(options, "organization_id", 0) : 0;
+	guint i;
+	if (org == 0) org = venture_context_get_default_organization_id(context);
+	statement = venture_database_get(db, VENTURE_TYPE_BANK_STATEMENT, id, error);
+	if (statement == NULL) return NULL;
+	if (venture_entity_get_organization_id(statement) != org)
+	{ refuse(error, "statement belongs to another organization"); return NULL; }
+	bank = venture_database_get(db, VENTURE_TYPE_BANK_ACCOUNT, number(statement, "bank-account-id"), error);
+	if (bank == NULL) return NULL;
+	g_object_get(bank, "currency", &currency, NULL);
+	g_object_get(statement, "period-end", &end, "closing-balance", &closing, NULL);
+	matched = venture_money_new_zero(currency); unmatched = venture_money_new_zero(currency); excluded = venture_money_new_zero(currency);
+	transactions = rows(db, VENTURE_TYPE_BANK_TRANSACTION, org, "statement-id", id, error);
+	if (transactions == NULL) return NULL;
+	for (i = 0; i < transactions->len; i++)
+	{
+		VentureEntity *transaction = g_ptr_array_index(transactions, i);
+		g_autoptr(VentureMoney) amount = NULL;
+		VentureMoney **total = state_is(transaction, "matched") ? &matched : state_is(transaction, "excluded") ? &excluded : &unmatched;
+		VentureMoney *next;
+		g_object_get(transaction, "amount", &amount, NULL);
+		next = venture_money_add(*total, amount, error);
+		if (next == NULL) return NULL;
+		venture_money_free(*total); *total = next;
+	}
+	book = venture_posting_service_account_balance(venture_database_get_posting_service(db), number(bank, "account-id"), org, currency, end, error);
+	if (book == NULL) return NULL;
+	difference = venture_money_subtract(closing, book, error);
+	if (difference == NULL) return NULL;
+	result = venture_report_result_new("Bank reconciliation", period);
+	venture_report_result_add_metric(result, venture_metric_new_money("matched", "Matched", matched));
+	venture_report_result_add_metric(result, venture_metric_new_money("unmatched", "Unmatched", unmatched));
+	venture_report_result_add_metric(result, venture_metric_new_money("excluded", "Excluded", excluded));
+	venture_report_result_add_metric(result, venture_metric_new_money("statement", "Statement balance", closing));
+	venture_report_result_add_metric(result, venture_metric_new_money("book", "Posted book balance", book));
+	venture_report_result_add_metric(result, venture_metric_new_money("difference", "Difference", difference));
+	return g_steal_pointer(&result);
+}
+
+void
+venture_bank_register_reports(VentureReportRegistry *registry)
+{
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+		"bank_reconciliation", "Bank reconciliation", "Statement evidence and posted balance; requires statement_id.", bank_report)));
 }

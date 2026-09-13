@@ -1,0 +1,100 @@
+#+title: Bank statements and reconciliation
+
+* Banking
+
+The =banking= module requires =ledger=. Its field tables register
+=bank_account=, =bank_statement=, =bank_transaction=, =bank_match= and
+=reconciliation=. Organization ownership is inherited from the entity spine.
+Match creation time is the entity's immutable =created_at= timestamp.
+All amounts are signed =VentureMoney=: money entering the account is positive,
+money leaving is negative. Credit card balances use the same debit-minus-credit
+convention as the posted ledger balance.
+
+=VentureBankMatchService= owns imports, matching, exclusion, creation and
+reconciliation. Generic writes cannot create or change statement evidence.
+Multi-record actions run in one database transaction, including normal audit
+records and any source documents and journals created by existing services.
+
+* Importing a statement
+
+Create a =bank_account= through the normal form or generic CLI, naming its
+organization, ledger =account_id= and currency. Store its CSV mapping in
+=date_column=, =amount_column=, =description_column=, =reference_column= and
+=external_id_column=. Mappings name header cells exactly. Supported date formats
+are =%Y-%m-%d=, =%m/%d/%Y= and =%d/%m/%Y=. The sign convention is =normal= or
+=invert=. CSV supports quoted commas, doubled quotes and embedded newlines.
+
+The import action takes =format= (=csv=, =ofx= or =qfx=), file contents in
+=data=, =period_start=, =period_end=, =opening_balance= and =closing_balance=.
+Calendar end dates include the entire UTC day. OFX/QFX reads =STMTTRN= blocks
+with =DTPOSTED=, =TRNAMT=, =FITID= and optional =MEMO= and =CHECKNUM=, including
+SGML leaf tags without closing tags. FITID supplies the external ID.
+
+Every line needs an external ID. A derived UNIQUE key combines organization,
+bank account and external ID. Reimport is refused rather than duplicated;
+a failure on any row rolls back the statement and every earlier line. The
+statement retains the SHA-256 of the original input and its import timestamp.
+
+#+begin_src sh
+venturectl bank import 1 @statement.json
+#+end_src
+
+The JSON file contains the action parameters, with the statement contents
+encoded as a JSON string. The ordinary list CSV importer remains a generic
+record importer; bank statements use this banking action so evidence cannot
+bypass duplicate checks.
+
+* Matching
+
+#+begin_src sh
+venturectl bank match AUTO 1
+venturectl bank match 2 '{"parts":[{"type":"expense","id":3,"amount":"-10 USD"}]}'
+venturectl bank unmatch 2
+venturectl bank exclude 2 '{"reason":"Duplicate supplied by bank"}'
+venturectl bank create 2 '{"type":"expense"}'
+venturectl bank create 3 '{"type":"receipt","customer_id":1}'
+venturectl bank reconcile 1
+#+end_src
+
+The candidate seam is
+=venture_bank_transaction_candidates(database, transaction, error)=. The owned
+array owns each returned =VentureEntity=. It searches enabled payment, sale,
+expense and registered =vendor_bill_payment= or =bill_payment= records in the
+same organization, within five days and 100 minor units of the signed amount.
+Vendor payment records must expose =amount= and =date= or =occurred_at=.
+Currencies are never converted. Automatic matching requires a single exact
+amount candidate within three days; ambiguity leaves the line unmatched.
+
+A manual match takes =parts=, an array of record type, id and optional signed
+amount. The parts must sum exactly to the transaction. Multiple parts produce
+split evidence; a smaller document amount produces partial evidence. Exclusion
+requires a reason. Unmatching retains the old match as soft-deleted audit history.
+
+Creating an expense saves an ordinary expense and invokes its registered
+posting rule. Creating a receipt calls the settlement service, with the linked
+bank ledger account selected as its cash account. The period guard is checked
+before creating either record. Banking never writes journals itself.
+
+* Reconciliation and surfaces
+
+Reconciliation reads posted journals on the linked ledger account through the
+inclusive period end. It refuses any unmatched transaction through that date
+and any nonzero difference. The evidence stores statement and book balances,
+difference and reconciler/time. Transactions through a reconciled date, and
+their matches, cannot be changed by any banking action or generic writer.
+
+The REST action shapes are:
+
+- =POST /api/v1/bank_accounts/:id/import=
+- =POST /api/v1/bank_statements/:id/auto|reconcile=
+- =POST /api/v1/bank_transactions/:id/match|unmatch|exclude|create=
+
+Bodies are JSON objects; actions without parameters accept ={}=. Editors may
+execute actions. Record detail pages contain an action selector and JSON
+parameter editor invoking the same service. The CLI accepts inline JSON or
+=@FILE= and sends the same REST request. Ordinary field-table forms and lists
+remain available for reading evidence and configuring bank accounts.
+
+The =bank_reconciliation= report takes =statement_id= and optional
+=organization_id=. It shows signed matched, unmatched and excluded totals,
+statement closing balance, current posted book balance and difference.

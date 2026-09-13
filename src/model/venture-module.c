@@ -533,6 +533,7 @@ static GType (*const venture_module_periods_types[]) (void) = {
 };
 static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live", NULL };
 
+static const gchar *const banking_reports[] = { "bank_reconciliation", NULL };
 static const gchar *const banking_requires[] = { "ledger", NULL };
 static GType (*const banking_types[]) (void) = {
 	venture_bank_account_get_type, venture_bank_statement_get_type,
@@ -684,7 +685,7 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	},
 	{
 		"banking", "Banking", "Statement import, matching and reconciliation.",
-		banking_requires, NULL, banking_types, NULL, NULL, FALSE
+		banking_requires, NULL, banking_types, banking_reports, NULL, FALSE
 	}
 };
 
