@@ -196,6 +196,14 @@ does the same for =create=, =update=, =delete= and =act= from the shell. It take
 =VENTURE_TOKEN= and refuses =--token= outright, since an MCP server is spawned
 from a config file. See [[file:mcp.org][venturectl mcp]].
 
+* Quote actions
+
+=venturectl quote send ID= freezes and queues a proposal.
+=venturectl quote accept ID 'by=Full Name'= accepts it and issues its invoice.
+=venturectl quote decline ID 'reason=Explanation'= records a refusal;
+=venturectl quote revise ID= clones the proposal and supersedes its source.
+For approval, use =--stage create quote_action quote_id=ID action=accept
+expected_version=N accepted_by=NAME=. See [[file:quotes.org][quotes]].
 * Leads
 
 =venturectl lead convert ID [deal=yes|no] [company_id=ID] [contact_id=ID]=

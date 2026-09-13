@@ -100,6 +100,8 @@
 #include "mcp/venture-mcp-catalog.h"
 #include "mcp/venture-mcp-server.h"
 
+ #include "quotes/venture-quote-records.h"
+
 /* --- Server-only subsystems ---------------------------------------------- */
 
 #ifdef VENTURE_SERVER_BUILD
@@ -122,6 +124,7 @@
 
 #include "report/venture-report.h"
 #include "receivables/venture-settlement-service.h"
+#include "quotes/venture-quote-service.h"
 #include "leads/venture-lead-service.h"
 #include "payables/venture-payables-service.h"
 #include "banking/venture-bank-match-service.h"

@@ -90,6 +90,8 @@ SERVER_ONLY_SRCS += src/banking/venture-bank-match-service.c
 
 SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard src/periods/*.c))
 
+CORE_SRCS += src/quotes/venture-quote-records.c
+SERVER_ONLY_SRCS += $(filter-out src/quotes/venture-quote-records.c,$(wildcard src/quotes/*.c))
 SERVER_ONLY_SRCS += src/leads/venture-lead-service.c src/leads/venture-lead-reports.c
 SERVER_ONLY_SRCS += $(filter-out src/activities/venture-activity-records.c,$(wildcard src/activities/*.c))
 SERVER_ONLY_SRCS += src/payables/venture-payables-service.c src/payables/venture-payable-reports.c
@@ -123,6 +125,7 @@ PUBLIC_HDRS := \
 	$(wildcard src/model/*.h) \
 	$(wildcard src/receivables/*.h) \
 	$(wildcard src/periods/*.h) \
+	$(filter-out %-print-style.h,$(wildcard src/quotes/*.h)) \
 	$(wildcard src/config/*.h) \
 	$(wildcard src/core/*.h) \
 	$(wildcard src/db/*.h) \
@@ -157,6 +160,7 @@ TEST_BINS := $(patsubst tests/%.c,$(OUTDIR)/tests/%,$(TEST_SRCS))
 
 # The settlement test drives the real CLI and its MCP tool against HTTP.
 $(OUTDIR)/tests/test-receivables: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-quotes: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-leads: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-payables: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
