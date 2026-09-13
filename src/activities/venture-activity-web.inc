@@ -218,3 +218,11 @@ activity_ui_worklist(HtmxRequest *request, GHashTable *params, gpointer data)
 	}
 	return venture_web_html_response(venture_web_page(self, request, "/worklist", "My day", content->str), 200);
 }
+
+static void
+activity_lazy_sweep(VentureWebServer *self, HtmxRequest *request)
+{
+	if (venture_context_module_enabled(self->context, "activities"))
+		venture_activity_service_sweep(venture_database_get_activity_service(venture_context_get_database(self->context)),
+			activity_organization(self, request), 50, NULL);
+}

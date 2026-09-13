@@ -357,6 +357,8 @@ venture_web_chat_append_starters(
 	const gchar		*path
 );
 
+static void activity_lazy_sweep(VentureWebServer *self, HtmxRequest *request);
+
 static gboolean
 venture_web_field_is_machinery(const gchar *name);
 
@@ -6350,6 +6352,8 @@ venture_web_ui_form(
 		current_organization = (0 != id)
 			? venture_entity_get_organization_id(record)
 			: venture_web_active_organization(self, request);
+		if (id == 0 && htmx_request_get_query_param(request, "organization_id") != NULL)
+			current_organization = g_ascii_strtoll(htmx_request_get_query_param(request, "organization_id"), NULL, 10);
 
 		if (0 == current_organization)
 		{
@@ -9187,6 +9191,7 @@ venture_web_ui_tickets(
 	/* Anything that has fallen due is marked before the board is drawn,
 	 * so a breached card is red the first time anybody looks. */
 	venture_sla_sweep(self->context, 50, NULL);
+	activity_lazy_sweep(self, request);
 
 	query = venture_web_ticket_query(self, request, &error);
 
@@ -23726,6 +23731,7 @@ venture_web_ui_inbox(
 	/* Anything that has fallen due since the last look is marked now,
 	 * so the inbox never says "nothing" about a breach an hour old. */
 	venture_sla_sweep(self->context, 50, NULL);
+	activity_lazy_sweep(self, request);
 
 	filter = htmx_request_get_query_param(request, "show");
 	unread_only = (0 != g_strcmp0(filter, "all"));
@@ -23950,6 +23956,7 @@ venture_web_api_inbox(
 	}
 
 	venture_sla_sweep(self->context, 50, NULL);
+	activity_lazy_sweep(self, request);
 
 	unread = htmx_request_get_query_param(request, "unread");
 	limit = htmx_request_get_query_param(request, "limit");

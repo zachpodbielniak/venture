@@ -34,7 +34,7 @@ fixture_set_up(Fixture *fixture, gconstpointer data)
 	fixture->config = venture_config_new();
 	g_object_set(fixture->config, "state-dir", fixture->state_dir,
 		"server-bind-address", "127.0.0.1", "server-port", (gint64)port,
-		"security-require-auth", FALSE, NULL);
+		"security-require-auth", data != NULL, NULL);
 	fixture->database = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
 	fixture->context = venture_context_new(fixture->config, fixture->database);
@@ -353,6 +353,187 @@ test_staged(Fixture *f, gconstpointer data)
 	g_assert_cmpint(status, ==, VENTURE_ACTIVITY_STATUS_DONE);
 }
 
+typedef struct
+{
+	gboolean done;
+	gchar *out;
+	gchar *err;
+	GError *error;
+} CliResult;
+
+static void
+cli_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+	CliResult *outcome = data;
+	g_subprocess_communicate_utf8_finish(G_SUBPROCESS(source), result, &outcome->out, &outcome->err, &outcome->error);
+	outcome->done = TRUE;
+}
+
+static void
+test_cli(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) row = planned(f, "CLI completion");
+	g_autoptr(GSubprocess) child = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *id = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(row));
+	CliResult result = { FALSE, NULL, NULL, NULL };
+	child = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE, &error,
+		"build/debug/venturectl", "--server", f->url, "activity", "complete", id, "outcome=CLI outcome", NULL);
+	g_assert_no_error(error);
+	g_subprocess_communicate_utf8_async(child, NULL, NULL, cli_done, &result);
+	while (!result.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(result.error);
+	g_test_message("CLI stderr: %s", result.err);
+	g_assert_true(g_subprocess_get_successful(child));
+	g_assert_nonnull(strstr(result.out, "done"));
+	g_assert_nonnull(strstr(result.out, "CLI outcome"));
+	g_free(result.out);
+	g_free(result.err);
+}
+
+static void
+test_docs(void)
+{
+	g_autofree gchar *text = NULL;
+	g_assert_true(g_file_get_contents("docs/activities.org", &text, NULL, NULL));
+	g_assert_nonnull(strstr(text, "VentureActivityService"));
+	g_assert_nonnull(strstr(text, "activities.ics"));
+}
+
+static void
+test_auth(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *body = NULL;
+	g_assert_cmpuint(request(f, "GET", "/worklist", NULL, NULL, &body), ==, 302);
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(request(f, "GET", "/api/v1/activities.ics", NULL, NULL, &body), ==, 401);
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(request(f, "POST", "/api/v1/activities/1/complete", "application/json", "{}", &body), ==, 401);
+	g_clear_pointer(&body, g_free);
+}
+
+static void
+test_disabled(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *body = NULL;
+	venture_config_set_module_enabled(f->config, "activities", FALSE);
+	g_assert_cmpuint(request(f, "GET", "/worklist", NULL, NULL, &body), ==, 404);
+	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(), "activity"), ==, G_TYPE_INVALID);
+	venture_config_set_module_enabled(f->config, "activities", TRUE);
+}
+
+static void
+test_migration(Fixture *f, gconstpointer data)
+{
+	g_autoptr(OrmResult) result = venture_database_query_raw(f->database,
+		"SELECT CAST(COUNT(*) AS BIGINT) FROM sqlite_master WHERE type='index' AND name='activities_notification_target'", NULL, NULL);
+	g_assert_nonnull(result);
+	g_assert_true(orm_result_next(result));
+	g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 1);
+}
+
+static GError *
+completion_veto(VentureActivityService *service, VentureEntity *row, gpointer data)
+{
+	return g_error_new_literal(VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "Completion veto");
+}
+
+static void
+test_veto(Fixture *f, gconstpointer data)
+{
+	VentureActivityService *service = venture_database_get_activity_service(f->database);
+	g_autoptr(VentureEntity) row = planned(f, "Veto completion");
+	g_autoptr(VentureEntity) done = NULL;
+	g_autoptr(GError) error = NULL;
+	g_assert_cmpuint(g_signal_lookup("completing", G_OBJECT_TYPE(service)), !=, 0);
+	g_signal_connect(service, "completing", G_CALLBACK(completion_veto), NULL);
+	done = venture_activity_service_complete(service, row, "Outcome", NULL, &error);
+	g_assert_null(done);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_assert_cmpstr(error->message, ==, "Completion veto");
+}
+
+static void
+test_upgrade_restart(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-activities-upgrade-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = NULL;
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureCompany) company = venture_company_new();
+	g_autoptr(GError) error = NULL;
+	guint run;
+	gint64 id;
+	venture_config_set_module_enabled(config, "activities", FALSE);
+	db = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	context = venture_context_new(config, db);
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	venture_entity_set_organization_id(VENTURE_ENTITY(company), 1);
+	g_object_set(company, "name", "Existing customer", NULL);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(company), NULL, &error));
+	id = venture_entity_get_id(VENTURE_ENTITY(company));
+	/* Recreate the previous migration history with real CRM data, and no
+	 * activity table because the module has always been disabled. */
+	g_assert_true(venture_database_execute(db, "DELETE FROM schema_migrations WHERE version=103; DROP INDEX activities_notification_target", NULL, &error));
+	g_clear_object(&context);
+	g_clear_object(&db);
+	for (run = 0; run < 2; run++)
+	{
+		g_autoptr(VentureEntity) existing = NULL;
+		g_autoptr(OrmResult) result = NULL;
+		g_autofree gchar *name = NULL;
+		if (run == 1)
+			venture_config_set_module_enabled(config, "activities", TRUE);
+		db = venture_database_new(uri, &error);
+		context = venture_context_new(config, db);
+		g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		existing = venture_database_get(db, VENTURE_TYPE_COMPANY, id, &error);
+		g_assert_no_error(error);
+		g_object_get(existing, "name", &name, NULL);
+		g_assert_cmpstr(name, ==, "Existing customer");
+		result = venture_database_query_raw(db, "SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations WHERE version=103", NULL, &error);
+		g_assert_no_error(error);
+		g_assert_true(orm_result_next(result));
+		g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 1);
+		g_clear_object(&result);
+		g_clear_object(&context);
+		g_clear_object(&db);
+	}
+	venture_test_remove_tree(directory);
+}
+
+static void
+test_widget_sources(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) row = planned(f, "Next call");
+	g_autoptr(VentureDashboardWidget) widget = venture_dashboard_widget_new();
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(GDateTime) due = venture_time_now();
+	gint64 organization = 1;
+	VentureWidgetScope scope = { &organization, 1, 1, "local", 0 };
+	g_object_set(row, "due-at", due, NULL);
+	g_assert_true(venture_database_save(f->database, row, NULL, NULL));
+	g_object_set(widget, "kind", "count", "entity-type", "activity", "filter", "status=planned&owner={me}", NULL);
+	result = venture_dashboard_render_widget(f->context, widget, &scope);
+	g_assert_null(result->error);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(result->data), "count"), ==, 1);
+	g_clear_pointer(&result, venture_widget_result_free);
+	g_object_set(widget, "kind", "upcoming", "field", "due_at", "options", "{\"days\":14}", NULL);
+	result = venture_dashboard_render_widget(f->context, widget, &scope);
+	g_assert_null(result->error);
+	g_assert_nonnull(strstr(result->html, "Next call"));
+	g_clear_pointer(&result, venture_widget_result_free);
+	g_object_set(widget, "kind", "metric", "report-name", "worklist", "field", "activities_today", NULL);
+	result = venture_dashboard_render_widget(f->context, widget, &scope);
+	g_assert_null(result->error);
+	g_assert_nonnull(strstr(result->html, "1"));
+}
+
 int
 main(int argc, char **argv)
 {
@@ -367,5 +548,13 @@ main(int argc, char **argv)
 	g_test_add("/activities/related", Fixture, NULL, fixture_set_up, test_related, fixture_tear_down);
 	g_test_add("/activities/rollback", Fixture, NULL, fixture_set_up, test_rollback, fixture_tear_down);
 	g_test_add("/activities/staged", Fixture, NULL, fixture_set_up, test_staged, fixture_tear_down);
+	g_test_add("/activities/cli", Fixture, NULL, fixture_set_up, test_cli, fixture_tear_down);
+	g_test_add("/activities/auth", Fixture, GINT_TO_POINTER(1), fixture_set_up, test_auth, fixture_tear_down);
+	g_test_add_func("/activities/docs", test_docs);
+	g_test_add("/activities/migration", Fixture, NULL, fixture_set_up, test_migration, fixture_tear_down);
+	g_test_add("/activities/disabled", Fixture, NULL, fixture_set_up, test_disabled, fixture_tear_down);
+	g_test_add("/activities/veto", Fixture, NULL, fixture_set_up, test_veto, fixture_tear_down);
+	g_test_add("/activities/widget_sources", Fixture, NULL, fixture_set_up, test_widget_sources, fixture_tear_down);
+	g_test_add_func("/activities/upgrade_restart", test_upgrade_restart);
 	return g_test_run();
 }

@@ -157,3 +157,11 @@ The description must outlive the registry. A static does.
 - Every type it claims must be a concrete =VentureEntity= subclass.
 
 All five are checked at registration, and a built-in that breaks one aborts startup, because a registry missing a core module would fail in a hundred quieter ways later.
+
+* Planned activities
+
+| Module | Requires | Owns |
+|--------+----------+------|
+| =activities= | crm | activity, activity_type; worklist report, reminders, calendar export and /worklist |
+
+See [[file:activities.org][planned activities]].

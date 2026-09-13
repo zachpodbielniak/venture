@@ -50,6 +50,15 @@ finalize(GObject *object)
 	G_OBJECT_CLASS(venture_activity_service_parent_class)->finalize(object);
 }
 
+static gboolean
+first_completion_error(GSignalInvocationHint *hint, GValue *accumulator, const GValue *value, gpointer data)
+{
+	if (g_value_get_boxed(value) == NULL)
+		return TRUE;
+	g_value_copy(value, accumulator);
+	return FALSE;
+}
+
 static void
 venture_activity_service_class_init(VentureActivityServiceClass *klass)
 {
@@ -57,6 +66,18 @@ venture_activity_service_class_init(VentureActivityServiceClass *klass)
 	object_class->get_property = get_property;
 	object_class->set_property = set_property;
 	object_class->finalize = finalize;
+	/**
+	 * VentureActivityService::completing:
+	 * @self: service
+	 * @activity: detached snapshot of the proposed completed activity
+	 *
+	 * Emitted inside the transaction after checking the stored version and
+	 * planned status, before any writes. Snapshot edits have no effect.
+	 * Reentrant actions are refused. The first returned error vetoes completion.
+	 * Returns: (transfer full) (nullable): a veto, or NULL to continue
+	 */
+	g_signal_new("completing", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0,
+		first_completion_error, NULL, NULL, G_TYPE_ERROR, 1, VENTURE_TYPE_ENTITY);
 	g_object_class_install_property(object_class, 1,
 		g_param_spec_object("database", "Database", "Owning repository", VENTURE_TYPE_DATABASE,
 			G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_STRINGS));
@@ -239,6 +260,18 @@ venture_activity_service_act(VentureActivityService *self, VentureEntity *activi
 	{
 		refuse(error, VENTURE_ERROR_VALIDATION, "Unknown activity action");
 		goto done;
+	}
+	if (complete)
+	{
+		g_autoptr(VentureEntity) snapshot = g_object_new(VENTURE_TYPE_ACTIVITY, NULL);
+		g_autoptr(GError) veto = NULL;
+		venture_entity_copy_properties_from(snapshot, row, FALSE);
+		g_signal_emit_by_name(self, "completing", snapshot, &veto);
+		if (veto != NULL)
+		{
+			g_propagate_error(error, g_steal_pointer(&veto));
+			goto done;
+		}
 	}
 	if (!write_record(self, row, actor, error))
 		goto done;

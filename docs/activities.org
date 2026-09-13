@@ -1,0 +1,133 @@
+#+title: Planned activities
+#+description: The next action as a record, and a daily worklist
+
+* Planned work and history
+
+The =activities= module requires =crm=. An =activity= is something planned;
+an =interaction= is what happened. Tasks, calls, meetings, email and followups
+share the same field table, generated forms, REST resource, CLI and audit trail.
+An =activity_type= names a reusable kind with a default duration in minutes
+and an active flag. The duration is descriptive; selecting a type does not
+currently stamp meeting times.
+
+An activity belongs to one organization. It carries a subject, body, owner
+(username), due time, optional meeting start and end, priority, status,
+completion time and outcome. Contact, company and deal references create the
+ordinary reverse panels on their pages. Each panel lists planned activities,
+including an empty panel with a *New activity* link that prefills its relation.
+
+=related_type= and =related_id= also accept an enabled registered company,
+contact, deal, lead, ticket or invoice. Both must be supplied together, the
+record must exist in the same organization, and a CRM relation fills its
+ordinary reference. Lead registration belongs to the leads module; this
+module neither declares nor creates leads. Optional CRM references must also
+belong to the activity's organization.
+
+* Completing and moving the next action
+
+=VentureActivityService= owns completion. It saves =done= and =completed_at=,
+records the outcome in an interaction when a contact, company or deal is
+related, and creates the next occurrence when recurrence is enabled. All
+records and audit entries share one transaction. A refused interaction or
+next occurrence leaves the original planned and writes no partial history.
+=VentureActivityService::completing= is a =G_SIGNAL_RUN_LAST= veto signal,
+emitted inside the transaction after version/status validation and before
+writing. Its detached snapshot cannot change the action; the first returned
+=GError= aborts it. Reentrant actions are refused.
+
+Company-only and deal-only interactions are permitted without inventing a
+contact. The service preserves its caller's object and checks its version.
+
+Generic writes setting =status=done= are refused, naming the service.
+Completed activities cannot be edited to rewrite their completion. Deletion
+is the normal soft deletion: retained history is not erased.
+
+Snooze moves the due time and reminder to =until=, and moves a meeting's
+start while preserving its duration. It rearms the reminder. Reassign changes
+the owner; cancel keeps the row with =cancelled= status. These actions require
+a planned activity. Owner strings follow the ticket assignee convention: an
+unknown username can own work but has no inbox to notify.
+
+| Surface | Completion |
+|---------+------------|
+| Web | *Done* on =/worklist= |
+| REST | =POST /api/v1/activities/:id/complete= with ={"outcome":"Agreed next step"}= |
+| CLI | =venturectl activity complete ID outcome=...= |
+| Assistant | =venture_activity_complete=, staged unless autonomous |
+
+REST completion accepts =?stage=1=. It stages an outcome and status change
+without writing anything; approval calls the service against the original
+version. A stale approval fails. A generic staged =status=done= update does
+not gain completion authority. Snooze, reassign and cancel use the same REST
+route with their verb, taking =until=, =owner=, or an empty object. These
+three action endpoints refuse staging; ordinary editable fields can be
+proposed with the generic staged record API.
+
+Recurrence is =none=, =daily=, =weekly= or =monthly=. Completion advances
+all supplied scheduling fields from their previous dates, once, rather than
+from the completion time. It creates one planned successor with the same
+owner and relations and no completion or reminder-delivery stamps. Monthly
+advancement uses calendar months, clipping a day that does not exist in the
+next month; later occurrences advance from that clipped date. A recurring
+activity needs a due or start time.
+
+* My day and dashboards
+
+=/worklist= shows the signed-in username's overdue, today and upcoming work
+within the selected organization (the default organization when none is
+selected). Queues use UTC calendar days: overdue is before today's midnight,
+today ends at tomorrow's midnight, and upcoming includes undated work.
+
+#+begin_src sh
+venturectl activity list mine
+venturectl activity list overdue
+venturectl activity list today
+venturectl list activity owner=alice status=planned
+venturectl report worklist organization_id=1
+#+end_src
+
+The existing =venturectl activity TYPE ID= timeline command retains its
+meaning. The =worklist= report is a current-week operational report, with
+one row per owner: overdue, due today, due this week and done this week.
+Weeks begin Monday in UTC. It exposes =activities_overdue= and
+=activities_today= metrics. It uses the default organization unless
+=organization_id= is supplied; it does not combine legal entities.
+
+Dashboards can use the ordinary =count=, =list= and =upcoming= kinds with
+=entity_type=activity=, =field=due_at= and
+=filter=status=planned&owner={me}=. A =metric= widget can read the worklist
+report's =activities_overdue= or =activities_today=. No special widget
+renderer or alternate query engine is involved.
+
+* Reminders and calendars
+
+A due =remind_at= produces one inbox notification for the active user whose
+username matches the owner in that organization. Delivery and =reminded_at=
+are saved together, so repeating the sweep does not repeat the notification.
+No matching active user leaves it pending. Snoozing explicitly rearms it.
+The bounded sweep runs on the worklist, inbox and ticket board and can be called explicitly:
+
+=POST /api/v1/activities/sweep?organization_id=1=.
+
+There is no background database thread and no mail delivery.
+
+=GET /api/v1/activities.ics?owner=alice&organization_id=1= exports calls
+and meetings with a start or due time. The authenticated export uses stable
+UUID-based UIDs, UTC timestamps, CRLF lines, escaped text and UTF-8-safe
+75-octet line folding. Each stored occurrence is a separate event; recurrence
+is advanced by completion, so the export does not promise uncreated events.
+This is an export, not a calendar synchronization protocol.
+
+* Upgrade and verification
+
+Field metadata adds activity tables when the module is enabled. The paired
+migration adds an organization-scoped lookup index to the core notification
+table, including when activities is disabled. It preserves existing CRM
+history and creates no activities from old interactions.
+
+=test-activities= exercises metadata, completion and recurring history,
+generic completion refusal, transaction rollback after the first write,
+snooze/reassign/cancel, two reminder sweeps, staged approval, calendar text,
+the worklist report, related panels, CLI completion and route authentication.
+PostgreSQL is supported by the shared repository; the default suite runs
+SQLite and does not constitute a live PostgreSQL integration run.

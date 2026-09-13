@@ -31,7 +31,7 @@ test_upgrade_restart(void)
 		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
 		g_assert_no_error(error);
 		result = venture_database_query_raw(database,
-			"SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations", NULL, &error);
+			"SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations WHERE version IN (1, 2)", NULL, &error);
 		g_assert_no_error(error);
 		g_assert_true(orm_result_next(result));
 		g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 2);
