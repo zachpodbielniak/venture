@@ -36,8 +36,8 @@ number(GObject *object, const gchar *field)
 static gboolean
 within(GDateTime *date, VentureDateRange *period)
 {
-	return NULL != date && g_date_time_compare(date, venture_date_range_get_start(period)) >= 0 &&
-		g_date_time_compare(date, venture_date_range_get_end(period)) < 0;
+	return NULL != date && (NULL == venture_date_range_get_start(period) || g_date_time_compare(date, venture_date_range_get_start(period)) >= 0) &&
+		(NULL == venture_date_range_get_end(period) || g_date_time_compare(date, venture_date_range_get_end(period)) < 0);
 }
 static gboolean
 add_money(VentureMoney **total, const VentureMoney *value, GError **error)
@@ -137,7 +137,7 @@ generate(VentureContext *context, VentureDateRange *period, JsonObject *options,
 	reasons = fetch(db, VENTURE_TYPE_LOSS_REASON, org, error);
 	if (NULL == deals || NULL == stages || NULL == pipelines || NULL == entries || NULL == reasons)
 		return NULL;
-	if (g_date_time_compare(end, now) > 0)
+	if (NULL == end || g_date_time_compare(end, now) > 0)
 		end = now;
 	for (i = 0; i < deals->len; i++)
 	{
@@ -206,6 +206,8 @@ generate(VentureContext *context, VentureDateRange *period, JsonObject *options,
 					}
 				}
 				start = venture_date_range_get_start(period);
+				if (NULL == start)
+					start = entered;
 				if (NULL != exited && g_date_time_compare(exited, start) <= 0)
 					continue;
 				if (g_date_time_compare(entered, start) > 0)

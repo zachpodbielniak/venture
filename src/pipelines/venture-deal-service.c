@@ -173,15 +173,32 @@ initialize_deal(VentureDealService *self, VentureDatabase *db, VentureEntity *in
 	venture_query_add_filter_int(query, "pipeline-id", VENTURE_FILTER_OP_EQ, pipeline, NULL);
 	venture_query_add_filter_int(query, "position", VENTURE_FILTER_OP_EQ, legacy, NULL);
 	stage = venture_database_find_one(db, query, error);
+	if (NULL == stage && (NULL == error || NULL == *error))
+	{
+		/* Custom processes need not number their first stage zero. */
+		g_clear_object(&query);
+		query = venture_query_new(VENTURE_TYPE_PIPELINE_STAGE);
+		venture_query_set_organization(query, org);
+		venture_query_add_filter_int(query, "pipeline-id", VENTURE_FILTER_OP_EQ, pipeline, NULL);
+		venture_query_add_filter_string(query, "kind", VENTURE_FILTER_OP_EQ, "open", NULL);
+		venture_query_add_order(query, "position", VENTURE_SORT_ASCENDING, NULL);
+		stage = venture_database_find_one(db, query, error);
+	}
 	if (NULL == stage)
 	{
 		if (NULL == error || NULL == *error)
 			refuse(error, "pipeline has no initial stage");
 		goto fail;
 	}
-	g_object_set(deal, "pipeline-id", pipeline, "stage-id", venture_entity_get_id(stage), NULL);
+	{
+		gint kind;
+		g_object_get(stage, "kind", &kind, NULL);
+		legacy = kind == 1 ? VENTURE_DEAL_STAGE_WON : (kind == 2 ? VENTURE_DEAL_STAGE_LOST : (gint)CLAMP(integer(G_OBJECT(stage), "position"), 0, 3));
+	}
+	g_object_set(deal, "pipeline-id", pipeline, "stage-id", venture_entity_get_id(stage), "stage", legacy, NULL);
 	if (!save_permitted(self, db, VENTURE_ENTITY(deal), actor, error) ||
-		!write_entry(self, db, deal, 0, venture_entity_get_id(stage), now, "Initial stage", actor, error))
+		(!venture_entity_is_deleted(VENTURE_ENTITY(deal)) &&
+		 !write_entry(self, db, deal, 0, venture_entity_get_id(stage), now, "Initial stage", actor, error)))
 		goto fail;
 	if (!venture_database_commit(db, error))
 		return FALSE;
@@ -411,6 +428,7 @@ venture_pipelines_migrate(VentureDatabase *db, GError **error)
 		if (0 == venture_deal_service_ensure_default(self, org_id, error))
 			goto fail;
 		venture_query_set_organization(query, org_id);
+		venture_query_set_include_deleted(query, TRUE);
 		deals = venture_database_find(db, query, error);
 		if (NULL == deals)
 			goto fail;

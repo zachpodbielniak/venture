@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
 #include <string.h>
+#include "venture-test-util.h"
 
 /* Configurable stages must participate in every generated record surface. */
 static void
@@ -60,6 +61,11 @@ test_generic_refused(void)
 	g_assert_false(venture_database_save(db, VENTURE_ENTITY(deal), NULL, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 	g_assert_nonnull(strstr(error->message, "VentureDealService"));
+	g_clear_error(&error);
+	g_object_set(deal, "stage", VENTURE_DEAL_STAGE_LEAD, "stage-id", (gint64)2, NULL);
+	g_assert_false(venture_database_save(db, VENTURE_ENTITY(deal), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+
 }
 
 static void
@@ -105,14 +111,16 @@ static void
 test_upgrade(void)
 {
 	g_autoptr(GError) error = NULL;
-	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", &error);
+	g_autofree gchar *directory = g_dir_make_tmp("venture-pipeline-upgrade-XXXXXX", &error);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/fixture.db", directory);
+	g_autoptr(VentureDatabase) db = venture_database_new(uri, &error);
 	g_autoptr(VentureEntity) deal = NULL;
 	gint64 pipeline, stage;
 	gint legacy;
 
 	g_assert_true(venture_database_execute(db,
-		"CREATE TABLE deals (id INTEGER PRIMARY KEY, name TEXT, stage TEXT, organization_id BIGINT, version BIGINT, uuid TEXT);"
-		"INSERT INTO deals VALUES (42, 'Historical proposal', 'proposal', 1, 1, 'legacy-deal-42')", NULL, &error));
+		"CREATE TABLE deals (id INTEGER PRIMARY KEY, name TEXT, stage TEXT, organization_id BIGINT, version BIGINT, uuid TEXT, deleted_at TEXT);"
+		"INSERT INTO deals VALUES (42, 'Historical proposal', 'proposal', 1, 1, 'legacy-deal-42', NULL); INSERT INTO deals VALUES (43, 'Archived deal', 'qualified', 1, 1, 'legacy-deal-43', '2024-01-01T00:00:00Z')", NULL, &error));
 	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
 	deal = venture_database_get(db, VENTURE_TYPE_DEAL, 42, &error);
@@ -122,8 +130,25 @@ test_upgrade(void)
 	g_assert_cmpint(pipeline, >, 0);
 	g_assert_cmpint(stage, >, 0);
 	g_assert_cmpint(legacy, ==, VENTURE_DEAL_STAGE_PROPOSAL);
+	g_clear_object(&deal);
+	deal = venture_database_get(db, VENTURE_TYPE_DEAL, 43, &error);
+	g_assert_no_error(error);
+	g_object_get(deal, "pipeline-id", &pipeline, "stage-id", &stage, NULL);
+	g_assert_cmpint(pipeline, >, 0);
+	g_assert_cmpint(stage, >, 0);
+	g_assert_true(venture_entity_is_deleted(deal));
+
+	g_clear_object(&deal);
+	g_clear_object(&db);
+	db = venture_database_new(uri, &error);
 	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_DEAL_STAGE_ENTRY);
+		g_assert_cmpint(venture_database_count(db, query, &error), ==, 1);
+	}
+	g_clear_object(&db);
+	venture_test_remove_tree(directory);
 }
 
 static void
@@ -225,6 +250,153 @@ test_report_values(void)
 	g_assert_cmpfloat(venture_metric_get_number(g_ptr_array_index(venture_report_result_get_metrics(result), 0)), ==, 2);
 }
 
+static gboolean
+reject_entry(VentureDatabase *db, VentureEntity *entity, VentureEntity *previous, gpointer data, GError **error)
+{
+	(void)db; (void)entity; (void)previous; (void)data;
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Injected history failure");
+	return FALSE;
+}
+
+static void
+test_lifecycle_and_rollback(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", &error);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = venture_context_new(config, db);
+	g_autoptr(VentureDeal) deal = venture_deal_new();
+	g_autoptr(VentureDeal) moved = NULL;
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(VentureEntity) lost = NULL;
+	g_autoptr(VentureEntity) won = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PIPELINE_STAGE);
+	g_autoptr(VentureQuery) entries = venture_query_new(VENTURE_TYPE_DEAL_STAGE_ENTRY);
+	g_autoptr(VentureLossReason) reason = venture_loss_reason_new();
+	g_autoptr(GDateTime) closed = NULL;
+	gint64 initial, probability;
+	gint legacy;
+
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_object_set(deal, "name", "Lifecycle", "organization-id", (gint64)1,
+		"probability", (gint64)73, "probability-overridden", TRUE, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(deal), "value", "100 USD", &error));
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(deal), NULL, &error));
+	g_object_get(deal, "stage-id", &initial, NULL);
+	venture_query_add_filter_string(query, "kind", VENTURE_FILTER_OP_EQ, "lost", NULL);
+	lost = venture_database_find_one(db, query, &error);
+	g_assert_nonnull(lost);
+	g_clear_object(&query);
+	query = venture_query_new(VENTURE_TYPE_PIPELINE_STAGE);
+	venture_query_add_filter_string(query, "kind", VENTURE_FILTER_OP_EQ, "won", NULL);
+	won = venture_database_find_one(db, query, &error);
+	g_assert_nonnull(won);
+	moved = venture_deal_service_move_stage(venture_database_get_deal_service(db), deal, venture_entity_get_id(lost), "Lost", NULL, &error);
+	g_assert_null(moved);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "loss reason"));
+	g_clear_error(&error);
+	g_object_set(reason, "organization-id", (gint64)1, "name", "Budget", "active", TRUE, NULL);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(reason), NULL, &error));
+	g_object_set(deal, "loss-reason-id", venture_entity_get_id(VENTURE_ENTITY(reason)), NULL);
+	moved = venture_deal_service_move_stage(venture_database_get_deal_service(db), deal, venture_entity_get_id(lost), "Lost", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(moved);
+	g_object_get(moved, "closed-at", &closed, "stage", &legacy, "probability", &probability, NULL);
+	g_assert_nonnull(closed);
+	g_assert_cmpint(legacy, ==, VENTURE_DEAL_STAGE_LOST);
+	g_assert_cmpint(probability, ==, 73);
+	{
+		g_autoptr(VentureDateRange) period = venture_context_parse_period(context, "all_time", &error);
+		g_autoptr(VentureReportResult) report = venture_report_generate(
+			venture_report_registry_lookup(venture_context_get_report_registry(context), "loss_reasons"), context, period, NULL, &error);
+		g_assert_no_error(error);
+		g_assert_cmpuint(venture_report_result_get_row_count(report), ==, 1);
+		g_assert_cmpfloat(g_value_get_double(venture_report_result_get_cell(report, 0, "entered")), ==, 1);
+		g_assert_cmpint(venture_money_get_amount(g_value_get_boxed(venture_report_result_get_cell(report, 0, "closed_value"))), ==, 10000);
+	}
+
+	g_clear_object(&deal);
+	deal = g_steal_pointer(&moved);
+	moved = venture_deal_service_move_stage(venture_database_get_deal_service(db), deal, venture_entity_get_id(won), "Recovered", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(moved);
+	g_clear_pointer(&closed, g_date_time_unref);
+	g_object_get(moved, "closed-at", &closed, "stage", &legacy, NULL);
+	g_assert_nonnull(closed);
+	g_assert_cmpint(legacy, ==, VENTURE_DEAL_STAGE_WON);
+	{
+		g_autoptr(VentureDateRange) period = venture_context_parse_period(context, "all_time", &error);
+		g_autoptr(VentureReportResult) report = venture_report_generate(
+			venture_report_registry_lookup(venture_context_get_report_registry(context), "forecast"), context, period, NULL, &error);
+		g_assert_no_error(error);
+		g_assert_cmpint(venture_money_get_amount(g_value_get_boxed(venture_report_result_get_cell(report, 0, "closed_value"))), ==, 10000);
+	}
+
+	g_clear_object(&deal);
+	deal = g_steal_pointer(&moved);
+	moved = venture_deal_service_move_stage(venture_database_get_deal_service(db), deal, initial, "Reopened", NULL, &error);
+	g_assert_no_error(error);
+	g_clear_pointer(&closed, g_date_time_unref);
+	g_object_get(moved, "closed-at", &closed, NULL);
+	g_assert_null(closed);
+	g_clear_object(&deal);
+	deal = g_steal_pointer(&moved);
+	/* Reject history after the deal save: neither its state nor an entry may persist. */
+	venture_database_add_save_validator(db, VENTURE_TYPE_DEAL_STAGE_ENTRY, reject_entry, NULL, NULL);
+	moved = venture_deal_service_move_stage(venture_database_get_deal_service(db), deal, venture_entity_get_id(won), "Close", NULL, &error);
+	g_assert_null(moved);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	stored = venture_database_get(db, VENTURE_TYPE_DEAL, venture_entity_get_id(VENTURE_ENTITY(deal)), &error);
+	g_object_get(stored, "stage-id", &probability, NULL);
+	g_assert_cmpint(probability, ==, initial);
+	g_assert_cmpint(venture_database_count(db, entries, &error), ==, 4);
+	g_assert_no_error(error);
+}
+
+static void
+test_custom_pipeline(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", &error);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = venture_context_new(config, db);
+	g_autoptr(VenturePipeline) pipeline = venture_pipeline_new();
+	g_autoptr(VenturePipelineStage) stage = venture_pipeline_stage_new();
+	g_autoptr(VentureDeal) deal = venture_deal_new();
+	g_autoptr(VentureDeal) moved = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PIPELINE_STAGE);
+	g_autoptr(VentureEntity) other_stage = NULL;
+	gint64 pipeline_id, stage_id;
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_object_set(pipeline, "name", "Renewals", "organization-id", (gint64)1, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(pipeline), NULL, &error));
+	pipeline_id = venture_entity_get_id(VENTURE_ENTITY(pipeline));
+	g_object_set(stage, "pipeline-id", pipeline_id, "organization-id", (gint64)1,
+		"name", "Review renewal", "position", (gint64)10, "probability", (gint64)35, NULL);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(stage), NULL, &error));
+	g_object_set(deal, "pipeline-id", pipeline_id, "organization-id", (gint64)1, "name", "Renew", NULL);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(deal), NULL, &error));
+	g_assert_no_error(error);
+	g_object_get(deal, "stage-id", &stage_id, NULL);
+	g_assert_cmpint(stage_id, ==, venture_entity_get_id(VENTURE_ENTITY(stage)));
+	venture_query_add_filter_int(query, "pipeline-id", VENTURE_FILTER_OP_NE, pipeline_id, NULL);
+	other_stage = venture_database_find_one(db, query, &error);
+	g_assert_nonnull(other_stage);
+	moved = venture_deal_service_move_stage(venture_database_get_deal_service(db), deal, venture_entity_get_id(other_stage), NULL, NULL, &error);
+	g_assert_null(moved);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	venture_config_set_module_enabled(config, "pipelines", FALSE);
+	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(context), "forecast"));
+	g_assert_cmpuint(venture_entity_registry_lookup(venture_context_get_entity_registry(context), "pipeline"), ==, G_TYPE_INVALID);
+	moved = venture_deal_service_move_stage(venture_database_get_deal_service(db), deal, stage_id, NULL, NULL, &error);
+	g_assert_null(moved);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	venture_config_set_module_enabled(config, "pipelines", TRUE);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -238,5 +410,7 @@ main(int argc, char **argv)
 	g_test_add_func("/pipelines/reports", test_reports_registered);
 	g_test_add_func("/pipelines/history-retained", test_history_retained);
 	g_test_add_func("/pipelines/report-values", test_report_values);
+	g_test_add_func("/pipelines/lifecycle-rollback", test_lifecycle_and_rollback);
+	g_test_add_func("/pipelines/custom-pipeline", test_custom_pipeline);
 	return g_test_run();
 }

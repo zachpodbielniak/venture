@@ -126,6 +126,13 @@ test_rest_move(Fixture *fixture, gconstpointer data)
 		VentureConfirmation *confirmation;
 		g_autofree gchar *id = NULL;
 		g_assert_cmpuint(pending->len, ==, 1);
+		{
+			g_autoptr(VentureEntity) current = venture_database_get(fixture->database, VENTURE_TYPE_DEAL, venture_entity_get_id(VENTURE_ENTITY(deal)), &error);
+			gint64 original_stage, current_stage;
+			g_object_get(deal, "stage-id", &original_stage, NULL);
+			g_object_get(current, "stage-id", &current_stage, NULL);
+			g_assert_cmpint(current_stage, ==, original_stage);
+		}
 		confirmation = g_ptr_array_index(pending, 0);
 		id = g_strdup(venture_confirmation_get_id(confirmation));
 		g_assert_true(venture_confirmation_store_approve(venture_context_get_confirmations(fixture->context), id, "ben", &error));
@@ -136,12 +143,78 @@ test_rest_move(Fixture *fixture, gconstpointer data)
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(request(fixture, "GET", "/deals", NULL, NULL, &body), ==, 200);
 	g_assert_nonnull(strstr(body, "name=\"stage_id\""));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(request(fixture, "GET", "/api/v1/reports/forecast?period=all_time&pipeline_id=999999", NULL, NULL, &body), ==, 200);
+	{
+		g_autoptr(JsonNode) parsed = json_from_string(body, &error);
+		g_assert_no_error(error);
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(parsed), "rows")), ==, 0);
+	}
+
 }
+typedef struct
+{
+	gboolean done;
+	gchar *out;
+	gchar *err;
+	GError *error;
+} CliResult;
+
+static void
+cli_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+	CliResult *outcome = data;
+	g_subprocess_communicate_utf8_finish(G_SUBPROCESS(source), result, &outcome->out, &outcome->err, &outcome->error);
+	outcome->done = TRUE;
+}
+
+static void
+test_cli(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(GSubprocess) child = NULL;
+	g_autoptr(GSubprocessLauncher) launcher = NULL;
+	g_autoptr(GError) error = NULL;
+	CliResult result = { FALSE, NULL, NULL, NULL };
+	g_autoptr(VentureDeal) deal = venture_deal_new();
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PIPELINE_STAGE);
+	g_autoptr(VentureEntity) stage = NULL;
+	g_autofree gchar *deal_id = NULL;
+	g_autofree gchar *stage_id = NULL;
+	const gchar *args[] = { "build/debug/venturectl", "--server", fixture->url,
+		"deal", "move", NULL, NULL, "CLI qualification", NULL };
+	(void)data;
+	g_object_set(deal, "name", "CLI move", "organization-id", (gint64)1, NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(deal), NULL, &error));
+	venture_query_add_filter_int(query, "position", VENTURE_FILTER_OP_EQ, 1, NULL);
+	stage = venture_database_find_one(fixture->database, query, &error);
+	g_assert_nonnull(stage);
+	deal_id = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(VENTURE_ENTITY(deal)));
+	stage_id = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(stage));
+	args[5] = deal_id;
+	args[6] = stage_id;
+
+	launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
+	g_subprocess_launcher_unsetenv(launcher, "VENTURE_TOKEN");
+	child = g_subprocess_launcher_spawnv(launcher, args, &error);
+	g_assert_no_error(error);
+	g_subprocess_communicate_utf8_async(child, NULL, NULL, cli_done, &result);
+	while (!result.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(result.error);
+	g_assert_true(g_subprocess_get_successful(child));
+	g_assert_nonnull(strstr(result.out, "qualified"));
+	g_free(result.out);
+	g_free(result.err);
+
+}
+
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/pipeline-surfaces/rest", Fixture, NULL, fixture_set_up, test_rest_move, fixture_tear_down);
 	g_test_add("/pipeline-surfaces/staged", Fixture, GINT_TO_POINTER(1), fixture_set_up, test_rest_move, fixture_tear_down);
+	g_test_add("/pipeline-surfaces/cli", Fixture, NULL, fixture_set_up, test_cli, fixture_tear_down);
 	return g_test_run();
 }

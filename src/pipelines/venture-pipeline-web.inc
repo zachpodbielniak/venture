@@ -82,6 +82,9 @@ venture_web_deals_board(HtmxRequest *request, GHashTable *params, gpointer user_
 	HtmxResponse *gate;
 	guint i;
 	(void)params;
+	gate = venture_web_ui_require_session(self, request);
+	if (NULL != gate)
+		return gate;
 	gate = venture_web_require_module_ui(self, request, "pipelines");
 	if (NULL != gate)
 		return gate;
