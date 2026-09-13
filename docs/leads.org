@@ -1,0 +1,12 @@
+#+title: Leads
+
+* Inquiries before opportunities
+
+The =leads= module requires =crm=. Its =lead=, =lead_form= and
+=lead_assignment_rule= records use the ordinary generated forms, REST,
+CLI and import machinery. An inquiry has its own qualification state;
+a deal's existing stage remains the opportunity's stage.
+
+A lead belongs to one organization and may name a venture and a campaign.
+Its source, score, owner, contact details and notes describe the inquiry.
+Conversion references and timestamps preserve the eventual handoff.

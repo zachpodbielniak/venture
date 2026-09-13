@@ -533,6 +533,12 @@ static GType (*const venture_module_periods_types[]) (void) = {
 };
 static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live", NULL };
 
+static GType (*const venture_module_leads_types[]) (void) = {
+	venture_lead_get_type, venture_lead_form_get_type,
+	venture_lead_assignment_rule_get_type, NULL
+};
+static const gchar *const venture_module_requires_leads[] = { "crm", NULL };
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -674,6 +680,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"periods", "Fiscal periods", "Fiscal calendars, closing controls and historical reports.",
 		venture_module_requires_finance, NULL,
 		venture_module_periods_types, venture_module_reports_periods, NULL, FALSE
+	},
+	{
+		"leads", "Leads", "Capture, qualify, assign and convert inquiries.",
+		venture_module_requires_leads, NULL, venture_module_leads_types,
+		NULL, NULL, FALSE
 	}
 };
 
