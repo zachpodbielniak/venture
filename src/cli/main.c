@@ -630,6 +630,8 @@ venture_cli_values_from_args(
 	return json_builder_get_root(builder);
 }
 
+#include "payables/venture-payables-cli.inc"
+
 static gint
 venture_cli_command_list(
 	VentureCli	 *cli,
@@ -1130,10 +1132,10 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "customer_id")) && (0 != g_strcmp0(parts[0], "currency")) &&
 				 (0 != g_strcmp0(parts[0], "venture_id")) && (0 != g_strcmp0(parts[0], "group_by")) &&
 				 (0 != g_strcmp0(parts[0], "compare_to")) && (0 != g_strcmp0(parts[0], "account_id")) &&
-				 (0 != g_strcmp0(parts[0], "pipeline_id")) && (0 != g_strcmp0(parts[0], "owner"))))
+				 (0 != g_strcmp0(parts[0], "vendor_id")) && (0 != g_strcmp0(parts[0], "pipeline_id")) && (0 != g_strcmp0(parts[0], "owner"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, pipeline_id, owner");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -2145,6 +2147,7 @@ venture_cli_command_release(
 	return 0;
 }
 
+#include "activities/venture-activity-cli.inc"
 #include "pipelines/venture-pipeline-cli.inc"
 
 /* --- The workdesk ---------------------------------------------------------- */
@@ -3253,7 +3256,7 @@ main(
 		"  forge set-token ID           set a forge's access token (stdin)\n"
 		"  forge set-secret ID          set or generate its webhook secret\n"
 		"  forge verify ID              record which account the token is\n"
-		"  report [NAME] [PERIOD]       run; options: as_of, organization_id, customer_id, currency, venture_id, group_by, pipeline_id, owner\n"
+		"  report [NAME] [PERIOD]       run; options: as_of, organization_id, customer_id, currency, venture_id, group_by, vendor_id, pipeline_id, owner\n"
 		"  kb search QUERY              search the knowledge bases by\n"
 		"                               meaning; --kb SLUG, --limit N\n"
 		"  kb sync KB_ID                bring a base into line with its\n"
@@ -3275,6 +3278,7 @@ main(
 		"  sequence run                execute due steps; --as-of TIMESTAMP\n"
 		"  sequence status ID          enrollment and delivery history\n"
 		"  post backfill                post missing journals; --dry-run\n"
+		"  bill approve|pay|void ID [field=value ...]  supplier bill actions\n"
 		"  factory                      the software factory at a glance\n"
 		"  release changelog ID         draft a release's changelog from\n"
 		"                               its tickets; --replace overwrites\n"
@@ -3293,6 +3297,8 @@ main(
 		"  inbox read ID|all            mark it read\n"
 		"  watch TYPE ID                be told when a record changes;\n"
 		"                               unwatch to stop\n"
+		"  activity complete ID outcome=...  complete planned work and record history\n"
+		"  activity list mine|overdue|today   the daily worklist\n"
 		"  activity TYPE ID             a record's timeline: changes,\n"
 		"                               comments, worklogs\n"
 		"  ticket ID sla                its service-level clocks\n"
@@ -3499,6 +3505,8 @@ main(
 		result = venture_cli_command_factory(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "mail"))
 		result = venture_cli_command_mail(&cli, args, mail_html, mail_limit, &error);
+	else if (0 == g_strcmp0(args[0], "bill"))
+		result = venture_cli_command_bill(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "bank"))
 		result = venture_cli_command_bank(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "deal"))
@@ -3522,6 +3530,9 @@ main(
 	else if ((0 == g_strcmp0(args[0], "sprints")) ||
 	         (0 == g_strcmp0(args[0], "sprint")))
 		result = venture_cli_command_sprints(&cli, args, &error);
+	else if (g_strcmp0(args[0], "activity") == 0 &&
+	         (g_strcmp0(args[1], "complete") == 0 || g_strcmp0(args[1], "list") == 0))
+		result = venture_cli_command_activity(&cli, args, &error);
 	else if ((0 == g_strcmp0(args[0], "watch")) ||
 	         (0 == g_strcmp0(args[0], "unwatch")) ||
 	         (0 == g_strcmp0(args[0], "activity")))

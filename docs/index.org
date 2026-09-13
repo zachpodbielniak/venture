@@ -26,6 +26,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:money.org][Money and accounting]] — exact arithmetic, allocation, deductibility, the ledger
 - [[file:ledger.org][General journal]] — atomic posting, immutable journals, rules, reversals and authoritative balances
 - [[file:receivables.org][Customer receivables]] — receipts, credits, refunds and historical customer balances
+- [[file:payables.org][Vendor payables]] — supplier bills, payments and dated liability evidence
 - [[file:reporting.org][Reporting]] — the built-in reports and how to write one
 - [[file:forge.org][Git forges]] — linking tickets to repositories, and letting an agent do the work
 - [[file:knowledge-bases.org][Knowledge bases]] — documents the assistant can read, and how they reach it
@@ -42,6 +43,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:mail.org][Transactional mail]] — durable outbox, SMTP, templates and operator-resolved uncertainty
 - [[file:sequences.org][Follow-up sequences]] — enrollment, scheduling, exits, delivery evidence and the mail adapter seam
 - [[file:testing.org][Testing]] — running the suite, and what it guarantees
+- [[file:activities.org][Planned activities]] — tasks, calls, meetings, reminders and the daily rep worklist
 - [[file:actions.org][Record actions]] — shared business operations and approval
 
 - [[file:banking.org][Banking]] — statement import, matching and reconciliation

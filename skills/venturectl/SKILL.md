@@ -430,6 +430,27 @@ submits due rows. `mail list state=uncertain` lists uncertain acceptance;
 uncertain rows. Actions reject `--stage`; propose an enqueue with the generic
 `--stage create mail_message` command when approval is required.
 
+## Planned activities
+
+`activity complete ID outcome=...` completes a planned activity, writes interaction history and advances recurrence atomically. `activity list mine|overdue|today` reads your daily worklist. Generic `create activity` and `update activity` edit the plan; generic `status=done` is refused. The existing `activity TYPE ID` command still reads a record timeline. Use `report worklist organization_id=ID` for the current UTC week per owner.
+## Vendor payables
+
+Run `describe vendor_bill` and `describe vendor_bill_line` before creating
+a draft and its lines. Bill quantity is an exact decimal string, with at
+most three decimal places. Supplier companies have `kind=supplier`.
+
+Use `bill approve ID date=DATE`, `bill pay ID 'amount=40 USD' date=DATE`,
+and `bill void ID date=DATE` for financial actions. Omitted payment amount
+pays the outstanding balance. Direct bill status updates are refused.
+These CLI actions apply directly; to stage, use generated record creation:
+`vendor_bill_event` with `bill_id`, `vendor_id`, `kind=approve`,
+`state=approved`, and `date`, or `bill_payment` with vendor, bill, amount,
+method and date. MCP `venture_create` stages those records normally.
+
+`report payables PERIOD` is dated aging. `report vendor_statement PERIOD
+vendor_id=ID` is the supplier statement. Both accept `organization_id`,
+`currency` and `as_of`. See `docs/payables.org` for credits, immutable
+history and the single-date limitation on optional paid-line expense conversion.
 Banking business actions use `bank ACTION ID [JSON|@FILE]`. Import identifies
 an account, auto/reconcile a statement, and match/unmatch/exclude/create a
 transaction. `bank match AUTO STATEMENT_ID` runs exact automatic matching.

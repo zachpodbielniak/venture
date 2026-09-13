@@ -787,6 +787,7 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_string_property(builder, "period",
 			"The period to run it over.");
 		venture_mcp_catalog_add_integer_property(builder, "customer_id", "Customer for a statement.");
+		venture_mcp_catalog_add_integer_property(builder, "vendor_id", "Supplier for a vendor statement.");
 		venture_mcp_catalog_add_integer_property(builder, "organization_id", "Legal entity to report.");
 		venture_mcp_catalog_add_string_property(builder, "currency", "Book currency to report.");
 		venture_mcp_catalog_add_string_property(builder, "as_of", "Inclusive historical cutoff.");

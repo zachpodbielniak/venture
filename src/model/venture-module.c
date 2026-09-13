@@ -536,6 +536,19 @@ static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live
 static GType (*const venture_module_mail_types[]) (void) = {
 	venture_mail_message_get_type, venture_mail_template_get_type, NULL
 };
+static GType (*const venture_module_activities_types[]) (void) = {
+	venture_activity_get_type, venture_activity_type_get_type, NULL
+};
+static const gchar *const venture_module_activities_requires[] = { "crm", NULL };
+static const gchar *const venture_module_activities_reports[] = { "worklist", NULL };
+static GType (*const venture_module_payables_types[]) (void) = {
+	venture_vendor_bill_get_type, venture_vendor_bill_line_get_type,
+	venture_bill_payment_get_type, venture_bill_payment_allocation_get_type,
+	venture_vendor_credit_get_type, venture_vendor_bill_event_get_type,
+	venture_bill_refund_get_type, NULL
+};
+static const gchar *const venture_module_requires_payables[] = { "finance", "ledger", "crm", NULL };
+static const gchar *const venture_module_reports_payables[] = { "payables", "vendor_statement", NULL };
 
 static const gchar *const banking_reports[] = { "bank_reconciliation", NULL };
 static const gchar *const banking_requires[] = { "ledger", NULL };
@@ -713,6 +726,16 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"mail", "Transactional mail", "Durable outbound messages and templates.",
 		venture_module_requires_core, NULL, venture_module_mail_types, NULL, NULL, FALSE
+	},
+	{
+		"activities", "Planned activities", "Tasks, calls, meetings and the daily worklist.",
+		venture_module_activities_requires, NULL, venture_module_activities_types,
+		venture_module_activities_reports, NULL, FALSE
+	},
+	{
+		"payables", "Payables", "Supplier bills, payments and dated vendor balances.",
+		venture_module_requires_payables, NULL, venture_module_payables_types,
+		venture_module_reports_payables, NULL, FALSE
 	},
 
 	{

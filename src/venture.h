@@ -71,6 +71,7 @@
 #include "model/venture-federation-records.h"
 #include "ledger/venture-journal.h"
 #include "receivables/venture-receivable-records.h"
+#include "payables/venture-payable-records.h"
 #include "banking/venture-bank-records.h"
 #include "receivables/venture-invoice-state-machine.h"
 #include "model/venture-venture-type.h"
@@ -79,6 +80,7 @@
 #include "periods/venture-period-records.h"
 #include "mail/venture-mail-records.h"
 
+#include "activities/venture-activity-records.h"
 #include "pipelines/venture-pipeline-records.h"
 #include "sequences/venture-sequence-records.h"
 #include "autojournal/venture-posting-profile.h"
@@ -126,6 +128,7 @@
 #include "mail/venture-smtp-mailer.h"
 #include "mail/venture-mail-outbox.h"
 #include "mail/venture-mail-template.h"
+#include "payables/venture-payables-service.h"
 #include "banking/venture-bank-match-service.h"
 #include "sequences/venture-sequence-service.h"
 #include "periods/venture-period-report.h"
@@ -152,6 +155,8 @@
 #include "core/venture-desk.h"
 #include "core/venture-webhook.h"
 #include "core/venture-routing.h"
+#include "activities/venture-activity-service.h"
+#include "activities/venture-activity-reports.h"
 #include "core/venture-action.h"
 #include "ledger/venture-journal-actions.h"
 

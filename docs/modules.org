@@ -44,12 +44,14 @@ Written bottom-up, because a module may only require what precedes it:
 | =dashboards= | core            | dashboard, dashboard_widget; the =/dashboards= pages and their API | |
 | =mail= | core | mail_message, mail_template; durable outbox and SMTP actions | |
 
+| =payables= | finance, ledger, crm | vendor_bill, vendor_bill_line, bill_payment, bill_payment_allocation, vendor_credit, vendor_bill_event, bill_refund; =payables=, =vendor_statement= | |
 | =sequences= | crm | sequence, sequence_step, sequence_enrollment, sequence_delivery, suppression; =sequence_performance=, =sequence_failures= | |
 | =ledger=     | finance         | journal, journal_line; posting service, post/reverse/create-and-post actions, =trial_balance=           |                       |
 | =banking= | ledger | bank_account, bank_statement, bank_transaction, bank_match, reconciliation; =bank_reconciliation= | |
 
 | =pipelines= | crm | pipeline, pipeline_stage, deal_stage_entry, loss_reason; stage_duration, funnel, forecast, loss_reasons, overdue_deals; /deals | |
 | =statements= | ledger, periods | ledger balances query; balance sheet, income statement, cash flow, general ledger, account balances, P&L reconciliation | |
+| =activities= | crm | activity, activity_type; =worklist=, reminders, calendar export and =/worklist= | |
 
 Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.
 

@@ -276,6 +276,23 @@ venture_confirmation_parse_stage_flag(
 );
 
 /**
+ * venture_confirmation_store_stage_activity_complete:
+ * @self: confirmation queue
+ * @activity: saved planned record, at its expected version
+ * @outcome: (nullable): proposed outcome
+ * @origin: audit actor requesting completion
+ * @via: assistant or rest-api
+ * @error: (out) (optional): failure
+ *
+ * Stages completion as a business action. Approval calls VentureActivityService,
+ * preserving its transaction and optimistic concurrency boundary.
+ * Returns: (transfer none) (nullable): the pending confirmation
+ */
+VentureConfirmation *venture_confirmation_store_stage_activity_complete(
+	VentureConfirmationStore *self, VentureEntity *activity, const gchar *outcome,
+	const VentureActor *origin, const gchar *via, GError **error);
+
+/**
  * venture_confirmation_store_stage_deal_move:
  * @self: the confirmation queue
  * @deal: persisted deal snapshot
