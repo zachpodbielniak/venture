@@ -160,6 +160,8 @@
 
 #include "web/venture-web-server.h"
 
+#include "reconciliation/venture-reconciliation-matcher.h"
+
 #endif /* VENTURE_SERVER_BUILD */
 
 #undef VENTURE_INSIDE
