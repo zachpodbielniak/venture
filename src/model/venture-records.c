@@ -256,7 +256,8 @@ static const VentureFieldDecl venture_sale_fields[] = {
 	              VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("buyer-name", "Buyer name", NULL,
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD("refunded-at", "Refund date", "Falls back to the sale date", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureSale, venture_sale, venture_sale_fields,
@@ -663,7 +664,17 @@ static const VentureFieldDecl venture_deal_fields[] = {
 	              VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("source", "Source", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("pipeline-id", "Pipeline", NULL, "pipeline", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("stage-id", "Pipeline stage", "Use VentureDealService to move", "pipeline_stage", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("next-step", "Next step", NULL),
+	VENTURE_FIELD("next-action-at", "Next action", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("loss-reason-id", "Loss reason", NULL, "loss_reason", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("lost-note", "Lost note", NULL),
+	VENTURE_FIELD("owner", "Owner", "Username, like a ticket assignee", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("probability-overridden", "Override probability", "Keep the deal probability on stage moves", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("committed", "Committed", "Include in the committed forecast", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
+
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureDeal, venture_deal, venture_deal_fields,
