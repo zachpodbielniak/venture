@@ -58,3 +58,20 @@ refused action attempt is dropped and must be proposed again.
 Trusted transports use =venture_confirmation_store_approve_as()= with the
 authenticated approver's role. Internal callers using =approve()= must name
 an active user; that user's current role is looked up at approval time.
+
+* Generated surfaces
+
+The schema includes each type's action declarations. REST dispatches
+=POST /api/v1/:type/:id/actions/:action=, and =venturectl act TYPE ID ACTION
+[key=value ...]= derives parameter conversion from that schema. =--stage=
+uses the same confirmation queue. Unknown parameters are refused.
+
+Record pages render a button and parameter form for each currently allowed
+action. Forms POST the generic route and return to the resulting record.
+The REST route accepts JSON or those generated form values.
+
+The assistant and MCP derive =venture_TYPE_ACTION= tools for stageable
+actions. They always propose actions for approval, even under an autonomous
+policy or MCP's =--apply-writes=. Non-stageable actions have no generated
+assistant tool. Existing hand-written release, forge, ticket and KB actions
+remain unchanged; migrating their declarations is follow-up work.

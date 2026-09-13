@@ -100,6 +100,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `kb export KB_ID` | write an archive to stdout; `--format zip\|tar.gz` |
 | `kb crossref TYPE ID` | link the knowledge bearing on one record |
 | `kb article TYPE ID --kb N` | write a KB article from a record |
+| `act TYPE ID ACTION [key=value ...]` | discover and perform a business action; `--stage` proposes it |
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 
@@ -304,7 +305,7 @@ venturectl --stage create expense description="Cover art" amount=250.00
 #   approve: POST /api/v1/confirmations/a3f9c118/approve
 ```
 
-It is refused on any command other than `create`, `update` and `delete`,
+It is refused on any command other than `create`, `update`, `delete` and `act`,
 because those are the only routes that read it -- and an unknown query
 parameter on a write route is ignored, so a quietly accepted `--stage` would
 apply the change it was asked to hold back.
@@ -418,3 +419,12 @@ venturectl federation '{"action":"resolve","id":1,"version":5,"field":"descripti
 ```
 
 Collection pulls return at most ten results, `next_offset` and `more`; continue pages while `more` is true and inspect per-record errors. Pull imports/merges without pushing; sync pushes conflict-free changes with an expected remote version. Edits require the local replica version. A conflict blocks that record until resolved; choosing remote can accept a removed/revoked field. Never update `federation_replica` through generic CRUD: its merge state belongs to the service. Copies remain usable during outages but are not authoritative local accounting rows. New source objects and binary attachments are not created/copied offline. See `docs/federation.org` for key exchange, grants, scheduling and revocation.
+
+## Record actions
+
+Use `venturectl -f json describe TYPE` to discover `actions`, their parameters
+and whether they can be staged. `venturectl act TYPE ID ACTION key=value`
+uses those declarations; `venturectl --stage act journal 42 post` proposes a
+posting. A staged result is awaiting approval, never completed. Generated
+action tools in the assistant and MCP always stage, including when other
+writes are configured to apply automatically.
