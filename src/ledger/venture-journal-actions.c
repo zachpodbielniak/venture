@@ -105,7 +105,7 @@ venture_journal_actions_register(VentureDatabase *database)
 	g_ptr_array_add(parameters, journal_spec);
 	create = g_object_new(VENTURE_TYPE_ACTION, "type-name", "journal", "name", "create_and_post",
 		"label", "Create and post", "description", "Create and post a journal header and lines atomically",
-		"parameters", parameters, "stageable", TRUE, "type-level", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+		"parameters", parameters, "stageable", TRUE, "type-level", TRUE, "subject-parameter", "journal", "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	if (!venture_action_registry_register(registry, post, journal_allowed, journal_post, g_object_ref(service), g_object_unref, &error) ||
 		!venture_action_registry_register(registry, reverse, journal_allowed, journal_reverse, g_object_ref(service), g_object_unref, &error) ||
 		!venture_action_registry_register(registry, create, journal_allowed, journal_create_post, g_object_ref(service), g_object_unref, &error))

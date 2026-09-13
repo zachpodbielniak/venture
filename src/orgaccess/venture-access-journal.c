@@ -28,11 +28,13 @@ journal_fingerprint(VentureDatabase *database, VentureEntity *journal, GError **
 
 gboolean
 venture_orgaccess_apply_post(VentureDatabase *database, VentureEntity *original,
-	const gchar *via, const VentureActor *actor, GError **error)
+	const gchar *via, const VentureActor *actor, VentureUserRole role, GError **error)
 {
 	VentureAccessPolicy *policy = venture_database_get_access_policy(database);
 	g_autofree gchar *fingerprint = NULL;
+	g_autoptr(VentureEntity) current = NULL;
 	g_autoptr(VentureJournal) posted = NULL;
+	g_autoptr(GHashTable) parameters = g_hash_table_new(g_str_hash, g_str_equal);
 	if (!VENTURE_IS_JOURNAL(original) || !g_str_has_prefix(via, POST_ORIGIN))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "Invalid journal posting proposal");
@@ -42,6 +44,13 @@ venture_orgaccess_apply_post(VentureDatabase *database, VentureEntity *original,
 		return FALSE;
 	if (!venture_database_begin(database, error))
 		return FALSE;
+	current = venture_database_get(database, VENTURE_TYPE_JOURNAL, venture_entity_get_id(original), error);
+	if (!current) goto failed;
+	if (venture_entity_get_version(current) != venture_entity_get_version(original))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "Journal changed after the posting was proposed; propose it again");
+		goto failed;
+	}
 	fingerprint = journal_fingerprint(database, original, error);
 	if (NULL == fingerprint)
 		goto failed;
@@ -50,8 +59,10 @@ venture_orgaccess_apply_post(VentureDatabase *database, VentureEntity *original,
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "Journal lines changed after the posting was proposed; propose it again");
 		goto failed;
 	}
-	posted = venture_posting_service_post(venture_database_get_posting_service(database),
-		VENTURE_JOURNAL(original), NULL, NULL, actor, error);
+	/* Approval retains the action registry's plugin veto and completion hooks. */
+	posted = VENTURE_JOURNAL(venture_action_registry_perform(venture_database_get_action_registry(database),
+		"journal", venture_entity_get_id(original), "post", parameters, actor,
+		role, error));
 	if (NULL == posted)
 		goto failed;
 	return venture_database_commit(database, error);
@@ -71,6 +82,7 @@ venture_orgaccess_post_journal(VentureContext *context, const VentureAuthPrincip
 	g_autoptr(VentureEntity) journal = NULL;
 	g_autoptr(VentureEntity) proposed = NULL;
 	g_autoptr(VentureJournal) posted = NULL;
+	g_autoptr(GHashTable) parameters = g_hash_table_new(g_str_hash, g_str_equal);
 	g_autofree gchar *fingerprint = NULL;
 	g_autofree gchar *via = NULL;
 	VentureConfirmation *confirmation;
@@ -118,7 +130,8 @@ venture_orgaccess_post_journal(VentureContext *context, const VentureAuthPrincip
 	actor.approved_by = NULL;
 	if (!propose)
 	{
-		posted = venture_posting_service_post(venture_database_get_posting_service(database), VENTURE_JOURNAL(journal), NULL, NULL, &actor, error);
+		posted = VENTURE_JOURNAL(venture_action_registry_perform(venture_database_get_action_registry(database),
+			"journal", id, "post", parameters, &actor, principal->role, error));
 		return NULL != posted ? venture_serializable_to_json(VENTURE_SERIALIZABLE(posted), FALSE) : NULL;
 	}
 	internal = venture_access_policy_enter(policy, NULL);

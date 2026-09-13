@@ -498,6 +498,22 @@ venture_access_policy_count(VentureAccessPolicy *self, VentureQuery *query, GErr
 	venture_query_set_offset(query, offset);
 	return NULL != rows ? (gint64)rows->len : -1;
 }
+/* Only these public routes authenticate with capabilities instead of local
+ * sessions. Keep method and path shape exact as more routes are added. */
+static gboolean
+public_capability_request(HtmxRequest *request)
+{
+	const gchar *path = htmx_request_get_path(request);
+	HtmxMethod method = htmx_request_get_method(request);
+	const gchar *suffix;
+	if (g_str_has_prefix(path, "/f/") && path[3] != '\0')
+		return method == HTMX_METHOD_POST && strchr(path + 3, '/') == NULL;
+	if (!g_str_has_prefix(path, "/q/") || path[3] == '\0' || path[3] == '/') return FALSE;
+	suffix = strchr(path + 3, '/');
+	if (!suffix) return method == HTMX_METHOD_GET || method == HTMX_METHOD_POST;
+	return method == HTMX_METHOD_POST && !g_strcmp0(suffix, "/accept");
+}
+
 void
 venture_orgaccess_web_dispatch(VentureAuth *auth, VentureContext *context,
 	HtmxContext *http, HtmxMiddlewareNext next, gpointer next_data)
@@ -507,13 +523,14 @@ venture_orgaccess_web_dispatch(VentureAuth *auth, VentureContext *context,
 	g_autoptr(VentureAccessScope) scope = NULL;
 	HtmxRequest *request = htmx_context_get_request(http);
 	const gchar *path = htmx_request_get_path(request);
+
 	/* A nested main loop can dispatch a webhook underneath an authenticated
 	 * request. Protocol authority must never inherit the enclosing caller. */
 	boundary = venture_access_policy_enter(venture_database_get_access_policy(
 		venture_context_get_database(context)), NULL);
 	/* These protocols authenticate themselves, before accessing business
 	 * records. They do not acquire authority from browser credentials. */
-	if (!g_str_has_prefix(path, "/hooks/") && !g_str_has_prefix(path, "/federation/") &&
+	if (!public_capability_request(request) && !g_str_has_prefix(path, "/hooks/") && !g_str_has_prefix(path, "/federation/") &&
 		0 != g_strcmp0(path, "/login") && 0 != g_strcmp0(path, "/logout") && 0 != g_strcmp0(path, "/account/password"))
 	{
 		VentureAccessPolicy *policy = venture_database_get_access_policy(venture_context_get_database(context));

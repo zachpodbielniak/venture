@@ -514,14 +514,39 @@ test_watched_change_scope(void)
 
 /* Webhooks may arrive inside a nested main loop driven by an unrelated
  * authenticated request. Their protocol authority must be independent. */
+typedef struct {
+	const gchar *name;
+	HtmxMethod method;
+	const gchar *path;
+	gboolean protocol;
+} ProtocolCase;
+static const ProtocolCase protocol_cases[] = {
+	{ "/orgaccess/nested-protocol-scope", HTMX_METHOD_POST, "/hooks/forge/1", TRUE },
+	{ "/orgaccess/public-capture-scope", HTMX_METHOD_POST, "/f/token", TRUE },
+	{ "/orgaccess/public-quote-get", HTMX_METHOD_GET, "/q/token", TRUE },
+	{ "/orgaccess/public-quote-post", HTMX_METHOD_POST, "/q/token", TRUE },
+	{ "/orgaccess/public-quote-accept", HTMX_METHOD_POST, "/q/token/accept", TRUE },
+	{ "/orgaccess/private-capture-get", HTMX_METHOD_GET, "/f/token", FALSE },
+	{ "/orgaccess/private-capture-subpath", HTMX_METHOD_POST, "/f/token/other", FALSE },
+	{ "/orgaccess/private-quote-accept-get", HTMX_METHOD_GET, "/q/token/accept", FALSE },
+	{ "/orgaccess/private-quote-delete", HTMX_METHOD_DELETE, "/q/token", FALSE },
+	{ "/orgaccess/private-quote-subpath", HTMX_METHOD_POST, "/q/token/other", FALSE }
+};
 static void
-test_nested_protocol_scope(void)
+assert_local_authority(HtmxContext *http, gpointer data)
 {
+	g_assert_nonnull(venture_access_policy_get_actor(data));
+}
+
+static void
+test_nested_protocol_scope(gconstpointer data)
+{
+	const ProtocolCase *test = data;
 	g_autoptr(VentureConfig) config = venture_config_new();
 	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
 	g_autoptr(VentureContext) context = venture_context_new(config, db);
-	g_autoptr(VentureAuth) auth = venture_auth_new(context);
-	g_autoptr(HtmxRequest) request = htmx_request_new_for_path(HTMX_METHOD_POST, "/hooks/forge/1");
+	g_autoptr(VentureAuth) auth = NULL;
+	g_autoptr(HtmxRequest) request = htmx_request_new_for_path(test->method, test->path);
 	g_autoptr(HtmxContext) http = htmx_context_new(request);
 	g_autoptr(VentureAccessScope) outer = NULL;
 	VentureAccessPolicy *policy = venture_database_get_access_policy(db);
@@ -531,8 +556,10 @@ test_nested_protocol_scope(void)
 	actor.role = VENTURE_USER_ROLE_EDITOR;
 	actor.name = NULL;
 	actor.authenticated = TRUE;
+	g_object_set(config, "security-require-auth", FALSE, NULL);
+	auth = venture_auth_new(context);
 	outer = venture_access_policy_enter(policy, &actor);
-	venture_orgaccess_web_dispatch(auth, context, http, assert_protocol_authority, policy);
+	venture_orgaccess_web_dispatch(auth, context, http, test->protocol ? assert_protocol_authority : assert_local_authority, policy);
 	g_assert_nonnull(venture_access_policy_get_actor(policy));
 	g_assert_cmpint(venture_access_policy_get_actor(policy)->user_id, ==, actor.user_id);
 }
@@ -540,6 +567,7 @@ test_nested_protocol_scope(void)
 int
 main(int argc, char **argv)
 {
+	guint i;
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/orgaccess/records", test_records);
 	g_test_add_func("/orgaccess/module", test_module);
@@ -552,7 +580,8 @@ main(int argc, char **argv)
 	g_test_add_func("/orgaccess/team-revocation", test_team_revocation);
 	g_test_add_func("/orgaccess/bootstrap-rollback", test_bootstrap_rollback);
 	g_test_add_func("/orgaccess/pagination-and-picker", test_pagination_and_picker);
-	g_test_add_func("/orgaccess/nested-protocol-scope", test_nested_protocol_scope);
+	for (i = 0; i < G_N_ELEMENTS(protocol_cases); i++)
+		g_test_add_data_func(protocol_cases[i].name, &protocol_cases[i], test_nested_protocol_scope);
 	g_test_add_func("/orgaccess/watched-change-scope", test_watched_change_scope);
 	return g_test_run();
 }
