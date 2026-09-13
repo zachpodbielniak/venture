@@ -12,10 +12,7 @@ same declaration. =profile_key= is derived as =default=; its organization
 uniqueness includes soft-deleted profiles. Restore a deleted profile rather
 than replacing the organization's policy silently.
 
-The service uses existing organization-scoped chart codes and creates missing
-accounts inside the source transaction. Changing a profile affects subsequent
-posts. It does not rewrite posted history. Accounts must be active and belong
-to the source organization; the posting service enforces both.
+The service uses existing organization-scoped chart codes and creates missing accounts inside the source transaction. Existing bare codes are retained; organization-prefixed codes (=<organization-id>:<code>=) are reused or created when the bare code is absent, matching the base posting service. Changing a profile affects subsequent posts. It does not rewrite posted history. Accounts must be active and belong to the source organization; the posting service enforces both.
 
 | Leg | Profile field | Default code | Side |
 |-----+---------------+--------------+------|
@@ -133,7 +130,7 @@ formula and are not changed by this module.
 
 * Upgrade and verification
 
-Migration 000003 checks the additive sale/profile columns on both backends,
+Migration 000060 checks the additive sale/profile columns on both backends,
 including absent optional-module tables and unreconciled historical sales
 tables while sales is disabled. Existing refund dates remain NULL;
 startup invents neither dates nor historical journals. Profiles seed lazily.

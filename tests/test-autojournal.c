@@ -81,13 +81,14 @@ line_is(Fixture *f, VentureEntity *line, const gchar *code, VentureLedgerSide ex
 	g_autoptr(VentureEntity) acct = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *actual_code = NULL;
+	g_autofree gchar *scoped_code = g_strdup_printf("%" G_GINT64_FORMAT ":%s", f->org, code);
 	gint64 id;
 	VentureLedgerSide side;
 	g_object_get(line, "account-id", &id, "side", &side, "amount", &value, NULL);
 	acct = venture_database_get(f->db, VENTURE_TYPE_ACCOUNT, id, &error);
 	g_assert_no_error(error); g_assert_nonnull(acct);
 	g_object_get(acct, "code", &actual_code, NULL);
-	g_assert_cmpstr(actual_code, ==, code);
+	g_assert_true(g_strcmp0(actual_code, code) == 0 || g_strcmp0(actual_code, scoped_code) == 0);
 	g_assert_cmpint(side, ==, expected_side);
 	g_assert_cmpint(value->amount, ==, cents);
 }
@@ -186,6 +187,7 @@ refund_test(Fixture *f, gconstpointer data)
 static gint64
 balance(Fixture *f, const gchar *code)
 {
+	g_autofree gchar *scoped_code = g_strdup_printf("%" G_GINT64_FORMAT ":%s", f->org, code);
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
 	g_autoptr(VentureEntity) account = NULL;
 	g_autoptr(VentureMoney) value = NULL;
@@ -194,6 +196,13 @@ balance(Fixture *f, const gchar *code)
 	venture_query_set_organization(query, f->org);
 	venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, NULL);
 	account = venture_database_find_one(f->db, query, &error);
+	if (account == NULL && error == NULL) {
+		g_clear_object(&query);
+		query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+		venture_query_set_organization(query, f->org);
+		venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, scoped_code, NULL);
+		account = venture_database_find_one(f->db, query, &error);
+	}
 	g_assert_no_error(error); g_assert_nonnull(account);
 	value = venture_posting_service_account_balance(venture_database_get_posting_service(f->db),
 		venture_entity_get_id(account), f->org, "USD", when, &error);
@@ -344,6 +353,30 @@ profile_scope(Fixture *f, gconstpointer data)
 		g_assert_nonnull(error);
 	}
 }
+/* Switching on detailed posting must keep using the existing base chart. */
+static void
+profile_reuses_scoped_chart(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureOrganization) other = venture_organization_new();
+	g_autoptr(VentureAccount) cash = venture_account_new();
+	g_autoptr(VenturePostingProfile) profile_row = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *code = NULL;
+	gint64 org, cash_id;
+	(void)data;
+	g_object_set(other, "name", "Existing scoped chart", NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(other), NULL, &error));
+	org = venture_entity_get_id(VENTURE_ENTITY(other));
+	code = g_strdup_printf("%" G_GINT64_FORMAT ":1000", org);
+	g_object_set(cash, "organization-id", org, "code", code, "name", "Existing cash",
+		"kind", VENTURE_ACCOUNT_KIND_ASSET, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(cash), NULL, &error));
+	profile_row = venture_autojournal_service_profile(venture_database_get_autojournal_service(f->db), org, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(profile_row);
+	g_object_get(profile_row, "cash-account-id", &cash_id, NULL);
+	g_assert_cmpint(cash_id, ==, venture_entity_get_id(VENTURE_ENTITY(cash)));
+}
 static GError *
 refuse_date(VenturePostingService *posting, gint64 org, GDateTime *when, gpointer data)
 {
@@ -380,7 +413,7 @@ upgrade(Fixture *f, gconstpointer data)
 	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(record), NULL, &error));
 	/* A prior schema has refund totals, but no reliable separate refund dates. */
 	g_assert_true(venture_database_execute(f->db,
-		"ALTER TABLE sales DROP COLUMN refunded_at; DELETE FROM schema_migrations WHERE version = 3", NULL, &error));
+		"ALTER TABLE sales DROP COLUMN refunded_at; DELETE FROM schema_migrations WHERE version = 60", NULL, &error));
 	g_assert_no_error(error);
 	for (i = 0; i < 2; i++) {
 		g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
@@ -409,7 +442,7 @@ module_off(Fixture *f, gconstpointer data)
 	money(record, "fees", 300);
 	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(record), NULL, &error));
 	g_assert_no_error(error); g_assert_cmpint(balance(f, "4000"), ==, -9700);
-	g_assert_true(venture_database_execute(f->db, "DROP TABLE posting_profiles; DELETE FROM schema_migrations WHERE version = 3", NULL, &error));
+	g_assert_true(venture_database_execute(f->db, "DROP TABLE posting_profiles; DELETE FROM schema_migrations WHERE version = 60", NULL, &error));
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
 	venture_config_set_module_enabled(f->config, "autojournal", TRUE);
@@ -518,7 +551,7 @@ upgrade_disabled(Fixture *f, gconstpointer data)
 	/* A switched-off historical sales table is not reconciled at startup. */
 	venture_config_set_module_enabled(f->config, "sales", FALSE);
 	g_assert_true(venture_database_execute(f->db,
-		"DROP TABLE posting_profiles; ALTER TABLE sales DROP COLUMN refunded_at; DELETE FROM schema_migrations WHERE version = 3", NULL, &error));
+		"DROP TABLE posting_profiles; ALTER TABLE sales DROP COLUMN refunded_at; DELETE FROM schema_migrations WHERE version = 60", NULL, &error));
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
@@ -581,6 +614,7 @@ int main(int argc, char **argv)
 	g_test_add("/autojournal/refund-failure", Fixture, NULL, setup, refund_failure, teardown);
 	g_test_add("/autojournal/backfill", Fixture, NULL, setup, backfill_test, teardown);
 	g_test_add("/autojournal/profile-scope", Fixture, NULL, setup, profile_scope, teardown);
+	g_test_add("/autojournal/profile-reuses-scoped-chart", Fixture, NULL, setup, profile_reuses_scoped_chart, teardown);
 	g_test_add("/autojournal/backfill-period-guard", Fixture, NULL, setup, backfill_guard, teardown);
 	g_test_add("/autojournal/upgrade-restart", Fixture, NULL, setup, upgrade, teardown);
 	g_test_add("/autojournal/module-off", Fixture, NULL, setup, module_off, teardown);

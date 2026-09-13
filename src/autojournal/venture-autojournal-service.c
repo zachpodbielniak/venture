@@ -21,13 +21,23 @@ account(VentureDatabase *db, gint64 org, const gchar *code, const gchar *name, V
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
 	g_autoptr(VentureEntity) found = NULL;
+	g_autofree gchar *scoped_code = g_strdup_printf("%" G_GINT64_FORMAT ":%s", org, code);
 	venture_query_set_organization(query, org);
 	venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, NULL);
 	found = venture_database_find_one(db, query, error);
 	if (found != NULL) return venture_entity_get_id(found);
 	if (error != NULL && *error != NULL) return 0;
+	/* Reuse the base posting chart before creating an organization-specific
+	 * code: account codes are globally unique, including across legal entities. */
+	g_clear_object(&query);
+	query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	venture_query_set_organization(query, org);
+	venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, scoped_code, NULL);
+	found = venture_database_find_one(db, query, error);
+	if (found != NULL) return venture_entity_get_id(found);
+	if (error != NULL && *error != NULL) return 0;
 	found = VENTURE_ENTITY(venture_account_new());
-	g_object_set(found, "organization-id", org, "code", code, "name", name, "kind", kind, "active", TRUE, NULL);
+	g_object_set(found, "organization-id", org, "code", scoped_code, "name", name, "kind", kind, "active", TRUE, NULL);
 	if (!venture_database_save(db, found, NULL, error)) return 0;
 	return venture_entity_get_id(found);
 }
