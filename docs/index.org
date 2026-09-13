@@ -26,6 +26,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:money.org][Money and accounting]] — exact arithmetic, allocation, deductibility, the ledger
 - [[file:ledger.org][General journal]] — atomic posting, immutable journals, rules, reversals and authoritative balances
 - [[file:receivables.org][Customer receivables]] — receipts, credits, refunds and historical customer balances
+- [[file:payables.org][Vendor payables]] — supplier bills, payments and dated liability evidence
 - [[file:reporting.org][Reporting]] — the built-in reports and how to write one
 - [[file:forge.org][Git forges]] — linking tickets to repositories, and letting an agent do the work
 - [[file:knowledge-bases.org][Knowledge bases]] — documents the assistant can read, and how they reach it
@@ -39,7 +40,15 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:interface.org][The interface]] — the design system behind the web UI: substrates, the two registers of type, geometry, and the tokens a plugin builds on
 - [[file:extending.org][Extending]] — plugins, crispy scripts, declarative venture types, plugin modules
 - [[file:containers.org][Containers]] — the Containerfile, local compose, and a deployment example
+- [[file:mail.org][Transactional mail]] — durable outbox, SMTP, templates and operator-resolved uncertainty
+- [[file:sequences.org][Follow-up sequences]] — enrollment, scheduling, exits, delivery evidence and the mail adapter seam
 - [[file:testing.org][Testing]] — running the suite, and what it guarantees
+- [[file:activities.org][Planned activities]] — tasks, calls, meetings, reminders and the daily rep worklist
+- [[file:actions.org][Record actions]] — shared business operations and approval
+
+- [[file:banking.org][Banking]] — statement import, matching and reconciliation
+
+- [[file:statements.org][Financial statements]] — posted ledger balances, statements, comparatives and P&L reconciliation
 
 ** The shape of the thing in one page
 
@@ -64,3 +73,5 @@ The AI reads freely and cannot write unsupervised. A tool call that would change
 Two binaries, both statically linked against every vendored dependency: =venture= is the server, =venturectl= is the client. Either builds alone.
 
 - [[file:billing.org][SaaS billing]] — plans, customer subscriptions and recurring revenue
+- [[file:pipelines.org][Sales pipelines]] — configurable stages, next actions, history, loss reasons and forecasts
+- [[file:autojournal.org][Automatic journals]] — configurable sale/expense legs, dated refunds and backfill

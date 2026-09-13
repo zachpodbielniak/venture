@@ -192,7 +192,7 @@ record-type enumerations are generated from =/api/v1/schema= at startup, so a
 plugin's type is offered with no change anywhere. Writes are staged rather
 than applied unless =--apply-writes= is given: the change is queued on the
 server for somebody to approve, not merely described. =venturectl --stage=
-does the same for =create=, =update= and =delete= from the shell. It takes its credential from
+does the same for =create=, =update=, =delete= and =act= from the shell. It takes its credential from
 =VENTURE_TOKEN= and refuses =--token= outright, since an MCP server is spawned
 from a config file. See [[file:mcp.org][venturectl mcp]].
 
@@ -226,3 +226,99 @@ Direct subscription state writes are refused. The assistant can stage
 =billing_request= through its generated create tool; all CLI billing
 actions also honor =--stage=. See [[file:billing.org][SaaS billing]] for prices,
 trial activation, proration, historical report definitions and limitations.
+* Transactional mail
+
+=venturectl mail send to=... subject=... body=...= enqueues; =--html FILE=
+adds HTML. =mail test to=...= tests the configured SMTP transport immediately.
+=mail deliver [--limit N]= sweeps due messages, =mail list state=uncertain=
+shows outcomes needing an operator, and =mail retry ID= deliberately reuses
+that row and Message-ID. All accept =organization_id=N= where relevant.
+See [[file:mail.org][mail]] for uncertainty and scheduling. Actions reject
+=--stage=; =--stage create mail_message= proposes an enqueue instead.
+
+* Planned activities
+
+=venturectl activity complete ID outcome=...= completes planned work through
+the activity service, records history and advances recurrence atomically.
+=venturectl activity list mine|overdue|today= reads the signed-in user's worklist.
+The existing =activity TYPE ID= still reads a record's timeline.
+Create and edit planned work with generic =create activity= and =update activity=;
+setting =status=done= through generic writes is refused. See [[file:activities.org][activities]].
+* Vendor bills
+
+=venturectl bill approve ID [date=DATE]= approves a draft supplier bill.
+=bill pay ID [amount=MONEY] [date=DATE] [method=METHOD]= pays the outstanding
+amount or the supplied partial amount; excess cash remains vendor credit.
+=bill void ID [date=DATE]= reverses an unpaid approved bill. These call the
+same =VenturePayablesService= as the web and REST actions. Generic writes
+setting a bill's financial status are refused.
+
+=report payables PERIOD= reconstructs historical aging;
+=report vendor_statement PERIOD vendor_id=ID= reads the supplier's dated
+statement. Both accept =organization_id=, =currency= and =as_of=.
+See [[file:payables.org][vendor payables]] for credits and cash-report projections.
+* Banking actions
+
+=venturectl bank ACTION ID [JSON|@FILE]= calls the banking service over REST.
+=import= takes a bank account ID; =auto= and =reconcile= take a statement ID;
+=match=, =unmatch=, =exclude= and =create= take a transaction ID.
+=venturectl bank match AUTO STATEMENT_ID= is the bulk exact-match action.
+See [[file:banking.org][Banking]] for import mappings and action parameters.
+* Sales pipeline actions
+
+=venturectl deal move ID STAGE [NOTE]= moves a deal through
+=VentureDealService=. STAGE is a =pipeline_stage= id in the deal's pipeline.
+Fill its required fields and loss reason first with ordinary =update deal=.
+Generic updates cannot change =stage=, =stage_id= or =closed_at=.
+See [[file:pipelines.org][Sales pipelines]] for configuration and forecasting.
+* Follow-up sequences
+
+=sequence enroll ID contact_id=ID [field=value ...]= enrolls through the
+sequence service. The ID names the sequence; other fields describe the
+=enrollment=, including =deal_id=, =lead_id=, =owner_id= and
+=enrollment_reason=. =--stage sequence enroll= proposes enrollment for
+approval. The ordinary =create sequence_enrollment= path has the same
+validation and supports the assistant's standard staged create tool.
+
+=sequence run [--as-of ISO_TIMESTAMP] [organization_id=ID]= executes up to
+1000 due enrollments in one organization, defaulting to the server's default
+organization. A timestamp must carry its timezone. Omit it for now.
+=sequence status ENROLLMENT_ID= reads the enrollment and its delivery history.
+The command returns pending delivery rows; it does not send mail.
+
+Configure sequences and their steps with ordinary =create= / =update=
+commands after =describe sequence= and =describe sequence_step=. Sending
+hours and weekdays are interpreted in the sequence timezone. See
+[[file:sequences.org][follow-up sequences]] for checkpoints and the adapter contract.
+* Record actions
+
+=venturectl act TYPE ID ACTION [key=value ...]= discovers the action and
+its parameter kinds from =GET /api/v1/schema/TYPE=, then sends the generic
+action route. =--stage= proposes it for approval. Unknown names are refused.
+For example: =venturectl --stage act journal 42 post=.
+
+Journal actions are =post= and =reverse= (optional =occurred_at= and =memo=).
+Type-level =create_and_post= uses ID zero and a =journal= JSON-text parameter
+containing the header and =lines= array. All three support =--stage=.
+
+=venturectl --help= includes =act= among the commands accepting =--stage=.
+
+* Backfilling journals
+
+=venturectl post backfill [organization_id=ID] [--dry-run]= posts missing
+current sale/expense versions through the automatic-journal service, in date
+order. It requires an editor and the =autojournal= module. Omission selects
+the default organization. The response reports candidates, posted and skipped
+incomplete documents. A dry run validates the complete batch and rolls it back.
+See [[file:autojournal.org][automatic journals]] before cutting over legacy books.
+* Ledger statements
+
+#+begin_src sh
+venturectl report balance_sheet 2026-08 organization_id=1 currency=USD
+venturectl report income_statement 2026-08 organization_id=1 currency=USD compare_to=2026-07
+venturectl -f csv report general_ledger 2026-08 organization_id=1 currency=USD account_id=1
+#+end_src
+
+The =statements= reports accept =compare_to= for a prior period, =as_of= for
+an accounting cutoff, and one =organization_id= and =currency=. General
+ledger optionally accepts =account_id=. See [[file:statements.org][financial statement definitions]].

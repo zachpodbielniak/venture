@@ -36,6 +36,9 @@ static const gchar *const venture_error_slugs[] = {
 	"timeout",
 	"network",
 	"balance",
+	"mail_uncertain",
+	"mail_transient",
+	"mail_permanent",
 	NULL
 };
 
@@ -60,6 +63,9 @@ static const GEnumValue venture_error_values[] = {
 	{ VENTURE_ERROR_TIMEOUT,                  "VENTURE_ERROR_TIMEOUT",                  "timeout" },
 	{ VENTURE_ERROR_NETWORK,                  "VENTURE_ERROR_NETWORK",                  "network" },
 	{ VENTURE_ERROR_BALANCE,                  "VENTURE_ERROR_BALANCE",                  "balance" },
+	{ VENTURE_ERROR_MAIL_UNCERTAIN, "VENTURE_ERROR_MAIL_UNCERTAIN", "mail_uncertain" },
+	{ VENTURE_ERROR_MAIL_TRANSIENT, "VENTURE_ERROR_MAIL_TRANSIENT", "mail_transient" },
+	{ VENTURE_ERROR_MAIL_PERMANENT, "VENTURE_ERROR_MAIL_PERMANENT", "mail_permanent" },
 	{ 0, NULL, NULL }
 };
 

@@ -1,0 +1,125 @@
+#+title: Vendor payables
+#+description: Supplier bills, payments and dated liability evidence
+
+* The supplier's bill
+
+The =payables= module requires =finance=, =ledger= and =crm=. The last
+requirement supplies the supplier company; switching the module off hides
+its records and reports together. Bills belong to one organization and
+numbering is unique inside that organization.
+
+=vendor_bill= holds the supplier, number, bill and due dates, currency,
+status and memo. =vendor_bill_line= holds description, exact decimal
+quantity, unit price, expense account or category, and tax amount.
+Quantity is a decimal string with at most three fractional digits, parsed
+into an integer rational. Price multiplication rounds once, half to even;
+tax is then added in the same currency. No floating-point arithmetic is
+used. Tax is part of the expense cost; recoverable input-tax accounting is
+outside this module.
+
+* One financial writer
+
+=VenturePayablesService= belongs to the database and owns approval,
+allocations, vendor credits, refunds and voiding. Generic status changes
+are refused with the service named. Approval freezes the amount and due
+date in =vendor_bill_event= and posts each line's expense account against
+Accounts payable 2000. Approved lines, currency and dates cannot be edited.
+An unpaid approved bill can be voided; its approval is reversed with a new
+dated posting. Historical evidence cannot be removed through deletion,
+restoration or purge.
+
+=bill_payment= records money paid to a supplier. =bill_payment_allocation=
+applies exactly one payment or vendor credit to a bill. A payment can cover
+several bills in one transaction through the service's allocation-array
+API. A single-bill payment applies up to that bill's remaining amount;
+the excess is a =vendor_credit=. Remaining credit and bill status are
+derived from retained allocations and refunds. A =bill_refund= records
+cash returned by the supplier and reopens an allocated bill when applicable.
+Payments debit AP and credit Cash 1000. Vendor credit notes debit AP and
+credit General expenses 6900. Refunds reverse the cash movement.
+
+Every financial operation shares one transaction with its audit entries,
+allocations and journals. A failure after writing the payment leaves no
+payment or partial journal. Dated events check the fiscal-period guard
+inside that transaction; updating a derived current balance does not
+rewrite its earlier accounting date. Currency differences are refused.
+
+Account IDs on lines select active expense accounts within the bill's
+organization. Service properties select the cash, payable and default
+expense accounts. Zero selects conventional codes 1000, 2000 and 6900;
+missing default accounts are created within the transaction.
+
+* Scope
+
+Bank matching and purchase orders/receiving are separate modules. No
+historical approvals are inferred from an imported bill's current status.
+
+* Actions and historical reports
+
+The bill page has Approve and Pay actions. REST accepts
+=POST /api/v1/vendor_bill/:id/approve=, =/pay= and =/void= with ordinary
+record fields in a JSON body; =?stage=1= queues the same request for
+confirmation. The bill ID and organization come from the URL's bill.
+An omitted action date means now. Pay defaults to the outstanding amount
+and accepts =amount=, =date=, =method=, =reference=, =external_id= and
+=bank_account_id=.
+
+#+begin_src sh
+venturectl bill approve 1 date=2026-01-01
+venturectl bill pay 1 'amount=40 USD' date=2026-01-15 method=transfer
+venturectl report payables 2026-01 organization_id=1 currency=USD
+venturectl report vendor_statement 2026-01 vendor_id=1 currency=USD
+#+end_src
+
+The assistant's generated =venture_create= tool stages a =vendor_bill_event=
+with =bill_id=, =vendor_id=, =kind=approve=, =state=approved= and =date=.
+Approval invokes the service and saves the immutable event with its frozen
+amount. Creating =bill_payment= or =bill_payment_allocation= through that
+same staged tool invokes payment or credit allocation. No financial status
+is assigned through a generic bill update.
+
+Aging reconstructs approval events less dated allocations plus refunds
+before the exclusive cutoff. It uses the frozen due date, with Current,
+1–30, 31–60, 61–90, Over 90 and No due date buckets. The financial aging
+report participates in period snapshots. Vendor statements require
+=vendor_id= and show opening balance, dated movements and closing balance.
+Both select one organization and currency, retain historical evidence and
+accept =as_of=. A later payment never removes a bill from an earlier aging.
+
+* Cash-report expenses
+
+An expense with =external_id=bill_line:<line UUID>= requests conversion of
+a fully paid bill line. The service derives amount, description, category,
+venture and cash date from the line and its cash allocations. The projection
+is immutable and organization-unique. It bypasses automatic expense posting:
+approval already recognized the expense and payment already moved cash.
+An explicit document repost is refused at the journal save boundary too.
+
+This conversion is deliberately optional and narrow. One immutable expense
+has one amount and one date. It can represent cash allocations at one effective timestamp,
+without credit-note settlement or refunds; it cannot correctly represent
+partial payments on different dates. Those conversions are refused instead
+of assigning all earlier cash to the final payment date. Use the dated AP
+subledger for such bills. Expense deductibility remains the conservative
+ordinary default; the projection does not invent a tax classification.
+
+* Schema and verification
+
+Migration =000110_payables_schema.sql= is paired for SQLite and PostgreSQL.
+It verifies the metadata-created bill columns and the complete seven-table
+set, or the absent set of a never-enabled module. It creates no accounting
+history. Re-enabling the module uses ordinary additive schema reconciliation.
+
+=test-payables= covers registration, direct status refusal, approval and
+frozen dates, partial and consolidated payments, credits, refunds, voiding,
+external-ID refusal, rollback after a payment write, January close followed
+by February settlement, historical reports, real web/REST/CLI and staged
+MCP actions, and immutable cash expense conversion without duplicate posting.
+
+After conversion, a later cash refund or repayment appends a negative or
+positive expense adjustment on its own date, with a =bill_cash:= source
+identity. Exact allocation across the frozen bill lines preserves cents;
+the original expense is never edited. A line not converted to a cash-report
+expense does not acquire these optional adjustments.
+
+Default posting accounts reuse the organization's existing legacy code or its =organization-id:code= chart entry. Missing defaults use the namespaced form, so payables and the core posting rules retain one control-account balance per organization.

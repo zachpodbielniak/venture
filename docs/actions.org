@@ -1,0 +1,94 @@
+#+title: Record actions
+#+description: One service declaration for a record's business operations
+
+* Registry and service boundary
+
+The database owns =VentureActionRegistry=, exposed by its read-only
+=action-registry= property and =venture_database_get_action_registry()=.
+Actions belong to an existing record type. The entity registry's module
+mask hides their lookup and discovery when that type is disabled.
+
+=VentureAction= is a final GObject. Its construct-only properties are
+=type-name=, =name=, =label=, =description=, =parameters= (a =GPtrArray= of
+=VentureFieldSpec=), =stageable= and =roles= (the minimum authenticated role).
+Parameter values are a =GHashTable= from wire names to =JsonNode= values.
+
+A module creates a declaration and registers its service callbacks once:
+
+#+begin_src C
+action = g_object_new(VENTURE_TYPE_ACTION,
+    "type-name", "quote", "name", "accept", "label", "Accept",
+    "description", "Accept this quote", "parameters", parameters,
+    "stageable", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+venture_action_registry_register(
+    venture_database_get_action_registry(database), action,
+    quote_accept_allowed, quote_accept_invoke,
+    g_object_ref(service), g_object_unref, error);
+g_object_unref(action);
+#+end_src
+
+Registration retains the declaration and takes ownership of callback data
+only on success. Duplicate keys are refused. =allowed(action, entity, actor,
+error)= is read-only and supplies an actionable refusal; =invoke(action,
+entity, params, actor, error)= calls the module's service and returns an
+owned result record. Both retrieve their service with
+=venture_action_get_data(action)=. Business rules remain in that service.
+
+* Dispatch and signals
+
+Dispatch opens a database transaction, loads the current record, checks
+its live state and type, the authenticated role, parameter names and kinds,
+and the service's =allowed= callback. It emits =performing= with the
+declaration and record. This =RUN_LAST= signal accepts an owned =GError *=
+as a veto; the first error stops emission and rolls back the transaction.
+
+Dispatch reloads the target after handlers and checks eligibility again,
+then calls =invoke=, commits its transaction level and emits =performed=
+with the declaration and result. An enclosing transaction may still roll
+back. Listeners must defer external effects until its successful commit.
+
+* Approval
+
+An action confirmation carries kind =action=, its action name, target
+version and copied parameter values. Staging checks eligibility and writes
+nothing. Approval reloads the target, refuses a changed version and calls
+the same registry dispatch, including =allowed= and the role check. A
+refused action attempt is dropped and must be proposed again.
+
+The approval card and invocation each retain a detached snapshot of nested parameter values. Reusing or modifying the caller's JSON after staging cannot change what the operator sees or what approval executes.
+
+Trusted transports use =venture_confirmation_store_approve_as()= with the
+authenticated approver's role. Internal callers using =approve()= must name
+an active user; that user's current role is looked up at approval time.
+
+* Generated surfaces
+
+The schema includes each type's action declarations. REST dispatches
+=POST /api/v1/:type/:id/actions/:action=, and =venturectl act TYPE ID ACTION
+[key=value ...]= derives parameter conversion from that schema. =--stage=
+uses the same confirmation queue. Unknown parameters are refused.
+
+Record pages render a button and parameter form for each currently allowed
+action. Forms POST the generic route and return to the resulting record.
+The REST route accepts JSON or those generated form values.
+
+The assistant and MCP derive =venture_TYPE_ACTION= tools for stageable
+actions. They always propose actions for approval, even under an autonomous
+policy or MCP's =--apply-writes=. Non-stageable actions have no generated
+assistant tool. Existing hand-written release, forge, ticket and KB actions
+remain unchanged; migrating their declarations is follow-up work.
+
+* Type-level actions
+
+A =type-level= declaration acts on an unsaved instance and uses target ID
+zero. It is omitted from existing record pages. Its generated tool makes
+=id= optional; its generic REST and CLI paths accept zero. The confirmation
+holds parameters without writing a draft, and approval invokes the registry
+with a new instance. Journal's =create_and_post= is the first example.
+
+Parameter names are unique lowercase wire names. =id= is reserved for the
+target; sensitive parameter declarations are refused because generic
+schema and approval discovery would expose them. Declarations are copied
+at construction and when their parameter metadata is read. Enum choices
+and other field-spec constraints apply alongside kind and required checks.
+Assistant tools refresh from the registry before discovery and new turns.
