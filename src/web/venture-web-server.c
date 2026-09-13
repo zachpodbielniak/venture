@@ -618,7 +618,9 @@ venture_web_require_for_type(
 
 	needed = ordinary;
 
-	if ((VENTURE_TYPE_USER == entity_type) ||
+	if ((VENTURE_TYPE_FEDERATION_PEER == entity_type) ||
+	    (VENTURE_TYPE_FEDERATION_GRANT == entity_type) ||
+	    (VENTURE_TYPE_USER == entity_type) ||
 	    (VENTURE_TYPE_API_TOKEN == entity_type))
 		needed = VENTURE_USER_ROLE_OWNER;
 
@@ -693,6 +695,13 @@ venture_web_type_accepts_writes(
 	GType	  entity_type,
 	GError	**error
 ){
+	if (VENTURE_TYPE_FEDERATION_REPLICA == entity_type)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+			"Use federation replica operations to edit or synchronize a working copy");
+		return FALSE;
+	}
+
 	if (VENTURE_TYPE_LEDGER_ENTRY == entity_type)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
@@ -1280,6 +1289,11 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		),
 		NULL,
 		"forge"
+	},
+	{
+		"/federation", "Federation",
+		VENTURE_ICON("<path d=\"M3 12h18M12 3v18\"/>"),
+		NULL, "federation"
 	},
 	{
 		"/webhooks", "Webhooks",
@@ -8558,6 +8572,15 @@ venture_web_ui_detail(
 	}
 
 	g_string_append(content, "</dl></div></div>");
+
+	if (venture_web_module_enabled(self, "federation") &&
+		venture_entity_type_get_federation_access(entity_type) &&
+		venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER, NULL))
+	{
+		g_string_append(content, "<section class=\"card\"><h2>Federation sharing</h2><p>This record stays private unless explicitly granted. Use its UUID to select exact fields and peers.</p><code>");
+		venture_html_escape_append(content, venture_entity_get_uuid(record));
+		g_string_append(content, "</code><p><a class=\"btn\" href=\"/e/federation_grant/new\">Create sharing grant</a> <a href=\"/federation\">Federation workspace</a></p></section>");
+	}
 
 	venture_web_append_related(self, content, record);
 
@@ -27448,6 +27471,8 @@ venture_web_api_ticket_draft(
 }
 
 
+#include "venture-web-federation.inc"
+
 VentureWebServer *
 venture_web_server_new(
 	VentureContext	 *context,
@@ -27825,6 +27850,14 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/:type/:id/restore",
 	                 venture_web_api_restore, self);
 
+	htmx_router_get(router, "/federation/v1/identity", venture_web_federation_identity, self);
+	htmx_router_post(router, "/federation/v1/request", venture_web_federation_receive, self);
+	htmx_router_post(router, "/api/v1/federation", venture_web_api_federation, self);
+	htmx_router_get(router, "/federation", venture_web_ui_federation, self);
+	htmx_router_get(router, "/federation/replicas/:id", venture_web_ui_federation_replica, self);
+	htmx_router_post(router, "/federation/pull", venture_web_ui_federation_write, self);
+	htmx_router_post(router, "/federation/replicas/:id/:action", venture_web_ui_federation_write, self);
+
 	htmx_router_get(router, "/api/v1/:type", venture_web_api_list, self);
 	htmx_router_post(router, "/api/v1/:type", venture_web_api_create, self);
 	htmx_router_get(router, "/api/v1/:type/:id", venture_web_api_get, self);
@@ -27845,6 +27878,45 @@ venture_web_server_start(
 
 	g_return_val_if_fail(VENTURE_IS_WEB_SERVER(self), FALSE);
 
+	/* Honor the existing TLS settings. A partially configured certificate
+	 * must fail closed, never start a plaintext listener by accident. */
+	{
+		g_autofree gchar *certificate = NULL;
+		g_autofree gchar *private_key = NULL;
+		g_autofree gchar *bind = NULL;
+		g_object_get(venture_context_get_config(self->context),
+			"server-tls-certificate", &certificate,
+			"server-tls-private-key", &private_key,
+			"server-bind-address", &bind, NULL);
+		if (!venture_string_is_empty(certificate) || !venture_string_is_empty(private_key))
+		{
+			g_autoptr(GTlsCertificate) tls = NULL;
+			g_autoptr(GInetAddress) address = NULL;
+			g_autoptr(GSocketAddress) socket_address = NULL;
+			SoupServer *server = htmx_server_get_soup_server(self->server);
+			GSList *uris;
+			tls = g_tls_certificate_new_from_files(certificate, private_key, error);
+			if (!tls) return FALSE;
+			address = g_inet_address_new_from_string(bind);
+			if (!address)
+			{
+				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+					"TLS bind address must be an IP address");
+				return FALSE;
+			}
+			soup_server_set_tls_certificate(server, tls);
+			socket_address = g_inet_socket_address_new(address, self->port);
+			if (!soup_server_listen(server, socket_address, SOUP_SERVER_LISTEN_HTTPS, error))
+				return FALSE;
+			uris = soup_server_get_uris(server);
+			g_free(self->base_url);
+			self->base_url = g_uri_to_string((GUri *)uris->data);
+			g_slist_free_full(uris, (GDestroyNotify)g_uri_unref);
+			venture_federation_sync_start(self->context);
+			return TRUE;
+		}
+	}
+
 	if (!htmx_server_start(self->server, &local_error))
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NETWORK,
@@ -27854,6 +27926,7 @@ venture_web_server_start(
 		return FALSE;
 	}
 
+	venture_federation_sync_start(self->context);
 	return TRUE;
 }
 
@@ -27862,6 +27935,8 @@ venture_web_server_stop(VentureWebServer *self)
 {
 	g_return_if_fail(VENTURE_IS_WEB_SERVER(self));
 
+	venture_federation_sync_stop(self->context);
+	soup_server_disconnect(htmx_server_get_soup_server(self->server));
 	htmx_server_stop(self->server);
 }
 

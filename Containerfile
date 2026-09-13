@@ -51,6 +51,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         sqlite-devel \
         libpq-devel \
         readline-devel \
+        openssl-devel \
         gobject-introspection-devel \
         poppler-glib-devel \
         libetpan-devel \

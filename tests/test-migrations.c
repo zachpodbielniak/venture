@@ -34,7 +34,7 @@ test_upgrade_restart(void)
 			"SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations", NULL, &error);
 		g_assert_no_error(error);
 		g_assert_true(orm_result_next(result));
-		g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 1);
+		g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 2);
 		g_clear_object(&result);
 		result = venture_database_query_raw(database,
 			"SELECT amount FROM historical_data", NULL, &error);
@@ -251,7 +251,7 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/postgresql", test_postgresql);
 	g_test_add_func("/migrations/upgrade-restart", test_upgrade_restart);
 	g_test_add_data_func("/migrations/checksum", "UPDATE schema_migrations SET checksum = 'changed'", test_history_refusal);
-	g_test_add_data_func("/migrations/unknown-version", "UPDATE schema_migrations SET version = 999999", test_history_refusal);
+	g_test_add_data_func("/migrations/unknown-version", "UPDATE schema_migrations SET version = 999999 WHERE version = 1", test_history_refusal);
 	g_test_add_func("/migrations/batch-rollback-retry", test_batch_rollback);
 	g_test_add_func("/migrations/nested-refused", test_nested_refused);
 	return g_test_run();

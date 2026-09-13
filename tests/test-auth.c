@@ -1131,6 +1131,15 @@ test_auth_pages_refuse_anonymous_requests(
 
 	/* Webhooks name the host this install's data is posted to, and the
 	 * assistant's three judgements read a ticket's whole thread. */
+	/* Federation has its own peer authentication; local controls still need
+	 * local sessions and cannot be reached with a peer signature. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/federation"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/federation/replicas/1"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/federation/pull", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/federation/replicas/1/edit", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/federation/replicas/1/sync", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/federation/replicas/1/resolve", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/federation", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/webhooks"),
 	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
@@ -3539,6 +3548,29 @@ test_auth_browser_token_stores_only_a_hash(
 	g_assert_true(g_str_has_prefix(secret + 3, prefix));
 }
 
+static void
+test_federation_owner_boundary(ServerFixture *fixture, gconstpointer data)
+{
+	g_autofree gchar *editor = NULL;
+	g_autofree gchar *owner = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	g_object_set(fixture->config, "federation-enabled", TRUE, NULL);
+	g_assert_true(venture_database_migrate(fixture->database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	server_fixture_create_user(fixture, "fed-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	server_fixture_create_user(fixture, "fed-owner", "owner-long-password", VENTURE_USER_ROLE_OWNER, NULL);
+	editor = server_fixture_login(fixture, "fed-editor", "editor-long-password");
+	owner = server_fixture_login(fixture, "fed-owner", "owner-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/federation_peer", editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/federation_grant", editor, "", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/federation_peer", owner, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/federation_replica", owner, "", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/federation", editor, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+	/* Unsigned peers cannot become local editors, even on an enabled module. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/federation/v1/request", NULL, "", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+}
+
 int
 main(
 	int	  argc,
@@ -3715,5 +3747,6 @@ main(
 
 #undef ADD
 
+	g_test_add("/auth/federation-owner-boundary", ServerFixture, NULL, server_fixture_set_up, test_federation_owner_boundary, server_fixture_tear_down);
 	return g_test_run();
 }

@@ -381,3 +381,12 @@ logging:
 
   # Log every request line.
   access_log: true
+
+# Private by default. See docs/federation.org before exchanging public keys.
+federation:
+  enabled: false
+  mode: allowlist
+  origin: ""             # May differ from server.base_url; exact HTTPS origin.
+  key_file: ""           # Owner-only Ed25519 PEM identity, separate from TLS.
+  ca_file: ""            # Empty uses system trust; never disables verification.
+  sync_interval: 60      # One local replica per interval; 0 means manual only.

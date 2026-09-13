@@ -61,6 +61,19 @@ typedef struct
 	{ name, section, key, G_TYPE_BOXED, NULL, NULL, 0, FALSE, blurb }
 
 static const VentureConfigSetting venture_config_settings[] = {
+	VC_BOOL("federation-enabled", "federation", "enabled", FALSE,
+	        "Opt in to federation; records remain private without grants"),
+	VC_INT("federation-sync-interval", "federation", "sync_interval", 60,
+	       "Seconds between automatic replica sync attempts; zero disables automatic sync"),
+	VC_STR("federation-mode", "federation", "mode", "allowlist",
+	       "allowlist or global; global grants never permit remote writes"),
+	VC_STR("federation-origin", "federation", "origin", "",
+	       "Canonical public HTTPS origin without a trailing slash"),
+	VC_STR("federation-ca-file", "federation", "ca_file", "",
+	       "Optional PEM trust anchors for a private federation CA; empty uses system trust"),
+	VC_STR("federation-key-file", "federation", "key_file", "",
+	       "Owner-only Ed25519 PEM private key file"),
+
 	VC_STR ("server-bind-address", "server", "bind_address", "127.0.0.1",
 	        "Address to listen on"),
 	VC_INT ("server-port", "server", "port", 8747, "Port to listen on"),

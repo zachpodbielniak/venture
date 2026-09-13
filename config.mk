@@ -195,7 +195,7 @@ DEPS_CLI := $(DEPS_CORE) libsoup-3.0
 
 # Needed by the server on top of the CLI set. libxml-2.0 comes in via
 # ai-glib, which parses XML responses from some providers.
-DEPS_SERVER := $(DEPS_CLI) libxml-2.0
+DEPS_SERVER := $(DEPS_CLI) libxml-2.0 openssl
 
 ifeq ($(SQLITE),1)
     DEPS_SERVER += sqlite3
@@ -518,7 +518,7 @@ endif
 # on the host.
 FEDORA_DEPS := gcc make pkgconf-pkg-config \
                glib2-devel libyaml-devel json-glib-devel libsoup3-devel \
-               libxml2-devel sqlite-devel libpq-devel readline-devel \
+               libxml2-devel sqlite-devel libpq-devel readline-devel openssl-devel \
                gobject-introspection-devel poppler-glib-devel \
                libarchive-devel
 

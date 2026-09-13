@@ -572,6 +572,9 @@ venture_entity_registry_describe(
 	json_builder_add_string_value(builder,
 		venture_entity_get_table_name(prototype));
 
+	json_builder_set_member_name(builder, "federation_access");
+	json_builder_add_int_value(builder, venture_entity_type_get_federation_access(G_OBJECT_TYPE(prototype)));
+
 	json_builder_set_member_name(builder, "fields");
 	json_builder_begin_array(builder);
 
@@ -704,6 +707,9 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_sprint_get_type,
 		venture_agent_budget_get_type,
 
+		venture_federation_replica_get_type,
+		venture_federation_peer_get_type,
+		venture_federation_grant_get_type,
 		venture_webhook_get_type,
 		venture_webhook_delivery_get_type,
 		venture_routing_rule_get_type,

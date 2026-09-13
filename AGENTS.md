@@ -75,8 +75,8 @@ first seven columns were empty.
   Miss one and the audit writer dereferences an uninitialised stack pointer,
   which is a segfault a long way from the edit. Adding `approved_by` did
   exactly that to `tests/test-database.c`.
-- **`/api/v1/health` is the only authenticated-by-nothing route besides the
-  webhook**, because a container healthcheck runs before anybody has
+- **`/api/v1/health` needs no credentials, alongside the
+  webhook and opt-in federation identity discovery**, because a container healthcheck runs before anybody has
   credentials. It may say what this *build* can do — the version, the
   backend, whether staging exists — and must never say what this *install* is
   doing. A count of pending confirmations was drafted for it and removed for
@@ -157,7 +157,7 @@ first seven columns were empty.
   runner uses `venture_work_tools_register()` instead, which canonicalises
   every path against the checkout — and compares against `root + "/"`, not
   `root`, or a sibling named `<root>-evil` passes.
-- **The webhook is the only unauthenticated route, and the HMAC is its
+- **The webhook bypasses local sessions, and the HMAC is its
   guard.** `/hooks/forge/:id` has no session check by design. A forge with no
   webhook secret set must be *refused*, not trusted — podomation's forgejo
   module returns TRUE in that case, which is why VENTURE reimplements the
@@ -735,3 +735,11 @@ than one that fails.
 ## Versioned database migrations
 
 Every database feature ships paired, append-only SQL in `migrations/sqlite/` and `migrations/postgresql/`, meaningful upgrade/restart/failure tests, and docs in the same change. Read `docs/migrations.org` before editing persistent fields or storage behavior. Keep the GObject field table authoritative; the SQL expresses backfills and backend-specific invariants, and runs after additive schema reconciliation but before seeds. Never edit an applied script or manage transactions/history inside it. Test representative old data and affected disabled-module configurations; do not infer historical accounting events from current status. `OrmMigrator` validates checksums and unknown versions before schema reconciliation and applies each SQL batch atomically. Build embeds the complete script history into the server. Run DEBUG build/tests and ShellCheck for generator changes.
+
+## Federation
+
+- Federation defaults off and uses `federation.origin`, independently of `server.base_url`. Named peers require exact HTTPS origins and verified Ed25519 pins; global access is only explicit global read grants. Neither mode implicitly shares records.
+- `/federation/v1/*` uses application signatures rather than local sessions. Responses must be signed and bound to the request, including discovery's cryptographically random caller nonce: TLS termination alone is not the peer's identity. Local administration still requires ordinary roles.
+- Record types opt in through class metadata; grants enumerate exact UUIDs and fields. Never infer sharing from an organization, a parent record or a reference. Sensitive fields and credential-bearing URIs remain excluded.
+- Replicas are durable isolated working copies, not local accounting rows. Preserve unresolved three-way conflicts and local versions across every network call; never mutate a merge base via `json_node_copy()` because JSON-GLib shares nested objects.
+- Reconnect runs on the main context, never a database worker. Peer or grant revocation is checked again on each request. Test the actual HTTPS path with `test-federation`, including outages, restart, replay, response proofs and local authentication boundaries.

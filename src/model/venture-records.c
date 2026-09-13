@@ -63,8 +63,8 @@ static const VentureFieldDecl venture_organization_fields[] = {
 	              VENTURE_COLUMN_FLAG_INDEXED)
 };
 
-VENTURE_DEFINE_ENTITY(VentureOrganization, venture_organization,
-                      venture_organization_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureOrganization, venture_organization, venture_organization_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 static const VentureFieldDecl venture_venture_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", "What you call this venture"),
@@ -106,7 +106,8 @@ static const VentureFieldDecl venture_venture_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
-VENTURE_DEFINE_ENTITY(VentureVenture, venture_venture, venture_venture_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureVenture, venture_venture, venture_venture_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 /* ==========================================================================
  * Catalogue
@@ -153,7 +154,8 @@ static const VentureFieldDecl venture_product_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
-VENTURE_DEFINE_ENTITY(VentureProduct, venture_product, venture_product_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureProduct, venture_product, venture_product_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 static const VentureFieldDecl venture_inventory_item_fields[] = {
 	VENTURE_FIELD_REF("product-id", "Product", NULL, "product",
@@ -177,8 +179,8 @@ static const VentureFieldDecl venture_inventory_item_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
-VENTURE_DEFINE_ENTITY(VentureInventoryItem, venture_inventory_item,
-                      venture_inventory_item_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureInventoryItem, venture_inventory_item, venture_inventory_item_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 /*
  * Quantity on hand is deliberately absent as a stored field. It is the sum
@@ -208,8 +210,8 @@ static const VentureFieldDecl venture_inventory_txn_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
-VENTURE_DEFINE_ENTITY(VentureInventoryTxn, venture_inventory_txn,
-                      venture_inventory_txn_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureInventoryTxn, venture_inventory_txn, venture_inventory_txn_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 /* ==========================================================================
  * Revenue
@@ -257,7 +259,8 @@ static const VentureFieldDecl venture_sale_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
-VENTURE_DEFINE_ENTITY(VentureSale, venture_sale, venture_sale_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureSale, venture_sale, venture_sale_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 /*
  * Reads a money-valued property, substituting zero for an unset one so the
@@ -405,7 +408,8 @@ static const VentureFieldDecl venture_expense_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
-VENTURE_DEFINE_ENTITY(VentureExpense, venture_expense, venture_expense_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureExpense, venture_expense, venture_expense_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 VentureMoney *
 venture_expense_get_deductible_amount(
@@ -474,7 +478,8 @@ static const VentureFieldDecl venture_account_fields[] = {
 	              VENTURE_COLUMN_FLAG_INDEXED)
 };
 
-VENTURE_DEFINE_ENTITY(VentureAccount, venture_account, venture_account_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureAccount, venture_account, venture_account_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 static const VentureFieldDecl venture_ledger_entry_fields[] = {
 	VENTURE_FIELD_REF("journal-line-id", "Journal line",
@@ -506,8 +511,8 @@ static const VentureFieldDecl venture_ledger_entry_fields[] = {
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_INDEXED)
 };
 
-VENTURE_DEFINE_ENTITY(VentureLedgerEntry, venture_ledger_entry,
-                      venture_ledger_entry_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureLedgerEntry, venture_ledger_entry, venture_ledger_entry_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 static const VentureFieldDecl venture_tax_category_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", NULL),
@@ -525,8 +530,8 @@ static const VentureFieldDecl venture_tax_category_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
-VENTURE_DEFINE_ENTITY(VentureTaxCategory, venture_tax_category,
-                      venture_tax_category_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureTaxCategory, venture_tax_category, venture_tax_category_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 /* ==========================================================================
  * Relations
@@ -574,7 +579,8 @@ static const VentureFieldDecl venture_company_fields[] = {
 	              VENTURE_COLUMN_FLAG_INDEXED)
 };
 
-VENTURE_DEFINE_ENTITY(VentureCompany, venture_company, venture_company_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCompany, venture_company, venture_company_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 static const VentureFieldDecl venture_contact_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", NULL),
@@ -607,7 +613,8 @@ static const VentureFieldDecl venture_contact_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
-VENTURE_DEFINE_ENTITY(VentureContact, venture_contact, venture_contact_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureContact, venture_contact, venture_contact_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 static const VentureFieldDecl venture_interaction_fields[] = {
 	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact",
@@ -631,8 +638,8 @@ static const VentureFieldDecl venture_interaction_fields[] = {
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 };
 
-VENTURE_DEFINE_ENTITY(VentureInteraction, venture_interaction,
-                      venture_interaction_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureInteraction, venture_interaction, venture_interaction_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 static const VentureFieldDecl venture_deal_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", NULL),
@@ -659,7 +666,8 @@ static const VentureFieldDecl venture_deal_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
-VENTURE_DEFINE_ENTITY(VentureDeal, venture_deal, venture_deal_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureDeal, venture_deal, venture_deal_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 VentureMoney *
 venture_deal_get_weighted_value(
@@ -730,7 +738,8 @@ static const VentureFieldDecl venture_campaign_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
-VENTURE_DEFINE_ENTITY(VentureCampaign, venture_campaign, venture_campaign_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCampaign, venture_campaign, venture_campaign_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 gdouble
 venture_campaign_get_roi(VentureCampaign *self)
@@ -773,8 +782,8 @@ static const VentureFieldDecl venture_newsletter_fields[] = {
 	              VENTURE_COLUMN_FLAG_INDEXED)
 };
 
-VENTURE_DEFINE_ENTITY(VentureNewsletter, venture_newsletter,
-                      venture_newsletter_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureNewsletter, venture_newsletter, venture_newsletter_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 static const VentureFieldDecl venture_subscriber_fields[] = {
 	VENTURE_FIELD_REF("newsletter-id", "Newsletter", NULL, "newsletter",
@@ -799,8 +808,8 @@ static const VentureFieldDecl venture_subscriber_fields[] = {
 	                  VENTURE_COLUMN_FLAG_NONE)
 };
 
-VENTURE_DEFINE_ENTITY(VentureSubscriber, venture_subscriber,
-                      venture_subscriber_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureSubscriber, venture_subscriber, venture_subscriber_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 static const VentureFieldDecl venture_post_fields[] = {
 	VENTURE_FIELD_NAME("title", "Title", NULL),
@@ -830,7 +839,8 @@ static const VentureFieldDecl venture_post_fields[] = {
 	              VENTURE_COLUMN_FLAG_NONE)
 };
 
-VENTURE_DEFINE_ENTITY(VenturePost, venture_post, venture_post_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VenturePost, venture_post, venture_post_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 /* ==========================================================================
  * Thinking
@@ -862,7 +872,8 @@ static const VentureFieldDecl venture_idea_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
-VENTURE_DEFINE_ENTITY(VentureIdea, venture_idea, venture_idea_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureIdea, venture_idea, venture_idea_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 gdouble
 venture_idea_get_score(VentureIdea *self)
@@ -907,8 +918,8 @@ static const VentureFieldDecl venture_research_note_fields[] = {
 	              VENTURE_COLUMN_FLAG_INDEXED)
 };
 
-VENTURE_DEFINE_ENTITY(VentureResearchNote, venture_research_note,
-                      venture_research_note_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureResearchNote, venture_research_note, venture_research_note_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 
 /* ==========================================================================
@@ -1296,7 +1307,8 @@ static const VentureFieldDecl venture_ticket_fields[] = {
 	                   "What they said about it")
 };
 
-VENTURE_DEFINE_ENTITY(VentureTicket, venture_ticket, venture_ticket_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureTicket, venture_ticket, venture_ticket_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 /*
  * One message on a ticket.
@@ -1319,8 +1331,8 @@ static const VentureFieldDecl venture_ticket_comment_fields[] = {
 	              VENTURE_COLUMN_FLAG_INDEXED)
 };
 
-VENTURE_DEFINE_ENTITY(VentureTicketComment, venture_ticket_comment,
-                      venture_ticket_comment_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureTicketComment, venture_ticket_comment, venture_ticket_comment_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 /*
  * A ticket related to anything else in the system.
@@ -1406,8 +1418,8 @@ static const VentureFieldDecl venture_milestone_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
-VENTURE_DEFINE_ENTITY(VentureMilestone, venture_milestone,
-                      venture_milestone_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureMilestone, venture_milestone, venture_milestone_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 /*
  * A version that went, or will go, out of the door.
@@ -1444,7 +1456,8 @@ static const VentureFieldDecl venture_release_fields[] = {
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_INDEXED)
 };
 
-VENTURE_DEFINE_ENTITY(VentureRelease, venture_release, venture_release_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureRelease, venture_release, venture_release_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 /*
  * One run of a CI workflow, or a build somebody recorded by hand.
@@ -1487,7 +1500,8 @@ static const VentureFieldDecl venture_build_fields[] = {
 	VENTURE_FIELD_TEXT("log-excerpt", "Log", "The part of the log that matters")
 };
 
-VENTURE_DEFINE_ENTITY(VentureBuild, venture_build, venture_build_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureBuild, venture_build, venture_build_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 /*
  * Somewhere a release runs.
@@ -1507,8 +1521,8 @@ static const VentureFieldDecl venture_environment_fields[] = {
 	VENTURE_FIELD_TEXT("description", "Description", NULL)
 };
 
-VENTURE_DEFINE_ENTITY(VentureEnvironment, venture_environment,
-                      venture_environment_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureEnvironment, venture_environment, venture_environment_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 /*
  * A release arriving in an environment. The latest one that succeeded is
@@ -1533,8 +1547,8 @@ static const VentureFieldDecl venture_deployment_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
-VENTURE_DEFINE_ENTITY(VentureDeployment, venture_deployment,
-                      venture_deployment_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureDeployment, venture_deployment, venture_deployment_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 /*
  * Something going wrong where a release runs. Closes the loop: an incident
@@ -1565,8 +1579,8 @@ static const VentureFieldDecl venture_incident_fields[] = {
 	VENTURE_FIELD_TEXT("postmortem", "Postmortem", "Why, and what changes")
 };
 
-VENTURE_DEFINE_ENTITY(VentureIncident, venture_incident,
-                      venture_incident_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureIncident, venture_incident, venture_incident_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 /*
  * A link between any two records.
@@ -2048,7 +2062,8 @@ static const VentureFieldDecl venture_worklog_fields[] = {
 	VENTURE_FIELD_TEXT("note", "Note", "What the time went on")
 };
 
-VENTURE_DEFINE_ENTITY(VentureWorklog, venture_worklog, venture_worklog_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureWorklog, venture_worklog, venture_worklog_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 /*
  * A fixed window of work with a goal. Tickets are planned into it by their
@@ -2073,7 +2088,8 @@ static const VentureFieldDecl venture_sprint_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
-VENTURE_DEFINE_ENTITY(VentureSprint, venture_sprint, venture_sprint_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureSprint, venture_sprint, venture_sprint_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
 
 /* ==========================================================================
  * Webhooks out

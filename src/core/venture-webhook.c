@@ -34,7 +34,7 @@ venture_webhook_type_is_quiet(const gchar *type_name)
 	static const gchar *const quiet[] = {
 		"webhook", "webhook_delivery", "notification", "watch",
 		"audit_entry", "chat_thread", "chat_message", "kb_chunk",
-		"kb_link", "api_token", "user", NULL
+		"kb_link", "federation_replica", "federation_peer", "federation_grant", "api_token", "user", NULL
 	};
 	gsize i;
 

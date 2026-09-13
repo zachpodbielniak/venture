@@ -400,3 +400,21 @@ Check it against reality with `venturectl --help` and
 cannot drift.
 
 Customer statements require `customer_id`: `venturectl report customer_statement 2026-01 customer_id=1 currency=USD organization_id=1`. Report options also accept `venture_id` and `group_by`; REST, the report page and CSV exports preserve these filters. Receivables requires event history; existing invoices without issue events require an explicit migration, not a guessed balance.
+
+## Federation and offline working copies
+
+Federation is opt-in. `federation_peer` and `federation_grant` are owner-only generic records; use `describe` first. Peer keys are public Ed25519 base64 pins verified out of band, never private keys. Federation uses its own `federation.origin`, which may differ from the ordinary web URL. The assistant cannot administer federation trust.
+
+`venturectl federation JSON` sends one operation to the local authenticated server. Examples:
+
+```sh
+venturectl federation '{"action":"identity"}'
+venturectl federation '{"action":"remote","peer_id":1,"operation":{"action":"list"}}'
+venturectl federation '{"action":"pull_collection","peer_id":1,"collection":"joint_business","offset":0}'
+venturectl federation '{"action":"pull","peer_id":1,"type":"venture","uuid":"UUID"}'
+venturectl federation '{"action":"edit","id":1,"version":1,"fields":{"description":"Offline work"}}'
+venturectl federation '{"action":"sync","id":1}'
+venturectl federation '{"action":"resolve","id":1,"version":5,"field":"description","keep_local":false}'
+```
+
+Collection pulls return at most ten results, `next_offset` and `more`; continue pages while `more` is true and inspect per-record errors. Pull imports/merges without pushing; sync pushes conflict-free changes with an expected remote version. Edits require the local replica version. A conflict blocks that record until resolved; choosing remote can accept a removed/revoked field. Never update `federation_replica` through generic CRUD: its merge state belongs to the service. Copies remain usable during outages but are not authoritative local accounting rows. New source objects and binary attachments are not created/copied offline. See `docs/federation.org` for key exchange, grants, scheduling and revocation.

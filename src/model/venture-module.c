@@ -420,6 +420,13 @@ static GType (*const venture_module_tickets_types[]) (void) = {
 	NULL
 };
 
+static GType (*const venture_module_federation_types[]) (void) = {
+	venture_federation_replica_get_type,
+	venture_federation_peer_get_type,
+	venture_federation_grant_get_type,
+	NULL
+};
+
 static GType (*const venture_module_webhooks_types[]) (void) = {
 	venture_webhook_get_type,
 	venture_webhook_delivery_get_type,
@@ -601,6 +608,12 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		venture_module_requires_core, venture_module_suggests_tickets,
 		venture_module_tickets_types, venture_module_reports_tickets, NULL,
 		FALSE
+	},
+	{
+		"federation", "Federation",
+		"Explicit object sharing between authenticated servers.",
+		venture_module_requires_core, NULL,
+		venture_module_federation_types, NULL, "federation-enabled", FALSE
 	},
 	{
 		"webhooks", "Webhooks",

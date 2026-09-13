@@ -1938,6 +1938,27 @@ venture_cli_command_dashboard(
  *
  * The loop at a glance.
  */
+/* Federation operations use the same core service through the local server.
+ * The JSON operation allows future record types without per-type commands. */
+static gint
+venture_cli_command_federation(VentureCli *cli, gchar **args, GError **error)
+{
+	g_autoptr(JsonNode) operation = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	if (!args[1] || args[2])
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"Usage: venturectl federation '{\"action\":\"identity\"}'");
+		return -1;
+	}
+	operation = venture_json_parse(args[1], error);
+	if (!operation) return -1;
+	answer = venture_cli_request(cli, "POST", "/api/v1/federation", operation, error);
+	if (!answer) return -1;
+	venture_cli_output(cli, answer);
+	return 0;
+}
+
 static gint
 venture_cli_command_factory(
 	VentureCli	 *cli,
@@ -3155,6 +3176,7 @@ main(
 		"                               record_link ID\n"
 		"  modules                      list the server's modules and which\n"
 		"                               are on; -f json for the detail\n"
+		"  federation JSON              identity, remote, pull, edit and sync\n"
 		"  factory                      the software factory at a glance\n"
 		"  release changelog ID         draft a release's changelog from\n"
 		"                               its tickets; --replace overwrites\n"
@@ -3353,6 +3375,8 @@ main(
 		result = venture_cli_command_modules(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "links"))
 		result = venture_cli_command_links(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "federation"))
+		result = venture_cli_command_federation(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "factory"))
 		result = venture_cli_command_factory(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "release"))

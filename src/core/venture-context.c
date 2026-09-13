@@ -94,6 +94,7 @@ venture_context_new(
 
 	/* The cross-row checks a polymorphic link needs, on every writer. */
 	venture_record_link_install_validator(database);
+	venture_federation_install_validators(database);
 
 	/* And the ones a dashboard needs: a widget kind that exists, a
 	 * report that exists, one home page at a time. */

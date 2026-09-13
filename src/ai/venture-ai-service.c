@@ -169,7 +169,9 @@ venture_ai_tool_input(AiToolUse *tool_use)
 static gboolean
 venture_ai_type_is_readable(GType entity_type)
 {
-	return (VENTURE_TYPE_USER != entity_type) &&
+	return (VENTURE_TYPE_FEDERATION_PEER != entity_type) &&
+	       (VENTURE_TYPE_FEDERATION_GRANT != entity_type) &&
+	       (VENTURE_TYPE_USER != entity_type) &&
 	       (VENTURE_TYPE_API_TOKEN != entity_type) &&
 	       (VENTURE_TYPE_CHAT_THREAD != entity_type) &&
 	       (VENTURE_TYPE_CHAT_MESSAGE != entity_type);
@@ -198,7 +200,8 @@ venture_ai_type_is_readable(GType entity_type)
 static gboolean
 venture_ai_type_is_writable(GType entity_type)
 {
-	return venture_ai_type_is_readable(entity_type) &&
+	return (VENTURE_TYPE_FEDERATION_REPLICA != entity_type) &&
+	       venture_ai_type_is_readable(entity_type) &&
 	       (VENTURE_TYPE_AUDIT_ENTRY != entity_type) &&
 	       /*
 	        * A run record is evidence, for the same reason the audit log

@@ -826,7 +826,7 @@ test_web_navigation_links_all_resolve(
 		"/", "/reports", "/settings", "/account", "/account/tokens",
 		"/users", "/entities", "/tickets", "/login", "/logout", "/search",
 		"/automations", "/plugins", "/kb", "/modules", "/factory",
-		"/dashboards", "/overview", "/sprints", "/runs", "/webhooks",
+		"/dashboards", "/overview", "/sprints", "/runs", "/webhooks", "/federation",
 		"/harness", "/assistant", NULL
 	};
 	const VentureWebNavLink *links;

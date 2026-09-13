@@ -94,6 +94,11 @@ test_module_everything_is_on_by_default(void)
 		VentureModule *module;
 
 		module = g_ptr_array_index(modules, i);
+		if (!g_strcmp0(venture_module_get_name(module), "federation"))
+		{
+			g_assert_false(venture_module_is_enabled(module));
+			continue;
+		}
 		g_assert_true(venture_module_is_enabled(module));
 		g_assert_null(venture_module_get_disabled_reason(module));
 	}

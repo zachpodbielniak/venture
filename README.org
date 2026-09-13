@@ -211,6 +211,10 @@ in-process AI's =confirm_writes= policy: the change is queued on the server as
 a confirmation and a person approves it from the same panel the assistant's
 staged writes appear in. See [[file:docs/mcp.org][the MCP documentation]].
 
+*** Federation and offline collaboration
+
+Opt-in federation shares explicitly selected records and fields with pinned servers, or selected read-only fields globally. Ed25519 authenticates both requests and responses, including through a TLS tunnel. The federation origin can differ from the normal web URL. Local working copies retain offline edits and reconcile against their home server with per-field three-way merges and explicit conflicts. See [[file:docs/federation.org][federation and offline sync]].
+
 *** Conversations are records
 
 The assistant lives in a floating launcher that opens a right-hand panel (=Ctrl+/=). Each conversation is a =chat_thread= with =chat_message= rows — stored through the same repository as everything else, so a thread resumes across page loads, restarts and machines, and the model is shown the stored transcript when a thread continues. Threads are scoped to the account that had them: the chat routes 404 on anybody else's thread, and the generic surfaces for the chat types are owner-only.

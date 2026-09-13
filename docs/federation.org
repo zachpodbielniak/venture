@@ -1,0 +1,168 @@
+#+title: Federation and offline working copies
+#+description: Explicit sharing, pinned server identities, separate federation origins and conflict-aware synchronization
+#+authors: Zach Podbielniak
+#+categories: projects docs security
+#+created: 2026-09-12T18:00:00-04:00
+#+updated: 2026-09-12T18:00:00-04:00
+#+version: 0.6.0
+
+* Trust and ownership
+
+Federation is off by default. Turning it on publishes no business records. An owner must create an active grant naming an exact record UUID, an audience and an explicit list of fields. An active peer is permission to authenticate, never permission to read the database. Private and shared ventures can coexist on the same installation without inheriting one another's grants.
+
+Each shared record has one authoritative home server. Remote changes go through that server's ordinary deserializer, validators, optimistic concurrency and audit writer. A remote identity is never a local login, API token, owner, assistant or automation principal. Local editors use the federation service; only owners can manage peers and grants. The in-process assistant cannot create or change federation trust or grants.
+
+A grant covers one record. It does not automatically include an organization, children, related records, comments, attachments, file paths or newly added fields. Use a named collection of grants to select the records making up a shared venture or project. Sharing a venture's description must not silently share its private expenses or future fields. References use a type and UUID at the home server, never a local numeric database id; a reference is omitted unless its target is also shared with the same audience. Sensitive fields and credential-bearing URI values never appear in the federation projection.
+
+* Separate web and federation addresses
+
+=federation.origin= is independent of =server.base_url=. For example, people can use =https://business.example.org= while federation uses =https://venture.tail-network.example= or =https://federation.example.org= through a tunnel. The peer pins the federation origin, not the ordinary web address. Both can route to the same VENTURE listener. Only =/federation/v1/identity= and =/federation/v1/request= need routing through a federation-only tunnel; local administration remains behind ordinary authentication.
+
+Use an exact HTTPS origin with no trailing slash, path, userinfo, query or fragment. DNS names must be lowercase; an explicit default =:443= is omitted. Nondefault ports and IPv4 addresses are supported. TLS certificates must cover the federation hostname. Private-network addresses are supported because destinations are chosen by a local owner, not by remote payloads. There are no suffix/wildcard hostname matches, redirects or automatic discovery connections to untrusted hosts, and the federation client does not inherit an environment proxy.
+
+A tunnel can terminate TLS, but cannot forge authenticated federation answers: the application verifies Ed25519 signatures on both discovery and operation responses. Application signatures provide integrity and identity, not confidentiality from a TLS-terminating intermediary. Use a trusted tunnel or end-to-end TLS when the intermediary must not read shared data. This feature does not configure or install network overlays, DNS or tunnels.
+
+* Configure both servers
+
+The additional Fedora build dependency is =openssl-devel=. Existing requirements are printed by =make list-deps=; podomation also needs =libetpan-devel= and =libgudev-devel=. No private keys are generated or installed into the host automatically.
+
+Create an Ed25519 identity owned by the account running VENTURE. It is separate from the HTTPS certificate and its key:
+
+#+begin_src sh
+install -d -m 700 ~/.local/share/venture/federation
+(umask 077; openssl genpkey -algorithm ED25519 -out ~/.local/share/venture/federation/identity.pem)
+#+end_src
+
+Configure an absolute key path in the server's YAML:
+
+#+begin_src yaml
+server:
+  base_url: https://business.example.org
+  # Set both for direct HTTPS; omit both behind a trusted TLS proxy.
+  tls_certificate: /path/to/federation-fullchain.pem
+  tls_private_key: /path/to/federation-tls-key.pem
+federation:
+  enabled: true
+  mode: allowlist
+  origin: https://venture.tail-network.example
+  key_file: /home/venture/.local/share/venture/federation/identity.pem
+  ca_file: ""
+  sync_interval: 60
+#+end_src
+
+=ca_file= is an optional PEM trust-anchor file for a private CA. Empty uses system trust. There is no skip-verification option. A missing, unreadable, symlinked, nonregular, oversized, wrongly owned or group/other-accessible identity key refuses federation. A partial TLS configuration fails startup rather than falling back to HTTP. Back up the identity securely with the server state; replacing it changes the server's federation identity.
+
+=mode: allowlist= permits only active owner-pinned peers. =mode: global= additionally accepts self-authenticating Ed25519 identities for explicitly global read grants. An unknown global identity proves possession of its key, not ownership of its claimed DNS name; that claim never grants named-host access. Named-host grants always require the configured origin and pinned key. Global grants are public to any key holder and cannot grant writes. Do not use global sharing for data requiring a closed audience.
+
+An inactive or deleted known peer is refused. A pinned key mismatch is refused even in global mode; discovery never silently replaces a pin. Changing modes, disabling federation, disabling its module or revoking a grant is checked on subsequent requests. Changing listener settings or the automatic synchronization interval, or initially enabling automatic sync on an already running disabled installation, requires a server restart.
+
+* Exchange and verify public keys
+
+On each server, using its existing local CLI credentials:
+
+#+begin_src sh
+venturectl federation '{"action":"identity"}'
+#+end_src
+
+The result includes the federation origin, raw 32-byte public key in canonical base64, protocol version and a short-lived challenge. Exchange the origin and public key through an already trusted channel and verify them with the other operator. Never copy a key from an unverified connection and call that verification. Only public keys are exchanged; private keys stay on their servers.
+
+An owner creates the opposite peer on each server:
+
+#+begin_src sh
+venturectl describe federation_peer
+venturectl create federation_peer name='Partner server' origin=https://partner.tail-network.example public_key='VERIFIED_BASE64_PUBLIC_KEY' active=true
+#+end_src
+
+Use the returned local peer id in grants and operations. There may be any number of peers. Test connectivity without sharing anything:
+
+#+begin_src sh
+venturectl federation '{"action":"remote","peer_id":1,"operation":{"action":"list"}}'
+#+end_src
+
+The outbound client validates the HTTPS certificate, checks the exact pinned origin/key and verifies the discovery signature. Requests include an application-domain tag, sender identity, destination origin and key, an expiring server-issued challenge and the complete operation. Ed25519 signs the exact envelope bytes. Responses are independently signed and bound to the discovery caller's nonce or the SHA256 digest of the exact operation request. A TLS terminator cannot fabricate a clean acknowledgement, and an answer cannot be substituted for another request's answer.
+
+Challenges expire after sixty seconds and are authenticated with a process-local secret. Issuing them does not allocate replay-cache entries. Only verified requests consume the bounded replay cache; half its capacity is reserved for named peers. A restart invalidates outstanding challenges. Invalid signatures, wrong destinations, altered payloads, expired challenges and consumed challenges are refused before business operations. Each attempt obtains a fresh challenge. Response bodies are streamed with a one-MiB cap and a fifteen-second total deadline per HTTP request. These limits do not replace deployment-level connection and request rate limits.
+
+* Select what is shared
+
+Use =venturectl get venture ID= to obtain the venture's UUID, and =venturectl describe venture= for field names. A grant uses wire spelling with underscores; lists are comma-separated without spaces or wildcards.
+
+#+begin_src sh
+venturectl describe federation_grant
+venturectl create federation_grant name='Shared business overview' peer_id=1 record_type=venture record_uuid=UUID fields=name,description write_fields=name,description collection=joint_business active=true
+#+end_src
+
+An empty =write_fields= grants read-only access. Editable fields must be a subset of readable fields. Identity, organization, sensitive, transient and immutable-write fields are refused. Each target must exist and its type must opt into federation metadata. The generic grant form at =/e/federation_grant/new= uses exactly the same save validator as the CLI and API.
+
+For a shared project, put selected venture, ticket, comment, milestone and other record grants into the same =collection=. A private note on an otherwise shared record stays private if its field is omitted. A private child stays private unless separately granted. To publish selected fields globally, use =peer_id=0=, empty =write_fields= and =mode: global=. Revoking a grant or peer prevents future access and changes immediately; it cannot erase copies another operator has already legitimately received.
+
+* Offline work and reconnect
+
+The Federation page links server administration, sharing grants and local working copies. Import one object:
+
+#+begin_src sh
+venturectl federation '{"action":"pull","peer_id":1,"type":"venture","uuid":"UUID"}'
+#+end_src
+
+Or import the explicit grant collection, in bounded pages:
+
+#+begin_src sh
+venturectl federation '{"action":"pull_collection","peer_id":1,"collection":"joint_business","offset":0}'
+#+end_src
+
+Each collection page imports at most ten records and reports each outcome independently. Repeat using =next_offset= while =more= is true. Retry individual failures; successful imports are durable. The manifest contains only authorized records. A collection is not an implicit graph walk or an atomic multi-record database snapshot.
+
+A local =federation_replica= stores the source peer and key, record type and UUID, last remote snapshot, local working snapshot and conflicts. These survive a database restart. There is one working copy per source record on the local server. Its fields and editing permissions come from the authenticated source schema, so a remote plugin's new type can be used without installing that plugin locally.
+
+Edit in =/federation/replicas/ID=, or submit field values with the current local replica version:
+
+#+begin_src sh
+venturectl federation '{"action":"edit","id":1,"version":1,"fields":{"description":"Worked on this offline"}}'
+venturectl federation '{"action":"sync","id":1}'
+#+end_src
+
+An edit is saved locally before any network request. It cannot change the source identity, merge base or granted field list. Pull refreshes and merges without pushing. Sync fetches current remote state, merges and then pushes conflict-free changes using the remote record's expected version. A remote refusal or outage leaves local edits available. A changed peer pin never silently retargets an existing working copy.
+
+When enabled, the reconnect scheduler attempts one existing local copy every =sync_interval= seconds, rotating through the copies on the main context. It does not use a database worker thread. Set the interval to zero for manual synchronization. An unavailable peer is retried on the next rotation. Automatic sync does not discover or import newly granted records; pull the collection again to import those. Every local editor on this installation can collaborate on its local copies; trust is between servers, not a remote user-to-local user account mapping.
+
+** Merge rules
+
+For each field, compare the last fetched base, the local working value and the current remote value:
+
+- Local unchanged: accept the remote value, including removal.
+- Remote unchanged: retain and submit the local value if it remains writable.
+- Local and remote equal: already reconciled; no duplicate write.
+- Both changed differently, or locally edited field lost permission: preserve the local work and record a conflict.
+
+A conflict blocks the entire record's push. Other records continue syncing. The conflict view preserves base/local/remote values and distinguishes absent fields from JSON null. Editing a writable conflicted field explicitly chooses a new value. Alternatively resolve one field:
+
+#+begin_src sh
+venturectl federation '{"action":"resolve","id":1,"version":5,"field":"description","keep_local":false}'
+#+end_src
+
+=keep_local: false= accepts the remote value or removal, including a field that is no longer writable. =keep_local: true= retains local work only if the current source schema still permits that field. Sync again after every conflict has a resolution. Text fields are merged as whole values; the service does not guess how to splice competing prose. A lost acknowledgement is recovered by fetching again and recognizing already-equal values, not blindly repeating the previous mutation. Concurrent local editing during a network call is protected by the local replica version too.
+
+** What a working copy means
+
+Working copies are separate from authoritative local accounting rows. Importing a remote invoice-like object must not post it into the local books, run local automations or reinterpret its foreign ids as local ids. Existing shared objects can be edited offline and reconciled through the Federation workspace. They are not included in local accounting reports, and this protocol does not create/delete authoritative source records offline, duplicate binary attachments or forward data to a third server. Create additional source records normally and explicitly grant them, then refresh the collection. Source deletion and revoked access never silently destroy pending local work.
+
+* Extending the model
+
+A record type opts in once from class initialization:
+
+#+begin_src c
+venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);
+#+end_src
+
+=TRUE= permits explicit read and ordinary-update grants; =FALSE= permits explicit read grants only. A class that does not call this function is local-only, and subclasses do not inherit permission automatically. Credentials, user accounts, chats, operational control records and federation administration stay local-only. Financial and derived business records that opt in support read grants only. Business types with ordinary update semantics opt in next to their field declarations. A plugin must first consider whether its validators and side effects are appropriate for a remote writer.
+
+Adding a type never requires a new federation route, serializer, CLI command or synchronization algorithm. Grants are still per-record and per-field, and new fields are not automatically added to existing grants. Sensitive metadata remains authoritative even if an old grant names a field whose flags changed. Read-only type metadata also overrides an old write grant. Remote references remain scoped to the home server and must independently pass the same audience check.
+
+* Verification and protocol references
+
+=make DEBUG=1 test-one T=test-federation= exercises isolated servers with a test CA, real HTTPS, independent Ed25519 keys and independent file-backed databases. Test fixture keys are public test material and must never be deployed. The full DEBUG suite covers local authentication and the existing application surfaces.
+
+Ed25519 uses OpenSSL EVP's one-shot sign/verify APIs, not handwritten cryptography. This is a versioned VENTURE protocol, not a claim of RFC 9421 wire compatibility. Domain separation, complete request coverage, request-bound responses, expiration and replay prevention follow the same security requirements.
+
+- [[https://docs.openssl.org/3.0/man7/EVP_SIGNATURE-ED25519/][OpenSSL Ed25519 EVP signature documentation]]
+- [[https://www.rfc-editor.org/rfc/rfc9421.html][RFC 9421: HTTP Message Signatures, replay and application requirements]]
