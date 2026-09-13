@@ -155,10 +155,11 @@ JsonNode *venture_orgaccess_post_journal(VentureContext *context, const VentureA
  * @original: captured draft header
  * @via: captured line fingerprint
  * @actor: audit origin and approver
+ * @role: authenticated approver role
  * @error: refusal
  * Returns: whether posting committed with unchanged evidence
  */
-gboolean venture_orgaccess_apply_post(VentureDatabase *database, VentureEntity *original, const gchar *via, const VentureActor *actor, GError **error);
+gboolean venture_orgaccess_apply_post(VentureDatabase *database, VentureEntity *original, const gchar *via, const VentureActor *actor, VentureUserRole role, GError **error);
 /**
  * venture_orgaccess_web_post:
  * @auth: authenticator

@@ -687,7 +687,7 @@ venture_confirmation_store_approve_as(
 	actor.approved_by = approver;
 
 	if (NULL != confirmation->via && g_str_has_prefix(confirmation->via, "orgaccess:journal-post:"))
-		ok = venture_orgaccess_apply_post(self->database, confirmation->original, confirmation->via, &actor, &local_error);
+		ok = venture_orgaccess_apply_post(self->database, confirmation->original, confirmation->via, &actor, role, &local_error);
 	else
 	if (NULL != confirmation->record_action)
 	{
@@ -878,8 +878,11 @@ venture_confirmation_store_stage_action(VentureConfirmationStore *self, VentureA
 		return NULL;
 	}
 	current = venture_entity_get_id(entity) ? venture_database_get(self->database, G_OBJECT_TYPE(entity), venture_entity_get_id(entity), error) : g_object_new(G_OBJECT_TYPE(entity), NULL);
-	if (!current || !venture_action_registry_allowed(venture_database_get_action_registry(self->database),
-		action, current, origin, role, error) || !venture_action_validate_parameters(action, params, error)) return NULL;
+	if (!current || !venture_action_validate_parameters(action, params, error) ||
+		!venture_action_prepare_target(action, current, params, error) ||
+		!venture_action_registry_allowed(venture_database_get_action_registry(self->database),
+			action, current, origin, role, error) ||
+		!venture_access_policy_check_write(venture_database_get_access_policy(self->database), current, "write", error)) return NULL;
 	venture_confirmation_store_sweep(self);
 	if (self->limit > 0 && (gint64)g_hash_table_size(self->pending) >= self->limit)
 	{
@@ -920,7 +923,7 @@ venture_confirmation_store_approve(VentureConfirmationStore *self, const gchar *
 {
 	VentureConfirmation *confirmation = venture_confirmation_store_find(self, id);
 	VentureUserRole role = VENTURE_USER_ROLE_VIEWER;
-	if (confirmation && confirmation->record_action)
+	if (confirmation && (confirmation->record_action || (confirmation->via && g_str_has_prefix(confirmation->via, "orgaccess:journal-post:"))))
 	{
 		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_USER);
 		g_autoptr(VentureEntity) user = NULL;

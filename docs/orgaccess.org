@@ -112,3 +112,7 @@ journal's posted state remain refused.
 A user with no memberships is directed to their account page, which explains
 that an organization owner must grant access. Password changes and sign-out
 remain available. Business reads return no records.
+
+Public lead capture at =POST /f/:token= uses its form token authority even when the browser also carries a local session. That exact route receives an independent protocol scope; its token, active-form, field allowlist, body-size and rate-limit checks remain owned by the lead capture handler. Other =/f/= paths and methods receive ordinary request authority.
+
+Public quote viewing (=GET /q/:token=) and acceptance (=POST /q/:token= or =POST /q/:token/accept=) likewise use the quote capability independently of an incidental session. Other quote paths or methods retain local request authority; quote token validation, allowed states, revision checks and the public field allowlist still apply.

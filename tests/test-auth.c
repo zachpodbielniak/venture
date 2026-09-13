@@ -3796,6 +3796,58 @@ orgaccess_cli_wait(GObject *source, GAsyncResult *result, gpointer data)
 	*done = TRUE;
 }
 
+/* Type-level actions must carry the nested journal's organization into the
+ * confirmation, enforce proposal vetoes, and recheck authority at approval. */
+static void
+test_orgaccess_create_action(ServerFixture *fixture, gconstpointer user_data)
+{
+	const gchar *mode = user_data;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	g_autoptr(GPtrArray) accounts = venture_database_find(fixture->database, query, NULL);
+	g_autoptr(GPtrArray) pending = NULL;
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *input = NULL;
+	g_autofree gchar *path = NULL;
+	gint64 user, org = venture_context_get_default_organization_id(fixture->context);
+	guint expected = !g_strcmp0(mode, "veto") ? 403 : !g_strcmp0(mode, "foreign") ? 404 : 202;
+	g_assert_cmpuint(accounts->len, >=, 2);
+	server_fixture_create_member(fixture, "action-finance", "password", VENTURE_USER_ROLE_EDITOR, &user);
+	cookie = server_fixture_login(fixture, "action-finance", "password");
+	if (!g_strcmp0(mode, "veto"))
+		g_signal_connect(venture_database_get_access_policy(fixture->database), "decide", G_CALLBACK(orgaccess_proposal_veto), NULL);
+	input = g_strdup_printf("{\"journal\":{\"organization_id\":%" G_GINT64_FORMAT ",\"source_type\":\"organization\",\"source_id\":%" G_GINT64_FORMAT ",\"currency\":\"USD\",\"occurred_at\":\"2026-01-10\",\"lines\":[{\"account_id\":%" G_GINT64_FORMAT ",\"side\":\"debit\",\"amount\":\"10 USD\"},{\"account_id\":%" G_GINT64_FORMAT ",\"side\":\"credit\",\"amount\":\"10 USD\"}]}}",
+		!g_strcmp0(mode, "foreign") ? org + 10000 : org, org,
+		venture_entity_get_id(g_ptr_array_index(accounts, 0)), venture_entity_get_id(g_ptr_array_index(accounts, 1)));
+	g_assert_cmpuint(server_fixture_json(fixture, "POST", "/api/v1/journal/0/actions/create_and_post?stage=1", cookie, input, &body), ==, expected);
+	pending = venture_confirmation_store_list_pending(venture_context_get_confirmations(fixture->context));
+	g_assert_cmpuint(pending->len, ==, expected == 202 ? 1 : 0);
+	if (expected != 202) return;
+	path = g_strdup_printf("/api/v1/confirmations/%s/approve", venture_confirmation_get_id(g_ptr_array_index(pending, 0)));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(server_fixture_json(fixture, "GET", "/api/v1/confirmations", cookie, NULL, &body), ==, 200);
+	g_assert_nonnull(strstr(body, venture_confirmation_get_id(g_ptr_array_index(pending, 0))));
+	if (!g_strcmp0(mode, "revoked"))
+	{
+		g_autoptr(VentureQuery) members = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+		g_autoptr(VentureEntity) member = NULL;
+		venture_query_add_filter_int(members, "user-id", VENTURE_FILTER_OP_EQ, user, NULL);
+		member = venture_database_find_one(fixture->database, members, NULL);
+		g_object_set(member, "active", FALSE, NULL);
+		g_assert_true(venture_database_save(fixture->database, member, NULL, NULL));
+	}
+	g_assert_cmpuint(server_fixture_json(fixture, "POST", path, cookie, "{}", NULL), ==, !g_strcmp0(mode, "revoked") ? 404 : 200);
+	g_clear_object(&query);
+	query = venture_query_new(VENTURE_TYPE_JOURNAL);
+	g_assert_cmpint(venture_database_count(fixture->database, query, NULL), ==, !g_strcmp0(mode, "revoked") ? 0 : 1);
+}
+
+static GError *
+orgaccess_action_veto(VentureActionRegistry *registry, VentureAction *action, VentureEntity *entity, gpointer unused)
+{
+	return g_error_new_literal(VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "Posting vetoed by action policy");
+}
+
 static void
 test_orgaccess_journal_proposal(ServerFixture *fixture, gconstpointer user_data)
 {
@@ -3834,7 +3886,7 @@ test_orgaccess_journal_proposal(ServerFixture *fixture, gconstpointer user_data)
 	}
 	cookie = server_fixture_login(fixture, "journal-editor", "password");
 	path = g_strdup_printf("/api/v1/journals/%" G_GINT64_FORMAT "/post", venture_entity_get_id(journal));
-	if (0 == g_strcmp0(user_data, "action"))
+	if (0 == g_strcmp0(user_data, "action") || 0 == g_strcmp0(user_data, "action-veto"))
 	{
 		g_free(path);
 		path = g_strdup_printf("/api/v1/journal/%" G_GINT64_FORMAT "/actions/post", venture_entity_get_id(journal));
@@ -3900,15 +3952,22 @@ test_orgaccess_journal_proposal(ServerFixture *fixture, gconstpointer user_data)
 			g_assert_cmpuint(server_fixture_json(fixture, "POST", post_path, cookie, "{}", NULL), ==, 202);
 		}
 	}
+	if (0 == g_strcmp0(user_data, "action-veto"))
+		g_signal_connect(venture_database_get_action_registry(fixture->database), "performing", G_CALLBACK(orgaccess_action_veto), NULL);
+	if (0 == g_strcmp0(user_data, "header-changed"))
+	{
+		g_object_set(stored, "memo", "Header changed after proposal", NULL);
+		g_assert_true(venture_database_save(fixture->database, stored, NULL, NULL));
+	}
 	server_fixture_create_member(fixture, "journal-finance", "password", VENTURE_USER_ROLE_EDITOR, NULL);
 	g_clear_pointer(&cookie, g_free);
 	cookie = server_fixture_login(fixture, "journal-finance", "password");
 	g_assert_cmpuint(server_fixture_json(fixture, "POST", path, cookie, "{}", NULL), ==,
-		0 == g_strcmp0(user_data, "changed") ? 409 : 200);
+		0 == g_strcmp0(user_data, "action-veto") ? 403 : (0 == g_strcmp0(user_data, "changed") || 0 == g_strcmp0(user_data, "header-changed")) ? 409 : 200);
 	g_clear_object(&stored);
 	stored = venture_database_get(fixture->database, VENTURE_TYPE_JOURNAL, venture_entity_get_id(journal), NULL);
 	g_object_get(stored, "state", &state, NULL);
-	g_assert_cmpint(state, ==, 0 == g_strcmp0(user_data, "changed") ? VENTURE_JOURNAL_DRAFT : VENTURE_JOURNAL_POSTED);
+	g_assert_cmpint(state, ==, (0 == g_strcmp0(user_data, "changed") || 0 == g_strcmp0(user_data, "header-changed") || 0 == g_strcmp0(user_data, "action-veto")) ? VENTURE_JOURNAL_DRAFT : VENTURE_JOURNAL_POSTED);
 
 }
 
@@ -4162,5 +4221,11 @@ main(
 	g_test_add("/orgaccess/journal-cli", ServerFixture, "cli", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
 	g_test_add("/orgaccess/proposal-veto", ServerFixture, "veto", server_fixture_set_up, test_orgaccess_viewer_proposal, server_fixture_tear_down);
 	g_test_add("/orgaccess/journal-action", ServerFixture, "action", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
+	g_test_add("/orgaccess/action-create", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_create_action, server_fixture_tear_down);
+	g_test_add("/orgaccess/action-create-veto", ServerFixture, "veto", server_fixture_set_up, test_orgaccess_create_action, server_fixture_tear_down);
+	g_test_add("/orgaccess/action-create-foreign", ServerFixture, "foreign", server_fixture_set_up, test_orgaccess_create_action, server_fixture_tear_down);
+	g_test_add("/orgaccess/action-create-revoked", ServerFixture, "revoked", server_fixture_set_up, test_orgaccess_create_action, server_fixture_tear_down);
+	g_test_add("/orgaccess/journal-action-veto", ServerFixture, "action-veto", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
+	g_test_add("/orgaccess/journal-header-changed", ServerFixture, "header-changed", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
 	return g_test_run();
 }
