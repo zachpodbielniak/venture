@@ -728,6 +728,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_subscription_event_get_type
 		, venture_dunning_step_get_type
 		, venture_billing_notice_get_type
+		, venture_billing_request_get_type
 	};
 	gsize i;
 

@@ -52,6 +52,7 @@ struct _VentureDatabase
 	 * through venture_database_save(), so every writer gets the check.
 	 */
 	GPtrArray		*validators;
+	VentureBillingService *billing;
 };
 
 typedef struct
@@ -96,6 +97,7 @@ venture_database_finalize(GObject *object)
 	self = VENTURE_DATABASE(object);
 
 	g_clear_object(&self->transaction);
+	g_clear_object(&self->billing);
 
 	if (NULL != self->connection)
 	{
@@ -112,9 +114,31 @@ venture_database_finalize(GObject *object)
 }
 
 static void
+venture_database_billing_property(GObject *object, guint id, GValue *value, GParamSpec *spec)
+{
+	VentureDatabase *self = VENTURE_DATABASE(object);
+	if (id == 1)
+		g_value_set_object(value, venture_billing_service_get(self));
+	else
+		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
+}
+
+VentureBillingService *
+venture_billing_service_get(VentureDatabase *database)
+{
+	if (database->billing == NULL)
+		database->billing = g_object_new(VENTURE_TYPE_BILLING_SERVICE, "database", database, NULL);
+	return database->billing;
+}
+
+static void
 venture_database_class_init(VentureDatabaseClass *klass)
 {
 	G_OBJECT_CLASS(klass)->finalize = venture_database_finalize;
+	G_OBJECT_CLASS(klass)->get_property = venture_database_billing_property;
+	g_object_class_install_property(G_OBJECT_CLASS(klass), 1,
+		g_param_spec_object("billing-service", "Billing service", "Subscription lifecycle authority",
+			VENTURE_TYPE_BILLING_SERVICE, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
 
 	/**
 	 * VentureDatabase::entity-saved:
@@ -1082,6 +1106,16 @@ venture_database_save(
 		}
 	}
 
+	{
+		gboolean handled;
+		gboolean ok = venture_billing_save_hook(self, entity, actor, &handled, error);
+		if (!ok || handled)
+		{
+			g_rec_mutex_unlock(&self->lock);
+			return ok;
+		}
+	}
+
 	if (!created)
 	{
 		/* Fetch the stored row first, both to detect a conflict and to
@@ -1378,6 +1412,8 @@ venture_database_delete(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
+	if (!venture_billing_check_removal(self, entity, error))
+		return FALSE;
 	if (!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
@@ -1436,6 +1472,8 @@ venture_database_restore(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
+	if (!venture_billing_check_removal(self, entity, error))
+		return FALSE;
 	if (!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_periods_check_removal(self, entity, error))
@@ -1476,6 +1514,8 @@ venture_database_purge(
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
+		return FALSE;
+	if (!venture_billing_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_receivables_check_removal(self, entity, error))
 		return FALSE;

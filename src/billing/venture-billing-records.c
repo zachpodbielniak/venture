@@ -153,3 +153,23 @@ static const VentureFieldDecl billing_notice_fields[] = {
 };
 VENTURE_DEFINE_ENTITY(VentureBillingNotice, venture_billing_notice, billing_notice_fields)
 
+
+/* A durable instruction, so approval stages intent without granting CRUD the
+ * authority to write subscription state. The service fills the result fields. */
+static const VentureFieldDecl billing_request_fields[] = {
+	VENTURE_FIELD_NAME("action", "Action", "start, renew, change, change-seats, pause, resume, cancel, mark-payment-failed, recover, renew-sweep, dunning-sweep"),
+	VENTURE_FIELD_REF("subscription-id", "Subscription", NULL, "customer_subscription", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("company-id", "Customer", NULL, "company", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("plan-price-id", "Price", NULL, "plan_price", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("seats", "Seats", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("at", "Effective date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("at-period-end", "At period end", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("dry-run", "Dry run", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("external-id", "External ID", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("expected-version", "Expected version", "Required by staged actions on an existing subscription", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("invoice-id", "Invoice", "Service result", "invoice", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("proration-amount", "Proration", "Service result"),
+	VENTURE_FIELD("processed", "Processed", "Service result", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
+};
+VENTURE_DEFINE_ENTITY(VentureBillingRequest, venture_billing_request, billing_request_fields)

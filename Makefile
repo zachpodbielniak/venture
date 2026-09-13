@@ -85,6 +85,8 @@ SERVER_ONLY_SRCS := \
 
 SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard src/periods/*.c))
 
+SERVER_ONLY_SRCS += $(filter-out src/billing/venture-billing-records.c,$(wildcard src/billing/*.c))
+
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
 CLI_SRCS := $(wildcard src/cli/*.c)

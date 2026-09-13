@@ -59,5 +59,11 @@ VENTURE_DECLARE_ENTITY(VentureBillingNotice, venture_billing_notice, BILLING_NOT
  * venture_billing_notice_new:
  * Returns: (transfer full): a billing billing_notice record
  */
+#define VENTURE_TYPE_BILLING_REQUEST (venture_billing_request_get_type())
+VENTURE_DECLARE_ENTITY(VentureBillingRequest, venture_billing_request, BILLING_REQUEST)
+/**
+ * venture_billing_request_new:
+ * Returns: (transfer full): a stageable billing instruction
+ */
 G_END_DECLS
 #endif
