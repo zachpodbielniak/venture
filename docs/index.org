@@ -51,6 +51,8 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 
 - [[file:statements.org][Financial statements]] — posted ledger balances, statements, comparatives and P&L reconciliation
 
+- [[file:quotes.org][Commercial quotes]] — price lists, revisions, public acceptance and invoice handoff
+
 ** The shape of the thing in one page
 
 Everything derives from GObject properties. A record type is a field table; from that VENTURE builds the database table, the REST resource, the JSON and YAML serialisation, the web form, the AI tool schema, the audit diff and the CLI subcommands. Adding a field is a line; adding a record type is a registration.

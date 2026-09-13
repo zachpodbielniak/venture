@@ -648,7 +648,7 @@ test_upgrade(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	save(f, contact); id = venture_entity_get_id(contact);
 	venture_database_execute(f->db,
-		"DELETE FROM schema_migrations WHERE version=140; DROP TABLE leads; DROP INDEX idx_interactions_lead_id; ALTER TABLE interactions DROP COLUMN lead_id", NULL, &error);
+		"DELETE FROM schema_migrations WHERE version>=140; DROP TABLE leads; DROP INDEX idx_interactions_lead_id; ALTER TABLE interactions DROP COLUMN lead_id", NULL, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);

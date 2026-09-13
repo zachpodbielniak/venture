@@ -54,6 +54,8 @@ Written bottom-up, because a module may only require what precedes it:
 | =activities= | crm | activity, activity_type; =worklist=, reminders, calendar export and =/worklist= | |
 | =leads= | crm | lead, lead_form, lead_assignment_rule; =lead_sources=, =lead_response_time=, =leads_recycled_due=; capture and conversion | |
 
+| =quotes= | crm, invoicing | price_list, price_list_item, quote, quote_line, quote_event, quote_delivery, quote_action; =quotes= report and proposal actions | |
+
 Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.
 
 The rest are /suggestions/: a module works without them and is better with them. A ticket's =company-id= picker is simply empty when the CRM is off; the column stays, a value it already had is kept, and a new value cannot be written because there is nothing to check it against.
@@ -80,7 +82,7 @@ VENTURE_MODULE_CRM=false venture
 For one run:
 
 #+begin_src sh
-venture --disable-module crm --disable-module invoicing --disable-module receivables --disable-module pipelines
+venture --disable-module crm --disable-module invoicing --disable-module receivables --disable-module quotes --disable-module pipelines
 #+end_src
 
 From a compiled C configuration, which is how a machine decides for itself:

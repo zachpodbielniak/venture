@@ -3113,6 +3113,7 @@ venture_cli_command_mcp(
 
 /* --- Entry point --------------------------------------------------------- */
 
+#include "quotes/venture-quote-cli.inc"
 static gint
 venture_cli_command_act(VentureCli *cli, gchar **args, GError **error)
 {
@@ -3286,6 +3287,7 @@ main(
 		"  release changelog ID         draft a release's changelog from\n"
 		"                               its tickets; --replace overwrites\n"
 		"  mail list|send|test|deliver|retry  transactional mail\n"
+		"  quote send|accept|decline|revise ID [by=NAME] [reason=TEXT]\n"
 		"  bank ACTION ID [JSON|@FILE] banking action; bank match AUTO STATEMENT_ID\n"
 		"  deal move ID STAGE [NOTE]     move a deal through its pipeline\n"
 		"  release publish ID           cut it on the forge; --prerelease\n"
@@ -3509,6 +3511,8 @@ main(
 		result = venture_cli_command_factory(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "mail"))
 		result = venture_cli_command_mail(&cli, args, mail_html, mail_limit, &error);
+	else if (0 == g_strcmp0(args[0], "quote"))
+		result = venture_cli_command_quote(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "lead"))
 		result = venture_cli_command_lead(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "bill"))

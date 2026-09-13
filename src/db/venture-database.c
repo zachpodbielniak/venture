@@ -56,6 +56,7 @@ struct _VentureDatabase
 	 * through venture_database_save(), so every writer gets the check.
 	 */
 	GPtrArray		*validators;
+	VentureQuoteService *quote_service;
 	VentureLeadService *lead_service;
 	VentureActivityService *activities;
 	VenturePayablesService *payables;
@@ -107,6 +108,7 @@ venture_database_finalize(GObject *object)
 	self = VENTURE_DATABASE(object);
 	g_clear_object(&self->mail_outbox);
 
+	g_clear_object(&self->quote_service);
 	g_clear_object(&self->payables);
 	g_clear_object(&self->bank_match_service);
 	g_clear_object(&self->deal_service);
@@ -206,6 +208,14 @@ venture_database_init(VentureDatabase *self)
 	self->validators = g_ptr_array_new_with_free_func(
 		venture_database_validator_free);
 	self->activities = venture_activity_service_new(self);
+}
+
+VentureQuoteService *
+venture_database_get_quote_service(VentureDatabase *self)
+{
+	if (self->quote_service == NULL)
+		self->quote_service = g_object_new(VENTURE_TYPE_QUOTE_SERVICE, "database", self, NULL);
+	return self->quote_service;
 }
 
 /* --- Opening ------------------------------------------------------------- */
@@ -1137,6 +1147,12 @@ database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
 	if (!venture_entity_before_save(entity, error))
 		return FALSE;
 
+	{
+		gboolean handled;
+		gboolean ok = venture_quotes_save_hook(self, entity, actor, &handled, error);
+		if (handled || !ok) return ok;
+	}
+
 	created = !venture_entity_is_persisted(entity);
 
 	g_rec_mutex_lock(&self->lock);
@@ -1468,6 +1484,12 @@ venture_database_delete(
 	if (!venture_pipelines_check_removal(entity, error))
 		return FALSE;
 
+	{
+		gboolean handled;
+		gboolean result = venture_quotes_remove_hook(self, entity, 0, actor, &handled, error);
+		if (handled || !result) return result;
+	}
+
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
@@ -1480,6 +1502,8 @@ venture_database_delete(
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_mail_check_removal(entity, error))
+		return FALSE;
+	if (!venture_quotes_check_removal(self, entity, error))
 		return FALSE;
 
 	if (!venture_entity_is_persisted(entity))
@@ -1534,6 +1558,12 @@ venture_database_restore(
 	if (!venture_pipelines_check_removal(entity, error))
 		return FALSE;
 
+	{
+		gboolean handled;
+		gboolean result = venture_quotes_remove_hook(self, entity, 1, actor, &handled, error);
+		if (handled || !result) return result;
+	}
+
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
@@ -1546,6 +1576,8 @@ venture_database_restore(
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_mail_check_removal(entity, error))
+		return FALSE;
+	if (!venture_quotes_check_removal(self, entity, error))
 		return FALSE;
 
 	if (!venture_entity_is_deleted(entity))
@@ -1583,6 +1615,12 @@ venture_database_purge(
 	if (!venture_pipelines_check_removal(entity, error))
 		return FALSE;
 
+	{
+		gboolean handled;
+		gboolean result = venture_quotes_remove_hook(self, entity, 2, actor, &handled, error);
+		if (handled || !result) return result;
+	}
+
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
@@ -1595,6 +1633,8 @@ venture_database_purge(
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_mail_check_removal(entity, error))
+		return FALSE;
+	if (!venture_quotes_check_removal(self, entity, error))
 		return FALSE;
 
 	if (!venture_entity_is_persisted(entity))

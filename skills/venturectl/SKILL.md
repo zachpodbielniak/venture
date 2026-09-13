@@ -430,6 +430,14 @@ submits due rows. `mail list state=uncertain` lists uncertain acceptance;
 uncertain rows. Actions reject `--stage`; propose an enqueue with the generic
 `--stage create mail_message` command when approval is required.
 
+### Commercial quote actions
+
+`quote send ID`, `quote accept ID 'by=Full Name'`,
+`quote decline ID 'reason=Explanation'`, and `quote revise ID` call the quote
+service. Acceptance creates and issues the invoice in the same transaction.
+For a staged action use `--stage create quote_action quote_id=ID action=accept
+expected_version=N 'accepted_by=Full Name'`; obtain the quote's current
+`version` first. `revision` is the separate commercial revision number.
 ## Leads
 
 Use `describe lead` before capture or qualification. `lead convert ID
