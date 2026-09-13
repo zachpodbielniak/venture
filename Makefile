@@ -88,6 +88,11 @@ SERVER_ONLY_SRCS += src/banking/venture-bank-match-service.c
 SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard src/periods/*.c))
 
 SERVER_ONLY_SRCS += $(wildcard src/reconciliation/*.c)
+CORE_SRCS += src/autojournal/venture-posting-profile.c
+SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wildcard src/autojournal/*.c))
+
+PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
+SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
@@ -96,6 +101,7 @@ MAIN_SRC := src/main.c
 
 # Public headers: installed, and fed to the GIR scanner.
 PUBLIC_HDRS := \
+	$(PUBLIC_HDRS_AUTOJOURNAL) \
 	$(filter-out %-private.h,$(wildcard src/ledger/*.h)) \
 	src/venture.h \
 	src/venture-types.h \
@@ -122,6 +128,7 @@ PUBLIC_HDRS := \
 
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/reconciliation/*.h))
 PUBLIC_HDRS += $(wildcard src/banking/*.h)
+PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/statements/*.h))
 
 TEST_SRCS := $(wildcard tests/test-*.c)
 

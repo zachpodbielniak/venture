@@ -249,6 +249,7 @@ venture_context_apply_modules(VentureContext *self)
 				self->reports, reports[j],
 				venture_module_is_enabled(module));
 	}
+	if (venture_context_module_enabled(self, "autojournal")) venture_database_get_autojournal_service(self->database);
 }
 
 VentureConfirmationStore *

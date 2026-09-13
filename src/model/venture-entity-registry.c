@@ -727,6 +727,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_bank_transaction_get_type
 		, venture_bank_match_get_type
 		, venture_reconciliation_get_type
+		, venture_posting_profile_get_type
 	};
 	gsize i;
 
