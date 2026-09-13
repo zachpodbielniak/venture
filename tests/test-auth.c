@@ -1395,6 +1395,11 @@ test_auth_api_refuses_anonymous_requests(
 		"/runs/1/cancel", NULL, "", NULL, NULL),
 		==, SOUP_STATUS_FOUND);
 
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/journal/1/actions/post", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/journals/post", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+
 	/* The factory's two actions over the API: a changelog is a write, a
 	 * publish creates a tag on the forge. */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
@@ -1519,6 +1524,13 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/ui/chat/confirm/abc123/reject", NULL, "", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/sequence/1/enroll", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/sequence_enrollment/1/pause", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/sequence_enrollment/1/resume", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/sequence_enrollment/1/exit", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/sequences/run", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/ui/sequence_enrollment/1/pause", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+
 }
 
 /*
@@ -2635,6 +2647,13 @@ test_auth_staging_needs_the_editor_role(
 		"/api/v1/expense?stage=1", viewer,
 		"{\"description\":\"Sneaky\",\"amount\":\"1.00 USD\"}", NULL),
 		==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_json(fixture, "POST",
+		"/api/v1/journal/1/actions/post", viewer, "{}", NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_json(fixture, "POST",
+		"/api/v1/journal/1/actions/post?stage=1", viewer, "{}", NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_json(fixture, "POST",
+		"/api/v1/journals/post", viewer, "{}", NULL), ==, SOUP_STATUS_FORBIDDEN);
+
 }
 
 /*

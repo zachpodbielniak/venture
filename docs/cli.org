@@ -192,7 +192,7 @@ record-type enumerations are generated from =/api/v1/schema= at startup, so a
 plugin's type is offered with no change anywhere. Writes are staged rather
 than applied unless =--apply-writes= is given: the change is queued on the
 server for somebody to approve, not merely described. =venturectl --stage=
-does the same for =create=, =update= and =delete= from the shell. It takes its credential from
+does the same for =create=, =update=, =delete= and =act= from the shell. It takes its credential from
 =VENTURE_TOKEN= and refuses =--token= outright, since an MCP server is spawned
 from a config file. See [[file:mcp.org][venturectl mcp]].
 
@@ -203,6 +203,37 @@ from a config file. See [[file:mcp.org][venturectl mcp]].
 =match=, =unmatch=, =exclude= and =create= take a transaction ID.
 =venturectl bank match AUTO STATEMENT_ID= is the bulk exact-match action.
 See [[file:banking.org][Banking]] for import mappings and action parameters.
+* Follow-up sequences
+
+=sequence enroll ID contact_id=ID [field=value ...]= enrolls through the
+sequence service. The ID names the sequence; other fields describe the
+=enrollment=, including =deal_id=, =lead_id=, =owner_id= and
+=enrollment_reason=. =--stage sequence enroll= proposes enrollment for
+approval. The ordinary =create sequence_enrollment= path has the same
+validation and supports the assistant's standard staged create tool.
+
+=sequence run [--as-of ISO_TIMESTAMP] [organization_id=ID]= executes up to
+1000 due enrollments in one organization, defaulting to the server's default
+organization. A timestamp must carry its timezone. Omit it for now.
+=sequence status ENROLLMENT_ID= reads the enrollment and its delivery history.
+The command returns pending delivery rows; it does not send mail.
+
+Configure sequences and their steps with ordinary =create= / =update=
+commands after =describe sequence= and =describe sequence_step=. Sending
+hours and weekdays are interpreted in the sequence timezone. See
+[[file:sequences.org][follow-up sequences]] for checkpoints and the adapter contract.
+* Record actions
+
+=venturectl act TYPE ID ACTION [key=value ...]= discovers the action and
+its parameter kinds from =GET /api/v1/schema/TYPE=, then sends the generic
+action route. =--stage= proposes it for approval. Unknown names are refused.
+For example: =venturectl --stage act journal 42 post=.
+
+Journal actions are =post= and =reverse= (optional =occurred_at= and =memo=).
+Type-level =create_and_post= uses ID zero and a =journal= JSON-text parameter
+containing the header and =lines= array. All three support =--stage=.
+
+=venturectl --help= includes =act= among the commands accepting =--stage=.
 
 * Backfilling journals
 

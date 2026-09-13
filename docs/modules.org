@@ -42,7 +42,8 @@ Written bottom-up, because a module may only require what precedes it:
 | =forge=      | tickets         | forge, forge_repo, forge_rule, ticket_link, forge_run, agent_budget | =forge.enabled=     |
 | =factory=    | forge           | milestone, release, build, environment, deployment, incident; =releases=, =lead_time=, =incidents=, =delivery= | |
 | =dashboards= | core            | dashboard, dashboard_widget; the =/dashboards= pages and their API | |
-| =ledger=     | finance         | journal, journal_line; posting service, =trial_balance=           |                       |
+| =sequences= | crm | sequence, sequence_step, sequence_enrollment, sequence_delivery, suppression; =sequence_performance=, =sequence_failures= | |
+| =ledger=     | finance         | journal, journal_line; posting service, post/reverse/create-and-post actions, =trial_balance=           |                       |
 | =banking= | ledger | bank_account, bank_statement, bank_transaction, bank_match, reconciliation; =bank_reconciliation= | |
 
 | =statements= | ledger, periods | ledger balances query; balance sheet, income statement, cash flow, general ledger, account balances, P&L reconciliation | |

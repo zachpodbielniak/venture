@@ -77,6 +77,7 @@
 #include "model/venture-entity-registry.h"
 #include "model/venture-module.h"
 #include "periods/venture-period-records.h"
+#include "sequences/venture-sequence-records.h"
 #include "autojournal/venture-posting-profile.h"
 
 /* --- Configuration ------------------------------------------------------- */
@@ -118,6 +119,7 @@
 #include "report/venture-report.h"
 #include "receivables/venture-settlement-service.h"
 #include "banking/venture-bank-match-service.h"
+#include "sequences/venture-sequence-service.h"
 #include "periods/venture-period-report.h"
 
 /* The confirmation store comes first: the context owns one and names its
@@ -139,6 +141,8 @@
 #include "core/venture-desk.h"
 #include "core/venture-webhook.h"
 #include "core/venture-routing.h"
+#include "core/venture-action.h"
+#include "ledger/venture-journal-actions.h"
 
 /* Auth comes before the AI service, which names VentureAuthPrincipal in its
  * signatures, and before the web server, which uses both. */
