@@ -533,6 +533,15 @@ static GType (*const venture_module_periods_types[]) (void) = {
 };
 static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live", NULL };
 
+static GType (*const venture_module_pipelines_types[]) (void) = {
+	venture_pipeline_get_type, venture_pipeline_stage_get_type,
+	venture_deal_stage_entry_get_type, venture_loss_reason_get_type, NULL
+};
+static const gchar *const venture_module_requires_crm[] = { "crm", NULL };
+static const gchar *const venture_module_reports_pipelines[] = {
+	"stage_duration", "funnel", "forecast", "loss_reasons", "overdue_deals", NULL
+};
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -674,7 +683,13 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"periods", "Fiscal periods", "Fiscal calendars, closing controls and historical reports.",
 		venture_module_requires_finance, NULL,
 		venture_module_periods_types, venture_module_reports_periods, NULL, FALSE
+	},
+	{
+		"pipelines", "Sales pipelines", "Configurable stages, history and forecasts.",
+		venture_module_requires_crm, NULL, venture_module_pipelines_types,
+		venture_module_reports_pipelines, NULL, FALSE
 	}
+
 };
 
 const VentureModuleInfo *

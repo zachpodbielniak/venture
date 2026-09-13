@@ -8,6 +8,7 @@
 #include "venture.h"
 #include "ledger/venture-ledger-private.h"
 #include "db/venture-migrations.h"
+#include "pipelines/venture-pipelines-private.h"
 
 #include <string.h>
 
@@ -52,6 +53,7 @@ struct _VentureDatabase
 	 * through venture_database_save(), so every writer gets the check.
 	 */
 	GPtrArray		*validators;
+	VentureDealService *deal_service;
 };
 
 typedef struct
@@ -95,6 +97,7 @@ venture_database_finalize(GObject *object)
 
 	self = VENTURE_DATABASE(object);
 
+	g_clear_object(&self->deal_service);
 	g_clear_object(&self->transaction);
 
 	if (NULL != self->connection)
@@ -1050,6 +1053,13 @@ venture_database_save(
 			return ok;
 	}
 
+	{
+		gboolean handled;
+		gboolean ok = venture_pipelines_save(self, entity, actor, &handled, error);
+		if (handled || !ok)
+			return ok;
+	}
+
 	/* Validation happens before anything is written, never after: a
 	 * half-written invalid record is worse than a rejected one. */
 	if (!venture_entity_validate(entity, error))
@@ -1950,4 +1960,13 @@ venture_database_migrate(
 		!venture_database_seed_tax_categories(self, organization_id, error))
 		return FALSE;
 	return TRUE;
+}
+
+VentureDealService *
+venture_database_get_deal_service(VentureDatabase *self)
+{
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), NULL);
+	if (NULL == self->deal_service)
+		self->deal_service = g_object_new(VENTURE_TYPE_DEAL_SERVICE, "database", self, NULL);
+	return self->deal_service;
 }

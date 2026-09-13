@@ -1,0 +1,37 @@
+#+title: Sales pipelines
+
+* Configurable processes
+
+The =pipelines= module requires =crm=. Its =pipeline=, =pipeline_stage=,
+=deal_stage_entry= and =loss_reason= records use the ordinary field tables,
+so their forms, JSON, lists and CLI CRUD share the same metadata.
+
+A pipeline belongs to an organization. Its kind is =sales=, =renewal=,
+=partnership= or =custom=. Stages have an ascending position, a probability,
+a kind (=open=, =won=, =lost=), comma-separated required deal fields and a
+rotting threshold in days. Zero disables that threshold.
+
+Deals carry a pipeline, stage, owner username, next step, next-action time,
+loss reason and loss note. =probability_overridden= preserves an explicitly
+chosen probability on moves. =committed= marks a deal for the forecast.
+
+* Moving
+
+=venture_deal_service_move_stage()= is the transition boundary. It checks
+organization and pipeline membership, required fields and active loss
+reasons, refuses a stale deal version, and writes the deal and history in
+one transaction. Inputs are unchanged; the return value is the updated deal.
+A move to the existing stage creates no duplicate history. Generic updates
+to either stage representation, pipeline or closing timestamp are refused
+with =VentureDealService= named in the error.
+
+The legacy enum remains. Won and lost stage kinds map to their matching
+legacy outcomes. Open stages map positions 0, 1, 2 and 3 to =lead=,
+=qualified=, =proposal= and =negotiation=; later positions map to
+=negotiation=. Closing stamps =closed_at= and reopening clears it.
+
+First use creates an organization's default Sales pipeline with all six
+legacy stages. New deals retain their initial legacy stage and probability
+for compatibility with existing import callers; subsequent changes use the
+service. The initial history entry is an observation at creation, not an
+invention of earlier stage transitions.

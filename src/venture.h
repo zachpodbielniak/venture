@@ -76,6 +76,7 @@
 #include "model/venture-entity-registry.h"
 #include "model/venture-module.h"
 #include "periods/venture-period-records.h"
+#include "pipelines/venture-pipeline-records.h"
 
 /* --- Configuration ------------------------------------------------------- */
 
@@ -125,6 +126,7 @@
 #include "core/venture-federation.h"
 #include "ledger/venture-posting-rule.h"
 #include "ledger/venture-posting-service.h"
+#include "pipelines/venture-deal-service.h"
 #include "core/venture-ticket-relation.h"
 #include "core/venture-record-link.h"
 #include "core/venture-dashboard.h"
