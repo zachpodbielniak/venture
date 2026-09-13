@@ -240,6 +240,19 @@ candidate_date(VentureEntity *record)
 	return date;
 }
 
+static gint
+calendar_distance(GDateTime *a, GDateTime *b)
+{
+	g_autoptr(GDateTime) utc_a = g_date_time_to_utc(a);
+	g_autoptr(GDateTime) utc_b = g_date_time_to_utc(b);
+	GDate day_a, day_b;
+	g_date_clear(&day_a, 1);
+	g_date_clear(&day_b, 1);
+	g_date_set_dmy(&day_a, g_date_time_get_day_of_month(utc_a), g_date_time_get_month(utc_a), g_date_time_get_year(utc_a));
+	g_date_set_dmy(&day_b, g_date_time_get_day_of_month(utc_b), g_date_time_get_month(utc_b), g_date_time_get_year(utc_b));
+	return (gint)g_date_get_julian(&day_a) - (gint)g_date_get_julian(&day_b);
+}
+
 GPtrArray *
 venture_bank_transaction_candidates(VentureDatabase *db, VentureEntity *transaction, GError **error)
 {
@@ -276,10 +289,10 @@ venture_bank_transaction_candidates(VentureDatabase *db, VentureEntity *transact
 			gboolean used = FALSE;
 			guint k;
 			if (value == NULL || when == NULL || strcmp(venture_money_get_currency(value), venture_money_get_currency(amount))) continue;
-			if (g_date_time_difference(when, date) > 5 * G_TIME_SPAN_DAY || g_date_time_difference(date, when) > 5 * G_TIME_SPAN_DAY) continue;
+			if (calendar_distance(when, date) > 5 || calendar_distance(when, date) < -5) continue;
 			delta = venture_money_subtract(value, amount, error);
 			if (delta == NULL) return NULL;
-			/* Near means at most one currency unit, never a percentage float. */
+			/* Near means at most 100 minor units, never a percentage float. */
 			if (venture_money_get_amount(delta) > 100 || venture_money_get_amount(delta) < -100) continue;
 			for (k = 0; k < matches->len; k++)
 			{
@@ -679,8 +692,7 @@ auto_match(VentureBankMatchService *self, VentureEntity *statement, const Ventur
 			g_autoptr(VentureMoney) value = candidate_amount(candidate);
 			g_autoptr(GDateTime) when = candidate_date(candidate);
 			if (venture_money_equal(value, amount) &&
-				g_date_time_difference(when, date) <= 3 * G_TIME_SPAN_DAY &&
-				g_date_time_difference(date, when) <= 3 * G_TIME_SPAN_DAY)
+				calendar_distance(when, date) <= 3 && calendar_distance(when, date) >= -3)
 			{ only = candidate; count++; }
 		}
 		if (count == 1)

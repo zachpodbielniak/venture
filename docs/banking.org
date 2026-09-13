@@ -60,10 +60,10 @@ The candidate seam is
 =venture_bank_transaction_candidates(database, transaction, error)=. The owned
 array owns each returned =VentureEntity=. It searches enabled payment, sale,
 expense and registered =vendor_bill_payment= or =bill_payment= records in the
-same organization, within five days and 100 minor units of the signed amount.
+same organization, within five UTC calendar days and 100 minor units of the signed amount.
 Vendor payment records must expose =amount= and =date= or =occurred_at=.
 Currencies are never converted. Automatic matching requires a single exact
-amount candidate within three days; ambiguity leaves the line unmatched.
+amount candidate within three UTC calendar days; ambiguity leaves the line unmatched.
 
 A manual match takes =parts=, an array of record type, id and optional signed
 amount. The parts must sum exactly to the transaction. Multiple parts produce

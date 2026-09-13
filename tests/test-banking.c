@@ -575,10 +575,10 @@ test_candidate_windows(BankFixture *f, gconstpointer data)
 	g_autoptr(VentureMoney) near = venture_money_new_for_currency(900, "USD");
 	guint i;
 	(void)data;
-	for (i = 0; i < 4; i++)
+	for (i = 0; i < 5; i++)
 	{
 		g_autoptr(VentureExpense) expense = venture_expense_new();
-		g_autoptr(GDateTime) date = g_date_time_new_utc(2026, 1, i == 3 ? 16 : 10, 0, 0, 0);
+		g_autoptr(GDateTime) date = g_date_time_new_utc(2026, 1, i == 3 ? 15 : i == 4 ? 16 : 10, 12, 0, 0);
 		g_object_set(expense, "description", "Candidate", "organization-id", f->org,
 			"amount", i == 2 ? near : ten, "occurred-at", date, NULL);
 		g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(expense), NULL, &error));
@@ -588,7 +588,7 @@ test_candidate_windows(BankFixture *f, gconstpointer data)
 	transaction = venture_database_get(f->database, VENTURE_TYPE_BANK_TRANSACTION, 1, &error);
 	candidates = venture_bank_transaction_candidates(f->database, transaction, &error);
 	g_assert_no_error(error);
-	g_assert_cmpuint(candidates->len, ==, 3);
+	g_assert_cmpuint(candidates->len, ==, 4);
 	result = bank_action(f, "auto", venture_entity_get_id(statement), "{}", &error);
 	g_assert_no_error(error); g_assert_nonnull(result);
 	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_MATCH), ==, 0);
