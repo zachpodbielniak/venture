@@ -198,6 +198,22 @@ test_partial_payment(Fixture *f, gconstpointer unused)
 	save(f, p);
 	status(f, b, "paid");
 	g_assert_cmpint(count(f, "bill_payment_allocation"), ==, 2);
+	{
+		g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_VENDOR_CREDIT);
+		g_autoptr(VentureEntity) credit = NULL;
+		g_autoptr(VentureMoney) remaining = NULL;
+		g_autoptr(GError) error = NULL;
+		venture_query_set_organization(q, f->org);
+		venture_query_add_filter_int(q, "payment-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(p), NULL);
+		credit = venture_database_find_one(f->db, q, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(credit);
+		g_object_get(credit, "remaining", &remaining, NULL);
+		g_assert_cmpint(venture_money_get_amount(remaining), ==, 1000);
+		field(credit, "remaining", "500 USD");
+		g_assert_false(venture_database_save(f->db, credit, NULL, &error));
+		g_assert_nonnull(error);
+	}
 }
 
 static void
@@ -459,6 +475,14 @@ test_surfaces(Fixture *f, gconstpointer unused)
 		path = g_strdup_printf("/api/v1/confirmations/%s/approve", venture_confirmation_get_id(g_ptr_array_index(pending, 0)));
 		g_assert_cmpuint(http_request(server, "POST", path, "application/json", "{}", NULL), ==, 200);
 		status(f, staged_bill, "approved");
+	}
+	{
+		g_autoptr(VentureEntity) cli_bill = bill(f, "CLI-APPROVE");
+		const gchar *approve_argv[] = { cli_path, "--server", venture_web_server_get_base_url(server),
+			"bill", "approve", "4", "date=2026-01-01", NULL };
+		g_clear_pointer(&out, g_free);
+		out = run_cli(approve_argv, NULL, TRUE);
+		status(f, cli_bill, "approved");
 	}
 	venture_web_server_stop(server);
 	venture_test_remove_tree(state_dir);
