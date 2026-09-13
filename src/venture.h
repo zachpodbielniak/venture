@@ -116,6 +116,7 @@
 
 #include "report/venture-report.h"
 #include "receivables/venture-settlement-service.h"
+#include "payables/venture-payables-service.h"
 #include "periods/venture-period-report.h"
 
 /* The confirmation store comes first: the context owns one and names its

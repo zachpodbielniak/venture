@@ -59,5 +59,13 @@ VENTURE_DECLARE_ENTITY(VentureVendorBillLine, venture_vendor_bill_line, VENDOR_B
  * venture_vendor_bill_line_new:
  * Returns: (transfer full): a supplier bill line with exact quantity
  */
+/**
+ * venture_vendor_bill_line_get_amount:
+ * @self: the line
+ * @error: (out) (optional): invalid quantity, currency or overflow
+ * Returns: (transfer full) (nullable): exact quantity times price plus tax
+ */
+VentureMoney *venture_vendor_bill_line_get_amount(VentureVendorBillLine *self, GError **error);
+
 G_END_DECLS
 #endif

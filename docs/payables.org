@@ -1,0 +1,55 @@
+#+title: Vendor payables
+#+description: Supplier bills, payments and dated liability evidence
+
+* The supplier's bill
+
+The =payables= module requires =finance=, =ledger= and =crm=. The last
+requirement supplies the supplier company; switching the module off hides
+its records and reports together. Bills belong to one organization and
+numbering is unique inside that organization.
+
+=vendor_bill= holds the supplier, number, bill and due dates, currency,
+status and memo. =vendor_bill_line= holds description, exact decimal
+quantity, unit price, expense account or category, and tax amount.
+Quantity is a decimal string with at most three fractional digits, parsed
+into an integer rational. Price multiplication rounds once, half to even;
+tax is then added in the same currency. No floating-point arithmetic is
+used. Tax is part of the expense cost; recoverable input-tax accounting is
+outside this module.
+
+* One financial writer
+
+=VenturePayablesService= belongs to the database and owns approval,
+allocations, vendor credits, refunds and voiding. Generic status changes
+are refused with the service named. Approval freezes the amount and due
+date in =vendor_bill_event= and posts each line's expense account against
+Accounts payable 2000. Approved lines, currency and dates cannot be edited.
+An unpaid approved bill can be voided; its approval is reversed with a new
+dated posting. Historical evidence cannot be removed through deletion,
+restoration or purge.
+
+=bill_payment= records money paid to a supplier. =bill_payment_allocation=
+applies exactly one payment or vendor credit to a bill. A payment can cover
+several bills in one transaction through the service's allocation-array
+API. A single-bill payment applies up to that bill's remaining amount;
+the excess is a =vendor_credit=. Remaining credit and bill status are
+derived from retained allocations and refunds. A =bill_refund= records
+cash returned by the supplier and reopens an allocated bill when applicable.
+Payments debit AP and credit Cash 1000. Vendor credit notes debit AP and
+credit General expenses 6900. Refunds reverse the cash movement.
+
+Every financial operation shares one transaction with its audit entries,
+allocations and journals. A failure after writing the payment leaves no
+payment or partial journal. Dated events check the fiscal-period guard
+inside that transaction; updating a derived current balance does not
+rewrite its earlier accounting date. Currency differences are refused.
+
+Account IDs on lines select active expense accounts within the bill's
+organization. Service properties select the cash, payable and default
+expense accounts. Zero selects conventional codes 1000, 2000 and 6900;
+missing default accounts are created within the transaction.
+
+* Scope
+
+Bank matching and purchase orders/receiving are separate modules. No
+historical approvals are inferred from an imported bill's current status.

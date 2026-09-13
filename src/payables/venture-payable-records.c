@@ -80,8 +80,56 @@ static const VentureFieldDecl bill_line_fields[] = {
 	VENTURE_FIELD_NAME("quantity", "Quantity", "Exact decimal quantity, up to three decimal places"),
 	VENTURE_FIELD_MONEY("unit-price", "Unit price", NULL),
 	VENTURE_FIELD_REF("account-id", "Expense account", NULL, "account", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_NAME("category", "Category", "General expenses when no account is specified"),
+	VENTURE_FIELD("category", "Category", "General expenses when no account is specified", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("tax-amount", "Tax amount", "Tax included in expense cost"),
 	VENTURE_FIELD("position", "Position", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureVendorBillLine, venture_vendor_bill_line, bill_line_fields)
+
+VentureMoney *
+venture_vendor_bill_line_get_amount(VentureVendorBillLine *self, GError **error)
+{
+	g_autofree gchar *quantity = NULL;
+	g_autoptr(VentureMoney) price = NULL;
+	g_autoptr(VentureMoney) tax = NULL;
+	g_autoptr(VentureMoney) net = NULL;
+	const gchar *p;
+	gint64 numerator = 0;
+	gint64 denominator = 1;
+	guint decimals = 0;
+	gboolean point = FALSE;
+	gboolean digit = FALSE;
+
+	g_object_get(self, "quantity", &quantity, "unit-price", &price, "tax-amount", &tax, NULL);
+	if (quantity == NULL || price == NULL)
+		goto invalid;
+	for (p = quantity; *p != '\0'; p++)
+	{
+		if (*p == '.' && !point)
+		{
+			point = TRUE;
+			continue;
+		}
+		if (!g_ascii_isdigit(*p) || numerator > (G_MAXINT64 - (*p - '0')) / 10)
+			goto invalid;
+		digit = TRUE;
+		numerator = numerator * 10 + (*p - '0');
+		if (point)
+		{
+			if (++decimals > 3)
+				goto invalid;
+			denominator *= 10;
+		}
+	}
+	if (!digit || numerator <= 0 || venture_money_get_amount(price) < 0 ||
+		(tax != NULL && venture_money_get_amount(tax) < 0))
+		goto invalid;
+	net = venture_money_multiply_rational(price, numerator, denominator, error);
+	if (net == NULL)
+		return NULL;
+	return tax != NULL ? venture_money_add(net, tax, error) : g_steal_pointer(&net);
+invalid:
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		"VenturePayablesService: positive exact quantity (up to three decimals) and nonnegative price/tax required");
+	return NULL;
+}

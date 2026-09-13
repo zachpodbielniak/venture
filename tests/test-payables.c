@@ -212,6 +212,87 @@ test_currency(Fixture *f, gconstpointer unused)
 	status(f, b, "approved");
 }
 
+static gboolean
+reject_credit(VentureDatabase *db, VentureEntity *e, VentureEntity *old, gpointer data, GError **error)
+{
+	Fixture *f = data;
+	/* The first payment write really happened inside the transaction. */
+	g_assert_cmpint(count(f, "bill_payment"), ==, 1);
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE, "Injected after the payment write");
+	return FALSE;
+}
+
+static void
+test_atomic(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) b = bill(f, "ATOMIC");
+	g_autoptr(VentureEntity) p = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 audits;
+	gint64 journals;
+	approve(f, b);
+	audits = count(f, "audit_entry");
+	journals = count(f, "journal");
+	p = payment(f, b, "100 USD", "2026-02-01");
+	venture_database_add_save_validator(f->db, VENTURE_TYPE_VENDOR_CREDIT, reject_credit, f, NULL);
+	g_assert_false(venture_database_save(f->db, p, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE);
+	g_assert_false(venture_entity_is_persisted(p));
+	g_assert_cmpint(count(f, "bill_payment"), ==, 0);
+	g_assert_cmpint(count(f, "vendor_credit"), ==, 0);
+	g_assert_cmpint(count(f, "bill_payment_allocation"), ==, 0);
+	g_assert_cmpint(count(f, "journal"), ==, journals);
+	g_assert_cmpint(count(f, "audit_entry"), ==, audits);
+	status(f, b, "approved");
+}
+
+static gint64
+metric(VentureReportResult *result, const gchar *key)
+{
+	GPtrArray *metrics = venture_report_result_get_metrics(result);
+	guint i;
+	for (i = 0; i < metrics->len; i++)
+	{
+		VentureMetric *m = g_ptr_array_index(metrics, i);
+		if (g_strcmp0(key, venture_metric_get_key(m)) == 0)
+			return venture_money_get_amount(venture_metric_get_money(m));
+	}
+	g_assert_not_reached();
+}
+
+static void
+test_reports(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) b = bill(f, "REPORT");
+	g_autoptr(VentureEntity) p = NULL;
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(GTimeZone) tz = g_time_zone_new_utc();
+	g_autoptr(VentureDateRange) period = venture_date_range_parse("2026-01", tz, 1, NULL);
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(GError) error = NULL;
+	VentureReport *report;
+	approve(f, b);
+	p = payment(f, b, "40 USD", "2026-01-15");
+	save(f, p);
+	g_clear_object(&p);
+	p = payment(f, b, "60 USD", "2026-02-15");
+	save(f, p);
+	report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "payables");
+	g_assert_nonnull(report);
+	result = venture_report_generate(report, f->context, period, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_assert_cmpint(metric(result, "outstanding"), ==, 6000);
+	g_clear_object(&result);
+	report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "vendor_statement");
+	g_assert_nonnull(report);
+	json_object_set_int_member(options, "vendor_id", f->vendor);
+	result = venture_report_generate(report, f->context, period, options, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_assert_cmpint(metric(result, "balance"), ==, 6000);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -222,5 +303,7 @@ main(int argc, char **argv)
 	g_test_add("/payables/approval", Fixture, NULL, setup, test_approval, teardown);
 	g_test_add("/payables/partial-payment", Fixture, NULL, setup, test_partial_payment, teardown);
 	g_test_add("/payables/currency", Fixture, NULL, setup, test_currency, teardown);
+	g_test_add("/payables/atomic", Fixture, NULL, setup, test_atomic, teardown);
+	g_test_add("/payables/reports", Fixture, NULL, setup, test_reports, teardown);
 	return g_test_run();
 }
