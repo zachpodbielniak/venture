@@ -229,7 +229,46 @@ test_lifecycle(Fixture *f, gconstpointer data)
 		gint stage;
 		g_object_get(current, "stage", &stage, NULL);
 		g_assert_cmpint(stage, ==, VENTURE_DEAL_STAGE_WON);
+		{
+			g_autoptr(GPtrArray) history = rows(f, "deal_stage_entry");
+			g_assert_cmpuint(history->len, ==, 2);
+		}
 	}
+}
+
+/* A process refusing its won stage must roll back the issued invoice too. */
+static void
+test_pipeline_refusal(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) q = quote(f, "Required-field");
+	g_autoptr(VentureEntity) l = line(f, q);
+	g_autoptr(VentureEntity) deal = record(f, "deal");
+	g_autoptr(VentureEntity) current = fresh(f, "quote", venture_entity_get_id(q));
+	g_autoptr(VentureEntity) accept = NULL;
+	g_autoptr(VentureEntity) won = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PIPELINE_STAGE);
+	g_autoptr(GPtrArray) invoices = NULL;
+	g_autoptr(GPtrArray) entries = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	g_object_set(deal, "name", "Needs approval", NULL);
+	save(f, deal);
+	g_object_set(current, "deal-id", venture_entity_get_id(deal), NULL);
+	save(f, current);
+	venture_query_add_filter_string(query, "kind", VENTURE_FILTER_OP_EQ, "won", NULL);
+	won = venture_database_find_one(f->db, query, &error);
+	g_assert_nonnull(won);
+	g_object_set(won, "required-fields", "next_step", NULL);
+	save(f, won);
+	action(f, q, "send");
+	accept = request(f, q, "accept");
+	g_assert_false(venture_database_save(f->db, accept, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	status(f, q, "sent");
+	invoices = rows(f, "invoice");
+	entries = rows(f, "deal_stage_entry");
+	g_assert_cmpuint(invoices->len, ==, 0);
+	g_assert_cmpuint(entries->len, ==, 1);
 }
 
 static gboolean
@@ -715,6 +754,7 @@ main(int argc, char **argv)
 	venture_entity_registry_get_default();
 	g_test_add("/quotes/records", Fixture, NULL, setup, test_records, teardown);
 	g_test_add("/quotes/totals", Fixture, NULL, setup, test_totals, teardown);
+	g_test_add("/quotes/pipeline-refusal", Fixture, NULL, setup, test_pipeline_refusal, teardown);
 	g_test_add("/quotes/lifecycle", Fixture, NULL, setup, test_lifecycle, teardown);
 	g_test_add("/quotes/rollback", Fixture, NULL, setup, test_rollback, teardown);
 	g_test_add("/quotes/freeze-revision", Fixture, NULL, setup, test_freeze, teardown);

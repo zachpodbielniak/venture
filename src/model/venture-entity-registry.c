@@ -729,6 +729,10 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_quote_event_get_type
 		, venture_quote_delivery_get_type
 		, venture_quote_action_get_type
+		, venture_pipeline_get_type,
+		venture_pipeline_stage_get_type,
+		venture_deal_stage_entry_get_type,
+		venture_loss_reason_get_type,
 	};
 	gsize i;
 

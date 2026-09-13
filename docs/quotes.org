@@ -133,3 +133,5 @@ zero percentages. PostgreSQL SQL is shipped but requires a live PostgreSQL
 integration run separately.
 
 Action routes validate =stage= with the shared confirmation parser; invalid values are refused before any action executes.
+
+When pipelines is enabled, acceptance moves the linked deal to its own pipeline's first won stage (ordered by position, then id). The stage must satisfy the ordinary transition rules; a refusal rolls back acceptance and invoice issuance together. The stage history records the move. When pipelines is disabled, acceptance retains the legacy won-stage transition.

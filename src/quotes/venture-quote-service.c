@@ -456,8 +456,34 @@ handoff(VentureQuoteService *self, VentureEntity *q, GDateTime *now, const Ventu
 	{
 		g_autoptr(VentureEntity) deal = get(self, VENTURE_TYPE_DEAL, org, integer(q, "deal-id"), error);
 		if (deal == NULL) return FALSE;
-		g_object_set(deal, "stage", VENTURE_DEAL_STAGE_WON, "closed-at", now, NULL);
-		if (!venture_database_save(self->database, deal, actor, error)) return FALSE;
+		if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "pipeline") != G_TYPE_INVALID)
+		{
+			g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PIPELINE_STAGE);
+			g_autoptr(VentureEntity) won = NULL;
+			g_autoptr(VentureDeal) moved = NULL;
+			/* Acceptance uses the configured process, including required fields
+			 * and history, inside the invoice transaction. */
+			venture_query_set_organization(query, org);
+			venture_query_add_filter_int(query, "pipeline-id", VENTURE_FILTER_OP_EQ, integer(deal, "pipeline-id"), NULL);
+			venture_query_add_filter_string(query, "kind", VENTURE_FILTER_OP_EQ, "won", NULL);
+			venture_query_add_order(query, "position", VENTURE_SORT_ASCENDING, NULL);
+			venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+			won = venture_database_find_one(self->database, query, error);
+			if (won == NULL)
+			{
+				if (error == NULL || *error == NULL)
+					refuse(error, VENTURE_ERROR_VALIDATION, "deal pipeline has no won stage");
+				return FALSE;
+			}
+			moved = venture_deal_service_move_stage(venture_database_get_deal_service(self->database),
+				VENTURE_DEAL(deal), venture_entity_get_id(won), "Quote accepted", actor, error);
+			if (moved == NULL) return FALSE;
+		}
+		else
+		{
+			g_object_set(deal, "stage", VENTURE_DEAL_STAGE_WON, "closed-at", now, NULL);
+			if (!venture_database_save(self->database, deal, actor, error)) return FALSE;
+		}
 	}
 	g_object_set(q, "invoice-id", venture_entity_get_id(invoice), NULL);
 	return TRUE;

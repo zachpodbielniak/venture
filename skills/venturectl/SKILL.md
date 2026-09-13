@@ -427,3 +427,11 @@ service. Acceptance creates and issues the invoice in the same transaction.
 For a staged action use `--stage create quote_action quote_id=ID action=accept
 expected_version=N 'accepted_by=Full Name'`; obtain the quote's current
 `version` first. `revision` is the separate commercial revision number.
+## Sales pipeline actions
+
+`venturectl deal move ID STAGE [NOTE]` calls the deal transition service.
+Use `describe pipeline_stage` and `list pipeline_stage` to find the destination.
+Fill required deal fields and a loss reason before moving to a lost stage.
+`update deal` cannot change either stage field or the closing timestamp.
+Reports: `stage_duration`, `funnel`, `forecast`, `loss_reasons`, `overdue_deals`;
+filter with `pipeline_id=N` and `owner=USERNAME`.

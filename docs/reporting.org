@@ -128,3 +128,11 @@ A plugin needing state can subclass =VentureReport= instead and override
 every consumer. Registering a name that already exists replaces it, so a
 plugin can deliberately override a built-in with a better version for its
 data.
+
+* Sales pipeline analysis
+
+The =pipelines= module adds =stage_duration=, =funnel=, =forecast=,
+=loss_reasons= and the =overdue_deals= dashboard metric. All accept
+=organization_id=, =pipeline_id= and =owner=. The existing =pipeline= report
+also accepts =pipeline_id=. Definitions and currency separation are described
+in [[file:pipelines.org][Sales pipelines]].

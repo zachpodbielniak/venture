@@ -43,6 +43,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =factory=    | forge           | milestone, release, build, environment, deployment, incident; =releases=, =lead_time=, =incidents=, =delivery= | |
 | =dashboards= | core            | dashboard, dashboard_widget; the =/dashboards= pages and their API | |
 | =ledger=     | finance         | journal, journal_line; posting service, =trial_balance=           |                       |
+| =pipelines= | crm | pipeline, pipeline_stage, deal_stage_entry, loss_reason; stage_duration, funnel, forecast, loss_reasons, overdue_deals; /deals | |
 
 | =quotes= | crm, invoicing | price_list, price_list_item, quote, quote_line, quote_event, quote_delivery, quote_action; =quotes= report and proposal actions | |
 
@@ -72,7 +73,7 @@ VENTURE_MODULE_CRM=false venture
 For one run:
 
 #+begin_src sh
-venture --disable-module crm --disable-module invoicing --disable-module receivables --disable-module quotes
+venture --disable-module crm --disable-module invoicing --disable-module receivables --disable-module quotes --disable-module pipelines
 #+end_src
 
 From a compiled C configuration, which is how a machine decides for itself:

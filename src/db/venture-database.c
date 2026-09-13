@@ -8,6 +8,7 @@
 #include "venture.h"
 #include "ledger/venture-ledger-private.h"
 #include "db/venture-migrations.h"
+#include "pipelines/venture-pipelines-private.h"
 
 #include <string.h>
 
@@ -53,6 +54,7 @@ struct _VentureDatabase
 	 */
 	GPtrArray		*validators;
 	VentureQuoteService *quote_service;
+	VentureDealService *deal_service;
 };
 
 typedef struct
@@ -97,6 +99,7 @@ venture_database_finalize(GObject *object)
 	self = VENTURE_DATABASE(object);
 
 	g_clear_object(&self->quote_service);
+	g_clear_object(&self->deal_service);
 	g_clear_object(&self->transaction);
 
 	if (NULL != self->connection)
@@ -1060,6 +1063,13 @@ venture_database_save(
 			return ok;
 	}
 
+	{
+		gboolean handled;
+		gboolean ok = venture_pipelines_save(self, entity, actor, &handled, error);
+		if (handled || !ok)
+			return ok;
+	}
+
 	/* Validation happens before anything is written, never after: a
 	 * half-written invalid record is worse than a rejected one. */
 	if (!venture_entity_validate(entity, error))
@@ -1390,6 +1400,8 @@ venture_database_delete(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_pipelines_check_removal(entity, error))
+		return FALSE;
 
 	{
 		gboolean handled;
@@ -1456,6 +1468,8 @@ venture_database_restore(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_pipelines_check_removal(entity, error))
+		return FALSE;
 
 	{
 		gboolean handled;
@@ -1505,6 +1519,8 @@ venture_database_purge(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_pipelines_check_removal(entity, error))
+		return FALSE;
 
 	{
 		gboolean handled;
@@ -1987,7 +2003,17 @@ venture_database_migrate(
 
 	organization_id = venture_database_seed_default_organization(self, error);
 	if (organization_id == 0 || !venture_database_seed_accounts(self, organization_id, error) ||
-		!venture_database_seed_tax_categories(self, organization_id, error))
+		!venture_database_seed_tax_categories(self, organization_id, error) ||
+		!venture_pipelines_migrate(self, error))
 		return FALSE;
 	return TRUE;
+}
+
+VentureDealService *
+venture_database_get_deal_service(VentureDatabase *self)
+{
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), NULL);
+	if (NULL == self->deal_service)
+		self->deal_service = g_object_new(VENTURE_TYPE_DEAL_SERVICE, "database", self, NULL);
+	return self->deal_service;
 }

@@ -204,3 +204,10 @@ from a config file. See [[file:mcp.org][venturectl mcp]].
 =venturectl quote revise ID= clones the proposal and supersedes its source.
 For approval, use =--stage create quote_action quote_id=ID action=accept
 expected_version=N accepted_by=NAME=. See [[file:quotes.org][quotes]].
+* Sales pipeline actions
+
+=venturectl deal move ID STAGE [NOTE]= moves a deal through
+=VentureDealService=. STAGE is a =pipeline_stage= id in the deal's pipeline.
+Fill its required fields and loss reason first with ordinary =update deal=.
+Generic updates cannot change =stage=, =stage_id= or =closed_at=.
+See [[file:pipelines.org][Sales pipelines]] for configuration and forecasting.

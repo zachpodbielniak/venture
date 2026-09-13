@@ -42,6 +42,8 @@ struct _VentureConfirmation
 	 */
 	VentureEntity			*staged;
 	VentureEntity			*original;
+	gint64 deal_stage_id;
+	gchar *deal_move_note;
 };
 
 G_DEFINE_FINAL_TYPE(VentureConfirmation, venture_confirmation, G_TYPE_OBJECT)
@@ -63,6 +65,7 @@ venture_confirmation_finalize(GObject *object)
 	g_clear_pointer(&self->expires_at, g_date_time_unref);
 	g_clear_object(&self->staged);
 	g_clear_object(&self->original);
+	g_free(self->deal_move_note);
 
 	G_OBJECT_CLASS(venture_confirmation_parent_class)->finalize(object);
 }
@@ -667,6 +670,14 @@ venture_confirmation_store_approve(
 	actor.request_id = confirmation->id;
 	actor.approved_by = approver;
 
+	if (confirmation->deal_stage_id > 0)
+	{
+		g_autoptr(VentureDeal) moved = venture_deal_service_move_stage(
+			venture_database_get_deal_service(self->database), VENTURE_DEAL(confirmation->original),
+			confirmation->deal_stage_id, confirmation->deal_move_note, &actor, &local_error);
+		ok = NULL != moved;
+	}
+	else
 	if (VENTURE_AUDIT_ACTION_DELETE == confirmation->action)
 	{
 		ok = venture_database_delete(self->database, confirmation->staged,
@@ -810,4 +821,30 @@ venture_confirmation_parse_stage_flag(
 	            "it.", value);
 
 	return FALSE;
+}
+
+VentureConfirmation *
+venture_confirmation_store_stage_deal_move(VentureConfirmationStore *self,
+	VentureDeal *deal, gint64 stage_id, const gchar *note,
+	const VentureActor *actor, const gchar *via, GError **error)
+{
+	g_autoptr(VentureDeal) staged = venture_deal_new();
+	VentureConfirmation *confirmation;
+	if (stage_id <= 0 || !venture_entity_is_persisted(VENTURE_ENTITY(deal)))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"VentureDealService: a persisted deal and destination stage are required");
+		return NULL;
+	}
+	venture_entity_copy_properties_from(VENTURE_ENTITY(staged), VENTURE_ENTITY(deal), FALSE);
+	g_object_set(staged, "stage-id", stage_id, NULL);
+	confirmation = venture_confirmation_store_stage(self, VENTURE_AUDIT_ACTION_UPDATE,
+		VENTURE_ENTITY(staged), VENTURE_ENTITY(deal), actor, via, error);
+	if (NULL != confirmation)
+	{
+		confirmation->deal_stage_id = stage_id;
+		g_free(confirmation->deal_move_note);
+		confirmation->deal_move_note = g_strdup(note);
+	}
+	return confirmation;
 }
