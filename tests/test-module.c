@@ -158,6 +158,7 @@ test_module_dependency_conflict_is_refused(void)
 	g_clear_error(&error);
 	venture_config_set_module_enabled(config, "invoicing", FALSE);
 	venture_config_set_module_enabled(config, "receivables", FALSE);
+	venture_config_set_module_enabled(config, "billing", FALSE);
 	venture_config_set_module_enabled(config, "quotes", FALSE);
 	venture_config_set_module_enabled(config, "leads", FALSE);
 	venture_config_set_module_enabled(config, "activities", FALSE);
@@ -600,6 +601,7 @@ fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "crm", FALSE);
 	venture_config_set_module_enabled(fixture->config, "invoicing", FALSE);
 	venture_config_set_module_enabled(fixture->config, "receivables", FALSE);
+	venture_config_set_module_enabled(fixture->config, "billing", FALSE);
 	venture_config_set_module_enabled(fixture->config, "quotes", FALSE);
 	venture_config_set_module_enabled(fixture->config, "leads", FALSE);
 	venture_config_set_module_enabled(fixture->config, "activities", FALSE);
@@ -967,6 +969,7 @@ server_fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "crm", FALSE);
 	venture_config_set_module_enabled(fixture->config, "invoicing", FALSE);
 	venture_config_set_module_enabled(fixture->config, "receivables", FALSE);
+	venture_config_set_module_enabled(fixture->config, "billing", FALSE);
 	venture_config_set_module_enabled(fixture->config, "quotes", FALSE);
 	venture_config_set_module_enabled(fixture->config, "leads", FALSE);
 	venture_config_set_module_enabled(fixture->config, "activities", FALSE);

@@ -380,6 +380,39 @@ One shape for every failure:
 A =409= from a write means someone else changed the record since you loaded
 it. Reload, reapply, retry — do not force it.
 
+* SaaS billing actions
+
+=billing= requires invoicing and receivables. Its =plan=, =plan_price=,
+=customer_subscription=, =subscription_event=, =dunning_step=,
+=billing_notice= and =billing_request= use the ordinary generated resources.
+Subscription state and immutable billing evidence are written only by
+=VentureBillingService=.
+
+| POST endpoint | Body fields |
+|---------------+-------------|
+| =/api/v1/billing/start= | =organization_id=, =company_id=, optional =contact_id=, =plan_price_id=, =seats=, =external_id=, =at= |
+| =/api/v1/customer_subscriptions/:id/renew= | optional =at= |
+| =/api/v1/customer_subscriptions/:id/change= | =plan_price_id=, optional =at_period_end=, =at= |
+| =/api/v1/customer_subscriptions/:id/change-seats= | =seats=, optional =at= |
+| =/api/v1/customer_subscriptions/:id/cancel= | optional =at_period_end=, =at= |
+| =/api/v1/customer_subscriptions/:id/pause= | optional =at= |
+| =/api/v1/customer_subscriptions/:id/resume= | optional =at= |
+| =/api/v1/customer_subscriptions/:id/mark-payment-failed= | optional =at= |
+| =/api/v1/customer_subscriptions/:id/recover= | optional =at= |
+| =/api/v1/billing/renew-sweep= | optional =organization_id=, =at=, =dry_run= |
+| =/api/v1/billing/dunning-sweep= | optional =organization_id=, =at=, =dry_run= |
+
+Bodies are JSON objects, including ={}= for defaults. Dates default to the
+server clock; actions require editor authority. A successful action returns
+200 with its billing request and result fields (=subscription_id=,
+=invoice_id=, =proration_amount=, =processed=). =?stage=1= returns 202 with a
+confirmation instead. Approval uses the same transaction and checks the
+pinned subscription version and fiscal guard again.
+
+GET =/api/v1/reports/mrr=, =/churn= and =/subscriptions_due= use the report
+registry, with =period=, =organization_id=, =currency=, =as_of= and (for the
+due queue) =days=. Definitions are in each report's notes and
+[[file:billing.org][SaaS billing]]. No endpoint sends mail or charges a card.
 * Transactional mail actions
 
 Editor actions: =POST /api/v1/mail/send= (message fields, returns 202),

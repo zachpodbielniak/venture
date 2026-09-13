@@ -56,6 +56,7 @@ struct _VentureDatabase
 	 * through venture_database_save(), so every writer gets the check.
 	 */
 	GPtrArray		*validators;
+	VentureBillingService *billing;
 	VentureQuoteService *quote_service;
 	VentureLeadService *lead_service;
 	VentureActivityService *activities;
@@ -115,6 +116,7 @@ venture_database_finalize(GObject *object)
 	g_clear_object(&self->sequence_service);
 	g_clear_object(&self->actions);
 	g_clear_object(&self->transaction);
+	g_clear_object(&self->billing);
 	g_clear_object(&self->lead_service);
 
 	if (NULL != self->connection)
@@ -137,8 +139,18 @@ venture_database_get_property(GObject *object, guint id, GValue *value, GParamSp
 {
 	if (1 == id)
 		g_value_set_object(value, venture_database_get_action_registry(VENTURE_DATABASE(object)));
+	else if (2 == id)
+		g_value_set_object(value, venture_billing_service_get(VENTURE_DATABASE(object)));
 	else
 		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
+}
+
+VentureBillingService *
+venture_billing_service_get(VentureDatabase *database)
+{
+	if (database->billing == NULL)
+		database->billing = g_object_new(VENTURE_TYPE_BILLING_SERVICE, "database", database, NULL);
+	return database->billing;
 }
 
 static void
@@ -146,6 +158,9 @@ venture_database_class_init(VentureDatabaseClass *klass)
 {
 	G_OBJECT_CLASS(klass)->finalize = venture_database_finalize;
 	G_OBJECT_CLASS(klass)->get_property = venture_database_get_property;
+	g_object_class_install_property(G_OBJECT_CLASS(klass), 2,
+		g_param_spec_object("billing-service", "Billing service", "Subscription lifecycle authority",
+			VENTURE_TYPE_BILLING_SERVICE, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
 	g_object_class_install_property(G_OBJECT_CLASS(klass), 1,
 		g_param_spec_object("action-registry", "Action registry", "Shared record actions",
 			VENTURE_TYPE_ACTION_REGISTRY, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
@@ -1179,6 +1194,16 @@ database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
 
 	{
 		gboolean handled;
+		gboolean ok = venture_billing_save_hook(self, entity, actor, &handled, error);
+		if (!ok || handled)
+		{
+			g_rec_mutex_unlock(&self->lock);
+			return ok;
+		}
+	}
+
+	{
+		gboolean handled;
 		gboolean authorized;
 		gboolean ok = venture_payables_save_hook(self, entity, actor, &handled, &authorized, error);
 		settlement_authorized = settlement_authorized || authorized;
@@ -1493,6 +1518,8 @@ venture_database_delete(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
+	if (!venture_billing_check_removal(self, entity, error))
+		return FALSE;
 	if (!venture_bank_check_write(self, entity, TRUE, error) ||
 		!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error))
@@ -1567,6 +1594,8 @@ venture_database_restore(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
+	if (!venture_billing_check_removal(self, entity, error))
+		return FALSE;
 	if (!venture_bank_check_write(self, entity, TRUE, error) ||
 		!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error))
@@ -1623,6 +1652,8 @@ venture_database_purge(
 
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
+		return FALSE;
+	if (!venture_billing_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_bank_check_write(self, entity, TRUE, error) ||
 		!venture_payables_check_removal(self, entity, error) ||

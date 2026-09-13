@@ -1424,6 +1424,16 @@ test_auth_api_refuses_anonymous_requests(
 		"/runs/1/cancel", NULL, "", NULL, NULL),
 		==, SOUP_STATUS_FOUND);
 
+	/* Billing actions authenticate before reading the subscription or module. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/customer_subscriptions/1/renew", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/billing/renew-sweep", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/billing/subscriptions/1/action", NULL, "billing_action=cancel", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/leads/1/convert", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/leads/1/reassign", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/leads/1/convert", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);

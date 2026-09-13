@@ -305,7 +305,7 @@ venturectl --stage create expense description="Cover art" amount=250.00
 #   approve: POST /api/v1/confirmations/a3f9c118/approve
 ```
 
-It is refused on any command other than `create`, `update`, `delete`, `act` and `sequence enroll`,
+It is refused on any command other than `create`, `update`, `delete`, `act`, `sequence enroll`, `lead convert` and `billing`,
 because those are the only routes that read it -- and an unknown query
 parameter on a write route is ignored, so a quietly accepted `--stage` would
 apply the change it was asked to hold back.
@@ -420,6 +420,30 @@ venturectl federation '{"action":"resolve","id":1,"version":5,"field":"descripti
 
 Collection pulls return at most ten results, `next_offset` and `more`; continue pages while `more` is true and inspect per-record errors. Pull imports/merges without pushing; sync pushes conflict-free changes with an expected remote version. Edits require the local replica version. A conflict blocks that record until resolved; choosing remote can accept a removed/revoked field. Never update `federation_replica` through generic CRUD: its merge state belongs to the service. Copies remain usable during outages but are not authoritative local accounting rows. New source objects and binary attachments are not created/copied offline. See `docs/federation.org` for key exchange, grants, scheduling and revocation.
 
+## SaaS billing actions
+
+Use `billing start company_id=N plan_price_id=N seats=N` to start a
+`customer_subscription`. Read `describe plan_price` and the price first:
+non-trial starts issue an invoice immediately, while trials bill at activation.
+Use `billing change ID plan_price=N [at_period_end=true]`,
+`billing change-seats ID seats=N`, `billing cancel ID [at_period_end=true]`,
+`billing pause ID`, `billing resume ID`, `billing mark-payment-failed ID`
+and `billing recover ID` for lifecycle actions. Never update subscription
+status directly; the service refuses it.
+
+`billing renew --as-of DATE [--dry-run]` sweeps due periods;
+`billing dunning --as-of DATE [--dry-run]` records dunning notices/actions.
+Pass `organization_id=N` to choose the legal entity. Dry runs write nothing.
+`--stage` holds a billing action for approval. The assistant's generated
+create tool can instead stage `billing_request` with `action`, `at`,
+`organization_id` and the relevant subscription/customer/price fields.
+Approval refuses a subscription changed since staging.
+
+`report mrr PERIOD currency=USD`, `report churn PERIOD currency=USD`, and
+`report subscriptions_due PERIOD days=14` read the registered reports.
+Read their notes: MRR is contracted revenue, not cash or recognized income;
+churn rates are in basis points. Proration adjustments are settled on the
+next renewal. Billing sends no mail and integrates no card provider.
 ## Transactional mail
 
 `mail send to=... subject=... body=...` queues mail; `--html FILE` supplies
@@ -514,7 +538,7 @@ with header fields and a `lines` array. Both support `--stage`. Use real
 source and account IDs from the same organization. Invalid lines leave no
 draft behind; closed periods and repeat reversals are refused.
 
-The `--stage` help lists `create/update/delete/act/sequence enroll/lead convert`; the same flag also
+The `--stage` help lists `create/update/delete/act/sequence enroll/lead convert/billing`; the same flag also
 applies to a type-level journal creation at ID zero.
 
 ### Automatic journals

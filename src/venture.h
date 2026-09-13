@@ -78,6 +78,7 @@
 #include "model/venture-entity-registry.h"
 #include "model/venture-module.h"
 #include "periods/venture-period-records.h"
+#include "billing/venture-billing-records.h"
 #include "mail/venture-mail-records.h"
 
 #include "leads/venture-lead-records.h"
@@ -160,6 +161,8 @@
 #include "core/venture-desk.h"
 #include "core/venture-webhook.h"
 #include "core/venture-routing.h"
+#include "billing/venture-billing-service.h"
+#include "billing/venture-billing-reports.h"
 #include "activities/venture-activity-service.h"
 #include "activities/venture-activity-reports.h"
 #include "core/venture-action.h"

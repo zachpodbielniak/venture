@@ -533,6 +533,18 @@ static GType (*const venture_module_periods_types[]) (void) = {
 };
 static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live", NULL };
 
+static const gchar *const billing_requires[] = { "invoicing", "receivables", NULL };
+static const gchar *const billing_reports[] = { "mrr", "churn", "subscriptions_due", NULL };
+static GType (*const billing_types[]) (void) = {
+	venture_plan_get_type,
+	venture_plan_price_get_type,
+	venture_customer_subscription_get_type,
+	venture_subscription_event_get_type,
+	venture_dunning_step_get_type,
+	venture_billing_notice_get_type,
+	venture_billing_request_get_type,
+	NULL
+};
 static GType (*const venture_module_mail_types[]) (void) = {
 	venture_mail_message_get_type, venture_mail_template_get_type, NULL
 };
@@ -744,6 +756,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	},
 	{ "quotes", "Quotes", "Versioned commercial proposals and acceptance.",
 		quotes_requires, NULL, quotes_types, quotes_reports, NULL, FALSE },
+	{
+		"billing", "SaaS billing", "Customer subscriptions and recurring revenue.",
+		billing_requires, NULL, billing_types, billing_reports, NULL, FALSE
+	},
 	{
 		"mail", "Transactional mail", "Durable outbound messages and templates.",
 		venture_module_requires_core, NULL, venture_module_mail_types, NULL, NULL, FALSE

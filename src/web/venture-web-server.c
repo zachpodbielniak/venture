@@ -1058,6 +1058,11 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"periods"
 	},
 	{
+		"/e/customer_subscription", "Subscriptions",
+		VENTURE_ICON("<path d=\"M4 12a8 8 0 1 0 3-6\"/><path d=\"M3 3v6h6\"/>"),
+		NULL, "billing"
+	},
+	{
 		"/e/company", "Companies",
 		VENTURE_ICON(
 			"<path d=\"M3 21h18\"/>"
@@ -2196,6 +2201,8 @@ venture_web_api_write(
 	return venture_web_json_response(node, created ? 201 : 200);
 }
 
+#include "billing/venture-billing-web.inc"
+
 static HtmxResponse *
 venture_web_api_create(
 	HtmxRequest	*request,
@@ -2516,7 +2523,7 @@ venture_web_api_report(
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -5585,7 +5592,7 @@ venture_web_ui_report(
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -8707,6 +8714,7 @@ venture_web_ui_detail(
 		g_string_append(content, "</code><p><a class=\"btn\" href=\"/e/federation_grant/new\">Create sharing grant</a> <a href=\"/federation\">Federation workspace</a></p></section>");
 	}
 
+	venture_billing_web_buttons(self, content, record, principal);
 	venture_web_append_record_actions(self, content, record, principal);
 	venture_web_append_related(self, content, record);
 	venture_bank_append_actions(content, record);
@@ -27932,6 +27940,10 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/activities/:id/:action", activity_api_action, self);
 	htmx_router_post(router, "/api/v1/releases/:id/publish",
 	                 venture_web_api_release_publish, self);
+	htmx_router_post(router, "/api/v1/customer_subscriptions/:id/:action", venture_billing_web_action, self);
+	htmx_router_post(router, "/api/v1/billing/start", venture_billing_web_action, self);
+	htmx_router_post(router, "/api/v1/billing/:action", venture_billing_web_action, self);
+	htmx_router_post(router, "/billing/subscriptions/:id/action", venture_billing_web_action, self);
 	htmx_router_get(router, "/api/v1/widget-kinds",
 	                venture_web_api_widget_kinds, self);
 	htmx_router_get(router, "/api/v1/dashboard-templates",
