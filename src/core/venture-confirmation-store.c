@@ -42,6 +42,7 @@ struct _VentureConfirmation
 	 */
 	VentureEntity			*staged;
 	VentureEntity			*original;
+	gint64 proposer_user_id;
 };
 
 G_DEFINE_FINAL_TYPE(VentureConfirmation, venture_confirmation, G_TYPE_OBJECT)
@@ -380,6 +381,8 @@ venture_confirmation_store_stage(
 	g_return_val_if_fail(VENTURE_IS_CONFIRMATION_STORE(self), NULL);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(staged), NULL);
 
+	if (!venture_orgaccess_check_proposal(self->database, staged, action, via, error)) return NULL;
+
 	venture_confirmation_store_sweep(self);
 
 	/* Validate before staging, so nobody is ever asked to approve
@@ -493,6 +496,7 @@ venture_confirmation_store_stage(
 	confirmation->staged = g_object_ref(staged);
 	confirmation->original = (NULL != original) ? g_object_ref(original) : NULL;
 	confirmation->via = g_strdup(via);
+	if (NULL != venture_access_policy_get_actor(venture_database_get_access_policy(self->database))) confirmation->proposer_user_id = venture_access_policy_get_actor(venture_database_get_access_policy(self->database))->user_id;
 
 	if (NULL != origin)
 	{
@@ -545,7 +549,7 @@ venture_confirmation_store_list_pending(VentureConfirmationStore *self)
 	g_hash_table_iter_init(&iter, self->pending);
 
 	while (g_hash_table_iter_next(&iter, NULL, &value))
-		g_ptr_array_add(pending, value);
+		if (venture_orgaccess_confirmation_visible(self->database, ((VentureConfirmation *)value)->staged, ((VentureConfirmation *)value)->proposer_user_id, ((VentureConfirmation *)value)->via)) g_ptr_array_add(pending, value);
 
 	/* A hash table has no order, and a decision queue that reshuffles
 	 * itself between two reads is one nobody can work through. */
@@ -566,7 +570,10 @@ venture_confirmation_store_find(
 
 	venture_confirmation_store_sweep(self);
 
-	return g_hash_table_lookup(self->pending, confirmation_id);
+	{
+		VentureConfirmation *confirmation = g_hash_table_lookup(self->pending, confirmation_id);
+		return NULL != confirmation && venture_orgaccess_confirmation_visible(self->database, confirmation->staged, confirmation->proposer_user_id, confirmation->via) ? confirmation : NULL;
+	}
 }
 
 /*
@@ -639,7 +646,7 @@ venture_confirmation_store_approve(
 
 	venture_confirmation_store_sweep(self);
 
-	confirmation = g_hash_table_lookup(self->pending, confirmation_id);
+	confirmation = venture_confirmation_store_find(self, confirmation_id);
 
 	if (NULL == confirmation)
 	{
@@ -667,6 +674,9 @@ venture_confirmation_store_approve(
 	actor.request_id = confirmation->id;
 	actor.approved_by = approver;
 
+	if (NULL != confirmation->via && g_str_has_prefix(confirmation->via, "orgaccess:journal-post:"))
+		ok = venture_orgaccess_apply_post(self->database, confirmation->original, confirmation->via, &actor, &local_error);
+	else
 	if (VENTURE_AUDIT_ACTION_DELETE == confirmation->action)
 	{
 		ok = venture_database_delete(self->database, confirmation->staged,
@@ -739,7 +749,7 @@ venture_confirmation_store_reject(
 
 	venture_confirmation_store_sweep(self);
 
-	confirmation = g_hash_table_lookup(self->pending, confirmation_id);
+	confirmation = venture_confirmation_store_find(self, confirmation_id);
 
 	if (NULL == confirmation)
 	{

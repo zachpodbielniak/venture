@@ -7,6 +7,7 @@ struct _VentureAccessPolicy
 	VentureDatabase *database;
 	const VentureAuthPrincipal *actor;
 	guint decide_signal;
+	const gchar *read_action;
 };
 struct _VentureAccessScope
 {
@@ -14,6 +15,7 @@ struct _VentureAccessScope
 	VentureAccessPolicy *policy;
 	const VentureAuthPrincipal *previous;
 	VentureAuthPrincipal *actor;
+	const gchar *previous_action;
 };
 G_DEFINE_FINAL_TYPE(VentureAccessPolicy, venture_access_policy, G_TYPE_OBJECT)
 G_DEFINE_FINAL_TYPE(VentureAccessScope, venture_access_scope, G_TYPE_OBJECT)
@@ -85,12 +87,14 @@ static void
 venture_access_policy_init(VentureAccessPolicy *self)
 {
 	self->decide_signal = g_signal_lookup("decide", VENTURE_TYPE_ACCESS_POLICY);
+	self->read_action = "read";
 }
 static void
 scope_finalize(GObject *object)
 {
 	VentureAccessScope *self = VENTURE_ACCESS_SCOPE(object);
 	self->policy->actor = self->previous;
+	self->policy->read_action = self->previous_action;
 	g_clear_pointer(&self->actor, venture_auth_principal_free);
 	g_clear_object(&self->policy);
 	G_OBJECT_CLASS(venture_access_scope_parent_class)->finalize(object);
@@ -115,6 +119,8 @@ venture_access_policy_enter(VentureAccessPolicy *self, const VentureAuthPrincipa
 	VentureAccessScope *scope = g_object_new(VENTURE_TYPE_ACCESS_SCOPE, NULL);
 	scope->policy = g_object_ref(self);
 	scope->previous = self->actor;
+	scope->previous_action = self->read_action;
+	self->read_action = "read";
 	if (NULL != actor)
 	{
 		scope->actor = g_new(VentureAuthPrincipal, 1);
@@ -351,7 +357,7 @@ venture_access_policy_find(VentureAccessPolicy *self, VentureQuery *query, GErro
 	for (i = 0; i < all->len; i++)
 	{
 		VentureEntity *entity = g_ptr_array_index(all, i);
-		if (!venture_access_policy_can(self, self->actor, "read", entity, NULL))
+		if (!venture_access_policy_can(self, self->actor, self->read_action, entity, NULL))
 			continue;
 		if (visible++ < offset)
 			continue;
@@ -384,7 +390,7 @@ venture_access_policy_check_write(VentureAccessPolicy *self, VentureEntity *enti
 gboolean
 venture_access_policy_check_read(VentureAccessPolicy *self, VentureEntity *entity, GError **error)
 {
-	return NULL == self->actor || venture_access_policy_can(self, self->actor, "read", entity, error);
+	return NULL == self->actor || venture_access_policy_can(self, self->actor, self->read_action, entity, error);
 }
 gint64
 venture_access_policy_count(VentureAccessPolicy *self, VentureQuery *query, GError **error)
@@ -409,13 +415,28 @@ venture_orgaccess_web_dispatch(VentureAuth *auth, VentureContext *context,
 	const gchar *path = htmx_request_get_path(request);
 	/* These protocols authenticate themselves, before accessing business
 	 * records. They do not acquire authority from browser credentials. */
-	if (!g_str_has_prefix(path, "/hooks/") && !g_str_has_prefix(path, "/federation/"))
+	if (!g_str_has_prefix(path, "/hooks/") && !g_str_has_prefix(path, "/federation/") &&
+		0 != g_strcmp0(path, "/login") && 0 != g_strcmp0(path, "/logout") && 0 != g_strcmp0(path, "/account/password"))
 	{
+		VentureAccessPolicy *policy = venture_database_get_access_policy(venture_context_get_database(context));
 		actor = venture_auth_authenticate(auth, request);
 		if (actor->authenticated)
-			scope = venture_access_policy_enter(venture_database_get_access_policy(
-				venture_context_get_database(context)), actor);
+		{
+			scope = venture_access_policy_enter(policy, actor);
+			if (!venture_access_policy_has_membership(policy, actor) &&
+				0 != g_strcmp0(path, "/account") && 0 != g_strcmp0(path, "/look") &&
+				!g_str_has_prefix(path, "/api/") && !g_str_has_prefix(path, "/ui/") && !g_str_has_prefix(path, "/e/"))
+			{
+				HtmxResponse *response = htmx_response_new();
+				htmx_response_set_status(response, 302);
+				htmx_response_add_header(response, "Location", "/account");
+				htmx_context_set_response(http, response);
+				return;
+			}
+		}
 	}
+	if (NULL != scope && (g_str_has_suffix(path, "/export") || 0 == g_strcmp0(htmx_request_get_query_param(request, "format"), "csv")))
+		scope->policy->read_action = "export";
 	next(http, next_data);
 }
 
@@ -517,4 +538,52 @@ venture_orgaccess_prepare(VentureDatabase *database, VentureEntity *entity, GErr
 		g_object_set(entity, "membership-snapshot", snapshot, NULL);
 	}
 	return TRUE;
+}
+
+VentureAccessScope *
+venture_orgaccess_enter_ai(VentureContext *context, const VentureAuthPrincipal *principal)
+{
+	VentureAuthPrincipal anonymous;
+	anonymous.user_id = 0;
+	anonymous.token_id = 0;
+	anonymous.role = VENTURE_USER_ROLE_VIEWER;
+	anonymous.name = NULL;
+	anonymous.authenticated = FALSE;
+	return venture_access_policy_enter(venture_database_get_access_policy(
+		venture_context_get_database(context)), NULL != principal ? principal : &anonymous);
+}
+gboolean
+venture_orgaccess_check_proposal(VentureDatabase *database, VentureEntity *staged,
+	VentureAuditAction action, const gchar *via, GError **error)
+{
+	VentureAccessPolicy *policy = venture_database_get_access_policy(database);
+	const VentureAuthPrincipal *actor = venture_access_policy_get_actor(policy);
+	g_autoptr(GError) local_error = NULL;
+	if (NULL == actor)
+		return TRUE;
+	if (venture_access_policy_requires_approval(policy, actor,
+		(NULL != via && g_str_has_prefix(via, "orgaccess:journal-post:")) ? "post" : "write", staged, &local_error))
+		return TRUE;
+	if (NULL != local_error)
+	{
+		g_propagate_error(error, g_steal_pointer(&local_error));
+		return FALSE;
+	}
+	return venture_access_policy_check_write(policy, staged,
+		action == VENTURE_AUDIT_ACTION_DELETE ? "delete" : "write", error);
+}
+
+gboolean
+venture_orgaccess_confirmation_visible(VentureDatabase *database, VentureEntity *staged,
+	gint64 proposer, const gchar *via)
+{
+	VentureAccessPolicy *policy = venture_database_get_access_policy(database);
+	const VentureAuthPrincipal *actor = venture_access_policy_get_actor(policy);
+	if (NULL == actor)
+		return TRUE;
+	if (venture_access_policy_can(policy, actor, "read", staged, NULL))
+		return TRUE;
+	return proposer > 0 && proposer == actor->user_id &&
+		venture_access_policy_requires_approval(policy, actor,
+			(NULL != via && g_str_has_prefix(via, "orgaccess:journal-post:")) ? "post" : "write", staged, NULL);
 }

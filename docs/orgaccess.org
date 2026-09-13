@@ -52,3 +52,24 @@ Token membership snapshots are captured on creation and intersected with
 current membership authority. A later grant or promotion cannot expand an
 existing token. Legacy non-admin tokens with no snapshot need rotation.
 The initial owner and their memberships are created in one transaction.
+
+* Proposals and posting
+
+An organization viewer can propose a new record through the form or REST;
+these requests return 202 and enter the shared confirmation queue. Existing
+global role checks still apply. A viewer cannot update an existing record.
+The same authority check constrains assistant tools, including autonomous
+mode. Confirmations are visible only to authorized readers or their still
+authorized proposer. Approval rechecks current authority.
+
+=POST /api/v1/journals/:id/post= is the journal action. An organization editor
+proposes it; finance, organization admin/owner, or global administrators can
+apply it. The proposal preserves the draft header version and a fingerprint
+of its lines. Changed lines cause a conflict, rather than approval of different
+amounts. Approval calls the existing posting service, which retains balance,
+currency, source, period and immutable-history checks. Generic writes to a
+journal's posted state remain refused.
+
+A user with no memberships is directed to their account page, which explains
+that an organization owner must grant access. Password changes and sign-out
+remain available. Business reads return no records.

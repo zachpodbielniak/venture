@@ -170,6 +170,41 @@ test_token_scope(void)
 	g_assert_true(venture_access_policy_can(venture_database_get_access_policy(db), &actor, "read", company, NULL));
 }
 
+static void
+test_ai_boundary(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureAiService) ai = NULL;
+	g_autoptr(VentureEntity) user = NULL;
+	g_autoptr(VentureEntity) company = NULL;
+	g_autoptr(AiToolUse) tool = ai_tool_use_new_from_json_string("probe", "venture_query", "{\"type\":\"company\"}");
+	g_autofree gchar *result = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureAuthPrincipal actor;
+	g_object_set(config, "ai-enabled", TRUE, "ai-provider", "ollama", NULL);
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	context = venture_context_new(config, db);
+	user = g_object_new(VENTURE_TYPE_USER, "username", "ai-caller", "active", TRUE, "role", VENTURE_USER_ROLE_EDITOR, NULL);
+	g_assert_true(venture_database_save(db, user, NULL, &error));
+	company = g_object_new(VENTURE_TYPE_COMPANY, "name", "PrivateBoundaryMarker",
+		"organization-id", venture_context_get_default_organization_id(context), NULL);
+	g_assert_true(venture_database_save(db, company, NULL, &error));
+	ai = venture_ai_service_new(context, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(ai);
+	actor.user_id = venture_entity_get_id(user);
+	actor.token_id = 0;
+	actor.role = VENTURE_USER_ROLE_EDITOR;
+	actor.name = NULL;
+	actor.authenticated = TRUE;
+	result = venture_ai_service_execute_tool(ai, tool, &actor, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_assert_null(strstr(result, "PrivateBoundaryMarker"));
+}
+
 int
 main(int argc, char **argv)
 {
@@ -179,5 +214,6 @@ main(int argc, char **argv)
 	g_test_add_func("/orgaccess/upgrade", test_upgrade);
 	g_test_add_func("/orgaccess/bootstrap", test_bootstrap);
 	g_test_add_func("/orgaccess/token-scope", test_token_scope);
+	g_test_add_func("/orgaccess/ai", test_ai_boundary);
 	return g_test_run();
 }

@@ -121,5 +121,60 @@ gboolean venture_orgaccess_bootstrap_owner(VentureDatabase *database, VentureUse
  * Returns: whether membership and ownership references are consistent
  */
 gboolean venture_orgaccess_prepare(VentureDatabase *database, VentureEntity *entity, GError **error);
+/**
+ * venture_orgaccess_enter_ai:
+ * @context: application wiring
+ * @principal: (nullable): caller; absence denies access
+ * Returns: (transfer full): synchronous tool scope
+ */
+VentureAccessScope *venture_orgaccess_enter_ai(VentureContext *context, const VentureAuthPrincipal *principal);
+/**
+ * venture_orgaccess_check_proposal:
+ * @database: repository
+ * @staged: proposed record
+ * @action: audit operation
+ * @via: trusted surface name
+ * @error: refusal
+ * Returns: whether the caller may stage this proposal
+ */
+gboolean venture_orgaccess_check_proposal(VentureDatabase *database, VentureEntity *staged, VentureAuditAction action, const gchar *via, GError **error);
+/**
+ * venture_orgaccess_post_journal:
+ * @context: wiring
+ * @principal: authenticated actor
+ * @id: draft journal
+ * @staged_out: whether a confirmation was created
+ * @error: refusal
+ * Returns: (transfer full) (nullable): a confirmation or posted record
+ */
+JsonNode *venture_orgaccess_post_journal(VentureContext *context, const VentureAuthPrincipal *principal, gint64 id, gboolean *staged_out, GError **error);
+/**
+ * venture_orgaccess_apply_post:
+ * @database: repository
+ * @original: captured draft header
+ * @via: captured line fingerprint
+ * @actor: audit origin and approver
+ * @error: refusal
+ * Returns: whether posting committed with unchanged evidence
+ */
+gboolean venture_orgaccess_apply_post(VentureDatabase *database, VentureEntity *original, const gchar *via, const VentureActor *actor, GError **error);
+/**
+ * venture_orgaccess_web_post:
+ * @auth: authenticator
+ * @context: wiring
+ * @request: HTTP request
+ * @params: route parameters
+ * Returns: (transfer full): journal action response
+ */
+HtmxResponse *venture_orgaccess_web_post(VentureAuth *auth, VentureContext *context, HtmxRequest *request, GHashTable *params);
+/**
+ * venture_orgaccess_confirmation_visible:
+ * @database: repository
+ * @staged: proposal
+ * @proposer: authenticated originating user id, or zero for internal work
+ * @via: trusted surface name
+ * Returns: whether the current principal may see the confirmation
+ */
+gboolean venture_orgaccess_confirmation_visible(VentureDatabase *database, VentureEntity *staged, gint64 proposer, const gchar *via);
 G_END_DECLS
 #endif

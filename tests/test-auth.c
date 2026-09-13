@@ -3571,6 +3571,27 @@ test_federation_owner_boundary(ServerFixture *fixture, gconstpointer data)
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/federation/v1/request", NULL, "", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
 }
 
+static VentureReportResult *
+orgaccess_report(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_COMPANY);
+	g_autoptr(GPtrArray) rows = venture_database_find(venture_context_get_database(context), query, error);
+	VentureReportResult *result;
+	guint i;
+	if (NULL == rows)
+		return NULL;
+	result = venture_report_result_new("Access probe", period);
+	venture_report_result_add_column(result, "name", "Name", VENTURE_REPORT_COLUMN_TEXT);
+	for (i = 0; i < rows->len; i++)
+	{
+		g_autofree gchar *name = NULL;
+		g_object_get(g_ptr_array_index(rows, i), "name", &name, NULL);
+		venture_report_result_begin_row(result);
+		venture_report_result_set_text(result, "name", name);
+	}
+	return result;
+}
+
 /* Each surface must hide rows outside the caller's membership even when
  * an explicit organization or record id is supplied. */
 static void
@@ -3598,6 +3619,18 @@ test_orgaccess_surface(ServerFixture *fixture, gconstpointer user_data)
 		path = g_strdup("/ui/records/search?type=company&q=PrivateBoundaryMarker");
 	else if (0 == g_strcmp0(surface, "export"))
 		path = g_strdup("/e/company/export");
+	else if (0 == g_strcmp0(surface, "queue"))
+	{
+		g_autoptr(VentureEntity) proposed = g_object_new(VENTURE_TYPE_COMPANY, "name", "PrivateBoundaryMarker", "organization-id", org, NULL);
+		g_assert_nonnull(venture_confirmation_store_stage(venture_context_get_confirmations(fixture->context), VENTURE_AUDIT_ACTION_CREATE, proposed, NULL, NULL, "test", NULL));
+		path = g_strdup("/api/v1/confirmations");
+	}
+	else if (0 == g_strcmp0(surface, "report"))
+	{
+		venture_report_registry_add(venture_context_get_report_registry(fixture->context),
+			VENTURE_REPORT(venture_func_report_new("access_probe", "Access probe", "Membership-scoped company rows", orgaccess_report)));
+		path = g_strdup("/api/v1/reports/access_probe?period=all");
+	}
 	else
 		path = g_strdup("/account");
 	status = server_fixture_request(fixture, "GET", path, cookie, NULL, &body, NULL);
@@ -3610,6 +3643,144 @@ test_orgaccess_surface(ServerFixture *fixture, gconstpointer user_data)
 		if (0 == g_strcmp0(surface, "account"))
 			g_assert_nonnull(strstr(body, "No organization membership"));
 	}
+}
+
+static void
+test_orgaccess_widget(ServerFixture *fixture, gconstpointer user_data)
+{
+	g_autoptr(VentureEntity) org = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Private organization", "slug", "private", NULL);
+	g_autoptr(VentureEntity) company = NULL;
+	g_autoptr(VentureEntity) dashboard = NULL;
+	g_autoptr(VentureEntity) widget = NULL;
+	g_autoptr(VentureEntity) member = NULL;
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *body = NULL;
+	gint64 user;
+	gint64 home = venture_context_get_default_organization_id(fixture->context);
+	g_assert_true(venture_database_save(fixture->database, org, NULL, NULL));
+	company = g_object_new(VENTURE_TYPE_COMPANY, "name", "PrivateBoundaryMarker", "organization-id", venture_entity_get_id(org), NULL);
+	g_assert_true(venture_database_save(fixture->database, company, NULL, NULL));
+	server_fixture_create_user(fixture, "widget-member", "password", VENTURE_USER_ROLE_EDITOR, &user);
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", user, "organization-id", home,
+		"role", VENTURE_ORGANIZATION_ROLE_EDITOR, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, member, NULL, NULL));
+	dashboard = g_object_new(VENTURE_TYPE_DASHBOARD, "name", "Public dashboard", "slug", "access-probe", "organization-id", home, NULL);
+	g_assert_true(venture_database_save(fixture->database, dashboard, NULL, NULL));
+	widget = g_object_new(VENTURE_TYPE_DASHBOARD_WIDGET, "dashboard-id", venture_entity_get_id(dashboard),
+		"organization-id", home, "kind", "list", "entity-type", "company", NULL);
+	g_assert_true(venture_database_save(fixture->database, widget, NULL, NULL));
+	cookie = server_fixture_login(fixture, "widget-member", "password");
+	path = g_strdup_printf("/api/v1/dashboards/access-probe?organization_id=%" G_GINT64_FORMAT, venture_entity_get_id(org));
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, cookie, NULL, &body, NULL), ==, 200);
+	g_assert_null(strstr(body, "PrivateBoundaryMarker"));
+}
+
+static void
+test_orgaccess_viewer_proposal(ServerFixture *fixture, gconstpointer user_data)
+{
+	g_autoptr(VentureEntity) member = NULL;
+	g_autoptr(GPtrArray) pending = NULL;
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *json = NULL;
+	g_autofree gchar *form = NULL;
+	gint64 id;
+	gint64 org = venture_context_get_default_organization_id(fixture->context);
+	server_fixture_create_user(fixture, "proposal-viewer", "password", VENTURE_USER_ROLE_EDITOR, &id);
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", id, "organization-id", org,
+		"role", VENTURE_ORGANIZATION_ROLE_VIEWER, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, member, NULL, NULL));
+	cookie = server_fixture_login(fixture, "proposal-viewer", "password");
+	json = g_strdup_printf("{\"name\":\"REST proposal\",\"organization_id\":%" G_GINT64_FORMAT "}", org);
+	g_assert_cmpuint(server_fixture_json(fixture, "POST", "/api/v1/company", cookie, json, NULL), ==, 202);
+	form = g_strdup_printf("name=Form+proposal&organization_id=%" G_GINT64_FORMAT, org);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/e/company", cookie, form, NULL, NULL), ==, 202);
+	pending = venture_confirmation_store_list_pending(venture_context_get_confirmations(fixture->context));
+	g_assert_cmpuint(pending->len, ==, 2);
+}
+
+static void
+test_orgaccess_account_only(ServerFixture *fixture, gconstpointer user_data)
+{
+	g_autofree gchar *cookie = NULL;
+	g_autoptr(VentureEntity) user = NULL;
+	gint64 id;
+	server_fixture_create_user(fixture, "account-only", "password", VENTURE_USER_ROLE_EDITOR, &id);
+	cookie = server_fixture_login(fixture, "account-only", "password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/", cookie, NULL, NULL, NULL), ==, 302);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/password", cookie,
+		"current_password=password&new_password=new-long-password&confirm_password=new-long-password", NULL, NULL), ==, 302);
+	user = venture_database_get(fixture->database, VENTURE_TYPE_USER, id, NULL);
+	g_assert_true(venture_user_check_password(VENTURE_USER(user), "new-long-password"));
+}
+
+static GError *
+orgaccess_export_veto(VentureAccessPolicy *policy, gpointer actor, const gchar *action, VentureEntity *entity, gpointer data)
+{
+	return 0 == g_strcmp0(action, "export") ? g_error_new_literal(VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "Export veto") : NULL;
+}
+static void
+test_orgaccess_export_signal(ServerFixture *fixture, gconstpointer user_data)
+{
+	g_autoptr(VentureEntity) company = g_object_new(VENTURE_TYPE_COMPANY, "name", "PrivateBoundaryMarker",
+		"organization-id", venture_context_get_default_organization_id(fixture->context), NULL);
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *body = NULL;
+	g_assert_true(venture_database_save(fixture->database, company, NULL, NULL));
+	server_fixture_create_user(fixture, "export-owner", "password", VENTURE_USER_ROLE_OWNER, NULL);
+	cookie = server_fixture_login(fixture, "export-owner", "password");
+	g_signal_connect(venture_database_get_access_policy(fixture->database), "decide", G_CALLBACK(orgaccess_export_veto), NULL);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/e/company/export", cookie, NULL, &body, NULL), ==, 200);
+	g_assert_null(strstr(body, "PrivateBoundaryMarker"));
+}
+
+static void
+test_orgaccess_journal_proposal(ServerFixture *fixture, gconstpointer user_data)
+{
+	g_autoptr(VentureEntity) member = NULL;
+	g_autoptr(VentureEntity) journal = NULL;
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	g_autoptr(GPtrArray) accounts = NULL;
+	g_autoptr(GPtrArray) pending = NULL;
+	g_autoptr(VentureMoney) amount = venture_money_new_for_currency(1000, "USD");
+	g_autoptr(GDateTime) date = g_date_time_new_now_utc();
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *body = NULL;
+	gint64 user;
+	gint64 org = venture_context_get_default_organization_id(fixture->context);
+	gint state;
+	guint i;
+	server_fixture_create_user(fixture, "journal-editor", "password", VENTURE_USER_ROLE_EDITOR, &user);
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", user, "organization-id", org,
+		"role", VENTURE_ORGANIZATION_ROLE_EDITOR, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, member, NULL, NULL));
+	journal = g_object_new(VENTURE_TYPE_JOURNAL, "memo", "Proposed journal", "organization-id", org,
+		"source-type", "organization", "source-id", org, "currency", "USD", "occurred-at", date, NULL);
+	g_assert_true(venture_database_save(fixture->database, journal, NULL, NULL));
+	accounts = venture_database_find(fixture->database, query, NULL);
+	g_assert_cmpuint(accounts->len, >=, 2);
+	for (i = 0; i < 2; i++)
+	{
+		g_autoptr(VentureEntity) line = g_object_new(VENTURE_TYPE_JOURNAL_LINE,
+			"organization-id", org, "journal-id", venture_entity_get_id(journal),
+			"account-id", venture_entity_get_id(g_ptr_array_index(accounts, i)),
+			"side", i == 0 ? VENTURE_LEDGER_SIDE_DEBIT : VENTURE_LEDGER_SIDE_CREDIT,
+			"amount", amount, NULL);
+		g_assert_true(venture_database_save(fixture->database, line, NULL, NULL));
+	}
+	cookie = server_fixture_login(fixture, "journal-editor", "password");
+	path = g_strdup_printf("/api/v1/journals/%" G_GINT64_FORMAT "/post", venture_entity_get_id(journal));
+	g_assert_cmpuint(server_fixture_json(fixture, "POST", path, cookie, "{}", &body), ==, 202);
+	pending = venture_confirmation_store_list_pending(venture_context_get_confirmations(fixture->context));
+	g_assert_cmpuint(pending->len, ==, 1);
+	stored = venture_database_get(fixture->database, VENTURE_TYPE_JOURNAL, venture_entity_get_id(journal), NULL);
+	g_object_get(stored, "state", &state, NULL);
+	g_assert_cmpint(state, ==, VENTURE_JOURNAL_DRAFT);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/confirmations/%s/approve", venture_confirmation_get_id(g_ptr_array_index(pending, 0)));
+	g_assert_cmpuint(server_fixture_json(fixture, "POST", path, cookie, "{}", NULL), ==, 403);
 }
 
 static void
@@ -3818,5 +3989,12 @@ main(
 	g_test_add("/orgaccess/surface/export", ServerFixture, "export", server_fixture_set_up, test_orgaccess_surface, server_fixture_tear_down);
 	g_test_add("/orgaccess/surface/account", ServerFixture, "account", server_fixture_set_up, test_orgaccess_surface, server_fixture_tear_down);
 	g_test_add("/orgaccess/wrong-role", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_wrong_role, server_fixture_tear_down);
+	g_test_add("/orgaccess/surface/report", ServerFixture, "report", server_fixture_set_up, test_orgaccess_surface, server_fixture_tear_down);
+	g_test_add("/orgaccess/surface/widget", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_widget, server_fixture_tear_down);
+	g_test_add("/orgaccess/journal-proposal", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
+	g_test_add("/orgaccess/surface/queue", ServerFixture, "queue", server_fixture_set_up, test_orgaccess_surface, server_fixture_tear_down);
+	g_test_add("/orgaccess/export-signal", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_export_signal, server_fixture_tear_down);
+	g_test_add("/orgaccess/account-only", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_account_only, server_fixture_tear_down);
+	g_test_add("/orgaccess/viewer-proposal", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_viewer_proposal, server_fixture_tear_down);
 	return g_test_run();
 }

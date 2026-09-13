@@ -1936,6 +1936,13 @@ venture_web_api_list(
 }
 
 static HtmxResponse *
+venture_web_orgaccess_post(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+	VentureWebServer *self = user_data;
+	return venture_orgaccess_web_post(self->auth, self->context, request, params);
+}
+
+static HtmxResponse *
 venture_web_api_get(
 	HtmxRequest	*request,
 	GHashTable	*params,
@@ -2160,6 +2167,9 @@ venture_web_api_write(
 		venture_entity_set_organization_id(record,
 			venture_context_get_default_organization_id(self->context));
 	}
+
+	if (venture_access_policy_requires_approval(venture_database_get_access_policy(venture_context_get_database(self->context)), principal, "write", record, &error)) stage = TRUE;
+	if (NULL != error) return venture_web_error_response(error);
 
 	if (stage)
 	{
@@ -6550,6 +6560,9 @@ venture_web_ui_save(
 
 	if (!venture_web_apply_form(self, request, record, specs, &error))
 		return venture_web_error_response(error);
+
+	if (venture_access_policy_requires_approval(venture_database_get_access_policy(venture_context_get_database(self->context)), principal, "write", record, &error)) return venture_web_api_stage(self, record, NULL, principal, VENTURE_AUDIT_ACTION_CREATE);
+	if (NULL != error) return venture_web_error_response(error);
 
 	venture_auth_to_actor(principal, &actor);
 
@@ -27850,6 +27863,7 @@ venture_web_server_new(
 	htmx_router_get(router, "/api/v1/schema", venture_web_api_describe, self);
 	htmx_router_get(router, "/api/v1/schema/:type", venture_web_api_describe,
 	                self);
+	htmx_router_post(router, "/api/v1/journals/:id/post", venture_web_orgaccess_post, self);
 	htmx_router_get(router, "/api/v1/reports", venture_web_api_reports, self);
 	htmx_router_get(router, "/api/v1/reports/:name", venture_web_api_report,
 	                self);
