@@ -240,6 +240,7 @@ test_balances(Fixture *f, gconstpointer data)
 	g_autoptr(GDateTime) cutoff = venture_time_from_string("2026-08-11T00:00:00Z", NULL);
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureJournal) draft = venture_journal_new();
+	g_autoptr(VentureJournalLine) draft_line = venture_journal_line_new();
 	g_autoptr(VentureMoney) fake = venture_money_new_for_currency(99999, "USD");
 	gint64 parent_id;
 	(void)data;
@@ -258,6 +259,10 @@ test_balances(Fixture *f, gconstpointer data)
 	post(f, "2026-08-10T00:00:00Z", "EUR", "1000", "4000", 700);
 	g_object_set(draft, "organization-id", f->org, "occurred-at", cutoff, "currency", "USD", NULL);
 	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(draft), NULL, &error));
+	g_object_set(draft_line, "organization-id", f->org, "journal-id", venture_entity_get_id(VENTURE_ENTITY(draft)),
+		"account-id", account(f, "1000"), "side", VENTURE_LEDGER_SIDE_DEBIT,
+		"amount", fake, "book-amount", fake, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(draft_line), NULL, &error));
 	g_assert_no_error(error);
 	r = venture_ledger_balances_query(query, f->org, "USD", period, NULL, TRUE, &error);
 	g_assert_no_error(error);
@@ -268,6 +273,24 @@ test_balances(Fixture *f, gconstpointer data)
 	r = venture_ledger_balances_query(query, f->org, "EUR", period, NULL, TRUE, &error);
 	g_assert_no_error(error);
 	g_assert_cmpint(cell(r, "0800", "closing"), ==, 700);
+	g_clear_object(&r);
+	r = venture_ledger_balances_query(query, f->org, NULL, period, NULL, TRUE, &error);
+	g_assert_no_error(error);
+	{
+		guint i, currencies = 0;
+		for (i = 0; i < venture_report_result_get_row_count(r); i++)
+		{
+			const gchar *key = g_value_get_string(venture_report_result_get_cell(r, i, "key"));
+			if (g_str_equal(key, "0800"))
+			{
+				const gchar *currency = g_value_get_string(venture_report_result_get_cell(r, i, "currency"));
+				const VentureMoney *value = g_value_get_boxed(venture_report_result_get_cell(r, i, "closing"));
+				g_assert_cmpint(value->amount, ==, g_str_equal(currency, "EUR") ? 700 : 27000);
+				currencies++;
+			}
+		}
+		g_assert_cmpuint(currencies, ==, 2);
+	}
 	g_clear_object(&r);
 	r = venture_ledger_balances_query(query, f->org, "USD", period, cutoff, TRUE, &error);
 	g_assert_no_error(error);
@@ -381,6 +404,11 @@ test_source_reconciliation(Fixture *f, gconstpointer data)
 		"organization-id", f->org, "gross", gross, "occurred-at", date, NULL);
 	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(sale), NULL, &error));
 	g_assert_no_error(error);
+	r = report(f, "balance_sheet", "2026-08", "USD", NULL);
+	g_assert_cmpint(cell(r, "assets", "current"), ==, 1234);
+	g_assert_cmpint(cell(r, "equity", "current"), ==, 1234);
+	g_assert_cmpint(cell(r, "difference", "current"), ==, 0);
+	g_clear_object(&r);
 	r = report(f, "pnl_reconciliation", "2026-08", "USD", NULL);
 	g_assert_cmpuint(venture_report_result_get_row_count(r), ==, 0);
 	g_assert_true(venture_database_delete(f->db, VENTURE_ENTITY(sale), NULL, &error));
