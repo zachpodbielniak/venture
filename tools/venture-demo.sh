@@ -292,6 +292,22 @@ start_server () {
     rm -rf "${state}"
     mkdir -p "${state}"
 
+    # Somewhere for a harness session to work. Without a root configured
+    # a session may only use a checkout it clones itself, which makes the
+    # page look broken the moment anyone tries it.
+    #
+    # Two roots, for the two things a person does here. The scratch one
+    # inside build/demo goes away with the rest of the demo. This
+    # checkout is the second, because a harness demonstrated against an
+    # empty directory demonstrates nothing -- the point is to point an
+    # agent at real code and watch it work.
+    #
+    # That does mean a session can edit this working tree. It is a
+    # checkout under version control, which is the protection; commit or
+    # stash before turning an agent loose on it. Override the pair with
+    # VENTURE_FORGE_WORKSPACE_ROOTS to keep the demo away from it.
+    mkdir -p "${state}/workspace"
+
     (
         CDPATH='' cd -- "${root}"
         VENTURE_PLUGIN_PATH="${outdir}/plugins" \
@@ -299,6 +315,8 @@ start_server () {
         VENTURE_POD_MODULE_PATH="${outdir}/pod-modules:${root}/deps/podomation/build/${build_type}/modules" \
         VENTURE_UI_THEME="${VENTURE_UI_THEME:-mocha}" \
         VENTURE_SESSION_SECRET="venture-demo-secret" \
+        VENTURE_FORGE_RUNS_ENABLED="true" \
+        VENTURE_FORGE_WORKSPACE_ROOTS="${VENTURE_FORGE_WORKSPACE_ROOTS:-${state}/workspace,${root}}" \
         "${outdir}/venture" \
             --database "sqlite://${state}/venture.db" \
             --state-dir "${state}" \
