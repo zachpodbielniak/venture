@@ -50,6 +50,8 @@ static const VentureFieldDecl bank_match_fields[] = {
 	VENTURE_FIELD_MONEY("amount", "Amount", NULL),
 	VENTURE_FIELD("kind", "Kind", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("created-by", "Created by", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("cleared-at", "Cleared at", "Bank statement date, independent of the book accounting date",
+		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureBankMatch, venture_bank_match, bank_match_fields)
 
@@ -62,5 +64,11 @@ static const VentureFieldDecl reconciliation_fields[] = {
 	VENTURE_FIELD("state", "State", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("reconciled-by", "Reconciled by", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("reconciled-at", "Reconciled at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("outstanding-checks", "Outstanding checks", "Book credits not cleared by the statement cutoff"),
+	VENTURE_FIELD_MONEY("deposits-in-transit", "Deposits in transit", "Book debits not cleared by the statement cutoff"),
+	VENTURE_FIELD_TEXT("outstanding-items", "Outstanding items", "JSON evidence of uncleared book movements"),
+	VENTURE_FIELD("reopened-by", "Reopened by", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("reopened-at", "Reopened at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("reopen-reason", "Reopen reason", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureReconciliation, venture_reconciliation, reconciliation_fields)

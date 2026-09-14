@@ -381,10 +381,14 @@ match_records(VentureBankMatchService *self, VentureEntity *transaction, JsonArr
 		g_clear_pointer(&sum, venture_money_free);
 		sum = g_steal_pointer(&next);
 		match = new_record(VENTURE_TYPE_BANK_MATCH, org);
-		g_object_set(match, "transaction-id", venture_entity_get_id(transaction), "record-type", name,
-			"record-id", venture_entity_get_id(target), "amount", contribution,
-			"kind", json_array_get_length(parts) > 1 ? "split" : venture_money_equal(value, contribution) ? "exact" : "partial",
-			"created-by", actor != NULL ? actor->name : "system", NULL);
+		{
+			g_autoptr(GDateTime) cleared = NULL;
+			g_object_get(transaction, "date", &cleared, NULL);
+			g_object_set(match, "transaction-id", venture_entity_get_id(transaction), "record-type", name,
+				"record-id", venture_entity_get_id(target), "amount", contribution,
+				"kind", json_array_get_length(parts) > 1 ? "split" : venture_money_equal(value, contribution) ? "exact" : "partial",
+				"created-by", actor != NULL ? actor->name : "system", "cleared-at", cleared, NULL);
+		}
 		g_ptr_array_add(pending, g_steal_pointer(&match));
 	}
 	if (!venture_money_equal(sum, amount)) return refuse(error, "split amounts must equal the statement transaction");
@@ -619,19 +623,144 @@ import_statement(VentureBankMatchService *self, VentureEntity *bank, JsonObject 
 	return g_steal_pointer(&statement);
 }
 
+static gboolean
+source_cleared(VentureBankMatchService *self, const gchar *source_type, gint64 source_id,
+	gint64 org, GDateTime *end, GError **error)
+{
+	g_autoptr(GPtrArray) matches = NULL;
+	guint i;
+	if (source_type == NULL || source_id <= 0)
+		return FALSE;
+	matches = rows(self->database, VENTURE_TYPE_BANK_MATCH, org, "record-id", source_id, error);
+	if (matches == NULL)
+		return FALSE;
+	for (i = 0; i < matches->len; i++)
+	{
+		VentureEntity *match = g_ptr_array_index(matches, i);
+		g_autofree gchar *type = NULL;
+		g_autoptr(GDateTime) cleared = NULL;
+		g_object_get(match, "record-type", &type, "cleared-at", &cleared, NULL);
+		if (g_strcmp0(type, source_type) != 0)
+			continue;
+		if (cleared == NULL)
+		{
+			g_autoptr(VentureEntity) txn = venture_database_get(self->database, VENTURE_TYPE_BANK_TRANSACTION,
+				number(match, "transaction-id"), error);
+			if (txn == NULL)
+				return FALSE;
+			g_object_get(txn, "date", &cleared, NULL);
+		}
+		if (cleared != NULL && g_date_time_compare(cleared, end) <= 0)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+static gboolean
+outstanding_items(VentureBankMatchService *self, VentureEntity *bank, GDateTime *start, GDateTime *end,
+	VentureMoney **checks, VentureMoney **deposits, gchar **evidence, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_JOURNAL);
+	g_autoptr(GPtrArray) journals = NULL;
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(VentureMoney) out = NULL;
+	g_autoptr(VentureMoney) inn = NULL;
+	g_autofree gchar *currency = NULL;
+	gint64 account_id, org;
+	guint i;
+	g_object_get(bank, "currency", &currency, "account-id", &account_id, NULL);
+	org = venture_entity_get_organization_id(bank);
+	out = venture_money_new_zero(currency);
+	inn = venture_money_new_zero(currency);
+	json_builder_begin_array(builder);
+	venture_query_set_organization(query, org);
+	venture_query_set_limit(query, 0);
+	venture_query_set_include_deleted(query, TRUE);
+	journals = venture_database_find(self->database, query, error);
+	if (journals == NULL)
+		return FALSE;
+	for (i = 0; i < journals->len; i++)
+	{
+		VentureEntity *journal = g_ptr_array_index(journals, i);
+		g_autoptr(GDateTime) date = NULL;
+		g_autoptr(GPtrArray) lines = NULL;
+		g_autoptr(VentureQuery) lines_query = NULL;
+		g_autofree gchar *source_type = NULL;
+		gint64 source_id;
+		VentureJournalState state;
+		guint j;
+		g_object_get(journal, "state", &state, "occurred-at", &date, "source-type", &source_type,
+			"source-id", &source_id, NULL);
+		if ((state != VENTURE_JOURNAL_POSTED && state != VENTURE_JOURNAL_REVERSED) || date == NULL)
+			continue;
+		if (start != NULL && g_date_time_compare(date, start) < 0)
+			continue;
+		if (g_date_time_compare(date, end) > 0)
+			continue;
+		if (source_cleared(self, source_type, source_id, org, end, error))
+			continue;
+		if (error != NULL && *error != NULL)
+			return FALSE;
+		lines_query = venture_query_new(VENTURE_TYPE_JOURNAL_LINE);
+		venture_query_set_limit(lines_query, 0);
+		venture_query_add_filter_int(lines_query, "journal-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(journal), NULL);
+		lines = venture_database_find(self->database, lines_query, error);
+		if (lines == NULL)
+			return FALSE;
+		for (j = 0; j < lines->len; j++)
+		{
+			VentureEntity *line = g_ptr_array_index(lines, j);
+			g_autoptr(VentureMoney) amount = NULL;
+			gint64 line_account;
+			gint side;
+			g_object_get(line, "account-id", &line_account, "side", &side, "book-amount", &amount, NULL);
+			if (line_account != account_id || amount == NULL || venture_money_is_zero(amount))
+				continue;
+			if (side == VENTURE_LEDGER_SIDE_CREDIT)
+			{
+				VentureMoney *next = venture_money_add(out, amount, error);
+				if (next == NULL) return FALSE;
+				venture_money_free(out); out = next;
+				json_builder_begin_object(builder);
+				json_builder_set_member_name(builder, "kind"); json_builder_add_string_value(builder, "outstanding_check");
+				json_builder_set_member_name(builder, "journal_id"); json_builder_add_int_value(builder, venture_entity_get_id(journal));
+				json_builder_end_object(builder);
+			}
+			else
+			{
+				VentureMoney *next = venture_money_add(inn, amount, error);
+				if (next == NULL) return FALSE;
+				venture_money_free(inn); inn = next;
+				json_builder_begin_object(builder);
+				json_builder_set_member_name(builder, "kind"); json_builder_add_string_value(builder, "deposit_in_transit");
+				json_builder_set_member_name(builder, "journal_id"); json_builder_add_int_value(builder, venture_entity_get_id(journal));
+				json_builder_end_object(builder);
+			}
+		}
+	}
+	json_builder_end_array(builder);
+	node = json_builder_get_root(builder);
+	*checks = g_steal_pointer(&out);
+	*deposits = g_steal_pointer(&inn);
+	*evidence = venture_json_to_string(node, FALSE);
+	return TRUE;
+}
+
 static VentureEntity *
 reconcile(VentureBankMatchService *self, VentureEntity *statement, gboolean finalize_record, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) bank = venture_database_get(self->database, VENTURE_TYPE_BANK_ACCOUNT, number(statement, "bank-account-id"), error);
 	g_autoptr(GPtrArray) transactions = NULL;
-	g_autoptr(GDateTime) end = NULL, now = g_date_time_new_now_utc();
-	g_autoptr(VentureMoney) closing = NULL, book = NULL, difference = NULL;
+	g_autoptr(GDateTime) end = NULL, start = NULL, now = g_date_time_new_now_utc();
+	g_autoptr(VentureMoney) closing = NULL, book = NULL, difference = NULL, checks = NULL, deposits = NULL, adjusted = NULL;
 	g_autofree gchar *currency = NULL;
+	g_autofree gchar *evidence = NULL;
 	g_autoptr(VentureEntity) result = NULL;
 	gint64 org = venture_entity_get_organization_id(statement);
 	guint i;
 	if (bank == NULL) return NULL;
-	g_object_get(statement, "period-end", &end, "closing-balance", &closing, NULL);
+	g_object_get(statement, "period-end", &end, "period-start", &start, "closing-balance", &closing, NULL);
 	g_object_get(bank, "currency", &currency, NULL);
 	transactions = rows(self->database, VENTURE_TYPE_BANK_TRANSACTION, org, "bank-account-id", venture_entity_get_id(bank), error);
 	if (transactions == NULL) return NULL;
@@ -646,18 +775,61 @@ reconcile(VentureBankMatchService *self, VentureEntity *statement, gboolean fina
 	book = venture_posting_service_account_balance(venture_database_get_posting_service(self->database),
 		number(bank, "account-id"), org, currency, end, error);
 	if (book == NULL) return NULL;
+	if (!outstanding_items(self, bank, start, end, &checks, &deposits, &evidence, error))
+		return NULL;
+	adjusted = venture_money_add(book, checks, error);
+	if (adjusted == NULL) return NULL;
+	{
+		VentureMoney *next = venture_money_subtract(adjusted, deposits, error);
+		if (next == NULL) return NULL;
+		g_clear_pointer(&adjusted, venture_money_free);
+		adjusted = next;
+	}
 	difference = venture_money_subtract(closing, book, error);
 	if (difference == NULL) return NULL;
-	if (finalize_record && venture_money_get_amount(difference) != 0)
-	{ refuse(error, "statement and posted book balance differ"); return NULL; }
+	if (finalize_record && !venture_money_equal(closing, adjusted))
+	{ refuse(error, "statement and posted book balance differ after outstanding items"); return NULL; }
 	result = new_record(VENTURE_TYPE_RECONCILIATION, org);
 	g_object_set(result, "bank-account-id", venture_entity_get_id(bank), "period-end", end,
-		"statement-balance", closing, "book-balance", book, "difference", difference, "state", finalize_record ? "reconciled" : "open",
+		"statement-balance", closing, "book-balance", book, "difference", difference,
+		"outstanding-checks", checks, "deposits-in-transit", deposits, "outstanding-items", evidence,
+		"state", finalize_record ? "reconciled" : "open",
 		"reconciled-by", finalize_record ? (actor != NULL ? actor->name : "system") : NULL,
 		"reconciled-at", finalize_record ? now : NULL, NULL);
 	if (!save_owned(self, result, actor, error)) return NULL;
 	return g_steal_pointer(&result);
 }
+
+static VentureEntity *
+reopen_reconciliation(VentureBankMatchService *self, VentureEntity *statement, JsonObject *args,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(GPtrArray) found = NULL;
+	g_autoptr(GDateTime) end = NULL, now = g_date_time_new_now_utc();
+	const gchar *reason = option(args, "reason");
+	guint i;
+	if (reason == NULL || *reason == '\0')
+	{ refuse(error, "reopen requires a reason"); return NULL; }
+	g_object_get(statement, "period-end", &end, NULL);
+	found = rows(self->database, VENTURE_TYPE_RECONCILIATION, venture_entity_get_organization_id(statement),
+		"bank-account-id", number(statement, "bank-account-id"), error);
+	if (found == NULL) return NULL;
+	for (i = 0; i < found->len; i++)
+	{
+		VentureEntity *rec = g_ptr_array_index(found, i);
+		g_autoptr(GDateTime) rec_end = NULL;
+		g_object_get(rec, "period-end", &rec_end, NULL);
+		if (!state_is(rec, "reconciled") || rec_end == NULL || g_date_time_compare(rec_end, end) != 0)
+			continue;
+		g_object_set(rec, "state", "reopened", "reopened-by", actor != NULL ? actor->name : "system",
+			"reopened-at", now, "reopen-reason", reason, NULL);
+		if (!save_owned(self, rec, actor, error)) return NULL;
+		return g_object_ref(rec);
+	}
+	refuse(error, "no reconciled evidence exists for this statement");
+	return NULL;
+}
+
 
 static JsonArray *
 parts_for(VentureEntity *record)
@@ -783,7 +955,7 @@ venture_bank_match_service_execute(VentureBankMatchService *self, const gchar *a
 	{ refuse(error, "banking module is disabled"); return NULL; }
 	if (action == NULL) { refuse(error, "action is required"); return NULL; }
 	type = !strcmp(action, "import") ? VENTURE_TYPE_BANK_ACCOUNT :
-		!strcmp(action, "auto") || !strcmp(action, "reconcile") ? VENTURE_TYPE_BANK_STATEMENT : VENTURE_TYPE_BANK_TRANSACTION;
+		!strcmp(action, "auto") || !strcmp(action, "reconcile") || !strcmp(action, "reopen") ? VENTURE_TYPE_BANK_STATEMENT : VENTURE_TYPE_BANK_TRANSACTION;
 	if (!venture_database_begin(self->database, error)) return NULL;
 	record = venture_database_get(self->database, type, id, error);
 	if (record == NULL) goto finish;
@@ -795,6 +967,11 @@ venture_bank_match_service_execute(VentureBankMatchService *self, const gchar *a
 	else if (!strcmp(action, "reconcile"))
 	{
 		result = reconcile(self, record, g_strcmp0(option(args, "state"), "open") != 0, actor, error);
+		ok = result != NULL;
+	}
+	else if (!strcmp(action, "reopen"))
+	{
+		result = reopen_reconciliation(self, record, args, actor, error);
 		ok = result != NULL;
 	}
 	else if (!strcmp(action, "auto")) ok = auto_match(self, record, actor, error);

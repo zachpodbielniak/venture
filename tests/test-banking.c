@@ -672,6 +672,114 @@ test_bank_posting_account(BankFixture *f, gconstpointer data)
 	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_JOURNAL), ==, 0);
 }
 
+static gint64
+bank_book(BankFixture *f, const gchar *cutoff)
+{
+	g_autoptr(GDateTime) date = venture_time_from_string(cutoff, NULL);
+	g_autoptr(VentureMoney) balance = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 account_id;
+	g_object_get(f->bank, "account-id", &account_id, NULL);
+	balance = venture_posting_service_account_balance(venture_database_get_posting_service(f->database),
+		account_id, f->org, "USD", date, &error);
+	g_assert_no_error(error);
+	return venture_money_get_amount(balance);
+}
+
+static void
+post_cash(BankFixture *f, const gchar *when, gint64 amount, gboolean debit)
+{
+	g_autoptr(VentureJournal) header = venture_journal_new();
+	g_autoptr(VentureJournal) posted = NULL;
+	g_autoptr(GPtrArray) lines = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autoptr(GDateTime) date = g_date_time_new_from_iso8601(when, NULL);
+	g_autoptr(VentureMoney) money = venture_money_new_for_currency(amount, "USD");
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	g_autoptr(GPtrArray) accounts = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 cash_id, offset_id;
+	VentureJournalLine *line;
+	g_object_get(f->bank, "account-id", &cash_id, NULL);
+	venture_query_set_organization(query, f->org);
+	g_assert_true(venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, "3000", &error));
+	accounts = venture_database_find(f->database, query, &error);
+	g_assert_cmpuint(accounts->len, ==, 1);
+	offset_id = venture_entity_get_id(g_ptr_array_index(accounts, 0));
+	g_object_set(header, "organization-id", f->org, "source-type", "organization",
+		"source-id", f->org, "occurred-at", date, "currency", "USD", NULL);
+	line = venture_journal_line_new();
+	g_object_set(line, "account-id", debit ? cash_id : offset_id, "side", VENTURE_LEDGER_SIDE_DEBIT, "amount", money, NULL);
+	g_ptr_array_add(lines, line);
+	line = venture_journal_line_new();
+	g_object_set(line, "account-id", debit ? offset_id : cash_id, "side", VENTURE_LEDGER_SIDE_CREDIT, "amount", money, NULL);
+	g_ptr_array_add(lines, line);
+	posted = venture_posting_service_post(venture_database_get_posting_service(f->database), header, lines, NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(posted);
+}
+
+/* Statement 1000 versus books 900 is explained by an outstanding check of 100.
+ * Clearing it on the next statement removes it from outstanding. */
+static void
+test_outstanding_check(BankFixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) statement = NULL;
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(VentureMoney) outstanding = NULL;
+	g_autoptr(JsonObject) args = json_object_new();
+	(void)data;
+	post_cash(f, "2025-12-31T00:00:00Z", 100000, TRUE);
+	post_cash(f, "2026-01-15T00:00:00Z", 10000, FALSE);
+	g_assert_cmpint(bank_book(f, "2026-01-31T23:59:59Z"), ==, 90000);
+	json_object_set_string_member(args, "format", "csv");
+	json_object_set_string_member(args, "data", "date,amount,memo,ref,id\n2026-01-20,0,placeholder,none,ph-1\n");
+	json_object_set_string_member(args, "period_start", "2026-01-01");
+	json_object_set_string_member(args, "period_end", "2026-01-31");
+	json_object_set_string_member(args, "opening_balance", "1000 USD");
+	json_object_set_string_member(args, "closing_balance", "1000 USD");
+	statement = venture_bank_match_service_execute(venture_database_get_bank_match_service(f->database),
+		"import", venture_entity_get_id(f->bank), args, NULL, &error);
+	g_assert_no_error(error);
+	g_clear_object(&result);
+	result = bank_action(f, "exclude", 1, "{\"reason\":\"placeholder line\"}", &error);
+	g_assert_no_error(error);
+	g_clear_object(&result);
+	result = bank_action(f, "reconcile", venture_entity_get_id(statement), "{}", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_object_get(result, "outstanding-checks", &outstanding, NULL);
+	g_assert_cmpint(venture_money_get_amount(outstanding), ==, 10000);
+	g_assert_cmpint(bank_book(f, "2026-01-31T23:59:59Z"), ==, 90000);
+}
+
+static void
+test_reopen_reconciliation(BankFixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) statement = NULL;
+	g_autoptr(VentureEntity) result = NULL;
+	g_autofree gchar *state = NULL;
+	(void)data;
+	statement = bank_import(f, "ofx", "<OFX><STMTTRN><DTPOSTED>20260110<TRNAMT>-10<FITID>reopen</STMTTRN></OFX>", "-10 USD", &error);
+	g_assert_no_error(error);
+	result = bank_action(f, "create", 1, "{\"type\":\"expense\"}", &error);
+	g_assert_no_error(error);
+	g_clear_object(&result);
+	result = bank_action(f, "reconcile", venture_entity_get_id(statement), "{}", &error);
+	g_assert_no_error(error);
+	g_clear_object(&result);
+	result = bank_action(f, "reopen", venture_entity_get_id(statement), "{\"reason\":\"statement revised\"}", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_object_get(result, "state", &state, NULL);
+	g_assert_cmpstr(state, ==, "reopened");
+	g_clear_error(&error);
+	g_clear_object(&result);
+	result = bank_action(f, "unmatch", 1, "{}", &error);
+	g_assert_no_error(error);
+}
+
 static void
 test_open_reconciliation(BankFixture *f, gconstpointer data)
 {
@@ -724,6 +832,8 @@ main(int argc, char **argv)
 	g_test_add("/banking/deleted-match-target", BankFixture, NULL, bank_setup, test_deleted_match_target, bank_teardown);
 	g_test_add("/banking/ofx-currency", BankFixture, NULL, bank_setup, test_ofx_currency, bank_teardown);
 	g_test_add("/banking/posting-account", BankFixture, NULL, bank_setup, test_bank_posting_account, bank_teardown);
+	g_test_add("/banking/outstanding-check", BankFixture, NULL, bank_setup, test_outstanding_check, bank_teardown);
+	g_test_add("/banking/reopen-reconciliation", BankFixture, NULL, bank_setup, test_reopen_reconciliation, bank_teardown);
 	g_test_add("/banking/open-reconciliation", BankFixture, NULL, bank_setup, test_open_reconciliation, bank_teardown);
 	g_test_add("/banking/candidate-windows", BankFixture, NULL, bank_setup, test_candidate_windows, bank_teardown);
 	g_test_add("/banking/partial-installments", BankFixture, NULL, bank_setup, test_partial_installments, bank_teardown);

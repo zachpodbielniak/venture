@@ -78,8 +78,11 @@ before creating either record. Banking never writes journals itself.
 * Reconciliation and surfaces
 
 Reconciliation reads posted journals on the linked ledger account through the
-inclusive period end. It refuses any unmatched transaction through that date
-and any nonzero difference. The evidence stores statement and book balances,
+inclusive period end. It refuses any unmatched statement transaction through
+that date. Uncleared book items are outstanding checks (credits) or deposits
+in transit (debits); statement closing must equal book plus outstanding checks
+less deposits in transit. Reopen records an authorized reason and keeps the
+historical balances. The evidence stores statement and book balances,
 difference and reconciler/time. Transactions through a reconciled date, and
 their matches, cannot be changed by any banking action or generic writer.
 
