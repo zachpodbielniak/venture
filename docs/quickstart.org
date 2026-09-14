@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-12]
+#+updated: [2026-09-13]
 #+version: 0.6.0
 
 
@@ -17,7 +17,11 @@ make DEMOFLAGS=-d demo  # leave it running in the background
 make demo-stop          # stop that one and delete its data
 #+end_src
 
-It prints the URL and the owner password when it is ready. What is in there: two ventures, a year of sales and expenses, companies and contacts and a pipeline, two invoices with one overdue, a support desk with service-level policies, macros, a rota, a sprint, fourteen tickets with a conversation and logged time and one deliberately missed promise, a release that went out and the incident that followed, and two dashboards — one for the desk, one for the money. Every report has figures.
+It prints the URL and the owner password when it is ready. What is in there: two ventures, a year of sales and expenses, companies and contacts, a sales pipeline whose deals have been walked through their stages and one of them lost with a reason, invoices raised and issued and one settled by a receipt, a support desk with service-level policies, macros, a rota, a sprint, fourteen tickets with a conversation and logged time and one deliberately missed promise, a release that went out and the incident that followed, and two dashboards — one for the desk, one for the money.
+
+Behind that sits a full set of books. A general ledger posted by the trade itself rather than typed in beside it, a fiscal year with its first quarter closed and every report snapshotted at the close, supplier bills approved and part paid, customer and vendor credits with refunds against them, a bank statement imported and matched against the documents it corresponds to, a capitalised laptop on a thirty-six month depreciation schedule and rent paid six months in advance, quotes sent and one accepted into an invoice, subscriptions with an MRR and a dunning ladder behind them, a follow-up sequence enrolled and run, and an outbox with mail queued in it. Every report has figures.
+
+Two things it deliberately does not fake. *Stripe and federation stay off*, because one needs an account and the other needs a second server. And there are no dunning notices, because a notice is what happens when a renewal goes unpaid and a financial event cannot be dated into the future — the ladder that would produce them is seeded, the failures have simply not happened yet.
 
 Three things worth knowing about it. It listens on *8749*, not 8747 or 8748, so it cannot collide with a container or with =just start=; it refuses to start if something else is already answering there, because seeding example data into a real instance is the one mistake it must never make. The database is =build/demo/venture.db= and is *deleted and rebuilt on every run*, so nothing you do to the demo matters. And every record goes in through =venturectl= and the REST API rather than into the database directly, so a demo that seeds is also a demonstration that the API can build one.
 

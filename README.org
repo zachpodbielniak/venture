@@ -138,7 +138,7 @@ personal one is yours alone, and a dashboard exports as JSON that imports
 anywhere -- four ship as templates, the factory among them. See
 [[file:docs/dashboards.org][dashboards]].
 
-=make demo= builds and runs a throwaway instance on 127.0.0.1:8749 seeded with a small complete business — two ventures, a year of trade, a support desk with service levels and a sprint, a release and an incident, and two dashboards. It prints the password when it is ready, and rebuilds its database on every run. See [[file:docs/quickstart.org][the quickstart]].
+=make demo= builds and runs a throwaway instance on 127.0.0.1:8749 seeded with a small complete business — two ventures, a year of trade posted through to a general ledger, receivables and payables with their credits and refunds, a matched bank statement, fixed assets and deferrals, a sales pipeline with leads and quotes and activities, subscriptions and follow-up sequences, a support desk with service levels and a sprint, a release and an incident, and two dashboards. It prints the password when it is ready, and rebuilds its database on every run. See [[file:docs/quickstart.org][the quickstart]].
 
 The workdesk: every record has a Watch button and a timeline; an inbox fed by the audit trail tells you about mentions, assignments, watched changes, service levels, budgets and runs; saved views, service-level policies with live clocks, macros, worklogs, sprints and bulk edits on tickets; mission control for the coding runs with a cost per success, agent budgets that refuse a run once the money is gone, and a delivery report with DORA's four keys beside the agents' cost. Ctrl+K opens a command palette. See [[file:docs/workdesk.org][the workdesk]].
 
