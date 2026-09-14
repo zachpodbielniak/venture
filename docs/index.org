@@ -54,6 +54,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:actions.org][Record actions]] — shared business operations and approval
 
 - [[file:banking.org][Banking]] — statement import, matching and reconciliation
+- [[file:cutover.org][Accounting cutover]] — guided Zoho Books and QuickBooks opening balances
 - [[file:statements.org][Financial statements]] — posted ledger balances, statements, comparatives and P&L reconciliation
 
 - [[file:quotes.org][Commercial quotes]] — price lists, revisions, public acceptance and invoice handoff

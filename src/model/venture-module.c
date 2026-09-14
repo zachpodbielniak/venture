@@ -629,6 +629,10 @@ static const gchar *const venture_module_requires_statements[] = { "ledger", "pe
 static const gchar *const venture_module_reports_statements[] = {
 	"balance_sheet", "income_statement", "cash_flow", "general_ledger", "account_balances", "pnl_reconciliation", NULL
 };
+static const gchar *const cutover_requires[] = { "ledger", NULL };
+static GType (*const cutover_types[]) (void) = {
+	venture_accounting_cutover_get_type, venture_accounting_cutover_row_get_type, NULL
+};
 
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
@@ -834,6 +838,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"statements", "Statements", "Financial statements from posted ledger evidence.",
 		venture_module_requires_statements, NULL, NULL,
 		venture_module_reports_statements, NULL, FALSE
+	},
+	{
+		"cutover", "Accounting cutover", "Guided Zoho Books and QuickBooks opening-balance migration.",
+		cutover_requires, NULL, cutover_types, NULL, NULL, FALSE
 	}
 
 };

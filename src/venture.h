@@ -74,6 +74,7 @@
 #include "stripe/venture-stripe-records.h"
 #include "payables/venture-payable-records.h"
 #include "banking/venture-bank-records.h"
+#include "cutover/venture-cutover-records.h"
 #include "receivables/venture-invoice-state-machine.h"
 #include "model/venture-venture-type.h"
 #include "model/venture-entity-registry.h"
@@ -141,6 +142,7 @@
 #include "leads/venture-lead-service.h"
 #include "payables/venture-payables-service.h"
 #include "banking/venture-bank-match-service.h"
+#include "cutover/venture-cutover-service.h"
 #include "sequences/venture-sequence-service.h"
 #include "periods/venture-period-report.h"
 

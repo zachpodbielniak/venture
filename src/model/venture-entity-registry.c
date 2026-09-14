@@ -774,6 +774,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_sequence_delivery_get_type
 		, venture_suppression_get_type
 		, venture_posting_profile_get_type
+		, venture_accounting_cutover_get_type
+		, venture_accounting_cutover_row_get_type
 		, venture_pipeline_get_type,
 		venture_pipeline_stage_get_type,
 		venture_deal_stage_entry_get_type,
