@@ -1,0 +1,36 @@
+#+title: Accounting parity — the gap branch
+
+This branch, =feat/accounting-parity=, is where the work for the Zoho Books /
+QuickBooks gap tracker (issue #70) lands. One pull request stays open against
+=master= while the gaps close; each gap is its own issue, its own commits, and
+its own tests, merged into this branch rather than straight to =master=.
+
+* How work lands here
+
+- Take one issue from #70. Branch from =feat/accounting-parity=, not =master=.
+- Tests first, then the change, then this page: move the issue below from
+  "Open" to "Landed" with the commit that closes it.
+- Rebase onto =feat/accounting-parity= and merge there; the umbrella PR
+  carries the running list for review.
+- Nothing here re-implements what =master= already has; the tracker's "What
+  already exists" list is the boundary.
+
+* Landed
+
+(none yet)
+
+* Open
+
+Mirrors #70 at the time of writing; the issue is the source of truth.
+
+** P0 — accounting trust and cutover gates
+#22 taxes and line accounting separate from revenue · #23 outstanding checks
+and deposits in transit · #24 cash-basis and accrual reports · #25 guided
+migration and opening balances · #65 acceptance and reliability gates
+
+** P1 — daily replacement workflows
+#26 #27 #28 #29 #32 #33 #34 #35 #36 #37 #38 #39 #40 #41 #42 #43 #44 #45 #49
+#51 #52 #53 #54 #56 #57 #58 #62 #63 #67
+
+** P2 — broader business and advanced parity
+#30 #31 #46 #47 #48 #50 #55 #59 #60 #61 #64 #66 #68 #69

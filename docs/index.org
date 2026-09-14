@@ -36,6 +36,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:knowledge-bases.org][Knowledge bases]] — documents the assistant can read, and how they reach it
 - [[file:automation.org][Automation]] — scheduled rules, and the podomation engine
 - [[file:modules.org][Modules]] — switching pieces of VENTURE on and off, and what a module is made of
+- [[file:parity.org][Accounting parity]] — the gap branch for issue #70, and how work lands on it
 - [[file:factory.org][The software factory]] — milestones, releases, builds, environments, deployments, incidents
 - [[file:dashboards.org][Dashboards]] — pages of widgets, as many as you like, from any module's records and reports
 - [[file:webhooks.org][Webhooks out]] — telling something outside that a record changed: events, signing, deliveries
