@@ -3,6 +3,15 @@
 
 * Authority and scope
 
+The immutable accounting authority is the posted ledger (accrual recognition).
+Reports accept =basis= of =accrual= (default) or =cash=. Cash recognition uses
+receipts and payments: invoice issues and bill approvals are excluded, and
+allocated receipts recognize frozen net income and tax in the receipt period.
+Exports, dashboards and period snapshots retain the selected basis in their
+options; snapshots default to accrual so closed history is the ledger.
+
+
+
 The =statements= module requires =ledger= and =periods=. It registers
 =balance_sheet=, =income_statement=, =cash_flow=, =general_ledger=,
 =account_balances= and =pnl_reconciliation=. No new persistent records are

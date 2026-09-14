@@ -915,6 +915,148 @@ with_comparative(VentureReportResult *current, VentureReportResult *prior,
 	return g_steal_pointer(&r);
 }
 
+static gint64
+code_account(Books *books, const gchar *code)
+{
+	guint i;
+	for (i = 0; i < books->accounts->len; i++)
+	{
+		VentureEntity *account = g_ptr_array_index(books->accounts, i);
+		g_autofree gchar *actual = NULL;
+		g_object_get(account, "code", &actual, NULL);
+		if (g_strcmp0(actual, code) == 0)
+			return venture_entity_get_id(account);
+	}
+	return 0;
+}
+
+static gboolean
+push_cash_entry(Books *books, gint64 account_id, GDateTime *date, const gchar *source_type,
+	gint64 source_id, VentureLedgerSide side, const VentureMoney *amount)
+{
+	Evidence *e;
+	if (account_id == 0 || amount == NULL || venture_money_is_zero(amount))
+		return TRUE;
+	e = g_new0(Evidence, 1);
+	e->account_id = account_id;
+	e->source_id = source_id;
+	e->source_type = g_strdup(source_type);
+	e->date = g_date_time_ref(date);
+	e->amount = venture_money_copy((VentureMoney *)amount);
+	e->side = side;
+	g_ptr_array_add(books->entries, e);
+	return TRUE;
+}
+
+static gboolean
+apply_cash_basis(Books *books, VentureDatabase *db, gint64 org, GError **error)
+{
+	g_autoptr(GPtrArray) kept = g_ptr_array_new();
+	g_autoptr(GPtrArray) allocations = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	gint64 income = code_account(books, "4000");
+	gint64 tax = code_account(books, "2100");
+	gint64 expense = code_account(books, "6900");
+	guint i;
+	for (i = 0; i < books->entries->len; i++)
+	{
+		Evidence *e = g_ptr_array_index(books->entries, i);
+		if (g_strcmp0(e->source_type, "invoice_event") == 0 ||
+			g_strcmp0(e->source_type, "vendor_bill_event") == 0)
+		{
+			evidence_free(e);
+			continue;
+		}
+		g_ptr_array_add(kept, e);
+	}
+	g_ptr_array_set_free_func(books->entries, NULL);
+	g_ptr_array_set_size(books->entries, 0);
+	g_ptr_array_set_free_func(books->entries, evidence_free);
+	for (i = 0; i < kept->len; i++)
+		g_ptr_array_add(books->entries, g_ptr_array_index(kept, i));
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "payment_allocation") == G_TYPE_INVALID)
+		return TRUE;
+	query = venture_query_new(VENTURE_TYPE_PAYMENT_ALLOCATION);
+	venture_query_set_organization(query, org);
+	venture_query_set_limit(query, 0);
+	allocations = venture_database_find(db, query, error);
+	if (allocations == NULL)
+		return FALSE;
+	for (i = 0; i < allocations->len; i++)
+	{
+		VentureEntity *allocation = g_ptr_array_index(allocations, i);
+		g_autoptr(GDateTime) date = NULL;
+		g_autoptr(VentureMoney) amount = NULL;
+		g_autoptr(VentureQuery) events = NULL;
+		g_autoptr(GPtrArray) found = NULL;
+		g_autoptr(VentureMoney) levy = NULL;
+		g_autoptr(VentureMoney) total = NULL;
+		g_autoptr(VentureMoney) income_share = NULL;
+		g_autoptr(VentureMoney) tax_share = NULL;
+		gint64 invoice_id = 0;
+		guint j;
+		g_object_get(allocation, "date", &date, "amount", &amount, "invoice-id", &invoice_id, NULL);
+		if (date == NULL || g_date_time_compare(date, books->start) < 0 || g_date_time_compare(date, books->end) >= 0)
+			continue;
+		events = venture_query_new(VENTURE_TYPE_INVOICE_EVENT);
+		venture_query_set_limit(events, 0);
+		if (!venture_query_add_filter_int(events, "invoice-id", VENTURE_FILTER_OP_EQ, invoice_id, NULL))
+			return FALSE;
+		found = venture_database_find(db, events, error);
+		if (found == NULL)
+			return FALSE;
+		for (j = 0; j < found->len; j++)
+		{
+			g_autofree gchar *kind = NULL;
+			g_object_get(g_ptr_array_index(found, j), "kind", &kind, "tax-amount", &levy, "amount", &total, NULL);
+			if (g_strcmp0(kind, "issue") == 0)
+				break;
+			g_clear_pointer(&levy, venture_money_free);
+			g_clear_pointer(&total, venture_money_free);
+		}
+		if (total == NULL || venture_money_is_zero(total) || amount == NULL)
+			continue;
+		if (levy != NULL && !venture_money_is_zero(levy))
+			tax_share = venture_money_multiply_rational(amount, venture_money_get_amount(levy),
+				venture_money_get_amount(total), error);
+		else
+			tax_share = venture_money_new_zero(venture_money_get_currency(amount));
+		if (tax_share == NULL)
+			return FALSE;
+		income_share = venture_money_subtract(amount, tax_share, error);
+		if (income_share == NULL)
+			return FALSE;
+		if (!push_cash_entry(books, income, date, "payment_allocation",
+			venture_entity_get_id(allocation), VENTURE_LEDGER_SIDE_CREDIT, income_share) ||
+			!push_cash_entry(books, tax, date, "payment_allocation",
+			venture_entity_get_id(allocation), VENTURE_LEDGER_SIDE_CREDIT, tax_share))
+			return FALSE;
+	}
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "bill_payment_allocation") != G_TYPE_INVALID)
+	{
+		g_autoptr(VentureQuery) bills = venture_query_new(VENTURE_TYPE_BILL_PAYMENT_ALLOCATION);
+		g_autoptr(GPtrArray) bill_rows = NULL;
+		venture_query_set_organization(bills, org);
+		venture_query_set_limit(bills, 0);
+		bill_rows = venture_database_find(db, bills, error);
+		if (bill_rows == NULL)
+			return FALSE;
+		for (i = 0; i < bill_rows->len; i++)
+		{
+			VentureEntity *row = g_ptr_array_index(bill_rows, i);
+			g_autoptr(GDateTime) date = NULL;
+			g_autoptr(VentureMoney) amount = NULL;
+			g_object_get(row, "date", &date, "amount", &amount, NULL);
+			if (date == NULL || g_date_time_compare(date, books->start) < 0 || g_date_time_compare(date, books->end) >= 0)
+				continue;
+			if (!push_cash_entry(books, expense, date, "bill_payment_allocation",
+				venture_entity_get_id(row), VENTURE_LEDGER_SIDE_DEBIT, amount))
+				return FALSE;
+		}
+	}
+	return TRUE;
+}
+
 static VentureReportResult *
 generate_one(const gchar *name, Books *books, VentureDatabase *db, gint64 org,
 	VentureDateRange *period, JsonObject *options, GError **error)
@@ -974,6 +1116,17 @@ generate(const gchar *name, VentureContext *context, VentureDateRange *period,
 	books = read_books(db, org, currency, period, as_of, error);
 	if (books == NULL)
 		goto fail;
+	{
+		const gchar *basis = venture_json_object_get_string(options, "basis", "accrual");
+		if (basis != NULL && g_strcmp0(basis, "accrual") != 0 && g_strcmp0(basis, "cash") != 0)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+				"basis must be cash or accrual");
+			goto fail;
+		}
+		if (g_strcmp0(basis, "cash") == 0 && !apply_cash_basis(books, db, org, error))
+			goto fail;
+	}
 	if (prior_period != NULL)
 	{
 		previous = read_books(db, org, currency, prior_period, NULL, error);
@@ -1047,7 +1200,8 @@ statement_parameters(VentureReport *self)
 		"\"organization_id\":{\"type\":\"integer\",\"description\":\"One exact legal entity; defaults to the context organization\"},"
 		"\"currency\":{\"type\":\"string\",\"description\":\"Uppercase book currency; omit to report every currency separately\"},"
 		"\"compare_to\":{\"type\":\"string\",\"description\":\"Prior period label, ending before this period starts\"},"
-		"\"account_id\":{\"type\":\"integer\",\"description\":\"General ledger only: one account in this organization\"}}}", NULL);
+		"\"account_id\":{\"type\":\"integer\",\"description\":\"General ledger only: one account in this organization\"},"
+		"\"basis\":{\"type\":\"string\",\"description\":\"accrual (default, posted recognition) or cash (receipts and payments)\"}}}", NULL);
 }
 
 static void

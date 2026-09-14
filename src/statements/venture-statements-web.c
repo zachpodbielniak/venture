@@ -45,6 +45,13 @@ venture_statements_append_controls(VentureContext *context, VentureReport *repor
 	g_string_append(html, "<label>Compare to<input name=\"compare_to\" placeholder=\"Prior period, e.g. 2026-07\" value=\"");
 	venture_html_escape_append(html, venture_json_object_get_string(options, "compare_to", ""));
 	g_string_append(html, "\"></label>");
+	g_string_append(html, "<label>Basis<select name=\"basis\"><option value=\"accrual\"");
+	if (g_strcmp0(venture_json_object_get_string(options, "basis", "accrual"), "cash") != 0)
+		g_string_append(html, " selected");
+	g_string_append(html, ">Accrual</option><option value=\"cash\"");
+	if (g_strcmp0(venture_json_object_get_string(options, "basis", "accrual"), "cash") == 0)
+		g_string_append(html, " selected");
+	g_string_append(html, ">Cash</option></select></label>");
 }
 
 void
