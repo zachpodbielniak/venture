@@ -74,7 +74,14 @@ venture_autojournal_service_profile(VentureAutojournalService *self, gint64 org,
 	if (!enabled()) {
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "The autojournal module is disabled"); return NULL;
 	}
-	if (db == NULL || !venture_database_begin(db, error)) return NULL;
+	/* The database is held weakly, so it can be gone by the time a rule
+	 * asks for a profile. That is a failure like any other and must carry
+	 * an error, not an empty one. */
+	if (db == NULL) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+			"The autojournal service has no database"); return NULL;
+	}
+	if (!venture_database_begin(db, error)) return NULL;
 	venture_query_set_organization(query, org);
 	found = venture_database_find_one(db, query, error);
 	if (error != NULL && *error != NULL) goto fail;
@@ -201,7 +208,15 @@ rule_lines(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *source,
 			g_autoptr(VentureEntity) product = venture_database_get(db, VENTURE_TYPE_PRODUCT, product_id, error);
 			g_autoptr(VentureMoney) cost = NULL;
 			g_autoptr(VentureMoney) total = NULL;
-			if (product == NULL) return NULL;
+			/* A missing row comes back as NULL with no error set, so the
+			 * absence has to be named here or it travels as "Unknown error". */
+			if (product == NULL) {
+				if (error == NULL || *error == NULL)
+					g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+						"The sale names product %" G_GINT64_FORMAT ", which does not exist",
+						product_id);
+				return NULL;
+			}
 			g_object_get(product, "cost", &cost, NULL);
 			if (cost != NULL) {
 				total = venture_money_multiply_rational(cost, quantity, 1, error);
@@ -217,14 +232,29 @@ rule_lines(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *source,
 		gint64 tax_id, debit = 0;
 		g_object_get(source, "category", &category, "payment-method", &method, "tax-category-id", &tax_id, NULL);
 		g_object_get(profile, "expense-categories", &mapping, NULL);
-		if (mapping == NULL || !json_parser_load_from_data(parser, mapping, -1, error)) return NULL;
+		/* The service builds a complete profile, but one written by hand --
+		 * through the API, or left behind by a partial migration -- can carry
+		 * the account fields and no category map. Saying so beats returning
+		 * NULL with no error set: that reaches the caller as "Unknown error"
+		 * and leaves nothing in the log to work from. */
+		if (mapping == NULL) {
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"The posting profile has no expense category map"); return NULL;
+		}
+		if (!json_parser_load_from_data(parser, mapping, -1, error)) return NULL;
 		if (!JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser))) {
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Expense categories must be a JSON object"); return NULL;
 		}
 		map = json_node_get_object(json_parser_get_root(parser));
 		if (tax_id > 0) {
 			g_autoptr(VentureEntity) tax = venture_database_get(db, VENTURE_TYPE_TAX_CATEGORY, tax_id, error);
-			if (tax == NULL) return NULL;
+			if (tax == NULL) {
+				if (error == NULL || *error == NULL)
+					g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+						"The expense names tax category %" G_GINT64_FORMAT ", which does not exist",
+						tax_id);
+				return NULL;
+			}
 			g_object_get(tax, "code", &tax_code, NULL);
 		}
 		if (tax_code != NULL && json_object_has_member(map, tax_code)) debit = venture_json_object_get_int(map, tax_code, 0);
@@ -336,11 +366,24 @@ post_refund(VentureAutojournalService *self, VentureEntity *source, const Ventur
 		venture_query_add_filter_int(query, "journal-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(last), NULL);
 		venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
 		row = venture_database_find_one(db, query, error);
-		if (row == NULL) return FALSE;
+		/* A posted journal with no lines is a broken book, not an empty
+		 * result, so the absence is reported rather than returned bare. */
+		if (row == NULL) {
+			if (error == NULL || *error == NULL)
+				g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+					"Refund journal %" G_GINT64_FORMAT " has no lines to correct against",
+					venture_entity_get_id(last));
+			return FALSE;
+		}
 		g_object_get(row, "amount", &old, "side", &side, NULL);
 		if (side == VENTURE_LEDGER_SIDE_CREDIT) {
+			/* Negation takes no error of its own, and only fails on a
+			 * magnitude that cannot be represented. */
 			VentureMoney *negative = venture_money_negate(old);
-			if (negative == NULL) return FALSE;
+			if (negative == NULL) {
+				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+					"Journal amount magnitude overflows"); return FALSE;
+			}
 			venture_money_free(old); old = negative;
 		}
 		if (venture_money_equal(old, refund)) return TRUE;

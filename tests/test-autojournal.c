@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
 #include <libsoup/soup.h>
+#include <string.h>
 #include "venture-test-util.h"
 
 typedef struct { VentureDatabase *db; VentureConfig *config; VentureContext *context; gint64 org; gint64 venture; } Fixture;
@@ -519,6 +520,74 @@ profile_edit(Fixture *f, gconstpointer data)
 	g_assert_cmpint(balance(f, "1010"), ==, 10000);
 	g_assert_cmpint(balance(f, "1000"), ==, 0);
 }
+/*
+ * A profile carrying the account fields and no category map is what an
+ * operator gets by writing one through the API, or what a partial
+ * migration leaves behind. It used to fail every expense with a bare
+ * "Unknown error" and nothing in the log, because the rule returned NULL
+ * without setting the error. The failure must name the missing field.
+ */
+static void
+profile_without_categories(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VenturePostingProfile) profile = NULL;
+	g_autoptr(VentureExpense) record = venture_expense_new();
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	profile = venture_autojournal_service_profile(venture_database_get_autojournal_service(f->db), f->org, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(profile);
+	g_object_set(profile, "expense-categories", NULL, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(profile), NULL, &error));
+	g_assert_no_error(error);
+	g_object_set(record, "organization-id", f->org, "description", "Advertisement",
+		"category", "ADVERTISING", "payment-method", "credit", NULL);
+	money(record, "amount", 1200);
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(record), NULL, &error));
+	/* The point of the test: an error at all, and one that says what is
+	 * wrong rather than the empty-GError "Unknown error" it used to be. */
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "expense category map"));
+	g_assert_null(strstr(error->message, "Unknown error"));
+	/* Missing is not the same as empty: an empty object is a profile that
+	 * routes every category to the default expense account. */
+	g_clear_error(&error);
+	g_object_set(profile, "expense-categories", "{}", NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(profile), NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(record), NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(balance(f, "6900"), ==, 1200);
+	g_assert_cmpint(balance(f, "6200"), ==, 0);
+}
+/*
+ * The same defect one line down: a record that is simply not there comes
+ * back from the database as NULL with no error set, so the absence has to
+ * be named or it travels as "Unknown error" too.
+ *
+ * Saving cannot reach this -- reference validation rejects the dangling
+ * id first, and with a better message. The branch is for the paths that
+ * do not validate: building lines directly, and the backfill walking
+ * expenses whose tax category has since been deleted.
+ */
+static void
+expense_with_missing_tax_category(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureExpense) record = venture_expense_new();
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GError) error = NULL;
+	VenturePostingRule *rule = venture_posting_rule_registry_lookup(venture_posting_service_get_rules(
+		venture_database_get_posting_service(f->db)), "expense");
+	(void)data;
+	g_assert_nonnull(rule);
+	g_object_set(record, "organization-id", f->org, "description", "Advertisement",
+		"category", "ADVERTISING", "payment-method", "credit", "tax-category-id", (gint64)4242, NULL);
+	money(record, "amount", 1200);
+	rows = venture_posting_rule_build_lines(rule, f->db, VENTURE_ENTITY(record), &error);
+	g_assert_null(rows);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+	g_assert_nonnull(strstr(error->message, "tax category"));
+}
 static void
 expense_priority(Fixture *f, gconstpointer data)
 {
@@ -621,6 +690,8 @@ int main(int argc, char **argv)
 	g_test_add("/autojournal/module-off", Fixture, NULL, setup, module_off, teardown);
 	g_test_add("/autojournal/cli-rest-dry-run", Fixture, NULL, setup, cli_surface, teardown);
 	g_test_add("/autojournal/profile-edit", Fixture, NULL, setup, profile_edit, teardown);
+	g_test_add("/autojournal/profile-without-categories", Fixture, NULL, setup, profile_without_categories, teardown);
+	g_test_add("/autojournal/expense-missing-tax-category", Fixture, NULL, setup, expense_with_missing_tax_category, teardown);
 	g_test_add("/autojournal/expense-priority", Fixture, NULL, setup, expense_priority, teardown);
 	g_test_add("/autojournal/upgrade-disabled-sales", Fixture, NULL, setup, upgrade_disabled, teardown);
 	g_test_add("/autojournal/rules-at-context-start", Fixture, NULL, setup, rules_at_context_start, teardown);

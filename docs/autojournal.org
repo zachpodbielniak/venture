@@ -2,6 +2,7 @@
 #+description: Configurable sale, refund and expense posting
 #+authors: Zach Podbielniak
 #+created: [2026-09-13]
+#+updated: [2026-09-14]
 
 * Profiles
 
@@ -38,6 +39,14 @@ expense account applies. Payment methods =credit=, =credit_card=,
 =accounts_payable= and =unpaid= credit accounts payable; other methods credit
 the configured cash/clearing account. Deductibility does not reduce the cost
 posted to the books.
+
+The category map is required, and an empty object is the way to say "route
+everything to the default expense account". The service always writes one,
+but a profile created by hand -- through REST, a form, or a migration that
+filled in the account fields alone -- can be missing it, and every expense
+then fails with /The posting profile has no expense category map/ until it is
+set. Editing a profile must therefore leave the map in place rather than
+clearing it.
 
 * A complete sale
 
@@ -140,6 +149,9 @@ legacy document rules. Posted evidence remains readable through ledger.
 =test-autojournal= covers exact sale lines, COGS, dated refunds and corrections,
 bad-account rollback, tax remittance, category routing, profile isolation and
 uniqueness, missing versions, dry-run backfill, period refusal, schema upgrade
-and restart, and module-off behavior. The auth suite refuses anonymous
+and restart, and module-off behavior. It also covers the two ways a posting
+rule can fail without a record to point at -- a profile with no category map,
+and a tax category that has been deleted -- because both used to return an
+empty error and surface as /Unknown error/ with nothing in the log. The auth suite refuses anonymous
 backfill requests. The ledger suite continues to verify authoritative trial
 balance arithmetic and settlement tests guard against duplicate posting.
