@@ -108,22 +108,58 @@ static const VentureFieldDecl quote_action_fields[] = {
 VENTURE_DEFINE_ENTITY(VentureQuoteAction, venture_quote_action, quote_action_fields)
 
 
+gboolean
+venture_quote_percentage_parts(const VentureMoney *subtotal, gint64 discount_percent,
+	gint64 tax_percent, VentureMoney **discount, VentureMoney **net, VentureMoney **tax,
+	VentureMoney **total, GError **error)
+{
+	g_autoptr(VentureMoney) taken = NULL;
+	g_autoptr(VentureMoney) remaining = NULL;
+	g_autoptr(VentureMoney) levy = NULL;
+	g_autoptr(VentureMoney) gross = NULL;
+	if (discount != NULL)
+		*discount = NULL;
+	if (net != NULL)
+		*net = NULL;
+	if (tax != NULL)
+		*tax = NULL;
+	if (total != NULL)
+		*total = NULL;
+	if (discount_percent < 0 || discount_percent > 100 || tax_percent < 0 || tax_percent > 100)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Percentages must be 0..100");
+		return FALSE;
+	}
+	taken = venture_money_multiply_rational(subtotal, discount_percent, 100, error);
+	if (taken == NULL)
+		return FALSE;
+	remaining = venture_money_subtract(subtotal, taken, error);
+	if (remaining == NULL)
+		return FALSE;
+	levy = venture_money_multiply_rational(remaining, tax_percent, 100, error);
+	if (levy == NULL)
+		return FALSE;
+	gross = venture_money_add(remaining, levy, error);
+	if (gross == NULL)
+		return FALSE;
+	if (discount != NULL)
+		*discount = g_steal_pointer(&taken);
+	if (net != NULL)
+		*net = g_steal_pointer(&remaining);
+	if (tax != NULL)
+		*tax = g_steal_pointer(&levy);
+	if (total != NULL)
+		*total = g_steal_pointer(&gross);
+	return TRUE;
+}
+
 VentureMoney *
 venture_quote_apply_percentages(const VentureMoney *subtotal, gint64 discount_percent,
 	gint64 tax_percent, GError **error)
 {
-	g_autoptr(VentureMoney) discount = NULL;
-	g_autoptr(VentureMoney) net = NULL;
-	g_autoptr(VentureMoney) tax = NULL;
-	if (discount_percent < 0 || discount_percent > 100 || tax_percent < 0 || tax_percent > 100)
-	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Percentages must be 0..100");
+	VentureMoney *total = NULL;
+	if (!venture_quote_percentage_parts(subtotal, discount_percent, tax_percent,
+		NULL, NULL, NULL, &total, error))
 		return NULL;
-	}
-	discount = venture_money_multiply_rational(subtotal, discount_percent, 100, error);
-	if (discount == NULL) return NULL;
-	net = venture_money_subtract(subtotal, discount, error);
-	if (net == NULL) return NULL;
-	tax = venture_money_multiply_rational(net, tax_percent, 100, error);
-	return tax == NULL ? NULL : venture_money_add(net, tax, error);
+	return total;
 }

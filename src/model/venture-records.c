@@ -2691,7 +2691,8 @@ static const VentureFieldDecl venture_invoice_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", "Internal; never printed"),
 	VENTURE_FIELD("workflow-state", "Workflow state",
 		"Set through VentureSettlementService; plugins may extend the lifecycle",
-		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED)
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_MONEY("shipping-amount", "Shipping", "Optional shipping frozen at issuance")
 };
 
 VENTURE_DEFINE_ENTITY(VentureInvoice, venture_invoice, venture_invoice_fields)
@@ -2717,7 +2718,11 @@ static const VentureFieldDecl venture_invoice_line_fields[] = {
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("product-id", "Product", "Catalog item priced by the payment provider", "product", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("discount-percent", "Discount percent", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("tax-percent", "Tax percent", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("tax-percent", "Tax percent", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("income-amount", "Frozen income", "Net after discount, frozen at issuance"),
+	VENTURE_FIELD_MONEY("discount-amount", "Frozen discount", "Frozen at issuance"),
+	VENTURE_FIELD_MONEY("tax-amount", "Frozen tax", "Frozen at issuance"),
+	VENTURE_FIELD_MONEY("shipping-amount", "Frozen shipping", "Frozen at issuance")
 };
 
 VENTURE_DEFINE_ENTITY(VentureInvoiceLine, venture_invoice_line,

@@ -73,8 +73,8 @@ fund an allocation in an earlier statement.
 
 * Lifecycle and extensions
 
-Create a draft, add lines, then send it. Sending freezes its amount and
-due date in an issue event. The state is =sent= before allocation,
+Create a draft, add lines, then send it. Sending freezes its amount, due date, and per-line income, discount, shipping
+and tax allocations in an issue event. The state is =sent= before allocation,
 =partially_paid= after a partial allocation, and =paid= at zero balance.
 A refund derives the state again. Void is allowed for an unpaid invoice;
 refund its applied cash first. A direct transition cannot undo a paid
@@ -113,7 +113,9 @@ the current status.
 
 =venture_receivables_post_batch()= supplies balanced source-document legs to =venture_posting_service_post_entries()=. Journals are the sole accounting authority; generated cash-report sales bypass automatic sale posting to avoid recognizing the same receipt twice. Invoice document rules are refused because issuance and settlement already post their own journals.
 
-Issuing debits receivables and credits income. A receipt debits cash and
+Issuing debits receivables for the tax-inclusive total, credits income for
+the frozen net (after discount, plus shipping) and credits sales tax payable
+for the frozen tax. A receipt debits cash and
 credits receivables. Unused receipts are credit balances in that control
 account; allocation and creation of the receipt's credit post balanced
 transfers within it. A credit note debits income and credits receivables;

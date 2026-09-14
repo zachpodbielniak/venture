@@ -776,11 +776,32 @@ test_validator_boundary(Fixture *f, gconstpointer data)
 	status(f, q, "draft");
 }
 
+/* Tax is computed on the discounted net, never on the pre-discount subtotal. */
+static void
+test_percentage_parts(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureMoney) subtotal = venture_money_new_for_currency(10000, "USD");
+	g_autoptr(VentureMoney) discount = NULL;
+	g_autoptr(VentureMoney) net = NULL;
+	g_autoptr(VentureMoney) tax = NULL;
+	g_autoptr(VentureMoney) total = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)f;
+	(void)data;
+	g_assert_true(venture_quote_percentage_parts(subtotal, 10, 5, &discount, &net, &tax, &total, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_money_get_amount(discount), ==, 1000);
+	g_assert_cmpint(venture_money_get_amount(net), ==, 9000);
+	g_assert_cmpint(venture_money_get_amount(tax), ==, 450);
+	g_assert_cmpint(venture_money_get_amount(total), ==, 9450);
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	venture_entity_registry_get_default();
+	g_test_add("/quotes/percentage-parts", Fixture, NULL, setup, test_percentage_parts, teardown);
 	g_test_add("/quotes/records", Fixture, NULL, setup, test_records, teardown);
 	g_test_add("/quotes/totals", Fixture, NULL, setup, test_totals, teardown);
 	g_test_add("/quotes/pipeline-refusal", Fixture, NULL, setup, test_pipeline_refusal, teardown);

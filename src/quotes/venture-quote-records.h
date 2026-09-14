@@ -72,5 +72,22 @@ GType venture_quote_status_get_type(void) G_GNUC_CONST;
  */
 VentureMoney *venture_quote_apply_percentages(const VentureMoney *subtotal,
 	gint64 discount_percent, gint64 tax_percent, GError **error);
+/**
+ * venture_quote_percentage_parts:
+ * @subtotal: exact extended line amount
+ * @discount_percent: integer percent 0..100
+ * @tax_percent: integer percent 0..100
+ * @discount: (out) (optional) (transfer full): discount amount
+ * @net: (out) (optional) (transfer full): amount after discount, before tax
+ * @tax: (out) (optional) (transfer full): tax on the net amount
+ * @total: (out) (optional) (transfer full): net plus tax
+ * @error: (out) (optional): invalid percentages or arithmetic failure
+ *
+ * One rounding of each part, half to even. The returned total equals net plus tax.
+ * Returns: %TRUE when every requested part was computed
+ */
+gboolean venture_quote_percentage_parts(const VentureMoney *subtotal,
+	gint64 discount_percent, gint64 tax_percent, VentureMoney **discount,
+	VentureMoney **net, VentureMoney **tax, VentureMoney **total, GError **error);
 G_END_DECLS
 #endif

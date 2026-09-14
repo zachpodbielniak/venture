@@ -149,5 +149,19 @@ gboolean venture_receivables_check_sale(VentureDatabase *database, VentureEntity
  * Returns: whether a nonfinancial mail-queued invoice event was recorded
  */
 gboolean venture_settlement_service_record_mail(VentureSettlementService *self, VentureInvoice *invoice, const VentureActor *actor, GError **error);
+/**
+ * venture_settlement_service_correct_tax_allocation:
+ * @self: settlement service
+ * @organization_id: legal entity
+ * @date: dated correction
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): refusal
+ *
+ * Posts explicit dated corrections moving tax out of income for issued
+ * invoices whose original journals credited income for the tax-inclusive total.
+ * Returns: %TRUE if every needed correction posted or was already present
+ */
+gboolean venture_settlement_service_correct_tax_allocation(VentureSettlementService *self,
+	gint64 organization_id, GDateTime *date, const VentureActor *actor, GError **error);
 G_END_DECLS
 #endif
