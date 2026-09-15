@@ -1,0 +1,8 @@
+#+title: Progress invoicing, retainers and retention
+#+description: Invoice remaining contract value and hold liability
+
+An accepted quote with =billing-mode=progress= does not issue the full
+invoice. =VentureProgressService= invoices a percent or amount of the original
+total and refuses anything beyond the remaining contract value. Retainers
+debit Cash and credit a configured liability, then release into income.
+Retention is held as a liability against AR and released the same way.

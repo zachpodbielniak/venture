@@ -208,5 +208,6 @@ quote_buttons(GString *html, VentureEntity *record)
 		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/send\"><button>Send quote</button></form>"
 		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/accept\"><input name=\"accepted_by\" placeholder=\"Acceptor's full name\" required><button>Accept</button></form>"
 		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/decline\"><input name=\"reason\" placeholder=\"Reason\" required><button>Decline</button></form>"
-		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/revise\"><button>New revision</button></form>", id, id, id, id, id);
+		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/revise\"><button>New revision</button></form>"
+		"<form method=\"post\" action=\"/api/v1/quotes/%" G_GINT64_FORMAT "/actions/progress_invoice\"><input name=\"percent\" value=\"50\"><button>Progress invoice</button></form>", id, id, id, id, id, id);
 }

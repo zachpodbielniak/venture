@@ -419,6 +419,7 @@ event(VentureQuoteService *self, VentureEntity *q, const gchar *kind, VentureEnt
 static gboolean
 handoff(VentureQuoteService *self, VentureEntity *q, GDateTime *now, const VentureActor *actor, GError **error)
 {
+	g_autofree gchar *mode = NULL;
 	g_autoptr(VentureEntity) invoice = VENTURE_ENTITY(venture_invoice_new());
 	g_autoptr(GPtrArray) lines = NULL;
 	g_autofree gchar *number = NULL;
@@ -427,6 +428,9 @@ handoff(VentureQuoteService *self, VentureEntity *q, GDateTime *now, const Ventu
 	g_autoptr(GDateTime) due = NULL;
 	gint64 org = venture_entity_get_organization_id(q);
 	guint i;
+	g_object_get(q, "billing-mode", &mode, NULL);
+	if (g_strcmp0(mode, "progress") == 0)
+		return TRUE;
 	venture_entity_set_organization_id(invoice, org);
 	g_object_get(q, "number", &number, "terms", &terms, "valid-until", &due, NULL);
 	invoice_number = g_strdup_printf("QUOTE-%s", number);

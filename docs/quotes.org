@@ -53,6 +53,8 @@ they are being saved.
 - =decline= requires a reason. =venture_quote_service_sweep()= expires sent
   quotes whose validity elapsed, within one exact organization.
 
+A quote with =billing-mode=progress= is accepted without issuing the full invoice; progress slices are billed through =VentureProgressService=.
+
 The invoice number is =QUOTE-= followed by the quote number. Existing
 invoice-number conflicts are errors and roll back acceptance. Invoice lines
 now declare discount and tax percentages; existing lines default to zero.

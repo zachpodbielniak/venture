@@ -54,6 +54,8 @@ static const VentureFieldDecl quote_fields[] = {
 	VENTURE_FIELD("notes", "Notes", NULL, VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("acceptance-token", "Acceptance token", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
 	VENTURE_FIELD_REF("invoice-id", "Invoice", NULL, "invoice", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("billing-mode", "Billing mode", "full (default) or progress",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("subtotal", "Subtotal", NULL),
 	VENTURE_FIELD_MONEY("discount", "Discount", NULL),
 	VENTURE_FIELD_MONEY("tax", "Tax", NULL),
