@@ -1086,6 +1086,24 @@ push_cash_entry(Books *books, gint64 account_id, GDateTime *date, const gchar *s
 	return TRUE;
 }
 
+
+static gboolean
+add_money_local(VentureMoney **sum, const VentureMoney *value, GError **error)
+{
+	VentureMoney *next;
+	if (*sum == NULL)
+	{
+		*sum = venture_money_copy((VentureMoney *)value);
+		return TRUE;
+	}
+	next = venture_money_add(*sum, value, error);
+	if (next == NULL)
+		return FALSE;
+	venture_money_free(*sum);
+	*sum = next;
+	return TRUE;
+}
+
 static gint64
 bill_expense_account(Books *books, VentureDatabase *db, VentureEntity *allocation, GError **error)
 {
@@ -1173,7 +1191,11 @@ apply_cash_basis(Books *books, VentureDatabase *db, gint64 org, GError **error)
 		g_autoptr(VentureMoney) tax_share = NULL;
 		gint64 invoice_id = 0;
 		guint j;
-		g_object_get(allocation, "date", &date, "amount", &amount, "invoice-id", &invoice_id, NULL);
+		gint64 payment_id = 0;
+		g_object_get(allocation, "date", &date, "amount", &amount, "invoice-id", &invoice_id,
+			"payment-id", &payment_id, NULL);
+		if (payment_id <= 0)
+			continue;
 		if (date == NULL || g_date_time_compare(date, books->end) >= 0)
 			continue;
 		events = venture_query_new(VENTURE_TYPE_INVOICE_EVENT);
@@ -1233,10 +1255,142 @@ apply_cash_basis(Books *books, VentureDatabase *db, gint64 org, GError **error)
 			bill_expense = bill_expense_account(books, db, row, error);
 			if (bill_expense < 0)
 				return FALSE;
-			if (!push_cash_entry(books, bill_expense, date, "bill_payment_allocation",
-				venture_entity_get_id(row), VENTURE_LEDGER_SIDE_DEBIT, amount, error) ||
-				!push_cash_entry(books, ap, date, "bill_payment_allocation",
-				venture_entity_get_id(row), VENTURE_LEDGER_SIDE_CREDIT, amount, error))
+			{
+				g_autoptr(VentureQuery) lines_q = NULL;
+				g_autoptr(GPtrArray) lines = NULL;
+				g_autoptr(VentureMoney) levy = NULL;
+				g_autoptr(VentureMoney) total = NULL;
+				g_autoptr(VentureMoney) tax_share = NULL;
+				g_autoptr(VentureMoney) expense_share = NULL;
+				gint64 bill_id = 0;
+				gint64 recoverable = code_account(books, "1300");
+				guint j;
+				g_object_get(row, "bill-id", &bill_id, NULL);
+				levy = venture_money_new_zero(venture_money_get_currency(amount));
+				total = venture_money_copy(amount);
+				if (bill_id > 0)
+				{
+					lines_q = venture_query_new(VENTURE_TYPE_VENDOR_BILL_LINE);
+					venture_query_set_limit(lines_q, 0);
+					if (venture_query_add_filter_int(lines_q, "bill-id", VENTURE_FILTER_OP_EQ, bill_id, NULL))
+						lines = venture_database_find(db, lines_q, error);
+					if (lines == NULL)
+						return FALSE;
+					g_clear_pointer(&total, venture_money_free);
+					total = venture_money_new_zero(venture_money_get_currency(amount));
+					for (j = 0; j < lines->len; j++)
+					{
+						VentureEntity *line = g_ptr_array_index(lines, j);
+						g_autoptr(VentureMoney) line_tax = NULL;
+						g_autoptr(VentureMoney) line_total = venture_vendor_bill_line_get_amount(
+							VENTURE_VENDOR_BILL_LINE(line), error);
+						gint64 tax_code_id = 0;
+						gboolean rec = FALSE;
+						if (line_total == NULL)
+							return FALSE;
+						if (!add_money_local(&total, line_total, error))
+							return FALSE;
+						g_object_get(line, "tax-amount", &line_tax, "tax-code-id", &tax_code_id, NULL);
+						if (tax_code_id > 0)
+						{
+							g_autoptr(VentureEntity) code = venture_database_get(db,
+								VENTURE_TYPE_TAX_CODE, tax_code_id, error);
+							if (code == NULL)
+								return FALSE;
+							g_object_get(code, "recoverable", &rec, NULL);
+						}
+						if (rec && line_tax != NULL && !add_money_local(&levy, line_tax, error))
+							return FALSE;
+					}
+				}
+				if (levy != NULL && total != NULL && !venture_money_is_zero(levy) &&
+					!venture_money_is_zero(total) && recoverable != 0)
+					tax_share = venture_money_multiply_rational(amount, venture_money_get_amount(levy),
+						venture_money_get_amount(total), error);
+				else
+					tax_share = venture_money_new_zero(venture_money_get_currency(amount));
+				if (tax_share == NULL)
+					return FALSE;
+				expense_share = venture_money_subtract(amount, tax_share, error);
+				if (expense_share == NULL)
+					return FALSE;
+				if (!push_cash_entry(books, bill_expense, date, "bill_payment_allocation",
+					venture_entity_get_id(row), VENTURE_LEDGER_SIDE_DEBIT, expense_share, error) ||
+					!push_cash_entry(books, recoverable != 0 ? recoverable : bill_expense, date,
+						"bill_payment_allocation", venture_entity_get_id(row),
+						VENTURE_LEDGER_SIDE_DEBIT, tax_share, error) ||
+					!push_cash_entry(books, ap, date, "bill_payment_allocation",
+					venture_entity_get_id(row), VENTURE_LEDGER_SIDE_CREDIT, amount, error))
+					return FALSE;
+			}
+		}
+	}
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "refund") != G_TYPE_INVALID)
+	{
+		g_autoptr(VentureQuery) refunds = venture_query_new(VENTURE_TYPE_REFUND);
+		g_autoptr(GPtrArray) refund_rows = NULL;
+		venture_query_set_organization(refunds, org);
+		venture_query_set_limit(refunds, 0);
+		refund_rows = venture_database_find(db, refunds, error);
+		if (refund_rows == NULL)
+			return FALSE;
+		for (i = 0; i < refund_rows->len; i++)
+		{
+			VentureEntity *refund = g_ptr_array_index(refund_rows, i);
+			g_autoptr(GDateTime) date = NULL;
+			g_autoptr(VentureMoney) amount = NULL;
+			g_autoptr(VentureEntity) allocation = NULL;
+			g_autoptr(VentureQuery) events = NULL;
+			g_autoptr(GPtrArray) found = NULL;
+			g_autoptr(VentureMoney) levy = NULL;
+			g_autoptr(VentureMoney) total = NULL;
+			g_autoptr(VentureMoney) tax_share = NULL;
+			g_autoptr(VentureMoney) income_share = NULL;
+			gint64 allocation_id = 0, invoice_id = 0, payment_id = 0;
+			guint j;
+			g_object_get(refund, "date", &date, "amount", &amount, "allocation-id", &allocation_id, NULL);
+			if (date == NULL || g_date_time_compare(date, books->end) >= 0 || allocation_id <= 0)
+				continue;
+			allocation = venture_database_get(db, VENTURE_TYPE_PAYMENT_ALLOCATION, allocation_id, error);
+			if (allocation == NULL)
+				return FALSE;
+			g_object_get(allocation, "invoice-id", &invoice_id, "payment-id", &payment_id, NULL);
+			if (payment_id <= 0 || invoice_id <= 0)
+				continue;
+			events = venture_query_new(VENTURE_TYPE_INVOICE_EVENT);
+			venture_query_set_limit(events, 0);
+			if (!venture_query_add_filter_int(events, "invoice-id", VENTURE_FILTER_OP_EQ, invoice_id, NULL))
+				return FALSE;
+			found = venture_database_find(db, events, error);
+			if (found == NULL)
+				return FALSE;
+			for (j = 0; j < found->len; j++)
+			{
+				g_autofree gchar *kind = NULL;
+				g_object_get(g_ptr_array_index(found, j), "kind", &kind, "tax-amount", &levy, "amount", &total, NULL);
+				if (g_strcmp0(kind, "issue") == 0)
+					break;
+				g_clear_pointer(&levy, venture_money_free);
+				g_clear_pointer(&total, venture_money_free);
+			}
+			if (total == NULL || venture_money_is_zero(total) || amount == NULL)
+				continue;
+			if (levy != NULL && !venture_money_is_zero(levy))
+				tax_share = venture_money_multiply_rational(amount, venture_money_get_amount(levy),
+					venture_money_get_amount(total), error);
+			else
+				tax_share = venture_money_new_zero(venture_money_get_currency(amount));
+			if (tax_share == NULL)
+				return FALSE;
+			income_share = venture_money_subtract(amount, tax_share, error);
+			if (income_share == NULL)
+				return FALSE;
+			if (!push_cash_entry(books, income, date, "refund",
+				venture_entity_get_id(refund), VENTURE_LEDGER_SIDE_DEBIT, income_share, error) ||
+				!push_cash_entry(books, tax, date, "refund",
+				venture_entity_get_id(refund), VENTURE_LEDGER_SIDE_DEBIT, tax_share, error) ||
+				!push_cash_entry(books, ar, date, "refund",
+				venture_entity_get_id(refund), VENTURE_LEDGER_SIDE_CREDIT, amount, error))
 				return FALSE;
 		}
 	}
