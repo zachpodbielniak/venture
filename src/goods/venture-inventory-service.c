@@ -292,7 +292,9 @@ consume_fifo(VentureInventoryService *self, gint64 item_id, gint64 quantity, con
 		if (unit == NULL)
 			return refuse(error, "a cost layer has no unit cost");
 		slice = venture_money_multiply_int(unit, take, error);
-		if (slice == NULL || !add_money(cogs, slice, error))
+		if (slice == NULL)
+			return FALSE;
+		if (cogs != NULL && !add_money(cogs, slice, error))
 			return FALSE;
 		g_object_set(layer, "remaining-qty", remaining - take, NULL);
 		if (!save_owned(self, layer, actor, error))
@@ -301,8 +303,6 @@ consume_fifo(VentureInventoryService *self, gint64 item_id, gint64 quantity, con
 	}
 	if (need > 0 && !item_allows_negative(self, item_id))
 		return refuse(error, "negative stock is refused");
-	if (cogs != NULL && *cogs == NULL)
-		*cogs = venture_money_new_zero("USD");
 	return TRUE;
 }
 

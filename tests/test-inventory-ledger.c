@@ -251,6 +251,23 @@ test_transfer_and_reorder(Fixture *f, gconstpointer unused)
 	g_assert_cmpuint(venture_report_result_get_row_count(result), >=, 1);
 }
 
+
+static void
+test_restore_without_receipt(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) date = venture_time_from_string("2026-04-02", NULL);
+	g_autoptr(VentureMoney) unit = venture_money_new_for_currency(500, "USD");
+	gint64 line = po_line(f, 2, "PO-E", "5 USD");
+	(void)unused;
+	g_assert_true(venture_purchasing_service_receive_line(venture_purchasing_service_get(f->db),
+		line, 2, date, NULL, &error));
+	g_assert_true(venture_inventory_service_restore(venture_inventory_service_get(f->db),
+		f->item, 1, unit, date, 0, "return", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_inventory_service_on_hand(venture_inventory_service_get(f->db), f->item, NULL, &error), ==, 1);
+}
+
 static void
 test_autojournal_no_double(Fixture *f, gconstpointer unused)
 {
@@ -277,5 +294,6 @@ main(int argc, char **argv)
 	g_test_add("/inventory-ledger/negative", Fixture, NULL, setup, test_negative_refused, teardown);
 	g_test_add("/inventory-ledger/transfer-reorder", Fixture, NULL, setup, test_transfer_and_reorder, teardown);
 	g_test_add("/inventory-ledger/autojournal", Fixture, NULL, setup, test_autojournal_no_double, teardown);
+	g_test_add("/inventory-ledger/restore-without-receipt", Fixture, NULL, setup, test_restore_without_receipt, teardown);
 	return g_test_run();
 }
