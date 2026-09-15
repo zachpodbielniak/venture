@@ -89,8 +89,17 @@ seed_books(Fixture *f)
 	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(iline), NULL, &error));
 	{
 		g_autoptr(GDateTime) now = venture_time_now();
+		g_autoptr(VenturePayment) payment = venture_payment_new();
 		g_assert_true(venture_settlement_service_transition(venture_settlement_service_get(f->db),
 			invoice, "sent", now, NULL, &error));
+		g_assert_no_error(error);
+		venture_entity_set_organization_id(VENTURE_ENTITY(payment), f->org);
+		g_object_set(payment, "customer-id", venture_entity_get_id(VENTURE_ENTITY(customer)),
+			"date", now, "invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)),
+			"method", "transfer", "reference", "wire-1", NULL);
+		g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(payment), "amount", "50 USD", NULL));
+		g_assert_true(venture_settlement_service_apply_payment(venture_settlement_service_get(f->db),
+			payment, NULL, NULL, &error));
 		g_assert_no_error(error);
 	}
 }
@@ -163,8 +172,13 @@ test_export_restore_empty_org(Fixture *f, gconstpointer data)
 		rows = venture_database_find(f->db, q, NULL);
 		g_assert_cmpuint(rows->len, >=, 1);
 		g_object_get(g_ptr_array_index(rows, 0), "status", &status, NULL);
-		g_assert_cmpint(status, ==, VENTURE_INVOICE_STATUS_SENT);
+		g_assert_true(status == VENTURE_INVOICE_STATUS_SENT || status == VENTURE_INVOICE_STATUS_PAID);
 	}
+	g_assert_cmpint(count_type(f, dest, VENTURE_TYPE_PAYMENT), >=, 1);
+	g_assert_cmpint(count_type(f, dest, VENTURE_TYPE_PAYMENT_ALLOCATION), >=, 1);
+	g_assert_cmpint(count_type(f, dest, VENTURE_TYPE_INVOICE_EVENT), >=, 1);
+	g_assert_nonnull(strstr(payload, "\"payments\""));
+	g_assert_nonnull(strstr(payload, "\"allocations\""));
 	g_assert_false(venture_backup_service_restore(venture_backup_service_get(f->db),
 		dest, payload, &actor, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
