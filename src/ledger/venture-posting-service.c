@@ -614,6 +614,24 @@ post_internal(VenturePostingService *self, VentureJournal *input, GPtrArray *inp
 
 	if (!ledger_enabled(error) || NULL == db)
 		return NULL;
+	{
+		g_autoptr(GString) material = g_string_new("post");
+		g_autofree gchar *digest = NULL;
+		guint n;
+		if (input_lines != NULL)
+			for (n = 0; n < input_lines->len; n++)
+			{
+				g_autoptr(VentureMoney) amount = NULL;
+				gint64 account_id = 0;
+				gint side = 0;
+				g_object_get(g_ptr_array_index(input_lines, n), "account-id", &account_id,
+					"side", &side, "amount", &amount, NULL);
+				g_string_append_printf(material, ":%" G_GINT64_FORMAT ":%d:%s",
+					account_id, side, amount ? venture_money_to_string(amount) : "0");
+			}
+		digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256, material->str, -1);
+		g_object_set_data_full(G_OBJECT(input), "venture-proposal-digest", g_steal_pointer(&digest), g_free);
+	}
 	if (!venture_accounting_approval_allow(db, "post", VENTURE_ENTITY(input), actor, error))
 		return NULL;
 	if (!venture_database_begin(db, error))
@@ -708,6 +726,8 @@ post_internal(VenturePostingService *self, VentureJournal *input, GPtrArray *inp
 	g_ptr_array_add(self->pending, copy_record(VENTURE_ENTITY(journal)));
 	g_hash_table_remove(self->active_journals, active_uuid);
 	if (!venture_database_commit(db, error))
+		return NULL;
+	if (!venture_accounting_approval_consume(db, actor, error))
 		return NULL;
 	return g_steal_pointer(&journal);
 fail:

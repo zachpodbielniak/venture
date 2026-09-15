@@ -1181,6 +1181,19 @@ venture_payables_service_apply_payment(VenturePayablesService *self,
 	gboolean ok;
 	guint i;
 
+	{
+		gint64 bill_id = 0;
+		g_autoptr(VentureEntity) bill = NULL;
+		g_object_get(payment, "bill-id", &bill_id, NULL);
+		if (bill_id > 0)
+		{
+			bill = venture_database_get(self->database, VENTURE_TYPE_VENDOR_BILL, bill_id, error);
+			if (bill == NULL)
+				return FALSE;
+			if (!venture_accounting_approval_allow(self->database, "pay", bill, actor, error))
+				return FALSE;
+		}
+	}
 	if (!begin_operation(self, "bill_payment", error))
 		return FALSE;
 	original = snapshot(VENTURE_ENTITY(payment));
@@ -1197,6 +1210,8 @@ venture_payables_service_apply_payment(VenturePayablesService *self,
 		}
 	ok = perform_payment(self, VENTURE_ENTITY(payment), allocations, actor, error);
 	ok = finish_operation(self, ok, error);
+	if (ok)
+		ok = venture_accounting_approval_consume(self->database, actor, error);
 	if (!ok)
 	{
 		venture_entity_copy_properties_from(VENTURE_ENTITY(payment), original, FALSE);

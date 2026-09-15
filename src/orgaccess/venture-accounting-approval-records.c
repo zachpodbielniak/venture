@@ -23,7 +23,9 @@ static const VentureFieldDecl approval_fields[] = {
 	VENTURE_FIELD("approver", "Approver", "Second actor who applied it",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("state", "State", "pending or applied", VENTURE_FIELD_KIND_STRING,
-		VENTURE_COLUMN_FLAG_INDEXED)
+		VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("proposal-digest", "Proposal digest",
+		"SHA-256 of the intended write so an approval cannot move to another document",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED)
 };
 VENTURE_DEFINE_ENTITY(VentureAccountingApproval, venture_accounting_approval, approval_fields)
-

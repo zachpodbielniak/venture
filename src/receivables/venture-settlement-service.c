@@ -1540,6 +1540,19 @@ venture_settlement_service_apply_payment(VentureSettlementService *self,
 	gboolean ok;
 	guint i;
 
+	{
+		gint64 invoice_id = 0;
+		g_autoptr(VentureEntity) invoice = NULL;
+		g_object_get(payment, "invoice-id", &invoice_id, NULL);
+		if (invoice_id > 0)
+		{
+			invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, invoice_id, error);
+			if (invoice == NULL)
+				return FALSE;
+			if (!venture_accounting_approval_allow(self->database, "pay", invoice, actor, error))
+				return FALSE;
+		}
+	}
 	if (!begin_operation(self, "payment", error))
 		return FALSE;
 	original = snapshot(VENTURE_ENTITY(payment));
@@ -1556,6 +1569,8 @@ venture_settlement_service_apply_payment(VentureSettlementService *self,
 		}
 	ok = perform_payment(self, VENTURE_ENTITY(payment), allocations, actor, error);
 	ok = finish_operation(self, ok, error);
+	if (ok)
+		ok = venture_accounting_approval_consume(self->database, actor, error);
 	if (!ok)
 	{
 		venture_entity_copy_properties_from(VENTURE_ENTITY(payment), original, FALSE);
@@ -1916,7 +1931,10 @@ venture_settlement_service_settle_invoice(VentureSettlementService *self,
 		venture_entity_set_organization_id(VENTURE_ENTITY(payment), venture_entity_get_organization_id(invoice));
 		ok = perform_payment(self, VENTURE_ENTITY(payment), NULL, actor, error);
 	}
-	return finish_operation(self, ok, error);
+	ok = finish_operation(self, ok, error);
+	if (ok)
+		ok = venture_accounting_approval_consume(self->database, actor, error);
+	return ok;
 }
 
 VentureMoney *
