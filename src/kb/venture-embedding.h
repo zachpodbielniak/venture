@@ -122,7 +122,7 @@ venture_embedder_embed(
 );
 
 /**
- * venture_embedder_embed_many:
+ * venture_embedder_embed_many: (skip)
  * @self: an embedder
  * @texts: (array zero-terminated=1): the passages
  * @out_dims: (out): where to put the vector length shared by every result
@@ -135,6 +135,10 @@ venture_embedder_embed(
  * the request, which matters because the results are paired with the inputs
  * positionally: a dropped input would attach every later vector to the wrong
  * passage, and no later check could tell.
+ *
+ * This C bulk interface returns raw float pointers in a GPtrArray, with the
+ * shared row length returned separately. GIR cannot represent that nested
+ * array shape; bindings use venture_embedder_embed() for a typed float array.
  *
  * Returns: (transfer full) (nullable) (element-type gpointer): one
  *   #gfloat array per input, in order, or %NULL

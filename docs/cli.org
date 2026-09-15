@@ -73,6 +73,9 @@ venturectl factory                       # the software factory at a glance
 venturectl release changelog ID          # draft its changelog; --replace
 venturectl invoice checkout ID           # hosted Stripe payment URL; editor role
 venturectl release publish ID            # cut it on the forge; --prerelease
+venturectl recurring run [--as-of DATE] [--dry-run]
+venturectl collections run [--as-of DATE]
+venturectl batch invoice|expense [--dry-run]
 venturectl inbox [--all]                 # what you have been told
 venturectl inbox read ID|all             # mark it read
 venturectl watch TYPE ID                 # follow a record; unwatch to stop
@@ -119,6 +122,8 @@ venturectl dashboard export factory > factory.json
 #+end_src
 
 * Periods
+
+Ledger reports accept =basis=cash= or =basis=accrual= and =dimension=VALUE= alongside the period; these options pass through to the same report implementation used by the web page.
 
 Anywhere a period is accepted — a =report= argument, a =period== filter on a
 list — the full grammar is:
@@ -316,6 +321,18 @@ setting a bill's financial status are refused.
 =report vendor_statement PERIOD vendor_id=ID= reads the supplier's dated
 statement. Both accept =organization_id=, =currency= and =as_of=.
 See [[file:payables.org][vendor payables]] for credits and cash-report projections.
+
+=bill pay-bulk 1,2,3 adapter=transfer= pays selected approved bills through
+the payables adapters. =close open|run|sign|complete|reopen|pack= is the
+accountant close workspace. =capture ingest|convert|reject= files receipts
+and supplier invoices. =accounting= lists the daily books next actions.
+See [[file:close.org][close]], [[file:capture.org][capture]] and
+[[file:accounting.org][accounting home]].
+
+=venturectl tax-filing prepare|review|submit|acknowledge|amend= prepares a
+jurisdiction return pack. =contractor-tax prepare|review|approve|export=
+builds a 1099-NEC pack from paid bills. See [[file:tax-filing.org][tax
+filing]] and [[file:contractor-tax.org][contractor 1099]].
 * Banking actions
 
 =venturectl bank ACTION ID [JSON|@FILE]= calls the banking service over REST.

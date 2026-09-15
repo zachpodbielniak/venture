@@ -8,6 +8,7 @@
  * @connection: exclusively held migration connection
  * @sql: the complete embedded SQL batch
  * @error: (out) (optional): failure
+ *
  * Returns: TRUE if all statements succeeded, without committing
  */
 gboolean venture_migrations_execute_sql(OrmConnection *connection,
@@ -17,6 +18,7 @@ gboolean venture_migrations_execute_sql(OrmConnection *connection,
  * @connection: idle connection
  * @backend: the configured database backend
  * @error: (out) (optional): failure
+ *
  * Returns: (transfer full) (nullable): runner for the complete embedded history
  */
 OrmMigrator *venture_migrations_new(OrmConnection *connection,

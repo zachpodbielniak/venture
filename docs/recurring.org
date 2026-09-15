@@ -1,0 +1,90 @@
+#+title: Recurring documents, collections and batch entry
+#+description: Reusable schedules, overdue reminders and all-or-nothing financial imports
+
+* Recurring invoices, bills, expenses and journals
+
+The =recurring= module requires =invoicing=, =payables=, =ledger=, =periods=,
+=receivables= and =mail=. Its records are field tables: =recurring_schedule=,
+=recurring_occurrence=, =collection_policy=, =collection_step=,
+=collection_case=, =collection_notice= and =financial_batch=.
+
+A schedule names a document kind, frequency, IANA timezone, start and optional
+end, whether to auto-issue/approve/post, and a JSON template. Pause and resume
+are service actions. =next_run_at= is a preview of the next calendar day,
+computed from =start_at= plus =cycle_index= so January 31 stays the 31st after
+February, including 29 February in a leap year.
+
+Generation uses the live services: invoices go through
+=VentureSettlementService=, bills through =VenturePayablesService=, expenses
+through ordinary save (and therefore autojournal), journals through
+=VenturePostingService=. Invoices and bills are never written as raw journals.
+
+Each occurrence has a durable =occurrence_key= of =schedule-id:YYYY-MM-DD=.
+Repeating a sweep creates nothing. A closed fiscal period records
+=skipped_closed= and continues. A failed attempt is retained on the occurrence
+and the schedule. Template edits apply only to later occurrences.
+
+#+begin_src sh
+venturectl create recurring_schedule name=Hosting kind=invoice frequency=monthly \
+  timezone=UTC auto_post=true start_at=2026-01-15 \
+  'template={"company_id":1,"lines":[{"description":"Hosting","quantity":1,"unit_price":"40 USD"}]}'
+venturectl recurring run --as-of 2026-03-15 --dry-run
+venturectl recurring run --as-of 2026-03-15
+venturectl act recurring_schedule ID pause
+#+end_src
+
+Schedule the CLI or the =recurring_run= automation handler. There is no extra
+database worker.
+
+* Invoice collections and statements
+
+A =collection_policy= holds reminder steps at day offsets (negative is before
+due) and an optional monthly =statement_day=. The sweep measures overdue days
+from the frozen due date, skips paid, void, credited, disputed and held cases,
+and enqueues durable =mail_message= rows with an occurrence key so a restart or
+a concurrent settlement cannot send the same notice twice. Delivery failures
+stay on the notice. Customer statements use the existing =customer_statement=
+report for content.
+
+=collections_worklist= lists overdue invoices with owner, promised payment date
+and dispute notes. Follow-up is the generated case action plus another notice
+key for that day.
+
+#+begin_src sh
+venturectl create collection_policy name=Standard active=true statement_day=1
+venturectl create collection_step policy_id=1 day_offset=7 action=reminder active=true
+venturectl collections run --as-of 2026-01-17
+venturectl report collections_worklist
+#+end_src
+
+* Batch financial documents
+
+=venture_recurring_service_batch= parses CSV or JSON, validates every document,
+then creates invoices or expenses in one transaction. Any refusal rolls the
+batch back. =post=true= issues invoices only after every draft validates.
+Duplicate invoice numbers and expense =external_id= values, in the payload or
+already stored, are refused. Dry-run runs the same transaction and rolls it
+back.
+
+CSV invoice rows that share =number= become one document with several lines.
+JSON uses a =documents= array.
+
+#+begin_src sh
+venturectl batch expense format=csv "payload=$(cat expenses.csv)" --dry-run
+venturectl act invoice 0 batch_create format=json post=true 'payload={...}'
+#+end_src
+
+A =financial_batch= record stores a reusable payload. Its =apply= action runs
+the same service.
+
+Before-due reminder steps use the same threshold as overdue steps: =-3= becomes eligible three days before the due date, never earlier. Draft invoices are excluded from collections. Monthly customer deduplication occurs only after an eligible open invoice is found, so a paid invoice cannot hide another invoice that remains due.
+
+Saved =financial_batch= actions use their record's organization, retained payload, format and =auto_post= setting unless an explicit action parameter overrides the latter settings. Direct batch API calls use the default organization. An explicit template organization must match that target. Batch JSON requires object entries, and explicit invoice due dates are preserved.
+
+Schedule calendar arithmetic uses the declared IANA timezone, including daylight-saving transitions, so a recurring local 09:00 remains 09:00 across a UTC-offset change. Invalid timezones and out-of-range cycle indexes are refused. CSV parsing rejects unterminated quotes (including unsupported multiline fields), duplicate/empty headers and row-width mismatches. Rows grouped under one invoice number must agree on every header field.
+
+Statement messages contain the canonical customer statement rendered as org text for the selected invoice currency and sweep cutoff; they no longer send an empty cover letter. Registered actions receive reporting context through a weak service reference, while explicit callers may supply their own context.
+
+The =batch invoice|expense= convenience command accepts action arguments as =field=value=, including =format= and =payload=. It defaults to posting invoices; use =post=false= to keep drafts. The =--dry-run= flag validates and rolls back the whole batch. Shell-quote the payload so CSV newlines or JSON spaces remain one argument.
+
+When a recurring sweep omits =as_of=, accounting consent binds the effective UTC day and each active schedule's local calendar day. Repeating the command later within those same days can approve it; crossing either relevant midnight requires a new proposal. Explicit timestamps retain their exact meaning. After acquiring approval, the sweep reloads schedules inside the protected transaction before generating documents.

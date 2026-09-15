@@ -572,3 +572,19 @@ See [[file:actions.org][record actions]] for registration and signals.
 The ledger also exposes =POST /api/v1/journals/post= (header plus =lines=),
 including =?stage=1=. It dispatches the registered type-level
 =create_and_post= action. See [[file:ledger.org][posting from the outside]].
+
+* Recurring documents, collections and batch
+
+Generated actions on the =recurring= records:
+
+| POST endpoint | Meaning |
+|---------------+---------|
+| =/api/v1/recurring_schedule/:id/actions/pause= | Pause generation |
+| =/api/v1/recurring_schedule/:id/actions/resume= | Resume generation |
+| =/api/v1/recurring_schedule/0/actions/run= | Sweep due occurrences; =as_of=, =dry_run= |
+| =/api/v1/collection_policy/0/actions/run= | Queue overdue reminders; =as_of= |
+| =/api/v1/invoice/0/actions/batch_create= | All-or-nothing invoice import |
+| =/api/v1/expense/0/actions/batch_create= | All-or-nothing expense import |
+| =/api/v1/financial_batch/:id/actions/apply= | Apply a stored payload |
+
+See [[file:recurring.org][recurring documents]].

@@ -9,6 +9,7 @@ struct _VentureMailOutbox {
 	VentureMailer *mailer;
 	VentureEntity *permit;
 	VentureEntity *user_permit;
+	VentureEntity *enqueue_permit;
 	gchar *attachment_root;
 	guint max_attempts;
 };
@@ -84,6 +85,7 @@ static gboolean snapshot_attachments(VentureMailOutbox *self, VentureEntity *ent
 static gboolean validate(VentureDatabase *db, VentureEntity *entity, VentureEntity *previous, gpointer data, GError **error)
 {
 	VentureMailOutbox *self = data;
+	g_autofree gchar *private_body = NULL;
 	g_autofree gchar *state = NULL;
 	g_autofree gchar *id = NULL;
 	g_autofree gchar *key = NULL;
@@ -93,6 +95,9 @@ static gboolean validate(VentureDatabase *db, VentureEntity *entity, VentureEnti
 	if (!enabled(self, venture_entity_get_organization_id(entity), error)) return FALSE;
 	if (permitted) return TRUE;
 	if (previous) return refuse(error, "Stored messages are immutable; use retry for a deliberate resend");
+	g_object_get(entity, "private-text-body", &private_body, NULL);
+	if (private_body && *private_body && self->enqueue_permit != entity)
+		return refuse(error, "Private delivery content requires the outbox enqueue service");
 	g_object_get(entity, "state", &state, "message-id", &id, "idempotency-key", &key, "attempts", &attempts, NULL);
 	if ((state && *state && strcmp(state, "queued")) || (id && *id) || attempts)
 		return refuse(error, "Delivery state is managed by the outbox");
@@ -194,7 +199,13 @@ VentureMailMessage *venture_mail_outbox_enqueue(VentureMailOutbox *self, Venture
 		return VENTURE_MAIL_MESSAGE(g_steal_pointer(&existing));
 	}
 	copy = VENTURE_MAIL_MESSAGE(venture_entity_duplicate(VENTURE_ENTITY(message)));
-	if (!venture_database_save(self->database, VENTURE_ENTITY(copy), actor, error)) goto fail;
+	/* Trust the private body only; all ordinary enqueue checks still run. */
+	self->enqueue_permit = VENTURE_ENTITY(copy);
+	if (!venture_database_save(self->database, VENTURE_ENTITY(copy), actor, error)) {
+		self->enqueue_permit = NULL;
+		goto fail;
+	}
+	self->enqueue_permit = NULL;
 	if (!venture_database_commit(self->database, error)) return NULL;
 	return g_steal_pointer(&copy);
 fail:

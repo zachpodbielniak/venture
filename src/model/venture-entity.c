@@ -830,6 +830,29 @@ venture_entity_real_get_field_specs(VentureEntity *self)
 
 /* --- Serialisation ------------------------------------------------------- */
 
+static gboolean
+attribute_shadows_secret(VentureEntity *self, const gchar *name)
+{
+	GParamSpec *property = g_object_class_find_property(G_OBJECT_GET_CLASS(self), name);
+	return property != NULL && (venture_entity_class_get_column_flags(VENTURE_ENTITY_GET_CLASS(self),
+		property->name) & VENTURE_COLUMN_FLAG_SENSITIVE) != 0;
+}
+
+static gboolean
+attributes_contain_secret(VentureEntity *self)
+{
+	VentureEntityPrivate *priv = venture_entity_get_instance_private(self);
+	GHashTableIter iter;
+	gpointer key;
+	if (priv->attributes == NULL)
+		return FALSE;
+	g_hash_table_iter_init(&iter, priv->attributes);
+	while (g_hash_table_iter_next(&iter, &key, NULL))
+		if (attribute_shadows_secret(self, key))
+			return TRUE;
+	return FALSE;
+}
+
 static JsonNode *
 venture_entity_serializable_to_json(
 	VentureSerializable	*serializable,
@@ -904,6 +927,9 @@ venture_entity_serializable_to_json(
 
 		for (iter = keys; NULL != iter; iter = iter->next)
 		{
+			/* Older colliding definitions may already have copied secrets. */
+			if (!include_sensitive && attribute_shadows_secret(self, iter->data))
+				continue;
 			json_builder_set_member_name(builder, iter->data);
 			json_builder_add_string_value(builder,
 				g_hash_table_lookup(priv->attributes, iter->data));
@@ -2290,7 +2316,9 @@ venture_entity_diff(
 		json_builder_set_member_name(builder, member);
 		json_builder_begin_object(builder);
 
-		if (0 != (flags & VENTURE_COLUMN_FLAG_SENSITIVE))
+		if (0 != (flags & VENTURE_COLUMN_FLAG_SENSITIVE) ||
+			(g_str_equal(properties[i]->name, "attributes") &&
+			(attributes_contain_secret(self) || attributes_contain_secret(other))))
 		{
 			/* The operator needs to know a password or token changed;
 			 * they do not need either value written into an audit log

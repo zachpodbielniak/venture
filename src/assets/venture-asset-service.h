@@ -54,6 +54,19 @@ VentureDeferralService *venture_deferral_service_new(VentureDatabase *database);
 gboolean venture_deferral_service_schedule(VentureDeferralService *self, VentureEntity *deferral,
  const VentureActor *actor, GError **error);
 /**
+ * venture_deferral_service_cancel_invoice:
+ * @self: service
+ * @invoice_id: source invoice being voided
+ * @date: reversal date
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): failure details
+ *
+ * Stops remaining recognition and reverses posted recognition atomically.
+ * Returns: %TRUE on success
+ */
+gboolean venture_deferral_service_cancel_invoice(VentureDeferralService *self,
+ gint64 invoice_id, GDateTime *date, const VentureActor *actor, GError **error);
+/**
  * venture_asset_service_run_period:
  * @self: service
  * @period: YYYY-MM
@@ -64,6 +77,19 @@ gboolean venture_deferral_service_schedule(VentureDeferralService *self, Venture
  * Returns: number of scheduled rows, or -1 on failure; one transaction per run
  */
 gint venture_asset_service_run_period(VentureAssetService *self, const gchar *period,
+ gint64 organization_id, gboolean dry_run, const VentureActor *actor, GError **error);
+/**
+ * venture_asset_service_run_tax_period:
+ * @self: the service or registry instance
+ * @period: reporting period
+ * @organization_id: target legal entity ID
+ * @dry_run: whether to calculate without applying writes
+ * @actor: (nullable): audit actor; NULL for internal service work
+ * @error: (out) (optional): return location for an error
+ *
+ * Returns: number processed, or -1 on failure
+ */
+gint venture_asset_service_run_tax_period(VentureAssetService *self, const gchar *period,
  gint64 organization_id, gboolean dry_run, const VentureActor *actor, GError **error);
 /**
  * venture_assets_check_removal:

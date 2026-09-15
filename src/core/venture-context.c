@@ -24,6 +24,8 @@ struct _VentureContext
 	VentureWorkService	*work;
 	VentureKbService	*kb;
 	VentureStripeService *stripe;
+	VentureBankFeedService *bankfeed;
+	VentureCommerceService *commerce;
 	VentureModuleRegistry	*modules;
 	VentureMailerRegistry *mailers;
 	VentureMailOutbox *mail_outbox;
@@ -63,6 +65,8 @@ venture_context_finalize(GObject *object)
 	g_clear_object(&self->work);
 	g_clear_object(&self->kb);
 	g_clear_object(&self->stripe);
+	g_clear_object(&self->bankfeed);
+	g_clear_object(&self->commerce);
 	g_clear_object(&self->modules);
 	g_clear_pointer(&self->timezone, g_time_zone_unref);
 	g_clear_object(&self->reconciliation_registry);
@@ -114,6 +118,8 @@ venture_context_new(
 	/* The cross-row checks a polymorphic link needs, on every writer. */
 	venture_record_link_install_validator(database);
 	venture_federation_install_validators(database);
+	/* Scheduled packs must validate through generic writers too. */
+	venture_report_pack_service_get(database);
 
 	/* And the ones a dashboard needs: a widget kind that exists, a
 	 * report that exists, one home page at a time. */
@@ -153,6 +159,8 @@ venture_context_new(
 	}
 
 	venture_report_registry_register_builtins(self->reports);
+	/* Registered collection actions need the same reports as explicit callers. */
+	venture_collection_service_set_context(venture_collection_service_get(self->database), self);
 
 	/*
 	 * Modules, resolved against this configuration and applied to the
@@ -180,6 +188,7 @@ venture_context_new(
 	                        G_CALLBACK(venture_context_on_modules_changed),
 	                        self, G_CONNECT_SWAPPED);
 	venture_period_service_install(self);
+	venture_close_service_install(self);
 
 	return self;
 }
@@ -552,6 +561,48 @@ venture_context_start_stripe(VentureContext *self, GError **error)
 	return TRUE;
 }
 
+VentureBankFeedService *
+venture_context_get_bankfeed_service(VentureContext *self)
+{
+	return venture_context_module_enabled(self, "bankfeed") ? self->bankfeed : NULL;
+}
+void
+venture_context_set_bankfeed_service(VentureContext *self, VentureBankFeedService *service)
+{
+	g_set_object(&self->bankfeed, service);
+}
+gboolean
+venture_context_start_bankfeed(VentureContext *self, GError **error)
+{
+	g_autoptr(VentureBankFeedService) provider = NULL;
+	if (!venture_context_module_enabled(self, "bankfeed")) return TRUE;
+	provider = venture_bankfeed_service_new(self->database,
+		venture_context_get_default_organization_id(self), NULL, error);
+	if (!provider) return FALSE;
+	venture_context_set_bankfeed_service(self, provider);
+	return TRUE;
+}
+VentureCommerceService *
+venture_context_get_commerce_service(VentureContext *self)
+{
+	return venture_context_module_enabled(self, "commerce") ? self->commerce : NULL;
+}
+void
+venture_context_set_commerce_service(VentureContext *self, VentureCommerceService *service)
+{
+	g_set_object(&self->commerce, service);
+}
+gboolean
+venture_context_start_commerce(VentureContext *self, GError **error)
+{
+	g_autoptr(VentureCommerceService) provider = NULL;
+	if (!venture_context_module_enabled(self, "commerce")) return TRUE;
+	provider = venture_commerce_service_new(self->database,
+		venture_context_get_default_organization_id(self), NULL, error);
+	if (!provider) return FALSE;
+	venture_context_set_commerce_service(self, provider);
+	return TRUE;
+}
 VentureMailer *venture_context_get_mailer(VentureContext *self)
 {
 	if (!venture_context_module_enabled(self, "mail")) return NULL;

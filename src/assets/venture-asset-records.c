@@ -18,6 +18,22 @@ venture_asset_method_get_type(void)
 	return type_id;
 }
 GType
+venture_asset_convention_get_type(void)
+{
+	static gsize type_id = 0;
+	if (g_once_init_enter(&type_id))
+	{
+		static const GEnumValue values[] = {
+			{ VENTURE_ASSET_CONVENTION_FULL_MONTH, "VENTURE_ASSET_CONVENTION_FULL_MONTH", "full_month" },
+			{ VENTURE_ASSET_CONVENTION_HALF_YEAR, "VENTURE_ASSET_CONVENTION_HALF_YEAR", "half_year" },
+			{ 0, NULL, NULL }
+		};
+		GType id = g_enum_register_static("VentureAssetConvention", values);
+		g_once_init_leave(&type_id, id);
+	}
+	return type_id;
+}
+GType
 venture_asset_status_get_type(void)
 {
 	static gsize type_id = 0;
@@ -77,6 +93,7 @@ venture_deferral_status_get_type(void)
 		static const GEnumValue values[] = {
 			{ VENTURE_DEFERRAL_STATUS_ACTIVE, "VENTURE_DEFERRAL_STATUS_ACTIVE", "active" },
 			{ VENTURE_DEFERRAL_STATUS_COMPLETE, "VENTURE_DEFERRAL_STATUS_COMPLETE", "complete" },
+			{ VENTURE_DEFERRAL_STATUS_CANCELLED, "VENTURE_DEFERRAL_STATUS_CANCELLED", "cancelled" },
 			{ 0, NULL, NULL }
 		};
 		GType id = g_enum_register_static("VentureDeferralStatus", values);
@@ -98,6 +115,13 @@ static const VentureFieldDecl fixed_asset_fields[] = {
 	VENTURE_FIELD_MONEY("salvage-value", "Salvage Value", NULL),
 	VENTURE_FIELD("useful-life-months", "Useful Life Months", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_ENUM("method", "Method", NULL, venture_asset_method_get_type, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("book-convention", "Book convention", "full_month or half_year",
+		venture_asset_convention_get_type, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("tax-useful-life-months", "Tax useful life months", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("tax-method", "Tax method", "Independent of book method; none skips the tax schedule",
+		venture_asset_method_get_type, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("tax-convention", "Tax convention", "full_month or half_year",
+		venture_asset_convention_get_type, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("asset-account-id", "Asset Account Id", NULL, "account", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("accumulated-depreciation-account-id", "Accumulated Depreciation Account Id", NULL, "account", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("depreciation-expense-account-id", "Depreciation Expense Account Id", NULL, "account", VENTURE_COLUMN_FLAG_NONE),
@@ -143,3 +167,11 @@ static const VentureFieldDecl deferral_entry_fields[] = {
 	VENTURE_FIELD_ENUM("state", "State", NULL, venture_schedule_state_get_type, VENTURE_COLUMN_FLAG_NONE),
 };
 VENTURE_DEFINE_ENTITY(VentureDeferralEntry, venture_deferral_entry, deferral_entry_fields)
+static const VentureFieldDecl tax_depreciation_entry_fields[] = {
+	VENTURE_FIELD_REF("asset-id", "Asset Id", NULL, "fixed_asset", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("period", "Period", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("amount", "Amount", NULL),
+	VENTURE_FIELD_REF("journal-id", "Journal Id", NULL, "journal", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("state", "State", NULL, venture_schedule_state_get_type, VENTURE_COLUMN_FLAG_NONE),
+};
+VENTURE_DEFINE_ENTITY(VentureTaxDepreciationEntry, venture_tax_depreciation_entry, tax_depreciation_entry_fields)

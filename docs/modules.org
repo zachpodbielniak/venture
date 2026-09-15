@@ -24,13 +24,14 @@ Written bottom-up, because a module may only require what precedes it:
 | Module       | Requires        | Owns                                                              | Also switched by      |
 |--------------+-----------------+-------------------------------------------------------------------+-----------------------|
 | =core=       | —               | organization, venture, document, record_link, plugin_config, user, api_token, audit_entry, saved_view, watch, notification | always on |
+| =custom_fields= | core          | accounting_custom_field, accounting_layout, custom_field_value; =/settings/fields= | |
 | =sales=      | core            | product, inventory_item, inventory_txn, sale; =categories=, =inventory= |               |
-| =finance=    | sales           | expense, account, ledger_entry, tax_category; =pnl=, =ventures=, =monthly=, =tax= |     |
+| =finance=    | sales           | expense, account, ledger_entry, tax_category, tax_code; =pnl=, =ventures=, =monthly=, =tax=, =tax_liability= |     |
 | =periods=    | finance         | fiscal_year, fiscal_period, report_snapshot; =snapshot_vs_live= | |
 | =crm=        | core            | company, contact, interaction, deal; =pipeline=                   |                       |
 | =invoicing=  | finance, crm    | invoice, invoice_line                                            |                       |
 | =receivables= | finance, invoicing | payment, payment_allocation, customer_credit, refund, invoice_event; =receivables=, =customer_statement= | |
-| =stripe= | receivables | stripe_price_link, stripe_customer_link, stripe_checkout, stripe_event | =stripe.enabled= (opt-in) |
+| =stripe= | receivables | stripe_price_link, stripe_customer_link, stripe_checkout, stripe_event, processor_payout, processor_payout_item, processor_dispute, processor_exception | =stripe.enabled= (opt-in) |
 | =outreach=   | sales           | campaign, newsletter, subscriber, post; =campaigns=               |                       |
 | =ideas=      | core            | idea, research_note; =ideas=                                      |                       |
 | =kb=         | core            | knowledge_base, kb_article, kb_chunk, kb_link                     | =kb.enabled=          |
@@ -45,21 +46,39 @@ Written bottom-up, because a module may only require what precedes it:
 | =dashboards= | core            | dashboard, dashboard_widget; the =/dashboards= pages and their API | |
 | =reconciliation= | ledger | matcher registry, deterministic and AI matchers, staged suggestions; suggests banking | |
 | =banking= | ledger | bank_account, bank_statement, bank_transaction, bank_match, reconciliation; =bank_reconciliation= | |
+| =bankfeed= | banking | bank_connection | =bankfeed.enabled= (opt-in) |
+| =commerce= | invoicing, receivables | order import through invoice compose | =commerce.enabled= (opt-in) |
 | =orgaccess=  | core            | organization_membership, team, team_membership; record ownership | |
-| =billing= | invoicing, receivables | plan, plan_price, customer_subscription, subscription_event, dunning_step, billing_notice, billing_request; =mrr=, =churn=, =subscriptions_due= | |
+| =billing= | invoicing, receivables | plan, plan_price, customer_subscription, subscription_event, dunning_step, billing_notice, billing_request, customer_payment_method; =mrr=, =churn=, =subscriptions_due= | |
+| =projects= | invoicing, receivables | client_project, project_rate, project_time, project_cost, project_billing; =project_margin= | |
 | =mail= | core | mail_message, mail_template; durable outbox and SMTP actions | |
 
 | =payables= | finance, ledger, crm | vendor_bill, vendor_bill_line, bill_payment, bill_payment_allocation, vendor_credit, vendor_bill_event, bill_refund; =payables=, =vendor_statement= | |
+| =supplier_portal= | payables | supplier_portal_access; =/supplier/:token= | |
 | =sequences= | crm | sequence, sequence_step, sequence_enrollment, sequence_delivery, suppression; =sequence_performance=, =sequence_failures= | |
-| =ledger=     | finance         | journal, journal_line; posting service, post/reverse/create-and-post actions, =trial_balance=           |                       |
+| =ledger=     | finance         | journal, journal_line, exchange_rate; posting service, post/reverse/create-and-post actions, =trial_balance=           |                       |
 
 | =pipelines= | crm | pipeline, pipeline_stage, deal_stage_entry, loss_reason; stage_duration, funnel, forecast, loss_reasons, overdue_deals; /deals | |
 | =statements= | ledger, periods | ledger balances query; balance sheet, income statement, cash flow, general ledger, account balances, P&L reconciliation | |
+| =cutover= | ledger | accounting_cutover, accounting_cutover_row | |
+| =setup= | ledger, periods | accounting_setup, accounting_control_map | |
+| =backup= | ledger | accounting_backup | |
 | =activities= | crm | activity, activity_type; =worklist=, reminders, calendar export and =/worklist= | |
 | =leads= | crm | lead, lead_form, lead_assignment_rule; =lead_sources=, =lead_response_time=, =leads_recycled_due=; capture and conversion | |
 
 | =quotes= | crm, invoicing | price_list, price_list_item, quote, quote_line, quote_event, quote_delivery, quote_action; =quotes= report and proposal actions | |
-| =assets= | ledger, periods | fixed_asset, depreciation_entry, deferral, deferral_entry; =fixed_assets=, =deferrals= | |
+| =assets= | ledger, periods | fixed_asset, depreciation_entry, deferral, deferral_entry, tax_depreciation_entry; =fixed_assets=, =deferrals= | |
+| =recurring= | invoicing, payables, ledger, periods, receivables, mail | recurring_schedule, recurring_occurrence, collection_policy, collection_step, collection_case, collection_notice, financial_batch; =collections_worklist= | |
+| =close= | periods, ledger, statements | close_workspace, close_task, close_workpaper, close_discrepancy, close_signoff; =close_workspace= | banking, receivables, payables, assets |
+| =capture= | finance | capture_item | payables |
+| =claims= | finance, ledger | expense_claim, expense_claim_line; /claims | capture, payables |
+| =payroll= | finance, ledger | payroll_run, payroll_line; =payroll_reconciliation=; default off | |
+| =accounting= | finance | the =/accounting= home | banking, receivables, payables, periods, close, capture |
+| =tax_filing= | finance, periods | tax_filing, contractor_tax_form, contractor_tax_pack | invoicing, payables |
+| =goods= | payables, ledger, sales | purchase_order, purchase_order_line, goods_receipt, goods_receipt_line, inventory_cost_layer, sales_order, sales_order_line, fulfillment; =committed_spend=, =reorder_worklist=, =inventory_valuation= | invoicing, receivables |
+| =budgets= | statements | budget, budget_line; =budget_vs_actual=, =cash_forecast=; =/budgets= | |
+| =equity= | ledger, setup | equity_transaction; =/equity= | |
+| =group= | statements | intercompany_link, elimination; consolidated trial balance, income and balance sheet; =/group= | =group.enabled= (opt-in) |
 
 Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.
 

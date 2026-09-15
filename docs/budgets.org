@@ -1,0 +1,29 @@
+#+title: Budgets and cash forecasting
+#+description: Planned amounts, vs-actual and unpaid AR/AP cash forecast
+
+* Budgets
+
+The =budgets= module requires =statements=. It owns =budget= and =budget_line=.
+A plan names a period (=YYYY= or =YYYY-MM=), a book currency and an optional
+default dimension. Each line names an account, a period, an amount and an
+optional dimension.
+
+Period strings must match =YYYY= or =YYYY-MM= exactly; trailing text and out-of-range dates are refused. Named report periods use their calendar bounds rather than their display label.
+
+=VentureBudgetService= compares those lines with posted ledger movement from
+=VentureLedgerBalances=. Expense actuals are period debits less credits;
+income actuals are credits less debits. Variance is actual less budget.
+
+* Cash forecast
+
+The cash forecast starts from unpaid receivables and payables (control-account
+closing balances) and adds remaining budget inflows less remaining budget
+outflows for the same period.
+
+#+begin_src sh
+venturectl budget vs-actual 2026-08
+venturectl budget forecast 2026-08
+#+end_src
+
+The web page is =/budgets=. Turning the module off hides the records, both
+reports and the page.

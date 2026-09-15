@@ -1,5 +1,9 @@
 #+title: Bank statements and reconciliation
 
+* Posting approvals
+
+With a =post= or =pay= second-actor rule, =create=, =correct=, =reverse=, =transfer=, =bulk=, =match= and =auto= obtain consent for the complete command before changing records. Matching is included because it can produce adjustment journals. Imports, inbox review, rule configuration, statement reconciliation and other operations that only manage existing evidence retain their ordinary access checks without posting approval.
+
 * Banking
 
 The =banking= module requires =ledger=. Its field tables register
@@ -19,8 +23,12 @@ records and any source documents and journals created by existing services.
 
 Create a =bank_account= through the normal form or generic CLI, naming its
 organization, ledger =account_id= and currency. Store its CSV mapping in
-=date_column=, =amount_column=, =description_column=, =reference_column= and
-=external_id_column=. Mappings name header cells exactly. Supported date formats
+=date_column=, =amount_column=, =description_column=, =reference_column=,
+=external_id_column=, optional =debit_column= / =credit_column= and =locale=.
+Mappings name header cells exactly. The =map= action previews headers from a
+sample file and can save those columns. A debit column without a credit is a
+negative amount. Locale =de_DE= treats a comma as the decimal separator.
+Supported date formats
 are =%Y-%m-%d=, =%m/%d/%Y= and =%d/%m/%Y=. The sign convention is =normal= or
 =invert=. CSV supports quoted commas, doubled quotes and embedded newlines.
 
@@ -30,10 +38,16 @@ Calendar end dates include the entire UTC day. OFX/QFX reads =STMTTRN= blocks
 with =DTPOSTED=, =TRNAMT=, =FITID= and optional =MEMO= and =CHECKNUM=, including
 SGML leaf tags without closing tags. FITID supplies the external ID.
 
-Every line needs an external ID. A derived UNIQUE key combines organization,
-bank account and external ID. Reimport is refused rather than duplicated;
-a failure on any row rolls back the statement and every earlier line. The
-statement retains the SHA-256 of the original input and its import timestamp.
+Every line needs an external ID. OFX FITID supplies it. CSV may omit the
+column: the importer derives a stable identity from date, amount, description
+and a same-day occurrence index so two equal purchases on one day stay
+distinct. A derived UNIQUE key combines organization, bank account and
+external ID. A FITID already stored for this bank is skipped so overlapping
+statement windows cannot duplicate it; a file that repeats a FITID inside
+itself is still refused. If every line is an overlap, the import is refused
+rather than creating an empty statement. A failure on any new row rolls back
+the statement and every earlier line. The statement retains the SHA-256 of
+the original input and its import timestamp.
 
 #+begin_src sh
 venturectl bank import 1 @statement.json
@@ -54,45 +68,79 @@ venturectl bank exclude 2 '{"reason":"Duplicate supplied by bank"}'
 venturectl bank create 2 '{"type":"expense"}'
 venturectl bank create 3 '{"type":"receipt","customer_id":1}'
 venturectl bank reconcile 1
+venturectl bank preview 1
+venturectl bank bulk 1 '{"mode":"categorize"}'
+venturectl bank map 1 @mapping.json
+venturectl bank transfer 1 '{"counterparty_bank_account_id":2,"amount":"100 USD","date":"2026-01-10"}'
+venturectl bank reverse 2
 #+end_src
 
 The candidate seam is
-=venture_bank_transaction_candidates(database, transaction, error)=. The owned
-array owns each returned =VentureEntity=. It searches enabled payment, sale,
-expense and registered =vendor_bill_payment= or =bill_payment= records in the
-same organization, within five UTC calendar days and 100 minor units of the signed amount.
+=venture_bank_transaction_candidates(database, transaction, error)=, with
+=venture_bank_transaction_candidates_search()= adding a case-folded description
+or reference token. The owned array owns each returned =VentureEntity=. It
+searches enabled payment, sale, expense, refund, journal, processor payout and
+registered =vendor_bill_payment= or =bill_payment= records in the same
+organization, within the bank account's =match-window-days= (default five UTC
+calendar days) and 100 minor units of the signed amount.
 Vendor payment records must expose =amount= and =date= or =occurred_at=.
 Currencies are never converted. Automatic matching requires a single exact
 amount candidate within three UTC calendar days; ambiguity leaves the line unmatched.
 
 A manual match takes =parts=, an array of record type, id and optional signed
 amount. The parts must sum exactly to the transaction. Multiple parts produce
-split evidence; an amount smaller than the document produces partial evidence. Exclusion
-requires a reason. Unmatching retains the old match as soft-deleted audit history.
+split evidence; an amount smaller than the document produces partial evidence.
+An =adjustment= part posts an explicit approved journal for the difference
+(fees, rounding) against a named account; it is never netted into revenue.
+Exclusion requires a reason. Unmatching retains the old match as soft-deleted
+audit history. The web form offers twelve split rows and REST/CLI accept any
+number.
 
-Creating an expense saves an ordinary expense and invokes its registered
-posting rule. Creating a receipt calls the settlement service, with the linked
-bank ledger account selected as its cash account. The period guard is checked
-before creating either record. Banking never writes journals itself.
+Creating an expense saves an ordinary expense, stamps =cash_account_id= from
+the bank's ledger account, and invokes its registered posting rule so the
+cash credit is that account rather than hardcoded Cash (1000). Creating a
+receipt calls the settlement service, with the linked bank ledger account
+selected as its cash account. The period guard is checked before creating
+either record. Categorization still goes through these actions, never a
+direct journal write.
+
+=bank_rule= rows are prioritized conditions (merchant, description, signed
+amount bounds, bank account) and actions (categorize, match, split).
+=preview= scores historical unmatched rows without posting. A rule cannot be
+enabled until that preview exists. =inbox= writes confidence and an
+explanation onto unmatched lines; two rules of equal priority that both
+match leave the line reviewable. =bulk= applies unique high-confidence
+suggestions. =reverse= unmatches and reverses open-period journals for the
+linked documents. =correct= recategorizes and upserts a rule from the
+correction.
+
+=transfer= posts a paired movement: debit the destination bank's ledger
+account, credit the source. An optional fee is an expense on the source
+side only. The transfer key is unique, so a retry cannot post twice. Credit
+card repayment is the same action onto the card's bank account.
 
 * Reconciliation and surfaces
 
 Reconciliation reads posted journals on the linked ledger account through the
-inclusive period end. It refuses any unmatched transaction through that date
-and any nonzero difference. The evidence stores statement and book balances,
+inclusive period end. It refuses any unmatched statement transaction through
+that date. Uncleared book items are outstanding checks (credits) or deposits
+in transit (debits); statement closing must equal book plus outstanding checks
+less deposits in transit. Reopen records an authorized reason and keeps the
+historical balances. The evidence stores statement and book balances,
 difference and reconciler/time. Transactions through a reconciled date, and
 their matches, cannot be changed by any banking action or generic writer.
 
 The REST action shapes are:
 
-- =POST /api/v1/bank_accounts/:id/import=
-- =POST /api/v1/bank_statements/:id/auto|reconcile=
-- =POST /api/v1/bank_transactions/:id/match|unmatch|exclude|create=
+- =POST /api/v1/bank_accounts/:id/import|map|inbox|bulk|transfer=
+- =POST /api/v1/bank_statements/:id/auto|reconcile|reopen=
+- =POST /api/v1/bank_transactions/:id/match|unmatch|exclude|create|reverse|correct=
+- =POST /api/v1/bank_rules/:id/preview|enable=
 
 Bodies are JSON objects; actions without parameters accept ={}=. Editors may
 execute actions. Record detail pages contain action forms for statement contents, balances,
 matching, creation and exclusion, invoking the same service. The web match
-form offers three split rows; REST and CLI accept any number. The CLI accepts inline JSON or
+form offers twelve split rows; REST and CLI accept any number. The CLI accepts inline JSON or
 =@FILE= and sends the same REST request. Ordinary field-table forms and lists
 remain available for reading evidence and configuring bank accounts.
 
@@ -104,10 +152,10 @@ statement closing balance, current posted book balance and difference.
 
 An expense's configured posting rule must affect the bank account by the
 statement amount. The create action checks the actual posted balance change
-and rolls everything back if the rule selected another account. The built-in
-expense rule uses Cash (1000); another bank requires an installation posting
-rule selecting it. Receipt creation selects the linked bank directly through
-the settlement service's public cash-account property.
+and rolls everything back if the rule selected another account. Bank-created expenses set =cash_account_id= on the expense so the built-in
+rule credits that ledger account instead of Cash (1000). Receipt creation
+selects the linked bank directly through the settlement service's public
+cash-account property.
 
 To preserve an open review without finalizing it, call =reconcile= with
 ={"state":"open"}=. This records the balances and difference without locking
@@ -120,3 +168,21 @@ module is disabled. No bank history is fabricated from existing documents.
 The ordinary migration suite checks upgrade and restart with retained data.
 
 Matching refuses soft-deleted cash documents even though their records remain available for historical lookup. A failed match leaves the transaction and match evidence unchanged.
+
+* Outstanding items
+
+Finalize requires =statement = book + outstanding checks − deposits in transit=.
+Outstanding items are uncleared cash documents (expenses, receipts, sales and
+bill payments) through the statement end, including prior periods. A split
+match only clears the matched remainder. Opening and other non-document cash
+journals are not deposits in transit. The statement page offers reopen with a
+required reason; the bank reconciliation report exposes outstanding check and
+deposit-in-transit totals.
+
+* Transfer matching
+
+A transfer requires two bank accounts in the same currency, a positive amount and a nonnegative fee in that currency. Linked statement rows must belong to the corresponding bank and organization and match the signed amount exactly: the source debit includes the fee, and the destination credit is the transfer amount. A refused link rolls back the transfer, journal and every earlier link together. An explicitly invalid date is refused.
+
+* Reversing bank categorization
+
+=reverse= cancels only expenses created by that bank categorization, including its split expenses. The reversal journal and expense soft deletion commit together, so both ledger and expense reports remove the categorization. A match to an existing document is reconciliation evidence: use =unmatch= to change that link. Receipts require the receivables refund operation rather than a journal-only bank reversal. Historical matches without creation provenance are treated as existing documents. Amount bounds on a bank rule match only the same currency as the bank transaction; no exchange conversion is inferred.

@@ -113,6 +113,32 @@ VENTURE_DECLARE_ENTITY(VentureLedgerEntry, venture_ledger_entry, LEDGER_ENTRY)
 #define VENTURE_TYPE_TAX_CATEGORY (venture_tax_category_get_type())
 VENTURE_DECLARE_ENTITY(VentureTaxCategory, venture_tax_category, TAX_CATEGORY)
 
+#define VENTURE_TYPE_TAX_CODE (venture_tax_code_get_type())
+VENTURE_DECLARE_ENTITY(VentureTaxCode, venture_tax_code, TAX_CODE)
+
+/**
+ * venture_tax_code_get_rate:
+ * @self: a tax code
+ * @numerator: (out): exact rate numerator
+ * @denominator: (out): exact rate denominator
+ * @error: (out) (optional): missing or invalid rate
+ *
+ * Returns: %TRUE when the stored rate is a nonnegative exact rational
+ */
+gboolean venture_tax_code_get_rate(VentureTaxCode *self, gint64 *numerator,
+	gint64 *denominator, GError **error);
+
+/**
+ * venture_tax_code_levy:
+ * @self: a tax code
+ * @net: taxable amount after discount
+ * @error: (out) (optional): invalid rate or overflow
+ *
+ * Returns: (transfer full) (nullable): net times the exact rate, half to even
+ */
+VentureMoney *venture_tax_code_levy(VentureTaxCode *self, const VentureMoney *net,
+	GError **error);
+
 /* --- Relations ----------------------------------------------------------- */
 
 #define VENTURE_TYPE_COMPANY (venture_company_get_type())

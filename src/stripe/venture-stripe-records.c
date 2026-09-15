@@ -48,3 +48,42 @@ static const VentureFieldDecl event_fields[] = {
 	VENTURE_FIELD("result", "Result", "processed, ignored or mismatch", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureStripeEvent, venture_stripe_event, event_fields)
+
+static const VentureFieldDecl payout_fields[] = {
+	VENTURE_FIELD("provider-id", "Provider payout", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	VENTURE_FIELD("date", "Effective date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_MONEY("gross", "Gross receipts", NULL),
+	VENTURE_FIELD_MONEY("fees", "Processor fees", NULL),
+	VENTURE_FIELD_MONEY("amount", "Net bank deposit", NULL),
+	VENTURE_FIELD_REF("bank-account-id", "Destination cash account", NULL, "account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("status", "Status", "pending, paid or failed", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
+};
+VENTURE_DEFINE_ENTITY(VentureProcessorPayout, venture_processor_payout, payout_fields)
+
+static const VentureFieldDecl payout_item_fields[] = {
+	VENTURE_FIELD_REF("payout-id", "Payout", NULL, "processor_payout", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("payment-id", "Receipt", NULL, "payment", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_MONEY("amount", "Gross amount in the batch", NULL)
+};
+VENTURE_DEFINE_ENTITY(VentureProcessorPayoutItem, venture_processor_payout_item, payout_item_fields)
+
+static const VentureFieldDecl dispute_fields[] = {
+	VENTURE_FIELD("provider-id", "Provider dispute", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	VENTURE_FIELD_REF("payment-id", "Receipt", NULL, "payment", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("invoice-id", "Invoice", NULL, "invoice", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("opened-at", "Opened", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("closed-at", "Closed", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("amount", "Disputed amount", NULL),
+	VENTURE_FIELD("status", "Status", "open, won or lost", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("refund-id", "Chargeback refund", NULL, "refund", VENTURE_COLUMN_FLAG_NONE)
+};
+VENTURE_DEFINE_ENTITY(VentureProcessorDispute, venture_processor_dispute, dispute_fields)
+
+static const VentureFieldDecl exception_fields[] = {
+	VENTURE_FIELD("kind", "Kind", "mismatch, closed_period, out_of_order or failed_refund", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("provider-id", "Provider event", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("reason", "Reason", NULL),
+	VENTURE_FIELD("resolved", "Resolved", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("occurred-at", "Occurred", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
+};
+VENTURE_DEFINE_ENTITY(VentureProcessorException, venture_processor_exception, exception_fields)

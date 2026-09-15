@@ -9,7 +9,7 @@
 G_BEGIN_DECLS
 
 /**
- * venture_period_constraints_migrate:
+ * venture_period_constraints_migrate: (skip)
  * @connection: the locked schema connection
  * @entity_type: the record type being migrated
  * @error: (out) (optional): failure details
@@ -18,6 +18,8 @@ G_BEGIN_DECLS
  * indexes. SQLite retains the original table definition, indexes, triggers
  * and autoincrement watermark; PostgreSQL drops only the legacy constraint.
  * The replacement and new indexes are one savepoint and preserve every row.
+ * This native migration hook borrows an already locked ORM connection; the
+ * vendored ORM connection and schema-lock contract are not introspectable.
  *
  * Returns: %TRUE on success
  */

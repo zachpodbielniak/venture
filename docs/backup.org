@@ -1,0 +1,55 @@
+#+title: Historical accounting export and restore
+#+description: Versioned accounting snapshots with transactional identity remapping
+
+* Version 4 snapshots
+
+=VentureBackupService= exports version 4 JSON snapshots from a consistent
+read transaction. Record fields and references come from GObject metadata.
+The archive includes financial records from sales, invoicing, receivables,
+payables, ledger, periods, banking, goods, setup, cutover, statements, tax filing,
+budgets, equity, consolidation, claims, payroll, projects, billing and close, plus companies,
+contacts, ventures, custom-field definitions and layouts. It retains drafts,
+soft-deleted records, account classifications, control mappings, journals and
+ledger projections, invoices, bills, frozen tax, allocations, credits, refunds
+and document events. CSV remains a type/count summary and cannot be restored.
+
+Restore requires a newly created, empty destination organization, including
+an empty chart; it does not combine two sets of books. It copies book currency
+and fiscal-year settings while retaining the destination organization's name
+and identity. All records receive new IDs and UUIDs. Ordinary and supported
+polymorphic references are remapped, and globally unique account codes and
+operational keys are scoped to the destination. Historical dates, versions,
+statuses and money values are retained.
+
+The importer inserts historical state directly through the existing database
+binder. It does not issue invoices, apply receipts, run shipment commands or
+post journals again. This avoids duplicating income and stock movements.
+Custom-value indexes are rebuilt from the owning records' public attributes.
+The final =accounting_backup= record has state =restored= and contains the
+source-to-destination ID/UUID mapping. The entire restore, including that
+receipt and organization settings, commits together or rolls back together.
+
+The exporter and importer must support compatible record schemas. Unknown or
+missing persistent fields are rejected rather than silently defaulted.
+
+Missing references, duplicate identities, incomplete fields, unbalanced posted
+journals and missing or inconsistent ledger projections fail the transaction.
+Tests compare every archived public field after identity remapping, exact row
+counts, ledger balances and invoice/bill balances, including refunds, credits,
+foreign currency and frozen tax.
+
+* Scope and compatibility
+
+An accounting snapshot is not an installation backup. It excludes credentials,
+users, sessions, provider configuration, attachments and unrelated operational
+modules. References to access-management records or other organizations are
+recorded as external UUID identities. Those identities must already exist at
+the destination; numeric IDs are never assumed to identify the same person or
+organization across databases. Retain a full database and file backup for
+whole-installation disaster recovery.
+
+Version 3 remains supported only for manual opening-ledger imports. Its account and journal fields are validated before any write; malformed dates, line arrays and debit/credit sides are rejected without changing the destination.
+Its document packs lack the relationships needed for historical restoration and
+remain refused, as do versions 1 and 2. Export a fresh version 4 snapshot from
+the source database to restore document history; missing evidence cannot be
+recovered by upgrading the JSON version number.

@@ -25,6 +25,55 @@ enum { POSTING, POSTED, DATE_POSTABLE, N_SIGNALS };
 static guint signals[N_SIGNALS];
 G_DEFINE_FINAL_TYPE(VenturePostingService, venture_posting_service, G_TYPE_OBJECT)
 
+/* Fingerprint inspectable policy configuration without pointer identities.
+ * The whole-operation snapshot also binds persisted exchange-rate rows. */
+static GVariant *
+exchange_arguments(VentureExchangePolicy *policy)
+{
+	GVariantBuilder builder;
+	g_autofree GParamSpec **properties = NULL;
+	guint count = 0, i;
+	const gchar *name = policy != NULL ? venture_exchange_policy_get_name(policy) : NULL;
+	g_variant_builder_init(&builder, G_VARIANT_TYPE("a{ss}"));
+	if (policy != NULL)
+		properties = g_object_class_list_properties(G_OBJECT_GET_CLASS(policy), &count);
+	for (i = 0; i < count; i++)
+	{
+		GParamSpec *property = properties[i];
+		GType fundamental = G_TYPE_FUNDAMENTAL(G_PARAM_SPEC_VALUE_TYPE(property));
+		GValue value = G_VALUE_INIT;
+		g_autofree gchar *text = NULL, *typed = NULL;
+		if (!(property->flags & G_PARAM_READABLE)) continue;
+		if (fundamental != G_TYPE_BOOLEAN && fundamental != G_TYPE_CHAR && fundamental != G_TYPE_UCHAR &&
+			fundamental != G_TYPE_INT && fundamental != G_TYPE_UINT && fundamental != G_TYPE_LONG &&
+			fundamental != G_TYPE_ULONG && fundamental != G_TYPE_INT64 && fundamental != G_TYPE_UINT64 &&
+			fundamental != G_TYPE_FLOAT && fundamental != G_TYPE_DOUBLE && fundamental != G_TYPE_STRING &&
+			fundamental != G_TYPE_ENUM && fundamental != G_TYPE_FLAGS) continue;
+		g_value_init(&value, G_PARAM_SPEC_VALUE_TYPE(property));
+		g_object_get_property(G_OBJECT(policy), property->name, &value);
+		text = g_strdup_value_contents(&value);
+		typed = g_strdup_printf("%s:%s", G_VALUE_TYPE_NAME(&value), text);
+		g_variant_builder_add(&builder, "{ss}", property->name, typed);
+		g_value_unset(&value);
+	}
+	return g_variant_new("(ss@a{ss})", policy != NULL ? G_OBJECT_TYPE_NAME(policy) : "",
+		name != NULL ? name : "", g_variant_builder_end(&builder));
+}
+
+/* Opaque plugin state cannot be certified by inspecting scalar properties.
+ * Approved operations support only the exact snapshotted built-in rate table. */
+static gboolean
+approved_exchange_policy(VentureDatabase *db, VentureExchangePolicy *policy,
+	gint64 org, GError **error)
+{
+	if (policy == NULL || !venture_accounting_operation_is_approved(db)) return TRUE;
+	if (VENTURE_IS_RATE_TABLE_POLICY(policy) &&
+		venture_rate_table_policy_matches(VENTURE_RATE_TABLE_POLICY(policy), db, org)) return TRUE;
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+		"Second-actor approval requires the organization's stored exchange-rate policy; opaque or cross-organization policies are unsupported");
+	return FALSE;
+}
+
 static gboolean
 ledger_enabled(GError **error)
 {
@@ -72,13 +121,16 @@ transaction_finished(VentureDatabase *db, gboolean committed, VenturePostingServ
 	g_autoptr(GPtrArray) pending = NULL;
 	guint i;
 
-	(void)db;
 	/* Detach before emission: a posted observer may itself post a new journal. */
 	pending = self->pending;
 	self->pending = g_ptr_array_new_with_free_func(g_object_unref);
 	if (committed)
+	{
+		venture_accounting_operation_suspend(db);
 		for (i = 0; i < pending->len; i++)
 			g_signal_emit(self, signals[POSTED], 0, g_ptr_array_index(pending, i));
+		venture_accounting_operation_resume(db);
+	}
 }
 
 static void
@@ -394,7 +446,9 @@ venture_posting_service_is_date_postable(VenturePostingService *self,
 	if (!venture_period_guard_is_postable(VENTURE_PERIOD_GUARD(venture_database_get_period_guard(db)),
 		db, org, when, error))
 		return FALSE;
+	venture_accounting_operation_suspend(db);
 	g_signal_emit(self, signals[DATE_POSTABLE], 0, org, when, &veto_error);
+	venture_accounting_operation_resume(db);
 	if (NULL == veto_error)
 		return TRUE;
 	g_propagate_error(error, veto_error);
@@ -604,6 +658,8 @@ post_internal(VenturePostingService *self, VentureJournal *input, GPtrArray *inp
 	VentureExchangePolicy *policy, const VentureActor *actor, gboolean reversing, GError **error)
 {
 	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
+	g_autoptr(VentureEntity) approval = NULL;
+	g_autoptr(GPtrArray) proposal_rows = NULL;
 	g_autoptr(VentureJournal) journal = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(GDateTime) now = NULL;
@@ -613,6 +669,15 @@ post_internal(VenturePostingService *self, VentureJournal *input, GPtrArray *inp
 	guint i;
 
 	if (!ledger_enabled(error) || NULL == db)
+		return NULL;
+	if (input_lines == NULL && id != 0)
+	{
+		proposal_rows = journal_lines(db, id, error);
+		if (proposal_rows == NULL)
+			return NULL;
+	}
+	if (!venture_accounting_approval_allow(db, "post", VENTURE_ENTITY(input),
+		input_lines != NULL ? input_lines : proposal_rows, actor, &approval, error))
 		return NULL;
 	if (!venture_database_begin(db, error))
 		return NULL;
@@ -680,7 +745,9 @@ post_internal(VenturePostingService *self, VentureJournal *input, GPtrArray *inp
 		g_autoptr(VentureEntity) snapshot = copy_record(VENTURE_ENTITY(journal));
 		g_autoptr(GPtrArray) snapshots = copy_lines(rows);
 
+		venture_accounting_operation_suspend(db);
 		g_signal_emit(self, signals[POSTING], 0, snapshot, snapshots, &veto_error);
+		venture_accounting_operation_resume(db);
 		if (NULL != veto_error)
 		{
 			g_propagate_error(error, veto_error);
@@ -705,6 +772,8 @@ post_internal(VenturePostingService *self, VentureJournal *input, GPtrArray *inp
 		goto fail;
 	g_ptr_array_add(self->pending, copy_record(VENTURE_ENTITY(journal)));
 	g_hash_table_remove(self->active_journals, active_uuid);
+	if (!venture_accounting_approval_consume(db, approval, actor, error))
+		goto fail;
 	if (!venture_database_commit(db, error))
 		return NULL;
 	return g_steal_pointer(&journal);
@@ -719,10 +788,28 @@ VentureJournal *
 venture_posting_service_post(VenturePostingService *self, VentureJournal *journal,
 	GPtrArray *rows, VentureExchangePolicy *policy, const VentureActor *actor, GError **error)
 {
+	g_autoptr(VentureDatabase) db = NULL;
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureJournal) result = NULL;
+	g_autoptr(GPtrArray) stored_rows = NULL;
 	g_return_val_if_fail(VENTURE_IS_POSTING_SERVICE(self), NULL);
 	g_return_val_if_fail(VENTURE_IS_JOURNAL(journal), NULL);
 	g_return_val_if_fail(NULL == policy || VENTURE_IS_EXCHANGE_POLICY(policy), NULL);
-	return post_internal(self, journal, rows, policy, actor, FALSE, error);
+	db = g_weak_ref_get(&self->database);
+	if (db == NULL) return NULL;
+	if (rows == NULL && venture_entity_is_persisted(VENTURE_ENTITY(journal)))
+	{
+		stored_rows = journal_lines(db, venture_entity_get_id(VENTURE_ENTITY(journal)), error);
+		if (stored_rows == NULL) return NULL;
+	}
+	operation = venture_accounting_operation_begin(db, "ledger.post", VENTURE_ENTITY(journal),
+		rows != NULL ? rows : stored_rows, exchange_arguments(policy),
+		venture_entity_get_organization_id(VENTURE_ENTITY(journal)), actor, error);
+	if (operation == NULL || !approved_exchange_policy(db, policy,
+		venture_entity_get_organization_id(VENTURE_ENTITY(journal)), error)) return NULL;
+	result = post_internal(self, journal, rows, policy, actor, FALSE, error);
+	if (result == NULL || !venture_accounting_operation_finish(operation, error)) return NULL;
+	return g_steal_pointer(&result);
 }
 
 GPtrArray *
@@ -748,8 +835,8 @@ venture_posting_service_find_source(VenturePostingService *self, const gchar *so
 	return venture_database_find(db, query, error);
 }
 
-VentureJournal *
-venture_posting_service_reverse(VenturePostingService *self, gint64 journal_id,
+static VentureJournal *
+reverse_impl(VenturePostingService *self, gint64 journal_id,
 	GDateTime *when, const gchar *memo, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
@@ -808,6 +895,31 @@ venture_posting_service_reverse(VenturePostingService *self, gint64 journal_id,
 fail:
 	venture_database_rollback(db);
 	return NULL;
+}
+
+/* Reversal consent names the original journal, never its generated draft. */
+VentureJournal *
+venture_posting_service_reverse(VenturePostingService *self, gint64 journal_id,
+	GDateTime *when, const gchar *memo, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureEntity) original = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(VentureJournal) result = NULL;
+	g_autofree gchar *date = when != NULL ? g_date_time_format_iso8601(when) : NULL;
+	if (db == NULL || !ledger_enabled(error)) return NULL;
+	original = required_record(db, VENTURE_TYPE_JOURNAL, journal_id, error);
+	if (original == NULL) return NULL;
+	rows = journal_lines(db, journal_id, error);
+	if (rows == NULL) return NULL;
+	operation = venture_accounting_operation_begin(db, "ledger.reverse", original, rows,
+		g_variant_new("(ss)", date != NULL ? date : "", memo != NULL ? memo : ""),
+		venture_entity_get_organization_id(original), actor, error);
+	if (operation == NULL) return NULL;
+	result = reverse_impl(self, journal_id, when, memo, actor, error);
+	if (result == NULL || !venture_accounting_operation_finish(operation, error)) return NULL;
+	return g_steal_pointer(&result);
 }
 
 VentureMoney *
@@ -929,6 +1041,7 @@ VentureJournal *
 venture_posting_service_post_document(VenturePostingService *self, const gchar *name,
 	VentureEntity *source, const VentureActor *actor, GError **error)
 {
+	g_autoptr(VentureAccountingOperation) operation = NULL;
 	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
 	g_autoptr(VentureJournal) journal = NULL;
 	g_autoptr(VentureJournal) posted = NULL;
@@ -937,6 +1050,10 @@ venture_posting_service_post_document(VenturePostingService *self, const gchar *
 	g_autoptr(GPtrArray) existing = NULL;
 	guint i;
 
+	if (!ledger_enabled(error) || db == NULL) return NULL;
+	operation = venture_accounting_operation_begin(db, "ledger.post_document", source, NULL,
+		g_variant_new("(s)", name != NULL ? name : ""), venture_entity_get_organization_id(source), actor, error);
+	if (operation == NULL) return NULL;
 	if (!ledger_enabled(error) || NULL == db || !venture_database_begin(db, error))
 		return NULL;
 	current = required_record(db, G_OBJECT_TYPE(source), venture_entity_get_id(source), error);
@@ -984,7 +1101,7 @@ venture_posting_service_post_document(VenturePostingService *self, const gchar *
 	posted = venture_posting_service_post(self, journal, rows, NULL, actor, error);
 	if (NULL == posted)
 		goto fail;
-	if (!venture_database_commit(db, error))
+	if (!venture_database_commit(db, error) || !venture_accounting_operation_finish(operation, error))
 		return NULL;
 	return g_steal_pointer(&posted);
 fail:
@@ -1042,10 +1159,11 @@ gboolean
 venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 	const VentureActor *actor, GError **error)
 {
+	g_autoptr(VentureAccountingOperation) operation = NULL;
 	VenturePostingService *self = venture_database_get_posting_service(db);
 	g_autoptr(VentureEntity) copy = copy_record(entity);
 	g_autoptr(VentureEntity) previous = NULL;
-	g_autoptr(VentureMoney) amount = NULL;
+	g_autoptr(VentureMoney) amount = NULL, proposed_amount = NULL;
 	g_autoptr(GPtrArray) existing = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(VentureJournal) draft = NULL;
@@ -1059,6 +1177,13 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "This source is already being posted");
 		return FALSE;
 	}
+	g_object_get(entity, VENTURE_IS_SALE(entity) ? "gross" : "amount", &proposed_amount, NULL);
+	if (proposed_amount != NULL)
+	{
+		operation = venture_accounting_operation_begin(db, "ledger.save_source", entity, NULL, NULL,
+			venture_entity_get_organization_id(entity), actor, error);
+		if (operation == NULL) return FALSE;
+	}
 	if (!venture_database_begin(db, error))
 		return FALSE;
 	g_hash_table_add(self->active_sources, g_strdup(source_uuid));
@@ -1066,6 +1191,17 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 		previous = venture_database_get(db, G_OBJECT_TYPE(entity), venture_entity_get_id(entity), error);
 	if (NULL != error && NULL != *error)
 		goto fail;
+	/* Reject loss of a posted amount before any source write or callback. */
+	if (proposed_amount == NULL && previous != NULL)
+	{
+		g_autoptr(VentureMoney) old_amount = NULL;
+		g_object_get(previous, VENTURE_IS_SALE(previous) ? "gross" : "amount", &old_amount, NULL);
+		if (old_amount != NULL)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "A posted source cannot lose its amount");
+			goto fail;
+		}
+	}
 	self->source_permit = copy;
 	if (!venture_database_save(db, copy, actor, error))
 	{
@@ -1075,19 +1211,7 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 	g_object_get(copy, VENTURE_IS_SALE(copy) ? "gross" : "amount", &amount, NULL);
 	/* Incomplete operational records carry no amount yet. Once an amount
 	 * exists, every save is held to the posting rules, regardless of surface. */
-	if (NULL == amount)
-	{
-		g_autoptr(VentureMoney) old_amount = NULL;
-
-		if (NULL != previous)
-			g_object_get(previous, VENTURE_IS_SALE(copy) ? "gross" : "amount", &old_amount, NULL);
-		if (NULL != old_amount)
-		{
-			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "A posted source cannot lose its amount");
-			goto fail;
-		}
-		goto commit;
-	}
+	if (NULL == amount) goto commit;
 	rows = build_document_lines(self, db, name, copy, error);
 	if (NULL == rows)
 		goto fail;
@@ -1132,7 +1256,7 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 		goto fail;
 commit:
 	g_hash_table_remove(self->active_sources, source_uuid);
-	if (!venture_database_commit(db, error))
+	if (!venture_database_commit(db, error) || (operation != NULL && !venture_accounting_operation_finish(operation, error)))
 		return FALSE;
 	venture_entity_copy_properties_from(entity, copy, FALSE);
 	return TRUE;
@@ -1146,6 +1270,7 @@ gboolean
 venture_posting_service_post_entries(VenturePostingService *self, GPtrArray *entries,
 	VentureExchangePolicy *policy, const VentureActor *actor, GError **error)
 {
+	g_autoptr(VentureAccountingOperation) operation = NULL;
 	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
 	g_autoptr(VentureJournal) draft = venture_journal_new();
 	g_autoptr(VentureJournal) posted = NULL;
@@ -1180,6 +1305,9 @@ venture_posting_service_post_entries(VenturePostingService *self, GPtrArray *ent
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "A batch needs a stable transaction-id");
 		return FALSE;
 	}
+	operation = venture_accounting_operation_begin(db, "ledger.post_entries", first, entries,
+		exchange_arguments(policy), org, actor, error);
+	if (operation == NULL || !approved_exchange_policy(db, policy, org, error)) return FALSE;
 	if (!venture_database_begin(db, error))
 		return FALSE;
 	posting_key = g_strdup_printf("%" G_GINT64_FORMAT ":%s", org, transaction);
@@ -1241,17 +1369,33 @@ venture_posting_service_post_entries(VenturePostingService *self, GPtrArray *ent
 			goto fail;
 		}
 		if (i == 0)
-			g_object_set(draft, "currency", NULL != amount ? amount->currency : NULL, NULL);
+		{
+			g_autofree gchar *book = NULL;
+			if (NULL != policy)
+			{
+				g_autoptr(VentureEntity) organization = required_record(db, VENTURE_TYPE_ORGANIZATION, org, error);
+				if (NULL == organization)
+					goto fail;
+				g_object_get(organization, "default-currency", &book, NULL);
+			}
+			if (NULL == book || '\0' == *book)
+			{
+				g_free(book);
+				book = g_strdup(NULL != amount ? amount->currency : NULL);
+			}
+			g_object_set(draft, "currency", book, NULL);
+		}
 		g_object_set(row, "amount", amount, "account-id", acct, "side", side,
 			"memo", memo, "organization-id", org, NULL);
 		g_ptr_array_add(rows, g_steal_pointer(&row));
 	}
 	g_object_set(draft, "organization-id", org, "occurred-at", when, "source-type", source_type,
-		"source-id", source_id, "memo", transaction, "posting-key", posting_key, NULL);
+		"source-id", source_id, "memo", transaction, "posting-key", posting_key,
+		"tax-book", g_strcmp0(source_type, "tax_depreciation_entry") == 0, NULL);
 	posted = venture_posting_service_post(self, draft, rows, policy, actor, error);
 	if (NULL == posted)
 		goto fail;
-	return venture_database_commit(db, error);
+	return venture_database_commit(db, error) && venture_accounting_operation_finish(operation, error);
 fail:
 	venture_database_rollback(db);
 	return FALSE;

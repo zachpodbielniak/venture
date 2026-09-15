@@ -194,3 +194,51 @@ venture_web_append_asset_actions(GString *html, VentureEntity *asset)
 		g_string_append_printf(html, "<form method=\"post\" action=\"/assets/%" G_GINT64_FORMAT "/write-off\"><button class=\"btn\">Write off</button></form>", id);
 	}
 }
+
+static HtmxResponse *
+venture_web_assets_run_tax(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *gate;
+	JsonObject *object;
+	VentureActor actor;
+	gint64 org;
+	gint count;
+	gboolean dry_run;
+	(void)params;
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+	if (gate != NULL)
+		return gate;
+	gate = venture_web_require_module_api(self, "assets");
+	if (gate != NULL)
+		return gate;
+	body = htmx_request_get_json(request, &error);
+	if (body == NULL || !JSON_NODE_HOLDS_OBJECT(body))
+	{
+		if (error == NULL)
+			venture_set_error_validation(&error, "body", "Expected period");
+		return venture_web_error_response(error);
+	}
+	object = json_node_get_object(body);
+	org = json_object_has_member(object, "organization_id") ?
+		venture_json_object_get_int(object, "organization_id", 0) :
+		venture_context_get_default_organization_id(self->context);
+	dry_run = json_object_has_member(object, "dry_run") &&
+		json_object_get_boolean_member(object, "dry_run");
+	if (org <= 0)
+		org = venture_context_get_default_organization_id(self->context);
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+	count = venture_asset_service_run_tax_period(venture_asset_service_get(venture_context_get_database(self->context)),
+		venture_json_object_get_string(object, "period", ""), org, dry_run, &actor, &error);
+	if (count < 0)
+		return venture_web_error_response(error);
+	result = venture_json_parse("{}", NULL);
+	json_object_set_int_member(json_node_get_object(result), "entries", count);
+	json_object_set_boolean_member(json_node_get_object(result), "dry_run", dry_run);
+	return venture_web_json_response(result, 200);
+}

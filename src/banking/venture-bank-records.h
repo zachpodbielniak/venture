@@ -15,5 +15,9 @@ VENTURE_DECLARE_ENTITY(VentureBankTransaction, venture_bank_transaction, BANK_TR
 VENTURE_DECLARE_ENTITY(VentureBankMatch, venture_bank_match, BANK_MATCH)
 #define VENTURE_TYPE_RECONCILIATION (venture_reconciliation_get_type())
 VENTURE_DECLARE_ENTITY(VentureReconciliation, venture_reconciliation, RECONCILIATION)
+#define VENTURE_TYPE_BANK_RULE (venture_bank_rule_get_type())
+VENTURE_DECLARE_ENTITY(VentureBankRule, venture_bank_rule, BANK_RULE)
+#define VENTURE_TYPE_BANK_TRANSFER (venture_bank_transfer_get_type())
+VENTURE_DECLARE_ENTITY(VentureBankTransfer, venture_bank_transfer, BANK_TRANSFER)
 G_END_DECLS
 #endif

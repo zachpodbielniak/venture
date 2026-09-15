@@ -33,8 +33,10 @@ venture_cli_command_bank(VentureCli *cli, gchar **args, GError **error)
 		parameters = contents;
 	}
 	if (!json_parser_load_from_data(parser, parameters != NULL ? parameters : "{}", -1, error)) return -1;
-	resource = !strcmp(action, "import") ? "bank_accounts" :
-		!strcmp(action, "auto") || !strcmp(action, "reconcile") ? "bank_statements" : "bank_transactions";
+	resource = !strcmp(action, "import") || !strcmp(action, "map") || !strcmp(action, "inbox") ||
+		!strcmp(action, "bulk") || !strcmp(action, "transfer") ? "bank_accounts" :
+		!strcmp(action, "auto") || !strcmp(action, "reconcile") || !strcmp(action, "reopen") ? "bank_statements" :
+		!strcmp(action, "preview") || !strcmp(action, "enable") ? "bank_rules" : "bank_transactions";
 	path = g_strdup_printf("/api/v1/%s/%s/%s", resource, id, action);
 	response = venture_cli_request(cli, "POST", path, json_parser_get_root(parser), error);
 	if (response == NULL) return -1;

@@ -433,8 +433,8 @@ venture_entity_registry_create(
 	return g_object_new(entity_type, NULL);
 }
 
-gchar **
-venture_entity_registry_list_names(VentureEntityRegistry *self)
+static gchar **
+list_names(VentureEntityRegistry *self, gboolean include_hidden)
 {
 	g_autoptr(GPtrArray) names = NULL;
 	g_autoptr(GList) keys = NULL;
@@ -451,7 +451,7 @@ venture_entity_registry_list_names(VentureEntityRegistry *self)
 		/* A hidden type is not offered anywhere: not as a REST
 		 * resource, a schema entry, a form, an AI tool argument or a
 		 * CLI subcommand. This one loop is what makes that true. */
-		if (g_hash_table_contains(self->hidden, iter->data))
+		if (!include_hidden && g_hash_table_contains(self->hidden, iter->data))
 			continue;
 
 		g_ptr_array_add(names, g_strdup(iter->data));
@@ -460,6 +460,18 @@ venture_entity_registry_list_names(VentureEntityRegistry *self)
 	g_ptr_array_add(names, NULL);
 
 	return (gchar **)g_ptr_array_free(g_steal_pointer(&names), FALSE);
+}
+
+gchar **
+venture_entity_registry_list_names(VentureEntityRegistry *self)
+{
+	return list_names(self, FALSE);
+}
+
+gchar **
+venture_entity_registry_list_all_names(VentureEntityRegistry *self)
+{
+	return list_names(self, TRUE);
 }
 
 GType *
@@ -642,7 +654,9 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_ledger_entry_get_type,
 		venture_journal_get_type,
 		venture_journal_line_get_type,
+		venture_exchange_rate_get_type,
 		venture_tax_category_get_type,
+		venture_tax_code_get_type,
 
 		venture_contact_get_type,
 		venture_interaction_get_type,
@@ -693,6 +707,10 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_stripe_customer_link_get_type,
 		venture_stripe_checkout_get_type,
 		venture_stripe_event_get_type,
+		venture_processor_payout_get_type,
+		venture_processor_payout_item_get_type,
+		venture_processor_dispute_get_type,
+		venture_processor_exception_get_type,
 		venture_payment_get_type,
 		venture_payment_allocation_get_type,
 		venture_customer_credit_get_type,
@@ -740,6 +758,12 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_dunning_step_get_type
 		, venture_billing_notice_get_type
 		, venture_billing_request_get_type
+		, venture_customer_payment_method_get_type
+		, venture_client_project_get_type
+		, venture_project_rate_get_type
+		, venture_project_time_get_type
+		, venture_project_cost_get_type
+		, venture_project_billing_get_type
 		, venture_mail_message_get_type
 		, venture_mail_template_get_type
 
@@ -767,6 +791,9 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_bank_transaction_get_type
 		, venture_bank_match_get_type
 		, venture_reconciliation_get_type
+		, venture_bank_rule_get_type
+		, venture_bank_transfer_get_type
+		, venture_bank_connection_get_type
 
 		, venture_sequence_get_type
 		, venture_sequence_step_get_type
@@ -774,10 +801,62 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_sequence_delivery_get_type
 		, venture_suppression_get_type
 		, venture_posting_profile_get_type
+		, venture_accounting_cutover_get_type
+		, venture_accounting_cutover_row_get_type
+		, venture_accounting_setup_get_type
+		, venture_accounting_control_map_get_type
+		, venture_progress_billing_get_type
+		, venture_customer_retainer_get_type
+		, venture_contract_retention_get_type
+		, venture_customer_portal_access_get_type
+		, venture_supplier_portal_access_get_type
+		, venture_accounting_custom_field_get_type
+		, venture_accounting_layout_get_type
+		, venture_custom_field_value_get_type
+		, venture_saved_report_get_type
+		, venture_report_pack_get_type
+		, venture_accounting_dimension_get_type
+		, venture_accounting_approval_rule_get_type
+		, venture_accounting_approval_get_type
+		, venture_accounting_backup_get_type
 		, venture_pipeline_get_type,
 		venture_pipeline_stage_get_type,
 		venture_deal_stage_entry_get_type,
 		venture_loss_reason_get_type,
+		venture_recurring_schedule_get_type,
+		venture_recurring_occurrence_get_type,
+		venture_collection_policy_get_type,
+		venture_collection_step_get_type,
+		venture_collection_case_get_type,
+		venture_collection_notice_get_type,
+		venture_financial_batch_get_type,
+		venture_close_workspace_get_type,
+		venture_close_task_get_type,
+		venture_close_workpaper_get_type,
+		venture_close_discrepancy_get_type,
+		venture_close_signoff_get_type,
+		venture_capture_item_get_type,
+		venture_tax_filing_get_type,
+		venture_contractor_tax_form_get_type,
+		venture_contractor_tax_pack_get_type,
+		venture_expense_claim_get_type,
+		venture_expense_claim_line_get_type,
+		venture_payroll_run_get_type,
+		venture_payroll_line_get_type,
+		venture_purchase_order_get_type,
+		venture_purchase_order_line_get_type,
+		venture_goods_receipt_get_type,
+		venture_goods_receipt_line_get_type,
+		venture_inventory_cost_layer_get_type,
+		venture_sales_order_get_type,
+		venture_sales_order_line_get_type,
+		venture_fulfillment_get_type,
+		venture_budget_get_type,
+		venture_budget_line_get_type,
+		venture_equity_transaction_get_type,
+		venture_intercompany_link_get_type,
+		venture_elimination_get_type,
+		venture_tax_depreciation_entry_get_type,
 	};
 	gsize i;
 

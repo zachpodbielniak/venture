@@ -1,0 +1,36 @@
+#+title: Employee reimbursements
+#+description: Mileage and expense claims from submit through payment
+
+* A claim is not yet a book
+
+The =claims= module requires =finance= and =ledger=, and suggests =capture=
+and =payables=. It owns =expense_claim= and =expense_claim_line=. Employees
+file a draft, submit it, finance approves it, then payment posts through the
+posting service: expense plus cash, or expense plus AP.
+
+A mileage line is rate times miles, an exact decimal quantity with at most
+three fractional digits, rounded half to even. A receipt line names a
+=document= (or a capture original). The document checksum is copied onto
+=receipt-hash= and a second line with that hash is refused.
+
+Receipt uniqueness applies on edits as well as insertion. A submitted claim's lines cannot be edited or moved into another claim, preserving the evidence behind its frozen total.
+
+Closed fiscal periods refuse submit, approve and pay. Generic status changes
+are refused; only =VentureClaimsService= writes the workflow.
+
+#+begin_src sh
+venturectl claim submit 1
+venturectl claim approve 1
+venturectl claim pay 1
+#+end_src
+
+The web workbench is =/claims=. Settlement =cash= credits Cash 1000;
+=payable= credits Accounts payable 2000. Missing control accounts reuse the
+organization chart or =accounting_control_map=, as payables does.
+
+Migration =000280_people.sql= verifies the claims (and payroll) table
+families, or the absent set of a never-enabled module.
+
+=test-claims= covers mileage arithmetic, submit/approve/pay posting,
+duplicate receipt hashes, closed periods, generic status refusal, the module
+switch and =/claims=.

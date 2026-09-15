@@ -149,31 +149,85 @@ G_BEGIN_DECLS
  * to check against the schema -- when each row fits on one line.
  */
 
-/** VENTURE_FIELD: a field with no reference and no enum backing. */
+/**
+ * VENTURE_FIELD:
+ * @name: property name
+ * @label: human-readable field label
+ * @help: field description, or %NULL
+ * @kind: declared #VentureFieldKind
+ * @flags: column behavior flags
+ *
+ * Declares a field without a reference target or enum backing.
+ * Expands to a #VentureFieldDecl initializer for a field table.
+ */
 #define VENTURE_FIELD(name, label, help, kind, flags)                         \
 	{ name, label, help, kind, NULL, NULL, flags }
 
-/** VENTURE_FIELD_ENUM: a field backed by a registered #GEnum. */
+/**
+ * VENTURE_FIELD_ENUM:
+ * @name: property name
+ * @label: human-readable field label
+ * @help: field description, or %NULL
+ * @enum_type_func: function returning the registered enum type
+ * @flags: column behavior flags
+ *
+ * Declares a field backed by a registered enumeration.
+ * Expands to a #VentureFieldDecl initializer for a field table.
+ */
 #define VENTURE_FIELD_ENUM(name, label, help, enum_type_func, flags)          \
 	{ name, label, help, VENTURE_FIELD_KIND_ENUM, enum_type_func, NULL,   \
 	  flags }
 
-/** VENTURE_FIELD_REF: a foreign key to another entity type. */
+/**
+ * VENTURE_FIELD_REF:
+ * @name: property name
+ * @label: human-readable field label
+ * @help: field description, or %NULL
+ * @target: referenced entity registry name
+ * @flags: column behavior flags
+ *
+ * Declares an indexed reference to another entity type.
+ * Expands to a #VentureFieldDecl initializer for a field table.
+ */
 #define VENTURE_FIELD_REF(name, label, help, target, flags)                   \
 	{ name, label, help, VENTURE_FIELD_KIND_REFERENCE, NULL, target,      \
 	  (flags) | VENTURE_COLUMN_FLAG_INDEXED }
 
-/** VENTURE_FIELD_TEXT: a long free-text field, searchable by default. */
+/**
+ * VENTURE_FIELD_TEXT:
+ * @name: property name
+ * @label: human-readable field label
+ * @help: field description, or %NULL
+ *
+ * Declares a long free-text field that is searchable by default.
+ * Expands to a #VentureFieldDecl initializer for a field table.
+ */
 #define VENTURE_FIELD_TEXT(name, label, help)                                 \
 	{ name, label, help, VENTURE_FIELD_KIND_TEXT, NULL, NULL,             \
 	  VENTURE_COLUMN_FLAG_SEARCHABLE }
 
-/** VENTURE_FIELD_MONEY: a monetary amount. */
+/**
+ * VENTURE_FIELD_MONEY:
+ * @name: property name
+ * @label: human-readable field label
+ * @help: field description, or %NULL
+ *
+ * Declares a monetary amount represented by #VentureMoney.
+ * Expands to a #VentureFieldDecl initializer for a field table.
+ */
 #define VENTURE_FIELD_MONEY(name, label, help)                                \
 	{ name, label, help, VENTURE_FIELD_KIND_MONEY, NULL, NULL,            \
 	  VENTURE_COLUMN_FLAG_NONE }
 
-/** VENTURE_FIELD_NAME: the primary human label -- required and searchable. */
+/**
+ * VENTURE_FIELD_NAME:
+ * @name: property name
+ * @label: human-readable field label
+ * @help: field description, or %NULL
+ *
+ * Declares the required, indexed and searchable primary human label.
+ * Expands to a #VentureFieldDecl initializer for a field table.
+ */
 #define VENTURE_FIELD_NAME(name, label, help)                                 \
 	{ name, label, help, VENTURE_FIELD_KIND_STRING, NULL, NULL,           \
 	  VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_SEARCHABLE |     \

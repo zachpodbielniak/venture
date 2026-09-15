@@ -67,6 +67,8 @@ static const VentureFieldDecl bill_fields[] = {
 	VENTURE_FIELD_NAME("currency", "Currency", "Uppercase ISO 4217 code"),
 	VENTURE_FIELD_NAME("status", "Status", "draft, approved, partially_paid, paid, void; VenturePayablesService owns transitions"),
 	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("purchase-order-id", "Purchase order", "Optional three-way match",
+		"purchase_order", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("memo", "Memo", NULL)
 };
 VENTURE_DEFINE_ENTITY(VentureVendorBill, venture_vendor_bill, bill_fields)
@@ -79,8 +81,12 @@ static const VentureFieldDecl bill_line_fields[] = {
 	VENTURE_FIELD_MONEY("unit-price", "Unit price", NULL),
 	VENTURE_FIELD_REF("account-id", "Expense account", NULL, "account", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("category", "Category", "General expenses when no account is specified", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_MONEY("tax-amount", "Tax amount", "Tax included in expense cost"),
-	VENTURE_FIELD("position", "Position", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD_MONEY("tax-amount", "Tax amount", "Tax included in expense cost unless the tax code is recoverable"),
+	VENTURE_FIELD_REF("tax-code-id", "Tax code", "Exact rate, jurisdiction and recoverable flag",
+		"tax_code", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("position", "Position", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("purchase-order-line-id", "Purchase order line", NULL,
+		"purchase_order_line", VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureVendorBillLine, venture_vendor_bill_line, bill_line_fields)
 

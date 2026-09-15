@@ -563,6 +563,50 @@ venture_money_multiply_percent(
 	                                       10000, error);
 }
 
+VentureMoney *
+venture_money_convert_at_rate(const VentureMoney *self, gint64 numerator, gint64 denominator,
+	const gchar *currency, GError **error)
+{
+	__int128 product, divisor, quotient, remainder;
+	guint8 dest_exp;
+	g_return_val_if_fail(NULL != self, NULL);
+	if (!venture_currency_is_valid(currency) || numerator <= 0 || denominator <= 0)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"A conversion needs a valid destination currency and a positive rate");
+		return NULL;
+	}
+	if (g_strcmp0(self->currency, currency) == 0)
+		return venture_money_copy(self);
+	dest_exp = venture_currency_get_exponent(currency);
+	/* Two 64-bit factors fit here. If scaling overflows this wider
+	 * intermediate, even division by the largest rate denominator cannot
+	 * bring the result back into the representable minor-unit range. */
+	product = (__int128)self->amount * numerator;
+	divisor = denominator;
+	if (dest_exp > self->exponent)
+	{
+		if (__builtin_mul_overflow(product,
+			(__int128)venture_money_pow10(dest_exp - self->exponent), &product))
+			goto overflow;
+	}
+	else
+		divisor *= venture_money_pow10(self->exponent - dest_exp);
+	quotient = product / divisor;
+	remainder = product % divisor;
+	if (remainder < 0)
+		remainder = -remainder;
+	if (remainder * 2 > divisor || (remainder * 2 == divisor && quotient % 2 != 0))
+		quotient += product < 0 ? -1 : 1;
+	if (quotient < G_MININT64 || quotient > G_MAXINT64)
+		goto overflow;
+	return venture_money_new((gint64)quotient, currency, dest_exp);
+overflow:
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		"Currency conversion exceeds the minor-unit range");
+	return NULL;
+}
+
 /*
  * Sort helper for the allocation remainder pass: orders indices by
  * descending ratio so that the largest shares absorb the leftover minor

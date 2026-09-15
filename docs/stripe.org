@@ -29,28 +29,26 @@ redirects are navigation only; neither records a receipt.
 
 Checkout refuses deleted invoices and customers before creating provider objects, including historical references that remain on an issued invoice.
 
-Invoices emitted by the billing module currently have no product reference on their line, so they do not qualify for Checkout. Subscription catalog mapping and payment-driven recovery are not implemented; do not modify issued invoice evidence to make it pass eligibility.
+Ordinary sent invoices with a positive open balance qualify. Checkout
+charges that remaining amount with Stripe =price_data= (currency, unit
+amount in Stripe charge units, and a product name). A =stripe_price_link=
+is optional catalog evidence; it is not required to open a session, and
+it cannot replace the invoice remaining. Subscription catalog mapping
+and payment-driven recovery are not implemented.
+Billing invoice lines copy =plan_price.product_id=, so a subscription invoice
+qualifies for Checkout when a =stripe_price_link= exists for that product.
+=billing collect= records an operator-confirmed receipt through an authorized =manual= customer payment method and recovers =past_due=. Processor mandates alone cannot record cash. Do not rewrite issued invoice evidence to
+pass eligibility.
 
-1. In Stripe's dashboard, create a product and a one-time price in the
-   invoice's currency. Its unit amount must match the Venture invoice line.
-2. Record the price identifier in a =stripe_price_link= with the Venture
-   =product_id= and organization. A product has one configured price per
-   organization, and the Stripe price identifier is unique within that
-   organization. Invoice lines now have an optional =product_id= reference.
-3. Configure an HTTPS webhook endpoint at =/webhooks/stripe= for
+1. Configure an HTTPS webhook endpoint at =/webhooks/stripe= for
    =checkout.session.completed=. Select the same explicit API version used
    by the deployment, and inject its signing secret into the environment.
-4. Issue the Venture invoice through the normal settlement lifecycle.
+2. Issue the Venture invoice through the normal settlement lifecycle.
    Use *Pay with Stripe* on its page, or =venturectl invoice checkout ID=.
 
-The pinned library supports exactly one dashboard-configured price and a
-positive integral quantity. It cannot send an inline amount, create a Stripe
-Invoice, or describe several invoice lines. Checkout therefore requires a
-=sent= invoice with exactly one line, a price link for its product, and a
-line total equal to its positive open balance. Fractional quantities are
-refused. The existing receivables lifecycle requires a bill-to company.
-Configure the dashboard price without additional taxes, discounts or shipping
-that would change the total; unexpected totals are recorded as mismatches.
+A stored expired session may be replaced. The existing receivables
+lifecycle requires a bill-to company. Unexpected webhook totals are
+recorded as mismatches.
 
 * What is stored
 
@@ -101,7 +99,15 @@ another payment.
 
 * Boundaries and verification
 
-There are no subscriptions, Billing Portal, refunds, Stripe Invoice creation,
+=processor_payout= records a payout batch's gross, fees and net bank amount.
+Fees post to platform fees (6000), never income. =processor_payout_item= names
+the receipts in the batch so a grouped deposit can be matched without
+double-posting cash. =processor_dispute= holds AR by moving the invoice to the
+built-in =disputed= workflow state. A lost dispute reverses the receipt through
+=VentureSettlementService= as a refund. =processor_exception= is the retry
+queue for mismatches, closed periods and out-of-order events.
+
+There are no Billing Portal, Stripe Invoice creation,
 Connect accounts or generic provider interface. A future provider should own
 its transport and verified external-event mapping, then call the same
 settlement service. A future provider interface would sit in front of
@@ -127,3 +133,5 @@ A product link identifies a remote Price, not its value. Before creating a custo
 Both Price validation and signed webhook settlement use Stripe's charge currency units: the documented zero-decimal currencies (including MGA) use exponent zero, while ISK and UGX retain Stripe's two-decimal API representation and must be multiples of 100. See [[https://docs.stripe.com/currencies][Stripe supported currency rules]]. Checked integer arithmetic reconciles these units with an invoice's stored exponent; overflow is refusal, never equality.
 
 Only =POST /webhooks/stripe= uses independent signature authority; an incidental local browser session does not restrict or widen that capability. Signature, payload size and module guards still apply. Neighboring paths and other methods retain local authentication and organization policy.
+
+A lost chargeback requires an open dispute. Repeating the loss action is refused, including partial disputes, so the same dispute cannot reverse a second portion of its receipt.

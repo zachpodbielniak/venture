@@ -1117,6 +1117,26 @@ test_auth_pages_refuse_anonymous_requests(
 	 * the spend. */
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/worklist"),
 	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/accounting"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/purchasing"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/sales-orders"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/settings/fields"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/budgets"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/equity"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/group"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/payables"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/close"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/capture"),
+	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/inbox"),
 	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/views"),
@@ -1318,26 +1338,97 @@ test_auth_api_refuses_anonymous_requests(
 		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/vendor_bill/1/approve",
 		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/supplier_portal/invite",
+		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/customer_portal/invite",
+		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/vendor_bill/1/pay",
 		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/bills/1/approve",
 		NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/bills/1/pay",
 		NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/payables/pay",
+		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/accounting/home"),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/close/open",
+		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/tax-filings/prepare",
+		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/contractor-tax/prepare",
+		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/capture",
+		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/bankfeed/1/sync",
+		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/commerce/import",
+		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	/* Every banking action must authenticate before loading statement evidence. */
 	{
 		static const gchar *const banking[] = {
 			"/api/v1/bank_transactions/1/match",
 			"/api/v1/bank_statements/1/reconcile",
 			"/api/v1/bank_accounts/1/import",
+			"/api/v1/bank_rules/1/preview",
 			"/banking/1/action"
+		};
+		static const gchar *const cutover[] = {
+			"/api/v1/accounting_cutovers/preview",
+			"/cutover/preview",
+			"/api/v1/accounting_cutovers/1/import",
+			"/cutover/1/action"
+		};
+		static const gchar *const setup[] = {
+			"/api/v1/accounting_setups/preview",
+			"/setup/preview",
+			"/api/v1/accounting_setups/1/complete",
+			"/setup/1/action"
 		};
 		for (i = 0; i < G_N_ELEMENTS(banking); i++)
 			g_assert_cmpuint(server_fixture_request(fixture, "POST", banking[i],
 				NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+		for (i = 0; i < G_N_ELEMENTS(cutover); i++)
+			g_assert_cmpuint(server_fixture_request(fixture, "POST", cutover[i],
+				NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+		for (i = 0; i < G_N_ELEMENTS(setup); i++)
+			g_assert_cmpuint(server_fixture_request(fixture, "POST", setup[i],
+				NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	}
 
 	/* The chat POSTs, which write records. */
+	/* Accounting operations must authenticate before parsing a document or
+	 * resolving a record, even when their module is disabled. */
+	{
+		static const gchar *const posts[] = {
+			"/backup/export", "/api/v1/accounting_backups/export",
+			"/invoices/compose", "/quotes/compose", "/api/v1/invoices/compose", "/api/v1/quotes/compose",
+			"/settings/fields", "/api/v1/supplier_portal/invite",
+			"/api/v1/customer_portal/invite", "/bankfeed/1/sync",
+			"/equity/post", "/api/v1/equity/post", "/payables/pay", "/api/v1/payables/pay",
+			"/claims/1/submit", "/api/v1/expense_claim/1/submit", "/api/v1/payroll/import",
+			"/payroll/1/post", "/api/v1/payroll_run/1/post", "/purchase_order/1/approve",
+			"/api/v1/purchase_order/1/approve", "/sales_order/1/confirm", "/api/v1/sales_order/1/confirm",
+			"/api/v1/close/1/complete", "/api/v1/tax-filings/1/export", "/api/v1/contractor-tax/1/export",
+			"/api/v1/capture/1/convert"
+		};
+		static const gchar *const gets[] = {
+			"/api/v1/budget_reports", "/api/v1/group/reports", "/api/v1/close/1/pack",
+			"/api/v1/contractor-tax/1/export"
+		};
+		static const gchar *const redirects[] = {
+			"/settings/fields", "/equity/post", "/payables/pay", "/claims/1/submit",
+			"/payroll/1/post", "/purchase_order/1/approve", "/sales_order/1/confirm", NULL
+		};
+		for (i = 0; i < G_N_ELEMENTS(posts); i++)
+		{
+			g_test_message("Anonymous accounting POST %s", posts[i]);
+			g_assert_cmpuint(server_fixture_request(fixture, "POST", posts[i], NULL, "{}", NULL, NULL), ==,
+				g_strv_contains(redirects, posts[i]) ? SOUP_STATUS_FOUND : SOUP_STATUS_UNAUTHORIZED);
+		}
+		for (i = 0; i < G_N_ELEMENTS(gets); i++)
+			g_assert_cmpuint(server_fixture_get_anonymous(fixture, gets[i]), ==, SOUP_STATUS_UNAUTHORIZED);
+	}
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/ui/chat",
 	                                        NULL, "message=hi", NULL, NULL),
 	                 ==, SOUP_STATUS_UNAUTHORIZED);
@@ -4176,12 +4267,34 @@ test_orgaccess_wrong_role(ServerFixture *fixture, gconstpointer user_data)
 		"{\"name\":\"Not permitted\"}", NULL), ==, 403);
 }
 
+/* Malformed equity input must return validation errors without crashing or posting. */
+static void
+test_auth_equity_input(ServerFixture *fixture, gconstpointer data)
+{
+	static const gchar *const invalid[] = {
+		"{}", "[]", "{\"amount\":1}", "{\"kind\":\"bogus\",\"amount\":\"10 USD\"}"
+	};
+	g_autofree gchar *cookie = NULL;
+	guint i;
+	(void)data;
+	server_fixture_create_member(fixture, "equity-owner", "equity-password",
+		VENTURE_USER_ROLE_OWNER, NULL);
+	cookie = server_fixture_login(fixture, "equity-owner", "equity-password");
+	for (i = 0; i < G_N_ELEMENTS(invalid); i++)
+	{
+		g_autoptr(GBytes) body = g_bytes_new(invalid[i], strlen(invalid[i]));
+		g_assert_cmpuint(server_fixture_post_raw(fixture, "/api/v1/equity/post", cookie,
+			"application/json", body, NULL), ==, SOUP_STATUS_UNPROCESSABLE_ENTITY);
+	}
+}
+
 int
 main(
 	int	  argc,
 	char	**argv
 ){
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/auth/equity-input", ServerFixture, NULL, server_fixture_set_up, test_auth_equity_input, server_fixture_tear_down);
 
 #define ADD(path, func) \
 	g_test_add(path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)

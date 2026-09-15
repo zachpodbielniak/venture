@@ -26,6 +26,8 @@ service derives an immutable =external_key= from the organization and ID;
 that field has a database UNIQUE constraint. Callers supply =external_id=,
 not the derived key. An empty external ID is optional and may recur.
 
+Posting uses mapped cash, receivables, income and tax control accounts; see [[file:setup.org][Accounting setup]].
+
 * Receiving and allocating money
 
 =VentureSettlementService= owns every financial invoice transition. A
@@ -73,8 +75,8 @@ fund an allocation in an earlier statement.
 
 * Lifecycle and extensions
 
-Create a draft, add lines, then send it. Sending freezes its amount and
-due date in an issue event. The state is =sent= before allocation,
+Create a draft, add lines, then send it. Sending freezes its amount, due date, and per-line income, discount, shipping
+and tax allocations in an issue event. The state is =sent= before allocation,
 =partially_paid= after a partial allocation, and =paid= at zero balance.
 A refund derives the state again. Void is allowed for an unpaid invoice;
 refund its applied cash first. A direct transition cannot undo a paid
@@ -109,11 +111,24 @@ invoices predating its installation need an explicit migration of their
 issue and payment history. This module does not invent that history from
 the current status.
 
+* Collections
+
+Overdue reminder cadence lives in the =recurring= module and enqueues through
+the mail outbox. See [[file:recurring.org][recurring documents]].
+
 * Posting boundary
 
 =venture_receivables_post_batch()= supplies balanced source-document legs to =venture_posting_service_post_entries()=. Journals are the sole accounting authority; generated cash-report sales bypass automatic sale posting to avoid recognizing the same receipt twice. Invoice document rules are refused because issuance and settlement already post their own journals.
 
-Issuing debits receivables and credits income. A receipt debits cash and
+A product =recognition-policy= of deferred with =recognition-months= credits
+deferred revenue (2200) for those lines at issue and schedules an accrual
+deferral whose period sweep recognizes income through the posting service.
+Immediate lines still credit income. Mixed invoices split the frozen net
+exactly.
+
+Issuing debits receivables for the tax-inclusive total, credits income for
+the frozen net (after discount, plus shipping) or deferred revenue, and credits sales tax payable
+for the frozen tax. A receipt debits cash and
 credits receivables. Unused receipts are credit balances in that control
 account; allocation and creation of the receipt's credit post balanced
 transfers within it. A credit note debits income and credits receivables;
@@ -123,10 +138,54 @@ The service properties =cash-account-id=, =receivable-account-id= and
 =income-account-id= select accounts. Zero resolves active accounts 1000,
 1100 and 4000 within the transaction's organization. Another organization
 must have suitable accounts configured; the service does not create them.
-Posting validates each batch's currency through the journal service. Different currencies are kept separate and are never converted. Every journal checks the fiscal calendar at its own effective date, so a February payment can settle a January invoice after January closes without rewriting January.
+Posting validates each batch's currency through the journal service. An
+invoice in a foreign currency is valued into the organization's
+=default-currency= through a stored =exchange_rate= and the posting
+=VentureExchangePolicy=. A book-currency receipt against that invoice
+releases the frozen book AR and posts the difference to Exchange gain/loss
+7600. If no rate exists at issuance, the invoice and its journal stay in document currency; a later book-currency receipt is refused because no book valuation was frozen. Record the rate before issuing an invoice that needs book-currency settlement. Nothing invents a market quote. Same-currency receipts are unchanged. Every journal checks the fiscal calendar at its own
+effective date, so a February payment can settle a January invoice after
+January closes without rewriting January.
+
+Invoice and bill lines may name a =tax_code= (exact rate, jurisdiction,
+recoverable flag) instead of an integer =tax-percent=. Frozen
+=income-amount= and =tax-amount= still come from issuance. The
+=tax_liability= report groups that frozen tax by code. Company and invoice
+=tax-exempt= still freeze tax at zero.
+
+Remaining AR is written off through =venture_settlement_service_write_off()=
+(the invoice Write off action). That records a =write_off= credit and
+allocation, debiting Bad debt 6800 and crediting receivables. Original issue
+journals stay posted; it is not a cash refund and not a tax credit note.
 
 Existing cash reports still read sales: each cash allocation creates an immutable sale at the allocation date with external ID =allocation:<allocation UUID>=. Two partial payments therefore remain distinct even when their invoice number is the same. An allocation refund creates a negative sale at the refund date with external ID =refund:<refund UUID>= and records its ID in =refund.sale_id=. Neither operation rewrites the original receipt. Generic edits, deletion, purge and explicit document reposting of these projections are refused.
 
 * Integrated verification
 
 The accounting-cycle regression issues a $100 invoice, receives $40, closes January, receives the remaining $60 in February and refunds $10 later in February. It checks actual cash, receivables and income account balances after every step, preserves January's balance and refuses editing the original cash projection. Separate HTTP coverage verifies customer-statement options reach the report and module-off coverage verifies invoice issuance still works.
+
+Issued invoice print and detail tables show frozen Net and Tax per line next to
+the line total, so tax is never presented as revenue.
+
+* Tax exemption
+
+A company or invoice may be marked =tax-exempt= with an optional reason
+(for example a non-profit certificate). At issuance the settlement service
+copies the customer's exemption onto the invoice, freezes tax at zero even
+when lines still carry a tax percent, and posts AR equal to net income.
+Print and invoice detail show the exemption. Tax-allocation corrections skip
+voided and exempt invoices.
+
+* Tax reporting periods
+
+The =tax_liability= report includes issue and void events in the selected period (inclusive start, exclusive end), with voids reversing tax in their own period. Draft bills never contribute. Rows distinguish =output= tax collected on invoices from =input= tax paid on bills; =tax= is the signed tax movement, while =liability= adds output tax, subtracts recoverable input tax, and excludes nonrecoverable input tax. Codes shared by purchases and sales have separate rows. The selected organization, venture and currency constrain the evidence.
+
+Tax-bearing credit notes reduce liability in their own period under =unassigned credit=, because credit notes do not carry a tax-code reference. Customer-level credit notes are excluded when filtering a single venture. Foreign receipt allocation enforces the same customer, organization and chronology as ordinary receipts; unused book-currency cash remains refundable credit. Partial receipts release cumulative rounded historical AR, and invoice voids reverse the actual issue journal plus deferred recognition rather than recalculating current rates or product settings.
+
+Invoices valued into a different book currency accept direct receipts in that book currency. Document-currency receipts and explicit payment/credit allocations against those invoices are refused because the ordinary allocation path cannot release their frozen book-currency receivable. Invoices retained wholly in document currency continue to accept same-currency allocations.
+
+* Whole-operation approval
+
+Invoice issue/void, receipt/allocation/refund, full-invoice settlement, write-off and tax-correction commands request second-actor consent for the entire operation before writing business records. A configured post or pay rule applies to the command; generated issue events, credits, sales and journals share its approval. The command arguments, current financial records and service account overrides are bound to that consent. Retry the same command as a different actor; changed inputs or financial state require a new proposal.
+
+Omitted dates in the invoice status buttons and payables action/workbench surfaces resolve to midnight of the current UTC day. Repeating a proposal on that day retains its accounting date; a later-day request is a different proposal. Explicit dates remain unchanged.

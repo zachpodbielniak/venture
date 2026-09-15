@@ -326,6 +326,12 @@ finance_type(VentureEntity *entity)
 		g_quark_from_static_string("venture-access-financial"));
 }
 static gboolean
+payroll_type(VentureEntity *entity)
+{
+	return NULL != g_type_get_qdata(G_OBJECT_TYPE(entity),
+		g_quark_from_static_string("venture-access-payroll"));
+}
+static gboolean
 role_allows(VentureAccessPolicy *self, const VentureAuthPrincipal *actor,
 	const gchar *action, VentureEntity *entity, gint role)
 {
@@ -335,6 +341,11 @@ role_allows(VentureAccessPolicy *self, const VentureAuthPrincipal *actor,
 		return FALSE;
 	if (manager)
 		return TRUE;
+	/* A payer must not disable the second-person rule that constrains it. */
+	if (VENTURE_IS_ACCOUNTING_APPROVAL_RULE(entity) && !read)
+		return FALSE;
+	if (payroll_type(entity) && role != VENTURE_ORGANIZATION_ROLE_FINANCE)
+		return FALSE;
 	if (finance_type(entity) && role != VENTURE_ORGANIZATION_ROLE_FINANCE)
 		return FALSE;
 	if (VENTURE_IS_ORGANIZATION_MEMBERSHIP(entity) || VENTURE_IS_TEAM_MEMBERSHIP(entity) || VENTURE_IS_TEAM(entity))

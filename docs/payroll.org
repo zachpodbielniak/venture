@@ -1,0 +1,32 @@
+#+title: Payroll import
+#+description: Import approved pay runs, disburse liabilities and reverse without rewriting
+
+* Import only
+
+The =payroll= module requires =finance= and =ledger=. It is off until
+=payroll.enabled= is true. Native tax calculation is out of scope: an
+approved JSON or CSV pay run is the input.
+
+=payroll_run= is unique by =run-key= inside an organization. Duplicate keys
+are refused. =payroll_line= stores gross, employer cost, deductions, net and
+liabilities. Gross plus employer cost must equal net plus liabilities.
+
+All imported amounts must be nonnegative, and gross less deductions must equal net. Malformed line objects and incomplete money fields are rejected before posting; failed imports leave no partial run. Disbursement accepts only =all=, =net= or =tax=.
+
+Import posts wages expense against tax payable and net-pay liability through
+the posting service. Disburse clears net pay and tax by crediting cash.
+Reverse posts reversing journals and leaves the imported lines unchanged.
+
+Enabling the module without =payroll.access= (organization owner, admin or
+finance) hides the records.
+
+#+begin_src sh
+venturectl payroll import run_key=2026-01 period_start=2026-01-01 period_end=2026-02-01
+venturectl payroll disburse 1 kind=all
+venturectl payroll reverse 1
+venturectl report payroll_reconciliation
+#+end_src
+
+=test-payroll= covers default-off, JSON/CSV import, duplicate keys,
+disbursement, reversal without rewrite, the reconciliation report and
+access hiding.

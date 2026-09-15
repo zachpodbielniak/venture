@@ -51,7 +51,7 @@ static const gchar *const venture_pod_module_events[] = {
 };
 
 static const gchar *const venture_pod_module_handlers[] = {
-	"query", "count", "report", "create", "low_stock", "assets_run_period", "mail_deliver", NULL
+	"query", "count", "report", "create", "low_stock", "assets_run_period", "mail_deliver", "recurring_run", "collections_run", "bankfeed_sync", "commerce_import", "report_packs_run", NULL
 };
 
 /* --- Event source --------------------------------------------------------- */
@@ -552,6 +552,10 @@ venture_pod_module_handle_low_stock(
 
 #include "assets/venture-assets-automation.inc"
 #include "mail/venture-mail-automation.inc"
+#include "recurring/venture-recurring-automation.inc"
+#include "bankfeed/venture-bankfeed-automation.inc"
+#include "commerce/venture-commerce-automation.inc"
+#include "report/venture-report-pack-automation.inc"
 
 static gboolean
 venture_pod_module_handle_event(
@@ -592,6 +596,16 @@ venture_pod_module_handle_event(
 		return venture_pod_module_assets_run(self, params, result);
 	if (0 == g_strcmp0(event_name, "mail_deliver"))
 		return venture_pod_module_handle_mail(self, params, result);
+	if (0 == g_strcmp0(event_name, "recurring_run"))
+		return venture_pod_module_recurring_run(self, params, result);
+	if (0 == g_strcmp0(event_name, "collections_run"))
+		return venture_pod_module_collections_run(self, params, result);
+	if (0 == g_strcmp0(event_name, "bankfeed_sync"))
+		return venture_pod_module_handle_bankfeed(self, params, result);
+	if (0 == g_strcmp0(event_name, "commerce_import"))
+		return venture_pod_module_handle_commerce(self, params, result);
+	if (0 == g_strcmp0(event_name, "report_packs_run"))
+		return venture_pod_module_handle_report_packs(self, params, result);
 
 	g_warning("venture has no handler called \"%s\"", event_name);
 
@@ -974,8 +988,8 @@ venture_automation_validate_dsl(
 	return TRUE;
 }
 
-/**
- * venture_automation_describe_modules:
+/*
+ * The public header documents venture_automation_describe_modules().
  * @self: a #VentureAutomation
  *
  * Returns: (transfer full): a JSON array of the loaded pod modules, each

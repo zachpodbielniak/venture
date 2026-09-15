@@ -368,6 +368,7 @@ static GType (*const venture_module_finance_types[]) (void) = {
 	venture_account_get_type,
 	venture_ledger_entry_get_type,
 	venture_tax_category_get_type,
+	venture_tax_code_get_type,
 	NULL
 };
 
@@ -498,7 +499,7 @@ static const gchar *const venture_module_reports_sales[] = {
 	"categories", "inventory", NULL
 };
 static const gchar *const venture_module_reports_finance[] = {
-	"pnl", "ventures", "monthly", "tax", NULL
+	"pnl", "ventures", "monthly", "tax", "tax_liability", NULL
 };
 static const gchar *const venture_module_reports_crm[] = { "pipeline", NULL };
 static const gchar *const venture_module_reports_receivables[] = {
@@ -509,7 +510,8 @@ static const gchar *const venture_module_requires_receivables[] = {
 };
 static GType (*const venture_module_receivables_types[]) (void) = {
 	venture_payment_get_type, venture_payment_allocation_get_type,
-	venture_customer_credit_get_type, venture_refund_get_type, NULL
+	venture_customer_credit_get_type, venture_refund_get_type,
+	venture_customer_portal_access_get_type, NULL
 };
 static const gchar *const venture_module_reports_outreach[] = {
 	"campaigns", NULL
@@ -524,12 +526,15 @@ static const gchar *const venture_module_reports_factory[] = {
 
 static GType (*const venture_module_stripe_types[]) (void) = {
 	venture_stripe_price_link_get_type, venture_stripe_customer_link_get_type,
-	venture_stripe_checkout_get_type, venture_stripe_event_get_type, NULL
+	venture_stripe_checkout_get_type, venture_stripe_event_get_type,
+	venture_processor_payout_get_type, venture_processor_payout_item_get_type,
+	venture_processor_dispute_get_type, venture_processor_exception_get_type, NULL
 };
 static const gchar *const venture_module_requires_stripe[] = { "receivables", NULL };
 
 static GType (*const venture_module_ledger_types[]) (void) = {
-	venture_journal_get_type, venture_journal_line_get_type, NULL
+	venture_journal_get_type, venture_journal_line_get_type,
+	venture_exchange_rate_get_type, NULL
 };
 static const gchar *const venture_module_requires_finance[] = { "finance", NULL };
 static const gchar *const venture_module_reports_ledger[] = { "trial_balance", NULL };
@@ -541,17 +546,26 @@ static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live
 
 static const gchar *const reconciliation_requires[] = { "ledger", NULL };
 static const gchar *const reconciliation_suggests[] = { "banking", NULL };
-static GType (*const venture_module_assets_types[]) (void) = { venture_fixed_asset_get_type, venture_depreciation_entry_get_type, venture_deferral_get_type, venture_deferral_entry_get_type, NULL };
+static GType (*const venture_module_assets_types[]) (void) = { venture_fixed_asset_get_type, venture_depreciation_entry_get_type, venture_deferral_get_type, venture_deferral_entry_get_type, venture_tax_depreciation_entry_get_type, NULL };
 static const gchar *const venture_module_requires_assets[] = { "ledger", "periods", NULL };
 static const gchar *const venture_module_reports_assets[] = { "fixed_assets", "deferrals", NULL };
 static GType (*const venture_module_orgaccess_types[]) (void) = {
 	venture_organization_membership_get_type,
 	venture_team_get_type,
 	venture_team_membership_get_type,
+	venture_accounting_approval_rule_get_type,
+	venture_accounting_approval_get_type,
 	NULL
 };
 
 static const gchar *const billing_requires[] = { "invoicing", "receivables", NULL };
+static const gchar *const projects_requires[] = { "invoicing", "receivables", NULL };
+static const gchar *const projects_reports[] = { "project_margin", NULL };
+static GType (*const projects_types[]) (void) = {
+	venture_client_project_get_type, venture_project_rate_get_type,
+	venture_project_time_get_type, venture_project_cost_get_type,
+	venture_project_billing_get_type, NULL
+};
 static const gchar *const billing_reports[] = { "mrr", "churn", "subscriptions_due", NULL };
 static GType (*const billing_types[]) (void) = {
 	venture_plan_get_type,
@@ -561,6 +575,7 @@ static GType (*const billing_types[]) (void) = {
 	venture_dunning_step_get_type,
 	venture_billing_notice_get_type,
 	venture_billing_request_get_type,
+	venture_customer_payment_method_get_type,
 	NULL
 };
 static GType (*const venture_module_mail_types[]) (void) = {
@@ -576,6 +591,9 @@ static GType (*const quotes_types[]) (void) = {
 	venture_quote_event_get_type,
 	venture_quote_delivery_get_type,
 	venture_quote_action_get_type,
+	venture_progress_billing_get_type,
+	venture_customer_retainer_get_type,
+	venture_contract_retention_get_type,
 	NULL
 };
 
@@ -601,10 +619,15 @@ static const gchar *const venture_module_reports_payables[] = { "payables", "ven
 
 static const gchar *const banking_reports[] = { "bank_reconciliation", NULL };
 static const gchar *const banking_requires[] = { "ledger", NULL };
+static const gchar *const bankfeed_requires[] = { "banking", NULL };
+static GType (*const bankfeed_types[]) (void) = { venture_bank_connection_get_type, NULL };
+static const gchar *const commerce_requires[] = { "invoicing", "receivables", NULL };
+
 static GType (*const banking_types[]) (void) = {
 	venture_bank_account_get_type, venture_bank_statement_get_type,
 	venture_bank_transaction_get_type, venture_bank_match_get_type,
-	venture_reconciliation_get_type, NULL
+	venture_reconciliation_get_type, venture_bank_rule_get_type,
+	venture_bank_transfer_get_type, NULL
 };
 static GType (*const venture_module_pipelines_types[]) (void) = {
 	venture_pipeline_get_type, venture_pipeline_stage_get_type,
@@ -625,10 +648,104 @@ static const gchar *const sequence_reports[] = { "sequence_performance", "sequen
 static GType (*const autojournal_types[]) (void) = { venture_posting_profile_get_type, NULL };
 static const gchar *const autojournal_requires[] = { "ledger", NULL };
 static const gchar *const autojournal_reports[] = { "unposted", NULL };
+static GType (*const venture_module_close_types[]) (void) = {
+	venture_close_workspace_get_type, venture_close_task_get_type,
+	venture_close_workpaper_get_type, venture_close_discrepancy_get_type,
+	venture_close_signoff_get_type, NULL
+};
+static const gchar *const venture_module_requires_close[] = {
+	"periods", "ledger", "statements", NULL
+};
+static const gchar *const venture_module_suggests_close[] = {
+	"banking", "receivables", "payables", "assets", NULL
+};
+static const gchar *const venture_module_reports_close[] = { "close_workspace", NULL };
+static GType (*const venture_module_capture_types[]) (void) = {
+	venture_capture_item_get_type, NULL
+};
+static const gchar *const venture_module_requires_capture[] = { "finance", NULL };
+static const gchar *const venture_module_suggests_capture[] = { "payables", NULL };
+static GType (*const venture_module_claims_types[]) (void) = {
+	venture_expense_claim_get_type, venture_expense_claim_line_get_type, NULL
+};
+static const gchar *const venture_module_requires_claims[] = { "finance", "ledger", NULL };
+static const gchar *const venture_module_suggests_claims[] = { "capture", "payables", NULL };
+static GType (*const venture_module_payroll_types[]) (void) = {
+	venture_payroll_run_get_type, venture_payroll_line_get_type, NULL
+};
+static const gchar *const venture_module_requires_payroll[] = { "finance", "ledger", NULL };
+static const gchar *const venture_module_reports_payroll[] = { "payroll_reconciliation", NULL };
+static const gchar *const venture_module_requires_accounting[] = { "finance", NULL };
+static const gchar *const venture_module_suggests_accounting[] = {
+	"banking", "receivables", "payables", "periods", "close", "capture", NULL
+};
 static const gchar *const venture_module_requires_statements[] = { "ledger", "periods", NULL };
 static const gchar *const venture_module_reports_statements[] = {
 	"balance_sheet", "income_statement", "cash_flow", "general_ledger", "account_balances", "pnl_reconciliation", NULL
 };
+static const gchar *const cutover_requires[] = { "ledger", NULL };
+static const gchar *const setup_requires[] = { "ledger", "periods", NULL };
+static GType (*const setup_types[]) (void) = {
+	venture_accounting_setup_get_type, venture_accounting_control_map_get_type, NULL
+};
+static GType (*const cutover_types[]) (void) = {
+	venture_accounting_cutover_get_type, venture_accounting_cutover_row_get_type, NULL
+};
+static GType (*const statements_types[]) (void) = {
+	venture_saved_report_get_type, venture_report_pack_get_type,
+	venture_accounting_dimension_get_type, NULL
+};
+static GType (*const backup_types[]) (void) = { venture_accounting_backup_get_type, NULL };
+static GType (*const venture_module_tax_filing_types[]) (void) = {
+	venture_tax_filing_get_type, venture_contractor_tax_form_get_type,
+	venture_contractor_tax_pack_get_type, NULL
+};
+static const gchar *const venture_module_requires_tax_filing[] = { "finance", "periods", NULL };
+static const gchar *const venture_module_suggests_tax_filing[] = { "invoicing", "payables", NULL };
+static GType (*const budgets_types[]) (void) = { venture_budget_get_type, venture_budget_line_get_type, NULL };
+static const gchar *const budgets_requires[] = { "statements", NULL };
+static const gchar *const budgets_reports[] = { "budget_vs_actual", "cash_forecast", NULL };
+static GType (*const equity_types[]) (void) = { venture_equity_transaction_get_type, NULL };
+static const gchar *const equity_requires[] = { "ledger", "setup", NULL };
+static GType (*const group_types[]) (void) = { venture_intercompany_link_get_type, venture_elimination_get_type, NULL };
+static const gchar *const group_requires[] = { "statements", NULL };
+static const gchar *const group_reports[] = {
+	"consolidated_trial_balance", "consolidated_income_statement", "consolidated_balance_sheet", NULL
+};
+
+
+static const gchar *const recurring_requires[] = {
+	"invoicing", "payables", "ledger", "periods", "receivables", "mail", NULL
+};
+static const gchar *const recurring_reports[] = { "collections_worklist", NULL };
+static GType (*const recurring_types[]) (void) = {
+	venture_recurring_schedule_get_type, venture_recurring_occurrence_get_type,
+	venture_collection_policy_get_type, venture_collection_step_get_type,
+	venture_collection_case_get_type, venture_collection_notice_get_type,
+	venture_financial_batch_get_type, NULL
+};
+static GType (*const goods_types[]) (void) = {
+	venture_purchase_order_get_type, venture_purchase_order_line_get_type,
+	venture_goods_receipt_get_type, venture_goods_receipt_line_get_type,
+	venture_inventory_cost_layer_get_type, venture_sales_order_get_type,
+	venture_sales_order_line_get_type, venture_fulfillment_get_type, NULL
+};
+static const gchar *const goods_requires[] = { "payables", "ledger", "sales", NULL };
+static const gchar *const goods_reports[] = {
+	"committed_spend", "reorder_worklist", "inventory_valuation", NULL
+};
+
+static GType (*const venture_module_custom_fields_types[]) (void) = {
+	venture_accounting_custom_field_get_type,
+	venture_accounting_layout_get_type,
+	venture_custom_field_value_get_type,
+	NULL
+};
+static const gchar *const venture_module_requires_custom_fields[] = { "core", NULL };
+static GType (*const venture_module_supplier_portal_types[]) (void) = {
+	venture_supplier_portal_access_get_type, NULL
+};
+static const gchar *const venture_module_requires_supplier_portal[] = { "payables", NULL };
 
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
@@ -638,6 +755,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		NULL, NULL, venture_module_core_types, NULL, NULL, TRUE
 	},
 	{
+		"custom_fields", "Custom fields",
+		"Operator-defined fields, layouts and required values without writing C.",
+		venture_module_requires_custom_fields, NULL, venture_module_custom_fields_types, NULL, NULL, FALSE
+	},
+	{
 		"sales", "Sales",
 		"Products, inventory and sales: what you sell and what it sold for.",
 		venture_module_requires_core, venture_module_suggests_crm,
@@ -645,7 +767,7 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	},
 	{
 		"finance", "Finance",
-		"Expenses, accounts, the ledger, tax categories, and the profit-and-"
+		"Expenses, accounts, the ledger, tax categories, tax codes, and the profit-and-"
 		"loss reports built on them.",
 		venture_module_requires_sales, NULL,
 		venture_module_finance_types, venture_module_reports_finance, NULL,
@@ -790,6 +912,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		billing_requires, NULL, billing_types, billing_reports, NULL, FALSE
 	},
 	{
+		"projects", "Client projects", "Approved time and billable costs invoiced through settlement.",
+		projects_requires, NULL, projects_types, projects_reports, NULL, FALSE
+	},
+	{
 		"orgaccess", "Organization access", "Membership, organization roles and team ownership.",
 		venture_module_requires_core, NULL,
 		venture_module_orgaccess_types, NULL, NULL, FALSE
@@ -813,10 +939,23 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		venture_module_requires_payables, NULL, venture_module_payables_types,
 		venture_module_reports_payables, NULL, FALSE
 	},
+	{
+		"supplier_portal", "Supplier portal",
+		"Tokenized vendor access to isolated bills, payment status and print.",
+		venture_module_requires_supplier_portal, NULL, venture_module_supplier_portal_types, NULL, NULL, FALSE
+	},
 
 	{
 		"banking", "Banking", "Statement import, matching and reconciliation.",
 		banking_requires, NULL, banking_types, banking_reports, NULL, FALSE
+	},
+	{
+		"bankfeed", "Bank feeds", "Pluggable statement feeds into bank_transaction.",
+		bankfeed_requires, NULL, bankfeed_types, NULL, "bankfeed-enabled", FALSE
+	},
+	{
+		"commerce", "Commerce connectors", "Import orders as invoices through document compose.",
+		commerce_requires, NULL, NULL, NULL, "commerce-enabled", FALSE
 	},
 	{
 		"pipelines", "Sales pipelines", "Configurable stages, history and forecasts.",
@@ -832,8 +971,73 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	},
 	{
 		"statements", "Statements", "Financial statements from posted ledger evidence.",
-		venture_module_requires_statements, NULL, NULL,
+		venture_module_requires_statements, NULL, statements_types,
 		venture_module_reports_statements, NULL, FALSE
+	},
+	{
+		"cutover", "Accounting cutover", "Guided Zoho Books and QuickBooks opening-balance migration.",
+		cutover_requires, NULL, cutover_types, NULL, NULL, FALSE
+	},
+	{
+		"setup", "Accounting setup", "Guided books setup, control-account mappings and first-posting checks.",
+		setup_requires, NULL, setup_types, NULL, NULL, FALSE
+	},
+	{
+		"recurring", "Recurring documents and collections",
+		"Reusable schedules, invoice reminders and batch financial entry.",
+		recurring_requires, NULL, recurring_types, recurring_reports, NULL, FALSE
+	},
+	{
+		"close", "Period close", "Accountant close workspace, signoff and subledger tie-outs.",
+		venture_module_requires_close, venture_module_suggests_close,
+		venture_module_close_types, venture_module_reports_close, NULL, FALSE
+	},
+	{
+		"capture", "Document capture", "Receipt and supplier-invoice inbox that becomes expenses or bills.",
+		venture_module_requires_capture, venture_module_suggests_capture,
+		venture_module_capture_types, NULL, NULL, FALSE
+	},
+	{
+		"claims", "Expense claims", "Employee reimbursements, mileage and receipt-backed expense claims.",
+		venture_module_requires_claims, venture_module_suggests_claims,
+		venture_module_claims_types, NULL, NULL, FALSE
+	},
+	{
+		"payroll", "Payroll", "Imported pay runs, liability disbursement and reconciliation.",
+		venture_module_requires_payroll, NULL,
+		venture_module_payroll_types, venture_module_reports_payroll, "payroll-enabled", FALSE
+	},
+	{
+		"accounting", "Daily accounting", "Guided next actions for the books.",
+		venture_module_requires_accounting, venture_module_suggests_accounting,
+		NULL, NULL, NULL, FALSE
+	},
+	{
+		"backup", "Accounting backup", "Export and restore an organization accounting pack.",
+		cutover_requires, NULL, backup_types, NULL, NULL, FALSE
+	},
+	{
+		"tax_filing", "Tax filing",
+		"Jurisdiction sales-tax returns and contractor 1099-NEC packs.",
+		venture_module_requires_tax_filing, venture_module_suggests_tax_filing,
+		venture_module_tax_filing_types, NULL, NULL, FALSE
+	},
+	{
+		"goods", "Purchasing, inventory and sales orders",
+		"Purchase orders, receiving, FIFO inventory to the general ledger, and sales-order fulfillment.",
+		goods_requires, NULL, goods_types, goods_reports, NULL, FALSE
+	},
+	{
+		"budgets", "Budgets", "Plans, vs-actual and cash forecasting from unpaid AR/AP.",
+		budgets_requires, NULL, budgets_types, budgets_reports, NULL, FALSE
+	},
+	{
+		"equity", "Owner equity", "Guided contributions, draws, loans and transfers.",
+		equity_requires, NULL, equity_types, NULL, NULL, FALSE
+	},
+	{
+		"group", "Intercompany group", "Optional consolidation, eliminations and FX.",
+		group_requires, NULL, group_types, group_reports, "group-enabled", FALSE
 	}
 
 };

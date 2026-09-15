@@ -154,7 +154,11 @@ static const VentureFieldDecl venture_product_fields[] = {
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
 	              VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD("recognition-policy", "Recognition policy", "0 immediate, 1 deferred, 2 milestone",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("recognition-months", "Recognition months", "Service period for deferred income; 0 means immediate",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureProduct, venture_product, venture_product_fields,
@@ -179,6 +183,9 @@ static const VentureFieldDecl venture_inventory_item_fields[] = {
 	VENTURE_FIELD("lead-time-days", "Lead time",
 	              "Days between ordering and receiving",
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("allow-negative", "Allow negative",
+	              "When true, stock may go below zero",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
@@ -401,6 +408,9 @@ static const VentureFieldDecl venture_expense_fields[] = {
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("payment-method", "Paid with", NULL,
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("cash-account-id", "Cash account",
+	                  "Ledger cash or card account this payment used; empty means code 1000",
+	                  "account", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("receipt-url", "Receipt", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("external-id", "External ID",
@@ -479,7 +489,13 @@ static const VentureFieldDecl venture_account_fields[] = {
 	VENTURE_FIELD_TEXT("description", "Description", NULL),
 	VENTURE_FIELD_MONEY("opening-balance", "Opening balance", NULL),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
-	              VENTURE_COLUMN_FLAG_INDEXED)
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("cash-equivalent", "Cash equivalent",
+		"Include with Cash on the cash-flow statement",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("cash-flow-class", "Cash-flow class",
+		"operating, investing or financing; empty infers from the account class",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureAccount, venture_account, venture_account_fields,
@@ -537,6 +553,61 @@ static const VentureFieldDecl venture_tax_category_fields[] = {
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureTaxCategory, venture_tax_category, venture_tax_category_fields,
 	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
+static const VentureFieldDecl venture_tax_code_fields[] = {
+	VENTURE_FIELD("code", "Code", "Organization-unique tax code", VENTURE_FIELD_KIND_STRING,
+		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_NAME("name", "Name", NULL),
+	VENTURE_FIELD("jurisdiction", "Jurisdiction", "Filing jurisdiction, for example US-NY or EU-DE",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD("rate-numerator", "Rate numerator", "Exact rate numerator; 8875/100000 is 8.875%",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("rate-denominator", "Rate denominator", "Exact rate denominator, never zero",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("recoverable", "Recoverable", "Purchase tax is an asset rather than extra expense",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED)
+};
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureTaxCode, venture_tax_code, venture_tax_code_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
+
+gboolean
+venture_tax_code_get_rate(VentureTaxCode *self, gint64 *numerator, gint64 *denominator, GError **error)
+{
+	gint64 num = 0;
+	gint64 den = 0;
+
+	g_return_val_if_fail(VENTURE_IS_TAX_CODE(self), FALSE);
+	g_object_get(self, "rate-numerator", &num, "rate-denominator", &den, NULL);
+	if (num < 0 || den <= 0)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"A tax code rate must be a nonnegative numerator over a positive denominator");
+		return FALSE;
+	}
+	if (numerator != NULL)
+		*numerator = num;
+	if (denominator != NULL)
+		*denominator = den;
+	return TRUE;
+}
+
+VentureMoney *
+venture_tax_code_levy(VentureTaxCode *self, const VentureMoney *net, GError **error)
+{
+	gint64 numerator = 0;
+	gint64 denominator = 0;
+
+	if (net == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Tax is computed from a net amount");
+		return NULL;
+	}
+	if (!venture_tax_code_get_rate(self, &numerator, &denominator, error))
+		return NULL;
+	return venture_money_multiply_rational(net, numerator, denominator, error);
+}
+
 /* ==========================================================================
  * Relations
  * ========================================================================== */
@@ -584,7 +655,11 @@ static const VentureFieldDecl venture_company_fields[] = {
 	VENTURE_FIELD_REF("owner-user-id", "Owner", "Responsible user", "user", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("default-price-list-id", "Default price list", "Customer-specific quote pricing", "price_list", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("tax-exempt", "Tax exempt", "Non-profit or other exemption: invoices freeze zero tax",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("tax-exempt-reason", "Exemption reason", "Certificate or statutory basis",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCompany, venture_company, venture_company_fields,
@@ -2691,7 +2766,15 @@ static const VentureFieldDecl venture_invoice_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", "Internal; never printed"),
 	VENTURE_FIELD("workflow-state", "Workflow state",
 		"Set through VentureSettlementService; plugins may extend the lifecycle",
-		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED)
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_MONEY("shipping-amount", "Shipping", "Optional shipping frozen at issuance"),
+	VENTURE_FIELD("tax-exempt", "Tax exempt", "Frozen at issue from the customer or this invoice",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("tax-exempt-reason", "Exemption reason", "Certificate or statutory basis frozen at issue",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("external-id", "External ID",
+		"Connector order identifier; nonempty values are unique per organization",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION)
 };
 
 VENTURE_DEFINE_ENTITY(VentureInvoice, venture_invoice, venture_invoice_fields)
@@ -2717,7 +2800,13 @@ static const VentureFieldDecl venture_invoice_line_fields[] = {
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("product-id", "Product", "Catalog item priced by the payment provider", "product", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("discount-percent", "Discount percent", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("tax-percent", "Tax percent", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("tax-percent", "Tax percent", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("tax-code-id", "Tax code", "Exact rate and jurisdiction; used instead of tax-percent when set",
+		"tax_code", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("income-amount", "Frozen income", "Net after discount, frozen at issuance"),
+	VENTURE_FIELD_MONEY("discount-amount", "Frozen discount", "Frozen at issuance"),
+	VENTURE_FIELD_MONEY("tax-amount", "Frozen tax", "Frozen at issuance"),
+	VENTURE_FIELD_MONEY("shipping-amount", "Frozen shipping", "Frozen at issuance")
 };
 
 VENTURE_DEFINE_ENTITY(VentureInvoiceLine, venture_invoice_line,
@@ -2756,10 +2845,16 @@ venture_invoice_line_get_amount(
 
 	{
 		g_autoptr(VentureMoney) subtotal = venture_money_multiply_rational(unit_price, thousandths, 1000, error);
+		g_autoptr(VentureMoney) frozen_net = NULL;
+		g_autoptr(VentureMoney) frozen_tax = NULL;
 		gint64 discount_percent;
 		gint64 tax_percent;
-		g_object_get(self, "discount-percent", &discount_percent, "tax-percent", &tax_percent, NULL);
-		if (subtotal == NULL) return NULL;
+		g_object_get(self, "discount-percent", &discount_percent, "tax-percent", &tax_percent,
+			"income-amount", &frozen_net, "tax-amount", &frozen_tax, NULL);
+		if (subtotal == NULL)
+			return NULL;
+		if (frozen_net != NULL && frozen_tax != NULL)
+			return venture_money_add(frozen_net, frozen_tax, error);
 		return venture_quote_apply_percentages(subtotal, discount_percent, tax_percent, error);
 	}
 }

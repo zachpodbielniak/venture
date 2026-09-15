@@ -1,0 +1,16 @@
+#+title: Guided invoice and quote editor
+#+description: One page to add lines, tax and send
+
+Draft invoices and composed quotes do not require =post=/=pay= approval. Composing and sending an invoice together does: the complete header, lines and send command are one proposal, and the second actor repeats the exact input before any rows are created.
+
+The guided editor reuses invoice and quote field tables and
+=VentureQuoteService=. =POST /api/v1/invoices/compose= and
+=/api/v1/quotes/compose= create a header, lines and optionally send in one
+transaction. Numbers are allocated per organization when omitted. Invoice
+quantities keep thousandths precision; quote quantities remain whole units
+until a later commercial change. =venturectl compose invoice|quote JSON=
+calls the same routes.
+
+Every line must be an object with a positive numeric quantity and an exact money price. Fractional quote quantities are refused rather than truncated; invoice quantities retain their existing fractional support. Validation or send failures roll back the document and all its lines.
+
+The browser editor uses the normal application shell and metadata-derived document and line fields, with five optional line groups and an optional Send checkbox. API and CLI callers continue to use the same JSON composer.

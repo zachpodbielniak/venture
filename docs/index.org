@@ -31,11 +31,15 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:assets.org][Fixed assets and deferrals]] — book depreciation, monthly releases and period sweeps
 - [[file:receivables.org][Customer receivables]] — receipts, credits, refunds and historical customer balances
 - [[file:payables.org][Vendor payables]] — supplier bills, payments and dated liability evidence
+- [[file:purchasing.org][Purchasing]] — purchase orders, receiving and three-way match
+- [[file:inventory.org][Inventory ledger]] — FIFO cost layers and COGS
+- [[file:sales-orders.org][Sales orders]] — allocate, ship and invoice fulfilled quantity
 - [[file:reporting.org][Reporting]] — the built-in reports and how to write one
 - [[file:forge.org][Git forges]] — linking tickets to repositories, and letting an agent do the work
 - [[file:knowledge-bases.org][Knowledge bases]] — documents the assistant can read, and how they reach it
 - [[file:automation.org][Automation]] — scheduled rules, and the podomation engine
 - [[file:modules.org][Modules]] — switching pieces of VENTURE on and off, and what a module is made of
+- [[file:parity.org][Accounting parity]] — the gap branch for issue #70, and how work lands on it
 - [[file:factory.org][The software factory]] — milestones, releases, builds, environments, deployments, incidents
 - [[file:dashboards.org][Dashboards]] — pages of widgets, as many as you like, from any module's records and reports
 - [[file:webhooks.org][Webhooks out]] — telling something outside that a record changed: events, signing, deliveries
@@ -53,8 +57,29 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:actions.org][Record actions]] — shared business operations and approval
 
 - [[file:banking.org][Banking]] — statement import, matching and reconciliation
+- [[file:bankfeed.org][Bank feeds]] — pluggable Teller-style statement feeds
+- [[file:commerce.org][Commerce connectors]] — import orders as invoices through compose
+- [[file:setup.org][Accounting setup]] — guided books setup and control-account mappings
+- [[file:projects.org][Client projects]] — approved time, billable costs and invoices through settlement
+- [[file:cutover.org][Accounting cutover]] — guided Zoho Books and QuickBooks opening balances
 - [[file:statements.org][Financial statements]] — posted ledger balances, statements, comparatives and P&L reconciliation
+- [[file:close.org][Accountant close]] — workspace, subledger tie-outs, workpapers and signoff
+- [[file:tax-filing.org][Jurisdiction tax filing]] — adapter-prepared sales-tax return packs
+- [[file:contractor-tax.org][Contractor 1099-NEC]] — protected TINs and calendar-year packs from paid bills
+- [[file:capture.org][Document capture]] — receipt and supplier-invoice inbox
+- [[file:claims.org][Employee reimbursements]] — mileage, receipts, submit, approve and pay
+- [[file:payroll.org][Payroll import]] — imported pay runs, liability disbursement and reconciliation
+- [[file:accounting.org][Daily accounting home]] — guided next actions for the books
+- [[file:budgets.org][Budgets]] — vs-actual and cash forecasting
+- [[file:equity.org][Owner equity]] — contributions, draws, loans and transfers
+- [[file:group.org][Intercompany group]] — optional consolidation and eliminations
 
+- [[file:documents.org][Guided invoice and quote editor]] — one page for lines, tax and send
+- [[file:progress.org][Progress invoicing]] — remaining contract value, retainers and retention
+- [[file:portal.org][Customer portal]] — isolated invoices and pay
+- [[file:supplier-portal.org][Supplier portal]] — isolated bills, payment status and print
+- [[file:custom-fields.org][Custom fields]] — layouts and required values without writing C
+- [[file:backup.org][Accounting backup]] — export and restore an organization pack
 - [[file:quotes.org][Commercial quotes]] — price lists, revisions, public acceptance and invoice handoff
 
 ** The shape of the thing in one page
@@ -79,6 +104,8 @@ The AI reads freely and cannot write unsupervised. A tool call that would change
 
 Two binaries, both statically linked against every vendored dependency: =venture= is the server, =venturectl= is the client. Either builds alone.
 
+- [[file:projects.org][Client projects]] — approved time, billable costs and invoices through settlement
 - [[file:billing.org][SaaS billing]] — plans, customer subscriptions and recurring revenue
+- [[file:recurring.org][Recurring documents]] — reusable invoices, bills, expenses and journals; collections; batch entry
 - [[file:pipelines.org][Sales pipelines]] — configurable stages, next actions, history, loss reasons and forecasts
 - [[file:autojournal.org][Automatic journals]] — configurable sale/expense legs, dated refunds and backfill

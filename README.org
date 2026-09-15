@@ -35,6 +35,8 @@ make run                  # run the server against a scratch SQLite database
 
 See =make help= for the full target list and =make show-config= for the resolved configuration.
 
+=make DEBUG=1 gir= builds the Orm, AiGlib and HtmxGlib introspection dependencies from their pinned submodules before scanning Venture. The optional shared library uses those same dependency shared libraries so imported types have one runtime identity; the server, CLI and tests retain static dependency linking. =make DEBUG=1 install-gir DESTDIR=/path/to/stage= stages Venture and dependency GIR/typelib files together with the required shared libraries and SONAME links. =BUILD_GIR=1= also includes this installation in the ordinary =install= target.
+
 *** Fedora build dependencies
 
 =make list-deps= prints the package names to layer into an image build:

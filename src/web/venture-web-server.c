@@ -947,6 +947,22 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"invoicing"
 	},
 	{
+		"/setup", "Setup",
+		VENTURE_ICON(
+			"<path d=\"M4 4h16v4H4z\"/><path d=\"M8 12h8\"/><path d=\"M8 16h5\"/>"
+		),
+		NULL,
+		"setup"
+	},
+	{
+		"/e/accounting_cutover", "Cutover",
+		VENTURE_ICON(
+			"<path d=\"M4 4h16v4H4z\"/><path d=\"M4 10h10v10H4z\"/><path d=\"M16 14h4v6h-4z\"/>"
+		),
+		NULL,
+		"cutover"
+	},
+	{
 		"/e/product", "Products",
 		VENTURE_ICON(
 			"<path d=\"M21 8l-9-5-9 5 9 5 9-5z\"/>"
@@ -1061,6 +1077,16 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"/e/customer_subscription", "Subscriptions",
 		VENTURE_ICON("<path d=\"M4 12a8 8 0 1 0 3-6\"/><path d=\"M3 3v6h6\"/>"),
 		NULL, "billing"
+	},
+	{
+		"/e/recurring_schedule", "Recurring",
+		VENTURE_ICON("<path d=\"M4 12a8 8 0 1 0 3-6\"/><path d=\"M3 3v6h6\"/>"),
+		NULL, "recurring"
+	},
+	{
+		"/e/collection_case", "Collections",
+		VENTURE_ICON("<path d=\"M4 4h16v4H4z\"/><path d=\"M4 12h16v8H4z\"/>"),
+		NULL, "recurring"
 	},
 	{
 		"/e/company", "Companies",
@@ -1399,8 +1425,23 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		VENTURE_ICON("<path d=\"M3 5h18v14H3zM3 5l9 7 9-7\"/>"),
 		NULL, "mail"
 	},
+	{ "/accounting", "Books", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h8M8 16h5\"/>"), "Accounting", "accounting" },
+	{ "/bankfeed", "Bank feeds", VENTURE_ICON("<path d=\"M4 12h16M4 7h16M4 17h10\"/>"), NULL, "bankfeed" },
+	{ "/budgets", "Budgets", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), NULL, "budgets" },
+	{ "/equity", "Owner equity", VENTURE_ICON("<path d=\"M12 3v18M5 10h14\"/>"), NULL, "equity" },
+	{ "/group", "Group", VENTURE_ICON("<circle cx=\"8\" cy=\"8\" r=\"3\"/><circle cx=\"16\" cy=\"8\" r=\"3\"/>"), NULL, "group" },
+	{ "/payables", "Pay bills", VENTURE_ICON("<path d=\"M4 12h16M14 6l6 6-6 6\"/>"), NULL, "payables" },
+	{ "/claims", "Claims", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), NULL, "claims" },
+	{ "/payroll", "Payroll", VENTURE_ICON("<path d=\"M4 6h16M4 12h16M4 18h10\"/>"), NULL, "payroll" },
+	{ "/purchasing", "Purchasing", VENTURE_ICON("<path d=\"M4 7h16M4 12h10M4 17h7\"/>"), NULL, "goods" },
+	{ "/sales-orders", "Sales orders", VENTURE_ICON("<path d=\"M4 7h16M4 12h10M4 17h7\"/>"), NULL, "goods" },
+	{ "/close", "Period close", VENTURE_ICON("<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M8 15l2 2 4-4\"/>"), NULL, "close" },
+	{ "/tax-filings", "Tax filings", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h8M8 16h5\"/>"), NULL, "tax_filing" },
+	{ "/capture", "Capture inbox", VENTURE_ICON("<path d=\"M4 4h16v12H4zM8 20h8\"/>"), NULL, "capture" },
 	{ "/worklist", "My day", VENTURE_ICON("<path d=\"M4 7h16M4 12h16M4 17h10\"/>"), "Activities", "activities" },
 	{ "/deals", "Sales board", VENTURE_ICON("<path d=\"M4 4v16M12 4v16M20 4v16\"/>"), "Sales pipelines", "pipelines" },
+	{ "/invoices/compose", "New invoice", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h8M8 16h5\"/>"), "Invoicing", "invoicing" },
+	{ "/quotes/compose", "New quote", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), "Quotes", "quotes" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 
@@ -2532,7 +2573,7 @@ venture_web_api_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
@@ -3597,6 +3638,9 @@ venture_web_stripe_webhook(HtmxRequest *request, GHashTable *params, gpointer us
 	return response;
 }
 #include "payables/venture-payables-web.inc"
+#include "claims/venture-claims-web.inc"
+#include "payroll/venture-payroll-web.inc"
+#include "goods/venture-goods-web.inc"
 
 /*
  * POST /invoices/:id/status - the same service reached by generated writes.
@@ -3650,7 +3694,8 @@ venture_web_ui_invoice_status(
 
 	to = htmx_request_get_form_value(request, "to");
 
-	now = venture_time_now();
+	/* Implicit accounting dates remain stable across a two-actor retry. */
+	now = venture_time_from_string("today", NULL);
 	venture_auth_to_actor(principal, &actor);
 
 	if (g_strcmp0(to, "paid") == 0)
@@ -3659,6 +3704,16 @@ venture_web_ui_invoice_status(
 		if (NULL != gate)
 			return gate;
 		if (!venture_settlement_service_settle_invoice(
+			venture_settlement_service_get(venture_context_get_database(self->context)),
+			id, now, &actor, &error))
+			return venture_web_error_response(error);
+	}
+	else if (g_strcmp0(to, "write-off") == 0)
+	{
+		HtmxResponse *gate = venture_web_require_module_ui(self, request, "receivables");
+		if (NULL != gate)
+			return gate;
+		if (!venture_settlement_service_write_off(
 			venture_settlement_service_get(venture_context_get_database(self->context)),
 			id, now, &actor, &error))
 			return venture_web_error_response(error);
@@ -3808,6 +3863,8 @@ venture_web_ui_invoice_print(
 	g_string_append(html, "<table><thead><tr><th>Description</th>"
 	                      "<th class=\"num\">Qty</th>"
 	                      "<th class=\"num\">Unit</th>"
+	                      "<th class=\"num\">Net</th>"
+	                      "<th class=\"num\">Tax</th>"
 	                      "<th class=\"num\">Amount</th></tr></thead><tbody>");
 
 	for (i = 0; i < lines->len; i++)
@@ -3816,12 +3873,15 @@ venture_web_ui_invoice_print(
 		g_autofree gchar *description = NULL;
 		g_autoptr(VentureMoney) unit_price = NULL;
 		g_autoptr(VentureMoney) amount = NULL;
+		g_autoptr(VentureMoney) net = NULL;
+		g_autoptr(VentureMoney) tax = NULL;
 		gdouble quantity;
 
 		line = g_ptr_array_index(lines, i);
 		g_object_get(line, "description", &description,
 		             "quantity", &quantity,
-		             "unit-price", &unit_price, NULL);
+		             "unit-price", &unit_price,
+		             "income-amount", &net, "tax-amount", &tax, NULL);
 		amount = venture_invoice_line_get_amount(line, NULL);
 
 		g_string_append(html, "<tr><td>");
@@ -3839,6 +3899,18 @@ venture_web_ui_invoice_print(
 		}
 
 		g_string_append(html, "</td><td class=\"num\">");
+		if (NULL != net)
+		{
+			g_autofree gchar *text = venture_money_to_display_string(net, TRUE);
+			venture_html_escape_append(html, text);
+		}
+		g_string_append(html, "</td><td class=\"num\">");
+		if (NULL != tax)
+		{
+			g_autofree gchar *text = venture_money_to_display_string(tax, TRUE);
+			venture_html_escape_append(html, text);
+		}
+		g_string_append(html, "</td><td class=\"num\">");
 
 		if (NULL != amount)
 		{
@@ -3852,7 +3924,7 @@ venture_web_ui_invoice_print(
 	}
 
 	g_string_append(html, "</tbody><tfoot><tr>"
-	                      "<td colspan=\"3\" class=\"num\">Total</td>"
+	                      "<td colspan=\"5\" class=\"num\">Total</td>"
 	                      "<td class=\"num\">");
 
 	{
@@ -5663,7 +5735,7 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
@@ -6147,6 +6219,12 @@ venture_web_append_form_field(
 			current = g_value_dup_string(&value);
 		}
 	}
+	if (current == NULL && record != NULL)
+	{
+		const gchar *attribute = venture_entity_get_attribute(record, name);
+		if (attribute != NULL && attribute[0] != '\0')
+			current = g_strdup(attribute);
+	}
 
 	/*
 	 * The label text and the required marker are wrapped together so they
@@ -6417,6 +6495,21 @@ venture_web_ui_form(
 	g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
 	                         "<div class=\"form-grid\">");
 
+	{
+		gint64 org = (0 != id)
+			? venture_entity_get_organization_id(record)
+			: venture_web_active_organization(self, request);
+		g_autoptr(GPtrArray) extra = NULL;
+		guint custom;
+		if (org == 0)
+			org = venture_context_get_default_organization_id(self->context);
+		extra = venture_custom_fields_form_specs(venture_context_get_database(self->context),
+			org, type_name, record, NULL);
+		for (custom = 0; extra && custom < extra->len; custom++)
+			g_ptr_array_add(specs, venture_field_spec_copy(g_ptr_array_index(extra, custom)));
+		venture_custom_fields_order_specs(venture_context_get_database(self->context), org, type_name, specs);
+	}
+
 	for (i = 0; i < specs->len; i++)
 	{
 		VentureFieldSpec *spec;
@@ -6606,6 +6699,22 @@ venture_web_apply_form(
 	{
 		venture_entity_set_organization_id(record,
 			venture_context_get_default_organization_id(self->context));
+	}
+
+	{
+		g_autoptr(GPtrArray) extra = venture_custom_fields_form_specs(
+			venture_context_get_database(self->context),
+			venture_entity_get_organization_id(record),
+			venture_entity_get_entity_name(record), record, NULL);
+		guint custom;
+		for (custom = 0; extra && custom < extra->len; custom++)
+		{
+			VentureFieldSpec *spec = g_ptr_array_index(extra, custom);
+			const gchar *submitted = htmx_request_get_form_value(request,
+				venture_field_spec_get_name(spec));
+			if (submitted != NULL)
+				venture_entity_set_attribute(record, venture_field_spec_get_name(spec), submitted);
+		}
 	}
 
 	return TRUE;
@@ -7244,6 +7353,9 @@ venture_web_append_knowledge(
 );
 
 #include "banking/venture-bank-panel.inc"
+#include "cutover/venture-cutover-panel.inc"
+#include "setup/venture-setup-panel.inc"
+#include "backup/venture-backup-web.inc"
 
 static void
 venture_web_append_related(
@@ -8507,6 +8619,8 @@ venture_web_append_invoice_block(
 	                         "<table class=\"data\"><thead><tr>"
 	                         "<th>Description</th><th class=\"num\">Qty</th>"
 	                         "<th class=\"num\">Unit</th>"
+	                         "<th class=\"num\">Net</th>"
+	                         "<th class=\"num\">Tax</th>"
 	                         "<th class=\"num\">Amount</th></tr></thead>"
 	                         "<tbody>");
 
@@ -8516,12 +8630,15 @@ venture_web_append_invoice_block(
 		g_autofree gchar *description = NULL;
 		g_autoptr(VentureMoney) unit_price = NULL;
 		g_autoptr(VentureMoney) amount = NULL;
+		g_autoptr(VentureMoney) net = NULL;
+		g_autoptr(VentureMoney) tax = NULL;
 		gdouble quantity;
 
 		line = g_ptr_array_index(lines, i);
 		g_object_get(line, "description", &description,
 		             "quantity", &quantity,
-		             "unit-price", &unit_price, NULL);
+		             "unit-price", &unit_price,
+		             "income-amount", &net, "tax-amount", &tax, NULL);
 		amount = venture_invoice_line_get_amount(line, NULL);
 
 		g_string_append(content, "<tr><td>");
@@ -8539,6 +8656,18 @@ venture_web_append_invoice_block(
 		}
 
 		g_string_append(content, "</td><td class=\"num\">");
+		if (NULL != net)
+		{
+			g_autofree gchar *text = venture_money_to_display_string(net, TRUE);
+			venture_html_escape_append(content, text);
+		}
+		g_string_append(content, "</td><td class=\"num\">");
+		if (NULL != tax)
+		{
+			g_autofree gchar *text = venture_money_to_display_string(tax, TRUE);
+			venture_html_escape_append(content, text);
+		}
+		g_string_append(content, "</td><td class=\"num\">");
 
 		if (NULL != amount)
 		{
@@ -8552,7 +8681,7 @@ venture_web_append_invoice_block(
 	}
 
 	g_string_append(content, "</tbody><tfoot><tr>"
-	                         "<td colspan=\"3\" class=\"num\">"
+	                         "<td colspan=\"5\" class=\"num\">"
 	                         "<strong>Total</strong></td>"
 	                         "<td class=\"num\"><strong>");
 
@@ -8581,6 +8710,21 @@ venture_web_append_invoice_block(
 	}
 
 	g_string_append(content, "</strong></td></tr></tfoot></table></div>");
+	{
+		gboolean exempt = FALSE;
+		g_autofree gchar *reason = NULL;
+		g_object_get(record, "tax-exempt", &exempt, "tax-exempt-reason", &reason, NULL);
+		if (exempt)
+		{
+			g_string_append(content, "<p class=\"muted\">Tax exempt");
+			if (reason != NULL && *reason != '\0')
+			{
+				g_string_append(content, ": ");
+				venture_html_escape_append(content, reason);
+			}
+			g_string_append(content, "</p>");
+		}
+	}
 
 	/* The transitions this status allows, each a form so nothing here
 	 * depends on scripting. */
@@ -8625,12 +8769,20 @@ venture_web_append_invoice_block(
 
 	if ((VENTURE_INVOICE_STATUS_SENT == status) ||
 	    (VENTURE_INVOICE_STATUS_PARTIALLY_PAID == status))
+	{
 		g_string_append_printf(content,
 			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
 			"/status\"><input type=\"hidden\" name=\"to\" value=\"paid\">"
 			"<button class=\"btn btn-primary\" type=\"submit\" "
 			"title=\"Records a receipt for the outstanding balance\">"
 			"Mark paid</button></form>", id);
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
+			"/status\"><input type=\"hidden\" name=\"to\" value=\"write-off\">"
+			"<button class=\"btn\" type=\"submit\" "
+			"title=\"Write off remaining AR; journals stay posted\">"
+			"Write off</button></form>", id);
+	}
 
 	g_string_append(content, "</div></div>");
 }
@@ -8800,6 +8952,10 @@ venture_web_ui_detail(
 	venture_web_append_record_actions(self, content, record, principal);
 	venture_web_append_related(self, content, record);
 	venture_bank_append_actions(content, record);
+	venture_cutover_append_actions(content, record);
+	venture_setup_append_actions(content, record);
+	if (venture_context_module_enabled(self->context, "backup"))
+		venture_backup_append_actions(content, record);
 	venture_web_sequence_panel(self, content, principal, record);
 
 	/* A link is not offered on a link; the audit log is not linkable. */
@@ -8817,6 +8973,7 @@ venture_web_ui_detail(
 		venture_web_append_invoice_block(self, content, record);
 	quote_buttons(content, record);
 	venture_web_append_payables_actions(self, content, record);
+	venture_web_append_claims_actions(self, content, record);
 
 	if (VENTURE_TYPE_FIXED_ASSET == entity_type)
 		venture_web_append_asset_actions(content, record);
@@ -12088,6 +12245,7 @@ venture_web_ui_settings(
 	                       "resolved at startup. Read-only: settings are "
 	                       "layered, so edit the file or the environment and "
 	                       "restart.</p>"
+	                       "<p><a href=\"/settings/fields\">Custom fields and layouts</a></p>"
 	                       "</div></div>");
 
 	/* Where things stand right now, before the settings themselves. */
@@ -27706,6 +27864,12 @@ venture_web_api_ticket_draft(
 #include "reconciliation/venture-reconciliation-web.inc"
 #include "activities/venture-activity-web.inc"
 #include "banking/venture-bank-web.inc"
+#include "cutover/venture-cutover-web.inc"
+#include "setup/venture-setup-web.inc"
+#include "documents/venture-document-web.inc"
+#include "portal/venture-portal-web.inc"
+#include "portal/venture-supplier-portal-web.inc"
+#include "fields/venture-custom-fields-web.inc"
 #include "autojournal/venture-autojournal-web.inc"
 
 #include "mail/venture-mail-web.inc"
@@ -27713,6 +27877,15 @@ venture_web_api_ticket_draft(
 #include "pipelines/venture-pipeline-web.inc"
 
 #include "leads/venture-lead-web.inc"
+#include "close/venture-close-web.inc"
+#include "tax/venture-tax-web.inc"
+#include "capture/venture-capture-web.inc"
+#include "accounting/venture-accounting-web.inc"
+#include "bankfeed/venture-bankfeed-web.inc"
+#include "commerce/venture-commerce-web.inc"
+#include "budgets/venture-budget-web.inc"
+#include "equity/venture-equity-web.inc"
+#include "group/venture-group-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -27845,6 +28018,42 @@ venture_web_server_new(
 	                 venture_web_ui_invoice_status, self);
 	htmx_router_post(router, "/api/v1/vendor_bill/:id/:action", venture_web_payables_action, self);
 	htmx_router_post(router, "/bills/:id/:action", venture_web_payables_action, self);
+	htmx_router_get(router, "/payables", venture_web_payables_workbench, self);
+	htmx_router_post(router, "/payables/pay", venture_web_payables_workbench_pay, self);
+	htmx_router_post(router, "/api/v1/payables/pay", venture_web_payables_workbench, self);
+	htmx_router_get(router, "/claims", venture_web_claims_workbench, self);
+	htmx_router_post(router, "/claims/:id/:action", venture_web_claims_action, self);
+	htmx_router_post(router, "/api/v1/expense_claim/:id/:action", venture_web_claims_action, self);
+	htmx_router_get(router, "/payroll", venture_web_payroll_workbench, self);
+	htmx_router_post(router, "/api/v1/payroll/import", venture_web_payroll_action, self);
+	htmx_router_post(router, "/api/v1/payroll_run/:id/:action", venture_web_payroll_action, self);
+	htmx_router_post(router, "/payroll/:id/:action", venture_web_payroll_action, self);
+	htmx_router_get(router, "/purchasing", venture_web_purchasing_workbench, self);
+	htmx_router_get(router, "/sales-orders", venture_web_sales_workbench, self);
+	htmx_router_post(router, "/purchase_order/:id/:action", venture_web_goods_action, self);
+	htmx_router_post(router, "/api/v1/purchase_order/:id/:action", venture_web_goods_action, self);
+	htmx_router_post(router, "/sales_order/:id/:action", venture_web_goods_action, self);
+	htmx_router_post(router, "/api/v1/sales_order/:id/:action", venture_web_goods_action, self);
+	venture_supplier_portal_web_register(router, self);
+	htmx_router_get(router, "/close", close_ui, self);
+	htmx_router_post(router, "/api/v1/close/open", close_api, self);
+	htmx_router_post(router, "/api/v1/close/:id/:action", close_api, self);
+	htmx_router_get(router, "/api/v1/close/:id/pack", close_api, self);
+	htmx_router_get(router, "/tax-filings", tax_filings_ui, self);
+	htmx_router_post(router, "/api/v1/tax-filings/prepare", tax_filing_api, self);
+	htmx_router_post(router, "/api/v1/tax-filings/:id/:action", tax_filing_api, self);
+	htmx_router_post(router, "/api/v1/contractor-tax/prepare", contractor_tax_api, self);
+	htmx_router_post(router, "/api/v1/contractor-tax/:id/:action", contractor_tax_api, self);
+	htmx_router_get(router, "/api/v1/contractor-tax/:id/export", contractor_tax_api, self);
+	htmx_router_get(router, "/capture", capture_ui, self);
+	htmx_router_post(router, "/api/v1/commerce/import", commerce_import, self);
+	htmx_router_post(router, "/api/v1/capture", capture_api, self);
+	htmx_router_post(router, "/api/v1/capture/:id/:action", capture_api, self);
+	htmx_router_get(router, "/accounting", accounting_ui_home, self);
+	htmx_router_get(router, "/api/v1/accounting/home", accounting_api_home, self);
+	venture_budget_web_register(router, self);
+	venture_equity_web_register(router, self);
+	venture_group_web_register(router, self);
 	htmx_router_get(router, "/invoices/:id/print",
 	                 venture_web_ui_invoice_print, self);
 	htmx_router_get(router, "/quotes/:id/print", quote_route, self);
@@ -27855,6 +28064,7 @@ venture_web_server_new(
 	htmx_router_post(router, "/q/:token/accept", quote_public, self);
 	htmx_router_get(router, "/reports", venture_web_ui_reports, self);
 	htmx_router_get(router, "/settings", venture_web_ui_settings, self);
+	venture_custom_fields_web_register(router, self);
 	htmx_router_get(router, "/entity/:id", venture_web_ui_switch_entity, self);
 	htmx_router_get(router, "/tickets", venture_web_ui_tickets, self);
 	htmx_router_post(router, "/tickets/:id/move", venture_web_ui_ticket_move,
@@ -28033,6 +28243,7 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/fixed_assets/:id/:operation", venture_web_asset_action, self);
 	htmx_router_post(router, "/assets/:id/:operation", venture_web_asset_action, self);
 	htmx_router_post(router, "/api/v1/assets/run-period", venture_web_assets_run, self);
+	htmx_router_post(router, "/api/v1/assets/run-tax-period", venture_web_assets_run_tax, self);
 	htmx_router_post(router, "/api/v1/customer_subscriptions/:id/:action", venture_billing_web_action, self);
 	htmx_router_post(router, "/api/v1/billing/start", venture_billing_web_action, self);
 	htmx_router_post(router, "/api/v1/billing/:action", venture_billing_web_action, self);
@@ -28150,6 +28361,12 @@ venture_web_server_new(
 	                   self);
 
 	venture_bank_web_register(router, self);
+	venture_bankfeed_web_register(router, self);
+	venture_cutover_web_register(router, self);
+	venture_setup_web_register(router, self);
+venture_document_web_register(router, self);
+	venture_portal_web_register(router, self);
+	venture_backup_web_register(router, self);
 	htmx_router_post(router, "/api/v1/:type/:id/actions/:action", venture_web_api_action, self);
 	htmx_router_post(router, "/api/v1/journals/post", venture_web_api_action, self);
 

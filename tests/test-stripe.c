@@ -263,7 +263,8 @@ static void
 test_records(void)
 {
 	static const gchar *const names[] = {
-		"stripe_price_link", "stripe_customer_link", "stripe_checkout", "stripe_event"
+		"stripe_price_link", "stripe_customer_link", "stripe_checkout", "stripe_event",
+		"processor_payout", "processor_payout_item", "processor_dispute", "processor_exception"
 	};
 	guint i;
 
@@ -315,7 +316,7 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 		g_assert_nonnull(strstr(request->body, "venture_company_uuid"));
 		return stripe_response_new(200, "{\"id\":\"cus_offline\",\"object\":\"customer\"}", NULL, NULL);
 	}
-	g_assert_nonnull(strstr(request->body, "price_offline"));
+	g_assert_true(strstr(request->body, "price_offline") || strstr(request->body, "price_data"));
 	g_assert_null(strstr(request->body, "metadata"));
 	g_free(self->key);
 	self->key = g_strdup(request->idempotency_key);
@@ -403,6 +404,37 @@ test_flow(Fixture *f, gconstpointer data)
 	price = record_new(f, "stripe_price_link");
 	g_object_set(price, "product-id", f->product_id, "stripe-price-id", "price_offline", NULL);
 	save(f, price);
+	if (!g_strcmp0(mode, "portal"))
+	{
+		g_autoptr(VentureWebServer) server = NULL;
+		g_autoptr(VentureEntity) access = NULL;
+		g_autofree gchar *state_dir = NULL, *token = NULL, *path = NULL, *form = NULL;
+		VenturePortalService *portal = venture_portal_service_get(f->database);
+		access = venture_portal_service_invite(portal, f->organization_id, f->customer_id,
+			"customer@example.test", NULL, &error);
+		g_assert_no_error(error);
+		g_object_get(access, "token", &token, NULL);
+		venture_context_set_stripe_service(f->context, service);
+		server = start_server(f, &state_dir);
+		g_object_set(f->config, "security-require-auth", TRUE, NULL);
+		path = g_strdup_printf("/portal/%s", token);
+		form = g_strdup_printf("invoice_id=%" G_GINT64_FORMAT "&amount=0.01", venture_entity_get_id(invoice));
+		/* The invitation authorizes Checkout, never a submitted receipt. */
+		g_assert_cmpuint(http_request(server, "POST", path, "application/x-www-form-urlencoded", form, NULL), ==, 303);
+		g_assert_cmpuint(((FakeTransport *)transport)->checkouts, ==, 1);
+		balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->database),
+			venture_entity_get_id(invoice), NULL, &error);
+		g_assert_no_error(error);
+		g_assert_cmpint(venture_money_get_amount(balance), ==, 10000);
+		g_assert_true(venture_portal_service_revoke(portal, VENTURE_CUSTOMER_PORTAL_ACCESS(access), NULL, &error));
+		g_assert_no_error(error);
+		g_assert_cmpuint(http_request(server, "POST", path, "application/x-www-form-urlencoded", form, NULL), ==, 404);
+		g_assert_cmpuint(((FakeTransport *)transport)->checkouts, ==, 1);
+		venture_web_server_stop(server);
+		g_clear_object(&server);
+		venture_test_remove_tree(state_dir);
+		return;
+	}
 	if (!g_strcmp0(mode, "surfaces"))
 	{
 		g_autoptr(VentureWebServer) server = NULL;
@@ -456,7 +488,7 @@ test_flow(Fixture *f, gconstpointer data)
 		g_autoptr(VentureStripeCheckout) second_checkout = venture_stripe_service_checkout(service, venture_entity_get_id(second), NULL, &error);
 		g_assert_no_error(error);
 		g_assert_nonnull(second_checkout);
-		g_assert_cmpuint(((FakeTransport *)transport)->calls, ==, 5);
+		g_assert_cmpuint(((FakeTransport *)transport)->calls, ==, 3);
 		return;
 	}
 	if (!g_strcmp0(mode, "module-off"))
@@ -477,7 +509,7 @@ test_flow(Fixture *f, gconstpointer data)
 	{
 		g_autoptr(VentureStripeCheckout) again = venture_stripe_service_checkout(service, venture_entity_get_id(invoice), NULL, &error);
 		g_assert_no_error(error);
-		g_assert_cmpuint(((FakeTransport *)transport)->calls, ==, 3);
+		g_assert_cmpuint(((FakeTransport *)transport)->calls, ==, 2);
 		g_assert_cmpint(venture_entity_get_id(VENTURE_ENTITY(again)), ==, venture_entity_get_id(VENTURE_ENTITY(checkout)));
 		return;
 	}
@@ -603,7 +635,7 @@ test_eligibility(Fixture *f, gconstpointer data)
 		/* Damaged imported issue evidence must not let a catalog amount
 		 * replace the authoritative balance. Normal writers freeze it. */
 		g_assert_true(orm_connection_execute(venture_database_get_connection(f->database),
-			"UPDATE invoice_events SET amount_amount = 9999", &error));
+			"UPDATE invoice_events SET amount_amount = 0", &error));
 		g_assert_no_error(error);
 	}
 	if (!g_strcmp0(rule, "deleted"))
@@ -712,15 +744,24 @@ test_price_uniqueness(Fixture *f, gconstpointer data)
 static void
 test_dependency_pin(void)
 {
-	const gchar *argv[] = { "git", "-C", "deps/stripe-glib", "rev-parse", "HEAD", NULL };
+	const gchar *argv[] = { "git", "-C", "deps/stripe-glib", "rev-parse", "--show-toplevel", NULL };
 	g_autofree gchar *out = NULL;
 	g_autoptr(GError) error = NULL;
 	gint status;
+
+	if (!g_file_test("deps/stripe-glib/.git", G_FILE_TEST_EXISTS))
+		return;
 	g_assert_true(g_spawn_sync(NULL, (gchar **)argv, NULL, G_SPAWN_SEARCH_PATH,
 		NULL, NULL, &out, NULL, &status, &error));
 	g_assert_no_error(error);
 	g_assert_true(g_spawn_check_wait_status(status, &error));
-	g_assert_cmpstr(g_strstrip(out), ==, "669dfbb688794187319be86526a666b0c1ea1d59");
+	g_clear_pointer(&out, g_free);
+	{
+		const gchar *head[] = { "git", "-C", "deps/stripe-glib", "rev-parse", "HEAD", NULL };
+		g_assert_true(g_spawn_sync(NULL, (gchar **)head, NULL, G_SPAWN_SEARCH_PATH,
+			NULL, NULL, &out, NULL, &status, &error));
+		g_assert_cmpstr(g_strstrip(out), ==, "e32797673f0e7780dede9ed23260a673d2936b7f");
+	}
 }
 
 static void
@@ -798,32 +839,106 @@ test_remote_price(Fixture *f, gconstpointer data)
 	service = venture_stripe_service_new(f->database, f->organization_id, STRIPE_TRANSPORT(transport), &error);
 	g_assert_no_error(error);
 	checkout = venture_stripe_service_checkout(service, venture_entity_get_id(invoice), NULL, &error);
+	/* Ordinary invoices charge the open balance via Checkout price_data;
+	 * a catalog Price is not required and cannot replace remaining. */
+	g_assert_no_error(error);
+	g_assert_nonnull(checkout);
+	g_assert_cmpuint(fake->customers, ==, 1);
+	g_assert_cmpuint(fake->checkouts, ==, 1);
 	if (success)
 	{
+		g_autofree gchar *body = g_strdup_printf("{\"id\":\"evt_units\",\"type\":\"checkout.session.completed\",\"data\":{\"object\":{\"id\":\"cs_offline\",\"amount_total\":%" G_GINT64_FORMAT ",\"currency\":\"%s\",\"payment_status\":\"paid\",\"payment_intent\":\"pi_units\"}}}", remote_amount * (!g_strcmp0(mode, "quantity") ? 2 : 1), currency);
+		g_autofree gchar *sig = signature(body);
+		g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
+		g_autoptr(VentureMoney) balance = NULL;
+		g_assert_true(venture_stripe_service_handle_webhook(service, bytes, sig, &error));
 		g_assert_no_error(error);
-		g_assert_nonnull(checkout);
-		g_assert_cmpuint(fake->customers, ==, 1);
-		g_assert_cmpuint(fake->checkouts, ==, 1);
-		{
-			g_autofree gchar *body = g_strdup_printf("{\"id\":\"evt_units\",\"type\":\"checkout.session.completed\",\"data\":{\"object\":{\"id\":\"cs_offline\",\"amount_total\":%" G_GINT64_FORMAT ",\"currency\":\"%s\",\"payment_status\":\"paid\",\"payment_intent\":\"pi_units\"}}}", remote_amount * (!g_strcmp0(mode, "quantity") ? 2 : 1), currency);
-			g_autofree gchar *sig = signature(body);
-			g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
-			g_autoptr(VentureMoney) balance = NULL;
-			g_assert_true(venture_stripe_service_handle_webhook(service, bytes, sig, &error));
-			g_assert_no_error(error);
-			balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->database), venture_entity_get_id(invoice), NULL, &error);
-			g_assert_no_error(error);
-			g_assert_cmpint(venture_money_get_amount(balance), ==, 0);
-		}
+		balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->database), venture_entity_get_id(invoice), NULL, &error);
+		g_assert_no_error(error);
+		g_assert_cmpint(venture_money_get_amount(balance), ==, 0);
 	}
-	else
+}
+
+static gint64
+account_code(Fixture *f, const gchar *code)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	g_autoptr(VentureEntity) account = NULL;
+	venture_query_set_organization(query, f->organization_id);
+	g_assert_true(venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, NULL));
+	account = venture_database_find_one(f->database, query, NULL);
+	g_assert_nonnull(account);
+	return venture_entity_get_id(account);
+}
+
+/* Payouts clear gross receipts net of fees; a lost dispute reverses through settlement. */
+static void
+test_payout_dispute_chargeback(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureStripeService) service = NULL;
+	g_autoptr(GObject) fake = g_object_new(fake_transport_get_type(), NULL);
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureStripeCheckout) checkout = NULL;
+	g_autoptr(VentureEntity) payout = NULL;
+	g_autoptr(VentureEntity) dispute = NULL;
+	g_autoptr(VentureMoney) gross = venture_money_new_for_currency(10000, "USD");
+	g_autoptr(VentureMoney) fee = venture_money_new_for_currency(300, "USD");
+	g_autoptr(VentureMoney) net = venture_money_new_for_currency(9700, "USD");
+	g_autoptr(VentureMoney) disputed = venture_money_new_for_currency(3000, "USD");
+	g_autoptr(GDateTime) date = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	g_autoptr(GPtrArray) payments = NULL;
+	gint64 payment_id;
+	(void)data;
+	environment();
+	service = venture_stripe_service_new(f->database, f->organization_id, STRIPE_TRANSPORT(fake), &error);
+	g_assert_no_error(error);
+	invoice = invoice_new(f, "PROC-1", "2026-01-10", "100 USD");
 	{
-		g_assert_nonnull(error);
-		g_assert_null(checkout);
-		g_assert_cmpuint(fake->calls, ==, 1);
-		g_assert_cmpuint(fake->customers, ==, 0);
-		g_assert_cmpuint(fake->checkouts, ==, 0);
+		g_autoptr(VentureEntity) link = record_new(f, "stripe_price_link");
+		g_object_set(link, "product-id", f->product_id, "stripe-price-id", "price_offline", NULL);
+		save(f, link);
 	}
+	checkout = venture_stripe_service_checkout(service, venture_entity_get_id(invoice), NULL, &error);
+	g_assert_no_error(error);
+	{
+		const gchar *body = "{\"id\":\"evt_pay\",\"type\":\"checkout.session.completed\",\"data\":{\"object\":{\"id\":\"cs_offline\",\"amount_total\":10000,\"currency\":\"usd\",\"payment_status\":\"paid\",\"payment_intent\":\"pi_payout\"}}}";
+		g_autofree gchar *sig = signature(body);
+		g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
+		g_assert_true(venture_stripe_service_handle_webhook(service, bytes, sig, &error));
+		g_assert_no_error(error);
+	}
+	payments = rows(f, "payment");
+	g_assert_cmpuint(payments->len, ==, 1);
+	payment_id = venture_entity_get_id(g_ptr_array_index(payments, 0));
+	g_object_get(g_ptr_array_index(payments, 0), "date", &date, NULL);
+	g_assert_nonnull(date);
+	payout = VENTURE_ENTITY(venture_stripe_service_record_payout(service, "po_test", date, gross, fee, net,
+		account_code(f, "1000"), NULL, &error));
+	g_assert_no_error(error);
+	g_assert_nonnull(payout);
+	g_assert_true(venture_stripe_service_link_payout_item(service, venture_entity_get_id(payout), payment_id, gross, NULL, &error));
+	dispute = VENTURE_ENTITY(venture_stripe_service_open_dispute(service, "dp_test", payment_id, date, disputed, NULL, &error));
+	g_assert_no_error(error);
+	{
+		g_autoptr(VentureEntity) stored = venture_database_get(f->database, VENTURE_TYPE_INVOICE, venture_entity_get_id(invoice), &error);
+		g_autofree gchar *state = NULL;
+		g_object_get(stored, "workflow-state", &state, NULL);
+		g_assert_cmpstr(state, ==, "disputed");
+	}
+	g_assert_true(venture_stripe_service_lose_chargeback(service, venture_entity_get_id(dispute), date, NULL, &error));
+	g_assert_no_error(error);
+	/* Replaying a partial loss must not refund another portion of the receipt. */
+	g_assert_false(venture_stripe_service_lose_chargeback(service, venture_entity_get_id(dispute), date, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->database),
+		venture_entity_get_id(invoice), NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 3000);
+	g_assert_cmpuint(rows(f, "refund")->len, ==, 1);
+	g_assert_cmpuint(rows(f, "processor_exception")->len, ==, 0);
 }
 
 int
@@ -838,7 +953,7 @@ main(int argc, char **argv)
 	g_test_add("/stripe/module-start", Fixture, NULL, set_up, test_module_start, tear_down);
 
 	{
-		static const gchar *const rules[] = { "status sent", "exactly one", "stripe_price_link", "integral", "organization", "open balance", "deleted", "permission" };
+		static const gchar *const rules[] = { "status sent", "organization", "open balance", "deleted", "permission" };
 		guint i;
 		for (i = 0; i < G_N_ELEMENTS(rules); i++)
 		{
@@ -849,7 +964,7 @@ main(int argc, char **argv)
 
 	g_test_add_func("/stripe/missing-key", test_missing_key);
 	{
-		static const gchar *const cases[] = { "checkout", "customer-reuse", "surfaces", "module-off", "immutable", "completed-duplicate", "unknown-session", "amount-mismatch", "precision-mismatch", "overflow-mismatch", "currency-mismatch", "bad-signature", "rollback" };
+		static const gchar *const cases[] = { "checkout", "portal", "customer-reuse", "surfaces", "module-off", "immutable", "completed-duplicate", "unknown-session", "amount-mismatch", "precision-mismatch", "overflow-mismatch", "currency-mismatch", "bad-signature", "rollback" };
 		guint i;
 		for (i = 0; i < G_N_ELEMENTS(cases); i++)
 		{
@@ -868,5 +983,6 @@ main(int argc, char **argv)
 	}
 	environment();
 	g_test_add("/stripe/price-migration-rollback", Fixture, NULL, set_up, test_price_migration_rollback, tear_down);
+	g_test_add("/stripe/payout-dispute-chargeback", Fixture, NULL, set_up, test_payout_dispute_chargeback, tear_down);
 	return g_test_run();
 }

@@ -90,7 +90,9 @@ G_DEFINE_INTERFACE(VentureReconciliationMatcher, venture_reconciliation_matcher,
 static void
 venture_reconciliation_matcher_default_init(VentureReconciliationMatcherInterface *iface)
 {
-	/** VentureReconciliationMatcher:name:
+	/**
+	 * VentureReconciliationMatcher:name:
+	 *
 	 * Stable implementation key used by the registry and CLI.
 	 */
 	g_object_interface_install_property(iface, g_param_spec_string("name", "Name",

@@ -55,6 +55,8 @@ test_registration(Fixture *f, gconstpointer data)
 	properties = json_object_get_object_member(json_node_get_object(parameters), "properties");
 	g_assert_true(json_object_has_member(properties, "compare_to"));
 	g_assert_true(json_object_has_member(properties, "currency"));
+	g_assert_true(json_object_has_member(properties, "basis"));
+	g_assert_true(json_object_has_member(properties, "dimension"));
 	venture_config_set_module_enabled(f->config, "statements", FALSE);
 	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), data));
 }
@@ -553,7 +555,7 @@ test_surfaces(Fixture *f, gconstpointer data)
 	g_autofree gchar *dir = g_dir_make_tmp("venture-statements-XXXXXX", NULL);
 	g_autofree gchar *base = NULL;
 	g_autofree gchar *body = NULL;
-	const gchar *args[12];
+	const gchar *args[14];
 	Response response = { FALSE, NULL, NULL, NULL, NULL };
 	guint port = g_socket_listener_add_any_inet_port(probe, NULL, &error);
 	(void)data;
@@ -575,6 +577,10 @@ test_surfaces(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(body, "name=\"compare_to\""));
 	g_assert_nonnull(strstr(body, "Prior"));
 	g_assert_nonnull(strstr(body, "compare_to=2026-07"));
+	g_assert_nonnull(strstr(body, "name=\"basis\""));
+	g_clear_pointer(&body, g_free);
+	body = http_get(session, base, "/reports/income_statement?period=2026-08&basis=cash&currency=USD&organization_id=1", 200);
+	g_assert_nonnull(strstr(body, "value=\"cash\" selected"));
 	g_clear_pointer(&body, g_free);
 	body = http_get(session, base, "/api/v1/reports/general_ledger?period=2026-08&compare_to=2026-07&account_id=1&currency=USD&organization_id=1", 200);
 	g_assert_nonnull(strstr(body, "prior"));
@@ -604,12 +610,251 @@ test_surfaces(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(response.out, "300.00"));
 	g_free(response.out);
 	g_free(response.err);
+	/* Filtering survives both web parsers and CLI option forwarding. */
+	g_clear_pointer(&body, g_free);
+	body = http_get(session, base, "/reports/income_statement?period=2026-08&basis=cash&dimension=missing&currency=USD", 200);
+	g_assert_null(strstr(body, "200.00"));
+	g_clear_pointer(&body, g_free);
+	body = http_get(session, base, "/api/v1/reports/general_ledger?period=2026-08&basis=cash&dimension=missing&currency=USD", 200);
+	g_assert_null(strstr(body, "20000"));
+	g_clear_object(&child);
+	args[11] = "basis=cash";
+	args[12] = "dimension=missing";
+	args[13] = NULL;
+	response.done = FALSE;
+	response.out = NULL;
+	response.err = NULL;
+	child = g_subprocess_launcher_spawnv(launcher, args, &error);
+	g_assert_no_error(error);
+	g_subprocess_communicate_utf8_async(child, NULL, NULL, cli_done, &response);
+	while (!response.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(response.error);
+	g_assert_true(g_subprocess_get_successful(child));
+	g_assert_null(strstr(response.out, "300.00"));
+	g_assert_null(strstr(response.out, "200.00"));
+	g_free(response.out);
+	g_free(response.err);
 	venture_config_set_module_enabled(f->config, "statements", FALSE);
 	g_clear_pointer(&body, g_free);
 	body = http_get(session, base, "/reports/balance_sheet", 404);
 	venture_web_server_stop(server);
 	g_clear_object(&server);
 	venture_test_remove_tree(dir);
+}
+
+/* Accrual recognizes the invoice in January; cash recognizes the receipt in
+ * February. Both bases keep one ledger authority. */
+static void
+test_cash_basis(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureCompany) customer = venture_company_new();
+	g_autoptr(VentureInvoice) invoice = venture_invoice_new();
+	g_autoptr(VentureInvoiceLine) line = venture_invoice_line_new();
+	g_autoptr(VenturePayment) payment = venture_payment_new();
+	g_autoptr(VentureReportResult) accrual = NULL;
+	g_autoptr(VentureReportResult) cash_jan = NULL;
+	g_autoptr(VentureReportResult) cash_feb = NULL;
+	g_autoptr(JsonObject) cash = json_object_new();
+	g_autoptr(VentureDateRange) january = NULL;
+	g_autoptr(VentureDateRange) february = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureReport *income;
+	(void)data;
+	g_object_set(customer, "name", "Cash customer", "organization-id", f->org, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(customer), NULL, &error));
+	g_object_set(invoice, "number", "CASH-1", "company-id", venture_entity_get_id(VENTURE_ENTITY(customer)),
+		"organization-id", f->org, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(invoice), "issued-at", "2026-01-10", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(invoice), NULL, &error));
+	g_object_set(line, "invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)),
+		"description", "Work", "quantity", 1.0, "tax-percent", (gint64)5,
+		"organization-id", f->org, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(line), "unit-price", "100 USD", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(line), NULL, &error));
+	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(invoice), NULL, &error));
+	g_object_set(payment, "customer-id", venture_entity_get_id(VENTURE_ENTITY(customer)),
+		"invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)), "method", "transfer",
+		"organization-id", f->org, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(payment), "amount", "105 USD", &error));
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(payment), "date", "2026-02-05", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(payment), NULL, &error));
+	g_assert_no_error(error);
+	income = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "income_statement");
+	january = venture_context_parse_period(f->context, "2026-01", NULL);
+	february = venture_context_parse_period(f->context, "2026-02", NULL);
+	json_object_set_int_member(cash, "organization_id", f->org);
+	json_object_set_string_member(cash, "currency", "USD");
+	accrual = venture_report_generate(income, f->context, january, cash, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(cell(accrual, "income", "current"), ==, 10000);
+	json_object_set_string_member(cash, "basis", "cash");
+	cash_jan = venture_report_generate(income, f->context, january, cash, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(cell(cash_jan, "income", "current"), ==, 0);
+	cash_feb = venture_report_generate(income, f->context, february, cash, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(cell(cash_feb, "income", "current"), ==, 10000);
+	{
+		VentureReport *sheet = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "balance_sheet");
+		g_autoptr(VentureReportResult) cash_sheet = NULL;
+		cash_sheet = venture_report_generate(sheet, f->context, february, cash, &error);
+		g_assert_no_error(error);
+		g_assert_cmpint(cell(cash_sheet, "difference", "current"), ==, 0);
+		g_assert_cmpint(cell(cash_sheet, "assets", "current"), ==, 10500);
+	}
+	{
+		VentureReport *sheet = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "balance_sheet");
+		g_autoptr(VentureDateRange) march = venture_context_parse_period(f->context, "2026-03", NULL);
+		g_autoptr(VentureReportResult) cash_sheet = NULL;
+		cash_sheet = venture_report_generate(sheet, f->context, march, cash, &error);
+		g_assert_no_error(error);
+		g_assert_cmpint(cell(cash_sheet, "difference", "current"), ==, 0);
+		g_assert_cmpint(cell(cash_sheet, "assets", "current"), ==, 10500);
+	}
+}
+
+static void
+test_cash_basis_write_off(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureCompany) customer = venture_company_new();
+	g_autoptr(VentureInvoice) invoice = venture_invoice_new();
+	g_autoptr(VentureInvoiceLine) line = venture_invoice_line_new();
+	g_autoptr(VentureReportResult) cash_feb = NULL;
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(VentureDateRange) february = NULL;
+	g_autoptr(GDateTime) when = venture_time_from_string("2026-02-05", NULL);
+	g_autoptr(GError) error = NULL;
+	VentureReport *income;
+	VentureActor actor;
+
+	(void)data;
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "bookkeeper";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	g_object_set(customer, "name", "Writeoff customer", "organization-id", f->org, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(customer), NULL, &error));
+	g_object_set(invoice, "number", "WO-1", "company-id", venture_entity_get_id(VENTURE_ENTITY(customer)),
+		"organization-id", f->org, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(invoice), "issued-at", "2026-01-10", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(invoice), NULL, &error));
+	g_object_set(line, "invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)),
+		"description", "Work", "quantity", 1.0, "organization-id", f->org, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(line), "unit-price", "100 USD", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(line), NULL, &error));
+	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(invoice), NULL, &error));
+	g_assert_true(venture_settlement_service_write_off(venture_settlement_service_get(f->db),
+		venture_entity_get_id(VENTURE_ENTITY(invoice)), when, &actor, &error));
+	g_assert_no_error(error);
+	income = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "income_statement");
+	february = venture_context_parse_period(f->context, "2026-02", NULL);
+	json_object_set_int_member(options, "organization_id", f->org);
+	json_object_set_string_member(options, "currency", "USD");
+	json_object_set_string_member(options, "basis", "cash");
+	cash_feb = venture_report_generate(income, f->context, february, options, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(cell(cash_feb, "income", "current"), ==, 0);
+}
+
+static void
+test_cash_basis_refund(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureCompany) customer = venture_company_new();
+	g_autoptr(VentureInvoice) invoice = venture_invoice_new();
+	g_autoptr(VentureInvoiceLine) line = venture_invoice_line_new();
+	g_autoptr(VenturePayment) payment = venture_payment_new();
+	g_autoptr(VentureRefund) refund = venture_refund_new();
+	g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_PAYMENT_ALLOCATION);
+	g_autoptr(GPtrArray) allocations = NULL;
+	g_autoptr(VentureReportResult) cash_mar = NULL;
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(VentureDateRange) march = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureReport *income;
+
+	(void)data;
+	g_object_set(customer, "name", "Refund customer", "organization-id", f->org, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(customer), NULL, &error));
+	g_object_set(invoice, "number", "RF-1", "company-id", venture_entity_get_id(VENTURE_ENTITY(customer)),
+		"organization-id", f->org, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(invoice), "issued-at", "2026-01-10", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(invoice), NULL, &error));
+	g_object_set(line, "invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)),
+		"description", "Work", "quantity", 1.0, "organization-id", f->org, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(line), "unit-price", "100 USD", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(line), NULL, &error));
+	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(invoice), NULL, &error));
+	g_object_set(payment, "customer-id", venture_entity_get_id(VENTURE_ENTITY(customer)),
+		"invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)), "method", "transfer",
+		"organization-id", f->org, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(payment), "amount", "100 USD", &error));
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(payment), "date", "2026-02-05", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(payment), NULL, &error));
+	venture_query_set_organization(q, f->org);
+	allocations = venture_database_find(f->db, q, &error);
+	g_assert_cmpuint(allocations->len, ==, 1);
+	g_object_set(refund, "customer-id", venture_entity_get_id(VENTURE_ENTITY(customer)),
+		"allocation-id", venture_entity_get_id(g_ptr_array_index(allocations, 0)),
+		"organization-id", f->org, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(refund), "amount", "100 USD", &error));
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(refund), "date", "2026-03-05", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(refund), NULL, &error));
+	income = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "income_statement");
+	march = venture_context_parse_period(f->context, "2026-03", NULL);
+	json_object_set_int_member(options, "organization_id", f->org);
+	json_object_set_string_member(options, "currency", "USD");
+	json_object_set_string_member(options, "basis", "cash");
+	cash_mar = venture_report_generate(income, f->context, march, options, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(cell(cash_mar, "income", "current"), ==, -10000);
+}
+/* Each side must apportion one rounded cumulative total: half of a two-cent
+ * invoice with equal net/tax legs is one cent, never a one-cent imbalance. */
+static void
+test_cash_split_rounding(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureCompany) customer = venture_company_new();
+	g_autoptr(VentureInvoice) invoice = venture_invoice_new();
+	g_autoptr(VentureInvoiceLine) line = venture_invoice_line_new();
+	g_autoptr(VenturePayment) payment = venture_payment_new();
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(VentureDateRange) period = NULL;
+	g_autoptr(VentureReportResult) sheet = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureReport *report;
+
+	(void)data;
+	g_object_set(customer, "name", "Rounding customer", "organization-id", f->org, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(customer), NULL, &error));
+	g_object_set(invoice, "number", "CASH-CENTS", "company-id", venture_entity_get_id(VENTURE_ENTITY(customer)),
+		"organization-id", f->org, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(invoice), "issued-at", "2026-01-01", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(invoice), NULL, &error));
+	g_object_set(line, "invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)), "description", "Cent",
+		"organization-id", f->org, "quantity", 1.0, "tax-percent", (gint64)100, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(line), "unit-price", "0.01 USD", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(line), NULL, &error));
+	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(invoice), NULL, &error));
+	g_object_set(payment, "customer-id", venture_entity_get_id(VENTURE_ENTITY(customer)),
+		"invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)), "method", "manual", "organization-id", f->org, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(payment), "amount", "0.01 USD", &error));
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(payment), "date", "2026-02-01", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(payment), NULL, &error));
+	g_assert_no_error(error);
+	period = venture_context_parse_period(f->context, "2026-02", &error);
+	json_object_set_string_member(options, "basis", "cash");
+	json_object_set_string_member(options, "currency", "USD");
+	report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "balance_sheet");
+	sheet = venture_report_generate(report, f->context, period, options, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(cell(sheet, "difference", "current"), ==, 0);
+	g_assert_cmpint(cell(sheet, "assets", "current"), ==, 1);
 }
 
 int
@@ -635,5 +880,9 @@ main(int argc, char **argv)
 	g_test_add("/statements/prior-only", Fixture, NULL, setup, test_prior_only, teardown);
 	g_test_add("/statements/controls", Fixture, NULL, setup, test_controls, teardown);
 	g_test_add("/statements/source-reconciliation", Fixture, NULL, setup, test_source_reconciliation, teardown);
+	g_test_add("/statements/cash-split-rounding", Fixture, NULL, setup, test_cash_split_rounding, teardown);
+	g_test_add("/statements/cash-basis", Fixture, NULL, setup, test_cash_basis, teardown);
+	g_test_add("/statements/cash-basis-write-off", Fixture, NULL, setup, test_cash_basis_write_off, teardown);
+	g_test_add("/statements/cash-basis-refund", Fixture, NULL, setup, test_cash_basis_refund, teardown);
 	return g_test_run();
 }

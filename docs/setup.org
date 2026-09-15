@@ -1,0 +1,36 @@
+#+title: Accounting setup
+#+description: Guided books setup, control-account mappings and first-posting checks
+
+* Setup
+
+The =setup= module requires =ledger= and =periods=. It registers
+=accounting_setup= and =accounting_control_map=. =VentureSetupService= owns
+preview and complete. Generic writes cannot mark setup complete.
+
+A resumable checklist covers the legal entity, book currency, fiscal year,
+basis, tax profile, chart template, banks and opening balances. Preview stores
+the answers on =accounting_setup=. Complete applies them: it updates the
+organization, seeds a conventional chart when the entity has none, maps
+control accounts, generates the fiscal calendar, creates an operating bank
+and posts opening cash against retained earnings. Amounts are =VentureMoney=.
+
+Control maps name a semantic classification (=cash=, =receivables=,
+=payables=, =tax=, =retained_earnings=, =clearing=, =inventory=, =income=,
+=expense=) and an account in the same legal entity. The account class must
+match the role: cash is an asset, tax payable a liability, and so on. Bank
+and item overrides use =subject-type= / =subject-id=. Dated restatements use
+=effective-from=; changing an existing map restates the current default.
+
+Receivables, payables and statements resolve those classifications instead of
+spelling chart codes. Renumbering a mapped cash account keeps cash-flow cash
+and cash postings on the same account. The first invoice, bill or payment is
+refused until the required mappings exist, in bookkeeping language.
+
+The Setup nav item opens =/setup=, which redirects to the legal entity's
+=accounting_setup= record. Preview and complete are actions on that page.
+
+#+begin_src sh
+venturectl action accounting_setup complete 1
+#+end_src
+
+Completion restores the caller's setup state and version when any final write fails, so the same preview can be retried safely. Bare opening-cash amounts inherit the chosen book currency; unknown currency codes are refused.

@@ -92,7 +92,11 @@ builtin_build(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *sour
 		debit = default_account(db, org, "6900", "General expenses", VENTURE_ACCOUNT_KIND_EXPENSE, error);
 		if (debit == 0)
 			return NULL;
-		credit = default_account(db, org, "1000", "Cash", VENTURE_ACCOUNT_KIND_ASSET, error);
+		credit = 0;
+		if (g_object_class_find_property(G_OBJECT_GET_CLASS(source), "cash-account-id") != NULL)
+			g_object_get(source, "cash-account-id", &credit, NULL);
+		if (credit <= 0)
+			credit = default_account(db, org, "1000", "Cash", VENTURE_ACCOUNT_KIND_ASSET, error);
 	}
 	else
 	{

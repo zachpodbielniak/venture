@@ -1,0 +1,60 @@
+#+title: Bank feeds
+#+description: Pluggable statement feeds that write bank_transaction through the existing match import
+
+* Bank feeds
+
+The =bankfeed= module is opt-in and requires =banking=. Set
+=bankfeed.enabled: true=. A Teller key is optional: without
+=VENTURE_BANKFEED_TELLER_KEY= the registry is empty so a plugin can
+register another feed. Production HTTP uses
+=venture_bank_feed_transport_get_async= with a =GCancellable=; database
+writes stay on the completion context. Credentials are never stored in YAML.
+
+A =bank_connection= row is one linked account: provider, provider account
+id, and the =bank_account= that receives statement evidence. Hosted
+metering can count these rows later. Generic writes may link an account;
+sync is a service action.
+
+* Providers
+
+=VentureBankFeed= is a GInterface with a registry, the same shape as
+posting rules. The built-in Teller implementation talks only to an
+injected transport. Tests register a fake feed and never open a socket.
+
+Fetch results are imported through =VentureBankMatchService= action
+=feed=. That writes =bank_transaction= with the existing external-key
+dedupe (organization, bank account, provider transaction id). A second
+sync of the same window creates zero new rows. A failure rolls back the
+batch, including the connection's last-sync stamp.
+
+* Scheduling
+
+Automation can call the same function the page uses:
+
+#+begin_src text
+pod bank_hour = cron->new("0 * * * *");
+bank_hour->on_schedule => venture->bankfeed_sync("1");
+#+end_src
+
+=venturectl bankfeed sync ID= and =POST /api/v1/bankfeed/:id/sync= take an
+optional =period_start= / =period_end=. The web page is =/bankfeed=.
+
+* Provider lifetime and asynchronous contract
+
+Every provider used by service sync implements =fetch_async= and returns a
+=GTask= containing an owned array of owned JSON objects. Synchronous-only
+plugins are refused by that path. Completion and database application stay
+on the caller's main context. Sync and scheduled-sync entry points dispatch
+the same async operation while iterating that context. Providers must allow
+reentrancy during this wait. All actor strings are copied before returning.
+
+The HTTP transport refuses redirects, including redirects carrying custom
+Shopify authorization headers. Its synchronous adapter dispatches async I/O;
+no request or scheduled import blocks the event loop on a socket read.
+
+Connection records select the legal entity for each sync, and their bank
+account must belong to that same entity. The web handler also requires the
+connection to belong to the active organization. Scheduled sweeps filter
+connections by the organization supplied to the automation action.
+
+The Teller adapter sends inclusive =start_date= and =end_date= filters, with an escaped account path segment, as specified by the [[https://teller.io/docs/api/account/transactions][Teller transactions API]]. Reversed date windows are refused. It does not request a =count= limit, so Teller returns the complete filtered list.

@@ -377,24 +377,74 @@ void venture_context_set_stripe_service(VentureContext *self, VentureStripeServi
  * Returns: TRUE when disabled or successfully started from deployment environment
  */
 gboolean venture_context_start_stripe(VentureContext *self, GError **error);
+/**
+ * venture_context_get_bankfeed_service:
+ * @self: the service or registry instance
+ *
+ * Returns: (transfer none) (nullable): borrowed result
+ */
+VentureBankFeedService *venture_context_get_bankfeed_service(VentureContext *self);
+/**
+ * venture_context_set_bankfeed_service:
+ * @self: the service or registry instance
+ * @service: (nullable) (transfer none): replacement service; the context retains a reference
+ *
+ * Replaces the context-owned service reference.
+ */
+void venture_context_set_bankfeed_service(VentureContext *self, VentureBankFeedService *service);
+/**
+ * venture_context_start_bankfeed:
+ * @self: the service or registry instance
+ * @error: (out) (optional): return location for an error
+ *
+ * Returns: TRUE on success, FALSE on failure
+ */
+gboolean venture_context_start_bankfeed(VentureContext *self, GError **error);
+/**
+ * venture_context_get_commerce_service:
+ * @self: the service or registry instance
+ *
+ * Returns: (transfer none) (nullable): borrowed result
+ */
+VentureCommerceService *venture_context_get_commerce_service(VentureContext *self);
+/**
+ * venture_context_set_commerce_service:
+ * @self: the service or registry instance
+ * @service: (nullable) (transfer none): replacement service; the context retains a reference
+ *
+ * Replaces the context-owned service reference.
+ */
+void venture_context_set_commerce_service(VentureContext *self, VentureCommerceService *service);
+/**
+ * venture_context_start_commerce:
+ * @self: the service or registry instance
+ * @error: (out) (optional): return location for an error
+ *
+ * Returns: TRUE on success, FALSE on failure
+ */
+gboolean venture_context_start_commerce(VentureContext *self, GError **error);
 
-/** venture_context_get_mailer:
+/**
+ * venture_context_get_mailer:
  * @self: context
  * Returns: (transfer none) (nullable): configured transport, or NULL with mail off
  */
 VentureMailer *venture_context_get_mailer(VentureContext *self);
-/** venture_context_get_mail_outbox:
+/**
+ * venture_context_get_mail_outbox:
  * @self: context
  * Returns: (transfer none) (nullable): durable outbox, or NULL with mail off
  */
 VentureMailOutbox *venture_context_get_mail_outbox(VentureContext *self);
 
-/** venture_context_set_mailer:
+/**
+ * venture_context_set_mailer:
  * @self: context
  * @mailer: replacement SMTP implementation; retained by the registry
  */
 void venture_context_set_mailer(VentureContext *self, VentureMailer *mailer);
-/** venture_context_get_mailer_registry:
+/**
+ * venture_context_get_mailer_registry:
  * @self: context
  * Returns: (transfer none): implementation registry, with the active "smtp" slot
  */

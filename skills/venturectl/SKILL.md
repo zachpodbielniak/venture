@@ -66,7 +66,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `forge set-token ID` | set a forge's access token, read from stdin |
 | `forge set-secret ID` | set or generate its webhook secret |
 | `forge verify ID` | record which account the token belongs to |
-| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID]` | list reports, or run one with an optional historical cutoff and legal entity |
+| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID] [basis=cash\|accrual] [dimension=VALUE]` | list reports, or run one with an optional historical cutoff, legal entity, accounting basis and dimension |
 | `links TYPE ID` | every link touching a record, read from it |
 | `link TYPE ID TYPE ID [kind=K] [note=T]` | link two records; kinds: related, blocks, blocked_by, depends_on, required_by, parent_of, child_of, duplicates, causes, caused_by, produces, produced_by, references, referenced_by, supersedes, superseded_by; unlink with `delete record_link ID` |
 | `reconcile suggest TYPE ID [--matcher NAME] [--threshold N]` | rank matching book records; scores above the threshold (default 80) stage bank transaction action confirmations when banking is installed; never applies |
@@ -74,6 +74,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `factory` | the software factory at a glance: milestones with progress, releases, builds, environments and what they run, open incidents |
 | `release changelog ID [--replace]` | draft a release's changelog from the tickets marked fixed in it |
 | `invoice checkout ID` | return a hosted Stripe Checkout URL for an eligible sent invoice; editor role, Stripe module required |
+| `compose invoice\|quote JSON` | create lines, tax and optionally send in one request |
 | `journal post ID` | post a draft through the shared service; editors propose, `--stage` always proposes |
 | `release publish ID [--prerelease]` | cut the release on the forge; creates the tag, cannot be undone here |
 | `dashboards` | the dashboards the token may see |
@@ -104,6 +105,9 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `kb crossref TYPE ID` | link the knowledge bearing on one record |
 | `kb article TYPE ID --kb N` | write a KB article from a record |
 | `act TYPE ID ACTION [key=value ...]` | discover and perform a business action; `--stage` proposes it |
+| `recurring run [--as-of DATE] [--dry-run]` | generate due invoices, bills, expenses and journals |
+| `collections run [--as-of DATE]` | queue overdue invoice reminders through the outbox |
+| `batch invoice\|expense format=csv\|json payload=... [post=false] [--dry-run]` | all-or-nothing CSV/JSON document create |
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 
@@ -458,6 +462,8 @@ status directly; the service refuses it.
 `billing renew --as-of DATE [--dry-run]` sweeps due periods;
 `billing dunning --as-of DATE [--dry-run]` records dunning notices/actions.
 Pass `organization_id=N` to choose the legal entity. Dry runs write nothing.
+`billing collect` records confirmed manual payments only; an authorized card/ACH mandate does not execute a provider charge and is refused here.
+
 `--stage` holds a billing action for approval. The assistant's generated
 create tool can instead stage `billing_request` with `action`, `at`,
 `organization_id` and the relevant subscription/customer/price fields.
@@ -482,7 +488,8 @@ uncertain rows. Actions reject `--stage`; propose an enqueue with the generic
 
 `quote send ID`, `quote accept ID 'by=Full Name'`,
 `quote decline ID 'reason=Explanation'`, and `quote revise ID` call the quote
-service. Acceptance creates and issues the invoice in the same transaction.
+service. Acceptance creates and issues the invoice in the same transaction unless `billing_mode=progress`.
+`compose quote JSON` and `compose invoice JSON` create a draft (or send) in one call.
 For a staged action use `--stage create quote_action quote_id=ID action=accept
 expected_version=N 'accepted_by=Full Name'`; obtain the quote's current
 `version` first. `revision` is the separate commercial revision number.
@@ -500,6 +507,10 @@ see `docs/leads.org` for definitions and public capture forms.
 ## Planned activities
 
 `activity complete ID outcome=...` completes a planned activity, writes interaction history and advances recurrence atomically. `activity list mine|overdue|today` reads your daily worklist. Generic `create activity` and `update activity` edit the plan; generic `status=done` is refused. The existing `activity TYPE ID` command still reads a record timeline. Use `report worklist organization_id=ID` for the current UTC week per owner.
+## Portal invitations
+
+`supplier invite company_id=ID email=ADDR` queues the private supplier access link through the mail outbox. Configure an HTTPS `server.base_url` and enable mail first, then deliver the outbox. The response contains redacted access metadata, never the bearer token. Revoke with `supplier revoke ID`.
+
 ## Vendor payables
 
 Run `describe vendor_bill` and `describe vendor_bill_line` before creating
@@ -507,7 +518,12 @@ a draft and its lines. Bill quantity is an exact decimal string, with at
 most three decimal places. Supplier companies have `kind=supplier`.
 
 Use `bill approve ID date=DATE`, `bill pay ID 'amount=40 USD' date=DATE`,
-and `bill void ID date=DATE` for financial actions. Omitted payment amount
+and `bill void ID date=DATE` for financial actions.
+`bill pay-bulk 1,2,3 adapter=transfer` pays selected approved bills through
+the payables service adapters, never generic writes.
+`close open|run|sign|complete|reopen|pack` is the accountant close
+workspace. `capture ingest|convert|reject` files receipts and supplier
+invoices. `accounting` lists the daily books next actions. Omitted payment amount
 pays the outstanding balance. Direct bill status updates are refused.
 These CLI actions apply directly; to stage, use generated record creation:
 `vendor_bill_event` with `bill_id`, `vendor_id`, `kind=approve`,
@@ -565,6 +581,20 @@ draft behind; closed periods and repeat reversals are refused.
 The `--stage` help lists `create/update/delete/act/sequence enroll/lead convert/billing`; the same flag also
 applies to a type-level journal creation at ID zero.
 
+### Accounting second-person consent
+
+When an organization enables a post/pay second-actor rule, an operation that
+posts or pays first returns permission denied after saving a pending proposal.
+That response is not a successful posting and is separate from `--stage`/202.
+A different authorized account must repeat the same business command with the
+same inputs; two tokens from one account do not qualify. One consent covers
+its generated invoices, allocations and journal entries, and is consumed only
+when the whole operation succeeds. Changed inputs or business/configuration
+records require a fresh proposal; consent expires after 24 hours and must be
+re-proposed after a server restart or posting-rule replacement. Draft editing
+and read-only previews remain available. Use an explicit date for reproducible
+posting commands, and reread records after any failed operation.
+
 ### Automatic journals
 
 `post backfill [organization_id=ID] [--dry-run]` is an editor action which posts
@@ -573,6 +603,13 @@ candidates, then `post backfill --dry-run` to validate without retaining writes.
 The response includes `candidates`, `posted`, `skipped` and `dry_run`. Period
 refusals abort the entire batch. `posting_profile` uses the normal generic
 CRUD commands; consult `describe posting_profile` for its account mappings.
+## Recurring documents, collections and batch entry
+
+`recurring run --as-of DATE [--dry-run]` generates due schedules through the
+existing settlement, payables and posting services. Closed periods are skipped.
+`collections run --as-of DATE` enqueues overdue reminders with durable
+idempotency keys. `act invoice 0 batch_create` / `act expense 0 batch_create`
+create many documents in one transaction. See `docs/recurring.org`.
 ## Ledger statements
 
 `report balance_sheet`, `income_statement`, `cash_flow`, `general_ledger`,
@@ -583,3 +620,17 @@ For example: `venturectl -f csv report balance_sheet 2026-08 organization_id=1 c
 Synthetic totals have no single account ID; actual account/journal IDs link
 to their record pages. Cash-flow controls use the conventional chart codes
 documented in `docs/statements.org`.
+
+## Accounting custom values and scheduled output
+
+`fields value record_type=TYPE record_id=ID name=NAME value=VALUE` PATCHes the
+owning record's `attributes` object; direct writes to `custom_field_value` are
+refused. Empty values clear optional fields and fail required-field validation.
+Built-in property names cannot be declared as custom fields.
+
+Use `get report_pack ID` to read `last_output`, the last successful scheduled
+result array. Version 4 accounting packs restore document history into an empty
+organization and remap record identities. External references resolve by UUID.
+Version 3 supports only manual ledger imports; old document packs remain
+refused. Accounting packs exclude installation credentials and attachments.
+See `docs/backup.org`.

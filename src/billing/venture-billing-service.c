@@ -315,7 +315,7 @@ issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 	/* Seats have already been multiplied with VentureMoney. Invoice quantity
 	 * is the existing exact unity value, never a monetary floating point path. */
 	g_object_set(line, "invoice-id", venture_entity_get_id(invoice), "description", "Subscription renewal",
-		"quantity", 1.0, "unit-price", amount, NULL);
+		"quantity", 1.0, "unit-price", amount, "product-id", number(price, "product-id"), NULL);
 	if (!venture_database_save(self->database, line, actor, error) ||
 		!venture_settlement_service_transition(venture_settlement_service_get(self->database),
 			VENTURE_INVOICE(invoice), "sent", at, actor, error))
@@ -541,6 +541,66 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 			kind = 9;
 			g_object_set(sub, "past-due-at", NULL, NULL);
 		}
+		else if (g_strcmp0(verb, "collect") == 0 && (state == 1 || state == 2))
+		{
+			g_autoptr(GPtrArray) methods = NULL;
+			g_autoptr(GPtrArray) events = NULL;
+			g_autoptr(VentureMoney) balance = NULL;
+			g_autoptr(VenturePayment) payment = NULL;
+			gint64 invoice = 0;
+			guint m;
+			gboolean authorized = FALSE;
+			methods = rows(self, VENTURE_TYPE_CUSTOMER_PAYMENT_METHOD, org, error);
+			if (methods == NULL)
+				return FALSE;
+			for (m = 0; m < methods->len; m++)
+			{
+				VentureEntity *method = g_ptr_array_index(methods, m);
+				g_autofree gchar *method_name = NULL;
+				g_object_get(method, "method", &method_name, NULL);
+				/* A stored mandate is not proof that a processor collected cash.
+				 * This path records only an operator-confirmed manual receipt. */
+				if (number(method, "company-id") == number(sub, "company-id") &&
+					flag(method, "authorized") && g_strcmp0(method_name, "manual") == 0)
+					authorized = TRUE;
+			}
+			if (!authorized)
+				return refuse(error, VENTURE_ERROR_VALIDATION, "collection requires an authorized manual payment method; processor methods need verified settlement");
+			events = rows(self, VENTURE_TYPE_SUBSCRIPTION_EVENT, org, error);
+			if (events == NULL)
+				return FALSE;
+			for (m = events->len; m > 0; m--)
+			{
+				VentureEntity *history = g_ptr_array_index(events, m - 1);
+				if (number(history, "subscription-id") == venture_entity_get_id(sub) && number(history, "invoice-id") > 0)
+				{
+					invoice = number(history, "invoice-id");
+					break;
+				}
+			}
+			if (invoice == 0)
+				return refuse(error, VENTURE_ERROR_VALIDATION, "collection requires a billed invoice");
+			balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(self->database), invoice, NULL, error);
+			if (balance == NULL)
+				return FALSE;
+			if (!venture_money_is_zero(balance))
+			{
+				payment = venture_payment_new();
+				venture_entity_set_organization_id(VENTURE_ENTITY(payment), org);
+				g_object_set(payment, "customer-id", number(sub, "company-id"), "invoice-id", invoice,
+					"amount", balance, "date", at, "method", "manual", NULL);
+				if (!venture_settlement_service_apply_payment(venture_settlement_service_get(self->database),
+					payment, NULL, actor, error))
+					return FALSE;
+			}
+			invoice_id = invoice;
+			kind = 10;
+			if (state == 2)
+			{
+				state = 1;
+				g_object_set(sub, "past-due-at", NULL, NULL);
+			}
+		}
 		else
 			return refuse(error, VENTURE_ERROR_VALIDATION, "action is not allowed in this subscription state");
 	}
@@ -577,7 +637,10 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 		"period-start", start, "period-end", end, NULL);
 	snapshot = g_object_new(VENTURE_TYPE_SUBSCRIPTION_EVENT, NULL);
 	venture_entity_copy_properties_from(snapshot, event, FALSE);
+	/* Veto subscribers may inspect this change, but cannot borrow its consent. */
+	venture_accounting_operation_suspend(self->database);
 	g_signal_emit_by_name(self, "changing", snapshot, &veto);
+	venture_accounting_operation_resume(self->database);
 	if (veto != NULL)
 	{
 		g_propagate_error(error, g_steal_pointer(&veto));
@@ -724,9 +787,11 @@ gboolean
 venture_billing_service_execute(VentureBillingService *self, VentureBillingRequest *request,
 	const VentureActor *actor, GError **error)
 {
+	g_autoptr(VentureAccountingOperation) operation = NULL;
 	g_autoptr(VentureEntity) copy = NULL;
 	g_autofree gchar *verb = NULL;
 	gboolean ok;
+	gboolean can_post;
 	if (self->database == NULL || self->busy)
 		return refuse(error, VENTURE_ERROR_CONFLICT, "service is unavailable or already executing");
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "customer_subscription") == G_TYPE_INVALID)
@@ -742,6 +807,23 @@ venture_billing_service_execute(VentureBillingService *self, VentureBillingReque
 	g_object_get(copy, "action", &verb, NULL);
 	if (flag(copy, "dry-run") && g_strcmp0(verb, "renew-sweep") != 0 && g_strcmp0(verb, "dunning-sweep") != 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "dry-run is available for sweeps only");
+	/* Changes to future terms and dunning state do not themselves post money. */
+	can_post = g_strcmp0(verb, "renew") == 0 || g_strcmp0(verb, "renew-sweep") == 0 ||
+		g_strcmp0(verb, "collect") == 0;
+	if (g_strcmp0(verb, "start") == 0)
+	{
+		g_autoptr(VentureEntity) price = load(self, VENTURE_TYPE_PLAN_PRICE,
+			number(copy, "plan-price-id"), venture_entity_get_organization_id(copy), error);
+		if (price == NULL) return FALSE;
+		can_post = number(price, "trial-days") == 0;
+	}
+	if (!flag(copy, "dry-run") && can_post)
+	{
+		operation = venture_accounting_operation_begin(self->database, "billing.execute", copy, NULL,
+			NULL, venture_entity_get_organization_id(copy), actor, error);
+		if (operation == NULL)
+			return FALSE;
+	}
 	if (!venture_database_begin(self->database, error))
 		return FALSE;
 	self->busy = TRUE;
@@ -754,6 +836,8 @@ venture_billing_service_execute(VentureBillingService *self, VentureBillingReque
 	else
 		venture_database_rollback(self->database);
 	self->busy = FALSE;
+	if (ok && operation != NULL)
+		ok = venture_accounting_operation_finish(operation, error);
 	if (ok)
 		venture_entity_copy_properties_from(VENTURE_ENTITY(request), copy, FALSE);
 	return ok;

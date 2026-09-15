@@ -1,0 +1,31 @@
+#+title: Owner equity, loans and transfers
+#+description: Guided balance-sheet postings that refuse expense dumps
+
+* Two-person approval
+
+When either the organization's =post= or =pay= rule requires a second actor, consent covers the complete equity command: its amount, effective date, kind, memo, account choices, and the financial state used to derive its journal. The first attempt records a pending proposal without creating an equity transaction or journal. A different actor repeats the identical command to execute it atomically; changed inputs or intervening financial changes require a new proposal. Consent is consumed only when all effects commit.
+
+The browser's omitted effective date means the execution time after approval. The browser does not manufacture a new dated proposal on each retry.
+
+* Guided capital
+
+The =equity= module requires =ledger= and =setup=. =VentureCapitalService=
+posts a balanced journal through the posting service for one of:
+
+| Kind | Debit | Credit |
+| contribution | cash (1000) | owner's equity (3000) |
+| draw | owner's draw (3100) | cash (1000) |
+| loan_proceed | cash (1000) | notes payable (2500) |
+| loan_payment | notes payable (2500) | cash (1000) |
+| transfer | named cash | named cash |
+
+Accounts come from =accounting_control_map=. Overrides must still be asset,
+liability or equity: an expense or income account is refused as an unlabeled
+expense dump. Generic writes of =equity_transaction= are refused.
+
+#+begin_src sh
+venturectl equity contribution '1000.00 USD' memo='Owner contribution'
+venturectl equity draw '250.00 USD'
+#+end_src
+
+The web page is =/equity=.

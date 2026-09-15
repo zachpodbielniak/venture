@@ -80,6 +80,18 @@ gboolean venture_posting_rule_registry_remove(VenturePostingRuleRegistry *self, 
  */
 GPtrArray *venture_posting_rule_registry_list(VenturePostingRuleRegistry *self);
 
+/**
+ * venture_posting_rule_registry_get_revision:
+ * @self: the registry
+ *
+ * The revision changes on construction, addition/replacement and successful
+ * removal, invalidating consent across process restarts or callback changes.
+ * Registered implementations must be replaced when their behavior changes.
+ *
+ * Returns: (transfer none): opaque revision, valid until the next mutation
+ */
+const gchar *venture_posting_rule_registry_get_revision(VenturePostingRuleRegistry *self);
+
 #define VENTURE_TYPE_EXCHANGE_POLICY (venture_exchange_policy_get_type())
 G_DECLARE_INTERFACE(VentureExchangePolicy, venture_exchange_policy, VENTURE, EXCHANGE_POLICY, GObject)
 /**
@@ -112,6 +124,35 @@ const gchar *venture_exchange_policy_get_name(VentureExchangePolicy *self);
  */
 VentureMoney *venture_exchange_policy_convert(VentureExchangePolicy *self,
 	const VentureMoney *amount, const gchar *currency, GDateTime *when, GError **error);
+
+typedef struct _VentureDatabase VentureDatabase;
+
+#define VENTURE_TYPE_RATE_TABLE_POLICY (venture_rate_table_policy_get_type())
+G_DECLARE_FINAL_TYPE(VentureRateTablePolicy, venture_rate_table_policy,
+	VENTURE, RATE_TABLE_POLICY, GObject)
+
+/**
+ * venture_rate_table_policy_new:
+ * @database: organization-scoped rate table
+ * @organization_id: legal entity
+ *
+ * Looks up dated exchange_rate rows. Missing pairs are refused; no inverse
+ * or market rate is invented.
+ * Returns: (transfer full): a policy named "exchange_rate"
+ */
+VentureExchangePolicy *venture_rate_table_policy_new(VentureDatabase *database,
+	gint64 organization_id);
+
+/**
+ * venture_rate_table_policy_matches:
+ * @self: a stored-rate policy
+ * @database: the database covered by operation consent
+ * @organization_id: the legal entity covered by operation consent
+ *
+ * Returns: whether conversion reads the exact table scope bound to consent
+ */
+gboolean venture_rate_table_policy_matches(VentureRateTablePolicy *self,
+	VentureDatabase *database, gint64 organization_id);
 
 G_END_DECLS
 #endif

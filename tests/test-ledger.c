@@ -63,6 +63,7 @@ test_records(Fixture *f, gconstpointer data)
 	registry = venture_context_get_entity_registry(f->context);
 	g_assert_cmpuint(venture_entity_registry_lookup(registry, "journal"), !=, 0);
 	g_assert_cmpuint(venture_entity_registry_lookup(registry, "journal_line"), !=, 0);
+	g_assert_cmpuint(venture_entity_registry_lookup(registry, "exchange_rate"), !=, 0);
 }
 
 static void
@@ -540,6 +541,141 @@ test_exchange(Fixture *f, gconstpointer data)
 	g_assert_cmpstr(policy_name, ==, "test-rate-set-1");
 }
 
+/* Second-actor consent cannot certify opaque conversion state or a rate
+ * table from a different legal entity than the snapshotted journal. */
+static void
+test_approved_exchange_boundary(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureJournal) draft = header(f), posted = NULL;
+	g_autoptr(GPtrArray) entries = lines(f, 10000, "USD");
+	g_autoptr(VentureAccountingApprovalRule) rule = venture_accounting_approval_rule_new();
+	g_autoptr(VentureExchangePolicy) policy = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_JOURNAL);
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	if (g_strcmp0(data, "opaque") == 0)
+		policy = VENTURE_EXCHANGE_POLICY(g_object_new(test_exchange_get_type(), NULL));
+	else
+		policy = venture_rate_table_policy_new(f->db, f->org + 1);
+	g_object_set(rule, "organization-id", f->org, "action", "post", "require-second-actor", TRUE, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(rule), NULL, &error));
+	g_assert_no_error(error);
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "alice";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	posted = venture_posting_service_post(venture_database_get_posting_service(f->db),
+		draft, entries, policy, &actor, &error);
+	g_assert_null(posted);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	actor.name = "bob";
+	posted = venture_posting_service_post(venture_database_get_posting_service(f->db),
+		draft, entries, policy, &actor, &error);
+	g_assert_null(posted);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_assert_nonnull(strstr(error->message, "exchange-rate policy"));
+	g_clear_error(&error);
+	g_assert_cmpint(venture_database_count(f->db, query, &error), ==, 0);
+	g_assert_no_error(error);
+}
+
+
+/* Replacing a callback under the same name must invalidate previously
+ * proposed work even when no persisted row or command argument changes. */
+static void
+test_approval_rule_revision(Fixture *f, gconstpointer data)
+{
+	VenturePostingService *service = venture_database_get_posting_service(f->db);
+	VenturePostingRuleRegistry *registry = venture_posting_service_get_rules(service);
+	g_autoptr(VentureJournal) draft = header(f), posted = NULL;
+	g_autoptr(GPtrArray) entries = lines(f, 10000, "USD");
+	g_autoptr(VentureEntity) rule = VENTURE_ENTITY(venture_accounting_approval_rule_new());
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *revision = NULL;
+	TestRule *implementation;
+	VentureActor actor;
+	(void)data;
+	g_object_set(rule, "organization-id", f->org, "action", "post", "require-second-actor", TRUE, NULL);
+	g_assert_true(venture_database_save(f->db, rule, NULL, &error));
+	g_assert_no_error(error);
+	implementation = g_object_new(test_rule_get_type(), NULL);
+	implementation->fixture = f;
+	venture_posting_rule_registry_add(registry, VENTURE_POSTING_RULE(implementation));
+	revision = g_strdup(venture_posting_rule_registry_get_revision(registry));
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "alice";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	posted = venture_posting_service_post(service, draft, entries, NULL, &actor, &error);
+	g_assert_null(posted);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	implementation = g_object_new(test_rule_get_type(), NULL);
+	implementation->fixture = f;
+	venture_posting_rule_registry_add(registry, VENTURE_POSTING_RULE(implementation));
+	g_assert_cmpstr(venture_posting_rule_registry_get_revision(registry), !=, revision);
+	actor.name = "bob";
+	posted = venture_posting_service_post(service, draft, entries, NULL, &actor, &error);
+	g_assert_null(posted);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	/* Bob's attempt is a new proposal under the replacement rule set. */
+	actor.name = "alice";
+	posted = venture_posting_service_post(service, draft, entries, NULL, &actor, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(posted);
+}
+
+
+static void
+test_rate_table(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureExchangeRate) rate = venture_exchange_rate_new();
+	g_autoptr(GObject) policy = NULL;
+	g_autoptr(VentureMoney) euros = venture_money_new_for_currency(10000, "EUR");
+	g_autoptr(VentureMoney) valued = NULL;
+	g_autoptr(GDateTime) when = date("2026-01-10T00:00:00Z");
+	g_autoptr(GError) error = NULL;
+
+	(void)data;
+	policy = G_OBJECT(venture_rate_table_policy_new(f->db, f->org));
+	valued = venture_exchange_policy_convert(VENTURE_EXCHANGE_POLICY(policy),
+		euros, "USD", when, &error);
+	g_assert_null(valued);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_object_set(rate, "from-currency", "EUR", "to-currency", "USD",
+		"rate-numerator", (gint64)110, "rate-denominator", (gint64)100,
+		"source", "manual", "reason", "board", "effective-at", when, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(rate), f->org);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(rate), NULL, &error));
+	g_assert_no_error(error);
+	valued = venture_exchange_policy_convert(VENTURE_EXCHANGE_POLICY(policy),
+		euros, "USD", when, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(valued->amount, ==, 11000);
+	g_assert_cmpstr(valued->currency, ==, "USD");
+	{
+		g_autoptr(VentureExchangeRate) yen = venture_exchange_rate_new();
+		g_autoptr(VentureMoney) jpy = venture_money_new_for_currency(100, "JPY");
+		g_autoptr(VentureMoney) usd = NULL;
+		g_object_set(yen, "from-currency", "JPY", "to-currency", "USD",
+			"rate-numerator", (gint64)1, "rate-denominator", (gint64)150,
+			"source", "manual", "reason", "board", "effective-at", when, NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(yen), f->org);
+		g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(yen), NULL, &error));
+		usd = venture_exchange_policy_convert(VENTURE_EXCHANGE_POLICY(policy),
+			jpy, "USD", when, &error);
+		g_assert_no_error(error);
+		g_assert_cmpint(usd->amount, ==, 67);
+		g_assert_cmpstr(usd->currency, ==, "USD");
+		g_assert_cmpint(usd->exponent, ==, 2);
+	}
+}
+
 static void
 test_source_saves(Fixture *f, gconstpointer data)
 {
@@ -589,6 +725,54 @@ test_source_saves(Fixture *f, gconstpointer data)
 	g_assert_true(venture_database_delete(f->db, VENTURE_ENTITY(sale), NULL, &error));
 	g_assert_cmpint(count(f, VENTURE_TYPE_JOURNAL), ==, 4);
 }
+
+/* Draft editing is not posting. Adding an amount crosses the consent
+ * boundary, and removing a posted amount must never erase the source. */
+static void
+test_unvalued_source_approval(Fixture *f, gconstpointer data)
+{
+	gboolean sale = g_strcmp0(data, "sale") == 0;
+	g_autoptr(VentureEntity) source = g_object_new(sale ? VENTURE_TYPE_SALE : VENTURE_TYPE_EXPENSE, NULL);
+	g_autoptr(VentureEntity) venture = VENTURE_ENTITY(venture_venture_new());
+	g_autoptr(VentureEntity) rule = VENTURE_ENTITY(venture_accounting_approval_rule_new());
+	g_autoptr(VentureMoney) amount = venture_money_new_for_currency(1000, "USD");
+	g_autoptr(GDateTime) when = date("2026-01-10T00:00:00Z");
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	g_object_set(venture, "name", "Draft business", "venture-type", "books", "organization-id", f->org, NULL);
+	g_assert_true(venture_database_save(f->db, venture, NULL, &error));
+	g_assert_no_error(error);
+	g_object_set(source, "organization-id", f->org, "venture-id", venture_entity_get_id(venture),
+		"occurred-at", when, sale ? "channel" : "description", "Draft", NULL);
+	g_object_set(rule, "organization-id", f->org, "action", "post", "require-second-actor", TRUE, NULL);
+	g_assert_true(venture_database_save(f->db, rule, NULL, &error));
+	g_assert_no_error(error);
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "alice";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	g_assert_true(venture_database_save(f->db, source, &actor, &error));
+	g_assert_no_error(error);
+	g_object_set(source, sale ? "channel" : "description", "Edited draft", NULL);
+	g_assert_true(venture_database_save(f->db, source, &actor, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(count(f, VENTURE_TYPE_JOURNAL), ==, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_ACCOUNTING_APPROVAL), ==, 0);
+	g_object_set(source, sale ? "gross" : "amount", amount, NULL);
+	g_assert_false(venture_database_save(f->db, source, &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	actor.name = "bob";
+	g_assert_true(venture_database_save(f->db, source, &actor, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(count(f, VENTURE_TYPE_JOURNAL), ==, 1);
+	g_object_set(source, sale ? "gross" : "amount", NULL, NULL);
+	g_assert_false(venture_database_save(f->db, source, &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_cmpint(count(f, VENTURE_TYPE_JOURNAL), ==, 1);
+}
+
 
 static void
 test_source_veto(Fixture *f, gconstpointer data)
@@ -1092,6 +1276,8 @@ main(int argc, char **argv)
 	ADD("posted-account-ownership", test_posted_account_ownership);
 	ADD("plugin-rule", test_plugin_rule);
 	ADD("exchange", test_exchange);
+	ADD("approval-rule-revision", test_approval_rule_revision);
+	ADD("rate-table", test_rate_table);
 	ADD("source-saves", test_source_saves);
 	ADD("source-veto", test_source_veto);
 	ADD("invoice-rule", test_invoice_rule);
@@ -1130,6 +1316,10 @@ main(int argc, char **argv)
 	CASE("atomic", "commit", test_atomic_and_signals);
 	CASE("atomic", "rollback", test_atomic_and_signals);
 	CASE("exchange", "wrong-currency", test_exchange);
+	CASE("draft-consent", "sale", test_unvalued_source_approval);
+	CASE("draft-consent", "expense", test_unvalued_source_approval);
+	CASE("approved-exchange", "opaque", test_approved_exchange_boundary);
+	CASE("approved-exchange", "foreign-table", test_approved_exchange_boundary);
 	CASE("reentrant", "mutating-validator", test_reentrant_integrity);
 	CASE("batch", "duplicate", test_batch_identity);
 	CASE("batch", "date", test_batch_identity);

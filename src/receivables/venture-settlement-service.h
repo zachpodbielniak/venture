@@ -141,7 +141,8 @@ gboolean venture_receivables_is_projection_write(VentureDatabase *database, Vent
  */
 gboolean venture_receivables_check_sale(VentureDatabase *database, VentureEntity *record, GError **error);
 
-/** venture_settlement_service_record_mail:
+/**
+ * venture_settlement_service_record_mail:
  * @self: settlement service
  * @invoice: issued invoice
  * @actor: (nullable): audit actor
@@ -149,5 +150,34 @@ gboolean venture_receivables_check_sale(VentureDatabase *database, VentureEntity
  * Returns: whether a nonfinancial mail-queued invoice event was recorded
  */
 gboolean venture_settlement_service_record_mail(VentureSettlementService *self, VentureInvoice *invoice, const VentureActor *actor, GError **error);
+/**
+ * venture_settlement_service_correct_tax_allocation:
+ * @self: settlement service
+ * @organization_id: legal entity
+ * @date: dated correction
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): refusal
+ *
+ * Posts explicit dated corrections moving tax out of income for issued
+ * invoices whose original journals credited income for the tax-inclusive total.
+ * Returns: %TRUE if every needed correction posted or was already present
+ */
+gboolean venture_settlement_service_correct_tax_allocation(VentureSettlementService *self,
+	gint64 organization_id, GDateTime *date, const VentureActor *actor, GError **error);
+
+/**
+ * venture_settlement_service_write_off:
+ * @self: settlement service
+ * @invoice_id: an issued invoice with remaining AR
+ * @date: correction date
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): refusal
+ *
+ * Writes off remaining AR through a dated credit and allocation. Original
+ * journals stay posted; cash is not returned.
+ * Returns: %TRUE on success
+ */
+gboolean venture_settlement_service_write_off(VentureSettlementService *self,
+	gint64 invoice_id, GDateTime *date, const VentureActor *actor, GError **error);
 G_END_DECLS
 #endif

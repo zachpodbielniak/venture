@@ -1,0 +1,24 @@
+#+title: Receipt and supplier-invoice capture
+#+description: Inbox rows that become expenses or vendor bills through existing services
+
+* An inbox row is not yet a book
+
+The =capture= module requires =finance= and suggests =payables=. It owns
+=capture_item=. Upload, email and scan land here as =receipt= or
+=supplier_invoice= rows in status =inbox=. Conversion is the only writer
+that creates the destination.
+
+A receipt becomes an =expense= through the ordinary expense save, so
+automatic journals, period guards and uniqueness still apply. A supplier
+invoice becomes a draft =vendor_bill= plus one =vendor_bill_line=; approval
+and payment stay on =VenturePayablesService=. Rejection keeps the inbox
+evidence without a book entry.
+
+#+begin_src sh
+venturectl capture ingest kind=receipt title="Toner" 'amount=12.50 USD' occurred_at=2026-01-15 vendor="Office Supply"
+venturectl capture convert 1 as=expense category=office
+venturectl capture convert 2 as=vendor_bill company_id=1
+venturectl capture reject 3 reason=personal
+#+end_src
+
+Capture ingestion through the API files the item under the active organization. =venture_capture_service_ingest_for_organization()= provides that explicit scope to other callers; the original ingest API uses the configured default organization. Conversion preserves the captured item's organization for the expense or supplier bill.

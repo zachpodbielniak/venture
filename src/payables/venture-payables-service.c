@@ -17,6 +17,25 @@ struct _VenturePayablesService
 	gint64 expense_account;
 };
 
+/* Bind service-level account overrides as well as persisted policy to consent.
+ * Nested operations inherit the already authorized whole-command scope. */
+static VentureAccountingOperation *
+accounting_operation(VenturePayablesService *self, const gchar *name, VentureEntity *subject,
+	GPtrArray *details, GVariant *arguments, gint64 org, const VentureActor *actor, GError **error)
+{
+	return venture_accounting_operation_begin(self->database, name, subject, details,
+		g_variant_new("(xxxv)", self->cash_account, self->payable_account, self->expense_account,
+			arguments != NULL ? arguments : g_variant_new_tuple(NULL, 0)), org, actor, error);
+}
+
+/* ISO dates preserve explicit instants without introducing generated IDs. */
+static GVariant *
+operation_date(GDateTime *date, const gchar *state)
+{
+	g_autofree gchar *text = date != NULL ? g_date_time_format_iso8601(date) : NULL;
+	return g_variant_new("(ss)", text != NULL ? text : "", state != NULL ? state : "");
+}
+
 enum
 {
 	PROP_0,
@@ -473,6 +492,21 @@ account_id(VenturePayablesService *self, gint64 configured, const gchar *code,
 	gboolean active;
 	gint actual_kind;
 
+	if (configured == 0)
+	{
+		const gchar *role = g_str_equal(code, "1000") ? "cash" :
+			(g_str_equal(code, "2000") ? "payables" :
+			(g_str_equal(code, "6900") ? "expense" : NULL));
+		if (role != NULL)
+		{
+			gint64 mapped = venture_setup_resolve_account(self->database, organization_id,
+				role, "organization", 0, NULL, error);
+			if (mapped != 0)
+				configured = mapped;
+			else if (error != NULL && *error != NULL)
+				return 0;
+		}
+	}
 	if (configured != 0)
 		account = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, configured, error);
 	else
@@ -500,7 +534,8 @@ account_id(VenturePayablesService *self, gint64 configured, const gchar *code,
 		account = VENTURE_ENTITY(venture_account_new());
 		g_object_set(account, "organization-id", organization_id, "code", scoped_code,
 			"name", g_str_equal(code, "6900") ? "General expenses" :
-			(g_str_equal(code, "2000") ? "Accounts payable" : "Cash"),
+			(g_str_equal(code, "2000") ? "Accounts payable" :
+			(g_str_equal(code, "1300") ? "Recoverable tax" : "Cash")),
 			"kind", kind, "active", TRUE, NULL);
 		if (!venture_database_save(self->database, account, NULL, error))
 			return 0;
@@ -703,22 +738,68 @@ post_bill(VenturePayablesService *self, VentureEntity *bill, VentureEntity *even
 	{
 		VentureEntity *line = g_ptr_array_index(lines, i);
 		g_autoptr(VentureMoney) amount = NULL;
+		g_autoptr(VentureMoney) tax = NULL;
+		g_autoptr(VentureMoney) net = NULL;
+		g_autoptr(VentureEntity) tax_code = NULL;
+		gboolean recoverable = FALSE;
 		gint64 account;
+		gint64 tax_code_id;
 		if (venture_entity_is_deleted(line))
 			continue;
 		amount = venture_vendor_bill_line_get_amount(VENTURE_VENDOR_BILL_LINE(line), error);
 		if (amount == NULL || !accumulate(&total, amount, FALSE, error))
 			return FALSE;
-		account = account_id(self, get_id(line, "account-id") != 0 ? get_id(line, "account-id") : self->expense_account,
-			"6900", VENTURE_ACCOUNT_KIND_EXPENSE, org, error);
+		g_object_get(line, "tax-amount", &tax, NULL);
+		tax_code_id = get_id(line, "tax-code-id");
+		if (tax_code_id != 0)
+		{
+			tax_code = venture_database_get(self->database, VENTURE_TYPE_TAX_CODE, tax_code_id, error);
+			if (tax_code == NULL)
+				return FALSE;
+			g_object_get(tax_code, "recoverable", &recoverable, NULL);
+		}
+		if (tax != NULL && !venture_money_is_zero(tax))
+			net = venture_money_subtract(amount, tax, error);
+		else
+			net = g_steal_pointer(&amount);
+		if (net == NULL)
+			return FALSE;
+		if (get_id(line, "account-id") != 0)
+		{
+			g_autoptr(VentureEntity) chosen = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT,
+				get_id(line, "account-id"), error);
+			gboolean active = FALSE;
+			if (chosen == NULL)
+				return FALSE;
+			g_object_get(chosen, "active", &active, NULL);
+			if (!active || venture_entity_get_organization_id(chosen) != org)
+				return refuse(error, VENTURE_ERROR_VALIDATION,
+					"The posting account must be active, of the right class, and in the same organization");
+			account = venture_entity_get_id(chosen);
+		}
+		else
+			account = account_id(self, self->expense_account, "6900", VENTURE_ACCOUNT_KIND_EXPENSE, org, error);
 		if (account == 0)
 			return FALSE;
 		entry = venture_ledger_entry_new();
 		g_object_set(entry, "organization-id", org, "transaction-id", transaction, "account-id", account,
 			"side", approval ? VENTURE_LEDGER_SIDE_DEBIT : VENTURE_LEDGER_SIDE_CREDIT,
-			"amount", amount, "occurred-at", date, "source-type", "vendor_bill_event",
-			"source-id", venture_entity_get_id(event), NULL);
+			"amount", recoverable ? net : (amount != NULL ? amount : net), "occurred-at", date,
+			"source-type", "vendor_bill_event", "source-id", venture_entity_get_id(event), NULL);
 		g_ptr_array_add(entries, entry);
+		if (recoverable && tax != NULL && !venture_money_is_zero(tax))
+		{
+			gint64 recoverable_account = account_id(self, 0, "1300", VENTURE_ACCOUNT_KIND_ASSET, org, error);
+			if (recoverable_account == 0)
+				return FALSE;
+			entry = venture_ledger_entry_new();
+			g_object_set(entry, "organization-id", org, "transaction-id", transaction,
+				"account-id", recoverable_account,
+				"side", approval ? VENTURE_LEDGER_SIDE_DEBIT : VENTURE_LEDGER_SIDE_CREDIT,
+				"amount", tax, "occurred-at", date, "source-type", "vendor_bill_event",
+				"source-id", venture_entity_get_id(event), NULL);
+			g_ptr_array_add(entries, entry);
+		}
 	}
 	if (total == NULL)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "A bill requires expense lines");
@@ -759,6 +840,8 @@ perform_transition(VenturePayablesService *self, VentureEntity *bill, VentureVen
 	g_object_get(bill, "bill-date", &earliest, "due-date", &due, NULL);
 	if (!check_date(date, earliest, error) || !check_bill_chronology(self, venture_entity_get_id(bill), date, error))
 		return FALSE;
+	if (approval && !venture_purchasing_check_bill_approval(self->database, bill, error))
+		return FALSE;
 	if (approval)
 		total = bill_total(self, bill, error);
 	else
@@ -790,14 +873,19 @@ venture_payables_service_transition(VenturePayablesService *self,
 	VentureVendorBill *bill, const gchar *state, GDateTime *date,
 	const VentureActor *actor, GError **error)
 {
+	g_autoptr(VentureAccountingOperation) operation = NULL;
 	g_autoptr(VentureEntity) original = NULL;
 	gboolean ok;
 
+	operation = accounting_operation(self, "payables.transition", VENTURE_ENTITY(bill), NULL,
+		operation_date(date, state), venture_entity_get_organization_id(VENTURE_ENTITY(bill)), actor, error);
+	if (operation == NULL) return FALSE;
 	if (!begin_operation(self, "vendor_bill", error))
 		return FALSE;
 	original = snapshot(VENTURE_ENTITY(bill));
 	ok = perform_transition(self, VENTURE_ENTITY(bill), NULL, state, date, actor, error);
 	ok = finish_operation(self, ok, error);
+	if (ok) ok = venture_accounting_operation_finish(operation, error);
 	if (!ok)
 		venture_entity_copy_properties_from(VENTURE_ENTITY(bill), original, FALSE);
 	return ok;
@@ -1112,11 +1200,19 @@ gboolean
 venture_payables_service_apply_payment(VenturePayablesService *self,
 	VentureBillPayment *payment, GPtrArray *allocations, const VentureActor *actor, GError **error)
 {
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureEntity) approval = NULL;
 	g_autoptr(VentureEntity) original = NULL;
 	g_autoptr(GPtrArray) originals = NULL;
 	gboolean ok;
 	guint i;
 
+	operation = accounting_operation(self, "payables.apply_payment", VENTURE_ENTITY(payment), allocations,
+		NULL, venture_entity_get_organization_id(VENTURE_ENTITY(payment)), actor, error);
+	if (operation == NULL) return FALSE;
+	if (!venture_accounting_approval_allow(self->database, "pay", VENTURE_ENTITY(payment),
+		allocations, actor, &approval, error))
+		return FALSE;
 	if (!begin_operation(self, "bill_payment", error))
 		return FALSE;
 	original = snapshot(VENTURE_ENTITY(payment));
@@ -1132,7 +1228,10 @@ venture_payables_service_apply_payment(VenturePayablesService *self,
 			g_ptr_array_add(originals, snapshot(g_ptr_array_index(allocations, i)));
 		}
 	ok = perform_payment(self, VENTURE_ENTITY(payment), allocations, actor, error);
+	if (ok)
+		ok = venture_accounting_approval_consume(self->database, approval, actor, error);
 	ok = finish_operation(self, ok, error);
+	if (ok) ok = venture_accounting_operation_finish(operation, error);
 	if (!ok)
 	{
 		venture_entity_copy_properties_from(VENTURE_ENTITY(payment), original, FALSE);
@@ -1328,9 +1427,11 @@ gboolean
 venture_payables_save_hook(VentureDatabase *database, VentureEntity *record,
 	const VentureActor *actor, gboolean *handled, gboolean *authorized, GError **error)
 {
+	g_autoptr(VentureAccountingOperation) operation = NULL;
 	VenturePayablesService *self;
 	g_autoptr(VentureEntity) previous = NULL;
 	g_autoptr(VentureEntity) original = NULL;
+	g_autoptr(VentureEntity) approval = NULL;
 	gboolean ok;
 
 	*handled = FALSE;
@@ -1401,18 +1502,27 @@ venture_payables_save_hook(VentureDatabase *database, VentureEntity *record,
 		bill = venture_database_get(database, VENTURE_TYPE_VENDOR_BILL, get_id(record, "bill-id"), error);
 		if (bill == NULL || !same_owner(record, bill, error))
 			return FALSE;
+		operation = accounting_operation(self, "payables.save_event", record, NULL, NULL,
+			venture_entity_get_organization_id(record), actor, error);
+		if (operation == NULL) return FALSE;
 		if (!begin_operation(self, "vendor_bill", error))
 			return FALSE;
 		original = snapshot(record);
 		ok = perform_transition(self, bill, VENTURE_VENDOR_BILL_EVENT(record),
 			g_str_equal(kind, "approve") ? "approved" : "void", date, actor, error);
 		ok = finish_operation(self, ok, error);
+		if (ok) ok = venture_accounting_operation_finish(operation, error);
 		if (!ok)
 			venture_entity_copy_properties_from(record, original, FALSE);
 		return ok;
 	}
 	if (VENTURE_IS_BILL_PAYMENT(record))
 		return venture_payables_service_apply_payment(self, VENTURE_BILL_PAYMENT(record), NULL, actor, error);
+	operation = accounting_operation(self, "payables.save", record, NULL, NULL,
+		venture_entity_get_organization_id(record), actor, error);
+	if (operation == NULL) return FALSE;
+	if (!venture_accounting_approval_allow(database, "pay", record, NULL, actor, &approval, error))
+		return FALSE;
 	if (!begin_operation(self, "bill_payment", error))
 		return FALSE;
 	original = snapshot(record);
@@ -1424,14 +1534,17 @@ venture_payables_save_hook(VentureDatabase *database, VentureEntity *record,
 		ok = perform_refund(self, record, actor, error);
 	else
 		ok = refuse(error, VENTURE_ERROR_VALIDATION, "Bill events can only be written by VenturePayablesService");
+	if (ok)
+		ok = venture_accounting_approval_consume(database, approval, actor, error);
 	ok = finish_operation(self, ok, error);
+	if (ok) ok = venture_accounting_operation_finish(operation, error);
 	if (!ok)
 		venture_entity_copy_properties_from(record, original, FALSE);
 	return ok;
 }
 
-gboolean
-venture_payables_service_settle_bill(VenturePayablesService *self,
+static gboolean
+settle_bill_impl(VenturePayablesService *self,
 	gint64 bill_id, GDateTime *date, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) bill = NULL;
@@ -1457,6 +1570,22 @@ venture_payables_service_settle_bill(VenturePayablesService *self,
 		ok = perform_payment(self, VENTURE_ENTITY(payment), NULL, actor, error);
 	}
 	return finish_operation(self, ok, error);
+}
+
+/* The command owns approval before constructing any payment or credit. */
+gboolean
+venture_payables_service_settle_bill(VenturePayablesService *self,
+	gint64 bill_id, GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) subject = NULL;
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	subject = venture_database_get(self->database, VENTURE_TYPE_VENDOR_BILL, bill_id, error);
+	if (subject == NULL) return FALSE;
+	operation = accounting_operation(self, "payables.settle_bill", subject, NULL, operation_date(date, NULL),
+		venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL) return FALSE;
+	return settle_bill_impl(self, bill_id, date, actor, error) &&
+		venture_accounting_operation_finish(operation, error);
 }
 
 VentureMoney *
@@ -1543,7 +1672,8 @@ venture_payables_service_prepare_action(VenturePayablesService *self,
 	g_object_get(request, "date", &date, NULL);
 	if (date == NULL)
 	{
-		date = venture_time_now();
+		/* A repeated HTTP command must keep the same accounting day. */
+		date = venture_time_from_string("today", NULL);
 		g_object_set(request, "date", date, NULL);
 	}
 	if (pay)
@@ -1587,6 +1717,7 @@ gboolean
 venture_payables_expense_hook(VentureDatabase *database, VentureEntity *record,
 	const VentureActor *actor, gboolean *handled, GError **error)
 {
+	g_autoptr(VentureAccountingOperation) operation = NULL;
 	VenturePayablesService *self;
 	g_autoptr(VentureEntity) line = NULL;
 	g_autoptr(VentureEntity) bill = NULL;
@@ -1611,6 +1742,9 @@ venture_payables_expense_hook(VentureDatabase *database, VentureEntity *record,
 	if (!is_bill_expense(record))
 		return TRUE;
 	*handled = TRUE;
+	operation = accounting_operation(self, "payables.convert_expense", record, NULL, NULL,
+		venture_entity_get_organization_id(record), actor, error);
+	if (operation == NULL) return FALSE;
 	if (!begin_operation(self, "vendor_bill", error))
 		return FALSE;
 	original = snapshot(record);
@@ -1679,7 +1813,156 @@ venture_payables_expense_hook(VentureDatabase *database, VentureEntity *record,
 	ok = write_record(self, record, actor, error);
 done:
 	ok = finish_operation(self, ok, error);
+	if (ok) ok = venture_accounting_operation_finish(operation, error);
 	if (!ok)
 		venture_entity_copy_properties_from(record, original, FALSE);
 	return ok;
+}
+
+static gboolean
+adapter_known(const gchar *adapter)
+{
+	return g_strcmp0(adapter, "manual") == 0 || g_strcmp0(adapter, "transfer") == 0 ||
+		g_strcmp0(adapter, "card") == 0 || g_strcmp0(adapter, "check") == 0 ||
+		g_strcmp0(adapter, "ach") == 0;
+}
+
+gboolean
+venture_payables_service_execute_payment(VenturePayablesService *self,
+	const gchar *adapter, VentureBillPayment *payment, GPtrArray *allocations,
+	const VentureActor *actor, GError **error)
+{
+	g_autofree gchar *method = NULL;
+	if (adapter == NULL || !adapter_known(adapter))
+		return refuse(error, VENTURE_ERROR_VALIDATION,
+			"Payment adapter is manual, transfer, card, check or ach");
+	g_object_get(payment, "method", &method, NULL);
+	if (venture_string_is_empty(method))
+		g_object_set(payment, "method", adapter, NULL);
+	return venture_payables_service_apply_payment(self, payment, allocations, actor, error);
+}
+
+gboolean
+venture_payables_service_pay_bills(VenturePayablesService *self, GArray *bill_ids,
+	GDateTime *date, const gchar *method, const gchar *adapter, const gchar *reference,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureEntity) subject = NULL;
+	g_autofree gchar *approval_date = NULL;
+	g_autoptr(GHashTable) groups = NULL;
+	g_autoptr(GPtrArray) payments = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autoptr(GPtrArray) batches = g_ptr_array_new_with_free_func((GDestroyNotify)g_ptr_array_unref);
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
+	const gchar *used;
+	guint i;
+	if (adapter == NULL)
+		adapter = "transfer";
+	if (!adapter_known(adapter))
+		return refuse(error, VENTURE_ERROR_VALIDATION,
+			"Payment adapter is manual, transfer, card, check or ach");
+	if (bill_ids == NULL || bill_ids->len == 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Select at least one approved bill");
+	if (date == NULL)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "A payment date is required");
+	used = !venture_string_is_empty(method) ? method : adapter;
+	subject = venture_database_get(self->database, VENTURE_TYPE_VENDOR_BILL,
+		g_array_index(bill_ids, gint64, 0), error);
+	if (subject == NULL) return FALSE;
+	approval_date = g_date_time_format_iso8601(date);
+	operation = accounting_operation(self, "payables.pay_bills", subject, NULL,
+		g_variant_new("(@axssss)", g_variant_new_fixed_array(G_VARIANT_TYPE_INT64,
+			bill_ids->data, bill_ids->len, sizeof(gint64)), approval_date, used, adapter,
+			reference != NULL ? reference : ""), venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL) return FALSE;
+
+	groups = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, (GDestroyNotify)g_ptr_array_unref);
+	for (i = 0; i < bill_ids->len; i++)
+	{
+		gint64 bill_id = g_array_index(bill_ids, gint64, i);
+		g_autoptr(VentureEntity) bill = NULL;
+		g_autoptr(VentureMoney) balance = NULL;
+		g_autofree gchar *status = NULL;
+		GPtrArray *bucket;
+		gint64 vendor;
+		bill = venture_database_get(self->database, VENTURE_TYPE_VENDOR_BILL, bill_id, error);
+		if (bill == NULL || !same_owner(subject, bill, error))
+			return FALSE;
+		g_object_get(bill, "status", &status, NULL);
+		if (g_strcmp0(status, "approved") != 0 && g_strcmp0(status, "partially_paid") != 0)
+		{
+			refuse(error, VENTURE_ERROR_VALIDATION, "The workbench pays approved or partially paid bills");
+			return FALSE;
+		}
+		balance = venture_payables_service_bill_balance(self, bill_id, NULL, error);
+		if (balance == NULL)
+			return FALSE;
+		if (venture_money_is_zero(balance))
+		{
+			refuse(error, VENTURE_ERROR_VALIDATION, "A selected bill has no outstanding balance");
+			return FALSE;
+		}
+		vendor = get_id(bill, "company-id");
+		bucket = g_hash_table_lookup(groups, (gpointer)(guintptr)vendor);
+		if (bucket == NULL)
+		{
+			bucket = g_ptr_array_new_with_free_func(g_object_unref);
+			g_hash_table_insert(groups, (gpointer)(guintptr)vendor, bucket);
+		}
+		{
+			VentureEntity *allocation = VENTURE_ENTITY(venture_bill_payment_allocation_new());
+			g_object_set(allocation, "bill-id", bill_id, "amount", balance, "date", date, NULL);
+			venture_entity_set_organization_id(allocation, venture_entity_get_organization_id(bill));
+			g_ptr_array_add(bucket, allocation);
+		}
+	}
+	g_hash_table_iter_init(&iter, groups);
+	while (g_hash_table_iter_next(&iter, &key, &value))
+	{
+		GPtrArray *bucket = value;
+		g_autoptr(VentureBillPayment) payment = venture_bill_payment_new();
+		g_autoptr(VentureMoney) total = NULL;
+		guint a;
+		for (a = 0; a < bucket->len; a++)
+		{
+			g_autoptr(VentureMoney) amount = NULL;
+			g_object_get(g_ptr_array_index(bucket, a), "amount", &amount, NULL);
+			if (total == NULL)
+				total = venture_money_copy(amount);
+			else if (!accumulate(&total, amount, FALSE, error))
+				return FALSE;
+		}
+		g_object_set(payment, "vendor-id", (gint64)(guintptr)key, "date", date, "amount", total,
+			"method", used, "reference", reference, NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(payment),
+			venture_entity_get_organization_id(g_ptr_array_index(bucket, 0)));
+		{
+			g_autoptr(VentureEntity) approval = NULL;
+
+			/* Consent must survive a refusal. Build every proposal before
+			 * opening the all-or-nothing payment transaction. */
+			if (!venture_accounting_approval_allow(self->database, "pay",
+				VENTURE_ENTITY(payment), bucket, actor, &approval, error))
+				return FALSE;
+		}
+		g_ptr_array_add(payments, g_steal_pointer(&payment));
+		g_ptr_array_add(batches, g_ptr_array_ref(bucket));
+	}
+	if (!venture_database_begin(self->database, error))
+		return FALSE;
+	for (i = 0; i < payments->len; i++)
+	{
+		/* Reuse the guarded operation, including approval consumption and
+		 * live balance checks; an error rolls back earlier vendor payments. */
+		if (!venture_payables_service_apply_payment(self, g_ptr_array_index(payments, i),
+			g_ptr_array_index(batches, i), actor, error))
+		{
+			venture_database_rollback(self->database);
+			return FALSE;
+		}
+	}
+	return venture_database_commit(self->database, error) &&
+		venture_accounting_operation_finish(operation, error);
 }

@@ -68,10 +68,29 @@ CORE_SRCS := \
 
 CORE_SRCS += src/orgaccess/venture-access-records.c
 CORE_SRCS += src/billing/venture-billing-records.c
+CORE_SRCS += src/projects/venture-project-records.c
 CORE_SRCS += src/leads/venture-lead-records.c
 CORE_SRCS += src/activities/venture-activity-records.c
 CORE_SRCS += src/payables/venture-payable-records.c
+CORE_SRCS += src/close/venture-close-records.c
+CORE_SRCS += src/tax/venture-tax-records.c
+CORE_SRCS += src/capture/venture-capture-records.c
+CORE_SRCS += src/claims/venture-claim-records.c
+CORE_SRCS += src/payroll/venture-payroll-records.c
 CORE_SRCS += src/banking/venture-bank-records.c
+CORE_SRCS += src/bankfeed/venture-bankfeed-records.c
+CORE_SRCS += src/cutover/venture-cutover-records.c
+CORE_SRCS += src/setup/venture-setup-records.c
+CORE_SRCS += src/progress/venture-progress-records.c
+CORE_SRCS += src/portal/venture-portal-records.c
+CORE_SRCS += src/portal/venture-supplier-portal-records.c
+CORE_SRCS += src/fields/venture-custom-fields-records.c
+CORE_SRCS += src/backup/venture-backup-records.c
+CORE_SRCS += src/orgaccess/venture-accounting-approval-records.c
+CORE_SRCS += src/report/venture-report-records.c
+CORE_SRCS += src/budgets/venture-budget-records.c
+CORE_SRCS += src/equity/venture-equity-records.c
+CORE_SRCS += src/group/venture-group-records.c
 
 # Server-only subsystems.
 SERVER_ONLY_SRCS := \
@@ -80,7 +99,7 @@ SERVER_ONLY_SRCS := \
 	src/receivables/venture-receivable-reports.c \
 	$(wildcard src/core/*.c) \
 	$(wildcard src/db/*.c) \
-	$(wildcard src/report/*.c) \
+	$(filter-out src/report/venture-report-records.c,$(wildcard src/report/*.c)) \
 	$(wildcard src/ai/*.c) \
 	$(wildcard src/automation/*.c) \
 	$(wildcard src/plugin/*.c) \
@@ -89,6 +108,8 @@ SERVER_ONLY_SRCS := \
 	$(wildcard src/kb/*.c)
 
 SERVER_ONLY_SRCS += src/banking/venture-bank-match-service.c
+SERVER_ONLY_SRCS += $(filter-out src/bankfeed/venture-bankfeed-records.c,$(wildcard src/bankfeed/*.c))
+SERVER_ONLY_SRCS += $(wildcard src/commerce/*.c)
 
 SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard src/periods/*.c))
 
@@ -97,25 +118,47 @@ CORE_SRCS += src/stripe/venture-stripe-records.c
 SERVER_ONLY_SRCS += $(filter-out src/stripe/venture-stripe-records.c,$(wildcard src/stripe/*.c))
 CORE_SRCS += src/assets/venture-asset-records.c
 SERVER_ONLY_SRCS += $(filter-out src/assets/venture-asset-records.c,$(wildcard src/assets/*.c))
-SERVER_ONLY_SRCS += $(filter-out src/orgaccess/venture-access-records.c,$(wildcard src/orgaccess/*.c))
+SERVER_ONLY_SRCS += $(filter-out src/orgaccess/venture-access-records.c src/orgaccess/venture-accounting-approval-records.c,$(wildcard src/orgaccess/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/billing/venture-billing-records.c,$(wildcard src/billing/*.c))
+SERVER_ONLY_SRCS += $(filter-out src/projects/venture-project-records.c,$(wildcard src/projects/*.c))
 CORE_SRCS += src/mail/venture-mail-records.c
 SERVER_ONLY_SRCS += $(filter-out src/mail/venture-mail-records.c,$(wildcard src/mail/*.c))
 CORE_SRCS += src/quotes/venture-quote-records.c
 SERVER_ONLY_SRCS += $(filter-out src/quotes/venture-quote-records.c,$(wildcard src/quotes/*.c))
+CORE_SRCS += src/goods/venture-goods-records.c
+SERVER_ONLY_SRCS += $(filter-out src/goods/venture-goods-records.c,$(wildcard src/goods/*.c))
 SERVER_ONLY_SRCS += src/leads/venture-lead-service.c src/leads/venture-lead-reports.c
 SERVER_ONLY_SRCS += $(filter-out src/activities/venture-activity-records.c,$(wildcard src/activities/*.c))
 SERVER_ONLY_SRCS += src/payables/venture-payables-service.c src/payables/venture-payable-reports.c
+SERVER_ONLY_SRCS += src/close/venture-close-service.c
+SERVER_ONLY_SRCS += src/tax/venture-tax-filing-adapter.c src/tax/venture-tax-filing-service.c
+SERVER_ONLY_SRCS += src/capture/venture-capture-service.c
+SERVER_ONLY_SRCS += src/claims/venture-claims-service.c
+SERVER_ONLY_SRCS += src/payroll/venture-payroll-service.c
+SERVER_ONLY_SRCS += src/accounting/venture-accounting-home.c
 
 CORE_SRCS += src/pipelines/venture-pipeline-records.c
 SERVER_ONLY_SRCS += $(filter-out src/pipelines/venture-pipeline-records.c,$(wildcard src/pipelines/*.c))
 CORE_SRCS += src/sequences/venture-sequence-records.c
 SERVER_ONLY_SRCS += $(filter-out src/sequences/venture-sequence-records.c,$(wildcard src/sequences/*.c))
 CORE_SRCS += src/autojournal/venture-posting-profile.c
+CORE_SRCS += src/recurring/venture-recurring-records.c
 SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wildcard src/autojournal/*.c))
+SERVER_ONLY_SRCS += $(filter-out src/recurring/venture-recurring-records.c,$(wildcard src/recurring/*.c))
 
 PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
 SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
+SERVER_ONLY_SRCS += src/cutover/venture-cutover-service.c
+SERVER_ONLY_SRCS += src/setup/venture-setup-service.c
+SERVER_ONLY_SRCS += src/documents/venture-document-service.c
+SERVER_ONLY_SRCS += src/progress/venture-progress-service.c
+SERVER_ONLY_SRCS += src/portal/venture-portal-service.c
+SERVER_ONLY_SRCS += src/portal/venture-supplier-portal-service.c
+SERVER_ONLY_SRCS += src/fields/venture-custom-fields-service.c
+SERVER_ONLY_SRCS += src/backup/venture-backup-service.c
+SERVER_ONLY_SRCS += $(filter-out src/budgets/venture-budget-records.c,$(wildcard src/budgets/*.c))
+SERVER_ONLY_SRCS += $(filter-out src/equity/venture-equity-records.c,$(wildcard src/equity/*.c))
+SERVER_ONLY_SRCS += $(filter-out src/group/venture-group-records.c,$(wildcard src/group/*.c))
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
@@ -155,13 +198,38 @@ PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/reconciliation/*.h))
 PUBLIC_HDRS += $(wildcard src/assets/*.h)
 PUBLIC_HDRS += $(wildcard src/orgaccess/*.h)
 PUBLIC_HDRS += $(wildcard src/billing/*.h)
+PUBLIC_HDRS += $(wildcard src/projects/*.h)
 PUBLIC_HDRS += $(wildcard src/mail/*.h)
 
 PUBLIC_HDRS += $(wildcard src/payables/*.h)
+PUBLIC_HDRS += $(wildcard src/goods/*.h)
+PUBLIC_HDRS += $(wildcard src/close/*.h)
+PUBLIC_HDRS += $(wildcard src/tax/*.h)
+PUBLIC_HDRS += $(wildcard src/capture/*.h)
+PUBLIC_HDRS += $(wildcard src/claims/*.h)
+PUBLIC_HDRS += $(wildcard src/payroll/*.h)
+PUBLIC_HDRS += $(wildcard src/accounting/*.h)
 PUBLIC_HDRS += $(wildcard src/banking/*.h)
+PUBLIC_HDRS += $(wildcard src/bankfeed/*.h)
+PUBLIC_HDRS += $(wildcard src/commerce/*.h)
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/pipelines/*.h))
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/sequences/*.h))
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/statements/*.h))
+PUBLIC_HDRS += $(wildcard src/cutover/*.h)
+PUBLIC_HDRS += $(wildcard src/setup/*.h)
+PUBLIC_HDRS += $(wildcard src/documents/*.h)
+PUBLIC_HDRS += $(wildcard src/recurring/*.h)
+PUBLIC_HDRS += $(wildcard src/progress/*.h)
+PUBLIC_HDRS += $(wildcard src/portal/*.h)
+PUBLIC_HDRS += $(wildcard src/fields/*.h)
+PUBLIC_HDRS += $(wildcard src/backup/*.h)
+PUBLIC_HDRS += $(wildcard src/budgets/*.h)
+PUBLIC_HDRS += $(wildcard src/equity/*.h)
+PUBLIC_HDRS += $(wildcard src/group/*.h)
+
+# Private implementation fragments are included by their owning C source;
+# they are neither installable headers nor introspection declarations.
+PUBLIC_HDRS := $(filter-out %-private.h,$(PUBLIC_HDRS))
 
 TEST_SRCS := $(wildcard tests/test-*.c)
 
@@ -185,8 +253,14 @@ $(OUTDIR)/tests/test-billing-surfaces: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-quotes: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-leads: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-payables: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-close: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-capture: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-claims: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-payroll: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-accounting: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sequences: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-recurring: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery

@@ -218,6 +218,14 @@ static const VentureConfigSetting venture_config_settings[] = {
 
 	VC_BOOL("stripe-enabled", "stripe", "enabled", FALSE,
 	        "Enable hosted Stripe payments; requires deployment credentials"),
+	VC_BOOL("payroll-enabled", "payroll", "enabled", FALSE,
+	        "Enable imported payroll runs; native tax calculation is out of scope"),
+	VC_BOOL("bankfeed-enabled", "bankfeed", "enabled", FALSE,
+	        "Enable pluggable bank feeds; requires VENTURE_BANKFEED_TELLER_KEY"),
+	VC_BOOL("commerce-enabled", "commerce", "enabled", FALSE,
+	        "Enable commerce connectors; requires VENTURE_COMMERCE_SHOPIFY_TOKEN"),
+	VC_BOOL("group-enabled", "group", "enabled", FALSE,
+	        "Enable intercompany links, eliminations and consolidated statements"),
 
 	VC_BOOL("forge-enabled", "forge", "enabled", TRUE,
 	        "Enable git forge integration"),

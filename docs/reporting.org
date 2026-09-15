@@ -23,6 +23,7 @@ about it.
 | =categories= | sales grouped by a product field; genre by default           |
 | =inventory=  | quantity on hand and carrying value; reorder flags           |
 | =tax=        | expenses by category with deductible amounts                 |
+| =tax_liability= | frozen invoice and bill tax grouped by tax code            |
 | =campaigns=  | spend, attributed revenue, return                            |
 | =pipeline=   | open deals by stage, probability-weighted                    |
 | =monthly=    | revenue, expenses and profit month by month                  |
@@ -146,3 +147,28 @@ accepts =account_id=. They use the normal report pages, CSV export and
 financial close snapshots. See [[file:statements.org][definitions and the indirect cash-flow method]].
 The older =pnl= remains operational sales/expenses reporting; differences are
 explained by source document in =pnl_reconciliation=.
+
+* Saved reports and dimensions
+
+=saved_report= stores report name, period, JSON options and an optional
+dimension. Execution always scopes =organization_id= from the saved row and
+passes =dimension= into the shared ledger query so departmental packs do not
+see another team's postings. =report_pack= groups saved reports for a
+schedule. =venture_report_pack_service_run_due= dispatches due packs
+(cron-like =0 8 * * *= daily, =0 8 1 * *= monthly) and stamps
+=last-run-at=. Automation: =venture->report_packs_run("1")=.
+
+* Scheduled report packs
+
+Schedules accept =daily= or five space-separated numeric/=*= fields: minute,
+hour, day of month, month, weekday (0 or 7 is Sunday). Evaluation uses UTC.
+Unsupported expressions are refused instead of interpreted as daily. When
+both day fields are specified, either may match. A delayed sweep catches up
+once on the scheduled day; it does not replay missed historical days.
+
+A successful run stores its result array in =report_pack.last_output= and
+updates =last_run_at= in the same record save. Read that JSON through the
+generic record API or CLI. A failed run preserves the previous output and
+timestamp. No email delivery or historical output archive is implied.
+
+A report pack may reference only saved reports in its own organization. The runner validates this boundary before generating each result, including scheduled packs; foreign saved-report ids fail instead of copying another organization's report into the pack output.

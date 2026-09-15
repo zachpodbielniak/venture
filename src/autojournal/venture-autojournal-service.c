@@ -204,7 +204,8 @@ rule_lines(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *source,
 			!leg(rows, profile, "tax-account-id", VENTURE_LEDGER_SIDE_DEBIT, remitted, error) ||
 			!leg(rows, profile, "cash-account-id", VENTURE_LEDGER_SIDE_CREDIT, remitted, error)) return NULL;
 		g_object_get(source, "product-id", &product_id, "quantity", &quantity, NULL);
-		if (product_id > 0 && quantity != 0) {
+		if (product_id > 0 && quantity != 0 &&
+			!venture_inventory_product_is_stocked(db, product_id)) {
 			g_autoptr(VentureEntity) product = venture_database_get(db, VENTURE_TYPE_PRODUCT, product_id, error);
 			g_autoptr(VentureMoney) cost = NULL;
 			g_autoptr(VentureMoney) total = NULL;
@@ -261,6 +262,13 @@ rule_lines(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *source,
 		if (debit == 0 && category != NULL && json_object_has_member(map, category)) debit = venture_json_object_get_int(map, category, 0);
 		if (debit != 0) g_object_set(profile, "default-expense-account-id", debit, NULL);
 		base = amount(source, "amount", "USD");
+		if (g_object_class_find_property(G_OBJECT_GET_CLASS(source), "cash-account-id") != NULL)
+		{
+			gint64 cash_id = 0;
+			g_object_get(source, "cash-account-id", &cash_id, NULL);
+			if (cash_id > 0)
+				g_object_set(profile, "cash-account-id", cash_id, NULL);
+		}
 		if (!leg(rows, profile, "default-expense-account-id", VENTURE_LEDGER_SIDE_DEBIT, base, error) ||
 			!leg(rows, profile, g_strcmp0(method, "credit") == 0 || g_strcmp0(method, "credit_card") == 0 || g_strcmp0(method, "accounts_payable") == 0 || g_strcmp0(method, "unpaid") == 0 ? "payable-account-id" : "cash-account-id", VENTURE_LEDGER_SIDE_CREDIT, base, error)) return NULL;
 	} else {
@@ -503,8 +511,8 @@ venture_autojournal_service_unposted(VentureAutojournalService *self, gint64 org
 	g_ptr_array_sort(result, source_order);
 	return g_steal_pointer(&result);
 }
-JsonNode *
-venture_autojournal_service_backfill(VentureAutojournalService *self, gint64 org, gboolean dry_run, const VentureActor *actor, GError **error)
+static JsonNode *
+venture_autojournal_service_backfill_impl(VentureAutojournalService *self, gint64 org, gboolean dry_run, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
 	g_autoptr(GPtrArray) sources = NULL;
@@ -555,4 +563,35 @@ venture_autojournal_service_backfill(VentureAutojournalService *self, gint64 org
 fail:
 	venture_database_rollback(db);
 	return NULL;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+JsonNode *
+venture_autojournal_service_backfill(VentureAutojournalService *self, gint64 org, gboolean dry_run, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
+	GVariantBuilder arguments;
+	g_autoptr(JsonNode) result = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return NULL;
+	}
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "org", g_variant_new_int64((gint64)org));
+	g_variant_builder_add(&arguments, "{sv}", "dry_run", g_variant_new_boolean(dry_run));
+	operation = venture_accounting_operation_begin(db, "autojournal-backfill", NULL, NULL,
+		g_variant_builder_end(&arguments), org, actor, error);
+	if (operation == NULL)
+		return NULL;
+	result = venture_autojournal_service_backfill_impl(self, org, dry_run, actor, error);
+	if (result == NULL)
+		return NULL;
+	if (dry_run)
+		return g_steal_pointer(&result);
+	if (!venture_accounting_operation_finish(operation, error))
+		return NULL;
+	return g_steal_pointer(&result);
 }

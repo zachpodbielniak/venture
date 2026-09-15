@@ -31,6 +31,16 @@ gboolean venture_bank_check_write(VentureDatabase *database, VentureEntity *reco
  */
 GPtrArray *venture_bank_transaction_candidates(VentureDatabase *database, VentureEntity *transaction, GError **error);
 /**
+ * venture_bank_transaction_candidates_search:
+ * @database: database
+ * @transaction: bank transaction
+ * @search: (nullable): case-folded token that must appear in description or reference
+ * @error: (out) (optional): error
+ * Returns: (transfer full) (element-type VentureEntity) (nullable): owned candidates
+ */
+GPtrArray *venture_bank_transaction_candidates_search(VentureDatabase *database, VentureEntity *transaction,
+	const gchar *search, GError **error);
+/**
  * venture_bank_candidate_amount:
  * @record: proposed cash document
  * Returns: (transfer full) (nullable): signed bank contribution, or NULL for an unsupported document

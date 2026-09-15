@@ -339,6 +339,224 @@ customer_statement(VentureContext *context, VentureDateRange *period, JsonObject
 	return g_steal_pointer(&result);
 }
 
+typedef struct
+{
+	gchar *code;
+	gchar *jurisdiction;
+	gboolean recoverable;
+	gboolean purchase;
+	VentureMoney *taxable;
+	VentureMoney *tax;
+} TaxRow;
+
+static void
+tax_row_free(gpointer data)
+{
+	TaxRow *row = data;
+	if (row == NULL)
+		return;
+	g_free(row->code);
+	g_free(row->jurisdiction);
+	g_clear_pointer(&row->taxable, venture_money_free);
+	g_clear_pointer(&row->tax, venture_money_free);
+	g_free(row);
+}
+
+static gboolean
+add_tax_row(GHashTable *rows, VentureDatabase *database, gint64 tax_code_id,
+	const VentureMoney *taxable, const VentureMoney *tax, const gchar *currency,
+	gboolean purchase, gboolean reversal, GError **error)
+{
+	TaxRow *row;
+	g_autofree gchar *key = NULL;
+	g_autoptr(VentureMoney) signed_tax = NULL;
+	g_autoptr(VentureMoney) signed_taxable = NULL;
+
+	if (tax == NULL || g_strcmp0(venture_money_get_currency(tax), currency) != 0)
+		return TRUE;
+	/* Keep the full database identity and distinguish tax collected from tax paid. */
+	key = g_strdup_printf("%d:%" G_GINT64_FORMAT, purchase, tax_code_id);
+	row = g_hash_table_lookup(rows, key);
+	if (row == NULL)
+	{
+		row = g_new0(TaxRow, 1);
+		row->purchase = purchase;
+		row->taxable = venture_money_new_zero(currency);
+		row->tax = venture_money_new_zero(currency);
+		if (tax_code_id > 0)
+		{
+			g_autoptr(VentureEntity) code = venture_database_get(database, VENTURE_TYPE_TAX_CODE, tax_code_id, error);
+			if (code == NULL)
+			{
+				tax_row_free(row);
+				return FALSE;
+			}
+			g_object_get(code, "code", &row->code, "jurisdiction", &row->jurisdiction,
+				"recoverable", &row->recoverable, NULL);
+		}
+		else
+			row->code = g_strdup(tax_code_id < 0 ? "unassigned credit" : "percent");
+		g_hash_table_insert(rows, g_steal_pointer(&key), row);
+	}
+	signed_tax = venture_money_multiply_rational(tax, reversal ? -1 : 1, 1, error);
+	if (signed_tax == NULL)
+		return FALSE;
+	if (taxable != NULL)
+	{
+		signed_taxable = venture_money_multiply_rational(taxable, reversal ? -1 : 1, 1, error);
+		if (signed_taxable == NULL || !add(&row->taxable, signed_taxable, error))
+			return FALSE;
+	}
+	return add(&row->tax, signed_tax, error);
+}
+
+static VentureReportResult *
+tax_liability(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
+{
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(GHashTable) grouped = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, tax_row_free);
+	g_autoptr(GDateTime) end = NULL;
+	GDateTime *start = period != NULL ? venture_date_range_get_start(period) : NULL;
+	const gchar *currency;
+	GHashTableIter iter;
+	TaxRow *row;
+	VentureDatabase *database;
+	guint t;
+
+	end = cutoff(period, options, error);
+	if (end == NULL)
+		return NULL;
+	currency = report_currency(options);
+	database = venture_context_get_database(context);
+	/* Draft lines have no tax consequence. Dated issue and void events
+	 * select the immutable lines and their sign, including historical voids. */
+	for (t = 0; t < 2; t++)
+	{
+		gboolean purchase = t == 1;
+		g_autoptr(VentureQuery) event_query = NULL;
+		g_autoptr(GPtrArray) events = NULL;
+		guint i;
+
+		if (purchase && venture_entity_registry_lookup(venture_entity_registry_get_default(),
+			"vendor_bill_event") == G_TYPE_INVALID)
+			continue;
+		event_query = venture_query_new(purchase ? VENTURE_TYPE_VENDOR_BILL_EVENT : VENTURE_TYPE_INVOICE_EVENT);
+		venture_query_set_limit(event_query, 0);
+		venture_query_set_include_deleted(event_query, TRUE);
+		venture_query_set_organization(event_query, organization(context, options));
+		if (option_id(options, "venture_id") != 0 &&
+			!venture_query_add_filter_int(event_query, "venture-id", VENTURE_FILTER_OP_EQ,
+				option_id(options, "venture_id"), error))
+			return NULL;
+		events = venture_database_find(database, event_query, error);
+		if (events == NULL)
+			return NULL;
+		for (i = 0; i < events->len; i++)
+		{
+			VentureEntity *event = g_ptr_array_index(events, i);
+			g_autoptr(GPtrArray) lines = NULL;
+			g_autofree gchar *kind = NULL;
+			g_autoptr(GDateTime) date = NULL;
+			g_autoptr(VentureQuery) query = NULL;
+			guint j;
+			gint64 document_id = 0;
+
+			g_object_get(event, "kind", &kind, "date", &date,
+				purchase ? "bill-id" : "invoice-id", &document_id, NULL);
+			if ((g_strcmp0(kind, "issue") != 0 && g_strcmp0(kind, "void") != 0) ||
+				date == NULL || g_date_time_compare(date, end) >= 0 ||
+				(start != NULL && g_date_time_compare(date, start) < 0))
+				continue;
+			query = venture_query_new(purchase ? VENTURE_TYPE_VENDOR_BILL_LINE : VENTURE_TYPE_INVOICE_LINE);
+			venture_query_set_limit(query, 0);
+			venture_query_set_organization(query, organization(context, options));
+			if (!venture_query_add_filter_int(query, purchase ? "bill-id" : "invoice-id",
+				VENTURE_FILTER_OP_EQ, document_id, error))
+				return NULL;
+			lines = venture_database_find(database, query, error);
+			if (lines == NULL)
+				return NULL;
+			for (j = 0; j < lines->len; j++)
+			{
+				VentureEntity *line = g_ptr_array_index(lines, j);
+				g_autoptr(VentureMoney) taxable = NULL;
+				g_autoptr(VentureMoney) tax = NULL;
+				gint64 tax_code_id = 0;
+
+				g_object_get(line, "tax-amount", &tax, "tax-code-id", &tax_code_id, NULL);
+				if (purchase)
+				{
+					g_autoptr(VentureMoney) amount = venture_vendor_bill_line_get_amount(VENTURE_VENDOR_BILL_LINE(line), error);
+					if (amount == NULL)
+						return NULL;
+					taxable = tax != NULL ? venture_money_subtract(amount, tax, error) : venture_money_copy(amount);
+					if (taxable == NULL)
+						return NULL;
+				}
+				else
+					g_object_get(line, "income-amount", &taxable, NULL);
+				if (!add_tax_row(grouped, database, tax_code_id, taxable, tax, currency,
+					purchase, g_strcmp0(kind, "void") == 0, error))
+					return NULL;
+			}
+		}
+	}
+	/* Tax credit notes carry a frozen tax amount but no tax-code reference.
+	 * Keep that reduction visible in an explicit unassigned row. A venture
+	 * filter cannot assign customer-level credits to an invented venture. */
+	if (option_id(options, "venture_id") == 0)
+	{
+		g_autoptr(GPtrArray) credits = report_events(context, VENTURE_TYPE_CUSTOMER_CREDIT, options, end, error);
+		guint i;
+
+		if (credits == NULL)
+			return NULL;
+		for (i = 0; i < credits->len; i++)
+		{
+			VentureEntity *credit = g_ptr_array_index(credits, i);
+			g_autoptr(GDateTime) date = NULL;
+			g_autofree gchar *kind = NULL;
+			g_autoptr(VentureMoney) amount = NULL, tax = NULL, net = NULL;
+
+			g_object_get(credit, "date", &date, "kind", &kind, "amount", &amount, "tax-amount", &tax, NULL);
+			if (g_strcmp0(kind, "credit_note") != 0 || tax == NULL || venture_money_is_zero(tax) ||
+				date == NULL || (start != NULL && g_date_time_compare(date, start) < 0))
+				continue;
+			if (amount == NULL)
+				continue;
+			net = venture_money_subtract(amount, tax, error);
+			if (net == NULL || !add_tax_row(grouped, database, -1, net, tax, currency, FALSE, TRUE, error))
+				return NULL;
+		}
+	}
+	result = venture_report_result_new("Tax liability by code", period);
+	venture_report_result_add_column(result, "code", "Tax code", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "jurisdiction", "Jurisdiction", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "taxable", "Taxable", VENTURE_REPORT_COLUMN_MONEY);
+	venture_report_result_add_column(result, "tax", "Tax", VENTURE_REPORT_COLUMN_MONEY);
+	venture_report_result_add_column(result, "recoverable", "Recoverable", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "direction", "Direction", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "liability", "Net liability", VENTURE_REPORT_COLUMN_MONEY);
+	g_hash_table_iter_init(&iter, grouped);
+	while (g_hash_table_iter_next(&iter, NULL, (gpointer *)&row))
+	{
+		g_autoptr(VentureMoney) liability = venture_money_multiply_rational(row->tax,
+			row->purchase ? (row->recoverable ? -1 : 0) : 1, 1, error);
+
+		if (liability == NULL)
+			return NULL;
+		venture_report_result_begin_row(result);
+		venture_report_result_set_text(result, "direction", row->purchase ? "input" : "output");
+		venture_report_result_set_money(result, "liability", liability);
+		venture_report_result_set_text(result, "code", row->code);
+		venture_report_result_set_text(result, "jurisdiction", row->jurisdiction);
+		venture_report_result_set_money(result, "taxable", row->taxable);
+		venture_report_result_set_money(result, "tax", row->tax);
+		venture_report_result_set_text(result, "recoverable", row->recoverable ? "yes" : "no");
+	}
+	return g_steal_pointer(&result);
+}
+
 void
 venture_receivables_register_reports(VentureReportRegistry *registry)
 {
@@ -346,4 +564,6 @@ venture_receivables_register_reports(VentureReportRegistry *registry)
 		"receivables", "Receivables aging", "Outstanding issued amounts less dated allocations, as of the period end.", receivables_aging)));
 	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
 		"customer_statement", "Customer statement", "Dated customer movements and balance in one organization and currency; requires customer_id.", customer_statement)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+		"tax_liability", "Tax liability by code", "Frozen invoice and bill tax grouped by tax code and jurisdiction.", tax_liability)));
 }

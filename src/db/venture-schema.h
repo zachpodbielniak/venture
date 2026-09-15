@@ -171,8 +171,8 @@ venture_schema_create_all(
  * Reads the columns a table currently has. Used to work out what a record
  * type has gained since the table was created.
  *
- * Returns: (transfer full) (element-type utf8) (nullable): a set of column
- *   names, or %NULL on error
+ * Returns: (transfer full) (element-type utf8 utf8) (nullable): a set of column
+ *   names mapped to themselves, or %NULL on error
  */
 GHashTable *
 venture_schema_get_existing_columns(
@@ -196,7 +196,7 @@ venture_schema_quote_identifier(const gchar *identifier);
 /**
  * venture_schema_bind_entity:
  * @entity: the record to read
- * @out_columns: (out) (transfer full): the column names bound
+ * @out_columns: (out) (transfer full) (element-type utf8): the column names bound
  * @out_values: (out) (transfer full) (element-type OrmValue): the values, in
  *   the same order
  * @include_identity: whether to include the primary key

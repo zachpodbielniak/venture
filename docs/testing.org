@@ -14,7 +14,7 @@ make DEBUG=1 test-one T=test-money   # one binary, verbosely
 make DEBUG=1 test-valgrind           # under valgrind, if installed
 #+end_src
 
-Every test runs against a private in-memory SQLite database, so the suite needs no external service. It leaves nothing behind on disk either -- see [[#temporary-directories][Temporary directories]] below, which is a claim the suite now checks rather than one this page merely makes. Set =VENTURE_TEST_DB= to a =postgres://= URI to run the database tests against PostgreSQL instead:
+By default, tests use private SQLite fixtures, so the suite needs no external service. It leaves nothing behind on disk either -- see [[#temporary-directories][Temporary directories]] below, which is a claim the suite now checks rather than one this page merely makes. Set =VENTURE_TEST_DB= to a =postgres://= URI to run the database tests against PostgreSQL instead:
 
 #+begin_src sh
 podman run -d --rm --name pg -e POSTGRES_PASSWORD=t -e POSTGRES_USER=venture \
@@ -24,6 +24,26 @@ VENTURE_TEST_DB=postgres://venture:t@127.0.0.1:55432/venture \
 #+end_src
 
 Each test drops and recreates the schema before it runs. An external database is one shared database for the whole run, and several tests create a venture with the slug "books" -- a UNIQUE column -- so without that reset the second one fails for a reason that has nothing to do with what it tests. Worth knowing what that hid: the PostgreSQL run used to stop at the ninth test, and the money-summation bug behind it went unnoticed because SQLite returns =SUM()= as an integer while PostgreSQL widens it to numeric.
+
+Accounting integration fixtures also support PostgreSQL. They create and drop
+a unique schema per fixture and need permission to create schemas; they do not
+reset =public=. Use a disposable database for all integration runs:
+
+#+begin_src sh
+VENTURE_TEST_ACCOUNTING_POSTGRES_URI=postgres://venture:t@127.0.0.1:55432/venture \
+    ./build/debug/tests/test-backup
+VENTURE_TEST_ACCOUNTING_POSTGRES_URI=postgres://venture:t@127.0.0.1:55432/venture \
+    ./build/debug/tests/test-receivables -p /receivables/deposit-allocations-refund \
+    -p /receivables/tax-issue-receipt -p /receivables/foreign-currency-fx
+VENTURE_TEST_ACCOUNTING_POSTGRES_URI=postgres://venture:t@127.0.0.1:55432/venture \
+    ./build/debug/tests/test-payables -p /payables/credit-void-refund
+#+end_src
+
+These cases compare complete accounting snapshots, balances and relationships.
+The backup suite also restores between SQLite and PostgreSQL in both directions
+and checks rollback after malformed input and an injected late write failure.
+Migration integration uses =VENTURE_TEST_MIGRATION_POSTGRES_URI= with
+=test-migrations -p /migrations/postgresql= and owns a separate schema.
 
 The whole tree builds with =-Werror= and a wide warning set in =gnu89=. A warning is a latent bug; there are none.
 
@@ -53,11 +73,35 @@ Two tests exist specifically to prove injection is impossible: a filter naming a
 
 The arithmetic against known data, not merely that reports run. Also that an unreviewed expense counts as zero in the tax report and that the report says so, that CSV export defuses spreadsheet formula injection, and that HTML export escapes its content.
 
+** =test-bankfeed=
+
+Fake feed import through the bank match seam, idempotent sync of the same
+window, missing =VENTURE_BANKFEED_TELLER_KEY=, injected Teller transport
+with no network, and a rolled-back batch on a bad line.
+
+
+** =test-commerce=
+
+Fake Shopify-like connector imports an order as a sent invoice (and a sale
+when paid) through document compose and settlement. A second import of the
+same external id writes nothing. Missing =VENTURE_COMMERCE_SHOPIFY_TOKEN=
+refuses to start. A later invalid order rolls the batch back.
+
+** =test-banking=
+
+Statement import, matching and reconciliation. Rule preview against historical
+rows does not post; bulk categorize applies a unique enabled rule and leaves
+ambiguous rows unmatched; overlapping FITIDs are refused rather than
+duplicated; a transfer posts both ledger sides once; a payment from a
+non-1000 bank credits that bank's account.
+
 ** =test-receivables=
 
-Receipts, partial and complete allocations, deposits, credit notes and
-refunds; external IDs unique within an organization; immutable financial
-history; and the lifecycle signal's veto. Failures injected after a source
+Receipts, partial and complete allocations, deposits, credit notes,
+write-offs and refunds; tax codes with exact rates and a liability report;
+foreign invoices paid in book currency with stored exchange rates; external
+IDs unique within an organization; immutable financial history; and the
+lifecycle signal's veto. Failures injected after a source
 write must leave every record and audit entry unchanged. Web, REST, the
 real =venturectl= process and its MCP tool produce identical financial
 rows, including a staged tool call applied after approval. Each source
@@ -227,3 +271,40 @@ One more thing it surfaced, which was not litter: =test-work-service= started a 
 The CLI must build without the mail server's GMime development package. Run =make DEBUG=1 -W src/cli/main.c venturectl= without any temporary server dependency prefix to compile and relink the CLI. Server-only pkg-config queries are deferred until a server or test recipe expands its flags; a successful CLI build that still emits missing server-package diagnostics fails this boundary.
 
 The Stripe sub-build consumes the YAML archive produced by the parent build. It must not recompile private YAML objects into that shared archive: a parallel =make DEBUG=1 -j4= may be linking =venturectl= against it. =YAML_OBJECTS== on the Stripe sub-make keeps archive ownership with =dep-yaml-glib= while retaining the declared archive prerequisite.
+
+** =test-accounting-acceptance=
+
+The independent replacement pack: a synthetic business issues a taxed invoice,
+takes a partial receipt, records and pays a bill, and keeps subledgers tied to
+the GL. A payment that fails after the invoice is issued leaves the journal count unchanged. It does not claim country,
+payroll or inventory parity. Invoice detail, cash-basis reports, bank reopen
+and the cutover wizard are asserted over HTTP in the module suites.
+
+** =test-tax-filing=
+
+Jurisdiction filing adapters, a fake adapter with no network, the US
+sales-tax pack from tax codes and invoice-event tax, missing-country
+refusal that names the jurisdiction, draft/reviewed/submitted/acknowledged
+with preserved JSON/CSV bytes, amendments that keep the prior pack, and
+that turning =tax_filing= off leaves =tax_code= working.
+
+** =test-contractor-tax=
+
+Protected contractor TIN records, 1099-NEC totals from paid vendor bills
+at the 600 USD threshold, review/approve before export, and an identical
+second export of the same year and vendor.
+
+** =test-setup=
+
+A new legal entity's checklist starts incomplete and the first invoice is
+refused until cash, AR, AP, tax, earnings and P&L control accounts are
+mapped, in bookkeeping language. Completing setup lets a synthetic business
+issue an invoice, take a receipt, record an expense and reconcile a bank
+statement. Renumbering the mapped cash account still reports it as cash.
+
+** =test-cutover=
+
+Preview lists unsupported source fields, import is idempotent on source IDs,
+reconcile checks trial balance and opening AR/bank totals, rollback reverses
+opening cash and voids imported invoices, generic writes are refused, and the
+Cutover page plus preview/action routes are covered over HTTP.

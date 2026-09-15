@@ -957,10 +957,8 @@ typedef enum
  * @VENTURE_COLUMN_FLAG_TRANSIENT: computed at run time; never persisted
  * @VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION: nonempty values are unique within
  *   an organization, including soft-deleted records
- *
  * @VENTURE_COLUMN_FLAG_PERSONAL_OWNER: reference to the account or personal
  *   parent that owns this whole record
- *
  * @VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME: string naming the assigned account;
  *   grants ownership within that account's organization role
  *

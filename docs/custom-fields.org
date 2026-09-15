@@ -1,0 +1,46 @@
+#+title: Accounting custom fields
+#+description: Field definitions, layouts and required values without writing C
+
+The =custom_fields= module owns three records:
+
+- =accounting_custom_field= — =record-type=, =name=, =kind=, =required=, JSON =options=
+- =accounting_layout= — =record-type= and a JSON array of field names
+- =custom_field_value= — derived index of values on the owning entity
+
+Kind is one of =string=, =text=, =integer=, =boolean=, =enum=, =money=,
+=date=, =datetime=. Enum choices live in =options= as a JSON string array.
+
+Saving an entity checks its custom attributes and updates the derived index
+in the same transaction. Update the parent's =attributes= object, or use
+=fields value=, which PATCHes that object. Direct custom-value writes are
+refused. A service value update increments the parent version: re-read any
+previously loaded parent before another save. Empty values clear optional
+fields and fail required-field validation.
+
+Names must be identifiers and cannot shadow any built-in GObject property,
+including sensitive fields and identity/version properties. Enum options must
+be strings; integer overflow is refused. Legacy colliding definitions are
+ignored by generated forms. No operator writes C to add a field.
+
+=GET /settings/fields= lists definitions and layouts. Editors may add them
+there.
+
+#+begin_src sh
+venturectl fields define record_type=vendor_bill name=po_number kind=string required=true
+venturectl fields layout record_type=vendor_bill field_order='["number","po_number"]'
+venturectl fields value record_type=vendor_bill record_id=1 name=po_number value=PO-42
+#+end_src
+
+* Record forms
+
+Configured fields appear on =GET /e/:type/new= and edit pages using the same
+widgets as built-in field specs. A layout JSON array orders built-in and custom fields together on
+that form; unspecified fields keep their declaration order. Required, integer, enum, money, boolean and date values are
+checked on save; an integer field rejects =not an integer=.
+
+The derived index value is sensitive and omitted from generic responses and
+audit values. For older colliding definitions, attributes named after a
+sensitive built-in property are also omitted from public serialization, and
+attribute diffs on affected records are redacted. The original sensitive
+property and stored evidence are preserved; the generated form ignores the
+invalid definition.

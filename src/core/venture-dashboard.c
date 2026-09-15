@@ -26,6 +26,21 @@ venture_widget_result_new(void)
 	return g_new0(VentureWidgetResult, 1);
 }
 
+VentureWidgetResult *
+venture_widget_result_copy(const VentureWidgetResult *self)
+{
+	VentureWidgetResult *copy;
+	if (self == NULL) return NULL;
+	copy = venture_widget_result_new();
+	copy->title = g_strdup(self->title);
+	copy->html = g_strdup(self->html);
+	copy->data = self->data != NULL ? json_node_copy(self->data) : NULL;
+	copy->link = g_strdup(self->link);
+	copy->link_label = g_strdup(self->link_label);
+	copy->error = g_strdup(self->error);
+	return copy;
+}
+
 void
 venture_widget_result_free(VentureWidgetResult *self)
 {

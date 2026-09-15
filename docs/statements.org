@@ -3,14 +3,29 @@
 
 * Authority and scope
 
+The immutable accounting authority is the posted ledger (accrual recognition).
+Reports accept =basis= of =accrual= (default) or =cash=. Cash recognition uses
+receipts and payments: invoice issues and bill approvals are excluded, and
+allocated receipts recognize frozen net income and tax in the receipt period.
+Cash also reclassifies AR and AP by the same receipt or payment so the
+balance sheet and cash-flow statement still tie, including later periods
+where the receipt is opening cash. Bill cash uses the paid bill's expense
+account rather than assuming code 6900. Compare-to periods use the
+same basis. The statements page keeps a Basis selector on every report form.
+Exports, dashboards and period snapshots retain the selected basis in their
+options; snapshots default to accrual so closed history is the ledger.
+
+
+
 The =statements= module requires =ledger= and =periods=. It registers
 =balance_sheet=, =income_statement=, =cash_flow=, =general_ledger=,
-=account_balances= and =pnl_reconciliation=. No new persistent records are
-introduced. =VentureLedgerBalances= is the reusable query object; its
+=account_balances= and =pnl_reconciliation=. Saved reports, packs and
+dimensions live on the statements module. =VentureLedgerBalances= is the reusable query object; its
 construct-only =database= property selects the repository.
 
 All amounts come from journal lines' book amounts. Drafts, standalone legacy
-ledger entries and mutable =account.opening_balance= fields do not contribute.
+ledger entries, mutable =account.opening_balance= fields and journals flagged
+=tax-book= do not contribute.
 A reversed original still contributes at its original accounting date; its
 reversal contributes on its own date. Opening evidence must be posted as a
 balanced journal. No posting, journal or trial-balance behavior is changed.
@@ -79,15 +94,16 @@ difference for comparisons. Zero-difference documents are omitted.
 Start with ledger net income. Add credits minus debits in every non-cash
 balance-sheet account: increasing receivables or inventory reduces cash;
 increasing payables or tax payable increases it. Account rows expose each
-adjustment. The four control subtotals use conventional chart codes and their
-descendants: receivables =1100=, payables =2000=, inventory =1200= and tax payable
-=2100=. Cash is =1000= and its descendants. Organization-prefixed conventional
-codes created by the posting rules are also recognized.
+adjustment. Control subtotals use semantic classifications from
+=accounting_control_map= — cash, receivables, payables, inventory and tax —
+and their descendants, not chart-code spelling. A conventional chart is seeded
+with those mappings; renumbering a mapped cash account still reports as cash.
+When no mapping exists the historical codes =1000= / =1100= / =1200= / =2000= /
+=2100= remain a fallback, including organization-prefixed posting codes.
 
 =adjustments= totals all non-cash balance-sheet movements, including the four
 control groups and other asset, liability and equity accounts. The latter
-include investing, financing and non-cash offsets; this statement does not
-classify a full statutory operating/investing/financing presentation.
+are classified as operating, investing or financing from =cash-flow-class= or the account class. Cash includes accounts marked =cash-equivalent=.
 Control subtotals summarize the account rows and must not be added a second
 time. There is no unexplained residual or balancing plug.
 
@@ -95,8 +111,8 @@ time. There is no unexplained residual or balancing plug.
 =cash_movement= is net income plus adjustments. =difference= compares this
 with Cash closing less Cash opening and must be zero exactly. Non-cash offsets
 cancel through the same ledger identity. No FX cash-flow adjustment or
-cash-equivalent classification is inferred. A custom chart must retain the
-conventional control codes or provide a replacement report through the registry.
+cash-equivalent classification is inferred. A custom chart keeps statements by mapping control accounts rather than by
+retaining conventional codes.
 
 ** Account balances and general ledger
 
@@ -142,3 +158,7 @@ entity scope, statement totals, comparative columns, month-end cutoffs,
 reconciliation, running balances, HTML journal links, the real report pages,
 the CLI CSV subprocess, module disablement, fiscal snapshots and later
 reversals, invalid inputs, cyclic hierarchy and monetary overflow.
+
+* Cash recognition evidence
+
+Cash-basis statements recognize allocations of receipts, payments and cash deposits using the original issue journal: book currency, account splits, tax and dimensions remain frozen. Noncash credit notes and write-offs do not create cash income or expense. Customer and vendor allocation refunds reverse recognition at their refund date. Draft and unpaid documents contribute no cash recognition; cumulative rounding preserves the final minor unit across partial settlements.

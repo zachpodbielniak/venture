@@ -14,8 +14,10 @@ quantity, unit price, expense account or category, and tax amount.
 Quantity is a decimal string with at most three fractional digits, parsed
 into an integer rational. Price multiplication rounds once, half to even;
 tax is then added in the same currency. No floating-point arithmetic is
-used. Tax is part of the expense cost; recoverable input-tax accounting is
-outside this module.
+used. A line may name a =tax_code=. When that code is recoverable, approval
+debits the net expense and Recoverable tax 1300 for the frozen tax-amount,
+and credits AP for the total. Otherwise tax remains part of the expense
+cost.
 
 * One financial writer
 
@@ -55,6 +57,16 @@ Bank matching and purchase orders/receiving are separate modules. No
 historical approvals are inferred from an imported bill's current status.
 
 * Actions and historical reports
+
+The =/payables= workbench selects approved bills and pays them through
+=VenturePayablesService= using a named adapter (=manual=, =transfer=,
+=card=, =check=, =ach=). Adapters never write settlement tables themselves.
+=POST /api/v1/payables/pay= accepts =bills=, =date=, =adapter=, =method= and
+=reference=. One payment per vendor is allocated in a single transaction.
+
+#+begin_src sh
+venturectl bill pay-bulk 1,2,3 adapter=transfer date=2026-02-01
+#+end_src
 
 The bill page has Approve and Pay actions. REST accepts
 =POST /api/v1/vendor_bill/:id/approve=, =/pay= and =/void= with ordinary
@@ -122,4 +134,14 @@ identity. Exact allocation across the frozen bill lines preserves cents;
 the original expense is never edited. A line not converted to a cash-report
 expense does not acquire these optional adjustments.
 
-Default posting accounts reuse the organization's existing legacy code or its =organization-id:code= chart entry. Missing defaults use the namespaced form, so payables and the core posting rules retain one control-account balance per organization.
+Default posting accounts come from =accounting_control_map= (cash, payables, expense). When a mapping is absent they still reuse the organization's legacy code or its =organization-id:code= chart entry.
+
+* Workbench approval
+
+Batch payments use the same second-actor approval checks as individual payments. A refused proposal remains pending for a second actor; no vendor is paid until all proposals are allowed. Execution and approval consumption are one transaction, so a failed vendor payment rolls back the entire batch.
+
+* Whole-operation approval
+
+Second-actor consent covers a complete payment command, including every selected vendor in a workbench batch and all derived journals. A post or pay rule requests one operation proposal before business writes; the same command from a different actor applies it atomically. Bill transitions, direct settlement and allocation/refund writes use the same whole-operation boundary. Changed arguments or financial state require a new proposal.
+
+Omitted dates in the invoice status buttons and payables action/workbench surfaces resolve to midnight of the current UTC day. Repeating a proposal on that day retains its accounting date; a later-day request is a different proposal. Explicit dates remain unchanged.

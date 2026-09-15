@@ -32,19 +32,25 @@ money_equal(const VentureMoney *a, const VentureMoney *b)
 /* Stripe charge units differ from ISO for MGA and the legacy ISK/UGX
  * representation. Use the same mapper for Prices and signed settlement data;
  * https://docs.stripe.com/currencies documents these API exceptions. */
-static VentureMoney *
-charge_money(gint64 amount, const gchar *currency)
+static guint8
+charge_exponent(const gchar *currency)
 {
 	static const gchar *const zero[] = { "BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF", "VND", "VUV", "XAF", "XOF", "XPF" };
 	guint8 exponent = venture_currency_get_exponent(currency);
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(zero); i++)
-		if (!g_ascii_strcasecmp(currency, zero[i])) exponent = 0;
+		if (!g_ascii_strcasecmp(currency, zero[i])) return 0;
 	if (!g_ascii_strcasecmp(currency, "ISK") || !g_ascii_strcasecmp(currency, "UGX"))
-	{
-		if (amount % 100) return NULL;
-		exponent = 2;
-	}
+		return 2;
+	return exponent;
+}
+
+static VentureMoney *
+charge_money(gint64 amount, const gchar *currency)
+{
+	guint8 exponent = charge_exponent(currency);
+	if ((!g_ascii_strcasecmp(currency, "ISK") || !g_ascii_strcasecmp(currency, "UGX")) && amount % 100)
+		return NULL;
 	return venture_money_new(amount, currency, exponent);
 }
 
@@ -53,6 +59,49 @@ refuse(GError **error, const gchar *rule)
 {
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, rule);
 	return FALSE;
+}
+
+static gboolean
+to_stripe_amount(const VentureMoney *money, gint64 *out, GError **error)
+{
+	guint8 from = venture_money_get_exponent(money);
+	guint8 to = charge_exponent(venture_money_get_currency(money));
+	gint64 amount = venture_money_get_amount(money);
+	gint64 factor = 1;
+	gint64 scaled;
+
+	if (from == to)
+	{
+		if (amount <= 0) return refuse(error, "Checkout requires a positive open balance");
+		*out = amount;
+		return TRUE;
+	}
+	if (to > from)
+	{
+		while (from < to)
+		{
+			if (__builtin_mul_overflow(factor, (gint64)10, &factor))
+				return refuse(error, "Checkout amount overflows Stripe charge units");
+			from++;
+		}
+		if (__builtin_mul_overflow(amount, factor, &scaled))
+			return refuse(error, "Checkout amount overflows Stripe charge units");
+		if (scaled <= 0) return refuse(error, "Checkout requires a positive open balance");
+		*out = scaled;
+		return TRUE;
+	}
+	while (to < from)
+	{
+		if (__builtin_mul_overflow(factor, (gint64)10, &factor))
+			return refuse(error, "Checkout amount overflows Stripe charge units");
+		to++;
+	}
+	if (amount % factor)
+		return refuse(error, "Checkout amount is not an integral Stripe charge unit");
+	scaled = amount / factor;
+	if (scaled <= 0) return refuse(error, "Checkout requires a positive open balance");
+	*out = scaled;
+	return TRUE;
 }
 
 static void
@@ -225,39 +274,26 @@ eligible(VentureStripeService *self, gint64 invoice_id, VentureEntity **invoice_
 {
 	g_autoptr(VentureEntity) invoice = NULL;
 	g_autoptr(GPtrArray) lines = NULL;
-	g_autoptr(GPtrArray) links = NULL;
-	g_autoptr(VentureMoney) amount = NULL;
 	g_autoptr(VentureMoney) balance = NULL;
-	VentureEntity *line;
 	gint status;
-	gint64 product;
-	gdouble quantity;
 
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "stripe_checkout") == G_TYPE_INVALID)
 		return refuse(error, "Stripe module is disabled (stripe.enabled)");
 	invoice = owned_get(self, VENTURE_TYPE_INVOICE, invoice_id, error);
 	if (!invoice) return FALSE;
 	g_object_get(invoice, "status", &status, NULL);
-	if (status != VENTURE_INVOICE_STATUS_SENT) return refuse(error, "Checkout requires invoice status sent");
+	if (status != VENTURE_INVOICE_STATUS_SENT && status != VENTURE_INVOICE_STATUS_PARTIALLY_PAID)
+		return refuse(error, "Checkout requires invoice status sent");
 	lines = find_id(self, VENTURE_TYPE_INVOICE_LINE, "invoice-id", invoice_id, error);
 	if (!lines) return FALSE;
-	if (lines->len != 1) return refuse(error, "Checkout requires exactly one invoice line");
-	line = g_ptr_array_index(lines, 0);
-	g_object_get(line, "product-id", &product, "quantity", &quantity, NULL);
-	if (!isfinite(quantity) || quantity < 1 || quantity > G_MAXUINT || floor(quantity) != quantity)
-		return refuse(error, "Checkout requires a positive integral line quantity");
-	links = find_id(self, venture_stripe_price_link_get_type(), "product-id", product, error);
-	if (!links) return FALSE;
-	if (links->len != 1) return refuse(error, "Checkout requires a stripe_price_link for the line product");
-	amount = venture_invoice_line_get_amount(VENTURE_INVOICE_LINE(line), error);
-	if (!amount) return FALSE;
+	if (lines->len < 1) return refuse(error, "Checkout requires at least one invoice line");
 	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(self->database), invoice_id, NULL, error);
 	if (!balance) return FALSE;
-	if (venture_money_get_amount(balance) <= 0 || !money_equal(amount, balance))
-		return refuse(error, "Checkout line total must equal the positive open balance");
+	if (venture_money_get_amount(balance) <= 0)
+		return refuse(error, "Checkout requires a positive open balance");
 	if (invoice_out) *invoice_out = g_steal_pointer(&invoice);
-	if (link_out) *link_out = g_object_ref(g_ptr_array_index(links, 0));
-	if (quantity_out) *quantity_out = (guint)quantity;
+	if (link_out) *link_out = NULL;
+	if (quantity_out) *quantity_out = 1;
 	if (expected_out) *expected_out = g_steal_pointer(&balance);
 	return TRUE;
 }
@@ -272,7 +308,7 @@ venture_stripe_service_can_checkout(VentureStripeService *self, gint64 invoice_i
  * Validate the immutable provider price before either external write. Refuse
  * quantity transforms, recurring/tiered pricing and fractional minor units
  * because this checkout has no exact representation for those contracts. */
-static gboolean
+static gboolean G_GNUC_UNUSED
 check_price(VentureStripeService *self, VentureEntity *price, guint quantity,
 	const VentureMoney *expected, GError **error)
 {
@@ -310,7 +346,6 @@ venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 	const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) invoice = NULL;
-	g_autoptr(VentureEntity) price = NULL;
 	g_autoptr(VentureEntity) customer = NULL;
 	g_autoptr(GPtrArray) links = NULL;
 	g_autoptr(GPtrArray) sessions = NULL;
@@ -321,10 +356,9 @@ venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 	g_autofree gchar *customer_id = NULL;
 	gint64 company_id, contact_id, party_id;
 	const gchar *party_field;
-	guint quantity;
 
 	if (!venture_database_begin(self->database, error)) return NULL;
-	if (!eligible(self, invoice_id, &invoice, &price, &quantity, &expected, error)) goto fail;
+	if (!eligible(self, invoice_id, &invoice, NULL, NULL, &expected, error)) goto fail;
 	/* A remote customer/session cannot be undone by rolling back the local
 	 * transaction. Check the invoice write policy before contacting Stripe. */
 	if (!venture_access_policy_check_write(venture_database_get_access_policy(self->database), invoice, "write", error)) goto fail;
@@ -332,9 +366,15 @@ venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 	if (!sessions) goto fail;
 	if (sessions->len)
 	{
+		g_autofree gchar *status_name = NULL;
 		checkout = g_object_ref(g_ptr_array_index(sessions, sessions->len - 1));
-		if (!venture_database_commit(self->database, error)) goto fail;
-		return g_steal_pointer(&checkout);
+		g_object_get(checkout, "status", &status_name, NULL);
+		if (g_strcmp0(status_name, "expired") != 0)
+		{
+			if (!venture_database_commit(self->database, error)) goto fail;
+			return g_steal_pointer(&checkout);
+		}
+		g_clear_object(&checkout);
 	}
 	g_object_get(invoice, "company-id", &company_id, "contact-id", &contact_id, NULL);
 	party_id = company_id ? company_id : contact_id;
@@ -343,7 +383,6 @@ venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 	if (!customer) goto fail;
 	links = find_id(self, venture_stripe_customer_link_get_type(), party_field, party_id, error);
 	if (!links) goto fail;
-	if (!check_price(self, price, quantity, expected, error)) goto fail;
 	if (links->len) g_object_get(g_ptr_array_index(links, 0), "stripe-customer-id", &customer_id, NULL);
 	else
 	{
@@ -365,8 +404,19 @@ venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 	}
 	request = stripe_request_new(STRIPE_CHECKOUT_CREATE);
 	request->customer = g_steal_pointer(&customer_id);
-	g_object_get(price, "stripe-price-id", &request->price, NULL);
-	request->quantity = quantity;
+	{
+		gint64 amount = 0;
+		if (!to_stripe_amount(expected, &amount, error)) goto fail;
+		if (amount <= 0)
+		{
+			refuse(error, "Checkout requires a positive open balance");
+			goto fail;
+		}
+		request->unit_amount = (guint64)amount;
+	}
+	request->currency = g_ascii_strdown(venture_money_get_currency(expected), -1);
+	request->product_name = g_strdup("Invoice");
+	request->quantity = 1;
 	request->success_url = g_strdup(self->success_url);
 	request->cancel_url = g_strdup(self->cancel_url);
 	g_free(request->idempotency_key);
@@ -510,6 +560,210 @@ done:
 	if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(record), NULL, error)) goto fail;
 	if (!venture_database_commit(self->database, error)) goto fail;
 	return mismatch ? refuse(error, "Stripe amount or currency mismatch with expected payment") : TRUE;
+fail:
+	venture_database_rollback(self->database);
+	return FALSE;
+}
+
+static gint64
+account_code(VentureStripeService *self, const gchar *code, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	g_autoptr(VentureEntity) account = NULL;
+	venture_query_set_organization(query, self->organization_id);
+	if (!venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, error))
+		return 0;
+	account = venture_database_find_one(self->database, query, error);
+	if (account == NULL) return 0;
+	return venture_entity_get_id(account);
+}
+
+static gboolean
+ensure_disputed(VentureSettlementService *settlement, GError **error)
+{
+	VentureInvoiceStateMachine *machine = venture_settlement_service_get_state_machine(settlement);
+	g_autoptr(GError) local = NULL;
+	if (!venture_invoice_state_machine_add_state(machine, "disputed", VENTURE_INVOICE_STATUS_SENT, &local))
+	{
+		if (local == NULL || local->code != VENTURE_ERROR_ALREADY_EXISTS)
+		{
+			g_propagate_error(error, g_steal_pointer(&local));
+			return FALSE;
+		}
+		g_clear_error(&local);
+	}
+	venture_invoice_state_machine_add_transition(machine, "sent", "disputed", NULL);
+	venture_invoice_state_machine_add_transition(machine, "partially_paid", "disputed", NULL);
+	venture_invoice_state_machine_add_transition(machine, "paid", "disputed", NULL);
+	venture_invoice_state_machine_add_transition(machine, "disputed", "sent", NULL);
+	venture_invoice_state_machine_add_transition(machine, "disputed", "partially_paid", NULL);
+	venture_invoice_state_machine_add_transition(machine, "disputed", "paid", NULL);
+	return TRUE;
+}
+
+VentureProcessorPayout *
+venture_stripe_service_record_payout(VentureStripeService *self, const gchar *provider_id,
+	GDateTime *date, const VentureMoney *gross, const VentureMoney *fees, const VentureMoney *net,
+	gint64 cash_account_id, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autofree gchar *date_text = date ? g_date_time_format_iso8601(date) : g_strdup("");
+	g_autofree gchar *gross_text = gross ? venture_money_to_string(gross) : g_strdup("");
+	g_autofree gchar *fees_text = fees ? venture_money_to_string(fees) : g_strdup("");
+	g_autofree gchar *net_text = net ? venture_money_to_string(net) : g_strdup("");
+	g_autoptr(VentureProcessorPayout) payout = NULL;
+	g_autoptr(GPtrArray) entries = NULL;
+	if (provider_id == NULL || *provider_id == '\0' || date == NULL || net == NULL)
+	{
+		refuse(error, "A payout needs a provider id, date and net amount");
+		return NULL;
+	}
+	if (fees != NULL && !venture_money_is_zero(fees) && cash_account_id > 0)
+	{
+		operation = venture_accounting_operation_begin(self->database, "stripe.payout", NULL, NULL,
+			g_variant_new("(sssssx)", provider_id ? provider_id : "", date_text, gross_text, fees_text, net_text, cash_account_id), self->organization_id, actor, error);
+		if (operation == NULL) return NULL;
+	}
+	if (!venture_database_begin(self->database, error)) return NULL;
+	payout = venture_processor_payout_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(payout), self->organization_id);
+	g_object_set(payout, "provider-id", provider_id, "date", date, "gross", gross, "fees", fees,
+		"amount", net, "bank-account-id", cash_account_id, "status", "paid", NULL);
+	if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(payout), actor, error)) goto fail;
+	if (fees != NULL && !venture_money_is_zero(fees) && cash_account_id > 0)
+	{
+		gint64 fee_account = account_code(self, "6000", error);
+		g_autofree gchar *transaction = g_strdup_printf("processor:payout:%s", venture_entity_get_uuid(VENTURE_ENTITY(payout)));
+		VentureLedgerEntry *debit, *credit;
+		if (fee_account == 0) goto fail;
+		entries = g_ptr_array_new_with_free_func(g_object_unref);
+		debit = venture_ledger_entry_new();
+		credit = venture_ledger_entry_new();
+		g_object_set(debit, "transaction-id", transaction, "account-id", fee_account,
+			"side", VENTURE_LEDGER_SIDE_DEBIT, "amount", fees, "occurred-at", date,
+			"source-type", "processor_payout", "source-id", venture_entity_get_id(VENTURE_ENTITY(payout)), NULL);
+		g_object_set(credit, "transaction-id", transaction, "account-id", cash_account_id,
+			"side", VENTURE_LEDGER_SIDE_CREDIT, "amount", fees, "occurred-at", date,
+			"source-type", "processor_payout", "source-id", venture_entity_get_id(VENTURE_ENTITY(payout)), NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(debit), self->organization_id);
+		venture_entity_set_organization_id(VENTURE_ENTITY(credit), self->organization_id);
+		g_ptr_array_add(entries, debit);
+		g_ptr_array_add(entries, credit);
+		if (!venture_posting_service_post_entries(venture_database_get_posting_service(self->database),
+			entries, NULL, actor, error)) goto fail;
+	}
+	if (!venture_database_commit(self->database, error)) goto fail;
+	if (operation != NULL && !venture_accounting_operation_finish(operation, error)) return NULL;
+	return g_steal_pointer(&payout);
+fail:
+	venture_database_rollback(self->database);
+	return NULL;
+}
+
+gboolean
+venture_stripe_service_link_payout_item(VentureStripeService *self, gint64 payout_id, gint64 payment_id,
+	const VentureMoney *amount, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureProcessorPayoutItem) item = NULL;
+	g_autoptr(VentureEntity) payout = NULL;
+	g_autoptr(VentureEntity) payment = NULL;
+	if (!venture_database_begin(self->database, error)) return FALSE;
+	payout = owned_get(self, VENTURE_TYPE_PROCESSOR_PAYOUT, payout_id, error);
+	payment = owned_get(self, VENTURE_TYPE_PAYMENT, payment_id, error);
+	if (payout == NULL || payment == NULL) goto fail;
+	item = venture_processor_payout_item_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(item), self->organization_id);
+	g_object_set(item, "payout-id", payout_id, "payment-id", payment_id, "amount", amount, NULL);
+	if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(item), actor, error)) goto fail;
+	if (!venture_database_commit(self->database, error)) goto fail;
+	return TRUE;
+fail:
+	venture_database_rollback(self->database);
+	return FALSE;
+}
+
+VentureProcessorDispute *
+venture_stripe_service_open_dispute(VentureStripeService *self, const gchar *provider_id,
+	gint64 payment_id, GDateTime *date, const VentureMoney *amount, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureProcessorDispute) dispute = NULL;
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(VentureEntity) invoice = NULL;
+	VentureSettlementService *settlement;
+	gint64 invoice_id = 0;
+	if (!venture_database_begin(self->database, error)) return NULL;
+	payment = owned_get(self, VENTURE_TYPE_PAYMENT, payment_id, error);
+	if (payment == NULL) goto fail;
+	g_object_get(payment, "invoice-id", &invoice_id, NULL);
+	settlement = venture_settlement_service_get(self->database);
+	if (!ensure_disputed(settlement, error)) goto fail;
+	if (invoice_id > 0)
+	{
+		invoice = owned_get(self, VENTURE_TYPE_INVOICE, invoice_id, error);
+		if (invoice == NULL) goto fail;
+		if (!venture_settlement_service_transition(settlement, VENTURE_INVOICE(invoice), "disputed", date, actor, error))
+			goto fail;
+	}
+	dispute = venture_processor_dispute_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(dispute), self->organization_id);
+	g_object_set(dispute, "provider-id", provider_id, "payment-id", payment_id, "invoice-id", invoice_id,
+		"opened-at", date, "amount", amount, "status", "open", NULL);
+	if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(dispute), actor, error)) goto fail;
+	if (!venture_database_commit(self->database, error)) goto fail;
+	return g_steal_pointer(&dispute);
+fail:
+	venture_database_rollback(self->database);
+	return NULL;
+}
+
+gboolean
+venture_stripe_service_lose_chargeback(VentureStripeService *self, gint64 dispute_id, GDateTime *date,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autofree gchar *date_text = date ? g_date_time_format_iso8601(date) : g_strdup("");
+	g_autoptr(VentureEntity) dispute = NULL;
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(GPtrArray) allocations = NULL;
+	g_autoptr(VentureRefund) refund = NULL;
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autofree gchar *status = NULL;
+	gint64 payment_id = 0, customer_id = 0;
+	operation = venture_accounting_operation_begin(self->database, "stripe.chargeback", NULL, NULL,
+		g_variant_new("(xs)", dispute_id, date_text), self->organization_id, actor, error);
+	if (operation == NULL) return FALSE;
+	if (!venture_database_begin(self->database, error)) return FALSE;
+	dispute = owned_get(self, VENTURE_TYPE_PROCESSOR_DISPUTE, dispute_id, error);
+	if (dispute == NULL) goto fail;
+	/* One dispute may reverse cash once, including a partial chargeback. */
+	g_object_get(dispute, "status", &status, NULL);
+	if (g_strcmp0(status, "open") != 0)
+	{
+		refuse(error, "Only an open dispute can become a lost chargeback");
+		goto fail;
+	}
+	g_object_get(dispute, "payment-id", &payment_id, "amount", &amount, NULL);
+	payment = owned_get(self, VENTURE_TYPE_PAYMENT, payment_id, error);
+	if (payment == NULL) goto fail;
+	g_object_get(payment, "customer-id", &customer_id, NULL);
+	allocations = find_id(self, VENTURE_TYPE_PAYMENT_ALLOCATION, "payment-id", payment_id, error);
+	if (allocations == NULL) goto fail;
+	if (allocations->len == 0)
+	{
+		refuse(error, "Chargeback requires an allocated receipt");
+		goto fail;
+	}
+	refund = venture_refund_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(refund), self->organization_id);
+	g_object_set(refund, "customer-id", customer_id,
+		"allocation-id", venture_entity_get_id(g_ptr_array_index(allocations, 0)),
+		"amount", amount, "date", date, "reference", "chargeback", NULL);
+	if (!venture_database_save(self->database, VENTURE_ENTITY(refund), actor, error)) goto fail;
+	g_object_set(dispute, "status", "lost", "closed-at", date, "refund-id", venture_entity_get_id(VENTURE_ENTITY(refund)), NULL);
+	if (!venture_stripe_save_owned(self->database, dispute, actor, error)) goto fail;
+	if (!venture_database_commit(self->database, error)) goto fail;
+	if (!venture_accounting_operation_finish(operation, error)) return FALSE;
+	return TRUE;
 fail:
 	venture_database_rollback(self->database);
 	return FALSE;

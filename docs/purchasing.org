@@ -1,0 +1,51 @@
+#+title: Purchase orders, receiving and three-way match
+#+description: Commit spend, receive stock and match the vendor bill before it can hit AP
+
+* Purchase orders
+
+A complete return restores the order to =sent=, permitting replacement receipts or cancellation once no received quantity remains.
+
+Matching updates the order, bill lines and bill in one transaction. A failed account assignment or bill save rolls back every part of the match. Generic line edits require a draft parent and cannot move evidence out of an approved order.
+
+The =goods= module requires =payables=, =ledger= and =sales=. It owns
+=purchase_order=, =purchase_order_line=, =goods_receipt= and
+=goods_receipt_line=. Field tables supply the generic forms, REST
+resources and CLI. =VenturePurchasingService= owns every status
+transition.
+
+A draft names a vendor, a number unique inside the organization, a
+currency and lines with whole-unit quantity and an exact unit price.
+=approve= then =send= freeze the commercial commitment. =cancel= is
+refused once quantity has been received; return the stock first.
+
+* Receiving
+
+=receive= posts a =goods_receipt= for a partial or complete quantity,
+writes a signed =inventory_txn= and a FIFO cost layer, and journals
+Inventory 1200 against Goods received not invoiced 2010 through
+=VenturePostingService=. Quantity on hand remains the sum of
+=inventory_txn= rows. Over-receipt is refused.
+
+* Three-way match
+
+=match= links a draft =vendor_bill= to the purchase order and compares
+received value to billed value within =match-tolerance-percent=. Bill
+quantity is an exact decimal (up to three places); billing more than
+was received is a mismatch even when the money is inside the price
+tolerance. A mismatch stamps =match-status=mismatch= and bill approval
+is refused until an exception is approved. A PO-linked bill that has
+not been matched is also refused. A match (or an approved exception)
+points the bill lines at the mapped GRNI control account (role
+=grni=, else 2010) so =VenturePayablesService= still posts AP and does
+not invent a second payable journal.
+
+The =/purchasing= workbench posts =approve=, =send=, =receive= (line
+and quantity) and =match= (bill id, optional exception).
+
+#+begin_src sh
+venturectl purchase approve 1
+venturectl purchase send 1
+venturectl purchase receive LINE quantity=4
+venturectl purchase match 1 vendor_bill_id=2
+venturectl bill approve 2
+#+end_src

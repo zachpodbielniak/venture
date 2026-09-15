@@ -1,6 +1,8 @@
 #+title: Commercial quotes
 #+description: Price lists, revisions and an atomic handoff to billing
 
+Posting approval applies to acceptance that immediately creates and sends an invoice. Draft editing, quote sending, declining and progress-mode acceptance do not post and retain their ordinary access checks. Progress invoices obtain approval when billed. Where a second account is required, public token acceptance cannot act as both people; staff complete the manual acceptance with two authenticated accounts.
+
 * A proposal is a commitment
 
 The =quotes= module requires =crm= and =invoicing=. It owns =price_list=,
@@ -52,6 +54,8 @@ they are being saved.
   including posting or invoice validation, rolls everything back.
 - =decline= requires a reason. =venture_quote_service_sweep()= expires sent
   quotes whose validity elapsed, within one exact organization.
+
+A quote with =billing-mode=progress= is accepted without issuing the full invoice; progress slices are billed through =VentureProgressService=.
 
 The invoice number is =QUOTE-= followed by the quote number. Existing
 invoice-number conflicts are errors and roll back acceptance. Invoice lines

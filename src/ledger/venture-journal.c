@@ -50,7 +50,9 @@ static const VentureFieldDecl journal_fields[] = {
 	VENTURE_FIELD("source-version", "Source version", NULL,
 		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("posting-key", "Posting key", "Stable organization-scoped batch identity",
-		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE)
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE),
+	VENTURE_FIELD("tax-book", "Tax book", "TRUE posts tax depreciation that statements ignore",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY(VentureJournal, venture_journal, journal_fields)
@@ -65,7 +67,24 @@ static const VentureFieldDecl journal_line_fields[] = {
 	VENTURE_FIELD_MONEY("amount", "Original amount", "Nonnegative amount"),
 	VENTURE_FIELD_MONEY("book-amount", "Book amount", "Valued by the posting service"),
 	VENTURE_FIELD("memo", "Memo", NULL, VENTURE_FIELD_KIND_STRING,
-		VENTURE_COLUMN_FLAG_SEARCHABLE)
+		VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD("dimension", "Dimension", "Optional department, location, project or class",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY(VentureJournalLine, venture_journal_line, journal_line_fields)
+
+static const VentureFieldDecl exchange_rate_fields[] = {
+	VENTURE_FIELD_NAME("from-currency", "From", "ISO 4217 code of the original amount"),
+	VENTURE_FIELD_NAME("to-currency", "To", "ISO 4217 book currency"),
+	VENTURE_FIELD("rate-numerator", "Rate numerator", "Exact multiplier of the original amount",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("rate-denominator", "Rate denominator", "Exact divisor; never invented",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("effective-at", "Effective", "Inclusive start of this rate",
+		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("source", "Source", "manual or a named feed; never guessed",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("reason", "Reason", "Required for a manual override")
+};
+VENTURE_DEFINE_ENTITY(VentureExchangeRate, venture_exchange_rate, exchange_rate_fields)

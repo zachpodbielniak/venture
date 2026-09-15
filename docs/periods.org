@@ -35,7 +35,9 @@ approver and =closed_at= from the clock. Those stamps cannot be supplied or
 edited by a caller.
 
 The close checklist refuses unbalanced ledger transaction batches and draft
-invoices dated in the period. Failures are collected and named together in
+invoices dated in the period. With the =close= module on, unmatched bank
+lines and an unsigned close workspace also veto the close. See
+[[file:close.org][accountant close workspace]]. Failures are collected and named together in
 the error, so fixing one does not merely reveal the next. Ledger amounts are
 summed with =VentureMoney=; currencies and organizations are not netted
 against one another.

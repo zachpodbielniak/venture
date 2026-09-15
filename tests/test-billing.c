@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
 #include "venture-test-util.h"
+#include "venture-test-accounting.h"
 
 /* Billing must coexist with the example plugin's recurring-cost record. */
 static void
@@ -9,7 +10,7 @@ test_catalog(void)
 {
 	static const gchar *const names[] = {
 		"plan", "plan_price", "customer_subscription", "subscription_event",
-		"dunning_step", "billing_notice"
+		"dunning_step", "billing_notice", "customer_payment_method"
 	};
 	VentureEntityRegistry *registry;
 	gsize i;
@@ -272,6 +273,24 @@ test_dunning(Fixture *f, gconstpointer data)
 	save(f, a);
 	g_assert_cmpint(count(f, "billing_notice"), ==, 1);
 	status_is(f, id, "paused");
+	{
+		gint64 restored_org = venture_test_accounting_roundtrip(f->db, f->org);
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_BILLING_NOTICE);
+		g_autoptr(VentureEntity) notice = NULL;
+		g_autoptr(GError) error = NULL;
+		g_autoptr(GDateTime) past_due = NULL;
+		g_autofree gchar *stamp = NULL, *expected = NULL, *key = NULL;
+		gint64 subscription_id = 0, step_id = 0;
+		venture_query_set_organization(query, restored_org);
+		notice = venture_database_find_one(f->db, query, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(notice);
+		g_object_get(notice, "subscription-id", &subscription_id, "dunning-step-id", &step_id,
+			"past-due-at", &past_due, "delivery-key", &key, NULL);
+		stamp = g_date_time_format_iso8601(past_due);
+		expected = g_strdup_printf("%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT ":%s", subscription_id, step_id, stamp);
+		g_assert_cmpstr(key, ==, expected);
+	}
 }
 
 static void
@@ -876,6 +895,58 @@ test_uniqueness(Fixture *f, gconstpointer data)
 	g_assert_cmpint(count(f, "invoice"), ==, 1);
 }
 
+/* Collection uses an authorized method, then recover exits dunning. */
+static void
+test_collect_and_recover(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) product = record(f, "product");
+	g_autoptr(VentureEntity) method = record(f, "customer_payment_method");
+	g_autoptr(VentureEntity) fail = NULL;
+	g_autoptr(VentureEntity) collect = NULL;
+	g_autoptr(VentureEntity) price = NULL;
+	g_autoptr(VentureQuery) lines = NULL;
+	g_autoptr(GPtrArray) found = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	gint64 id;
+	gint64 product_id;
+	(void)data;
+	g_object_set(product, "name", "Starter seats", NULL);
+	save(f, product);
+	product_id = venture_entity_get_id(product);
+	price = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_object_set(price, "product-id", product_id, NULL);
+	save(f, price);
+	id = start(f);
+	lines = venture_query_new(VENTURE_TYPE_INVOICE_LINE);
+	found = venture_database_find(f->db, lines, NULL);
+	g_assert_cmpuint(found->len, ==, 1);
+	g_assert_cmpint(integer(g_ptr_array_index(found, 0), "product-id"), ==, product_id);
+	g_object_set(method, "company-id", f->company, "method", "manual", "authorized", TRUE, NULL);
+	save(f, method);
+	fail = request(f, "mark-payment-failed", id, "2026-01-05");
+	save(f, fail);
+	status_is(f, id, "past_due");
+	collect = request(f, "collect", id, "2026-01-06");
+	/* An authorized card alone must never manufacture a cash receipt. */
+	g_object_set(method, "method", "card", NULL);
+	save(f, method);
+	{
+		g_autoptr(GError) error = NULL;
+		g_assert_false(venture_database_save(f->db, collect, NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		status_is(f, id, "past_due");
+	}
+	g_clear_object(&collect);
+	collect = request(f, "collect", id, "2026-01-06");
+	g_object_set(method, "method", "manual", NULL);
+	save(f, method);
+	save(f, collect);
+	status_is(f, id, "active");
+	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db),
+		integer(collect, "invoice-id"), NULL, NULL);
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 0);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -912,6 +983,7 @@ main(int argc, char **argv)
 	g_test_add("/billing/sweep-scope", Fixture, NULL, setup, test_sweep_scope, teardown);
 	g_test_add("/billing/interval-changes", Fixture, NULL, setup, test_interval_changes, teardown);
 	g_test_add("/billing/uniqueness", Fixture, NULL, setup, test_uniqueness, teardown);
+	g_test_add("/billing/collect-and-recover", Fixture, NULL, setup, test_collect_and_recover, teardown);
 	g_test_add_func("/billing/upgrade-disabled-restart", test_upgrade_disabled_restart);
 	return g_test_run();
 }

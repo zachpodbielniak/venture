@@ -18,18 +18,22 @@ typedef enum {
 	VENTURE_MATCH_PARTIAL
 } VentureMatchKind;
 #define VENTURE_TYPE_MATCH_KIND (venture_match_kind_get_type())
-/** venture_match_kind_get_type:
+/**
+ * venture_match_kind_get_type:
+ *
  * Returns: the exact/partial/none enum type
  */
 GType venture_match_kind_get_type(void) G_GNUC_CONST;
 
 #define VENTURE_TYPE_MATCH_SUGGESTION (venture_match_suggestion_get_type())
 G_DECLARE_FINAL_TYPE(VentureMatchSuggestion, venture_match_suggestion, VENTURE, MATCH_SUGGESTION, GObject)
-/** venture_match_suggestion_new:
- * @candidate: proposed book record
+/**
+ * venture_match_suggestion_new:
+ * @candidate: (nullable): proposed book record, referenced by the suggestion
  * @confidence: score from 0 through 100
- * @rationale: explanation
+ * @rationale: (nullable): explanation, copied by the suggestion
  * @kind: match classification
+ *
  * Returns: (transfer full): an immutable suggestion
  */
 VentureMatchSuggestion *venture_match_suggestion_new(VentureEntity *candidate,
@@ -38,7 +42,8 @@ VentureMatchSuggestion *venture_match_suggestion_new(VentureEntity *candidate,
 #define VENTURE_TYPE_RECONCILIATION_MATCHER (venture_reconciliation_matcher_get_type())
 G_DECLARE_INTERFACE(VentureReconciliationMatcher, venture_reconciliation_matcher,
 	VENTURE, RECONCILIATION_MATCHER, GObject)
-/** VentureReconciliationMatcherInterface:
+/**
+ * VentureReconciliationMatcherInterface:
  * @parent_iface: parent interface
  * @suggest: propose matches without writing anything
  * @suggest_async: optional asynchronous implementation
@@ -46,42 +51,48 @@ G_DECLARE_INTERFACE(VentureReconciliationMatcher, venture_reconciliation_matcher
  */
 struct _VentureReconciliationMatcherInterface {
 	GTypeInterface parent_iface;
-	GPtrArray *(*suggest)(VentureReconciliationMatcher *, VentureDatabase *,
-		VentureEntity *, GPtrArray *, GCancellable *, GError **);
-	void (*suggest_async)(VentureReconciliationMatcher *, VentureDatabase *,
-		VentureEntity *, GPtrArray *, GCancellable *, GAsyncReadyCallback, gpointer);
-	GPtrArray *(*suggest_finish)(VentureReconciliationMatcher *, GAsyncResult *, GError **);
+	GPtrArray *(*suggest)(VentureReconciliationMatcher *self, VentureDatabase *db,
+		VentureEntity *transaction, GPtrArray *candidates, GCancellable *cancellable, GError **error);
+	void (*suggest_async)(VentureReconciliationMatcher *self, VentureDatabase *db,
+		VentureEntity *transaction, GPtrArray *candidates, GCancellable *cancellable,
+		GAsyncReadyCallback callback, gpointer user_data);
+	GPtrArray *(*suggest_finish)(VentureReconciliationMatcher *self, GAsyncResult *result, GError **error);
 };
-/** venture_reconciliation_matcher_suggest:
+/**
+ * venture_reconciliation_matcher_suggest:
  * @self: implementation
  * @db: repository
  * @transaction: bank line as an ordinary entity
- * @candidates: (element-type VentureEntity): book records
+ * @candidates: (transfer none) (element-type VentureEntity): borrowed book records
  * @cancellable: (nullable): cancellation
  * @error: (out) (optional): error location
+ *
  * Returns: (transfer full) (element-type VentureMatchSuggestion) (nullable): proposals
  */
 GPtrArray *venture_reconciliation_matcher_suggest(VentureReconciliationMatcher *self,
 	VentureDatabase *db, VentureEntity *transaction, GPtrArray *candidates,
 	GCancellable *cancellable, GError **error);
-/** venture_reconciliation_matcher_suggest_async:
+/**
+ * venture_reconciliation_matcher_suggest_async:
  * @self: implementation
  * @db: repository
  * @transaction: bank line
- * @candidates: (element-type VentureEntity): book records
+ * @candidates: (transfer none) (element-type VentureEntity): borrowed book records
  * @cancellable: (nullable): cancellation
- * @callback: (scope async): completion callback
- * @user_data: callback data
+ * @callback: (scope async) (closure user_data) (nullable): completion callback
+ * @user_data: (nullable): callback data
  *
  * The default runs on the calling main context, never a database worker.
  */
 void venture_reconciliation_matcher_suggest_async(VentureReconciliationMatcher *self,
 	VentureDatabase *db, VentureEntity *transaction, GPtrArray *candidates,
 	GCancellable *cancellable, GAsyncReadyCallback callback, gpointer user_data);
-/** venture_reconciliation_matcher_suggest_finish:
+/**
+ * venture_reconciliation_matcher_suggest_finish:
  * @self: implementation
  * @result: asynchronous result
  * @error: (out) (optional): error location
+ *
  * Returns: (transfer full) (element-type VentureMatchSuggestion) (nullable): proposals
  */
 GPtrArray *venture_reconciliation_matcher_suggest_finish(VentureReconciliationMatcher *self,
@@ -89,7 +100,9 @@ GPtrArray *venture_reconciliation_matcher_suggest_finish(VentureReconciliationMa
 
 #define VENTURE_TYPE_EXACT_MATCHER (venture_exact_matcher_get_type())
 G_DECLARE_FINAL_TYPE(VentureExactMatcher, venture_exact_matcher, VENTURE, EXACT_MATCHER, GObject)
-/** venture_exact_matcher_new:
+/**
+ * venture_exact_matcher_new:
+ *
  * Returns: (transfer full): the deterministic matcher
  */
 VentureExactMatcher *venture_exact_matcher_new(void);
@@ -97,41 +110,52 @@ VentureExactMatcher *venture_exact_matcher_new(void);
 #define VENTURE_TYPE_RECONCILIATION_REGISTRY (venture_reconciliation_registry_get_type())
 G_DECLARE_FINAL_TYPE(VentureReconciliationRegistry, venture_reconciliation_registry,
 	VENTURE, RECONCILIATION_REGISTRY, GObject)
-/** venture_reconciliation_registry_new:
+/**
+ * venture_reconciliation_registry_new:
+ *
  * Returns: (transfer full): an empty registry
  */
 VentureReconciliationRegistry *venture_reconciliation_registry_new(void);
-/** venture_reconciliation_registry_add:
+/**
+ * venture_reconciliation_registry_add:
  * @self: registry
  * @matcher: (transfer full): implementation replacing its name
  */
 void venture_reconciliation_registry_add(VentureReconciliationRegistry *self,
 	VentureReconciliationMatcher *matcher);
-/** venture_reconciliation_registry_lookup:
+/**
+ * venture_reconciliation_registry_lookup:
  * @self: registry
  * @name: implementation name
+ *
  * Returns: (transfer none) (nullable): implementation
  */
 VentureReconciliationMatcher *venture_reconciliation_registry_lookup(
 	VentureReconciliationRegistry *self, const gchar *name);
-/** venture_reconciliation_registry_remove:
+/**
+ * venture_reconciliation_registry_remove:
  * @self: registry
  * @name: implementation name
+ *
  * Returns: whether the implementation existed
  */
 gboolean venture_reconciliation_registry_remove(VentureReconciliationRegistry *self, const gchar *name);
-/** venture_reconciliation_registry_list:
+/**
+ * venture_reconciliation_registry_list:
  * @self: registry
+ *
  * Returns: (transfer container) (element-type VentureReconciliationMatcher): implementations by name
  */
 GPtrArray *venture_reconciliation_registry_list(VentureReconciliationRegistry *self);
-/** venture_reconciliation_registry_suggest_all:
+/**
+ * venture_reconciliation_registry_suggest_all:
  * @self: registry
  * @db: repository
  * @transaction: bank line
- * @candidates: (element-type VentureEntity): book records
+ * @candidates: (transfer none) (element-type VentureEntity): borrowed book records
  * @cancellable: (nullable): cancellation
  * @error: (out) (optional): error location
+ *
  * Returns: (transfer full) (element-type VentureMatchSuggestion) (nullable): highest score per candidate, descending
  */
 GPtrArray *venture_reconciliation_registry_suggest_all(VentureReconciliationRegistry *self,
@@ -139,8 +163,10 @@ GPtrArray *venture_reconciliation_registry_suggest_all(VentureReconciliationRegi
 	GCancellable *cancellable, GError **error);
 #define VENTURE_TYPE_AI_MATCHER (venture_ai_matcher_get_type())
 G_DECLARE_FINAL_TYPE(VentureAiMatcher, venture_ai_matcher, VENTURE, AI_MATCHER, GObject)
-/** venture_ai_matcher_new:
+/**
+ * venture_ai_matcher_new:
  * @service: tool-free completion service
+ *
  * Returns: (transfer full): an AI matcher; holds a weak reference to the service
  */
 VentureAiMatcher *venture_ai_matcher_new(VentureAiService *service);

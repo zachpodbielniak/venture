@@ -42,6 +42,21 @@ venture_kb_ingest_result_new(void)
 	return self;
 }
 
+VentureKbIngestResult *
+venture_kb_ingest_result_copy(const VentureKbIngestResult *self)
+{
+	VentureKbIngestResult *copy;
+	guint i;
+	if (self == NULL) return NULL;
+	copy = g_new(VentureKbIngestResult, 1);
+	*copy = *self;
+	copy->notes = g_ptr_array_new_with_free_func(g_free);
+	if (self->notes != NULL)
+		for (i = 0; i < self->notes->len; i++)
+			g_ptr_array_add(copy->notes, g_strdup(g_ptr_array_index(self->notes, i)));
+	return copy;
+}
+
 void
 venture_kb_ingest_result_free(VentureKbIngestResult *self)
 {

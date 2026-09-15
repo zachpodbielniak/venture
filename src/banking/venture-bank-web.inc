@@ -28,7 +28,9 @@ venture_bank_web_action(HtmxRequest *request, GHashTable *params, gpointer user_
 	}
 	else if (form_action != NULL)
 	{
-		static const gchar *const fields[] = { "format", "data", "period_start", "period_end", "opening_balance", "closing_balance", "reason", "type", "state", NULL };
+		static const gchar *const fields[] = { "format", "data", "period_start", "period_end", "opening_balance", "closing_balance", "reason", "type", "state",
+			"date_column", "amount_column", "description_column", "reference_column", "external_id_column",
+			"debit_column", "credit_column", "locale", "date_format", "category", "amount", "date", "memo", "mode", NULL };
 		JsonObject *object = json_object_new();
 		JsonArray *parts = json_array_new();
 		const gchar *customer = htmx_request_get_form_value(request, "customer_id");
@@ -39,7 +41,16 @@ venture_bank_web_action(HtmxRequest *request, GHashTable *params, gpointer user_
 			if (value != NULL && *value) json_object_set_string_member(object, fields[i], value);
 		}
 		if (customer != NULL && *customer) json_object_set_int_member(object, "customer_id", g_ascii_strtoll(customer, NULL, 10));
+		{
+			const gchar *counterparty = htmx_request_get_form_value(request, "counterparty_bank_account_id");
+			const gchar *apply = htmx_request_get_form_value(request, "apply");
+			if (counterparty != NULL && *counterparty)
+				json_object_set_int_member(object, "counterparty_bank_account_id", g_ascii_strtoll(counterparty, NULL, 10));
+			if (apply != NULL && *apply)
+				json_object_set_boolean_member(object, "apply", TRUE);
+		}
 		for (i = 0; i < 3; i++)
+		for (i = 0; i < 50; i++)
 		{
 			g_autofree gchar *id_key = g_strdup_printf("record_id_%u", i);
 			g_autofree gchar *type_key = g_strdup_printf("record_type_%u", i);
@@ -48,10 +59,13 @@ venture_bank_web_action(HtmxRequest *request, GHashTable *params, gpointer user_
 			const gchar *record_type = htmx_request_get_form_value(request, type_key);
 			const gchar *amount = htmx_request_get_form_value(request, amount_key);
 			JsonObject *part;
-			if (record_id == NULL || *record_id == '\0' || record_type == NULL) continue;
+			if (record_type == NULL || *record_type == '\0') continue;
+			if (g_strcmp0(record_type, "adjustment") && (record_id == NULL || *record_id == '\0')) continue;
 			part = json_object_new();
 			json_object_set_string_member(part, "type", record_type);
-			json_object_set_int_member(part, "id", g_ascii_strtoll(record_id, NULL, 10));
+			if (record_id != NULL && *record_id)
+				json_object_set_int_member(part, g_strcmp0(record_type, "adjustment") ? "id" : "account_id",
+					g_ascii_strtoll(record_id, NULL, 10));
 			if (amount != NULL && *amount) json_object_set_string_member(part, "amount", amount);
 			json_array_add_object_element(parts, part);
 		}
@@ -86,5 +100,6 @@ venture_bank_web_register(HtmxRouter *router, VentureWebServer *self)
 	htmx_router_post(router, "/api/v1/bank_transactions/:id/:action", venture_bank_web_action, self);
 	htmx_router_post(router, "/api/v1/bank_statements/:id/:action", venture_bank_web_action, self);
 	htmx_router_post(router, "/api/v1/bank_accounts/:id/:action", venture_bank_web_action, self);
+	htmx_router_post(router, "/api/v1/bank_rules/:id/:action", venture_bank_web_action, self);
 	htmx_router_post(router, "/banking/:id/action", venture_bank_web_action, self);
 }

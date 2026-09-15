@@ -38,6 +38,15 @@ Every record derives from =VentureEntity= and carries the same spine:
 - *inventory_item* — reorder point, lead time, carrying cost.
 - *inventory_txn* — a signed movement. Quantity on hand is their sum, never a
   stored field.
+- *inventory_cost_layer* — remaining FIFO quantity and unit cost, posted by
+  receiving.
+
+** Purchasing and sales orders
+
+- *purchase_order* / *purchase_order_line* — committed spend.
+- *goods_receipt* / *goods_receipt_line* — partial receiving.
+- *sales_order* / *sales_order_line* / *fulfillment* — allocation, shipment
+  and invoicing of fulfilled quantity.
 
 ** Revenue
 
@@ -48,11 +57,23 @@ Every record derives from =VentureEntity= and carries the same spine:
 ** Money
 
 - *expense* — with a deductibility and a business-use percentage.
+- *expense_claim*, *expense_claim_line* — employee reimbursements; mileage is rate times miles. Owned by =claims=. See [[file:claims.org][employee reimbursements]].
+- *payroll_run*, *payroll_line* — imported approved pay runs. Owned by =payroll=, default off. See [[file:payroll.org][payroll import]].
 - *account* — a chart of accounts; five classes.
 - *ledger_entry* — read-only projections of posted journal lines.
 - *journal*, *journal_line* — immutable posted evidence, with source-document
   linkage and reversing journals; owned by =ledger=. See [[file:ledger.org][the general journal]].
 - *tax_category* — default deductibility per category.
+- *tax_code* — exact rate (numerator/denominator), jurisdiction and recoverable
+  flag applied on invoice and bill lines. Integer =tax-percent= remains for
+  lines without a code. Company and invoice =tax-exempt= still freeze tax at
+  zero.
+- *tax_filing* — a jurisdiction return pack (draft through acknowledged) with
+  versioned rule id and preserved JSON/CSV bytes; owned by =tax_filing=.
+- *contractor_tax_form* — vendor TIN, never generically exported.
+- *contractor_tax_pack* — calendar-year 1099-NEC totals from paid bills.
+- *exchange_rate* — dated exact rate from one currency into another. Missing
+  pairs are refused; nothing invents a market rate.
 
 ** Relations
 

@@ -4,6 +4,8 @@
 
 * Assets
 
+Voiding a source invoice cancels its recognition deferrals atomically: future entries become skipped and previously posted recognition journals receive linked reversals. Posted schedule entries retain their original journal references as evidence; the cancelled parent cannot settle as a completed accrual.
+
 The =assets= module requires =ledger= and =periods=. Its four field tables
 are =fixed_asset=, =depreciation_entry=, =deferral= and =deferral_entry=.
 Their registers, forms, JSON, REST, related panels, assistant schemas and
@@ -63,8 +65,16 @@ All calculations use =VentureMoney=. Straight-line and deferral splits use
 to the final installment, preserving the exact original total. There is no
 floating-point money, currency conversion or daily proration.
 
-These are book methods, not tax depreciation rules. No jurisdictional
-allowances, accelerated tax schedules or tax elections are inferred.
+Book and tax conventions are independent. =book-convention= and
+=tax-convention= are =full_month= (the historical schedule) or
+=half_year= (first installment halved, residual on the last month).
+=tax-useful-life-months= and =tax-method= build a =tax_depreciation_entry=
+schedule at placement. That schedule does not post to the book GL until
+=assets run-tax-period=, which writes journals with =tax-book= set.
+Statements ignore tax-book journals.
+
+These tax schedules are not jurisdictional elections. No bonus, section 179
+or MACRS table is inferred.
 
 ** A worked laptop
 
@@ -125,6 +135,7 @@ cash settlement is visible in its ledger account.
 #+begin_src sh
 venturectl assets run-period 2026-01 organization_id=1 --dry-run
 venturectl assets run-period 2026-01 organization_id=1
+venturectl assets run-tax-period 2026-01 organization_id=1
 venturectl asset place 12
 venturectl asset dispose 12 'proceeds=500 USD' disposed_at=2026-07-15
 venturectl asset write-off 12 disposed_at=2026-07-15

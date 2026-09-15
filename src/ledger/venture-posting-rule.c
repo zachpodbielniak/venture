@@ -36,6 +36,7 @@ struct _VenturePostingRuleRegistry
 {
 	GObject parent_instance;
 	GHashTable *rules;
+	gchar *revision;
 };
 G_DEFINE_FINAL_TYPE(VenturePostingRuleRegistry, venture_posting_rule_registry, G_TYPE_OBJECT)
 
@@ -43,6 +44,7 @@ static void
 venture_posting_rule_registry_finalize(GObject *object)
 {
 	g_hash_table_unref(VENTURE_POSTING_RULE_REGISTRY(object)->rules);
+	g_free(VENTURE_POSTING_RULE_REGISTRY(object)->revision);
 	G_OBJECT_CLASS(venture_posting_rule_registry_parent_class)->finalize(object);
 }
 static void
@@ -54,6 +56,7 @@ static void
 venture_posting_rule_registry_init(VenturePostingRuleRegistry *self)
 {
 	self->rules = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_object_unref);
+	self->revision = g_uuid_string_random();
 }
 VenturePostingRuleRegistry *
 venture_posting_rule_registry_new(void)
@@ -69,7 +72,11 @@ venture_posting_rule_registry_add(VenturePostingRuleRegistry *self, VenturePosti
 	g_return_if_fail(VENTURE_IS_POSTING_RULE(rule));
 	name = venture_posting_rule_get_name(rule);
 	g_return_if_fail(NULL != name && '\0' != *name);
+	/* Names do not capture replaced callback implementations. A fresh
+	 * process or registry mutation invalidates outstanding consent. */
 	g_hash_table_replace(self->rules, g_strdup(name), rule);
+	g_free(self->revision);
+	self->revision = g_uuid_string_random();
 }
 VenturePostingRule *
 venture_posting_rule_registry_lookup(VenturePostingRuleRegistry *self, const gchar *name)
@@ -82,8 +89,18 @@ gboolean
 venture_posting_rule_registry_remove(VenturePostingRuleRegistry *self, const gchar *name)
 {
 	g_return_val_if_fail(VENTURE_IS_POSTING_RULE_REGISTRY(self), FALSE);
-	return g_hash_table_remove(self->rules, name);
+	if (!g_hash_table_remove(self->rules, name)) return FALSE;
+	g_free(self->revision);
+	self->revision = g_uuid_string_random();
+	return TRUE;
 }
+const gchar *
+venture_posting_rule_registry_get_revision(VenturePostingRuleRegistry *self)
+{
+	g_return_val_if_fail(VENTURE_IS_POSTING_RULE_REGISTRY(self), NULL);
+	return self->revision;
+}
+
 static gint
 compare_rules(gconstpointer a, gconstpointer b)
 {

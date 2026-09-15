@@ -631,6 +631,18 @@ venture_cli_values_from_args(
 }
 
 #include "payables/venture-payables-cli.inc"
+#include "goods/venture-goods-cli.inc"
+#include "portal/venture-supplier-portal-cli.inc"
+#include "fields/venture-custom-fields-cli.inc"
+#include "close/venture-close-cli.inc"
+#include "tax/venture-tax-cli.inc"
+#include "capture/venture-capture-cli.inc"
+#include "claims/venture-claims-cli.inc"
+#include "payroll/venture-payroll-cli.inc"
+#include "accounting/venture-accounting-cli.inc"
+#include "budgets/venture-budget-cli.inc"
+#include "equity/venture-equity-cli.inc"
+#include "group/venture-group-cli.inc"
 
 static gint
 venture_cli_command_list(
@@ -1132,10 +1144,11 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "customer_id")) && (0 != g_strcmp0(parts[0], "currency")) &&
 				 (0 != g_strcmp0(parts[0], "venture_id")) && (0 != g_strcmp0(parts[0], "group_by")) &&
 				 (0 != g_strcmp0(parts[0], "compare_to")) && (0 != g_strcmp0(parts[0], "account_id")) &&
+				 (0 != g_strcmp0(parts[0], "basis")) && (0 != g_strcmp0(parts[0], "dimension")) &&
 				 (0 != g_strcmp0(parts[0], "vendor_id")) && (0 != g_strcmp0(parts[0], "pipeline_id")) && (0 != g_strcmp0(parts[0], "owner"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -2096,6 +2109,8 @@ venture_cli_command_factory(
  */
 #include "mail/venture-mail-cli.inc"
 #include "banking/venture-bank-cli.inc"
+#include "bankfeed/venture-bankfeed-cli.inc"
+#include "commerce/venture-commerce-cli.inc"
 
 static gint
 venture_cli_command_invoice(VentureCli *cli, gchar **args, GError **error)
@@ -2180,9 +2195,9 @@ venture_cli_command_assets(VentureCli *cli, gchar **args, GError **error)
 		return -1;
 	}
 	body = venture_cli_values_from_args(args, 3);
-	if (g_str_equal(args[0], "assets") && g_str_equal(args[1], "run-period"))
+	if (g_str_equal(args[0], "assets") && (g_str_equal(args[1], "run-period") || g_str_equal(args[1], "run-tax-period")))
 	{
-		path = g_strdup("/api/v1/assets/run-period");
+		path = g_strdup(g_str_equal(args[1], "run-tax-period") ? "/api/v1/assets/run-tax-period" : "/api/v1/assets/run-period");
 		json_object_set_string_member(json_node_get_object(body), "period", args[2]);
 		for (i = 3; args[i] != NULL; i++)
 			if (g_str_equal(args[i], "--dry-run"))
@@ -3199,10 +3214,12 @@ venture_cli_command_mcp(
 #include "reconciliation/venture-reconciliation-cli.inc"
 #include "billing/venture-billing-cli.inc"
 #include "sequences/venture-sequence-cli.inc"
+#include "recurring/venture-recurring-cli.inc"
 
 /* --- Entry point --------------------------------------------------------- */
 
 #include "quotes/venture-quote-cli.inc"
+#include "documents/venture-document-cli.inc"
 static gint
 venture_cli_command_act(VentureCli *cli, gchar **args, GError **error)
 {
@@ -3375,6 +3392,18 @@ main(
 		"  sequence status ID          enrollment and delivery history\n"
 		"  post backfill                post missing journals; --dry-run\n"
 		"  bill approve|pay|void ID [field=value ...]  supplier bill actions\n"
+		"  bill pay-bulk 1,2,3 [adapter=transfer]     pay selected approved bills\n"
+		"  purchase approve|send|receive|match|cancel ID  purchase orders and receiving\n"
+		"  sales-order allocate|ship|invoice|cancel ID   sales order fulfillment\n"
+		"  supplier invite|revoke     tokenized vendor bill portal\n"
+		"  fields define|layout|value  custom fields without writing C\n"
+		"  close open|run|sign|complete|reopen|pack   accountant close workspace\n"
+		"  tax-filing prepare|review|submit|acknowledge|amend  jurisdiction tax return\n"
+		"  contractor-tax prepare|review|approve|export     1099-NEC packs\n"
+		"  capture ingest|convert|reject              receipt and supplier-invoice inbox\n"
+		"  claim submit|approve|pay ID               employee expense claims\n"
+		"  payroll import|disburse|reverse           imported pay runs\n"
+		"  accounting                               daily books next actions\n"
 		"  factory                      the software factory at a glance\n"
 		"  lead convert ID              qualify first; deal=yes|no, company_id=ID\n"
 		"  lead reassign ID             owner=NAME or run assignment rules\n"
@@ -3386,7 +3415,11 @@ main(
 		"  journal post ID              post a draft, or propose for approval\n"
 		"  mail list|send|test|deliver|retry  transactional mail\n"
 		"  quote send|accept|decline|revise ID [by=NAME] [reason=TEXT]\n"
-		"  bank ACTION ID [JSON|@FILE] banking action; bank match AUTO STATEMENT_ID\n"
+		"  compose invoice|quote JSON   lines, tax and optional send\n"
+		"  bank ACTION ID [JSON|@FILE] banking action; import map inbox bulk transfer\n"
+		"                               preview enable reverse; bank match AUTO ID\n"
+		"  bankfeed sync ID [JSON]      sync a linked bank feed connection\n"
+		"  commerce import [JSON]       import connector orders as invoices\n"
 		"  deal move ID STAGE [NOTE]     move a deal through its pipeline\n"
 		"  release publish ID           cut it on the forge; --prerelease\n"
 		"  dashboards                   list the dashboards\n"
@@ -3425,6 +3458,9 @@ main(
 		"  health                       check the server is up\n"
 		"  billing start|change|cancel   manage customer subscription terms\n"
 		"  billing renew|dunning        sweep; --as-of DATE, --dry-run\n"
+		"  recurring run               generate due documents; --as-of DATE, --dry-run\n"
+		"  collections run             queue overdue reminders; --as-of DATE\n"
+		"  batch invoice|expense format=csv|json payload=... [post=false] [--dry-run]\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
 		"\n"
@@ -3489,9 +3525,9 @@ main(
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 
-	if (dry_run && g_strcmp0(args[0], "billing") != 0 && (g_strcmp0(args[0], "post") != 0 || g_strcmp0(args[1], "backfill") != 0))
+	if (dry_run && g_strcmp0(args[0], "billing") != 0 && g_strcmp0(args[0], "recurring") != 0 && g_strcmp0(args[0], "batch") != 0 && (g_strcmp0(args[0], "post") != 0 || g_strcmp0(args[1], "backfill") != 0))
 	{
-		g_printerr("venturectl: --dry-run requires post backfill or billing\n");
+		g_printerr("venturectl: --dry-run requires post backfill, billing, recurring or batch\n");
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 
@@ -3569,9 +3605,9 @@ main(
 		cli.format = (VentureOutputFormat)value;
 	}
 
-	if (sequence_as_of != NULL && g_strcmp0(args[0], "billing") != 0 && (g_strcmp0(args[0], "sequence") != 0 || g_strcmp0(args[1], "run") != 0))
+	if (sequence_as_of != NULL && g_strcmp0(args[0], "billing") != 0 && g_strcmp0(args[0], "recurring") != 0 && g_strcmp0(args[0], "collections") != 0 && (g_strcmp0(args[0], "sequence") != 0 || g_strcmp0(args[1], "run") != 0))
 	{
-		g_printerr("venturectl: --as-of is only valid for sequence run or billing\n");
+		g_printerr("venturectl: --as-of is only valid for sequence run, billing, recurring or collections\n");
 		g_free(cli.base_url);
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
@@ -3623,12 +3659,46 @@ main(
 		result = venture_cli_command_mail(&cli, args, mail_html, mail_limit, &error);
 	else if (0 == g_strcmp0(args[0], "quote"))
 		result = venture_cli_command_quote(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "compose"))
+		result = venture_cli_command_compose(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "lead"))
 		result = venture_cli_command_lead(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "supplier"))
+		result = venture_cli_command_supplier(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "fields"))
+		result = venture_cli_command_fields(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "bill"))
 		result = venture_cli_command_bill(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "purchase"))
+		result = venture_cli_command_purchase(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "sales-order"))
+		result = venture_cli_command_sales_order(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "close"))
+		result = venture_cli_command_close(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "tax-filing"))
+		result = venture_cli_command_tax_filing(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "contractor-tax"))
+		result = venture_cli_command_contractor_tax(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "capture"))
+		result = venture_cli_command_capture(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "claim"))
+		result = venture_cli_command_claim(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "payroll"))
+		result = venture_cli_command_payroll(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "accounting"))
+		result = venture_cli_command_accounting(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "budget"))
+		result = venture_cli_command_budget(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "equity"))
+		result = venture_cli_command_equity(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "group"))
+		result = venture_cli_command_group(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "bank"))
 		result = venture_cli_command_bank(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "bankfeed"))
+		result = venture_cli_command_bankfeed(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "commerce"))
+		result = venture_cli_command_commerce(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "deal"))
 		result = venture_cli_command_deal(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "release"))
@@ -3672,6 +3742,8 @@ main(
 		result = venture_cli_command_mcp(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "billing"))
 		result = venture_cli_command_billing(&cli, args, sequence_as_of, dry_run, &error);
+	else if (0 == g_strcmp0(args[0], "recurring") || 0 == g_strcmp0(args[0], "collections") || 0 == g_strcmp0(args[0], "batch"))
+		result = venture_cli_command_recurring(&cli, args, sequence_as_of, dry_run, &error);
 	else if (0 == g_strcmp0(args[0], "act"))
 		result = venture_cli_command_act(&cli, args, &error);
 	else

@@ -583,6 +583,38 @@ test_currency_default(void)
 	venture_money_set_default_currency(original);
 }
 
+/* FX must round once, after both the rate and decimal scaling. */
+static void
+test_money_fx_precision(void)
+{
+	static const struct { gint64 minor, num, den, expected; const gchar *from, *to; } cases[] = {
+		{ 50, 150, 1, 75, "USD", "JPY" },
+		{ -50, 150, 1, -75, "USD", "JPY" },
+		{ 100, 1, 150, 67, "JPY", "USD" },
+		{ 1, 50, 1, 0, "USD", "JPY" },
+		{ 3, 50, 1, 2, "USD", "JPY" },
+		{ G_MAXINT64, G_MAXINT64, G_MAXINT64, G_MAXINT64, "USD", "EUR" }
+	};
+	guint i;
+	for (i = 0; i < G_N_ELEMENTS(cases); i++)
+	{
+		g_autoptr(GError) error = NULL;
+		g_autoptr(VentureMoney) source = venture_money_new_for_currency(cases[i].minor, cases[i].from);
+		g_autoptr(VentureMoney) result = venture_money_convert_at_rate(source,
+			cases[i].num, cases[i].den, cases[i].to, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(result);
+		g_assert_cmpint(result->amount, ==, cases[i].expected);
+	}
+	{
+		g_autoptr(GError) error = NULL;
+		g_autoptr(VentureMoney) source = venture_money_new_for_currency(G_MAXINT64, "JPY");
+		g_autoptr(VentureMoney) result = venture_money_convert_at_rate(source, 1, 1, "USD", &error);
+		g_assert_null(result);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	}
+}
+
 int
 main(
 	int	  argc,
@@ -638,5 +670,6 @@ main(
 	g_test_add_func("/currency/validity", test_currency_validity);
 	g_test_add_func("/currency/default", test_currency_default);
 
+	g_test_add_func("/money/fx-precision", test_money_fx_precision);
 	return g_test_run();
 }

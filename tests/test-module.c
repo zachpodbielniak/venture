@@ -95,7 +95,11 @@ test_module_everything_is_on_by_default(void)
 
 		module = g_ptr_array_index(modules, i);
 		if (!g_strcmp0(venture_module_get_name(module), "federation") ||
-		    !g_strcmp0(venture_module_get_name(module), "stripe"))
+		    !g_strcmp0(venture_module_get_name(module), "stripe") ||
+		    !g_strcmp0(venture_module_get_name(module), "payroll") ||
+		    !g_strcmp0(venture_module_get_name(module), "bankfeed") ||
+		    !g_strcmp0(venture_module_get_name(module), "commerce") ||
+		    !g_strcmp0(venture_module_get_name(module), "group"))
 		{
 			g_assert_false(venture_module_is_enabled(module));
 			continue;
@@ -164,8 +168,12 @@ test_module_dependency_conflict_is_refused(void)
 	venture_config_set_module_enabled(config, "leads", FALSE);
 	venture_config_set_module_enabled(config, "activities", FALSE);
 	venture_config_set_module_enabled(config, "payables", FALSE);
+	venture_config_set_module_enabled(config, "supplier_portal", FALSE);
 	venture_config_set_module_enabled(config, "pipelines", FALSE);
 	venture_config_set_module_enabled(config, "sequences", FALSE);
+	venture_config_set_module_enabled(config, "projects", FALSE);
+	venture_config_set_module_enabled(config, "recurring", FALSE);
+	venture_config_set_module_enabled(config, "goods", FALSE);
 	g_assert_true(venture_module_registry_configure(registry, config, &error));
 	g_assert_no_error(error);
 	g_assert_true(venture_module_registry_is_enabled(registry, "sales"));
@@ -607,8 +615,12 @@ fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "leads", FALSE);
 	venture_config_set_module_enabled(fixture->config, "activities", FALSE);
 	venture_config_set_module_enabled(fixture->config, "payables", FALSE);
+	venture_config_set_module_enabled(fixture->config, "supplier_portal", FALSE);
 	venture_config_set_module_enabled(fixture->config, "pipelines", FALSE);
 	venture_config_set_module_enabled(fixture->config, "sequences", FALSE);
+	venture_config_set_module_enabled(fixture->config, "projects", FALSE);
+	venture_config_set_module_enabled(fixture->config, "recurring", FALSE);
+	venture_config_set_module_enabled(fixture->config, "goods", FALSE);
 
 	fixture->database = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
@@ -975,12 +987,17 @@ server_fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "leads", FALSE);
 	venture_config_set_module_enabled(fixture->config, "activities", FALSE);
 	venture_config_set_module_enabled(fixture->config, "payables", FALSE);
+	venture_config_set_module_enabled(fixture->config, "supplier_portal", FALSE);
 	venture_config_set_module_enabled(fixture->config, "pipelines", FALSE);
 	venture_config_set_module_enabled(fixture->config, "sequences", FALSE);
+	venture_config_set_module_enabled(fixture->config, "projects", FALSE);
+	venture_config_set_module_enabled(fixture->config, "recurring", FALSE);
+	venture_config_set_module_enabled(fixture->config, "goods", FALSE);
 	venture_config_set_module_enabled(fixture->config, "tickets", FALSE);
 	venture_config_set_module_enabled(fixture->config, "forge", FALSE);
 	venture_config_set_module_enabled(fixture->config, "factory", FALSE);
 	venture_config_set_module_enabled(fixture->config, "kb", FALSE);
+	venture_config_set_module_enabled(fixture->config, "backup", FALSE);
 
 	fixture->database = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
@@ -1091,6 +1108,8 @@ test_module_http_disabled_module_is_absent(
 	                                NULL), ==, SOUP_STATUS_OK);
 
 	/* Module pages and API routes. */
+	g_assert_cmpuint(server_request(fixture, "POST", "/backup/export", "", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_request(fixture, "POST", "/api/v1/accounting_backups/export", "", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_request(fixture, "GET", "/tickets", NULL, &page,
 	                                NULL), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_nonnull(strstr(page, "tickets module is turned off"));
