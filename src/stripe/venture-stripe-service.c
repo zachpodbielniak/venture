@@ -408,8 +408,11 @@ venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 		gint64 amount = 0;
 		if (!to_stripe_amount(expected, &amount, error)) goto fail;
 		if (amount <= 0)
+		{
+			refuse(error, "Checkout requires a positive open balance");
 			goto fail;
-		request->unit_amount = (guint)amount;
+		}
+		request->unit_amount = (guint64)amount;
 	}
 	request->currency = g_ascii_strdown(venture_money_get_currency(expected), -1);
 	request->product_name = g_strdup("Invoice");
