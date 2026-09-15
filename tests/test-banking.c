@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+ * Covers src/banking/venture-bank-records.c and venture-bank-match-service.c */
 #include <venture.h>
 #include <string.h>
 #include <libsoup/soup.h>
@@ -185,6 +186,8 @@ bank_action(BankFixture *f, const gchar *action, gint64 id, const gchar *json, G
 	return venture_bank_match_service_execute(venture_database_get_bank_match_service(f->database), action, id,
 		json_node_get_object(json_parser_get_root(parser)), NULL, error);
 }
+
+static void post_cash(BankFixture *f, const gchar *when, gint64 amount, gboolean debit);
 
 static VentureEntity *
 bank_import(BankFixture *f, const gchar *format, const gchar *data, const gchar *closing, GError **error)
@@ -572,6 +575,180 @@ test_period_guard(BankFixture *f, gconstpointer data)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
 	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_EXPENSE), ==, 0);
 	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_MATCH), ==, 0);
+}
+
+static gint64
+bank_account_code(BankFixture *f, const gchar *code)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	g_autoptr(GPtrArray) accounts = NULL;
+	g_autoptr(GError) error = NULL;
+	venture_query_set_organization(query, f->org);
+	g_assert_true(venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, &error));
+	accounts = venture_database_find(f->database, query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(accounts->len, ==, 1);
+	return venture_entity_get_id(g_ptr_array_index(accounts, 0));
+}
+
+static VentureEntity *
+bank_issue(BankFixture *f, const gchar *number, const gchar *amount)
+{
+	g_autoptr(VentureEntity) invoice = g_object_new(VENTURE_TYPE_INVOICE, NULL);
+	g_autoptr(VentureEntity) line = g_object_new(VENTURE_TYPE_INVOICE_LINE, NULL);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureMoney) money = NULL;
+	g_autoptr(GDateTime) date = g_date_time_new_utc(2026, 1, 8, 0, 0, 0);
+	venture_entity_set_organization_id(invoice, f->org);
+	g_object_set(invoice, "number", number, "company-id", (gint64)1, "issued-at", date, "due-at", date, NULL);
+	g_assert_true(venture_database_save(f->database, invoice, NULL, &error));
+	venture_entity_set_organization_id(line, f->org);
+	money = venture_money_from_string(amount, "USD", &error);
+	g_assert_no_error(error);
+	g_object_set(line, "invoice-id", venture_entity_get_id(invoice), "description", number,
+		"quantity", 1.0, "unit-price", money, NULL);
+	g_assert_true(venture_database_save(f->database, line, NULL, &error));
+	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+	g_assert_true(venture_database_save(f->database, invoice, NULL, &error));
+	return g_steal_pointer(&invoice);
+}
+
+/* One deposit can clear several receipts; a fee is an explicit approved journal. */
+static void
+test_grouped_deposit_adjustment(BankFixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) statement = NULL, result = NULL;
+	g_autoptr(VentureCompany) customer = venture_company_new();
+	g_autoptr(VentureEntity) first = NULL, second = NULL;
+	g_autoptr(VentureEntity) pay_a = g_object_new(VENTURE_TYPE_PAYMENT, NULL);
+	g_autoptr(VentureEntity) pay_b = g_object_new(VENTURE_TYPE_PAYMENT, NULL);
+	g_autoptr(GDateTime) date = g_date_time_new_utc(2026, 1, 10, 0, 0, 0);
+	g_autoptr(VentureMoney) forty = venture_money_new_for_currency(4000, "USD");
+	g_autoptr(VentureMoney) sixty = venture_money_new_for_currency(6000, "USD");
+	g_autofree gchar *json = NULL;
+	(void)data;
+	g_object_set(customer, "name", "Grouped", "organization-id", f->org, NULL);
+	g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(customer), NULL, &error));
+	first = bank_issue(f, "GRP-A", "40 USD");
+	second = bank_issue(f, "GRP-B", "60 USD");
+	venture_entity_set_organization_id(pay_a, f->org);
+	venture_entity_set_organization_id(pay_b, f->org);
+	g_object_set(pay_a, "customer-id", venture_entity_get_id(VENTURE_ENTITY(customer)),
+		"invoice-id", venture_entity_get_id(first), "amount", forty, "date", date, "method", "transfer", NULL);
+	g_object_set(pay_b, "customer-id", venture_entity_get_id(VENTURE_ENTITY(customer)),
+		"invoice-id", venture_entity_get_id(second), "amount", sixty, "date", date, "method", "transfer", NULL);
+	g_assert_true(venture_database_save(f->database, pay_a, NULL, &error));
+	g_assert_true(venture_database_save(f->database, pay_b, NULL, &error));
+	statement = bank_import(f, "csv",
+		"date,amount,memo,ref,id\n2026-01-10,97,Stripe payout,batch,group-1\n", "97 USD", &error);
+	g_assert_no_error(error);
+	json = g_strdup_printf(
+		"{\"parts\":[{\"type\":\"payment\",\"id\":%" G_GINT64_FORMAT "},"
+		"{\"type\":\"payment\",\"id\":%" G_GINT64_FORMAT "},"
+		"{\"type\":\"adjustment\",\"amount\":\"-3 USD\",\"account_id\":%" G_GINT64_FORMAT ",\"description\":\"processor fee\"}]}",
+		venture_entity_get_id(pay_a), venture_entity_get_id(pay_b), bank_account_code(f, "6000"));
+	result = bank_action(f, "match", 1, json, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_MATCH), ==, 3);
+	g_clear_object(&result);
+	result = bank_action(f, "reconcile", venture_entity_get_id(statement), "{}", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+}
+
+static void
+test_refund_and_journal_candidates(BankFixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) statement = NULL, result = NULL, transaction = NULL;
+	g_autoptr(GPtrArray) candidates = NULL;
+	g_autoptr(VentureCompany) customer = venture_company_new();
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) payment = g_object_new(VENTURE_TYPE_PAYMENT, NULL);
+	g_autoptr(VentureEntity) refund = g_object_new(VENTURE_TYPE_REFUND, NULL);
+	g_autoptr(GDateTime) date = g_date_time_new_utc(2026, 1, 10, 0, 0, 0);
+	g_autoptr(VentureMoney) ten = venture_money_new_for_currency(1000, "USD");
+	g_autoptr(GPtrArray) allocations = NULL;
+	guint i;
+	gboolean saw_refund = FALSE, saw_journal = FALSE;
+	(void)data;
+	g_object_set(customer, "name", "Refunded", "organization-id", f->org, NULL);
+	g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(customer), NULL, &error));
+	invoice = bank_issue(f, "REF-1", "10 USD");
+	venture_entity_set_organization_id(payment, f->org);
+	g_object_set(payment, "customer-id", venture_entity_get_id(VENTURE_ENTITY(customer)),
+		"invoice-id", venture_entity_get_id(invoice), "amount", ten, "date", date, "method", "transfer", NULL);
+	g_assert_true(venture_database_save(f->database, payment, NULL, &error));
+	allocations = venture_database_find(f->database, venture_query_new(VENTURE_TYPE_PAYMENT_ALLOCATION), &error);
+	g_assert_cmpuint(allocations->len, ==, 1);
+	venture_entity_set_organization_id(refund, f->org);
+	g_object_set(refund, "customer-id", venture_entity_get_id(VENTURE_ENTITY(customer)),
+		"allocation-id", venture_entity_get_id(g_ptr_array_index(allocations, 0)),
+		"amount", ten, "date", date, NULL);
+	g_assert_true(venture_database_save(f->database, refund, NULL, &error));
+	post_cash(f, "2026-01-10T00:00:00Z", 1000, FALSE);
+	statement = bank_import(f, "csv",
+		"date,amount,memo,ref,id\n2026-01-10,-10,Customer refund,r,ref-out\n", "-10 USD", &error);
+	g_assert_no_error(error);
+	transaction = venture_database_get(f->database, VENTURE_TYPE_BANK_TRANSACTION, 1, &error);
+	candidates = venture_bank_transaction_candidates(f->database, transaction, &error);
+	g_assert_no_error(error);
+	for (i = 0; i < candidates->len; i++)
+	{
+		const gchar *name = venture_entity_get_entity_name(g_ptr_array_index(candidates, i));
+		if (!strcmp(name, "refund")) saw_refund = TRUE;
+		if (!strcmp(name, "journal")) saw_journal = TRUE;
+	}
+	g_assert_true(saw_refund);
+	g_assert_true(saw_journal);
+	{
+		g_autofree gchar *match = g_strdup_printf("{\"parts\":[{\"type\":\"refund\",\"id\":%" G_GINT64_FORMAT "}]}",
+			venture_entity_get_id(refund));
+		result = bank_action(f, "match", 1, match, &error);
+	}
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+}
+
+static void
+test_searchable_window(BankFixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) statement = NULL, transaction = NULL;
+	g_autoptr(GPtrArray) wide = NULL, narrow = NULL, searched = NULL;
+	g_autoptr(VentureMoney) ten = venture_money_new_for_currency(1000, "USD");
+	guint i;
+	(void)data;
+	for (i = 0; i < 2; i++)
+	{
+		g_autoptr(VentureExpense) expense = venture_expense_new();
+		g_autoptr(GDateTime) date = g_date_time_new_utc(2026, 1, i == 0 ? 10 : 16, 12, 0, 0);
+		g_object_set(expense, "description", i == 0 ? "Alpha fee" : "Beta charge",
+			"organization-id", f->org, "amount", ten, "occurred-at", date, NULL);
+		g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(expense), NULL, &error));
+	}
+	g_object_set(f->bank, "match-window-days", (gint64)1, NULL);
+	g_assert_true(venture_database_save(f->database, f->bank, NULL, &error));
+	g_assert_no_error(error);
+	statement = bank_import(f, "csv", "date,amount,memo,ref,id\n2026-01-10,-10,Fee,x,search-1\n", "-10 USD", &error);
+	g_assert_no_error(error);
+	transaction = venture_database_get(f->database, VENTURE_TYPE_BANK_TRANSACTION, 1, &error);
+	wide = venture_bank_transaction_candidates(f->database, transaction, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(wide->len, ==, 1);
+	g_clear_object(&f->bank);
+	f->bank = venture_database_get(f->database, VENTURE_TYPE_BANK_ACCOUNT, 1, &error);
+	g_object_set(f->bank, "match-window-days", (gint64)10, NULL);
+	g_assert_true(venture_database_save(f->database, f->bank, NULL, &error));
+	g_assert_no_error(error);
+	narrow = venture_bank_transaction_candidates_search(f->database, transaction, "alpha", &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(narrow->len, ==, 1);
+	searched = venture_bank_transaction_candidates_search(f->database, transaction, "missing", &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(searched->len, ==, 0);
 }
 
 static void
@@ -1146,6 +1323,9 @@ main(int argc, char **argv)
 	g_test_add("/banking/overlap-import", BankFixture, NULL, bank_setup, test_overlap_import, bank_teardown);
 	g_test_add("/banking/transfer-balanced", BankFixture, NULL, bank_setup, test_transfer_balanced, bank_teardown);
 	g_test_add("/banking/payment-cash-account", BankFixture, NULL, bank_setup, test_payment_cash_account, bank_teardown);
+	g_test_add("/banking/grouped-deposit-adjustment", BankFixture, NULL, bank_setup, test_grouped_deposit_adjustment, bank_teardown);
+	g_test_add("/banking/refund-and-journal-candidates", BankFixture, NULL, bank_setup, test_refund_and_journal_candidates, bank_teardown);
+	g_test_add("/banking/searchable-window", BankFixture, NULL, bank_setup, test_searchable_window, bank_teardown);
 	g_test_add_func("/banking/disabled-upgrade", test_disabled_upgrade);
 	g_test_add_func("/banking/records", test_records);
 	g_test_add_func("/banking/report", test_report_registration);

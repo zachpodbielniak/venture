@@ -22,6 +22,8 @@ static const VentureFieldDecl bank_account_fields[] = {
 		VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("last-mapping-preview", "Last mapping preview", "Latest CSV mapping preview; service-owned",
 		VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("match-window-days", "Match window days", "Inclusive UTC calendar window for candidate discovery; 0 means 5",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 };
 VENTURE_DEFINE_ENTITY(VentureBankAccount, venture_bank_account, bank_account_fields)
 

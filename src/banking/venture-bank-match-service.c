@@ -240,12 +240,13 @@ venture_bank_candidate_amount(VentureEntity *record)
 	const gchar *name = venture_entity_get_entity_name(record);
 	VentureMoney *amount = NULL;
 	if (!strcmp(name, "sale")) return venture_sale_get_net(VENTURE_SALE(record), NULL);
-	if (strcmp(name, "expense") && strcmp(name, "payment") && strcmp(name, "vendor_bill_payment") && strcmp(name, "bill_payment"))
+	if (strcmp(name, "expense") && strcmp(name, "payment") && strcmp(name, "vendor_bill_payment") &&
+		strcmp(name, "bill_payment") && strcmp(name, "refund") && strcmp(name, "processor_payout"))
 		return NULL;
 	if (g_object_class_find_property(G_OBJECT_GET_CLASS(record), "amount") == NULL)
 		return NULL;
 	g_object_get(record, "amount", &amount, NULL);
-	if (amount != NULL && strcmp(name, "payment"))
+	if (amount != NULL && strcmp(name, "payment") && strcmp(name, "processor_payout"))
 	{
 		VentureMoney *negative = venture_money_multiply_int(amount, -1, NULL);
 		venture_money_free(amount);
@@ -278,15 +279,94 @@ calendar_distance(GDateTime *a, GDateTime *b)
 	return (gint)g_date_get_julian(&day_a) - (gint)g_date_get_julian(&day_b);
 }
 
+static gint
+match_window(VentureDatabase *db, VentureEntity *transaction)
+{
+	g_autoptr(VentureEntity) bank = NULL;
+	gint64 days = 0;
+	bank = venture_database_get(db, VENTURE_TYPE_BANK_ACCOUNT, number(transaction, "bank-account-id"), NULL);
+	if (bank != NULL)
+		g_object_get(bank, "match-window-days", &days, NULL);
+	return days > 0 && days < 366 ? (gint)days : 5;
+}
+
+static gboolean
+token_match(VentureEntity *record, const gchar *search)
+{
+	g_autofree gchar *description = NULL;
+	g_autofree gchar *reference = NULL;
+	g_autofree gchar *needle = NULL;
+	if (search == NULL || *search == '\0') return TRUE;
+	needle = g_utf8_casefold(search, -1);
+	if (g_object_class_find_property(G_OBJECT_GET_CLASS(record), "description") != NULL)
+		g_object_get(record, "description", &description, NULL);
+	if (g_object_class_find_property(G_OBJECT_GET_CLASS(record), "reference") != NULL)
+		g_object_get(record, "reference", &reference, NULL);
+	if (g_object_class_find_property(G_OBJECT_GET_CLASS(record), "memo") != NULL && description == NULL)
+		g_object_get(record, "memo", &description, NULL);
+	{
+		g_autofree gchar *hay = g_utf8_casefold(description != NULL ? description : "", -1);
+		g_autofree gchar *ref = g_utf8_casefold(reference != NULL ? reference : "", -1);
+		return (hay != NULL && strstr(hay, needle) != NULL) || (ref != NULL && strstr(ref, needle) != NULL);
+	}
+}
+
+static VentureMoney *
+journal_bank_amount(VentureDatabase *db, VentureEntity *journal, gint64 ledger_id, GError **error)
+{
+	g_autoptr(GPtrArray) lines = NULL;
+	g_autoptr(VentureMoney) total = NULL;
+	guint i;
+	lines = rows(db, VENTURE_TYPE_JOURNAL_LINE, venture_entity_get_organization_id(journal),
+		"journal-id", venture_entity_get_id(journal), error);
+	if (lines == NULL) return NULL;
+	for (i = 0; i < lines->len; i++)
+	{
+		VentureEntity *line = g_ptr_array_index(lines, i);
+		g_autoptr(VentureMoney) amount = NULL;
+		gint side = 0;
+		if (number(line, "account-id") != ledger_id) continue;
+		g_object_get(line, "amount", &amount, "side", &side, NULL);
+		if (amount == NULL) continue;
+		if (total == NULL) total = venture_money_new_zero(venture_money_get_currency(amount));
+		if (side == VENTURE_LEDGER_SIDE_CREDIT)
+		{
+			VentureMoney *neg = venture_money_multiply_int(amount, -1, error);
+			if (neg == NULL) return NULL;
+			g_clear_pointer(&amount, venture_money_free);
+			amount = neg;
+		}
+		{
+			VentureMoney *next = venture_money_add(total, amount, error);
+			if (next == NULL) return NULL;
+			g_clear_pointer(&total, venture_money_free);
+			total = next;
+		}
+	}
+	return g_steal_pointer(&total);
+}
+
+static VentureMoney *
+document_amount(VentureDatabase *db, VentureEntity *record, gint64 ledger_id, GError **error)
+{
+	if (!strcmp(venture_entity_get_entity_name(record), "journal"))
+		return journal_bank_amount(db, record, ledger_id, error);
+	(void)error;
+	return venture_bank_candidate_amount(record);
+}
+
 GPtrArray *
-venture_bank_transaction_candidates(VentureDatabase *db, VentureEntity *transaction, GError **error)
+venture_bank_transaction_candidates_search(VentureDatabase *db, VentureEntity *transaction, const gchar *search, GError **error)
 {
 	g_auto(GStrv) names = venture_entity_registry_list_names(venture_entity_registry_get_default());
 	g_autoptr(VentureMoney) amount = NULL;
 	g_autoptr(GDateTime) date = NULL;
 	g_autoptr(GPtrArray) matches = NULL;
 	g_autoptr(GPtrArray) result = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autoptr(VentureEntity) bank = NULL;
 	gint64 org = venture_entity_get_organization_id(transaction);
+	gint64 ledger = 0;
+	gint window;
 	guint i, j;
 	g_object_get(transaction, "amount", &amount, "date", &date, NULL);
 	if (org <= 0 || amount == NULL || date == NULL)
@@ -294,6 +374,10 @@ venture_bank_transaction_candidates(VentureDatabase *db, VentureEntity *transact
 		refuse(error, "candidate search needs organization, amount and date");
 		return NULL;
 	}
+	window = match_window(db, transaction);
+	bank = venture_database_get(db, VENTURE_TYPE_BANK_ACCOUNT, number(transaction, "bank-account-id"), error);
+	if (bank == NULL) return NULL;
+	ledger = number(bank, "account-id");
 	matches = rows(db, VENTURE_TYPE_BANK_MATCH, org, NULL, 0, error);
 	if (matches == NULL) return NULL;
 	for (i = 0; names[i] != NULL; i++)
@@ -302,19 +386,31 @@ venture_bank_transaction_candidates(VentureDatabase *db, VentureEntity *transact
 		g_autoptr(GPtrArray) records = NULL;
 		/* Probe the record contract without querying unrelated tables. */
 		if (strcmp(names[i], "sale") && strcmp(names[i], "expense") && strcmp(names[i], "payment") &&
-			strcmp(names[i], "vendor_bill_payment") && strcmp(names[i], "bill_payment")) continue;
+			strcmp(names[i], "vendor_bill_payment") && strcmp(names[i], "bill_payment") &&
+			strcmp(names[i], "refund") && strcmp(names[i], "processor_payout") &&
+			strcmp(names[i], "journal")) continue;
 		records = rows(db, type, org, NULL, 0, error);
 		if (records == NULL) return NULL;
 		for (j = 0; j < records->len; j++)
 		{
 			VentureEntity *record = g_ptr_array_index(records, j);
-			g_autoptr(VentureMoney) value = venture_bank_candidate_amount(record);
+			g_autoptr(VentureMoney) value = document_amount(db, record, ledger, error);
 			g_autoptr(GDateTime) when = venture_bank_candidate_date(record);
 			g_autoptr(VentureMoney) delta = NULL;
 			gboolean used = FALSE;
 			guint k;
+			if (error != NULL && *error != NULL) return NULL;
 			if (value == NULL || when == NULL || strcmp(venture_money_get_currency(value), venture_money_get_currency(amount))) continue;
-			if (calendar_distance(when, date) > 5 || calendar_distance(when, date) < -5) continue;
+			if (!strcmp(names[i], "journal"))
+			{
+				g_autofree gchar *source_type = NULL;
+				g_object_get(record, "source-type", &source_type, NULL);
+				if (source_type != NULL && strcmp(source_type, "organization") && strcmp(source_type, "journal") &&
+					strcmp(source_type, "bank_match") && strcmp(source_type, "processor_payout"))
+					continue;
+			}
+			if (calendar_distance(when, date) > window || calendar_distance(when, date) < -window) continue;
+			if (!token_match(record, search)) continue;
 			delta = venture_money_subtract(value, amount, error);
 			if (delta == NULL) return NULL;
 			/* Near means at most 100 minor units, never a percentage float. */
@@ -332,19 +428,71 @@ venture_bank_transaction_candidates(VentureDatabase *db, VentureEntity *transact
 	return g_steal_pointer(&result);
 }
 
+GPtrArray *
+venture_bank_transaction_candidates(VentureDatabase *db, VentureEntity *transaction, GError **error)
+{
+	return venture_bank_transaction_candidates_search(db, transaction, NULL, error);
+}
+
+static gboolean
+post_adjustment(VentureBankMatchService *self, VentureEntity *transaction, VentureEntity *match,
+	const gchar *description, gint64 offset, const VentureMoney *contribution, const VentureActor *actor, GError **error)
+{
+	g_autoptr(GPtrArray) entries = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autoptr(VentureEntity) bank = NULL;
+	g_autoptr(GDateTime) date = NULL;
+	g_autoptr(VentureMoney) positive = NULL;
+	g_autofree gchar *transaction_id = NULL;
+	gint64 ledger, org = venture_entity_get_organization_id(transaction);
+	gint64 debit, credit;
+	if (offset <= 0) return refuse(error, "an adjustment requires an offset account");
+	bank = venture_database_get(self->database, VENTURE_TYPE_BANK_ACCOUNT, number(transaction, "bank-account-id"), error);
+	if (bank == NULL) return FALSE;
+	ledger = number(bank, "account-id");
+	g_object_get(transaction, "date", &date, NULL);
+	positive = venture_money_get_amount(contribution) < 0 ?
+		venture_money_multiply_int(contribution, -1, error) : venture_money_copy(contribution);
+	if (positive == NULL) return FALSE;
+	debit = venture_money_get_amount(contribution) < 0 ? offset : ledger;
+	credit = venture_money_get_amount(contribution) < 0 ? ledger : offset;
+	transaction_id = g_strdup_printf("banking:adjustment:%s", venture_entity_get_uuid(match));
+	{
+		VentureLedgerEntry *debit_entry = venture_ledger_entry_new();
+		VentureLedgerEntry *credit_entry = venture_ledger_entry_new();
+		g_object_set(debit_entry, "transaction-id", transaction_id, "account-id", debit,
+			"side", VENTURE_LEDGER_SIDE_DEBIT, "amount", positive, "occurred-at", date,
+			"source-type", "bank_match", "source-id", venture_entity_get_id(match), NULL);
+		g_object_set(credit_entry, "transaction-id", transaction_id, "account-id", credit,
+			"side", VENTURE_LEDGER_SIDE_CREDIT, "amount", positive, "occurred-at", date,
+			"source-type", "bank_match", "source-id", venture_entity_get_id(match), NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(debit_entry), org);
+		venture_entity_set_organization_id(VENTURE_ENTITY(credit_entry), org);
+		(void)description;
+		g_ptr_array_add(entries, debit_entry);
+		g_ptr_array_add(entries, credit_entry);
+	}
+	return venture_posting_service_post_entries(venture_database_get_posting_service(self->database),
+		entries, NULL, actor, error);
+}
+
 static gboolean
 match_records(VentureBankMatchService *self, VentureEntity *transaction, JsonArray *parts, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureMoney) amount = NULL;
 	g_autoptr(VentureMoney) sum = NULL;
 	g_autoptr(GPtrArray) pending = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autoptr(VentureEntity) bank = NULL;
 	guint i;
 	gint64 first = 0, org = venture_entity_get_organization_id(transaction);
+	gint64 ledger = 0;
 	if (!unlocked(self, transaction, error)) return FALSE;
 	if (!state_is(transaction, "unmatched") || parts == NULL || json_array_get_length(parts) == 0)
 		return refuse(error, "matching requires an unmatched transaction and at least one record");
 	g_object_get(transaction, "amount", &amount, NULL);
 	sum = venture_money_new_zero(venture_money_get_currency(amount));
+	bank = venture_database_get(self->database, VENTURE_TYPE_BANK_ACCOUNT, number(transaction, "bank-account-id"), error);
+	if (bank == NULL) return FALSE;
+	ledger = number(bank, "account-id");
 	for (i = 0; i < json_array_get_length(parts); i++)
 	{
 		JsonNode *node = json_array_get_element(parts, i);
@@ -362,7 +510,30 @@ match_records(VentureBankMatchService *self, VentureEntity *transaction, JsonArr
 		if (!JSON_NODE_HOLDS_OBJECT(node)) return refuse(error, "match parts must be objects");
 		part = json_node_get_object(node);
 		name = option(part, "type");
-		if (name == NULL || !json_object_has_member(part, "id")) return refuse(error, "match requires type and id");
+		if (name == NULL) return refuse(error, "match requires type");
+		if (!strcmp(name, "adjustment"))
+		{
+			g_autoptr(GDateTime) cleared = NULL;
+			if (option(part, "amount") == NULL) return refuse(error, "an adjustment requires an amount");
+			contribution = venture_money_from_string(option(part, "amount"), venture_money_get_currency(amount), error);
+			if (contribution == NULL) return FALSE;
+			if (strcmp(venture_money_get_currency(contribution), venture_money_get_currency(amount)))
+				return refuse(error, "match crosses currencies");
+			if (venture_money_is_zero(contribution)) return refuse(error, "an adjustment must change cash");
+			next = venture_money_add(sum, contribution, error);
+			if (next == NULL) return FALSE;
+			g_clear_pointer(&sum, venture_money_free);
+			sum = g_steal_pointer(&next);
+			match = new_record(VENTURE_TYPE_BANK_MATCH, org);
+			g_object_get(transaction, "date", &cleared, NULL);
+			g_object_set(match, "transaction-id", venture_entity_get_id(transaction), "record-type", "adjustment",
+				"record-id", option_id(part, "account_id") != 0 ? option_id(part, "account_id") : option_id(part, "id"),
+				"amount", contribution, "kind", "adjustment",
+				"created-by", actor != NULL ? actor->name : "system", "cleared-at", cleared, NULL);
+			g_ptr_array_add(pending, g_steal_pointer(&match));
+			continue;
+		}
+		if (!json_object_has_member(part, "id")) return refuse(error, "match requires type and id");
 		type = venture_entity_registry_lookup(venture_entity_registry_get_default(), name);
 		if (type == G_TYPE_INVALID) return refuse(error, "match record type is unavailable");
 		target = venture_database_get(self->database, type, option_id(part, "id"), error);
@@ -371,7 +542,7 @@ match_records(VentureBankMatchService *self, VentureEntity *transaction, JsonArr
 		 * not authorize creating new reconciliation evidence for deleted rows. */
 		if (venture_entity_is_deleted(target)) return refuse(error, "match document has been deleted");
 		if (venture_entity_get_organization_id(target) != org) return refuse(error, "match crosses organizations");
-		value = venture_bank_candidate_amount(target);
+		value = document_amount(self->database, target, ledger, error);
 		if (value == NULL) return refuse(error, "record is not a supported cash document");
 		contribution = option(part, "amount") != NULL ? venture_money_from_string(option(part, "amount"), venture_money_get_currency(value), error) : venture_money_copy(value);
 		if (contribution == NULL) return FALSE;
@@ -420,7 +591,13 @@ match_records(VentureBankMatchService *self, VentureEntity *transaction, JsonArr
 	for (i = 0; i < pending->len; i++)
 	{
 		VentureEntity *match = g_ptr_array_index(pending, i);
+		g_autofree gchar *kind = NULL;
+		g_autoptr(VentureMoney) contribution = NULL;
 		if (!save_owned(self, match, actor, error)) return FALSE;
+		g_object_get(match, "kind", &kind, "amount", &contribution, NULL);
+		if (!g_strcmp0(kind, "adjustment") &&
+			!post_adjustment(self, transaction, match, "bank adjustment", number(match, "record-id"), contribution, actor, error))
+			return FALSE;
 		if (i == 0) first = venture_entity_get_id(match);
 	}
 	g_object_set(transaction, "state", "matched", "match-id", first, NULL);

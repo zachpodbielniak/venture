@@ -49,12 +49,16 @@ venture_bank_append_actions(GString *content, VentureEntity *record)
 			"<option value=\"receipt\">Receipt</option></select></label>"
 			"<label>Category<input name=\"category\"></label>"
 			"<label>Customer ID for receipt<input type=\"number\" name=\"customer_id\" min=\"1\"></label>"
-			"<p>For matching, select the existing record and its signed amount. Add rows for a split.</p>");
-		for (i = 0; i < 3; i++)
+			"<label>Candidate search<input name=\"search\" placeholder=\"description or reference\"></label>"
+			"<p>For matching, select the existing record and its signed amount. Add rows for a split, refund, journal or explicit fee adjustment. REST and CLI accept any number of parts.</p>");
+		for (i = 0; i < 12; i++)
 			g_string_append_printf(content,
 				"<fieldset><legend>Match %u</legend><label>Record type<select name=\"record_type_%u\">"
 				"<option value=\"expense\">Expense</option><option value=\"payment\">Payment</option>"
-				"<option value=\"sale\">Sale</option><option value=\"vendor_bill_payment\">Vendor bill payment</option>"
+				"<option value=\"sale\">Sale</option><option value=\"refund\">Refund</option>"
+				"<option value=\"journal\">Journal</option><option value=\"processor_payout\">Processor payout</option>"
+				"<option value=\"adjustment\">Adjustment</option>"
+				"<option value=\"vendor_bill_payment\">Vendor bill payment</option>"
 				"<option value=\"bill_payment\">Bill payment</option></select></label>"
 				"<label>Record ID<input type=\"number\" name=\"record_id_%u\" min=\"1\"></label>"
 				"<label>Amount (optional)<input name=\"match_amount_%u\"></label></fieldset>", i + 1, i, i, i);

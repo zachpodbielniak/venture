@@ -50,6 +50,7 @@ venture_bank_web_action(HtmxRequest *request, GHashTable *params, gpointer user_
 				json_object_set_boolean_member(object, "apply", TRUE);
 		}
 		for (i = 0; i < 3; i++)
+		for (i = 0; i < 50; i++)
 		{
 			g_autofree gchar *id_key = g_strdup_printf("record_id_%u", i);
 			g_autofree gchar *type_key = g_strdup_printf("record_type_%u", i);
@@ -58,10 +59,13 @@ venture_bank_web_action(HtmxRequest *request, GHashTable *params, gpointer user_
 			const gchar *record_type = htmx_request_get_form_value(request, type_key);
 			const gchar *amount = htmx_request_get_form_value(request, amount_key);
 			JsonObject *part;
-			if (record_id == NULL || *record_id == '\0' || record_type == NULL) continue;
+			if (record_type == NULL || *record_type == '\0') continue;
+			if (g_strcmp0(record_type, "adjustment") && (record_id == NULL || *record_id == '\0')) continue;
 			part = json_object_new();
 			json_object_set_string_member(part, "type", record_type);
-			json_object_set_int_member(part, "id", g_ascii_strtoll(record_id, NULL, 10));
+			if (record_id != NULL && *record_id)
+				json_object_set_int_member(part, g_strcmp0(record_type, "adjustment") ? "id" : "account_id",
+					g_ascii_strtoll(record_id, NULL, 10));
 			if (amount != NULL && *amount) json_object_set_string_member(part, "amount", amount);
 			json_array_add_object_element(parts, part);
 		}

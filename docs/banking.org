@@ -72,18 +72,25 @@ venturectl bank reverse 2
 #+end_src
 
 The candidate seam is
-=venture_bank_transaction_candidates(database, transaction, error)=. The owned
-array owns each returned =VentureEntity=. It searches enabled payment, sale,
-expense and registered =vendor_bill_payment= or =bill_payment= records in the
-same organization, within five UTC calendar days and 100 minor units of the signed amount.
+=venture_bank_transaction_candidates(database, transaction, error)=, with
+=venture_bank_transaction_candidates_search()= adding a case-folded description
+or reference token. The owned array owns each returned =VentureEntity=. It
+searches enabled payment, sale, expense, refund, journal, processor payout and
+registered =vendor_bill_payment= or =bill_payment= records in the same
+organization, within the bank account's =match-window-days= (default five UTC
+calendar days) and 100 minor units of the signed amount.
 Vendor payment records must expose =amount= and =date= or =occurred_at=.
 Currencies are never converted. Automatic matching requires a single exact
 amount candidate within three UTC calendar days; ambiguity leaves the line unmatched.
 
 A manual match takes =parts=, an array of record type, id and optional signed
 amount. The parts must sum exactly to the transaction. Multiple parts produce
-split evidence; an amount smaller than the document produces partial evidence. Exclusion
-requires a reason. Unmatching retains the old match as soft-deleted audit history.
+split evidence; an amount smaller than the document produces partial evidence.
+An =adjustment= part posts an explicit approved journal for the difference
+(fees, rounding) against a named account; it is never netted into revenue.
+Exclusion requires a reason. Unmatching retains the old match as soft-deleted
+audit history. The web form offers twelve split rows and REST/CLI accept any
+number.
 
 Creating an expense saves an ordinary expense, stamps =cash_account_id= from
 the bank's ledger account, and invokes its registered posting rule so the
@@ -129,7 +136,7 @@ The REST action shapes are:
 Bodies are JSON objects; actions without parameters accept ={}=. Editors may
 execute actions. Record detail pages contain action forms for statement contents, balances,
 matching, creation and exclusion, invoking the same service. The web match
-form offers three split rows; REST and CLI accept any number. The CLI accepts inline JSON or
+form offers twelve split rows; REST and CLI accept any number. The CLI accepts inline JSON or
 =@FILE= and sends the same REST request. Ordinary field-table forms and lists
 remain available for reading evidence and configuring bank accounts.
 
