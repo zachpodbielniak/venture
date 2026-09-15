@@ -246,6 +246,20 @@ the GL. A payment that fails after the invoice is issued leaves the journal coun
 payroll or inventory parity. Invoice detail, cash-basis reports, bank reopen
 and the cutover wizard are asserted over HTTP in the module suites.
 
+** =test-tax-filing=
+
+Jurisdiction filing adapters, a fake adapter with no network, the US
+sales-tax pack from tax codes and invoice-event tax, missing-country
+refusal that names the jurisdiction, draft/reviewed/submitted/acknowledged
+with preserved JSON/CSV bytes, amendments that keep the prior pack, and
+that turning =tax_filing= off leaves =tax_code= working.
+
+** =test-contractor-tax=
+
+Protected contractor TIN records, 1099-NEC totals from paid vendor bills
+at the 600 USD threshold, review/approve before export, and an identical
+second export of the same year and vendor.
+
 ** =test-setup=
 
 A new legal entity's checklist starts incomplete and the first invoice is

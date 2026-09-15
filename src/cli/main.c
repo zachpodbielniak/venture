@@ -632,6 +632,7 @@ venture_cli_values_from_args(
 
 #include "payables/venture-payables-cli.inc"
 #include "close/venture-close-cli.inc"
+#include "tax/venture-tax-cli.inc"
 #include "capture/venture-capture-cli.inc"
 #include "accounting/venture-accounting-cli.inc"
 
@@ -3382,6 +3383,8 @@ main(
 		"  bill approve|pay|void ID [field=value ...]  supplier bill actions\n"
 		"  bill pay-bulk 1,2,3 [adapter=transfer]     pay selected approved bills\n"
 		"  close open|run|sign|complete|reopen|pack   accountant close workspace\n"
+		"  tax-filing prepare|review|submit|acknowledge|amend  jurisdiction tax return\n"
+		"  contractor-tax prepare|review|approve|export     1099-NEC packs\n"
 		"  capture ingest|convert|reject              receipt and supplier-invoice inbox\n"
 		"  accounting                               daily books next actions\n"
 		"  factory                      the software factory at a glance\n"
@@ -3645,6 +3648,10 @@ main(
 		result = venture_cli_command_bill(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "close"))
 		result = venture_cli_command_close(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "tax-filing"))
+		result = venture_cli_command_tax_filing(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "contractor-tax"))
+		result = venture_cli_command_contractor_tax(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "capture"))
 		result = venture_cli_command_capture(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "accounting"))

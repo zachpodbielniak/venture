@@ -73,6 +73,7 @@ CORE_SRCS += src/leads/venture-lead-records.c
 CORE_SRCS += src/activities/venture-activity-records.c
 CORE_SRCS += src/payables/venture-payable-records.c
 CORE_SRCS += src/close/venture-close-records.c
+CORE_SRCS += src/tax/venture-tax-records.c
 CORE_SRCS += src/capture/venture-capture-records.c
 CORE_SRCS += src/banking/venture-bank-records.c
 CORE_SRCS += src/cutover/venture-cutover-records.c
@@ -118,6 +119,7 @@ SERVER_ONLY_SRCS += src/leads/venture-lead-service.c src/leads/venture-lead-repo
 SERVER_ONLY_SRCS += $(filter-out src/activities/venture-activity-records.c,$(wildcard src/activities/*.c))
 SERVER_ONLY_SRCS += src/payables/venture-payables-service.c src/payables/venture-payable-reports.c
 SERVER_ONLY_SRCS += src/close/venture-close-service.c
+SERVER_ONLY_SRCS += src/tax/venture-tax-filing-adapter.c src/tax/venture-tax-filing-service.c
 SERVER_ONLY_SRCS += src/capture/venture-capture-service.c
 SERVER_ONLY_SRCS += src/accounting/venture-accounting-home.c
 
@@ -182,6 +184,7 @@ PUBLIC_HDRS += $(wildcard src/mail/*.h)
 
 PUBLIC_HDRS += $(wildcard src/payables/*.h)
 PUBLIC_HDRS += $(wildcard src/close/*.h)
+PUBLIC_HDRS += $(wildcard src/tax/*.h)
 PUBLIC_HDRS += $(wildcard src/capture/*.h)
 PUBLIC_HDRS += $(wildcard src/accounting/*.h)
 PUBLIC_HDRS += $(wildcard src/banking/*.h)

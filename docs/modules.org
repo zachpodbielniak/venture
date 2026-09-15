@@ -68,6 +68,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =close= | periods, ledger, statements | close_workspace, close_task, close_workpaper, close_discrepancy, close_signoff; =close_workspace= | banking, receivables, payables, assets |
 | =capture= | finance | capture_item | payables |
 | =accounting= | finance | the =/accounting= home | banking, receivables, payables, periods, close, capture |
+| =tax_filing= | finance, periods | tax_filing, contractor_tax_form, contractor_tax_pack | invoicing, payables |
 
 Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.
 

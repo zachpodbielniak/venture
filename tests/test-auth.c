@@ -1338,6 +1338,10 @@ test_auth_api_refuses_anonymous_requests(
 		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/close/open",
 		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/tax-filings/prepare",
+		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/contractor-tax/prepare",
+		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/capture",
 		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	/* Every banking action must authenticate before loading statement evidence. */

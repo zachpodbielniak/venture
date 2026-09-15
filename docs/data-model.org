@@ -57,6 +57,10 @@ Every record derives from =VentureEntity= and carries the same spine:
   flag applied on invoice and bill lines. Integer =tax-percent= remains for
   lines without a code. Company and invoice =tax-exempt= still freeze tax at
   zero.
+- *tax_filing* — a jurisdiction return pack (draft through acknowledged) with
+  versioned rule id and preserved JSON/CSV bytes; owned by =tax_filing=.
+- *contractor_tax_form* — vendor TIN, never generically exported.
+- *contractor_tax_pack* — calendar-year 1099-NEC totals from paid bills.
 - *exchange_rate* — dated exact rate from one currency into another. Missing
   pairs are refused; nothing invents a market rate.
 

@@ -682,6 +682,13 @@ static GType (*const statements_types[]) (void) = {
 	venture_accounting_dimension_get_type, NULL
 };
 static GType (*const backup_types[]) (void) = { venture_accounting_backup_get_type, NULL };
+static GType (*const venture_module_tax_filing_types[]) (void) = {
+	venture_tax_filing_get_type, venture_contractor_tax_form_get_type,
+	venture_contractor_tax_pack_get_type, NULL
+};
+static const gchar *const venture_module_requires_tax_filing[] = { "finance", "periods", NULL };
+static const gchar *const venture_module_suggests_tax_filing[] = { "invoicing", "payables", NULL };
+
 
 
 static const gchar *const recurring_requires[] = {
@@ -934,6 +941,12 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"backup", "Accounting backup", "Export and restore an organization accounting pack.",
 		cutover_requires, NULL, backup_types, NULL, NULL, FALSE
+	},
+	{
+		"tax_filing", "Tax filing",
+		"Jurisdiction sales-tax returns and contractor 1099-NEC packs.",
+		venture_module_requires_tax_filing, venture_module_suggests_tax_filing,
+		venture_module_tax_filing_types, NULL, NULL, FALSE
 	}
 
 };

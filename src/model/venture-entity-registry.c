@@ -819,6 +819,9 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_close_discrepancy_get_type,
 		venture_close_signoff_get_type,
 		venture_capture_item_get_type,
+		venture_tax_filing_get_type,
+		venture_contractor_tax_form_get_type,
+		venture_contractor_tax_pack_get_type,
 	};
 	gsize i;
 

@@ -1,0 +1,43 @@
+#+title: Jurisdiction tax filing
+#+description: Adapter-prepared sales-tax return packs with review, submit and amendment
+
+* A filing is a pack, not a live return
+
+The optional =tax_filing= module requires =finance= and =periods=, and
+suggests =invoicing= and =payables=. Turning it off hides =tax_filing=,
+=contractor_tax_form= and =contractor_tax_pack= together. It does not
+touch =tax_code=: exact rates and the =tax_liability= report keep working.
+
+=VentureTaxFilingAdapter= is the seam. The registry is the same shape as
+=VenturePostingRuleRegistry=: add, lookup, remove, list. The built-in US
+sales-tax adapter is keyed =US= and records rule id =us-sales-tax:1= on
+every pack. Tests register fake adapters; nothing here talks to a tax
+authority.
+
+* Prepare, review, submit, acknowledge
+
+=venture_tax_filing_service_prepare()= selects an adapter by country.
+A missing country, or a country with no adapter, is refused and names the
+jurisdiction. The US adapter reads frozen invoice-event tax and invoice
+lines that name a =tax_code=, grouped the same way as =tax_liability=.
+A tax code used in the period without a country in its jurisdiction is
+refused by name.
+
+States are =draft= then =reviewed= then =submitted= then =acknowledged=.
+Submit keeps the JSON and CSV bytes already on the pack. Acknowledge
+stores the id the filing window gave back. Amend prepares a new draft and
+leaves the prior pack in place.
+
+Generic writes cannot mint a pack or jump its status.
+=VentureTaxFilingService= owns those transitions.
+
+#+begin_src sh
+venturectl tax-filing prepare country=US jurisdiction=US-NY fiscal_period_id=1
+venturectl tax-filing review 1
+venturectl tax-filing submit 1
+venturectl tax-filing acknowledge 1 acknowledgment_id=ACK-1
+venturectl tax-filing amend 1
+#+end_src
+
+The web list is =/tax-filings=, with a prepare form and the generic
+=/e/tax_filing= record plus review/submit/acknowledge/amend actions.

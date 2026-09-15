@@ -326,6 +326,11 @@ accountant close workspace. =capture ingest|convert|reject= files receipts
 and supplier invoices. =accounting= lists the daily books next actions.
 See [[file:close.org][close]], [[file:capture.org][capture]] and
 [[file:accounting.org][accounting home]].
+
+=venturectl tax-filing prepare|review|submit|acknowledge|amend= prepares a
+jurisdiction return pack. =contractor-tax prepare|review|approve|export=
+builds a 1099-NEC pack from paid bills. See [[file:tax-filing.org][tax
+filing]] and [[file:contractor-tax.org][contractor 1099]].
 * Banking actions
 
 =venturectl bank ACTION ID [JSON|@FILE]= calls the banking service over REST.
