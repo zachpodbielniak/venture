@@ -661,6 +661,11 @@ static GType (*const venture_module_capture_types[]) (void) = {
 };
 static const gchar *const venture_module_requires_capture[] = { "finance", NULL };
 static const gchar *const venture_module_suggests_capture[] = { "payables", NULL };
+static GType (*const venture_module_claims_types[]) (void) = {
+	venture_expense_claim_get_type, venture_expense_claim_line_get_type, NULL
+};
+static const gchar *const venture_module_requires_claims[] = { "finance", "ledger", NULL };
+static const gchar *const venture_module_suggests_claims[] = { "capture", "payables", NULL };
 static const gchar *const venture_module_requires_accounting[] = { "finance", NULL };
 static const gchar *const venture_module_suggests_accounting[] = {
 	"banking", "receivables", "payables", "periods", "close", "capture", NULL
@@ -932,6 +937,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"capture", "Document capture", "Receipt and supplier-invoice inbox that becomes expenses or bills.",
 		venture_module_requires_capture, venture_module_suggests_capture,
 		venture_module_capture_types, NULL, NULL, FALSE
+	},
+	{
+		"claims", "Expense claims", "Employee reimbursements, mileage and receipt-backed expense claims.",
+		venture_module_requires_claims, venture_module_suggests_claims,
+		venture_module_claims_types, NULL, NULL, FALSE
 	},
 	{
 		"accounting", "Daily accounting", "Guided next actions for the books.",

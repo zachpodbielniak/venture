@@ -822,6 +822,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_tax_filing_get_type,
 		venture_contractor_tax_form_get_type,
 		venture_contractor_tax_pack_get_type,
+		venture_expense_claim_get_type,
+		venture_expense_claim_line_get_type,
 	};
 	gsize i;
 
