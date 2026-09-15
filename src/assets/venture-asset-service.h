@@ -65,6 +65,8 @@ gboolean venture_deferral_service_schedule(VentureDeferralService *self, Venture
  */
 gint venture_asset_service_run_period(VentureAssetService *self, const gchar *period,
  gint64 organization_id, gboolean dry_run, const VentureActor *actor, GError **error);
+gint venture_asset_service_run_tax_period(VentureAssetService *self, const gchar *period,
+ gint64 organization_id, gboolean dry_run, const VentureActor *actor, GError **error);
 /**
  * venture_assets_check_removal:
  * @database: repository holding the authoritative state

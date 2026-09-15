@@ -2729,6 +2729,8 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 	venture_sequences_register_reports(self);
 	venture_autojournal_register_reports(self);
 	venture_statements_register_reports(self);
+	venture_budgets_register_reports(self);
+	venture_group_register_reports(self);
 	venture_recurring_register_reports(self);
 	venture_close_register_reports(self);
 	venture_payroll_register_reports(self);

@@ -1121,6 +1121,11 @@ test_auth_pages_refuse_anonymous_requests(
 	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/purchasing"),
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/settings/fields"),
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/budgets"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/equity"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/group"),
 	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/payables"),
 	                 ==, SOUP_STATUS_FOUND);

@@ -274,7 +274,11 @@ read_books(VentureDatabase *db, gint64 org, const gchar *currency,
 		g_autoptr(GPtrArray) lines = NULL;
 		VentureJournalState state;
 		guint j;
-		g_object_get(journal, "state", &state, "occurred-at", &date, "currency", &book_currency, NULL);
+		gboolean tax_book = FALSE;
+		g_object_get(journal, "state", &state, "occurred-at", &date, "currency", &book_currency,
+			"tax-book", &tax_book, NULL);
+		if (tax_book)
+			continue;
 		if ((state != VENTURE_JOURNAL_POSTED && state != VENTURE_JOURNAL_REVERSED) ||
 			date == NULL || g_date_time_compare(date, books->end) >= 0 ||
 			(currency != NULL && g_strcmp0(currency, book_currency) != 0))

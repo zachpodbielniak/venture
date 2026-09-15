@@ -88,6 +88,9 @@ CORE_SRCS += src/fields/venture-custom-fields-records.c
 CORE_SRCS += src/backup/venture-backup-records.c
 CORE_SRCS += src/orgaccess/venture-accounting-approval-records.c
 CORE_SRCS += src/report/venture-report-records.c
+CORE_SRCS += src/budgets/venture-budget-records.c
+CORE_SRCS += src/equity/venture-equity-records.c
+CORE_SRCS += src/group/venture-group-records.c
 
 # Server-only subsystems.
 SERVER_ONLY_SRCS := \
@@ -153,6 +156,9 @@ SERVER_ONLY_SRCS += src/portal/venture-portal-service.c
 SERVER_ONLY_SRCS += src/portal/venture-supplier-portal-service.c
 SERVER_ONLY_SRCS += src/fields/venture-custom-fields-service.c
 SERVER_ONLY_SRCS += src/backup/venture-backup-service.c
+SERVER_ONLY_SRCS += $(filter-out src/budgets/venture-budget-records.c,$(wildcard src/budgets/*.c))
+SERVER_ONLY_SRCS += $(filter-out src/equity/venture-equity-records.c,$(wildcard src/equity/*.c))
+SERVER_ONLY_SRCS += $(filter-out src/group/venture-group-records.c,$(wildcard src/group/*.c))
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
@@ -217,6 +223,9 @@ PUBLIC_HDRS += $(wildcard src/progress/*.h)
 PUBLIC_HDRS += $(wildcard src/portal/*.h)
 PUBLIC_HDRS += $(wildcard src/fields/*.h)
 PUBLIC_HDRS += $(wildcard src/backup/*.h)
+PUBLIC_HDRS += $(wildcard src/budgets/*.h)
+PUBLIC_HDRS += $(wildcard src/equity/*.h)
+PUBLIC_HDRS += $(wildcard src/group/*.h)
 
 TEST_SRCS := $(wildcard tests/test-*.c)
 

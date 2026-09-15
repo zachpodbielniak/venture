@@ -1264,7 +1264,8 @@ venture_posting_service_post_entries(VenturePostingService *self, GPtrArray *ent
 		g_ptr_array_add(rows, g_steal_pointer(&row));
 	}
 	g_object_set(draft, "organization-id", org, "occurred-at", when, "source-type", source_type,
-		"source-id", source_id, "memo", transaction, "posting-key", posting_key, NULL);
+		"source-id", source_id, "memo", transaction, "posting-key", posting_key,
+		"tax-book", g_strcmp0(source_type, "tax_depreciation_entry") == 0, NULL);
 	posted = venture_posting_service_post(self, draft, rows, policy, actor, error);
 	if (NULL == posted)
 		goto fail;

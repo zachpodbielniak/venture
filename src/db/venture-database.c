@@ -1150,7 +1150,10 @@ venture_database_save(
 		!venture_accounting_approval_check_write(self, entity, FALSE, error) ||
 		!venture_claims_check_write(self, entity, FALSE, error) ||
 		!venture_payroll_check_write(self, entity, FALSE, error) ||
-		!venture_goods_check_write(self, entity, FALSE, error))
+		!venture_goods_check_write(self, entity, FALSE, error) ||
+		!venture_budget_check_write(self, entity, FALSE, error) ||
+		!venture_equity_check_write(self, entity, FALSE, error) ||
+		!venture_group_check_write(self, entity, FALSE, error))
 		return FALSE;
 
 	VENTURE_AUTOJOURNAL_SAVE_HOOK(self, entity, actor, error);
@@ -1655,6 +1658,9 @@ venture_database_delete(
 		!venture_tax_filing_check_write(self, entity, TRUE, error) ||
 		!venture_accounting_approval_check_write(self, entity, TRUE, error) ||
 		!venture_goods_check_write(self, entity, TRUE, error) ||
+		!venture_budget_check_write(self, entity, TRUE, error) ||
+		!venture_equity_check_write(self, entity, TRUE, error) ||
+		!venture_group_check_write(self, entity, TRUE, error) ||
 		!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error) ||
 		!venture_claims_check_write(self, entity, TRUE, error) ||
@@ -1754,6 +1760,9 @@ venture_database_restore(
 		!venture_tax_filing_check_write(self, entity, TRUE, error) ||
 		!venture_accounting_approval_check_write(self, entity, TRUE, error) ||
 		!venture_goods_check_write(self, entity, TRUE, error) ||
+		!venture_budget_check_write(self, entity, TRUE, error) ||
+		!venture_equity_check_write(self, entity, TRUE, error) ||
+		!venture_group_check_write(self, entity, TRUE, error) ||
 		!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error) ||
 		!venture_claims_check_write(self, entity, TRUE, error) ||
@@ -1833,6 +1842,9 @@ venture_database_purge(
 		!venture_tax_filing_check_write(self, entity, TRUE, error) ||
 		!venture_accounting_approval_check_write(self, entity, TRUE, error) ||
 		!venture_goods_check_write(self, entity, TRUE, error) ||
+		!venture_budget_check_write(self, entity, TRUE, error) ||
+		!venture_equity_check_write(self, entity, TRUE, error) ||
+		!venture_group_check_write(self, entity, TRUE, error) ||
 		!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error) ||
 		!venture_claims_check_write(self, entity, TRUE, error) ||
@@ -2152,6 +2164,7 @@ venture_database_seed_accounts(
 		{ "2000", "Accounts payable",      VENTURE_ACCOUNT_KIND_LIABILITY },
 		{ "2100", "Sales tax payable",     VENTURE_ACCOUNT_KIND_LIABILITY },
 		{ "2200", "Deferred revenue",      VENTURE_ACCOUNT_KIND_LIABILITY },
+		{ "2500", "Notes payable",         VENTURE_ACCOUNT_KIND_LIABILITY },
 		{ "3000", "Owner's equity",        VENTURE_ACCOUNT_KIND_EQUITY },
 		{ "3100", "Owner's draw",          VENTURE_ACCOUNT_KIND_EQUITY },
 		{ "4000", "Sales",                 VENTURE_ACCOUNT_KIND_INCOME },

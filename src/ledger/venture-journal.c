@@ -50,7 +50,9 @@ static const VentureFieldDecl journal_fields[] = {
 	VENTURE_FIELD("source-version", "Source version", NULL,
 		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("posting-key", "Posting key", "Stable organization-scoped batch identity",
-		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE)
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE),
+	VENTURE_FIELD("tax-book", "Tax book", "TRUE posts tax depreciation that statements ignore",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY(VentureJournal, venture_journal, journal_fields)

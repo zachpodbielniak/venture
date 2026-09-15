@@ -640,6 +640,9 @@ venture_cli_values_from_args(
 #include "claims/venture-claims-cli.inc"
 #include "payroll/venture-payroll-cli.inc"
 #include "accounting/venture-accounting-cli.inc"
+#include "budgets/venture-budget-cli.inc"
+#include "equity/venture-equity-cli.inc"
+#include "group/venture-group-cli.inc"
 
 static gint
 venture_cli_command_list(
@@ -2191,9 +2194,9 @@ venture_cli_command_assets(VentureCli *cli, gchar **args, GError **error)
 		return -1;
 	}
 	body = venture_cli_values_from_args(args, 3);
-	if (g_str_equal(args[0], "assets") && g_str_equal(args[1], "run-period"))
+	if (g_str_equal(args[0], "assets") && (g_str_equal(args[1], "run-period") || g_str_equal(args[1], "run-tax-period")))
 	{
-		path = g_strdup("/api/v1/assets/run-period");
+		path = g_strdup(g_str_equal(args[1], "run-tax-period") ? "/api/v1/assets/run-tax-period" : "/api/v1/assets/run-period");
 		json_object_set_string_member(json_node_get_object(body), "period", args[2]);
 		for (i = 3; args[i] != NULL; i++)
 			if (g_str_equal(args[i], "--dry-run"))
@@ -3683,6 +3686,12 @@ main(
 		result = venture_cli_command_payroll(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "accounting"))
 		result = venture_cli_command_accounting(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "budget"))
+		result = venture_cli_command_budget(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "equity"))
+		result = venture_cli_command_equity(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "group"))
+		result = venture_cli_command_group(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "bank"))
 		result = venture_cli_command_bank(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "bankfeed"))

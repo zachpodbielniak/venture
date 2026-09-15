@@ -23,6 +23,8 @@ static const struct {
 	{ "tax", "2100", "Sales tax payable", VENTURE_ACCOUNT_KIND_LIABILITY },
 	{ "deferred", "2200", "Deferred revenue", VENTURE_ACCOUNT_KIND_LIABILITY },
 	{ "retained_earnings", "3000", "Owner's equity", VENTURE_ACCOUNT_KIND_EQUITY },
+	{ "owner_draws", "3100", "Owner's draw", VENTURE_ACCOUNT_KIND_EQUITY },
+	{ "loans", "2500", "Notes payable", VENTURE_ACCOUNT_KIND_LIABILITY },
 	{ "income", "4000", "Sales", VENTURE_ACCOUNT_KIND_INCOME },
 	{ "expense", "6900", "General expenses", VENTURE_ACCOUNT_KIND_EXPENSE },
 	{ "clearing", "1000", "Cash", VENTURE_ACCOUNT_KIND_ASSET }
@@ -131,9 +133,9 @@ static VentureAccountKind
 kind_for(const gchar *classification)
 {
 	if (g_str_equal(classification, "payables") || g_str_equal(classification, "tax") ||
-		g_str_equal(classification, "deferred"))
+		g_str_equal(classification, "deferred") || g_str_equal(classification, "loans"))
 		return VENTURE_ACCOUNT_KIND_LIABILITY;
-	if (g_str_equal(classification, "retained_earnings"))
+	if (g_str_equal(classification, "retained_earnings") || g_str_equal(classification, "owner_draws"))
 		return VENTURE_ACCOUNT_KIND_EQUITY;
 	if (g_str_equal(classification, "income"))
 		return VENTURE_ACCOUNT_KIND_INCOME;

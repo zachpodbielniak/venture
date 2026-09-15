@@ -40,7 +40,7 @@ map_before_save(VentureEntity *entity, GError **error)
 {
 	static const gchar *const classes[] = {
 		"cash", "receivables", "payables", "tax", "deferred", "retained_earnings",
-		"clearing", "inventory", "income", "expense", NULL
+		"owner_draws", "loans", "clearing", "inventory", "income", "expense", NULL
 	};
 	g_autofree gchar *classification = NULL;
 	g_autofree gchar *subject_type = NULL;

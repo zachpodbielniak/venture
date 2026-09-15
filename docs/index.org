@@ -70,6 +70,9 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:claims.org][Employee reimbursements]] — mileage, receipts, submit, approve and pay
 - [[file:payroll.org][Payroll import]] — imported pay runs, liability disbursement and reconciliation
 - [[file:accounting.org][Daily accounting home]] — guided next actions for the books
+- [[file:budgets.org][Budgets]] — vs-actual and cash forecasting
+- [[file:equity.org][Owner equity]] — contributions, draws, loans and transfers
+- [[file:group.org][Intercompany group]] — optional consolidation and eliminations
 
 - [[file:documents.org][Guided invoice and quote editor]] — one page for lines, tax and send
 - [[file:progress.org][Progress invoicing]] — remaining contract value, retainers and retention

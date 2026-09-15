@@ -113,6 +113,7 @@ constructed(GObject *object)
 	venture_database_add_save_validator(db, VENTURE_TYPE_DEPRECIATION_ENTRY, validate, self, NULL);
 	venture_database_add_save_validator(db, VENTURE_TYPE_DEFERRAL, validate, self, NULL);
 	venture_database_add_save_validator(db, VENTURE_TYPE_DEFERRAL_ENTRY, validate, self, NULL);
+	venture_database_add_save_validator(db, VENTURE_TYPE_TAX_DEPRECIATION_ENTRY, validate, self, NULL);
 }
 
 static void
@@ -360,6 +361,66 @@ venture_asset_service_place_in_service(VentureAssetService *self,
 		if (!save_internal(self, db, row, actor, error))
 			goto fail;
 	}
+	{
+		gint64 tax_months = 0;
+		gint tax_method = VENTURE_ASSET_METHOD_NONE;
+		gint tax_convention = VENTURE_ASSET_CONVENTION_FULL_MONTH;
+		g_object_get(current, "tax-useful-life-months", &tax_months, "tax-method", &tax_method,
+			"tax-convention", &tax_convention, NULL);
+		if (tax_months >= 1 && tax_months <= 1200 && tax_method != VENTURE_ASSET_METHOD_NONE)
+		{
+			g_autoptr(GPtrArray) tax_parts = split(base, (guint)tax_months, error);
+			guint t;
+			if (tax_parts == NULL)
+				goto fail;
+			if (tax_method == VENTURE_ASSET_METHOD_DECLINING_BALANCE)
+			{
+				g_autoptr(VentureMoney) remaining = venture_money_copy(base);
+				g_autoptr(VentureMoney) carrying = venture_money_copy(cost);
+				for (t = 0; t < tax_parts->len; t++)
+				{
+					g_autoptr(VentureMoney) charge = venture_money_multiply_rational(carrying, 2, tax_months, error);
+					g_autoptr(VentureMoney) next = NULL;
+					g_autoptr(VentureMoney) book = NULL;
+					if (charge == NULL)
+						goto fail;
+					if (t + 1 == tax_parts->len || venture_money_compare(charge, remaining) > 0)
+					{
+						g_clear_pointer(&charge, venture_money_free);
+						charge = venture_money_copy(remaining);
+					}
+					next = venture_money_subtract(remaining, charge, error);
+					book = venture_money_subtract(carrying, charge, error);
+					if (next == NULL || book == NULL)
+						goto fail;
+					g_clear_pointer(&remaining, venture_money_free);
+					g_clear_pointer(&carrying, venture_money_free);
+					remaining = g_steal_pointer(&next);
+					carrying = g_steal_pointer(&book);
+					venture_money_free(g_ptr_array_index(tax_parts, t));
+					g_ptr_array_index(tax_parts, t) = g_steal_pointer(&charge);
+				}
+			}
+			if (tax_convention == VENTURE_ASSET_CONVENTION_HALF_YEAR && tax_parts->len > 1)
+			{
+				VentureMoney *first = g_ptr_array_index(tax_parts, 0);
+				VentureMoney *last = g_ptr_array_index(tax_parts, tax_parts->len - 1);
+				gint64 half = first->amount / 2;
+				last->amount += first->amount - half;
+				first->amount = half;
+			}
+			for (t = 0; t < tax_parts->len; t++)
+			{
+				g_autoptr(VentureEntity) row = VENTURE_ENTITY(venture_tax_depreciation_entry_new());
+				g_autoptr(GDateTime) date = g_date_time_add_months(start, (gint)t);
+				g_autofree gchar *period = g_date_time_format(date, "%Y-%m");
+				g_object_set(row, "organization-id", org, "asset-id", venture_entity_get_id(asset),
+					"period", period, "amount", g_ptr_array_index(tax_parts, t), NULL);
+				if (!save_internal(self, db, row, actor, error))
+					goto fail;
+			}
+		}
+	}
 	g_object_set(current, "operation", NULL, NULL);
 	g_object_set(current, "status", VENTURE_ASSET_STATUS_IN_SERVICE, "in-service-at", start, NULL);
 	if (!save_internal(self, db, current, actor, error) || !venture_database_commit(db, error))
@@ -379,7 +440,8 @@ venture_assets_save(VentureDatabase *db, VentureEntity *entity,
 	g_autofree gchar *operation = NULL;
 	*handled = FALSE;
 	if (!VENTURE_IS_FIXED_ASSET(entity) && !VENTURE_IS_DEPRECIATION_ENTRY(entity) &&
-		!VENTURE_IS_DEFERRAL(entity) && !VENTURE_IS_DEFERRAL_ENTRY(entity))
+		!VENTURE_IS_DEFERRAL(entity) && !VENTURE_IS_DEFERRAL_ENTRY(entity) &&
+		!VENTURE_IS_TAX_DEPRECIATION_ENTRY(entity))
 		return TRUE;
 	if (!venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "fixed_asset"))
 		return refuse(error, "The assets module is disabled");
@@ -777,6 +839,79 @@ fail:
 	return -1;
 }
 
+gint
+venture_asset_service_run_tax_period(VentureAssetService *self, const gchar *period,
+	gint64 org, gboolean dry_run, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
+	g_autoptr(GDateTime) date = month_end(period, error);
+	g_autoptr(GPtrArray) rows = NULL;
+	gint count = 0;
+	guint i;
+	if (date == NULL)
+		return -1;
+	if (org <= 0 || !venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "fixed_asset"))
+	{
+		refuse(error, "An enabled assets module and exact organization are required");
+		return -1;
+	}
+	if (!venture_database_begin(db, error))
+		return -1;
+	if (!venture_period_guard_is_postable(VENTURE_PERIOD_GUARD(venture_database_get_period_guard(db)), db, org, date, error))
+		goto fail;
+	rows = scheduled(db, VENTURE_TYPE_TAX_DEPRECIATION_ENTRY, org, period, error);
+	if (rows == NULL)
+		goto fail;
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(rows, i);
+		g_autoptr(VentureEntity) parent = NULL;
+		g_autoptr(VentureMoney) amount = NULL;
+		g_autoptr(GPtrArray) journals = NULL;
+		g_autofree gchar *transaction = NULL;
+		gint64 parent_id, debit, credit;
+		gint state;
+		g_object_get(row, "asset-id", &parent_id, "amount", &amount, NULL);
+		parent = load_record(db, VENTURE_TYPE_FIXED_ASSET, parent_id, error);
+		if (parent == NULL)
+			goto fail;
+		g_object_get(parent, "status", &state, "depreciation-expense-account-id", &debit,
+			"accumulated-depreciation-account-id", &credit, NULL);
+		if (venture_entity_get_organization_id(parent) != org || amount == NULL || amount->amount < 0 ||
+			state != VENTURE_ASSET_STATUS_IN_SERVICE)
+		{
+			refuse(error, "Scheduled tax entry has an invalid amount or parent state/organization");
+			goto fail;
+		}
+		if (!check_account(db, debit, org, error) || !check_account(db, credit, org, error))
+			goto fail;
+		count++;
+		if (dry_run)
+			continue;
+		transaction = g_strdup_printf("assets:tax_depreciation_entry:%" G_GINT64_FORMAT, venture_entity_get_id(row));
+		if (!post_pair(db, row, "tax_depreciation_entry", transaction, date, debit, credit, amount, actor, error))
+			goto fail;
+		journals = venture_posting_service_find_source(venture_database_get_posting_service(db),
+			"tax_depreciation_entry", venture_entity_get_id(row), org, error);
+		if (journals == NULL || journals->len != 1)
+		{
+			if (journals != NULL)
+				refuse(error, "Expected exactly one journal for the scheduled tax entry");
+			goto fail;
+		}
+		g_object_set(row, "journal-id", venture_entity_get_id(g_ptr_array_index(journals, 0)),
+			"state", VENTURE_SCHEDULE_STATE_POSTED, NULL);
+		if (!save_internal(self, db, row, actor, error))
+			goto fail;
+	}
+	if (!venture_database_commit(db, error))
+		goto fail;
+	return count;
+fail:
+	venture_database_rollback(db);
+	return -1;
+}
+
 gboolean
 venture_assets_check_removal(VentureDatabase *database, VentureEntity *entity, GError **error)
 {
@@ -790,7 +925,8 @@ venture_assets_check_removal(VentureDatabase *database, VentureEntity *entity, G
 		if (state != VENTURE_ASSET_STATUS_DRAFT)
 			return refuse(error, "Retain asset history; use VentureAssetService disposal or write-off");
 	}
-	else if (VENTURE_IS_DEPRECIATION_ENTRY(entity) || VENTURE_IS_DEFERRAL(entity) || VENTURE_IS_DEFERRAL_ENTRY(entity))
+	else if (VENTURE_IS_DEPRECIATION_ENTRY(entity) || VENTURE_IS_DEFERRAL(entity) || VENTURE_IS_DEFERRAL_ENTRY(entity) ||
+		VENTURE_IS_TAX_DEPRECIATION_ENTRY(entity))
 		return refuse(error, "Retain schedule history; use VentureAssetService or VentureDeferralService");
 	return TRUE;
 }

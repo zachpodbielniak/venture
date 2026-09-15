@@ -96,6 +96,9 @@
 #include "orgaccess/venture-access-records.h"
 #include "periods/venture-period-records.h"
 #include "assets/venture-asset-records.h"
+#include "budgets/venture-budget-records.h"
+#include "equity/venture-equity-records.h"
+#include "group/venture-group-records.h"
 #include "billing/venture-billing-records.h"
 #include "projects/venture-project-records.h"
 #include "mail/venture-mail-records.h"
@@ -243,6 +246,9 @@ gboolean venture_accounting_approval_allow(VentureDatabase *database, const gcha
 
 #include "web/venture-web-server.h"
 #include "assets/venture-asset-service.h"
+#include "budgets/venture-budget-service.h"
+#include "equity/venture-equity-service.h"
+#include "group/venture-group-service.h"
 
 #include "reconciliation/venture-reconciliation-matcher.h"
 #include "reconciliation/venture-reconciliation-service.h"

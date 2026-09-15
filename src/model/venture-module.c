@@ -546,7 +546,7 @@ static const gchar *const venture_module_reports_periods[] = { "snapshot_vs_live
 
 static const gchar *const reconciliation_requires[] = { "ledger", NULL };
 static const gchar *const reconciliation_suggests[] = { "banking", NULL };
-static GType (*const venture_module_assets_types[]) (void) = { venture_fixed_asset_get_type, venture_depreciation_entry_get_type, venture_deferral_get_type, venture_deferral_entry_get_type, NULL };
+static GType (*const venture_module_assets_types[]) (void) = { venture_fixed_asset_get_type, venture_depreciation_entry_get_type, venture_deferral_get_type, venture_deferral_entry_get_type, venture_tax_depreciation_entry_get_type, NULL };
 static const gchar *const venture_module_requires_assets[] = { "ledger", "periods", NULL };
 static const gchar *const venture_module_reports_assets[] = { "fixed_assets", "deferrals", NULL };
 static GType (*const venture_module_orgaccess_types[]) (void) = {
@@ -702,7 +702,16 @@ static GType (*const venture_module_tax_filing_types[]) (void) = {
 };
 static const gchar *const venture_module_requires_tax_filing[] = { "finance", "periods", NULL };
 static const gchar *const venture_module_suggests_tax_filing[] = { "invoicing", "payables", NULL };
-
+static GType (*const budgets_types[]) (void) = { venture_budget_get_type, venture_budget_line_get_type, NULL };
+static const gchar *const budgets_requires[] = { "statements", NULL };
+static const gchar *const budgets_reports[] = { "budget_vs_actual", "cash_forecast", NULL };
+static GType (*const equity_types[]) (void) = { venture_equity_transaction_get_type, NULL };
+static const gchar *const equity_requires[] = { "ledger", "setup", NULL };
+static GType (*const group_types[]) (void) = { venture_intercompany_link_get_type, venture_elimination_get_type, NULL };
+static const gchar *const group_requires[] = { "statements", NULL };
+static const gchar *const group_reports[] = {
+	"consolidated_trial_balance", "consolidated_income_statement", "consolidated_balance_sheet", NULL
+};
 
 
 static const gchar *const recurring_requires[] = {
@@ -1017,6 +1026,18 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"goods", "Purchasing, inventory and sales orders",
 		"Purchase orders, receiving, FIFO inventory to the general ledger, and sales-order fulfillment.",
 		goods_requires, NULL, goods_types, goods_reports, NULL, FALSE
+	},
+	{
+		"budgets", "Budgets", "Plans, vs-actual and cash forecasting from unpaid AR/AP.",
+		budgets_requires, NULL, budgets_types, budgets_reports, NULL, FALSE
+	},
+	{
+		"equity", "Owner equity", "Guided contributions, draws, loans and transfers.",
+		equity_requires, NULL, equity_types, NULL, NULL, FALSE
+	},
+	{
+		"group", "Intercompany group", "Optional consolidation, eliminations and FX.",
+		group_requires, NULL, group_types, group_reports, "group-enabled", FALSE
 	}
 
 };

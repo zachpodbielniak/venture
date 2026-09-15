@@ -839,6 +839,12 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_sales_order_get_type,
 		venture_sales_order_line_get_type,
 		venture_fulfillment_get_type,
+		venture_budget_get_type,
+		venture_budget_line_get_type,
+		venture_equity_transaction_get_type,
+		venture_intercompany_link_get_type,
+		venture_elimination_get_type,
+		venture_tax_depreciation_entry_get_type,
 	};
 	gsize i;
 

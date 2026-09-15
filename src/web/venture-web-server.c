@@ -1427,6 +1427,9 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	},
 	{ "/accounting", "Books", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h8M8 16h5\"/>"), "Accounting", "accounting" },
 	{ "/bankfeed", "Bank feeds", VENTURE_ICON("<path d=\"M4 12h16M4 7h16M4 17h10\"/>"), NULL, "bankfeed" },
+	{ "/budgets", "Budgets", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), NULL, "budgets" },
+	{ "/equity", "Owner equity", VENTURE_ICON("<path d=\"M12 3v18M5 10h14\"/>"), NULL, "equity" },
+	{ "/group", "Group", VENTURE_ICON("<circle cx=\"8\" cy=\"8\" r=\"3\"/><circle cx=\"16\" cy=\"8\" r=\"3\"/>"), NULL, "group" },
 	{ "/payables", "Pay bills", VENTURE_ICON("<path d=\"M4 12h16M14 6l6 6-6 6\"/>"), NULL, "payables" },
 	{ "/claims", "Claims", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), NULL, "claims" },
 	{ "/payroll", "Payroll", VENTURE_ICON("<path d=\"M4 6h16M4 12h16M4 18h10\"/>"), NULL, "payroll" },
@@ -27840,6 +27843,9 @@ venture_web_api_ticket_draft(
 #include "accounting/venture-accounting-web.inc"
 #include "bankfeed/venture-bankfeed-web.inc"
 #include "commerce/venture-commerce-web.inc"
+#include "budgets/venture-budget-web.inc"
+#include "equity/venture-equity-web.inc"
+#include "group/venture-group-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -28004,6 +28010,9 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/capture/:id/:action", capture_api, self);
 	htmx_router_get(router, "/accounting", accounting_ui_home, self);
 	htmx_router_get(router, "/api/v1/accounting/home", accounting_api_home, self);
+	venture_budget_web_register(router, self);
+	venture_equity_web_register(router, self);
+	venture_group_web_register(router, self);
 	htmx_router_get(router, "/invoices/:id/print",
 	                 venture_web_ui_invoice_print, self);
 	htmx_router_get(router, "/quotes/:id/print", quote_route, self);
@@ -28193,6 +28202,7 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/fixed_assets/:id/:operation", venture_web_asset_action, self);
 	htmx_router_post(router, "/assets/:id/:operation", venture_web_asset_action, self);
 	htmx_router_post(router, "/api/v1/assets/run-period", venture_web_assets_run, self);
+	htmx_router_post(router, "/api/v1/assets/run-tax-period", venture_web_assets_run_tax, self);
 	htmx_router_post(router, "/api/v1/customer_subscriptions/:id/:action", venture_billing_web_action, self);
 	htmx_router_post(router, "/api/v1/billing/start", venture_billing_web_action, self);
 	htmx_router_post(router, "/api/v1/billing/:action", venture_billing_web_action, self);

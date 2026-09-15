@@ -14,8 +14,14 @@ G_BEGIN_DECLS
  * Book accounting lifecycle values.
  */
 typedef enum { VENTURE_ASSET_METHOD_STRAIGHT_LINE, VENTURE_ASSET_METHOD_DECLINING_BALANCE, VENTURE_ASSET_METHOD_NONE } VentureAssetMethod;
-/** venture_asset_method_get_type: Returns: the asset method enumeration */
 GType venture_asset_method_get_type(void) G_GNUC_CONST;
+/**
+ * VentureAssetConvention:
+ * @VENTURE_ASSET_CONVENTION_FULL_MONTH: full month
+ * @VENTURE_ASSET_CONVENTION_HALF_YEAR: half year
+ */
+typedef enum { VENTURE_ASSET_CONVENTION_FULL_MONTH, VENTURE_ASSET_CONVENTION_HALF_YEAR } VentureAssetConvention;
+GType venture_asset_convention_get_type(void) G_GNUC_CONST;
 /**
  * VentureAssetStatus:
  * @VENTURE_ASSET_STATUS_DRAFT: draft
@@ -67,5 +73,7 @@ VENTURE_DECLARE_ENTITY(VentureDepreciationEntry, venture_depreciation_entry, DEP
 VENTURE_DECLARE_ENTITY(VentureDeferral, venture_deferral, DEFERRAL)
 #define VENTURE_TYPE_DEFERRAL_ENTRY (venture_deferral_entry_get_type())
 VENTURE_DECLARE_ENTITY(VentureDeferralEntry, venture_deferral_entry, DEFERRAL_ENTRY)
+#define VENTURE_TYPE_TAX_DEPRECIATION_ENTRY (venture_tax_depreciation_entry_get_type())
+VENTURE_DECLARE_ENTITY(VentureTaxDepreciationEntry, venture_tax_depreciation_entry, TAX_DEPRECIATION_ENTRY)
 G_END_DECLS
 #endif
