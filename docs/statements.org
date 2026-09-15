@@ -24,7 +24,8 @@ dimensions live on the statements module. =VentureLedgerBalances= is the reusabl
 construct-only =database= property selects the repository.
 
 All amounts come from journal lines' book amounts. Drafts, standalone legacy
-ledger entries and mutable =account.opening_balance= fields do not contribute.
+ledger entries, mutable =account.opening_balance= fields and journals flagged
+=tax-book= do not contribute.
 A reversed original still contributes at its original accounting date; its
 reversal contributes on its own date. Opening evidence must be posted as a
 balanced journal. No posting, journal or trial-balance behavior is changed.
