@@ -23,3 +23,10 @@ venturectl fields define record_type=vendor_bill name=po_number kind=string requ
 venturectl fields layout record_type=vendor_bill field_order='["number","po_number"]'
 venturectl fields value record_type=vendor_bill record_id=1 name=po_number value=PO-42
 #+end_src
+
+* Record forms
+
+Configured fields appear on =GET /e/:type/new= and edit pages using the same
+widgets as built-in field specs. A layout JSON array orders custom fields on
+that form. Required, integer, enum, money, boolean and date values are
+checked on save; an integer field rejects =not an integer=.

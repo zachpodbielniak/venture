@@ -217,6 +217,190 @@ prepare_value(VentureEntity *record, GError **error)
 	return TRUE;
 }
 
+static gboolean
+check_kind(const gchar *kind, const gchar *options, const gchar *text, const gchar *name, GError **error)
+{
+	if (g_strcmp0(kind, "integer") == 0)
+	{
+		gchar *end = NULL;
+		g_ascii_strtoll(text, &end, 10);
+		if (end == NULL || end == text || *end != '\0')
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"VentureCustomFieldsService: %s must be an integer", name);
+			return FALSE;
+		}
+	}
+	else if (g_strcmp0(kind, "boolean") == 0)
+	{
+		if (g_strcmp0(text, "true") != 0 && g_strcmp0(text, "false") != 0 &&
+			g_strcmp0(text, "1") != 0 && g_strcmp0(text, "0") != 0)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"VentureCustomFieldsService: %s must be true or false", name);
+			return FALSE;
+		}
+	}
+	else if (g_strcmp0(kind, "enum") == 0)
+	{
+		g_autoptr(JsonNode) node = json_from_string(options ? options : "[]", NULL);
+		JsonArray *array;
+		gboolean ok = FALSE;
+		guint i;
+		if (node == NULL || !JSON_NODE_HOLDS_ARRAY(node))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"VentureCustomFieldsService: %s has invalid enum options", name);
+			return FALSE;
+		}
+		array = json_node_get_array(node);
+		for (i = 0; i < json_array_get_length(array); i++)
+		{
+			if (g_strcmp0(json_array_get_string_element(array, i), text) == 0)
+				ok = TRUE;
+		}
+		if (!ok)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"VentureCustomFieldsService: %s must be one of the declared options", name);
+			return FALSE;
+		}
+	}
+	else if (g_strcmp0(kind, "money") == 0)
+	{
+		g_autoptr(GError) inner = NULL;
+		g_autoptr(VentureMoney) money = venture_money_from_string(text, NULL, &inner);
+		if (money == NULL)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"VentureCustomFieldsService: %s must be money", name);
+			return FALSE;
+		}
+	}
+	else if (g_strcmp0(kind, "date") == 0 || g_strcmp0(kind, "datetime") == 0)
+	{
+		g_autoptr(GDateTime) when = g_date_time_new_from_iso8601(text, NULL);
+		if (when == NULL && strlen(text) == 10)
+		{
+			g_autofree gchar *iso = g_strconcat(text, "T00:00:00Z", NULL);
+			when = g_date_time_new_from_iso8601(iso, NULL);
+		}
+		if (when == NULL)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"VentureCustomFieldsService: %s must be a date", name);
+			return FALSE;
+		}
+	}
+	return TRUE;
+}
+
+static VentureFieldKind
+kind_to_spec(const gchar *kind)
+{
+	if (g_strcmp0(kind, "text") == 0) return VENTURE_FIELD_KIND_TEXT;
+	if (g_strcmp0(kind, "integer") == 0) return VENTURE_FIELD_KIND_INTEGER;
+	if (g_strcmp0(kind, "boolean") == 0) return VENTURE_FIELD_KIND_BOOLEAN;
+	if (g_strcmp0(kind, "enum") == 0) return VENTURE_FIELD_KIND_ENUM;
+	if (g_strcmp0(kind, "money") == 0) return VENTURE_FIELD_KIND_MONEY;
+	if (g_strcmp0(kind, "date") == 0) return VENTURE_FIELD_KIND_DATE;
+	if (g_strcmp0(kind, "datetime") == 0) return VENTURE_FIELD_KIND_DATETIME;
+	return VENTURE_FIELD_KIND_STRING;
+}
+
+GPtrArray *
+venture_custom_fields_form_specs(VentureDatabase *database, gint64 organization_id,
+	const gchar *record_type, VentureEntity *record, GError **error)
+{
+	g_autoptr(GPtrArray) fields = NULL;
+	g_autoptr(VentureQuery) layout_query = NULL;
+	g_autoptr(VentureEntity) layout = NULL;
+	GPtrArray *specs;
+	GHashTable *by_name;
+	guint i;
+	if (database == NULL || record_type == NULL)
+		return g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "accounting_custom_field") == G_TYPE_INVALID)
+		return g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
+	fields = fields_for_type(database, organization_id, record_type, error);
+	if (fields == NULL)
+		return NULL;
+	by_name = g_hash_table_new(g_str_hash, g_str_equal);
+	specs = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
+	for (i = 0; i < fields->len; i++)
+	{
+		VentureEntity *field = g_ptr_array_index(fields, i);
+		g_autofree gchar *name = NULL;
+		g_autofree gchar *kind = NULL;
+		g_autofree gchar *options = NULL;
+		gboolean required = FALSE;
+		VentureFieldSpec *spec;
+		g_object_get(field, "name", &name, "kind", &kind, "options", &options, "required", &required, NULL);
+		spec = venture_field_spec_new(name, NULL, kind_to_spec(kind));
+		spec->required = required;
+		if (g_strcmp0(kind, "enum") == 0 && options != NULL)
+		{
+			g_autoptr(JsonNode) node = json_from_string(options, NULL);
+			if (node != NULL && JSON_NODE_HOLDS_ARRAY(node))
+			{
+				JsonArray *array = json_node_get_array(node);
+				GPtrArray *choices = g_ptr_array_new();
+				guint j;
+				for (j = 0; j < json_array_get_length(array); j++)
+					g_ptr_array_add(choices, g_strdup(json_array_get_string_element(array, j)));
+				g_ptr_array_add(choices, NULL);
+				spec->choices = (gchar **)g_ptr_array_free(choices, FALSE);
+			}
+		}
+		if (record != NULL)
+		{
+			g_autofree gchar *stored = stored_value(database, organization_id, record_type,
+				venture_entity_get_id(record), name, NULL);
+			const gchar *attribute = venture_entity_get_attribute(record, name);
+			if (!value_present(attribute) && value_present(stored))
+				venture_entity_set_attribute(record, name, stored);
+		}
+		g_hash_table_insert(by_name, spec->name, spec);
+		g_ptr_array_add(specs, spec);
+	}
+	layout_query = venture_query_new(VENTURE_TYPE_ACCOUNTING_LAYOUT);
+	venture_query_set_organization(layout_query, organization_id);
+	venture_query_add_filter_string(layout_query, "layout-key", VENTURE_FILTER_OP_EQ, record_type, NULL);
+	layout = venture_database_find_one(database, layout_query, NULL);
+	if (layout != NULL)
+	{
+		g_autofree gchar *order = NULL;
+		g_autoptr(JsonNode) node = NULL;
+		g_object_get(layout, "field-order", &order, NULL);
+		node = json_from_string(order, NULL);
+		if (node != NULL && JSON_NODE_HOLDS_ARRAY(node))
+		{
+			JsonArray *array = json_node_get_array(node);
+			GPtrArray *ordered = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
+			GHashTable *seen = g_hash_table_new(g_str_hash, g_str_equal);
+			guint j;
+			g_ptr_array_set_free_func(specs, NULL);
+			for (j = 0; j < json_array_get_length(array); j++)
+			{
+				const gchar *want = json_array_get_string_element(array, j);
+				VentureFieldSpec *spec = want ? g_hash_table_lookup(by_name, want) : NULL;
+				if (spec == NULL || g_hash_table_contains(seen, want))
+					continue;
+				g_hash_table_add(seen, (gpointer)want);
+				g_ptr_array_remove(specs, spec);
+				g_ptr_array_add(ordered, spec);
+			}
+			for (j = 0; j < specs->len; j++)
+				g_ptr_array_add(ordered, g_ptr_array_index(specs, j));
+			g_ptr_array_unref(specs);
+			g_hash_table_unref(seen);
+			specs = ordered;
+		}
+	}
+	g_hash_table_unref(by_name);
+	return specs;
+}
+
 gboolean
 venture_custom_fields_validate(VentureDatabase *database, VentureEntity *record, GError **error)
 {
@@ -247,20 +431,29 @@ venture_custom_fields_validate(VentureDatabase *database, VentureEntity *record,
 	{
 		VentureEntity *field = g_ptr_array_index(fields, i);
 		g_autofree gchar *name = NULL;
+		g_autofree gchar *kind = NULL;
+		g_autofree gchar *options = NULL;
 		g_autofree gchar *stored = NULL;
+		g_autofree gchar *text = NULL;
 		gboolean required = FALSE;
-		g_object_get(field, "name", &name, "required", &required, NULL);
-		if (!required)
+		const gchar *attribute;
+		g_object_get(field, "name", &name, "kind", &kind, "options", &options, "required", &required, NULL);
+		attribute = venture_entity_get_attribute(record, name);
+		if (value_present(attribute))
+			text = g_strdup(attribute);
+		else
+			text = stored_value(database, venture_entity_get_organization_id(record),
+				entity_name, venture_entity_get_id(record), name, error);
+		if (required && !value_present(text))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"VentureCustomFieldsService: required custom field %s", name);
+			return FALSE;
+		}
+		if (!value_present(text))
 			continue;
-		if (value_present(venture_entity_get_attribute(record, name)))
-			continue;
-		stored = stored_value(database, venture_entity_get_organization_id(record),
-			entity_name, venture_entity_get_id(record), name, error);
-		if (value_present(stored))
-			continue;
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-			"VentureCustomFieldsService: required custom field %s", name);
-		return FALSE;
+		if (!check_kind(kind, options, text, name, error))
+			return FALSE;
 	}
 	return TRUE;
 }

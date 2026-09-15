@@ -6218,6 +6218,12 @@ venture_web_append_form_field(
 			current = g_value_dup_string(&value);
 		}
 	}
+	if (current == NULL && record != NULL)
+	{
+		const gchar *attribute = venture_entity_get_attribute(record, name);
+		if (attribute != NULL && attribute[0] != '\0')
+			current = g_strdup(attribute);
+	}
 
 	/*
 	 * The label text and the required marker are wrapped together so they
@@ -6515,6 +6521,19 @@ venture_web_ui_form(
 		}
 		venture_web_append_form_field(self, content, spec, record);
 	}
+	{
+		gint64 org = (0 != id)
+			? venture_entity_get_organization_id(record)
+			: venture_web_active_organization(self, request);
+		g_autoptr(GPtrArray) extra = NULL;
+		guint custom;
+		if (org == 0)
+			org = venture_context_get_default_organization_id(self->context);
+		extra = venture_custom_fields_form_specs(venture_context_get_database(self->context),
+			org, type_name, record, NULL);
+		for (custom = 0; extra && custom < extra->len; custom++)
+			venture_web_append_form_field(self, content, g_ptr_array_index(extra, custom), record);
+	}
 
 	g_string_append(content, "</div></div></div>");
 
@@ -6677,6 +6696,22 @@ venture_web_apply_form(
 	{
 		venture_entity_set_organization_id(record,
 			venture_context_get_default_organization_id(self->context));
+	}
+
+	{
+		g_autoptr(GPtrArray) extra = venture_custom_fields_form_specs(
+			venture_context_get_database(self->context),
+			venture_entity_get_organization_id(record),
+			venture_entity_get_entity_name(record), record, NULL);
+		guint custom;
+		for (custom = 0; extra && custom < extra->len; custom++)
+		{
+			VentureFieldSpec *spec = g_ptr_array_index(extra, custom);
+			const gchar *submitted = htmx_request_get_form_value(request,
+				venture_field_spec_get_name(spec));
+			if (submitted != NULL)
+				venture_entity_set_attribute(record, venture_field_spec_get_name(spec), submitted);
+		}
 	}
 
 	return TRUE;

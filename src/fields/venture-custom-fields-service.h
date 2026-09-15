@@ -7,9 +7,29 @@
 G_BEGIN_DECLS
 #define VENTURE_TYPE_CUSTOM_FIELDS_SERVICE (venture_custom_fields_service_get_type())
 G_DECLARE_FINAL_TYPE(VentureCustomFieldsService, venture_custom_fields_service, VENTURE, CUSTOM_FIELDS_SERVICE, GObject)
+/**
+ * venture_custom_fields_service_get:
+ * @database: the owning database
+ *
+ * Returns: (transfer none): the per-database service
+ */
 VentureCustomFieldsService *venture_custom_fields_service_get(VentureDatabase *database);
 gboolean venture_custom_fields_validate(VentureDatabase *database, VentureEntity *record, GError **error);
 gboolean venture_custom_fields_sync(VentureDatabase *database, VentureEntity *record, const VentureActor *actor, GError **error);
+/**
+ * venture_custom_fields_form_specs:
+ * @database: the database
+ * @organization_id: legal entity
+ * @record_type: registered entity name
+ * @record: (nullable): existing row to hydrate current values
+ * @error: (out) (optional)
+ *
+ * Field specs for configured custom fields, ordered by layout when one exists.
+ *
+ * Returns: (transfer full) (element-type VentureFieldSpec) (nullable)
+ */
+GPtrArray *venture_custom_fields_form_specs(VentureDatabase *database, gint64 organization_id,
+	const gchar *record_type, VentureEntity *record, GError **error);
 VentureEntity *venture_custom_fields_service_define(VentureCustomFieldsService *self, gint64 organization_id,
 	const gchar *record_type, const gchar *name, const gchar *kind, gboolean required,
 	const gchar *options, const VentureActor *actor, GError **error);

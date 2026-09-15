@@ -199,6 +199,68 @@ test_settings_fields_page(Fixture *f, gconstpointer data)
 	venture_test_remove_tree(dir);
 }
 
+static void
+test_kind_and_enum_validation(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) field = NULL;
+	g_autoptr(VentureCompany) company = NULL;
+	VentureActor actor;
+	(void)data;
+	actor_init(&actor);
+	field = venture_custom_fields_service_define(venture_custom_fields_service_get(f->db),
+		f->org, "company", "headcount", "integer", TRUE, NULL, &actor, &error);
+	g_assert_no_error(error);
+	company = venture_company_new();
+	g_object_set(company, "name", "Counts", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(company), f->org);
+	venture_entity_set_attribute(VENTURE_ENTITY(company), "headcount", "not an integer");
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(company), &actor, &error));
+	g_assert_nonnull(error);
+	g_assert_true(strstr(error->message, "integer") != NULL || strstr(error->message, "headcount") != NULL);
+	g_clear_error(&error);
+	venture_entity_set_attribute(VENTURE_ENTITY(company), "headcount", "12");
+	save(f, VENTURE_ENTITY(company));
+	g_assert_nonnull(venture_custom_fields_service_define(venture_custom_fields_service_get(f->db),
+		f->org, "company", "region", "enum", TRUE, "[\"east\",\"west\"]", &actor, &error));
+	g_assert_no_error(error);
+	venture_entity_set_attribute(VENTURE_ENTITY(company), "region", "south");
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(company), &actor, &error));
+	g_clear_error(&error);
+	venture_entity_set_attribute(VENTURE_ENTITY(company), "region", "east");
+	save(f, VENTURE_ENTITY(company));
+}
+
+static void
+test_form_shows_layout_field(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autofree gchar *dir = NULL;
+	g_autofree gchar *body = NULL;
+	g_autoptr(GSocketListener) listener = g_socket_listener_new();
+	guint16 port;
+	VentureActor actor;
+	(void)data;
+	actor_init(&actor);
+	g_assert_nonnull(venture_custom_fields_service_define(venture_custom_fields_service_get(f->db),
+		f->org, "company", "po_number", "string", TRUE, NULL, &actor, &error));
+	g_assert_nonnull(venture_custom_fields_service_set_layout(venture_custom_fields_service_get(f->db),
+		f->org, "company", "[\"po_number\",\"name\"]", &actor, &error));
+	dir = g_dir_make_tmp("venture-fields-form-XXXXXX", &error);
+	g_assert_no_error(error);
+	port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
+	g_socket_listener_close(listener);
+	g_object_set(f->config, "state-dir", dir, "server-bind-address", "127.0.0.1",
+		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
+	server = venture_web_server_new(f->context, &error);
+	g_assert_true(venture_web_server_start(server, &error));
+	g_assert_cmpuint(http_request(server, "GET", "/e/company/new", NULL, NULL, &body), ==, 200);
+	g_assert_nonnull(strstr(body, "po_number"));
+	g_assert_nonnull(strstr(body, "name=\"po_number\""));
+	venture_test_remove_tree(dir);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -209,5 +271,9 @@ main(int argc, char **argv)
 		test_attribute_satisfies_required, teardown);
 	g_test_add("/custom-fields/settings-page", Fixture, NULL, setup,
 		test_settings_fields_page, teardown);
+	g_test_add("/custom-fields/kind-and-enum", Fixture, NULL, setup,
+		test_kind_and_enum_validation, teardown);
+	g_test_add("/custom-fields/form-layout", Fixture, NULL, setup,
+		test_form_shows_layout_field, teardown);
 	return g_test_run();
 }
