@@ -701,11 +701,12 @@ outstanding_items(VentureBankMatchService *self, VentureEntity *bank, GDateTime 
 		g_autofree gchar *source_type = NULL;
 		gint64 source_id;
 		gint64 remaining_cleared = 0;
+		gint64 reverses_id = 0;
 		VentureJournalState state;
 		guint j;
 		g_object_get(journal, "state", &state, "occurred-at", &date, "source-type", &source_type,
-			"source-id", &source_id, NULL);
-		if ((state != VENTURE_JOURNAL_POSTED && state != VENTURE_JOURNAL_REVERSED) || date == NULL)
+			"source-id", &source_id, "reverses-id", &reverses_id, NULL);
+		if (state != VENTURE_JOURNAL_POSTED || reverses_id != 0 || date == NULL)
 			continue;
 		if (g_date_time_compare(date, end) > 0)
 			continue;
