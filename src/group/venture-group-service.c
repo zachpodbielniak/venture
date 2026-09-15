@@ -195,8 +195,7 @@ period_matches(const gchar *elim_period, VentureDateRange *period)
 	if (elim_period == NULL || elim_period[0] == '\0' || period == NULL)
 		return TRUE;
 	label = venture_date_range_get_label(period);
-	if (label != NULL && (g_str_equal(elim_period, label) ||
-		g_str_has_prefix(label, elim_period) || strstr(label, elim_period) != NULL))
+	if (label != NULL && g_str_equal(elim_period, label))
 		return TRUE;
 	named = venture_date_range_parse(elim_period, NULL, 1, NULL);
 	if (named == NULL)
@@ -326,16 +325,30 @@ venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 			if (amount == NULL)
 				continue;
 			debit = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, debit_id, error);
-			if (debit == NULL)
+			credit = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, credit_id, error);
+			if (debit == NULL || credit == NULL)
 				return NULL;
-			g_object_get(debit, "kind", &kind, NULL);
-			if (!trial && !sheet && kind == VENTURE_ACCOUNT_KIND_INCOME)
+			if (!trial && !sheet)
 			{
-				VentureMoney *next = venture_money_subtract(income, amount, error);
-				if (next == NULL)
-					return NULL;
-				venture_money_free(income);
-				income = next;
+				gint credit_kind;
+				g_object_get(debit, "kind", &kind, NULL);
+				g_object_get(credit, "kind", &credit_kind, NULL);
+				if (kind == VENTURE_ACCOUNT_KIND_INCOME || credit_kind == VENTURE_ACCOUNT_KIND_INCOME)
+				{
+					VentureMoney *next = venture_money_subtract(income, amount, error);
+					if (next == NULL)
+						return NULL;
+					venture_money_free(income);
+					income = next;
+				}
+				if (kind == VENTURE_ACCOUNT_KIND_EXPENSE || credit_kind == VENTURE_ACCOUNT_KIND_EXPENSE)
+				{
+					VentureMoney *next = venture_money_subtract(expenses, amount, error);
+					if (next == NULL)
+						return NULL;
+					venture_money_free(expenses);
+					expenses = next;
+				}
 			}
 			if (trial || sheet)
 			{
@@ -344,35 +357,62 @@ venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 				g_autofree gchar *debit_name = NULL;
 				g_autofree gchar *credit_code = NULL;
 				g_autofree gchar *credit_name = NULL;
-				credit = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, credit_id, error);
-				if (credit == NULL)
-					return NULL;
+				gint debit_kind, credit_kind;
+				gboolean debit_bs, credit_bs;
 				credit_amount = venture_money_negate(amount);
 				if (credit_amount == NULL)
 					return NULL;
-				g_object_get(debit, "code", &debit_code, "name", &debit_name, NULL);
-				g_object_get(credit, "code", &credit_code, "name", &credit_name, NULL);
-				venture_report_result_begin_row(result);
-				venture_report_result_set_text(result, "key", debit_code);
-				venture_report_result_set_text(result, "name", debit_name);
-				venture_report_result_set_text(result, "organization", "elimination");
-				venture_report_result_set_money(result, "current", amount);
-				if (trial)
+				g_object_get(debit, "code", &debit_code, "name", &debit_name, "kind", &debit_kind, NULL);
+				g_object_get(credit, "code", &credit_code, "name", &credit_name, "kind", &credit_kind, NULL);
+				debit_bs = debit_kind == VENTURE_ACCOUNT_KIND_ASSET ||
+					debit_kind == VENTURE_ACCOUNT_KIND_LIABILITY ||
+					debit_kind == VENTURE_ACCOUNT_KIND_EQUITY;
+				credit_bs = credit_kind == VENTURE_ACCOUNT_KIND_ASSET ||
+					credit_kind == VENTURE_ACCOUNT_KIND_LIABILITY ||
+					credit_kind == VENTURE_ACCOUNT_KIND_EQUITY;
+				if (trial || debit_bs || (sheet && !debit_bs))
 				{
-					g_autoptr(VentureMoney) zero = venture_money_new_zero(amount->currency);
-					venture_report_result_set_money(result, "debits", amount);
-					venture_report_result_set_money(result, "credits", zero);
+					venture_report_result_begin_row(result);
+					if (sheet && !debit_bs)
+					{
+						venture_report_result_set_text(result, "key", "equity");
+						venture_report_result_set_text(result, "name", "Retained earnings (eliminations)");
+					}
+					else
+					{
+						venture_report_result_set_text(result, "key", debit_code);
+						venture_report_result_set_text(result, "name", debit_name);
+					}
+					venture_report_result_set_text(result, "organization", "elimination");
+					venture_report_result_set_money(result, "current", amount);
+					if (trial)
+					{
+						g_autoptr(VentureMoney) zero = venture_money_new_zero(amount->currency);
+						venture_report_result_set_money(result, "debits", amount);
+						venture_report_result_set_money(result, "credits", zero);
+					}
 				}
-				venture_report_result_begin_row(result);
-				venture_report_result_set_text(result, "key", credit_code);
-				venture_report_result_set_text(result, "name", credit_name);
-				venture_report_result_set_text(result, "organization", "elimination");
-				venture_report_result_set_money(result, "current", credit_amount);
-				if (trial)
+				if (trial || credit_bs || (sheet && !credit_bs))
 				{
-					g_autoptr(VentureMoney) zero = venture_money_new_zero(amount->currency);
-					venture_report_result_set_money(result, "debits", zero);
-					venture_report_result_set_money(result, "credits", amount);
+					venture_report_result_begin_row(result);
+					if (sheet && !credit_bs)
+					{
+						venture_report_result_set_text(result, "key", "equity");
+						venture_report_result_set_text(result, "name", "Retained earnings (eliminations)");
+					}
+					else
+					{
+						venture_report_result_set_text(result, "key", credit_code);
+						venture_report_result_set_text(result, "name", credit_name);
+					}
+					venture_report_result_set_text(result, "organization", "elimination");
+					venture_report_result_set_money(result, "current", credit_amount);
+					if (trial)
+					{
+						g_autoptr(VentureMoney) zero = venture_money_new_zero(amount->currency);
+						venture_report_result_set_money(result, "debits", zero);
+						venture_report_result_set_money(result, "credits", amount);
+					}
 				}
 			}
 		}

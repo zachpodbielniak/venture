@@ -12,11 +12,12 @@ trial balance, income statement and balance sheet combine those legal entities,
 convert through the existing =exchange_rate= table (no invented inverse) and
 tag each row with the organization dimension.
 
-Elimination rows apply to the consolidated income statement totals and
-also appear on the consolidated trial balance and balance sheet as
-organization =elimination=. They do not rewrite either entity's posted
-book. An elimination is included when its =period= equals the report
-period label, or the label starts with that period.
+Elimination rows apply to the consolidated income statement totals when
+either leg is income or expense. Trial balance shows both legs.
+Balance sheet shows only asset, liability and equity legs; P&L legs
+roll into retained earnings so the sheet still ties. They do not rewrite
+either entity's posted book. An elimination is included when its
+=period= equals the report label or overlaps the report range.
 
 #+begin_src sh
 venturectl group income 2026-08

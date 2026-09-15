@@ -127,6 +127,22 @@ cell_org(VentureReportResult *r, const gchar *code, const gchar *org_label, cons
 	return 0;
 }
 
+
+static gboolean
+has_org_key(VentureReportResult *r, const gchar *code, const gchar *org_label)
+{
+	guint i;
+	for (i = 0; i < venture_report_result_get_row_count(r); i++)
+	{
+		const GValue *key = venture_report_result_get_cell(r, i, "key");
+		const GValue *org = venture_report_result_get_cell(r, i, "organization");
+		if (key != NULL && org != NULL && g_strcmp0(g_value_get_string(key), code) == 0 &&
+			g_strcmp0(g_value_get_string(org), org_label) == 0)
+			return TRUE;
+	}
+	return FALSE;
+}
+
 static gint64
 cell_key(VentureReportResult *r, const gchar *key, const gchar *column)
 {
@@ -249,7 +265,39 @@ test_elimination(Fixture *f, gconstpointer data)
 		g_assert_no_error(error);
 		g_assert_cmpint(cell_org(balances, "1100", "elimination", "current"), ==, -10000);
 		g_assert_cmpint(cell_org(trial, "1100", "elimination", "current"), ==, -10000);
+		g_assert_false(has_org_key(balances, "4000", "elimination"));
+		g_assert_true(has_org_key(trial, "4000", "elimination"));
 	}
+}
+
+static void
+test_elimination_credit_income(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) link = VENTURE_ENTITY(venture_intercompany_link_new());
+	g_autoptr(VentureMoney) amount = venture_money_new_for_currency(10000, "USD");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureReportResult) income = NULL;
+	g_autoptr(VentureDateRange) period = NULL;
+	(void)data;
+	g_object_set(link, "organization-id", f->parent, "child-organization-id", f->child, NULL);
+	g_assert_true(venture_database_save(f->db, link, NULL, &error));
+	{
+		g_autoptr(VentureEntity) rate = VENTURE_ENTITY(venture_exchange_rate_new());
+		g_autoptr(GDateTime) effective = g_date_time_new_utc(2026, 1, 1, 0, 0, 0);
+		g_object_set(rate, "organization-id", f->parent, "from-currency", "EUR", "to-currency", "USD",
+			"rate-numerator", (gint64)1, "rate-denominator", (gint64)1, "effective-at", effective,
+			"source", "manual", "reason", "test", NULL);
+		g_assert_true(venture_database_save(f->db, rate, NULL, &error));
+	}
+	post_in(f, f->parent, "USD", "2026-08-10T00:00:00Z", "1100", "4000", 10000);
+	g_assert_nonnull(venture_group_service_eliminate(venture_group_service_get(f->db), f->parent, f->child,
+		account_in(f, f->parent, "1100"), account_in(f, f->parent, "4000"), amount, "2026-08",
+		"Dr AR Cr revenue", NULL, &error));
+	period = venture_context_parse_period(f->context, "2026-08", &error);
+	income = venture_group_service_consolidated(venture_group_service_get(f->db),
+		f->parent, "consolidated_income_statement", period, "USD", &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(cell_key(income, "income", "current"), ==, 0);
 }
 
 int
@@ -260,5 +308,6 @@ main(int argc, char **argv)
 	g_test_add("/group/records", Fixture, NULL, setup, test_records, teardown);
 	g_test_add("/group/consolidated-fx", Fixture, NULL, setup, test_consolidated_and_fx, teardown);
 	g_test_add("/group/elimination", Fixture, NULL, setup, test_elimination, teardown);
+	g_test_add("/group/elimination-credit-income", Fixture, NULL, setup, test_elimination_credit_income, teardown);
 	return g_test_run();
 }
