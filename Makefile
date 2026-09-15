@@ -76,6 +76,7 @@ CORE_SRCS += src/close/venture-close-records.c
 CORE_SRCS += src/tax/venture-tax-records.c
 CORE_SRCS += src/capture/venture-capture-records.c
 CORE_SRCS += src/claims/venture-claim-records.c
+CORE_SRCS += src/payroll/venture-payroll-records.c
 CORE_SRCS += src/banking/venture-bank-records.c
 CORE_SRCS += src/cutover/venture-cutover-records.c
 CORE_SRCS += src/setup/venture-setup-records.c
@@ -123,6 +124,7 @@ SERVER_ONLY_SRCS += src/close/venture-close-service.c
 SERVER_ONLY_SRCS += src/tax/venture-tax-filing-adapter.c src/tax/venture-tax-filing-service.c
 SERVER_ONLY_SRCS += src/capture/venture-capture-service.c
 SERVER_ONLY_SRCS += src/claims/venture-claims-service.c
+SERVER_ONLY_SRCS += src/payroll/venture-payroll-service.c
 SERVER_ONLY_SRCS += src/accounting/venture-accounting-home.c
 
 CORE_SRCS += src/pipelines/venture-pipeline-records.c
@@ -189,6 +191,7 @@ PUBLIC_HDRS += $(wildcard src/close/*.h)
 PUBLIC_HDRS += $(wildcard src/tax/*.h)
 PUBLIC_HDRS += $(wildcard src/capture/*.h)
 PUBLIC_HDRS += $(wildcard src/claims/*.h)
+PUBLIC_HDRS += $(wildcard src/payroll/*.h)
 PUBLIC_HDRS += $(wildcard src/accounting/*.h)
 PUBLIC_HDRS += $(wildcard src/banking/*.h)
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/pipelines/*.h))
@@ -227,6 +230,7 @@ $(OUTDIR)/tests/test-payables: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-close: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-capture: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-claims: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-payroll: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-accounting: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sequences: | $(OUTDIR)/venturectl

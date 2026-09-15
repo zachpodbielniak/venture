@@ -68,6 +68,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =close= | periods, ledger, statements | close_workspace, close_task, close_workpaper, close_discrepancy, close_signoff; =close_workspace= | banking, receivables, payables, assets |
 | =capture= | finance | capture_item | payables |
 | =claims= | finance, ledger | expense_claim, expense_claim_line; /claims | capture, payables |
+| =payroll= | finance, ledger | payroll_run, payroll_line; =payroll_reconciliation=; default off | |
 | =accounting= | finance | the =/accounting= home | banking, receivables, payables, periods, close, capture |
 | =tax_filing= | finance, periods | tax_filing, contractor_tax_form, contractor_tax_pack | invoicing, payables |
 

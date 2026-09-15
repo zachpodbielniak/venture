@@ -635,6 +635,7 @@ venture_cli_values_from_args(
 #include "tax/venture-tax-cli.inc"
 #include "capture/venture-capture-cli.inc"
 #include "claims/venture-claims-cli.inc"
+#include "payroll/venture-payroll-cli.inc"
 #include "accounting/venture-accounting-cli.inc"
 
 static gint
@@ -3388,6 +3389,7 @@ main(
 		"  contractor-tax prepare|review|approve|export     1099-NEC packs\n"
 		"  capture ingest|convert|reject              receipt and supplier-invoice inbox\n"
 		"  claim submit|approve|pay ID               employee expense claims\n"
+		"  payroll import|disburse|reverse           imported pay runs\n"
 		"  accounting                               daily books next actions\n"
 		"  factory                      the software factory at a glance\n"
 		"  lead convert ID              qualify first; deal=yes|no, company_id=ID\n"
@@ -3658,6 +3660,8 @@ main(
 		result = venture_cli_command_capture(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "claim"))
 		result = venture_cli_command_claim(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "payroll"))
+		result = venture_cli_command_payroll(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "accounting"))
 		result = venture_cli_command_accounting(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "bank"))

@@ -218,6 +218,8 @@ static const VentureConfigSetting venture_config_settings[] = {
 
 	VC_BOOL("stripe-enabled", "stripe", "enabled", FALSE,
 	        "Enable hosted Stripe payments; requires deployment credentials"),
+	VC_BOOL("payroll-enabled", "payroll", "enabled", FALSE,
+	        "Enable imported payroll runs; native tax calculation is out of scope"),
 
 	VC_BOOL("forge-enabled", "forge", "enabled", TRUE,
 	        "Enable git forge integration"),

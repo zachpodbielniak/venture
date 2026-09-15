@@ -1428,6 +1428,7 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/accounting", "Books", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h8M8 16h5\"/>"), "Accounting", "accounting" },
 	{ "/payables", "Pay bills", VENTURE_ICON("<path d=\"M4 12h16M14 6l6 6-6 6\"/>"), NULL, "payables" },
 	{ "/claims", "Claims", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), NULL, "claims" },
+	{ "/payroll", "Payroll", VENTURE_ICON("<path d=\"M4 6h16M4 12h16M4 18h10\"/>"), NULL, "payroll" },
 	{ "/close", "Period close", VENTURE_ICON("<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M8 15l2 2 4-4\"/>"), NULL, "close" },
 	{ "/tax-filings", "Tax filings", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h8M8 16h5\"/>"), NULL, "tax_filing" },
 	{ "/capture", "Capture inbox", VENTURE_ICON("<path d=\"M4 4h16v12H4zM8 20h8\"/>"), NULL, "capture" },
@@ -3632,6 +3633,7 @@ venture_web_stripe_webhook(HtmxRequest *request, GHashTable *params, gpointer us
 }
 #include "payables/venture-payables-web.inc"
 #include "claims/venture-claims-web.inc"
+#include "payroll/venture-payroll-web.inc"
 
 /*
  * POST /invoices/:id/status - the same service reached by generated writes.
@@ -27968,6 +27970,10 @@ venture_web_server_new(
 	htmx_router_get(router, "/claims", venture_web_claims_workbench, self);
 	htmx_router_post(router, "/claims/:id/:action", venture_web_claims_action, self);
 	htmx_router_post(router, "/api/v1/expense_claim/:id/:action", venture_web_claims_action, self);
+	htmx_router_get(router, "/payroll", venture_web_payroll_workbench, self);
+	htmx_router_post(router, "/api/v1/payroll/import", venture_web_payroll_action, self);
+	htmx_router_post(router, "/api/v1/payroll_run/:id/:action", venture_web_payroll_action, self);
+	htmx_router_post(router, "/payroll/:id/:action", venture_web_payroll_action, self);
 	htmx_router_get(router, "/close", close_ui, self);
 	htmx_router_post(router, "/api/v1/close/open", close_api, self);
 	htmx_router_post(router, "/api/v1/close/:id/:action", close_api, self);

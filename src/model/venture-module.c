@@ -666,6 +666,11 @@ static GType (*const venture_module_claims_types[]) (void) = {
 };
 static const gchar *const venture_module_requires_claims[] = { "finance", "ledger", NULL };
 static const gchar *const venture_module_suggests_claims[] = { "capture", "payables", NULL };
+static GType (*const venture_module_payroll_types[]) (void) = {
+	venture_payroll_run_get_type, venture_payroll_line_get_type, NULL
+};
+static const gchar *const venture_module_requires_payroll[] = { "finance", "ledger", NULL };
+static const gchar *const venture_module_reports_payroll[] = { "payroll_reconciliation", NULL };
 static const gchar *const venture_module_requires_accounting[] = { "finance", NULL };
 static const gchar *const venture_module_suggests_accounting[] = {
 	"banking", "receivables", "payables", "periods", "close", "capture", NULL
@@ -942,6 +947,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"claims", "Expense claims", "Employee reimbursements, mileage and receipt-backed expense claims.",
 		venture_module_requires_claims, venture_module_suggests_claims,
 		venture_module_claims_types, NULL, NULL, FALSE
+	},
+	{
+		"payroll", "Payroll", "Imported pay runs, liability disbursement and reconciliation.",
+		venture_module_requires_payroll, NULL,
+		venture_module_payroll_types, venture_module_reports_payroll, "payroll-enabled", FALSE
 	},
 	{
 		"accounting", "Daily accounting", "Guided next actions for the books.",

@@ -49,6 +49,7 @@ Every record derives from =VentureEntity= and carries the same spine:
 
 - *expense* — with a deductibility and a business-use percentage.
 - *expense_claim*, *expense_claim_line* — employee reimbursements; mileage is rate times miles. Owned by =claims=. See [[file:claims.org][employee reimbursements]].
+- *payroll_run*, *payroll_line* — imported approved pay runs. Owned by =payroll=, default off. See [[file:payroll.org][payroll import]].
 - *account* — a chart of accounts; five classes.
 - *ledger_entry* — read-only projections of posted journal lines.
 - *journal*, *journal_line* — immutable posted evidence, with source-document
