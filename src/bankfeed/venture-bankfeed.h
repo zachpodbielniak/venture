@@ -19,6 +19,7 @@ struct _VentureBankFeedTransportInterface
 };
 gchar *venture_bank_feed_transport_get(VentureBankFeedTransport *self, const gchar *url,
 	const gchar *authorization, GError **error);
+VentureBankFeedTransport *venture_bank_feed_transport_new_http(void);
 
 #define VENTURE_TYPE_BANK_FEED (venture_bank_feed_get_type())
 G_DECLARE_INTERFACE(VentureBankFeed, venture_bank_feed, VENTURE, BANK_FEED, GObject)
@@ -41,7 +42,19 @@ GPtrArray *venture_bank_feed_fetch(VentureBankFeed *self, const gchar *account_i
 #define VENTURE_TYPE_BANK_FEED_REGISTRY (venture_bank_feed_registry_get_type())
 G_DECLARE_FINAL_TYPE(VentureBankFeedRegistry, venture_bank_feed_registry, VENTURE, BANK_FEED_REGISTRY, GObject)
 VentureBankFeedRegistry *venture_bank_feed_registry_new(void);
+/**
+ * venture_bank_feed_registry_add:
+ * @self: the registry
+ * @feed: (transfer full): the registry takes ownership
+ */
 void venture_bank_feed_registry_add(VentureBankFeedRegistry *self, VentureBankFeed *feed);
+/**
+ * venture_bank_feed_registry_lookup:
+ * @self: the registry
+ * @name: provider key
+ *
+ * Returns: (transfer none) (nullable): borrowed feed
+ */
 VentureBankFeed *venture_bank_feed_registry_lookup(VentureBankFeedRegistry *self, const gchar *name);
 gboolean venture_bank_feed_registry_remove(VentureBankFeedRegistry *self, const gchar *name);
 GPtrArray *venture_bank_feed_registry_list(VentureBankFeedRegistry *self);

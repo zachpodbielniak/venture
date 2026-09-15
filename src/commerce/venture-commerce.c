@@ -294,7 +294,8 @@ venture_shopify_connector_new(const gchar *shop, const gchar *token, VentureBank
 	VentureShopifyConnector *self = g_object_new(VENTURE_TYPE_SHOPIFY_CONNECTOR, NULL);
 	self->shop = g_strdup(shop);
 	self->token = g_strdup(token);
-	self->transport = transport != NULL ? g_object_ref(transport) : NULL;
+	self->transport = transport != NULL ? g_object_ref(transport) :
+		venture_bank_feed_transport_new_http();
 	return VENTURE_COMMERCE_CONNECTOR(self);
 }
 
@@ -328,18 +329,15 @@ venture_commerce_service_new(VentureDatabase *database, gint64 organization_id,
 	g_autoptr(VentureCommerceService) self = NULL;
 	const gchar *token = g_getenv("VENTURE_COMMERCE_SHOPIFY_TOKEN");
 	const gchar *shop = g_getenv("VENTURE_COMMERCE_SHOPIFY_SHOP");
-	if (token == NULL || *token == '\0')
-	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
-			"Commerce module requires VENTURE_COMMERCE_SHOPIFY_TOKEN");
-		return NULL;
-	}
+	(void)error;
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
 	self = g_object_new(VENTURE_TYPE_COMMERCE_SERVICE, NULL);
 	self->database = g_object_ref(database);
 	self->organization_id = organization_id;
 	self->registry = venture_commerce_connector_registry_new();
-	venture_commerce_connector_registry_add(self->registry,
-		venture_shopify_connector_new(shop, token, transport));
+	if (token != NULL && *token != '\0')
+		venture_commerce_connector_registry_add(self->registry,
+			venture_shopify_connector_new(shop, token, transport));
 	return g_steal_pointer(&self);
 }
 

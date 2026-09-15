@@ -40,4 +40,3 @@ connection_before_save(VentureEntity *entity, GError **error)
 }
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureBankConnection, venture_bank_connection, bank_connection_fields,
 	VENTURE_ENTITY_CLASS(klass)->before_save = connection_before_save;)
-

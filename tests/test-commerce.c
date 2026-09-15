@@ -130,9 +130,9 @@ test_missing_key(void)
 	db = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
 	service = venture_commerce_service_new(db, 1, NULL, &error);
-	g_assert_null(service);
-	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
-	g_assert_nonnull(strstr(error->message, "VENTURE_COMMERCE_SHOPIFY_TOKEN"));
+	g_assert_nonnull(service);
+	g_assert_no_error(error);
+	g_assert_null(venture_commerce_connector_registry_lookup(venture_commerce_service_get_registry(service), "shopify"));
 	g_setenv("VENTURE_COMMERCE_SHOPIFY_TOKEN", "test-token", TRUE);
 }
 

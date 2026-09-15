@@ -175,7 +175,13 @@ soup_bank_feed_transport_class_init(SoupBankFeedTransportClass *klass)
 static void
 soup_bank_feed_transport_init(SoupBankFeedTransport *self)
 {
-	self->session = soup_session_new();
+	self->session = soup_session_new_with_options("timeout", 30, NULL);
+}
+
+VentureBankFeedTransport *
+venture_bank_feed_transport_new_http(void)
+{
+	return g_object_new(soup_bank_feed_transport_get_type(), NULL);
 }
 
 struct _VentureTellerFeed
@@ -306,32 +312,21 @@ venture_bankfeed_service_class_init(VentureBankFeedServiceClass *klass)
 }
 static void venture_bankfeed_service_init(VentureBankFeedService *self) { (void)self; }
 
-static gboolean
-require_key(GError **error)
-{
-	const gchar *key = g_getenv("VENTURE_BANKFEED_TELLER_KEY");
-	if (key == NULL || *key == '\0')
-	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
-			"Bank feed module requires VENTURE_BANKFEED_TELLER_KEY");
-		return FALSE;
-	}
-	return TRUE;
-}
-
 VentureBankFeedService *
 venture_bankfeed_service_new(VentureDatabase *database, gint64 organization_id,
 	VentureBankFeedTransport *transport, GError **error)
 {
 	g_autoptr(VentureBankFeedService) self = NULL;
 	const gchar *key;
-	if (!require_key(error)) return NULL;
-	key = g_getenv("VENTURE_BANKFEED_TELLER_KEY");
+	(void)error;
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
 	self = g_object_new(VENTURE_TYPE_BANKFEED_SERVICE, NULL);
 	self->database = g_object_ref(database);
 	self->organization_id = organization_id;
 	self->registry = venture_bank_feed_registry_new();
-	venture_bank_feed_registry_add(self->registry, venture_teller_feed_new(key, transport));
+	key = g_getenv("VENTURE_BANKFEED_TELLER_KEY");
+	if (key != NULL && *key != '\0')
+		venture_bank_feed_registry_add(self->registry, venture_teller_feed_new(key, transport));
 	return g_steal_pointer(&self);
 }
 
@@ -362,7 +357,7 @@ venture_bankfeed_service_sync(VentureBankFeedService *self, gint64 connection_id
 	g_autoptr(VentureEntity) bank = NULL;
 	g_autoptr(GPtrArray) items = NULL;
 	g_autoptr(JsonObject) args = json_object_new();
-	JsonArray *transactions = json_array_new();
+	g_autoptr(JsonArray) transactions = json_array_new();
 	g_autoptr(VentureEntity) result = NULL;
 	g_autoptr(GDateTime) window_from = NULL, window_to = NULL, now = NULL;
 	g_autofree gchar *provider = NULL, *account = NULL, *currency = NULL, *start = NULL, *end = NULL;
@@ -415,7 +410,7 @@ venture_bankfeed_service_sync(VentureBankFeedService *self, gint64 connection_id
 	end = g_date_time_format(window_to, "%Y-%m-%d");
 	json_object_set_string_member(args, "period_start", start);
 	json_object_set_string_member(args, "period_end", end);
-	json_object_set_array_member(args, "transactions", transactions);
+	json_object_set_array_member(args, "transactions", g_steal_pointer(&transactions));
 	before = count_filter(self->database, VENTURE_TYPE_BANK_TRANSACTION, self->organization_id, "bank-account-id", bank_id, error);
 	if (before < 0) return -1;
 	if (!venture_database_begin(self->database, error)) return -1;

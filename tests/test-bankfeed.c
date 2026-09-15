@@ -177,9 +177,9 @@ test_missing_key(void)
 	db = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
 	service = venture_bankfeed_service_new(db, 1, NULL, &error);
-	g_assert_null(service);
-	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
-	g_assert_nonnull(strstr(error->message, "VENTURE_BANKFEED_TELLER_KEY"));
+	g_assert_nonnull(service);
+	g_assert_no_error(error);
+	g_assert_null(venture_bank_feed_registry_lookup(venture_bankfeed_service_get_registry(service), "teller"));
 	g_setenv("VENTURE_BANKFEED_TELLER_KEY", "test-token", TRUE);
 }
 
@@ -189,9 +189,9 @@ test_start_without_key(Fixture *f, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	(void)data;
 	g_unsetenv("VENTURE_BANKFEED_TELLER_KEY");
-	g_assert_false(venture_context_start_bankfeed(f->context, &error));
-	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
-	g_assert_nonnull(strstr(error->message, "VENTURE_BANKFEED_TELLER_KEY"));
+	g_assert_true(venture_context_start_bankfeed(f->context, &error));
+	g_assert_no_error(error);
+	g_assert_nonnull(venture_context_get_bankfeed_service(f->context));
 	g_setenv("VENTURE_BANKFEED_TELLER_KEY", "test-token", TRUE);
 }
 
