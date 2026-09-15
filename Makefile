@@ -117,6 +117,8 @@ CORE_SRCS += src/mail/venture-mail-records.c
 SERVER_ONLY_SRCS += $(filter-out src/mail/venture-mail-records.c,$(wildcard src/mail/*.c))
 CORE_SRCS += src/quotes/venture-quote-records.c
 SERVER_ONLY_SRCS += $(filter-out src/quotes/venture-quote-records.c,$(wildcard src/quotes/*.c))
+CORE_SRCS += src/goods/venture-goods-records.c
+SERVER_ONLY_SRCS += $(filter-out src/goods/venture-goods-records.c,$(wildcard src/goods/*.c))
 SERVER_ONLY_SRCS += src/leads/venture-lead-service.c src/leads/venture-lead-reports.c
 SERVER_ONLY_SRCS += $(filter-out src/activities/venture-activity-records.c,$(wildcard src/activities/*.c))
 SERVER_ONLY_SRCS += src/payables/venture-payables-service.c src/payables/venture-payable-reports.c
@@ -187,6 +189,7 @@ PUBLIC_HDRS += $(wildcard src/projects/*.h)
 PUBLIC_HDRS += $(wildcard src/mail/*.h)
 
 PUBLIC_HDRS += $(wildcard src/payables/*.h)
+PUBLIC_HDRS += $(wildcard src/goods/*.h)
 PUBLIC_HDRS += $(wildcard src/close/*.h)
 PUBLIC_HDRS += $(wildcard src/tax/*.h)
 PUBLIC_HDRS += $(wildcard src/capture/*.h)

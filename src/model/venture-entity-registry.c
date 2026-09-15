@@ -826,6 +826,14 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_expense_claim_line_get_type,
 		venture_payroll_run_get_type,
 		venture_payroll_line_get_type,
+		venture_purchase_order_get_type,
+		venture_purchase_order_line_get_type,
+		venture_goods_receipt_get_type,
+		venture_goods_receipt_line_get_type,
+		venture_inventory_cost_layer_get_type,
+		venture_sales_order_get_type,
+		venture_sales_order_line_get_type,
+		venture_fulfillment_get_type,
 	};
 	gsize i;
 

@@ -1076,7 +1076,9 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 					return FALSE;
 			}
 			if (!post_split(self, VENTURE_ENTITY(event), date, total, income != NULL ? income : net, tax, FALSE, deferred, actor, error) ||
-				!schedule_recognition(self, invoice, deferred, date, actor, error))
+				!schedule_recognition(self, invoice, deferred, date, actor, error) ||
+				!venture_inventory_service_issue_invoice(venture_inventory_service_get(self->database),
+					invoice, actor, error))
 				return FALSE;
 		}
 		if (phase == VENTURE_INVOICE_STATUS_VOID && !venture_money_is_zero(total))

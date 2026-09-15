@@ -1148,10 +1148,17 @@ venture_database_save(
 		!venture_tax_filing_check_write(self, entity, FALSE, error) ||
 		!venture_accounting_approval_check_write(self, entity, FALSE, error) ||
 		!venture_claims_check_write(self, entity, FALSE, error) ||
-		!venture_payroll_check_write(self, entity, FALSE, error))
+		!venture_payroll_check_write(self, entity, FALSE, error) ||
+		!venture_goods_check_write(self, entity, FALSE, error))
 		return FALSE;
 
 	VENTURE_AUTOJOURNAL_SAVE_HOOK(self, entity, actor, error);
+	{
+		gboolean handled = FALSE;
+		gboolean ok = venture_goods_save_hook(self, entity, actor, &handled, error);
+		if (handled || !ok)
+			return ok;
+	}
 	/* Source and posting share a transaction, whichever surface saved it. */
 	{
 		gboolean handled = FALSE;
@@ -1641,6 +1648,7 @@ venture_database_delete(
 		!venture_backup_check_write(self, entity, TRUE, error) ||
 		!venture_tax_filing_check_write(self, entity, TRUE, error) ||
 		!venture_accounting_approval_check_write(self, entity, TRUE, error) ||
+		!venture_goods_check_write(self, entity, TRUE, error) ||
 		!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error) ||
 		!venture_claims_check_write(self, entity, TRUE, error) ||
@@ -1738,6 +1746,7 @@ venture_database_restore(
 		!venture_backup_check_write(self, entity, TRUE, error) ||
 		!venture_tax_filing_check_write(self, entity, TRUE, error) ||
 		!venture_accounting_approval_check_write(self, entity, TRUE, error) ||
+		!venture_goods_check_write(self, entity, TRUE, error) ||
 		!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error) ||
 		!venture_claims_check_write(self, entity, TRUE, error) ||
@@ -1815,6 +1824,7 @@ venture_database_purge(
 		!venture_backup_check_write(self, entity, TRUE, error) ||
 		!venture_tax_filing_check_write(self, entity, TRUE, error) ||
 		!venture_accounting_approval_check_write(self, entity, TRUE, error) ||
+		!venture_goods_check_write(self, entity, TRUE, error) ||
 		!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error) ||
 		!venture_claims_check_write(self, entity, TRUE, error) ||

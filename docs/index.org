@@ -31,6 +31,9 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:assets.org][Fixed assets and deferrals]] — book depreciation, monthly releases and period sweeps
 - [[file:receivables.org][Customer receivables]] — receipts, credits, refunds and historical customer balances
 - [[file:payables.org][Vendor payables]] — supplier bills, payments and dated liability evidence
+- [[file:purchasing.org][Purchasing]] — purchase orders, receiving and three-way match
+- [[file:inventory.org][Inventory ledger]] — FIFO cost layers and COGS
+- [[file:sales-orders.org][Sales orders]] — allocate, ship and invoice fulfilled quantity
 - [[file:reporting.org][Reporting]] — the built-in reports and how to write one
 - [[file:forge.org][Git forges]] — linking tickets to repositories, and letting an agent do the work
 - [[file:knowledge-bases.org][Knowledge bases]] — documents the assistant can read, and how they reach it

@@ -711,6 +711,17 @@ static GType (*const recurring_types[]) (void) = {
 	venture_collection_case_get_type, venture_collection_notice_get_type,
 	venture_financial_batch_get_type, NULL
 };
+static GType (*const goods_types[]) (void) = {
+	venture_purchase_order_get_type, venture_purchase_order_line_get_type,
+	venture_goods_receipt_get_type, venture_goods_receipt_line_get_type,
+	venture_inventory_cost_layer_get_type, venture_sales_order_get_type,
+	venture_sales_order_line_get_type, venture_fulfillment_get_type, NULL
+};
+static const gchar *const goods_requires[] = { "payables", "ledger", "sales", NULL };
+static const gchar *const goods_reports[] = {
+	"committed_spend", "reorder_worklist", "inventory_valuation", NULL
+};
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -967,6 +978,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"Jurisdiction sales-tax returns and contractor 1099-NEC packs.",
 		venture_module_requires_tax_filing, venture_module_suggests_tax_filing,
 		venture_module_tax_filing_types, NULL, NULL, FALSE
+	},
+	{
+		"goods", "Purchasing, inventory and sales orders",
+		"Purchase orders, receiving, FIFO inventory to the general ledger, and sales-order fulfillment.",
+		goods_requires, NULL, goods_types, goods_reports, NULL, FALSE
 	}
 
 };

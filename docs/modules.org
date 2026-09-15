@@ -71,6 +71,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =payroll= | finance, ledger | payroll_run, payroll_line; =payroll_reconciliation=; default off | |
 | =accounting= | finance | the =/accounting= home | banking, receivables, payables, periods, close, capture |
 | =tax_filing= | finance, periods | tax_filing, contractor_tax_form, contractor_tax_pack | invoicing, payables |
+| =goods= | payables, ledger, sales | purchase_order, purchase_order_line, goods_receipt, goods_receipt_line, inventory_cost_layer, sales_order, sales_order_line, fulfillment; =committed_spend=, =reorder_worklist=, =inventory_valuation= | invoicing, receivables |
 
 Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.
 

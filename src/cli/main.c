@@ -631,6 +631,7 @@ venture_cli_values_from_args(
 }
 
 #include "payables/venture-payables-cli.inc"
+#include "goods/venture-goods-cli.inc"
 #include "close/venture-close-cli.inc"
 #include "tax/venture-tax-cli.inc"
 #include "capture/venture-capture-cli.inc"
@@ -3384,6 +3385,8 @@ main(
 		"  post backfill                post missing journals; --dry-run\n"
 		"  bill approve|pay|void ID [field=value ...]  supplier bill actions\n"
 		"  bill pay-bulk 1,2,3 [adapter=transfer]     pay selected approved bills\n"
+		"  purchase approve|send|receive|match|cancel ID  purchase orders and receiving\n"
+		"  sales-order allocate|ship|invoice|cancel ID   sales order fulfillment\n"
 		"  close open|run|sign|complete|reopen|pack   accountant close workspace\n"
 		"  tax-filing prepare|review|submit|acknowledge|amend  jurisdiction tax return\n"
 		"  contractor-tax prepare|review|approve|export     1099-NEC packs\n"
@@ -3650,6 +3653,10 @@ main(
 		result = venture_cli_command_lead(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "bill"))
 		result = venture_cli_command_bill(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "purchase"))
+		result = venture_cli_command_purchase(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "sales-order"))
+		result = venture_cli_command_sales_order(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "close"))
 		result = venture_cli_command_close(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "tax-filing"))

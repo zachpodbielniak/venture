@@ -38,6 +38,15 @@ Every record derives from =VentureEntity= and carries the same spine:
 - *inventory_item* — reorder point, lead time, carrying cost.
 - *inventory_txn* — a signed movement. Quantity on hand is their sum, never a
   stored field.
+- *inventory_cost_layer* — remaining FIFO quantity and unit cost, posted by
+  receiving.
+
+** Purchasing and sales orders
+
+- *purchase_order* / *purchase_order_line* — committed spend.
+- *goods_receipt* / *goods_receipt_line* — partial receiving.
+- *sales_order* / *sales_order_line* / *fulfillment* — allocation, shipment
+  and invoicing of fulfilled quantity.
 
 ** Revenue
 

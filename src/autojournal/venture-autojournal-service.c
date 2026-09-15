@@ -204,7 +204,8 @@ rule_lines(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *source,
 			!leg(rows, profile, "tax-account-id", VENTURE_LEDGER_SIDE_DEBIT, remitted, error) ||
 			!leg(rows, profile, "cash-account-id", VENTURE_LEDGER_SIDE_CREDIT, remitted, error)) return NULL;
 		g_object_get(source, "product-id", &product_id, "quantity", &quantity, NULL);
-		if (product_id > 0 && quantity != 0) {
+		if (product_id > 0 && quantity != 0 &&
+			!venture_inventory_product_is_stocked(db, product_id)) {
 			g_autoptr(VentureEntity) product = venture_database_get(db, VENTURE_TYPE_PRODUCT, product_id, error);
 			g_autoptr(VentureMoney) cost = NULL;
 			g_autoptr(VentureMoney) total = NULL;

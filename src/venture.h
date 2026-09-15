@@ -122,6 +122,7 @@
 #include "mcp/venture-mcp-server.h"
 
 #include "quotes/venture-quote-records.h"
+#include "goods/venture-goods-records.h"
 
 /* --- Server-only subsystems ---------------------------------------------- */
 
@@ -154,6 +155,9 @@ gboolean venture_accounting_approval_allow(VentureDatabase *database, const gcha
 #include "mail/venture-mail-outbox.h"
 #include "mail/venture-mail-template.h"
 #include "quotes/venture-quote-service.h"
+#include "goods/venture-purchasing-service.h"
+#include "goods/venture-inventory-service.h"
+#include "goods/venture-sales-order-service.h"
 #include "leads/venture-lead-service.h"
 #include "payables/venture-payables-service.h"
 #include "close/venture-close-service.h"

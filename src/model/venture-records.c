@@ -183,6 +183,9 @@ static const VentureFieldDecl venture_inventory_item_fields[] = {
 	VENTURE_FIELD("lead-time-days", "Lead time",
 	              "Days between ordering and receiving",
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("allow-negative", "Allow negative",
+	              "When true, stock may go below zero",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 

@@ -2732,5 +2732,6 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 	venture_recurring_register_reports(self);
 	venture_close_register_reports(self);
 	venture_payroll_register_reports(self);
+	venture_goods_register_reports(self);
 
 }

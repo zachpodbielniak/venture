@@ -745,8 +745,21 @@ post_bill(VenturePayablesService *self, VentureEntity *bill, VentureEntity *even
 			net = g_steal_pointer(&amount);
 		if (net == NULL)
 			return FALSE;
-		account = account_id(self, get_id(line, "account-id") != 0 ? get_id(line, "account-id") : self->expense_account,
-			"6900", VENTURE_ACCOUNT_KIND_EXPENSE, org, error);
+		if (get_id(line, "account-id") != 0)
+		{
+			g_autoptr(VentureEntity) chosen = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT,
+				get_id(line, "account-id"), error);
+			gboolean active = FALSE;
+			if (chosen == NULL)
+				return FALSE;
+			g_object_get(chosen, "active", &active, NULL);
+			if (!active || venture_entity_get_organization_id(chosen) != org)
+				return refuse(error, VENTURE_ERROR_VALIDATION,
+					"The posting account must be active, of the right class, and in the same organization");
+			account = venture_entity_get_id(chosen);
+		}
+		else
+			account = account_id(self, self->expense_account, "6900", VENTURE_ACCOUNT_KIND_EXPENSE, org, error);
 		if (account == 0)
 			return FALSE;
 		entry = venture_ledger_entry_new();
@@ -807,6 +820,8 @@ perform_transition(VenturePayablesService *self, VentureEntity *bill, VentureVen
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Approve a draft or void an unpaid approved bill");
 	g_object_get(bill, "bill-date", &earliest, "due-date", &due, NULL);
 	if (!check_date(date, earliest, error) || !check_bill_chronology(self, venture_entity_get_id(bill), date, error))
+		return FALSE;
+	if (approval && !venture_purchasing_check_bill_approval(self->database, bill, error))
 		return FALSE;
 	if (approval)
 		total = bill_total(self, bill, error);
