@@ -544,6 +544,7 @@ resolve_code(VentureSettlementService *self, const gchar *code, gint64 organizat
 	{
 		configured = 0;
 		kind = VENTURE_ACCOUNT_KIND_EXPENSE;
+	}
 	else if (g_str_equal(code, "2200"))
 	{
 		configured = 0;
@@ -556,15 +557,24 @@ resolve_code(VentureSettlementService *self, const gchar *code, gint64 organizat
 	}
 	if (configured == 0)
 	{
-		const gchar *role = g_str_equal(code, "1000") ? "cash" :
-			(g_str_equal(code, "1100") ? "receivables" :
-			(g_str_equal(code, "2100") ? "tax" : "income"));
-		gint64 mapped = venture_setup_resolve_account(self->database, organization_id,
-			role, "organization", 0, NULL, error);
-		if (mapped != 0)
-			configured = mapped;
-		else if (error != NULL && *error != NULL)
-			return FALSE;
+		const gchar *role = NULL;
+		if (g_str_equal(code, "1000"))
+			role = "cash";
+		else if (g_str_equal(code, "1100"))
+			role = "receivables";
+		else if (g_str_equal(code, "2100"))
+			role = "tax";
+		else if (g_str_equal(code, "4000"))
+			role = "income";
+		if (role != NULL)
+		{
+			gint64 mapped = venture_setup_resolve_account(self->database, organization_id,
+				role, "organization", 0, NULL, error);
+			if (mapped != 0)
+				configured = mapped;
+			else if (error != NULL && *error != NULL)
+				return FALSE;
+		}
 	}
 	*account = account_id(self, configured, code, kind, organization_id, error);
 	return *account != 0;
@@ -595,7 +605,6 @@ post_split(VentureSettlementService *self, VentureEntity *source, GDateTime *dat
 	g_autoptr(VentureExchangePolicy) policy = NULL;
 	g_autofree gchar *transaction = NULL;
 	g_autofree gchar *book = NULL;
-	gint64 ar = 0, income = 0, tax = 0;
 	gint64 ar = 0, income = 0, tax = 0, deferred = 0;
 	gint64 org = venture_entity_get_organization_id(source);
 	if (debit_ar != NULL && !venture_money_is_zero(debit_ar) && !check_amount(debit_ar, error))

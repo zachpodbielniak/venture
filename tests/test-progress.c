@@ -37,7 +37,7 @@ actor_init(VentureActor *actor)
 }
 
 static gint64
-G_GNUC_UNUSED account_id(Fixture *f, const gchar *code)
+account_id(Fixture *f, const gchar *code)
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
 	g_autoptr(VentureEntity) row = NULL;
@@ -154,12 +154,7 @@ test_progress_invoice_remaining(Fixture *f, gconstpointer data)
 static gint64
 liability(Fixture *f)
 {
-	g_autoptr(VentureAccount) account = venture_account_new();
-	venture_entity_set_organization_id(VENTURE_ENTITY(account), f->org);
-	g_object_set(account, "code", "2200", "name", "Retainers",
-		"kind", VENTURE_ACCOUNT_KIND_LIABILITY, "active", TRUE, NULL);
-	save(f, VENTURE_ENTITY(account));
-	return venture_entity_get_id(VENTURE_ENTITY(account));
+	return account_id(f, "2200");
 }
 
 static void
