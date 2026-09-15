@@ -510,7 +510,8 @@ static const gchar *const venture_module_requires_receivables[] = {
 };
 static GType (*const venture_module_receivables_types[]) (void) = {
 	venture_payment_get_type, venture_payment_allocation_get_type,
-	venture_customer_credit_get_type, venture_refund_get_type, NULL
+	venture_customer_credit_get_type, venture_refund_get_type,
+	venture_customer_portal_access_get_type, NULL
 };
 static const gchar *const venture_module_reports_outreach[] = {
 	"campaigns", NULL
@@ -550,6 +551,8 @@ static GType (*const venture_module_orgaccess_types[]) (void) = {
 	venture_organization_membership_get_type,
 	venture_team_get_type,
 	venture_team_membership_get_type,
+	venture_accounting_approval_rule_get_type,
+	venture_accounting_approval_get_type,
 	NULL
 };
 
@@ -578,6 +581,9 @@ static GType (*const quotes_types[]) (void) = {
 	venture_quote_event_get_type,
 	venture_quote_delivery_get_type,
 	venture_quote_action_get_type,
+	venture_progress_billing_get_type,
+	venture_customer_retainer_get_type,
+	venture_contract_retention_get_type,
 	NULL
 };
 
@@ -661,6 +667,11 @@ static GType (*const setup_types[]) (void) = {
 static GType (*const cutover_types[]) (void) = {
 	venture_accounting_cutover_get_type, venture_accounting_cutover_row_get_type, NULL
 };
+static GType (*const statements_types[]) (void) = {
+	venture_saved_report_get_type, venture_report_pack_get_type,
+	venture_accounting_dimension_get_type, NULL
+};
+static GType (*const backup_types[]) (void) = { venture_accounting_backup_get_type, NULL };
 
 
 static const gchar *const recurring_requires[] = {
@@ -875,7 +886,7 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	},
 	{
 		"statements", "Statements", "Financial statements from posted ledger evidence.",
-		venture_module_requires_statements, NULL, NULL,
+		venture_module_requires_statements, NULL, statements_types,
 		venture_module_reports_statements, NULL, FALSE
 	},
 	{
@@ -905,6 +916,8 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"accounting", "Daily accounting", "Guided next actions for the books.",
 		venture_module_requires_accounting, venture_module_suggests_accounting,
 		NULL, NULL, NULL, FALSE
+		"backup", "Accounting backup", "Export and restore an organization accounting pack.",
+		cutover_requires, NULL, backup_types, NULL, NULL, FALSE
 	}
 
 };

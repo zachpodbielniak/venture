@@ -1131,6 +1131,10 @@ venture_database_save(
 	if (!venture_bank_check_write(self, entity, FALSE, error) ||
 		!venture_cutover_check_write(self, entity, FALSE, error) ||
 		!venture_setup_check_write(self, entity, FALSE, error))
+		!venture_progress_check_write(self, entity, FALSE, error) ||
+		!venture_portal_check_write(self, entity, FALSE, error) ||
+		!venture_backup_check_write(self, entity, FALSE, error) ||
+		!venture_accounting_approval_check_write(self, entity, FALSE, error))
 		return FALSE;
 
 	VENTURE_AUTOJOURNAL_SAVE_HOOK(self, entity, actor, error);
@@ -1591,6 +1595,10 @@ venture_database_delete(
 	if (!venture_bank_check_write(self, entity, TRUE, error) ||
 		!venture_cutover_check_write(self, entity, TRUE, error) ||
 		!venture_setup_check_write(self, entity, TRUE, error) ||
+		!venture_progress_check_write(self, entity, TRUE, error) ||
+		!venture_portal_check_write(self, entity, TRUE, error) ||
+		!venture_backup_check_write(self, entity, TRUE, error) ||
+		!venture_accounting_approval_check_write(self, entity, TRUE, error) ||
 		!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
@@ -1682,6 +1690,10 @@ venture_database_restore(
 	if (!venture_bank_check_write(self, entity, TRUE, error) ||
 		!venture_cutover_check_write(self, entity, TRUE, error) ||
 		!venture_setup_check_write(self, entity, TRUE, error) ||
+		!venture_progress_check_write(self, entity, TRUE, error) ||
+		!venture_portal_check_write(self, entity, TRUE, error) ||
+		!venture_backup_check_write(self, entity, TRUE, error) ||
+		!venture_accounting_approval_check_write(self, entity, TRUE, error) ||
 		!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
@@ -1753,6 +1765,10 @@ venture_database_purge(
 	if (!venture_bank_check_write(self, entity, TRUE, error) ||
 		!venture_cutover_check_write(self, entity, TRUE, error) ||
 		!venture_setup_check_write(self, entity, TRUE, error) ||
+		!venture_progress_check_write(self, entity, TRUE, error) ||
+		!venture_portal_check_write(self, entity, TRUE, error) ||
+		!venture_backup_check_write(self, entity, TRUE, error) ||
+		!venture_accounting_approval_check_write(self, entity, TRUE, error) ||
 		!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
@@ -2352,6 +2368,9 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_cutover_actions_register(self);
 		venture_setup_actions_register(self);
 		venture_recurring_register_actions(self);
+		venture_progress_actions_register(self);
+		venture_portal_actions_register(self);
+		venture_backup_actions_register(self);
 	}
 	return self->actions;
 }

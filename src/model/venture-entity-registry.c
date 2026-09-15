@@ -782,6 +782,16 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_accounting_cutover_row_get_type
 		, venture_accounting_setup_get_type
 		, venture_accounting_control_map_get_type
+		, venture_progress_billing_get_type
+		, venture_customer_retainer_get_type
+		, venture_contract_retention_get_type
+		, venture_customer_portal_access_get_type
+		, venture_saved_report_get_type
+		, venture_report_pack_get_type
+		, venture_accounting_dimension_get_type
+		, venture_accounting_approval_rule_get_type
+		, venture_accounting_approval_get_type
+		, venture_accounting_backup_get_type
 		, venture_pipeline_get_type,
 		venture_pipeline_stage_get_type,
 		venture_deal_stage_entry_get_type,

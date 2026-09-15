@@ -78,6 +78,11 @@
 #include "banking/venture-bank-records.h"
 #include "cutover/venture-cutover-records.h"
 #include "setup/venture-setup-records.h"
+#include "progress/venture-progress-records.h"
+#include "portal/venture-portal-records.h"
+#include "backup/venture-backup-records.h"
+#include "report/venture-report-records.h"
+#include "orgaccess/venture-accounting-approval.h"
 #include "receivables/venture-invoice-state-machine.h"
 #include "model/venture-venture-type.h"
 #include "model/venture-entity-registry.h"
@@ -112,7 +117,7 @@
 #include "mcp/venture-mcp-catalog.h"
 #include "mcp/venture-mcp-server.h"
 
- #include "quotes/venture-quote-records.h"
+#include "quotes/venture-quote-records.h"
 
 /* --- Server-only subsystems ---------------------------------------------- */
 
@@ -125,6 +130,8 @@
 #include "db/venture-schema.h"
 #include "db/venture-query.h"
 #include "db/venture-database.h"
+gboolean venture_accounting_approval_check_write(VentureDatabase *database, VentureEntity *record, gboolean removal, GError **error);
+gboolean venture_accounting_approval_allow(VentureDatabase *database, const gchar *action, VentureEntity *entity, const VentureActor *actor, GError **error);
 #include "periods/venture-period-constraints.h"
 #include "periods/venture-period-check.h"
 #include "periods/venture-period-service.h"
@@ -152,6 +159,11 @@
 #include "cutover/venture-cutover-service.h"
 #include "setup/venture-setup-service.h"
 #include "documents/venture-document-service.h"
+#include "documents/venture-document-service.h"
+#include "progress/venture-progress-service.h"
+#include "portal/venture-portal-service.h"
+#include "backup/venture-backup-service.h"
+#include "report/venture-report-pack-service.h"
 #include "sequences/venture-sequence-service.h"
 #include "periods/venture-period-report.h"
 

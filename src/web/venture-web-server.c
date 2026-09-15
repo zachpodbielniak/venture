@@ -1431,6 +1431,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/capture", "Capture inbox", VENTURE_ICON("<path d=\"M4 4h16v12H4zM8 20h8\"/>"), NULL, "capture" },
 	{ "/worklist", "My day", VENTURE_ICON("<path d=\"M4 7h16M4 12h16M4 17h10\"/>"), "Activities", "activities" },
 	{ "/deals", "Sales board", VENTURE_ICON("<path d=\"M4 4v16M12 4v16M20 4v16\"/>"), "Sales pipelines", "pipelines" },
+	{ "/invoices/compose", "New invoice", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h8M8 16h5\"/>"), "Invoicing", "invoicing" },
+	{ "/quotes/compose", "New quote", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), "Quotes", "quotes" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 
@@ -7303,6 +7305,7 @@ venture_web_append_knowledge(
 #include "banking/venture-bank-panel.inc"
 #include "cutover/venture-cutover-panel.inc"
 #include "setup/venture-setup-panel.inc"
+#include "backup/venture-backup-web.inc"
 
 static void
 venture_web_append_related(
@@ -8901,6 +8904,7 @@ venture_web_ui_detail(
 	venture_bank_append_actions(content, record);
 	venture_cutover_append_actions(content, record);
 	venture_setup_append_actions(content, record);
+	venture_backup_append_actions(content, record);
 	venture_web_sequence_panel(self, content, principal, record);
 
 	/* A link is not offered on a link; the audit log is not linkable. */
@@ -27810,6 +27814,8 @@ venture_web_api_ticket_draft(
 #include "cutover/venture-cutover-web.inc"
 #include "setup/venture-setup-web.inc"
 #include "documents/venture-document-web.inc"
+#include "documents/venture-document-web.inc"
+#include "portal/venture-portal-web.inc"
 #include "autojournal/venture-autojournal-web.inc"
 
 #include "mail/venture-mail-web.inc"
@@ -28272,6 +28278,9 @@ venture_web_server_new(
 	venture_cutover_web_register(router, self);
 	venture_setup_web_register(router, self);
 venture_document_web_register(router, self);
+	venture_document_web_register(router, self);
+	venture_portal_web_register(router, self);
+	venture_backup_web_register(router, self);
 	htmx_router_post(router, "/api/v1/:type/:id/actions/:action", venture_web_api_action, self);
 	htmx_router_post(router, "/api/v1/journals/post", venture_web_api_action, self);
 

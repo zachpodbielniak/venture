@@ -61,6 +61,10 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:capture.org][Document capture]] — receipt and supplier-invoice inbox
 - [[file:accounting.org][Daily accounting home]] — guided next actions for the books
 
+- [[file:documents.org][Guided invoice and quote editor]] — one page for lines, tax and send
+- [[file:progress.org][Progress invoicing]] — remaining contract value, retainers and retention
+- [[file:portal.org][Customer portal]] — isolated invoices and pay
+- [[file:backup.org][Accounting backup]] — export and restore an organization pack
 - [[file:quotes.org][Commercial quotes]] — price lists, revisions, public acceptance and invoice handoff
 
 ** The shape of the thing in one page

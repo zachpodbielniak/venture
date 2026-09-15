@@ -76,6 +76,11 @@ CORE_SRCS += src/capture/venture-capture-records.c
 CORE_SRCS += src/banking/venture-bank-records.c
 CORE_SRCS += src/cutover/venture-cutover-records.c
 CORE_SRCS += src/setup/venture-setup-records.c
+CORE_SRCS += src/progress/venture-progress-records.c
+CORE_SRCS += src/portal/venture-portal-records.c
+CORE_SRCS += src/backup/venture-backup-records.c
+CORE_SRCS += src/orgaccess/venture-accounting-approval-records.c
+CORE_SRCS += src/report/venture-report-records.c
 
 # Server-only subsystems.
 SERVER_ONLY_SRCS := \
@@ -84,7 +89,7 @@ SERVER_ONLY_SRCS := \
 	src/receivables/venture-receivable-reports.c \
 	$(wildcard src/core/*.c) \
 	$(wildcard src/db/*.c) \
-	$(wildcard src/report/*.c) \
+	$(filter-out src/report/venture-report-records.c,$(wildcard src/report/*.c)) \
 	$(wildcard src/ai/*.c) \
 	$(wildcard src/automation/*.c) \
 	$(wildcard src/plugin/*.c) \
@@ -101,7 +106,7 @@ CORE_SRCS += src/stripe/venture-stripe-records.c
 SERVER_ONLY_SRCS += $(filter-out src/stripe/venture-stripe-records.c,$(wildcard src/stripe/*.c))
 CORE_SRCS += src/assets/venture-asset-records.c
 SERVER_ONLY_SRCS += $(filter-out src/assets/venture-asset-records.c,$(wildcard src/assets/*.c))
-SERVER_ONLY_SRCS += $(filter-out src/orgaccess/venture-access-records.c,$(wildcard src/orgaccess/*.c))
+SERVER_ONLY_SRCS += $(filter-out src/orgaccess/venture-access-records.c src/orgaccess/venture-accounting-approval-records.c,$(wildcard src/orgaccess/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/billing/venture-billing-records.c,$(wildcard src/billing/*.c))
 CORE_SRCS += src/mail/venture-mail-records.c
 SERVER_ONLY_SRCS += $(filter-out src/mail/venture-mail-records.c,$(wildcard src/mail/*.c))
@@ -128,6 +133,10 @@ SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
 SERVER_ONLY_SRCS += src/cutover/venture-cutover-service.c
 SERVER_ONLY_SRCS += src/setup/venture-setup-service.c
 SERVER_ONLY_SRCS += src/documents/venture-document-service.c
+SERVER_ONLY_SRCS += src/documents/venture-document-service.c
+SERVER_ONLY_SRCS += src/progress/venture-progress-service.c
+SERVER_ONLY_SRCS += src/portal/venture-portal-service.c
+SERVER_ONLY_SRCS += src/backup/venture-backup-service.c
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
@@ -181,6 +190,10 @@ PUBLIC_HDRS += $(wildcard src/cutover/*.h)
 PUBLIC_HDRS += $(wildcard src/setup/*.h)
 PUBLIC_HDRS += $(wildcard src/documents/*.h)
 PUBLIC_HDRS += $(wildcard src/recurring/*.h)
+PUBLIC_HDRS += $(wildcard src/documents/*.h)
+PUBLIC_HDRS += $(wildcard src/progress/*.h)
+PUBLIC_HDRS += $(wildcard src/portal/*.h)
+PUBLIC_HDRS += $(wildcard src/backup/*.h)
 
 TEST_SRCS := $(wildcard tests/test-*.c)
 
