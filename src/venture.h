@@ -151,6 +151,7 @@
 #include "banking/venture-bank-match-service.h"
 #include "cutover/venture-cutover-service.h"
 #include "setup/venture-setup-service.h"
+#include "documents/venture-document-service.h"
 #include "sequences/venture-sequence-service.h"
 #include "periods/venture-period-report.h"
 

@@ -74,6 +74,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `factory` | the software factory at a glance: milestones with progress, releases, builds, environments and what they run, open incidents |
 | `release changelog ID [--replace]` | draft a release's changelog from the tickets marked fixed in it |
 | `invoice checkout ID` | return a hosted Stripe Checkout URL for an eligible sent invoice; editor role, Stripe module required |
+| `compose invoice\|quote JSON` | create lines, tax and optionally send in one request |
 | `journal post ID` | post a draft through the shared service; editors propose, `--stage` always proposes |
 | `release publish ID [--prerelease]` | cut the release on the forge; creates the tag, cannot be undone here |
 | `dashboards` | the dashboards the token may see |
@@ -485,7 +486,8 @@ uncertain rows. Actions reject `--stage`; propose an enqueue with the generic
 
 `quote send ID`, `quote accept ID 'by=Full Name'`,
 `quote decline ID 'reason=Explanation'`, and `quote revise ID` call the quote
-service. Acceptance creates and issues the invoice in the same transaction.
+service. Acceptance creates and issues the invoice in the same transaction unless `billing_mode=progress`.
+`compose quote JSON` and `compose invoice JSON` create a draft (or send) in one call.
 For a staged action use `--stage create quote_action quote_id=ID action=accept
 expected_version=N 'accepted_by=Full Name'`; obtain the quote's current
 `version` first. `revision` is the separate commercial revision number.

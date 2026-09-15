@@ -27809,6 +27809,7 @@ venture_web_api_ticket_draft(
 #include "banking/venture-bank-web.inc"
 #include "cutover/venture-cutover-web.inc"
 #include "setup/venture-setup-web.inc"
+#include "documents/venture-document-web.inc"
 #include "autojournal/venture-autojournal-web.inc"
 
 #include "mail/venture-mail-web.inc"
@@ -28270,6 +28271,7 @@ venture_web_server_new(
 	venture_bank_web_register(router, self);
 	venture_cutover_web_register(router, self);
 	venture_setup_web_register(router, self);
+venture_document_web_register(router, self);
 	htmx_router_post(router, "/api/v1/:type/:id/actions/:action", venture_web_api_action, self);
 	htmx_router_post(router, "/api/v1/journals/post", venture_web_api_action, self);
 

@@ -1,0 +1,10 @@
+#+title: Guided invoice and quote editor
+#+description: One page to add lines, tax and send
+
+The guided editor reuses invoice and quote field tables and
+=VentureQuoteService=. =POST /api/v1/invoices/compose= and
+=/api/v1/quotes/compose= create a header, lines and optionally send in one
+transaction. Numbers are allocated per organization when omitted. Invoice
+quantities keep thousandths precision; quote quantities remain whole units
+until a later commercial change. =venturectl compose invoice|quote JSON=
+calls the same routes.

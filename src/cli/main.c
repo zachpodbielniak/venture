@@ -3207,6 +3207,7 @@ venture_cli_command_mcp(
 /* --- Entry point --------------------------------------------------------- */
 
 #include "quotes/venture-quote-cli.inc"
+#include "documents/venture-document-cli.inc"
 static gint
 venture_cli_command_act(VentureCli *cli, gchar **args, GError **error)
 {
@@ -3394,6 +3395,7 @@ main(
 		"  journal post ID              post a draft, or propose for approval\n"
 		"  mail list|send|test|deliver|retry  transactional mail\n"
 		"  quote send|accept|decline|revise ID [by=NAME] [reason=TEXT]\n"
+		"  compose invoice|quote JSON   lines, tax and optional send\n"
 		"  bank ACTION ID [JSON|@FILE] banking action; import map inbox bulk transfer\n"
 		"                               preview enable reverse; bank match AUTO ID\n"
 		"  deal move ID STAGE [NOTE]     move a deal through its pipeline\n"
@@ -3635,6 +3637,8 @@ main(
 		result = venture_cli_command_mail(&cli, args, mail_html, mail_limit, &error);
 	else if (0 == g_strcmp0(args[0], "quote"))
 		result = venture_cli_command_quote(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "compose"))
+		result = venture_cli_command_compose(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "lead"))
 		result = venture_cli_command_lead(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "bill"))
