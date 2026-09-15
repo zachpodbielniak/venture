@@ -405,7 +405,16 @@ restore_invoices(VentureBackupService *self, gint64 org, JsonArray *invoices, co
 				"quantity", json_object_has_member(line, "quantity") ? json_object_get_double_member(line, "quantity") : 1.0,
 				NULL);
 			if (price != NULL)
-				amount = venture_money_from_json(price, "USD", NULL);
+			{
+				g_autoptr(VentureEntity) organization = venture_database_get(self->database,
+					VENTURE_TYPE_ORGANIZATION, org, NULL);
+				g_autofree gchar *currency = NULL;
+				if (organization != NULL)
+					g_object_get(organization, "default-currency", &currency, NULL);
+				amount = venture_money_from_json(price, currency, error);
+				if (amount == NULL)
+					return FALSE;
+			}
 			if (amount != NULL)
 				g_object_set(il, "unit-price", amount, NULL);
 			if (!venture_database_save(self->database, VENTURE_ENTITY(il), actor, error))

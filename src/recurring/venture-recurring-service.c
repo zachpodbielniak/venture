@@ -366,7 +366,16 @@ generate_bill(VentureRecurringService *self, VentureEntity *schedule, JsonObject
 		g_object_set(bill, "number", fallback, NULL);
 	g_object_set(bill, "bill-date", at, "due-date", at, "status", "draft", NULL);
 	if (empty_text(bill, "currency"))
-		g_object_set(bill, "currency", "USD", NULL);
+	{
+		g_autoptr(VentureEntity) organization = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION,
+			venture_entity_get_organization_id(schedule), NULL);
+		g_autofree gchar *currency = NULL;
+		if (organization != NULL)
+			g_object_get(organization, "default-currency", &currency, NULL);
+		g_object_set(bill, "currency", currency != NULL && currency[0] != '\0' ? currency : NULL, NULL);
+		if (empty_text(bill, "currency"))
+			return refuse(error, "A bill template needs a currency");
+	}
 	if (!venture_database_save(self->database, bill, actor, error))
 		return FALSE;
 	if (lines == NULL || json_array_get_length(lines) == 0)

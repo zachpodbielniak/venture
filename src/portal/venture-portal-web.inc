@@ -20,7 +20,14 @@ venture_portal_web(HtmxRequest *request, GHashTable *params, gpointer user_data)
 	{
 		const gchar *invoice = htmx_request_get_form_value(request, "invoice_id");
 		const gchar *amount = htmx_request_get_form_value(request, "amount");
-		g_autoptr(VentureMoney) money = amount ? venture_money_from_string(amount, "USD", &error) : NULL;
+		g_autofree gchar *currency = NULL;
+		g_autoptr(VentureEntity) organization = NULL;
+		g_autoptr(VentureMoney) money = NULL;
+		organization = venture_database_get(venture_context_get_database(self->context),
+			VENTURE_TYPE_ORGANIZATION, venture_entity_get_organization_id(access), NULL);
+		if (organization != NULL)
+			g_object_get(organization, "default-currency", &currency, NULL);
+		money = amount ? venture_money_from_string(amount, currency, &error) : NULL;
 		VentureActor actor;
 		actor.kind = VENTURE_ACTOR_KIND_USER;
 		actor.name = "customer portal";

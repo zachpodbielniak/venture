@@ -311,7 +311,7 @@ project_margin_report(VentureContext *context, VentureDateRange *period, JsonObj
 		VentureEntity *project = g_ptr_array_index(projects, i);
 		g_autoptr(VentureQuery) bq = venture_query_new(VENTURE_TYPE_PROJECT_BILLING);
 		g_autoptr(GPtrArray) rows = NULL;
-		g_autoptr(VentureMoney) billed = venture_money_new_zero("USD");
+		g_autoptr(VentureMoney) billed = NULL;
 		g_autofree gchar *name = NULL;
 		guint j;
 		venture_query_set_organization(bq, org);
@@ -325,11 +325,22 @@ project_margin_report(VentureContext *context, VentureDateRange *period, JsonObj
 			g_object_get(g_ptr_array_index(rows, j), "amount", &amount, NULL);
 			if (amount != NULL)
 			{
-				VentureMoney *next = venture_money_add(billed, amount, error);
+				VentureMoney *next;
+				if (billed == NULL)
+					billed = venture_money_new_zero(venture_money_get_currency(amount));
+				next = venture_money_add(billed, amount, error);
 				if (next == NULL) return NULL;
 				venture_money_free(billed);
 				billed = next;
 			}
+		}
+		if (billed == NULL)
+		{
+			g_autoptr(VentureEntity) organization = venture_database_get(db, VENTURE_TYPE_ORGANIZATION, org, NULL);
+			g_autofree gchar *currency = NULL;
+			if (organization != NULL)
+				g_object_get(organization, "default-currency", &currency, NULL);
+			billed = venture_money_new_zero(currency != NULL && currency[0] != '\0' ? currency : "XXX");
 		}
 		g_object_get(project, "name", &name, NULL);
 		venture_report_result_begin_row(result);
