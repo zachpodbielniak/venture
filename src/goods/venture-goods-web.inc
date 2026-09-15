@@ -18,6 +18,42 @@ goods_form_int(HtmxRequest *request, JsonNode *input, const gchar *key)
 }
 
 static gboolean
+goods_form_whole(HtmxRequest *request, JsonNode *input, const gchar *key, gint64 *out, GError **error)
+{
+	const gchar *text;
+	gchar *end = NULL;
+	gint64 value;
+	if (input != NULL && JSON_NODE_HOLDS_OBJECT(input))
+	{
+		JsonNode *node = json_object_get_member(json_node_get_object(input), key);
+		if (node != NULL && JSON_NODE_HOLDS_VALUE(node) &&
+			json_node_get_value_type(node) == G_TYPE_DOUBLE)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"quantity must be a whole number of units");
+			return FALSE;
+		}
+		*out = venture_json_object_get_int(json_node_get_object(input), key, 0);
+		return TRUE;
+	}
+	text = htmx_request_get_form_value(request, key);
+	if (text == NULL || *text == '\0')
+	{
+		*out = 0;
+		return TRUE;
+	}
+	value = g_ascii_strtoll(text, &end, 10);
+	if (end == text || *end != '\0')
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"quantity must be a whole number of units");
+		return FALSE;
+	}
+	*out = value;
+	return TRUE;
+}
+
+static gboolean
 goods_form_bool(HtmxRequest *request, JsonNode *input, const gchar *key)
 {
 	const gchar *text;
@@ -73,7 +109,8 @@ venture_web_goods_action(HtmxRequest *request, GHashTable *params, gpointer user
 	if (date == NULL)
 		date = venture_time_now();
 	line_id = goods_form_int(request, input, "line_id");
-	qty = goods_form_int(request, input, "quantity");
+	if (!goods_form_whole(request, input, "quantity", &qty, &error))
+		return venture_web_error_response(error);
 	bill_id = goods_form_int(request, input, "vendor_bill_id");
 	exception = goods_form_bool(request, input, "exception");
 	if (g_strcmp0(kind, "purchase_order") == 0)
