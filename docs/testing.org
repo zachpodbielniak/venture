@@ -288,4 +288,3 @@ Preview lists unsupported source fields, import is idempotent on source IDs,
 reconcile checks trial balance and opening AR/bank totals, rollback reverses
 opening cash and voids imported invoices, generic writes are refused, and the
 Cutover page plus preview/action routes are covered over HTTP.
-

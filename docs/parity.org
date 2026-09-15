@@ -82,3 +82,15 @@ Mirrors #70 at the time of writing; the issue is the source of truth.
 
 ** Existing open work
 (landed: #21 bank feeds)
+
+* Known leftovers on this branch
+
+The tracker issues have landed, but these runtime paths are still incomplete
+and must not be treated as certified replacements:
+
+- Customer portal pay starts Checkout rather than recording cash.
+- Accounting restore preserves chart kinds and issued invoices; receipts,
+  tax freeze and subledger allocations still need a versioned pack.
+- Scheduled report packs store a cron string; dispatch is not a production
+  caller yet.
+- Custom field layouts are stored; record-form rendering is still generic.

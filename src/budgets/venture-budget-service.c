@@ -263,7 +263,13 @@ venture_budget_service_vs_actual(VentureBudgetService *self, gint64 organization
 	lines = active_lines(self, organization_id, period, dimension, error);
 	if (lines == NULL)
 		return NULL;
-	balances = balances_for(self, organization_id, period, "USD", error);
+	{
+		g_autoptr(VentureEntity) org = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, organization_id, NULL);
+		g_autofree gchar *currency = NULL;
+		if (org != NULL)
+			g_object_get(org, "default-currency", &currency, NULL);
+		balances = balances_for(self, organization_id, period, currency && currency[0] ? currency : "USD", error);
+	}
 	if (balances == NULL)
 		return NULL;
 	result = venture_report_result_new("Budget vs actual", range);
@@ -273,8 +279,14 @@ venture_budget_service_vs_actual(VentureBudgetService *self, gint64 organization
 	venture_report_result_add_column(result, "budget", "Budget", VENTURE_REPORT_COLUMN_MONEY);
 	venture_report_result_add_column(result, "actual", "Actual", VENTURE_REPORT_COLUMN_MONEY);
 	venture_report_result_add_column(result, "variance", "Variance", VENTURE_REPORT_COLUMN_MONEY);
-	budget_total = venture_money_new_zero("USD");
-	actual_total = venture_money_new_zero("USD");
+	{
+		g_autoptr(VentureEntity) org = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, organization_id, NULL);
+		g_autofree gchar *currency = NULL;
+		if (org != NULL)
+			g_object_get(org, "default-currency", &currency, NULL);
+		budget_total = venture_money_new_zero(currency && currency[0] ? currency : "USD");
+		actual_total = venture_money_new_zero(currency && currency[0] ? currency : "USD");
+	}
 	for (i = 0; i < lines->len; i++)
 	{
 		VentureEntity *line = g_ptr_array_index(lines, i);
@@ -342,7 +354,13 @@ venture_budget_service_cash_forecast(VentureBudgetService *self, gint64 organiza
 	range = period_range(period, error);
 	if (range == NULL)
 		return NULL;
-	balances = balances_for(self, organization_id, period, "USD", error);
+	{
+		g_autoptr(VentureEntity) org = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, organization_id, NULL);
+		g_autofree gchar *currency = NULL;
+		if (org != NULL)
+			g_object_get(org, "default-currency", &currency, NULL);
+		balances = balances_for(self, organization_id, period, currency && currency[0] ? currency : "USD", error);
+	}
 	if (balances == NULL)
 		return NULL;
 	vs = venture_budget_service_vs_actual(self, organization_id, period, NULL, error);

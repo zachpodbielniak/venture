@@ -1400,17 +1400,42 @@ database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
 	expected_version = venture_entity_get_version(entity);
 	venture_entity_touch(entity);
 
-	if (created)
 	{
-		if (!venture_database_insert(self, entity, error))
+		gboolean opened = FALSE;
+		if (self->transaction_depth == 0)
 		{
+			if (!venture_database_begin(self, error))
+			{
+				g_rec_mutex_unlock(&self->lock);
+				return FALSE;
+			}
+			opened = TRUE;
+		}
+		if (created)
+		{
+			if (!venture_database_insert(self, entity, error))
+			{
+				if (opened)
+					venture_database_rollback(self);
+				g_rec_mutex_unlock(&self->lock);
+				return FALSE;
+			}
+		}
+		else if (!venture_database_update(self, entity, expected_version, error))
+		{
+			if (opened)
+				venture_database_rollback(self);
 			g_rec_mutex_unlock(&self->lock);
 			return FALSE;
 		}
-	}
-	else
-	{
-		if (!venture_database_update(self, entity, expected_version, error))
+		if (!venture_custom_fields_sync(self, entity, actor, error))
+		{
+			if (opened)
+				venture_database_rollback(self);
+			g_rec_mutex_unlock(&self->lock);
+			return FALSE;
+		}
+		if (opened && !venture_database_commit(self, error))
 		{
 			g_rec_mutex_unlock(&self->lock);
 			return FALSE;
@@ -1428,9 +1453,6 @@ database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
 		g_signal_emit(self, venture_database_signals[SIGNAL_ENTITY_SAVED], 0,
 		              entity, created);
 	}
-
-	if (!venture_custom_fields_sync(self, entity, actor, error))
-		return FALSE;
 	return TRUE;
 }
 
