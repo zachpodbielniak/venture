@@ -266,6 +266,41 @@ test_module_off(Fixture *f, gconstpointer unused)
 }
 
 static void
+test_tax_control_is_sales_tax(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	VentureActor actor = actor_named("closer");
+	g_autoptr(VentureEntity) workspace = venture_close_service_open(
+		venture_close_service_get(f->db), f->period, "USD", &actor, &error);
+	g_autoptr(VentureQuery) q = NULL;
+	g_autoptr(GPtrArray) tasks = NULL;
+	gboolean saw = FALSE;
+	guint i;
+
+	(void)unused;
+	g_assert_true(venture_close_service_run_checks(venture_close_service_get(f->db),
+		workspace, &actor, &error));
+	g_assert_no_error(error);
+	q = venture_query_new(VENTURE_TYPE_CLOSE_TASK);
+	venture_query_set_organization(q, f->org);
+	tasks = venture_database_find(f->db, q, &error);
+	g_assert_nonnull(tasks);
+	for (i = 0; i < tasks->len; i++)
+	{
+		g_autofree gchar *kind = NULL;
+		g_autofree gchar *notes = NULL;
+		g_object_get(g_ptr_array_index(tasks, i), "kind", &kind, "notes", &notes, NULL);
+		if (g_strcmp0(kind, "tax") != 0)
+			continue;
+		saw = TRUE;
+		g_assert_nonnull(notes);
+		g_assert_nonnull(strstr(notes, "2100"));
+		g_assert_null(strstr(notes, "2200"));
+	}
+	g_assert_true(saw);
+}
+
+static void
 test_direct_period_close_still_runs_checks(Fixture *f, gconstpointer unused)
 {
 	g_autoptr(GError) error = NULL;
@@ -290,6 +325,7 @@ main(int argc, char **argv)
 	g_test_add("/close/unmatched-bank", Fixture, NULL, setup, test_unmatched_bank_blocks, teardown);
 	g_test_add("/close/generic-signoff", Fixture, NULL, setup, test_generic_signoff_refused, teardown);
 	g_test_add("/close/module-off", Fixture, NULL, setup, test_module_off, teardown);
+	g_test_add("/close/tax-control", Fixture, NULL, setup, test_tax_control_is_sales_tax, teardown);
 	g_test_add("/close/period-close", Fixture, NULL, setup, test_direct_period_close_still_runs_checks, teardown);
 	return g_test_run();
 }

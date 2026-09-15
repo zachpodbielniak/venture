@@ -140,21 +140,49 @@ account_by_code(VentureDatabase *db, gint64 org, const gchar *code)
 	return account != NULL ? venture_entity_get_id(account) : 0;
 }
 
+static gint64
+mapped_or_code(VentureDatabase *db, gint64 org, const gchar *role, const gchar *code)
+{
+	g_autoptr(GError) ignored = NULL;
+	gint64 id;
+
+	id = venture_setup_resolve_account(db, org, role, "organization", org, NULL, &ignored);
+	if (id != 0)
+		return id;
+	return account_by_code(db, org, code);
+}
+
 static VentureMoney *
-gl_balance(VentureDatabase *db, gint64 org, const gchar *code, const gchar *currency,
-	GDateTime *as_of, GError **error)
+gl_balance(VentureDatabase *db, gint64 org, const gchar *role, const gchar *code,
+	const gchar *currency, GDateTime *as_of, GError **error)
 {
 	VenturePostingService *posting;
 	gint64 account;
 	if (!type_on("journal"))
 		return venture_money_new_zero(currency);
-	account = account_by_code(db, org, code);
+	account = mapped_or_code(db, org, role, code);
 	if (account == 0)
 		return venture_money_new_zero(currency);
 	posting = venture_database_get_posting_service(db);
 	if (posting == NULL)
 		return venture_money_new_zero(currency);
 	return venture_posting_service_account_balance(posting, account, org, currency, as_of, error);
+}
+
+static gchar *
+control_code_label(VentureDatabase *db, gint64 org, const gchar *role, const gchar *fallback)
+{
+	gint64 id = mapped_or_code(db, org, role, fallback);
+	g_autoptr(VentureEntity) row = NULL;
+	gchar *code = NULL;
+
+	if (id == 0)
+		return g_strdup(fallback);
+	row = venture_database_get(db, VENTURE_TYPE_ACCOUNT, id, NULL);
+	if (row == NULL)
+		return g_strdup(fallback);
+	g_object_get(row, "code", &code, NULL);
+	return code != NULL ? code : g_strdup(fallback);
 }
 
 static gint64
@@ -317,7 +345,8 @@ run_kind(VentureCloseService *self, VentureDatabase *db, VentureContext *context
 	}
 	else if (g_strcmp0(kind, "ar_control") == 0)
 	{
-		g_autoptr(VentureMoney) gl = gl_balance(db, org, "1100", currency, as_of, error);
+		g_autoptr(VentureMoney) gl = gl_balance(db, org, "receivables", "1100", currency, as_of, error);
+		g_autofree gchar *code = control_code_label(db, org, "receivables", "1100");
 		gint64 outstanding;
 		if (gl == NULL)
 			return FALSE;
@@ -333,11 +362,12 @@ run_kind(VentureCloseService *self, VentureDatabase *db, VentureContext *context
 			g_clear_pointer(&difference, venture_money_free);
 			difference = g_steal_pointer(&flipped);
 		}
-		notes = g_strdup_printf("AR control 1100 vs receivables outstanding");
+		notes = g_strdup_printf("AR control %s vs receivables outstanding", code);
 	}
 	else if (g_strcmp0(kind, "ap_control") == 0)
 	{
-		g_autoptr(VentureMoney) gl = gl_balance(db, org, "2000", currency, as_of, error);
+		g_autoptr(VentureMoney) gl = gl_balance(db, org, "payables", "2000", currency, as_of, error);
+		g_autofree gchar *code = control_code_label(db, org, "payables", "2000");
 		gint64 outstanding;
 		if (gl == NULL)
 			return FALSE;
@@ -353,7 +383,7 @@ run_kind(VentureCloseService *self, VentureDatabase *db, VentureContext *context
 			g_clear_pointer(&difference, venture_money_free);
 			difference = g_steal_pointer(&flipped);
 		}
-		notes = g_strdup_printf("AP control 2000 vs payables outstanding");
+		notes = g_strdup_printf("AP control %s vs payables outstanding", code);
 	}
 	else if (g_strcmp0(kind, "suspense") == 0 && type_on("account") && type_on("journal"))
 	{
@@ -387,11 +417,12 @@ run_kind(VentureCloseService *self, VentureDatabase *db, VentureContext *context
 	}
 	else if (g_strcmp0(kind, "tax") == 0)
 	{
-		g_autoptr(VentureMoney) gl = gl_balance(db, org, "2200", currency, as_of, error);
+		g_autoptr(VentureMoney) gl = gl_balance(db, org, "tax", "2100", currency, as_of, error);
+		g_autofree gchar *code = control_code_label(db, org, "tax", "2100");
 		if (gl == NULL)
 			return FALSE;
-		notes = g_strdup_printf("Tax control 2200 balance %s",
-			venture_money_to_string(gl));
+		notes = g_strdup_printf("Tax control %s balance %s",
+			code, venture_money_to_string(gl));
 	}
 	else if (g_strcmp0(kind, "depreciation") == 0)
 	{
