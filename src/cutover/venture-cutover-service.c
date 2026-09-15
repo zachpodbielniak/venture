@@ -524,27 +524,6 @@ add_money(VentureMoney **total, const VentureMoney *amount, GError **error)
 }
 
 static gboolean
-payload_sum(JsonArray *rows, const gchar *field, VentureMoney **total, GError **error)
-{
-	guint i;
-	if (rows == NULL)
-		return TRUE;
-	for (i = 0; i < json_array_get_length(rows); i++)
-	{
-		JsonObject *row = json_array_get_object_element(rows, i);
-		g_autoptr(VentureMoney) amount = NULL;
-		if (obj_str(row, field) == NULL)
-			continue;
-		amount = parse_money(obj_str(row, field), NULL, error);
-		if (amount == NULL)
-			return FALSE;
-		if (!add_money(total, amount, error))
-			return FALSE;
-	}
-	return TRUE;
-}
-
-static gboolean
 cutover_rows(VentureCutoverService *self, gint64 cutover_id, GPtrArray **rows, GError **error)
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNTING_CUTOVER_ROW);
@@ -655,10 +634,46 @@ venture_cutover_service_reconcile(VentureCutoverService *self, VentureAccounting
 	org = venture_entity_get_organization_id(VENTURE_ENTITY(cutover));
 	if (!trial_balance(self, org, cutoff, error))
 		return FALSE;
-	if (!payload_sum(arr(payload, "open_ar"), "amount", &expected_ar, error))
-		return FALSE;
-	if (expected_ar == NULL && !payload_sum(arr(payload, "open_ar"), "net", &expected_ar, error))
-		return FALSE;
+	{
+		JsonArray *open_ar = arr(payload, "open_ar");
+		guint r;
+		if (open_ar != NULL)
+		{
+			for (r = 0; r < json_array_get_length(open_ar); r++)
+			{
+				JsonObject *row = json_array_get_object_element(open_ar, r);
+				g_autoptr(VentureMoney) piece = NULL;
+				const gchar *currency = obj_str(row, "currency");
+				if (currency == NULL)
+					currency = obj_str(payload, "currency");
+				if (obj_str(row, "amount") != NULL)
+					piece = parse_money(obj_str(row, "amount"), currency, error);
+				else
+				{
+					g_autoptr(VentureMoney) net = NULL;
+					g_autoptr(VentureMoney) tax = NULL;
+					if (obj_str(row, "net") == NULL)
+						continue;
+					net = parse_money(obj_str(row, "net"), currency, error);
+					if (net == NULL)
+						return FALSE;
+					if (obj_str(row, "tax") != NULL)
+					{
+						tax = parse_money(obj_str(row, "tax"), currency, error);
+						if (tax == NULL)
+							return FALSE;
+						piece = venture_money_add(net, tax, error);
+					}
+					else
+						piece = venture_money_copy(net);
+				}
+				if (piece == NULL)
+					return FALSE;
+				if (!add_money(&expected_ar, piece, error))
+					return FALSE;
+			}
+		}
+	}
 	if (!cutover_rows(self, venture_entity_get_id(VENTURE_ENTITY(cutover)), &rows, error))
 		return FALSE;
 	for (i = 0; i < rows->len; i++)

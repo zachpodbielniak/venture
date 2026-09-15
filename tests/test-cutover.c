@@ -335,7 +335,7 @@ test_exact_opening_tax(Fixture *f, gconstpointer data)
 		"\"customers\":[{\"source_id\":\"cust-1\",\"name\":\"Acme\"}],"
 		"\"open_ar\":[{\"source_id\":\"inv-1\",\"customer_source_id\":\"cust-1\","
 		"\"number\":\"OB-2\",\"net\":\"33.33 USD\",\"tax\":\"2.50 USD\","
-		"\"amount\":\"35.83 USD\",\"date\":\"2025-12-15\"}]}");
+		"\"date\":\"2025-12-15\"}]}");
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureEntity) cutover = NULL;
 	g_autoptr(GPtrArray) events = NULL;
@@ -354,6 +354,9 @@ test_exact_opening_tax(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(events->len, ==, 1);
 	g_object_get(g_ptr_array_index(events, 0), "tax-amount", &tax, NULL);
 	g_assert_cmpint(venture_money_get_amount(tax), ==, 250);
+	g_assert_true(venture_cutover_service_reconcile(venture_cutover_service_get(f->db),
+		VENTURE_ACCOUNTING_CUTOVER(cutover), &actor, &error));
+	g_assert_no_error(error);
 }
 
 int
