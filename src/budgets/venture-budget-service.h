@@ -10,6 +10,16 @@ G_DECLARE_FINAL_TYPE(VentureBudgetService, venture_budget_service, VENTURE, BUDG
 VentureBudgetService *venture_budget_service_get(VentureDatabase *database);
 gboolean venture_budget_check_write(VentureDatabase *database, VentureEntity *record,
 	gboolean removal, GError **error);
+/**
+ * venture_budget_service_vs_actual:
+ * @self: the service
+ * @organization_id: legal entity
+ * @period: YYYY or YYYY-MM
+ * @dimension: (nullable): restrict lines and ledger actuals
+ * @error: (out) (optional)
+ *
+ * Returns: (transfer full) (nullable)
+ */
 VentureReportResult *venture_budget_service_vs_actual(VentureBudgetService *self,
 	gint64 organization_id, const gchar *period, const gchar *dimension, GError **error);
 VentureReportResult *venture_budget_service_cash_forecast(VentureBudgetService *self,

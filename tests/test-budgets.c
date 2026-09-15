@@ -78,6 +78,31 @@ post(Fixture *f, const gchar *when, const gchar *debit, const gchar *credit, gin
 	g_assert_nonnull(posted);
 }
 
+static void
+post_dim(Fixture *f, const gchar *when, const gchar *debit, const gchar *credit, gint64 amount, const gchar *dimension)
+{
+	g_autoptr(VentureJournal) header = venture_journal_new();
+	g_autoptr(VentureJournal) posted = NULL;
+	g_autoptr(GPtrArray) lines = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autoptr(GDateTime) date = g_date_time_new_from_iso8601(when, NULL);
+	g_autoptr(VentureMoney) money = venture_money_new_for_currency(amount, "USD");
+	g_autoptr(GError) error = NULL;
+	VentureJournalLine *line;
+	g_object_set(header, "organization-id", f->org, "source-type", "organization",
+		"source-id", f->org, "occurred-at", date, "currency", "USD", NULL);
+	line = venture_journal_line_new();
+	g_object_set(line, "account-id", account(f, debit), "side", VENTURE_LEDGER_SIDE_DEBIT,
+		"amount", money, "dimension", dimension, NULL);
+	g_ptr_array_add(lines, line);
+	line = venture_journal_line_new();
+	g_object_set(line, "account-id", account(f, credit), "side", VENTURE_LEDGER_SIDE_CREDIT,
+		"amount", money, "dimension", dimension, NULL);
+	g_ptr_array_add(lines, line);
+	posted = venture_posting_service_post(venture_database_get_posting_service(f->db), header, lines, NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(posted);
+}
+
 static gint64
 cell(VentureReportResult *r, const gchar *key, const gchar *column)
 {
@@ -139,7 +164,7 @@ test_vs_actual(Fixture *f, gconstpointer data)
 	g_object_set(line, "organization-id", f->org, "budget-id", venture_entity_get_id(budget),
 		"account-id", account(f, "6900"), "period", "2026-08", "amount", planned, "dimension", "ops", NULL);
 	save(f, line);
-	post(f, "2026-08-10T00:00:00Z", "6900", "1000", 4000);
+	post_dim(f, "2026-08-10T00:00:00Z", "6900", "1000", 4000, "ops");
 	result = venture_budget_service_vs_actual(venture_budget_service_get(f->db), f->org, "2026-08", NULL, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(result);
@@ -190,6 +215,33 @@ test_module_off(Fixture *f, gconstpointer data)
 	g_assert_false(venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "budget"));
 	g_assert_null(venture_budget_service_vs_actual(venture_budget_service_get(f->db), f->org, "2026-08", NULL, &error));
 	g_assert_nonnull(strstr(error->message, "budgets"));
+	venture_config_set_module_enabled(f->config, "budgets", TRUE);
+}
+
+static void
+test_dimension_actuals(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) budget = VENTURE_ENTITY(venture_budget_new());
+	g_autoptr(VentureEntity) line = VENTURE_ENTITY(venture_budget_line_new());
+	g_autoptr(VentureMoney) planned = venture_money_new_for_currency(10000, "USD");
+	g_autoptr(VentureReportResult) whole = NULL;
+	g_autoptr(VentureReportResult) ops = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	g_object_set(budget, "organization-id", f->org, "name", "August plan", "period", "2026-08",
+		"currency", "USD", "status", "active", NULL);
+	save(f, budget);
+	g_object_set(line, "organization-id", f->org, "budget-id", venture_entity_get_id(budget),
+		"account-id", account(f, "6900"), "period", "2026-08", "amount", planned, "dimension", "ops", NULL);
+	save(f, line);
+	post_dim(f, "2026-08-10T00:00:00Z", "6900", "1000", 4000, "ops");
+	post_dim(f, "2026-08-11T00:00:00Z", "6900", "1000", 2500, "sales");
+	whole = venture_budget_service_vs_actual(venture_budget_service_get(f->db), f->org, "2026-08", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(cell(whole, "6900", "actual"), ==, 4000);
+	ops = venture_budget_service_vs_actual(venture_budget_service_get(f->db), f->org, "2026-08", "ops", &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(cell(ops, "6900", "actual"), ==, 4000);
 }
 
 int
@@ -200,5 +252,6 @@ main(int argc, char **argv)
 	g_test_add("/budgets/vs-actual", Fixture, NULL, setup, test_vs_actual, teardown);
 	g_test_add("/budgets/cash-forecast", Fixture, NULL, setup, test_cash_forecast, teardown);
 	g_test_add("/budgets/module-off", Fixture, NULL, setup, test_module_off, teardown);
+	g_test_add("/budgets/dimension-actuals", Fixture, NULL, setup, test_dimension_actuals, teardown);
 	return g_test_run();
 }

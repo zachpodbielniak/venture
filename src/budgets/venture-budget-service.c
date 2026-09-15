@@ -233,13 +233,14 @@ active_lines(VentureBudgetService *self, gint64 organization_id, const gchar *pe
 
 static VentureReportResult *
 balances_for(VentureBudgetService *self, gint64 organization_id, const gchar *period,
-	const gchar *currency, GError **error)
+	const gchar *currency, const gchar *dimension, GError **error)
 {
 	g_autoptr(VentureDateRange) range = period_range(period, error);
 	g_autoptr(VentureLedgerBalances) books = NULL;
 	if (range == NULL)
 		return NULL;
 	books = venture_ledger_balances_new(self->database);
+	venture_ledger_balances_set_dimension(books, dimension);
 	return venture_ledger_balances_query(books, organization_id, currency, range, NULL, FALSE, error);
 }
 
@@ -248,11 +249,12 @@ venture_budget_service_vs_actual(VentureBudgetService *self, gint64 organization
 	const gchar *period, const gchar *dimension, GError **error)
 {
 	g_autoptr(GPtrArray) lines = NULL;
-	g_autoptr(VentureReportResult) balances = NULL;
 	g_autoptr(VentureDateRange) range = NULL;
 	g_autoptr(VentureReportResult) result = NULL;
 	g_autoptr(VentureMoney) budget_total = NULL;
 	g_autoptr(VentureMoney) actual_total = NULL;
+	g_autoptr(GHashTable) cached = NULL;
+	g_autofree gchar *book_currency = NULL;
 	guint i;
 	g_return_val_if_fail(VENTURE_IS_BUDGET_SERVICE(self), NULL);
 	if (!enabled(error))
@@ -265,13 +267,10 @@ venture_budget_service_vs_actual(VentureBudgetService *self, gint64 organization
 		return NULL;
 	{
 		g_autoptr(VentureEntity) org = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, organization_id, NULL);
-		g_autofree gchar *currency = NULL;
 		if (org != NULL)
-			g_object_get(org, "default-currency", &currency, NULL);
-		balances = balances_for(self, organization_id, period, currency && currency[0] ? currency : "USD", error);
+			g_object_get(org, "default-currency", &book_currency, NULL);
 	}
-	if (balances == NULL)
-		return NULL;
+	cached = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_object_unref);
 	result = venture_report_result_new("Budget vs actual", range);
 	venture_report_result_add_column(result, "key", "Code", VENTURE_REPORT_COLUMN_TEXT);
 	venture_report_result_add_column(result, "name", "Account", VENTURE_REPORT_COLUMN_TEXT);
@@ -284,8 +283,8 @@ venture_budget_service_vs_actual(VentureBudgetService *self, gint64 organization
 		g_autofree gchar *currency = NULL;
 		if (org != NULL)
 			g_object_get(org, "default-currency", &currency, NULL);
-		budget_total = venture_money_new_zero(currency && currency[0] ? currency : "USD");
-		actual_total = venture_money_new_zero(currency && currency[0] ? currency : "USD");
+		budget_total = venture_money_new_zero(book_currency && book_currency[0] ? book_currency : "USD");
+		actual_total = venture_money_new_zero(book_currency && book_currency[0] ? book_currency : "USD");
 	}
 	for (i = 0; i < lines->len; i++)
 	{
@@ -299,6 +298,8 @@ venture_budget_service_vs_actual(VentureBudgetService *self, gint64 organization
 		g_autofree gchar *code = NULL;
 		g_autofree gchar *name = NULL;
 		g_autofree gchar *line_dimension = NULL;
+		VentureReportResult *balances;
+		const gchar *scope;
 		gint64 account_id = 0;
 		gint kind;
 		g_object_get(line, "account-id", &account_id, "amount", &planned, "dimension", &line_dimension, NULL);
@@ -306,8 +307,20 @@ venture_budget_service_vs_actual(VentureBudgetService *self, gint64 organization
 		if (account == NULL)
 			return NULL;
 		g_object_get(account, "code", &code, "name", &name, "kind", &kind, NULL);
+		scope = (line_dimension != NULL && line_dimension[0] != '\0') ? line_dimension :
+			((dimension != NULL && dimension[0] != '\0') ? dimension : "");
+		balances = g_hash_table_lookup(cached, scope);
+		if (balances == NULL)
+		{
+			balances = balances_for(self, organization_id, period,
+				book_currency && book_currency[0] ? book_currency : "USD",
+				scope[0] ? scope : NULL, error);
+			if (balances == NULL)
+				return NULL;
+			g_hash_table_insert(cached, g_strdup(scope), balances);
+		}
 		actual = venture_money_new_for_currency(actual_for(balances, account_id, kind),
-			planned != NULL ? planned->currency : "USD");
+			planned != NULL ? planned->currency : (book_currency && book_currency[0] ? book_currency : "USD"));
 		variance = venture_money_subtract(actual, planned, error);
 		if (variance == NULL)
 			return NULL;
@@ -359,7 +372,7 @@ venture_budget_service_cash_forecast(VentureBudgetService *self, gint64 organiza
 		g_autofree gchar *currency = NULL;
 		if (org != NULL)
 			g_object_get(org, "default-currency", &currency, NULL);
-		balances = balances_for(self, organization_id, period, currency && currency[0] ? currency : "USD", error);
+		balances = balances_for(self, organization_id, period, currency && currency[0] ? currency : "USD", NULL, error);
 	}
 	if (balances == NULL)
 		return NULL;
@@ -374,10 +387,18 @@ venture_budget_service_cash_forecast(VentureBudgetService *self, gint64 organiza
 	ap_id = venture_setup_resolve_account(self->database, organization_id, "payables", "organization", 0, NULL, error);
 	if (cash_id < 0 || ar_id < 0 || ap_id < 0)
 		return NULL;
-	ar = venture_money_new_for_currency(ar_id > 0 ? closing_for(balances, ar_id) : 0, "USD");
-	ap = venture_money_new_for_currency(ap_id > 0 ? -closing_for(balances, ap_id) : 0, "USD");
-	budget_in = venture_money_new_zero("USD");
-	budget_out = venture_money_new_zero("USD");
+	{
+		g_autoptr(VentureEntity) org = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, organization_id, NULL);
+		g_autofree gchar *currency = NULL;
+		if (org != NULL)
+			g_object_get(org, "default-currency", &currency, NULL);
+		if (currency == NULL || currency[0] == '\0')
+			currency = g_strdup("USD");
+		ar = venture_money_new_for_currency(ar_id > 0 ? closing_for(balances, ar_id) : 0, currency);
+		ap = venture_money_new_for_currency(ap_id > 0 ? -closing_for(balances, ap_id) : 0, currency);
+		budget_in = venture_money_new_zero(currency);
+		budget_out = venture_money_new_zero(currency);
+	}
 	for (i = 0; i < lines->len; i++)
 	{
 		VentureEntity *line = g_ptr_array_index(lines, i);
