@@ -4,10 +4,11 @@
 * Bank feeds
 
 The =bankfeed= module is opt-in and requires =banking=. Set
-=bankfeed.enabled: true=. Startup then requires
-=VENTURE_BANKFEED_TELLER_KEY= (the Teller access token). Enabling the
-module without that environment variable fails configure/start and names
-the key. Credentials are never stored in YAML.
+=bankfeed.enabled: true=. A Teller key is optional: without
+=VENTURE_BANKFEED_TELLER_KEY= the registry is empty so a plugin can
+register another feed. Production HTTP uses
+=venture_bank_feed_transport_get_async= with a =GCancellable=; database
+writes stay on the completion context. Credentials are never stored in YAML.
 
 A =bank_connection= row is one linked account: provider, provider account
 id, and the =bank_account= that receives statement evidence. Hosted

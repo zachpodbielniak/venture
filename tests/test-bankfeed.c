@@ -2,6 +2,8 @@
  * Covers src/bankfeed: pluggable feeds, Teller transport, idempotent sync. */
 #include <venture.h>
 #include <string.h>
+#include <libsoup/soup.h>
+#include <gio/gio.h>
 #include "venture-test-util.h"
 
 typedef struct
@@ -318,6 +320,155 @@ test_scheduled_sync(Fixture *f, gconstpointer data)
 	g_assert_cmpint(imported, ==, 1);
 }
 
+typedef struct { GObject parent; guint delay_ms; gboolean cancelled; } SlowTransport;
+typedef struct { GObjectClass parent; } SlowTransportClass;
+GType slow_transport_get_type(void);
+static void slow_transport_iface(VentureBankFeedTransportInterface *iface);
+G_DEFINE_TYPE_WITH_CODE(SlowTransport, slow_transport, G_TYPE_OBJECT,
+	G_IMPLEMENT_INTERFACE(VENTURE_TYPE_BANK_FEED_TRANSPORT, slow_transport_iface))
+static gchar *
+slow_transport_get(VentureBankFeedTransport *transport, const gchar *url,
+	const gchar *authorization, GError **error)
+{
+	(void)transport; (void)url; (void)authorization; (void)error;
+	g_usleep(800 * 1000);
+	return g_strdup("[]");
+}
+typedef struct { GTask *task; } SlowIdle;
+static gboolean
+slow_fire(gpointer data)
+{
+	SlowIdle *idle = data;
+	if (!g_task_return_error_if_cancelled(idle->task))
+		g_task_return_pointer(idle->task, g_strdup("[]"), g_free);
+	g_object_unref(idle->task);
+	g_free(idle);
+	return G_SOURCE_REMOVE;
+}
+static void
+slow_transport_get_async(VentureBankFeedTransport *transport, const gchar *url,
+	const gchar *authorization, GCancellable *cancellable,
+	GAsyncReadyCallback callback, gpointer user_data)
+{
+	GTask *task;
+	SlowIdle *idle;
+	(void)url; (void)authorization;
+	task = g_task_new(transport, cancellable, callback, user_data);
+	idle = g_new0(SlowIdle, 1);
+	idle->task = g_object_ref(task);
+	g_timeout_add(((SlowTransport *)transport)->delay_ms, slow_fire, idle);
+	g_object_unref(task);
+}
+static void
+slow_transport_iface(VentureBankFeedTransportInterface *iface)
+{
+	iface->get = slow_transport_get;
+	iface->get_async = slow_transport_get_async;
+}
+static void slow_transport_class_init(SlowTransportClass *klass) { (void)klass; }
+static void slow_transport_init(SlowTransport *self) { self->delay_ms = 800; }
+
+typedef struct { gboolean done; gint imported; GError *error; } SyncDone;
+typedef struct { gboolean done; guint status; GError *error; gint64 elapsed; gint64 started; } HealthDone;
+
+static void
+sync_finished(GObject *source, GAsyncResult *result, gpointer data)
+{
+	SyncDone *done = data;
+	done->imported = venture_bankfeed_service_sync_finish(VENTURE_BANKFEED_SERVICE(source), result, &done->error);
+	done->done = TRUE;
+}
+
+static void
+health_finished(GObject *source, GAsyncResult *result, gpointer data)
+{
+	HealthDone *done = data;
+	g_autoptr(GBytes) bytes = soup_session_send_and_read_finish(SOUP_SESSION(source), result, &done->error);
+	(void)bytes;
+	done->elapsed = g_get_monotonic_time() - done->started;
+	done->done = TRUE;
+}
+
+static void
+test_async_health_stays_responsive(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(VentureBankFeedService) service = NULL;
+	g_autoptr(VentureBankConnection) connection = NULL;
+	g_autoptr(GDateTime) from = g_date_time_new_from_iso8601("2026-01-01T00:00:00Z", NULL);
+	g_autoptr(GDateTime) to = g_date_time_new_from_iso8601("2026-01-31T00:00:00Z", NULL);
+	g_autoptr(SoupSession) session = soup_session_new_with_options("timeout", 5, NULL);
+	g_autoptr(SoupMessage) message = NULL;
+	g_autoptr(GCancellable) cancel = g_cancellable_new();
+	g_autofree gchar *dir = NULL;
+	g_autofree gchar *url = NULL;
+	g_autoptr(GSocketListener) listener = g_socket_listener_new();
+	SlowTransport *transport;
+	SyncDone sync = { FALSE, -1, NULL };
+	HealthDone health = { FALSE, 0, NULL, 0, 0 };
+	gint64 started;
+	guint16 port;
+	(void)data;
+	dir = g_dir_make_tmp("venture-bankfeed-XXXXXX", &error);
+	g_assert_no_error(error);
+	port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
+	g_socket_listener_close(listener);
+	g_object_set(f->config, "state-dir", dir, "server-bind-address", "127.0.0.1",
+		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
+	server = venture_web_server_new(f->context, &error);
+	g_assert_true(venture_web_server_start(server, &error));
+	transport = g_object_new(slow_transport_get_type(), NULL);
+	service = venture_bankfeed_service_new(f->db, f->org, VENTURE_BANK_FEED_TRANSPORT(transport), &error);
+	g_assert_no_error(error);
+	connection = link_account(f, "teller", "acc_slow");
+	started = g_get_monotonic_time();
+	health.started = started;
+	venture_bankfeed_service_sync_async(service, venture_entity_get_id(VENTURE_ENTITY(connection)),
+		from, to, NULL, cancel, sync_finished, &sync);
+	url = g_strdup_printf("%s/api/v1/health", venture_web_server_get_base_url(server));
+	message = soup_message_new("GET", url);
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, health_finished, &health);
+	while (!health.done || !sync.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_true(health.done);
+	g_assert_no_error(health.error);
+	g_assert_cmpuint(soup_message_get_status(message), ==, 200);
+	g_assert_cmpint(health.elapsed, <, 400 * 1000);
+	g_assert_true(sync.done);
+	g_assert_no_error(sync.error);
+	g_clear_error(&sync.error);
+	g_clear_error(&health.error);
+	venture_test_remove_tree(dir);
+}
+
+static void
+test_async_cancel(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureBankFeedService) service = NULL;
+	g_autoptr(VentureBankConnection) connection = NULL;
+	g_autoptr(GDateTime) from = g_date_time_new_from_iso8601("2026-01-01T00:00:00Z", NULL);
+	g_autoptr(GDateTime) to = g_date_time_new_from_iso8601("2026-01-31T00:00:00Z", NULL);
+	g_autoptr(GCancellable) cancel = g_cancellable_new();
+	SlowTransport *transport;
+	SyncDone sync = { FALSE, -1, NULL };
+	(void)data;
+	transport = g_object_new(slow_transport_get_type(), NULL);
+	transport->delay_ms = 1200;
+	service = venture_bankfeed_service_new(f->db, f->org, VENTURE_BANK_FEED_TRANSPORT(transport), &error);
+	g_assert_no_error(error);
+	connection = link_account(f, "teller", "acc_cancel");
+	venture_bankfeed_service_sync_async(service, venture_entity_get_id(VENTURE_ENTITY(connection)),
+		from, to, NULL, cancel, sync_finished, &sync);
+	g_cancellable_cancel(cancel);
+	while (!sync.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_cmpint(sync.imported, ==, -1);
+	g_assert_error(sync.error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+	g_clear_error(&sync.error);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -329,5 +480,7 @@ main(int argc, char **argv)
 	g_test_add("/bankfeed/failure-rollback", Fixture, NULL, setup, test_failure_rolls_back, teardown);
 	g_test_add("/bankfeed/teller-transport", Fixture, NULL, setup, test_teller_uses_transport, teardown);
 	g_test_add("/bankfeed/scheduled-sync", Fixture, NULL, setup, test_scheduled_sync, teardown);
+	g_test_add("/bankfeed/async-health", Fixture, NULL, setup, test_async_health_stays_responsive, teardown);
+	g_test_add("/bankfeed/async-cancel", Fixture, NULL, setup, test_async_cancel, teardown);
 	return g_test_run();
 }

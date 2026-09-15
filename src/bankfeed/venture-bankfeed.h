@@ -16,9 +16,44 @@ struct _VentureBankFeedTransportInterface
 {
 	GTypeInterface parent_iface;
 	gchar *(*get)(VentureBankFeedTransport *self, const gchar *url, const gchar *authorization, GError **error);
+	void (*get_async)(VentureBankFeedTransport *self, const gchar *url, const gchar *authorization,
+		GCancellable *cancellable, GAsyncReadyCallback callback, gpointer user_data);
 };
+/**
+ * venture_bank_feed_transport_get:
+ * @self: the transport
+ * @url: absolute URL
+ * @authorization: (nullable): Authorization value, or "Header: value"
+ * @error: (out) (optional): network failure
+ *
+ * Synchronous GET. Production HTTP uses the async form from the server path.
+ *
+ * Returns: (transfer full) (nullable): response body
+ */
 gchar *venture_bank_feed_transport_get(VentureBankFeedTransport *self, const gchar *url,
 	const gchar *authorization, GError **error);
+/**
+ * venture_bank_feed_transport_get_async:
+ * @self: the transport
+ * @url: absolute URL
+ * @authorization: (nullable): Authorization value, or "Header: value"
+ * @cancellable: (nullable): cancel the in-flight GET
+ * @callback: (scope async): completion on the thread-default context
+ * @user_data: (closure): callback data
+ *
+ * Network I/O must not run on a worker that also writes the database.
+ */
+void venture_bank_feed_transport_get_async(VentureBankFeedTransport *self, const gchar *url,
+	const gchar *authorization, GCancellable *cancellable, GAsyncReadyCallback callback, gpointer user_data);
+/**
+ * venture_bank_feed_transport_get_finish:
+ * @self: the transport
+ * @result: the async result
+ * @error: (out) (optional): network or cancellation
+ *
+ * Returns: (transfer full) (nullable): response body
+ */
+gchar *venture_bank_feed_transport_get_finish(VentureBankFeedTransport *self, GAsyncResult *result, GError **error);
 VentureBankFeedTransport *venture_bank_feed_transport_new_http(void);
 
 #define VENTURE_TYPE_BANK_FEED (venture_bank_feed_get_type())
@@ -36,6 +71,17 @@ struct _VentureBankFeedInterface
 		GDateTime *to, const gchar *currency, GError **error);
 };
 const gchar *venture_bank_feed_get_name(VentureBankFeed *self);
+/**
+ * venture_bank_feed_fetch:
+ * @self: the feed
+ * @account_id: provider account
+ * @from: inclusive start
+ * @to: exclusive end
+ * @currency: (nullable): book currency for imported rows
+ * @error: (out) (optional)
+ *
+ * Returns: (transfer full) (element-type JsonObject) (nullable): posted transactions
+ */
 GPtrArray *venture_bank_feed_fetch(VentureBankFeed *self, const gchar *account_id,
 	GDateTime *from, GDateTime *to, const gchar *currency, GError **error);
 
@@ -57,6 +103,12 @@ void venture_bank_feed_registry_add(VentureBankFeedRegistry *self, VentureBankFe
  */
 VentureBankFeed *venture_bank_feed_registry_lookup(VentureBankFeedRegistry *self, const gchar *name);
 gboolean venture_bank_feed_registry_remove(VentureBankFeedRegistry *self, const gchar *name);
+/**
+ * venture_bank_feed_registry_list:
+ * @self: the registry
+ *
+ * Returns: (transfer container) (element-type VentureBankFeed): borrowed feeds
+ */
 GPtrArray *venture_bank_feed_registry_list(VentureBankFeedRegistry *self);
 
 #define VENTURE_TYPE_TELLER_FEED (venture_teller_feed_get_type())
@@ -68,8 +120,48 @@ G_DECLARE_FINAL_TYPE(VentureBankFeedService, venture_bankfeed_service, VENTURE, 
 VentureBankFeedService *venture_bankfeed_service_new(VentureDatabase *database, gint64 organization_id,
 	VentureBankFeedTransport *transport, GError **error);
 VentureBankFeedRegistry *venture_bankfeed_service_get_registry(VentureBankFeedService *self);
+/**
+ * venture_bankfeed_service_sync:
+ * @self: the service
+ * @connection_id: a bank_connection in this organization
+ * @from: (nullable): default 30 days ago
+ * @to: (nullable): default now
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional)
+ *
+ * Fetches then writes bank_transaction on this thread. Prefer the async form
+ * from a server request so health stays responsive.
+ *
+ * Returns: imported row count, or -1
+ */
 gint venture_bankfeed_service_sync(VentureBankFeedService *self, gint64 connection_id,
 	GDateTime *from, GDateTime *to, const VentureActor *actor, GError **error);
+/**
+ * venture_bankfeed_service_sync_async:
+ * @self: the service
+ * @connection_id: a bank_connection in this organization
+ * @from: (nullable)
+ * @to: (nullable)
+ * @actor: (nullable)
+ * @cancellable: (nullable)
+ * @callback: (scope async)
+ * @user_data: (closure)
+ *
+ * Looks up the connection on the caller thread, fetches on the transport's
+ * async path, and applies database changes on the completion context.
+ */
+void venture_bankfeed_service_sync_async(VentureBankFeedService *self, gint64 connection_id,
+	GDateTime *from, GDateTime *to, const VentureActor *actor, GCancellable *cancellable,
+	GAsyncReadyCallback callback, gpointer user_data);
+/**
+ * venture_bankfeed_service_sync_finish:
+ * @self: the service
+ * @result: the async result
+ * @error: (out) (optional)
+ *
+ * Returns: imported row count, or -1
+ */
+gint venture_bankfeed_service_sync_finish(VentureBankFeedService *self, GAsyncResult *result, GError **error);
 gint venture_bankfeed_service_sync_due(VentureBankFeedService *self, gint64 organization_id,
 	const VentureActor *actor, GError **error);
 
