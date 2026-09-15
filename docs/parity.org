@@ -46,6 +46,7 @@ its own tests, merged into this branch rather than straight to =master=.
 - #43 processor payouts, disputes and chargebacks
 - #44 subscription collection and recovery
 - #51 approved project time and billable costs
+- #52 deferred revenue recognition schedules
 
 * Open
 
@@ -62,7 +63,7 @@ Mirrors #70 at the time of writing; the issue is the source of truth.
 #26 #27 #28 #29 #32 #33 #34 #35 #37 #38 #39 #40 #41 #42 #43 #44 #45 #49
 #26 #27 #28 #29 #32 #33 #34 #35 #37 #38 #39 #40 #41 #42 #44 #45 #49
 #26 #27 #28 #29 #32 #33 #34 #35 #37 #38 #39 #40 #41 #42 #45 #49
-#52 #53 #54 #56 #57 #58 #62 #63 #67
+#53 #54 #56 #57 #58 #62 #63 #67
 
 ** P2 — broader business and advanced parity
 #30 #31 #46 #47 #48 #50 #55 #59 #60 #61 #64 #66 #68 #69

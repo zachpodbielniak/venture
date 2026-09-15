@@ -544,6 +544,10 @@ resolve_code(VentureSettlementService *self, const gchar *code, gint64 organizat
 	{
 		configured = 0;
 		kind = VENTURE_ACCOUNT_KIND_EXPENSE;
+	else if (g_str_equal(code, "2200"))
+	{
+		configured = 0;
+		kind = VENTURE_ACCOUNT_KIND_LIABILITY;
 	}
 	else
 	{
@@ -585,13 +589,14 @@ add_leg(GPtrArray *entries, VentureEntity *source, GDateTime *date, const gchar 
 static gboolean
 post_split(VentureSettlementService *self, VentureEntity *source, GDateTime *date,
 	const VentureMoney *debit_ar, const VentureMoney *credit_income, const VentureMoney *credit_tax,
-	gboolean reverse, const VentureActor *actor, GError **error)
+	gboolean reverse, const VentureMoney *credit_deferred, const VentureActor *actor, GError **error)
 {
 	g_autoptr(GPtrArray) entries = g_ptr_array_new_with_free_func(g_object_unref);
 	g_autoptr(VentureExchangePolicy) policy = NULL;
 	g_autofree gchar *transaction = NULL;
 	g_autofree gchar *book = NULL;
 	gint64 ar = 0, income = 0, tax = 0;
+	gint64 ar = 0, income = 0, tax = 0, deferred = 0;
 	gint64 org = venture_entity_get_organization_id(source);
 	if (debit_ar != NULL && !venture_money_is_zero(debit_ar) && !check_amount(debit_ar, error))
 		return FALSE;
@@ -616,11 +621,15 @@ post_split(VentureSettlementService *self, VentureEntity *source, GDateTime *dat
 			g_clear_object(&policy);
 		}
 	}
+	if (credit_deferred != NULL && !venture_money_is_zero(credit_deferred) &&
+		!resolve_code(self, "2200", org, &deferred, error))
+		return FALSE;
 	transaction = g_strdup_printf("receivables:%s:%s", venture_entity_get_entity_name(source),
 		venture_entity_get_uuid(source));
 	if (reverse)
 	{
 		add_leg(entries, source, date, transaction, income, VENTURE_LEDGER_SIDE_DEBIT, credit_income);
+		add_leg(entries, source, date, transaction, deferred, VENTURE_LEDGER_SIDE_DEBIT, credit_deferred);
 		add_leg(entries, source, date, transaction, tax, VENTURE_LEDGER_SIDE_DEBIT, credit_tax);
 		add_leg(entries, source, date, transaction, ar, VENTURE_LEDGER_SIDE_CREDIT, debit_ar);
 	}
@@ -628,6 +637,7 @@ post_split(VentureSettlementService *self, VentureEntity *source, GDateTime *dat
 	{
 		add_leg(entries, source, date, transaction, ar, VENTURE_LEDGER_SIDE_DEBIT, debit_ar);
 		add_leg(entries, source, date, transaction, income, VENTURE_LEDGER_SIDE_CREDIT, credit_income);
+		add_leg(entries, source, date, transaction, deferred, VENTURE_LEDGER_SIDE_CREDIT, credit_deferred);
 		add_leg(entries, source, date, transaction, tax, VENTURE_LEDGER_SIDE_CREDIT, credit_tax);
 	}
 	return entries->len == 0 || venture_receivables_post_batch(self, entries, policy, actor, error);
@@ -850,6 +860,82 @@ invoice_parts(VentureSettlementService *self, VentureEntity *invoice,
 }
 
 static gboolean
+deferred_portion(VentureSettlementService *self, VentureEntity *invoice, VentureMoney **deferred, GError **error)
+{
+	g_autoptr(GPtrArray) lines = NULL;
+	guint i;
+	*deferred = NULL;
+	lines = find_rows(self, VENTURE_TYPE_INVOICE_LINE, "invoice-id", venture_entity_get_id(invoice), NULL, error);
+	if (lines == NULL)
+		return FALSE;
+	for (i = 0; i < lines->len; i++)
+	{
+		VentureEntity *line = g_ptr_array_index(lines, i);
+		g_autoptr(VentureEntity) product = NULL;
+		g_autoptr(VentureMoney) net = NULL;
+		gint64 product_id = 0, months = 0, policy = 0;
+		if (venture_entity_is_deleted(line))
+			continue;
+		g_object_get(line, "product-id", &product_id, "income-amount", &net, NULL);
+		if (product_id <= 0 || net == NULL)
+			continue;
+		product = venture_database_get(self->database, VENTURE_TYPE_PRODUCT, product_id, error);
+		if (product == NULL)
+			return FALSE;
+		g_object_get(product, "recognition-policy", &policy, "recognition-months", &months, NULL);
+		if (policy == 0 || months < 1)
+			continue;
+		if (!accumulate(deferred, net, FALSE, error))
+			return FALSE;
+	}
+	return TRUE;
+}
+
+static gboolean
+schedule_recognition(VentureSettlementService *self, VentureEntity *invoice, const VentureMoney *deferred,
+	GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) deferral = VENTURE_ENTITY(venture_deferral_new());
+	g_autoptr(GPtrArray) lines = NULL;
+	gint64 months = 0, source = 0, target = 0, org = venture_entity_get_organization_id(invoice);
+	guint i;
+	if (deferred == NULL || venture_money_is_zero(deferred))
+		return TRUE;
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "deferral") == G_TYPE_INVALID)
+		return refuse(error, VENTURE_ERROR_CONFIG, "Deferred recognition requires the assets module");
+	lines = find_rows(self, VENTURE_TYPE_INVOICE_LINE, "invoice-id", venture_entity_get_id(invoice), NULL, error);
+	if (lines == NULL)
+		return FALSE;
+	for (i = 0; i < lines->len; i++)
+	{
+		gint64 product_id = 0, policy = 0, line_months = 0;
+		g_autoptr(VentureEntity) product = NULL;
+		g_object_get(g_ptr_array_index(lines, i), "product-id", &product_id, NULL);
+		if (product_id <= 0)
+			continue;
+		product = venture_database_get(self->database, VENTURE_TYPE_PRODUCT, product_id, error);
+		if (product == NULL)
+			return FALSE;
+		g_object_get(product, "recognition-policy", &policy, "recognition-months", &line_months, NULL);
+		if (policy != 0 && line_months > months)
+			months = line_months;
+	}
+	if (months < 1)
+		months = 1;
+	if (!resolve_code(self, "2200", org, &source, error) || !resolve_code(self, "4000", org, &target, error))
+		return FALSE;
+	venture_entity_set_organization_id(deferral, org);
+	g_object_set(deferral, "kind", VENTURE_DEFERRAL_KIND_ACCRUAL, "description", "Invoice revenue recognition",
+		"total", deferred, "start", date, "months", months, "source-account-id", source,
+		"target-account-id", target, "source-invoice-id", venture_entity_get_id(invoice),
+		"status", VENTURE_DEFERRAL_STATUS_ACTIVE, NULL);
+	{
+		g_autoptr(VentureDeferralService) deferrals = venture_deferral_service_new(self->database);
+		return venture_deferral_service_schedule(deferrals, deferral, actor, error);
+	}
+}
+
+static gboolean
 perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 	const gchar *state, GDateTime *date, const VentureActor *actor, GError **error)
 {
@@ -951,11 +1037,37 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 		if (!check_customer(self, VENTURE_ENTITY(event), error) ||
 			!write_record(self, VENTURE_ENTITY(event), actor, error))
 			return FALSE;
-		if (first_issue && !post_split(self, VENTURE_ENTITY(event), date, total, net, tax, FALSE, actor, error))
-			return FALSE;
-		if (phase == VENTURE_INVOICE_STATUS_VOID && !venture_money_is_zero(total) &&
-			!post_split(self, VENTURE_ENTITY(event), date, total, net, tax, TRUE, actor, error))
-			return FALSE;
+		if (first_issue)
+		{
+			g_autoptr(VentureMoney) deferred = NULL;
+			g_autoptr(VentureMoney) income = NULL;
+			if (!deferred_portion(self, invoice, &deferred, error))
+				return FALSE;
+			if (deferred != NULL && net != NULL)
+			{
+				income = venture_money_subtract(net, deferred, error);
+				if (income == NULL)
+					return FALSE;
+			}
+			if (!post_split(self, VENTURE_ENTITY(event), date, total, income != NULL ? income : net, tax, FALSE, deferred, actor, error) ||
+				!schedule_recognition(self, invoice, deferred, date, actor, error))
+				return FALSE;
+		}
+		if (phase == VENTURE_INVOICE_STATUS_VOID && !venture_money_is_zero(total))
+		{
+			g_autoptr(VentureMoney) deferred = NULL;
+			g_autoptr(VentureMoney) income = NULL;
+			if (!deferred_portion(self, invoice, &deferred, error))
+				return FALSE;
+			if (deferred != NULL && net != NULL)
+			{
+				income = venture_money_subtract(net, deferred, error);
+				if (income == NULL)
+					return FALSE;
+			}
+			if (!post_split(self, VENTURE_ENTITY(event), date, total, income != NULL ? income : net, tax, TRUE, deferred, actor, error))
+				return FALSE;
+		}
 	}
 	g_object_set(invoice, "status", phase, "workflow-state", state, "paid-at", NULL, NULL);
 	if (first_issue)
@@ -1149,7 +1261,7 @@ perform_credit(VentureSettlementService *self, VentureEntity *credit,
 			if (net == NULL)
 				return FALSE;
 			return write_record(self, credit, actor, error) &&
-				post_split(self, credit, date, amount, net, tax, TRUE, actor, error);
+				post_split(self, credit, date, amount, net, tax, TRUE, NULL, actor, error);
 		}
 	}
 	return write_record(self, credit, actor, error) && post(self, credit, date, amount, "4000", "1100", actor, error);

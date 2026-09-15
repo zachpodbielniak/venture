@@ -704,15 +704,15 @@ test_plugin_state(Fixture *f, gconstpointer data)
 	service = venture_settlement_service_get(f->database);
 	machine = venture_settlement_service_get_state_machine(service);
 	invoice = invoice_new(f, "PLUGIN", "2026-07-01", "100 USD");
-	g_assert_true(venture_invoice_state_machine_add_state(machine, "disputed", VENTURE_INVOICE_STATUS_SENT, &error));
+	g_assert_true(venture_invoice_state_machine_add_state(machine, "held", VENTURE_INVOICE_STATUS_SENT, &error));
 	g_assert_no_error(error);
-	g_assert_true(venture_invoice_state_machine_add_transition(machine, "sent", "disputed", &error));
-	g_assert_true(venture_invoice_state_machine_add_transition(machine, "disputed", "sent", &error));
-	g_assert_true(venture_invoice_state_machine_add_transition(machine, "disputed", "paid", &error));
+	g_assert_true(venture_invoice_state_machine_add_transition(machine, "sent", "held", &error));
+	g_assert_true(venture_invoice_state_machine_add_transition(machine, "held", "sent", &error));
+	g_assert_true(venture_invoice_state_machine_add_transition(machine, "held", "paid", &error));
 	date = g_date_time_new_from_iso8601("2026-07-02T00:00:00Z", NULL);
-	g_assert_true(venture_settlement_service_transition(service, VENTURE_INVOICE(invoice), "disputed", date, NULL, &error));
+	g_assert_true(venture_settlement_service_transition(service, VENTURE_INVOICE(invoice), "held", date, NULL, &error));
 	g_assert_true(venture_settlement_service_transition(service, VENTURE_INVOICE(invoice), "sent", date, NULL, &error));
-	g_assert_true(venture_settlement_service_transition(service, VENTURE_INVOICE(invoice), "disputed", date, NULL, &error));
+	g_assert_true(venture_settlement_service_transition(service, VENTURE_INVOICE(invoice), "held", date, NULL, &error));
 	g_assert_no_error(error);
 	balance = venture_settlement_service_invoice_balance(service, venture_entity_get_id(invoice), NULL, &error);
 	g_assert_no_error(error);
@@ -720,7 +720,7 @@ test_plugin_state(Fixture *f, gconstpointer data)
 	payment = payment_new(f, venture_entity_get_id(invoice), "100 USD", "2026-07-10");
 	save(f, payment);
 	assert_status(f, invoice, "paid");
-	g_assert_false(venture_invoice_state_machine_add_state(machine, "disputed", VENTURE_INVOICE_STATUS_SENT, &error));
+	g_assert_false(venture_invoice_state_machine_add_state(machine, "held", VENTURE_INVOICE_STATUS_SENT, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS);
 }
 
@@ -1692,6 +1692,43 @@ assert_book_balance(Fixture *f, const gchar *code, const gchar *cutoff, gint64 e
 	g_assert_cmpint(balance->amount, ==, expected);
 }
 
+static void
+test_deferred_revenue(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) product = record_new(f, "product");
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) line = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_DEFERRAL);
+	g_autoptr(GPtrArray) deferrals = NULL;
+	(void)data;
+	g_object_set(product, "name", "Support", "recognition-policy", (gint64)1, "recognition-months", (gint64)2, NULL);
+	save(f, product);
+	invoice = record_new(f, "invoice");
+	g_object_set(invoice, "number", "DEF-1", "company-id", f->customer_id, NULL);
+	money_field(invoice, "issued-at", "2026-01-01");
+	money_field(invoice, "due-at", "2026-01-01");
+	save(f, invoice);
+	line = record_new(f, "invoice_line");
+	g_object_set(line, "invoice-id", venture_entity_get_id(invoice), "description", "Year of support",
+		"quantity", 1.0, "product-id", venture_entity_get_id(product), NULL);
+	money_field(line, "unit-price", "100 USD");
+	save(f, line);
+	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+	save(f, invoice);
+	assert_book_balance(f, "4000", "2026-01-02T00:00:00Z", 0);
+	assert_book_balance(f, "2200", "2026-01-02T00:00:00Z", -10000);
+	deferrals = venture_database_find(f->database, query, &error);
+	g_assert_cmpuint(deferrals->len, ==, 1);
+	g_assert_cmpint(venture_asset_service_run_period(venture_asset_service_get(f->database), "2026-01",
+		f->organization_id, FALSE, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	assert_book_balance(f, "4000", "2026-02-01T00:00:00Z", -5000);
+	g_assert_cmpint(venture_asset_service_run_period(venture_asset_service_get(f->database), "2026-02",
+		f->organization_id, FALSE, NULL, &error), ==, 1);
+	assert_book_balance(f, "4000", "2026-03-01T00:00:00Z", -10000);
+}
+
 /* The integrated workflow must recognize each receipt once, accept a
  * second partial payment, and refund in February without rewriting January. */
 static void
@@ -1996,6 +2033,7 @@ main(int argc, char **argv)
 	ADD("batch", test_batch);
 	g_test_add("/receivables/batch-rollback", Fixture, "fail", set_up, test_batch, tear_down);
 	ADD("plugin-state", test_plugin_state);
+	ADD("deferred-revenue", test_deferred_revenue);
 	ADD("backdated-allocation", test_backdated_allocation);
 	ADD("delete-cannot-set-paid", test_delete_cannot_set_paid);
 	ADD("transition-cannot-edit-issued", test_transition_cannot_edit_issued);

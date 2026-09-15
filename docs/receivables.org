@@ -120,8 +120,14 @@ the mail outbox. See [[file:recurring.org][recurring documents]].
 
 =venture_receivables_post_batch()= supplies balanced source-document legs to =venture_posting_service_post_entries()=. Journals are the sole accounting authority; generated cash-report sales bypass automatic sale posting to avoid recognizing the same receipt twice. Invoice document rules are refused because issuance and settlement already post their own journals.
 
+A product =recognition-policy= of deferred with =recognition-months= credits
+deferred revenue (2200) for those lines at issue and schedules an accrual
+deferral whose period sweep recognizes income through the posting service.
+Immediate lines still credit income. Mixed invoices split the frozen net
+exactly.
+
 Issuing debits receivables for the tax-inclusive total, credits income for
-the frozen net (after discount, plus shipping) and credits sales tax payable
+the frozen net (after discount, plus shipping) or deferred revenue, and credits sales tax payable
 for the frozen tax. A receipt debits cash and
 credits receivables. Unused receipts are credit balances in that control
 account; allocation and creation of the receipt's credit post balanced

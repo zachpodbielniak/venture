@@ -2103,6 +2103,7 @@ venture_database_seed_accounts(
 		{ "1300", "Recoverable tax",       VENTURE_ACCOUNT_KIND_ASSET },
 		{ "2000", "Accounts payable",      VENTURE_ACCOUNT_KIND_LIABILITY },
 		{ "2100", "Sales tax payable",     VENTURE_ACCOUNT_KIND_LIABILITY },
+		{ "2200", "Deferred revenue",      VENTURE_ACCOUNT_KIND_LIABILITY },
 		{ "3000", "Owner's equity",        VENTURE_ACCOUNT_KIND_EQUITY },
 		{ "3100", "Owner's draw",          VENTURE_ACCOUNT_KIND_EQUITY },
 		{ "4000", "Sales",                 VENTURE_ACCOUNT_KIND_INCOME },
