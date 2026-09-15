@@ -232,7 +232,7 @@ The Stripe sub-build consumes the YAML archive produced by the parent build. It 
 
 The independent replacement pack: a synthetic business issues a taxed invoice,
 takes a partial receipt, records and pays a bill, and keeps subledgers tied to
-the GL. Rollback and retry leave no partial money. It does not claim country,
+the GL. A payment that fails after the invoice is issued leaves the journal count unchanged. It does not claim country,
 payroll or inventory parity. Invoice detail, cash-basis reports, bank reopen
 and the cutover wizard are asserted over HTTP in the module suites.
 

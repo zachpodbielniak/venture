@@ -163,20 +163,57 @@ test_full_cycle(Fixture *f, gconstpointer data)
 		venture_time_from_string("2026-01-31", NULL), &actor, &error));
 }
 
+static gboolean
+reject_credit(VentureDatabase *db, VentureEntity *record, VentureEntity *previous,
+	gpointer data, GError **error)
+{
+	(void)db; (void)record; (void)previous; (void)data;
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE, "injected credit failure");
+	return FALSE;
+}
+
+static guint
+count_type(Fixture *f, GType type)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(type);
+	g_autoptr(GPtrArray) rows = NULL;
+	venture_query_set_limit(query, 0);
+	rows = venture_database_find(f->db, query, NULL);
+	return rows != NULL ? rows->len : 0;
+}
+
 static void
 test_rollback_retry(Fixture *f, gconstpointer data)
 {
+	g_autoptr(VentureInvoice) invoice = venture_invoice_new();
+	g_autoptr(VentureInvoiceLine) line = venture_invoice_line_new();
 	g_autoptr(VenturePayment) payment = venture_payment_new();
 	g_autoptr(GError) error = NULL;
-	g_autofree gchar *before = NULL;
+	guint journals;
 	(void)data;
-	g_object_set(payment, "customer-id", f->customer, "method", "manual", "organization-id", f->org, NULL);
-	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(payment), "amount", "0 USD", &error) || TRUE);
-	g_object_set(payment, "customer-id", f->customer, "method", "manual", "organization-id", f->org, NULL);
-	before = g_strdup("ok");
+	g_object_set(invoice, "number", "ACC-RB", "company-id", f->customer, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(invoice), f->org);
+	money(VENTURE_ENTITY(invoice), "issued-at", "2026-01-10");
+	save(f, VENTURE_ENTITY(invoice));
+	g_object_set(line, "invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)),
+		"description", "Work", "quantity", 1.0, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(line), f->org);
+	money(VENTURE_ENTITY(line), "unit-price", "40 USD");
+	save(f, VENTURE_ENTITY(line));
+	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+	save(f, VENTURE_ENTITY(invoice));
+	journals = count_type(f, VENTURE_TYPE_JOURNAL);
+	venture_database_add_save_validator(f->db, VENTURE_TYPE_CUSTOMER_CREDIT, reject_credit, NULL, NULL);
+	g_object_set(payment, "customer-id", f->customer,
+		"invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)),
+		"method", "transfer", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(payment), f->org);
+	money(VENTURE_ENTITY(payment), "amount", "40 USD");
+	money(VENTURE_ENTITY(payment), "date", "2026-01-15");
 	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(payment), NULL, &error));
-	g_assert_nonnull(error);
-	g_assert_cmpstr(before, ==, "ok");
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE);
+	g_assert_cmpuint(count_type(f, VENTURE_TYPE_JOURNAL), ==, journals);
+	g_assert_cmpuint(count_type(f, VENTURE_TYPE_PAYMENT), ==, 0);
 }
 
 int
