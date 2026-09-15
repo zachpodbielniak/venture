@@ -68,6 +68,7 @@ CORE_SRCS := \
 
 CORE_SRCS += src/orgaccess/venture-access-records.c
 CORE_SRCS += src/billing/venture-billing-records.c
+CORE_SRCS += src/projects/venture-project-records.c
 CORE_SRCS += src/leads/venture-lead-records.c
 CORE_SRCS += src/activities/venture-activity-records.c
 CORE_SRCS += src/payables/venture-payable-records.c
@@ -108,6 +109,7 @@ CORE_SRCS += src/assets/venture-asset-records.c
 SERVER_ONLY_SRCS += $(filter-out src/assets/venture-asset-records.c,$(wildcard src/assets/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/orgaccess/venture-access-records.c src/orgaccess/venture-accounting-approval-records.c,$(wildcard src/orgaccess/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/billing/venture-billing-records.c,$(wildcard src/billing/*.c))
+SERVER_ONLY_SRCS += $(filter-out src/projects/venture-project-records.c,$(wildcard src/projects/*.c))
 CORE_SRCS += src/mail/venture-mail-records.c
 SERVER_ONLY_SRCS += $(filter-out src/mail/venture-mail-records.c,$(wildcard src/mail/*.c))
 CORE_SRCS += src/quotes/venture-quote-records.c
@@ -176,6 +178,7 @@ PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/reconciliation/*.h))
 PUBLIC_HDRS += $(wildcard src/assets/*.h)
 PUBLIC_HDRS += $(wildcard src/orgaccess/*.h)
 PUBLIC_HDRS += $(wildcard src/billing/*.h)
+PUBLIC_HDRS += $(wildcard src/projects/*.h)
 PUBLIC_HDRS += $(wildcard src/mail/*.h)
 
 PUBLIC_HDRS += $(wildcard src/payables/*.h)

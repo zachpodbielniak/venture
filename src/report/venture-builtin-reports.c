@@ -2722,6 +2722,7 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 	venture_period_reports_register(self);
 	venture_assets_register_reports(self);
 	venture_billing_register_reports(self);
+	venture_projects_register_reports(self);
 	venture_leads_register_reports(self);
 	venture_activity_register_reports(self);
 	venture_pipeline_reports_register(self);

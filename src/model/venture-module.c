@@ -559,6 +559,13 @@ static GType (*const venture_module_orgaccess_types[]) (void) = {
 };
 
 static const gchar *const billing_requires[] = { "invoicing", "receivables", NULL };
+static const gchar *const projects_requires[] = { "invoicing", "receivables", NULL };
+static const gchar *const projects_reports[] = { "project_margin", NULL };
+static GType (*const projects_types[]) (void) = {
+	venture_client_project_get_type, venture_project_rate_get_type,
+	venture_project_time_get_type, venture_project_cost_get_type,
+	venture_project_billing_get_type, NULL
+};
 static const gchar *const billing_reports[] = { "mrr", "churn", "subscriptions_due", NULL };
 static GType (*const billing_types[]) (void) = {
 	venture_plan_get_type,
@@ -845,6 +852,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"billing", "SaaS billing", "Customer subscriptions and recurring revenue.",
 		billing_requires, NULL, billing_types, billing_reports, NULL, FALSE
+	},
+	{
+		"projects", "Client projects", "Approved time and billable costs invoiced through settlement.",
+		projects_requires, NULL, projects_types, projects_reports, NULL, FALSE
 	},
 	{
 		"orgaccess", "Organization access", "Membership, organization roles and team ownership.",

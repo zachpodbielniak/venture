@@ -55,6 +55,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 
 - [[file:banking.org][Banking]] — statement import, matching and reconciliation
 - [[file:setup.org][Accounting setup]] — guided books setup and control-account mappings
+- [[file:projects.org][Client projects]] — approved time, billable costs and invoices through settlement
 - [[file:cutover.org][Accounting cutover]] — guided Zoho Books and QuickBooks opening balances
 - [[file:statements.org][Financial statements]] — posted ledger balances, statements, comparatives and P&L reconciliation
 - [[file:close.org][Accountant close]] — workspace, subledger tie-outs, workpapers and signoff
@@ -89,6 +90,7 @@ The AI reads freely and cannot write unsupervised. A tool call that would change
 
 Two binaries, both statically linked against every vendored dependency: =venture= is the server, =venturectl= is the client. Either builds alone.
 
+- [[file:projects.org][Client projects]] — approved time, billable costs and invoices through settlement
 - [[file:billing.org][SaaS billing]] — plans, customer subscriptions and recurring revenue
 - [[file:recurring.org][Recurring documents]] — reusable invoices, bills, expenses and journals; collections; batch entry
 - [[file:pipelines.org][Sales pipelines]] — configurable stages, next actions, history, loss reasons and forecasts

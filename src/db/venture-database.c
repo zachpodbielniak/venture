@@ -1270,6 +1270,16 @@ database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
 
 	{
 		gboolean handled;
+		gboolean ok = venture_projects_save_hook(self, entity, actor, &handled, error);
+		if (!ok || handled)
+		{
+			g_rec_mutex_unlock(&self->lock);
+			return ok;
+		}
+	}
+
+	{
+		gboolean handled;
 		gboolean authorized;
 		gboolean ok = venture_payables_save_hook(self, entity, actor, &handled, &authorized, error);
 		settlement_authorized = settlement_authorized || authorized;

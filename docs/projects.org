@@ -1,0 +1,25 @@
+#+title: Client projects
+#+description: Approved time and billable costs invoiced through settlement
+
+* Projects
+
+The =projects= module requires =invoicing= and =receivables=. A
+=client_project= is a contract for a customer and optional venture. Staff
+=project_rate= rows hold billing and cost rates. Approved =project_time=
+(optionally from a worklog) and billable =project_cost= rows become invoice
+lines through =VentureProjectService=. =project_billing= is the immutable
+allocation that prevents double billing.
+
+#+begin_src sh
+venturectl create client_project customer_id=1 name=Website currency=USD billing_kind=time
+venturectl create project_rate project_id=1 role=engineer 'billing_rate=150 USD' 'cost_rate=80 USD'
+#+end_src
+
+=venture_project_service_approve_time()= computes the billable amount from the
+hourly rate over exact minutes. =venture_project_service_bill()= issues one
+invoice through =VentureSettlementService= for every approved unbilled row.
+Generic writes cannot create =project_billing= rows. The =project_margin=
+report totals billed amounts by project.
+
+A second bill of the same time or cost is refused. Retainer and change-order
+links use ordinary =record_link= rows to the project and quote.
