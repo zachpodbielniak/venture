@@ -12202,6 +12202,7 @@ venture_web_ui_settings(
 	                       "resolved at startup. Read-only: settings are "
 	                       "layered, so edit the file or the environment and "
 	                       "restart.</p>"
+	                       "<p><a href=\"/settings/fields\">Custom fields and layouts</a></p>"
 	                       "</div></div>");
 
 	/* Where things stand right now, before the settings themselves. */
@@ -27825,6 +27826,7 @@ venture_web_api_ticket_draft(
 #include "documents/venture-document-web.inc"
 #include "portal/venture-portal-web.inc"
 #include "portal/venture-supplier-portal-web.inc"
+#include "fields/venture-custom-fields-web.inc"
 #include "autojournal/venture-autojournal-web.inc"
 
 #include "mail/venture-mail-web.inc"
@@ -28012,6 +28014,7 @@ venture_web_server_new(
 	htmx_router_post(router, "/q/:token/accept", quote_public, self);
 	htmx_router_get(router, "/reports", venture_web_ui_reports, self);
 	htmx_router_get(router, "/settings", venture_web_ui_settings, self);
+	venture_custom_fields_web_register(router, self);
 	htmx_router_get(router, "/entity/:id", venture_web_ui_switch_entity, self);
 	htmx_router_get(router, "/tickets", venture_web_ui_tickets, self);
 	htmx_router_post(router, "/tickets/:id/move", venture_web_ui_ticket_move,

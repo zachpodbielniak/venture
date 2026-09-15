@@ -1,0 +1,25 @@
+#+title: Accounting custom fields
+#+description: Field definitions, layouts and required values without writing C
+
+The =custom_fields= module owns three records:
+
+- =accounting_custom_field= — =record-type=, =name=, =kind=, =required=, JSON =options=
+- =accounting_layout= — =record-type= and a JSON array of field names
+- =custom_field_value= — =record-type=, =record-id=, =name=, =value=, queryable
+
+Kind is one of =string=, =text=, =integer=, =boolean=, =enum=, =money=,
+=date=, =datetime=. Enum choices live in =options= as a JSON string array.
+
+Saving a record of that type checks required custom values. A value may be a
+=custom_field_value= row or an attribute of the same name on the entity
+(copied to =custom_field_value= after a successful save). No operator writes
+C to add a field.
+
+=GET /settings/fields= lists definitions and layouts. Editors may add them
+there.
+
+#+begin_src sh
+venturectl fields define record_type=vendor_bill name=po_number kind=string required=true
+venturectl fields layout record_type=vendor_bill field_order='["number","po_number"]'
+venturectl fields value record_type=vendor_bill record_id=1 name=po_number value=PO-42
+#+end_src

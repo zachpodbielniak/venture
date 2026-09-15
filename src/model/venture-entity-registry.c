@@ -798,6 +798,9 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_contract_retention_get_type
 		, venture_customer_portal_access_get_type
 		, venture_supplier_portal_access_get_type
+		, venture_accounting_custom_field_get_type
+		, venture_accounting_layout_get_type
+		, venture_custom_field_value_get_type
 		, venture_saved_report_get_type
 		, venture_report_pack_get_type
 		, venture_accounting_dimension_get_type

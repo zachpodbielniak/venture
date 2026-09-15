@@ -726,6 +726,13 @@ static const gchar *const goods_reports[] = {
 	"committed_spend", "reorder_worklist", "inventory_valuation", NULL
 };
 
+static GType (*const venture_module_custom_fields_types[]) (void) = {
+	venture_accounting_custom_field_get_type,
+	venture_accounting_layout_get_type,
+	venture_custom_field_value_get_type,
+	NULL
+};
+static const gchar *const venture_module_requires_custom_fields[] = { "core", NULL };
 static GType (*const venture_module_supplier_portal_types[]) (void) = {
 	venture_supplier_portal_access_get_type, NULL
 };
@@ -737,6 +744,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"Entities, ventures, documents, accounts, the audit log, and the "
 		"links between records. Always on.",
 		NULL, NULL, venture_module_core_types, NULL, NULL, TRUE
+	},
+	{
+		"custom_fields", "Custom fields",
+		"Operator-defined fields, layouts and required values without writing C.",
+		venture_module_requires_custom_fields, NULL, venture_module_custom_fields_types, NULL, NULL, FALSE
 	},
 	{
 		"sales", "Sales",

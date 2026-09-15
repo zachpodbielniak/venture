@@ -1253,6 +1253,8 @@ database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
 	 * half-written invalid record is worse than a rejected one. */
 	if (!venture_entity_validate(entity, error))
 		return FALSE;
+	if (!venture_custom_fields_validate(self, entity, error))
+		return FALSE;
 
 	if (!venture_entity_before_save(entity, error))
 		return FALSE;
@@ -1424,6 +1426,8 @@ database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
 		              entity, created);
 	}
 
+	if (!venture_custom_fields_sync(self, entity, actor, error))
+		return FALSE;
 	return TRUE;
 }
 

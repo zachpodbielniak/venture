@@ -84,6 +84,7 @@ CORE_SRCS += src/setup/venture-setup-records.c
 CORE_SRCS += src/progress/venture-progress-records.c
 CORE_SRCS += src/portal/venture-portal-records.c
 CORE_SRCS += src/portal/venture-supplier-portal-records.c
+CORE_SRCS += src/fields/venture-custom-fields-records.c
 CORE_SRCS += src/backup/venture-backup-records.c
 CORE_SRCS += src/orgaccess/venture-accounting-approval-records.c
 CORE_SRCS += src/report/venture-report-records.c
@@ -150,6 +151,7 @@ SERVER_ONLY_SRCS += src/documents/venture-document-service.c
 SERVER_ONLY_SRCS += src/progress/venture-progress-service.c
 SERVER_ONLY_SRCS += src/portal/venture-portal-service.c
 SERVER_ONLY_SRCS += src/portal/venture-supplier-portal-service.c
+SERVER_ONLY_SRCS += src/fields/venture-custom-fields-service.c
 SERVER_ONLY_SRCS += src/backup/venture-backup-service.c
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
@@ -213,6 +215,7 @@ PUBLIC_HDRS += $(wildcard src/documents/*.h)
 PUBLIC_HDRS += $(wildcard src/recurring/*.h)
 PUBLIC_HDRS += $(wildcard src/progress/*.h)
 PUBLIC_HDRS += $(wildcard src/portal/*.h)
+PUBLIC_HDRS += $(wildcard src/fields/*.h)
 PUBLIC_HDRS += $(wildcard src/backup/*.h)
 
 TEST_SRCS := $(wildcard tests/test-*.c)
