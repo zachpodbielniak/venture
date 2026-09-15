@@ -65,7 +65,9 @@ static const VentureFieldDecl journal_line_fields[] = {
 	VENTURE_FIELD_MONEY("amount", "Original amount", "Nonnegative amount"),
 	VENTURE_FIELD_MONEY("book-amount", "Book amount", "Valued by the posting service"),
 	VENTURE_FIELD("memo", "Memo", NULL, VENTURE_FIELD_KIND_STRING,
-		VENTURE_COLUMN_FLAG_SEARCHABLE)
+		VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD("dimension", "Dimension", "Optional department, location, project or class",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY(VentureJournalLine, venture_journal_line, journal_line_fields)

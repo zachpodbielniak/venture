@@ -147,3 +147,10 @@ accepts =account_id=. They use the normal report pages, CSV export and
 financial close snapshots. See [[file:statements.org][definitions and the indirect cash-flow method]].
 The older =pnl= remains operational sales/expenses reporting; differences are
 explained by source document in =pnl_reconciliation=.
+
+* Saved reports and dimensions
+
+=saved_report= stores report name, period, JSON options and an optional
+dimension. =report_pack= groups saved reports for a schedule. Journal lines
+accept an optional =dimension= string. =venture_report_pack_service_run=
+uses the same registry as the report page.
