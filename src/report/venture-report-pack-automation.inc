@@ -9,9 +9,8 @@ static gboolean venture_pod_module_handle_report_packs(VenturePodModule *self, G
 	if (!organization) return FALSE;
 	org = g_ascii_strtoll(organization, &end, 10);
 	if (*end || org <= 0) return FALSE;
-	(void)org;
 	ran = venture_report_pack_service_run_due(venture_report_pack_service_get(venture_context_get_database(self->context)),
-		self->context, NULL, NULL, &error);
+		self->context, org, NULL, NULL, &error);
 	if (ran < 0) {
 		g_warning("venture->report_packs_run: %s", error->message);
 		return FALSE;

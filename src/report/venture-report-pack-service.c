@@ -137,7 +137,7 @@ venture_report_pack_service_run(VentureReportPackService *self, VentureContext *
 		owned = json_object_new();
 		options = owned;
 	}
-	if (!json_object_has_member(options, "organization_id") && org > 0)
+	if (org > 0)
 		json_object_set_int_member(options, "organization_id", org);
 	if (dimension != NULL && dimension[0] != '\0')
 		json_object_set_string_member(options, "dimension", dimension);
@@ -224,7 +224,7 @@ pack_is_due(const gchar *schedule, GDateTime *last, GDateTime *as_of)
 
 gint
 venture_report_pack_service_run_due(VentureReportPackService *self, VentureContext *context,
-	GDateTime *as_of, const VentureActor *actor, GError **error)
+	gint64 organization_id, GDateTime *as_of, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
@@ -235,6 +235,8 @@ venture_report_pack_service_run_due(VentureReportPackService *self, VentureConte
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), -1);
 	now = as_of != NULL ? g_date_time_ref(as_of) : venture_time_now();
 	query = venture_query_new(VENTURE_TYPE_REPORT_PACK);
+	if (organization_id > 0)
+		venture_query_set_organization(query, organization_id);
 	venture_query_set_limit(query, 0);
 	rows = venture_database_find(self->database, query, error);
 	if (rows == NULL)

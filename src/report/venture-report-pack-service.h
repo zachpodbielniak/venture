@@ -36,6 +36,7 @@ GPtrArray *venture_report_pack_service_run_pack(VentureReportPackService *self, 
  * venture_report_pack_service_run_due:
  * @self: the service
  * @context: report context
+ * @organization_id: legal entity whose packs to dispatch
  * @as_of: (nullable): now when omitted
  * @actor: (nullable)
  * @error: (out) (optional)
@@ -45,6 +46,6 @@ GPtrArray *venture_report_pack_service_run_pack(VentureReportPackService *self, 
  * Returns: number of packs run, or -1
  */
 gint venture_report_pack_service_run_due(VentureReportPackService *self, VentureContext *context,
-	GDateTime *as_of, const VentureActor *actor, GError **error);
+	gint64 organization_id, GDateTime *as_of, const VentureActor *actor, GError **error);
 G_END_DECLS
 #endif

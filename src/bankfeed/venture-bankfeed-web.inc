@@ -1,4 +1,12 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
+typedef struct { gboolean done; gint imported; GError *error; } BankfeedSyncWait;
+static void
+bankfeed_sync_finished(GObject *source, GAsyncResult *result, gpointer data)
+{
+	BankfeedSyncWait *wait = data;
+	wait->imported = venture_bankfeed_service_sync_finish(VENTURE_BANKFEED_SERVICE(source), result, &wait->error);
+	wait->done = TRUE;
+}
 static HtmxResponse *
 bankfeed_sync(HtmxRequest *request, GHashTable *params, gpointer data)
 {
@@ -41,7 +49,17 @@ bankfeed_sync(HtmxRequest *request, GHashTable *params, gpointer data)
 			to = g_date_time_new_from_iso8601(iso, NULL);
 		}
 	}
-	imported = venture_bankfeed_service_sync(service, id != NULL ? g_ascii_strtoll(id, NULL, 10) : 0, from, to, &actor, &error);
+	{
+		BankfeedSyncWait wait = { FALSE, -1, NULL };
+		g_autoptr(GCancellable) cancel = g_cancellable_new();
+		venture_bankfeed_service_sync_async(service, id != NULL ? g_ascii_strtoll(id, NULL, 10) : 0,
+			from, to, &actor, cancel, bankfeed_sync_finished, &wait);
+		while (!wait.done)
+			g_main_context_iteration(NULL, TRUE);
+		imported = wait.imported;
+		if (wait.error != NULL)
+			g_propagate_error(&error, wait.error);
+	}
 	if (imported < 0) return venture_web_error_response(error);
 	if (htmx_request_get_form_value(request, "action") != NULL)
 		return venture_web_redirect_to("/bankfeed");

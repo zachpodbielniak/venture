@@ -240,6 +240,23 @@ export_json(VentureBackupService *self, gint64 org, GError **error)
 			json_builder_set_member_name(builder, "status");
 			json_builder_add_int_value(builder, status);
 		}
+		{
+			g_autoptr(VentureQuery) eq = venture_query_new(VENTURE_TYPE_INVOICE_EVENT);
+			g_autoptr(GPtrArray) events = NULL;
+			venture_query_add_filter_int(eq, "invoice-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(invoice), NULL);
+			events = venture_database_find(self->database, eq, NULL);
+			if (events && events->len > 0)
+			{
+				g_autoptr(GDateTime) issued = NULL;
+				g_object_get(g_ptr_array_index(events, 0), "date", &issued, NULL);
+				if (issued != NULL)
+				{
+					g_autofree gchar *iso = g_date_time_format(issued, "%Y-%m-%dT%H:%M:%SZ");
+					json_builder_set_member_name(builder, "issued_at");
+					json_builder_add_string_value(builder, iso);
+				}
+			}
+		}
 		json_builder_set_member_name(builder, "lines");
 		json_builder_begin_array(builder);
 		venture_query_add_filter_int(q, "invoice-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(invoice), NULL);
@@ -281,7 +298,20 @@ export_json(VentureBackupService *self, gint64 org, GError **error)
 		if (payments == NULL) return NULL;
 		for (i = 0; i < payments->len; i++)
 		{
-			g_autoptr(JsonNode) node = venture_serializable_to_json(VENTURE_SERIALIZABLE(g_ptr_array_index(payments, i)), FALSE);
+			VentureEntity *payment = g_ptr_array_index(payments, i);
+			g_autoptr(JsonNode) node = venture_serializable_to_json(VENTURE_SERIALIZABLE(payment), FALSE);
+			JsonObject *object = json_node_get_object(node);
+			gint64 invoice_id = 0;
+			g_object_get(payment, "invoice-id", &invoice_id, NULL);
+			if (invoice_id > 0)
+			{
+				g_autoptr(VentureEntity) invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, invoice_id, NULL);
+				g_autofree gchar *number = NULL;
+				if (invoice != NULL)
+					g_object_get(invoice, "number", &number, NULL);
+				if (number != NULL)
+					json_object_set_string_member(object, "invoice_number", number);
+			}
 			json_builder_add_value(builder, json_node_copy(node));
 		}
 	}
@@ -550,9 +580,12 @@ restore_invoices(VentureBackupService *self, gint64 org, JsonArray *invoices, co
 		if (status == VENTURE_INVOICE_STATUS_SENT || status == VENTURE_INVOICE_STATUS_PARTIALLY_PAID ||
 			status == VENTURE_INVOICE_STATUS_PAID)
 		{
-			g_autoptr(GDateTime) now = venture_time_now();
+			g_autoptr(GDateTime) when = NULL;
+			const gchar *issued = json_object_has_member(row, "issued_at") ?
+				json_object_get_string_member(row, "issued_at") : NULL;
+			when = issued ? g_date_time_new_from_iso8601(issued, NULL) : venture_time_now();
 			if (!venture_settlement_service_transition(venture_settlement_service_get(self->database),
-				invoice, "sent", now, actor, error))
+				invoice, "sent", when, actor, error))
 				return FALSE;
 		}
 	}
@@ -592,28 +625,22 @@ restore_payments(VentureBackupService *self, gint64 org, JsonArray *payments, co
 		const gchar *invoice_number = json_object_has_member(row, "invoice_number") ?
 			json_object_get_string_member(row, "invoice_number") : NULL;
 		gint64 invoice_id = 0;
-		when = venture_time_now();
+		{
+			JsonNode *date_node = json_object_get_member(row, "date");
+			if (date_node != NULL && JSON_NODE_HOLDS_VALUE(date_node) &&
+				json_node_get_value_type(date_node) == G_TYPE_STRING)
+				when = g_date_time_new_from_iso8601(json_node_get_string(date_node), NULL);
+		}
+		if (when == NULL)
+			when = venture_time_now();
 		amount_node = json_object_get_member(row, "amount");
 		if (amount_node != NULL)
 			amount = venture_money_from_json(amount_node, NULL, error);
 		if (amount == NULL)
 			return FALSE;
-		if (invoice_number == NULL && json_object_has_member(row, "invoice_id"))
-		{
-			/* Identity remapping uses invoice number when present. */
-		}
-		if (json_object_has_member(row, "number"))
-			invoice_number = json_object_get_string_member(row, "number");
 		invoice_id = invoice_by_number(self, org, invoice_number);
 		if (invoice_id == 0)
-		{
-			g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_INVOICE);
-			g_autoptr(GPtrArray) rows = NULL;
-			venture_query_set_organization(q, org);
-			rows = venture_database_find(self->database, q, NULL);
-			if (rows && rows->len == 1)
-				invoice_id = venture_entity_get_id(g_ptr_array_index(rows, 0));
-		}
+			return refuse(error, "restore payment is missing a remapped invoice");
 		venture_entity_set_organization_id(VENTURE_ENTITY(payment), org);
 		g_object_set(payment, "customer-id", company, "date", when, "amount", amount,
 			"method", json_object_has_member(row, "method") ? json_object_get_string_member(row, "method") : "transfer",

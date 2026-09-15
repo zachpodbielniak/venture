@@ -221,11 +221,11 @@ test_scheduled_dispatch(Fixture *f, gconstpointer data)
 		venture_entity_get_id(saved), NULL, &error);
 	g_assert_no_error(error);
 	ran = venture_report_pack_service_run_due(venture_report_pack_service_get(f->db),
-		f->context, as_of, NULL, &error);
+		f->context, f->org, as_of, NULL, &error);
 	g_assert_no_error(error);
 	g_assert_cmpint(ran, ==, 1);
 	ran = venture_report_pack_service_run_due(venture_report_pack_service_get(f->db),
-		f->context, as_of, NULL, &error);
+		f->context, f->org, as_of, NULL, &error);
 	g_assert_no_error(error);
 	g_assert_cmpint(ran, ==, 0);
 }
