@@ -1,0 +1,28 @@
+#+title: Inventory to the general ledger
+#+description: FIFO cost layers, COGS on issue, and a valuation that ties to account 1200
+
+* Quantity and cost
+
+Quantity on hand is still the sum of signed =inventory_txn= rows, never
+a stored field. FIFO cost lives on =inventory_cost_layer=, written by
+=VentureInventoryService= when goods are received. Issue consumes the
+oldest remaining quantity and posts Cost of goods sold 5000 against
+Inventory 1200 through =VenturePostingService=. The inventory control
+account is resolved with setup role =inventory=, or code 1200.
+
+=allow-negative= on =inventory_item= is false by default; a movement
+that would take stock below zero is refused. Transfers move layers
+between two items of the same product (two locations) without hitting
+COGS.
+
+* Autojournal
+
+When a product has an =inventory_item=, automatic sale journals skip
+the product-cost COGS legs. The inventory service owns those journals
+so a sale cannot double-post inventory and COGS.
+
+* Reports
+
+=inventory_valuation= as-of is remaining FIFO layers. It is the figure
+that must reconcile to the GL inventory account. =reorder_worklist=
+lists items at or below their reorder point.
