@@ -46,7 +46,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =reconciliation= | ledger | matcher registry, deterministic and AI matchers, staged suggestions; suggests banking | |
 | =banking= | ledger | bank_account, bank_statement, bank_transaction, bank_match, reconciliation; =bank_reconciliation= | |
 | =orgaccess=  | core            | organization_membership, team, team_membership; record ownership | |
-| =billing= | invoicing, receivables | plan, plan_price, customer_subscription, subscription_event, dunning_step, billing_notice, billing_request; =mrr=, =churn=, =subscriptions_due= | |
+| =billing= | invoicing, receivables | plan, plan_price, customer_subscription, subscription_event, dunning_step, billing_notice, billing_request, customer_payment_method; =mrr=, =churn=, =subscriptions_due= | |
 | =mail= | core | mail_message, mail_template; durable outbox and SMTP actions | |
 
 | =payables= | finance, ledger, crm | vendor_bill, vendor_bill_line, bill_payment, bill_payment_allocation, vendor_credit, vendor_bill_event, bill_refund; =payables=, =vendor_statement= | |

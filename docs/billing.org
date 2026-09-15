@@ -135,6 +135,13 @@ returns the number of operations without writing records or audit entries.
 Schedule the CLI or POST the sweep endpoint from the installation's
 scheduler; no separate billing thread touches the database.
 
+A =plan_price= may name a =product_id= so issued invoice lines qualify for
+hosted Checkout. =customer_payment_method= stores explicit authorization
+(=card=, =ach=, =direct_debit= or =manual=). =billing collect ID= applies an
+authorized method through settlement, then recovers a =past_due= subscription.
+Invoice creation, cash collection and recognized revenue remain separate
+events.
+
 =mark-payment-failed= records the failure date and moves active to
 =past_due=. Dunning measures whole overdue days from that date. Each
 subscription/failure episode/step has one durable =billing_notice= with

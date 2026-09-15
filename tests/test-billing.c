@@ -9,7 +9,7 @@ test_catalog(void)
 {
 	static const gchar *const names[] = {
 		"plan", "plan_price", "customer_subscription", "subscription_event",
-		"dunning_step", "billing_notice"
+		"dunning_step", "billing_notice", "customer_payment_method"
 	};
 	VentureEntityRegistry *registry;
 	gsize i;
@@ -876,6 +876,45 @@ test_uniqueness(Fixture *f, gconstpointer data)
 	g_assert_cmpint(count(f, "invoice"), ==, 1);
 }
 
+/* Collection uses an authorized method, then recover exits dunning. */
+static void
+test_collect_and_recover(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) product = record(f, "product");
+	g_autoptr(VentureEntity) method = record(f, "customer_payment_method");
+	g_autoptr(VentureEntity) fail = NULL;
+	g_autoptr(VentureEntity) collect = NULL;
+	g_autoptr(VentureEntity) price = NULL;
+	g_autoptr(VentureQuery) lines = NULL;
+	g_autoptr(GPtrArray) found = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	gint64 id;
+	gint64 product_id;
+	(void)data;
+	g_object_set(product, "name", "Starter seats", NULL);
+	save(f, product);
+	product_id = venture_entity_get_id(product);
+	price = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_object_set(price, "product-id", product_id, NULL);
+	save(f, price);
+	id = start(f);
+	lines = venture_query_new(VENTURE_TYPE_INVOICE_LINE);
+	found = venture_database_find(f->db, lines, NULL);
+	g_assert_cmpuint(found->len, ==, 1);
+	g_assert_cmpint(integer(g_ptr_array_index(found, 0), "product-id"), ==, product_id);
+	g_object_set(method, "company-id", f->company, "method", "manual", "authorized", TRUE, NULL);
+	save(f, method);
+	fail = request(f, "mark-payment-failed", id, "2026-01-05");
+	save(f, fail);
+	status_is(f, id, "past_due");
+	collect = request(f, "collect", id, "2026-01-06");
+	save(f, collect);
+	status_is(f, id, "active");
+	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db),
+		integer(collect, "invoice-id"), NULL, NULL);
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 0);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -912,6 +951,7 @@ main(int argc, char **argv)
 	g_test_add("/billing/sweep-scope", Fixture, NULL, setup, test_sweep_scope, teardown);
 	g_test_add("/billing/interval-changes", Fixture, NULL, setup, test_interval_changes, teardown);
 	g_test_add("/billing/uniqueness", Fixture, NULL, setup, test_uniqueness, teardown);
+	g_test_add("/billing/collect-and-recover", Fixture, NULL, setup, test_collect_and_recover, teardown);
 	g_test_add_func("/billing/upgrade-disabled-restart", test_upgrade_disabled_restart);
 	return g_test_run();
 }

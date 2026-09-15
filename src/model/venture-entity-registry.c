@@ -746,6 +746,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_dunning_step_get_type
 		, venture_billing_notice_get_type
 		, venture_billing_request_get_type
+		, venture_customer_payment_method_get_type
 		, venture_mail_message_get_type
 		, venture_mail_template_get_type
 

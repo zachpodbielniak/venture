@@ -568,6 +568,7 @@ static GType (*const billing_types[]) (void) = {
 	venture_dunning_step_get_type,
 	venture_billing_notice_get_type,
 	venture_billing_request_get_type,
+	venture_customer_payment_method_get_type,
 	NULL
 };
 static GType (*const venture_module_mail_types[]) (void) = {

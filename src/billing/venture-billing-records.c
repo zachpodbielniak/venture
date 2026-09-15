@@ -52,6 +52,7 @@ venture_billing_event_kind_get_type(void)
 		{ 7, "VENTURE_BILLING_EVENT_KIND_CANCELLED", "cancelled" },
 		{ 8, "VENTURE_BILLING_EVENT_KIND_PAYMENT_FAILED", "payment_failed" },
 		{ 9, "VENTURE_BILLING_EVENT_KIND_RECOVERED", "recovered" },
+		{ 10, "VENTURE_BILLING_EVENT_KIND_COLLECTED", "collected" },
 		{ 0, NULL, NULL }
 	};
 	if (g_once_init_enter(&type))
@@ -96,6 +97,7 @@ static const VentureFieldDecl plan_price_fields[] = {
 	VENTURE_FIELD("per-seat", "Per seat", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("trial-days", "Trial days", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("product-id", "Product", "Catalog mapping for hosted collection", "product", VENTURE_COLUMN_FLAG_NONE),
 };
 VENTURE_DEFINE_ENTITY(VenturePlanPrice, venture_plan_price, plan_price_fields)
 
@@ -159,7 +161,7 @@ VENTURE_DEFINE_ENTITY(VentureBillingNotice, venture_billing_notice, billing_noti
 /* A durable instruction, so approval stages intent without granting CRUD the
  * authority to write subscription state. The service fills the result fields. */
 static const VentureFieldDecl billing_request_fields[] = {
-	VENTURE_FIELD_NAME("action", "Action", "start, renew, change, change-seats, pause, resume, cancel, mark-payment-failed, recover, renew-sweep, dunning-sweep"),
+	VENTURE_FIELD_NAME("action", "Action", "start, renew, change, change-seats, pause, resume, cancel, mark-payment-failed, recover, collect, renew-sweep, dunning-sweep"),
 	VENTURE_FIELD_REF("subscription-id", "Subscription", NULL, "customer_subscription", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("company-id", "Customer", NULL, "company", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact", VENTURE_COLUMN_FLAG_NONE),
@@ -175,3 +177,12 @@ static const VentureFieldDecl billing_request_fields[] = {
 	VENTURE_FIELD("processed", "Processed", "Service result", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureBillingRequest, venture_billing_request, billing_request_fields)
+
+static const VentureFieldDecl payment_method_fields[] = {
+	VENTURE_FIELD_REF("company-id", "Customer", NULL, "company", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_NAME("method", "Method", "card, ach, direct_debit or manual"),
+	VENTURE_FIELD("authorized", "Authorized", "Customer authorization to collect", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("external-id", "External identity", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
+};
+VENTURE_DEFINE_ENTITY(VentureCustomerPaymentMethod, venture_customer_payment_method, payment_method_fields)
