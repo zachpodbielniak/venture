@@ -32,19 +32,25 @@ money_equal(const VentureMoney *a, const VentureMoney *b)
 /* Stripe charge units differ from ISO for MGA and the legacy ISK/UGX
  * representation. Use the same mapper for Prices and signed settlement data;
  * https://docs.stripe.com/currencies documents these API exceptions. */
-static VentureMoney *
-charge_money(gint64 amount, const gchar *currency)
+static guint8
+charge_exponent(const gchar *currency)
 {
 	static const gchar *const zero[] = { "BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF", "VND", "VUV", "XAF", "XOF", "XPF" };
 	guint8 exponent = venture_currency_get_exponent(currency);
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(zero); i++)
-		if (!g_ascii_strcasecmp(currency, zero[i])) exponent = 0;
+		if (!g_ascii_strcasecmp(currency, zero[i])) return 0;
 	if (!g_ascii_strcasecmp(currency, "ISK") || !g_ascii_strcasecmp(currency, "UGX"))
-	{
-		if (amount % 100) return NULL;
-		exponent = 2;
-	}
+		return 2;
+	return exponent;
+}
+
+static VentureMoney *
+charge_money(gint64 amount, const gchar *currency)
+{
+	guint8 exponent = charge_exponent(currency);
+	if ((!g_ascii_strcasecmp(currency, "ISK") || !g_ascii_strcasecmp(currency, "UGX")) && amount % 100)
+		return NULL;
 	return venture_money_new(amount, currency, exponent);
 }
 
@@ -53,6 +59,49 @@ refuse(GError **error, const gchar *rule)
 {
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, rule);
 	return FALSE;
+}
+
+static gboolean
+to_stripe_amount(const VentureMoney *money, gint64 *out, GError **error)
+{
+	guint8 from = venture_money_get_exponent(money);
+	guint8 to = charge_exponent(venture_money_get_currency(money));
+	gint64 amount = venture_money_get_amount(money);
+	gint64 factor = 1;
+	gint64 scaled;
+
+	if (from == to)
+	{
+		if (amount <= 0) return refuse(error, "Checkout requires a positive open balance");
+		*out = amount;
+		return TRUE;
+	}
+	if (to > from)
+	{
+		while (from < to)
+		{
+			if (__builtin_mul_overflow(factor, (gint64)10, &factor))
+				return refuse(error, "Checkout amount overflows Stripe charge units");
+			from++;
+		}
+		if (__builtin_mul_overflow(amount, factor, &scaled))
+			return refuse(error, "Checkout amount overflows Stripe charge units");
+		if (scaled <= 0) return refuse(error, "Checkout requires a positive open balance");
+		*out = scaled;
+		return TRUE;
+	}
+	while (to < from)
+	{
+		if (__builtin_mul_overflow(factor, (gint64)10, &factor))
+			return refuse(error, "Checkout amount overflows Stripe charge units");
+		to++;
+	}
+	if (amount % factor)
+		return refuse(error, "Checkout amount is not an integral Stripe charge unit");
+	scaled = amount / factor;
+	if (scaled <= 0) return refuse(error, "Checkout requires a positive open balance");
+	*out = scaled;
+	return TRUE;
 }
 
 static void
@@ -225,39 +274,26 @@ eligible(VentureStripeService *self, gint64 invoice_id, VentureEntity **invoice_
 {
 	g_autoptr(VentureEntity) invoice = NULL;
 	g_autoptr(GPtrArray) lines = NULL;
-	g_autoptr(GPtrArray) links = NULL;
-	g_autoptr(VentureMoney) amount = NULL;
 	g_autoptr(VentureMoney) balance = NULL;
-	VentureEntity *line;
 	gint status;
-	gint64 product;
-	gdouble quantity;
 
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "stripe_checkout") == G_TYPE_INVALID)
 		return refuse(error, "Stripe module is disabled (stripe.enabled)");
 	invoice = owned_get(self, VENTURE_TYPE_INVOICE, invoice_id, error);
 	if (!invoice) return FALSE;
 	g_object_get(invoice, "status", &status, NULL);
-	if (status != VENTURE_INVOICE_STATUS_SENT) return refuse(error, "Checkout requires invoice status sent");
+	if (status != VENTURE_INVOICE_STATUS_SENT && status != VENTURE_INVOICE_STATUS_PARTIALLY_PAID)
+		return refuse(error, "Checkout requires invoice status sent");
 	lines = find_id(self, VENTURE_TYPE_INVOICE_LINE, "invoice-id", invoice_id, error);
 	if (!lines) return FALSE;
-	if (lines->len != 1) return refuse(error, "Checkout requires exactly one invoice line");
-	line = g_ptr_array_index(lines, 0);
-	g_object_get(line, "product-id", &product, "quantity", &quantity, NULL);
-	if (!isfinite(quantity) || quantity < 1 || quantity > G_MAXUINT || floor(quantity) != quantity)
-		return refuse(error, "Checkout requires a positive integral line quantity");
-	links = find_id(self, venture_stripe_price_link_get_type(), "product-id", product, error);
-	if (!links) return FALSE;
-	if (links->len != 1) return refuse(error, "Checkout requires a stripe_price_link for the line product");
-	amount = venture_invoice_line_get_amount(VENTURE_INVOICE_LINE(line), error);
-	if (!amount) return FALSE;
+	if (lines->len < 1) return refuse(error, "Checkout requires at least one invoice line");
 	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(self->database), invoice_id, NULL, error);
 	if (!balance) return FALSE;
-	if (venture_money_get_amount(balance) <= 0 || !money_equal(amount, balance))
-		return refuse(error, "Checkout line total must equal the positive open balance");
+	if (venture_money_get_amount(balance) <= 0)
+		return refuse(error, "Checkout requires a positive open balance");
 	if (invoice_out) *invoice_out = g_steal_pointer(&invoice);
-	if (link_out) *link_out = g_object_ref(g_ptr_array_index(links, 0));
-	if (quantity_out) *quantity_out = (guint)quantity;
+	if (link_out) *link_out = NULL;
+	if (quantity_out) *quantity_out = 1;
 	if (expected_out) *expected_out = g_steal_pointer(&balance);
 	return TRUE;
 }
@@ -272,7 +308,7 @@ venture_stripe_service_can_checkout(VentureStripeService *self, gint64 invoice_i
  * Validate the immutable provider price before either external write. Refuse
  * quantity transforms, recurring/tiered pricing and fractional minor units
  * because this checkout has no exact representation for those contracts. */
-static gboolean
+static gboolean G_GNUC_UNUSED
 check_price(VentureStripeService *self, VentureEntity *price, guint quantity,
 	const VentureMoney *expected, GError **error)
 {
@@ -310,7 +346,6 @@ venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 	const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) invoice = NULL;
-	g_autoptr(VentureEntity) price = NULL;
 	g_autoptr(VentureEntity) customer = NULL;
 	g_autoptr(GPtrArray) links = NULL;
 	g_autoptr(GPtrArray) sessions = NULL;
@@ -321,10 +356,9 @@ venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 	g_autofree gchar *customer_id = NULL;
 	gint64 company_id, contact_id, party_id;
 	const gchar *party_field;
-	guint quantity;
 
 	if (!venture_database_begin(self->database, error)) return NULL;
-	if (!eligible(self, invoice_id, &invoice, &price, &quantity, &expected, error)) goto fail;
+	if (!eligible(self, invoice_id, &invoice, NULL, NULL, &expected, error)) goto fail;
 	/* A remote customer/session cannot be undone by rolling back the local
 	 * transaction. Check the invoice write policy before contacting Stripe. */
 	if (!venture_access_policy_check_write(venture_database_get_access_policy(self->database), invoice, "write", error)) goto fail;
@@ -332,9 +366,15 @@ venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 	if (!sessions) goto fail;
 	if (sessions->len)
 	{
+		g_autofree gchar *status_name = NULL;
 		checkout = g_object_ref(g_ptr_array_index(sessions, sessions->len - 1));
-		if (!venture_database_commit(self->database, error)) goto fail;
-		return g_steal_pointer(&checkout);
+		g_object_get(checkout, "status", &status_name, NULL);
+		if (g_strcmp0(status_name, "expired") != 0)
+		{
+			if (!venture_database_commit(self->database, error)) goto fail;
+			return g_steal_pointer(&checkout);
+		}
+		g_clear_object(&checkout);
 	}
 	g_object_get(invoice, "company-id", &company_id, "contact-id", &contact_id, NULL);
 	party_id = company_id ? company_id : contact_id;
@@ -343,7 +383,6 @@ venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 	if (!customer) goto fail;
 	links = find_id(self, venture_stripe_customer_link_get_type(), party_field, party_id, error);
 	if (!links) goto fail;
-	if (!check_price(self, price, quantity, expected, error)) goto fail;
 	if (links->len) g_object_get(g_ptr_array_index(links, 0), "stripe-customer-id", &customer_id, NULL);
 	else
 	{
@@ -365,8 +404,10 @@ venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 	}
 	request = stripe_request_new(STRIPE_CHECKOUT_CREATE);
 	request->customer = g_steal_pointer(&customer_id);
-	g_object_get(price, "stripe-price-id", &request->price, NULL);
-	request->quantity = quantity;
+	if (!to_stripe_amount(expected, &request->unit_amount, error)) goto fail;
+	request->currency = g_ascii_strdown(venture_money_get_currency(expected), -1);
+	request->product_name = g_strdup("Invoice");
+	request->quantity = 1;
 	request->success_url = g_strdup(self->success_url);
 	request->cancel_url = g_strdup(self->cancel_url);
 	g_free(request->idempotency_key);
