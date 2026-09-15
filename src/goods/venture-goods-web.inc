@@ -7,6 +7,27 @@ refuse_web(GError **error)
 	return FALSE;
 }
 
+static gint64
+goods_form_int(HtmxRequest *request, JsonNode *input, const gchar *key)
+{
+	const gchar *text;
+	if (input != NULL && JSON_NODE_HOLDS_OBJECT(input))
+		return venture_json_object_get_int(json_node_get_object(input), key, 0);
+	text = htmx_request_get_form_value(request, key);
+	return text != NULL && *text != '\0' ? g_ascii_strtoll(text, NULL, 10) : 0;
+}
+
+static gboolean
+goods_form_bool(HtmxRequest *request, JsonNode *input, const gchar *key)
+{
+	const gchar *text;
+	if (input != NULL && JSON_NODE_HOLDS_OBJECT(input))
+		return venture_json_object_get_bool(json_node_get_object(input), key, FALSE);
+	text = htmx_request_get_form_value(request, key);
+	return text != NULL && *text != '\0' && g_strcmp0(text, "0") != 0 &&
+		g_ascii_strcasecmp(text, "false") != 0 && g_ascii_strcasecmp(text, "off") != 0;
+}
+
 static HtmxResponse *
 venture_web_goods_action(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -51,14 +72,10 @@ venture_web_goods_action(HtmxRequest *request, GHashTable *params, gpointer user
 		date = g_date_time_new_from_iso8601(venture_json_object_get_string(json_node_get_object(input), "date", NULL), NULL);
 	if (date == NULL)
 		date = venture_time_now();
-	line_id = input != NULL && JSON_NODE_HOLDS_OBJECT(input) ?
-		venture_json_object_get_int(json_node_get_object(input), "line_id", 0) : 0;
-	qty = input != NULL && JSON_NODE_HOLDS_OBJECT(input) ?
-		venture_json_object_get_int(json_node_get_object(input), "quantity", 0) : 0;
-	bill_id = input != NULL && JSON_NODE_HOLDS_OBJECT(input) ?
-		venture_json_object_get_int(json_node_get_object(input), "vendor_bill_id", 0) : 0;
-	exception = input != NULL && JSON_NODE_HOLDS_OBJECT(input) &&
-		venture_json_object_get_bool(json_node_get_object(input), "exception", FALSE);
+	line_id = goods_form_int(request, input, "line_id");
+	qty = goods_form_int(request, input, "quantity");
+	bill_id = goods_form_int(request, input, "vendor_bill_id");
+	exception = goods_form_bool(request, input, "exception");
 	if (g_strcmp0(kind, "purchase_order") == 0)
 	{
 		VenturePurchasingService *svc = venture_purchasing_service_get(venture_context_get_database(self->context));
@@ -137,9 +154,65 @@ venture_web_purchasing_workbench(HtmxRequest *request, GHashTable *params, gpoin
 		venture_html_escape_append(content, number);
 		g_string_append(content, "</td><td>");
 		venture_html_escape_append(content, status);
-		g_string_append_printf(content, "</td><td><form method=\"post\" action=\"/purchase_order/%" G_GINT64_FORMAT "/approve\"><button class=\"btn\">Approve</button></form>"
-			"<form method=\"post\" action=\"/purchase_order/%" G_GINT64_FORMAT "/send\"><button class=\"btn\">Send</button></form></td></tr>", id, id);
+		g_string_append_printf(content,
+			"</td><td><form method=\"post\" action=\"/purchase_order/%" G_GINT64_FORMAT "/approve\"><button class=\"btn\">Approve</button></form>"
+			"<form method=\"post\" action=\"/purchase_order/%" G_GINT64_FORMAT "/send\"><button class=\"btn\">Send</button></form>"
+			"<form method=\"post\" action=\"/purchase_order/%" G_GINT64_FORMAT "/receive\">"
+			"<input name=\"line_id\" placeholder=\"Line\" required>"
+			"<input name=\"quantity\" placeholder=\"Qty\" required>"
+			"<button class=\"btn\">Receive</button></form>"
+			"<form method=\"post\" action=\"/purchase_order/%" G_GINT64_FORMAT "/match\">"
+			"<input name=\"vendor_bill_id\" placeholder=\"Bill\" required>"
+			"<label><input type=\"checkbox\" name=\"exception\" value=\"1\"> Exception</label>"
+			"<button class=\"btn\">Match</button></form></td></tr>",
+			id, id, id, id);
 	}
 	g_string_append(content, "</tbody></table></div>");
 	return venture_web_html_response(venture_web_page(self, request, "/purchasing", "Purchasing", content->str), 200);
+}
+
+static HtmxResponse *
+venture_web_sales_workbench(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+	VentureWebServer *self = user_data;
+	g_autoptr(GString) content = g_string_new("<div class=\"page-head\"><h1>Sales orders</h1></div>");
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *gate;
+	guint i;
+	(void)params;
+	gate = venture_web_ui_require_session(self, request);
+	if (gate != NULL)
+		return gate;
+	gate = venture_web_require_module_ui(self, request, "goods");
+	if (gate != NULL)
+		return gate;
+	query = venture_query_new(VENTURE_TYPE_SALES_ORDER);
+	venture_query_set_organization(query, venture_web_active_organization(self, request));
+	rows = venture_database_find(venture_context_get_database(self->context), query, &error);
+	if (rows == NULL)
+		return venture_web_error_response(error);
+	g_string_append(content, "<div class=\"card\"><div class=\"card-head\"><h2>Orders</h2></div><table><thead><tr><th>Number</th><th>Status</th><th></th></tr></thead><tbody>");
+	for (i = 0; i < rows->len; i++)
+	{
+		g_autofree gchar *status = NULL;
+		g_autofree gchar *number = NULL;
+		gint64 id = venture_entity_get_id(g_ptr_array_index(rows, i));
+		g_object_get(g_ptr_array_index(rows, i), "status", &status, "number", &number, NULL);
+		g_string_append(content, "<tr><td>");
+		venture_html_escape_append(content, number);
+		g_string_append(content, "</td><td>");
+		venture_html_escape_append(content, status);
+		g_string_append_printf(content,
+			"</td><td><form method=\"post\" action=\"/sales_order/%" G_GINT64_FORMAT "/allocate\"><button class=\"btn\">Allocate</button></form>"
+			"<form method=\"post\" action=\"/sales_order/%" G_GINT64_FORMAT "/ship\">"
+			"<input name=\"line_id\" placeholder=\"Line\" required>"
+			"<input name=\"quantity\" placeholder=\"Qty\" required>"
+			"<button class=\"btn\">Ship</button></form>"
+			"<form method=\"post\" action=\"/sales_order/%" G_GINT64_FORMAT "/invoice\"><button class=\"btn\">Invoice</button></form></td></tr>",
+			id, id, id);
+	}
+	g_string_append(content, "</tbody></table></div>");
+	return venture_web_html_response(venture_web_page(self, request, "/sales-orders", "Sales orders", content->str), 200);
 }

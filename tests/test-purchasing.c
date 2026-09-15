@@ -307,6 +307,76 @@ test_owned_rows(Fixture *f, gconstpointer unused)
 	g_assert_nonnull(strstr(error->message, "VenturePurchasingService"));
 }
 
+static void
+test_unmatched_bill_refused(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) po = purchase_order(f, "PO-6", 10);
+	g_autoptr(VentureEntity) bill = NULL;
+	g_autoptr(VentureEntity) bill_line = NULL;
+	g_autoptr(VentureEntity) event = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) date = venture_time_from_string("2026-03-02", NULL);
+	gint64 po_id = venture_entity_get_id(po);
+	gint64 line_id = first_line_id(f, po_id);
+	(void)unused;
+
+	g_assert_true(venture_purchasing_service_approve(venture_purchasing_service_get(f->db), po_id, date, NULL, &error));
+	g_assert_true(venture_purchasing_service_send(venture_purchasing_service_get(f->db), po_id, date, NULL, &error));
+	g_assert_true(venture_purchasing_service_receive_line(venture_purchasing_service_get(f->db),
+		line_id, 10, date, NULL, &error));
+	bill = record(f, "vendor_bill");
+	g_object_set(bill, "number", "B-6", "company-id", f->vendor, "currency", "USD", "status", "draft", NULL);
+	field(bill, "bill-date", "2026-03-03");
+	save(f, bill);
+	bill_line = record(f, "vendor_bill_line");
+	g_object_set(bill_line, "bill-id", venture_entity_get_id(bill),
+		"description", "Widget", "quantity", "10", "purchase-order-line-id", line_id, NULL);
+	field(bill_line, "unit-price", "4 USD");
+	save(f, bill_line);
+	event = record(f, "vendor_bill_event");
+	g_object_set(event, "bill-id", venture_entity_get_id(bill), "vendor-id", f->vendor,
+		"kind", "approve", "state", "approved", NULL);
+	field(event, "date", "2026-03-03");
+	g_assert_false(venture_database_save(f->db, event, NULL, &error));
+	g_assert_nonnull(error);
+	g_assert_nonnull(strstr(error->message, "match"));
+}
+
+static void
+test_decimal_billed_qty_mismatch(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) po = purchase_order(f, "PO-7", 10);
+	g_autoptr(VentureEntity) bill = NULL;
+	g_autoptr(VentureEntity) bill_line = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) date = venture_time_from_string("2026-03-02", NULL);
+	gint64 po_id = venture_entity_get_id(po);
+	gint64 line_id = first_line_id(f, po_id);
+	g_autofree gchar *status = NULL;
+	g_autoptr(VentureEntity) stored = NULL;
+	(void)unused;
+
+	g_assert_true(venture_purchasing_service_approve(venture_purchasing_service_get(f->db), po_id, date, NULL, &error));
+	g_assert_true(venture_purchasing_service_send(venture_purchasing_service_get(f->db), po_id, date, NULL, &error));
+	g_assert_true(venture_purchasing_service_receive_line(venture_purchasing_service_get(f->db),
+		line_id, 10, date, NULL, &error));
+	bill = record(f, "vendor_bill");
+	g_object_set(bill, "number", "B-7", "company-id", f->vendor, "currency", "USD", "status", "draft", NULL);
+	field(bill, "bill-date", "2026-03-03");
+	save(f, bill);
+	bill_line = record(f, "vendor_bill_line");
+	g_object_set(bill_line, "bill-id", venture_entity_get_id(bill),
+		"description", "Widget", "quantity", "10.01", "purchase-order-line-id", line_id, NULL);
+	field(bill_line, "unit-price", "4 USD");
+	save(f, bill_line);
+	g_assert_true(venture_purchasing_service_match(venture_purchasing_service_get(f->db),
+		po_id, venture_entity_get_id(bill), FALSE, NULL, &error));
+	g_assert_no_error(error);
+	stored = fresh(f, "purchase_order", po_id);
+	g_object_get(stored, "match-status", &status, NULL);
+	g_assert_cmpstr(status, ==, "mismatch");
+}
+
 int
 main(int argc, char **argv)
 {
@@ -317,5 +387,7 @@ main(int argc, char **argv)
 	g_test_add("/purchasing/cancel-return", Fixture, NULL, setup, test_cancel_and_return, teardown);
 	g_test_add("/purchasing/committed-spend", Fixture, NULL, setup, test_committed_spend, teardown);
 	g_test_add("/purchasing/owned-rows", Fixture, NULL, setup, test_owned_rows, teardown);
+	g_test_add("/purchasing/unmatched-bill", Fixture, NULL, setup, test_unmatched_bill_refused, teardown);
+	g_test_add("/purchasing/decimal-qty", Fixture, NULL, setup, test_decimal_billed_qty_mismatch, teardown);
 	return g_test_run();
 }

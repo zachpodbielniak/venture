@@ -25,11 +25,18 @@ Inventory 1200 against Goods received not invoiced 2010 through
 * Three-way match
 
 =match= links a draft =vendor_bill= to the purchase order and compares
-received value to billed value within =match-tolerance-percent=. A
-mismatch stamps =match-status=mismatch= and bill approval is refused
-until an exception is approved. A match (or an approved exception)
-points the bill lines at the GRNI account so =VenturePayablesService=
-still posts AP and does not invent a second payable journal.
+received value to billed value within =match-tolerance-percent=. Bill
+quantity is an exact decimal (up to three places); billing more than
+was received is a mismatch even when the money is inside the price
+tolerance. A mismatch stamps =match-status=mismatch= and bill approval
+is refused until an exception is approved. A PO-linked bill that has
+not been matched is also refused. A match (or an approved exception)
+points the bill lines at the mapped GRNI control account (role
+=grni=, else 2010) so =VenturePayablesService= still posts AP and does
+not invent a second payable journal.
+
+The =/purchasing= workbench posts =approve=, =send=, =receive= (line
+and quantity) and =match= (bill id, optional exception).
 
 #+begin_src sh
 venturectl purchase approve 1

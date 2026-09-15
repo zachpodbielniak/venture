@@ -479,15 +479,20 @@ venture_inventory_service_transfer(VentureInventoryService *self, gint64 from_it
 		return FALSE;
 	if (!consume_fifo(self, from_item_id, quantity, actor, &cost, error))
 		return FALSE;
-	out = write_txn(self, from_item_id, -quantity, VENTURE_INVENTORY_TXN_KIND_TRANSFER,
-		cost, when, "transfer", 0, actor, error);
-	in = write_txn(self, to_item_id, quantity, VENTURE_INVENTORY_TXN_KIND_TRANSFER,
-		cost, when, "transfer", 0, actor, error);
-	if (out == NULL || in == NULL)
-		return FALSE;
-	layer = venture_inventory_cost_layer_new();
-	g_object_set(layer, "inventory-item-id", to_item_id, "received-at", when,
-		"original-qty", quantity, "remaining-qty", quantity, "unit-cost", cost, NULL);
+	{
+		g_autoptr(VentureMoney) unit = venture_money_multiply_rational(cost, 1, quantity, error);
+		if (unit == NULL)
+			return FALSE;
+		out = write_txn(self, from_item_id, -quantity, VENTURE_INVENTORY_TXN_KIND_TRANSFER,
+			unit, when, "transfer", 0, actor, error);
+		in = write_txn(self, to_item_id, quantity, VENTURE_INVENTORY_TXN_KIND_TRANSFER,
+			unit, when, "transfer", 0, actor, error);
+		if (out == NULL || in == NULL)
+			return FALSE;
+		layer = venture_inventory_cost_layer_new();
+		g_object_set(layer, "inventory-item-id", to_item_id, "received-at", when,
+			"original-qty", quantity, "remaining-qty", quantity, "unit-cost", unit, NULL);
+	}
 	venture_entity_set_organization_id(VENTURE_ENTITY(layer), venture_entity_get_organization_id(in));
 	return save_owned(self, VENTURE_ENTITY(layer), actor, error);
 }

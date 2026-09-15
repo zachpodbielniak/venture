@@ -20,3 +20,5 @@ venturectl sales-order allocate 1
 venturectl sales-order ship LINE quantity=2
 venturectl sales-order invoice 1
 #+end_src
+
+The =/sales-orders= workbench posts =allocate=, =ship= (line and quantity) and =invoice=.

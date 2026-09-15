@@ -218,10 +218,32 @@ test_transfer_and_reorder(Fixture *f, gconstpointer unused)
 	g_assert_true(venture_purchasing_service_receive_line(venture_purchasing_service_get(f->db),
 		line, 4, date, NULL, &error));
 	g_assert_true(venture_inventory_service_transfer(venture_inventory_service_get(f->db),
-		f->item, f->item_b, 1, date, NULL, &error));
+		f->item, f->item_b, 2, date, NULL, &error));
 	g_assert_no_error(error);
-	g_assert_cmpint(venture_inventory_service_on_hand(venture_inventory_service_get(f->db), f->item, NULL, &error), ==, 3);
-	g_assert_cmpint(venture_inventory_service_on_hand(venture_inventory_service_get(f->db), f->item_b, NULL, &error), ==, 1);
+	g_assert_cmpint(venture_inventory_service_on_hand(venture_inventory_service_get(f->db), f->item, NULL, &error), ==, 2);
+	g_assert_cmpint(venture_inventory_service_on_hand(venture_inventory_service_get(f->db), f->item_b, NULL, &error), ==, 2);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVENTORY_TXN);
+		g_autoptr(GPtrArray) rows = NULL;
+		guint i;
+		gboolean found = FALSE;
+		venture_query_set_organization(query, f->org);
+		venture_query_add_filter_int(query, "inventory-item-id", VENTURE_FILTER_OP_EQ, f->item_b, NULL);
+		rows = venture_database_find(f->db, query, NULL);
+		g_assert_nonnull(rows);
+		for (i = 0; i < rows->len; i++)
+		{
+			gint kind = 0;
+			g_autoptr(VentureMoney) unit = NULL;
+			g_object_get(g_ptr_array_index(rows, i), "kind", &kind, "unit-cost", &unit, NULL);
+			if (kind != VENTURE_INVENTORY_TXN_KIND_TRANSFER)
+				continue;
+			g_assert_nonnull(unit);
+			g_assert_cmpint(venture_money_get_amount(unit), ==, 500);
+			found = TRUE;
+		}
+		g_assert_true(found);
+	}
 	report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "reorder_worklist");
 	g_assert_nonnull(report);
 	result = venture_report_generate(report, f->context, NULL, NULL, &error);

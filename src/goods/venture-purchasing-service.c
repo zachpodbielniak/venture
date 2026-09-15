@@ -390,10 +390,41 @@ match_result(VenturePurchasingService *self, VentureEntity *po, VentureEntity *b
 		{
 			gint64 received = received_for_line(self, po_line_id, error);
 			g_autofree gchar *qty = NULL;
-			gint64 billed_qty;
+			gint64 billed_milli = 0;
+			const gchar *p;
+			gint64 numerator = 0;
+			gint64 denominator = 1;
+			guint decimals = 0;
+			gboolean point = FALSE;
+			gboolean digit = FALSE;
 			g_object_get(g_ptr_array_index(bill_lines, i), "quantity", &qty, NULL);
-			billed_qty = qty != NULL ? g_ascii_strtoll(qty, NULL, 10) : 0;
-			if (billed_qty > received)
+			for (p = qty != NULL ? qty : ""; *p != '\0'; p++)
+			{
+				if (*p == '.' && !point)
+				{
+					point = TRUE;
+					continue;
+				}
+				if (!g_ascii_isdigit(*p) || numerator > (G_MAXINT64 - (*p - '0')) / 10)
+				{
+					digit = FALSE;
+					break;
+				}
+				digit = TRUE;
+				numerator = numerator * 10 + (*p - '0');
+				if (point)
+				{
+					if (++decimals > 3)
+					{
+						digit = FALSE;
+						break;
+					}
+					denominator *= 10;
+				}
+			}
+			if (digit && denominator > 0 && 1000 % denominator == 0)
+				billed_milli = numerator * (1000 / denominator);
+			if (billed_milli > received * 1000)
 				return TRUE;
 		}
 		if (billed_value == NULL)
@@ -454,25 +485,33 @@ venture_purchasing_service_match(VenturePurchasingService *self, gint64 purchase
 		g_object_set(bill, "purchase-order-id", purchase_order_id, NULL);
 	if (!save_owned(self, po, actor, error))
 		return FALSE;
-	grni = 0;
 	{
-		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+		g_autoptr(GError) ignored = NULL;
+		g_autoptr(VentureQuery) query = NULL;
 		g_autoptr(VentureEntity) found = NULL;
 		g_autofree gchar *scoped = g_strdup_printf("%" G_GINT64_FORMAT ":2010",
 			venture_entity_get_organization_id(po));
-		venture_query_set_organization(query, venture_entity_get_organization_id(po));
-		venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, "2010", NULL);
-		found = venture_database_find_one(self->database, query, NULL);
-		if (found == NULL)
+		grni = venture_setup_resolve_account(self->database, venture_entity_get_organization_id(po),
+			"grni", "organization", 0, NULL, &ignored);
+		if (grni == 0)
 		{
-			g_clear_object(&query);
 			query = venture_query_new(VENTURE_TYPE_ACCOUNT);
 			venture_query_set_organization(query, venture_entity_get_organization_id(po));
-			venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, scoped, NULL);
+			venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, "2010", NULL);
 			found = venture_database_find_one(self->database, query, NULL);
+			if (found == NULL)
+			{
+				g_clear_object(&query);
+				query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+				venture_query_set_organization(query, venture_entity_get_organization_id(po));
+				venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, scoped, NULL);
+				found = venture_database_find_one(self->database, query, NULL);
+			}
+			if (found != NULL)
+				grni = venture_entity_get_id(found);
 		}
-		if (found != NULL)
-			grni = venture_entity_get_id(found);
+		if (grni == 0)
+			return refuse(error, "the goods-received-not-invoiced control account is missing");
 	}
 	bill_lines = find_rows(self, VENTURE_TYPE_VENDOR_BILL_LINE, "bill-id", vendor_bill_id, error);
 	if (bill_lines == NULL)
@@ -510,14 +549,51 @@ venture_purchasing_check_bill_approval(VentureDatabase *database, VentureEntity 
 	}
 	else
 		po = venture_database_get(database, VENTURE_TYPE_PURCHASE_ORDER, po_id, error);
+	if (po == NULL && (error == NULL || *error == NULL))
+	{
+		g_autoptr(VentureQuery) lines = venture_query_new(VENTURE_TYPE_VENDOR_BILL_LINE);
+		g_autoptr(GPtrArray) rows = NULL;
+		guint i;
+		venture_query_set_limit(lines, 0);
+		if (!venture_query_add_filter_int(lines, "bill-id", VENTURE_FILTER_OP_EQ,
+			venture_entity_get_id(bill), error))
+			return FALSE;
+		rows = venture_database_find(database, lines, error);
+		if (rows == NULL)
+			return FALSE;
+		for (i = 0; i < rows->len && po == NULL; i++)
+		{
+			gint64 line_id = 0;
+			g_autoptr(VentureEntity) po_line = NULL;
+			if (g_object_class_find_property(G_OBJECT_GET_CLASS(g_ptr_array_index(rows, i)),
+				"purchase-order-line-id") == NULL)
+				continue;
+			g_object_get(g_ptr_array_index(rows, i), "purchase-order-line-id", &line_id, NULL);
+			if (line_id <= 0)
+				continue;
+			po_line = venture_database_get(database, VENTURE_TYPE_PURCHASE_ORDER_LINE, line_id, error);
+			if (po_line == NULL)
+			{
+				if (error != NULL && *error != NULL)
+					return FALSE;
+				continue;
+			}
+			po_id = 0;
+			g_object_get(po_line, "purchase-order-id", &po_id, NULL);
+			if (po_id > 0)
+				po = venture_database_get(database, VENTURE_TYPE_PURCHASE_ORDER, po_id, error);
+		}
+	}
 	if (po == NULL)
 		return error != NULL && *error != NULL ? FALSE : TRUE;
 	g_object_get(po, "match-status", &match, "match-exception", &exception, NULL);
-	if (g_strcmp0(match, "matched") == 0 || (g_strcmp0(match, "exception") == 0 && exception) || exception)
+	if (g_strcmp0(match, "matched") == 0)
+		return TRUE;
+	if (g_strcmp0(match, "exception") == 0 && exception)
 		return TRUE;
 	if (g_strcmp0(match, "mismatch") == 0)
 		return refuse(error, "three-way match failed; approve a match exception first");
-	return TRUE;
+	return refuse(error, "match the supplier bill to the purchase order before approval");
 }
 
 gboolean
