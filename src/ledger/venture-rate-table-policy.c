@@ -5,7 +5,7 @@
 struct _VentureRateTablePolicy
 {
 	GObject parent_instance;
-	VentureDatabase *database;
+	GWeakRef database;
 	gint64 organization_id;
 };
 
@@ -15,15 +15,22 @@ G_DEFINE_FINAL_TYPE_WITH_CODE(VentureRateTablePolicy, venture_rate_table_policy,
 	G_IMPLEMENT_INTERFACE(VENTURE_TYPE_EXCHANGE_POLICY, rate_table_iface))
 
 static void
+venture_rate_table_policy_finalize(GObject *object)
+{
+	g_weak_ref_clear(&VENTURE_RATE_TABLE_POLICY(object)->database);
+	G_OBJECT_CLASS(venture_rate_table_policy_parent_class)->finalize(object);
+}
+
+static void
 venture_rate_table_policy_init(VentureRateTablePolicy *self)
 {
-	(void)self;
+	g_weak_ref_init(&self->database, NULL);
 }
 
 static void
 venture_rate_table_policy_class_init(VentureRateTablePolicyClass *klass)
 {
-	(void)klass;
+	G_OBJECT_CLASS(klass)->finalize = venture_rate_table_policy_finalize;
 }
 
 static const gchar *
@@ -51,11 +58,18 @@ rate_table_convert(VentureExchangePolicy *policy, const VentureMoney *amount,
 	const gchar *currency, GDateTime *when, GError **error)
 {
 	VentureRateTablePolicy *self = VENTURE_RATE_TABLE_POLICY(policy);
+	g_autoptr(VentureDatabase) database = g_weak_ref_get(&self->database);
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autofree gchar *when_text = NULL;
 	guint i;
 
+	if (database == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+			"The exchange-rate database has been closed");
+		return NULL;
+	}
 	if (amount == NULL || currency == NULL || when == NULL)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
@@ -70,7 +84,7 @@ rate_table_convert(VentureExchangePolicy *policy, const VentureMoney *amount,
 	if (!venture_query_add_filter_string(query, "from-currency", VENTURE_FILTER_OP_EQ, amount->currency, error) ||
 		!venture_query_add_filter_string(query, "to-currency", VENTURE_FILTER_OP_EQ, currency, error))
 		return NULL;
-	rows = venture_database_find(self->database, query, error);
+	rows = venture_database_find(database, query, error);
 	if (rows == NULL)
 		return NULL;
 	g_ptr_array_sort(rows, compare_effective);
@@ -89,10 +103,7 @@ rate_table_convert(VentureExchangePolicy *policy, const VentureMoney *amount,
 		if (numerator <= 0 || denominator <= 0)
 			continue;
 		{
-			g_autoptr(VentureMoney) valued = venture_money_multiply_rational(amount, numerator, denominator, error);
-			if (valued == NULL)
-				return NULL;
-			return venture_money_new(valued->amount, currency, valued->exponent);
+			return venture_money_convert_at_rate(amount, numerator, denominator, currency, error);
 		}
 	}
 	when_text = g_date_time_format_iso8601(when);
@@ -116,7 +127,7 @@ venture_rate_table_policy_new(VentureDatabase *database, gint64 organization_id)
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
 	self = g_object_new(VENTURE_TYPE_RATE_TABLE_POLICY, NULL);
-	self->database = database;
+	g_weak_ref_set(&self->database, database);
 	self->organization_id = organization_id;
 	return VENTURE_EXCHANGE_POLICY(self);
 }

@@ -569,6 +569,22 @@ test_rate_table(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_cmpint(valued->amount, ==, 11000);
 	g_assert_cmpstr(valued->currency, ==, "USD");
+	{
+		g_autoptr(VentureExchangeRate) yen = venture_exchange_rate_new();
+		g_autoptr(VentureMoney) jpy = venture_money_new_for_currency(100, "JPY");
+		g_autoptr(VentureMoney) usd = NULL;
+		g_object_set(yen, "from-currency", "JPY", "to-currency", "USD",
+			"rate-numerator", (gint64)1, "rate-denominator", (gint64)150,
+			"source", "manual", "reason", "board", "effective-at", when, NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(yen), f->org);
+		g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(yen), NULL, &error));
+		usd = venture_exchange_policy_convert(VENTURE_EXCHANGE_POLICY(policy),
+			jpy, "USD", when, &error);
+		g_assert_no_error(error);
+		g_assert_cmpint(usd->amount, ==, 67);
+		g_assert_cmpstr(usd->currency, ==, "USD");
+		g_assert_cmpint(usd->exponent, ==, 2);
+	}
 }
 
 static void

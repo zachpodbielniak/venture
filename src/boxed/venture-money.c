@@ -563,6 +563,46 @@ venture_money_multiply_percent(
 	                                       10000, error);
 }
 
+VentureMoney *
+venture_money_convert_at_rate(const VentureMoney *self, gint64 numerator, gint64 denominator,
+	const gchar *currency, GError **error)
+{
+	guint8 dest_exp;
+	gint64 scaled;
+	gint64 product;
+	gint64 result;
+	g_return_val_if_fail(NULL != self, NULL);
+	if (currency == NULL || denominator == 0)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"A conversion needs a destination currency and a non-zero rate");
+		return NULL;
+	}
+	if (g_strcmp0(self->currency, currency) == 0)
+		return venture_money_copy(self);
+	dest_exp = venture_currency_get_exponent(currency);
+	scaled = self->amount;
+	if (dest_exp > self->exponent)
+	{
+		if (__builtin_mul_overflow(scaled, venture_money_pow10(dest_exp - self->exponent), &scaled))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+				"Scaling %" G_GINT64_FORMAT " to %s overflows", self->amount, currency);
+			return NULL;
+		}
+	}
+	else if (dest_exp < self->exponent)
+		scaled = venture_money_div_round_half_even(scaled, venture_money_pow10(self->exponent - dest_exp));
+	if (__builtin_mul_overflow(scaled, numerator, &product))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"Converting %" G_GINT64_FORMAT " overflows an intermediate value", self->amount);
+		return NULL;
+	}
+	result = venture_money_div_round_half_even(product, denominator);
+	return venture_money_new(result, currency, dest_exp);
+}
+
 /*
  * Sort helper for the allocation remainder pass: orders indices by
  * descending ratio so that the largest shares absorb the leftover minor

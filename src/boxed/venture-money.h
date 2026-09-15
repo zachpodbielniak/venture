@@ -302,6 +302,23 @@ venture_money_multiply_percent(
 );
 
 /**
+ * venture_money_convert_at_rate:
+ * @self: source amount
+ * @numerator: rate numerator
+ * @denominator: rate denominator
+ * @currency: destination ISO code
+ * @error: (out) (optional): overflow or a zero denominator
+ *
+ * Converts @self at @numerator/@denominator, rounding once at the
+ * destination currency exponent (half to even).
+ *
+ * Returns: (transfer full) (nullable): the converted amount
+ */
+VentureMoney *
+venture_money_convert_at_rate(const VentureMoney *self, gint64 numerator, gint64 denominator,
+	const gchar *currency, GError **error);
+
+/**
  * venture_money_allocate:
  * @self: the amount to split
  * @ratios: (array length=n_ratios): the relative share of each part
