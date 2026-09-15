@@ -604,6 +604,35 @@ mapped_account(Books *books, const gchar *classification)
 	return 0;
 }
 
+static gboolean
+is_cash_like(Books *books, VentureEntity *account)
+{
+	gboolean equivalent = FALSE;
+	g_object_get(account, "cash-equivalent", &equivalent, NULL);
+	return equivalent || control_account(books, venture_entity_get_id(account), "cash");
+}
+
+static const gchar *
+cash_flow_section(Books *books, VentureEntity *account)
+{
+	g_autofree gchar *cls = NULL;
+	VentureAccountKind kind;
+	g_object_get(account, "cash-flow-class", &cls, NULL);
+	if (cls != NULL && cls[0] != '\0')
+		return g_intern_string(cls);
+	if (is_profit_account(account))
+		return "operating";
+	if (control_account(books, venture_entity_get_id(account), "receivables") ||
+		control_account(books, venture_entity_get_id(account), "payables") ||
+		control_account(books, venture_entity_get_id(account), "inventory") ||
+		control_account(books, venture_entity_get_id(account), "tax"))
+		return "operating";
+	kind = account_kind(account);
+	if (kind == VENTURE_ACCOUNT_KIND_ASSET)
+		return "investing";
+	return "financing";
+}
+
 static VentureReportResult *
 cash_flow(Books *books, VentureDateRange *period, GError **error)
 {
@@ -620,6 +649,9 @@ cash_flow(Books *books, VentureDateRange *period, GError **error)
 		g_autoptr(VentureMoney) end = venture_money_new_zero(currency);
 		g_autoptr(VentureMoney) net = venture_money_new_zero(currency);
 		g_autoptr(VentureMoney) adjustments = venture_money_new_zero(currency);
+		g_autoptr(VentureMoney) operating = venture_money_new_zero(currency);
+		g_autoptr(VentureMoney) investing = venture_money_new_zero(currency);
+		g_autoptr(VentureMoney) financing = venture_money_new_zero(currency);
 		g_autoptr(VentureMoney) movement = NULL, calculated = NULL, difference = NULL;
 		g_autoptr(GPtrArray) controls = g_ptr_array_new_with_free_func((GDestroyNotify)venture_money_free);
 		guint k;
@@ -636,7 +668,7 @@ cash_flow(Books *books, VentureDateRange *period, GError **error)
 			change = venture_money_subtract(credits, debits, error);
 			if (change == NULL)
 				return NULL;
-			if (control_account(books, id, "cash"))
+			if (is_cash_like(books, a))
 			{
 				if (!add(&start, opening, FALSE, error) || !add(&end, closing, FALSE, error))
 					return NULL;
@@ -645,10 +677,25 @@ cash_flow(Books *books, VentureDateRange *period, GError **error)
 			{
 				if (!add(&net, change, FALSE, error))
 					return NULL;
+				if (!add(&operating, change, FALSE, error))
+					return NULL;
 			}
 			else
 			{
+				const gchar *section = cash_flow_section(books, a);
 				if (!add(&adjustments, change, FALSE, error))
+					return NULL;
+				if (g_strcmp0(section, "investing") == 0)
+				{
+					if (!add(&investing, change, FALSE, error))
+						return NULL;
+				}
+				else if (g_strcmp0(section, "financing") == 0)
+				{
+					if (!add(&financing, change, FALSE, error))
+						return NULL;
+				}
+				else if (!add(&operating, change, FALSE, error))
 					return NULL;
 				for (k = 0; k < G_N_ELEMENTS(keys); k++)
 					if (control_account(books, id, codes[k]))
@@ -671,6 +718,9 @@ cash_flow(Books *books, VentureDateRange *period, GError **error)
 		summary_row(r, "net_income", "Net income", net);
 		for (k = 0; k < G_N_ELEMENTS(keys); k++)
 			summary_row(r, keys[k], labels[k], g_ptr_array_index(controls, k));
+		summary_row(r, "operating", "Operating cash flow", operating);
+		summary_row(r, "investing", "Investing cash flow", investing);
+		summary_row(r, "financing", "Financing cash flow", financing);
 		summary_row(r, "adjustments", "Total non-cash balance movements", adjustments);
 		calculated = venture_money_add(net, adjustments, error);
 		movement = venture_money_subtract(end, start, error);
@@ -689,7 +739,7 @@ cash_flow(Books *books, VentureDateRange *period, GError **error)
 		summary_row(r, "cash_movement", "Net cash movement", calculated);
 		summary_row(r, "difference", "Difference from Cash movement", difference);
 	}
-	venture_report_result_append_note(r, "Indirect method: net income plus credit-minus-debit movements in every non-cash balance-sheet account. Control lines are subtotals of the account adjustments, not additional flows. Other asset, liability and equity movements include investing, financing and non-cash offsets; no cash-equivalent or FX conversion is assumed.");
+	venture_report_result_append_note(r, "Indirect method: net income plus credit-minus-debit movements in every non-cash balance-sheet account. Cash includes accounts marked cash-equivalent. Movements are classified operating, investing or financing from cash-flow-class or the account class. Control lines remain subtotals, not additional flows.");
 	return g_steal_pointer(&r);
 }
 

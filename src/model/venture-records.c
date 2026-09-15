@@ -482,7 +482,13 @@ static const VentureFieldDecl venture_account_fields[] = {
 	VENTURE_FIELD_TEXT("description", "Description", NULL),
 	VENTURE_FIELD_MONEY("opening-balance", "Opening balance", NULL),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
-	              VENTURE_COLUMN_FLAG_INDEXED)
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("cash-equivalent", "Cash equivalent",
+		"Include with Cash on the cash-flow statement",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("cash-flow-class", "Cash-flow class",
+		"operating, investing or financing; empty infers from the account class",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureAccount, venture_account, venture_account_fields,
