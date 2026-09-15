@@ -14,8 +14,10 @@ quantity, unit price, expense account or category, and tax amount.
 Quantity is a decimal string with at most three fractional digits, parsed
 into an integer rational. Price multiplication rounds once, half to even;
 tax is then added in the same currency. No floating-point arithmetic is
-used. Tax is part of the expense cost; recoverable input-tax accounting is
-outside this module.
+used. A line may name a =tax_code=. When that code is recoverable, approval
+debits the net expense and Recoverable tax 1300 for the frozen tax-amount,
+and credits AP for the total. Otherwise tax remains part of the expense
+cost.
 
 * One financial writer
 

@@ -30,7 +30,7 @@ static const VentureFieldDecl credit_fields[] = {
 	VENTURE_FIELD("date", "Date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_MONEY("amount", "Original amount", NULL),
 	VENTURE_FIELD_MONEY("remaining", "Remaining", "Derived from allocations and refunds"),
-	VENTURE_FIELD_NAME("kind", "Kind", "credit_note, deposit, or overpayment; receipts create deposits and overpayments"),
+	VENTURE_FIELD_NAME("kind", "Kind", "credit_note, write_off, deposit, or overpayment; receipts create deposits and overpayments"),
 	VENTURE_FIELD_REF("payment-id", "Payment", "Set by the service for unused receipts", "payment", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("reference", "Reference", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD_MONEY("tax-amount", "Tax amount", "Optional tax portion of a credit note")
@@ -56,6 +56,7 @@ static const VentureFieldDecl event_fields[] = {
 	VENTURE_FIELD("date", "Date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("due-at", "Due", "Frozen at issue", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("amount", "Issued amount", "Frozen from the invoice lines at issue"),
+	VENTURE_FIELD_MONEY("book-amount", "Book amount", "Issued amount valued in the organization book currency"),
 	VENTURE_FIELD_MONEY("net-amount", "Frozen net", "Income after discount, frozen at issue"),
 	VENTURE_FIELD_MONEY("tax-amount", "Frozen tax", "Tax liability frozen at issue"),
 	VENTURE_FIELD_MONEY("discount-amount", "Frozen discount", "Discount frozen at issue"),

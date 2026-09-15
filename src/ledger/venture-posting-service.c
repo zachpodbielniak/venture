@@ -1241,7 +1241,22 @@ venture_posting_service_post_entries(VenturePostingService *self, GPtrArray *ent
 			goto fail;
 		}
 		if (i == 0)
-			g_object_set(draft, "currency", NULL != amount ? amount->currency : NULL, NULL);
+		{
+			g_autofree gchar *book = NULL;
+			if (NULL != policy)
+			{
+				g_autoptr(VentureEntity) organization = required_record(db, VENTURE_TYPE_ORGANIZATION, org, error);
+				if (NULL == organization)
+					goto fail;
+				g_object_get(organization, "default-currency", &book, NULL);
+			}
+			if (NULL == book || '\0' == *book)
+			{
+				g_free(book);
+				book = g_strdup(NULL != amount ? amount->currency : NULL);
+			}
+			g_object_set(draft, "currency", book, NULL);
+		}
 		g_object_set(row, "amount", amount, "account-id", acct, "side", side,
 			"memo", memo, "organization-id", org, NULL);
 		g_ptr_array_add(rows, g_steal_pointer(&row));

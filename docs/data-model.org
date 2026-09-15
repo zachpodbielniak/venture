@@ -53,6 +53,12 @@ Every record derives from =VentureEntity= and carries the same spine:
 - *journal*, *journal_line* — immutable posted evidence, with source-document
   linkage and reversing journals; owned by =ledger=. See [[file:ledger.org][the general journal]].
 - *tax_category* — default deductibility per category.
+- *tax_code* — exact rate (numerator/denominator), jurisdiction and recoverable
+  flag applied on invoice and bill lines. Integer =tax-percent= remains for
+  lines without a code. Company and invoice =tax-exempt= still freeze tax at
+  zero.
+- *exchange_rate* — dated exact rate from one currency into another. Missing
+  pairs are refused; nothing invents a market rate.
 
 ** Relations
 

@@ -113,5 +113,23 @@ const gchar *venture_exchange_policy_get_name(VentureExchangePolicy *self);
 VentureMoney *venture_exchange_policy_convert(VentureExchangePolicy *self,
 	const VentureMoney *amount, const gchar *currency, GDateTime *when, GError **error);
 
+typedef struct _VentureDatabase VentureDatabase;
+
+#define VENTURE_TYPE_RATE_TABLE_POLICY (venture_rate_table_policy_get_type())
+G_DECLARE_FINAL_TYPE(VentureRateTablePolicy, venture_rate_table_policy,
+	VENTURE, RATE_TABLE_POLICY, GObject)
+
+/**
+ * venture_rate_table_policy_new:
+ * @database: organization-scoped rate table
+ * @organization_id: legal entity
+ *
+ * Looks up dated exchange_rate rows. Missing pairs are refused; no inverse
+ * or market rate is invented.
+ * Returns: (transfer full): a policy named "exchange_rate"
+ */
+VentureExchangePolicy *venture_rate_table_policy_new(VentureDatabase *database,
+	gint64 organization_id);
+
 G_END_DECLS
 #endif

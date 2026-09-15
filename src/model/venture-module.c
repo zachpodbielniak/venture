@@ -368,6 +368,7 @@ static GType (*const venture_module_finance_types[]) (void) = {
 	venture_account_get_type,
 	venture_ledger_entry_get_type,
 	venture_tax_category_get_type,
+	venture_tax_code_get_type,
 	NULL
 };
 
@@ -498,7 +499,7 @@ static const gchar *const venture_module_reports_sales[] = {
 	"categories", "inventory", NULL
 };
 static const gchar *const venture_module_reports_finance[] = {
-	"pnl", "ventures", "monthly", "tax", NULL
+	"pnl", "ventures", "monthly", "tax", "tax_liability", NULL
 };
 static const gchar *const venture_module_reports_crm[] = { "pipeline", NULL };
 static const gchar *const venture_module_reports_receivables[] = {
@@ -529,7 +530,8 @@ static GType (*const venture_module_stripe_types[]) (void) = {
 static const gchar *const venture_module_requires_stripe[] = { "receivables", NULL };
 
 static GType (*const venture_module_ledger_types[]) (void) = {
-	venture_journal_get_type, venture_journal_line_get_type, NULL
+	venture_journal_get_type, venture_journal_line_get_type,
+	venture_exchange_rate_get_type, NULL
 };
 static const gchar *const venture_module_requires_finance[] = { "finance", NULL };
 static const gchar *const venture_module_reports_ledger[] = { "trial_balance", NULL };
@@ -665,7 +667,7 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	},
 	{
 		"finance", "Finance",
-		"Expenses, accounts, the ledger, tax categories, and the profit-and-"
+		"Expenses, accounts, the ledger, tax categories, tax codes, and the profit-and-"
 		"loss reports built on them.",
 		venture_module_requires_sales, NULL,
 		venture_module_finance_types, venture_module_reports_finance, NULL,

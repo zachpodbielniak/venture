@@ -24,9 +24,16 @@ its own tests, merged into this branch rather than straight to =master=.
 - #65 acceptance and reliability gates
 - #26 guided accounting setup
 - #27 configurable control accounts
+- #28 exact tax codes, jurisdictions and liability reporting
+- #29 recoverable purchase tax
+- #32 foreign-currency receipts and exchange gain/loss
 - #33 bank review inbox and categorization rules
 - #34 overlapping statement import and CSV mapping
 - #35 bank transfers and cash account on payment
+- #39 recurring invoices, bills, expenses and journals
+- #40 invoice collections and reminders
+- #58 AR write-off through settlement
+- #67 batch financial document entry
 
 * Open
 
@@ -36,8 +43,8 @@ Mirrors #70 at the time of writing; the issue is the source of truth.
 (landed)
 
 ** P1 — daily replacement workflows
-#28 #29 #32 #36 #37 #38 #39 #40 #41 #42 #43 #44 #45 #49
-#51 #52 #53 #54 #56 #57 #58 #62 #63 #67
+#36 #37 #38 #41 #42 #43 #44 #45 #49
+#51 #52 #53 #54 #56 #57 #62 #63
 
 ** P2 — broader business and advanced parity
 #30 #31 #46 #47 #48 #50 #55 #59 #60 #61 #64 #66 #68 #69

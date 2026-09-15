@@ -214,7 +214,13 @@ still requires balanced valued debits and credits, and checks that every
 valuation has the requested currency and is nonnegative. The policy cannot
 waive balance. Original amounts, book amounts and the policy identifier are
 stored; a reversal copies those valuations exactly without calling today's
-exchange policy. Ledger supplies no exchange-rate feed.
+exchange policy.
+
+=exchange_rate= rows are the dated exact feed. =venture_rate_table_policy_new()=
+looks up the latest rate on or before the accounting date for that pair.
+Missing pairs, including the inverse of a stored pair, are refused. When a
+policy is supplied, the journal's book currency is the organization's
+=default-currency=.
 
 * Reading the books
 

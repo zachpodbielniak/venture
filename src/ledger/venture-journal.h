@@ -35,6 +35,13 @@ GType venture_journal_state_get_type(void) G_GNUC_CONST;
 VENTURE_DECLARE_ENTITY(VentureJournal, venture_journal, JOURNAL)
 #define VENTURE_TYPE_JOURNAL_LINE (venture_journal_line_get_type())
 VENTURE_DECLARE_ENTITY(VentureJournalLine, venture_journal_line, JOURNAL_LINE)
+#define VENTURE_TYPE_EXCHANGE_RATE (venture_exchange_rate_get_type())
+VENTURE_DECLARE_ENTITY(VentureExchangeRate, venture_exchange_rate, EXCHANGE_RATE)
+
+/**
+ * venture_exchange_rate_new:
+ * Returns: (transfer full): a dated exact rate from one currency into another
+ */
 
 /**
  * venture_journal_new:

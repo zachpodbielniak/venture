@@ -515,7 +515,8 @@ account_id(VenturePayablesService *self, gint64 configured, const gchar *code,
 		account = VENTURE_ENTITY(venture_account_new());
 		g_object_set(account, "organization-id", organization_id, "code", scoped_code,
 			"name", g_str_equal(code, "6900") ? "General expenses" :
-			(g_str_equal(code, "2000") ? "Accounts payable" : "Cash"),
+			(g_str_equal(code, "2000") ? "Accounts payable" :
+			(g_str_equal(code, "1300") ? "Recoverable tax" : "Cash")),
 			"kind", kind, "active", TRUE, NULL);
 		if (!venture_database_save(self->database, account, NULL, error))
 			return 0;
@@ -718,11 +719,31 @@ post_bill(VenturePayablesService *self, VentureEntity *bill, VentureEntity *even
 	{
 		VentureEntity *line = g_ptr_array_index(lines, i);
 		g_autoptr(VentureMoney) amount = NULL;
+		g_autoptr(VentureMoney) tax = NULL;
+		g_autoptr(VentureMoney) net = NULL;
+		g_autoptr(VentureEntity) tax_code = NULL;
+		gboolean recoverable = FALSE;
 		gint64 account;
+		gint64 tax_code_id;
 		if (venture_entity_is_deleted(line))
 			continue;
 		amount = venture_vendor_bill_line_get_amount(VENTURE_VENDOR_BILL_LINE(line), error);
 		if (amount == NULL || !accumulate(&total, amount, FALSE, error))
+			return FALSE;
+		g_object_get(line, "tax-amount", &tax, NULL);
+		tax_code_id = get_id(line, "tax-code-id");
+		if (tax_code_id != 0)
+		{
+			tax_code = venture_database_get(self->database, VENTURE_TYPE_TAX_CODE, tax_code_id, error);
+			if (tax_code == NULL)
+				return FALSE;
+			g_object_get(tax_code, "recoverable", &recoverable, NULL);
+		}
+		if (tax != NULL && !venture_money_is_zero(tax))
+			net = venture_money_subtract(amount, tax, error);
+		else
+			net = g_steal_pointer(&amount);
+		if (net == NULL)
 			return FALSE;
 		account = account_id(self, get_id(line, "account-id") != 0 ? get_id(line, "account-id") : self->expense_account,
 			"6900", VENTURE_ACCOUNT_KIND_EXPENSE, org, error);
@@ -731,9 +752,22 @@ post_bill(VenturePayablesService *self, VentureEntity *bill, VentureEntity *even
 		entry = venture_ledger_entry_new();
 		g_object_set(entry, "organization-id", org, "transaction-id", transaction, "account-id", account,
 			"side", approval ? VENTURE_LEDGER_SIDE_DEBIT : VENTURE_LEDGER_SIDE_CREDIT,
-			"amount", amount, "occurred-at", date, "source-type", "vendor_bill_event",
-			"source-id", venture_entity_get_id(event), NULL);
+			"amount", recoverable ? net : (amount != NULL ? amount : net), "occurred-at", date,
+			"source-type", "vendor_bill_event", "source-id", venture_entity_get_id(event), NULL);
 		g_ptr_array_add(entries, entry);
+		if (recoverable && tax != NULL && !venture_money_is_zero(tax))
+		{
+			gint64 recoverable_account = account_id(self, 0, "1300", VENTURE_ACCOUNT_KIND_ASSET, org, error);
+			if (recoverable_account == 0)
+				return FALSE;
+			entry = venture_ledger_entry_new();
+			g_object_set(entry, "organization-id", org, "transaction-id", transaction,
+				"account-id", recoverable_account,
+				"side", approval ? VENTURE_LEDGER_SIDE_DEBIT : VENTURE_LEDGER_SIDE_CREDIT,
+				"amount", tax, "occurred-at", date, "source-type", "vendor_bill_event",
+				"source-id", venture_entity_get_id(event), NULL);
+			g_ptr_array_add(entries, entry);
+		}
 	}
 	if (total == NULL)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "A bill requires expense lines");

@@ -109,9 +109,9 @@ VENTURE_DEFINE_ENTITY(VentureQuoteAction, venture_quote_action, quote_action_fie
 
 
 gboolean
-venture_quote_percentage_parts(const VentureMoney *subtotal, gint64 discount_percent,
-	gint64 tax_percent, VentureMoney **discount, VentureMoney **net, VentureMoney **tax,
-	VentureMoney **total, GError **error)
+venture_quote_rate_parts(const VentureMoney *subtotal, gint64 discount_percent,
+	gint64 tax_numerator, gint64 tax_denominator, VentureMoney **discount, VentureMoney **net,
+	VentureMoney **tax, VentureMoney **total, GError **error)
 {
 	g_autoptr(VentureMoney) taken = NULL;
 	g_autoptr(VentureMoney) remaining = NULL;
@@ -125,9 +125,10 @@ venture_quote_percentage_parts(const VentureMoney *subtotal, gint64 discount_per
 		*tax = NULL;
 	if (total != NULL)
 		*total = NULL;
-	if (discount_percent < 0 || discount_percent > 100 || tax_percent < 0 || tax_percent > 100)
+	if (discount_percent < 0 || discount_percent > 100 || tax_numerator < 0 || tax_denominator <= 0)
 	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Percentages must be 0..100");
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"Discount must be 0..100 and the tax rate a nonnegative numerator over a positive denominator");
 		return FALSE;
 	}
 	taken = venture_money_multiply_rational(subtotal, discount_percent, 100, error);
@@ -136,7 +137,7 @@ venture_quote_percentage_parts(const VentureMoney *subtotal, gint64 discount_per
 	remaining = venture_money_subtract(subtotal, taken, error);
 	if (remaining == NULL)
 		return FALSE;
-	levy = venture_money_multiply_rational(remaining, tax_percent, 100, error);
+	levy = venture_money_multiply_rational(remaining, tax_numerator, tax_denominator, error);
 	if (levy == NULL)
 		return FALSE;
 	gross = venture_money_add(remaining, levy, error);
@@ -151,6 +152,20 @@ venture_quote_percentage_parts(const VentureMoney *subtotal, gint64 discount_per
 	if (total != NULL)
 		*total = g_steal_pointer(&gross);
 	return TRUE;
+}
+
+gboolean
+venture_quote_percentage_parts(const VentureMoney *subtotal, gint64 discount_percent,
+	gint64 tax_percent, VentureMoney **discount, VentureMoney **net, VentureMoney **tax,
+	VentureMoney **total, GError **error)
+{
+	if (tax_percent < 0 || tax_percent > 100)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Percentages must be 0..100");
+		return FALSE;
+	}
+	return venture_quote_rate_parts(subtotal, discount_percent, tax_percent, 100,
+		discount, net, tax, total, error);
 }
 
 VentureMoney *

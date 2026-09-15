@@ -23,6 +23,7 @@ about it.
 | =categories= | sales grouped by a product field; genre by default           |
 | =inventory=  | quantity on hand and carrying value; reorder flags           |
 | =tax=        | expenses by category with deductible amounts                 |
+| =tax_liability= | frozen invoice and bill tax grouped by tax code            |
 | =campaigns=  | spend, attributed revenue, return                            |
 | =pipeline=   | open deals by stage, probability-weighted                    |
 | =monthly=    | revenue, expenses and profit month by month                  |

@@ -69,3 +69,18 @@ static const VentureFieldDecl journal_line_fields[] = {
 };
 
 VENTURE_DEFINE_ENTITY(VentureJournalLine, venture_journal_line, journal_line_fields)
+
+static const VentureFieldDecl exchange_rate_fields[] = {
+	VENTURE_FIELD_NAME("from-currency", "From", "ISO 4217 code of the original amount"),
+	VENTURE_FIELD_NAME("to-currency", "To", "ISO 4217 book currency"),
+	VENTURE_FIELD("rate-numerator", "Rate numerator", "Exact multiplier of the original amount",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("rate-denominator", "Rate denominator", "Exact divisor; never invented",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("effective-at", "Effective", "Inclusive start of this rate",
+		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("source", "Source", "manual or a named feed; never guessed",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("reason", "Reason", "Required for a manual override")
+};
+VENTURE_DEFINE_ENTITY(VentureExchangeRate, venture_exchange_rate, exchange_rate_fields)

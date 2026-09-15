@@ -25,7 +25,7 @@ Written bottom-up, because a module may only require what precedes it:
 |--------------+-----------------+-------------------------------------------------------------------+-----------------------|
 | =core=       | —               | organization, venture, document, record_link, plugin_config, user, api_token, audit_entry, saved_view, watch, notification | always on |
 | =sales=      | core            | product, inventory_item, inventory_txn, sale; =categories=, =inventory= |               |
-| =finance=    | sales           | expense, account, ledger_entry, tax_category; =pnl=, =ventures=, =monthly=, =tax= |     |
+| =finance=    | sales           | expense, account, ledger_entry, tax_category, tax_code; =pnl=, =ventures=, =monthly=, =tax=, =tax_liability= |     |
 | =periods=    | finance         | fiscal_year, fiscal_period, report_snapshot; =snapshot_vs_live= | |
 | =crm=        | core            | company, contact, interaction, deal; =pipeline=                   |                       |
 | =invoicing=  | finance, crm    | invoice, invoice_line                                            |                       |
@@ -51,7 +51,7 @@ Written bottom-up, because a module may only require what precedes it:
 
 | =payables= | finance, ledger, crm | vendor_bill, vendor_bill_line, bill_payment, bill_payment_allocation, vendor_credit, vendor_bill_event, bill_refund; =payables=, =vendor_statement= | |
 | =sequences= | crm | sequence, sequence_step, sequence_enrollment, sequence_delivery, suppression; =sequence_performance=, =sequence_failures= | |
-| =ledger=     | finance         | journal, journal_line; posting service, post/reverse/create-and-post actions, =trial_balance=           |                       |
+| =ledger=     | finance         | journal, journal_line, exchange_rate; posting service, post/reverse/create-and-post actions, =trial_balance=           |                       |
 
 | =pipelines= | crm | pipeline, pipeline_stage, deal_stage_entry, loss_reason; stage_duration, funnel, forecast, loss_reasons, overdue_deals; /deals | |
 | =statements= | ledger, periods | ledger balances query; balance sheet, income statement, cash flow, general ledger, account balances, P&L reconciliation | |

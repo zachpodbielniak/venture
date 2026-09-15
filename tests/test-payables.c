@@ -191,6 +191,93 @@ test_existing_namespaced_chart(Fixture *f, gconstpointer unused)
 	g_assert_cmpint(count(f, "account"), ==, 2);
 }
 
+static gint64
+payables_balance(Fixture *f, const gchar *code, const gchar *cutoff)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	g_autoptr(GPtrArray) found = NULL;
+	g_autoptr(GDateTime) date = venture_time_from_string(cutoff, NULL);
+	g_autoptr(VentureMoney) balance = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *scoped = g_strdup_printf("%" G_GINT64_FORMAT ":%s", f->org, code);
+	VentureEntity *account = NULL;
+	guint i;
+
+	venture_query_set_limit(query, 0);
+	found = venture_database_find(f->db, query, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(found);
+	for (i = 0; i < found->len; i++)
+	{
+		g_autofree gchar *actual = NULL;
+		g_object_get(g_ptr_array_index(found, i), "code", &actual, NULL);
+		if (g_strcmp0(actual, code) == 0 || g_strcmp0(actual, scoped) == 0)
+			account = g_ptr_array_index(found, i);
+	}
+	g_assert_nonnull(account);
+	balance = venture_posting_service_account_balance(venture_database_get_posting_service(f->db),
+		venture_entity_get_id(account), f->org, "USD", date, &error);
+	g_assert_no_error(error);
+	return venture_money_get_amount(balance);
+}
+
+/* Recoverable purchase tax is an asset, not extra expense. Non-recoverable
+ * tax remains in the expense cost, matching the historical bill line. */
+static void
+test_recoverable_tax(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) recoverable = record(f, "tax_code");
+	g_autoptr(VentureEntity) consumed = record(f, "tax_code");
+	g_autoptr(VentureEntity) billed = record(f, "vendor_bill");
+	g_autoptr(VentureEntity) other = record(f, "vendor_bill");
+	g_autoptr(VentureEntity) recover_line = NULL;
+	g_autoptr(VentureEntity) consume_line = NULL;
+
+	(void)unused;
+	g_object_set(recoverable, "code", "VAT-R", "name", "Recoverable VAT",
+		"jurisdiction", "EU", "rate-numerator", (gint64)10, "rate-denominator", (gint64)100,
+		"recoverable", TRUE, "active", TRUE, NULL);
+	save(f, recoverable);
+	g_object_set(consumed, "code", "VAT-N", "name", "Non-recoverable VAT",
+		"jurisdiction", "EU", "rate-numerator", (gint64)10, "rate-denominator", (gint64)100,
+		"recoverable", FALSE, "active", TRUE, NULL);
+	save(f, consumed);
+	g_object_set(billed, "number", "VAT-REC", "company-id", f->vendor,
+		"currency", "USD", "status", "draft", NULL);
+	field(billed, "bill-date", "2026-01-01");
+	save(f, billed);
+	recover_line = record(f, "vendor_bill_line");
+	g_object_set(recover_line, "bill-id", venture_entity_get_id(billed),
+		"description", "Services", "quantity", "1",
+		"tax-code-id", venture_entity_get_id(recoverable), NULL);
+	field(recover_line, "unit-price", "100 USD");
+	field(recover_line, "tax-amount", "10 USD");
+	save(f, recover_line);
+	approve(f, billed);
+	status(f, billed, "approved");
+	g_assert_cmpint(payables_balance(f, "2000", "2026-01-01T23:59:59Z"), ==, -11000);
+	g_assert_cmpint(payables_balance(f, "6900", "2026-01-01T23:59:59Z"), ==, 10000);
+	g_assert_cmpint(payables_balance(f, "1300", "2026-01-01T23:59:59Z"), ==, 1000);
+	g_object_set(other, "number", "VAT-EXP", "company-id", f->vendor,
+		"currency", "USD", "status", "draft", NULL);
+	field(other, "bill-date", "2026-01-02");
+	save(f, other);
+	consume_line = record(f, "vendor_bill_line");
+	g_object_set(consume_line, "bill-id", venture_entity_get_id(other),
+		"description", "Meals", "quantity", "1",
+		"tax-code-id", venture_entity_get_id(consumed), NULL);
+	field(consume_line, "unit-price", "100 USD");
+	field(consume_line, "tax-amount", "10 USD");
+	save(f, consume_line);
+	{
+		g_autoptr(VentureEntity) e = event(f, other, "approve", "2026-01-02");
+		save(f, e);
+	}
+	g_assert_cmpint(payables_balance(f, "6900", "2026-01-02T23:59:59Z"), ==, 21000);
+	g_assert_cmpint(payables_balance(f, "1300", "2026-01-02T23:59:59Z"), ==, 1000);
+	g_assert_cmpint(payables_balance(f, "2000", "2026-01-02T23:59:59Z"), ==, -22000);
+}
+
 static void
 test_approval(Fixture *f, gconstpointer unused)
 {
@@ -936,6 +1023,7 @@ main(int argc, char **argv)
 	g_test_add_func("/payables/records", test_records);
 	g_test_add("/payables/state-guard", Fixture, NULL, setup, test_state_guard, teardown);
 	g_test_add("/payables/approval", Fixture, NULL, setup, test_approval, teardown);
+	g_test_add("/payables/recoverable-tax", Fixture, NULL, setup, test_recoverable_tax, teardown);
 	g_test_add("/payables/existing-namespaced-chart", Fixture, NULL, setup, test_existing_namespaced_chart, teardown);
 	g_test_add("/payables/partial-payment", Fixture, NULL, setup, test_partial_payment, teardown);
 	g_test_add("/payables/currency", Fixture, NULL, setup, test_currency, teardown);

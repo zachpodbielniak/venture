@@ -89,5 +89,24 @@ VentureMoney *venture_quote_apply_percentages(const VentureMoney *subtotal,
 gboolean venture_quote_percentage_parts(const VentureMoney *subtotal,
 	gint64 discount_percent, gint64 tax_percent, VentureMoney **discount,
 	VentureMoney **net, VentureMoney **tax, VentureMoney **total, GError **error);
+/**
+ * venture_quote_rate_parts:
+ * @subtotal: exact extended line amount
+ * @discount_percent: integer percent 0..100
+ * @tax_numerator: exact tax rate numerator
+ * @tax_denominator: exact tax rate denominator
+ * @discount: (out) (optional) (transfer full): discount amount
+ * @net: (out) (optional) (transfer full): amount after discount, before tax
+ * @tax: (out) (optional) (transfer full): tax on the net amount
+ * @total: (out) (optional) (transfer full): net plus tax
+ * @error: (out) (optional): invalid rate or arithmetic failure
+ *
+ * One rounding of each part, half to even. A tax code uses this instead of an
+ * integer percent so 8.875% is 8875/100000 rather than a truncated 8.
+ * Returns: %TRUE when every requested part was computed
+ */
+gboolean venture_quote_rate_parts(const VentureMoney *subtotal, gint64 discount_percent,
+	gint64 tax_numerator, gint64 tax_denominator, VentureMoney **discount,
+	VentureMoney **net, VentureMoney **tax, VentureMoney **total, GError **error);
 G_END_DECLS
 #endif

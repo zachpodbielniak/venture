@@ -2053,6 +2053,7 @@ venture_database_seed_accounts(
 		{ "1000", "Cash",                  VENTURE_ACCOUNT_KIND_ASSET },
 		{ "1100", "Accounts receivable",   VENTURE_ACCOUNT_KIND_ASSET },
 		{ "1200", "Inventory",             VENTURE_ACCOUNT_KIND_ASSET },
+		{ "1300", "Recoverable tax",       VENTURE_ACCOUNT_KIND_ASSET },
 		{ "2000", "Accounts payable",      VENTURE_ACCOUNT_KIND_LIABILITY },
 		{ "2100", "Sales tax payable",     VENTURE_ACCOUNT_KIND_LIABILITY },
 		{ "3000", "Owner's equity",        VENTURE_ACCOUNT_KIND_EQUITY },
@@ -2067,7 +2068,9 @@ venture_database_seed_accounts(
 		{ "6400", "Supplies",              VENTURE_ACCOUNT_KIND_EXPENSE },
 		{ "6500", "Professional fees",     VENTURE_ACCOUNT_KIND_EXPENSE },
 		{ "6600", "Home office",           VENTURE_ACCOUNT_KIND_EXPENSE },
-		{ "6700", "Travel",                VENTURE_ACCOUNT_KIND_EXPENSE }
+		{ "6700", "Travel",                VENTURE_ACCOUNT_KIND_EXPENSE },
+		{ "6800", "Bad debt",              VENTURE_ACCOUNT_KIND_EXPENSE },
+		{ "7600", "Exchange gain/loss",    VENTURE_ACCOUNT_KIND_EXPENSE }
 	};
 	g_autoptr(VentureQuery) query = NULL;
 	gint64 existing;

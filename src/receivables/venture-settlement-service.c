@@ -492,10 +492,28 @@ account_id(VentureSettlementService *self, gint64 configured, const gchar *code,
  */
 static gboolean
 venture_receivables_post_batch(VentureSettlementService *self, GPtrArray *entries,
-	const VentureActor *actor, GError **error)
+	VentureExchangePolicy *policy, const VentureActor *actor, GError **error)
 {
 	return venture_posting_service_post_entries(venture_database_get_posting_service(self->database),
-		entries, NULL, actor, error);
+		entries, policy, actor, error);
+}
+
+static gchar *
+book_currency(VentureSettlementService *self, gint64 organization_id, GError **error)
+{
+	g_autoptr(VentureEntity) organization = NULL;
+	gchar *currency = NULL;
+
+	organization = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, organization_id, error);
+	if (organization == NULL)
+		return NULL;
+	g_object_get(organization, "default-currency", &currency, NULL);
+	if (currency == NULL || *currency == '\0')
+	{
+		g_free(currency);
+		currency = g_strdup(venture_money_get_default_currency());
+	}
+	return currency;
 }
 
 /* These are source-document legs, not a second posting engine. Unapplied
@@ -521,6 +539,11 @@ resolve_code(VentureSettlementService *self, const gchar *code, gint64 organizat
 	{
 		configured = self->tax_account;
 		kind = VENTURE_ACCOUNT_KIND_LIABILITY;
+	}
+	else if (g_str_equal(code, "6800") || g_str_equal(code, "7600"))
+	{
+		configured = 0;
+		kind = VENTURE_ACCOUNT_KIND_EXPENSE;
 	}
 	else
 	{
@@ -565,7 +588,9 @@ post_split(VentureSettlementService *self, VentureEntity *source, GDateTime *dat
 	gboolean reverse, const VentureActor *actor, GError **error)
 {
 	g_autoptr(GPtrArray) entries = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autoptr(VentureExchangePolicy) policy = NULL;
 	g_autofree gchar *transaction = NULL;
+	g_autofree gchar *book = NULL;
 	gint64 ar = 0, income = 0, tax = 0;
 	gint64 org = venture_entity_get_organization_id(source);
 	if (debit_ar != NULL && !venture_money_is_zero(debit_ar) && !check_amount(debit_ar, error))
@@ -576,6 +601,21 @@ post_split(VentureSettlementService *self, VentureEntity *source, GDateTime *dat
 	if (credit_tax != NULL && !venture_money_is_zero(credit_tax) &&
 		!resolve_code(self, "2100", org, &tax, error))
 		return FALSE;
+	book = book_currency(self, org, error);
+	if (book == NULL)
+		return FALSE;
+	if (debit_ar != NULL && g_strcmp0(venture_money_get_currency(debit_ar), book) != 0)
+	{
+		g_autoptr(VentureMoney) trial = NULL;
+		g_autoptr(GError) missing = NULL;
+		policy = venture_rate_table_policy_new(self->database, org);
+		trial = venture_exchange_policy_convert(policy, debit_ar, book, date, &missing);
+		if (trial == NULL)
+		{
+			/* Keep document currency rather than inventing a rate. */
+			g_clear_object(&policy);
+		}
+	}
 	transaction = g_strdup_printf("receivables:%s:%s", venture_entity_get_entity_name(source),
 		venture_entity_get_uuid(source));
 	if (reverse)
@@ -590,7 +630,7 @@ post_split(VentureSettlementService *self, VentureEntity *source, GDateTime *dat
 		add_leg(entries, source, date, transaction, income, VENTURE_LEDGER_SIDE_CREDIT, credit_income);
 		add_leg(entries, source, date, transaction, tax, VENTURE_LEDGER_SIDE_CREDIT, credit_tax);
 	}
-	return entries->len == 0 || venture_receivables_post_batch(self, entries, actor, error);
+	return entries->len == 0 || venture_receivables_post_batch(self, entries, policy, actor, error);
 }
 
 static gboolean
@@ -610,7 +650,7 @@ post(VentureSettlementService *self, VentureEntity *source, GDateTime *date,
 	transaction = g_strdup_printf("receivables:%s:%s", venture_entity_get_entity_name(source), venture_entity_get_uuid(source));
 	add_leg(entries, source, date, transaction, debit, VENTURE_LEDGER_SIDE_DEBIT, amount);
 	add_leg(entries, source, date, transaction, credit, VENTURE_LEDGER_SIDE_CREDIT, amount);
-	return venture_receivables_post_batch(self, entries, actor, error);
+	return venture_receivables_post_batch(self, entries, NULL, actor, error);
 }
 
 static gboolean
@@ -757,9 +797,21 @@ invoice_parts(VentureSettlementService *self, VentureEntity *invoice,
 		}
 		else
 		{
+			gint64 tax_numerator = tax_percent;
+			gint64 tax_denominator = 100;
+			gint64 tax_code_id = get_id(line, "tax-code-id");
 			g_clear_pointer(&line_net, venture_money_free);
 			g_clear_pointer(&line_tax, venture_money_free);
-			if (!venture_quote_percentage_parts(subtotal, discount_percent, tax_percent,
+			if (!exempt && tax_code_id != 0)
+			{
+				g_autoptr(VentureEntity) tax_code = venture_database_get(self->database,
+					VENTURE_TYPE_TAX_CODE, tax_code_id, error);
+				if (tax_code == NULL || !same_owner(invoice, tax_code, error) ||
+					!venture_tax_code_get_rate(VENTURE_TAX_CODE(tax_code),
+						&tax_numerator, &tax_denominator, error))
+					return FALSE;
+			}
+			if (!venture_quote_rate_parts(subtotal, discount_percent, tax_numerator, tax_denominator,
 				&line_discount, &line_net, &line_tax, &line_total, error))
 				return FALSE;
 			if (exempt)
@@ -870,12 +922,30 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 			total = venture_money_new_zero(NULL);
 		g_object_get(invoice, "due-at", &due, NULL);
 		event = venture_invoice_event_new();
-		g_object_set(event, "invoice-id", venture_entity_get_id(invoice),
-			"customer-id", get_id(invoice, "company-id"), "date", date,
-			"kind", first_issue ? "issue" : (phase == VENTURE_INVOICE_STATUS_VOID ? "void" : "transition"),
-			"state", first_issue ? "sent" : state, "due-at", due, "amount", total,
-			"net-amount", net, "tax-amount", tax, "discount-amount", discount, "shipping-amount", shipping,
-			"venture-id", get_id(invoice, "venture-id"), NULL);
+		{
+			g_autoptr(VentureMoney) book_total = NULL;
+			g_autofree gchar *book = book_currency(self, venture_entity_get_organization_id(invoice), error);
+			if (book == NULL)
+				return FALSE;
+			if (g_strcmp0(venture_money_get_currency(total), book) == 0)
+				book_total = venture_money_copy(total);
+			else
+			{
+				g_autoptr(VentureExchangePolicy) policy = venture_rate_table_policy_new(self->database,
+					venture_entity_get_organization_id(invoice));
+				g_autoptr(GError) missing = NULL;
+				book_total = venture_exchange_policy_convert(policy, total, book, date, &missing);
+				if (book_total == NULL)
+					book_total = venture_money_copy(total);
+			}
+			g_object_set(event, "invoice-id", venture_entity_get_id(invoice),
+				"customer-id", get_id(invoice, "company-id"), "date", date,
+				"kind", first_issue ? "issue" : (phase == VENTURE_INVOICE_STATUS_VOID ? "void" : "transition"),
+				"state", first_issue ? "sent" : state, "due-at", due, "amount", total,
+				"book-amount", book_total,
+				"net-amount", net, "tax-amount", tax, "discount-amount", discount, "shipping-amount", shipping,
+				"venture-id", get_id(invoice, "venture-id"), NULL);
+		}
 		venture_entity_set_organization_id(VENTURE_ENTITY(event), venture_entity_get_organization_id(invoice));
 		if (!check_customer(self, VENTURE_ENTITY(event), error) ||
 			!write_record(self, VENTURE_ENTITY(event), actor, error))
@@ -1061,11 +1131,13 @@ perform_credit(VentureSettlementService *self, VentureEntity *credit,
 	if (venture_entity_is_persisted(credit))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Credits and their derived remaining balances are immutable");
 	g_object_get(credit, "amount", &amount, "date", &date, "kind", &kind, NULL);
-	if (g_strcmp0(kind, "credit_note") != 0 || get_id(credit, "payment-id") != 0)
-		return refuse(error, VENTURE_ERROR_VALIDATION, "Create a payment for a deposit or overpayment; only credit_note may be entered directly");
+	if ((g_strcmp0(kind, "credit_note") != 0 && g_strcmp0(kind, "write_off") != 0) || get_id(credit, "payment-id") != 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Create a payment for a deposit or overpayment; only credit_note or write_off may be entered directly");
 	if (!check_amount(amount, error) || !check_date(date, NULL, error) || !check_customer(self, credit, error))
 		return FALSE;
 	g_object_set(credit, "remaining", amount, NULL);
+	if (g_strcmp0(kind, "write_off") == 0)
+		return write_record(self, credit, actor, error) && post(self, credit, date, amount, "6800", "1100", actor, error);
 	{
 		g_autoptr(VentureMoney) tax = NULL;
 		g_autoptr(VentureMoney) net = NULL;
@@ -1080,6 +1152,97 @@ perform_credit(VentureSettlementService *self, VentureEntity *credit,
 		}
 	}
 	return write_record(self, credit, actor, error) && post(self, credit, date, amount, "4000", "1100", actor, error);
+}
+
+static gboolean
+post_fx_receipt(VentureSettlementService *self, VentureEntity *source, GDateTime *date,
+	const VentureMoney *cash, const VentureMoney *released, const VentureActor *actor, GError **error)
+{
+	g_autoptr(GPtrArray) entries = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autoptr(VentureMoney) difference = NULL;
+	g_autofree gchar *transaction = NULL;
+	gint64 cash_account = 0, ar = 0, fx = 0;
+	gint64 org = venture_entity_get_organization_id(source);
+
+	if (!check_amount(cash, error) || !check_amount(released, error))
+		return FALSE;
+	if (!resolve_code(self, "1000", org, &cash_account, error) ||
+		!resolve_code(self, "1100", org, &ar, error) ||
+		!resolve_code(self, "7600", org, &fx, error))
+		return FALSE;
+	difference = venture_money_subtract(cash, released, error);
+	if (difference == NULL)
+		return FALSE;
+	transaction = g_strdup_printf("receivables:%s:%s", venture_entity_get_entity_name(source),
+		venture_entity_get_uuid(source));
+	add_leg(entries, source, date, transaction, cash_account, VENTURE_LEDGER_SIDE_DEBIT, cash);
+	add_leg(entries, source, date, transaction, ar, VENTURE_LEDGER_SIDE_CREDIT, released);
+	if (venture_money_get_amount(difference) > 0)
+		add_leg(entries, source, date, transaction, fx, VENTURE_LEDGER_SIDE_CREDIT, difference);
+	else if (venture_money_get_amount(difference) < 0)
+	{
+		g_autoptr(VentureMoney) zero = venture_money_new_zero(venture_money_get_currency(difference));
+		g_autoptr(VentureMoney) loss = venture_money_subtract(zero, difference, error);
+		if (loss == NULL)
+			return FALSE;
+		add_leg(entries, source, date, transaction, fx, VENTURE_LEDGER_SIDE_DEBIT, loss);
+	}
+	return venture_receivables_post_batch(self, entries, NULL, actor, error);
+}
+
+static gboolean
+settle_foreign_payment(VentureSettlementService *self, VentureEntity *payment,
+	VentureEntity *invoice, const VentureMoney *cash, GDateTime *date,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) issued = NULL;
+	g_autoptr(VentureMoney) remaining = NULL;
+	g_autoptr(VentureMoney) issued_total = NULL;
+	g_autoptr(VentureMoney) issued_book = NULL;
+	g_autoptr(VentureMoney) released = NULL;
+	g_autoptr(VenturePaymentAllocation) allocation = NULL;
+	g_autoptr(VentureSale) sale = NULL;
+	g_autofree gchar *book = NULL;
+	g_autofree gchar *external = NULL;
+
+	book = book_currency(self, venture_entity_get_organization_id(invoice), error);
+	if (book == NULL)
+		return FALSE;
+	if (g_strcmp0(venture_money_get_currency(cash), book) != 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION,
+			"Pay a foreign invoice in the organization book currency; mixed currencies require an exchange_rate");
+	remaining = venture_settlement_service_invoice_balance(self, venture_entity_get_id(invoice), NULL, error);
+	if (remaining == NULL || !check_amount(remaining, error))
+		return FALSE;
+	issued = issue_event(self, venture_entity_get_id(invoice), NULL, error);
+	if (issued == NULL)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "The invoice has no issue event");
+	g_object_get(issued, "amount", &issued_total, "book-amount", &issued_book, NULL);
+	if (issued_book == NULL)
+		issued_book = venture_money_copy(issued_total);
+	if (issued_total == NULL || venture_money_is_zero(issued_total))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "The invoice has no issued amount");
+	if (g_strcmp0(venture_money_get_currency(issued_book), venture_money_get_currency(cash)) != 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION,
+			"No exchange rate valued this invoice into the book currency; record an exchange_rate");
+	released = venture_money_multiply_rational(issued_book, remaining->amount, issued_total->amount, error);
+	if (released == NULL)
+		return FALSE;
+	allocation = venture_payment_allocation_new();
+	g_object_set(allocation, "payment-id", venture_entity_get_id(payment),
+		"invoice-id", venture_entity_get_id(invoice), "amount", remaining, "date", date, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(allocation), venture_entity_get_organization_id(invoice));
+	external = g_strdup_printf("allocation:%s", venture_entity_get_uuid(VENTURE_ENTITY(allocation)));
+	sale = venture_sale_new();
+	g_object_set(sale, "venture-id", get_id(invoice, "venture-id"), "gross", cash,
+		"occurred-at", date, "channel", "invoice", "external-id", external, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(sale), venture_entity_get_organization_id(invoice));
+	if (!write_record(self, VENTURE_ENTITY(sale), actor, error))
+		return FALSE;
+	g_object_set(allocation, "sale-id", venture_entity_get_id(VENTURE_ENTITY(sale)), NULL);
+	return write_record(self, VENTURE_ENTITY(allocation), actor, error) &&
+		post_fx_receipt(self, payment, date, cash, released, actor, error) &&
+		derive_invoice(self, invoice, date, actor, error);
 }
 
 static gboolean
@@ -1119,6 +1282,19 @@ perform_payment(VentureSettlementService *self, VentureEntity *payment,
 	g_object_set(payment, "external-key", key, NULL);
 	if (!write_record(self, payment, actor, error))
 		return FALSE;
+	invoice_id = get_id(payment, "invoice-id");
+	if (invoice_id != 0 && allocations == NULL)
+	{
+		g_autoptr(VentureEntity) invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, invoice_id, error);
+		g_autoptr(VentureMoney) remaining = NULL;
+		if (invoice == NULL)
+			return FALSE;
+		remaining = venture_settlement_service_invoice_balance(self, invoice_id, NULL, error);
+		if (remaining == NULL)
+			return FALSE;
+		if (g_strcmp0(venture_money_get_currency(amount), venture_money_get_currency(remaining)) != 0)
+			return settle_foreign_payment(self, payment, invoice, amount, date, actor, error);
+	}
 	credit = venture_customer_credit_new();
 	invoice_id = get_id(payment, "invoice-id");
 	g_object_set(credit, "customer-id", get_id(payment, "customer-id"), "date", date,
@@ -1487,6 +1663,45 @@ venture_receivables_save_hook(VentureDatabase *database, VentureEntity *record,
 }
 
 gboolean
+venture_settlement_service_write_off(VentureSettlementService *self,
+	gint64 invoice_id, GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	g_autoptr(VentureCustomerCredit) credit = NULL;
+	g_autoptr(VenturePaymentAllocation) allocation = NULL;
+	gboolean ok;
+
+	if (!begin_operation(self, "payment", error))
+		return FALSE;
+	invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, invoice_id, error);
+	ok = invoice != NULL;
+	if (ok)
+	{
+		balance = venture_settlement_service_invoice_balance(self, invoice_id, NULL, error);
+		ok = balance != NULL && check_amount(balance, error);
+	}
+	if (ok)
+	{
+		credit = venture_customer_credit_new();
+		g_object_set(credit, "customer-id", get_id(invoice, "company-id"), "kind", "write_off",
+			"date", date, "amount", balance, "remaining", balance,
+			"reference", "Bad-debt write-off", NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(credit), venture_entity_get_organization_id(invoice));
+		ok = perform_credit(self, VENTURE_ENTITY(credit), actor, error);
+	}
+	if (ok)
+	{
+		allocation = venture_payment_allocation_new();
+		g_object_set(allocation, "credit-id", venture_entity_get_id(VENTURE_ENTITY(credit)),
+			"invoice-id", invoice_id, "amount", balance, "date", date, NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(allocation), venture_entity_get_organization_id(invoice));
+		ok = perform_allocation(self, VENTURE_ENTITY(allocation), actor, error);
+	}
+	return finish_operation(self, ok, error);
+}
+
+gboolean
 venture_settlement_service_settle_invoice(VentureSettlementService *self,
 	gint64 invoice_id, GDateTime *date, const VentureActor *actor, GError **error)
 {
@@ -1628,7 +1843,7 @@ venture_settlement_service_correct_tax_allocation(VentureSettlementService *self
 		entries = g_ptr_array_new_with_free_func(g_object_unref);
 		add_leg(entries, event, date, transaction, income, VENTURE_LEDGER_SIDE_DEBIT, tax);
 		add_leg(entries, event, date, transaction, tax_account, VENTURE_LEDGER_SIDE_CREDIT, tax);
-		if (!venture_receivables_post_batch(self, entries, actor, error))
+		if (!venture_receivables_post_batch(self, entries, NULL, actor, error))
 		{
 			if (error != NULL && *error != NULL && (*error)->code == VENTURE_ERROR_ALREADY_EXISTS)
 				g_clear_error(error);

@@ -3689,6 +3689,16 @@ venture_web_ui_invoice_status(
 			id, now, &actor, &error))
 			return venture_web_error_response(error);
 	}
+	else if (g_strcmp0(to, "write-off") == 0)
+	{
+		HtmxResponse *gate = venture_web_require_module_ui(self, request, "receivables");
+		if (NULL != gate)
+			return gate;
+		if (!venture_settlement_service_write_off(
+			venture_settlement_service_get(venture_context_get_database(self->context)),
+			id, now, &actor, &error))
+			return venture_web_error_response(error);
+	}
 	else if (!venture_settlement_service_transition(
 		venture_settlement_service_get(venture_context_get_database(self->context)),
 		VENTURE_INVOICE(record), to, now, &actor, &error))
@@ -8702,12 +8712,20 @@ venture_web_append_invoice_block(
 
 	if ((VENTURE_INVOICE_STATUS_SENT == status) ||
 	    (VENTURE_INVOICE_STATUS_PARTIALLY_PAID == status))
+	{
 		g_string_append_printf(content,
 			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
 			"/status\"><input type=\"hidden\" name=\"to\" value=\"paid\">"
 			"<button class=\"btn btn-primary\" type=\"submit\" "
 			"title=\"Records a receipt for the outstanding balance\">"
 			"Mark paid</button></form>", id);
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
+			"/status\"><input type=\"hidden\" name=\"to\" value=\"write-off\">"
+			"<button class=\"btn\" type=\"submit\" "
+			"title=\"Write off remaining AR; journals stay posted\">"
+			"Write off</button></form>", id);
+	}
 
 	g_string_append(content, "</div></div>");
 }

@@ -136,6 +136,10 @@ test_registry_table_names_pluralise_correctly(void)
 	/* "category" -> "categories", not "categorys". */
 	g_assert_cmpstr(venture_entity_registry_get_table_name(registry, "tax_category"),
 	                ==, "tax_categories");
+	g_assert_cmpstr(venture_entity_registry_get_table_name(registry, "tax_code"),
+	                ==, "tax_codes");
+	g_assert_cmpstr(venture_entity_registry_get_table_name(registry, "exchange_rate"),
+	                ==, "exchange_rates");
 	/* "expense" ends in a sibilant and takes -s, not -es. */
 	g_assert_cmpstr(venture_entity_registry_get_table_name(registry, "expense"),
 	                ==, "expenses");

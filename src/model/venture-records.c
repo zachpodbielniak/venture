@@ -540,6 +540,61 @@ static const VentureFieldDecl venture_tax_category_fields[] = {
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureTaxCategory, venture_tax_category, venture_tax_category_fields,
 	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
+static const VentureFieldDecl venture_tax_code_fields[] = {
+	VENTURE_FIELD("code", "Code", "Organization-unique tax code", VENTURE_FIELD_KIND_STRING,
+		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_NAME("name", "Name", NULL),
+	VENTURE_FIELD("jurisdiction", "Jurisdiction", "Filing jurisdiction, for example US-NY or EU-DE",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD("rate-numerator", "Rate numerator", "Exact rate numerator; 8875/100000 is 8.875%",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("rate-denominator", "Rate denominator", "Exact rate denominator, never zero",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("recoverable", "Recoverable", "Purchase tax is an asset rather than extra expense",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED)
+};
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureTaxCode, venture_tax_code, venture_tax_code_fields,
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
+
+gboolean
+venture_tax_code_get_rate(VentureTaxCode *self, gint64 *numerator, gint64 *denominator, GError **error)
+{
+	gint64 num = 0;
+	gint64 den = 0;
+
+	g_return_val_if_fail(VENTURE_IS_TAX_CODE(self), FALSE);
+	g_object_get(self, "rate-numerator", &num, "rate-denominator", &den, NULL);
+	if (num < 0 || den <= 0)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"A tax code rate must be a nonnegative numerator over a positive denominator");
+		return FALSE;
+	}
+	if (numerator != NULL)
+		*numerator = num;
+	if (denominator != NULL)
+		*denominator = den;
+	return TRUE;
+}
+
+VentureMoney *
+venture_tax_code_levy(VentureTaxCode *self, const VentureMoney *net, GError **error)
+{
+	gint64 numerator = 0;
+	gint64 denominator = 0;
+
+	if (net == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Tax is computed from a net amount");
+		return NULL;
+	}
+	if (!venture_tax_code_get_rate(self, &numerator, &denominator, error))
+		return NULL;
+	return venture_money_multiply_rational(net, numerator, denominator, error);
+}
+
 /* ==========================================================================
  * Relations
  * ========================================================================== */
@@ -2730,6 +2785,8 @@ static const VentureFieldDecl venture_invoice_line_fields[] = {
 	VENTURE_FIELD_REF("product-id", "Product", "Catalog item priced by the payment provider", "product", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("discount-percent", "Discount percent", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("tax-percent", "Tax percent", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("tax-code-id", "Tax code", "Exact rate and jurisdiction; used instead of tax-percent when set",
+		"tax_code", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("income-amount", "Frozen income", "Net after discount, frozen at issuance"),
 	VENTURE_FIELD_MONEY("discount-amount", "Frozen discount", "Frozen at issuance"),
 	VENTURE_FIELD_MONEY("tax-amount", "Frozen tax", "Frozen at issuance"),
@@ -2772,10 +2829,16 @@ venture_invoice_line_get_amount(
 
 	{
 		g_autoptr(VentureMoney) subtotal = venture_money_multiply_rational(unit_price, thousandths, 1000, error);
+		g_autoptr(VentureMoney) frozen_net = NULL;
+		g_autoptr(VentureMoney) frozen_tax = NULL;
 		gint64 discount_percent;
 		gint64 tax_percent;
-		g_object_get(self, "discount-percent", &discount_percent, "tax-percent", &tax_percent, NULL);
-		if (subtotal == NULL) return NULL;
+		g_object_get(self, "discount-percent", &discount_percent, "tax-percent", &tax_percent,
+			"income-amount", &frozen_net, "tax-amount", &frozen_tax, NULL);
+		if (subtotal == NULL)
+			return NULL;
+		if (frozen_net != NULL && frozen_tax != NULL)
+			return venture_money_add(frozen_net, frozen_tax, error);
 		return venture_quote_apply_percentages(subtotal, discount_percent, tax_percent, error);
 	}
 }

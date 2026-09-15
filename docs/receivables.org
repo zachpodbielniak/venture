@@ -132,7 +132,26 @@ The service properties =cash-account-id=, =receivable-account-id= and
 =income-account-id= select accounts. Zero resolves active accounts 1000,
 1100 and 4000 within the transaction's organization. Another organization
 must have suitable accounts configured; the service does not create them.
-Posting validates each batch's currency through the journal service. Different currencies are kept separate and are never converted. Every journal checks the fiscal calendar at its own effective date, so a February payment can settle a January invoice after January closes without rewriting January.
+Posting validates each batch's currency through the journal service. An
+invoice in a foreign currency is valued into the organization's
+=default-currency= through a stored =exchange_rate= and the posting
+=VentureExchangePolicy=. A book-currency receipt against that invoice
+releases the frozen book AR and posts the difference to Exchange gain/loss
+7600. Missing rates are refused; nothing invents a market quote. Same-currency
+receipts are unchanged. Every journal checks the fiscal calendar at its own
+effective date, so a February payment can settle a January invoice after
+January closes without rewriting January.
+
+Invoice and bill lines may name a =tax_code= (exact rate, jurisdiction,
+recoverable flag) instead of an integer =tax-percent=. Frozen
+=income-amount= and =tax-amount= still come from issuance. The
+=tax_liability= report groups that frozen tax by code. Company and invoice
+=tax-exempt= still freeze tax at zero.
+
+Remaining AR is written off through =venture_settlement_service_write_off()=
+(the invoice Write off action). That records a =write_off= credit and
+allocation, debiting Bad debt 6800 and crediting receivables. Original issue
+journals stay posted; it is not a cash refund and not a tax credit note.
 
 Existing cash reports still read sales: each cash allocation creates an immutable sale at the allocation date with external ID =allocation:<allocation UUID>=. Two partial payments therefore remain distinct even when their invoice number is the same. An allocation refund creates a negative sale at the refund date with external ID =refund:<refund UUID>= and records its ID in =refund.sale_id=. Neither operation rewrites the original receipt. Generic edits, deletion, purge and explicit document reposting of these projections are refused.
 

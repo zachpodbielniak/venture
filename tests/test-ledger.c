@@ -63,6 +63,7 @@ test_records(Fixture *f, gconstpointer data)
 	registry = venture_context_get_entity_registry(f->context);
 	g_assert_cmpuint(venture_entity_registry_lookup(registry, "journal"), !=, 0);
 	g_assert_cmpuint(venture_entity_registry_lookup(registry, "journal_line"), !=, 0);
+	g_assert_cmpuint(venture_entity_registry_lookup(registry, "exchange_rate"), !=, 0);
 }
 
 static void
@@ -538,6 +539,36 @@ test_exchange(Fixture *f, gconstpointer data)
 	g_assert_nonnull(posted);
 	g_object_get(posted, "exchange-policy", &policy_name, NULL);
 	g_assert_cmpstr(policy_name, ==, "test-rate-set-1");
+}
+
+static void
+test_rate_table(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureExchangeRate) rate = venture_exchange_rate_new();
+	g_autoptr(GObject) policy = NULL;
+	g_autoptr(VentureMoney) euros = venture_money_new_for_currency(10000, "EUR");
+	g_autoptr(VentureMoney) valued = NULL;
+	g_autoptr(GDateTime) when = date("2026-01-10T00:00:00Z");
+	g_autoptr(GError) error = NULL;
+
+	(void)data;
+	policy = G_OBJECT(venture_rate_table_policy_new(f->db, f->org));
+	valued = venture_exchange_policy_convert(VENTURE_EXCHANGE_POLICY(policy),
+		euros, "USD", when, &error);
+	g_assert_null(valued);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_object_set(rate, "from-currency", "EUR", "to-currency", "USD",
+		"rate-numerator", (gint64)110, "rate-denominator", (gint64)100,
+		"source", "manual", "reason", "board", "effective-at", when, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(rate), f->org);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(rate), NULL, &error));
+	g_assert_no_error(error);
+	valued = venture_exchange_policy_convert(VENTURE_EXCHANGE_POLICY(policy),
+		euros, "USD", when, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(valued->amount, ==, 11000);
+	g_assert_cmpstr(valued->currency, ==, "USD");
 }
 
 static void
@@ -1092,6 +1123,7 @@ main(int argc, char **argv)
 	ADD("posted-account-ownership", test_posted_account_ownership);
 	ADD("plugin-rule", test_plugin_rule);
 	ADD("exchange", test_exchange);
+	ADD("rate-table", test_rate_table);
 	ADD("source-saves", test_source_saves);
 	ADD("source-veto", test_source_veto);
 	ADD("invoice-rule", test_invoice_rule);

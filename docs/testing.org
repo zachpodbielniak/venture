@@ -63,9 +63,11 @@ non-1000 bank credits that bank's account.
 
 ** =test-receivables=
 
-Receipts, partial and complete allocations, deposits, credit notes and
-refunds; external IDs unique within an organization; immutable financial
-history; and the lifecycle signal's veto. Failures injected after a source
+Receipts, partial and complete allocations, deposits, credit notes,
+write-offs and refunds; tax codes with exact rates and a liability report;
+foreign invoices paid in book currency with stored exchange rates; external
+IDs unique within an organization; immutable financial history; and the
+lifecycle signal's veto. Failures injected after a source
 write must leave every record and audit entry unchanged. Web, REST, the
 real =venturectl= process and its MCP tool produce identical financial
 rows, including a staged tool call applied after approval. Each source
