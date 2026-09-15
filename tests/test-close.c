@@ -301,6 +301,67 @@ test_tax_control_is_sales_tax(Fixture *f, gconstpointer unused)
 }
 
 static void
+test_tax_control_uses_mapped_account(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	VentureActor actor = actor_named("closer");
+	g_autoptr(VentureAccount) tax = venture_account_new();
+	g_autoptr(VentureEntity) map = NULL;
+	g_autoptr(VentureEntity) workspace = NULL;
+	g_autoptr(VentureQuery) q = NULL;
+	g_autoptr(GPtrArray) tasks = NULL;
+	gboolean saw = FALSE;
+	guint i;
+
+	(void)unused;
+	venture_entity_set_organization_id(VENTURE_ENTITY(tax), f->org);
+	g_object_set(tax, "code", "2150", "name", "VAT payable",
+		"kind", VENTURE_ACCOUNT_KIND_LIABILITY, "active", TRUE, NULL);
+	save(f, VENTURE_ENTITY(tax));
+	q = venture_query_new(VENTURE_TYPE_ACCOUNTING_CONTROL_MAP);
+	venture_query_set_organization(q, f->org);
+	g_assert_true(venture_query_add_filter_string(q, "classification", VENTURE_FILTER_OP_EQ, "tax", NULL));
+	map = venture_database_find_one(f->db, q, NULL);
+	if (map == NULL)
+	{
+		map = g_object_new(VENTURE_TYPE_ACCOUNTING_CONTROL_MAP,
+			"organization-id", f->org, "classification", "tax",
+			"subject-type", "organization", "subject-id", (gint64)0,
+			"account-id", venture_entity_get_id(VENTURE_ENTITY(tax)), NULL);
+	}
+	else
+		g_object_set(map, "account-id", venture_entity_get_id(VENTURE_ENTITY(tax)), NULL);
+	save(f, map);
+	g_clear_object(&q);
+	workspace = venture_close_service_open(venture_close_service_get(f->db),
+		f->period, NULL, &actor, &error);
+	g_assert_no_error(error);
+	{
+		g_autofree gchar *currency = NULL;
+		g_object_get(workspace, "currency", &currency, NULL);
+		g_assert_cmpstr(currency, ==, "USD");
+	}
+	g_assert_true(venture_close_service_run_checks(venture_close_service_get(f->db),
+		workspace, &actor, &error));
+	g_assert_no_error(error);
+	q = venture_query_new(VENTURE_TYPE_CLOSE_TASK);
+	venture_query_set_organization(q, f->org);
+	tasks = venture_database_find(f->db, q, &error);
+	for (i = 0; i < tasks->len; i++)
+	{
+		g_autofree gchar *kind = NULL;
+		g_autofree gchar *notes = NULL;
+		g_object_get(g_ptr_array_index(tasks, i), "kind", &kind, "notes", &notes, NULL);
+		if (g_strcmp0(kind, "tax") != 0)
+			continue;
+		saw = TRUE;
+		g_assert_nonnull(strstr(notes, "2150"));
+		g_assert_null(strstr(notes, "2100"));
+	}
+	g_assert_true(saw);
+}
+
+static void
 test_direct_period_close_still_runs_checks(Fixture *f, gconstpointer unused)
 {
 	g_autoptr(GError) error = NULL;
@@ -326,6 +387,7 @@ main(int argc, char **argv)
 	g_test_add("/close/generic-signoff", Fixture, NULL, setup, test_generic_signoff_refused, teardown);
 	g_test_add("/close/module-off", Fixture, NULL, setup, test_module_off, teardown);
 	g_test_add("/close/tax-control", Fixture, NULL, setup, test_tax_control_is_sales_tax, teardown);
+	g_test_add("/close/mapped-tax", Fixture, NULL, setup, test_tax_control_uses_mapped_account, teardown);
 	g_test_add("/close/period-close", Fixture, NULL, setup, test_direct_period_close_still_runs_checks, teardown);
 	return g_test_run();
 }

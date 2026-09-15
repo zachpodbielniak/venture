@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
 #include <string.h>
+#include <json-glib/json-glib.h>
 
 static const gchar *const close_kinds[] = {
 	"bank_recon", "ar_control", "ap_control", "suspense", "tax",
@@ -146,7 +147,9 @@ mapped_or_code(VentureDatabase *db, gint64 org, const gchar *role, const gchar *
 	g_autoptr(GError) ignored = NULL;
 	gint64 id;
 
-	id = venture_setup_resolve_account(db, org, role, "organization", org, NULL, &ignored);
+	id = venture_setup_resolve_account(db, org, role, "organization", 0, NULL, &ignored);
+	if (ignored != NULL)
+		return 0;
 	if (id != 0)
 		return id;
 	return account_by_code(db, org, code);
@@ -510,6 +513,8 @@ venture_close_service_open(VentureCloseService *self, gint64 period_id,
 	g_autoptr(VentureEntity) workspace = NULL;
 	g_autoptr(GPtrArray) existing = NULL;
 	g_autofree gchar *name = NULL;
+	g_autofree gchar *book = NULL;
+	const gchar *use_currency = currency;
 	guint i;
 	g_return_val_if_fail(VENTURE_IS_CLOSE_SERVICE(self), NULL);
 	db = service_db(self);
@@ -531,8 +536,16 @@ venture_close_service_open(VentureCloseService *self, gint64 period_id,
 	}
 	g_object_get(period, "name", &name, NULL);
 	workspace = VENTURE_ENTITY(venture_close_workspace_new());
+	if (use_currency == NULL || use_currency[0] == '\0')
+	{
+		g_autoptr(VentureEntity) organization = venture_database_get(db, VENTURE_TYPE_ORGANIZATION,
+			venture_entity_get_organization_id(period), NULL);
+		if (organization != NULL)
+			g_object_get(organization, "default-currency", &book, NULL);
+		use_currency = book;
+	}
 	g_object_set(workspace, "name", name, "fiscal-period-id", period_id, "status", "preparing",
-		"currency", currency != NULL ? currency : "USD", NULL);
+		"currency", use_currency != NULL && use_currency[0] != '\0' ? use_currency : "USD", NULL);
 	venture_entity_set_organization_id(workspace, venture_entity_get_organization_id(period));
 	if (!save_internal(self, db, workspace, actor, error))
 		goto fail;
@@ -728,6 +741,8 @@ venture_close_service_sign(VentureCloseService *self, VentureEntity *workspace,
 	g_autoptr(VentureEntity) sign = NULL;
 	g_autoptr(GDateTime) now = NULL;
 	g_autoptr(JsonNode) pack = NULL;
+	g_autoptr(JsonGenerator) generator = NULL;
+	g_autofree gchar *text = NULL;
 	g_autofree gchar *hash = NULL;
 	const gchar *name;
 	g_return_val_if_fail(VENTURE_IS_CLOSE_SERVICE(self), FALSE);
@@ -751,8 +766,17 @@ venture_close_service_sign(VentureCloseService *self, VentureEntity *workspace,
 	now = venture_time_now();
 	name = actor->name;
 	sign = VENTURE_ENTITY(venture_close_signoff_new());
+	pack = venture_close_service_pack(self, workspace, NULL);
+	if (pack != NULL)
+	{
+		generator = json_generator_new();
+		json_generator_set_root(generator, pack);
+		text = json_generator_to_data(generator, NULL);
+		if (text != NULL)
+			hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, text, -1);
+	}
 	g_object_set(sign, "workspace-id", venture_entity_get_id(workspace), "role", role,
-		"actor", name, "signed-at", now, NULL);
+		"actor", name, "signed-at", now, "pack-hash", hash, NULL);
 	venture_entity_set_organization_id(sign, venture_entity_get_organization_id(workspace));
 	if (!save_internal(self, db, sign, actor, error))
 		return finish_op(self, db, FALSE, error);
@@ -762,8 +786,6 @@ venture_close_service_sign(VentureCloseService *self, VentureEntity *workspace,
 		g_object_set(workspace, "status", "signed_off", "reviewer", name, NULL);
 	if (!save_internal(self, db, workspace, actor, error))
 		return finish_op(self, db, FALSE, error);
-	(void)pack;
-	(void)hash;
 	return finish_op(self, db, TRUE, error);
 }
 
@@ -790,8 +812,6 @@ venture_close_service_complete(VentureCloseService *self, VentureEntity *workspa
 {
 	g_autoptr(VentureDatabase) db = NULL;
 	g_autoptr(VentureEntity) period = NULL;
-	g_autoptr(JsonNode) pack = NULL;
-	g_autofree gchar *text = NULL;
 	gboolean tb = FALSE;
 	gboolean sub = FALSE;
 	g_return_val_if_fail(VENTURE_IS_CLOSE_SERVICE(self), FALSE);
@@ -824,8 +844,6 @@ venture_close_service_complete(VentureCloseService *self, VentureEntity *workspa
 	g_object_set(workspace, "status", "completed", NULL);
 	if (!save_internal(self, db, workspace, actor, error))
 		return finish_op(self, db, FALSE, error);
-	(void)pack;
-	(void)text;
 	return finish_op(self, db, TRUE, error);
 }
 

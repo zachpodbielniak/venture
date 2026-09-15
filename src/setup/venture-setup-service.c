@@ -21,6 +21,7 @@ static const struct {
 	{ "inventory", "1200", "Inventory", VENTURE_ACCOUNT_KIND_ASSET },
 	{ "payables", "2000", "Accounts payable", VENTURE_ACCOUNT_KIND_LIABILITY },
 	{ "tax", "2100", "Sales tax payable", VENTURE_ACCOUNT_KIND_LIABILITY },
+	{ "deferred", "2200", "Deferred revenue", VENTURE_ACCOUNT_KIND_LIABILITY },
 	{ "retained_earnings", "3000", "Owner's equity", VENTURE_ACCOUNT_KIND_EQUITY },
 	{ "income", "4000", "Sales", VENTURE_ACCOUNT_KIND_INCOME },
 	{ "expense", "6900", "General expenses", VENTURE_ACCOUNT_KIND_EXPENSE },
@@ -129,7 +130,8 @@ save_owned(VentureSetupService *self, VentureEntity *record, const VentureActor 
 static VentureAccountKind
 kind_for(const gchar *classification)
 {
-	if (g_str_equal(classification, "payables") || g_str_equal(classification, "tax"))
+	if (g_str_equal(classification, "payables") || g_str_equal(classification, "tax") ||
+		g_str_equal(classification, "deferred"))
 		return VENTURE_ACCOUNT_KIND_LIABILITY;
 	if (g_str_equal(classification, "retained_earnings"))
 		return VENTURE_ACCOUNT_KIND_EQUITY;

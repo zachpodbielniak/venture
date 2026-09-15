@@ -39,7 +39,7 @@ static gboolean
 map_before_save(VentureEntity *entity, GError **error)
 {
 	static const gchar *const classes[] = {
-		"cash", "receivables", "payables", "tax", "retained_earnings",
+		"cash", "receivables", "payables", "tax", "deferred", "retained_earnings",
 		"clearing", "inventory", "income", "expense", NULL
 	};
 	g_autofree gchar *classification = NULL;
