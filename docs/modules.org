@@ -45,6 +45,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =dashboards= | core            | dashboard, dashboard_widget; the =/dashboards= pages and their API | |
 | =reconciliation= | ledger | matcher registry, deterministic and AI matchers, staged suggestions; suggests banking | |
 | =banking= | ledger | bank_account, bank_statement, bank_transaction, bank_match, reconciliation; =bank_reconciliation= | |
+| =bankfeed= | banking | bank_connection | =bankfeed.enabled= (opt-in) |
 | =orgaccess=  | core            | organization_membership, team, team_membership; record ownership | |
 | =billing= | invoicing, receivables | plan, plan_price, customer_subscription, subscription_event, dunning_step, billing_notice, billing_request, customer_payment_method; =mrr=, =churn=, =subscriptions_due= | |
 | =projects= | invoicing, receivables | client_project, project_rate, project_time, project_cost, project_billing; =project_margin= | |

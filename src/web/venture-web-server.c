@@ -1426,6 +1426,7 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		NULL, "mail"
 	},
 	{ "/accounting", "Books", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h8M8 16h5\"/>"), "Accounting", "accounting" },
+	{ "/bankfeed", "Bank feeds", VENTURE_ICON("<path d=\"M4 12h16M4 7h16M4 17h10\"/>"), NULL, "bankfeed" },
 	{ "/payables", "Pay bills", VENTURE_ICON("<path d=\"M4 12h16M14 6l6 6-6 6\"/>"), NULL, "payables" },
 	{ "/claims", "Claims", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), NULL, "claims" },
 	{ "/payroll", "Payroll", VENTURE_ICON("<path d=\"M4 6h16M4 12h16M4 18h10\"/>"), NULL, "payroll" },
@@ -27834,6 +27835,7 @@ venture_web_api_ticket_draft(
 #include "tax/venture-tax-web.inc"
 #include "capture/venture-capture-web.inc"
 #include "accounting/venture-accounting-web.inc"
+#include "bankfeed/venture-bankfeed-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -28301,6 +28303,7 @@ venture_web_server_new(
 	                   self);
 
 	venture_bank_web_register(router, self);
+	venture_bankfeed_web_register(router, self);
 	venture_cutover_web_register(router, self);
 	venture_setup_web_register(router, self);
 venture_document_web_register(router, self);

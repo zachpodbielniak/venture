@@ -552,6 +552,11 @@ main(
 		g_printerr("Stripe: %s\n", error->message);
 		return venture_error_to_exit_code(VENTURE_ERROR_CONFIG);
 	}
+	if (!venture_context_start_bankfeed(context, &error))
+	{
+		g_printerr("Bank feed: %s\n", error->message);
+		return venture_error_to_exit_code(VENTURE_ERROR_CONFIG);
+	}
 
 	if (!venture_web_server_start(server, &error))
 	{

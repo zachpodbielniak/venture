@@ -2103,6 +2103,7 @@ venture_cli_command_factory(
  */
 #include "mail/venture-mail-cli.inc"
 #include "banking/venture-bank-cli.inc"
+#include "bankfeed/venture-bankfeed-cli.inc"
 
 static gint
 venture_cli_command_invoice(VentureCli *cli, gchar **args, GError **error)
@@ -3408,6 +3409,7 @@ main(
 		"  compose invoice|quote JSON   lines, tax and optional send\n"
 		"  bank ACTION ID [JSON|@FILE] banking action; import map inbox bulk transfer\n"
 		"                               preview enable reverse; bank match AUTO ID\n"
+		"  bankfeed sync ID [JSON]      sync a linked bank feed connection\n"
 		"  deal move ID STAGE [NOTE]     move a deal through its pipeline\n"
 		"  release publish ID           cut it on the forge; --prerelease\n"
 		"  dashboards                   list the dashboards\n"
@@ -3673,6 +3675,8 @@ main(
 		result = venture_cli_command_accounting(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "bank"))
 		result = venture_cli_command_bank(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "bankfeed"))
+		result = venture_cli_command_bankfeed(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "deal"))
 		result = venture_cli_command_deal(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "release"))

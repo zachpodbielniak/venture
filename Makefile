@@ -78,6 +78,7 @@ CORE_SRCS += src/capture/venture-capture-records.c
 CORE_SRCS += src/claims/venture-claim-records.c
 CORE_SRCS += src/payroll/venture-payroll-records.c
 CORE_SRCS += src/banking/venture-bank-records.c
+CORE_SRCS += src/bankfeed/venture-bankfeed-records.c
 CORE_SRCS += src/cutover/venture-cutover-records.c
 CORE_SRCS += src/setup/venture-setup-records.c
 CORE_SRCS += src/progress/venture-progress-records.c
@@ -102,6 +103,7 @@ SERVER_ONLY_SRCS := \
 	$(wildcard src/kb/*.c)
 
 SERVER_ONLY_SRCS += src/banking/venture-bank-match-service.c
+SERVER_ONLY_SRCS += $(filter-out src/bankfeed/venture-bankfeed-records.c,$(wildcard src/bankfeed/*.c))
 
 SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard src/periods/*.c))
 
@@ -197,6 +199,7 @@ PUBLIC_HDRS += $(wildcard src/claims/*.h)
 PUBLIC_HDRS += $(wildcard src/payroll/*.h)
 PUBLIC_HDRS += $(wildcard src/accounting/*.h)
 PUBLIC_HDRS += $(wildcard src/banking/*.h)
+PUBLIC_HDRS += $(wildcard src/bankfeed/*.h)
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/pipelines/*.h))
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/sequences/*.h))
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/statements/*.h))

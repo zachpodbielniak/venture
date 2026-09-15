@@ -115,6 +115,8 @@ venture_bank_check_write(VentureDatabase *database, VentureEntity *record, gbool
 			return refuse(error, "bank currency is required");
 		return TRUE;
 	}
+	if (!strcmp(name, "bank_connection"))
+		return TRUE;
 	if (!strcmp(name, "bank_rule") && !removal)
 	{
 		gboolean enabled = FALSE;
@@ -1849,11 +1851,76 @@ create_transfer(VentureBankMatchService *self, VentureEntity *from_bank, JsonObj
 	return TRUE;
 }
 
+
+static VentureEntity *
+import_feed(VentureBankMatchService *self, VentureEntity *bank, JsonObject *args, const VentureActor *actor, GError **error)
+{
+	JsonNode *node = args != NULL ? json_object_get_member(args, "transactions") : NULL;
+	JsonArray *lines;
+	g_autoptr(GDateTime) start = date_parse(option(args, "period_start"));
+	g_autoptr(GDateTime) end = date_parse(option(args, "period_end"));
+	g_autoptr(GDateTime) now = g_date_time_new_now_utc();
+	g_autoptr(VentureMoney) opening = NULL;
+	g_autofree gchar *currency = NULL, *hash = NULL;
+	g_autoptr(VentureEntity) statement = NULL;
+	guint i, count = 0;
+	if (node == NULL || !JSON_NODE_HOLDS_ARRAY(node) || start == NULL || end == NULL)
+	{
+		refuse(error, "feed import needs transactions and a period");
+		return NULL;
+	}
+	if (option(args, "period_end") != NULL && strlen(option(args, "period_end")) == 10)
+	{
+		GDateTime *inclusive = g_date_time_add(end, G_TIME_SPAN_DAY - 1);
+		g_date_time_unref(end);
+		end = inclusive;
+	}
+	lines = json_node_get_array(node);
+	g_object_get(bank, "currency", &currency, NULL);
+	opening = venture_money_new_zero(currency);
+	hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, "bankfeed", -1);
+	statement = new_record(VENTURE_TYPE_BANK_STATEMENT, venture_entity_get_organization_id(bank));
+	g_object_set(statement, "bank-account-id", venture_entity_get_id(bank), "period-start", start, "period-end", end,
+		"opening-balance", opening, "closing-balance", opening, "source-file-hash", hash, "imported-at", now, NULL);
+	if (!save_owned(self, statement, actor, error)) return NULL;
+	for (i = 0; i < json_array_get_length(lines); i++)
+	{
+		JsonObject *row = json_array_get_object_element(lines, i);
+		gboolean stored = FALSE;
+		const gchar *date, *amount, *description, *reference, *external;
+		if (row == NULL)
+		{
+			refuse(error, "feed transaction must be an object");
+			return NULL;
+		}
+		date = venture_json_object_get_string(row, "date", NULL);
+		amount = venture_json_object_get_string(row, "amount", NULL);
+		description = venture_json_object_get_string(row, "description", "Bank transaction");
+		reference = venture_json_object_get_string(row, "reference", NULL);
+		external = venture_json_object_get_string(row, "external_id", NULL);
+		if (!import_line(self, bank, statement, date, amount, description, reference, external, "%Y-%m-%d", FALSE, &stored, actor, error))
+			return NULL;
+		if (stored) count++;
+	}
+	if (count == 0)
+	{
+		self->writing = statement;
+		if (!venture_database_delete(self->database, statement, actor, error))
+		{
+			self->writing = NULL;
+			return NULL;
+		}
+		self->writing = NULL;
+		return g_object_ref(bank);
+	}
+	return g_steal_pointer(&statement);
+}
+
 static GType
 action_type(const gchar *action)
 {
 	if (!strcmp(action, "import") || !strcmp(action, "map") || !strcmp(action, "inbox") ||
-		!strcmp(action, "bulk") || !strcmp(action, "transfer"))
+		!strcmp(action, "bulk") || !strcmp(action, "transfer") || !strcmp(action, "feed"))
 		return VENTURE_TYPE_BANK_ACCOUNT;
 	if (!strcmp(action, "auto") || !strcmp(action, "reconcile") || !strcmp(action, "reopen"))
 		return VENTURE_TYPE_BANK_STATEMENT;
@@ -1881,6 +1948,11 @@ venture_bank_match_service_execute(VentureBankMatchService *self, const gchar *a
 	if (!strcmp(action, "import"))
 	{
 		result = import_statement(self, record, args, actor, error);
+		ok = result != NULL;
+	}
+	else if (!strcmp(action, "feed"))
+	{
+		result = import_feed(self, record, args, actor, error);
 		ok = result != NULL;
 	}
 	else if (!strcmp(action, "reconcile"))

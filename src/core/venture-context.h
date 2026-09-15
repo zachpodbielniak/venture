@@ -377,6 +377,9 @@ void venture_context_set_stripe_service(VentureContext *self, VentureStripeServi
  * Returns: TRUE when disabled or successfully started from deployment environment
  */
 gboolean venture_context_start_stripe(VentureContext *self, GError **error);
+VentureBankFeedService *venture_context_get_bankfeed_service(VentureContext *self);
+void venture_context_set_bankfeed_service(VentureContext *self, VentureBankFeedService *service);
+gboolean venture_context_start_bankfeed(VentureContext *self, GError **error);
 
 /** venture_context_get_mailer:
  * @self: context

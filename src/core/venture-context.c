@@ -24,6 +24,7 @@ struct _VentureContext
 	VentureWorkService	*work;
 	VentureKbService	*kb;
 	VentureStripeService *stripe;
+	VentureBankFeedService *bankfeed;
 	VentureModuleRegistry	*modules;
 	VentureMailerRegistry *mailers;
 	VentureMailOutbox *mail_outbox;
@@ -63,6 +64,7 @@ venture_context_finalize(GObject *object)
 	g_clear_object(&self->work);
 	g_clear_object(&self->kb);
 	g_clear_object(&self->stripe);
+	g_clear_object(&self->bankfeed);
 	g_clear_object(&self->modules);
 	g_clear_pointer(&self->timezone, g_time_zone_unref);
 	g_clear_object(&self->reconciliation_registry);
@@ -553,6 +555,27 @@ venture_context_start_stripe(VentureContext *self, GError **error)
 	return TRUE;
 }
 
+VentureBankFeedService *
+venture_context_get_bankfeed_service(VentureContext *self)
+{
+	return venture_context_module_enabled(self, "bankfeed") ? self->bankfeed : NULL;
+}
+void
+venture_context_set_bankfeed_service(VentureContext *self, VentureBankFeedService *service)
+{
+	g_set_object(&self->bankfeed, service);
+}
+gboolean
+venture_context_start_bankfeed(VentureContext *self, GError **error)
+{
+	g_autoptr(VentureBankFeedService) provider = NULL;
+	if (!venture_context_module_enabled(self, "bankfeed")) return TRUE;
+	provider = venture_bankfeed_service_new(self->database,
+		venture_context_get_default_organization_id(self), NULL, error);
+	if (!provider) return FALSE;
+	venture_context_set_bankfeed_service(self, provider);
+	return TRUE;
+}
 VentureMailer *venture_context_get_mailer(VentureContext *self)
 {
 	if (!venture_context_module_enabled(self, "mail")) return NULL;

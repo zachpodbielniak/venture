@@ -619,6 +619,9 @@ static const gchar *const venture_module_reports_payables[] = { "payables", "ven
 
 static const gchar *const banking_reports[] = { "bank_reconciliation", NULL };
 static const gchar *const banking_requires[] = { "ledger", NULL };
+static const gchar *const bankfeed_requires[] = { "banking", NULL };
+static GType (*const bankfeed_types[]) (void) = { venture_bank_connection_get_type, NULL };
+
 static GType (*const banking_types[]) (void) = {
 	venture_bank_account_get_type, venture_bank_statement_get_type,
 	venture_bank_transaction_get_type, venture_bank_match_get_type,
@@ -913,6 +916,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"banking", "Banking", "Statement import, matching and reconciliation.",
 		banking_requires, NULL, banking_types, banking_reports, NULL, FALSE
+	},
+	{
+		"bankfeed", "Bank feeds", "Pluggable statement feeds into bank_transaction.",
+		bankfeed_requires, NULL, bankfeed_types, NULL, "bankfeed-enabled", FALSE
 	},
 	{
 		"pipelines", "Sales pipelines", "Configurable stages, history and forecasts.",

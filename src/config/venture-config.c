@@ -218,8 +218,13 @@ static const VentureConfigSetting venture_config_settings[] = {
 
 	VC_BOOL("stripe-enabled", "stripe", "enabled", FALSE,
 	        "Enable hosted Stripe payments; requires deployment credentials"),
+<<<<<<< HEAD
 	VC_BOOL("payroll-enabled", "payroll", "enabled", FALSE,
 	        "Enable imported payroll runs; native tax calculation is out of scope"),
+=======
+	VC_BOOL("bankfeed-enabled", "bankfeed", "enabled", FALSE,
+	        "Enable pluggable bank feeds; requires VENTURE_BANKFEED_TELLER_KEY"),
+>>>>>>> 81e6465 (feat(banking): add pluggable bank-feed connectors)
 
 	VC_BOOL("forge-enabled", "forge", "enabled", TRUE,
 	        "Enable git forge integration"),

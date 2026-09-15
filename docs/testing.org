@@ -53,6 +53,13 @@ Two tests exist specifically to prove injection is impossible: a filter naming a
 
 The arithmetic against known data, not merely that reports run. Also that an unreviewed expense counts as zero in the tax report and that the report says so, that CSV export defuses spreadsheet formula injection, and that HTML export escapes its content.
 
+** =test-bankfeed=
+
+Fake feed import through the bank match seam, idempotent sync of the same
+window, missing =VENTURE_BANKFEED_TELLER_KEY=, injected Teller transport
+with no network, and a rolled-back batch on a bad line.
+
+
 ** =test-banking=
 
 Statement import, matching and reconciliation. Rule preview against historical

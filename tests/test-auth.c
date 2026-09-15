@@ -1346,6 +1346,8 @@ test_auth_api_refuses_anonymous_requests(
 		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/capture",
 		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/bankfeed/1/sync",
+		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	/* Every banking action must authenticate before loading statement evidence. */
 	{
 		static const gchar *const banking[] = {
