@@ -927,6 +927,19 @@ test_collect_and_recover(Fixture *f, gconstpointer data)
 	save(f, fail);
 	status_is(f, id, "past_due");
 	collect = request(f, "collect", id, "2026-01-06");
+	/* An authorized card alone must never manufacture a cash receipt. */
+	g_object_set(method, "method", "card", NULL);
+	save(f, method);
+	{
+		g_autoptr(GError) error = NULL;
+		g_assert_false(venture_database_save(f->db, collect, NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		status_is(f, id, "past_due");
+	}
+	g_clear_object(&collect);
+	collect = request(f, "collect", id, "2026-01-06");
+	g_object_set(method, "method", "manual", NULL);
+	save(f, method);
 	save(f, collect);
 	status_is(f, id, "active");
 	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db),

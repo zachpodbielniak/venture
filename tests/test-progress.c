@@ -149,6 +149,16 @@ test_progress_invoice_remaining(Fixture *f, gconstpointer data)
 		VENTURE_QUOTE(quote), 70, NULL, &actor, &error);
 	g_assert_null(over);
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	/* Two 40% instalments need distinct invoice numbers and leave 20% unbilled. */
+	over = venture_progress_service_invoice(venture_progress_service_get(f->db),
+		VENTURE_QUOTE(quote), 40, NULL, &actor, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(over);
+	g_clear_pointer(&remaining, venture_money_free);
+	remaining = venture_progress_service_remaining(venture_progress_service_get(f->db), VENTURE_QUOTE(quote), &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_money_get_amount(remaining), ==, 20000);
 }
 
 static gint64

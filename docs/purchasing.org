@@ -3,6 +3,10 @@
 
 * Purchase orders
 
+A complete return restores the order to =sent=, permitting replacement receipts or cancellation once no received quantity remains.
+
+Matching updates the order, bill lines and bill in one transaction. A failed account assignment or bill save rolls back every part of the match. Generic line edits require a draft parent and cannot move evidence out of an approved order.
+
 The =goods= module requires =payables=, =ledger= and =sales=. It owns
 =purchase_order=, =purchase_order_line=, =goods_receipt= and
 =goods_receipt_line=. Field tables supply the generic forms, REST

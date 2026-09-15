@@ -235,9 +235,57 @@ test_derived_insert(Fixture *f, gconstpointer unused)
 	g_assert_false(venture_database_save(f->db, line, NULL, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 	g_clear_error(&error);
+	/* Invoiced quantity is equally service-owned: forging it would suppress billing. */
+	g_object_set(line, "allocated-qty", (gint64)0, "fulfilled-qty", (gint64)0, "invoiced-qty", (gint64)2, NULL);
+	g_assert_false(venture_database_save(f->db, line, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
 	g_object_set(order, "status", "allocated", NULL);
 	g_assert_false(venture_database_save(f->db, order, NULL, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
+static void
+test_reservations_and_cancellation(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) first = record(f, "sales_order");
+	g_autoptr(VentureEntity) second = record(f, "sales_order");
+	g_autoptr(VentureEntity) line = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 first_id, second_id, first_line;
+	(void)unused;
+	/* The same stock cannot be promised twice; cancellation releases its reservation. */
+	stock(f, 2);
+	g_object_set(first, "number", "SO-RESERVE-1", "company-id", f->customer, "currency", "USD", "status", "draft", NULL);
+	g_object_set(second, "number", "SO-RESERVE-2", "company-id", f->customer, "currency", "USD", "status", "draft", NULL);
+	field(first, "ordered-at", "2026-05-02");
+	field(second, "ordered-at", "2026-05-02");
+	save(f, first);
+	save(f, second);
+	first_id = venture_entity_get_id(first);
+	second_id = venture_entity_get_id(second);
+	first_line = so_line(f, first, 2, FALSE);
+	so_line(f, second, 2, FALSE);
+	g_assert_true(venture_sales_order_service_allocate(venture_sales_order_service_get(f->db), first_id, NULL, NULL, &error));
+	g_assert_no_error(error);
+	line = venture_database_get(f->db, VENTURE_TYPE_SALES_ORDER_LINE, first_line, &error);
+	g_object_set(line, "sales-order-id", second_id, NULL);
+	g_assert_false(venture_database_save(f->db, line, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_assert_false(venture_sales_order_service_allocate(venture_sales_order_service_get(f->db), second_id, NULL, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_assert_true(venture_sales_order_service_cancel(venture_sales_order_service_get(f->db), first_id, NULL, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_sales_order_service_allocate(venture_sales_order_service_get(f->db), first_id, NULL, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_assert_false(venture_sales_order_service_ship_line(venture_sales_order_service_get(f->db), first_line, 1, NULL, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_assert_true(venture_sales_order_service_allocate(venture_sales_order_service_get(f->db), second_id, NULL, NULL, &error));
+	g_assert_no_error(error);
 }
 
 int
@@ -249,5 +297,6 @@ main(int argc, char **argv)
 	g_test_add("/sales-orders/service-line", Fixture, NULL, setup, test_service_without_fulfillment, teardown);
 	g_test_add("/sales-orders/unfulfilled", Fixture, NULL, setup, test_cannot_invoice_unfulfilled, teardown);
 	g_test_add("/sales-orders/derived-insert", Fixture, NULL, setup, test_derived_insert, teardown);
+	g_test_add("/sales-orders/reservations-cancellation", Fixture, NULL, setup, test_reservations_and_cancellation, teardown);
 	return g_test_run();
 }

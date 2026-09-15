@@ -48,8 +48,8 @@ the destination; numeric IDs are never assumed to identify the same person or
 organization across databases. Retain a full database and file backup for
 whole-installation disaster recovery.
 
-Version 3 remains supported only for manual opening-ledger imports. Its
-document packs lack the relationships needed for historical restoration and
+Version 3 remains supported only for manual opening-ledger imports. Its account and journal fields are validated before any write; malformed dates, line arrays and debit/credit sides are rejected without changing the destination.
+Its document packs lack the relationships needed for historical restoration and
 remain refused, as do versions 1 and 2. Export a fresh version 4 snapshot from
 the source database to restore document history; missing evidence cannot be
 recovered by upgrading the JSON version number.

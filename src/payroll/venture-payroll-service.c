@@ -237,16 +237,30 @@ static gboolean
 add_line(VenturePayrollService *self, VentureEntity *run, JsonObject *object,
 	const VentureActor *actor, VentureMoney **cost, VentureMoney **net, VentureMoney **liab, GError **error)
 {
-	g_autoptr(VentureMoney) gross = money_member(object, "gross", error);
-	g_autoptr(VentureMoney) employer = money_member(object, "employer_cost", error);
-	g_autoptr(VentureMoney) deductions = money_member(object, "deductions", error);
-	g_autoptr(VentureMoney) line_net = money_member(object, "net", error);
-	g_autoptr(VentureMoney) liabilities = money_member(object, "liabilities", error);
+	g_autoptr(VentureMoney) gross = NULL;
+	g_autoptr(VentureMoney) employer = NULL;
+	g_autoptr(VentureMoney) deductions = NULL;
+	g_autoptr(VentureMoney) line_net = NULL;
+	g_autoptr(VentureMoney) liabilities = NULL;
+	g_autoptr(VentureMoney) expected_net = NULL;
 	g_autoptr(VentureEntity) line = NULL;
 	g_autoptr(VentureMoney) line_cost = NULL;
 	const gchar *employee;
-	if (gross == NULL || employer == NULL || deductions == NULL || line_net == NULL || liabilities == NULL)
+	/* Stop at the first parse failure rather than overwriting an existing GError. */
+	if ((gross = money_member(object, "gross", error)) == NULL ||
+		(employer = money_member(object, "employer_cost", error)) == NULL ||
+		(deductions = money_member(object, "deductions", error)) == NULL ||
+		(line_net = money_member(object, "net", error)) == NULL ||
+		(liabilities = money_member(object, "liabilities", error)) == NULL)
 		return FALSE;
+	if (gross->amount < 0 || employer->amount < 0 || deductions->amount < 0 ||
+		line_net->amount < 0 || liabilities->amount < 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Pay line amounts must be nonnegative");
+	expected_net = venture_money_subtract(gross, deductions, error);
+	if (expected_net == NULL)
+		return FALSE;
+	if (!venture_money_equal(expected_net, line_net))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "gross less deductions must equal net");
 	if (!line_balances(gross, employer, line_net, liabilities, error))
 		return FALSE;
 	employee = venture_json_object_get_string(object, "employee", NULL);
@@ -323,7 +337,7 @@ import_object(VenturePayrollService *self, gint64 organization_id, JsonObject *p
 		start = g_date_time_new_from_iso8601(venture_json_object_get_string(payload, "period_start", NULL), NULL);
 	if (venture_json_object_get_string(payload, "period_end", NULL) != NULL)
 		end = g_date_time_new_from_iso8601(venture_json_object_get_string(payload, "period_end", NULL), NULL);
-	if (start == NULL || end == NULL)
+	if (start == NULL || end == NULL || g_date_time_compare(start, end) >= 0)
 	{
 		refuse(error, VENTURE_ERROR_VALIDATION, "An imported pay run needs period_start and period_end");
 		return finish_op(self, FALSE, error), NULL;
@@ -331,7 +345,10 @@ import_object(VenturePayrollService *self, gint64 organization_id, JsonObject *p
 	if (!venture_period_guard_is_postable(VENTURE_PERIOD_GUARD(venture_database_get_period_guard(self->database)),
 		self->database, organization_id, start, error))
 		return finish_op(self, FALSE, error), NULL;
-	lines = json_object_get_array_member(payload, "lines");
+	{
+		JsonNode *node = json_object_get_member(payload, "lines");
+		lines = node != NULL && JSON_NODE_HOLDS_ARRAY(node) ? json_node_get_array(node) : NULL;
+	}
 	if (lines == NULL || json_array_get_length(lines) == 0)
 	{
 		refuse(error, VENTURE_ERROR_VALIDATION, "Import at least one pay line");
@@ -345,8 +362,13 @@ import_object(VenturePayrollService *self, gint64 organization_id, JsonObject *p
 		return finish_op(self, FALSE, error), NULL;
 	for (i = 0; i < json_array_get_length(lines); i++)
 	{
-		JsonObject *line = json_array_get_object_element(lines, i);
-		if (line == NULL || !add_line(self, run, line, actor, &cost, &net, &liab, error))
+		JsonNode *node = json_array_get_element(lines, i);
+		if (!JSON_NODE_HOLDS_OBJECT(node))
+		{
+			refuse(error, VENTURE_ERROR_VALIDATION, "Each pay line must be a JSON object");
+			return finish_op(self, FALSE, error), NULL;
+		}
+		if (!add_line(self, run, json_node_get_object(node), actor, &cost, &net, &liab, error))
 			return finish_op(self, FALSE, error), NULL;
 	}
 	if (cost == NULL)
@@ -493,6 +515,8 @@ venture_payroll_service_disburse(VenturePayrollService *self, VentureEntity *run
 	gboolean tax_done = FALSE;
 	gint64 org, cash, payable, tax;
 	g_return_val_if_fail(VENTURE_IS_PAYROLL_SERVICE(self), FALSE);
+	if (kind != NULL && g_strcmp0(kind, "all") != 0 && g_strcmp0(kind, "net") != 0 && g_strcmp0(kind, "tax") != 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Disburse all, net or tax");
 	if (!begin_op(self, error))
 		return FALSE;
 	g_object_get(run, "status", &status, "net-disbursed", &net_done, "tax-disbursed", &tax_done,

@@ -237,6 +237,16 @@ test_http_isolation(Fixture *f, gconstpointer data)
 	g_clear_pointer(&print_path, g_free);
 	print_path = g_strdup_printf("/supplier/%s/bills/99/print", token);
 	g_assert_cmpuint(http_request(server, "GET", print_path, NULL, NULL, NULL), ==, 404);
+	{
+		g_autofree gchar *payload = g_strdup_printf("{\"company_id\":%" G_GINT64_FORMAT ",\"email\":\"ap@example.org\"}", f->vendor);
+		g_autofree gchar *reply = NULL;
+		g_object_set(f->config, "server-base-url", "https://venture.example.org", NULL);
+		g_assert_cmpuint(http_request(server, "POST", "/api/v1/supplier_portal/invite", NULL, payload, &reply), ==, 201);
+		g_assert_null(strstr(reply, "\"token\""));
+	}
+	venture_config_set_module_enabled(f->config, "supplier_portal", FALSE);
+	g_assert_cmpuint(http_request(server, "GET", path, NULL, NULL, NULL), ==, 404);
+	venture_config_set_module_enabled(f->config, "supplier_portal", TRUE);
 	venture_test_remove_tree(dir);
 }
 

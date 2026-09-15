@@ -8,25 +8,18 @@ equity_post(HtmxRequest *request, GHashTable *params, gpointer data)
 	g_autoptr(VentureEntity) row = NULL;
 	g_autoptr(VentureMoney) amount = NULL;
 	g_autoptr(GDateTime) when = NULL;
+	g_autoptr(VentureEntity) organization = NULL;
+	g_autofree gchar *currency = NULL;
+	gint64 organization_id;
 	VentureActor actor;
 	HtmxResponse *gate;
-	g_autoptr(JsonNode) body = htmx_request_get_json(request, NULL);
-	const gchar *kind_nick = htmx_request_get_form_value(request, "kind");
-	const gchar *amount_text = htmx_request_get_form_value(request, "amount");
-	const gchar *memo = htmx_request_get_form_value(request, "memo");
+	g_autoptr(JsonNode) body = NULL;
+	const gchar *kind_nick = NULL;
+	const gchar *amount_text = NULL;
+	const gchar *memo = NULL;
 	gint kind = VENTURE_EQUITY_KIND_CONTRIBUTION;
 	gboolean api = g_str_has_prefix(htmx_request_get_path(request), "/api/");
 	(void)params;
-	if (body != NULL && JSON_NODE_HOLDS_OBJECT(body))
-	{
-		JsonObject *object = json_node_get_object(body);
-		if (kind_nick == NULL)
-			kind_nick = json_object_get_string_member(object, "kind");
-		if (amount_text == NULL)
-			amount_text = json_object_get_string_member(object, "amount");
-		if (memo == NULL)
-			memo = json_object_get_string_member(object, "memo");
-	}
 	gate = api ? venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR)
 		: venture_web_ui_require_session(self, request);
 	if (gate != NULL)
@@ -39,9 +32,56 @@ equity_post(HtmxRequest *request, GHashTable *params, gpointer data)
 	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, &error))
 		return venture_web_error_response(error);
 	venture_auth_to_actor(principal, &actor);
-	if (kind_nick != NULL)
-		venture_enum_from_nick(VENTURE_TYPE_EQUITY_KIND, kind_nick, &kind);
-	if (amount_text == NULL || (amount = venture_money_from_string(amount_text, "USD", &error)) == NULL)
+	/* Authenticate before reading untrusted fields. JSON-GLib's typed
+	 * accessors assert on missing or wrongly typed members. */
+	if (api)
+	{
+		const gchar *names[] = { "kind", "amount", "memo" };
+		const gchar *values[] = { NULL, NULL, NULL };
+		JsonObject *object;
+		guint i;
+		body = htmx_request_get_json(request, &error);
+		if (body == NULL || !JSON_NODE_HOLDS_OBJECT(body))
+		{
+			g_clear_error(&error);
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Expected a JSON object");
+			return venture_web_error_response(error);
+		}
+		object = json_node_get_object(body);
+		for (i = 0; i < G_N_ELEMENTS(names); i++)
+		{
+			JsonNode *value = json_object_get_member(object, names[i]);
+			if (value == NULL || JSON_NODE_HOLDS_NULL(value))
+				continue;
+			if (!JSON_NODE_HOLDS_VALUE(value) || json_node_get_value_type(value) != G_TYPE_STRING)
+			{
+				g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "%s must be a string", names[i]);
+				return venture_web_error_response(error);
+			}
+			values[i] = json_node_get_string(value);
+		}
+		kind_nick = values[0];
+		amount_text = values[1];
+		memo = values[2];
+	}
+	else
+	{
+		kind_nick = htmx_request_get_form_value(request, "kind");
+		amount_text = htmx_request_get_form_value(request, "amount");
+		memo = htmx_request_get_form_value(request, "memo");
+	}
+	if (kind_nick != NULL && !venture_enum_from_nick(VENTURE_TYPE_EQUITY_KIND, kind_nick, &kind))
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Unknown equity kind");
+		return venture_web_error_response(error);
+	}
+	organization_id = venture_web_active_organization(self, request);
+	organization = venture_database_get(venture_context_get_database(self->context),
+		VENTURE_TYPE_ORGANIZATION, organization_id, &error);
+	if (organization == NULL)
+		return venture_web_error_response(error);
+	g_object_get(organization, "default-currency", &currency, NULL);
+	if (amount_text == NULL || (amount = venture_money_from_string(amount_text, currency, &error)) == NULL)
 	{
 		if (error == NULL)
 			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Amount is required");
@@ -49,7 +89,7 @@ equity_post(HtmxRequest *request, GHashTable *params, gpointer data)
 	}
 	when = venture_time_now();
 	row = venture_capital_service_post(venture_capital_service_get(venture_context_get_database(self->context)),
-		venture_context_get_default_organization_id(self->context), kind, amount, when, memo, 0, 0, &actor, &error);
+		organization_id, kind, amount, when, memo, 0, 0, &actor, &error);
 	if (row == NULL)
 		return venture_web_error_response(error);
 	if (api)

@@ -93,6 +93,7 @@ venture_deferral_status_get_type(void)
 		static const GEnumValue values[] = {
 			{ VENTURE_DEFERRAL_STATUS_ACTIVE, "VENTURE_DEFERRAL_STATUS_ACTIVE", "active" },
 			{ VENTURE_DEFERRAL_STATUS_COMPLETE, "VENTURE_DEFERRAL_STATUS_COMPLETE", "complete" },
+			{ VENTURE_DEFERRAL_STATUS_CANCELLED, "VENTURE_DEFERRAL_STATUS_CANCELLED", "cancelled" },
 			{ 0, NULL, NULL }
 		};
 		GType id = g_enum_register_static("VentureDeferralStatus", values);

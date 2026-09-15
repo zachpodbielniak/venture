@@ -150,6 +150,33 @@ test_module_off(Fixture *f, gconstpointer unused)
 	venture_config_set_module_enabled(f->config, "capture", TRUE);
 }
 
+/* A receipt follows the selected books through capture and conversion. */
+static void
+test_scoped_capture(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureOrganization) other = venture_organization_new();
+	g_autoptr(VentureMoney) amount = venture_money_new_for_currency(1200, "USD");
+	g_autoptr(GDateTime) when = venture_time_from_string("2026-01-15", NULL);
+	g_autoptr(VentureEntity) item = NULL;
+	g_autoptr(VentureEntity) expense = NULL;
+	gint64 org;
+	(void)unused;
+	g_object_set(other, "name", "Other capture", "legal-name", "Other capture", "default-currency", "USD", NULL);
+	save(f, VENTURE_ENTITY(other));
+	org = venture_entity_get_id(VENTURE_ENTITY(other));
+	item = venture_capture_service_ingest_for_organization(venture_capture_service_get(f->db),
+		org, "receipt", "Supplies", "upload", 0, NULL, amount, when, NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(item);
+	g_assert_cmpint(venture_entity_get_organization_id(item), ==, org);
+	expense = venture_capture_service_convert(venture_capture_service_get(f->db), item, "expense", NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(expense);
+	g_assert_cmpint(venture_entity_get_organization_id(expense), ==, org);
+	g_assert_cmpint(count_type(f, "capture_item"), ==, 0);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -160,5 +187,6 @@ main(int argc, char **argv)
 	g_test_add("/capture/bill", Fixture, NULL, setup, test_invoice_becomes_bill, teardown);
 	g_test_add("/capture/reject", Fixture, NULL, setup, test_reject_and_generic_convert_refused, teardown);
 	g_test_add("/capture/module-off", Fixture, NULL, setup, test_module_off, teardown);
+	g_test_add("/capture/scoped", Fixture, NULL, setup, test_scoped_capture, teardown);
 	return g_test_run();
 }

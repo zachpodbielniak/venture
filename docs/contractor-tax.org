@@ -11,9 +11,10 @@ gate payroll would use.
 
 * Prepare from paid bills
 
+A failed export releases its transaction and operation guard, so a stale-version conflict does not block subsequent tax work. Re-read the pack before retrying a conflicted export.
+
 =venture_tax_filing_service_prepare_1099()= totals =bill_payment= rows for
-one vendor in a calendar year. The IRS 1099-NEC threshold is 600 USD;
-below that the prepare is refused. A contractor tax form must already
+one vendor in a calendar year. The general threshold used by this bookkeeping pack is 600 USD for 2020–2025 and 2,000 USD for 2026; below that prepare is refused. Later years are refused until their inflation-adjusted threshold is implemented. A contractor tax form must already
 exist. A second prepare for the same vendor and year returns the existing
 pack.
 
@@ -31,3 +32,9 @@ venturectl contractor-tax export 1
 
 The same actions sit on =/e/contractor_tax_pack=, and the prepare form
 lives on =/tax-filings=.
+
+* Scope and source
+
+This CSV is a bookkeeping review pack, not an IRS e-filing format or a determination of filing obligations. Totals currently include the vendor's recorded bill payments; an operator must review reportability, payment-method exclusions and backup-withholding exceptions separately. Currency must be USD. CSV fields quote commas, quotation marks and line breaks so names preserve their original content.
+
+Threshold verified on 2026-09-15 against [[https://www.irs.gov/faqs/small-business-self-employed-other-business/form-1099-nec-and-independent-contractors][IRS Form 1099-NEC and independent contractors]] and [[https://www.irs.gov/instructions/i1099mec][IRS instructions for Forms 1099-MISC and 1099-NEC]], which describe inflation adjustments beginning in 2027.

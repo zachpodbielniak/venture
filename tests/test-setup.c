@@ -387,11 +387,69 @@ test_surfaces(Fixture *f, gconstpointer data)
 	venture_test_remove_tree(dir);
 }
 
+static gboolean
+refuse_setup_complete(VentureDatabase *db, VentureEntity *record, VentureEntity *previous,
+	gpointer data, GError **error)
+{
+	gboolean *refuse = data;
+	g_autofree gchar *state = NULL;
+
+	(void)db;
+	(void)previous;
+	g_object_get(record, "state", &state, NULL);
+	if (*refuse && g_strcmp0(state, "complete") == 0)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE, "Injected completion failure");
+		return FALSE;
+	}
+	return TRUE;
+}
+
+/* A failed final save must restore the caller's state and version, or retry
+ * returns success from the in-memory 'complete' shortcut with no posted books. */
+static void
+test_complete_retry(Fixture *f, gconstpointer data)
+{
+	g_autoptr(JsonObject) payload = setup_payload();
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *state = NULL;
+	gboolean refuse = TRUE;
+	gint64 org = new_org(f, "retry-setup");
+	VentureActor actor;
+
+	(void)data;
+	actor_init(&actor);
+	record = venture_setup_service_preview(venture_setup_service_get(f->db), org, payload, &actor, &error);
+	g_assert_no_error(error);
+	venture_database_add_save_validator(f->db, VENTURE_TYPE_ACCOUNTING_SETUP,
+		refuse_setup_complete, &refuse, NULL);
+	g_assert_false(venture_setup_service_complete(venture_setup_service_get(f->db),
+		VENTURE_ACCOUNTING_SETUP(record), &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE);
+	g_clear_error(&error);
+	g_object_get(record, "state", &state, NULL);
+	g_assert_cmpstr(state, ==, "preview");
+	refuse = FALSE;
+	g_assert_true(venture_setup_service_complete(venture_setup_service_get(f->db),
+		VENTURE_ACCOUNTING_SETUP(record), &actor, &error));
+	g_assert_no_error(error);
+	{
+		g_autoptr(VentureEntity) stored = venture_database_get(f->db, VENTURE_TYPE_ACCOUNTING_SETUP,
+			venture_entity_get_id(record), &error);
+		g_autofree gchar *stored_state = NULL;
+		g_assert_no_error(error);
+		g_object_get(stored, "state", &stored_state, NULL);
+		g_assert_cmpstr(stored_state, ==, "complete");
+	}
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	venture_entity_registry_register_builtins(venture_entity_registry_get_default());
+	g_test_add("/setup/complete-retry", Fixture, NULL, setup, test_complete_retry, teardown);
 	g_test_add("/setup/checklist", Fixture, NULL, setup, test_checklist, teardown);
 	g_test_add("/setup/validation-refusal", Fixture, NULL, setup, test_validation_refusal, teardown);
 	g_test_add("/setup/wrong-kind-map", Fixture, NULL, setup, test_wrong_kind_map, teardown);

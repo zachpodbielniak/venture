@@ -174,3 +174,11 @@ match only clears the matched remainder. Opening and other non-document cash
 journals are not deposits in transit. The statement page offers reopen with a
 required reason; the bank reconciliation report exposes outstanding check and
 deposit-in-transit totals.
+
+* Transfer matching
+
+A transfer requires two bank accounts in the same currency, a positive amount and a nonnegative fee in that currency. Linked statement rows must belong to the corresponding bank and organization and match the signed amount exactly: the source debit includes the fee, and the destination credit is the transfer amount. A refused link rolls back the transfer, journal and every earlier link together. An explicitly invalid date is refused.
+
+* Reversing bank categorization
+
+=reverse= cancels only expenses created by that bank categorization, including its split expenses. The reversal journal and expense soft deletion commit together, so both ledger and expense reports remove the categorization. A match to an existing document is reconciliation evidence: use =unmatch= to change that link. Receipts require the receivables refund operation rather than a journal-only bank reversal. Historical matches without creation provenance are treated as existing documents. Amount bounds on a bank rule match only the same currency as the bank transaction; no exchange conversion is inferred.

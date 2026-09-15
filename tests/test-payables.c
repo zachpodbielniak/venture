@@ -1099,6 +1099,168 @@ test_batch_approval(Fixture *f, gconstpointer data)
 	status(f, invoice, "paid");
 }
 
+/* The workbench must preserve pending consent across refusal, and the same
+ * batch must require a different actor before any vendor payment is written. */
+static void
+test_workbench_approval(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = bill(f, "WORKBENCH-CONSENT");
+	g_autoptr(VentureAccountingApprovalRule) rule = venture_accounting_approval_rule_new();
+	g_autoptr(GArray) ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+	g_autoptr(GDateTime) date = venture_time_from_string("2026-08-11", NULL);
+	g_autoptr(GError) error = NULL;
+	gint64 id = venture_entity_get_id(invoice);
+	VentureActor actor;
+
+	(void)data;
+	approve(f, invoice);
+	g_object_set(rule, "organization-id", f->org, "action", "pay", "require-second-actor", TRUE, NULL);
+	save(f, VENTURE_ENTITY(rule));
+	g_array_append_val(ids, id);
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "alice";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	g_assert_false(venture_payables_service_pay_bills(venture_payables_service_get(f->db),
+		ids, date, "transfer", "transfer", "review", &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	g_assert_cmpint(count(f, "bill_payment"), ==, 0);
+	g_assert_cmpint(count(f, "accounting_approval"), ==, 1);
+	g_assert_false(venture_payables_service_pay_bills(venture_payables_service_get(f->db),
+		ids, date, "transfer", "transfer", "review", &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	actor.name = "bob";
+	g_assert_true(venture_payables_service_pay_bills(venture_payables_service_get(f->db),
+		ids, date, "transfer", "transfer", "review", &actor, &error));
+	g_assert_no_error(error);
+	status(f, invoice, "paid");
+	g_assert_cmpint(count(f, "bill_payment"), ==, 1);
+}
+
+/* Tax reports follow approved/void events, never draft lines or the current
+ * status of a bill that was voided after the requested reporting period. */
+static void
+test_tax_report_events(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) issued = bill(f, "TAX-ISSUED");
+	g_autoptr(VentureEntity) draft = bill(f, "TAX-DRAFT");
+	g_autoptr(VentureEntity) future = bill(f, "TAX-FUTURE");
+	g_autoptr(VentureEntity) issue_event = NULL;
+	g_autoptr(VentureEntity) void_event = NULL;
+	g_autoptr(GTimeZone) zone = g_time_zone_new_utc();
+	const gchar *months[] = { "2026-01", "2026-02", "2026-03" };
+	gint64 amounts[] = { 1000, -1000, 1000 };
+	VentureReport *report;
+	guint i;
+
+	(void)data;
+	approve(f, issued);
+	issue_event = event(f, future, "approve", "2026-03-01");
+	save(f, issue_event);
+	void_event = event(f, issued, "void", "2026-02-01");
+	g_object_set(void_event, "state", "void", NULL);
+	save(f, void_event);
+	report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "tax_liability");
+	g_assert_nonnull(report);
+	for (i = 0; i < G_N_ELEMENTS(months); i++)
+	{
+		g_autoptr(GError) error = NULL;
+		g_autoptr(VentureDateRange) period = venture_date_range_parse(months[i], zone, 1, &error);
+		g_autoptr(VentureReportResult) result = NULL;
+		const VentureMoney *tax;
+
+		g_assert_no_error(error);
+		result = venture_report_generate(report, f->context, period, NULL, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(result);
+		g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 1);
+		tax = g_value_get_boxed(venture_report_result_get_cell(result, 0, "tax"));
+		g_assert_cmpint(venture_money_get_amount(tax), ==, amounts[i]);
+		tax = g_value_get_boxed(venture_report_result_get_cell(result, 0, "liability"));
+		g_assert_cmpint(venture_money_get_amount(tax), ==, 0);
+		g_assert_cmpstr(g_value_get_string(venture_report_result_get_cell(result, 0, "direction")), ==, "input");
+	}
+}
+/* Cash recognition keeps each frozen expense leg, ignores noncash credits,
+ * reverses vendor refunds in their own period and honors dimension filters. */
+static void
+test_cash_basis_bill_movements(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) b = bill(f, "CASH-SPLIT");
+	g_autoptr(VentureEntity) account = record(f, "account");
+	g_autoptr(VentureEntity) line = record(f, "vendor_bill_line");
+	g_autoptr(VentureEntity) p = NULL;
+	g_autoptr(VentureEntity) credit = record(f, "vendor_credit");
+	g_autoptr(VentureEntity) allocation = record(f, "bill_payment_allocation");
+	g_autoptr(VentureEntity) cash_allocation = NULL;
+	g_autoptr(VentureEntity) refund = record(f, "bill_refund");
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_BILL_PAYMENT_ALLOCATION);
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(GTimeZone) zone = g_time_zone_new_utc();
+	g_autoptr(GError) error = NULL;
+	VentureReport *report;
+	const gchar *periods[] = { "2026-02", "2026-03" };
+	gint64 debits[] = { 5000, 0 }, credits[] = { 0, 1000 };
+	guint i;
+
+	(void)data;
+	g_object_set(account, "code", "6917", "name", "Separate expense", "active", TRUE,
+		"kind", VENTURE_ACCOUNT_KIND_EXPENSE, NULL);
+	save(f, account);
+	g_object_set(line, "bill-id", venture_entity_get_id(b), "description", "Second cost",
+		"quantity", "1", "account-id", venture_entity_get_id(account), NULL);
+	field(line, "unit-price", "100 USD");
+	save(f, line);
+	approve(f, b);
+	p = payment(f, b, "100 USD", "2026-02-01");
+	save(f, p);
+	g_object_set(credit, "vendor-id", f->vendor, "kind", "credit_note", NULL);
+	field(credit, "date", "2026-02-02");
+	field(credit, "amount", "100 USD");
+	save(f, credit);
+	g_object_set(allocation, "bill-id", venture_entity_get_id(b), "credit-id", venture_entity_get_id(credit), NULL);
+	field(allocation, "date", "2026-02-02");
+	field(allocation, "amount", "100 USD");
+	save(f, allocation);
+	venture_query_add_filter_int(query, "payment-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(p), NULL);
+	cash_allocation = venture_database_find_one(f->db, query, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(cash_allocation);
+	g_object_set(refund, "vendor-id", f->vendor, "allocation-id", venture_entity_get_id(cash_allocation), NULL);
+	field(refund, "date", "2026-03-01");
+	field(refund, "amount", "20 USD");
+	save(f, refund);
+	report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "general_ledger");
+	json_object_set_int_member(options, "account_id", venture_entity_get_id(account));
+	json_object_set_string_member(options, "basis", "cash");
+	json_object_set_string_member(options, "currency", "USD");
+	for (i = 0; i < G_N_ELEMENTS(periods); i++)
+	{
+		g_autoptr(VentureDateRange) period = venture_date_range_parse(periods[i], zone, 1, &error);
+		g_autoptr(VentureReportResult) result = NULL;
+		const VentureMoney *value;
+
+		g_assert_no_error(error);
+		result = venture_report_generate(report, f->context, period, options, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(result);
+		g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 1);
+		value = g_value_get_boxed(venture_report_result_get_cell(result, 0, "debits"));
+		g_assert_cmpint(value->amount, ==, debits[i]);
+		value = g_value_get_boxed(venture_report_result_get_cell(result, 0, "credits"));
+		g_assert_cmpint(value->amount, ==, credits[i]);
+		g_clear_object(&result);
+		json_object_set_string_member(options, "dimension", "unrelated");
+		result = venture_report_generate(report, f->context, period, options, &error);
+		g_assert_no_error(error);
+		g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 0);
+		json_object_remove_member(options, "dimension");
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1117,6 +1279,9 @@ main(int argc, char **argv)
 	g_test_add("/payables/paid-line-expense", Fixture, NULL, setup, test_paid_line_expense, teardown);
 	g_test_add("/payables/periods", Fixture, NULL, setup, test_periods, teardown);
 	g_test_add("/payables/credit-void-refund", Fixture, NULL, setup, test_credit_void_refund, teardown);
+	g_test_add("/payables/cash-basis-bill-movements", Fixture, NULL, setup, test_cash_basis_bill_movements, teardown);
+	g_test_add("/payables/tax-report-events", Fixture, NULL, setup, test_tax_report_events, teardown);
+	g_test_add("/payables/workbench-approval", Fixture, NULL, setup, test_workbench_approval, teardown);
 	g_test_add("/payables/batch-approval", Fixture, NULL, setup, test_batch_approval, teardown);
 	g_test_add("/payables/batch", Fixture, NULL, setup, test_batch, teardown);
 	g_test_add("/payables/bulk-workbench", Fixture, NULL, setup, test_bulk_workbench, teardown);

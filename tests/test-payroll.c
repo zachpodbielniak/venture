@@ -236,6 +236,37 @@ test_module_off(Fixture *f, gconstpointer unused)
 	g_object_set(f->config, "payroll-enabled", TRUE, NULL);
 }
 
+static void
+test_invalid_import(Fixture *f, gconstpointer unused)
+{
+	guint i;
+	(void)unused;
+	/* Reject malformed lines, missing amounts and inconsistent take-home pay without partial runs. */
+	for (i = 0; i < 3; i++)
+	{
+		g_autoptr(JsonNode) payload = sample_run("INVALID");
+		JsonObject *spec = json_node_get_object(payload);
+		JsonArray *lines = json_object_get_array_member(spec, "lines");
+		JsonObject *line = json_array_get_object_element(lines, 0);
+		g_autoptr(GError) error = NULL;
+		g_autoptr(VentureEntity) run = NULL;
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PAYROLL_RUN);
+		if (i == 0)
+			json_array_add_null_element(lines);
+		else if (i == 1)
+		{
+			json_object_remove_member(line, "gross");
+			json_object_remove_member(line, "net");
+		}
+		else
+			json_object_set_string_member(line, "deductions", "2000 USD");
+		run = venture_payroll_service_import_json(venture_payroll_service_get(f->db), f->org, spec, NULL, &error);
+		g_assert_null(run);
+		g_assert_nonnull(error);
+		g_assert_cmpint(venture_database_count(f->db, query, NULL), ==, 0);
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -245,6 +276,7 @@ main(int argc, char **argv)
 	g_test_add_func("/payroll/default-off", test_default_off);
 	g_test_add("/payroll/import-duplicate", Fixture, NULL, setup, test_import_and_duplicate, teardown);
 	g_test_add("/payroll/csv", Fixture, NULL, setup, test_csv_import, teardown);
+	g_test_add("/payroll/invalid-import", Fixture, NULL, setup, test_invalid_import, teardown);
 	g_test_add("/payroll/disburse-reverse", Fixture, NULL, setup, test_disburse_and_reverse, teardown);
 	g_test_add("/payroll/report", Fixture, NULL, setup, test_reconciliation_report, teardown);
 	g_test_add("/payroll/access", Fixture, NULL, setup, test_access_hides, teardown);

@@ -1788,6 +1788,8 @@ venture_payables_service_pay_bills(VenturePayablesService *self, GArray *bill_id
 	const VentureActor *actor, GError **error)
 {
 	g_autoptr(GHashTable) groups = NULL;
+	g_autoptr(GPtrArray) payments = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autoptr(GPtrArray) batches = g_ptr_array_new_with_free_func((GDestroyNotify)g_ptr_array_unref);
 	GHashTableIter iter;
 	gpointer key;
 	gpointer value;
@@ -1803,8 +1805,6 @@ venture_payables_service_pay_bills(VenturePayablesService *self, GArray *bill_id
 	if (date == NULL)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "A payment date is required");
 	used = !venture_string_is_empty(method) ? method : adapter;
-	if (!begin_operation(self, "bill_payment", error))
-		return FALSE;
 	groups = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, (GDestroyNotify)g_ptr_array_unref);
 	for (i = 0; i < bill_ids->len; i++)
 	{
@@ -1816,20 +1816,20 @@ venture_payables_service_pay_bills(VenturePayablesService *self, GArray *bill_id
 		gint64 vendor;
 		bill = venture_database_get(self->database, VENTURE_TYPE_VENDOR_BILL, bill_id, error);
 		if (bill == NULL)
-			return finish_operation(self, FALSE, error);
+			return FALSE;
 		g_object_get(bill, "status", &status, NULL);
 		if (g_strcmp0(status, "approved") != 0 && g_strcmp0(status, "partially_paid") != 0)
 		{
 			refuse(error, VENTURE_ERROR_VALIDATION, "The workbench pays approved or partially paid bills");
-			return finish_operation(self, FALSE, error);
+			return FALSE;
 		}
 		balance = venture_payables_service_bill_balance(self, bill_id, NULL, error);
 		if (balance == NULL)
-			return finish_operation(self, FALSE, error);
+			return FALSE;
 		if (venture_money_is_zero(balance))
 		{
 			refuse(error, VENTURE_ERROR_VALIDATION, "A selected bill has no outstanding balance");
-			return finish_operation(self, FALSE, error);
+			return FALSE;
 		}
 		vendor = get_id(bill, "company-id");
 		bucket = g_hash_table_lookup(groups, (gpointer)(guintptr)vendor);
@@ -1859,14 +1859,36 @@ venture_payables_service_pay_bills(VenturePayablesService *self, GArray *bill_id
 			if (total == NULL)
 				total = venture_money_copy(amount);
 			else if (!accumulate(&total, amount, FALSE, error))
-				return finish_operation(self, FALSE, error);
+				return FALSE;
 		}
 		g_object_set(payment, "vendor-id", (gint64)(guintptr)key, "date", date, "amount", total,
 			"method", used, "reference", reference, NULL);
 		venture_entity_set_organization_id(VENTURE_ENTITY(payment),
 			venture_entity_get_organization_id(g_ptr_array_index(bucket, 0)));
-		if (!perform_payment(self, VENTURE_ENTITY(payment), bucket, actor, error))
-			return finish_operation(self, FALSE, error);
+		{
+			g_autoptr(VentureEntity) approval = NULL;
+
+			/* Consent must survive a refusal. Build every proposal before
+			 * opening the all-or-nothing payment transaction. */
+			if (!venture_accounting_approval_allow(self->database, "pay",
+				VENTURE_ENTITY(payment), bucket, actor, &approval, error))
+				return FALSE;
+		}
+		g_ptr_array_add(payments, g_steal_pointer(&payment));
+		g_ptr_array_add(batches, g_ptr_array_ref(bucket));
 	}
-	return finish_operation(self, TRUE, error);
+	if (!venture_database_begin(self->database, error))
+		return FALSE;
+	for (i = 0; i < payments->len; i++)
+	{
+		/* Reuse the guarded operation, including approval consumption and
+		 * live balance checks; an error rolls back earlier vendor payments. */
+		if (!venture_payables_service_apply_payment(self, g_ptr_array_index(payments, i),
+			g_ptr_array_index(batches, i), actor, error))
+		{
+			venture_database_rollback(self->database);
+			return FALSE;
+		}
+	}
+	return venture_database_commit(self->database, error);
 }

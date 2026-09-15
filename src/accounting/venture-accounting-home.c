@@ -27,7 +27,7 @@ add_action(JsonBuilder *builder, const gchar *kind, const gchar *title, gint64 c
 }
 
 static gint64
-count_filter(VentureDatabase *db, GType type, gint64 org, const gchar *field, const gchar *value)
+count_filter(VentureDatabase *db, GType type, gint64 org, const gchar *field, const gchar *value, GError **error)
 {
 	g_autoptr(VentureQuery) query = NULL;
 	if (type == G_TYPE_INVALID)
@@ -36,7 +36,7 @@ count_filter(VentureDatabase *db, GType type, gint64 org, const gchar *field, co
 	venture_query_set_organization(query, org);
 	if (field != NULL)
 		venture_query_add_filter_string(query, field, VENTURE_FILTER_OP_EQ, value, NULL);
-	return venture_database_count(db, query, NULL);
+	return venture_database_count(db, query, error);
 }
 
 JsonNode *
@@ -46,16 +46,16 @@ venture_accounting_home(VentureContext *context, gint64 organization_id, GError 
 	VentureDatabase *db;
 	gint64 org;
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
-	(void)error;
 	db = venture_context_get_database(context);
 	org = organization_id > 0 ? organization_id : venture_context_get_default_organization_id(context);
 	json_builder_begin_array(builder);
 	if (type_on("bank_transaction"))
 	{
-		gint64 n = count_filter(db, VENTURE_TYPE_BANK_TRANSACTION, org, "state", "unmatched");
+		gint64 n = count_filter(db, VENTURE_TYPE_BANK_TRANSACTION, org, "state", "unmatched", error);
 		g_autofree gchar *reason = g_strdup_printf(
 			"%s unmatched bank line(s) have no matching receipt, payment or expense yet",
 			n == 0 ? "No" : "There are");
+		if (n < 0) return NULL;
 		if (n == 0)
 		{
 			g_free(reason);
@@ -77,7 +77,8 @@ venture_accounting_home(VentureContext *context, gint64 organization_id, GError 
 		gint64 n = 0;
 		guint i;
 		venture_query_set_organization(query, org);
-		rows = venture_database_find(db, query, NULL);
+		rows = venture_database_find(db, query, error);
+		if (rows == NULL) return NULL;
 		if (rows != NULL)
 		{
 			for (i = 0; i < rows->len; i++)
@@ -104,7 +105,8 @@ venture_accounting_home(VentureContext *context, gint64 organization_id, GError 
 		gint64 n = 0;
 		guint i;
 		venture_query_set_organization(query, org);
-		rows = venture_database_find(db, query, NULL);
+		rows = venture_database_find(db, query, error);
+		if (rows == NULL) return NULL;
 		if (rows != NULL)
 		{
 			for (i = 0; i < rows->len; i++)
@@ -129,7 +131,8 @@ venture_accounting_home(VentureContext *context, gint64 organization_id, GError 
 		g_autofree gchar *reason = NULL;
 		venture_query_set_organization(query, org);
 		venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ, "open", NULL);
-		n = venture_database_count(db, query, NULL);
+		n = venture_database_count(db, query, error);
+		if (n < 0) return NULL;
 		reason = n == 0
 			? g_strdup("The close checklist has no open preparer or reviewer tasks")
 			: g_strdup_printf("%" G_GINT64_FORMAT " close checklist task(s) are still open", n);
@@ -137,10 +140,11 @@ venture_accounting_home(VentureContext *context, gint64 organization_id, GError 
 	}
 	if (type_on("capture_item"))
 	{
-		gint64 n = count_filter(db, VENTURE_TYPE_CAPTURE_ITEM, org, "status", "inbox");
+		gint64 n = count_filter(db, VENTURE_TYPE_CAPTURE_ITEM, org, "status", "inbox", error);
 		g_autofree gchar *reason = n == 0
 			? g_strdup("The capture inbox is empty")
 			: g_strdup_printf("%" G_GINT64_FORMAT " captured receipt(s) or supplier invoice(s) are waiting to become expenses or bills", n);
+		if (n < 0) return NULL;
 		add_action(builder, "capture_inbox", "Capture inbox", n, "/capture", reason);
 	}
 	json_builder_end_array(builder);

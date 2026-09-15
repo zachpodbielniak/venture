@@ -124,6 +124,40 @@ static void test_refuse_generic(Fixture *f, gconstpointer data)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 	assert_state(f, venture_entity_get_id(VENTURE_ENTITY(row)), "queued");
 }
+/* A durable invitation must reach SMTP without leaking through record APIs. */
+static void test_private_body(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureMailMessage) input = venture_mail_message_new();
+	g_autoptr(VentureMailMessage) queued = NULL;
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) public = NULL;
+	g_autofree gchar *body = NULL, *serialized = NULL;
+	g_object_set(input, "organization-id", f->org, "to", "reader@example.test",
+		"subject", "Invitation", "text-body", "Private invitation",
+		"private-text-body", "https://example.test/portal/secret-token", NULL);
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(input), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	queued = venture_mail_outbox_enqueue(f->outbox, input, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(queued);
+	stored = venture_database_get(f->db, VENTURE_TYPE_MAIL_MESSAGE,
+		venture_entity_get_id(VENTURE_ENTITY(queued)), &error);
+	g_assert_no_error(error);
+	g_object_get(stored, "private-text-body", &body, NULL);
+	g_assert_cmpstr(body, ==, "https://example.test/portal/secret-token");
+	public = venture_serializable_to_json(VENTURE_SERIALIZABLE(stored), FALSE);
+	serialized = json_to_string(public, FALSE);
+	g_assert_null(strstr(serialized, "secret-token"));
+	g_assert_null(strstr(serialized, "private_text_body"));
+	g_assert_cmpint(venture_mail_outbox_deliver_due(f->outbox, f->org, 1, NULL, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	g_clear_pointer(&body, g_free);
+	g_object_get(g_ptr_array_index((GPtrArray *)venture_log_mailer_get_messages(f->mailer), 0),
+		"private-text-body", &body, NULL);
+	g_assert_cmpstr(body, ==, "https://example.test/portal/secret-token");
+}
 static void test_template(void)
 {
 	g_autoptr(VentureMailTemplate) t = venture_mail_template_new();
@@ -207,7 +241,8 @@ static void test_smtp_uncertain_wire(void)
 		"mail-security", "none", "mail-from-address", "sender@example.test", NULL);
 	mailer = venture_smtp_mailer_new(config);
 	g_object_set(message, "to", "reader@example.test", "bcc", "private@example.test", "subject", "Test",
-		"text-body", "Hello", "html-body", "<p>Hello</p>", "message-id", "stable@example.test", NULL);
+		"text-body", "Hello", "html-body", "<p>Hello</p>",
+		"private-text-body", "https://example.test/portal/secret-token", "message-id", "stable@example.test", NULL);
 	thread = g_thread_new("local-smtp", smtp_server, &f);
 	g_assert_false(venture_mailer_send(VENTURE_MAILER(mailer), message, NULL, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_MAIL_UNCERTAIN);
@@ -218,6 +253,8 @@ static void test_smtp_uncertain_wire(void)
 	g_assert_nonnull(strstr(f.bodies[0], "Message-Id: <stable@example.test>"));
 	g_assert_nonnull(strstr(f.bodies[1], "Message-Id: <stable@example.test>"));
 	g_assert_null(strstr(f.bodies[0], "Bcc:"));
+	g_assert_nonnull(strstr(f.bodies[0], "https://example.test/portal/secret-token"));
+	g_assert_null(strstr(f.bodies[0], "<p>Hello</p>"));
 	g_assert_cmpuint(f.recipients, ==, 4);
 	g_free(f.bodies[0]); g_free(f.bodies[1]); g_object_unref(f.listener);
 }
@@ -458,6 +495,7 @@ main(int argc, char **argv)
 	g_test_add("/mail/backoff-dead", Fixture, NULL, setup, test_backoff, teardown);
 	g_test_add("/mail/expired-lease", Fixture, NULL, setup, test_lease, teardown);
 	g_test_add("/mail/refuse-generic", Fixture, NULL, setup, test_refuse_generic, teardown);
+	g_test_add("/mail/private-body", Fixture, NULL, setup, test_private_body, teardown);
 	g_test_add_func("/mail/template", test_template);
 	g_test_add_func("/mail/smtp-connection-failure", test_smtp_configuration);
 	g_test_add_func("/mail/smtp-uncertain-wire", test_smtp_uncertain_wire);

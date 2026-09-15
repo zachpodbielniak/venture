@@ -244,6 +244,23 @@ test_dimension_actuals(Fixture *f, gconstpointer data)
 	g_assert_cmpint(cell(ops, "6900", "actual"), ==, 4000);
 }
 
+static void
+test_invalid_period(Fixture *f, gconstpointer data)
+{
+	static const gchar *const periods[] = { "2026-08junk", "2026-8", "10000-01", "2026-13", "2026x" };
+	guint i;
+	(void)data;
+	/* Reject the full invalid period before GLib date constructors or report queries see it. */
+	for (i = 0; i < G_N_ELEMENTS(periods); i++)
+	{
+		g_autoptr(GError) error = NULL;
+		g_autoptr(VentureReportResult) result = venture_budget_service_vs_actual(
+			venture_budget_service_get(f->db), f->org, periods[i], NULL, &error);
+		g_assert_null(result);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -253,5 +270,6 @@ main(int argc, char **argv)
 	g_test_add("/budgets/cash-forecast", Fixture, NULL, setup, test_cash_forecast, teardown);
 	g_test_add("/budgets/module-off", Fixture, NULL, setup, test_module_off, teardown);
 	g_test_add("/budgets/dimension-actuals", Fixture, NULL, setup, test_dimension_actuals, teardown);
+	g_test_add("/budgets/invalid-period", Fixture, NULL, setup, test_invalid_period, teardown);
 	return g_test_run();
 }

@@ -38,7 +38,7 @@ capture_api(HtmxRequest *request, GHashTable *params, gpointer data)
 			amount = venture_money_from_string(amount_text, NULL, NULL);
 		if (venture_json_object_get_string(object, "occurred_at", NULL) != NULL)
 			when = g_date_time_new_from_iso8601(venture_json_object_get_string(object, "occurred_at", NULL), NULL);
-		item = venture_capture_service_ingest(service,
+		item = venture_capture_service_ingest_for_organization(service, venture_web_active_organization(self, request),
 			venture_json_object_get_string(object, "kind", "receipt"),
 			venture_json_object_get_string(object, "title", NULL),
 			venture_json_object_get_string(object, "source", "upload"),

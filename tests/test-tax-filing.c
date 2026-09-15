@@ -226,6 +226,34 @@ test_missing_country_refuses_named_jurisdiction(Fixture *f, gconstpointer unused
 }
 
 static void
+test_voided_tax(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) code = tax_code(f, "VOID-NY", "US-NY");
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVOICE);
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) filing = NULL;
+	g_autoptr(VentureMoney) tax = NULL;
+	g_autoptr(GDateTime) date = venture_time_from_string("2026-01-16", NULL);
+	(void)unused;
+	/* An issue and void in the same filing period leave zero tax liability. */
+	issue_taxed_invoice(f, code, "VOID-TAX", "80 USD");
+	venture_query_add_filter_string(query, "number", VENTURE_FILTER_OP_EQ, "VOID-TAX", NULL);
+	invoice = venture_database_find_one(f->db, query, &error);
+	g_assert_nonnull(invoice);
+	g_assert_true(venture_settlement_service_transition(venture_settlement_service_get(f->db),
+		VENTURE_INVOICE(invoice), "void", date, NULL, &error));
+	g_assert_no_error(error);
+	filing = venture_tax_filing_service_prepare(venture_tax_filing_service_get(f->db),
+		f->org, "US", "US-NY", f->period, NULL, NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(filing);
+	g_object_get(filing, "tax", &tax, NULL);
+	g_assert_nonnull(tax);
+	g_assert_cmpint(venture_money_get_amount(tax), ==, 0);
+}
+
+static void
 test_unknown_country_refuses_named_jurisdiction(Fixture *f, gconstpointer unused)
 {
 	g_autoptr(GError) error = NULL;
@@ -367,6 +395,7 @@ gint
 main(gint argc, gchar **argv)
 {
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/tax-filing/voided-tax", Fixture, NULL, setup, test_voided_tax, teardown);
 	g_test_add_func("/tax-filing/records", test_records);
 	g_test_add("/tax-filing/registry", Fixture, NULL, setup, test_registry_and_fake_adapter, teardown);
 	g_test_add("/tax-filing/fake-adapter", Fixture, NULL, setup, test_fake_adapter_prepare, teardown);

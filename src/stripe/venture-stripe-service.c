@@ -713,10 +713,18 @@ venture_stripe_service_lose_chargeback(VentureStripeService *self, gint64 disput
 	g_autoptr(GPtrArray) allocations = NULL;
 	g_autoptr(VentureRefund) refund = NULL;
 	g_autoptr(VentureMoney) amount = NULL;
+	g_autofree gchar *status = NULL;
 	gint64 payment_id = 0, customer_id = 0;
 	if (!venture_database_begin(self->database, error)) return FALSE;
 	dispute = owned_get(self, VENTURE_TYPE_PROCESSOR_DISPUTE, dispute_id, error);
 	if (dispute == NULL) goto fail;
+	/* One dispute may reverse cash once, including a partial chargeback. */
+	g_object_get(dispute, "status", &status, NULL);
+	if (g_strcmp0(status, "open") != 0)
+	{
+		refuse(error, "Only an open dispute can become a lost chargeback");
+		goto fail;
+	}
 	g_object_get(dispute, "payment-id", &payment_id, "amount", &amount, NULL);
 	payment = owned_get(self, VENTURE_TYPE_PAYMENT, payment_id, error);
 	if (payment == NULL) goto fail;

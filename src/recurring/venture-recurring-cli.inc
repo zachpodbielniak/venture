@@ -27,11 +27,28 @@ venture_cli_command_recurring(VentureCli *cli, gchar **args, const gchar *as_of,
 			json_object_set_string_member(object, "as_of", as_of);
 		path = g_strdup_printf("/api/v1/collection_policy/0/actions/run%s", cli->stage ? "?stage=1" : "");
 	}
-	else if (g_strcmp0(verb, "batch") == 0 && args[1] != NULL)
+	else if (g_strcmp0(verb, "batch") == 0 &&
+		(g_strcmp0(args[1], "invoice") == 0 || g_strcmp0(args[1], "expense") == 0))
 	{
+		const gchar *post_text;
+		gboolean post;
+		/* Preserve payload bytes and the ordinary action field=value contract. */
+		g_clear_pointer(&body, json_node_unref);
+		body = venture_cli_values_from_args(args, 2);
+		object = json_node_get_object(body);
+		/* Action booleans are typed JSON, unlike the textual payload fields. */
+		post_text = json_object_has_member(object, "post") ?
+			json_object_get_string_member(object, "post") : "true";
+		if (g_strcmp0(post_text, "true") != 0 && g_strcmp0(post_text, "false") != 0)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+				"post must be true or false");
+			return -1;
+		}
+		post = g_strcmp0(post_text, "true") == 0;
 		json_object_set_string_member(object, "kind", args[1]);
 		json_object_set_boolean_member(object, "dry_run", dry_run);
-		json_object_set_boolean_member(object, "post", TRUE);
+		json_object_set_boolean_member(object, "post", post);
 		path = g_strdup_printf("/api/v1/%s/0/actions/batch_create%s",
 			g_strcmp0(args[1], "expense") == 0 ? "expense" : "invoice",
 			cli->stage ? "?stage=1" : "");

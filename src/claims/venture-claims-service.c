@@ -365,11 +365,14 @@ hash_taken(VentureClaimsService *self, VentureEntity *line, const gchar *hash, G
 	venture_query_set_organization(query, venture_entity_get_organization_id(line));
 	if (!venture_query_add_filter_string(query, "receipt-hash", VENTURE_FILTER_OP_EQ, hash, error))
 		return TRUE;
+	/* Exclude identity, not an assumed match: an edited hash may belong to another receipt. */
+	if (venture_entity_is_persisted(line) &&
+		!venture_query_add_filter_int(query, "id", VENTURE_FILTER_OP_NE,
+			venture_entity_get_id(line), error))
+		return TRUE;
 	others = venture_database_count(self->database, query, error);
 	if (others < 0)
 		return TRUE;
-	if (venture_entity_is_persisted(line))
-		others -= 1;
 	if (others > 0)
 		return !refuse(error, VENTURE_ERROR_VALIDATION, "duplicate receipt hash refused");
 	return FALSE;
@@ -462,6 +465,21 @@ venture_claims_save_hook(VentureDatabase *database, VentureEntity *record,
 	{
 		g_autoptr(VentureEntity) claim = NULL;
 		gint64 claim_id = 0;
+		/* Moving a row must not remove evidence from a submitted claim. */
+		if (venture_entity_is_persisted(record))
+		{
+			g_autoptr(VentureEntity) stored = venture_database_get(database,
+				VENTURE_TYPE_EXPENSE_CLAIM_LINE, venture_entity_get_id(record), error);
+			g_autoptr(VentureEntity) previous_claim = NULL;
+			gint64 previous_id = 0;
+			if (stored == NULL)
+				return FALSE;
+			g_object_get(stored, "claim-id", &previous_id, NULL);
+			previous_claim = venture_database_get(database, VENTURE_TYPE_EXPENSE_CLAIM,
+				previous_id, error);
+			if (previous_claim == NULL || !claim_editable(previous_claim, error))
+				return FALSE;
+		}
 		g_object_get(record, "claim-id", &claim_id, NULL);
 		claim = venture_database_get(database, VENTURE_TYPE_EXPENSE_CLAIM, claim_id, error);
 		if (claim == NULL)

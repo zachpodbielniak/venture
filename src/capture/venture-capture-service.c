@@ -102,7 +102,7 @@ finish_op(VentureCaptureService *self, VentureDatabase *db, gboolean ok, GError 
 }
 
 VentureEntity *
-venture_capture_service_ingest(VentureCaptureService *self, const gchar *kind,
+venture_capture_service_ingest_for_organization(VentureCaptureService *self, gint64 organization_id, const gchar *kind,
 	const gchar *title, const gchar *source, gint64 document_id, const gchar *vendor,
 	const VentureMoney *amount, GDateTime *occurred_at, const gchar *notes,
 	const VentureActor *actor, GError **error)
@@ -110,6 +110,8 @@ venture_capture_service_ingest(VentureCaptureService *self, const gchar *kind,
 	g_autoptr(VentureDatabase) db = NULL;
 	g_autoptr(VentureEntity) item = NULL;
 	g_return_val_if_fail(VENTURE_IS_CAPTURE_SERVICE(self), NULL);
+	if (organization_id <= 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "A capture requires an organization"), NULL;
 	if (g_strcmp0(kind, "receipt") != 0 && g_strcmp0(kind, "supplier_invoice") != 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Kind is receipt or supplier_invoice"), NULL;
 	if (venture_string_is_empty(title))
@@ -120,12 +122,7 @@ venture_capture_service_ingest(VentureCaptureService *self, const gchar *kind,
 	if (!begin_op(self, db, error))
 		return NULL;
 	item = VENTURE_ENTITY(venture_capture_item_new());
-	{
-		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
-		g_autoptr(VentureEntity) organization = venture_database_find_one(db, query, NULL);
-		if (organization != NULL)
-			venture_entity_set_organization_id(item, venture_entity_get_id(organization));
-	}
+	venture_entity_set_organization_id(item, organization_id);
 	g_object_set(item, "title", title, "kind", kind, "status", "inbox",
 		"source", source != NULL ? source : "upload", "document-id", document_id,
 		"vendor", vendor, "amount", amount, "occurred-at", occurred_at, "notes", notes, NULL);
@@ -134,6 +131,36 @@ venture_capture_service_ingest(VentureCaptureService *self, const gchar *kind,
 	if (!finish_op(self, db, TRUE, error))
 		return NULL;
 	return g_steal_pointer(&item);
+}
+
+VentureEntity *
+venture_capture_service_ingest(VentureCaptureService *self, const gchar *kind,
+	const gchar *title, const gchar *source, gint64 document_id, const gchar *vendor,
+	const VentureMoney *amount, GDateTime *occurred_at, const gchar *notes,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureDatabase) db = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
+	g_autoptr(VentureEntity) organization = NULL;
+	g_return_val_if_fail(VENTURE_IS_CAPTURE_SERVICE(self), NULL);
+	db = service_db(self);
+	if (db == NULL)
+		return refuse(error, VENTURE_ERROR_DATABASE, "The database has been closed"), NULL;
+	/* Match context's default rather than assuming the first organization. */
+	venture_query_add_filter_string(query, "is-default", VENTURE_FILTER_OP_EQ, "true", NULL);
+	organization = venture_database_find_one(db, query, error);
+	if (error != NULL && *error != NULL)
+		return NULL;
+	if (organization == NULL)
+	{
+		g_clear_object(&query);
+		query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
+		organization = venture_database_find_one(db, query, error);
+	}
+	if (organization == NULL)
+		return NULL;
+	return venture_capture_service_ingest_for_organization(self, venture_entity_get_id(organization),
+		kind, title, source, document_id, vendor, amount, occurred_at, notes, actor, error);
 }
 
 static gint64

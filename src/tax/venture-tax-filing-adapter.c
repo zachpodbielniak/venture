@@ -258,13 +258,22 @@ us_prepare(VentureTaxFilingAdapter *self, VentureDatabase *database, VentureEnti
 		g_autoptr(VentureQuery) lines_query = NULL;
 		g_autoptr(GPtrArray) lines = NULL;
 		gint64 invoice_id = 0;
+		gboolean reversal;
 		guint j;
 		if (venture_entity_is_deleted(event))
 			continue;
 		g_object_get(event, "kind", &kind, "date", &when, "invoice-id", &invoice_id,
 			"tax-amount", &frozen, NULL);
-		if (g_strcmp0(kind, "issue") != 0 || !in_period(when, start, end))
+		reversal = g_strcmp0(kind, "void") == 0;
+		if ((g_strcmp0(kind, "issue") != 0 && !reversal) || !in_period(when, start, end))
 			continue;
+		/* A void belongs to its own event period and unwinds the frozen issue tax. */
+		if (reversal && frozen != NULL)
+		{
+			VentureMoney *negative = venture_money_negate(frozen);
+			g_clear_pointer(&frozen, venture_money_free);
+			frozen = negative;
+		}
 		if (!add_amounts(&event_tax, frozen, currency, error))
 			return FALSE;
 		lines_query = venture_query_new(VENTURE_TYPE_INVOICE_LINE);
@@ -290,6 +299,15 @@ us_prepare(VentureTaxFilingAdapter *self, VentureDatabase *database, VentureEnti
 				continue;
 			g_object_get(line, "income-amount", &taxable, "tax-amount", &tax,
 				"tax-code-id", &tax_code_id, NULL);
+			if (reversal)
+			{
+				VentureMoney *negative_taxable = taxable != NULL ? venture_money_negate(taxable) : NULL;
+				VentureMoney *negative_tax = tax != NULL ? venture_money_negate(tax) : NULL;
+				g_clear_pointer(&taxable, venture_money_free);
+				g_clear_pointer(&tax, venture_money_free);
+				taxable = negative_taxable;
+				tax = negative_tax;
+			}
 			if (tax_code_id == 0)
 				continue;
 			code = venture_database_get(database, VENTURE_TYPE_TAX_CODE, tax_code_id, error);

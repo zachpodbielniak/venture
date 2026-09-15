@@ -1083,17 +1083,30 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 		}
 		if (phase == VENTURE_INVOICE_STATUS_VOID && !venture_money_is_zero(total))
 		{
-			g_autoptr(VentureMoney) deferred = NULL;
-			g_autoptr(VentureMoney) income = NULL;
-			if (!deferred_portion(self, invoice, &deferred, error))
+			g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_JOURNAL);
+			g_autoptr(VentureEntity) journal = NULL;
+			g_autoptr(VentureJournal) reversal = NULL;
+			g_autoptr(VentureDeferralService) deferrals = venture_deferral_service_new(self->database);
+
+			if (!venture_deferral_service_cancel_invoice(deferrals,
+				venture_entity_get_id(invoice), date, actor, error))
 				return FALSE;
-			if (deferred != NULL && net != NULL)
+			/* A void reverses the actual issue valuation and account split.
+			 * Current exchange rates and product policies cannot rewrite it. */
+			venture_query_set_organization(query, venture_entity_get_organization_id(invoice));
+			if (!venture_query_add_filter_string(query, "source-type", VENTURE_FILTER_OP_EQ, "invoice_event", error) ||
+				!venture_query_add_filter_int(query, "source-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(issued), error))
+				return FALSE;
+			journal = venture_database_find_one(self->database, query, error);
+			if (journal == NULL)
 			{
-				income = venture_money_subtract(net, deferred, error);
-				if (income == NULL)
+				if (error != NULL && *error != NULL)
 					return FALSE;
+				return refuse(error, VENTURE_ERROR_VALIDATION, "The invoice has no issue journal to reverse");
 			}
-			if (!post_split(self, VENTURE_ENTITY(event), date, total, income != NULL ? income : net, tax, TRUE, deferred, actor, error))
+			reversal = venture_posting_service_reverse(venture_database_get_posting_service(self->database),
+				venture_entity_get_id(journal), date, "Invoice void", actor, error);
+			if (reversal == NULL)
 				return FALSE;
 		}
 	}
@@ -1162,8 +1175,18 @@ credit_remaining(VentureSettlementService *self, VentureEntity *credit,
 		if (allocations == NULL)
 			return NULL;
 		for (i = 0; i < allocations->len; i++)
+		{
+			g_autoptr(VentureMoney) applied = NULL;
+
+			g_object_get(g_ptr_array_index(allocations, i), "amount", &applied, NULL);
+			/* An FX receipt's credit starts at its unused book-currency
+			 * cash; its document-currency allocation is already excluded. */
+			if (applied != NULL && remaining != NULL &&
+				g_strcmp0(applied->currency, remaining->currency) != 0)
+				continue;
 			if (!accumulate_record(&remaining, g_ptr_array_index(allocations, i), TRUE, error))
 				return NULL;
+		}
 	}
 	refunds = find_rows(self, VENTURE_TYPE_REFUND, "credit-id", venture_entity_get_id(credit), cutoff, error);
 	if (refunds == NULL)
@@ -1197,6 +1220,7 @@ perform_allocation(VentureSettlementService *self, VentureEntity *allocation,
 	g_autoptr(VentureMoney) remaining = NULL;
 	g_autoptr(VentureMoney) balance = NULL;
 	g_autoptr(VentureMoney) amount = NULL;
+	g_autoptr(VentureMoney) issued_amount = NULL, issued_book = NULL;
 	g_autoptr(GDateTime) date = NULL;
 	g_autoptr(GDateTime) source_date = NULL;
 	g_autoptr(GDateTime) issue_date = NULL;
@@ -1227,6 +1251,13 @@ perform_allocation(VentureSettlementService *self, VentureEntity *allocation,
 	issued = issue_event(self, venture_entity_get_id(invoice), NULL, error);
 	if (issued == NULL)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "The invoice has no issue event");
+	/* The ordinary allocation clears document-currency receivables. A
+	 * book-valued foreign invoice must use the FX receipt path instead. */
+	g_object_get(issued, "amount", &issued_amount, "book-amount", &issued_book, NULL);
+	if (issued_amount != NULL && issued_book != NULL &&
+		g_strcmp0(venture_money_get_currency(issued_amount), venture_money_get_currency(issued_book)))
+		return refuse(error, VENTURE_ERROR_VALIDATION,
+			"Pay a book-valued foreign invoice directly in the organization book currency; document-currency and explicit credit allocations are unsupported");
 	g_object_get(allocation, "amount", &amount, "date", &date, NULL);
 	g_object_get(credit, "date", &source_date, NULL);
 	g_object_get(issued, "date", &issue_date, NULL);
@@ -1337,6 +1368,7 @@ settle_foreign_payment(VentureSettlementService *self, VentureEntity *payment,
 	const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) issued = NULL;
+	g_autoptr(GDateTime) issue_date = NULL;
 	g_autoptr(VentureMoney) remaining = NULL;
 	g_autoptr(VentureMoney) issued_total = NULL;
 	g_autoptr(VentureMoney) issued_book = NULL;
@@ -1346,6 +1378,12 @@ settle_foreign_payment(VentureSettlementService *self, VentureEntity *payment,
 	g_autofree gchar *book = NULL;
 	g_autofree gchar *external = NULL;
 
+	/* The FX branch bypasses perform_allocation, so preserve its ownership
+	 * and chronology checks before writing derived settlement evidence. */
+	if (!same_owner(payment, invoice, error))
+		return FALSE;
+	if (get_id(payment, "customer-id") != get_id(invoice, "company-id"))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "The payment and invoice belong to different customers");
 	book = book_currency(self, venture_entity_get_organization_id(invoice), error);
 	if (book == NULL)
 		return FALSE;
@@ -1358,7 +1396,10 @@ settle_foreign_payment(VentureSettlementService *self, VentureEntity *payment,
 	issued = issue_event(self, venture_entity_get_id(invoice), NULL, error);
 	if (issued == NULL)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "The invoice has no issue event");
-	g_object_get(issued, "amount", &issued_total, "book-amount", &issued_book, NULL);
+	g_object_get(issued, "amount", &issued_total, "book-amount", &issued_book, "date", &issue_date, NULL);
+	if (!check_date(date, issue_date, error) ||
+		!check_invoice_chronology(self, venture_entity_get_id(invoice), date, error))
+		return FALSE;
 	if (issued_book == NULL)
 		issued_book = venture_money_copy(issued_total);
 	if (issued_total == NULL || venture_money_is_zero(issued_total))
@@ -1389,9 +1430,23 @@ settle_foreign_payment(VentureSettlementService *self, VentureEntity *payment,
 		}
 		if (applied_doc == NULL || applied_cash == NULL)
 			return FALSE;
-		released = venture_money_multiply_rational(issued_book, applied_doc->amount, issued_total->amount, error);
-		if (released == NULL)
-			return FALSE;
+		{
+			g_autoptr(VentureMoney) before = NULL;
+			g_autoptr(VentureMoney) after = NULL;
+			gint64 settled = issued_total->amount - remaining->amount;
+
+			/* Difference cumulative rounded valuations, so the final partial
+			 * receipt releases the last book cent instead of stranding it. */
+			before = venture_money_multiply_rational(issued_book, settled, issued_total->amount, error);
+			if (before == NULL)
+				return FALSE;
+			after = venture_money_multiply_rational(issued_book, settled + applied_doc->amount, issued_total->amount, error);
+			if (after == NULL)
+				return FALSE;
+			released = venture_money_subtract(after, before, error);
+			if (released == NULL)
+				return FALSE;
+		}
 		leftover = venture_money_subtract(cash, applied_cash, error);
 		if (leftover == NULL)
 			return FALSE;
@@ -1412,9 +1467,16 @@ settle_foreign_payment(VentureSettlementService *self, VentureEntity *payment,
 		if (!write_record(self, VENTURE_ENTITY(sale), actor, error))
 			return FALSE;
 		g_object_set(allocation, "sale-id", venture_entity_get_id(VENTURE_ENTITY(sale)), NULL);
-		if (!write_record(self, VENTURE_ENTITY(allocation), actor, error) ||
-			!post_fx_receipt(self, payment, date, applied_cash, released, actor, error))
+		if (!write_record(self, VENTURE_ENTITY(allocation), actor, error))
 			return FALSE;
+		{
+			g_autoptr(VentureMoney) credited = venture_money_add(released, leftover, error);
+
+			/* Post the whole receipt once: its unused cash remains a credit
+			 * in AR, while only the allocated cash contributes to FX. */
+			if (credited == NULL || !post_fx_receipt(self, payment, date, cash, credited, actor, error))
+				return FALSE;
+		}
 		if (venture_money_get_amount(leftover) > 0)
 		{
 			g_autoptr(VentureCustomerCredit) credit = venture_customer_credit_new();
@@ -1422,8 +1484,7 @@ settle_foreign_payment(VentureSettlementService *self, VentureEntity *payment,
 				"amount", leftover, "remaining", leftover, "payment-id", venture_entity_get_id(payment),
 				"kind", "overpayment", NULL);
 			venture_entity_set_organization_id(VENTURE_ENTITY(credit), org);
-			if (!write_record(self, VENTURE_ENTITY(credit), actor, error) ||
-				!post(self, payment, date, leftover, "1000", "1100", actor, error))
+			if (!write_record(self, VENTURE_ENTITY(credit), actor, error))
 				return FALSE;
 		}
 		return derive_invoice(self, invoice, date, actor, error);

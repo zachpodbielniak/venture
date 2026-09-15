@@ -4,6 +4,8 @@
 
 * Assets
 
+Voiding a source invoice cancels its recognition deferrals atomically: future entries become skipped and previously posted recognition journals receive linked reversals. Posted schedule entries retain their original journal references as evidence; the cancelled parent cannot settle as a completed accrual.
+
 The =assets= module requires =ledger= and =periods=. Its four field tables
 are =fixed_asset=, =depreciation_entry=, =deferral= and =deferral_entry=.
 Their registers, forms, JSON, REST, related panels, assistant schemas and

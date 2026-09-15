@@ -406,15 +406,16 @@ teller_fetch(VentureBankFeed *feed, const gchar *account_id, GDateTime *from, GD
 	const gchar *currency, GError **error)
 {
 	VentureTellerFeed *self = VENTURE_TELLER_FEED(feed);
-	g_autofree gchar *start = NULL, *end = NULL, *url = NULL, *auth = NULL, *body = NULL;
-	if (venture_string_is_empty(account_id) || from == NULL || to == NULL)
+	g_autofree gchar *start = NULL, *end = NULL, *url = NULL, *auth = NULL, *body = NULL, *account = NULL;
+	if (venture_string_is_empty(account_id) || from == NULL || to == NULL || g_date_time_compare(from, to) > 0)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Teller fetch needs account and window");
 		return NULL;
 	}
 	start = g_date_time_format(from, "%Y-%m-%d");
 	end = g_date_time_format(to, "%Y-%m-%d");
-	url = g_strdup_printf("https://api.teller.io/accounts/%s/transactions?from=%s&to=%s", account_id, start, end);
+	account = g_uri_escape_string(account_id, NULL, FALSE);
+	url = g_strdup_printf("https://api.teller.io/accounts/%s/transactions?start_date=%s&end_date=%s", account, start, end);
 	auth = teller_basic(self->token);
 	body = venture_bank_feed_transport_get(self->transport, url, auth, error);
 	if (body == NULL) return NULL;
@@ -447,7 +448,7 @@ teller_fetch_async(VentureBankFeed *feed, const gchar *account_id, GDateTime *fr
 	VentureTellerFeed *self = VENTURE_TELLER_FEED(feed);
 	g_autoptr(GTask) task = g_task_new(feed, cancellable, callback, user_data);
 	g_autofree gchar *start = NULL, *end = NULL, *url = NULL, *auth = NULL, *account = NULL;
-	if (venture_string_is_empty(account_id) || from == NULL || to == NULL)
+	if (venture_string_is_empty(account_id) || from == NULL || to == NULL || g_date_time_compare(from, to) > 0)
 	{
 		g_task_return_new_error(task, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Teller fetch needs account and window");
 		return;
@@ -455,7 +456,7 @@ teller_fetch_async(VentureBankFeed *feed, const gchar *account_id, GDateTime *fr
 	start = g_date_time_format(from, "%Y-%m-%d");
 	end = g_date_time_format(to, "%Y-%m-%d");
 	account = g_uri_escape_string(account_id, NULL, FALSE);
-	url = g_strdup_printf("https://api.teller.io/accounts/%s/transactions?from=%s&to=%s", account, start, end);
+	url = g_strdup_printf("https://api.teller.io/accounts/%s/transactions?start_date=%s&end_date=%s", account, start, end);
 	auth = teller_basic(self->token);
 	g_task_set_task_data(task, g_strdup(currency), g_free);
 	venture_bank_feed_transport_get_async(self->transport, url, auth, cancellable,

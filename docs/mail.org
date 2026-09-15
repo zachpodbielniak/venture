@@ -36,6 +36,8 @@ idempotency key and call enqueue. The source lane owns eligibility and
 content; the outbox owns submission. Those source-row adapters remain a
 cross-lane integration function, not additional SMTP implementations.
 
+Service-generated invitations use the sensitive =private_text_body= field for their bearer link. Only the outbox enqueue service may create this content; stored messages remain immutable. Public record serialization, forms and audit omit it. SMTP sends this private text in place of both public body alternatives, so an HTML mail client cannot hide the access link. The protected content remains in the database for durable retries and must be treated as a credential in database backups.
+
 * Templates
 
 Templates substitute ={field}= values from a record's public JSON fields

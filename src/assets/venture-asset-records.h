@@ -59,10 +59,11 @@ GType venture_deferral_kind_get_type(void) G_GNUC_CONST;
  * VentureDeferralStatus:
  * @VENTURE_DEFERRAL_STATUS_ACTIVE: active
  * @VENTURE_DEFERRAL_STATUS_COMPLETE: complete
+ * @VENTURE_DEFERRAL_STATUS_CANCELLED: source invoice voided; recognition reversed
  *
  * Book accounting lifecycle values.
  */
-typedef enum { VENTURE_DEFERRAL_STATUS_ACTIVE, VENTURE_DEFERRAL_STATUS_COMPLETE } VentureDeferralStatus;
+typedef enum { VENTURE_DEFERRAL_STATUS_ACTIVE, VENTURE_DEFERRAL_STATUS_COMPLETE, VENTURE_DEFERRAL_STATUS_CANCELLED } VentureDeferralStatus;
 /** venture_deferral_status_get_type: Returns: the deferral status enumeration */
 GType venture_deferral_status_get_type(void) G_GNUC_CONST;
 #define VENTURE_TYPE_FIXED_ASSET (venture_fixed_asset_get_type())

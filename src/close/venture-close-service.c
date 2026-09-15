@@ -340,7 +340,14 @@ run_kind(VentureCloseService *self, VentureDatabase *db, VentureContext *context
 			g_autoptr(VentureMoney) value = NULL;
 			g_object_get(g_ptr_array_index(rows, i), "amount", &value, NULL);
 			if (value != NULL)
-				amount += ABS(venture_money_get_amount(value));
+			{
+				gint64 minor = venture_money_get_amount(value);
+				/* A close cannot label foreign minor units as book currency. */
+				if (g_strcmp0(venture_money_get_currency(value), currency) != 0)
+					return refuse(error, VENTURE_ERROR_VALIDATION, "Unmatched bank transactions in another currency remain");
+				if (minor == G_MININT64 || __builtin_add_overflow(amount, ABS(minor), &amount))
+					return refuse(error, VENTURE_ERROR_VALIDATION, "Unmatched bank total overflows minor units");
+			}
 		}
 		g_clear_pointer(&difference, venture_money_free);
 		difference = venture_money_new_for_currency(amount, currency);
@@ -700,6 +707,7 @@ static gboolean
 all_tasks_done(VentureDatabase *db, gint64 workspace_id, const gchar *role, GError **error)
 {
 	g_autoptr(GPtrArray) tasks = rows_for(db, VENTURE_TYPE_CLOSE_TASK, "workspace-id", workspace_id, 0, error);
+	g_autoptr(GHashTable) seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	guint i;
 	if (tasks == NULL)
 		return FALSE;
@@ -707,12 +715,28 @@ all_tasks_done(VentureDatabase *db, gint64 workspace_id, const gchar *role, GErr
 	{
 		g_autofree gchar *task_role = NULL;
 		g_autofree gchar *status = NULL;
-		g_object_get(g_ptr_array_index(tasks, i), "role", &task_role, "status", &status, NULL);
+		g_autofree gchar *kind = NULL;
+		g_autofree gchar *key = NULL;
+		guint k;
+		g_object_get(g_ptr_array_index(tasks, i), "role", &task_role, "status", &status, "kind", &kind, NULL);
 		if (role != NULL && g_strcmp0(task_role, role) != 0)
 			continue;
+		if (g_strcmp0(task_role, "preparer") != 0 && g_strcmp0(task_role, "reviewer") != 0)
+			return refuse(error, VENTURE_ERROR_VALIDATION, "Invalid close checklist role");
+		for (k = 0; k < G_N_ELEMENTS(close_kinds); k++)
+			if (g_strcmp0(close_kinds[k], kind) == 0)
+				break;
+		if (k == G_N_ELEMENTS(close_kinds))
+			return refuse(error, VENTURE_ERROR_VALIDATION, "Invalid close checklist kind");
+		key = g_strconcat(task_role, ":", kind, NULL);
+		if (!g_hash_table_add(seen, g_steal_pointer(&key)))
+			return refuse(error, VENTURE_ERROR_VALIDATION, "Duplicate close checklist task");
 		if (g_strcmp0(status, "done") != 0 && g_strcmp0(status, "waived") != 0)
 			return refuse(error, VENTURE_ERROR_VALIDATION, "Every checklist task must be done or waived");
 	}
+	/* Deleting a required task cannot turn an incomplete checklist green. */
+	if (g_hash_table_size(seen) != G_N_ELEMENTS(close_kinds) * (role != NULL ? 1 : 2))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Required close checklist tasks are missing");
 	return TRUE;
 }
 
@@ -745,6 +769,9 @@ venture_close_service_sign(VentureCloseService *self, VentureEntity *workspace,
 	g_autofree gchar *text = NULL;
 	g_autofree gchar *hash = NULL;
 	const gchar *name;
+	g_autofree gchar *status = NULL;
+	g_autofree gchar *identity = NULL;
+	const VentureAuthPrincipal *principal;
 	g_return_val_if_fail(VENTURE_IS_CLOSE_SERVICE(self), FALSE);
 	if (g_strcmp0(role, "preparer") != 0 && g_strcmp0(role, "reviewer") != 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Signoff role is preparer or reviewer");
@@ -755,6 +782,16 @@ venture_close_service_sign(VentureCloseService *self, VentureEntity *workspace,
 		return refuse(error, VENTURE_ERROR_DATABASE, "The database has been closed");
 	if (!begin_op(self, db, error))
 		return FALSE;
+	principal = venture_access_policy_get_actor(venture_database_get_access_policy(db));
+	identity = principal != NULL && principal->authenticated && principal->user_id > 0 ?
+		g_strdup_printf("user:%" G_GINT64_FORMAT, principal->user_id) : g_strdup(actor->name);
+	g_object_get(workspace, "status", &status, NULL);
+	if (g_strcmp0(status, "completed") == 0 ||
+		(g_strcmp0(role, "reviewer") == 0 && g_strcmp0(status, "in_review") != 0))
+	{
+		refuse(error, VENTURE_ERROR_VALIDATION, "The current close cycle needs a preparer signoff before review");
+		return finish_op(self, db, FALSE, error);
+	}
 	if (!all_tasks_done(db, venture_entity_get_id(workspace),
 		g_strcmp0(role, "preparer") == 0 ? "preparer" : NULL, error))
 		return finish_op(self, db, FALSE, error);
@@ -763,8 +800,18 @@ venture_close_service_sign(VentureCloseService *self, VentureEntity *workspace,
 		refuse(error, VENTURE_ERROR_VALIDATION, "The reviewer signs after the preparer");
 		return finish_op(self, db, FALSE, error);
 	}
+	if (g_strcmp0(role, "reviewer") == 0)
+	{
+		g_autofree gchar *preparer = NULL;
+		g_object_get(workspace, "preparer", &preparer, NULL);
+		if (g_strcmp0(preparer, identity) == 0)
+		{
+			refuse(error, VENTURE_ERROR_PERMISSION_DENIED, "The reviewer must be a different authenticated account from the preparer");
+			return finish_op(self, db, FALSE, error);
+		}
+	}
 	now = venture_time_now();
-	name = actor->name;
+	name = identity;
 	sign = VENTURE_ENTITY(venture_close_signoff_new());
 	pack = venture_close_service_pack(self, workspace, NULL);
 	if (pack != NULL)
@@ -781,7 +828,7 @@ venture_close_service_sign(VentureCloseService *self, VentureEntity *workspace,
 	if (!save_internal(self, db, sign, actor, error))
 		return finish_op(self, db, FALSE, error);
 	if (g_strcmp0(role, "preparer") == 0)
-		g_object_set(workspace, "status", "in_review", "preparer", name, NULL);
+		g_object_set(workspace, "status", "in_review", "preparer", name, "reviewer", NULL, NULL);
 	else
 		g_object_set(workspace, "status", "signed_off", "reviewer", name, NULL);
 	if (!save_internal(self, db, workspace, actor, error))
@@ -814,12 +861,23 @@ venture_close_service_complete(VentureCloseService *self, VentureEntity *workspa
 	g_autoptr(VentureEntity) period = NULL;
 	gboolean tb = FALSE;
 	gboolean sub = FALSE;
+	g_autofree gchar *status = NULL;
 	g_return_val_if_fail(VENTURE_IS_CLOSE_SERVICE(self), FALSE);
 	db = service_db(self);
 	if (db == NULL)
 		return refuse(error, VENTURE_ERROR_DATABASE, "The database has been closed");
+	/* Cached checks are advisory: accounting may change after the last sweep.
+	 * Recompute before taking the completion transaction and closing the period. */
+	if (!venture_close_service_run_checks(self, workspace, actor, error))
+		return FALSE;
 	if (!begin_op(self, db, error))
 		return FALSE;
+	g_object_get(workspace, "status", &status, NULL);
+	if (g_strcmp0(status, "signed_off") != 0)
+	{
+		refuse(error, VENTURE_ERROR_VALIDATION, "The current close cycle must be signed off");
+		return finish_op(self, db, FALSE, error);
+	}
 	if (!all_tasks_done(db, venture_entity_get_id(workspace), NULL, error) ||
 		!no_open_discrepancies(db, venture_entity_get_id(workspace), error))
 		return finish_op(self, db, FALSE, error);
@@ -865,7 +923,9 @@ venture_close_service_reopen(VentureCloseService *self, VentureEntity *workspace
 	g_object_set(period, "state", VENTURE_PERIOD_OPEN, NULL);
 	if (!venture_database_save(db, period, actor, error))
 		return finish_op(self, db, FALSE, error);
-	g_object_set(workspace, "status", "reopened", "tb-balanced", FALSE, "subledger-tied", FALSE, NULL);
+	/* Keep historical signatures as evidence, but require both roles anew. */
+	g_object_set(workspace, "status", "reopened", "tb-balanced", FALSE, "subledger-tied", FALSE,
+		"preparer", NULL, "reviewer", NULL, NULL);
 	if (!save_internal(self, db, workspace, actor, error))
 		return finish_op(self, db, FALSE, error);
 	return finish_op(self, db, TRUE, error);
@@ -938,16 +998,12 @@ venture_close_save_hook(VentureDatabase *database, VentureEntity *record,
 	self = venture_close_service_get(database);
 	if (self->writing == record)
 		return TRUE;
+	/* Flags, signatures and fiscal-period identity describe one checked close
+	 * cycle. Generic CRUD must not manufacture or reset that evidence. */
+	if (VENTURE_IS_CLOSE_WORKSPACE(record))
+		return refuse(error, VENTURE_ERROR_PERMISSION_DENIED, "Close workspaces are written only by VentureCloseService");
 	if (VENTURE_IS_CLOSE_SIGNOFF(record))
 		return refuse(error, VENTURE_ERROR_PERMISSION_DENIED, "Signoffs are written only by VentureCloseService");
-	if (VENTURE_IS_CLOSE_WORKSPACE(record) && venture_entity_is_persisted(record))
-	{
-		g_autofree gchar *status = NULL;
-		g_object_get(record, "status", &status, NULL);
-		if (g_strcmp0(status, "completed") == 0 || g_strcmp0(status, "signed_off") == 0 ||
-			g_strcmp0(status, "reopened") == 0 || g_strcmp0(status, "in_review") == 0)
-			return refuse(error, VENTURE_ERROR_PERMISSION_DENIED, "Workspace status is owned by VentureCloseService");
-	}
 	if (VENTURE_IS_CLOSE_TASK(record) && venture_entity_is_persisted(record))
 	{
 		g_autofree gchar *status = NULL;

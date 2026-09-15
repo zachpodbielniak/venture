@@ -8,6 +8,8 @@ static const VentureFieldDecl message_fields[] = {
 	STR("cc", "Cc"), STR("bcc", "Bcc"), STR("reply-to", "Reply to"),
 	VENTURE_FIELD_NAME("subject", "Subject", NULL),
 	VENTURE_FIELD_TEXT("text-body", "Text body", NULL),
+	/* Bearer links belong only in delivery, never generated records or audit. */
+	VENTURE_FIELD("private-text-body", "Private text body", "Service-owned delivery content", VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_SENSITIVE),
 	VENTURE_FIELD_TEXT("html-body", "HTML body", NULL),
 	VENTURE_FIELD("attachments", "Attachments", "Document references: JSON array of type and id", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
 	STR("related-type", "Related type"), INT("related-id", "Related record"),

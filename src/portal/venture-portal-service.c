@@ -160,13 +160,81 @@ venture_portal_service_revoke(VenturePortalService *self, VentureCustomerPortalA
 }
 
 VentureEntity *
+venture_portal_service_send_invitation(VenturePortalService *self, const gchar *base_url,
+	gboolean supplier, gint64 organization_id, gint64 company_id, const gchar *email,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(GUri) uri = NULL;
+	g_autoptr(VentureEntity) access = NULL;
+	g_autoptr(VentureMailMessage) message = NULL;
+	g_autoptr(VentureMailMessage) queued = NULL;
+	g_autofree gchar *token = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *key = NULL;
+	g_autofree gchar *base = NULL;
+	g_return_val_if_fail(VENTURE_IS_PORTAL_SERVICE(self), NULL);
+	/* Do not mint unusable credentials or send them over an insecure origin. */
+	if (!venture_string_is_empty(base_url))
+		uri = g_uri_parse(base_url, G_URI_FLAGS_NONE, NULL);
+	if (uri == NULL || g_strcmp0(g_uri_get_scheme(uri), "https") != 0 ||
+		venture_string_is_empty(g_uri_get_host(uri)) || g_uri_get_userinfo(uri) != NULL ||
+		g_uri_get_query(uri) != NULL || g_uri_get_fragment(uri) != NULL)
+	{
+		refuse(error, "Invitations require server.base_url with a public HTTPS URL without credentials, query or fragment");
+		return NULL;
+	}
+	if (venture_string_is_empty(email) || strchr(email, '@') == NULL ||
+		strpbrk(email, "\r\n") != NULL)
+	{
+		refuse(error, "An invitation requires a valid email recipient");
+		return NULL;
+	}
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(),
+		supplier ? "supplier_portal_access" : "customer_portal_access") == G_TYPE_INVALID)
+	{
+		refuse(error, "The portal module is disabled");
+		return NULL;
+	}
+	if (!venture_database_begin(self->database, error))
+		return NULL;
+	access = supplier ? venture_portal_service_invite_supplier(self, organization_id, company_id, email, actor, error) :
+		venture_portal_service_invite(self, organization_id, company_id, email, actor, error);
+	if (access == NULL)
+		goto fail;
+	g_object_get(access, "token", &token, NULL);
+	base = g_strdup(base_url);
+	while (g_str_has_suffix(base, "/"))
+		base[strlen(base) - 1] = '\0';
+	body = g_strdup_printf("Your private Venture accounting portal invitation:\n%s/%s/%s\nKeep this link private.",
+		base, supplier ? "supplier" : "portal", token);
+	key = g_strdup_printf("portal-invitation:%s", venture_entity_get_uuid(access));
+	message = venture_mail_message_new();
+	g_object_set(message, "organization-id", organization_id, "to", email,
+		"subject", supplier ? "Your supplier portal invitation" : "Your customer portal invitation",
+		"text-body", "Private accounting portal invitation", "private-text-body", body,
+		"idempotency-key", key, "related-type", venture_entity_get_entity_name(access),
+		"related-id", venture_entity_get_id(access), NULL);
+	queued = venture_mail_outbox_enqueue(venture_database_get_mail_outbox(self->database), message, actor, error);
+	if (queued == NULL)
+		goto fail;
+	if (!venture_database_commit(self->database, error))
+		return NULL;
+	return g_steal_pointer(&access);
+fail:
+	venture_database_rollback(self->database);
+	return NULL;
+}
+
+VentureEntity *
 venture_portal_service_lookup(VenturePortalService *self, const gchar *token, GError **error)
 {
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(VentureEntity) access = NULL;
 	gboolean revoked;
 	g_return_val_if_fail(VENTURE_IS_PORTAL_SERVICE(self), NULL);
-	if (token == NULL || strlen(token) != 64)
+	/* A bearer URL must stop working when its owning module is disabled. */
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "customer_portal_access") == G_TYPE_INVALID ||
+		token == NULL || strlen(token) != 64)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Not found");
 		return NULL;

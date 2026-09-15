@@ -660,6 +660,19 @@ venture_inventory_service_issue_invoice(VentureInventoryService *self, VentureEn
 }
 
 static gboolean
+line_parent_is_draft(VentureDatabase *database, VentureEntity *line,
+	GType parent_type, const gchar *parent_field, GError **error)
+{
+	g_autoptr(VentureEntity) parent = venture_database_get(database, parent_type,
+		get_id(line, parent_field), error);
+	g_autofree gchar *status = NULL;
+	if (parent == NULL)
+		return FALSE;
+	g_object_get(parent, "status", &status, NULL);
+	return g_strcmp0(status, "draft") == 0 || refuse(error, "only draft order lines can be edited");
+}
+
+static gboolean
 owned_name(const gchar *name)
 {
 	return g_strcmp0(name, "purchase_order") == 0 || g_strcmp0(name, "purchase_order_line") == 0 ||
@@ -691,6 +704,22 @@ venture_goods_check_write(VentureDatabase *database, VentureEntity *record, gboo
 		return refuse(error, "inventory evidence is owned by VentureInventoryService");
 	if (removal)
 		return refuse(error, "goods history cannot be removed");
+	if (g_strcmp0(name, "sales_order_line") == 0 || g_strcmp0(name, "purchase_order_line") == 0)
+	{
+		gboolean sales = g_strcmp0(name, "sales_order_line") == 0;
+		GType parent_type = sales ? VENTURE_TYPE_SALES_ORDER : VENTURE_TYPE_PURCHASE_ORDER;
+		const gchar *parent_field = sales ? "sales-order-id" : "purchase-order-id";
+		/* Check both parents so moving a line cannot erase approved or fulfilled evidence. */
+		if (!line_parent_is_draft(database, record, parent_type, parent_field, error))
+			return FALSE;
+		if (venture_entity_is_persisted(record))
+		{
+			g_autoptr(VentureEntity) stored = venture_database_get(database,
+				G_OBJECT_TYPE(record), venture_entity_get_id(record), error);
+			if (stored == NULL || !line_parent_is_draft(database, stored, parent_type, parent_field, error))
+				return FALSE;
+		}
+	}
 	if (g_strcmp0(name, "purchase_order") == 0 || g_strcmp0(name, "sales_order") == 0)
 	{
 		g_autofree gchar *status = NULL;
@@ -724,13 +753,13 @@ venture_goods_check_write(VentureDatabase *database, VentureEntity *record, gboo
 	{
 		g_autoptr(VentureEntity) stored = venture_entity_is_persisted(record)
 			? venture_database_get(database, G_OBJECT_TYPE(record), venture_entity_get_id(record), error) : NULL;
-		gint64 allocated = 0, fulfilled = 0, stored_a = 0, stored_f = 0;
+		gint64 allocated = 0, fulfilled = 0, invoiced = 0, stored_a = 0, stored_f = 0, stored_i = 0;
 		if (venture_entity_is_persisted(record) && stored == NULL)
 			return FALSE;
-		g_object_get(record, "allocated-qty", &allocated, "fulfilled-qty", &fulfilled, NULL);
+		g_object_get(record, "allocated-qty", &allocated, "fulfilled-qty", &fulfilled, "invoiced-qty", &invoiced, NULL);
 		if (stored != NULL)
-			g_object_get(stored, "allocated-qty", &stored_a, "fulfilled-qty", &stored_f, NULL);
-		if (allocated != stored_a || fulfilled != stored_f)
+			g_object_get(stored, "allocated-qty", &stored_a, "fulfilled-qty", &stored_f, "invoiced-qty", &stored_i, NULL);
+		if (allocated != stored_a || fulfilled != stored_f || invoiced != stored_i)
 			return refuse(error, "fulfillment counters are owned by VentureSalesOrderService");
 	}
 	return TRUE;

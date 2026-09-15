@@ -352,6 +352,53 @@ test_scoped_plugin_import(Fixture *f, gconstpointer data)
 	g_assert_cmpint(venture_entity_get_organization_id(g_ptr_array_index(rows, 0)), ==, org);
 }
 
+/* Tax and payment state cannot be discarded when creating accounting entries. */
+static void
+test_shopify_unsupported_amounts(void)
+{
+	static const gchar *const extra[] = {
+		"\"total_tax\":\"2.50\"", "\"total_discounts\":\"5.00\"",
+		"\"shipping_lines\":[{\"price\":\"3.00\"}]",
+		"\"financial_status\":\"partially_paid\"",
+		"\"financial_status\":\"partially_refunded\""
+	};
+	guint i;
+	for (i = 0; i < G_N_ELEMENTS(extra); i++)
+	{
+		g_autoptr(GError) error = NULL;
+		g_autoptr(VentureCommerceConnector) connector = NULL;
+		g_autoptr(GPtrArray) orders = NULL;
+		FakeTransport *transport = g_object_new(fake_transport_get_type(), NULL);
+		transport->body = g_strdup_printf("{\"orders\":[{\"id\":1,\"currency\":\"USD\",%s,"
+			"\"line_items\":[{\"title\":\"Hat\",\"quantity\":1,\"price\":\"25.00\"}]}]}", extra[i]);
+		connector = venture_shopify_connector_new("shop.myshopify.com", "tok", VENTURE_BANK_FEED_TRANSPORT(transport));
+		orders = venture_commerce_connector_fetch_orders(connector, NULL, NULL, &error);
+		g_assert_null(orders);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED);
+		g_object_unref(transport);
+	}
+}
+
+/* A mismatched provider total must roll back both the invoice and customer. */
+static void
+test_shopify_total_mismatch(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureCommerceService) service = NULL;
+	FakeTransport *transport = g_object_new(fake_transport_get_type(), NULL);
+	(void)data;
+	transport->body = g_strdup("{\"orders\":[{\"id\":1,\"currency\":\"USD\",\"total_price\":\"30.00\","
+		"\"financial_status\":\"paid\",\"customer\":{\"id\":90,\"email\":\"new@example.org\"},"
+		"\"line_items\":[{\"title\":\"Hat\",\"quantity\":1,\"price\":\"25.00\"}]}]}");
+	service = venture_commerce_service_new(f->db, f->org, VENTURE_BANK_FEED_TRANSPORT(transport), &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_commerce_service_import(service, "shopify", NULL, NULL, NULL, &error), ==, -1);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_cmpuint(count_type(f, VENTURE_TYPE_INVOICE), ==, 0);
+	g_assert_cmpuint(count_type(f, VENTURE_TYPE_COMPANY), ==, 1);
+	g_object_unref(transport);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -362,6 +409,8 @@ main(int argc, char **argv)
 	g_test_add("/commerce/shopify-currency-cancelled", Fixture, NULL, setup, test_shopify_currency_and_cancelled, teardown);
 	g_test_add("/commerce/shopify-refuses-usd-default", Fixture, NULL, setup, test_shopify_refuses_bare_usd, teardown);
 	g_test_add_func("/commerce/pagination-window", test_shopify_pages);
+	g_test_add_func("/commerce/unsupported-amounts", test_shopify_unsupported_amounts);
+	g_test_add("/commerce/total-mismatch", Fixture, NULL, setup, test_shopify_total_mismatch, teardown);
 	g_test_add("/commerce/scoped-plugin", Fixture, NULL, setup, test_scoped_plugin_import, teardown);
 	return g_test_run();
 }

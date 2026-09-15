@@ -32,3 +32,5 @@ The Setup nav item opens =/setup=, which redirects to the legal entity's
 #+begin_src sh
 venturectl action accounting_setup complete 1
 #+end_src
+
+Completion restores the caller's setup state and version when any final write fails, so the same preview can be retried safely. Bare opening-cash amounts inherit the chosen book currency; unknown currency codes are refused.

@@ -123,6 +123,8 @@ venturectl dashboard export factory > factory.json
 
 * Periods
 
+Ledger reports accept =basis=cash= or =basis=accrual= and =dimension=VALUE= alongside the period; these options pass through to the same report implementation used by the web page.
+
 Anywhere a period is accepted — a =report= argument, a =period== filter on a
 list — the full grammar is:
 

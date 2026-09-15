@@ -301,6 +301,9 @@ test_teller_uses_transport(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(transport->calls, ==, 1);
 	g_assert_nonnull(strstr(transport->url, "api.teller.io"));
 	g_assert_nonnull(strstr(transport->url, "acc_teller"));
+	/* Teller ignores unknown from/to filters; its actual names bound the import. */
+	g_assert_nonnull(strstr(transport->url, "start_date="));
+	g_assert_nonnull(strstr(transport->url, "end_date="));
 	g_assert_nonnull(transport->authorization);
 	g_assert_cmpuint(count_txns(f), ==, 1);
 	imported = venture_bankfeed_service_sync(service, venture_entity_get_id(VENTURE_ENTITY(connection)),

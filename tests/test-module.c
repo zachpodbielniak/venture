@@ -997,6 +997,7 @@ server_fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "forge", FALSE);
 	venture_config_set_module_enabled(fixture->config, "factory", FALSE);
 	venture_config_set_module_enabled(fixture->config, "kb", FALSE);
+	venture_config_set_module_enabled(fixture->config, "backup", FALSE);
 
 	fixture->database = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
@@ -1107,6 +1108,8 @@ test_module_http_disabled_module_is_absent(
 	                                NULL), ==, SOUP_STATUS_OK);
 
 	/* Module pages and API routes. */
+	g_assert_cmpuint(server_request(fixture, "POST", "/backup/export", "", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_request(fixture, "POST", "/api/v1/accounting_backups/export", "", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_request(fixture, "GET", "/tickets", NULL, &page,
 	                                NULL), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_nonnull(strstr(page, "tickets module is turned off"));

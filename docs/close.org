@@ -51,3 +51,7 @@ venturectl close complete 1
 venturectl close reopen 1
 venturectl report close_workspace 2026-01 organization_id=1
 #+end_src
+
+Completion reruns the current accounting checks; cached tie-out flags cannot authorize closing changed books. Reopening retains historical signoffs but requires a new preparer and reviewer sequence. Generic writes cannot create or edit workspace evidence, and the checklist must contain every required kind for both roles; missing or duplicate tasks fail signoff. Unmatched transactions in a different currency fail reconciliation instead of being summed as book-currency minor units, and overflowing totals are refused.
+
+The preparer and reviewer must be different authenticated accounts. For authenticated requests, signoff identity uses the account ID, so two API tokens owned by one person cannot supply both signatures. Trusted internal service calls without an authenticated principal use the explicit actor name.

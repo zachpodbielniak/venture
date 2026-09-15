@@ -56,3 +56,5 @@ Connection records select the legal entity for each sync, and their bank
 account must belong to that same entity. The web handler also requires the
 connection to belong to the active organization. Scheduled sweeps filter
 connections by the organization supplied to the automation action.
+
+The Teller adapter sends inclusive =start_date= and =end_date= filters, with an escaped account path segment, as specified by the [[https://teller.io/docs/api/account/transactions][Teller transactions API]]. Reversed date windows are refused. It does not request a =count= limit, so Teller returns the complete filtered list.

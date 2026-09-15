@@ -1274,3 +1274,84 @@ capitalize(VentureDatabase *db, VentureEntity *asset, GDateTime *date,
 		return refuse(error, "Source journal debits do not match the asset's book cost");
 	return already_capitalized || venture_posting_service_post_entries(venture_database_get_posting_service(db), entries, NULL, actor, error);
 }
+
+gboolean
+venture_deferral_service_cancel_invoice(VentureDeferralService *service,
+	gint64 invoice_id, GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureDatabase) db = g_weak_ref_get(&service->database);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_DEFERRAL);
+	g_autoptr(GPtrArray) deferrals = NULL;
+	VentureAssetService *self;
+	guint i;
+	if (db == NULL)
+		return refuse(error, "The database has been closed");
+	/* Optional modules may never have created tables; disabled existing history still counts. */
+	if (!venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "deferral"))
+	{
+		g_autoptr(OrmInspector) inspector = orm_inspector_new(venture_database_get_connection(db), error);
+		g_autoptr(VentureEntity) prototype = VENTURE_ENTITY(venture_deferral_new());
+		if (inspector == NULL)
+			return FALSE;
+		if (!orm_inspector_has_table(inspector, venture_entity_get_table_name(prototype), NULL, error))
+			return error == NULL || *error == NULL;
+	}
+	self = venture_asset_service_get(db);
+	if (!venture_database_begin(db, error))
+		return FALSE;
+	venture_query_set_limit(query, 0);
+	if (!venture_query_add_filter_int(query, "source-invoice-id", VENTURE_FILTER_OP_EQ, invoice_id, error))
+		goto fail;
+	deferrals = venture_database_find(db, query, error);
+	if (deferrals == NULL)
+		goto fail;
+	for (i = 0; i < deferrals->len; i++)
+	{
+		VentureEntity *deferral = g_ptr_array_index(deferrals, i);
+		g_autoptr(VentureQuery) entries_query = venture_query_new(VENTURE_TYPE_DEFERRAL_ENTRY);
+		g_autoptr(GPtrArray) entries = NULL;
+		gint status;
+		guint j;
+		g_object_get(deferral, "status", &status, NULL);
+		if (status == VENTURE_DEFERRAL_STATUS_CANCELLED)
+			continue;
+		venture_query_set_limit(entries_query, 0);
+		if (!venture_query_add_filter_int(entries_query, "deferral-id", VENTURE_FILTER_OP_EQ,
+			venture_entity_get_id(deferral), error))
+			goto fail;
+		entries = venture_database_find(db, entries_query, error);
+		if (entries == NULL)
+			goto fail;
+		for (j = 0; j < entries->len; j++)
+		{
+			VentureEntity *entry = g_ptr_array_index(entries, j);
+			gint state;
+			gint64 journal_id;
+			g_object_get(entry, "state", &state, "journal-id", &journal_id, NULL);
+			/* Keep the posted row as evidence, with the reversal linked through its journal. */
+			if (state == VENTURE_SCHEDULE_STATE_POSTED)
+			{
+				g_autoptr(VentureJournal) reversal = venture_posting_service_reverse(
+					venture_database_get_posting_service(db), journal_id, date,
+					"Void invoice recognition", actor, error);
+				if (reversal == NULL)
+					goto fail;
+			}
+			else if (state == VENTURE_SCHEDULE_STATE_SCHEDULED)
+			{
+				g_object_set(entry, "state", VENTURE_SCHEDULE_STATE_SKIPPED, NULL);
+				if (!save_internal(self, db, entry, actor, error))
+					goto fail;
+			}
+		}
+		g_object_set(deferral, "status", VENTURE_DEFERRAL_STATUS_CANCELLED, NULL);
+		if (!save_internal(self, db, deferral, actor, error))
+			goto fail;
+	}
+	if (!venture_database_commit(db, error))
+		goto fail;
+	return TRUE;
+fail:
+	venture_database_rollback(db);
+	return FALSE;
+}

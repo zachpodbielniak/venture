@@ -253,6 +253,11 @@ venture_progress_service_invoice(VentureProgressService *self, VentureQuote *quo
 	}
 	if (slice == NULL)
 		return NULL;
+	{
+		g_autoptr(VentureMoney) checked = venture_money_subtract(remaining, slice, error);
+		if (checked == NULL)
+			return NULL;
+	}
 	if (venture_money_get_amount(slice) <= 0 || venture_money_get_amount(slice) > venture_money_get_amount(remaining))
 	{
 		refuse(error, "progress amount exceeds remaining contract value");
@@ -262,7 +267,8 @@ venture_progress_service_invoice(VentureProgressService *self, VentureQuote *quo
 		return NULL;
 	invoice = venture_invoice_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(invoice), org);
-	number = g_strdup_printf("PROG-%s-%" G_GINT64_FORMAT, quote_number, percent);
+	/* Repeated equal instalments are valid; the percentage is not a document identity. */
+	number = g_strdup_printf("PROG-%s-%s", quote_number, venture_entity_get_uuid(VENTURE_ENTITY(invoice)));
 	g_object_set(invoice, "number", number, "company-id", company, NULL);
 	if (!venture_database_save(self->database, VENTURE_ENTITY(invoice), actor, error))
 		goto fail;
@@ -351,6 +357,8 @@ venture_progress_service_release_retainer(VentureProgressService *self, VentureC
 		liability, income, amount, "Retainer released", actor, error))
 		goto fail;
 	next = venture_money_subtract(remaining, amount, error);
+	if (next == NULL)
+		goto fail;
 	now = venture_time_now();
 	g_object_set(retainer, "remaining", next, "released-at", now, NULL);
 	if (!save_owned(self, VENTURE_ENTITY(retainer), actor, error) ||
@@ -430,6 +438,8 @@ venture_progress_service_release_retention(VentureProgressService *self, Venture
 		liability, income, amount, "Retention released", actor, error))
 		goto fail;
 	next = venture_money_subtract(remaining, amount, error);
+	if (next == NULL)
+		goto fail;
 	now = venture_time_now();
 	g_object_set(retention, "remaining", next, "released-at", now, NULL);
 	if (!save_owned(self, VENTURE_ENTITY(retention), actor, error) ||

@@ -36,6 +36,27 @@ VentureEntity *venture_capture_service_ingest(VentureCaptureService *self, const
 	const VentureActor *actor, GError **error);
 
 /**
+ * venture_capture_service_ingest_for_organization:
+ * @self: the service
+ * @organization_id: owning organization
+ * @kind: receipt or supplier_invoice
+ * @title: inbox label
+ * @source: (nullable): source description
+ * @document_id: filed document, or zero
+ * @vendor: (nullable): printed vendor
+ * @amount: (nullable): captured total
+ * @occurred_at: (nullable): document date
+ * @notes: (nullable): operator notes
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): failure
+ * Returns: (transfer full) (nullable): the scoped inbox row
+ */
+VentureEntity *venture_capture_service_ingest_for_organization(VentureCaptureService *self, gint64 organization_id,
+	const gchar *kind, const gchar *title, const gchar *source, gint64 document_id, const gchar *vendor,
+	const VentureMoney *amount, GDateTime *occurred_at, const gchar *notes,
+	const VentureActor *actor, GError **error);
+
+/**
  * venture_capture_service_convert:
  * @self: the service
  * @item: an inbox row

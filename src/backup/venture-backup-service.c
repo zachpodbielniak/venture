@@ -258,6 +258,14 @@ restore_journals(VentureBackupService *self, gint64 org, JsonArray *journals, co
  * Refuse it before seeding or posting anything. Version 4 uses the snapshot importer above; the legacy path
  * is restricted to manual journals. */
 static gboolean
+legacy_string(JsonObject *object, const gchar *name)
+{
+	JsonNode *node = json_object_get_member(object, name);
+	return node != NULL && JSON_NODE_HOLDS_VALUE(node) &&
+		json_node_get_value_type(node) == G_TYPE_STRING;
+}
+
+static gboolean
 restore_preflight(JsonObject *root, GError **error)
 {
 	static const gchar *const unsupported[] = { "invoices", "vendor_bills", "bank_accounts",
@@ -271,6 +279,23 @@ restore_preflight(JsonObject *root, GError **error)
 			return refuse(error, "legacy accounting packs omit history; use a full database backup");
 		if (accounts == NULL || !JSON_NODE_HOLDS_ARRAY(accounts))
 			return refuse(error, "accounting pack needs accounts");
+		/* Typed JSON getters emit criticals for malformed input. Validate
+		 * the complete legacy shape before a transaction can change books. */
+		for (i = 0; i < json_array_get_length(json_node_get_array(accounts)); i++)
+		{
+			JsonNode *entry = json_array_get_element(json_node_get_array(accounts), i);
+			JsonObject *account;
+			JsonNode *kind;
+			if (!JSON_NODE_HOLDS_OBJECT(entry))
+				return refuse(error, "invalid legacy account");
+			account = json_node_get_object(entry);
+			kind = json_object_get_member(account, "kind");
+			if (!legacy_string(account, "code") || *json_object_get_string_member(account, "code") == '\0' ||
+				(json_object_has_member(account, "name") && !legacy_string(account, "name")) ||
+				(kind != NULL && (json_node_get_value_type(kind) != G_TYPE_INT64 ||
+				json_node_get_int(kind) < VENTURE_ACCOUNT_KIND_ASSET || json_node_get_int(kind) > VENTURE_ACCOUNT_KIND_EXPENSE)))
+				return refuse(error, "invalid legacy account fields");
+		}
 	}
 	for (i = 0; i < G_N_ELEMENTS(unsupported); i++)
 	{
@@ -293,9 +318,35 @@ restore_preflight(JsonObject *root, GError **error)
 		for (i = 0; i < json_array_get_length(journals); i++)
 		{
 			JsonNode *entry = json_array_get_element(journals, i);
+			JsonObject *journal;
+			JsonNode *lines;
+			g_autoptr(GDateTime) date = NULL;
+			guint j;
 			if (!JSON_NODE_HOLDS_OBJECT(entry) || g_strcmp0(venture_json_object_get_string(
 				json_node_get_object(entry), "source_type", ""), "organization") != 0)
 				return refuse(error, "document journals require their original document history");
+			journal = json_node_get_object(entry);
+			lines = json_object_get_member(journal, "lines");
+			if (!legacy_string(journal, "currency") || !venture_currency_is_valid(json_object_get_string_member(journal, "currency")) ||
+				!legacy_string(journal, "occurred_at") || lines == NULL || !JSON_NODE_HOLDS_ARRAY(lines))
+				return refuse(error, "invalid legacy journal fields");
+			date = g_date_time_new_from_iso8601(json_object_get_string_member(journal, "occurred_at"), NULL);
+			if (date == NULL)
+				return refuse(error, "invalid legacy journal date");
+			for (j = 0; j < json_array_get_length(json_node_get_array(lines)); j++)
+			{
+				JsonNode *line = json_array_get_element(json_node_get_array(lines), j);
+				JsonObject *object;
+				const gchar *side;
+				if (!JSON_NODE_HOLDS_OBJECT(line))
+					return refuse(error, "invalid legacy journal line");
+				object = json_node_get_object(line);
+				if (!legacy_string(object, "account_code") || !legacy_string(object, "amount") || !legacy_string(object, "side"))
+					return refuse(error, "invalid legacy journal line fields");
+				side = json_object_get_string_member(object, "side");
+				if (g_strcmp0(side, "debit") != 0 && g_strcmp0(side, "credit") != 0)
+					return refuse(error, "invalid legacy journal side");
+			}
 		}
 	}
 	return TRUE;

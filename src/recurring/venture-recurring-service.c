@@ -16,6 +16,7 @@ struct _VentureCollectionService
 {
 	GObject parent_instance;
 	VentureDatabase *database;
+	GWeakRef context;
 	VentureEntity *writing;
 	gboolean busy;
 	gboolean actions;
@@ -130,9 +131,21 @@ day_compare(GDateTime *a, GDateTime *b)
 }
 
 static GDateTime *
+schedule_start(VentureEntity *schedule)
+{
+	g_autoptr(GDateTime) start = NULL;
+	g_autofree gchar *name = NULL;
+	g_autoptr(GTimeZone) zone = NULL;
+	g_object_get(schedule, "start-at", &start, "timezone", &name, NULL);
+	zone = g_time_zone_new_identifier(venture_string_is_empty(name) ? "UTC" : name);
+	return start != NULL && zone != NULL ? g_date_time_to_timezone(start, zone) : NULL;
+}
+
+static GDateTime *
 cycle_date(GDateTime *start, gint frequency, gint64 index)
 {
-	if (start == NULL)
+	/* Date APIs take gint offsets; reject wraparound before multiplication. */
+	if (start == NULL || index < 0 || index > G_MAXINT / 7)
 		return NULL;
 	if (frequency == 1)
 		return g_date_time_add_days(start, 7 * (gint)index);
@@ -158,12 +171,20 @@ schedule_validate(VentureDatabase *database, VentureEntity *entity, VentureEntit
 	VentureRecurringService *self = data;
 	g_autoptr(GDateTime) start = NULL;
 	g_autoptr(GDateTime) next = NULL;
+	g_autofree gchar *zone_name = NULL;
+	g_autoptr(GTimeZone) zone = NULL;
 	(void)database;
 	if (!VENTURE_IS_RECURRING_SCHEDULE(entity))
 		return TRUE;
 	g_object_get(entity, "start-at", &start, "next-run-at", &next, NULL);
 	if (start == NULL)
 		return refuse(error, "A schedule needs a start date");
+	g_object_get(entity, "timezone", &zone_name, NULL);
+	zone = g_time_zone_new_identifier(venture_string_is_empty(zone_name) ? "UTC" : zone_name);
+	if (zone == NULL)
+		return refuse(error, "A schedule needs a valid IANA timezone");
+	if (number(entity, "cycle-index") < 0 || number(entity, "cycle-index") > G_MAXINT / 7)
+		return refuse(error, "Schedule cycle index is outside the calendar range");
 	if (next == NULL)
 		g_object_set(entity, "next-run-at", start, NULL);
 	if (self->writing == entity)
@@ -242,9 +263,14 @@ apply_object(VentureEntity *entity, JsonObject *object, GError **error)
 {
 	g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
 	g_autoptr(JsonObject) copy = json_object_new();
+	gint64 organization_id = venture_entity_get_organization_id(entity);
 	json_object_foreach_member(object, copy_member, copy);
 	json_node_take_object(node, g_steal_pointer(&copy));
-	return venture_serializable_from_json(VENTURE_SERIALIZABLE(entity), node, error);
+	if (!venture_serializable_from_json(VENTURE_SERIALIZABLE(entity), node, error))
+		return FALSE;
+	if (venture_entity_get_organization_id(entity) != organization_id)
+		return refuse(error, "A template cannot change its target organization");
+	return TRUE;
 }
 
 static JsonArray *
@@ -300,7 +326,7 @@ advance(VentureRecurringService *self, VentureEntity *schedule, gint64 index, GD
 	g_autoptr(GDateTime) start = NULL;
 	g_autoptr(GDateTime) next = NULL;
 	gint frequency = choice(schedule, "frequency");
-	g_object_get(schedule, "start-at", &start, NULL);
+	start = schedule_start(schedule);
 	next = cycle_date(start, frequency, index + 1);
 	g_object_set(schedule, "cycle-index", index + 1, "next-run-at", next,
 		"last-generated-at", at, "last-error", err, NULL);
@@ -518,23 +544,32 @@ run_schedule(VentureRecurringService *self, VentureEntity *schedule, GDateTime *
 {
 	g_autoptr(GDateTime) start = NULL;
 	g_autoptr(GDateTime) end = NULL;
+	g_autoptr(GDateTime) local_as_of = NULL;
 	gint64 index;
 	gint created = 0;
 	gint frequency;
 	guint n;
 	if (flag(schedule, "paused"))
 		return 0;
-	g_object_get(schedule, "start-at", &start, "end-at", &end, "cycle-index", &index, NULL);
+	g_object_get(schedule, "end-at", &end, "cycle-index", &index, NULL);
+	start = schedule_start(schedule);
 	frequency = choice(schedule, "frequency");
 	if (start == NULL)
 		return refuse(error, "A schedule needs a start date") ? -1 : -1;
+	local_as_of = g_date_time_to_timezone(as_of, g_date_time_get_timezone(start));
+	if (end != NULL)
+	{
+		GDateTime *local_end = g_date_time_to_timezone(end, g_date_time_get_timezone(start));
+		g_date_time_unref(end);
+		end = local_end;
+	}
 	for (n = 0; n < 1200; n++)
 	{
 		g_autoptr(GDateTime) at = cycle_date(start, frequency, index);
 		g_autofree gchar *stamp = NULL;
 		g_autofree gchar *key = NULL;
 		g_autoptr(VentureEntity) existing = NULL;
-		if (at == NULL || day_compare(at, as_of) > 0)
+		if (at == NULL || day_compare(at, local_as_of) > 0)
 			break;
 		if (end != NULL && day_compare(at, end) > 0)
 			break;
@@ -705,7 +740,7 @@ documents_from_json(const gchar *payload, GError **error)
 }
 
 static gchar **
-split_csv_line(const gchar *line, guint *count)
+split_csv_line(const gchar *line, guint *count, GError **error)
 {
 	GPtrArray *parts = g_ptr_array_new_with_free_func(g_free);
 	GString *cur = g_string_new(NULL);
@@ -731,6 +766,13 @@ split_csv_line(const gchar *line, guint *count)
 		else if (*p != '\r')
 			g_string_append_c(cur, *p);
 	}
+	if (quoted)
+	{
+		g_string_free(cur, TRUE);
+		g_ptr_array_unref(parts);
+		refuse(error, "CSV has an unterminated quoted field; multiline fields are not supported");
+		return NULL;
+	}
 	g_ptr_array_add(parts, g_string_free(cur, FALSE));
 	*count = parts->len;
 	g_ptr_array_add(parts, NULL);
@@ -753,7 +795,24 @@ documents_from_csv(const gchar *payload, const gchar *kind, GError **error)
 		refuse(error, "CSV needs a header row");
 		return NULL;
 	}
-	headers = split_csv_line(lines[0], &header_n);
+	headers = split_csv_line(lines[0], &header_n, error);
+	if (headers == NULL)
+		goto invalid;
+	for (i = 0; i < header_n; i++)
+	{
+		guint j;
+		if (venture_string_is_empty(headers[i]))
+		{
+			refuse(error, "CSV headers must be nonempty");
+			goto invalid;
+		}
+		for (j = 0; j < i; j++)
+			if (g_strcmp0(headers[i], headers[j]) == 0)
+			{
+				refuse(error, "CSV headers must be unique");
+				goto invalid;
+			}
+	}
 	for (i = 1; lines[i] != NULL; i++)
 	{
 		g_auto(GStrv) cols = NULL;
@@ -764,7 +823,14 @@ documents_from_csv(const gchar *payload, const gchar *kind, GError **error)
 		const gchar *number = NULL;
 		if (venture_string_is_empty(lines[i]) || lines[i][0] == '\0')
 			continue;
-		cols = split_csv_line(lines[i], &n);
+		cols = split_csv_line(lines[i], &n, error);
+		if (cols == NULL)
+			goto invalid;
+		if (n != header_n)
+		{
+			refuse(error, "CSV rows must have the same field count as the header");
+			goto invalid;
+		}
 		for (c = 0; c < header_n && c < n; c++)
 		{
 			json_object_set_string_member(object, headers[c], cols[c]);
@@ -779,6 +845,19 @@ documents_from_csv(const gchar *payload, const gchar *kind, GError **error)
 		{
 			JsonObject *existing = g_hash_table_lookup(invoices, number);
 			JsonNode *lines_node = json_object_get_member(existing, "lines");
+			/* Group only rows describing the same invoice header. Otherwise a
+			 * second customer's line could be billed to the first customer. */
+			for (c = 0; c < header_n; c++)
+			{
+				if (g_strcmp0(headers[c], "description") == 0 || g_strcmp0(headers[c], "quantity") == 0 ||
+					g_strcmp0(headers[c], "unit_price") == 0)
+					continue;
+				if (g_strcmp0(venture_json_object_get_string(existing, headers[c], NULL), cols[c]) != 0)
+				{
+					refuse(error, "CSV rows sharing an invoice number must agree on header fields");
+					goto invalid;
+				}
+			}
 			json_array_add_object_element(json_node_get_array(lines_node), json_object_ref(line));
 			continue;
 		}
@@ -794,6 +873,10 @@ documents_from_csv(const gchar *payload, const gchar *kind, GError **error)
 	}
 	g_hash_table_unref(invoices);
 	return docs;
+invalid:
+	g_hash_table_unref(invoices);
+	json_array_unref(docs);
+	return NULL;
 }
 
 static gboolean
@@ -835,13 +918,16 @@ create_batch_invoice(VentureRecurringService *self, JsonObject *object, gint64 o
 		return refuse(error, "Each invoice needs company_id");
 	if (empty_text(invoice, "number"))
 		return refuse(error, "Each invoice needs a number");
-	issued = json_object_get_string_member(object, "issued_at");
+	issued = venture_json_object_get_string(object, "issued_at", NULL);
 	if (!venture_string_is_empty(issued))
 	{
 		at = venture_time_from_string(issued, error);
 		if (at == NULL)
 			return FALSE;
-		g_object_set(invoice, "issued-at", at, "due-at", at, NULL);
+		/* Preserve explicit payment terms from the batch document. */
+		g_object_set(invoice, "issued-at", at, NULL);
+		if (!json_object_has_member(object, "due_at"))
+			g_object_set(invoice, "due-at", at, NULL);
 	}
 	{
 		g_autofree gchar *n = NULL;
@@ -884,8 +970,8 @@ create_batch_expense(VentureRecurringService *self, JsonObject *object, gint64 o
 	return TRUE;
 }
 
-JsonNode *
-venture_recurring_service_batch(VentureRecurringService *self, const gchar *kind,
+static JsonNode *
+batch_for_organization(VentureRecurringService *self, gint64 org, const gchar *kind,
 	const gchar *format, const gchar *payload, gboolean post, gboolean dry_run,
 	const VentureActor *actor, GError **error)
 {
@@ -895,7 +981,6 @@ venture_recurring_service_batch(VentureRecurringService *self, const gchar *kind
 	JsonBuilder *builder;
 	JsonNode *result;
 	guint i;
-	gint64 org;
 	g_return_val_if_fail(VENTURE_IS_RECURRING_SERVICE(self), NULL);
 	if (venture_string_is_empty(payload))
 	{
@@ -910,19 +995,29 @@ venture_recurring_service_batch(VentureRecurringService *self, const gchar *kind
 	docs = (g_strcmp0(format, "csv") == 0) ? documents_from_csv(payload, kind, error) : documents_from_json(payload, error);
 	if (docs == NULL)
 		return NULL;
-	org = 0;
+	if (org <= 0)
+	{
+		refuse(error, "A batch requires an organization");
+		return NULL;
+	}
 	if (!venture_database_begin(self->database, error))
 		return NULL;
 	for (i = 0; i < json_array_get_length(docs); i++)
 	{
-		JsonObject *object = json_array_get_object_element(docs, i);
+		JsonNode *item = json_array_get_element(docs, i);
+		JsonObject *object;
 		const gchar *identity;
 		gboolean ok;
-		if (org == 0)
-			org = 1;
+		if (!JSON_NODE_HOLDS_OBJECT(item))
+		{
+			refuse(error, "Every batch document must be an object");
+			venture_database_rollback(self->database);
+			return NULL;
+		}
+		object = json_node_get_object(item);
 		if (g_strcmp0(kind, "invoice") == 0)
 		{
-			identity = json_object_get_string_member(object, "number");
+			identity = venture_json_object_get_string(object, "number", NULL);
 			if (!seen_value(seen, identity, error, "Duplicate invoice number in payload"))
 			{
 				venture_database_rollback(self->database);
@@ -932,7 +1027,7 @@ venture_recurring_service_batch(VentureRecurringService *self, const gchar *kind
 		}
 		else
 		{
-			identity = json_object_get_string_member(object, "external_id");
+			identity = venture_json_object_get_string(object, "external_id", NULL);
 			if (!seen_value(seen, identity, error, "Duplicate expense external_id in payload"))
 			{
 				venture_database_rollback(self->database);
@@ -963,6 +1058,33 @@ venture_recurring_service_batch(VentureRecurringService *self, const gchar *kind
 	return result;
 }
 
+/* Legacy direct callers use the same explicitly flagged default as context. */
+static gint64
+default_organization(VentureRecurringService *self)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
+	g_autoptr(VentureEntity) organization = NULL;
+	venture_query_add_filter_string(query, "is-default", VENTURE_FILTER_OP_EQ, "true", NULL);
+	organization = venture_database_find_one(self->database, query, NULL);
+	if (organization == NULL)
+	{
+		g_clear_object(&query);
+		query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
+		organization = venture_database_find_one(self->database, query, NULL);
+	}
+	return organization != NULL ? venture_entity_get_id(organization) : 0;
+}
+
+JsonNode *
+venture_recurring_service_batch(VentureRecurringService *self, const gchar *kind,
+	const gchar *format, const gchar *payload, gboolean post, gboolean dry_run,
+	const VentureActor *actor, GError **error)
+{
+	g_return_val_if_fail(VENTURE_IS_RECURRING_SERVICE(self), NULL);
+	return batch_for_organization(self, default_organization(self), kind, format,
+		payload, post, dry_run, actor, error);
+}
+
 static void
 get_collection_property(GObject *object, guint id, GValue *value, GParamSpec *spec)
 {
@@ -990,6 +1112,7 @@ static void
 collection_finalize(GObject *object)
 {
 	VentureCollectionService *self = VENTURE_COLLECTION_SERVICE(object);
+	g_weak_ref_clear(&self->context);
 	if (self->database != NULL)
 		g_object_remove_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
 	G_OBJECT_CLASS(venture_collection_service_parent_class)->finalize(object);
@@ -1010,7 +1133,14 @@ venture_collection_service_class_init(VentureCollectionServiceClass *klass)
 static void
 venture_collection_service_init(VentureCollectionService *self)
 {
-	(void)self;
+	g_weak_ref_init(&self->context, NULL);
+}
+
+void
+venture_collection_service_set_context(VentureCollectionService *self, VentureContext *context)
+{
+	g_return_if_fail(VENTURE_IS_COLLECTION_SERVICE(self));
+	g_weak_ref_set(&self->context, context);
 }
 
 static gint
@@ -1056,7 +1186,8 @@ stopped(VentureCollectionService *self, VentureEntity *invoice, VentureEntity *k
 	g_autofree gchar *workflow = NULL;
 	gint status;
 	g_object_get(invoice, "status", &status, "workflow-state", &workflow, NULL);
-	if (status == VENTURE_INVOICE_STATUS_PAID || status == VENTURE_INVOICE_STATUS_VOID)
+	/* Drafts are internal proposals, not customer obligations to collect. */
+	if (status != VENTURE_INVOICE_STATUS_SENT && status != VENTURE_INVOICE_STATUS_PARTIALLY_PAID)
 		return TRUE;
 	if (g_strcmp0(workflow, "disputed") == 0)
 		return TRUE;
@@ -1089,6 +1220,7 @@ queue_notice(VentureCollectionService *self, VentureContext *context, VentureEnt
 	g_autofree gchar *number = NULL;
 	g_autofree gchar *subject = NULL;
 	g_autofree gchar *body = NULL;
+	g_autoptr(VentureContext) reporting_context = NULL;
 	gint64 org = venture_entity_get_organization_id(invoice);
 	gint64 company_id = 0;
 	existing = find_notice(self->database, org, key);
@@ -1109,18 +1241,33 @@ queue_notice(VentureCollectionService *self, VentureContext *context, VentureEnt
 		return venture_database_save(self->database, notice, actor, error);
 	}
 	subject = g_strdup_printf("%s %s", action == 1 ? "Statement" : action == 2 ? "Escalation" : "Reminder", number ? number : "");
-	if (action == 1 && context != NULL)
+	if (action == 1)
 	{
-		VentureReport *report = venture_report_registry_lookup(venture_context_get_report_registry(context), "customer_statement");
+		VentureReport *report;
 		g_autoptr(JsonObject) options = json_object_new();
 		g_autoptr(VentureReportResult) statement = NULL;
+		g_autoptr(VentureMoney) balance = NULL;
+		g_autofree gchar *as_of_text = g_date_time_format_iso8601(as_of);
 		g_autofree gchar *id_text = g_strdup_printf("%" G_GINT64_FORMAT, company_id);
+		reporting_context = context != NULL ? g_object_ref(context) : g_weak_ref_get(&self->context);
+		if (reporting_context == NULL)
+			return refuse(error, "Statement delivery requires a reporting context");
+		report = venture_report_registry_lookup(venture_context_get_report_registry(reporting_context), "customer_statement");
+		if (report == NULL)
+			return refuse(error, "Customer statements are unavailable");
 		json_object_set_string_member(options, "customer_id", id_text);
 		json_object_set_int_member(options, "organization_id", org);
-		if (report != NULL)
-			statement = venture_report_generate(report, context, NULL, options, NULL);
-		body = statement ? g_strdup_printf("Customer statement for invoice %s.", number ? number : "") :
-			g_strdup_printf("Please find your customer statement. Invoice %s remains outstanding.", number ? number : "");
+		json_object_set_string_member(options, "as_of", as_of_text);
+		balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(self->database),
+			venture_entity_get_id(invoice), NULL, error);
+		if (balance == NULL)
+			return FALSE;
+		json_object_set_string_member(options, "currency", venture_money_get_currency(balance));
+		statement = venture_report_generate(report, reporting_context, NULL, options, error);
+		if (statement == NULL)
+			return FALSE;
+		/* Use the report's canonical renderer instead of an empty cover letter. */
+		body = venture_report_result_render(statement, VENTURE_OUTPUT_FORMAT_ORG);
 	}
 	else
 		body = g_strdup_printf("Invoice %s is overdue. Please arrange payment.", number ? number : "");
@@ -1182,15 +1329,14 @@ run_policy_invoices(VentureCollectionService *self, VentureContext *context, Ven
 		for (s = 0; s < steps->len; s++)
 		{
 			VentureEntity *step = g_ptr_array_index(steps, s);
-			gint offset;
+			gint64 offset;
 			gint action;
 			g_autofree gchar *key = NULL;
 			if (!flag(step, "active"))
 				continue;
 			g_object_get(step, "day-offset", &offset, "action", &action, NULL);
-			if (offset >= 0 && days < offset)
-				continue;
-			if (offset < 0 && days > offset)
+			/* Offsets share the same threshold on either side of the due date. */
+			if (days < offset)
 				continue;
 			key = g_strdup_printf("inv:%" G_GINT64_FORMAT ":step:%" G_GINT64_FORMAT,
 				venture_entity_get_id(invoice), venture_entity_get_id(step));
@@ -1215,10 +1361,16 @@ run_policy_invoices(VentureCollectionService *self, VentureContext *context, Ven
 			g_autoptr(VentureEntity) kase = NULL;
 			if (customer <= 0 || g_hash_table_contains(customers, GINT_TO_POINTER(customer)))
 				continue;
-			g_hash_table_add(customers, GINT_TO_POINTER(customer));
 			kase = ensure_case(self, org, venture_entity_get_id(invoice), venture_entity_get_id(policy), actor, error);
+			if (kase == NULL)
+			{
+				g_hash_table_unref(customers);
+				return -1;
+			}
 			if (stopped(self, invoice, kase, as_of))
 				continue;
+			/* A paid first invoice must not hide this customer's open invoices. */
+			g_hash_table_add(customers, GINT_TO_POINTER(customer));
 			key = g_strdup_printf("stmt:%" G_GINT64_FORMAT ":%s", customer, month);
 			{
 				g_autoptr(VentureEntity) before = find_notice(self->database, org, key);
@@ -1413,6 +1565,10 @@ batch_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params,
 {
 	VentureRecurringService *self = venture_action_get_data(action);
 	g_autofree gchar *type_name = NULL;
+	g_autofree gchar *stored = NULL;
+	g_autofree gchar *stored_format = NULL;
+	gboolean stored_post = FALSE;
+	gint64 org = param_id(params, "organization_id");
 	const gchar *kind = param_string(params, "kind");
 	const gchar *format = param_string(params, "format");
 	const gchar *payload = param_string(params, "payload");
@@ -1424,20 +1580,27 @@ batch_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params,
 		kind = "invoice";
 	if (VENTURE_IS_FINANCIAL_BATCH(entity))
 	{
-		g_autofree gchar *stored = NULL;
 		gint stored_kind = 0;
-		g_object_get(entity, "payload", &stored, "format", &format, "kind", &stored_kind, "auto-post", NULL, NULL);
+		/* Keep borrowed views alive through the import; every g_object_get
+		 * output must point at storage of the property's actual type. */
+		g_object_get(entity, "payload", &stored, "format", &stored_format, "kind", &stored_kind, "auto-post", &stored_post, NULL);
 		if (payload == NULL)
 			payload = stored;
 		if (kind == NULL)
 			kind = stored_kind == 1 ? "expense" : "invoice";
 		if (format == NULL)
-			g_object_get(entity, "format", &format, NULL);
+			format = stored_format;
+		org = venture_entity_get_organization_id(entity);
 	}
+	if (org <= 0 && entity != NULL)
+		org = venture_entity_get_organization_id(entity);
+	if (org <= 0)
+		org = default_organization(self);
 	if (format == NULL)
 		format = "json";
-	result = venture_recurring_service_batch(self, kind ? kind : "invoice", format, payload,
-		param_bool(params, "post"), param_bool(params, "dry_run"), actor, error);
+	result = batch_for_organization(self, org, kind ? kind : "invoice", format, payload,
+		param_node(params, "post") != NULL ? param_bool(params, "post") : stored_post,
+		param_bool(params, "dry_run"), actor, error);
 	if (result == NULL)
 		return NULL;
 	if (VENTURE_IS_FINANCIAL_BATCH(entity))

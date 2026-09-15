@@ -238,6 +238,7 @@ test_role_matrix(gconstpointer data)
 	g_autoptr(VentureEntity) company = NULL;
 	g_autoptr(VentureEntity) expense = NULL;
 	g_autoptr(VentureEntity) thread = NULL;
+	g_autoptr(VentureEntity) approval_rule = NULL;
 	VentureAuthPrincipal actor = { 0 };
 	VentureAccessPolicy *policy;
 	gint role;
@@ -276,6 +277,7 @@ test_role_matrix(gconstpointer data)
 	company = g_object_new(VENTURE_TYPE_COMPANY, "organization-id", org, "owner-user-id", actor.user_id, NULL);
 	expense = g_object_new(VENTURE_TYPE_EXPENSE, "organization-id", org, NULL);
 	thread = g_object_new(VENTURE_TYPE_CHAT_THREAD, "organization-id", org, NULL);
+	approval_rule = g_object_new(VENTURE_TYPE_ACCOUNTING_APPROVAL_RULE, "organization-id", org, NULL);
 	for (role = VENTURE_ORGANIZATION_ROLE_VIEWER; role <= VENTURE_ORGANIZATION_ROLE_SUPPORT; role++)
 	{
 		gboolean finance = role == VENTURE_ORGANIZATION_ROLE_OWNER || role == VENTURE_ORGANIZATION_ROLE_ADMIN || role == VENTURE_ORGANIZATION_ROLE_FINANCE;
@@ -289,6 +291,11 @@ test_role_matrix(gconstpointer data)
 		g_assert_cmpint(venture_access_policy_can(policy, &actor, "delete", company, NULL), ==, role != VENTURE_ORGANIZATION_ROLE_VIEWER);
 		g_assert_cmpint(venture_access_policy_can(policy, &actor, "read", expense, NULL), ==, finance);
 		g_assert_cmpint(venture_access_policy_can(policy, &actor, "write", expense, NULL), ==, finance);
+		/* Finance may operate under the rule, but only administrators set it. */
+		g_assert_cmpint(venture_access_policy_can(policy, &actor, "write", approval_rule, NULL), ==,
+			role == VENTURE_ORGANIZATION_ROLE_OWNER || role == VENTURE_ORGANIZATION_ROLE_ADMIN);
+		g_assert_cmpint(venture_access_policy_can(policy, &actor, "delete", approval_rule, NULL), ==,
+			role == VENTURE_ORGANIZATION_ROLE_OWNER || role == VENTURE_ORGANIZATION_ROLE_ADMIN);
 		/* Organization administration must never grant another user's personal records. */
 		g_object_set(thread, "user-id", actor.user_id + 100, NULL);
 		g_assert_false(venture_access_policy_can(policy, &actor, "read", thread, NULL));

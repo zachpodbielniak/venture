@@ -66,7 +66,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `forge set-token ID` | set a forge's access token, read from stdin |
 | `forge set-secret ID` | set or generate its webhook secret |
 | `forge verify ID` | record which account the token belongs to |
-| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID]` | list reports, or run one with an optional historical cutoff and legal entity |
+| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID] [basis=cash\|accrual] [dimension=VALUE]` | list reports, or run one with an optional historical cutoff, legal entity, accounting basis and dimension |
 | `links TYPE ID` | every link touching a record, read from it |
 | `link TYPE ID TYPE ID [kind=K] [note=T]` | link two records; kinds: related, blocks, blocked_by, depends_on, required_by, parent_of, child_of, duplicates, causes, caused_by, produces, produced_by, references, referenced_by, supersedes, superseded_by; unlink with `delete record_link ID` |
 | `reconcile suggest TYPE ID [--matcher NAME] [--threshold N]` | rank matching book records; scores above the threshold (default 80) stage bank transaction action confirmations when banking is installed; never applies |
@@ -107,7 +107,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `act TYPE ID ACTION [key=value ...]` | discover and perform a business action; `--stage` proposes it |
 | `recurring run [--as-of DATE] [--dry-run]` | generate due invoices, bills, expenses and journals |
 | `collections run [--as-of DATE]` | queue overdue invoice reminders through the outbox |
-| `batch invoice\|expense [--dry-run]` | all-or-nothing CSV/JSON document create |
+| `batch invoice\|expense format=csv\|json payload=... [post=false] [--dry-run]` | all-or-nothing CSV/JSON document create |
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 
@@ -462,6 +462,8 @@ status directly; the service refuses it.
 `billing renew --as-of DATE [--dry-run]` sweeps due periods;
 `billing dunning --as-of DATE [--dry-run]` records dunning notices/actions.
 Pass `organization_id=N` to choose the legal entity. Dry runs write nothing.
+`billing collect` records confirmed manual payments only; an authorized card/ACH mandate does not execute a provider charge and is refused here.
+
 `--stage` holds a billing action for approval. The assistant's generated
 create tool can instead stage `billing_request` with `action`, `at`,
 `organization_id` and the relevant subscription/customer/price fields.
@@ -505,6 +507,10 @@ see `docs/leads.org` for definitions and public capture forms.
 ## Planned activities
 
 `activity complete ID outcome=...` completes a planned activity, writes interaction history and advances recurrence atomically. `activity list mine|overdue|today` reads your daily worklist. Generic `create activity` and `update activity` edit the plan; generic `status=done` is refused. The existing `activity TYPE ID` command still reads a record timeline. Use `report worklist organization_id=ID` for the current UTC week per owner.
+## Portal invitations
+
+`supplier invite company_id=ID email=ADDR` queues the private supplier access link through the mail outbox. Configure an HTTPS `server.base_url` and enable mail first, then deliver the outbox. The response contains redacted access metadata, never the bearer token. Revoke with `supplier revoke ID`.
+
 ## Vendor payables
 
 Run `describe vendor_bill` and `describe vendor_bill_line` before creating

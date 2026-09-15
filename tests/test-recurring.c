@@ -353,11 +353,25 @@ test_collection_reminders(Fixture *f, gconstpointer unused)
 	save(f, step);
 	issue_overdue(f);
 	notices = venture_collection_service_run(venture_collection_service_get(f->db),
-		f->context, f->org, as_of, NULL, &error);
+		NULL, f->org, as_of, NULL, &error);
 	g_assert_no_error(error);
 	g_assert_cmpint(notices, >=, 1);
 	g_assert_cmpint(count(f, "collection_notice"), >=, 1);
 	g_assert_cmpint(count(f, "mail_message"), >=, 1);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+		g_autoptr(VentureEntity) statement = NULL;
+		g_autofree gchar *body = NULL;
+		venture_query_set_organization(query, f->org);
+		venture_query_add_filter_string(query, "subject", VENTURE_FILTER_OP_EQ, "Statement INV-DUE", NULL);
+		statement = venture_database_find_one(f->db, query, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(statement);
+		g_object_get(statement, "text-body", &body, NULL);
+		/* A cover letter that discards the report has no balances to collect. */
+		g_assert_nonnull(strstr(body, "* Customer statement"));
+		g_assert_nonnull(strstr(body, "40.00"));
+	}
 	notices = venture_collection_service_run(venture_collection_service_get(f->db),
 		f->context, f->org, as_of, NULL, &error);
 	g_assert_no_error(error);
@@ -475,6 +489,178 @@ test_batch_dry_run(Fixture *f, gconstpointer unused)
 	g_assert_cmpint(count(f, "invoice"), ==, 0);
 }
 
+/* Before-due reminders start at their threshold, never weeks early. */
+static void
+test_collection_negative_offset(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) policy = record(f, "collection_policy");
+	g_autoptr(VentureEntity) step = record(f, "collection_step");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) early = venture_time_from_string("2026-01-01", NULL);
+	g_autoptr(GDateTime) due = venture_time_from_string("2026-01-08", NULL);
+	(void)unused;
+	g_object_set(policy, "name", "Before due", "active", TRUE, NULL);
+	save(f, policy);
+	g_object_set(step, "policy-id", venture_entity_get_id(policy), "day-offset", (gint64)-3, "active", TRUE, NULL);
+	save(f, step);
+	issue_overdue(f);
+	g_assert_cmpint(venture_collection_service_run(venture_collection_service_get(f->db),
+		f->context, f->org, early, NULL, &error), ==, 0);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_collection_service_run(venture_collection_service_get(f->db),
+		f->context, f->org, due, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+}
+
+/* The saved payload must outlive property extraction and stay in its organization. */
+static void
+test_saved_batch_action(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) other = record(f, "organization");
+	g_autoptr(VentureEntity) batch = record(f, "financial_batch");
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_EXPENSE);
+	g_autoptr(GPtrArray) expenses = NULL;
+	g_autoptr(GHashTable) params = g_hash_table_new(g_str_hash, g_str_equal);
+	g_autoptr(GError) error = NULL;
+	gint64 org;
+	(void)unused;
+	g_object_set(other, "name", "Other books", "legal-name", "Other books", "default-currency", "USD", NULL);
+	save(f, other);
+	org = venture_entity_get_id(other);
+	g_object_set(batch, "name", "Reusable expense", "organization-id", org,
+		"kind", 1, "format", "json", "auto-post", FALSE,
+		"payload", "[{\"description\":\"Supplies\",\"amount\":\"12 USD\",\"occurred_at\":\"2026-01-01\",\"external_id\":\"saved-1\"}]", NULL);
+	save(f, batch);
+	result = venture_action_registry_perform(venture_database_get_action_registry(f->db),
+		"financial_batch", venture_entity_get_id(batch), "apply", params, NULL, VENTURE_USER_ROLE_OWNER, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	venture_query_set_organization(query, org);
+	expenses = venture_database_find(f->db, query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(expenses->len, ==, 1);
+	g_assert_cmpint(count(f, "expense"), ==, 0);
+}
+
+/* Invalid array members must be validation failures, not JSON-GLib criticals. */
+static void
+test_batch_invalid_member(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	(void)unused;
+	g_assert_null(venture_recurring_service_batch(venture_recurring_service_get(f->db),
+		"invoice", "json", "[42]", FALSE, FALSE, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
+/* Calendar recurrence must retain local wall time across daylight saving time. */
+static void
+test_schedule_timezone(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) schedule = monthly_invoice(f, "2026-03-01T14:00:00Z");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) as_of = venture_time_from_string("2026-03-01T23:00:00Z", NULL);
+	g_autoptr(GDateTime) next = NULL;
+	g_autoptr(GDateTime) expected = venture_time_from_string("2026-04-01T13:00:00Z", NULL);
+	gint64 id = venture_entity_get_id(schedule);
+	(void)unused;
+	g_object_set(schedule, "timezone", "America/New_York", NULL);
+	save(f, schedule);
+	g_assert_cmpint(venture_recurring_service_run(venture_recurring_service_get(f->db),
+		f->org, as_of, FALSE, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	g_clear_object(&schedule);
+	schedule = venture_database_get(f->db, VENTURE_TYPE_RECURRING_SCHEDULE, id, &error);
+	g_assert_no_error(error);
+	g_object_get(schedule, "next-run-at", &next, NULL);
+	g_assert_nonnull(next);
+	g_assert_cmpint(g_date_time_compare(next, expected), ==, 0);
+}
+
+/* Malformed CSV must never silently lose a column or merge different customers. */
+static void
+test_batch_invalid_csv(Fixture *f, gconstpointer unused)
+{
+	static const gchar *const payloads[] = {
+		"description,amount\n\"Supplies,12 USD\n",
+		"description,amount\nSupplies,12 USD,extra\n",
+		"description,amount\nSupplies\n",
+		"description,description\nSupplies,Other\n",
+		"number,company_id,description,quantity,unit_price\nINV,1,A,1,10 USD\nINV,2,B,1,10 USD\n"
+	};
+	guint i;
+	(void)unused;
+	for (i = 0; i < G_N_ELEMENTS(payloads); i++)
+	{
+		g_autoptr(GError) error = NULL;
+		g_assert_null(venture_recurring_service_batch(venture_recurring_service_get(f->db),
+			i == 4 ? "invoice" : "expense", "csv", payloads[i], FALSE, FALSE, NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	}
+}
+
+/* Drive the real CLI against the real action route: a missing forwarded payload
+ * used to make every convenience batch invocation fail before creating a row. */
+typedef struct
+{
+	gboolean done;
+	gchar *out;
+	gchar *err;
+	GError *error;
+} BatchCliResult;
+
+static void
+batch_cli_finished(GObject *process, GAsyncResult *result, gpointer data)
+{
+	BatchCliResult *state = data;
+	g_subprocess_communicate_utf8_finish(G_SUBPROCESS(process), result,
+		&state->out, &state->err, &state->error);
+	state->done = TRUE;
+}
+
+static void
+test_batch_cli(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GSocketListener) probe = g_socket_listener_new();
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(GSubprocess) process = NULL;
+	g_autofree gchar *directory = g_dir_make_tmp("venture-batch-cli-XXXXXX", NULL);
+	g_autofree gchar *url = NULL;
+	guint port = g_socket_listener_add_any_inet_port(probe, NULL, &error);
+	BatchCliResult state;
+	(void)unused;
+	g_assert_no_error(error);
+	g_clear_object(&probe);
+	url = g_strdup_printf("http://127.0.0.1:%u", port);
+	g_object_set(f->config, "security-require-auth", FALSE,
+		"server-bind-address", "127.0.0.1", "server-port", (gint64)port,
+		"state-dir", directory, NULL);
+	server = venture_web_server_new(f->context, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(server, &error));
+	g_assert_no_error(error);
+	state.done = FALSE; state.out = NULL; state.err = NULL; state.error = NULL;
+	process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE,
+		&error, "build/debug/venturectl", "--server", url, "-f", "json", "batch", "expense",
+		"format=csv", "post=false",
+		"payload=description,amount,occurred_at,vendor,external_id\nCoffee,4.50 USD,2026-01-01,Cafe,cli-exp-1\n", NULL);
+	g_assert_no_error(error);
+	g_subprocess_communicate_utf8_async(process, NULL, NULL, batch_cli_finished, &state);
+	while (!state.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(state.error);
+	g_test_message("batch CLI stderr: %s", state.err);
+	g_assert_true(g_subprocess_get_successful(process));
+	g_assert_cmpint(count(f, "expense"), ==, 1);
+	g_free(state.out);
+	g_free(state.err);
+	venture_web_server_stop(server);
+	g_clear_object(&server);
+	venture_test_remove_tree(directory);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -494,5 +680,11 @@ main(int argc, char **argv)
 	g_test_add("/batch/all_or_nothing", Fixture, NULL, setup, test_batch_all_or_nothing, teardown);
 	g_test_add("/batch/csv_expenses", Fixture, NULL, setup, test_batch_csv_expenses, teardown);
 	g_test_add("/batch/dry_run", Fixture, NULL, setup, test_batch_dry_run, teardown);
+	g_test_add("/batch/invalid-member", Fixture, NULL, setup, test_batch_invalid_member, teardown);
+	g_test_add("/batch/saved-action", Fixture, NULL, setup, test_saved_batch_action, teardown);
+	g_test_add("/collections/negative-offset", Fixture, NULL, setup, test_collection_negative_offset, teardown);
+	g_test_add("/recurring/timezone", Fixture, NULL, setup, test_schedule_timezone, teardown);
+	g_test_add("/batch/invalid-csv", Fixture, NULL, setup, test_batch_invalid_csv, teardown);
+	g_test_add("/batch/cli", Fixture, NULL, setup, test_batch_cli, teardown);
 	return g_test_run();
 }

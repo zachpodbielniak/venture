@@ -192,7 +192,7 @@ refresh_po_status(VenturePurchasingService *self, VentureEntity *po, const Ventu
 		received += got;
 	}
 	if (received <= 0)
-		return TRUE;
+		return set_status(self, po, "sent", actor, error);
 	return set_status(self, po, received >= ordered ? "received" : "partial", actor, error);
 }
 
@@ -483,8 +483,11 @@ venture_purchasing_service_match(VenturePurchasingService *self, gint64 purchase
 			"vendor-bill-id", vendor_bill_id, NULL);
 	if (g_object_class_find_property(G_OBJECT_GET_CLASS(bill), "purchase-order-id") != NULL)
 		g_object_set(bill, "purchase-order-id", purchase_order_id, NULL);
-	if (!save_owned(self, po, actor, error))
+	/* Linking the order, allocating GRNI and linking the bill are one match result. */
+	if (!venture_database_begin(self->database, error))
 		return FALSE;
+	if (!save_owned(self, po, actor, error))
+		goto fail;
 	{
 		g_autoptr(GError) ignored = NULL;
 		g_autoptr(VentureQuery) query = NULL;
@@ -511,19 +514,27 @@ venture_purchasing_service_match(VenturePurchasingService *self, gint64 purchase
 				grni = venture_entity_get_id(found);
 		}
 		if (grni == 0)
-			return refuse(error, "the goods-received-not-invoiced control account is missing");
+		{
+			refuse(error, "the goods-received-not-invoiced control account is missing");
+			goto fail;
+		}
 	}
 	bill_lines = find_rows(self, VENTURE_TYPE_VENDOR_BILL_LINE, "bill-id", vendor_bill_id, error);
 	if (bill_lines == NULL)
-		return FALSE;
+		goto fail;
 	for (i = 0; i < bill_lines->len; i++)
 	{
 		if (grni != 0)
 			g_object_set(g_ptr_array_index(bill_lines, i), "account-id", grni, NULL);
 		if (!save_owned(self, g_ptr_array_index(bill_lines, i), actor, error))
-			return FALSE;
+			goto fail;
 	}
-	return save_owned(self, bill, actor, error);
+	if (!save_owned(self, bill, actor, error) || !venture_database_commit(self->database, error))
+		goto fail;
+	return TRUE;
+fail:
+	venture_database_rollback(self->database);
+	return FALSE;
 }
 
 gboolean

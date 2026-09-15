@@ -8,12 +8,14 @@ The =goods= module owns =sales_order=, =sales_order_line= and
 an =inventory_item=. =is-service= marks a line that may be invoiced
 without a shipment.
 
-=allocate= checks on-hand quantity. =ship= writes a =fulfillment=,
+=allocate= checks on-hand quantity after other lines' unshipped reservations. =ship= writes a =fulfillment=,
 consumes FIFO and posts COGS. =invoice= / =invoice_fulfilled= compose
 an invoice through =VentureDocumentService= and issue it through
 =VentureSettlementService=. Stocked lines cannot be invoiced for more
 than has been fulfilled. Service lines may invoice their ordered
 quantity immediately.
+
+Generic order-line edits are allowed only while both the stored and proposed parent orders are drafts. Allocation, fulfillment and invoiced counters are service-owned. Cancellation releases reservations and prevents further allocation, shipment or invoicing; fulfilled or invoiced orders cannot be cancelled.
 
 #+begin_src sh
 venturectl sales-order allocate 1

@@ -214,6 +214,53 @@ test_atomic_approval(Fixture *f, gconstpointer data)
 	g_assert_cmpint(state, ==, VENTURE_JOURNAL_DRAFT);
 }
 
+/* Switching token labels cannot turn one authenticated account into two
+ * people. Omitting the audit actor also must not discard request authority. */
+static void
+test_account_identity(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureAccountingApprovalRule) rule = venture_accounting_approval_rule_new();
+	g_autoptr(VentureJournal) journal = NULL;
+	g_autoptr(VentureEntity) approval = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	VentureAuthPrincipal principal;
+	VentureActor actor;
+	gchar first_name[] = "first-token";
+	gchar second_name[] = "second-token";
+	(void)data;
+	g_object_set(rule, "organization-id", f->org, "action", "post", "require-second-actor", TRUE, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(rule), NULL, &error));
+	journal = draft_journal(f);
+	principal.authenticated = TRUE;
+	principal.user_id = 101;
+	principal.token_id = 1;
+	principal.name = first_name;
+	principal.role = VENTURE_USER_ROLE_OWNER;
+	venture_auth_to_actor(&principal, &actor);
+	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+	g_assert_false(venture_accounting_approval_allow(f->db, "post", VENTURE_ENTITY(journal), NULL, &actor, &approval, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	g_clear_object(&scope);
+	principal.token_id = 2;
+	principal.name = second_name;
+	venture_auth_to_actor(&principal, &actor);
+	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+	g_assert_false(venture_accounting_approval_allow(f->db, "post", VENTURE_ENTITY(journal), NULL, &actor, &approval, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	g_assert_false(venture_accounting_approval_allow(f->db, "post", VENTURE_ENTITY(journal), NULL, NULL, &approval, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	g_clear_object(&scope);
+	principal.user_id = 102;
+	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+	g_assert_true(venture_accounting_approval_allow(f->db, "post", VENTURE_ENTITY(journal), NULL, &actor, &approval, &error));
+	g_assert_no_error(error);
+	g_assert_nonnull(approval);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -221,5 +268,6 @@ main(int argc, char **argv)
 	g_test_add("/approvals/post-second-actor", Fixture, NULL, setup, test_post_requires_second_actor, teardown);
 	g_test_add("/approvals/pay-second-actor", Fixture, NULL, setup, test_pay_requires_second_actor, teardown);
 	g_test_add("/approvals/atomic", Fixture, NULL, setup, test_atomic_approval, teardown);
+	g_test_add("/approvals/account-identity", Fixture, NULL, setup, test_account_identity, teardown);
 	return g_test_run();
 }

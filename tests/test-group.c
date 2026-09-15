@@ -267,6 +267,14 @@ test_elimination(Fixture *f, gconstpointer data)
 		g_assert_cmpint(cell_org(trial, "1100", "elimination", "current"), ==, -10000);
 		g_assert_false(has_org_key(balances, "4000", "elimination"));
 		g_assert_true(has_org_key(trial, "4000", "elimination"));
+		/* Revenue debits reduce retained earnings; source P&L rows also roll into equity. */
+		g_assert_cmpint(cell_org(balances, "equity", "elimination", "current"), ==, -10000);
+		{
+			g_autofree gchar *parent_label = g_strdup_printf("%" G_GINT64_FORMAT, f->parent);
+			g_assert_false(has_org_key(balances, "4000", parent_label));
+			g_assert_cmpint(cell_org(balances, "equity", parent_label, "current"), ==, 10000);
+			g_assert_cmpint(cell_org(trial, "4000", parent_label, "credits"), ==, 10000);
+		}
 	}
 }
 
@@ -297,7 +305,8 @@ test_elimination_credit_income(Fixture *f, gconstpointer data)
 	income = venture_group_service_consolidated(venture_group_service_get(f->db),
 		f->parent, "consolidated_income_statement", period, "USD", &error);
 	g_assert_no_error(error);
-	g_assert_cmpint(cell_key(income, "income", "current"), ==, 0);
+	/* A credit increases revenue; calling a journal an elimination does not change its sign. */
+	g_assert_cmpint(cell_key(income, "income", "current"), ==, 20000);
 }
 
 int

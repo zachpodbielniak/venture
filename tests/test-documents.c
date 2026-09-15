@@ -172,32 +172,108 @@ test_compose_quote_and_send(Fixture *f, gconstpointer data)
 }
 
 static guint
+count_documents(Fixture *f, GType type)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(type);
+	return (guint)venture_database_count(f->db, query, NULL);
+}
+
+static void
+test_invalid_compose(Fixture *f, gconstpointer data)
+{
+	static const gchar *const payloads[] = {
+		"{\"lines\":[null]}",
+		"{\"lines\":[7]}",
+		"{\"lines\":[{\"description\":\"Work\",\"quantity\":[],\"unit_price\":\"1 USD\"}]}",
+		"{\"lines\":[{\"description\":\"Work\",\"quantity\":1,\"unit_price\":\"invalid\"}]}"
+	};
+	guint i;
+	(void)data;
+	/* Invalid request bodies must return an error, not trigger a GLib critical or leave headers. */
+	for (i = 0; i < G_N_ELEMENTS(payloads); i++)
+	{
+		g_autoptr(JsonParser) parser = json_parser_new();
+		g_autoptr(GError) error = NULL;
+		g_autoptr(VentureEntity) invoice = NULL;
+		g_autoptr(VentureEntity) quote = NULL;
+		JsonObject *spec;
+		g_assert_true(json_parser_load_from_data(parser, payloads[i], -1, &error));
+		spec = json_node_get_object(json_parser_get_root(parser));
+		json_object_set_int_member(spec, "company_id", f->company);
+		invoice = venture_document_service_compose_invoice(venture_document_service_get(f->db),
+			f->org, spec, NULL, &error);
+		g_assert_null(invoice);
+		g_assert_nonnull(error);
+		g_clear_error(&error);
+		quote = venture_document_service_compose_quote(venture_document_service_get(f->db),
+			f->org, spec, NULL, &error);
+		g_assert_null(quote);
+		g_assert_nonnull(error);
+		g_assert_cmpuint(count_documents(f, VENTURE_TYPE_INVOICE), ==, 0);
+		g_assert_cmpuint(count_documents(f, VENTURE_TYPE_QUOTE), ==, 0);
+	}
+}
+
+static void
+test_fractional_quote_refused(Fixture *f, gconstpointer data)
+{
+	g_autoptr(JsonObject) spec = invoice_spec(f, FALSE);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) quote = NULL;
+	(void)data;
+	/* Whole-unit quote quantities must not silently truncate 1.5 hours to one. */
+	quote = venture_document_service_compose_quote(venture_document_service_get(f->db),
+		f->org, spec, NULL, &error);
+	g_assert_null(quote);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_cmpuint(count_documents(f, VENTURE_TYPE_QUOTE), ==, 0);
+}
+
+typedef struct
+{
+	gboolean done;
+	GBytes *bytes;
+	GError *error;
+} DocumentResponse;
+
+static void
+document_response_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+	DocumentResponse *response = data;
+	response->bytes = soup_session_send_and_read_finish(SOUP_SESSION(source), result, &response->error);
+	response->done = TRUE;
+}
+
+static guint
 http_request(VentureWebServer *server, const gchar *method, const gchar *path,
 	const gchar *body, gchar **out)
 {
 	g_autoptr(SoupSession) session = soup_session_new_with_options("timeout", 15, NULL);
 	g_autoptr(SoupMessage) message = NULL;
-	g_autoptr(GBytes) bytes = NULL;
-	g_autoptr(GError) error = NULL;
 	g_autofree gchar *url = g_strconcat(venture_web_server_get_base_url(server), path, NULL);
-	GBytes *response;
+	DocumentResponse response;
+	memset(&response, 0, sizeof(response));
 	message = soup_message_new(method, url);
 	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
 	if (body != NULL)
 	{
 		g_autoptr(GBytes) payload = g_bytes_new(body, strlen(body));
-		soup_message_set_request_body_from_bytes(message, "application/json", payload);
+		soup_message_set_request_body_from_bytes(message,
+			g_str_has_prefix(body, "compose-form=") ? "application/x-www-form-urlencoded" : "application/json", payload);
 	}
-	response = soup_session_send_and_read(session, message, NULL, &error);
-	g_assert_no_error(error);
-	if (out && response)
-		*out = g_strndup(g_bytes_get_data(response, NULL), g_bytes_get_size(response));
-	g_clear_pointer(&response, g_bytes_unref);
+	/* The server shares this context, so a blocking client would deadlock the fixture. */
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, document_response_done, &response);
+	while (!response.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(response.error);
+	if (out && response.bytes)
+		*out = g_strndup(g_bytes_get_data(response.bytes, NULL), g_bytes_get_size(response.bytes));
+	g_clear_pointer(&response.bytes, g_bytes_unref);
 	return soup_message_get_status(message);
 }
 
 static void
-G_GNUC_UNUSED test_http_compose(Fixture *f, gconstpointer data)
+test_http_compose(Fixture *f, gconstpointer data)
 {
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureWebServer) server = NULL;
@@ -219,7 +295,18 @@ G_GNUC_UNUSED test_http_compose(Fixture *f, gconstpointer data)
 	json_node_take_object(node, json_object_ref(spec));
 	json = venture_json_to_string(node, FALSE);
 	g_assert_cmpuint(http_request(server, "POST", "/api/v1/invoices/compose", json, NULL), ==, 200);
-	(void)body;
+	g_assert_cmpuint(http_request(server, "GET", "/invoices/compose", NULL, &body), ==, 200);
+	g_assert_nonnull(strstr(body, "form-grid"));
+	g_assert_nonnull(strstr(body, "line-0-description"));
+	g_assert_null(strstr(body, "name=\"payload\""));
+	{
+		g_autofree gchar *form = g_strdup_printf("compose-form=1&company-id=%" G_GINT64_FORMAT
+			"&line-0-description=Work&line-0-quantity=2&line-0-unit-price=50+USD", f->company);
+		guint status = http_request(server, "POST", "/invoices/compose", form, NULL);
+		g_assert_cmpuint(status, >=, 300);
+		g_assert_cmpuint(status, <, 400);
+	}
+	venture_web_server_stop(server);
 	venture_test_remove_tree(dir);
 }
 
@@ -229,6 +316,8 @@ main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/documents/compose-invoice", Fixture, NULL, setup, test_compose_invoice_and_send, teardown);
 	g_test_add("/documents/compose-quote", Fixture, NULL, setup, test_compose_quote_and_send, teardown);
-	/* HTTP covered by cutover-style async in other suites */
+	g_test_add("/documents/invalid-compose", Fixture, NULL, setup, test_invalid_compose, teardown);
+	g_test_add("/documents/fractional-quote", Fixture, NULL, setup, test_fractional_quote_refused, teardown);
+	g_test_add("/documents/http-compose", Fixture, NULL, setup, test_http_compose, teardown);
 	return g_test_run();
 }

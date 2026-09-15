@@ -341,6 +341,9 @@ role_allows(VentureAccessPolicy *self, const VentureAuthPrincipal *actor,
 		return FALSE;
 	if (manager)
 		return TRUE;
+	/* A payer must not disable the second-person rule that constrains it. */
+	if (VENTURE_IS_ACCOUNTING_APPROVAL_RULE(entity) && !read)
+		return FALSE;
 	if (payroll_type(entity) && role != VENTURE_ORGANIZATION_ROLE_FINANCE)
 		return FALSE;
 	if (finance_type(entity) && role != VENTURE_ORGANIZATION_ROLE_FINANCE)

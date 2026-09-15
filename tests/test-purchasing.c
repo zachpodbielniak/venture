@@ -142,6 +142,22 @@ first_line_id(Fixture *f, gint64 po_id)
 	return venture_entity_get_id(g_ptr_array_index(rows, 0));
 }
 
+static gboolean
+reject_match_once(VentureDatabase *db, VentureEntity *record, VentureEntity *previous,
+	gpointer data, GError **error)
+{
+	(void)record;
+	(void)data;
+	/* Inject a final-header failure after the order and bill lines were already saved. */
+	if (previous != NULL && g_object_get_data(G_OBJECT(db), "reject-match") != NULL)
+	{
+		g_object_set_data(G_OBJECT(db), "reject-match", NULL);
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Rejected matching bill");
+		return FALSE;
+	}
+	return TRUE;
+}
+
 static void
 test_receive_and_three_way(Fixture *f, gconstpointer unused)
 {
@@ -182,6 +198,18 @@ test_receive_and_three_way(Fixture *f, gconstpointer unused)
 		"description", "Widget", "quantity", "10", "purchase-order-line-id", line_id, NULL);
 	field(bill_line, "unit-price", "4 USD");
 	save(f, bill_line);
+	venture_database_add_save_validator(f->db, VENTURE_TYPE_VENDOR_BILL, reject_match_once, NULL, NULL);
+	g_object_set_data(G_OBJECT(f->db), "reject-match", GINT_TO_POINTER(1));
+	g_assert_false(venture_purchasing_service_match(venture_purchasing_service_get(f->db),
+		po_id, venture_entity_get_id(bill), FALSE, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	{
+		g_autoptr(VentureEntity) stored = fresh(f, "purchase_order", po_id);
+		gint64 linked = 0;
+		g_object_get(stored, "vendor-bill-id", &linked, NULL);
+		g_assert_cmpint(linked, ==, 0);
+	}
 	g_assert_true(venture_purchasing_service_match(venture_purchasing_service_get(f->db),
 		po_id, venture_entity_get_id(bill), FALSE, NULL, &error));
 	g_assert_no_error(error);
@@ -270,6 +298,15 @@ test_cancel_and_return(Fixture *f, gconstpointer unused)
 		line_id, 5, date, NULL, &error));
 	g_assert_no_error(error);
 	g_assert_cmpint(venture_inventory_service_on_hand(venture_inventory_service_get(f->db), f->item, NULL, &error), ==, 0);
+	/* A complete return reopens the order for replacements and subsequent cancellation. */
+	g_assert_true(venture_purchasing_service_receive_line(venture_purchasing_service_get(f->db),
+		line_id, 5, date, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_purchasing_service_return_line(venture_purchasing_service_get(f->db),
+		line_id, 5, date, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_purchasing_service_cancel(venture_purchasing_service_get(f->db), received_id, date, NULL, &error));
+	g_assert_no_error(error);
 }
 
 static void

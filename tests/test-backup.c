@@ -412,6 +412,53 @@ test_postgresql_schema_visibility(void)
 	venture_test_accounting_database_cleanup(first);
 }
 
+/* Legacy archives are operator input too: malformed JSON must return a
+ * validation error without a GLib critical or any partially imported chart. */
+static void
+test_legacy_validation(Fixture *f, gconstpointer data)
+{
+	static const gchar *const valid = "{\"version\":3,\"accounts\":[{\"code\":\"1000\",\"kind\":0},{\"code\":\"4000\",\"kind\":3}],"
+		"\"journals\":[{\"source_type\":\"organization\",\"occurred_at\":\"2026-01-01T00:00:00Z\",\"currency\":\"USD\","
+		"\"lines\":[{\"account_code\":\"1000\",\"side\":\"debit\",\"amount\":\"10 USD\"},"
+		"{\"account_code\":\"4000\",\"side\":\"credit\",\"amount\":\"10 USD\"}]}],"
+		"\"invoices\":[],\"vendor_bills\":[],\"bank_accounts\":[],\"payments\":[],\"allocations\":[],"
+		"\"invoice_events\":[],\"refund\":[],\"customer_credit\":[],\"company\":[]}";
+	const gchar *mode = data;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) node = venture_json_parse(valid, &error);
+	g_autoptr(VentureOrganization) destination = venture_organization_new();
+	g_autofree gchar *payload = NULL;
+	JsonObject *root = json_node_get_object(node);
+	JsonObject *journal = json_array_get_object_element(json_object_get_array_member(root, "journals"), 0);
+	gint64 org;
+	g_assert_no_error(error);
+	if (g_str_equal(mode, "account"))
+		json_array_add_int_element(json_object_get_array_member(root, "accounts"), 7);
+	else if (g_str_equal(mode, "date"))
+		json_object_set_string_member(journal, "occurred_at", "not-a-date");
+	else if (g_str_equal(mode, "lines"))
+		json_object_set_int_member(journal, "lines", 7);
+	else if (g_str_equal(mode, "side"))
+		json_object_set_string_member(json_array_get_object_element(json_object_get_array_member(journal, "lines"), 1), "side", "typo");
+	payload = venture_json_to_string(node, FALSE);
+	g_object_set(destination, "name", "Legacy target", "default-currency", "USD", NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(destination), NULL, &error));
+	org = venture_entity_get_id(VENTURE_ENTITY(destination));
+	if (g_str_equal(mode, "valid"))
+	{
+		g_assert_true(venture_backup_service_restore(venture_backup_service_get(f->db), org, payload, NULL, &error));
+		g_assert_no_error(error);
+		g_assert_cmpint(count_type(f, org, VENTURE_TYPE_JOURNAL), ==, 1);
+	}
+	else
+	{
+		g_assert_false(venture_backup_service_restore(venture_backup_service_get(f->db), org, payload, NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_cmpint(count_type(f, org, VENTURE_TYPE_ACCOUNT), ==, 0);
+		g_assert_cmpint(count_type(f, org, VENTURE_TYPE_JOURNAL), ==, 0);
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -422,6 +469,15 @@ main(int argc, char **argv)
 	g_test_add("/backup/csv", Fixture, NULL, setup, test_csv_export, teardown);
 	g_test_add("/backup/manual-import", Fixture, NULL, setup, test_manual_import, teardown);
 	g_test_add("/backup/cross-database", Fixture, NULL, setup, test_cross_database, teardown);
+	{
+		static const gchar *const modes[] = { "valid", "account", "date", "lines", "side" };
+		guint i;
+		for (i = 0; i < G_N_ELEMENTS(modes); i++)
+		{
+			g_autofree gchar *name = g_strconcat("/backup/legacy/", modes[i], NULL);
+			g_test_add(name, Fixture, modes[i], setup, test_legacy_validation, teardown);
+		}
+	}
 	{
 		static const gchar *const modes[] = { "duplicate", "duplicate-uuid", "attributes", "missing-field", "missing-customer", "missing-projection", "unbalanced", "late-failure" };
 		guint i;

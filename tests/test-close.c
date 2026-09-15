@@ -167,6 +167,10 @@ test_signoff_and_complete(Fixture *f, gconstpointer unused)
 	g_assert_true(venture_close_service_sign(venture_close_service_get(f->db),
 		workspace, "preparer", &closer, &error));
 	g_assert_no_error(error);
+	g_assert_false(venture_close_service_sign(venture_close_service_get(f->db),
+		workspace, "reviewer", &closer, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
 	g_assert_true(venture_close_service_sign(venture_close_service_get(f->db),
 		workspace, "reviewer", &owner, &error));
 	g_assert_no_error(error);
@@ -191,6 +195,25 @@ test_signoff_and_complete(Fixture *f, gconstpointer unused)
 	}
 	g_assert_true(venture_close_service_reopen(venture_close_service_get(f->db),
 		workspace, &owner, &error));
+	g_assert_no_error(error);
+	/* Historical signatures remain evidence, not approval of a reopened cycle. */
+	g_assert_false(venture_close_service_sign(venture_close_service_get(f->db),
+		workspace, "reviewer", &owner, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_assert_true(venture_close_service_run_checks(venture_close_service_get(f->db),
+		workspace, &closer, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_close_service_complete(venture_close_service_get(f->db),
+		workspace, &closer, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_assert_true(venture_close_service_sign(venture_close_service_get(f->db),
+		workspace, "preparer", &closer, &error));
+	g_assert_true(venture_close_service_sign(venture_close_service_get(f->db),
+		workspace, "reviewer", &owner, &error));
+	g_assert_true(venture_close_service_complete(venture_close_service_get(f->db),
+		workspace, &closer, &error));
 	g_assert_no_error(error);
 }
 
@@ -233,6 +256,12 @@ test_unmatched_bank_blocks(Fixture *f, gconstpointer unused)
 	g_assert_nonnull(error);
 	g_assert_nonnull(strstr(error->message, "bank"));
 	g_assert_cmpint(count_type(f, "close_discrepancy"), >, 0);
+	/* Flags from an earlier run cannot override accounting that now fails. */
+	g_clear_error(&error);
+	g_object_set(workspace, "tb-balanced", TRUE, "subledger-tied", TRUE, "status", "signed_off", NULL);
+	g_assert_false(venture_close_service_complete(venture_close_service_get(f->db), workspace, &actor, &error));
+	g_assert_nonnull(error);
+	g_assert_nonnull(strstr(error->message, "bank"));
 }
 
 static void
@@ -247,6 +276,10 @@ test_generic_signoff_refused(Fixture *f, gconstpointer unused)
 		"role", "preparer", "actor", "sneak", NULL);
 	g_assert_true(venture_entity_set_field_from_string(sign, "signed-at", "2026-01-31", &error));
 	g_assert_false(venture_database_save(f->db, sign, &actor, &error));
+	g_clear_error(&error);
+	/* Even the editable-looking preparing state cannot mint check results. */
+	g_object_set(workspace, "status", "preparing", "tb-balanced", TRUE, "subledger-tied", TRUE, NULL);
+	g_assert_false(venture_database_save(f->db, workspace, &actor, &error));
 	g_assert_nonnull(error);
 	g_assert_nonnull(strstr(error->message, "VentureCloseService"));
 }

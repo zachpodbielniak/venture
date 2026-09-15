@@ -8,6 +8,8 @@ A plan names a period (=YYYY= or =YYYY-MM=), a book currency and an optional
 default dimension. Each line names an account, a period, an amount and an
 optional dimension.
 
+Period strings must match =YYYY= or =YYYY-MM= exactly; trailing text and out-of-range dates are refused. Named report periods use their calendar bounds rather than their display label.
+
 =VentureBudgetService= compares those lines with posted ledger movement from
 =VentureLedgerBalances=. Expense actuals are period debits less credits;
 income actuals are credits less debits. Variance is actual less budget.

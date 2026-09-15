@@ -124,7 +124,9 @@ venture_portal_service_lookup_supplier(VenturePortalService *self, const gchar *
 	gboolean revoked;
 	g_return_val_if_fail(VENTURE_IS_PORTAL_SERVICE(self), NULL);
 	database = service_database(self);
-	if (token == NULL || strlen(token) != 64)
+	/* Database reads accept concrete GTypes, so enforce the live registry here. */
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "supplier_portal_access") == G_TYPE_INVALID ||
+		token == NULL || strlen(token) != 64)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Not found");
 		return NULL;

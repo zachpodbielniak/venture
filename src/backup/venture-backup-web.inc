@@ -15,6 +15,9 @@ venture_backup_web_export(HtmxRequest *request, GHashTable *params, gpointer use
 	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_ADMIN);
 	if (gate != NULL)
 		return gate;
+	gate = venture_web_require_module_api(self, "backup");
+	if (gate != NULL)
+		return gate;
 	org = requested_org != NULL ? g_ascii_strtoll(requested_org, NULL, 10) :
 		venture_web_active_organization(self, request);
 	if (org <= 0)

@@ -93,6 +93,14 @@ JsonNode *venture_recurring_service_batch(VentureRecurringService *self, const g
 gint venture_collection_service_run(VentureCollectionService *self, VentureContext *context,
 	gint64 organization_id, GDateTime *as_of, const VentureActor *actor, GError **error);
 /**
+ * venture_collection_service_set_context:
+ * @self: collection service
+ * @context: (nullable): reporting context, held weakly
+ *
+ * Supplies reports to collection actions invoked without an explicit context.
+ */
+void venture_collection_service_set_context(VentureCollectionService *self, VentureContext *context);
+/**
  * venture_recurring_register_reports:
  * @registry: registry receiving the registrations
  */

@@ -184,12 +184,14 @@ venture_project_service_bill(VentureProjectService *self, gint64 project_id, GDa
 	venture_entity_set_organization_id(invoice, org);
 	{
 		g_autofree gchar *stamp = date != NULL ? g_date_time_format(date, "%Y%m%d%H%M%S") : g_strdup("now");
-		g_autofree gchar *number_text = g_strdup_printf("PRJ-%s-%s", venture_entity_get_uuid(project), stamp);
+		g_autofree gchar *number_text = g_strdup_printf("PRJ-%s-%s", venture_entity_get_uuid(invoice), stamp);
 		g_object_set(invoice, "number", number_text,
 			"company-id", customer, "venture-id", number(project, "venture-id"),
 			"issued-at", date, "due-at", date, NULL);
 	}
 	if (!venture_database_save(self->database, invoice, actor, error)) goto fail;
+	g_clear_object(&tq);
+	g_clear_pointer(&times, g_ptr_array_unref);
 	tq = venture_query_new(VENTURE_TYPE_PROJECT_TIME);
 	venture_query_set_organization(tq, org);
 	venture_query_set_limit(tq, 0);
@@ -222,6 +224,8 @@ venture_project_service_bill(VentureProjectService *self, gint64 project_id, GDa
 		if (!write_owned(self, allocation, actor, error)) goto fail;
 		billed++;
 	}
+	g_clear_object(&cq);
+	g_clear_pointer(&costs, g_ptr_array_unref);
 	cq = venture_query_new(VENTURE_TYPE_PROJECT_COST);
 	venture_query_set_organization(cq, org);
 	venture_query_set_limit(cq, 0);

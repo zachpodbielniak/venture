@@ -11,7 +11,7 @@ pay, open close-checklist tasks, and capture-inbox rows.
 
 Each action carries a count, a link and a sentence saying why it is on the
 list. A zero count is still listed so an empty inbox is explainable rather
-than missing. Disabled modules are omitted, never shown as errors.
+than missing. Disabled modules are omitted, never shown as errors. A storage failure is reported as an error; it never becomes a zero count or an assurance that the books need no attention.
 
 #+begin_src sh
 venturectl accounting

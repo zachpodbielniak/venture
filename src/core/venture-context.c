@@ -159,6 +159,8 @@ venture_context_new(
 	}
 
 	venture_report_registry_register_builtins(self->reports);
+	/* Registered collection actions need the same reports as explicit callers. */
+	venture_collection_service_set_context(venture_collection_service_get(self->database), self);
 
 	/*
 	 * Modules, resolved against this configuration and applied to the

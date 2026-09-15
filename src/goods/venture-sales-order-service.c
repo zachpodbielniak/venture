@@ -121,6 +121,14 @@ find_rows(VentureSalesOrderService *self, GType type, const gchar *field, gint64
 }
 
 static gboolean
+require_open(VentureEntity *order, GError **error)
+{
+	g_autofree gchar *status = NULL;
+	g_object_get(order, "status", &status, NULL);
+	return g_strcmp0(status, "cancelled") != 0 || refuse(error, "cancelled sales orders cannot be processed");
+}
+
+static gboolean
 refresh_status(VentureSalesOrderService *self, VentureEntity *order, const VentureActor *actor, GError **error)
 {
 	g_autoptr(GPtrArray) lines = NULL;
@@ -160,7 +168,7 @@ venture_sales_order_service_allocate(VentureSalesOrderService *self, gint64 sale
 	g_return_val_if_fail(VENTURE_IS_SALES_ORDER_SERVICE(self), FALSE);
 	(void)date;
 	order = venture_database_get(self->database, VENTURE_TYPE_SALES_ORDER, sales_order_id, error);
-	if (order == NULL)
+	if (order == NULL || !require_open(order, error))
 		return FALSE;
 	lines = find_rows(self, VENTURE_TYPE_SALES_ORDER_LINE, "sales-order-id", sales_order_id, error);
 	if (lines == NULL)
@@ -172,6 +180,8 @@ venture_sales_order_service_allocate(VentureSalesOrderService *self, gint64 sale
 		VentureEntity *line = g_ptr_array_index(lines, i);
 		gboolean service = FALSE;
 		gint64 item_id, qty, on_hand;
+		g_autoptr(GPtrArray) reservations = NULL;
+		guint j;
 		g_object_get(line, "is-service", &service, NULL);
 		if (service)
 		{
@@ -188,7 +198,29 @@ venture_sales_order_service_allocate(VentureSalesOrderService *self, gint64 sale
 			item_id, NULL, error);
 		if (error != NULL && *error != NULL)
 			goto fail;
-		if (on_hand < qty)
+		/* Existing unshipped allocations already promise these units to another line. */
+		reservations = find_rows(self, VENTURE_TYPE_SALES_ORDER_LINE, "inventory-item-id", item_id, error);
+		if (reservations == NULL)
+			goto fail;
+		for (j = 0; j < reservations->len; j++)
+		{
+			VentureEntity *other = g_ptr_array_index(reservations, j);
+			g_autoptr(VentureEntity) other_order = NULL;
+			g_autofree gchar *status = NULL;
+			gint64 reserved;
+			if (venture_entity_get_id(other) == venture_entity_get_id(line))
+				continue;
+			other_order = venture_database_get(self->database, VENTURE_TYPE_SALES_ORDER,
+				get_id(other, "sales-order-id"), error);
+			if (other_order == NULL)
+				goto fail;
+			g_object_get(other_order, "status", &status, NULL);
+			if (g_strcmp0(status, "cancelled") == 0)
+				continue;
+			reserved = MAX((gint64)0, get_int(other, "allocated-qty") - get_int(other, "fulfilled-qty"));
+			on_hand -= MIN(MAX((gint64)0, on_hand), reserved);
+		}
+		if (on_hand < qty - get_int(line, "fulfilled-qty"))
 		{
 			refuse(error, "not enough stock to allocate");
 			goto fail;
@@ -234,7 +266,7 @@ venture_sales_order_service_ship_line(VentureSalesOrderService *self, gint64 sal
 	item_id = get_id(line, "inventory-item-id");
 	when = date != NULL ? g_date_time_ref(date) : venture_time_now();
 	order = venture_database_get(self->database, VENTURE_TYPE_SALES_ORDER, get_id(line, "sales-order-id"), error);
-	if (order == NULL)
+	if (order == NULL || !require_open(order, error))
 		return FALSE;
 	if (!venture_database_begin(self->database, error))
 		return FALSE;
@@ -271,7 +303,7 @@ invoice_qty(VentureSalesOrderService *self, gint64 sales_order_id, gboolean fulf
 	gboolean any = FALSE;
 	guint i;
 	order = venture_database_get(self->database, VENTURE_TYPE_SALES_ORDER, sales_order_id, error);
-	if (order == NULL)
+	if (order == NULL || !require_open(order, error))
 		return FALSE;
 	lines = find_rows(self, VENTURE_TYPE_SALES_ORDER_LINE, "sales-order-id", sales_order_id, error);
 	if (lines == NULL)
@@ -399,8 +431,9 @@ venture_sales_order_service_cancel(VentureSalesOrderService *self, gint64 sales_
 		return FALSE;
 	for (i = 0; i < lines->len; i++)
 	{
-		if (get_int(g_ptr_array_index(lines, i), "fulfilled-qty") > 0)
-			return refuse(error, "fulfilled sales orders cannot be cancelled");
+		if (get_int(g_ptr_array_index(lines, i), "fulfilled-qty") > 0 ||
+			get_int(g_ptr_array_index(lines, i), "invoiced-qty") > 0)
+			return refuse(error, "fulfilled or invoiced sales orders cannot be cancelled");
 	}
 	g_object_set(order, "status", "cancelled", NULL);
 	return save_owned(self, order, actor, error);

@@ -556,11 +556,16 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 			for (m = 0; m < methods->len; m++)
 			{
 				VentureEntity *method = g_ptr_array_index(methods, m);
-				if (number(method, "company-id") == number(sub, "company-id") && flag(method, "authorized"))
+				g_autofree gchar *method_name = NULL;
+				g_object_get(method, "method", &method_name, NULL);
+				/* A stored mandate is not proof that a processor collected cash.
+				 * This path records only an operator-confirmed manual receipt. */
+				if (number(method, "company-id") == number(sub, "company-id") &&
+					flag(method, "authorized") && g_strcmp0(method_name, "manual") == 0)
 					authorized = TRUE;
 			}
 			if (!authorized)
-				return refuse(error, VENTURE_ERROR_VALIDATION, "collection requires an authorized customer payment method");
+				return refuse(error, VENTURE_ERROR_VALIDATION, "collection requires an authorized manual payment method; processor methods need verified settlement");
 			events = rows(self, VENTURE_TYPE_SUBSCRIPTION_EVENT, org, error);
 			if (events == NULL)
 				return FALSE;

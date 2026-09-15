@@ -108,6 +108,21 @@ test_guides_next_actions(Fixture *f, gconstpointer unused)
 	g_assert_nonnull(strstr(json_object_get_string_member(bills, "reason"), "approved"));
 }
 
+/* Missing data must be an error, never a reassuring zero-work dashboard. */
+static void
+test_storage_error(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) home = NULL;
+	const gchar *table = data;
+	g_autofree gchar *sql = g_strdup_printf("DROP TABLE %s", table);
+	g_assert_true(venture_database_execute(f->db, sql, NULL, &error));
+	g_assert_no_error(error);
+	home = venture_accounting_home(f->context, f->org, &error);
+	g_assert_null(home);
+	g_assert_nonnull(error);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -115,5 +130,7 @@ main(int argc, char **argv)
 	venture_entity_registry_register_builtins(venture_entity_registry_get_default());
 	g_test_add("/accounting/empty", Fixture, NULL, setup, test_empty_home_is_explainable, teardown);
 	g_test_add("/accounting/bills", Fixture, NULL, setup, test_guides_next_actions, teardown);
+	g_test_add("/accounting/storage-count", Fixture, "bank_transactions", setup, test_storage_error, teardown);
+	g_test_add("/accounting/storage-rows", Fixture, "invoices", setup, test_storage_error, teardown);
 	return g_test_run();
 }

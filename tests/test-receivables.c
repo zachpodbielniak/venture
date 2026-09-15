@@ -1733,6 +1733,27 @@ test_deferred_revenue(Fixture *f, gconstpointer data)
 	g_assert_cmpint(venture_asset_service_run_period(venture_asset_service_get(f->database), "2026-02",
 		f->organization_id, FALSE, NULL, &error), ==, 1);
 	assert_book_balance(f, "4000", "2026-03-01T00:00:00Z", -10000);
+	/* Accrual recognition does not become cash revenue until receipt. */
+	{
+		g_autoptr(JsonObject) options = json_object_new();
+		g_autoptr(VentureDateRange) period = venture_date_range_parse("2026-01", NULL, 1, &error);
+		g_autoptr(VentureReportResult) result = NULL;
+		VentureReport *report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "income_statement");
+		guint i;
+		json_object_set_string_member(options, "basis", "cash");
+		json_object_set_string_member(options, "currency", "USD");
+		result = venture_report_generate(report, f->context, period, options, &error);
+		g_assert_no_error(error);
+		for (i = 0; i < venture_report_result_get_row_count(result); i++)
+		{
+			const GValue *key = venture_report_result_get_cell(result, i, "key");
+			if (key != NULL && g_strcmp0(g_value_get_string(key), "income") == 0)
+			{
+				const VentureMoney *value = g_value_get_boxed(venture_report_result_get_cell(result, i, "current"));
+				g_assert_cmpint(value->amount, ==, 0);
+			}
+		}
+	}
 }
 
 /* The integrated workflow must recognize each receipt once, accept a
@@ -1880,6 +1901,30 @@ test_tax_code_liability(Fixture *f, gconstpointer data)
 		}
 	}
 	g_assert_true(found);
+	/* The next month's liability excludes this prior-period issue. */
+	g_clear_object(&result);
+	g_clear_pointer(&period, venture_date_range_free);
+	period = venture_date_range_parse("2026-05", timezone, 1, &error);
+	g_assert_no_error(error);
+	result = venture_report_generate(report, f->context, period, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 0);
+	{
+		g_autoptr(VentureEntity) credit = record_new(f, "customer_credit");
+		const VentureMoney *liability;
+		g_object_set(credit, "customer-id", f->customer_id, "kind", "credit_note", NULL);
+		money_field(credit, "date", "2026-05-02");
+		money_field(credit, "amount", "10 USD");
+		money_field(credit, "tax-amount", "1 USD");
+		save(f, credit);
+		g_clear_object(&result);
+		result = venture_report_generate(report, f->context, period, NULL, &error);
+		g_assert_no_error(error);
+		g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 1);
+		liability = g_value_get_boxed(venture_report_result_get_cell(result, 0, "liability"));
+		g_assert_cmpint(liability->amount, ==, -100);
+		g_assert_cmpstr(g_value_get_string(venture_report_result_get_cell(result, 0, "code")), ==, "unassigned credit");
+	}
 }
 
 static void
@@ -1986,11 +2031,54 @@ test_foreign_partial_leaves_balance(Fixture *f, gconstpointer data)
 	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
 	save(f, invoice);
 	save_rate(f, "EUR", "USD", 105, 100, "2026-02-01");
+	/* A receipt for another customer must not settle this invoice through
+	 * the FX shortcut, and cash cannot arrive before the issue date. */
+	{
+		g_autoptr(VentureEntity) other = record_new(f, "company");
+		g_object_set(other, "name", "Unrelated customer", NULL);
+		save(f, other);
+		payment = payment_new(f, venture_entity_get_id(invoice), "55 USD", "2026-02-01");
+		g_object_set(payment, "customer-id", venture_entity_get_id(other), NULL);
+		g_assert_false(venture_database_save(f->database, payment, NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_clear_error(&error);
+		g_clear_object(&payment);
+		payment = payment_new(f, venture_entity_get_id(invoice), "55 USD", "2026-01-09");
+		g_assert_false(venture_database_save(f->database, payment, NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_clear_error(&error);
+		g_clear_object(&payment);
+	}
+	/* Document-currency cash cannot clear receivables frozen in USD. */
+	payment = payment_new(f, venture_entity_get_id(invoice), "50 EUR", "2026-02-01");
+	g_assert_false(venture_database_save(f->database, payment, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_clear_object(&payment);
+	assert_status(f, invoice, "sent");
 	payment = payment_new(f, venture_entity_get_id(invoice), "55 USD", "2026-02-01");
 	save(f, payment);
 	assert_status(f, invoice, "partially_paid");
 	g_assert_cmpint(account_balance_amount(f, account_id_for_code(f, "1000"), "2026-02-01T23:59:59Z"), ==, 5500);
 	g_assert_cmpint(account_balance_amount(f, account_id_for_code(f, "1100"), "2026-02-01T23:59:59Z"), !=, 0);
+	/* Excess cash must post once and remain refundable as book-currency
+	 * credit, without trying to subtract document currency from that credit. */
+	g_clear_object(&payment);
+	payment = payment_new(f, venture_entity_get_id(invoice), "60 USD", "2026-02-02");
+	save(f, payment);
+	assert_status(f, invoice, "paid");
+	g_assert_cmpint(account_balance_amount(f, account_id_for_code(f, "1000"), "2026-02-02T23:59:59Z"), ==, 11500);
+	{
+		g_autoptr(GPtrArray) credits = rows(f, "customer_credit");
+		g_autoptr(VentureEntity) refund = record_new(f, "refund");
+		g_assert_cmpuint(credits->len, ==, 1);
+		g_assert_cmpint(amount_field(g_ptr_array_index(credits, 0), "remaining"), ==, 1000);
+		g_object_set(refund, "customer-id", f->customer_id,
+			"credit-id", venture_entity_get_id(g_ptr_array_index(credits, 0)), NULL);
+		money_field(refund, "amount", "10 USD");
+		money_field(refund, "date", "2026-02-03");
+		save(f, refund);
+	}
 }
 
 static void
@@ -2031,6 +2119,30 @@ test_deferred_mixed_terms(Fixture *f, gconstpointer data)
 	deferrals = venture_database_find(f->database, query, &error);
 	g_assert_no_error(error);
 	g_assert_cmpuint(deferrals->len, ==, 2);
+	/* Voiding after one recognition period reverses posted revenue and
+	 * retires future schedules, even if product policy changed meanwhile. */
+	g_assert_cmpint(venture_asset_service_run_period(venture_asset_service_get(f->database),
+		"2026-01", f->organization_id, FALSE, NULL, &error), ==, 2);
+	g_assert_no_error(error);
+	g_object_set(short_product, "recognition-policy", (gint64)0, NULL);
+	save(f, short_product);
+	{
+		g_autoptr(GDateTime) date = venture_time_from_string("2026-02-01", NULL);
+		gint64 invoice_id = venture_entity_get_id(invoice);
+		g_clear_object(&invoice);
+		invoice = venture_database_get(f->database, VENTURE_TYPE_INVOICE, invoice_id, &error);
+		g_assert_no_error(error);
+		g_assert_true(venture_settlement_service_transition(venture_settlement_service_get(f->database),
+			VENTURE_INVOICE(invoice), "void", date, NULL, &error));
+		g_assert_no_error(error);
+	}
+	assert_book_balance(f, "4000", "2026-02-02T00:00:00Z", 0);
+	assert_book_balance(f, "2200", "2026-02-02T00:00:00Z", 0);
+	assert_book_balance(f, "1100", "2026-02-02T00:00:00Z", 0);
+	g_assert_cmpint(venture_asset_service_run_period(venture_asset_service_get(f->database),
+		"2026-02", f->organization_id, FALSE, NULL, &error), ==, 0);
+	g_assert_no_error(error);
+
 }
 
 static void

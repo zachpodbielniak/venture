@@ -365,8 +365,14 @@ import_open_ar(VentureCutoverService *self, VentureEntity *cutover, JsonObject *
 			if (obj_str(row, "tax") != NULL && tax == NULL)
 				return FALSE;
 		}
-		if (tax != NULL && !venture_money_is_zero(net) && venture_money_get_amount(tax) * 100 % venture_money_get_amount(net) == 0)
-			tax_percent = (venture_money_get_amount(tax) * 100) / venture_money_get_amount(net);
+		if (tax != NULL && !venture_money_is_zero(net))
+		{
+			__int128 scaled = (__int128)venture_money_get_amount(tax) * 100;
+			__int128 percent = scaled / venture_money_get_amount(net);
+
+			if (scaled % venture_money_get_amount(net) == 0 && percent >= 0 && percent <= 100)
+				tax_percent = (gint64)percent;
+		}
 		invoice = venture_invoice_new();
 		g_object_set(invoice, "number", obj_str(row, "number"), "company-id", customer_id, NULL);
 		venture_entity_set_organization_id(VENTURE_ENTITY(invoice), org);
@@ -379,9 +385,10 @@ import_open_ar(VentureCutoverService *self, VentureEntity *cutover, JsonObject *
 			"description", "Opening balance", "quantity", 1.0, "tax-percent", tax_percent,
 			"income-amount", net, "tax-amount", tax != NULL ? tax : zero_tax, NULL);
 		venture_entity_set_organization_id(VENTURE_ENTITY(line), org);
-		if (!venture_entity_set_field_from_string(VENTURE_ENTITY(line), "unit-price",
-			obj_str(row, "net") != NULL ? obj_str(row, "net") : obj_str(row, "amount"), error) ||
-			!venture_database_save(self->database, VENTURE_ENTITY(line), actor, error))
+		/* Reuse the parsed amount so a payload currency applies to bare
+		 * decimal strings as well as the frozen income/tax evidence. */
+		g_object_set(line, "unit-price", net, NULL);
+		if (!venture_database_save(self->database, VENTURE_ENTITY(line), actor, error))
 			return FALSE;
 		if (json_object_has_member(row, "tax_exempt") && json_object_get_boolean_member(row, "tax_exempt"))
 			g_object_set(invoice, "tax-exempt", TRUE, "tax-exempt-reason", obj_str(row, "tax_exempt_reason"), NULL);
@@ -566,7 +573,6 @@ trial_balance(VentureCutoverService *self, gint64 org, GDateTime *cutoff, GError
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_JOURNAL);
 	g_autoptr(GPtrArray) journals = NULL;
-	gint64 debit = 0, credit = 0;
 	guint i;
 	venture_query_set_organization(query, org);
 	venture_query_set_limit(query, 0);
@@ -581,6 +587,7 @@ trial_balance(VentureCutoverService *self, gint64 org, GDateTime *cutoff, GError
 		g_autoptr(GPtrArray) lines = NULL;
 		VentureJournalState state;
 		guint j;
+		__int128 debit = 0, credit = 0;
 		g_object_get(journal, "state", &state, "occurred-at", &date, NULL);
 		if (state != VENTURE_JOURNAL_POSTED && state != VENTURE_JOURNAL_REVERSED)
 			continue;
@@ -606,9 +613,11 @@ trial_balance(VentureCutoverService *self, gint64 org, GDateTime *cutoff, GError
 			else
 				credit += venture_money_get_amount(amount);
 		}
+		/* Balance each already single-currency journal separately. This
+		 * cannot net unrelated currencies or overflow across history. */
+		if (debit != credit)
+			return refuse(error, "trial balance does not tie at the cutoff");
 	}
-	if (debit != credit)
-		return refuse(error, "trial balance does not tie at the cutoff");
 	return TRUE;
 }
 
@@ -762,6 +771,9 @@ venture_cutover_service_rollback(VentureCutoverService *self, VentureAccountingC
 	g_object_get(cutover, "state", &state, "cutoff", &cutoff, NULL);
 	if (g_strcmp0(state, "active") == 0)
 		return refuse(error, "an activated cutover cannot be rolled back");
+	/* Retrying rollback must never reverse the reversal and recreate cash. */
+	if (g_strcmp0(state, "rolled_back") == 0)
+		return TRUE;
 	org = venture_entity_get_organization_id(VENTURE_ENTITY(cutover));
 	if (!venture_database_begin(self->database, error))
 		return FALSE;

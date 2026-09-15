@@ -288,6 +288,27 @@ test_schedule_calendar(Fixture *f, gconstpointer data)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 }
 
+/* A pack must not copy another organization's report into its stored output. */
+static void
+test_pack_organization(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) saved = NULL;
+	g_autoptr(VentureReportPack) pack = venture_report_pack_new();
+	g_autoptr(GPtrArray) results = NULL;
+	g_autofree gchar *ids = NULL;
+	(void)data;
+	saved = venture_report_pack_service_save(venture_report_pack_service_get(f->db),
+		f->org, "Private report", "account_balances", "2026-08", NULL, NULL, NULL, &error);
+	g_assert_no_error(error);
+	ids = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(saved));
+	g_object_set(pack, "saved-report-ids", ids, "organization-id", f->org + 1, NULL);
+	results = venture_report_pack_service_run_pack(venture_report_pack_service_get(f->db),
+		f->context, pack, &error);
+	g_assert_null(results);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -297,5 +318,6 @@ main(int argc, char **argv)
 	g_test_add("/report-packs/dimension-org", Fixture, NULL, setup, test_dimension_and_org_scope, teardown);
 	g_test_add("/report-packs/scheduled-dispatch", Fixture, NULL, setup, test_scheduled_dispatch, teardown);
 	g_test_add("/report-packs/calendar", Fixture, NULL, setup, test_schedule_calendar, teardown);
+	g_test_add("/report-packs/pack-organization", Fixture, NULL, setup, test_pack_organization, teardown);
 	return g_test_run();
 }

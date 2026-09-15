@@ -42,3 +42,7 @@ REST version =2025-10= and requires an existing app with order access.
 The web importer uses the active organization; automation uses its explicit
 organization argument. Both share the live connector registry, including
 plugins, and use the same import transaction.
+
+* Exact import boundary
+
+Orders with taxes, discounts, tips, shipping lines, refunds or partial payments are refused before importing the batch because this adapter does not yet map those components to accounting entries. When the provider supplies =total_price=, the composed invoice must equal that total before any receipt is recorded; a mismatch rolls back the entire import, including newly created customers. Resolve unsupported orders through an explicit document and settlement workflow.

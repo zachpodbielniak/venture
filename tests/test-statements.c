@@ -56,6 +56,7 @@ test_registration(Fixture *f, gconstpointer data)
 	g_assert_true(json_object_has_member(properties, "compare_to"));
 	g_assert_true(json_object_has_member(properties, "currency"));
 	g_assert_true(json_object_has_member(properties, "basis"));
+	g_assert_true(json_object_has_member(properties, "dimension"));
 	venture_config_set_module_enabled(f->config, "statements", FALSE);
 	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), data));
 }
@@ -554,7 +555,7 @@ test_surfaces(Fixture *f, gconstpointer data)
 	g_autofree gchar *dir = g_dir_make_tmp("venture-statements-XXXXXX", NULL);
 	g_autofree gchar *base = NULL;
 	g_autofree gchar *body = NULL;
-	const gchar *args[12];
+	const gchar *args[14];
 	Response response = { FALSE, NULL, NULL, NULL, NULL };
 	guint port = g_socket_listener_add_any_inet_port(probe, NULL, &error);
 	(void)data;
@@ -607,6 +608,31 @@ test_surfaces(Fixture *f, gconstpointer data)
 	g_assert_true(g_subprocess_get_successful(child));
 	g_assert_nonnull(strstr(response.out, "Prior"));
 	g_assert_nonnull(strstr(response.out, "300.00"));
+	g_free(response.out);
+	g_free(response.err);
+	/* Filtering survives both web parsers and CLI option forwarding. */
+	g_clear_pointer(&body, g_free);
+	body = http_get(session, base, "/reports/income_statement?period=2026-08&basis=cash&dimension=missing&currency=USD", 200);
+	g_assert_null(strstr(body, "200.00"));
+	g_clear_pointer(&body, g_free);
+	body = http_get(session, base, "/api/v1/reports/general_ledger?period=2026-08&basis=cash&dimension=missing&currency=USD", 200);
+	g_assert_null(strstr(body, "20000"));
+	g_clear_object(&child);
+	args[11] = "basis=cash";
+	args[12] = "dimension=missing";
+	args[13] = NULL;
+	response.done = FALSE;
+	response.out = NULL;
+	response.err = NULL;
+	child = g_subprocess_launcher_spawnv(launcher, args, &error);
+	g_assert_no_error(error);
+	g_subprocess_communicate_utf8_async(child, NULL, NULL, cli_done, &response);
+	while (!response.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(response.error);
+	g_assert_true(g_subprocess_get_successful(child));
+	g_assert_null(strstr(response.out, "300.00"));
+	g_assert_null(strstr(response.out, "200.00"));
 	g_free(response.out);
 	g_free(response.err);
 	venture_config_set_module_enabled(f->config, "statements", FALSE);
@@ -787,6 +813,49 @@ test_cash_basis_refund(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_cmpint(cell(cash_mar, "income", "current"), ==, -10000);
 }
+/* Each side must apportion one rounded cumulative total: half of a two-cent
+ * invoice with equal net/tax legs is one cent, never a one-cent imbalance. */
+static void
+test_cash_split_rounding(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureCompany) customer = venture_company_new();
+	g_autoptr(VentureInvoice) invoice = venture_invoice_new();
+	g_autoptr(VentureInvoiceLine) line = venture_invoice_line_new();
+	g_autoptr(VenturePayment) payment = venture_payment_new();
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(VentureDateRange) period = NULL;
+	g_autoptr(VentureReportResult) sheet = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureReport *report;
+
+	(void)data;
+	g_object_set(customer, "name", "Rounding customer", "organization-id", f->org, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(customer), NULL, &error));
+	g_object_set(invoice, "number", "CASH-CENTS", "company-id", venture_entity_get_id(VENTURE_ENTITY(customer)),
+		"organization-id", f->org, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(invoice), "issued-at", "2026-01-01", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(invoice), NULL, &error));
+	g_object_set(line, "invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)), "description", "Cent",
+		"organization-id", f->org, "quantity", 1.0, "tax-percent", (gint64)100, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(line), "unit-price", "0.01 USD", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(line), NULL, &error));
+	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(invoice), NULL, &error));
+	g_object_set(payment, "customer-id", venture_entity_get_id(VENTURE_ENTITY(customer)),
+		"invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)), "method", "manual", "organization-id", f->org, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(payment), "amount", "0.01 USD", &error));
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(payment), "date", "2026-02-01", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(payment), NULL, &error));
+	g_assert_no_error(error);
+	period = venture_context_parse_period(f->context, "2026-02", &error);
+	json_object_set_string_member(options, "basis", "cash");
+	json_object_set_string_member(options, "currency", "USD");
+	report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "balance_sheet");
+	sheet = venture_report_generate(report, f->context, period, options, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(cell(sheet, "difference", "current"), ==, 0);
+	g_assert_cmpint(cell(sheet, "assets", "current"), ==, 1);
+}
 
 int
 main(int argc, char **argv)
@@ -811,6 +880,7 @@ main(int argc, char **argv)
 	g_test_add("/statements/prior-only", Fixture, NULL, setup, test_prior_only, teardown);
 	g_test_add("/statements/controls", Fixture, NULL, setup, test_controls, teardown);
 	g_test_add("/statements/source-reconciliation", Fixture, NULL, setup, test_source_reconciliation, teardown);
+	g_test_add("/statements/cash-split-rounding", Fixture, NULL, setup, test_cash_split_rounding, teardown);
 	g_test_add("/statements/cash-basis", Fixture, NULL, setup, test_cash_basis, teardown);
 	g_test_add("/statements/cash-basis-write-off", Fixture, NULL, setup, test_cash_basis_write_off, teardown);
 	g_test_add("/statements/cash-basis-refund", Fixture, NULL, setup, test_cash_basis_refund, teardown);

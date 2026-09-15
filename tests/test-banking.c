@@ -770,6 +770,15 @@ test_partial_installments(BankFixture *f, gconstpointer data)
 	result = bank_action(f, "match", 2, "{\"parts\":[{\"type\":\"expense\",\"id\":1,\"amount\":\"-6 USD\"}]}", &error);
 	g_assert_no_error(error); g_assert_nonnull(result);
 	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_MATCH), ==, 2);
+	/* Reversing one installment must never cancel the entire expense. */
+	g_clear_object(&result);
+	result = bank_action(f, "reverse", 1, "{}", &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_MATCH), ==, 2);
+	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_EXPENSE), ==, 1);
+	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_JOURNAL), ==, 1);
 }
 
 /* Retained deleted records are audit evidence, never live match targets. */
@@ -1079,6 +1088,24 @@ test_rule_preview(BankFixture *f, gconstpointer data)
 	result = bank_action(f, "enable", venture_entity_get_id(rule), "{}", &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(result);
+	/* A foreign-currency amount bound cannot match local-currency cash. */
+	{
+		g_autoptr(VentureMoney) bound = venture_money_new_for_currency(-100000, "EUR");
+		gint64 rule_id = venture_entity_get_id(rule);
+		g_clear_object(&rule);
+		rule = venture_database_get(f->database, VENTURE_TYPE_BANK_RULE, rule_id, &error);
+		g_object_set(rule, "amount-min", bound, "enabled", FALSE, NULL);
+		g_assert_true(venture_database_save(f->database, rule, NULL, &error));
+		g_assert_no_error(error);
+		g_clear_object(&result);
+		result = bank_action(f, "preview", rule_id, "{}", &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(result);
+		g_clear_pointer(&preview, g_free);
+		g_object_get(result, "last-preview", &preview, NULL);
+		g_assert_null(strstr(preview, "STARBUCKS"));
+	}
+
 }
 
 /* Unique rule matches categorize in bulk; two rules on one row stay reviewable. */
@@ -1138,6 +1165,18 @@ test_bulk_categorize(BankFixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_EXPENSE), ==, 2);
 	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_MATCH), ==, 2);
+	{
+		g_autoptr(VentureQuery) suggested = venture_query_new(VENTURE_TYPE_BANK_TRANSACTION);
+		g_autoptr(VentureEntity) transaction = NULL;
+		g_autofree gchar *action = NULL;
+
+		venture_query_add_filter_string(suggested, "external-id", VENTURE_FILTER_OP_EQ, "sb-a", NULL);
+		transaction = venture_database_find_one(f->database, suggested, &error);
+		g_assert_no_error(error);
+		g_object_get(transaction, "suggested-action", &action, NULL);
+		g_assert_cmpstr(action, ==, "categorize");
+	}
+
 	g_clear_object(&query);
 	g_clear_pointer(&rows, g_ptr_array_unref);
 	query = venture_query_new(VENTURE_TYPE_BANK_TRANSACTION);
@@ -1160,6 +1199,7 @@ test_bulk_categorize(BankFixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_nonnull(result);
 	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_MATCH), ==, 1);
+	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_EXPENSE), ==, 1);
 }
 
 /* Overlapping statement windows must not duplicate FITIDs. */
@@ -1234,6 +1274,31 @@ test_transfer_balanced(BankFixture *f, gconstpointer data)
 	dest_id = venture_entity_get_id(VENTURE_ENTITY(dest));
 	payload = g_strdup_printf("{\"counterparty_bank_account_id\":%" G_GINT64_FORMAT
 		",\"amount\":\"100 USD\",\"date\":\"2026-01-10\"}", dest_id);
+	/* An unrelated statement debit must not be declared cleared merely
+	 * because the caller supplied its ID alongside an otherwise valid transfer. */
+	{
+		g_autoptr(VentureEntity) statement = bank_import(f, "csv",
+			"date,amount,memo,ref,id\n2026-01-10,-10,Other payment,x,other-transfer\n", "-10 USD", &error);
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_BANK_TRANSACTION);
+		g_autoptr(VentureEntity) transaction = NULL;
+		g_autofree gchar *bad = NULL;
+
+		g_assert_no_error(error);
+		g_assert_nonnull(statement);
+		transaction = venture_database_find_one(f->database, query, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(transaction);
+		bad = g_strdup_printf("{\"counterparty_bank_account_id\":%" G_GINT64_FORMAT
+			",\"amount\":\"100 USD\",\"date\":\"2026-01-10\",\"from_transaction_id\":%" G_GINT64_FORMAT "}",
+			dest_id, venture_entity_get_id(transaction));
+		result = bank_action(f, "transfer", venture_entity_get_id(f->bank), bad, &error);
+		g_assert_null(result);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_clear_error(&error);
+		g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_TRANSFER), ==, 0);
+		g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_MATCH), ==, 0);
+		g_assert_cmpuint(bank_count(f, VENTURE_TYPE_JOURNAL), ==, 0);
+	}
 	result = bank_action(f, "transfer", venture_entity_get_id(f->bank), payload, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(result);

@@ -164,6 +164,10 @@ test_idempotent_rollback(Fixture *f, gconstpointer data)
 		VENTURE_ACCOUNTING_CUTOVER(first), &actor, &error));
 	g_assert_no_error(error);
 	g_assert_cmpint(cash_balance(f, "2026-01-01T00:00:00Z"), ==, 0);
+	g_assert_true(venture_cutover_service_rollback(venture_cutover_service_get(f->db),
+		VENTURE_ACCOUNTING_CUTOVER(first), &actor, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(cash_balance(f, "2026-01-01T00:00:00Z"), ==, 0);
 	g_clear_pointer(&invoices, g_ptr_array_unref);
 	invoices = venture_database_find(f->db, query, &error);
 	g_assert_no_error(error);

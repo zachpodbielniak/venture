@@ -151,6 +151,7 @@ venture_capital_service_post(VentureCapitalService *self, gint64 organization_id
 {
 	g_autoptr(VentureEntity) row = NULL;
 	g_autoptr(GPtrArray) journals = NULL;
+	g_autoptr(GDateTime) effective = NULL;
 	gint64 debit = debit_account_id;
 	gint64 credit = credit_account_id;
 	g_return_val_if_fail(VENTURE_IS_CAPITAL_SERVICE(self), NULL);
@@ -162,8 +163,8 @@ venture_capital_service_post(VentureCapitalService *self, gint64 organization_id
 			"An equity posting needs a legal entity and a positive amount");
 		return NULL;
 	}
-	if (when == NULL)
-		when = venture_time_now();
+	effective = when != NULL ? g_date_time_ref(when) : venture_time_now();
+	when = effective;
 	if (kind == VENTURE_EQUITY_KIND_CONTRIBUTION)
 	{
 		if (debit == 0)

@@ -37,8 +37,7 @@ it cannot replace the invoice remaining. Subscription catalog mapping
 and payment-driven recovery are not implemented.
 Billing invoice lines copy =plan_price.product_id=, so a subscription invoice
 qualifies for Checkout when a =stripe_price_link= exists for that product.
-=billing collect= records an authorized =customer_payment_method= through
-settlement and recovers =past_due=. Do not rewrite issued invoice evidence to
+=billing collect= records an operator-confirmed receipt through an authorized =manual= customer payment method and recovers =past_due=. Processor mandates alone cannot record cash. Do not rewrite issued invoice evidence to
 pass eligibility.
 
 1. Configure an HTTPS webhook endpoint at =/webhooks/stripe= for
@@ -134,3 +133,5 @@ A product link identifies a remote Price, not its value. Before creating a custo
 Both Price validation and signed webhook settlement use Stripe's charge currency units: the documented zero-decimal currencies (including MGA) use exponent zero, while ISK and UGX retain Stripe's two-decimal API representation and must be multiples of 100. See [[https://docs.stripe.com/currencies][Stripe supported currency rules]]. Checked integer arithmetic reconciles these units with an invoice's stored exponent; overflow is refusal, never equality.
 
 Only =POST /webhooks/stripe= uses independent signature authority; an incidental local browser session does not restrict or widen that capability. Signature, payload size and module guards still apply. Neighboring paths and other methods retain local authentication and organization policy.
+
+A lost chargeback requires an open dispute. Repeating the loss action is refused, including partial disputes, so the same dispute cannot reverse a second portion of its receipt.

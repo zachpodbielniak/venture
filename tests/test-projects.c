@@ -124,6 +124,16 @@ test_bill_time_and_cost(Fixture *f, gconstpointer data)
 		f->context, NULL, NULL, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(report);
+	{
+		g_autoptr(VentureEntity) extra = g_object_new(VENTURE_TYPE_PROJECT_TIME,
+			"organization-id", f->org, "project-id", venture_entity_get_id(project),
+			"rate-id", venture_entity_get_id(rate), "minutes", (gint64)60, "occurred-at", date, NULL);
+		/* More approved work on the same day must not collide with the prior invoice number. */
+		g_assert_true(venture_project_service_approve_time(venture_project_service_get(f->db), extra, NULL, &error));
+		invoice = venture_project_service_bill(venture_project_service_get(f->db), venture_entity_get_id(project), date, NULL, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(invoice);
+	}
 }
 
 static void

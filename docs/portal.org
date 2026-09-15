@@ -2,8 +2,7 @@
 #+description: Isolated invoices, statements and pay
 
 =VenturePortalService= issues a 256-bit token for one company. =GET
-/portal/:token= lists that customer's invoices. Pay records a receipt through
-=VentureSettlementService=. Revoke ends access without deleting history.
+/portal/:token= lists that customer's invoices. Pay opens Stripe Checkout; only a verified provider completion records a receipt through =VentureSettlementService=. Revoke ends access without deleting history.
 Unknown or revoked tokens return 404.
 
 * Checkout
@@ -13,3 +12,7 @@ invoice ownership, then opens the existing Stripe Checkout service for the
 server-calculated outstanding balance. A missing Stripe configuration is an
 explicit error. Only verified Stripe completion records a receipt; submitting
 an amount to the portal does not pay an invoice.
+
+* Invitations
+
+=POST /api/v1/customer_portal/invite= accepts =company_id= and =email= for the active organization and requires editor access. Configure =server.base_url= as the public HTTPS URL and enable/configure transactional mail. Invitation creation and outbox enqueue share one transaction; the private link is stored in a sensitive mail-body field and is delivered only by the mail transport. Neither the access token nor the private body appears in generic API, UI, audit or AI output. Unknown, revoked and module-disabled invitations return 404.

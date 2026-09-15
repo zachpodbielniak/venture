@@ -3,6 +3,8 @@
 
 * A filing is a pack, not a live return
 
+Sales-tax preparation nets invoice issue and void events by their event dates, so a void in the same period removes its taxable base and tax; a later void is an adjustment in that later period.
+
 The optional =tax_filing= module requires =finance= and =periods=, and
 suggests =invoicing= and =payables=. Turning it off hides =tax_filing=,
 =contractor_tax_form= and =contractor_tax_pack= together. It does not

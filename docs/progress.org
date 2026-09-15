@@ -6,3 +6,5 @@ invoice. =VentureProgressService= invoices a percent or amount of the original
 total and refuses anything beyond the remaining contract value. Retainers
 debit Cash and credit a configured liability, then release into income.
 Retention is held as a liability against AR and released the same way.
+
+Equal-percentage instalments receive distinct invoice numbers. Explicit progress amounts must use the contract currency, and failed currency arithmetic rolls back releases.

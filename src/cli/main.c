@@ -1144,10 +1144,11 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "customer_id")) && (0 != g_strcmp0(parts[0], "currency")) &&
 				 (0 != g_strcmp0(parts[0], "venture_id")) && (0 != g_strcmp0(parts[0], "group_by")) &&
 				 (0 != g_strcmp0(parts[0], "compare_to")) && (0 != g_strcmp0(parts[0], "account_id")) &&
+				 (0 != g_strcmp0(parts[0], "basis")) && (0 != g_strcmp0(parts[0], "dimension")) &&
 				 (0 != g_strcmp0(parts[0], "vendor_id")) && (0 != g_strcmp0(parts[0], "pipeline_id")) && (0 != g_strcmp0(parts[0], "owner"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -3459,7 +3460,7 @@ main(
 		"  billing renew|dunning        sweep; --as-of DATE, --dry-run\n"
 		"  recurring run               generate due documents; --as-of DATE, --dry-run\n"
 		"  collections run             queue overdue reminders; --as-of DATE\n"
-		"  batch invoice|expense       CSV/JSON all-or-nothing create; --dry-run\n"
+		"  batch invoice|expense format=csv|json payload=... [post=false] [--dry-run]\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
 		"\n"

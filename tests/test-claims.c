@@ -167,6 +167,43 @@ test_duplicate_receipt_hash(Fixture *f, gconstpointer unused)
 }
 
 static void
+test_edit_receipt_hash(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) claim = make_claim(f, "CLM-EDIT", "2026-02-03T00:00:00Z");
+	g_autoptr(VentureEntity) first = receipt_line(f, venture_entity_get_id(claim), "First", "10 USD", 0);
+	g_autoptr(VentureEntity) second = receipt_line(f, venture_entity_get_id(claim), "Second", "10 USD", 0);
+	g_autoptr(GError) error = NULL;
+	(void)unused;
+	/* Existing rows cannot acquire another receipt's hash, but retain their own on edit. */
+	g_object_set(first, "receipt-hash", "first", NULL);
+	g_object_set(second, "receipt-hash", "second", NULL);
+	save(f, first);
+	save(f, second);
+	g_object_set(first, "description", "Updated description", NULL);
+	save(f, first);
+	g_object_set(second, "receipt-hash", "first", NULL);
+	g_assert_false(venture_database_save(f->db, second, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
+static void
+test_move_submitted_line(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) submitted = make_claim(f, "CLM-SUBMITTED", "2026-02-03T00:00:00Z");
+	g_autoptr(VentureEntity) draft = make_claim(f, "CLM-DRAFT", "2026-02-03T00:00:00Z");
+	g_autoptr(VentureEntity) line = receipt_line(f, venture_entity_get_id(submitted), "Taxi", "10 USD", 0);
+	g_autoptr(GError) error = NULL;
+	(void)unused;
+	/* Reparenting must not change the evidence behind the frozen submitted total. */
+	save(f, line);
+	g_assert_true(venture_claims_service_submit(venture_claims_service_get(f->db), submitted, NULL, &error));
+	g_assert_no_error(error);
+	g_object_set(line, "claim-id", venture_entity_get_id(draft), NULL);
+	g_assert_false(venture_database_save(f->db, line, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
+static void
 test_closed_period_refused(Fixture *f, gconstpointer unused)
 {
 	g_autoptr(GError) error = NULL;
@@ -318,6 +355,8 @@ main(int argc, char **argv)
 	g_test_add("/claims/pay-cash", Fixture, NULL, setup, test_submit_approve_pay_cash, teardown);
 	g_test_add("/claims/pay-payable", Fixture, NULL, setup, test_payable_settlement, teardown);
 	g_test_add("/claims/duplicate-hash", Fixture, NULL, setup, test_duplicate_receipt_hash, teardown);
+	g_test_add("/claims/edit-hash", Fixture, NULL, setup, test_edit_receipt_hash, teardown);
+	g_test_add("/claims/move-submitted-line", Fixture, NULL, setup, test_move_submitted_line, teardown);
 	g_test_add("/claims/closed-period", Fixture, NULL, setup, test_closed_period_refused, teardown);
 	g_test_add("/claims/generic-status", Fixture, NULL, setup, test_generic_status_refused, teardown);
 	g_test_add("/claims/module-off", Fixture, NULL, setup, test_module_off, teardown);

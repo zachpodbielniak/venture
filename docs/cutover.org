@@ -28,3 +28,5 @@ page.
 #+begin_src sh
 venturectl action accounting_cutover import 1
 #+end_src
+
+Rollback is idempotent: repeating a completed rollback leaves its reversal journals intact and cannot recreate opening cash. Opening line unit prices inherit the row or payload currency when their source amount has no ISO suffix. Reconciliation checks each posted journal separately, without netting currencies or overflowing a running 64-bit total across history.

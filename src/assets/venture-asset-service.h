@@ -54,6 +54,19 @@ VentureDeferralService *venture_deferral_service_new(VentureDatabase *database);
 gboolean venture_deferral_service_schedule(VentureDeferralService *self, VentureEntity *deferral,
  const VentureActor *actor, GError **error);
 /**
+ * venture_deferral_service_cancel_invoice:
+ * @self: service
+ * @invoice_id: source invoice being voided
+ * @date: reversal date
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): failure details
+ *
+ * Stops remaining recognition and reverses posted recognition atomically.
+ * Returns: %TRUE on success
+ */
+gboolean venture_deferral_service_cancel_invoice(VentureDeferralService *self,
+ gint64 invoice_id, GDateTime *date, const VentureActor *actor, GError **error);
+/**
  * venture_asset_service_run_period:
  * @self: service
  * @period: YYYY-MM

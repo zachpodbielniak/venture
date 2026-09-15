@@ -85,7 +85,11 @@ period_range(const gchar *period, GError **error)
 	gint year = 0, month = 0;
 	g_autoptr(GDateTime) start = NULL;
 	g_autoptr(GDateTime) end = NULL;
-	if (period == NULL || sscanf(period, "%d-%d", &year, &month) < 1 || year < 1)
+	gsize i, length = period != NULL ? strlen(period) : 0;
+	gboolean valid = length == 4 || length == 7;
+	for (i = 0; valid && i < length; i++)
+		valid = i == 4 ? period[i] == '-' : g_ascii_isdigit(period[i]);
+	if (!valid || sscanf(period, "%d-%d", &year, &month) < 1 || year < 1 || year > 9998)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 			"A budget period must be YYYY or YYYY-MM");
@@ -470,16 +474,27 @@ venture_budget_service_cash_forecast(VentureBudgetService *self, gint64 organiza
 	return g_steal_pointer(&result);
 }
 
+static gchar *
+report_period(VentureDateRange *period)
+{
+	g_autoptr(GDateTime) now = period == NULL ? venture_time_now() : NULL;
+	GDateTime *start = period != NULL ? venture_date_range_get_start(period) : now;
+	g_autoptr(GDateTime) next_year = g_date_time_add_years(start, 1);
+	gboolean annual = period != NULL && g_date_time_get_month(start) == 1 &&
+		g_date_time_get_day_of_month(start) == 1 && next_year != NULL &&
+		g_date_time_compare(next_year, venture_date_range_get_end(period)) == 0;
+	/* Labels may say "this_month"; calendar bounds are the reporting contract. */
+	return g_date_time_format(start, annual ? "%Y" : "%Y-%m");
+}
+
 static VentureReportResult *
 report_vs(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
 {
-	const gchar *label = period != NULL ? venture_date_range_get_label(period) : NULL;
+	g_autofree gchar *label = report_period(period);
 	gint64 org = options != NULL ? venture_json_object_get_int(options, "organization_id", 0) : 0;
 	const gchar *dimension = options != NULL ? venture_json_object_get_string(options, "dimension", NULL) : NULL;
 	if (org == 0)
 		org = venture_context_get_default_organization_id(context);
-	if (label == NULL || label[0] == '\0')
-		label = "this_month";
 	return venture_budget_service_vs_actual(venture_budget_service_get(venture_context_get_database(context)),
 		org, label, dimension, error);
 }
@@ -487,12 +502,10 @@ report_vs(VentureContext *context, VentureDateRange *period, JsonObject *options
 static VentureReportResult *
 report_forecast(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
 {
-	const gchar *label = period != NULL ? venture_date_range_get_label(period) : NULL;
+	g_autofree gchar *label = report_period(period);
 	gint64 org = options != NULL ? venture_json_object_get_int(options, "organization_id", 0) : 0;
 	if (org == 0)
 		org = venture_context_get_default_organization_id(context);
-	if (label == NULL || label[0] == '\0')
-		label = "this_month";
 	return venture_budget_service_cash_forecast(venture_budget_service_get(venture_context_get_database(context)),
 		org, label, error);
 }

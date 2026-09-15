@@ -170,3 +170,5 @@ A successful run stores its result array in =report_pack.last_output= and
 updates =last_run_at= in the same record save. Read that JSON through the
 generic record API or CLI. A failed run preserves the previous output and
 timestamp. No email delivery or historical output archive is implied.
+
+A report pack may reference only saved reports in its own organization. The runner validates this boundary before generating each result, including scheduled packs; foreign saved-report ids fail instead of copying another organization's report into the pack output.

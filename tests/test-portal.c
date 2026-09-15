@@ -214,8 +214,56 @@ test_http_isolation(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(body, "INV-WEB"));
 	g_assert_null(strstr(body, "INV-HIDDEN"));
 	g_assert_nonnull(strstr(body, "Checkout"));
+	{
+		g_autofree gchar *payload = g_strdup_printf("{\"company_id\":%" G_GINT64_FORMAT ",\"email\":\"billing@example.org\"}", f->company);
+		g_autofree gchar *reply = NULL;
+		g_object_set(f->config, "server-base-url", "https://venture.example.org", NULL);
+		g_assert_cmpuint(http_request(server, "POST", "/api/v1/customer_portal/invite", payload, &reply), ==, 201);
+		g_assert_null(strstr(reply, "\"token\""));
+	}
+	venture_config_set_module_enabled(f->config, "receivables", FALSE);
+	g_assert_cmpuint(http_request(server, "GET", path, NULL, NULL), ==, 404);
+	venture_config_set_module_enabled(f->config, "receivables", TRUE);
 	venture_test_remove_tree(dir);
 	(void)invoice;
+}
+
+/* Delivery retains its private link while every generic serialized view omits it. */
+static void
+test_private_invitation(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureLogMailer) mailer = venture_log_mailer_new();
+	g_autoptr(VentureEntity) access = NULL;
+	g_autoptr(JsonNode) output = NULL;
+	g_autofree gchar *token = NULL;
+	g_autofree gchar *private_body = NULL;
+	g_autofree gchar *serialized = NULL;
+	const GPtrArray *messages;
+	(void)data;
+	venture_context_set_mailer(f->context, VENTURE_MAILER(mailer));
+	access = venture_portal_service_send_invitation(venture_portal_service_get(f->db),
+		"https://venture.example.org/", FALSE, f->org, f->company, "billing@example.org", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(access);
+	g_object_get(access, "token", &token, NULL);
+	g_assert_cmpint(venture_mail_outbox_deliver_due(venture_context_get_mail_outbox(f->context),
+		f->org, 10, NULL, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	messages = venture_log_mailer_get_messages(mailer);
+	g_assert_cmpuint(messages->len, ==, 1);
+	g_object_get(g_ptr_array_index(messages, 0), "private-text-body", &private_body, NULL);
+	g_assert_nonnull(strstr(private_body, "https://venture.example.org/portal/"));
+	g_assert_nonnull(strstr(private_body, token));
+	output = venture_serializable_to_json(VENTURE_SERIALIZABLE(g_ptr_array_index(messages, 0)), FALSE);
+	serialized = venture_json_to_string(output, FALSE);
+	g_assert_null(strstr(serialized, token));
+	g_clear_object(&access);
+	/* An invalid deployment URL must fail before creating unusable access. */
+	access = venture_portal_service_send_invitation(venture_portal_service_get(f->db),
+		"http://venture.example.org", FALSE, f->org, f->company, "billing@example.org", NULL, &error);
+	g_assert_null(access);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 }
 
 int
@@ -224,5 +272,6 @@ main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/portal/invite-pay-revoke", Fixture, NULL, setup, test_invite_pay_revoke, teardown);
 	g_test_add("/portal/http-isolation", Fixture, NULL, setup, test_http_isolation, teardown);
+	g_test_add("/portal/private-invitation", Fixture, NULL, setup, test_private_invitation, teardown);
 	return g_test_run();
 }

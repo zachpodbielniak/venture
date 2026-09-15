@@ -8,6 +8,24 @@ G_BEGIN_DECLS
 #define VENTURE_TYPE_PORTAL_SERVICE (venture_portal_service_get_type())
 G_DECLARE_FINAL_TYPE(VenturePortalService, venture_portal_service, VENTURE, PORTAL_SERVICE, GObject)
 /**
+ * venture_portal_service_send_invitation:
+ * @self: portal service
+ * @base_url: configured public HTTPS application URL
+ * @supplier: whether to invite a supplier rather than a customer
+ * @organization_id: owning organization
+ * @company_id: company to invite
+ * @email: invitation recipient
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): failure
+ *
+ * Atomically creates access and queues its private link through the outbox.
+ * Generic serialization of the returned access never includes its token.
+ * Returns: (transfer full) (nullable): the newly invited access record
+ */
+VentureEntity *venture_portal_service_send_invitation(VenturePortalService *self,
+	const gchar *base_url, gboolean supplier, gint64 organization_id, gint64 company_id,
+	const gchar *email, const VentureActor *actor, GError **error);
+/**
  * venture_portal_service_get:
  * @database: database owning the records
  *

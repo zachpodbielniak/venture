@@ -128,7 +128,7 @@ members(VentureGroupService *self, gint64 parent_id, GError **error)
 	{
 		gint64 child = 0;
 		g_object_get(g_ptr_array_index(links, i), "child-organization-id", &child, NULL);
-		if (child > 0)
+		if (child > 0 && !g_ptr_array_find(orgs, GSIZE_TO_POINTER((gsize)child), NULL))
 			g_ptr_array_add(orgs, GSIZE_TO_POINTER((gsize)child));
 	}
 	return orgs;
@@ -273,8 +273,8 @@ venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 			if (trial)
 				amount = money_cell(balances, i, "closing");
 			else if (sheet)
-				amount = (kind == VENTURE_ACCOUNT_KIND_LIABILITY || kind == VENTURE_ACCOUNT_KIND_EQUITY)
-					? -money_cell(balances, i, "closing") : money_cell(balances, i, "closing");
+				amount = kind == VENTURE_ACCOUNT_KIND_ASSET
+					? money_cell(balances, i, "closing") : -money_cell(balances, i, "closing");
 			else if (kind == VENTURE_ACCOUNT_KIND_INCOME)
 				amount = money_cell(balances, i, "credits") - money_cell(balances, i, "debits");
 			else if (kind == VENTURE_ACCOUNT_KIND_EXPENSE)
@@ -288,10 +288,22 @@ venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 			if (converted == NULL)
 				return NULL;
 			venture_report_result_begin_row(result);
-			venture_report_result_set_text(result, "key", text_cell(balances, i, "key"));
-			venture_report_result_set_text(result, "name", text_cell(balances, i, "name"));
+			/* Unclosed income and expense balances belong to retained earnings on the sheet. */
+			venture_report_result_set_text(result, "key", sheet &&
+				(kind == VENTURE_ACCOUNT_KIND_INCOME || kind == VENTURE_ACCOUNT_KIND_EXPENSE)
+				? "equity" : text_cell(balances, i, "key"));
+			venture_report_result_set_text(result, "name", sheet &&
+				(kind == VENTURE_ACCOUNT_KIND_INCOME || kind == VENTURE_ACCOUNT_KIND_EXPENSE)
+				? "Retained earnings" : text_cell(balances, i, "name"));
 			venture_report_result_set_text(result, "organization", org_label);
 			venture_report_result_set_money(result, "current", converted);
+			if (trial)
+			{
+				g_autoptr(VentureMoney) zero = venture_money_new_zero(currency);
+				g_autoptr(VentureMoney) opposite = venture_money_negate(converted);
+				venture_report_result_set_money(result, "debits", amount > 0 ? converted : zero);
+				venture_report_result_set_money(result, "credits", amount < 0 ? opposite : zero);
+			}
 			if (!sheet && !trial && kind == VENTURE_ACCOUNT_KIND_INCOME &&
 				!add_money(&income, converted, error))
 				return NULL;
@@ -324,6 +336,13 @@ venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 				continue;
 			if (amount == NULL)
 				continue;
+			{
+				g_autoptr(VentureMoney) converted = convert(self, parent_id, amount, currency, when, error);
+				if (converted == NULL)
+					return NULL;
+				g_clear_pointer(&amount, venture_money_free);
+				amount = g_steal_pointer(&converted);
+			}
 			debit = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, debit_id, error);
 			credit = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, credit_id, error);
 			if (debit == NULL || credit == NULL)
@@ -333,17 +352,19 @@ venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 				gint credit_kind;
 				g_object_get(debit, "kind", &kind, NULL);
 				g_object_get(credit, "kind", &credit_kind, NULL);
-				if (kind == VENTURE_ACCOUNT_KIND_INCOME || credit_kind == VENTURE_ACCOUNT_KIND_INCOME)
+				if ((kind == VENTURE_ACCOUNT_KIND_INCOME) != (credit_kind == VENTURE_ACCOUNT_KIND_INCOME))
 				{
-					VentureMoney *next = venture_money_subtract(income, amount, error);
+					VentureMoney *next = kind == VENTURE_ACCOUNT_KIND_INCOME
+						? venture_money_subtract(income, amount, error) : venture_money_add(income, amount, error);
 					if (next == NULL)
 						return NULL;
 					venture_money_free(income);
 					income = next;
 				}
-				if (kind == VENTURE_ACCOUNT_KIND_EXPENSE || credit_kind == VENTURE_ACCOUNT_KIND_EXPENSE)
+				if ((kind == VENTURE_ACCOUNT_KIND_EXPENSE) != (credit_kind == VENTURE_ACCOUNT_KIND_EXPENSE))
 				{
-					VentureMoney *next = venture_money_subtract(expenses, amount, error);
+					VentureMoney *next = kind == VENTURE_ACCOUNT_KIND_EXPENSE
+						? venture_money_add(expenses, amount, error) : venture_money_subtract(expenses, amount, error);
 					if (next == NULL)
 						return NULL;
 					venture_money_free(expenses);
@@ -353,6 +374,7 @@ venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 			if (trial || sheet)
 			{
 				g_autoptr(VentureMoney) credit_amount = NULL;
+				g_autoptr(VentureMoney) debit_amount = NULL;
 				g_autofree gchar *debit_code = NULL;
 				g_autofree gchar *debit_name = NULL;
 				g_autofree gchar *credit_code = NULL;
@@ -364,6 +386,13 @@ venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 					return NULL;
 				g_object_get(debit, "code", &debit_code, "name", &debit_name, "kind", &debit_kind, NULL);
 				g_object_get(credit, "code", &credit_code, "name", &credit_name, "kind", &credit_kind, NULL);
+				debit_amount = sheet && debit_kind != VENTURE_ACCOUNT_KIND_ASSET
+					? venture_money_negate(amount) : venture_money_copy(amount);
+				if (sheet && credit_kind != VENTURE_ACCOUNT_KIND_ASSET)
+				{
+					g_clear_pointer(&credit_amount, venture_money_free);
+					credit_amount = venture_money_copy(amount);
+				}
 				debit_bs = debit_kind == VENTURE_ACCOUNT_KIND_ASSET ||
 					debit_kind == VENTURE_ACCOUNT_KIND_LIABILITY ||
 					debit_kind == VENTURE_ACCOUNT_KIND_EQUITY;
@@ -384,7 +413,7 @@ venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 						venture_report_result_set_text(result, "name", debit_name);
 					}
 					venture_report_result_set_text(result, "organization", "elimination");
-					venture_report_result_set_money(result, "current", amount);
+					venture_report_result_set_money(result, "current", debit_amount);
 					if (trial)
 					{
 						g_autoptr(VentureMoney) zero = venture_money_new_zero(amount->currency);

@@ -102,11 +102,22 @@ venture_accounting_approval_allow(VentureDatabase *database, const gchar *action
 	g_autoptr(GPtrArray) rows = NULL;
 	const gchar *name;
 	g_autofree gchar *digest = NULL;
+	g_autofree gchar *identity = NULL;
+	const VentureAuthPrincipal *principal;
 	gint64 org, id;
 	gboolean enabled;
 	guint i;
 	*approval = NULL;
-	if (database == NULL || entity == NULL || actor == NULL || actor->name == NULL)
+	if (database == NULL || entity == NULL)
+		return TRUE;
+	principal = venture_access_policy_get_actor(venture_database_get_access_policy(database));
+	/* Token labels and browser names are audit descriptions, not people.
+	 * Bind consent to the authenticated account even if it uses two tokens. */
+	if (principal != NULL && principal->authenticated && principal->user_id > 0)
+		identity = g_strdup_printf("user:%" G_GINT64_FORMAT, principal->user_id);
+	else if (actor != NULL && actor->name != NULL)
+		identity = g_strdup(actor->name);
+	else
 		return TRUE;
 	org = venture_entity_get_organization_id(entity);
 	if (!rule_enabled(database, org, action, &enabled, error))
@@ -133,7 +144,7 @@ venture_accounting_approval_allow(VentureDatabase *database, const gchar *action
 		g_object_get(row, "state", &state, "proposer", &proposer, NULL);
 		if (g_strcmp0(state, "pending") != 0)
 			continue;
-		if (g_strcmp0(proposer, actor->name) == 0)
+		if (g_strcmp0(proposer, identity) == 0)
 			return refuse(error, "post/pay requires a second actor");
 		*approval = g_object_ref(row);
 		return TRUE;
@@ -142,7 +153,7 @@ venture_accounting_approval_allow(VentureDatabase *database, const gchar *action
 		g_autoptr(VentureAccountingApproval) pending = venture_accounting_approval_new();
 		venture_entity_set_organization_id(VENTURE_ENTITY(pending), org);
 		g_object_set(pending, "action", action, "record-type", name, "record-id", id,
-			"proposer", actor->name, "state", "pending", "proposal-digest", digest, NULL);
+			"proposer", identity, "state", "pending", "proposal-digest", digest, NULL);
 		if (!save_approval(database, VENTURE_ENTITY(pending), actor, error))
 			return FALSE;
 	}

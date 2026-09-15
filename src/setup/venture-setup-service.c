@@ -630,7 +630,7 @@ venture_setup_service_preview(VentureSetupService *self, gint64 organization_id,
 		}
 		if (cash != NULL && cash[0] != '\0')
 		{
-			g_autoptr(VentureMoney) amount = venture_money_from_string(cash, NULL, error);
+			g_autoptr(VentureMoney) amount = venture_money_from_string(cash, payload_str(payload, "book_currency", NULL), error);
 			if (amount == NULL)
 				return NULL;
 			g_object_set(setup, "opening-cash", amount, NULL);
@@ -711,6 +711,7 @@ venture_setup_service_complete(VentureSetupService *self, VentureAccountingSetup
 {
 	g_autoptr(JsonObject) payload = NULL;
 	g_autoptr(VentureEntity) org = NULL;
+	g_autoptr(VentureEntity) original = NULL;
 	g_autoptr(JsonNode) checklist = NULL;
 	g_autofree gchar *state = NULL;
 	g_autofree gchar *checklist_text = NULL;
@@ -727,6 +728,8 @@ venture_setup_service_complete(VentureSetupService *self, VentureAccountingSetup
 	org = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, organization_id, error);
 	if (org == NULL)
 		return FALSE;
+	original = g_object_new(G_OBJECT_TYPE(setup), NULL);
+	venture_entity_copy_properties_from(original, VENTURE_ENTITY(setup), FALSE);
 	if (!venture_database_begin(self->database, error))
 		return FALSE;
 	{
@@ -740,7 +743,7 @@ venture_setup_service_complete(VentureSetupService *self, VentureAccountingSetup
 		g_autoptr(VentureMoney) opening = NULL;
 		g_autofree gchar *cash_text = NULL;
 		gint64 cash = 0, equity = 0;
-		if (currency == NULL || strlen(currency) != 3)
+		if (!venture_currency_is_valid(currency))
 		{
 			venture_database_rollback(self->database);
 			return refuse(error, "Choose a three-letter book currency before opening the books");
@@ -818,7 +821,7 @@ venture_setup_service_complete(VentureSetupService *self, VentureAccountingSetup
 		g_object_get(setup, "opening-cash", &opening, NULL);
 		cash_text = g_strdup(payload_str(payload, "opening_cash", NULL));
 		if (opening == NULL && cash_text != NULL && cash_text[0] != '\0')
-			opening = venture_money_from_string(cash_text, NULL, error);
+			opening = venture_money_from_string(cash_text, currency, error);
 		if (error != NULL && *error != NULL)
 			goto fail;
 		if (opening != NULL && !g_str_equal(venture_money_get_currency(opening), currency))
@@ -854,6 +857,9 @@ venture_setup_service_complete(VentureSetupService *self, VentureAccountingSetup
 	return TRUE;
 fail:
 	venture_database_rollback(self->database);
+	/* Restore state and optimistic version too: a rolled-back Complete
+	 * must not turn the next attempt into a false successful no-op. */
+	venture_entity_copy_properties_from(VENTURE_ENTITY(setup), original, FALSE);
 	return FALSE;
 }
 

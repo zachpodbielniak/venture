@@ -133,6 +133,51 @@ shopify_cancelled(JsonObject *raw)
 }
 
 static const gchar *shopify_name(VentureCommerceConnector *self) { (void)self; return "shopify"; }
+
+/* The adapter has no tax, discount, freight or refund mapping yet. Refuse
+ * those orders rather than posting a plausible but incorrect line subtotal. */
+static gboolean
+shopify_amounts_supported(JsonObject *raw, const gchar *currency, GError **error)
+{
+	static const gchar *const adjustments[] = { "total_tax", "total_discounts", "total_tip_received" };
+	const gchar *financial = venture_json_object_get_string(raw, "financial_status", "");
+	guint i;
+	if (g_strcmp0(financial, "partially_paid") == 0 || g_strcmp0(financial, "partially_refunded") == 0)
+		goto unsupported;
+	for (i = 0; i < G_N_ELEMENTS(adjustments); i++)
+	{
+		g_autoptr(VentureMoney) amount = NULL;
+		const gchar *text;
+		if (!json_object_has_member(raw, adjustments[i]))
+			continue;
+		text = venture_json_object_get_string(raw, adjustments[i], NULL);
+		if (text == NULL)
+			goto unsupported;
+		amount = venture_money_from_string(text, currency, error);
+		if (amount == NULL)
+			return FALSE;
+		if (!venture_money_is_zero(amount))
+			goto unsupported;
+	}
+	/* Even free shipping and refund objects require an explicit mapping;
+	 * refusing the batch preserves the source for a supported import. */
+	{
+		static const gchar *const arrays[] = { "shipping_lines", "refunds" };
+		for (i = 0; i < G_N_ELEMENTS(arrays); i++)
+		{
+			JsonNode *node = json_object_get_member(raw, arrays[i]);
+			if (node != NULL && (!JSON_NODE_HOLDS_ARRAY(node) ||
+				json_array_get_length(json_node_get_array(node)) > 0))
+				goto unsupported;
+		}
+	}
+	return TRUE;
+unsupported:
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED,
+		"Shopify orders with taxes, discounts, tips, shipping, refunds or partial payments require explicit accounting mapping");
+	return FALSE;
+}
+
 static GPtrArray *
 shopify_parse_orders(JsonArray *orders, GError **error)
 {
@@ -160,8 +205,26 @@ shopify_parse_orders(JsonArray *orders, GError **error)
 				"Shopify order is missing a currency");
 			return NULL;
 		}
+		if (!shopify_amounts_supported(raw, currency, error))
+		{
+			g_ptr_array_unref(items);
+			return NULL;
+		}
 		id = venture_json_object_get_string(raw, "id", NULL);
 		item = json_object_new();
+		if (json_object_has_member(raw, "total_price"))
+		{
+			const gchar *total = venture_json_object_get_string(raw, "total_price", NULL);
+			g_autofree gchar *expected = total != NULL ? g_strdup_printf("%s %s", total, currency) : NULL;
+			if (expected == NULL)
+			{
+				json_object_unref(item);
+				g_ptr_array_unref(items);
+				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Shopify total_price must be decimal text");
+				return NULL;
+			}
+			json_object_set_string_member(item, "expected_total", expected);
+		}
 		if (id == NULL)
 		{
 			gint64 number = json_object_get_int_member(raw, "id");
@@ -525,6 +588,22 @@ venture_commerce_service_import(VentureCommerceService *self, const gchar *conne
 		invoice = venture_document_service_compose_invoice(venture_document_service_get(self->database),
 			self->organization_id, spec, actor, error);
 		if (invoice == NULL) goto fail;
+		if (json_object_has_member(spec, "expected_total"))
+		{
+			g_autoptr(VentureMoney) expected = venture_money_from_string(
+				venture_json_object_get_string(spec, "expected_total", ""), NULL, error);
+			g_autoptr(VentureMoney) actual = NULL;
+			if (expected == NULL) goto fail;
+			actual = venture_settlement_service_invoice_balance(venture_settlement_service_get(self->database),
+				venture_entity_get_id(invoice), NULL, error);
+			if (actual == NULL) goto fail;
+			if (!venture_money_equal(expected, actual))
+			{
+				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+					"Commerce invoice total differs from the provider order total");
+				goto fail;
+			}
+		}
 		if (venture_json_object_get_bool(spec, "paid", FALSE))
 		{
 			g_autoptr(GDateTime) now = venture_time_now();

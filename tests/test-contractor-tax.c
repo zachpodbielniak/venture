@@ -162,12 +162,13 @@ test_prepare_threshold(Fixture *f, gconstpointer unused)
 	VentureActor actor = actor_named("clerk");
 	(void)unused;
 	(void)stored_form;
-	pay_bill(f, "LOW", "500 USD", "2026-03-01");
+	/* 2026's new threshold must refuse a total that exceeded the old 600 USD threshold. */
+	pay_bill(f, "LOW", "1500 USD", "2026-03-01");
 	pack = venture_tax_filing_service_prepare_1099(venture_tax_filing_service_get(f->db),
 		f->org, f->vendor, 2026, &actor, &error);
 	g_assert_null(pack);
 	g_assert_nonnull(error);
-	g_assert_nonnull(strstr(error->message, "600"));
+	g_assert_nonnull(strstr(error->message, "2000"));
 }
 
 static void
@@ -182,7 +183,9 @@ test_prepare_review_approve_export(Fixture *f, gconstpointer unused)
 	VentureActor actor = actor_named("clerk");
 	(void)unused;
 	(void)stored_form;
-	pay_bill(f, "NEC-1", "700 USD", "2026-04-01");
+	g_object_set(stored_form, "legal-name", "Contractor, \"Co\"", NULL);
+	save(f, stored_form);
+	pay_bill(f, "NEC-1", "2700 USD", "2026-04-01");
 	pack = venture_tax_filing_service_prepare_1099(venture_tax_filing_service_get(f->db),
 		f->org, f->vendor, 2026, &actor, &error);
 	g_assert_no_error(error);
@@ -196,12 +199,31 @@ test_prepare_review_approve_export(Fixture *f, gconstpointer unused)
 		pack, &actor, &error));
 	g_assert_true(venture_tax_filing_service_approve_1099(venture_tax_filing_service_get(f->db),
 		pack, &actor, &error));
+	{
+		g_autoptr(VentureEntity) stale = venture_database_get(f->db, VENTURE_TYPE_CONTRACTOR_TAX_PACK,
+			venture_entity_get_id(pack), &error);
+		g_autofree gchar *exported = NULL;
+		g_autoptr(VentureEntity) next = NULL;
+		/* A conflicting export must not strand every later tax operation as busy. */
+		g_assert_nonnull(stale);
+		g_object_set(stale, "version", venture_entity_get_version(stale) - 1, NULL);
+		exported = venture_tax_filing_service_export_1099(venture_tax_filing_service_get(f->db), stale, &actor, &error);
+		g_assert_null(exported);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+		g_clear_error(&error);
+		pay_bill(f, "PRIOR-YEAR", "700 USD", "2025-04-01");
+		next = venture_tax_filing_service_prepare_1099(venture_tax_filing_service_get(f->db),
+			f->org, f->vendor, 2025, &actor, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(next);
+	}
 	first = venture_tax_filing_service_export_1099(venture_tax_filing_service_get(f->db),
 		pack, &actor, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(first);
 	g_assert_nonnull(strstr(first, "1099-NEC"));
-	g_assert_nonnull(strstr(first, "700"));
+	g_assert_nonnull(strstr(first, "2700"));
+	g_assert_nonnull(strstr(first, "\"Contractor, \"\"Co\"\"\""));
 	g_assert_nonnull(strstr(first, "99-9999999"));
 	second = venture_tax_filing_service_export_1099(venture_tax_filing_service_get(f->db),
 		pack, &actor, &error);
@@ -240,7 +262,7 @@ test_generic_pack_status_refused(Fixture *f, gconstpointer unused)
 	VentureActor actor = actor_named("clerk");
 	(void)unused;
 	(void)stored_form;
-	pay_bill(f, "GEN", "700 USD", "2026-04-01");
+	pay_bill(f, "GEN", "2700 USD", "2026-04-01");
 	pack = venture_tax_filing_service_prepare_1099(venture_tax_filing_service_get(f->db),
 		f->org, f->vendor, 2026, &actor, &error);
 	g_object_set(pack, "status", "exported", NULL);

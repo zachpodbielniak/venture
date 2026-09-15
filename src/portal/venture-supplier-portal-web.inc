@@ -138,47 +138,8 @@ venture_supplier_portal_web(HtmxRequest *request, GHashTable *params, gpointer u
 static HtmxResponse *
 venture_supplier_portal_invite_api(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
-	VentureWebServer *self = user_data;
-	g_autoptr(GError) error = NULL;
-	g_autoptr(JsonNode) body = NULL;
-	g_autoptr(VentureEntity) access = NULL;
-	g_autoptr(VentureAuthPrincipal) principal = NULL;
-	HtmxResponse *gate;
-	VentureActor actor;
-	JsonObject *object;
-	gint64 company_id;
-	const gchar *email;
 	(void)params;
-	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
-	if (gate != NULL)
-		return gate;
-	gate = venture_web_require_module_api(self, "supplier_portal");
-	if (gate != NULL)
-		return gate;
-	principal = venture_auth_authenticate(self->auth, request);
-	venture_auth_to_actor(principal, &actor);
-	body = htmx_request_get_json(request, &error);
-	if (body == NULL || !JSON_NODE_HOLDS_OBJECT(body))
-		return venture_web_error_response(error);
-	object = json_node_get_object(body);
-	company_id = 0;
-	email = "";
-	if (json_object_has_member(object, "company_id"))
-	{
-		JsonNode *node = json_object_get_member(object, "company_id");
-		if (JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_STRING)
-			company_id = g_ascii_strtoll(json_node_get_string(node), NULL, 10);
-		else
-			company_id = json_node_get_int(node);
-	}
-	if (json_object_has_member(object, "email") &&
-		JSON_NODE_HOLDS_VALUE(json_object_get_member(object, "email")))
-		email = json_node_get_string(json_object_get_member(object, "email"));
-	access = venture_portal_service_invite_supplier(venture_portal_service_get(venture_context_get_database(self->context)),
-		venture_context_get_default_organization_id(self->context), company_id, email, &actor, &error);
-	if (access == NULL)
-		return venture_web_error_response(error);
-	return venture_web_json_response(venture_serializable_to_json(VENTURE_SERIALIZABLE(access), FALSE), 201);
+	return venture_portal_invite_request(user_data, request, TRUE);
 }
 
 static void

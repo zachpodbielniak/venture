@@ -301,9 +301,11 @@ venture_tax_filing_service_amend(VentureTaxFilingService *self, VentureEntity *f
 		g_object_set(next, "amended-from-id", venture_entity_get_id(filing), NULL);
 		{
 			g_autoptr(VentureDatabase) db = service_db(self);
-			if (db == NULL || !begin_op(self, db, error) ||
-				!save_internal(self, db, next, actor, error) ||
-				!finish_op(self, db, TRUE, error))
+			if (db == NULL || !begin_op(self, db, error))
+				return NULL;
+			if (!save_internal(self, db, next, actor, error))
+				return finish_op(self, db, FALSE, error), NULL;
+			if (!finish_op(self, db, TRUE, error))
 				return NULL;
 		}
 		return g_steal_pointer(&next);
@@ -397,17 +399,38 @@ paid_in_year(VentureDatabase *db, gint64 org, gint64 vendor_id, gint year, GErro
 }
 
 static gchar *
+csv_cell(const gchar *value)
+{
+	GString *cell = g_string_new("\"");
+	const gchar *p;
+	/* RFC 4180 quoting preserves commas, line breaks and literal quotation marks. */
+	for (p = value != NULL ? value : ""; *p != '\0'; p++)
+	{
+		if (*p == '"')
+			g_string_append_c(cell, '"');
+		g_string_append_c(cell, *p);
+	}
+	g_string_append_c(cell, '"');
+	return g_string_free(cell, FALSE);
+}
+
+static gchar *
 build_1099_csv(VentureEntity *form, VentureEntity *vendor, gint year, const VentureMoney *amount)
 {
 	g_autofree gchar *tin = NULL;
 	g_autofree gchar *legal = NULL;
 	g_autofree gchar *vendor_name = NULL;
 	g_autofree gchar *money = amount != NULL ? venture_money_to_string(amount) : g_strdup("0 USD");
+	g_autofree gchar *legal_cell = NULL;
+	g_autofree gchar *tin_cell = NULL;
+	g_autofree gchar *amount_cell = NULL;
 	g_object_get(form, "tin", &tin, "legal-name", &legal, NULL);
 	g_object_get(vendor, "name", &vendor_name, NULL);
+	legal_cell = csv_cell(legal != NULL && *legal != '\0' ? legal : vendor_name);
+	tin_cell = csv_cell(tin);
+	amount_cell = csv_cell(money);
 	return g_strdup_printf("form,year,vendor,tin,amount\n1099-NEC,%d,%s,%s,%s\n",
-		year, legal != NULL && *legal != '\0' ? legal : (vendor_name != NULL ? vendor_name : ""),
-		tin != NULL ? tin : "", money);
+		year, legal_cell, tin_cell, amount_cell);
 }
 
 VentureEntity *
@@ -429,6 +452,10 @@ venture_tax_filing_service_prepare_1099(VentureTaxFilingService *self, gint64 or
 	if (!module_on())
 		return refuse(error, VENTURE_ERROR_CONFIG,
 			"The tax_filing module is disabled (modules.tax_filing.enabled)"), NULL;
+	/* IRS 2026 instructions raise NEC's general threshold; later inflation values need a rule update. */
+	if (year < 2020 || year > 2026)
+		return refuse(error, VENTURE_ERROR_VALIDATION,
+			"1099-NEC bookkeeping rules support 2020 through 2026; update the year-specific threshold for later years"), NULL;
 	key = g_strdup_printf("%" G_GINT64_FORMAT ":%d:1099-NEC", vendor_id, year);
 	existing = find_pack(db, organization_id, key, error);
 	if (error != NULL && *error != NULL)
@@ -446,12 +473,18 @@ venture_tax_filing_service_prepare_1099(VentureTaxFilingService *self, gint64 or
 		paid = venture_money_from_string("0 USD", "USD", NULL);
 	if (paid == NULL)
 		return NULL;
-	threshold = venture_money_from_string("600 USD", "USD", error);
+	if (g_strcmp0(venture_money_get_currency(paid), "USD") != 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "1099-NEC bookkeeping totals must be in USD"), NULL;
+	threshold = venture_money_from_string(year == 2026 ? "2000 USD" : "600 USD", "USD", error);
 	if (threshold == NULL)
 		return NULL;
 	if (venture_money_compare(paid, threshold) < 0)
-		return refuse(error, VENTURE_ERROR_VALIDATION,
-			"1099-NEC is prepared only when calendar-year payments reach 600 USD"), NULL;
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"1099-NEC bookkeeping pack requires calendar-year payments of at least %s USD for %d",
+			year == 2026 ? "2000" : "600", year);
+		return NULL;
+	}
 	vendor = venture_database_get(db, VENTURE_TYPE_COMPANY, vendor_id, error);
 	if (vendor == NULL)
 		return NULL;
@@ -554,7 +587,10 @@ venture_tax_filing_service_export_1099(VentureTaxFilingService *self, VentureEnt
 	if (!begin_op(self, db, error))
 		return NULL;
 	g_object_set(pack, "status", "exported", NULL);
-	if (!save_internal(self, db, pack, actor, error) || !finish_op(self, db, TRUE, error))
+	/* A stale export must release the transaction and the service's reentrancy guard. */
+	if (!save_internal(self, db, pack, actor, error))
+		return finish_op(self, db, FALSE, error), NULL;
+	if (!finish_op(self, db, TRUE, error))
 		return NULL;
 	return g_steal_pointer(&csv);
 }

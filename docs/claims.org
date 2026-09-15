@@ -13,6 +13,8 @@ three fractional digits, rounded half to even. A receipt line names a
 =document= (or a capture original). The document checksum is copied onto
 =receipt-hash= and a second line with that hash is refused.
 
+Receipt uniqueness applies on edits as well as insertion. A submitted claim's lines cannot be edited or moved into another claim, preserving the evidence behind its frozen total.
+
 Closed fiscal periods refuse submit, approve and pay. Generic status changes
 are refused; only =VentureClaimsService= writes the workflow.
 

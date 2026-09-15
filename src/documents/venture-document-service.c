@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
 #include <string.h>
+#include <math.h>
 
 struct _VentureDocumentService
 {
@@ -95,6 +96,8 @@ static JsonArray *
 lines_of(JsonObject *spec, GError **error)
 {
 	JsonNode *node;
+	JsonArray *lines;
+	guint i;
 	if (spec == NULL)
 	{
 		refuse(error, "a JSON object is required");
@@ -106,15 +109,28 @@ lines_of(JsonObject *spec, GError **error)
 		refuse(error, "at least one line is required");
 		return NULL;
 	}
-	return json_node_get_array(node);
+	lines = json_node_get_array(node);
+	/* JSON is untrusted: typed accessors diagnose programmer errors on scalar rows. */
+	for (i = 0; i < json_array_get_length(lines); i++)
+	{
+		JsonNode *row = json_array_get_element(lines, i);
+		if (!JSON_NODE_HOLDS_OBJECT(row))
+		{
+			refuse(error, "each line must be a JSON object");
+			return NULL;
+		}
+	}
+	return lines;
 }
 
 static gboolean
 money_from_row(VentureEntity *line, JsonObject *row, GError **error)
 {
 	const gchar *price = venture_json_object_get_string(row, "unit_price", NULL);
-	if (price == NULL || !venture_entity_set_field_from_string(line, "unit-price", price, error))
+	if (price == NULL)
 		return refuse(error, "each line needs an exact unit_price");
+	if (!venture_entity_set_field_from_string(line, "unit-price", price, error))
+		return FALSE;
 	g_object_set(line, "discount-percent", venture_json_object_get_int(row, "discount_percent", 0),
 		"tax-percent", venture_json_object_get_int(row, "tax_percent", 0), NULL);
 	return TRUE;
@@ -128,7 +144,9 @@ row_quantity(JsonObject *row)
 		return 1;
 	if (JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_INT64)
 		return (gdouble)json_node_get_int(node);
-	return json_node_get_double(node);
+	if (JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_DOUBLE)
+		return json_node_get_double(node);
+	return 0;
 }
 
 VentureEntity *
@@ -176,7 +194,7 @@ venture_document_service_compose_invoice(VentureDocumentService *self, gint64 or
 		g_autoptr(VentureInvoiceLine) line = venture_invoice_line_new();
 		const gchar *description = venture_json_object_get_string(row, "description", NULL);
 		gdouble quantity = row_quantity(row);
-		if (description == NULL || description[0] == '\0' || quantity <= 0)
+		if (description == NULL || description[0] == '\0' || !isfinite(quantity) || quantity <= 0)
 		{
 			refuse(error, "each line needs a description and a positive quantity");
 			goto fail;
@@ -238,12 +256,15 @@ venture_document_service_compose_quote(VentureDocumentService *self, gint64 orga
 		JsonObject *row = json_array_get_object_element(lines, i);
 		g_autoptr(VentureQuoteLine) line = venture_quote_line_new();
 		const gchar *description = venture_json_object_get_string(row, "description", NULL);
-		gint64 quantity = (gint64)row_quantity(row);
-		if (description == NULL || description[0] == '\0' || quantity <= 0)
+		gdouble requested = row_quantity(row);
+		gint64 quantity;
+		if (description == NULL || description[0] == '\0' || !isfinite(requested) ||
+			requested <= 0 || requested >= (gdouble)G_MAXINT64 || floor(requested) != requested)
 		{
-			refuse(error, "each line needs a description and a positive quantity");
+			refuse(error, "each quote line needs a description and a positive whole quantity");
 			goto fail;
 		}
+		quantity = (gint64)requested;
 		venture_entity_set_organization_id(VENTURE_ENTITY(line), organization_id);
 		g_object_set(line, "quote-id", venture_entity_get_id(VENTURE_ENTITY(quote)),
 			"description", description, "quantity", quantity, "position", (gint64)(i + 1),
@@ -253,25 +274,26 @@ venture_document_service_compose_quote(VentureDocumentService *self, gint64 orga
 			goto fail;
 	}
 	quote_id = venture_entity_get_id(VENTURE_ENTITY(quote));
-	if (!venture_database_commit(self->database, error))
-		goto fail;
 	if (venture_json_object_get_bool(spec, "send", FALSE))
 	{
 		g_autoptr(VentureEntity) action = VENTURE_ENTITY(venture_quote_action_new());
 		g_autoptr(VentureEntity) current = venture_database_get(self->database, VENTURE_TYPE_QUOTE, quote_id, error);
 		if (current == NULL)
-			return NULL;
+			goto fail;
 		venture_entity_set_organization_id(action, organization_id);
 		g_object_set(action, "quote-id", quote_id, "action", "send",
 			"expected-version", venture_entity_get_version(current), NULL);
 		if (!venture_quote_service_execute(venture_database_get_quote_service(self->database),
 			action, "manual", NULL, actor, error))
-			return NULL;
+			goto fail;
 		g_object_unref(quote);
 		quote = VENTURE_QUOTE(venture_database_get(self->database, VENTURE_TYPE_QUOTE, quote_id, error));
 		if (quote == NULL)
-			return NULL;
+			goto fail;
 	}
+	/* Sending validates the complete quote; refusal must roll back its header and lines. */
+	if (!venture_database_commit(self->database, error))
+		goto fail;
 	return VENTURE_ENTITY(g_steal_pointer(&quote));
 fail:
 	venture_database_rollback(self->database);

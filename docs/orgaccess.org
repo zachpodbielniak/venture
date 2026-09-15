@@ -121,6 +121,8 @@ Assignment fields marked =VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME= grant record ow
 
 * Accounting second-actor rules
 
+Only organization owners/admins or global administrators may change or delete a second-actor rule. Authenticated proposals identify the account by user ID, so two API tokens belonging to the same person do not satisfy the second-person requirement. Token labels remain audit descriptions. An active request scope retains this identity even when an internal caller omits its audit actor.
+
 The post/pay rule fingerprints the full proposed record and ordered journal
 lines or payment allocations. Persisted identities and versions participate;
 new records omit automatically generated identity timestamps and UUIDs so an

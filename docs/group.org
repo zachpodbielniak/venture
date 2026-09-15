@@ -12,8 +12,7 @@ trial balance, income statement and balance sheet combine those legal entities,
 convert through the existing =exchange_rate= table (no invented inverse) and
 tag each row with the organization dimension.
 
-Elimination rows apply to the consolidated income statement totals when
-either leg is income or expense. Trial balance shows both legs.
+Elimination rows use ordinary debit and credit signs: a debit reduces income and increases expense; a credit does the reverse. Trial balance shows both legs and populated debit/credit columns for source balances. Eliminations use the same currency conversion as source balances.
 Balance sheet shows only asset, liability and equity legs; P&L legs
 roll into retained earnings so the sheet still ties. They do not rewrite
 either entity's posted book. An elimination is included when its
@@ -24,3 +23,5 @@ venturectl group income 2026-08
 #+end_src
 
 The web page is =/group=.
+
+Repeated membership links do not count a subsidiary twice. Source income and expense balances roll into retained earnings on the consolidated balance sheet, as do the elimination legs.

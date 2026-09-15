@@ -16,3 +16,5 @@ and payment status only.
 venturectl supplier invite company_id=1 email=ap@example.org
 venturectl supplier revoke ID
 #+end_src
+
+Inviting queues the link to the specified email through the transactional outbox. Configure the public HTTPS =server.base_url= and transactional mail first; invitation creation is rolled back if enqueue fails. The CLI/API return only redacted access metadata. Private links stay in sensitive outbox storage until delivery and never appear in generic output. Disabling =supplier_portal= also disables existing bearer links immediately.

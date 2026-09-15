@@ -201,6 +201,16 @@ venture_report_pack_service_run_pack(VentureReportPackService *self, VentureCont
 			g_ptr_array_unref(results);
 			return NULL;
 		}
+		/* The comma-separated ids are not reference fields, so the generic
+		 * reference validator cannot enforce this organization boundary. */
+		if (venture_entity_get_organization_id(saved) !=
+			venture_entity_get_organization_id(VENTURE_ENTITY(pack)))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"A report pack can only run reports from its own organization");
+			g_ptr_array_unref(results);
+			return NULL;
+		}
 		result = venture_report_pack_service_run(self, context, VENTURE_SAVED_REPORT(saved), error);
 		if (result == NULL)
 		{

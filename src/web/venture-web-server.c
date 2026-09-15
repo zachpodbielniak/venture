@@ -2573,7 +2573,7 @@ venture_web_api_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
@@ -5734,7 +5734,7 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
@@ -8953,7 +8953,8 @@ venture_web_ui_detail(
 	venture_bank_append_actions(content, record);
 	venture_cutover_append_actions(content, record);
 	venture_setup_append_actions(content, record);
-	venture_backup_append_actions(content, record);
+	if (venture_context_module_enabled(self->context, "backup"))
+		venture_backup_append_actions(content, record);
 	venture_web_sequence_panel(self, content, principal, record);
 
 	/* A link is not offered on a link; the audit log is not linkable. */

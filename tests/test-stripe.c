@@ -885,6 +885,7 @@ test_payout_dispute_chargeback(Fixture *f, gconstpointer data)
 	g_autoptr(VentureMoney) gross = venture_money_new_for_currency(10000, "USD");
 	g_autoptr(VentureMoney) fee = venture_money_new_for_currency(300, "USD");
 	g_autoptr(VentureMoney) net = venture_money_new_for_currency(9700, "USD");
+	g_autoptr(VentureMoney) disputed = venture_money_new_for_currency(3000, "USD");
 	g_autoptr(GDateTime) date = NULL;
 	g_autoptr(VentureMoney) balance = NULL;
 	g_autoptr(GPtrArray) payments = NULL;
@@ -918,7 +919,7 @@ test_payout_dispute_chargeback(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_nonnull(payout);
 	g_assert_true(venture_stripe_service_link_payout_item(service, venture_entity_get_id(payout), payment_id, gross, NULL, &error));
-	dispute = VENTURE_ENTITY(venture_stripe_service_open_dispute(service, "dp_test", payment_id, date, gross, NULL, &error));
+	dispute = VENTURE_ENTITY(venture_stripe_service_open_dispute(service, "dp_test", payment_id, date, disputed, NULL, &error));
 	g_assert_no_error(error);
 	{
 		g_autoptr(VentureEntity) stored = venture_database_get(f->database, VENTURE_TYPE_INVOICE, venture_entity_get_id(invoice), &error);
@@ -928,10 +929,14 @@ test_payout_dispute_chargeback(Fixture *f, gconstpointer data)
 	}
 	g_assert_true(venture_stripe_service_lose_chargeback(service, venture_entity_get_id(dispute), date, NULL, &error));
 	g_assert_no_error(error);
+	/* Replaying a partial loss must not refund another portion of the receipt. */
+	g_assert_false(venture_stripe_service_lose_chargeback(service, venture_entity_get_id(dispute), date, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
 	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->database),
 		venture_entity_get_id(invoice), NULL, &error);
 	g_assert_no_error(error);
-	g_assert_cmpint(venture_money_get_amount(balance), ==, 10000);
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 3000);
 	g_assert_cmpuint(rows(f, "refund")->len, ==, 1);
 	g_assert_cmpuint(rows(f, "processor_exception")->len, ==, 0);
 }
