@@ -464,6 +464,12 @@ test_surfaces(BankFixture *f, gconstpointer data)
 	g_assert_cmpuint(http_request(server, "POST", "/api/v1/bank_statements/1/auto", "application/json", "{}", NULL), ==, 200);
 	g_assert_cmpuint(http_request(server, "GET", "/api/v1/reports/bank_reconciliation?statement_id=1", NULL, NULL, &body), ==, 200);
 	g_assert_nonnull(strstr(body, "difference"));
+	g_assert_nonnull(strstr(body, "outstanding_checks"));
+	g_assert_nonnull(strstr(body, "deposits_in_transit"));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(http_request(server, "GET", "/e/bank_statement/1", NULL, NULL, &body), ==, 200);
+	g_assert_nonnull(strstr(body, "reopen"));
+	g_assert_nonnull(strstr(body, "Reopen reason"));
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(http_request(server, "POST", "/api/v1/bank_statements/1/reconcile", "application/json", "{}", NULL), ==, 200);
 	g_assert_cmpuint(http_request(server, "POST", "/api/v1/bank_transactions/1/unmatch", "application/json", "{}", NULL), ==, 422);
@@ -730,7 +736,14 @@ test_outstanding_check(BankFixture *f, gconstpointer data)
 	g_autoptr(JsonObject) args = json_object_new();
 	(void)data;
 	post_cash(f, "2025-12-31T00:00:00Z", 100000, TRUE);
-	post_cash(f, "2026-01-15T00:00:00Z", 10000, FALSE);
+	{
+		g_autoptr(VentureExpense) expense = venture_expense_new();
+		g_autoptr(VentureMoney) hundred = venture_money_new_for_currency(10000, "USD");
+		g_autoptr(GDateTime) date = g_date_time_new_utc(2026, 1, 15, 0, 0, 0);
+		g_object_set(expense, "description", "Uncleared check", "organization-id", f->org,
+			"amount", hundred, "occurred-at", date, NULL);
+		g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(expense), NULL, &error));
+	}
 	g_assert_cmpint(bank_book(f, "2026-01-31T23:59:59Z"), ==, 90000);
 	json_object_set_string_member(args, "format", "csv");
 	json_object_set_string_member(args, "data", "date,amount,memo,ref,id\n2026-01-20,0,placeholder,none,ph-1\n");

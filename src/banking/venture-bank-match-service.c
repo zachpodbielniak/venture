@@ -2,6 +2,7 @@
 #include "venture.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 struct _VentureBankMatchService
 {
@@ -624,13 +625,22 @@ import_statement(VentureBankMatchService *self, VentureEntity *bank, JsonObject 
 }
 
 static gboolean
-source_cleared(VentureBankMatchService *self, const gchar *source_type, gint64 source_id,
-	gint64 org, GDateTime *end, GError **error)
+cash_document_source(const gchar *source_type)
+{
+	return source_type != NULL && (!strcmp(source_type, "expense") || !strcmp(source_type, "payment") ||
+		!strcmp(source_type, "sale") || !strcmp(source_type, "vendor_bill_payment") ||
+		!strcmp(source_type, "bill_payment"));
+}
+
+static gboolean
+cleared_amount(VentureBankMatchService *self, const gchar *source_type, gint64 source_id,
+	gint64 org, GDateTime *end, gint64 *cleared, GError **error)
 {
 	g_autoptr(GPtrArray) matches = NULL;
 	guint i;
+	*cleared = 0;
 	if (source_type == NULL || source_id <= 0)
-		return FALSE;
+		return TRUE;
 	matches = rows(self->database, VENTURE_TYPE_BANK_MATCH, org, "record-id", source_id, error);
 	if (matches == NULL)
 		return FALSE;
@@ -638,22 +648,23 @@ source_cleared(VentureBankMatchService *self, const gchar *source_type, gint64 s
 	{
 		VentureEntity *match = g_ptr_array_index(matches, i);
 		g_autofree gchar *type = NULL;
-		g_autoptr(GDateTime) cleared = NULL;
-		g_object_get(match, "record-type", &type, "cleared-at", &cleared, NULL);
+		g_autoptr(GDateTime) when = NULL;
+		g_autoptr(VentureMoney) amount = NULL;
+		g_object_get(match, "record-type", &type, "cleared-at", &when, "amount", &amount, NULL);
 		if (g_strcmp0(type, source_type) != 0)
 			continue;
-		if (cleared == NULL)
+		if (when == NULL)
 		{
 			g_autoptr(VentureEntity) txn = venture_database_get(self->database, VENTURE_TYPE_BANK_TRANSACTION,
 				number(match, "transaction-id"), error);
 			if (txn == NULL)
 				return FALSE;
-			g_object_get(txn, "date", &cleared, NULL);
+			g_object_get(txn, "date", &when, NULL);
 		}
-		if (cleared != NULL && g_date_time_compare(cleared, end) <= 0)
-			return TRUE;
+		if (when != NULL && g_date_time_compare(when, end) <= 0 && amount != NULL)
+			*cleared += llabs(venture_money_get_amount(amount));
 	}
-	return FALSE;
+	return TRUE;
 }
 
 static gboolean
@@ -670,6 +681,7 @@ outstanding_items(VentureBankMatchService *self, VentureEntity *bank, GDateTime 
 	gint64 account_id, org;
 	guint i;
 	g_object_get(bank, "currency", &currency, "account-id", &account_id, NULL);
+	(void)start;
 	org = venture_entity_get_organization_id(bank);
 	out = venture_money_new_zero(currency);
 	inn = venture_money_new_zero(currency);
@@ -688,19 +700,18 @@ outstanding_items(VentureBankMatchService *self, VentureEntity *bank, GDateTime 
 		g_autoptr(VentureQuery) lines_query = NULL;
 		g_autofree gchar *source_type = NULL;
 		gint64 source_id;
+		gint64 remaining_cleared = 0;
 		VentureJournalState state;
 		guint j;
 		g_object_get(journal, "state", &state, "occurred-at", &date, "source-type", &source_type,
 			"source-id", &source_id, NULL);
 		if ((state != VENTURE_JOURNAL_POSTED && state != VENTURE_JOURNAL_REVERSED) || date == NULL)
 			continue;
-		if (start != NULL && g_date_time_compare(date, start) < 0)
-			continue;
 		if (g_date_time_compare(date, end) > 0)
 			continue;
-		if (source_cleared(self, source_type, source_id, org, end, error))
+		if (!cash_document_source(source_type))
 			continue;
-		if (error != NULL && *error != NULL)
+		if (!cleared_amount(self, source_type, source_id, org, end, &remaining_cleared, error))
 			return FALSE;
 		lines_query = venture_query_new(VENTURE_TYPE_JOURNAL_LINE);
 		venture_query_set_limit(lines_query, 0);
@@ -717,6 +728,22 @@ outstanding_items(VentureBankMatchService *self, VentureEntity *bank, GDateTime 
 			g_object_get(line, "account-id", &line_account, "side", &side, "book-amount", &amount, NULL);
 			if (line_account != account_id || amount == NULL || venture_money_is_zero(amount))
 				continue;
+			{
+				gint64 line_amount = venture_money_get_amount(amount);
+				gint64 apply = remaining_cleared;
+				gint64 remaining;
+				g_autoptr(VentureMoney) uncleared = NULL;
+				if (apply > line_amount)
+					apply = line_amount;
+				remaining_cleared -= apply;
+				remaining = line_amount - apply;
+				if (remaining <= 0)
+					continue;
+				uncleared = venture_money_new(remaining, venture_money_get_currency(amount),
+					venture_money_get_exponent(amount));
+				g_clear_pointer(&amount, venture_money_free);
+				amount = g_steal_pointer(&uncleared);
+			}
 			if (side == VENTURE_LEDGER_SIDE_CREDIT)
 			{
 				VentureMoney *next = venture_money_add(out, amount, error);
@@ -1022,7 +1049,8 @@ bank_report(VentureContext *context, VentureDateRange *period, JsonObject *optio
 	g_autoptr(VentureEntity) statement = NULL, bank = NULL;
 	g_autoptr(GPtrArray) transactions = NULL;
 	g_autoptr(VentureMoney) matched = NULL, unmatched = NULL, excluded = NULL;
-	g_autoptr(VentureMoney) book = NULL, closing = NULL, difference = NULL;
+	g_autoptr(VentureMoney) book = NULL, closing = NULL, difference = NULL, checks = NULL, deposits = NULL;
+	g_autofree gchar *evidence = NULL;
 	g_autoptr(GDateTime) end = NULL;
 	g_autofree gchar *currency = NULL;
 	g_autoptr(VentureReportResult) result = NULL;
@@ -1056,12 +1084,16 @@ bank_report(VentureContext *context, VentureDateRange *period, JsonObject *optio
 	if (book == NULL) return NULL;
 	difference = venture_money_subtract(closing, book, error);
 	if (difference == NULL) return NULL;
+	if (!outstanding_items(venture_database_get_bank_match_service(db), bank, NULL, end, &checks, &deposits, &evidence, error))
+		return NULL;
 	result = venture_report_result_new("Bank reconciliation", period);
 	venture_report_result_add_metric(result, venture_metric_new_money("matched", "Matched", matched));
 	venture_report_result_add_metric(result, venture_metric_new_money("unmatched", "Unmatched", unmatched));
 	venture_report_result_add_metric(result, venture_metric_new_money("excluded", "Excluded", excluded));
 	venture_report_result_add_metric(result, venture_metric_new_money("statement", "Statement balance", closing));
 	venture_report_result_add_metric(result, venture_metric_new_money("book", "Posted book balance", book));
+	venture_report_result_add_metric(result, venture_metric_new_money("outstanding_checks", "Outstanding checks", checks));
+	venture_report_result_add_metric(result, venture_metric_new_money("deposits_in_transit", "Deposits in transit", deposits));
 	venture_report_result_add_metric(result, venture_metric_new_money("difference", "Difference", difference));
 	return g_steal_pointer(&result);
 }

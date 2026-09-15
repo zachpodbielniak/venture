@@ -123,3 +123,13 @@ module is disabled. No bank history is fabricated from existing documents.
 The ordinary migration suite checks upgrade and restart with retained data.
 
 Matching refuses soft-deleted cash documents even though their records remain available for historical lookup. A failed match leaves the transaction and match evidence unchanged.
+
+* Outstanding items
+
+Finalize requires =statement = book + outstanding checks − deposits in transit=.
+Outstanding items are uncleared cash documents (expenses, receipts, sales and
+bill payments) through the statement end, including prior periods. A split
+match only clears the matched remainder. Opening and other non-document cash
+journals are not deposits in transit. The statement page offers reopen with a
+required reason; the bank reconciliation report exposes outstanding check and
+deposit-in-transit totals.

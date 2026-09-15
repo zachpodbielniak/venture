@@ -6,7 +6,7 @@ venture_bank_append_actions(GString *content, VentureEntity *record)
 	const gchar *options;
 	guint i;
 	if (!strcmp(name, "bank_account")) options = "<option>import</option>";
-	else if (!strcmp(name, "bank_statement")) options = "<option>auto</option><option>reconcile</option>";
+	else if (!strcmp(name, "bank_statement")) options = "<option>auto</option><option>reconcile</option><option>reopen</option>";
 	else if (!strcmp(name, "bank_transaction")) options = "<option>match</option><option>unmatch</option><option>exclude</option><option>create</option>";
 	else return;
 	g_string_append_printf(content,
@@ -25,7 +25,8 @@ venture_bank_append_actions(GString *content, VentureEntity *record)
 	}
 	else if (!strcmp(name, "bank_statement"))
 		g_string_append(content, "<label>Reconciliation state<select name=\"state\">"
-			"<option value=\"reconciled\">Finalize</option><option value=\"open\">Save open review</option></select></label>");
+			"<option value=\"reconciled\">Finalize</option><option value=\"open\">Save open review</option></select></label>"
+			"<label>Reopen reason<input name=\"reason\"></label>");
 	else
 	{
 		g_string_append(content,
