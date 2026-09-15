@@ -7,9 +7,12 @@ The =cutover= module requires =ledger=. =VentureCutoverService= owns preview, im
 and rollback. Generic writes do not create opening journals.
 
 A mapped JSON payload names the source (=zoho_books= or =quickbooks=), an
-explicit cutoff, chart mapping, customers, vendors, items, open AR/AP, credits,
-bank balances and assets. Unsupported source fields are listed on the retained
-reconciliation report. Each source ID is stored on =accounting_cutover_row= so
+explicit cutoff, chart mapping, customers, vendors, items, open AR, and bank
+balances. Amounts must include an ISO currency (or a payload-level
+=currency=). Mapped tax amounts are frozen on the opening invoice rather than
+rounded through an integer percent. Non-empty =open_ap=, =credits= or
+=assets= arrays are refused until those importers exist; list them under
+=unsupported= instead. Each source ID is stored on =accounting_cutover_row= so
 reimport is idempotent.
 
 Open AR is imported as issued invoices (tax split at issuance) rather than as a

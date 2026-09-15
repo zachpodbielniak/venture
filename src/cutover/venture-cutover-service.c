@@ -196,15 +196,53 @@ obj_str(JsonObject *object, const gchar *name)
 	return json_object_has_member(object, name) ? json_object_get_string_member(object, name) : NULL;
 }
 
+static gboolean
+text_names_currency(const gchar *text)
+{
+	gsize length;
+	if (text == NULL)
+		return FALSE;
+	length = strlen(text);
+	if (length > 4 && text[length - 4] == ' ' &&
+		g_ascii_isalpha(text[length - 3]) && g_ascii_isalpha(text[length - 2]) &&
+		g_ascii_isalpha(text[length - 1]))
+		return TRUE;
+	if (length > 4 && text[3] == ' ' &&
+		g_ascii_isalpha(text[0]) && g_ascii_isalpha(text[1]) && g_ascii_isalpha(text[2]))
+		return TRUE;
+	return FALSE;
+}
+
 static VentureMoney *
-parse_money(const gchar *text, GError **error)
+parse_money(const gchar *text, const gchar *currency, GError **error)
 {
 	if (text == NULL || *text == '\0')
 	{
 		refuse(error, "monetary amount is required");
 		return NULL;
 	}
-	return venture_money_from_string(text, "USD", error);
+	if (!text_names_currency(text) && (currency == NULL || *currency == '\0'))
+	{
+		refuse(error, "amount must include a currency");
+		return NULL;
+	}
+	return venture_money_from_string(text, currency, error);
+}
+
+static gboolean
+array_nonempty(JsonObject *payload, const gchar *name)
+{
+	JsonArray *rows = arr(payload, name);
+	return rows != NULL && json_array_get_length(rows) > 0;
+}
+
+static gboolean
+refuse_unimported_sections(JsonObject *payload, GError **error)
+{
+	if (array_nonempty(payload, "open_ap") || array_nonempty(payload, "credits") ||
+		array_nonempty(payload, "assets"))
+		return refuse(error, "open_ap, credits and assets are not imported; omit them or list them under unsupported");
+	return TRUE;
 }
 
 VentureEntity *
@@ -231,6 +269,8 @@ venture_cutover_service_preview(VentureCutoverService *self, gint64 organization
 		refuse(error, "source must be zoho_books or quickbooks");
 		return NULL;
 	}
+	if (!refuse_unimported_sections(payload, error))
+		return NULL;
 	cutoff = venture_time_from_string(obj_str(payload, "cutoff"), error);
 	if (cutoff == NULL)
 		return NULL;
@@ -291,6 +331,7 @@ import_open_ar(VentureCutoverService *self, VentureEntity *cutover, JsonObject *
 		g_autoptr(VentureInvoiceLine) line = NULL;
 		g_autoptr(VentureMoney) net = NULL;
 		g_autoptr(VentureMoney) tax = NULL;
+		g_autoptr(VentureMoney) zero_tax = NULL;
 		gint64 customer_id, existing, tax_percent = 0;
 		guint c;
 		existing = existing_record(self, org, source_id, "open_ar", error);
@@ -311,14 +352,20 @@ import_open_ar(VentureCutoverService *self, VentureEntity *cutover, JsonObject *
 			"customer", actor, error);
 		if (customer_id == 0)
 			return FALSE;
-		net = parse_money(obj_str(row, "net") != NULL ? obj_str(row, "net") : obj_str(row, "amount"), error);
-		if (net == NULL)
-			return FALSE;
-		if (obj_str(row, "tax") != NULL)
-			tax = parse_money(obj_str(row, "tax"), error);
-		if (obj_str(row, "tax") != NULL && tax == NULL)
-			return FALSE;
-		if (tax != NULL && !venture_money_is_zero(net))
+		{
+			const gchar *currency = obj_str(row, "currency");
+			if (currency == NULL)
+				currency = obj_str(payload, "currency");
+			net = parse_money(obj_str(row, "net") != NULL ? obj_str(row, "net") : obj_str(row, "amount"),
+				currency, error);
+			if (net == NULL)
+				return FALSE;
+			if (obj_str(row, "tax") != NULL)
+				tax = parse_money(obj_str(row, "tax"), currency, error);
+			if (obj_str(row, "tax") != NULL && tax == NULL)
+				return FALSE;
+		}
+		if (tax != NULL && !venture_money_is_zero(net) && venture_money_get_amount(tax) * 100 % venture_money_get_amount(net) == 0)
 			tax_percent = (venture_money_get_amount(tax) * 100) / venture_money_get_amount(net);
 		invoice = venture_invoice_new();
 		g_object_set(invoice, "number", obj_str(row, "number"), "company-id", customer_id, NULL);
@@ -327,13 +374,17 @@ import_open_ar(VentureCutoverService *self, VentureEntity *cutover, JsonObject *
 			!venture_database_save(self->database, VENTURE_ENTITY(invoice), actor, error))
 			return FALSE;
 		line = venture_invoice_line_new();
+		zero_tax = venture_money_new_zero(venture_money_get_currency(net));
 		g_object_set(line, "invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)),
-			"description", "Opening balance", "quantity", 1.0, "tax-percent", tax_percent, NULL);
+			"description", "Opening balance", "quantity", 1.0, "tax-percent", tax_percent,
+			"income-amount", net, "tax-amount", tax != NULL ? tax : zero_tax, NULL);
 		venture_entity_set_organization_id(VENTURE_ENTITY(line), org);
 		if (!venture_entity_set_field_from_string(VENTURE_ENTITY(line), "unit-price",
 			obj_str(row, "net") != NULL ? obj_str(row, "net") : obj_str(row, "amount"), error) ||
 			!venture_database_save(self->database, VENTURE_ENTITY(line), actor, error))
 			return FALSE;
+		if (json_object_has_member(row, "tax_exempt") && json_object_get_boolean_member(row, "tax_exempt"))
+			g_object_set(invoice, "tax-exempt", TRUE, "tax-exempt-reason", obj_str(row, "tax_exempt_reason"), NULL);
 		g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
 		if (!venture_database_save(self->database, VENTURE_ENTITY(invoice), actor, error))
 			return FALSE;
@@ -373,7 +424,8 @@ import_bank(VentureCutoverService *self, VentureEntity *cutover, JsonObject *pay
 			return FALSE;
 		if (existing > 0)
 			continue;
-		amount = parse_money(obj_str(row, "amount"), error);
+		amount = parse_money(obj_str(row, "amount"),
+			obj_str(row, "currency") != NULL ? obj_str(row, "currency") : obj_str(payload, "currency"), error);
 		if (amount == NULL)
 			return FALSE;
 		currency = venture_money_get_currency(amount);
@@ -434,19 +486,21 @@ venture_cutover_service_import(VentureCutoverService *self, VentureAccountingCut
 	payload = payload_of(VENTURE_ENTITY(cutover));
 	if (payload == NULL)
 		return refuse(error, "cutover payload is missing");
+	if (!refuse_unimported_sections(payload, error))
+		return FALSE;
 	if (!venture_database_begin(self->database, error))
 		return FALSE;
 	if (!import_open_ar(self, VENTURE_ENTITY(cutover), payload, actor, error) ||
 		!import_bank(self, VENTURE_ENTITY(cutover), payload, actor, error))
-	{
-		venture_database_rollback(self->database);
-		return FALSE;
-	}
+		goto fail;
 	g_object_set(cutover, "state", "imported", NULL);
 	if (!save_owned(self, VENTURE_ENTITY(cutover), actor, error) ||
 		!venture_database_commit(self->database, error))
-		return FALSE;
+		goto fail;
 	return TRUE;
+fail:
+	venture_database_rollback(self->database);
+	return FALSE;
 }
 
 static gboolean
@@ -481,7 +535,7 @@ payload_sum(JsonArray *rows, const gchar *field, VentureMoney **total, GError **
 		g_autoptr(VentureMoney) amount = NULL;
 		if (obj_str(row, field) == NULL)
 			continue;
-		amount = parse_money(obj_str(row, field), error);
+		amount = parse_money(obj_str(row, field), NULL, error);
 		if (amount == NULL)
 			return FALSE;
 		if (!add_money(total, amount, error))
@@ -646,7 +700,7 @@ venture_cutover_service_reconcile(VentureCutoverService *self, VentureAccounting
 					JsonObject *src = json_array_get_object_element(banks, b);
 					if (g_strcmp0(obj_str(src, "source_id"), source_id) == 0)
 					{
-						expected = parse_money(obj_str(src, "amount"), error);
+						expected = parse_money(obj_str(src, "amount"), currency, error);
 						break;
 					}
 				}
@@ -738,7 +792,7 @@ venture_cutover_service_rollback(VentureCutoverService *self, VentureAccountingC
 	g_object_set(cutover, "state", "rolled_back", NULL);
 	if (!save_owned(self, VENTURE_ENTITY(cutover), actor, error) ||
 		!venture_database_commit(self->database, error))
-		return FALSE;
+		goto fail;
 	return TRUE;
 fail:
 	venture_database_rollback(self->database);

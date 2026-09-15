@@ -280,6 +280,82 @@ test_surfaces(Fixture *f, gconstpointer data)
 	venture_test_remove_tree(dir);
 }
 
+static JsonObject *
+parse_json(const gchar *json)
+{
+	g_autoptr(JsonParser) parser = json_parser_new();
+	g_assert_true(json_parser_load_from_data(parser, json, -1, NULL));
+	return json_object_ref(json_node_get_object(json_parser_get_root(parser)));
+}
+
+static void
+test_refuse_unimported(Fixture *f, gconstpointer data)
+{
+	g_autoptr(JsonObject) payload = parse_json(
+		"{\"source\":\"zoho_books\",\"cutoff\":\"2026-01-01\","
+		"\"open_ap\":[{\"source_id\":\"b1\",\"amount\":\"10 USD\"}]}");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) cutover = NULL;
+	VentureActor actor;
+	(void)data;
+	actor_init(&actor);
+	cutover = venture_cutover_service_preview(venture_cutover_service_get(f->db),
+		f->org, payload, &actor, &error);
+	g_assert_null(cutover);
+	g_assert_nonnull(error);
+	g_assert_nonnull(strstr(error->message, "open_ap"));
+}
+
+static void
+test_currency_required(Fixture *f, gconstpointer data)
+{
+	g_autoptr(JsonObject) payload = parse_json(
+		"{\"source\":\"zoho_books\",\"cutoff\":\"2026-01-01\","
+		"\"bank_balances\":[{\"source_id\":\"bank-1\",\"name\":\"Checking\","
+		"\"account_code\":\"1000\",\"amount\":\"500\"}]}");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) cutover = NULL;
+	VentureActor actor;
+	(void)data;
+	actor_init(&actor);
+	cutover = venture_cutover_service_preview(venture_cutover_service_get(f->db),
+		f->org, payload, &actor, &error);
+	g_assert_no_error(error);
+	g_assert_false(venture_cutover_service_import(venture_cutover_service_get(f->db),
+		VENTURE_ACCOUNTING_CUTOVER(cutover), &actor, &error));
+	g_assert_nonnull(error);
+	g_assert_nonnull(strstr(error->message, "currency"));
+}
+
+static void
+test_exact_opening_tax(Fixture *f, gconstpointer data)
+{
+	g_autoptr(JsonObject) payload = parse_json(
+		"{\"source\":\"zoho_books\",\"cutoff\":\"2026-01-01\","
+		"\"customers\":[{\"source_id\":\"cust-1\",\"name\":\"Acme\"}],"
+		"\"open_ar\":[{\"source_id\":\"inv-1\",\"customer_source_id\":\"cust-1\","
+		"\"number\":\"OB-2\",\"net\":\"33.33 USD\",\"tax\":\"2.50 USD\","
+		"\"amount\":\"35.83 USD\",\"date\":\"2025-12-15\"}]}");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) cutover = NULL;
+	g_autoptr(GPtrArray) events = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVOICE_EVENT);
+	g_autoptr(VentureMoney) tax = NULL;
+	VentureActor actor;
+	(void)data;
+	actor_init(&actor);
+	cutover = venture_cutover_service_preview(venture_cutover_service_get(f->db),
+		f->org, payload, &actor, &error);
+	g_assert_true(venture_cutover_service_import(venture_cutover_service_get(f->db),
+		VENTURE_ACCOUNTING_CUTOVER(cutover), &actor, &error));
+	g_assert_no_error(error);
+	venture_query_set_limit(query, 0);
+	events = venture_database_find(f->db, query, &error);
+	g_assert_cmpuint(events->len, ==, 1);
+	g_object_get(g_ptr_array_index(events, 0), "tax-amount", &tax, NULL);
+	g_assert_cmpint(venture_money_get_amount(tax), ==, 250);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -288,6 +364,9 @@ main(int argc, char **argv)
 	g_test_add("/cutover/preview-import-activate", Fixture, NULL, setup, test_preview_import_activate, teardown);
 	g_test_add("/cutover/idempotent-rollback", Fixture, NULL, setup, test_idempotent_rollback, teardown);
 	g_test_add("/cutover/generic-write", Fixture, NULL, setup, test_generic_write_refused, teardown);
+	g_test_add("/cutover/refuse-unimported", Fixture, NULL, setup, test_refuse_unimported, teardown);
+	g_test_add("/cutover/currency-required", Fixture, NULL, setup, test_currency_required, teardown);
+	g_test_add("/cutover/exact-opening-tax", Fixture, NULL, setup, test_exact_opening_tax, teardown);
 	g_test_add("/cutover/surfaces", Fixture, NULL, setup, test_surfaces, teardown);
 	return g_test_run();
 }
