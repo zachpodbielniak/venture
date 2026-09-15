@@ -1,0 +1,30 @@
+#+title: Commerce connectors
+#+description: Import marketplace orders as invoices through document compose and settlement
+
+* Commerce connectors
+
+The =commerce= module is opt-in and requires =invoicing= and
+=receivables=. Set =commerce.enabled: true=. Startup requires
+=VENTURE_COMMERCE_SHOPIFY_TOKEN= (and optionally
+=VENTURE_COMMERCE_SHOPIFY_SHOP=). Enabling without the token fails
+configure/start and names the variable.
+
+=VentureCommerceConnector= is a GInterface with a registry. A
+Shopify-like connector turns orders into invoices through
+=VentureDocumentService= compose and, when the order is paid, through
+=VentureSettlementService=. There is no second ledger. The order id is
+stored as =invoice.external-id= and is unique within the organization, so
+a repeated import is a no-op.
+
+Tests register a fake connector and never open a network connection.
+
+#+begin_src sh
+venturectl commerce import
+#+end_src
+
+Automation:
+
+#+begin_src text
+pod shop_hour = cron->new("15 * * * *");
+shop_hour->on_schedule => venture->commerce_import("1", "shopify");
+#+end_src

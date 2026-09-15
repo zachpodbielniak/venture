@@ -170,6 +170,7 @@ gboolean venture_accounting_approval_allow(VentureDatabase *database, const gcha
 #include "accounting/venture-accounting-home.h"
 #include "banking/venture-bank-match-service.h"
 #include "bankfeed/venture-bankfeed.h"
+#include "commerce/venture-commerce.h"
 #include "cutover/venture-cutover-service.h"
 #include "setup/venture-setup-service.h"
 #include "documents/venture-document-service.h"

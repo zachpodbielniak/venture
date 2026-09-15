@@ -380,6 +380,9 @@ gboolean venture_context_start_stripe(VentureContext *self, GError **error);
 VentureBankFeedService *venture_context_get_bankfeed_service(VentureContext *self);
 void venture_context_set_bankfeed_service(VentureContext *self, VentureBankFeedService *service);
 gboolean venture_context_start_bankfeed(VentureContext *self, GError **error);
+VentureCommerceService *venture_context_get_commerce_service(VentureContext *self);
+void venture_context_set_commerce_service(VentureContext *self, VentureCommerceService *service);
+gboolean venture_context_start_commerce(VentureContext *self, GError **error);
 
 /** venture_context_get_mailer:
  * @self: context

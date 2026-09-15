@@ -25,6 +25,7 @@ struct _VentureContext
 	VentureKbService	*kb;
 	VentureStripeService *stripe;
 	VentureBankFeedService *bankfeed;
+	VentureCommerceService *commerce;
 	VentureModuleRegistry	*modules;
 	VentureMailerRegistry *mailers;
 	VentureMailOutbox *mail_outbox;
@@ -65,6 +66,7 @@ venture_context_finalize(GObject *object)
 	g_clear_object(&self->kb);
 	g_clear_object(&self->stripe);
 	g_clear_object(&self->bankfeed);
+	g_clear_object(&self->commerce);
 	g_clear_object(&self->modules);
 	g_clear_pointer(&self->timezone, g_time_zone_unref);
 	g_clear_object(&self->reconciliation_registry);
@@ -574,6 +576,27 @@ venture_context_start_bankfeed(VentureContext *self, GError **error)
 		venture_context_get_default_organization_id(self), NULL, error);
 	if (!provider) return FALSE;
 	venture_context_set_bankfeed_service(self, provider);
+	return TRUE;
+}
+VentureCommerceService *
+venture_context_get_commerce_service(VentureContext *self)
+{
+	return venture_context_module_enabled(self, "commerce") ? self->commerce : NULL;
+}
+void
+venture_context_set_commerce_service(VentureContext *self, VentureCommerceService *service)
+{
+	g_set_object(&self->commerce, service);
+}
+gboolean
+venture_context_start_commerce(VentureContext *self, GError **error)
+{
+	g_autoptr(VentureCommerceService) provider = NULL;
+	if (!venture_context_module_enabled(self, "commerce")) return TRUE;
+	provider = venture_commerce_service_new(self->database,
+		venture_context_get_default_organization_id(self), NULL, error);
+	if (!provider) return FALSE;
+	venture_context_set_commerce_service(self, provider);
 	return TRUE;
 }
 VentureMailer *venture_context_get_mailer(VentureContext *self)

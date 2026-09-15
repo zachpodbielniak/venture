@@ -60,6 +60,13 @@ window, missing =VENTURE_BANKFEED_TELLER_KEY=, injected Teller transport
 with no network, and a rolled-back batch on a bad line.
 
 
+** =test-commerce=
+
+Fake Shopify-like connector imports an order as a sent invoice (and a sale
+when paid) through document compose and settlement. A second import of the
+same external id writes nothing. Missing =VENTURE_COMMERCE_SHOPIFY_TOKEN=
+refuses to start. A later invalid order rolls the batch back.
+
 ** =test-banking=
 
 Statement import, matching and reconciliation. Rule preview against historical

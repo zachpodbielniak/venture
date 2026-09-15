@@ -51,7 +51,7 @@ static const gchar *const venture_pod_module_events[] = {
 };
 
 static const gchar *const venture_pod_module_handlers[] = {
-	"query", "count", "report", "create", "low_stock", "assets_run_period", "mail_deliver", "recurring_run", "collections_run", "bankfeed_sync", NULL
+	"query", "count", "report", "create", "low_stock", "assets_run_period", "mail_deliver", "recurring_run", "collections_run", "bankfeed_sync", "commerce_import", NULL
 };
 
 /* --- Event source --------------------------------------------------------- */
@@ -554,6 +554,7 @@ venture_pod_module_handle_low_stock(
 #include "mail/venture-mail-automation.inc"
 #include "recurring/venture-recurring-automation.inc"
 #include "bankfeed/venture-bankfeed-automation.inc"
+#include "commerce/venture-commerce-automation.inc"
 
 static gboolean
 venture_pod_module_handle_event(
@@ -600,7 +601,7 @@ venture_pod_module_handle_event(
 		return venture_pod_module_collections_run(self, params, result);
 	if (0 == g_strcmp0(event_name, "bankfeed_sync"))
 		return venture_pod_module_handle_bankfeed(self, params, result);
-	if (0 == g_strcmp0(event_name))
+	if (0 == g_strcmp0(event_name, "commerce_import"))
 		return venture_pod_module_handle_commerce(self, params, result);
 
 	g_warning("venture has no handler called \"%s\"", event_name);

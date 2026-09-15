@@ -159,7 +159,8 @@ venture_document_service_compose_invoice(VentureDocumentService *self, gint64 or
 		venture_json_object_get_int(spec, "company_id", 0),
 		"contact-id", venture_json_object_get_int(spec, "contact_id", 0),
 		"terms", venture_json_object_get_string(spec, "terms", ""),
-		"notes", venture_json_object_get_string(spec, "notes", ""), NULL);
+		"notes", venture_json_object_get_string(spec, "notes", ""),
+		"external-id", venture_json_object_get_string(spec, "external_id", ""), NULL);
 	due_days = venture_json_object_get_int(spec, "due_days", 30);
 	now = venture_time_now();
 	if (due_days > 0)
