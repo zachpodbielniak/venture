@@ -673,9 +673,13 @@ gint
 venture_recurring_service_run(VentureRecurringService *self, gint64 organization_id,
 	GDateTime *as_of, gboolean dry_run, const VentureActor *actor, GError **error)
 {
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autofree gchar *as_of_text = NULL;
+	g_autoptr(GString) effective_days = g_string_new(NULL);
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(GDateTime) clock = NULL;
+	gboolean can_post = FALSE;
 	gint total = 0;
 	guint i;
 	g_return_val_if_fail(VENTURE_IS_RECURRING_SERVICE(self), -1);
@@ -684,11 +688,45 @@ venture_recurring_service_run(VentureRecurringService *self, gint64 organization
 	if (organization_id <= 0)
 		return refuse(error, "An organization is required") ? -1 : -1;
 	clock = as_of ? g_date_time_ref(as_of) : venture_time_now();
+	as_of_text = as_of != NULL ? g_date_time_format_iso8601(clock) : g_date_time_format(clock, "%F");
 	query = venture_query_new(VENTURE_TYPE_RECURRING_SCHEDULE);
 	venture_query_set_organization(query, organization_id);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
 	rows = venture_database_find(self->database, query, error);
 	if (rows == NULL)
 		return -1;
+	/* Draft-only schedules and read-only previews do not request posting consent. */
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *schedule = g_ptr_array_index(rows, i);
+		if (as_of == NULL && !flag(schedule, "paused"))
+		{
+			g_autoptr(GDateTime) start = schedule_start(schedule);
+			if (start != NULL)
+			{
+				g_autoptr(GDateTime) local = g_date_time_to_timezone(clock, g_date_time_get_timezone(start));
+				g_autofree gchar *day = g_date_time_format(local, "%F");
+				/* UTC midnight and each schedule's local midnight invalidate
+				 * omitted-date consent without depending on retry seconds. */
+				g_string_append_printf(effective_days, "%" G_GINT64_FORMAT ":%s;",
+					venture_entity_get_id(schedule), day);
+			}
+		}
+		if (!flag(schedule, "paused") && (choice(schedule, "kind") == 2 || flag(schedule, "auto-post")))
+			can_post = TRUE;
+	}
+	if (!dry_run && can_post)
+	{
+		operation = venture_accounting_operation_begin(self->database, "recurring.run", NULL, NULL,
+			g_variant_new("(ssb)", as_of_text, effective_days->str, dry_run), organization_id, actor, error);
+		if (operation == NULL)
+			return -1;
+		/* The preflight determines whether posting is possible; execution
+		 * must read the rows protected by the acquired transaction snapshot. */
+		g_clear_pointer(&rows, g_ptr_array_unref);
+		rows = venture_database_find(self->database, query, error);
+		if (rows == NULL) return -1;
+	}
 	self->busy = TRUE;
 	if (!dry_run && !venture_database_begin(self->database, error))
 	{
@@ -713,6 +751,8 @@ venture_recurring_service_run(VentureRecurringService *self, gint64 organization
 		return -1;
 	}
 	self->busy = FALSE;
+	if (operation != NULL && !venture_accounting_operation_finish(operation, error))
+		return -1;
 	return total;
 }
 
@@ -975,6 +1015,7 @@ batch_for_organization(VentureRecurringService *self, gint64 org, const gchar *k
 	const gchar *format, const gchar *payload, gboolean post, gboolean dry_run,
 	const VentureActor *actor, GError **error)
 {
+	g_autoptr(VentureAccountingOperation) operation = NULL;
 	g_autoptr(JsonArray) docs = NULL;
 	g_autoptr(JsonArray) created = json_array_new();
 	g_autoptr(GHashTable) seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
@@ -999,6 +1040,14 @@ batch_for_organization(VentureRecurringService *self, gint64 org, const gchar *k
 	{
 		refuse(error, "A batch requires an organization");
 		return NULL;
+	}
+	/* Generated invoice IDs do not exist at approval time; consent binds the payload. */
+	if (post || g_strcmp0(kind, "expense") == 0)
+	{
+		operation = venture_accounting_operation_begin(self->database, "batch.create", NULL, NULL,
+			g_variant_new("(sssbb)", kind, format ? format : "json", payload, post, dry_run), org, actor, error);
+		if (operation == NULL)
+			return NULL;
 	}
 	if (!venture_database_begin(self->database, error))
 		return NULL;
@@ -1044,6 +1093,9 @@ batch_for_organization(VentureRecurringService *self, gint64 org, const gchar *k
 	if (dry_run)
 		venture_database_rollback(self->database);
 	else if (!venture_database_commit(self->database, error))
+		return NULL;
+	/* A dry run abandons the whole nested transaction, including consent use. */
+	if (!dry_run && operation != NULL && !venture_accounting_operation_finish(operation, error))
 		return NULL;
 	builder = json_builder_new();
 	json_builder_begin_object(builder);
@@ -1512,10 +1564,12 @@ schedule_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params
 {
 	VentureRecurringService *self = venture_action_get_data(action);
 	g_autofree gchar *name = NULL;
-	g_autoptr(GDateTime) as_of = param_date(params, "as_of", error);
+	const gchar *as_of_text = param_string(params, "as_of");
+	g_autoptr(GDateTime) as_of = !venture_string_is_empty(as_of_text) ?
+		venture_time_from_string(as_of_text, error) : NULL;
 	gint64 org;
 	g_object_get(action, "name", &name, NULL);
-	if (as_of == NULL)
+	if (!venture_string_is_empty(as_of_text) && as_of == NULL)
 		return NULL;
 	if (g_strcmp0(name, "pause") == 0)
 		return venture_recurring_service_pause(self, entity, actor, error) ? g_object_ref(entity) : NULL;
@@ -1525,7 +1579,7 @@ schedule_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params
 	if (org <= 0)
 		org = venture_entity_get_organization_id(entity);
 	if (org <= 0)
-		org = 1;
+		org = default_organization(self);
 	if (venture_recurring_service_run(self, org, as_of, param_bool(params, "dry_run"), actor, error) < 0)
 		return NULL;
 	return entity ? g_object_ref(entity) : g_object_new(VENTURE_TYPE_RECURRING_SCHEDULE, NULL);
@@ -1564,6 +1618,10 @@ batch_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params,
 	const VentureActor *actor, GError **error)
 {
 	VentureRecurringService *self = venture_action_get_data(action);
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	gboolean saved = VENTURE_IS_FINANCIAL_BATCH(entity);
+	gboolean dry_run = param_bool(params, "dry_run");
+	gboolean post;
 	g_autofree gchar *type_name = NULL;
 	g_autofree gchar *stored = NULL;
 	g_autofree gchar *stored_format = NULL;
@@ -1598,17 +1656,38 @@ batch_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params,
 		org = default_organization(self);
 	if (format == NULL)
 		format = "json";
+	post = param_node(params, "post") != NULL ? param_bool(params, "post") : stored_post;
+	if (saved && (post || g_strcmp0(kind, "expense") == 0))
+	{
+		operation = venture_accounting_operation_begin(self->database, "batch.apply", entity, NULL,
+			g_variant_new("(sssbb)", kind ? kind : "invoice", format, payload ? payload : "", post, dry_run), org, actor, error);
+		if (operation == NULL) return NULL;
+	}
+	if (saved && !venture_database_begin(self->database, error)) return NULL;
 	result = batch_for_organization(self, org, kind ? kind : "invoice", format, payload,
 		param_node(params, "post") != NULL ? param_bool(params, "post") : stored_post,
 		param_bool(params, "dry_run"), actor, error);
 	if (result == NULL)
+	{
+		if (saved) venture_database_rollback(self->database);
 		return NULL;
+	}
 	if (VENTURE_IS_FINANCIAL_BATCH(entity))
 	{
 		g_autofree gchar *text = venture_json_to_string(result, FALSE);
+		if (dry_run)
+		{
+			venture_database_rollback(self->database);
+			return g_object_ref(entity);
+		}
 		g_object_set(entity, "last-result", text, NULL);
 		if (!venture_database_save(self->database, entity, actor, error))
+		{
+			venture_database_rollback(self->database);
 			return NULL;
+		}
+		if (!venture_database_commit(self->database, error)) return NULL;
+		if (operation != NULL && !venture_accounting_operation_finish(operation, error)) return NULL;
 		return g_object_ref(entity);
 	}
 	return g_object_new(g_strcmp0(kind, "expense") == 0 ? VENTURE_TYPE_EXPENSE : VENTURE_TYPE_INVOICE, NULL);
@@ -1621,7 +1700,7 @@ register_one(VentureActionRegistry *registry, const gchar *type_name, const gcha
 {
 	g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "type-name", type_name, "name", name,
 		"label", label, "description", label, "parameters", parameters, "stageable", TRUE,
-		"type-level", type_level, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+		"type-level", type_level, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	g_autoptr(GError) error = NULL;
 	if (!venture_action_registry_register(registry, action, allowed, invoke, data, NULL, &error))
 		g_error("Recurring action registration: %s", error->message);

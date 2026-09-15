@@ -144,8 +144,8 @@ post_pair(VentureDatabase *database, VentureEntity *source, GDateTime *when,
 		entries, NULL, actor, error);
 }
 
-VentureEntity *
-venture_capital_service_post(VentureCapitalService *self, gint64 organization_id,
+static VentureEntity *
+venture_capital_service_post_impl(VentureCapitalService *self, gint64 organization_id,
 	VentureEquityKind kind, const VentureMoney *amount, GDateTime *when, const gchar *memo,
 	gint64 debit_account_id, gint64 credit_account_id, const VentureActor *actor, GError **error)
 {
@@ -227,4 +227,52 @@ fail:
 	self->permit = NULL;
 	venture_database_rollback(self->database);
 	return NULL;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+VentureEntity *
+venture_capital_service_post(VentureCapitalService *self, gint64 organization_id,
+	VentureEquityKind kind, const VentureMoney *amount, GDateTime *when, const gchar *memo,
+	gint64 debit_account_id, gint64 credit_account_id, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) result = NULL;
+	g_autofree gchar *amount_text = NULL;
+	g_autofree gchar *when_text = NULL;
+	if (!enabled(error))
+		return NULL;
+	if (organization_id <= 0 || amount == NULL || amount->amount <= 0)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"An equity posting needs a legal entity and a positive amount");
+		return NULL;
+	}
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return NULL;
+	}
+	amount_text = amount != NULL ? venture_money_to_string(amount) : NULL;
+	when_text = when != NULL ? g_date_time_format_iso8601(when) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "organization_id", g_variant_new_int64((gint64)organization_id));
+	g_variant_builder_add(&arguments, "{sv}", "kind", g_variant_new_int64((gint64)kind));
+	g_variant_builder_add(&arguments, "{sv}", "amount", g_variant_new_maybe(G_VARIANT_TYPE_STRING, amount_text != NULL ? g_variant_new_string(amount_text) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "when", g_variant_new_maybe(G_VARIANT_TYPE_STRING, when_text != NULL ? g_variant_new_string(when_text) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "memo", g_variant_new_maybe(G_VARIANT_TYPE_STRING, memo != NULL ? g_variant_new_string(memo) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "debit_account_id", g_variant_new_int64((gint64)debit_account_id));
+	g_variant_builder_add(&arguments, "{sv}", "credit_account_id", g_variant_new_int64((gint64)credit_account_id));
+	operation = venture_accounting_operation_begin(db, "capital-post", NULL, NULL,
+		g_variant_builder_end(&arguments), organization_id, actor, error);
+	if (operation == NULL)
+		return NULL;
+	result = venture_capital_service_post_impl(self, organization_id, kind, amount, when, memo, debit_account_id, credit_account_id, actor, error);
+	if (result == NULL)
+		return NULL;
+	if (!venture_accounting_operation_finish(operation, error))
+		return NULL;
+	return g_steal_pointer(&result);
 }

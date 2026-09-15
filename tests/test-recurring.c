@@ -661,6 +661,45 @@ test_batch_cli(Fixture *f, gconstpointer unused)
 	venture_test_remove_tree(directory);
 }
 
+/* Omitting as_of means a calendar day, not a fresh timestamp that prevents
+ * the second account from ever matching the first account's proposal. */
+static void
+test_omitted_date_approval(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autofree gchar *today = g_date_time_format(now, "%F");
+	g_autoptr(VentureEntity) schedule = monthly_invoice(f, today);
+	g_autoptr(VentureEntity) rule = record(f, "accounting_approval_rule");
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(JsonNode) body = json_node_new(JSON_NODE_OBJECT);
+	g_autoptr(GHashTable) params = NULL;
+	g_autoptr(GError) error = NULL;
+	JsonObject *object = json_object_new();
+	VentureActor alice, bob;
+	(void)unused;
+	g_object_set(rule, "action", "post", "require-second-actor", TRUE, NULL);
+	save(f, rule);
+	alice.kind = VENTURE_ACTOR_KIND_USER; alice.name = "alice";
+	alice.prompt = NULL; alice.request_id = NULL; alice.approved_by = NULL;
+	bob.kind = VENTURE_ACTOR_KIND_USER; bob.name = "bob";
+	bob.prompt = NULL; bob.request_id = NULL; bob.approved_by = NULL;
+	json_node_take_object(body, object);
+	json_object_set_int_member(object, "organization_id", f->org);
+	params = venture_action_parameters_from_json(body, &error);
+	g_assert_no_error(error);
+	result = venture_action_registry_perform(venture_database_get_action_registry(f->db),
+		"recurring_schedule", 0, "run", params, &alice, VENTURE_USER_ROLE_OWNER, &error);
+	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	g_assert_cmpint(count(f, "invoice"), ==, 0);
+	g_assert_cmpint(count(f, "accounting_approval"), ==, 1);
+	result = venture_action_registry_perform(venture_database_get_action_registry(f->db),
+		"recurring_schedule", 0, "run", params, &bob, VENTURE_USER_ROLE_OWNER, &error);
+	g_assert_no_error(error); g_assert_nonnull(result);
+	g_assert_cmpint(count(f, "invoice"), ==, 1);
+	g_assert_cmpint(count(f, "accounting_approval"), ==, 1);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -686,5 +725,6 @@ main(int argc, char **argv)
 	g_test_add("/recurring/timezone", Fixture, NULL, setup, test_schedule_timezone, teardown);
 	g_test_add("/batch/invalid-csv", Fixture, NULL, setup, test_batch_invalid_csv, teardown);
 	g_test_add("/batch/cli", Fixture, NULL, setup, test_batch_cli, teardown);
+	g_test_add("/recurring/omitted-date-approval", Fixture, NULL, setup, test_omitted_date_approval, teardown);
 	return g_test_run();
 }

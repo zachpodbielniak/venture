@@ -12,6 +12,7 @@ struct _VentureAction
 	GPtrArray *parameters;
 	gboolean stageable;
 	gboolean type_level;
+	gboolean service_transaction;
 	VentureUserRole roles;
 	VentureActionAllowed allowed;
 	VentureActionInvoke invoke;
@@ -20,7 +21,7 @@ struct _VentureAction
 };
 G_DEFINE_FINAL_TYPE(VentureAction, venture_action, G_TYPE_OBJECT)
 enum { PROP_ZERO, PROP_TYPE_NAME, PROP_NAME, PROP_LABEL, PROP_DESCRIPTION,
-	PROP_PARAMETERS, PROP_STAGEABLE, PROP_ROLES, PROP_TYPE_LEVEL, PROP_SUBJECT_PARAMETER };
+	PROP_PARAMETERS, PROP_STAGEABLE, PROP_ROLES, PROP_TYPE_LEVEL, PROP_SUBJECT_PARAMETER, PROP_SERVICE_TRANSACTION };
 
 static void
 action_set_property(GObject *object, guint id, const GValue *value, GParamSpec *spec)
@@ -38,6 +39,7 @@ action_set_property(GObject *object, guint id, const GValue *value, GParamSpec *
 	case PROP_STAGEABLE: self->stageable = g_value_get_boolean(value); break;
 	case PROP_ROLES: self->roles = g_value_get_enum(value); break;
 	case PROP_TYPE_LEVEL: self->type_level = g_value_get_boolean(value); break;
+	case PROP_SERVICE_TRANSACTION: self->service_transaction = g_value_get_boolean(value); break;
 	case PROP_PARAMETERS:
 		parameters = g_value_get_boxed(value);
 		for (i = 0; parameters && i < parameters->len; i++)
@@ -60,6 +62,7 @@ action_get_property(GObject *object, guint id, GValue *value, GParamSpec *spec)
 	case PROP_STAGEABLE: g_value_set_boolean(value, self->stageable); break;
 	case PROP_ROLES: g_value_set_enum(value, self->roles); break;
 	case PROP_TYPE_LEVEL: g_value_set_boolean(value, self->type_level); break;
+	case PROP_SERVICE_TRANSACTION: g_value_set_boolean(value, self->service_transaction); break;
 	case PROP_PARAMETERS:
 		{
 			GPtrArray *copy = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
@@ -100,6 +103,7 @@ venture_action_class_init(VentureActionClass *klass)
 	g_object_class_install_property(object, PROP_SUBJECT_PARAMETER, g_param_spec_string("subject-parameter", "Subject parameter", "JSON parameter containing the new record used for authorization", NULL, flags));
 	g_object_class_install_property(object, PROP_PARAMETERS, g_param_spec_boxed("parameters", "Parameters", "VentureFieldSpec declarations", G_TYPE_PTR_ARRAY, flags));
 	g_object_class_install_property(object, PROP_TYPE_LEVEL, g_param_spec_boolean("type-level", "Type level", "Creates a new record; use ID zero", FALSE, flags));
+	g_object_class_install_property(object, PROP_SERVICE_TRANSACTION, g_param_spec_boolean("service-transaction", "Service transaction", "The service owns atomicity and any posting approval before its first write", FALSE, flags));
 	g_object_class_install_property(object, PROP_STAGEABLE, g_param_spec_boolean("stageable", "Stageable", "Can await approval", FALSE, flags));
 	g_object_class_install_property(object, PROP_ROLES, g_param_spec_enum("roles", "Roles", "Minimum authenticated role", VENTURE_TYPE_USER_ROLE, VENTURE_USER_ROLE_EDITOR, flags));
 }
@@ -407,8 +411,8 @@ venture_action_prepare_target(VentureAction *self, VentureEntity *entity,
 	return TRUE;
 }
 
-VentureEntity *
-venture_action_registry_perform(VentureActionRegistry *self, const gchar *type_name,
+static VentureEntity *
+action_registry_perform_internal(VentureActionRegistry *self, const gchar *type_name,
 	gint64 id, const gchar *name, GHashTable *params, const VentureActor *actor,
 	VentureUserRole role, GError **error)
 {
@@ -424,13 +428,15 @@ venture_action_registry_perform(VentureActionRegistry *self, const gchar *type_n
 		return NULL;
 	}
 	type = venture_entity_registry_lookup(venture_entity_registry_get_default(), type_name);
-	if (!venture_database_begin(db, error)) return NULL;
+	if (!action->service_transaction && !venture_database_begin(db, error)) return NULL;
 	entity = (0 == id && action->type_level) ? g_object_new(type, NULL) : venture_database_get(db, type, id, error);
 	if (!entity || !venture_action_validate_parameters(action, params, error) ||
 		!venture_action_prepare_target(action, entity, params, error) ||
 		!venture_action_registry_allowed(self, action, entity, actor, role, error) ||
 		!venture_access_policy_check_write(venture_database_get_access_policy(db), entity, "write", error)) goto fail;
+	venture_accounting_operation_suspend(db);
 	g_signal_emit(self, signals[PERFORMING], 0, action, entity, &veto_error);
+	venture_accounting_operation_resume(db);
 	if (veto_error)
 	{
 		g_propagate_error(error, g_steal_pointer(&veto_error));
@@ -444,13 +450,58 @@ venture_action_registry_perform(VentureActionRegistry *self, const gchar *type_n
 		!venture_access_policy_check_write(venture_database_get_access_policy(db), entity, "write", error)) goto fail;
 	result = action->invoke(action, entity, params, actor, error);
 	if (!result) goto fail;
-	if (!venture_database_commit(db, error)) return NULL;
+	if (!action->service_transaction && !venture_database_commit(db, error)) return NULL;
+	venture_accounting_operation_suspend(db);
 	g_signal_emit(self, signals[PERFORMED], 0, action, result);
+	venture_accounting_operation_resume(db);
 	return g_steal_pointer(&result);
 fail:
-	venture_database_rollback(db);
+	if (!action->service_transaction) venture_database_rollback(db);
 	return NULL;
 }
+VentureEntity *
+venture_action_registry_perform(VentureActionRegistry *self, const gchar *type_name,
+	gint64 id, const gchar *name, GHashTable *params, const VentureActor *actor,
+	VentureUserRole role, GError **error)
+{
+	g_autoptr(VentureDatabase) database = g_weak_ref_get(&self->database);
+	g_autoptr(VentureEntity) subject = NULL;
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
+	g_autofree gchar *json = NULL;
+	g_autoptr(GList) keys = params != NULL ? g_hash_table_get_keys(params) : NULL;
+	GList *item;
+	VentureAction *action = venture_action_registry_lookup(self, type_name, name);
+	GType type = venture_entity_registry_lookup(venture_entity_registry_get_default(), type_name);
+	JsonObject *object = json_object_new();
+	json_node_take_object(node, object);
+	if (database == NULL || action == NULL || type == G_TYPE_INVALID)
+		return action_registry_perform_internal(self, type_name, id, name, params, actor, role, error);
+	subject = id == 0 && action->type_level ? g_object_new(type, NULL) : venture_database_get(database, type, id, error);
+	if (subject == NULL || !venture_action_validate_parameters(action, params, error) ||
+		!venture_action_prepare_target(action, subject, params, error) ||
+		!venture_action_registry_allowed(self, action, subject, actor, role, error) ||
+		!venture_access_policy_check_write(venture_database_get_access_policy(database), subject, "write", error))
+		return NULL;
+	if (!action->service_transaction && venture_accounting_operation_is_financial(subject))
+	{
+		/* Parameter maps are unordered; preserve array order inside each value. */
+		keys = g_list_sort(keys, (GCompareFunc)g_strcmp0);
+		for (item = keys; item != NULL; item = item->next)
+			json_object_set_member(object, item->data, json_node_copy(g_hash_table_lookup(params, item->data)));
+		json = venture_json_to_string(node, FALSE);
+		operation = venture_accounting_operation_begin(database, "record.action", subject, NULL,
+			g_variant_new("(sss)", type_name, name, json), venture_entity_get_organization_id(subject), actor, error);
+		if (operation == NULL)
+			return NULL;
+	}
+	result = action_registry_perform_internal(self, type_name, id, name, params, actor, role, error);
+	if (result == NULL || (operation != NULL && !venture_accounting_operation_finish(operation, error)))
+		return NULL;
+	return g_steal_pointer(&result);
+}
+
 GHashTable *
 venture_action_parameters_from_json(JsonNode *node, GError **error)
 {

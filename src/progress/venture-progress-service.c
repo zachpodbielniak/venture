@@ -214,8 +214,8 @@ venture_progress_service_remaining(VentureProgressService *self, VentureQuote *q
 	}
 	return venture_money_subtract(total, billed, error);
 }
-VentureEntity *
-venture_progress_service_invoice(VentureProgressService *self, VentureQuote *quote, gint64 percent,
+static VentureEntity *
+venture_progress_service_invoice_impl(VentureProgressService *self, VentureQuote *quote, gint64 percent,
 	const VentureMoney *amount, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureMoney) remaining = NULL;
@@ -297,8 +297,8 @@ fail:
 	return NULL;
 }
 
-VentureEntity *
-venture_progress_service_collect_retainer(VentureProgressService *self, gint64 organization_id,
+static VentureEntity *
+venture_progress_service_collect_retainer_impl(VentureProgressService *self, gint64 organization_id,
 	gint64 company_id, gint64 liability_account_id, const VentureMoney *amount,
 	const VentureActor *actor, GError **error)
 {
@@ -334,8 +334,8 @@ fail:
 	return NULL;
 }
 
-gboolean
-venture_progress_service_release_retainer(VentureProgressService *self, VentureCustomerRetainer *retainer,
+static gboolean
+venture_progress_service_release_retainer_impl(VentureProgressService *self, VentureCustomerRetainer *retainer,
 	const VentureMoney *amount, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureMoney) remaining = NULL;
@@ -370,8 +370,8 @@ fail:
 	return FALSE;
 }
 
-VentureEntity *
-venture_progress_service_hold_retention(VentureProgressService *self, VentureQuote *quote,
+static VentureEntity *
+venture_progress_service_hold_retention_impl(VentureProgressService *self, VentureQuote *quote,
 	gint64 liability_account_id, const VentureMoney *amount, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureContractRetention) retention = NULL;
@@ -415,8 +415,8 @@ fail:
 	return NULL;
 }
 
-gboolean
-venture_progress_service_release_retention(VentureProgressService *self, VentureContractRetention *retention,
+static gboolean
+venture_progress_service_release_retention_impl(VentureProgressService *self, VentureContractRetention *retention,
 	const VentureMoney *amount, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureMoney) remaining = NULL;
@@ -487,4 +487,169 @@ venture_progress_actions_register(VentureDatabase *database)
 		"parameters", parameters, "stageable", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	venture_action_registry_register(venture_database_get_action_registry(database), action,
 		progress_allowed, progress_invoke, venture_progress_service_get(database), NULL, &error);
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+VentureEntity *
+venture_progress_service_invoice(VentureProgressService *self, VentureQuote *quote, gint64 percent,
+	const VentureMoney *amount, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) result = NULL;
+	g_autofree gchar *amount_text = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return NULL;
+	}
+	g_return_val_if_fail(VENTURE_IS_ENTITY(quote), NULL);
+	amount_text = amount != NULL ? venture_money_to_string(amount) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "percent", g_variant_new_int64((gint64)percent));
+	g_variant_builder_add(&arguments, "{sv}", "amount", g_variant_new_maybe(G_VARIANT_TYPE_STRING, amount_text != NULL ? g_variant_new_string(amount_text) : NULL));
+	operation = venture_accounting_operation_begin(db, "progress-invoice", VENTURE_ENTITY(quote), NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(VENTURE_ENTITY(quote)), actor, error);
+	if (operation == NULL)
+		return NULL;
+	result = venture_progress_service_invoice_impl(self, quote, percent, amount, actor, error);
+	if (result == NULL)
+		return NULL;
+	if (!venture_accounting_operation_finish(operation, error))
+		return NULL;
+	return g_steal_pointer(&result);
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+VentureEntity *
+venture_progress_service_hold_retention(VentureProgressService *self, VentureQuote *quote,
+	gint64 liability_account_id, const VentureMoney *amount, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) result = NULL;
+	g_autofree gchar *amount_text = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return NULL;
+	}
+	g_return_val_if_fail(VENTURE_IS_ENTITY(quote), NULL);
+	amount_text = amount != NULL ? venture_money_to_string(amount) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "liability_account_id", g_variant_new_int64((gint64)liability_account_id));
+	g_variant_builder_add(&arguments, "{sv}", "amount", g_variant_new_maybe(G_VARIANT_TYPE_STRING, amount_text != NULL ? g_variant_new_string(amount_text) : NULL));
+	operation = venture_accounting_operation_begin(db, "progress-hold-retention", VENTURE_ENTITY(quote), NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(VENTURE_ENTITY(quote)), actor, error);
+	if (operation == NULL)
+		return NULL;
+	result = venture_progress_service_hold_retention_impl(self, quote, liability_account_id, amount, actor, error);
+	if (result == NULL)
+		return NULL;
+	if (!venture_accounting_operation_finish(operation, error))
+		return NULL;
+	return g_steal_pointer(&result);
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+VentureEntity *
+venture_progress_service_collect_retainer(VentureProgressService *self, gint64 organization_id,
+	gint64 company_id, gint64 liability_account_id, const VentureMoney *amount,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) result = NULL;
+	g_autofree gchar *amount_text = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return NULL;
+	}
+	amount_text = amount != NULL ? venture_money_to_string(amount) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "organization_id", g_variant_new_int64((gint64)organization_id));
+	g_variant_builder_add(&arguments, "{sv}", "company_id", g_variant_new_int64((gint64)company_id));
+	g_variant_builder_add(&arguments, "{sv}", "liability_account_id", g_variant_new_int64((gint64)liability_account_id));
+	g_variant_builder_add(&arguments, "{sv}", "amount", g_variant_new_maybe(G_VARIANT_TYPE_STRING, amount_text != NULL ? g_variant_new_string(amount_text) : NULL));
+	operation = venture_accounting_operation_begin(db, "progress-collect-retainer", NULL, NULL,
+		g_variant_builder_end(&arguments), organization_id, actor, error);
+	if (operation == NULL)
+		return NULL;
+	result = venture_progress_service_collect_retainer_impl(self, organization_id, company_id, liability_account_id, amount, actor, error);
+	if (result == NULL)
+		return NULL;
+	if (!venture_accounting_operation_finish(operation, error))
+		return NULL;
+	return g_steal_pointer(&result);
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_progress_service_release_retainer(VentureProgressService *self, VentureCustomerRetainer *retainer,
+	const VentureMoney *amount, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	gboolean result;
+	g_autofree gchar *amount_text = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	g_return_val_if_fail(VENTURE_IS_ENTITY(retainer), FALSE);
+	amount_text = amount != NULL ? venture_money_to_string(amount) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "amount", g_variant_new_maybe(G_VARIANT_TYPE_STRING, amount_text != NULL ? g_variant_new_string(amount_text) : NULL));
+	operation = venture_accounting_operation_begin(db, "progress-release-retainer", VENTURE_ENTITY(retainer), NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(VENTURE_ENTITY(retainer)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_progress_service_release_retainer_impl(self, retainer, amount, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_progress_service_release_retention(VentureProgressService *self, VentureContractRetention *retention,
+	const VentureMoney *amount, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	gboolean result;
+	g_autofree gchar *amount_text = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	g_return_val_if_fail(VENTURE_IS_ENTITY(retention), FALSE);
+	amount_text = amount != NULL ? venture_money_to_string(amount) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "amount", g_variant_new_maybe(G_VARIANT_TYPE_STRING, amount_text != NULL ? g_variant_new_string(amount_text) : NULL));
+	operation = venture_accounting_operation_begin(db, "progress-release-retention", VENTURE_ENTITY(retention), NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(VENTURE_ENTITY(retention)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_progress_service_release_retention_impl(self, retention, amount, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
 }

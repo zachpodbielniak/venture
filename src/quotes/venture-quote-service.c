@@ -523,8 +523,8 @@ revise(VentureQuoteService *self, VentureEntity *q, VentureEntity *request, cons
 	return TRUE;
 }
 
-gboolean
-venture_quote_service_execute(VentureQuoteService *self, VentureEntity *request,
+static gboolean
+venture_quote_service_execute_impl(VentureQuoteService *self, VentureEntity *request,
 	const gchar *method, const gchar *ip, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) q = NULL;
@@ -556,7 +556,9 @@ venture_quote_service_execute(VentureQuoteService *self, VentureEntity *request,
 		g_autoptr(VentureEntity) snapshot = g_object_new(G_OBJECT_TYPE(q), NULL);
 		GError *veto = NULL;
 		venture_entity_copy_properties_from(snapshot, q, FALSE);
+		venture_accounting_operation_suspend(self->database);
 		g_signal_emit_by_name(self, "before-action", snapshot, verb, &veto);
+		venture_accounting_operation_resume(self->database);
 		if (veto != NULL)
 		{
 			g_propagate_error(error, veto);
@@ -751,4 +753,51 @@ done:
 	venture_database_rollback(db);
 	if (snapshot != NULL) venture_entity_copy_properties_from(r, snapshot, FALSE);
 	return FALSE;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_quote_service_execute(VentureQuoteService *self, VentureEntity *request,
+	const gchar *method, const gchar *ip, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	gboolean result;
+	g_autofree gchar *verb = NULL;
+	g_autofree gchar *billing_mode = NULL;
+	g_autoptr(VentureEntity) quote = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	g_return_val_if_fail(VENTURE_IS_ENTITY(request), FALSE);
+	if (!VENTURE_IS_QUOTE_ACTION(request))
+		return venture_quote_service_execute_impl(self, request, method, ip, actor, error);
+	g_object_get(request, "action", &verb, NULL);
+	if (g_strcmp0(verb, "accept") != 0)
+		return venture_quote_service_execute_impl(self, request, method, ip, actor, error);
+	quote = get(self, VENTURE_TYPE_QUOTE, venture_entity_get_organization_id(request), integer(request, "quote-id"), error);
+	if (quote == NULL)
+		return FALSE;
+	g_object_get(quote, "billing-mode", &billing_mode, NULL);
+	/* Progress acceptance creates no invoice; its later billing operation
+	 * obtains consent when it actually posts the receivable. */
+	if (g_strcmp0(billing_mode, "progress") == 0)
+		return venture_quote_service_execute_impl(self, request, method, ip, actor, error);
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "method", g_variant_new_maybe(G_VARIANT_TYPE_STRING, method != NULL ? g_variant_new_string(method) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "ip", g_variant_new_maybe(G_VARIANT_TYPE_STRING, ip != NULL ? g_variant_new_string(ip) : NULL));
+	operation = venture_accounting_operation_begin(db, "quote-execute", VENTURE_ENTITY(request), NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(VENTURE_ENTITY(request)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_quote_service_execute_impl(self, request, method, ip, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
 }

@@ -94,9 +94,12 @@ venture_web_payables_workbench(HtmxRequest *request, GHashTable *params, gpointe
 			g_array_append_val(ids, id);
 		}
 		if (venture_json_object_get_string(object, "date", NULL) != NULL)
-			date = g_date_time_new_from_iso8601(venture_json_object_get_string(object, "date", NULL), NULL);
+			{
+			date = venture_time_from_string(venture_json_object_get_string(object, "date", NULL), &error);
+			if (date == NULL) return venture_web_error_response(error);
+		}
 		if (date == NULL)
-			date = venture_time_now();
+			date = venture_time_from_string("today", NULL);
 		if (!venture_payables_service_pay_bills(venture_payables_service_get(venture_context_get_database(self->context)),
 			ids, date, venture_json_object_get_string(object, "method", NULL),
 			venture_json_object_get_string(object, "adapter", "transfer"),
@@ -152,7 +155,7 @@ venture_web_payables_workbench_pay(HtmxRequest *request, GHashTable *params, gpo
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autoptr(GArray) ids = g_array_new(FALSE, FALSE, sizeof(gint64));
-	g_autoptr(GDateTime) date = venture_time_now();
+	g_autoptr(GDateTime) date = venture_time_from_string("today", NULL);
 	VentureActor actor;
 	HtmxResponse *gate;
 	(void)params;

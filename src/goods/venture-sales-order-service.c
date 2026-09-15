@@ -239,8 +239,8 @@ fail:
 	return FALSE;
 }
 
-gboolean
-venture_sales_order_service_ship_line(VentureSalesOrderService *self, gint64 sales_order_line_id,
+static gboolean
+venture_sales_order_service_ship_line_impl(VentureSalesOrderService *self, gint64 sales_order_line_id,
 	gint64 quantity, GDateTime *date, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) line = NULL;
@@ -398,16 +398,16 @@ fail:
 	return FALSE;
 }
 
-gboolean
-venture_sales_order_service_invoice(VentureSalesOrderService *self, gint64 sales_order_id,
+static gboolean
+venture_sales_order_service_invoice_impl(VentureSalesOrderService *self, gint64 sales_order_id,
 	GDateTime *date, const VentureActor *actor, GError **error)
 {
 	g_return_val_if_fail(VENTURE_IS_SALES_ORDER_SERVICE(self), FALSE);
 	return invoice_qty(self, sales_order_id, FALSE, date, actor, error);
 }
 
-gboolean
-venture_sales_order_service_invoice_fulfilled(VentureSalesOrderService *self, gint64 sales_order_id,
+static gboolean
+venture_sales_order_service_invoice_fulfilled_impl(VentureSalesOrderService *self, gint64 sales_order_id,
 	GDateTime *date, const VentureActor *actor, GError **error)
 {
 	g_return_val_if_fail(VENTURE_IS_SALES_ORDER_SERVICE(self), FALSE);
@@ -437,4 +437,113 @@ venture_sales_order_service_cancel(VentureSalesOrderService *self, gint64 sales_
 	}
 	g_object_set(order, "status", "cancelled", NULL);
 	return save_owned(self, order, actor, error);
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_sales_order_service_ship_line(VentureSalesOrderService *self, gint64 sales_order_line_id,
+	gint64 quantity, GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) subject = NULL;
+	gboolean result;
+	g_autofree gchar *date_text = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	subject = venture_database_get(db, VENTURE_TYPE_SALES_ORDER_LINE, sales_order_line_id, error);
+	if (subject == NULL)
+		return FALSE;
+	date_text = date != NULL ? g_date_time_format_iso8601(date) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "sales_order_line_id", g_variant_new_int64((gint64)sales_order_line_id));
+	g_variant_builder_add(&arguments, "{sv}", "quantity", g_variant_new_int64((gint64)quantity));
+	g_variant_builder_add(&arguments, "{sv}", "date", g_variant_new_maybe(G_VARIANT_TYPE_STRING, date_text != NULL ? g_variant_new_string(date_text) : NULL));
+	operation = venture_accounting_operation_begin(db, "sales-order-ship-line", subject, NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_sales_order_service_ship_line_impl(self, sales_order_line_id, quantity, date, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_sales_order_service_invoice(VentureSalesOrderService *self, gint64 sales_order_id,
+	GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) subject = NULL;
+	gboolean result;
+	g_autofree gchar *date_text = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	subject = venture_database_get(db, VENTURE_TYPE_SALES_ORDER, sales_order_id, error);
+	if (subject == NULL)
+		return FALSE;
+	date_text = date != NULL ? g_date_time_format_iso8601(date) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "sales_order_id", g_variant_new_int64((gint64)sales_order_id));
+	g_variant_builder_add(&arguments, "{sv}", "date", g_variant_new_maybe(G_VARIANT_TYPE_STRING, date_text != NULL ? g_variant_new_string(date_text) : NULL));
+	operation = venture_accounting_operation_begin(db, "sales-order-invoice", subject, NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_sales_order_service_invoice_impl(self, sales_order_id, date, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_sales_order_service_invoice_fulfilled(VentureSalesOrderService *self, gint64 sales_order_id,
+	GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) subject = NULL;
+	gboolean result;
+	g_autofree gchar *date_text = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	subject = venture_database_get(db, VENTURE_TYPE_SALES_ORDER, sales_order_id, error);
+	if (subject == NULL)
+		return FALSE;
+	date_text = date != NULL ? g_date_time_format_iso8601(date) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "sales_order_id", g_variant_new_int64((gint64)sales_order_id));
+	g_variant_builder_add(&arguments, "{sv}", "date", g_variant_new_maybe(G_VARIANT_TYPE_STRING, date_text != NULL ? g_variant_new_string(date_text) : NULL));
+	operation = venture_accounting_operation_begin(db, "sales-order-invoice-fulfilled", subject, NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_sales_order_service_invoice_fulfilled_impl(self, sales_order_id, date, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
 }

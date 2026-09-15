@@ -97,10 +97,14 @@ $(OUTDIR)/$(LIB_STATIC): $(SERVER_OBJS) | $(OUTDIR)
 
 # libventure.so - provided so that other GLib applications (and GIR) can
 # consume VENTURE as a library. The binaries themselves link statically.
-$(OUTDIR)/$(LIB_SHARED_FULL): $(SERVER_OBJS) $(VENDOR_LIBS_SERVER) | $(OUTDIR)
+# All Venture objects are included directly. Vendor archives bundle shared
+# dependencies such as YAML, so extract their required members as a group
+# instead of forcing several copies of the same dependency into this DSO.
+$(OUTDIR)/$(LIB_SHARED_FULL): $(SERVER_OBJS) $(VENDOR_LIBS_SERVER) $(VENDOR_SHARED_LIBS) | $(OUTDIR)
 	@echo "  LD      $@"
 	$(Q)$(CC) $(LDFLAGS_SHARED) -o $@ $(SERVER_OBJS) \
-		-Wl,--whole-archive $(VENDOR_LIBS_SERVER) -Wl,--no-whole-archive \
+		-Wl,--start-group $(VENDOR_SHARED_LIBS) \
+		$(filter-out $(ORM_GLIB_LIB) $(AI_GLIB_LIB) $(HTMX_GLIB_LIB),$(VENDOR_LIBS_SERVER)) -Wl,--end-group \
 		$(LDFLAGS)
 	$(Q)cd $(OUTDIR) && ln -sf $(LIB_SHARED_FULL) $(LIB_SHARED_MAJOR)
 	$(Q)cd $(OUTDIR) && ln -sf $(LIB_SHARED_MAJOR) $(LIB_SHARED)
@@ -245,22 +249,46 @@ $(OUTDIR)/venture-$(API_VERSION).pc: venture.pc.in | $(OUTDIR)
 # GIR
 # ---------------------------------------------------------------------------
 
-$(OUTDIR)/$(GIR_FILE): $(OUTDIR)/$(LIB_SHARED_FULL)
+# Resolve the actual public dependency types from their uninstalled GIRs.
+# Merely giving the scanner their C headers leaves every such type unresolved.
+$(ORM_GLIB_SHARED): dep-orm-glib
+	@test -f $@
+
+$(AI_GLIB_SHARED): dep-ai-glib
+	$(Q)$(MAKE) --no-print-directory -C $(AI_GLIB_DIR) DEBUG=$(DEBUG) $(AI_GLIB_SUBMAKE) shared
+
+$(HTMX_GLIB_SHARED): dep-htmx-glib
+	$(Q)$(MAKE) --no-print-directory -C $(HTMX_GLIB_DIR) DEBUG=$(DEBUG) $(HTMX_GLIB_SUBMAKE) shared
+
+$(ORM_GLIB_GIR): $(ORM_GLIB_SHARED)
+	$(Q)$(MAKE) --no-print-directory -C $(ORM_GLIB_DIR) DEBUG=$(DEBUG) $(ORM_GLIB_SUBMAKE) gir
+
+$(AI_GLIB_GIR): $(AI_GLIB_SHARED)
+	$(Q)$(MAKE) --no-print-directory -C $(AI_GLIB_DIR) DEBUG=$(DEBUG) $(AI_GLIB_SUBMAKE) GIR=1 gir
+
+$(HTMX_GLIB_GIR): $(HTMX_GLIB_SHARED)
+	$(Q)$(MAKE) --no-print-directory -C $(HTMX_GLIB_DIR) DEBUG=$(DEBUG) $(HTMX_GLIB_SUBMAKE) GIR=1 gir
+
+$(OUTDIR)/$(GIR_FILE): $(OUTDIR)/$(LIB_SHARED_FULL) $(VENDOR_GIR_FILES) $(PUBLIC_HDRS) Makefile config.mk rules.mk
 	@echo "  GIR     $@"
 	$(Q)$(GIR_SCANNER) \
 		--namespace=$(GIR_NAMESPACE) \
 		--nsversion=$(GIR_VERSION) \
 		--library=venture \
 		--library-path=$(OUTDIR) \
+		$(foreach path,$(VENDOR_GIR_DIRS),--library-path=$(path)) \
+		$(foreach gir,$(VENDOR_GIR_FILES),--include-uninstalled=$(gir)) \
 		--include=GLib-2.0 --include=GObject-2.0 --include=Gio-2.0 \
+		--include=Json-1.0 --include=Soup-3.0 \
 		--pkg=glib-2.0 --pkg=gobject-2.0 --pkg=gio-2.0 \
 		--identifier-prefix=Venture --symbol-prefix=venture \
-		--output=$@ --warn-all -Isrc \
-		$(PUBLIC_HDRS) $(SERVER_SRCS)
+		--output=$@ --warn-all --warn-error -Isrc \
+		--cflags-begin $(CFLAGS) --cflags-end \
+		src/venture.h $(filter-out src/venture.h,$(PUBLIC_HDRS)) $(SERVER_SRCS)
 
 $(OUTDIR)/$(TYPELIB_FILE): $(OUTDIR)/$(GIR_FILE)
 	@echo "  GIR     $@"
-	$(Q)$(GIR_COMPILER) --output=$@ $<
+	$(Q)$(GIR_COMPILER) $(foreach path,$(VENDOR_GIR_DIRS),--includedir=$(path)) --output=$@ $<
 
 # ---------------------------------------------------------------------------
 # Directories and the development include symlink
@@ -365,7 +393,8 @@ clean-all: clean-deps
 # exactly what an orm-glib bump did.
 clean-deps:
 	$(Q)for d in $(YAML_GLIB_DIR) $(HTMX_GLIB_DIR) $(AI_GLIB_DIR) \
-	             $(CRISPY_DIR) $(PODOMATION_DIR) $(ORM_GLIB_DIR) $(MAIL_GLIB_DIR) $(MAIL_OTEL_DIR); do \
+	             $(CRISPY_DIR) $(PODOMATION_DIR) $(ORM_GLIB_DIR) $(STRIPE_GLIB_DIR) \
+	             $(OTEL_GLIB_DIR) $(MAIL_GLIB_DIR) $(MAIL_GLIB_DIR)/deps/otel-glib; do \
 		rm -rf $$d/build; \
 	done
 
@@ -527,15 +556,32 @@ install-man:
 	done
 
 install-gir: $(OUTDIR)/$(GIR_FILE) $(OUTDIR)/$(TYPELIB_FILE)
-	$(MKDIR_P) $(DESTDIR)$(GIRDIR) $(DESTDIR)$(TYPELIBDIR)
+	$(MKDIR_P) $(DESTDIR)$(GIRDIR) $(DESTDIR)$(TYPELIBDIR) $(DESTDIR)$(LIBDIR)
 	$(INSTALL_DATA) $(OUTDIR)/$(GIR_FILE) $(DESTDIR)$(GIRDIR)/
 	$(INSTALL_DATA) $(OUTDIR)/$(TYPELIB_FILE) $(DESTDIR)$(TYPELIBDIR)/
+	$(INSTALL_PROGRAM) $(OUTDIR)/$(LIB_SHARED_FULL) $(DESTDIR)$(LIBDIR)/
+	ln -sf $(LIB_SHARED_FULL) $(DESTDIR)$(LIBDIR)/$(LIB_SHARED_MAJOR)
+	ln -sf $(LIB_SHARED_MAJOR) $(DESTDIR)$(LIBDIR)/$(LIB_SHARED)
+	$(Q)set -e; for gir in $(VENDOR_GIR_FILES); do \
+		$(INSTALL_DATA) "$$gir" "$(DESTDIR)$(GIRDIR)/"; \
+		$(INSTALL_DATA) "$${gir%.gir}.typelib" "$(DESTDIR)$(TYPELIBDIR)/"; \
+	done
+	$(Q)set -e; for lib in $(VENDOR_SHARED_LIBS); do \
+		real=$$(readlink -f "$$lib"); \
+		$(INSTALL_PROGRAM) "$$real" "$(DESTDIR)$(LIBDIR)/"; \
+		for alias in "$$lib"*; do \
+			if [ -L "$$alias" ]; then \
+				ln -sf "$$(basename "$$(readlink "$$alias")")" "$(DESTDIR)$(LIBDIR)/$$(basename "$$alias")"; \
+			fi; \
+		done; \
+	done
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/venture
 	rm -f $(DESTDIR)$(BINDIR)/venturectl
 	rm -f $(DESTDIR)$(LIBDIR)/$(LIB_STATIC)
 	rm -f $(DESTDIR)$(LIBDIR)/$(LIB_CORE_STATIC)
+	rm -f $(DESTDIR)$(LIBDIR)/$(LIB_SHARED_FULL) $(DESTDIR)$(LIBDIR)/$(LIB_SHARED_MAJOR) $(DESTDIR)$(LIBDIR)/$(LIB_SHARED)
 	rm -rf $(DESTDIR)$(INCLUDEDIR)/venture
 	rm -f $(DESTDIR)$(PKGCONFIGDIR)/venture-$(API_VERSION).pc
 	rm -rf $(DESTDIR)$(PLUGINDIR)
@@ -562,7 +608,6 @@ dep-stripe-glib: $(YAML_GLIB_LIB)
 $(STRIPE_GLIB_LIB) $(OTEL_GLIB_LIB): dep-stripe-glib
 	@test -f $@
 .PHONY: dep-mail-glib
-dep-mail-glib: $(YAML_GLIB_LIB)
-	$(Q)$(MAKE) --no-print-directory -C $(MAIL_GLIB_DIR) DEBUG=$(DEBUG) YAML_GLIB_STATIC=$(YAML_GLIB_LIB) static
-	$(Q)$(MAKE) --no-print-directory -C $(MAIL_OTEL_DIR) DEBUG=$(DEBUG) YAML_GLIB_STATIC=$(YAML_GLIB_LIB) static
-$(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB): dep-mail-glib
+dep-mail-glib: $(YAML_GLIB_LIB) $(OTEL_GLIB_LIB)
+	$(Q)$(MAKE) --no-print-directory -C $(MAIL_GLIB_DIR) DEBUG=$(DEBUG) YAML_GLIB_DIR=$(YAML_GLIB_DIR) YAML_GLIB_STATIC=$(YAML_GLIB_LIB) OTEL_GLIB_DIR=$(OTEL_GLIB_DIR) static
+$(MAIL_GLIB_LIB): dep-mail-glib

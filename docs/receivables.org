@@ -183,3 +183,9 @@ The =tax_liability= report includes issue and void events in the selected period
 Tax-bearing credit notes reduce liability in their own period under =unassigned credit=, because credit notes do not carry a tax-code reference. Customer-level credit notes are excluded when filtering a single venture. Foreign receipt allocation enforces the same customer, organization and chronology as ordinary receipts; unused book-currency cash remains refundable credit. Partial receipts release cumulative rounded historical AR, and invoice voids reverse the actual issue journal plus deferred recognition rather than recalculating current rates or product settings.
 
 Invoices valued into a different book currency accept direct receipts in that book currency. Document-currency receipts and explicit payment/credit allocations against those invoices are refused because the ordinary allocation path cannot release their frozen book-currency receivable. Invoices retained wholly in document currency continue to accept same-currency allocations.
+
+* Whole-operation approval
+
+Invoice issue/void, receipt/allocation/refund, full-invoice settlement, write-off and tax-correction commands request second-actor consent for the entire operation before writing business records. A configured post or pay rule applies to the command; generated issue events, credits, sales and journals share its approval. The command arguments, current financial records and service account overrides are bound to that consent. Retry the same command as a different actor; changed inputs or financial state require a new proposal.
+
+Omitted dates in the invoice status buttons and payables action/workbench surfaces resolve to midnight of the current UTC day. Repeating a proposal on that day retains its accounting date; a later-day request is a different proposal. Explicit dates remain unchanged.

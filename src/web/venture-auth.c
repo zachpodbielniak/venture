@@ -142,6 +142,17 @@ venture_auth_remote_address(HtmxRequest *request)
 	return g_inet_address_to_string(inet);
 }
 
+VentureAuthPrincipal *
+venture_auth_principal_copy(const VentureAuthPrincipal *self)
+{
+	VentureAuthPrincipal *copy;
+	if (self == NULL) return NULL;
+	copy = g_new(VentureAuthPrincipal, 1);
+	*copy = *self;
+	copy->name = g_strdup(self->name);
+	return copy;
+}
+
 void
 venture_auth_principal_free(VentureAuthPrincipal *principal)
 {

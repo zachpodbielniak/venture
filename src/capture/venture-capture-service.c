@@ -184,6 +184,9 @@ VentureEntity *
 venture_capture_service_convert(VentureCaptureService *self, VentureEntity *item,
 	const gchar *as, JsonObject *options, const VentureActor *actor, GError **error)
 {
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(JsonNode) option_node = json_node_new(JSON_NODE_OBJECT);
+	g_autofree gchar *option_text = NULL;
 	g_autoptr(VentureDatabase) db = NULL;
 	g_autoptr(VentureEntity) result = NULL;
 	g_autoptr(VentureMoney) amount = NULL;
@@ -200,6 +203,19 @@ venture_capture_service_convert(VentureCaptureService *self, VentureEntity *item
 	db = service_db(self);
 	if (db == NULL)
 		return refuse(error, VENTURE_ERROR_DATABASE, "The database has been closed"), NULL;
+	/* Bind the source and conversion choices before generating a financial row. */
+	if (options != NULL)
+		json_node_set_object(option_node, options);
+	else
+		json_node_take_object(option_node, json_object_new());
+	option_text = venture_json_to_string(option_node, FALSE);
+	if (g_strcmp0(as, "expense") == 0)
+	{
+		operation = venture_accounting_operation_begin(db, "capture.convert", item, NULL,
+			g_variant_new("(ss)", as, option_text), venture_entity_get_organization_id(item), actor, error);
+		if (operation == NULL)
+			return NULL;
+	}
 	if (!begin_op(self, db, error))
 		return NULL;
 	g_object_get(item, "status", &status, "title", &title, "vendor", &vendor, "kind", &kind,
@@ -263,6 +279,8 @@ venture_capture_service_convert(VentureCaptureService *self, VentureEntity *item
 	if (!save_internal(self, db, item, actor, error))
 		return finish_op(self, db, FALSE, error), NULL;
 	if (!finish_op(self, db, TRUE, error))
+		return NULL;
+	if (operation != NULL && !venture_accounting_operation_finish(operation, error))
 		return NULL;
 	return g_steal_pointer(&result);
 }

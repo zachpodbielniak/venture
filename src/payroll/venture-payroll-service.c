@@ -383,8 +383,8 @@ import_object(VenturePayrollService *self, gint64 organization_id, JsonObject *p
 	return g_steal_pointer(&run);
 }
 
-VentureEntity *
-venture_payroll_service_import_json(VenturePayrollService *self, gint64 organization_id,
+static VentureEntity *
+venture_payroll_service_import_json_impl(VenturePayrollService *self, gint64 organization_id,
 	JsonObject *payload, const VentureActor *actor, GError **error)
 {
 	g_return_val_if_fail(VENTURE_IS_PAYROLL_SERVICE(self), NULL);
@@ -406,8 +406,8 @@ unquote(gchar *field)
 	return field;
 }
 
-VentureEntity *
-venture_payroll_service_import_csv(VenturePayrollService *self, gint64 organization_id,
+static VentureEntity *
+venture_payroll_service_import_csv_impl(VenturePayrollService *self, gint64 organization_id,
 	const gchar *run_key, const gchar *period_start, const gchar *period_end, const gchar *currency,
 	const gchar *csv, const VentureActor *actor, GError **error)
 {
@@ -502,8 +502,8 @@ sum_field(GPtrArray *lines, const gchar *field, VentureMoney **total, GError **e
 	return TRUE;
 }
 
-gboolean
-venture_payroll_service_disburse(VenturePayrollService *self, VentureEntity *run,
+static gboolean
+venture_payroll_service_disburse_impl(VenturePayrollService *self, VentureEntity *run,
 	const gchar *kind, const VentureActor *actor, GError **error)
 {
 	g_autofree gchar *status = NULL;
@@ -556,8 +556,8 @@ venture_payroll_service_disburse(VenturePayrollService *self, VentureEntity *run
 	return finish_op(self, TRUE, error);
 }
 
-gboolean
-venture_payroll_service_reverse(VenturePayrollService *self, VentureEntity *run,
+static gboolean
+venture_payroll_service_reverse_impl(VenturePayrollService *self, VentureEntity *run,
 	const VentureActor *actor, GError **error)
 {
 	g_autoptr(GPtrArray) journals = NULL;
@@ -689,4 +689,136 @@ venture_payroll_register_reports(VentureReportRegistry *registry)
 	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
 		"payroll_reconciliation", "Payroll reconciliation",
 		"Imported tax liabilities versus unpaid remittances.", payroll_reconciliation_report)));
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+VentureEntity *
+venture_payroll_service_import_json(VenturePayrollService *self, gint64 organization_id,
+	JsonObject *payload, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(JsonNode) payload_node = NULL;
+	g_autofree gchar *payload_text = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return NULL;
+	}
+	if (payload != NULL)
+	{
+		payload_node = json_node_new(JSON_NODE_OBJECT);
+		json_node_set_object(payload_node, payload);
+		payload_text = venture_json_to_string(payload_node, FALSE);
+	}
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "organization_id", g_variant_new_int64((gint64)organization_id));
+	g_variant_builder_add(&arguments, "{sv}", "payload", g_variant_new_maybe(G_VARIANT_TYPE_STRING, payload_text != NULL ? g_variant_new_string(payload_text) : NULL));
+	operation = venture_accounting_operation_begin(db, "payroll-import-json", NULL, NULL,
+		g_variant_builder_end(&arguments), organization_id, actor, error);
+	if (operation == NULL)
+		return NULL;
+	result = venture_payroll_service_import_json_impl(self, organization_id, payload, actor, error);
+	if (result == NULL)
+		return NULL;
+	if (!venture_accounting_operation_finish(operation, error))
+		return NULL;
+	return g_steal_pointer(&result);
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+VentureEntity *
+venture_payroll_service_import_csv(VenturePayrollService *self, gint64 organization_id,
+	const gchar *run_key, const gchar *period_start, const gchar *period_end, const gchar *currency,
+	const gchar *csv, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) result = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return NULL;
+	}
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "organization_id", g_variant_new_int64((gint64)organization_id));
+	g_variant_builder_add(&arguments, "{sv}", "run_key", g_variant_new_maybe(G_VARIANT_TYPE_STRING, run_key != NULL ? g_variant_new_string(run_key) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "period_start", g_variant_new_maybe(G_VARIANT_TYPE_STRING, period_start != NULL ? g_variant_new_string(period_start) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "period_end", g_variant_new_maybe(G_VARIANT_TYPE_STRING, period_end != NULL ? g_variant_new_string(period_end) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "currency", g_variant_new_maybe(G_VARIANT_TYPE_STRING, currency != NULL ? g_variant_new_string(currency) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "csv", g_variant_new_maybe(G_VARIANT_TYPE_STRING, csv != NULL ? g_variant_new_string(csv) : NULL));
+	operation = venture_accounting_operation_begin(db, "payroll-import-csv", NULL, NULL,
+		g_variant_builder_end(&arguments), organization_id, actor, error);
+	if (operation == NULL)
+		return NULL;
+	result = venture_payroll_service_import_csv_impl(self, organization_id, run_key, period_start, period_end, currency, csv, actor, error);
+	if (result == NULL)
+		return NULL;
+	if (!venture_accounting_operation_finish(operation, error))
+		return NULL;
+	return g_steal_pointer(&result);
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_payroll_service_disburse(VenturePayrollService *self, VentureEntity *run,
+	const gchar *kind, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	gboolean result;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	g_return_val_if_fail(VENTURE_IS_ENTITY(run), FALSE);
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "kind", g_variant_new_maybe(G_VARIANT_TYPE_STRING, kind != NULL ? g_variant_new_string(kind) : NULL));
+	operation = venture_accounting_operation_begin(db, "payroll-disburse", VENTURE_ENTITY(run), NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(VENTURE_ENTITY(run)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_payroll_service_disburse_impl(self, run, kind, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_payroll_service_reverse(VenturePayrollService *self, VentureEntity *run,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	gboolean result;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	g_return_val_if_fail(VENTURE_IS_ENTITY(run), FALSE);
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	operation = venture_accounting_operation_begin(db, "payroll-reverse", VENTURE_ENTITY(run), NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(VENTURE_ENTITY(run)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_payroll_service_reverse_impl(self, run, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
 }

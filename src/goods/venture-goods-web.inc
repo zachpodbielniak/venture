@@ -105,9 +105,16 @@ venture_web_goods_action(HtmxRequest *request, GHashTable *params, gpointer user
 	venture_auth_to_actor(principal, &actor);
 	if (input != NULL && JSON_NODE_HOLDS_OBJECT(input) &&
 		venture_json_object_get_string(json_node_get_object(input), "date", NULL) != NULL)
+	{
 		date = g_date_time_new_from_iso8601(venture_json_object_get_string(json_node_get_object(input), "date", NULL), NULL);
-	if (date == NULL)
-		date = venture_time_now();
+		if (date == NULL)
+		{
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Date must be an ISO 8601 timestamp");
+			return venture_web_error_response(error);
+		}
+	}
+	/* Omitted dates mean execution time, chosen after the operation's
+	 * approval. Do not hash a new timestamp on every repeated request. */
 	line_id = goods_form_int(request, input, "line_id");
 	if (!goods_form_whole(request, input, "quantity", &qty, &error))
 		return venture_web_error_response(error);

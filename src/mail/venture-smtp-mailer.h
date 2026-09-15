@@ -5,7 +5,8 @@
 #include "config/venture-config.h"
 #define VENTURE_TYPE_SMTP_MAILER (venture_smtp_mailer_get_type())
 G_DECLARE_FINAL_TYPE(VentureSmtpMailer, venture_smtp_mailer, VENTURE, SMTP_MAILER, GObject)
-/** venture_smtp_mailer_new:
+/**
+ * venture_smtp_mailer_new:
  * @config: mail configuration; credentials are environment variable names
  * Returns: (transfer full): SMTP adapter; invalid configuration fails on send
  */

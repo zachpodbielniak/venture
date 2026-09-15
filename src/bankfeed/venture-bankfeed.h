@@ -33,13 +33,13 @@ struct _VentureBankFeedTransportInterface
 gchar *venture_bank_feed_transport_get(VentureBankFeedTransport *self, const gchar *url,
 	const gchar *authorization, GError **error);
 /**
- * venture_bank_feed_transport_get_async:
+ * venture_bank_feed_transport_get_async: (finish-func venture_bank_feed_transport_get_finish)
  * @self: the transport
  * @url: absolute URL
  * @authorization: (nullable): Authorization value, or "Header: value"
  * @cancellable: (nullable): cancel the in-flight GET
- * @callback: (scope async): completion on the thread-default context
- * @user_data: (closure): callback data
+ * @callback: (scope async) (closure user_data): completion on the thread-default context
+ * @user_data: (nullable): callback data
  *
  * Network I/O must not run on a worker that also writes the database.
  */
@@ -101,15 +101,15 @@ GPtrArray *venture_bank_feed_fetch(VentureBankFeed *self, const gchar *account_i
 	GDateTime *from, GDateTime *to, const gchar *currency, GError **error);
 
 /**
- * venture_bank_feed_fetch_async:
+ * venture_bank_feed_fetch_async: (finish-func venture_bank_feed_fetch_finish)
  * @self: provider
  * @account_id: account identifier
  * @from: inclusive start
  * @to: exclusive end
  * @currency: (nullable): book currency
  * @cancellable: (nullable): cancellation
- * @callback: (scope async): completion on the thread-default main context
- * @user_data: (closure): callback data
+ * @callback: (scope async) (closure user_data): completion on the thread-default main context
+ * @user_data: (nullable): callback data
  *
  * Providers implement fetch_async with a GTask returning an owned GPtrArray
  * of owned JsonObject values. Implementations must copy borrowed arguments
@@ -221,8 +221,8 @@ gint venture_bankfeed_service_sync(VentureBankFeedService *self, gint64 connecti
  * @to: (nullable)
  * @actor: (nullable)
  * @cancellable: (nullable)
- * @callback: (scope async)
- * @user_data: (closure)
+ * @callback: (scope async) (closure user_data)
+ * @user_data: (nullable): callback data
  *
  * Looks up the connection on the caller thread, fetches on the transport's
  * async path, and applies database changes on the completion context.

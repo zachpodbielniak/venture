@@ -1,6 +1,8 @@
 #+title: Guided invoice and quote editor
 #+description: One page to add lines, tax and send
 
+Draft invoices and composed quotes do not require =post=/=pay= approval. Composing and sending an invoice together does: the complete header, lines and send command are one proposal, and the second actor repeats the exact input before any rows are created.
+
 The guided editor reuses invoice and quote field tables and
 =VentureQuoteService=. =POST /api/v1/invoices/compose= and
 =/api/v1/quotes/compose= create a header, lines and optionally send in one

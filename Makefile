@@ -227,6 +227,10 @@ PUBLIC_HDRS += $(wildcard src/budgets/*.h)
 PUBLIC_HDRS += $(wildcard src/equity/*.h)
 PUBLIC_HDRS += $(wildcard src/group/*.h)
 
+# Private implementation fragments are included by their owning C source;
+# they are neither installable headers nor introspection declarations.
+PUBLIC_HDRS := $(filter-out %-private.h,$(PUBLIC_HDRS))
+
 TEST_SRCS := $(wildcard tests/test-*.c)
 
 # ---------------------------------------------------------------------------

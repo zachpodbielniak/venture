@@ -606,12 +606,23 @@ venture_stripe_service_record_payout(VentureStripeService *self, const gchar *pr
 	GDateTime *date, const VentureMoney *gross, const VentureMoney *fees, const VentureMoney *net,
 	gint64 cash_account_id, const VentureActor *actor, GError **error)
 {
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autofree gchar *date_text = date ? g_date_time_format_iso8601(date) : g_strdup("");
+	g_autofree gchar *gross_text = gross ? venture_money_to_string(gross) : g_strdup("");
+	g_autofree gchar *fees_text = fees ? venture_money_to_string(fees) : g_strdup("");
+	g_autofree gchar *net_text = net ? venture_money_to_string(net) : g_strdup("");
 	g_autoptr(VentureProcessorPayout) payout = NULL;
 	g_autoptr(GPtrArray) entries = NULL;
 	if (provider_id == NULL || *provider_id == '\0' || date == NULL || net == NULL)
 	{
 		refuse(error, "A payout needs a provider id, date and net amount");
 		return NULL;
+	}
+	if (fees != NULL && !venture_money_is_zero(fees) && cash_account_id > 0)
+	{
+		operation = venture_accounting_operation_begin(self->database, "stripe.payout", NULL, NULL,
+			g_variant_new("(sssssx)", provider_id ? provider_id : "", date_text, gross_text, fees_text, net_text, cash_account_id), self->organization_id, actor, error);
+		if (operation == NULL) return NULL;
 	}
 	if (!venture_database_begin(self->database, error)) return NULL;
 	payout = venture_processor_payout_new();
@@ -642,6 +653,7 @@ venture_stripe_service_record_payout(VentureStripeService *self, const gchar *pr
 			entries, NULL, actor, error)) goto fail;
 	}
 	if (!venture_database_commit(self->database, error)) goto fail;
+	if (operation != NULL && !venture_accounting_operation_finish(operation, error)) return NULL;
 	return g_steal_pointer(&payout);
 fail:
 	venture_database_rollback(self->database);
@@ -708,6 +720,8 @@ gboolean
 venture_stripe_service_lose_chargeback(VentureStripeService *self, gint64 dispute_id, GDateTime *date,
 	const VentureActor *actor, GError **error)
 {
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autofree gchar *date_text = date ? g_date_time_format_iso8601(date) : g_strdup("");
 	g_autoptr(VentureEntity) dispute = NULL;
 	g_autoptr(VentureEntity) payment = NULL;
 	g_autoptr(GPtrArray) allocations = NULL;
@@ -715,6 +729,9 @@ venture_stripe_service_lose_chargeback(VentureStripeService *self, gint64 disput
 	g_autoptr(VentureMoney) amount = NULL;
 	g_autofree gchar *status = NULL;
 	gint64 payment_id = 0, customer_id = 0;
+	operation = venture_accounting_operation_begin(self->database, "stripe.chargeback", NULL, NULL,
+		g_variant_new("(xs)", dispute_id, date_text), self->organization_id, actor, error);
+	if (operation == NULL) return FALSE;
 	if (!venture_database_begin(self->database, error)) return FALSE;
 	dispute = owned_get(self, VENTURE_TYPE_PROCESSOR_DISPUTE, dispute_id, error);
 	if (dispute == NULL) goto fail;
@@ -745,6 +762,7 @@ venture_stripe_service_lose_chargeback(VentureStripeService *self, gint64 disput
 	g_object_set(dispute, "status", "lost", "closed-at", date, "refund-id", venture_entity_get_id(VENTURE_ENTITY(refund)), NULL);
 	if (!venture_stripe_save_owned(self->database, dispute, actor, error)) goto fail;
 	if (!venture_database_commit(self->database, error)) goto fail;
+	if (!venture_accounting_operation_finish(operation, error)) return FALSE;
 	return TRUE;
 fail:
 	venture_database_rollback(self->database);

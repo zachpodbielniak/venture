@@ -548,10 +548,15 @@ gint
 venture_commerce_service_import(VentureCommerceService *self, const gchar *connector_name,
 	GDateTime *from, GDateTime *to, const VentureActor *actor, GError **error)
 {
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(GVariantBuilder) inputs = g_variant_builder_new(G_VARIANT_TYPE("as"));
+	g_autofree gchar *from_text = from ? g_date_time_format_iso8601(from) : g_strdup("");
+	g_autofree gchar *to_text = to ? g_date_time_format_iso8601(to) : g_strdup("");
 	g_autoptr(VentureCommerceConnector) connector = NULL;
 	g_autoptr(GPtrArray) orders = NULL;
 	guint i;
 	gint imported = 0;
+	gboolean can_post = FALSE;
 	g_return_val_if_fail(VENTURE_IS_COMMERCE_SERVICE(self), -1);
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "invoice") == G_TYPE_INVALID)
 	{
@@ -571,6 +576,27 @@ venture_commerce_service_import(VentureCommerceService *self, const gchar *conne
 	g_object_ref(connector);
 	orders = venture_commerce_connector_fetch_orders(connector, from, to, error);
 	if (orders == NULL) return -1;
+	/* Provider results are part of consent: a later changed order needs a new proposal. */
+	g_variant_builder_add(inputs, "s", connector_name ? connector_name : "shopify");
+	g_variant_builder_add(inputs, "s", from_text);
+	g_variant_builder_add(inputs, "s", to_text);
+	for (i = 0; i < orders->len; i++)
+	{
+		g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
+		g_autofree gchar *json = NULL;
+		JsonObject *spec = g_ptr_array_index(orders, i);
+		if (venture_json_object_get_bool(spec, "send", TRUE) || venture_json_object_get_bool(spec, "paid", FALSE))
+			can_post = TRUE;
+		json_node_set_object(node, spec);
+		json = venture_json_to_string(node, FALSE);
+		g_variant_builder_add(inputs, "s", json);
+	}
+	if (can_post)
+	{
+		operation = venture_accounting_operation_begin(self->database, "commerce.import", NULL, NULL,
+			g_variant_builder_end(inputs), self->organization_id, actor, error);
+		if (operation == NULL) return -1;
+	}
 	if (!venture_database_begin(self->database, error)) return -1;
 	for (i = 0; i < orders->len; i++)
 	{
@@ -614,6 +640,7 @@ venture_commerce_service_import(VentureCommerceService *self, const gchar *conne
 		imported++;
 	}
 	if (!venture_database_commit(self->database, error)) return -1;
+	if (operation != NULL && !venture_accounting_operation_finish(operation, error)) return -1;
 	return imported;
 fail:
 	venture_database_rollback(self->database);

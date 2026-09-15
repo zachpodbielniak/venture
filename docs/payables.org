@@ -139,3 +139,9 @@ Default posting accounts come from =accounting_control_map= (cash, payables, exp
 * Workbench approval
 
 Batch payments use the same second-actor approval checks as individual payments. A refused proposal remains pending for a second actor; no vendor is paid until all proposals are allowed. Execution and approval consumption are one transaction, so a failed vendor payment rolls back the entire batch.
+
+* Whole-operation approval
+
+Second-actor consent covers a complete payment command, including every selected vendor in a workbench batch and all derived journals. A post or pay rule requests one operation proposal before business writes; the same command from a different actor applies it atomically. Bill transitions, direct settlement and allocation/refund writes use the same whole-operation boundary. Changed arguments or financial state require a new proposal.
+
+Omitted dates in the invoice status buttons and payables action/workbench surfaces resolve to midnight of the current UTC day. Repeating a proposal on that day retains its accounting date; a later-day request is a different proposal. Explicit dates remain unchanged.

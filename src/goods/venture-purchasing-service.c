@@ -241,8 +241,8 @@ venture_purchasing_service_send(VenturePurchasingService *self, gint64 purchase_
 	return set_status(self, po, "sent", actor, error);
 }
 
-gboolean
-venture_purchasing_service_receive_line(VenturePurchasingService *self, gint64 purchase_order_line_id,
+static gboolean
+venture_purchasing_service_receive_line_impl(VenturePurchasingService *self, gint64 purchase_order_line_id,
 	gint64 quantity, GDateTime *date, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) line = NULL;
@@ -636,8 +636,8 @@ venture_purchasing_service_cancel(VenturePurchasingService *self, gint64 purchas
 	return set_status(self, po, "cancelled", actor, error);
 }
 
-gboolean
-venture_purchasing_service_return_line(VenturePurchasingService *self, gint64 purchase_order_line_id,
+static gboolean
+venture_purchasing_service_return_line_impl(VenturePurchasingService *self, gint64 purchase_order_line_id,
 	gint64 quantity, GDateTime *date, const VentureActor *actor, GError **error)
 {
 	g_autoptr(GPtrArray) rows = NULL;
@@ -697,4 +697,78 @@ venture_purchasing_service_return_line(VenturePurchasingService *self, gint64 pu
 		}
 	}
 	return venture_database_commit(self->database, error);
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_purchasing_service_receive_line(VenturePurchasingService *self, gint64 purchase_order_line_id,
+	gint64 quantity, GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) subject = NULL;
+	gboolean result;
+	g_autofree gchar *date_text = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	subject = venture_database_get(db, VENTURE_TYPE_PURCHASE_ORDER_LINE, purchase_order_line_id, error);
+	if (subject == NULL)
+		return FALSE;
+	date_text = date != NULL ? g_date_time_format_iso8601(date) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "purchase_order_line_id", g_variant_new_int64((gint64)purchase_order_line_id));
+	g_variant_builder_add(&arguments, "{sv}", "quantity", g_variant_new_int64((gint64)quantity));
+	g_variant_builder_add(&arguments, "{sv}", "date", g_variant_new_maybe(G_VARIANT_TYPE_STRING, date_text != NULL ? g_variant_new_string(date_text) : NULL));
+	operation = venture_accounting_operation_begin(db, "purchasing-receive-line", subject, NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_purchasing_service_receive_line_impl(self, purchase_order_line_id, quantity, date, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_purchasing_service_return_line(VenturePurchasingService *self, gint64 purchase_order_line_id,
+	gint64 quantity, GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) subject = NULL;
+	gboolean result;
+	g_autofree gchar *date_text = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	subject = venture_database_get(db, VENTURE_TYPE_PURCHASE_ORDER_LINE, purchase_order_line_id, error);
+	if (subject == NULL)
+		return FALSE;
+	date_text = date != NULL ? g_date_time_format_iso8601(date) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "purchase_order_line_id", g_variant_new_int64((gint64)purchase_order_line_id));
+	g_variant_builder_add(&arguments, "{sv}", "quantity", g_variant_new_int64((gint64)quantity));
+	g_variant_builder_add(&arguments, "{sv}", "date", g_variant_new_maybe(G_VARIANT_TYPE_STRING, date_text != NULL ? g_variant_new_string(date_text) : NULL));
+	operation = venture_accounting_operation_begin(db, "purchasing-return-line", subject, NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_purchasing_service_return_line_impl(self, purchase_order_line_id, quantity, date, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
 }

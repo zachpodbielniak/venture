@@ -511,8 +511,8 @@ venture_autojournal_service_unposted(VentureAutojournalService *self, gint64 org
 	g_ptr_array_sort(result, source_order);
 	return g_steal_pointer(&result);
 }
-JsonNode *
-venture_autojournal_service_backfill(VentureAutojournalService *self, gint64 org, gboolean dry_run, const VentureActor *actor, GError **error)
+static JsonNode *
+venture_autojournal_service_backfill_impl(VentureAutojournalService *self, gint64 org, gboolean dry_run, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
 	g_autoptr(GPtrArray) sources = NULL;
@@ -563,4 +563,35 @@ venture_autojournal_service_backfill(VentureAutojournalService *self, gint64 org
 fail:
 	venture_database_rollback(db);
 	return NULL;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+JsonNode *
+venture_autojournal_service_backfill(VentureAutojournalService *self, gint64 org, gboolean dry_run, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
+	GVariantBuilder arguments;
+	g_autoptr(JsonNode) result = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return NULL;
+	}
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "org", g_variant_new_int64((gint64)org));
+	g_variant_builder_add(&arguments, "{sv}", "dry_run", g_variant_new_boolean(dry_run));
+	operation = venture_accounting_operation_begin(db, "autojournal-backfill", NULL, NULL,
+		g_variant_builder_end(&arguments), org, actor, error);
+	if (operation == NULL)
+		return NULL;
+	result = venture_autojournal_service_backfill_impl(self, org, dry_run, actor, error);
+	if (result == NULL)
+		return NULL;
+	if (dry_run)
+		return g_steal_pointer(&result);
+	if (!venture_accounting_operation_finish(operation, error))
+		return NULL;
+	return g_steal_pointer(&result);
 }

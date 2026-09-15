@@ -141,7 +141,8 @@ gboolean venture_receivables_is_projection_write(VentureDatabase *database, Vent
  */
 gboolean venture_receivables_check_sale(VentureDatabase *database, VentureEntity *record, GError **error);
 
-/** venture_settlement_service_record_mail:
+/**
+ * venture_settlement_service_record_mail:
  * @self: settlement service
  * @invoice: issued invoice
  * @actor: (nullable): audit actor

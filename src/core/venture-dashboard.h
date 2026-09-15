@@ -58,7 +58,7 @@ typedef struct
 } VentureWidgetScope;
 
 /**
- * VentureWidgetResult:
+ * VentureWidgetResult: (copy-func venture_widget_result_copy) (free-func venture_widget_result_free)
  * @title: the card's title, the widget's own or the kind's default
  * @html: the card body, an HTML fragment; %NULL when @error is set
  * @data: the same answer as JSON, in a shape the kind decides
@@ -87,6 +87,16 @@ struct _VentureWidgetResult
  */
 VentureWidgetResult *
 venture_widget_result_new(void);
+
+/**
+ * venture_widget_result_copy:
+ * @self: (nullable): value to copy
+ *
+ * Copies all owned data so each result can be released independently.
+ * Returns: (transfer full) (nullable): an independent copy
+ */
+VentureWidgetResult *
+venture_widget_result_copy(const VentureWidgetResult *self);
 
 /**
  * venture_widget_result_free:

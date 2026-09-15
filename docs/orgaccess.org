@@ -123,15 +123,26 @@ Assignment fields marked =VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME= grant record ow
 
 Only organization owners/admins or global administrators may change or delete a second-actor rule. Authenticated proposals identify the account by user ID, so two API tokens belonging to the same person do not satisfy the second-person requirement. Token labels remain audit descriptions. An active request scope retains this identity even when an internal caller omits its audit actor.
 
-The post/pay rule fingerprints the full proposed record and ordered journal
-lines or payment allocations. Persisted identities and versions participate;
-new records omit automatically generated identity timestamps and UUIDs so an
-identical retry can be approved. A changed amount, line, dimension, header or
-saved draft needs its own proposal. Explicit allocation batches and direct
-allocation/refund writes use the same pay gate.
+** Whole-operation consent
 
-Approval evidence belongs to the operation that matched it. It is marked
-applied inside the financial transaction, and a failed approval save rolls
-back that transaction. Internal derived work with no user actor remains a
-service operation; callers must not drop an authenticated actor to bypass a
-rule.
+A post/pay rule applies to one complete business operation before its first write. The pending proposal includes the command name, organization, full input arguments and proposed record/ordered details, plus a conservative snapshot of all persistent business records in the organization and shared organization-zero records, including configuration. Changing an amount, line, account mapping, date, allocation, batch payload or source record requires a fresh proposal. Even an unrelated business or configuration edit can invalidate a pending proposal; retry the intended operation to propose its current state. Automatically generated identities on unsaved records do not change the meaning of an otherwise identical retry.
+
+The first actor receives a permission-denied response after the pending proposal is saved; generated documents, allocations, journals and ledger entries have not been written. A different authorized account repeats the same operation with the same inputs. Nested posting and settlement steps share the outer operation's consent, so a multi-document batch or multi-vendor payment run requires one matching approval rather than a separate approval for each intermediate row. Consent is consumed once inside the same transaction as the business effects. A failed write or failed approval save rolls everything back and leaves no applied consent behind.
+
+Service entry points establish this scope themselves, including direct C callers, rather than depending on a particular page or REST route. Recurring sweeps, financial batches, billing requests, capture conversions, commerce imports and Stripe fee postings and chargebacks bind their complete inputs before generating financial rows. Commerce consent also includes the fetched provider order contents; a changed remote order must be proposed again. A service invoked inside an unrecognized caller-owned transaction refuses a protected operation because it cannot durably save a new proposal independently of that caller's rollback.
+
+Pending consent expires after 24 hours from its creation time; future-dated evidence is also refused. Repeating an expired operation creates a fresh proposal that a second authorized account must approve. Old proposals remain as evidence and cannot be replayed. Authentication traffic, audit records, approval evidence, notifications and delivery queues are excluded from the business snapshot so ordinary login and proposal activity do not invalidate consent.
+
+The rule protects posting and payment effects, including generic saves that trigger those effects. Ordinary draft creation, draft editing and financial configuration changes remain available to a single authorized account; non-posting deletion and restoration do not require post/pay consent. Those changes still invalidate pending snapshots, so the approving account must repeat the intended posting or payment against the current books. Invoice batches with posting disabled, trial setup, subscription term/state changes, draft bill capture and read-only billing/recurring previews do not request accounting consent. A mixed batch or sweep retains one whole-operation gate when any member can post or pay.
+
+** Dry runs and trusted events
+
+A dry run that executes financial writes before rolling them back still requires consent, because save signals run during execution. A rolled-back batch dry run leaves the proposal pending rather than consuming it. Read-only previews remain read-only.
+
+Internal derived work without an authenticated request principal or explicit user actor retains the existing trusted-service policy. This includes signature-verified Stripe webhooks recording provider receipts; they are provider evidence, not a second local person. An internal call made under an authenticated request retains that account identity even when the audit actor argument is omitted. Dropping the audit actor must never bypass a user rule. Human approval scopes do not authorize unrelated signal-triggered operations.
+
+** Implementation boundaries
+
+Consent snapshots run in the same serializable transaction as the protected command. Pending proposals expire after 24 hours, and a process restart or posting-rule registry replacement requires a fresh proposal. A final policy-revision check precedes consumption. Opaque exchange-policy callbacks are refused under second-actor rules; the supported exchange policy is the same organization's persisted rate table.
+
+The transaction binding, server-side enforcement, expiry and single-use consumption follow the principles in [[https://cheatsheetseries.owasp.org/cheatsheets/Transaction_Authorization_Cheat_Sheet.html][OWASP Transaction Authorization]]. Operators authorize the significant inputs by repeating the exact business command under their own account; approval records store the fingerprint rather than a second copy of sensitive input data.

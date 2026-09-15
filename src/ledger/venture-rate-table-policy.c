@@ -131,3 +131,14 @@ venture_rate_table_policy_new(VentureDatabase *database, gint64 organization_id)
 	self->organization_id = organization_id;
 	return VENTURE_EXCHANGE_POLICY(self);
 }
+
+gboolean
+venture_rate_table_policy_matches(VentureRateTablePolicy *self, VentureDatabase *database,
+	gint64 organization_id)
+{
+	g_autoptr(VentureDatabase) owner = NULL;
+	g_return_val_if_fail(VENTURE_IS_RATE_TABLE_POLICY(self), FALSE);
+	/* Consent snapshots one database and legal entity, never another table. */
+	owner = g_weak_ref_get(&self->database);
+	return owner == database && self->organization_id == organization_id;
+}

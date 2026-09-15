@@ -616,6 +616,8 @@ test_paid_line_expense(Fixture *f, gconstpointer unused)
 	g_autoptr(VentureEntity) p = NULL;
 	g_autoptr(VentureEntity) e = record(f, "expense");
 	g_autoptr(VentureEntity) line = NULL;
+	g_autoptr(VentureEntity) rule = record(f, "accounting_approval_rule");
+	VentureActor actor;
 	g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_VENDOR_BILL_LINE);
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *external = NULL;
@@ -627,10 +629,23 @@ test_paid_line_expense(Fixture *f, gconstpointer unused)
 	g_assert_no_error(error);
 	external = g_strdup_printf("bill_line:%s", venture_entity_get_uuid(line));
 	g_object_set(e, "external-id", external, "description", "Supplies", NULL);
-	field(e, "amount", "100 USD");
+	/* This conversion derives its amount inside the specialized hook. */
 	field(e, "occurred-at", "2026-02-15");
 	journals = count(f, "journal");
-	save(f, e);
+	g_object_set(rule, "action", "post", "require-second-actor", TRUE, NULL);
+	save(f, rule);
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "alice";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	g_assert_false(venture_database_save(f->db, e, &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	g_assert_cmpint(count(f, "expense"), ==, 0);
+	actor.name = "bob";
+	g_assert_true(venture_database_save(f->db, e, &actor, &error));
+	g_assert_no_error(error);
 	g_assert_cmpint(count(f, "journal"), ==, journals);
 	/* Backfill must not offer the same paid cash projection for a second
 	 * posting, even when automatic source journals are enabled. */
@@ -1059,6 +1074,7 @@ test_batch_approval(Fixture *f, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureEntity) invoice = NULL, paid = NULL, allocation = NULL;
 	g_autoptr(VentureAccountingApprovalRule) rule = venture_accounting_approval_rule_new();
+	g_autoptr(VentureAccountingApprovalRule) post_rule = venture_accounting_approval_rule_new();
 	g_autoptr(GPtrArray) allocations = g_ptr_array_new_with_free_func(g_object_unref);
 	VentureActor actor;
 	(void)data;
@@ -1066,6 +1082,8 @@ test_batch_approval(Fixture *f, gconstpointer data)
 	approve(f, invoice);
 	g_object_set(rule, "organization-id", f->org, "action", "pay", "require-second-actor", TRUE, NULL);
 	save(f, VENTURE_ENTITY(rule));
+	g_object_set(post_rule, "organization-id", f->org, "action", "post", "require-second-actor", TRUE, NULL);
+	save(f, VENTURE_ENTITY(post_rule));
 	paid = payment(f, invoice, "100 USD", "2026-08-11");
 	g_object_set(paid, "bill-id", (gint64)0, NULL);
 	allocation = record(f, "bill_payment_allocation");
@@ -1106,6 +1124,8 @@ test_workbench_approval(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureEntity) invoice = bill(f, "WORKBENCH-CONSENT");
 	g_autoptr(VentureAccountingApprovalRule) rule = venture_accounting_approval_rule_new();
+	g_autoptr(VentureAccountingApprovalRule) post_rule = venture_accounting_approval_rule_new();
+	g_autoptr(VentureEntity) other = NULL, vendor = record(f, "company");
 	g_autoptr(GArray) ids = g_array_new(FALSE, FALSE, sizeof(gint64));
 	g_autoptr(GDateTime) date = venture_time_from_string("2026-08-11", NULL);
 	g_autoptr(GError) error = NULL;
@@ -1114,8 +1134,24 @@ test_workbench_approval(Fixture *f, gconstpointer data)
 
 	(void)data;
 	approve(f, invoice);
+	/* One command spans two vendors and all of their derived journals. */
+	g_object_set(vendor, "name", "Second supplier", NULL);
+	field(vendor, "kind", "supplier");
+	save(f, vendor);
+	{
+		gint64 original_vendor = f->vendor;
+		f->vendor = venture_entity_get_id(vendor);
+		other = bill(f, "WORKBENCH-SECOND");
+		approve(f, other);
+		f->vendor = original_vendor;
+	}
+
 	g_object_set(rule, "organization-id", f->org, "action", "pay", "require-second-actor", TRUE, NULL);
 	save(f, VENTURE_ENTITY(rule));
+	g_object_set(post_rule, "organization-id", f->org, "action", "post", "require-second-actor", TRUE, NULL);
+	save(f, VENTURE_ENTITY(post_rule));
+	g_array_append_val(ids, id);
+	id = venture_entity_get_id(other);
 	g_array_append_val(ids, id);
 	actor.kind = VENTURE_ACTOR_KIND_USER;
 	actor.name = "alice";
@@ -1127,6 +1163,7 @@ test_workbench_approval(Fixture *f, gconstpointer data)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
 	g_clear_error(&error);
 	g_assert_cmpint(count(f, "bill_payment"), ==, 0);
+	g_assert_cmpint(count(f, "journal"), ==, 2);
 	g_assert_cmpint(count(f, "accounting_approval"), ==, 1);
 	g_assert_false(venture_payables_service_pay_bills(venture_payables_service_get(f->db),
 		ids, date, "transfer", "transfer", "review", &actor, &error));
@@ -1137,7 +1174,8 @@ test_workbench_approval(Fixture *f, gconstpointer data)
 		ids, date, "transfer", "transfer", "review", &actor, &error));
 	g_assert_no_error(error);
 	status(f, invoice, "paid");
-	g_assert_cmpint(count(f, "bill_payment"), ==, 1);
+	status(f, other, "paid");
+	g_assert_cmpint(count(f, "bill_payment"), ==, 2);
 }
 
 /* Tax reports follow approved/void events, never draft lines or the current
@@ -1261,6 +1299,44 @@ test_cash_basis_bill_movements(Fixture *f, gconstpointer data)
 	}
 }
 
+/* The HTTP/CLI action preparation path fills omitted dates and constructs
+ * fresh records on every retry; those defaults must preserve consent. */
+static void
+test_prepared_action_approval(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = bill(f, "PREPARED-CONSENT"), first = NULL, second = NULL;
+	g_autoptr(VentureEntity) rule = record(f, "accounting_approval_rule");
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	(void)data;
+	approve(f, invoice);
+	g_object_set(rule, "action", "post", "require-second-actor", TRUE, NULL);
+	save(f, rule);
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "alice";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	first = venture_payables_service_prepare_action(venture_payables_service_get(f->db),
+		venture_entity_get_id(invoice), "pay", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(first);
+	g_assert_false(venture_database_save(f->db, first, &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	g_assert_cmpint(count(f, "bill_payment"), ==, 0);
+	second = venture_payables_service_prepare_action(venture_payables_service_get(f->db),
+		venture_entity_get_id(invoice), "pay", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(second);
+	actor.name = "bob";
+	g_assert_true(venture_database_save(f->db, second, &actor, &error));
+	g_assert_no_error(error);
+	status(f, invoice, "paid");
+	g_assert_cmpint(count(f, "accounting_approval"), ==, 1);
+}
+
+
 int
 main(int argc, char **argv)
 {
@@ -1282,6 +1358,7 @@ main(int argc, char **argv)
 	g_test_add("/payables/cash-basis-bill-movements", Fixture, NULL, setup, test_cash_basis_bill_movements, teardown);
 	g_test_add("/payables/tax-report-events", Fixture, NULL, setup, test_tax_report_events, teardown);
 	g_test_add("/payables/workbench-approval", Fixture, NULL, setup, test_workbench_approval, teardown);
+	g_test_add("/payables/prepared-action-approval", Fixture, NULL, setup, test_prepared_action_approval, teardown);
 	g_test_add("/payables/batch-approval", Fixture, NULL, setup, test_batch_approval, teardown);
 	g_test_add("/payables/batch", Fixture, NULL, setup, test_batch, teardown);
 	g_test_add("/payables/bulk-workbench", Fixture, NULL, setup, test_bulk_workbench, teardown);

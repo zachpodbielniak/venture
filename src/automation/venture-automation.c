@@ -988,8 +988,8 @@ venture_automation_validate_dsl(
 	return TRUE;
 }
 
-/**
- * venture_automation_describe_modules:
+/*
+ * The public header documents venture_automation_describe_modules().
  * @self: a #VentureAutomation
  *
  * Returns: (transfer full): a JSON array of the loaded pod modules, each

@@ -356,8 +356,8 @@ write_txn(VentureInventoryService *self, gint64 item_id, gint64 quantity, gint k
 	return VENTURE_ENTITY(g_steal_pointer(&txn));
 }
 
-gboolean
-venture_inventory_service_receive(VentureInventoryService *self, gint64 inventory_item_id,
+static gboolean
+venture_inventory_service_receive_impl(VentureInventoryService *self, gint64 inventory_item_id,
 	gint64 quantity, const VentureMoney *unit_cost, GDateTime *date, gint64 receipt_line_id,
 	const gchar *reference, const VentureActor *actor, GError **error)
 {
@@ -391,8 +391,8 @@ venture_inventory_service_receive(VentureInventoryService *self, gint64 inventor
 	return post_pair(self, org, txn, inventory, grni, total, "Inventory receipt", when, actor, error);
 }
 
-gboolean
-venture_inventory_service_issue(VentureInventoryService *self, gint64 inventory_item_id,
+static gboolean
+venture_inventory_service_issue_impl(VentureInventoryService *self, gint64 inventory_item_id,
 	gint64 quantity, GDateTime *date, const gchar *source_type, gint64 source_id,
 	const VentureActor *actor, VentureMoney **cogs, GError **error)
 {
@@ -426,8 +426,8 @@ venture_inventory_service_issue(VentureInventoryService *self, gint64 inventory_
 	return TRUE;
 }
 
-gboolean
-venture_inventory_service_restore(VentureInventoryService *self, gint64 inventory_item_id,
+static gboolean
+venture_inventory_service_restore_impl(VentureInventoryService *self, gint64 inventory_item_id,
 	gint64 quantity, const VentureMoney *unit_cost, GDateTime *date, gint64 receipt_line_id,
 	const gchar *reference, const VentureActor *actor, GError **error)
 {
@@ -462,8 +462,8 @@ venture_inventory_service_restore(VentureInventoryService *self, gint64 inventor
 	return post_pair(self, org, txn, grni, inventory, total, "Inventory return", when, actor, error);
 }
 
-gboolean
-venture_inventory_service_transfer(VentureInventoryService *self, gint64 from_item_id,
+static gboolean
+venture_inventory_service_transfer_impl(VentureInventoryService *self, gint64 from_item_id,
 	gint64 to_item_id, gint64 quantity, GDateTime *date, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureMoney) cost = NULL;
@@ -555,8 +555,8 @@ items_for_product(VentureInventoryService *self, gint64 product_id, GError **err
 	return venture_database_find(self->database, query, error);
 }
 
-gboolean
-venture_inventory_service_issue_sale(VentureInventoryService *self, VentureEntity *sale,
+static gboolean
+venture_inventory_service_issue_sale_impl(VentureInventoryService *self, VentureEntity *sale,
 	const VentureActor *actor, GError **error)
 {
 	g_autoptr(GPtrArray) items = NULL;
@@ -601,8 +601,8 @@ venture_inventory_service_issue_sale(VentureInventoryService *self, VentureEntit
 	return quantity == 0 || refuse(error, "negative stock is refused");
 }
 
-gboolean
-venture_inventory_service_issue_invoice(VentureInventoryService *self, VentureEntity *invoice,
+static gboolean
+venture_inventory_service_issue_invoice_impl(VentureInventoryService *self, VentureEntity *invoice,
 	const VentureActor *actor, GError **error)
 {
 	g_autoptr(GPtrArray) lines = NULL;
@@ -963,4 +963,226 @@ venture_goods_register_reports(VentureReportRegistry *registry)
 	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("inventory_valuation",
 		"Inventory valuation", "FIFO cost layers remaining, reconciling to the inventory control account.",
 		valuation_report)));
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_inventory_service_receive(VentureInventoryService *self, gint64 inventory_item_id,
+	gint64 quantity, const VentureMoney *unit_cost, GDateTime *date, gint64 receipt_line_id,
+	const gchar *reference, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) subject = NULL;
+	gboolean result;
+	g_autofree gchar *unit_cost_text = NULL;
+	g_autofree gchar *date_text = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	subject = venture_database_get(db, VENTURE_TYPE_INVENTORY_ITEM, inventory_item_id, error);
+	if (subject == NULL)
+		return FALSE;
+	unit_cost_text = unit_cost != NULL ? venture_money_to_string(unit_cost) : NULL;
+	date_text = date != NULL ? g_date_time_format_iso8601(date) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "inventory_item_id", g_variant_new_int64((gint64)inventory_item_id));
+	g_variant_builder_add(&arguments, "{sv}", "quantity", g_variant_new_int64((gint64)quantity));
+	g_variant_builder_add(&arguments, "{sv}", "unit_cost", g_variant_new_maybe(G_VARIANT_TYPE_STRING, unit_cost_text != NULL ? g_variant_new_string(unit_cost_text) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "date", g_variant_new_maybe(G_VARIANT_TYPE_STRING, date_text != NULL ? g_variant_new_string(date_text) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "receipt_line_id", g_variant_new_int64((gint64)receipt_line_id));
+	g_variant_builder_add(&arguments, "{sv}", "reference", g_variant_new_maybe(G_VARIANT_TYPE_STRING, reference != NULL ? g_variant_new_string(reference) : NULL));
+	operation = venture_accounting_operation_begin(db, "inventory-receive", subject, NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_inventory_service_receive_impl(self, inventory_item_id, quantity, unit_cost, date, receipt_line_id, reference, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_inventory_service_issue(VentureInventoryService *self, gint64 inventory_item_id,
+	gint64 quantity, GDateTime *date, const gchar *source_type, gint64 source_id,
+	const VentureActor *actor, VentureMoney **cogs, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) subject = NULL;
+	gboolean result;
+	g_autofree gchar *date_text = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	subject = venture_database_get(db, VENTURE_TYPE_INVENTORY_ITEM, inventory_item_id, error);
+	if (subject == NULL)
+		return FALSE;
+	date_text = date != NULL ? g_date_time_format_iso8601(date) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "inventory_item_id", g_variant_new_int64((gint64)inventory_item_id));
+	g_variant_builder_add(&arguments, "{sv}", "quantity", g_variant_new_int64((gint64)quantity));
+	g_variant_builder_add(&arguments, "{sv}", "date", g_variant_new_maybe(G_VARIANT_TYPE_STRING, date_text != NULL ? g_variant_new_string(date_text) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "source_type", g_variant_new_maybe(G_VARIANT_TYPE_STRING, source_type != NULL ? g_variant_new_string(source_type) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "source_id", g_variant_new_int64((gint64)source_id));
+	operation = venture_accounting_operation_begin(db, "inventory-issue", subject, NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_inventory_service_issue_impl(self, inventory_item_id, quantity, date, source_type, source_id, actor, cogs, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_inventory_service_restore(VentureInventoryService *self, gint64 inventory_item_id,
+	gint64 quantity, const VentureMoney *unit_cost, GDateTime *date, gint64 receipt_line_id,
+	const gchar *reference, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) subject = NULL;
+	gboolean result;
+	g_autofree gchar *unit_cost_text = NULL;
+	g_autofree gchar *date_text = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	subject = venture_database_get(db, VENTURE_TYPE_INVENTORY_ITEM, inventory_item_id, error);
+	if (subject == NULL)
+		return FALSE;
+	unit_cost_text = unit_cost != NULL ? venture_money_to_string(unit_cost) : NULL;
+	date_text = date != NULL ? g_date_time_format_iso8601(date) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "inventory_item_id", g_variant_new_int64((gint64)inventory_item_id));
+	g_variant_builder_add(&arguments, "{sv}", "quantity", g_variant_new_int64((gint64)quantity));
+	g_variant_builder_add(&arguments, "{sv}", "unit_cost", g_variant_new_maybe(G_VARIANT_TYPE_STRING, unit_cost_text != NULL ? g_variant_new_string(unit_cost_text) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "date", g_variant_new_maybe(G_VARIANT_TYPE_STRING, date_text != NULL ? g_variant_new_string(date_text) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "receipt_line_id", g_variant_new_int64((gint64)receipt_line_id));
+	g_variant_builder_add(&arguments, "{sv}", "reference", g_variant_new_maybe(G_VARIANT_TYPE_STRING, reference != NULL ? g_variant_new_string(reference) : NULL));
+	operation = venture_accounting_operation_begin(db, "inventory-restore", subject, NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_inventory_service_restore_impl(self, inventory_item_id, quantity, unit_cost, date, receipt_line_id, reference, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_inventory_service_transfer(VentureInventoryService *self, gint64 from_item_id,
+	gint64 to_item_id, gint64 quantity, GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) subject = NULL;
+	gboolean result;
+	g_autofree gchar *date_text = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	subject = venture_database_get(db, VENTURE_TYPE_INVENTORY_ITEM, from_item_id, error);
+	if (subject == NULL)
+		return FALSE;
+	date_text = date != NULL ? g_date_time_format_iso8601(date) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "from_item_id", g_variant_new_int64((gint64)from_item_id));
+	g_variant_builder_add(&arguments, "{sv}", "to_item_id", g_variant_new_int64((gint64)to_item_id));
+	g_variant_builder_add(&arguments, "{sv}", "quantity", g_variant_new_int64((gint64)quantity));
+	g_variant_builder_add(&arguments, "{sv}", "date", g_variant_new_maybe(G_VARIANT_TYPE_STRING, date_text != NULL ? g_variant_new_string(date_text) : NULL));
+	operation = venture_accounting_operation_begin(db, "inventory-transfer", subject, NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_inventory_service_transfer_impl(self, from_item_id, to_item_id, quantity, date, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_inventory_service_issue_sale(VentureInventoryService *self, VentureEntity *sale,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	gboolean result;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	g_return_val_if_fail(VENTURE_IS_ENTITY(sale), FALSE);
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	operation = venture_accounting_operation_begin(db, "inventory-issue-sale", VENTURE_ENTITY(sale), NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(VENTURE_ENTITY(sale)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_inventory_service_issue_sale_impl(self, sale, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_inventory_service_issue_invoice(VentureInventoryService *self, VentureEntity *invoice,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	gboolean result;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	g_return_val_if_fail(VENTURE_IS_ENTITY(invoice), FALSE);
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	operation = venture_accounting_operation_begin(db, "inventory-issue-invoice", VENTURE_ENTITY(invoice), NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(VENTURE_ENTITY(invoice)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_inventory_service_issue_invoice_impl(self, invoice, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
 }

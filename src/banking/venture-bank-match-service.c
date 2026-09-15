@@ -1994,8 +1994,8 @@ action_type(const gchar *action)
 }
 
 
-VentureEntity *
-venture_bank_match_service_execute(VentureBankMatchService *self, const gchar *action, gint64 id,
+static VentureEntity *
+venture_bank_match_service_execute_impl(VentureBankMatchService *self, const gchar *action, gint64 id,
 	JsonObject *args, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) record = NULL, result = NULL;
@@ -2139,4 +2139,68 @@ venture_bank_register_reports(VentureReportRegistry *registry)
 {
 	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
 		"bank_reconciliation", "Bank reconciliation", "Statement evidence and posted balance; requires statement_id.", bank_report)));
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+VentureEntity *
+venture_bank_match_service_execute(VentureBankMatchService *self, const gchar *action, gint64 id,
+	JsonObject *args, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) subject = NULL;
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(JsonNode) args_node = NULL;
+	g_autofree gchar *args_text = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return NULL;
+	}
+	if (action == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Bank action is required");
+		return NULL;
+	}
+	{
+		const gchar *const actions[] = { "import", "feed", "reconcile", "reopen", "auto", "preview",
+			"enable", "inbox", "bulk", "map", "transfer", "match", "unmatch", "exclude", "create", "reverse", "correct", NULL };
+		if (!g_strv_contains(actions, action))
+		{
+			refuse(error, "unknown bank action");
+			return NULL;
+		}
+	}
+	{
+		const gchar *const posting_actions[] = { "create", "correct", "reverse", "transfer", "bulk", "match", "auto", NULL };
+		/* Matching can create an adjustment journal; reviewing, importing,
+		 * configuring and reconciling existing evidence cannot. */
+		if (!g_strv_contains(posting_actions, action))
+			return venture_bank_match_service_execute_impl(self, action, id, args, actor, error);
+	}
+	subject = venture_database_get(db, action_type(action), id, error);
+	if (subject == NULL)
+		return NULL;
+	if (args != NULL)
+	{
+		args_node = json_node_new(JSON_NODE_OBJECT);
+		json_node_set_object(args_node, args);
+		args_text = venture_json_to_string(args_node, FALSE);
+	}
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "action", g_variant_new_maybe(G_VARIANT_TYPE_STRING, action != NULL ? g_variant_new_string(action) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "id", g_variant_new_int64((gint64)id));
+	g_variant_builder_add(&arguments, "{sv}", "args", g_variant_new_maybe(G_VARIANT_TYPE_STRING, args_text != NULL ? g_variant_new_string(args_text) : NULL));
+	operation = venture_accounting_operation_begin(db, "bank-match-execute", subject, NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL)
+		return NULL;
+	result = venture_bank_match_service_execute_impl(self, action, id, args, actor, error);
+	if (result == NULL)
+		return NULL;
+	if (!venture_accounting_operation_finish(operation, error))
+		return NULL;
+	return g_steal_pointer(&result);
 }

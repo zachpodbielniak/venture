@@ -60,7 +60,7 @@ venture_venture_type_new(
  * |[
  * name: etsy
  * label: Etsy shop
- * description: A print-on-demand or handmade storefront
+ * "description": A print-on-demand or handmade storefront
  *
  * fields:
  *   shop_name: string

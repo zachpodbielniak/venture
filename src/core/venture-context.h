@@ -424,23 +424,27 @@ void venture_context_set_commerce_service(VentureContext *self, VentureCommerceS
  */
 gboolean venture_context_start_commerce(VentureContext *self, GError **error);
 
-/** venture_context_get_mailer:
+/**
+ * venture_context_get_mailer:
  * @self: context
  * Returns: (transfer none) (nullable): configured transport, or NULL with mail off
  */
 VentureMailer *venture_context_get_mailer(VentureContext *self);
-/** venture_context_get_mail_outbox:
+/**
+ * venture_context_get_mail_outbox:
  * @self: context
  * Returns: (transfer none) (nullable): durable outbox, or NULL with mail off
  */
 VentureMailOutbox *venture_context_get_mail_outbox(VentureContext *self);
 
-/** venture_context_set_mailer:
+/**
+ * venture_context_set_mailer:
  * @self: context
  * @mailer: replacement SMTP implementation; retained by the registry
  */
 void venture_context_set_mailer(VentureContext *self, VentureMailer *mailer);
-/** venture_context_get_mailer_registry:
+/**
+ * venture_context_get_mailer_registry:
  * @self: context
  * Returns: (transfer none): implementation registry, with the active "smtp" slot
  */

@@ -346,8 +346,8 @@ venture_claims_service_approve(VentureClaimsService *self, VentureEntity *claim,
 	return transition(self, claim, "submitted", "approved", FALSE, actor, error);
 }
 
-gboolean
-venture_claims_service_pay(VentureClaimsService *self, VentureEntity *claim,
+static gboolean
+venture_claims_service_pay_impl(VentureClaimsService *self, VentureEntity *claim,
 	const VentureActor *actor, GError **error)
 {
 	g_return_val_if_fail(VENTURE_IS_CLAIMS_SERVICE(self), FALSE);
@@ -513,4 +513,33 @@ venture_claims_check_write(VentureDatabase *database, VentureEntity *record,
 	if (g_strcmp0(status, "draft") == 0 || g_strcmp0(status, "rejected") == 0)
 		return TRUE;
 	return refuse(error, VENTURE_ERROR_VALIDATION, "Submitted claims are retained as reimbursement evidence");
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_claims_service_pay(VentureClaimsService *self, VentureEntity *claim,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	gboolean result;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	g_return_val_if_fail(VENTURE_IS_ENTITY(claim), FALSE);
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	operation = venture_accounting_operation_begin(db, "claims-pay", VENTURE_ENTITY(claim), NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(VENTURE_ENTITY(claim)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_claims_service_pay_impl(self, claim, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
 }

@@ -2187,12 +2187,15 @@ test_batch_approval(Fixture *f, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureEntity) invoice = NULL, payment = NULL, allocation = NULL;
 	g_autoptr(VentureAccountingApprovalRule) rule = venture_accounting_approval_rule_new();
+	g_autoptr(VentureAccountingApprovalRule) post_rule = venture_accounting_approval_rule_new();
 	g_autoptr(GPtrArray) allocations = g_ptr_array_new_with_free_func(g_object_unref);
 	VentureActor actor;
 	(void)data;
 	invoice = invoice_new(f, "APPROVE-BATCH", "2026-08-10", "100 USD");
 	g_object_set(rule, "organization-id", f->organization_id, "action", "pay", "require-second-actor", TRUE, NULL);
 	save(f, VENTURE_ENTITY(rule));
+	g_object_set(post_rule, "organization-id", f->organization_id, "action", "post", "require-second-actor", TRUE, NULL);
+	save(f, VENTURE_ENTITY(post_rule));
 	payment = payment_new(f, 0, "100 USD", "2026-08-11");
 	allocation = allocation_new(f, 0, 0, venture_entity_get_id(invoice), "100 USD", "2026-08-11");
 	g_ptr_array_add(allocations, g_object_ref(allocation));
@@ -2220,6 +2223,66 @@ test_batch_approval(Fixture *f, gconstpointer data)
 		VENTURE_PAYMENT(payment), allocations, &actor, &error));
 	g_assert_no_error(error);
 	assert_status(f, invoice, "paid");
+}
+
+/* Source commands need consent before issue events obtain database IDs; a
+ * second actor must approve the same command without replaying any writes. */
+static void
+test_whole_issue_approval(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = record_new(f, "invoice");
+	g_autoptr(VentureEntity) line = record_new(f, "invoice_line");
+	g_autoptr(VentureEntity) rule = record_new(f, "accounting_approval_rule");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) evidence = NULL;
+	g_autoptr(GDateTime) date = venture_time_from_string("2026-08-12", NULL);
+	VentureActor actor;
+	(void)data;
+	g_object_set(invoice, "number", "WHOLE-ISSUE", "company-id", f->customer_id, NULL);
+	money_field(invoice, "issued-at", "2026-08-10");
+	save(f, invoice);
+	g_object_set(line, "invoice-id", venture_entity_get_id(invoice), "description", "Service", "quantity", 1.0, NULL);
+	money_field(line, "unit-price", "100 USD");
+	save(f, line);
+	g_object_set(rule, "action", "post", "require-second-actor", TRUE, NULL);
+	save(f, rule);
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "alice";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+	g_assert_false(venture_database_save(f->database, invoice, &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	assert_status(f, invoice, "draft");
+	evidence = rows(f, "invoice_event");
+	g_assert_cmpuint(evidence->len, ==, 0);
+	g_clear_pointer(&evidence, g_ptr_array_unref);
+	evidence = rows(f, "journal");
+	g_assert_cmpuint(evidence->len, ==, 0);
+	g_clear_pointer(&evidence, g_ptr_array_unref);
+	evidence = rows(f, "accounting_approval");
+	g_assert_cmpuint(evidence->len, ==, 1);
+	actor.name = "bob";
+	g_assert_true(venture_database_save(f->database, invoice, &actor, &error));
+	g_assert_no_error(error);
+	assert_status(f, invoice, "sent");
+	/* Void is a separate business command, approved once for its reversal. */
+	actor.name = "alice";
+	g_assert_false(venture_settlement_service_transition(venture_settlement_service_get(f->database),
+		VENTURE_INVOICE(invoice), "void", date, &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	assert_status(f, invoice, "sent");
+	actor.name = "bob";
+	g_assert_true(venture_settlement_service_transition(venture_settlement_service_get(f->database),
+		VENTURE_INVOICE(invoice), "void", date, &actor, &error));
+	g_assert_no_error(error);
+	assert_status(f, invoice, "void");
+	g_clear_pointer(&evidence, g_ptr_array_unref);
+	evidence = rows(f, "accounting_approval");
+	g_assert_cmpuint(evidence->len, ==, 2);
 }
 
 int
@@ -2293,6 +2356,7 @@ main(int argc, char **argv)
 	g_test_add("/receivables/negative", Fixture, "-10 USD", set_up, test_invalid_amount, tear_down);
 	g_test_add("/receivables/wrong-currency", Fixture, "100 EUR", set_up, test_invalid_amount, tear_down);
 	ADD("batch-approval", test_batch_approval);
+	ADD("whole-issue-approval", test_whole_issue_approval);
 #undef ADD
 	return g_test_run();
 }

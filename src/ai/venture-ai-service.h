@@ -304,7 +304,8 @@ venture_ai_service_complete(
 	GError			**error
 );
 
-/** venture_ai_service_new_with_provider:
+/**
+ * venture_ai_service_new_with_provider:
  * @context: application context
  * @provider: (nullable): injected provider; NULL uses configuration
  * @error: (out) (optional): error location
@@ -318,7 +319,7 @@ VentureAiService *venture_ai_service_new_with_provider(VentureContext *context,
  * @self: assistant service
  * @tool_use: an invocation of a registered tool
  * @principal: authenticated caller
- * @error: failure
+ * @error: (out) (optional): failure
  *
  * Executes the same callback used by a model turn, without a provider call.
  * Returns: (transfer full) (nullable): the tool's response

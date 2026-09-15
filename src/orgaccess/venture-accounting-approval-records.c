@@ -12,7 +12,7 @@ static const VentureFieldDecl rule_fields[] = {
 VENTURE_DEFINE_ENTITY(VentureAccountingApprovalRule, venture_accounting_approval_rule, rule_fields)
 
 static const VentureFieldDecl approval_fields[] = {
-	VENTURE_FIELD("action", "Action", "post or pay", VENTURE_FIELD_KIND_STRING,
+	VENTURE_FIELD("action", "Action", "post, pay, or post+pay for the whole operation", VENTURE_FIELD_KIND_STRING,
 		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("record-type", "Record type", NULL, VENTURE_FIELD_KIND_STRING,
 		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),

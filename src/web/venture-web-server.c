@@ -3694,7 +3694,8 @@ venture_web_ui_invoice_status(
 
 	to = htmx_request_get_form_value(request, "to");
 
-	now = venture_time_now();
+	/* Implicit accounting dates remain stable across a two-actor retry. */
+	now = venture_time_from_string("today", NULL);
 	venture_auth_to_actor(principal, &actor);
 
 	if (g_strcmp0(to, "paid") == 0)

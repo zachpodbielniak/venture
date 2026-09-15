@@ -114,8 +114,8 @@ already_billed(VentureProjectService *self, gint64 org, const gchar *type, gint6
 	return venture_database_count(self->database, query, error) != 0;
 }
 
-VentureEntity *
-venture_project_service_bill(VentureProjectService *self, gint64 project_id, GDateTime *date, const VentureActor *actor, GError **error)
+static VentureEntity *
+venture_project_service_bill_impl(VentureProjectService *self, gint64 project_id, GDateTime *date, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) project = NULL;
 	g_autoptr(VentureEntity) invoice = NULL;
@@ -359,4 +359,39 @@ venture_projects_register_reports(VentureReportRegistry *registry)
 {
 	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
 		"project_margin", "Project margin", "Billed time and costs by project.", project_margin_report)));
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+VentureEntity *
+venture_project_service_bill(VentureProjectService *self, gint64 project_id, GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) subject = NULL;
+	g_autoptr(VentureEntity) result = NULL;
+	g_autofree gchar *date_text = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return NULL;
+	}
+	subject = venture_database_get(db, VENTURE_TYPE_CLIENT_PROJECT, project_id, error);
+	if (subject == NULL)
+		return NULL;
+	date_text = date != NULL ? g_date_time_format_iso8601(date) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "project_id", g_variant_new_int64((gint64)project_id));
+	g_variant_builder_add(&arguments, "{sv}", "date", g_variant_new_maybe(G_VARIANT_TYPE_STRING, date_text != NULL ? g_variant_new_string(date_text) : NULL));
+	operation = venture_accounting_operation_begin(db, "project-bill", subject, NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL)
+		return NULL;
+	result = venture_project_service_bill_impl(self, project_id, date, actor, error);
+	if (result == NULL)
+		return NULL;
+	if (!venture_accounting_operation_finish(operation, error))
+		return NULL;
+	return g_steal_pointer(&result);
 }

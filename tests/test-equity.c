@@ -143,6 +143,69 @@ test_generic_write_refused(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(error->message, "VentureCapitalService"));
 }
 
+/* Consent belongs to the requested contribution, before its equity row and
+ * journal acquire IDs. Retrying as another person executes both atomically. */
+static void
+test_whole_operation_approval(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureAccountingApprovalRule) rule = venture_accounting_approval_rule_new();
+	g_autoptr(VentureMoney) amount = venture_money_new_for_currency(1000, "USD");
+	g_autoptr(GDateTime) when = g_date_time_new_utc(2026, 8, 3, 0, 0, 0);
+	g_autoptr(VentureEntity) row = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNTING_APPROVAL);
+	g_autoptr(GPtrArray) approvals = NULL;
+	gboolean execution_date = g_strcmp0((const gchar *)data, "execution-date") == 0;
+	VentureActor actor;
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "alice";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	if (execution_date)
+		g_clear_pointer(&when, g_date_time_unref);
+	g_object_set(rule, "organization-id", f->org, "action", execution_date ? "post" : (const gchar *)data,
+		"require-second-actor", TRUE, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(rule), NULL, &error));
+	g_assert_no_error(error);
+	row = venture_capital_service_post(venture_capital_service_get(f->db), f->org,
+		VENTURE_EQUITY_KIND_CONTRIBUTION, amount, when, "Contribution", 0, 0, &actor, &error);
+	g_assert_null(row);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	g_assert_cmpint(posted_balance(f, "1000"), ==, 0);
+	venture_query_set_organization(query, f->org);
+	venture_query_set_limit(query, 0);
+	approvals = venture_database_find(f->db, query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(approvals->len, ==, 1);
+	row = venture_capital_service_post(venture_capital_service_get(f->db), f->org,
+		VENTURE_EQUITY_KIND_CONTRIBUTION, amount, when, "Contribution", 0, 0, &actor, &error);
+	g_assert_null(row);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	actor.name = "bob";
+	row = venture_capital_service_post(venture_capital_service_get(f->db), f->org,
+		VENTURE_EQUITY_KIND_CONTRIBUTION, amount, when, "Changed proposal", 0, 0, &actor, &error);
+	g_assert_null(row);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	row = venture_capital_service_post(venture_capital_service_get(f->db), f->org,
+		VENTURE_EQUITY_KIND_CONTRIBUTION, amount, when, "Contribution", 0, 0, &actor, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(row);
+	if (execution_date)
+	{
+		g_autoptr(GPtrArray) journals = venture_posting_service_find_source(
+			venture_database_get_posting_service(f->db), "equity_transaction", venture_entity_get_id(row), f->org, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(journals);
+		g_assert_cmpuint(journals->len, ==, 1);
+	}
+	else
+		g_assert_cmpint(posted_balance(f, "1000"), ==, 1000);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -152,5 +215,8 @@ main(int argc, char **argv)
 	g_test_add("/equity/loan-transfer", Fixture, NULL, setup, test_loan_and_transfer, teardown);
 	g_test_add("/equity/refuse-expense", Fixture, NULL, setup, test_refuses_expense_dump, teardown);
 	g_test_add("/equity/generic-write", Fixture, NULL, setup, test_generic_write_refused, teardown);
+	g_test_add("/equity/whole-operation-post", Fixture, "post", setup, test_whole_operation_approval, teardown);
+	g_test_add("/equity/whole-operation-pay", Fixture, "pay", setup, test_whole_operation_approval, teardown);
+	g_test_add("/equity/whole-operation-execution-date", Fixture, "execution-date", setup, test_whole_operation_approval, teardown);
 	return g_test_run();
 }

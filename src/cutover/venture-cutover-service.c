@@ -481,8 +481,8 @@ import_bank(VentureCutoverService *self, VentureEntity *cutover, JsonObject *pay
 	return TRUE;
 }
 
-gboolean
-venture_cutover_service_import(VentureCutoverService *self, VentureAccountingCutover *cutover,
+static gboolean
+venture_cutover_service_import_impl(VentureCutoverService *self, VentureAccountingCutover *cutover,
 	const VentureActor *actor, GError **error)
 {
 	g_autoptr(JsonObject) payload = NULL;
@@ -758,8 +758,8 @@ venture_cutover_service_activate(VentureCutoverService *self, VentureAccountingC
 	return save_owned(self, VENTURE_ENTITY(cutover), actor, error);
 }
 
-gboolean
-venture_cutover_service_rollback(VentureCutoverService *self, VentureAccountingCutover *cutover,
+static gboolean
+venture_cutover_service_rollback_impl(VentureCutoverService *self, VentureAccountingCutover *cutover,
 	const VentureActor *actor, GError **error)
 {
 	g_autofree gchar *state = NULL;
@@ -865,9 +865,67 @@ venture_cutover_actions_register(VentureDatabase *database)
 	{
 		g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "accounting_cutover",
 			"name", names[i], "label", names[i], "description", "Cutover batch action",
-			"stageable", FALSE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+			"stageable", FALSE, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 		g_autoptr(GError) error = NULL;
 		venture_action_registry_register(registry, action, cutover_allowed, cutover_invoke,
 			venture_cutover_service_get(database), NULL, &error);
 	}
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_cutover_service_import(VentureCutoverService *self, VentureAccountingCutover *cutover,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	gboolean result;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	g_return_val_if_fail(VENTURE_IS_ENTITY(cutover), FALSE);
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	operation = venture_accounting_operation_begin(db, "cutover-import", VENTURE_ENTITY(cutover), NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(VENTURE_ENTITY(cutover)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_cutover_service_import_impl(self, cutover, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_cutover_service_rollback(VentureCutoverService *self, VentureAccountingCutover *cutover,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	gboolean result;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	g_return_val_if_fail(VENTURE_IS_ENTITY(cutover), FALSE);
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	operation = venture_accounting_operation_begin(db, "cutover-rollback", VENTURE_ENTITY(cutover), NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(VENTURE_ENTITY(cutover)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_cutover_service_rollback_impl(self, cutover, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
 }

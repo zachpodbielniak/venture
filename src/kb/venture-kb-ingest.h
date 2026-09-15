@@ -29,7 +29,7 @@
 G_BEGIN_DECLS
 
 /**
- * VentureKbIngestResult:
+ * VentureKbIngestResult: (copy-func venture_kb_ingest_result_copy) (free-func venture_kb_ingest_result_free)
  * @created: articles that did not exist before
  * @updated: articles whose source had changed
  * @unchanged: articles whose source hash still matched
@@ -63,6 +63,16 @@ typedef struct
  */
 VentureKbIngestResult *
 venture_kb_ingest_result_new(void);
+
+/**
+ * venture_kb_ingest_result_copy:
+ * @self: (nullable): value to copy
+ *
+ * Copies all owned data so each result can be released independently.
+ * Returns: (transfer full) (nullable): an independent copy
+ */
+VentureKbIngestResult *
+venture_kb_ingest_result_copy(const VentureKbIngestResult *self);
 
 /**
  * venture_kb_ingest_result_free:

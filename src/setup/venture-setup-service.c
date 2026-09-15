@@ -705,8 +705,8 @@ post_opening(VentureSetupService *self, VentureEntity *setup, gint64 cash, gint6
 		entries, NULL, actor, error);
 }
 
-gboolean
-venture_setup_service_complete(VentureSetupService *self, VentureAccountingSetup *setup,
+static gboolean
+venture_setup_service_complete_impl(VentureSetupService *self, VentureAccountingSetup *setup,
 	const VentureActor *actor, GError **error)
 {
 	g_autoptr(JsonObject) payload = NULL;
@@ -1015,8 +1015,21 @@ setup_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params,
 		return venture_setup_service_complete(service, VENTURE_ACCOUNTING_SETUP(entity), actor, error) ?
 			g_object_ref(entity) : NULL;
 	if (g_strcmp0(name, "preview") == 0)
-		return venture_setup_service_preview(service, venture_entity_get_organization_id(entity),
+	{
+		g_autoptr(VentureEntity) result = NULL;
+		/* Preview persists the draft and then its checklist; both belong to
+		 * this nonposting action even though no accounting consent is needed. */
+		if (!venture_database_begin(service->database, error)) return NULL;
+		result = venture_setup_service_preview(service, venture_entity_get_organization_id(entity),
 			NULL, actor, error);
+		if (result == NULL)
+		{
+			venture_database_rollback(service->database);
+			return NULL;
+		}
+		if (!venture_database_commit(service->database, error)) return NULL;
+		return g_steal_pointer(&result);
+	}
 	return NULL;
 }
 
@@ -1032,9 +1045,38 @@ venture_setup_actions_register(VentureDatabase *database)
 	{
 		g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "accounting_setup",
 			"name", names[i], "label", names[i], "description", "Accounting setup action",
-			"stageable", FALSE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+			"stageable", FALSE, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 		g_autoptr(GError) error = NULL;
 		venture_action_registry_register(registry, action, setup_allowed, setup_invoke,
 			venture_setup_service_get(database), NULL, &error);
 	}
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_setup_service_complete(VentureSetupService *self, VentureAccountingSetup *setup,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	gboolean result;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	g_return_val_if_fail(VENTURE_IS_ENTITY(setup), FALSE);
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	operation = venture_accounting_operation_begin(db, "setup-complete", VENTURE_ENTITY(setup), NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(VENTURE_ENTITY(setup)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_setup_service_complete_impl(self, setup, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
 }

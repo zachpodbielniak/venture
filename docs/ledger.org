@@ -322,3 +322,11 @@ CLI, assistant and MCP use those declarations. Generated assistant tools,
 including =venture_journal_post=, always stage actions. Approval reloads the
 record and checks its version, role and eligibility; a period closed after
 staging still refuses the posting. The ledger module switch hides all three.
+
+* Whole-operation second-actor consent
+
+Manual posting and reversal bind their original journal and ordered lines to a proposal before generating any derived IDs. Posting a source document, updating an automatically posted source and posting a legacy entry batch likewise own their outer operation. Nested postings reuse that operation's consent and commit together. Approved exchange conversion supports the built-in stored-rate policy bound to the same database and organization; opaque custom policy state and policies reading another organization's rates are refused. Without second-actor rules, custom exchange policies retain their existing behavior.
+
+Operation consent includes the posting-rule registry revision. Restarting the process, replacing a registered implementation or removing one invalidates pending proposals. A plugin must replace its registered rule when changing behavior; mutating opaque private callback state in place is outside the approval contract.
+
+Incomplete sale and expense drafts with no monetary amount remain writable without posting consent. Once an amount exists, source saves use the whole-operation posting boundary; removing a previously posted amount is refused before writing the source.

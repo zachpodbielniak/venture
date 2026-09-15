@@ -19,6 +19,25 @@ struct _VentureSettlementService
 	gint64 tax_account;
 };
 
+/* Bind service-level account overrides as well as persisted policy to consent.
+ * Nested operations inherit the already authorized whole-command scope. */
+static VentureAccountingOperation *
+accounting_operation(VentureSettlementService *self, const gchar *name, VentureEntity *subject,
+	GPtrArray *details, GVariant *arguments, gint64 org, const VentureActor *actor, GError **error)
+{
+	return venture_accounting_operation_begin(self->database, name, subject, details,
+		g_variant_new("(xxxxv)", self->cash_account, self->receivable_account, self->income_account, self->tax_account,
+			arguments != NULL ? arguments : g_variant_new_tuple(NULL, 0)), org, actor, error);
+}
+
+/* ISO dates preserve explicit instants without introducing generated IDs. */
+static GVariant *
+operation_date(GDateTime *date, const gchar *state)
+{
+	g_autofree gchar *text = date != NULL ? g_date_time_format_iso8601(date) : NULL;
+	return g_variant_new("(ss)", text != NULL ? text : "", state != NULL ? state : "");
+}
+
 enum
 {
 	PROP_0,
@@ -1121,14 +1140,19 @@ venture_settlement_service_transition(VentureSettlementService *self,
 	VentureInvoice *invoice, const gchar *state, GDateTime *date,
 	const VentureActor *actor, GError **error)
 {
+	g_autoptr(VentureAccountingOperation) operation = NULL;
 	g_autoptr(VentureEntity) original = NULL;
 	gboolean ok;
 
+	operation = accounting_operation(self, "receivables.transition", VENTURE_ENTITY(invoice), NULL,
+		operation_date(date, state), venture_entity_get_organization_id(VENTURE_ENTITY(invoice)), actor, error);
+	if (operation == NULL) return FALSE;
 	if (!begin_operation(self, "invoice", error))
 		return FALSE;
 	original = snapshot(VENTURE_ENTITY(invoice));
 	ok = perform_transition(self, VENTURE_ENTITY(invoice), state, date, actor, error);
 	ok = finish_operation(self, ok, error);
+	if (ok) ok = venture_accounting_operation_finish(operation, error);
 	if (!ok)
 		venture_entity_copy_properties_from(VENTURE_ENTITY(invoice), original, FALSE);
 	return ok;
@@ -1596,12 +1620,16 @@ gboolean
 venture_settlement_service_apply_payment(VentureSettlementService *self,
 	VenturePayment *payment, GPtrArray *allocations, const VentureActor *actor, GError **error)
 {
+	g_autoptr(VentureAccountingOperation) operation = NULL;
 	g_autoptr(VentureEntity) approval = NULL;
 	g_autoptr(VentureEntity) original = NULL;
 	g_autoptr(GPtrArray) originals = NULL;
 	gboolean ok;
 	guint i;
 
+	operation = accounting_operation(self, "receivables.apply_payment", VENTURE_ENTITY(payment), allocations,
+		NULL, venture_entity_get_organization_id(VENTURE_ENTITY(payment)), actor, error);
+	if (operation == NULL) return FALSE;
 	if (!venture_accounting_approval_allow(self->database, "pay", VENTURE_ENTITY(payment),
 		allocations, actor, &approval, error))
 		return FALSE;
@@ -1623,6 +1651,7 @@ venture_settlement_service_apply_payment(VentureSettlementService *self,
 	if (ok)
 		ok = venture_accounting_approval_consume(self->database, approval, actor, error);
 	ok = finish_operation(self, ok, error);
+	if (ok) ok = venture_accounting_operation_finish(operation, error);
 	if (!ok)
 	{
 		venture_entity_copy_properties_from(VENTURE_ENTITY(payment), original, FALSE);
@@ -1842,6 +1871,7 @@ gboolean
 venture_receivables_save_hook(VentureDatabase *database, VentureEntity *record,
 	const VentureActor *actor, gboolean *handled, gboolean *authorized, GError **error)
 {
+	g_autoptr(VentureAccountingOperation) operation = NULL;
 	VentureSettlementService *self;
 	g_autoptr(VentureEntity) previous = NULL;
 	g_autoptr(VentureEntity) original = NULL;
@@ -1888,16 +1918,23 @@ venture_receivables_save_hook(VentureDatabase *database, VentureEntity *record,
 		if (status == old_status)
 			return TRUE;
 		*handled = TRUE;
+		operation = accounting_operation(self, "receivables.save_transition", record, NULL, NULL,
+			venture_entity_get_organization_id(record), actor, error);
+		if (operation == NULL) return FALSE;
 		if (status == VENTURE_INVOICE_STATUS_SENT && old_status == VENTURE_INVOICE_STATUS_DRAFT)
 			g_object_get(record, "issued-at", &date, NULL);
 		if (date == NULL)
 			date = venture_time_now();
 		return venture_settlement_service_transition(self, VENTURE_INVOICE(record),
-			venture_enum_to_nick(VENTURE_TYPE_INVOICE_STATUS, status), date, actor, error);
+			venture_enum_to_nick(VENTURE_TYPE_INVOICE_STATUS, status), date, actor, error) &&
+			venture_accounting_operation_finish(operation, error);
 	}
 	*handled = TRUE;
 	if (VENTURE_IS_PAYMENT(record))
 		return venture_settlement_service_apply_payment(self, VENTURE_PAYMENT(record), NULL, actor, error);
+	operation = accounting_operation(self, "receivables.save", record, NULL, NULL,
+		venture_entity_get_organization_id(record), actor, error);
+	if (operation == NULL) return FALSE;
 	if (!venture_accounting_approval_allow(database, "pay", record, NULL, actor, &approval, error))
 		return FALSE;
 	if (!begin_operation(self, "payment", error))
@@ -1914,13 +1951,14 @@ venture_receivables_save_hook(VentureDatabase *database, VentureEntity *record,
 	if (ok)
 		ok = venture_accounting_approval_consume(database, approval, actor, error);
 	ok = finish_operation(self, ok, error);
+	if (ok) ok = venture_accounting_operation_finish(operation, error);
 	if (!ok)
 		venture_entity_copy_properties_from(record, original, FALSE);
 	return ok;
 }
 
-gboolean
-venture_settlement_service_write_off(VentureSettlementService *self,
+static gboolean
+write_off_impl(VentureSettlementService *self,
 	gint64 invoice_id, GDateTime *date, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) invoice = NULL;
@@ -1958,8 +1996,24 @@ venture_settlement_service_write_off(VentureSettlementService *self,
 	return finish_operation(self, ok, error);
 }
 
+/* The command owns approval before constructing any payment or credit. */
 gboolean
-venture_settlement_service_settle_invoice(VentureSettlementService *self,
+venture_settlement_service_write_off(VentureSettlementService *self,
+	gint64 invoice_id, GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) subject = NULL;
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	subject = venture_database_get(self->database, VENTURE_TYPE_INVOICE, invoice_id, error);
+	if (subject == NULL) return FALSE;
+	operation = accounting_operation(self, "receivables.write_off", subject, NULL, operation_date(date, NULL),
+		venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL) return FALSE;
+	return write_off_impl(self, invoice_id, date, actor, error) &&
+		venture_accounting_operation_finish(operation, error);
+}
+
+static gboolean
+settle_invoice_impl(VentureSettlementService *self,
 	gint64 invoice_id, GDateTime *date, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) invoice = NULL;
@@ -1977,6 +2031,22 @@ venture_settlement_service_settle_invoice(VentureSettlementService *self,
 		"date", date, "method", "manual", "amount", balance, NULL);
 	venture_entity_set_organization_id(VENTURE_ENTITY(payment), venture_entity_get_organization_id(invoice));
 	return venture_settlement_service_apply_payment(self, payment, NULL, actor, error);
+}
+
+/* The command owns approval before constructing any payment or credit. */
+gboolean
+venture_settlement_service_settle_invoice(VentureSettlementService *self,
+	gint64 invoice_id, GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) subject = NULL;
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	subject = venture_database_get(self->database, VENTURE_TYPE_INVOICE, invoice_id, error);
+	if (subject == NULL) return FALSE;
+	operation = accounting_operation(self, "receivables.settle_invoice", subject, NULL, operation_date(date, NULL),
+		venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL) return FALSE;
+	return settle_invoice_impl(self, invoice_id, date, actor, error) &&
+		venture_accounting_operation_finish(operation, error);
 }
 
 VentureMoney *
@@ -2036,8 +2106,8 @@ venture_settlement_service_customer_balance(VentureSettlementService *self,
 	return g_steal_pointer(&total);
 }
 
-gboolean
-venture_settlement_service_correct_tax_allocation(VentureSettlementService *self,
+static gboolean
+correct_tax_allocation_impl(VentureSettlementService *self,
 	gint64 organization_id, GDateTime *date, const VentureActor *actor, GError **error)
 {
 	g_autoptr(GPtrArray) events = NULL;
@@ -2101,6 +2171,17 @@ venture_settlement_service_correct_tax_allocation(VentureSettlementService *self
 		}
 	}
 	return finish_operation(self, TRUE, error);
+}
+
+gboolean
+venture_settlement_service_correct_tax_allocation(VentureSettlementService *self,
+	gint64 organization_id, GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = accounting_operation(self,
+		"receivables.correct_tax_allocation", NULL, NULL, operation_date(date, NULL), organization_id, actor, error);
+	if (operation == NULL) return FALSE;
+	return correct_tax_allocation_impl(self, organization_id, date, actor, error) &&
+		venture_accounting_operation_finish(operation, error);
 }
 
 gboolean venture_settlement_service_record_mail(VentureSettlementService *self, VentureInvoice *invoice, const VentureActor *actor, GError **error)

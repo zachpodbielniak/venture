@@ -2,18 +2,26 @@
 #ifndef VENTURE_STRIPE_SERVICE_H
 #define VENTURE_STRIPE_SERVICE_H
 G_BEGIN_DECLS
+#ifndef __GI_SCANNER__
 typedef struct _StripeTransport StripeTransport;
+#endif
 #define VENTURE_TYPE_STRIPE_SERVICE (venture_stripe_service_get_type())
 G_DECLARE_FINAL_TYPE(VentureStripeService, venture_stripe_service, VENTURE, STRIPE_SERVICE, GObject)
 /**
- * venture_stripe_service_new:
+ * venture_stripe_service_new: (skip)
  * @database: storage
  * @organization_id: the legal entity for this endpoint
  * @transport: (nullable): transport override for offline tests
  * @error: (out) (optional): configuration error, naming the missing variable
+ *
+ * C-only transport injection: StripeTransport is an opaque provider fixture
+ * interface with no introspection metadata. The returned service remains a
+ * normal GObject with introspectable operations.
  * Returns: (transfer full) (nullable): a started provider, configured from environment
  */
+#ifndef __GI_SCANNER__
 VentureStripeService *venture_stripe_service_new(VentureDatabase *database, gint64 organization_id, StripeTransport *transport, GError **error);
+#endif
 /**
  * venture_stripe_service_can_checkout:
  * @self: provider

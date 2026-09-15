@@ -1,6 +1,12 @@
 #+title: Owner equity, loans and transfers
 #+description: Guided balance-sheet postings that refuse expense dumps
 
+* Two-person approval
+
+When either the organization's =post= or =pay= rule requires a second actor, consent covers the complete equity command: its amount, effective date, kind, memo, account choices, and the financial state used to derive its journal. The first attempt records a pending proposal without creating an equity transaction or journal. A different actor repeats the identical command to execute it atomically; changed inputs or intervening financial changes require a new proposal. Consent is consumed only when all effects commit.
+
+The browser's omitted effective date means the execution time after approval. The browser does not manufacture a new dated proposal on each retry.
+
 * Guided capital
 
 The =equity= module requires =ledger= and =setup=. =VentureCapitalService=

@@ -32,7 +32,7 @@ G_BEGIN_DECLS
 G_DECLARE_FINAL_TYPE(VentureAuth, venture_auth, VENTURE, AUTH, GObject)
 
 /**
- * VentureAuthPrincipal:
+ * VentureAuthPrincipal: (copy-func venture_auth_principal_copy) (free-func venture_auth_principal_free)
  * @user_id: the authenticated user, or 0 for a token with no user
  * @token_id: the API token used, or 0 for a browser session
  * @role: what the principal may do
@@ -63,6 +63,16 @@ typedef struct
  */
 VentureAuth *
 venture_auth_new(VentureContext *context);
+
+/**
+ * venture_auth_principal_copy:
+ * @self: (nullable): value to copy
+ *
+ * Copies all owned data so each result can be released independently.
+ * Returns: (transfer full) (nullable): an independent copy
+ */
+VentureAuthPrincipal *
+venture_auth_principal_copy(const VentureAuthPrincipal *self);
 
 /**
  * venture_auth_principal_free:

@@ -7,7 +7,6 @@ equity_post(HtmxRequest *request, GHashTable *params, gpointer data)
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureEntity) row = NULL;
 	g_autoptr(VentureMoney) amount = NULL;
-	g_autoptr(GDateTime) when = NULL;
 	g_autoptr(VentureEntity) organization = NULL;
 	g_autofree gchar *currency = NULL;
 	gint64 organization_id;
@@ -87,9 +86,10 @@ equity_post(HtmxRequest *request, GHashTable *params, gpointer data)
 			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Amount is required");
 		return venture_web_error_response(error);
 	}
-	when = venture_time_now();
+	/* Resolve the execution date inside the service after approval; a fresh
+	 * timestamp here would change the proposal on every browser retry. */
 	row = venture_capital_service_post(venture_capital_service_get(venture_context_get_database(self->context)),
-		organization_id, kind, amount, when, memo, 0, 0, &actor, &error);
+		organization_id, kind, amount, NULL, memo, 0, 0, &actor, &error);
 	if (row == NULL)
 		return venture_web_error_response(error);
 	if (api)

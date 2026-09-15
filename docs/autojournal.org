@@ -2,7 +2,11 @@
 #+description: Configurable sale, refund and expense posting
 #+authors: Zach Podbielniak
 #+created: [2026-09-13]
-#+updated: [2026-09-14]
+#+updated: [2026-09-15]
+
+* Backfill approval
+
+With a =post= or =pay= second-actor rule, the entire backfill is one proposal bound to its organization, arguments, and current financial records. A second actor repeats the same request; changed source records invalidate the earlier consent. Dry runs also require approval because they exercise the posting path inside a transaction before rolling it back. A dry run preserves the pending approval and commits neither journals nor approval consumption; the live command is a separate proposal because its =dry_run= argument differs.
 
 * Profiles
 

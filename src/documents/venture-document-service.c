@@ -149,8 +149,8 @@ row_quantity(JsonObject *row)
 	return 0;
 }
 
-VentureEntity *
-venture_document_service_compose_invoice(VentureDocumentService *self, gint64 organization_id,
+static VentureEntity *
+venture_document_service_compose_invoice_impl(VentureDocumentService *self, gint64 organization_id,
 	JsonObject *spec, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureInvoice) invoice = NULL;
@@ -298,4 +298,45 @@ venture_document_service_compose_quote(VentureDocumentService *self, gint64 orga
 fail:
 	venture_database_rollback(self->database);
 	return NULL;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+VentureEntity *
+venture_document_service_compose_invoice(VentureDocumentService *self, gint64 organization_id,
+	JsonObject *spec, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	VentureDatabase * db = self->database;
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(JsonNode) spec_node = NULL;
+	g_autofree gchar *spec_text = NULL;
+	/* A draft has no ledger effect. Sending it is the posting boundary. */
+	if (spec == NULL || !venture_json_object_get_bool(spec, "send", FALSE))
+		return venture_document_service_compose_invoice_impl(self, organization_id, spec, actor, error);
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return NULL;
+	}
+	if (spec != NULL)
+	{
+		spec_node = json_node_new(JSON_NODE_OBJECT);
+		json_node_set_object(spec_node, spec);
+		spec_text = venture_json_to_string(spec_node, FALSE);
+	}
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "organization_id", g_variant_new_int64((gint64)organization_id));
+	g_variant_builder_add(&arguments, "{sv}", "spec", g_variant_new_maybe(G_VARIANT_TYPE_STRING, spec_text != NULL ? g_variant_new_string(spec_text) : NULL));
+	operation = venture_accounting_operation_begin(db, "document-compose-invoice", NULL, NULL,
+		g_variant_builder_end(&arguments), organization_id, actor, error);
+	if (operation == NULL)
+		return NULL;
+	result = venture_document_service_compose_invoice_impl(self, organization_id, spec, actor, error);
+	if (result == NULL)
+		return NULL;
+	if (!venture_accounting_operation_finish(operation, error))
+		return NULL;
+	return g_steal_pointer(&result);
 }

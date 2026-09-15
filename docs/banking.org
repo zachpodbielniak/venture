@@ -1,5 +1,9 @@
 #+title: Bank statements and reconciliation
 
+* Posting approvals
+
+With a =post= or =pay= second-actor rule, =create=, =correct=, =reverse=, =transfer=, =bulk=, =match= and =auto= obtain consent for the complete command before changing records. Matching is included because it can produce adjustment journals. Imports, inbox review, rule configuration, statement reconciliation and other operations that only manage existing evidence retain their ordinary access checks without posting approval.
+
 * Banking
 
 The =banking= module requires =ledger=. Its field tables register

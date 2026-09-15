@@ -445,6 +445,17 @@ GIR_NAMESPACE := Venture
 GIR_VERSION := $(API_VERSION)
 GIR_FILE := $(GIR_NAMESPACE)-$(GIR_VERSION).gir
 TYPELIB_FILE := $(GIR_NAMESPACE)-$(GIR_VERSION).typelib
+ORM_GLIB_GIR := $(ORM_GLIB_DIR)/build/$(BUILD_TYPE)/Orm-0.2.gir
+AI_GLIB_GIR := $(AI_GLIB_DIR)/build/$(BUILD_TYPE)/AiGlib-1.0.gir
+HTMX_GLIB_GIR := $(HTMX_GLIB_DIR)/build/$(BUILD_TYPE)/HtmxGlib-1.0.gir
+VENDOR_GIR_FILES := $(ORM_GLIB_GIR) $(AI_GLIB_GIR) $(HTMX_GLIB_GIR)
+VENDOR_GIR_DIRS := $(sort $(dir $(VENDOR_GIR_FILES)))
+# Imported GIR namespaces must share their runtime GTypes with Venture's DSO.
+# Server/CLI/test targets continue to consume the canonical static archives.
+ORM_GLIB_SHARED := $(ORM_GLIB_DIR)/build/$(BUILD_TYPE)/liborm-glib-0.2.so
+AI_GLIB_SHARED := $(AI_GLIB_DIR)/build/$(BUILD_TYPE)/libai-glib-1.0.so
+HTMX_GLIB_SHARED := $(HTMX_GLIB_DIR)/build/$(BUILD_TYPE)/libhtmx-glib-1.0.so
+VENDOR_SHARED_LIBS := $(ORM_GLIB_SHARED) $(AI_GLIB_SHARED) $(HTMX_GLIB_SHARED)
 
 # ---------------------------------------------------------------------------
 # Test flags
@@ -552,14 +563,15 @@ list-deps:
 	@echo "Fedora build dependencies:"
 	@for p in $(FEDORA_DEPS); do echo "  $$p"; done
 
-# Stripe uses the canonical YAML archive; telemetry stays at its nested pin.
+# Stripe and mail pin the same otel-glib commit (d2f52174a840). Use one
+# telemetry archive and header tree so the process has one set of GTypes.
 STRIPE_GLIB_DIR := $(DEPS_DIR)/stripe-glib
 STRIPE_GLIB_LIB := $(STRIPE_GLIB_DIR)/build/$(BUILD_TYPE)/libstripe-glib-1.0.a
 OTEL_GLIB_DIR := $(STRIPE_GLIB_DIR)/deps/otel-glib
 OTEL_GLIB_LIB := $(OTEL_GLIB_DIR)/build/$(BUILD_TYPE)/libotel-glib-1.0.a
 CFLAGS += -I$(STRIPE_GLIB_DIR)/src -I$(OTEL_GLIB_DIR)/src $(shell $(PKG_CONFIG) --cflags gnutls)
 TEST_CFLAGS += -I$(STRIPE_GLIB_DIR)/src -I$(OTEL_GLIB_DIR)/src $(shell $(PKG_CONFIG) --cflags gnutls)
-VENDOR_LIBS_SERVER := $(STRIPE_GLIB_LIB) $(OTEL_GLIB_LIB) $(VENDOR_LIBS_SERVER)
+VENDOR_LIBS_SERVER := $(STRIPE_GLIB_LIB) $(VENDOR_LIBS_SERVER)
 LDFLAGS += $(shell $(PKG_CONFIG) --libs gnutls)
 TEST_LDFLAGS += $(shell $(PKG_CONFIG) --libs gnutls)
 # Transactional mail; keep the standalone CLI free of server dependencies.
@@ -567,13 +579,14 @@ TEST_LDFLAGS += $(shell $(PKG_CONFIG) --libs gnutls)
 # when a server or test recipe expands them, never while parsing CLI targets.
 MAIL_GLIB_DIR := $(DEPS_DIR)/mail-glib
 MAIL_GLIB_LIB := $(MAIL_GLIB_DIR)/build/$(BUILD_TYPE)/libmail-glib-1.0.a
-MAIL_OTEL_DIR := $(MAIL_GLIB_DIR)/deps/otel-glib
-MAIL_OTEL_LIB := $(MAIL_OTEL_DIR)/build/$(BUILD_TYPE)/libotel-glib-1.0.a
+MAIL_OTEL_DIR := $(OTEL_GLIB_DIR)
+MAIL_OTEL_LIB := $(OTEL_GLIB_LIB)
 DEPS_SERVER += gmime-3.0 gnutls
 CFLAGS_MAIL = -I$(MAIL_GLIB_DIR)/src -I$(MAIL_OTEL_DIR)/src $(shell $(PKG_CONFIG) --cflags gmime-3.0 gnutls)
 CFLAGS += $(CFLAGS_MAIL)
 LDFLAGS += $(shell $(PKG_CONFIG) --libs gmime-3.0 gnutls)
-VENDOR_LIBS_SERVER += $(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB)
+# Keep telemetry after both consumers for ordinary static archive extraction.
+VENDOR_LIBS_SERVER += $(MAIL_GLIB_LIB) $(OTEL_GLIB_LIB)
 FEDORA_DEPS += gmime30-devel gnutls-devel
 DEBIAN_DEPS += libgmime-3.0-dev libgnutls28-dev
 ARCH_DEPS += gmime3 gnutls

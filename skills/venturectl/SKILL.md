@@ -581,6 +581,20 @@ draft behind; closed periods and repeat reversals are refused.
 The `--stage` help lists `create/update/delete/act/sequence enroll/lead convert/billing`; the same flag also
 applies to a type-level journal creation at ID zero.
 
+### Accounting second-person consent
+
+When an organization enables a post/pay second-actor rule, an operation that
+posts or pays first returns permission denied after saving a pending proposal.
+That response is not a successful posting and is separate from `--stage`/202.
+A different authorized account must repeat the same business command with the
+same inputs; two tokens from one account do not qualify. One consent covers
+its generated invoices, allocations and journal entries, and is consumed only
+when the whole operation succeeds. Changed inputs or business/configuration
+records require a fresh proposal; consent expires after 24 hours and must be
+re-proposed after a server restart or posting-rule replacement. Draft editing
+and read-only previews remain available. Use an explicit date for reproducible
+posting commands, and reread records after any failed operation.
+
 ### Automatic journals
 
 `post backfill [organization_id=ID] [--dry-run]` is an editor action which posts

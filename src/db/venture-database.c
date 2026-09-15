@@ -649,6 +649,29 @@ venture_database_begin(
 }
 
 gboolean
+venture_database_begin_serializable(VentureDatabase *self, GError **error)
+{
+	g_rec_mutex_lock(&self->lock);
+	if (self->transaction_depth != 0)
+	{
+		g_rec_mutex_unlock(&self->lock);
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+			"Accounting approval must begin before the enclosing business transaction");
+		return FALSE;
+	}
+	self->transaction = orm_connection_begin_transaction_with_isolation(self->connection,
+		ORM_ISOLATION_SERIALIZABLE, error);
+	if (self->transaction == NULL)
+	{
+		g_rec_mutex_unlock(&self->lock);
+		return FALSE;
+	}
+	self->transaction_depth = 1;
+	self->transaction_owner = g_thread_self();
+	return TRUE;
+}
+
+gboolean
 venture_database_commit(
 	VentureDatabase	 *self,
 	GError		**error
@@ -799,7 +822,9 @@ venture_database_record_audit(
 
 	/* Notifications, outbound webhooks and automation are trusted service
 	 * reactions to an already-authorized write, including other recipients. */
+	venture_accounting_operation_suspend(self);
 	g_signal_emit(self, venture_database_signals[SIGNAL_AUDIT], 0, entry);
+	venture_accounting_operation_resume(self);
 }
 
 /* --- Writing ------------------------------------------------------------- */
@@ -1157,8 +1182,8 @@ check_subsystem_write(VentureDatabase *self, VentureEntity *entity, gboolean rem
 	return TRUE;
 }
 
-gboolean
-venture_database_save(
+static gboolean
+database_save_dispatch(
 	VentureDatabase		 *self,
 	VentureEntity		 *entity,
 	const VentureActor	 *actor,
@@ -1265,6 +1290,97 @@ venture_database_save(
 	}
 
 	return database_save_unwrapped(self, entity, actor, error);
+}
+
+/* Only hooks that can post need a whole-operation boundary here. Draft
+ * edits remain ordinary writes; they invalidate consent through the snapshot.
+ * AR/AP and other services establish their own scopes at their handled branch. */
+static gboolean
+accounting_save_needs_scope(VentureDatabase *database, VentureEntity *entity)
+{
+	g_autofree gchar *operation = NULL;
+	if (VENTURE_IS_SALE(entity))
+	{
+		g_autoptr(VentureMoney) gross = NULL;
+		g_autoptr(VentureMoney) refunded = NULL;
+		gint64 product_id = 0;
+		g_object_get(entity, "gross", &gross, "refunded", &refunded, "product-id", &product_id, NULL);
+		/* Product-backed sales may issue inventory before their ordinary save;
+		 * a refund cleared to zero may reverse an existing refund journal. */
+		return gross != NULL || refunded != NULL || product_id > 0;
+	}
+	if (VENTURE_IS_EXPENSE(entity))
+	{
+		g_autoptr(VentureMoney) amount = NULL;
+		g_object_get(entity, "amount", &amount, NULL);
+		return amount != NULL;
+	}
+	if (VENTURE_IS_DEFERRAL(entity))
+	{
+		if (!venture_entity_is_persisted(entity))
+			return TRUE;
+		g_object_get(entity, "operation", &operation, NULL);
+		return g_strcmp0(operation, "settle") == 0;
+	}
+	if (VENTURE_IS_FIXED_ASSET(entity))
+	{
+		g_object_get(entity, "operation", &operation, NULL);
+		return g_strcmp0(operation, "place") == 0 || g_strcmp0(operation, "dispose") == 0 ||
+			g_strcmp0(operation, "write-off") == 0 || (operation != NULL && g_str_has_prefix(operation, "run-period:"));
+	}
+	if (VENTURE_IS_QUOTE_ACTION(entity))
+	{
+		g_autoptr(VentureEntity) quote = NULL;
+		g_autofree gchar *mode = NULL;
+		gint64 quote_id = 0;
+		g_object_get(entity, "action", &operation, "quote-id", &quote_id, NULL);
+		if (g_strcmp0(operation, "accept") != 0)
+			return FALSE;
+		quote = venture_database_get(database, VENTURE_TYPE_QUOTE, quote_id, NULL);
+		/* A missing/unreadable source is refused by the service; never infer
+		 * the nonposting progress branch from a failed lookup. */
+		if (quote == NULL)
+			return TRUE;
+		g_object_get(quote, "billing-mode", &mode, NULL);
+		return g_strcmp0(mode, "progress") != 0;
+	}
+	return FALSE;
+}
+
+/* The generic writer is itself a business command: source hooks can generate
+ * postings before the ordinary row save. Scope it before dispatching any hook. */
+gboolean
+venture_database_save(VentureDatabase *self, VentureEntity *entity,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	gboolean ok;
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
+	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	/* A failed child poisons the enclosing transaction. SQL after its
+	 * rollback would otherwise run in autocommit and escape the operation. */
+	g_rec_mutex_lock(&self->lock);
+	if (self->transaction_depth != 0 && self->transaction == NULL)
+	{
+		g_rec_mutex_unlock(&self->lock);
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE, "The transaction was already rolled back");
+		return FALSE;
+	}
+	g_rec_mutex_unlock(&self->lock);
+	if (!venture_access_policy_check_write(venture_database_get_access_policy(self), entity, "write", error) ||
+		!venture_orgaccess_prepare(self, entity, error))
+		return FALSE;
+	if (!venture_accounting_operation_guard_write(self, entity, actor, error))
+		return FALSE;
+	if (accounting_save_needs_scope(self, entity))
+	{
+		operation = venture_accounting_operation_begin(self, "record.save", entity, NULL, NULL,
+			venture_entity_get_organization_id(entity), actor, error);
+		if (operation == NULL)
+			return FALSE;
+	}
+	ok = database_save_dispatch(self, entity, actor, error);
+	return ok && (operation == NULL || venture_accounting_operation_finish(operation, error));
 }
 
 static gboolean
@@ -1482,8 +1598,10 @@ database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
 
 	{
 		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(self), NULL);
+		venture_accounting_operation_suspend(self);
 		g_signal_emit(self, venture_database_signals[SIGNAL_ENTITY_SAVED], 0,
 		              entity, created);
+		venture_accounting_operation_resume(self);
 	}
 	return TRUE;
 }
@@ -1681,6 +1799,8 @@ venture_database_delete(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_accounting_operation_guard_write(self, entity, actor, error))
+		return FALSE;
 	if (!venture_access_policy_check_write(venture_database_get_access_policy(self), entity, "delete", error)) return FALSE;
 	if (!venture_pipelines_check_removal(entity, error))
 		return FALSE;
@@ -1750,12 +1870,15 @@ venture_database_delete(
 
 	{
 		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(self), NULL);
+		venture_accounting_operation_suspend(self);
 		g_signal_emit(self, venture_database_signals[SIGNAL_ENTITY_DELETED], 0,
 		              entity);
+		venture_accounting_operation_resume(self);
 	}
 
 	return TRUE;
 }
+
 
 gboolean
 venture_database_restore(
@@ -1769,6 +1892,8 @@ venture_database_restore(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_accounting_operation_guard_write(self, entity, actor, error))
+		return FALSE;
 	if (!venture_access_policy_check_write(venture_database_get_access_policy(self), entity, "write", error)) return FALSE;
 	if (!venture_pipelines_check_removal(entity, error))
 		return FALSE;
@@ -1837,6 +1962,8 @@ venture_database_purge(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_accounting_operation_guard_write(self, entity, actor, error))
+		return FALSE;
 	if (!venture_access_policy_check_write(venture_database_get_access_policy(self), entity, "delete", error)) return FALSE;
 	if (!venture_pipelines_check_removal(entity, error))
 		return FALSE;
@@ -2469,4 +2596,10 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_tax_filing_actions_register(self);
 	}
 	return self->actions;
+}
+
+GRecMutexLocker *
+venture_database_lock_scope(VentureDatabase *self)
+{
+	return g_rec_mutex_locker_new(&self->lock);
 }

@@ -45,10 +45,14 @@ transition_accumulate(GSignalInvocationHint *hint, GValue *result, const GValue 
 static gboolean
 transition(GObject *service, VentureEntity *entity, const gchar *operation, GError **error)
 {
+	g_autoptr(VentureDatabase) database = NULL;
 	g_autoptr(VentureEntity) snapshot = g_object_new(G_OBJECT_TYPE(entity), NULL);
 	GError *veto = NULL;
 	venture_entity_copy_properties_from(snapshot, entity, FALSE);
+	g_object_get(service, "database", &database, NULL);
+	if (database != NULL) venture_accounting_operation_suspend(database);
 	g_signal_emit_by_name(service, "transition", snapshot, operation, &veto);
+	if (database != NULL) venture_accounting_operation_resume(database);
 	if (veto != NULL)
 	{
 		g_propagate_error(error, veto);
@@ -250,8 +254,8 @@ first_open(VentureDatabase *db, gint64 org, GDateTime *requested, GError **error
 	return NULL;
 }
 
-gboolean
-venture_asset_service_place_in_service(VentureAssetService *self,
+static gboolean
+venture_asset_service_place_in_service_impl(VentureAssetService *self,
 	VentureEntity *asset, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
@@ -572,8 +576,8 @@ post_pair(VentureDatabase *db, VentureEntity *source, const gchar *type,
 		entries, NULL, actor, error);
 }
 
-gboolean
-venture_deferral_service_schedule(VentureDeferralService *service, VentureEntity *deferral,
+static gboolean
+venture_deferral_service_schedule_impl(VentureDeferralService *service, VentureEntity *deferral,
 	const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureDatabase) db = g_weak_ref_get(&service->database);
@@ -729,8 +733,8 @@ scheduled(VentureDatabase *db, GType type, gint64 org, const gchar *period, GErr
 	return venture_database_find(db, query, error);
 }
 
-gint
-venture_asset_service_run_period(VentureAssetService *self, const gchar *period,
+static gint
+venture_asset_service_run_period_impl(VentureAssetService *self, const gchar *period,
 	gint64 org, gboolean dry_run, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
@@ -839,8 +843,8 @@ fail:
 	return -1;
 }
 
-gint
-venture_asset_service_run_tax_period(VentureAssetService *self, const gchar *period,
+static gint
+venture_asset_service_run_tax_period_impl(VentureAssetService *self, const gchar *period,
 	gint64 org, gboolean dry_run, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
@@ -931,8 +935,8 @@ venture_assets_check_removal(VentureDatabase *database, VentureEntity *entity, G
 	return TRUE;
 }
 
-gboolean
-venture_asset_service_dispose(VentureAssetService *self, VentureEntity *asset,
+static gboolean
+venture_asset_service_dispose_impl(VentureAssetService *self, VentureEntity *asset,
 	gboolean write_off, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
@@ -1275,8 +1279,8 @@ capitalize(VentureDatabase *db, VentureEntity *asset, GDateTime *date,
 	return already_capitalized || venture_posting_service_post_entries(venture_database_get_posting_service(db), entries, NULL, actor, error);
 }
 
-gboolean
-venture_deferral_service_cancel_invoice(VentureDeferralService *service,
+static gboolean
+venture_deferral_service_cancel_invoice_impl(VentureDeferralService *service,
 	gint64 invoice_id, GDateTime *date, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureDatabase) db = g_weak_ref_get(&service->database);
@@ -1354,4 +1358,190 @@ venture_deferral_service_cancel_invoice(VentureDeferralService *service,
 fail:
 	venture_database_rollback(db);
 	return FALSE;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_asset_service_place_in_service(VentureAssetService *self,
+	VentureEntity *asset, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
+	GVariantBuilder arguments;
+	gboolean result;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	g_return_val_if_fail(VENTURE_IS_ENTITY(asset), FALSE);
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	operation = venture_accounting_operation_begin(db, "asset-place-in-service", VENTURE_ENTITY(asset), NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(VENTURE_ENTITY(asset)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_asset_service_place_in_service_impl(self, asset, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_asset_service_dispose(VentureAssetService *self, VentureEntity *asset,
+	gboolean write_off, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
+	GVariantBuilder arguments;
+	gboolean result;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	g_return_val_if_fail(VENTURE_IS_ENTITY(asset), FALSE);
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "write_off", g_variant_new_boolean(write_off));
+	operation = venture_accounting_operation_begin(db, "asset-dispose", VENTURE_ENTITY(asset), NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(VENTURE_ENTITY(asset)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_asset_service_dispose_impl(self, asset, write_off, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_deferral_service_schedule(VentureDeferralService *service, VentureEntity *deferral,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureDatabase) db = g_weak_ref_get(&service->database);
+	GVariantBuilder arguments;
+	gboolean result;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	g_return_val_if_fail(VENTURE_IS_ENTITY(deferral), FALSE);
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	operation = venture_accounting_operation_begin(db, "deferral-schedule", VENTURE_ENTITY(deferral), NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(VENTURE_ENTITY(deferral)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_deferral_service_schedule_impl(service, deferral, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gint
+venture_asset_service_run_period(VentureAssetService *self, const gchar *period,
+	gint64 org, gboolean dry_run, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
+	GVariantBuilder arguments;
+	gint result;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return -1;
+	}
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "period", g_variant_new_maybe(G_VARIANT_TYPE_STRING, period != NULL ? g_variant_new_string(period) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "org", g_variant_new_int64((gint64)org));
+	g_variant_builder_add(&arguments, "{sv}", "dry_run", g_variant_new_boolean(dry_run));
+	operation = venture_accounting_operation_begin(db, "asset-run-period", NULL, NULL,
+		g_variant_builder_end(&arguments), org, actor, error);
+	if (operation == NULL)
+		return -1;
+	result = venture_asset_service_run_period_impl(self, period, org, dry_run, actor, error);
+	if (result < 0)
+		return -1;
+	if (!venture_accounting_operation_finish(operation, error))
+		return -1;
+	return result;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gint
+venture_asset_service_run_tax_period(VentureAssetService *self, const gchar *period,
+	gint64 org, gboolean dry_run, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
+	GVariantBuilder arguments;
+	gint result;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return -1;
+	}
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "period", g_variant_new_maybe(G_VARIANT_TYPE_STRING, period != NULL ? g_variant_new_string(period) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "org", g_variant_new_int64((gint64)org));
+	g_variant_builder_add(&arguments, "{sv}", "dry_run", g_variant_new_boolean(dry_run));
+	operation = venture_accounting_operation_begin(db, "asset-run-tax-period", NULL, NULL,
+		g_variant_builder_end(&arguments), org, actor, error);
+	if (operation == NULL)
+		return -1;
+	result = venture_asset_service_run_tax_period_impl(self, period, org, dry_run, actor, error);
+	if (result < 0)
+		return -1;
+	if (!venture_accounting_operation_finish(operation, error))
+		return -1;
+	return result;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal. */
+gboolean
+venture_deferral_service_cancel_invoice(VentureDeferralService *service,
+	gint64 invoice_id, GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureDatabase) db = g_weak_ref_get(&service->database);
+	GVariantBuilder arguments;
+	g_autoptr(VentureEntity) subject = NULL;
+	gboolean result;
+	g_autofree gchar *date_text = NULL;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	subject = venture_database_get(db, VENTURE_TYPE_INVOICE, invoice_id, error);
+	if (subject == NULL)
+		return FALSE;
+	date_text = date != NULL ? g_date_time_format_iso8601(date) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "invoice_id", g_variant_new_int64((gint64)invoice_id));
+	g_variant_builder_add(&arguments, "{sv}", "date", g_variant_new_maybe(G_VARIANT_TYPE_STRING, date_text != NULL ? g_variant_new_string(date_text) : NULL));
+	operation = venture_accounting_operation_begin(db, "deferral-cancel-invoice", subject, NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_deferral_service_cancel_invoice_impl(service, invoice_id, date, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
 }

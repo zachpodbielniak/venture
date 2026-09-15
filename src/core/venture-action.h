@@ -37,7 +37,7 @@ typedef VentureEntity *(*VentureActionInvoke)(VentureAction *action, VentureEnti
  */
 gpointer venture_action_get_data(VentureAction *self);
 /**
- * venture_action_registry_register:
+ * venture_action_registry_register: (skip)
  * @self: registry
  * @action: declaration, retained by the registry
  * @allowed: eligibility callback
@@ -45,6 +45,11 @@ gpointer venture_action_get_data(VentureAction *self);
  * @data: (nullable): callback data
  * @destroy: (nullable): callback data destructor, on successful registration
  * @error: (out) (optional): registration failure
+ *
+ * C registration ABI: callbacks recover their shared service data through
+ * venture_action_get_data(), rather than a callback closure argument. Language
+ * binding trampolines cannot attach independent closures to these callbacks.
+ * The registry owns the registration data until its destroy notification.
  * Returns: TRUE on success; duplicate keys are refused
  */
 gboolean venture_action_registry_register(VentureActionRegistry *self, VentureAction *action,

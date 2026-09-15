@@ -86,7 +86,7 @@ venture_database_new(
  * @config: the configuration
  *
  * Builds the connection URI a #VentureDatabase would actually open for
- * @config: a relative SQLite path resolved against the state directory, and
+ * that configuration: a relative SQLite path resolved against the state directory, and
  * the password from the environment variable named by
  * `database.password_env` spliced in.
  *
@@ -208,7 +208,7 @@ venture_database_rollback(VentureDatabase *self);
  * @database: the database the record is about to be written to
  * @entity: the record, validated and about to be inserted or updated
  * @previous: (nullable): the stored row it replaces, or %NULL on insert
- * @user_data: the data given at registration
+ * @user_data: (closure) (nullable): the data given at registration
  * @error: (out) (optional): return location for a #GError
  *
  * A check that needs the database. venture_entity_validate() sees only the
@@ -231,8 +231,8 @@ typedef gboolean (*VentureSaveValidator) (
  * venture_database_add_save_validator:
  * @self: a #VentureDatabase
  * @entity_type: the record type to check; subclasses are checked too
- * @validate: the check
- * @user_data: passed to @validate
+ * @validate: (scope notified) (closure user_data) (destroy destroy): the check
+ * @user_data: (nullable): passed to @validate
  * @destroy: (nullable): called on @user_data when the database is finalised
  *
  * Registers a check that runs before every save of @entity_type, from any
@@ -507,18 +507,46 @@ venture_database_query_raw(
 	GError		**error
 );
 
-/** venture_database_has_transaction:
+/**
+ * venture_database_has_transaction:
  * @self: database
+ *
  * Returns: whether a transaction is open; external effects require no transaction
  */
 gboolean venture_database_has_transaction(VentureDatabase *self);
 
-/** venture_database_get_mail_outbox:
+/**
+ * venture_database_get_mail_outbox:
  * @self: owning database
+ *
  * Returns: (transfer none): canonical mail outbox; transport may be configured later
  */
 struct _VentureMailOutbox *venture_database_get_mail_outbox(VentureDatabase *self);
 
+/**
+ * venture_database_begin_serializable:
+ * @self: database
+ * @error: (out) (optional): failure
+ *
+ * Begins an outer serializable transaction for consent and financial execution.
+ * Refuses an existing transaction rather than weakening its isolation.
+ *
+ * Returns: whether the transaction began
+ */
+gboolean venture_database_begin_serializable(VentureDatabase *self, GError **error);
+/**
+ * venture_database_lock_scope: (skip)
+ * @self: database
+ *
+ * Native C scope: #GRecMutexLocker has no introspectable boxed type, and its
+ * cleanup must release the recursive lock on the originating thread.
+ *
+ * Serializes preflight state with transaction ownership. Nested callers on
+ * the owning thread may take another level of the recursive lock.
+ *
+ * Returns: (transfer full): release with g_rec_mutex_locker_free()
+ */
+GRecMutexLocker *venture_database_lock_scope(VentureDatabase *self);
 G_END_DECLS
 
 #endif /* VENTURE_DATABASE_H */

@@ -98,3 +98,7 @@ The generated journal post action shares organization access posting policy with
 Type-level actions whose input contains a new record declare =subject-parameter= naming that JSON parameter (=journal= for =create_and_post=). The registry hydrates that record before policy checks and plugin callbacks, and the confirmation retains its organization for scoped visibility. Staging checks write authority too; approval rehydrates the independent parameter snapshot and rechecks current write authority. Subject records must be new and unversioned.
 
 A plugin type-level action that writes an organization-scoped record must declare its subject parameter. Without it the proposed target retains organization zero and scoped users are refused; the registry never guesses the organization from unrelated parameters or from the current sidebar selection.
+
+* Services that own their transaction
+
+An action may declare =service-transaction=true= only when its service provides atomicity itself, including any whole-operation accounting consent before its first write. The registry retains parameter, role, access and veto checks but delegates the transaction and posting decision to that service. This distinguishes a draft invoice batch from the same batch with =post=true= without creating a second business-policy implementation in the registry. Recurring/batch, setup and cutover actions use this contract; saved batch application includes its result evidence in the service transaction. Existing declarations default to the registry-owned transaction.

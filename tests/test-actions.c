@@ -180,6 +180,74 @@ test_confirmation_snapshot(void)
 	g_assert_cmpint(json_object_get_int_member(json_object_get_object_member(diff, "payload"), "amount"), ==, 10);
 }
 
+/* The same generic action may prepare drafts or post them. Service-owned
+ * transactions keep that policy identical to direct API calls. */
+static void
+test_batch_posting_boundary(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", &error);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureCompany) company = venture_company_new();
+	g_autoptr(VentureAccountingApprovalRule) rule = venture_accounting_approval_rule_new();
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(VentureQuery) approvals = venture_query_new(VENTURE_TYPE_ACCOUNTING_APPROVAL);
+	g_autoptr(VentureQuery) invoices = venture_query_new(VENTURE_TYPE_INVOICE);
+	g_autoptr(GHashTable) params = NULL;
+	g_autoptr(JsonNode) body = json_node_new(JSON_NODE_OBJECT);
+	g_autofree gchar *draft = NULL;
+	g_autofree gchar *posted = NULL;
+	JsonObject *object = json_object_new();
+	VentureActor alice, bob;
+	gint64 org;
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	context = venture_context_new(config, db);
+	org = venture_context_get_default_organization_id(context);
+	g_object_set(company, "name", "Batch customer", "organization-id", org, NULL);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(company), NULL, &error));
+	g_object_set(rule, "organization-id", org, "action", "post", "require-second-actor", TRUE, NULL);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(rule), NULL, &error));
+	g_assert_no_error(error);
+	alice.kind = VENTURE_ACTOR_KIND_USER; alice.name = "alice";
+	alice.prompt = NULL; alice.request_id = NULL; alice.approved_by = NULL;
+	bob.kind = VENTURE_ACTOR_KIND_USER; bob.name = "bob";
+	bob.prompt = NULL; bob.request_id = NULL; bob.approved_by = NULL;
+	draft = g_strdup_printf("[{\"number\":\"ACTION-DRAFT\",\"company_id\":%" G_GINT64_FORMAT ",\"issued_at\":\"2026-08-10\",\"lines\":[{\"description\":\"Work\",\"quantity\":1,\"unit_price\":\"10 USD\"}]}]", venture_entity_get_id(VENTURE_ENTITY(company)));
+	posted = g_strdup_printf("[{\"number\":\"ACTION-POST\",\"company_id\":%" G_GINT64_FORMAT ",\"issued_at\":\"2026-08-10\",\"lines\":[{\"description\":\"Work\",\"quantity\":1,\"unit_price\":\"10 USD\"}]}]", venture_entity_get_id(VENTURE_ENTITY(company)));
+	json_node_take_object(body, object);
+	json_object_set_string_member(object, "payload", draft);
+	json_object_set_string_member(object, "format", "json");
+	json_object_set_boolean_member(object, "post", FALSE);
+	params = venture_action_parameters_from_json(body, &error);
+	g_assert_no_error(error);
+	result = venture_action_registry_perform(venture_database_get_action_registry(db), "invoice", 0,
+		"batch_create", params, &alice, VENTURE_USER_ROLE_OWNER, &error);
+	g_assert_no_error(error); g_assert_nonnull(result);
+	g_assert_cmpint(venture_database_count(db, invoices, &error), ==, 1);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_database_count(db, approvals, &error), ==, 0);
+	g_assert_no_error(error);
+	g_clear_object(&result); g_clear_pointer(&params, g_hash_table_unref);
+	json_object_set_string_member(object, "payload", posted);
+	json_object_set_boolean_member(object, "post", TRUE);
+	params = venture_action_parameters_from_json(body, &error);
+	g_assert_no_error(error);
+	result = venture_action_registry_perform(venture_database_get_action_registry(db), "invoice", 0,
+		"batch_create", params, &alice, VENTURE_USER_ROLE_OWNER, &error);
+	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	g_assert_cmpint(venture_database_count(db, approvals, &error), ==, 1);
+	g_assert_no_error(error);
+	result = venture_action_registry_perform(venture_database_get_action_registry(db), "invoice", 0,
+		"batch_create", params, &bob, VENTURE_USER_ROLE_OWNER, &error);
+	g_assert_no_error(error); g_assert_nonnull(result);
+	g_assert_cmpint(venture_database_count(db, invoices, &error), ==, 2);
+	g_assert_no_error(error);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -190,5 +258,6 @@ main(int argc, char **argv)
 	g_test_add_func("/actions/parameter-contract", test_parameter_contract);
 	g_test_add_func("/actions/parameter-registration", test_parameter_registration);
 	g_test_add_func("/actions/confirmation-snapshot", test_confirmation_snapshot);
+	g_test_add_func("/actions/batch-posting-boundary", test_batch_posting_boundary);
 	return g_test_run();
 }
