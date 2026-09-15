@@ -119,11 +119,124 @@ test_journal_dimension(Fixture *f, gconstpointer data)
 	}
 }
 
+static gint64
+account_id(Fixture *f, const gchar *code)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	g_autoptr(VentureEntity) row = NULL;
+	venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, NULL);
+	row = venture_database_find_one(f->db, query, NULL);
+	return venture_entity_get_id(row);
+}
+
+static void
+post_dimension(Fixture *f, const gchar *when, const gchar *dimension, gint64 amount)
+{
+	g_autoptr(VentureJournal) journal = venture_journal_new();
+	g_autoptr(GPtrArray) lines = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autoptr(VentureJournalLine) debit = venture_journal_line_new();
+	g_autoptr(VentureJournalLine) credit = venture_journal_line_new();
+	g_autoptr(GDateTime) date = g_date_time_new_from_iso8601(when, NULL);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureMoney) money = venture_money_new_for_currency(amount, "USD");
+	g_object_set(journal, "source-type", "organization", "source-id", f->org,
+		"occurred-at", date, "currency", "USD", "organization-id", f->org, NULL);
+	g_object_set(debit, "account-id", account_id(f, "1000"), "side", VENTURE_LEDGER_SIDE_DEBIT,
+		"organization-id", f->org, "amount", money, "dimension", dimension, NULL);
+	g_object_set(credit, "account-id", account_id(f, "4000"), "side", VENTURE_LEDGER_SIDE_CREDIT,
+		"organization-id", f->org, "amount", money, "dimension", dimension, NULL);
+	g_ptr_array_add(lines, g_object_ref(debit));
+	g_ptr_array_add(lines, g_object_ref(credit));
+	g_assert_nonnull(venture_posting_service_post(venture_database_get_posting_service(f->db),
+		journal, lines, NULL, NULL, &error));
+	g_assert_no_error(error);
+}
+
+static gint64
+closing_for(VentureReportResult *r, const gchar *code)
+{
+	guint i;
+	for (i = 0; i < venture_report_result_get_row_count(r); i++)
+	{
+		const gchar *key = g_value_get_string(venture_report_result_get_cell(r, i, "key"));
+		if (g_strcmp0(key, code) == 0)
+		{
+			const VentureMoney *money = g_value_get_boxed(venture_report_result_get_cell(r, i, "closing"));
+			return money->amount;
+		}
+	}
+	return 0;
+}
+
+static void
+test_dimension_and_org_scope(Fixture *f, gconstpointer data)
+{
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) saved = NULL;
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(VentureOrganization) other = venture_organization_new();
+	gint64 other_id;
+	(void)data;
+	post_dimension(f, "2026-08-10T00:00:00Z", "dept-ops", 10000);
+	post_dimension(f, "2026-08-11T00:00:00Z", "dept-sales", 4000);
+	g_object_set(other, "name", "Other co", "legal-name", "Other co", "default-currency", "USD", NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(other), NULL, &error));
+	other_id = venture_entity_get_id(VENTURE_ENTITY(other));
+	saved = venture_report_pack_service_save(venture_report_pack_service_get(f->db),
+		f->org, "Ops cash", "account_balances", "2026-08", options, "dept-ops", NULL, &error);
+	g_assert_no_error(error);
+	result = venture_report_pack_service_run(venture_report_pack_service_get(f->db),
+		f->context, VENTURE_SAVED_REPORT(saved), &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(closing_for(result, "1000"), ==, 10000);
+	g_clear_object(&result);
+	g_clear_object(&saved);
+	json_object_set_int_member(options, "organization_id", other_id);
+	saved = venture_report_pack_service_save(venture_report_pack_service_get(f->db),
+		other_id, "Empty other", "account_balances", "2026-08", options, NULL, NULL, &error);
+	g_assert_no_error(error);
+	result = venture_report_pack_service_run(venture_report_pack_service_get(f->db),
+		f->context, VENTURE_SAVED_REPORT(saved), &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(closing_for(result, "1000"), ==, 0);
+}
+
+static void
+test_scheduled_dispatch(Fixture *f, gconstpointer data)
+{
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) saved = NULL;
+	g_autoptr(VentureEntity) pack = NULL;
+	g_autoptr(GDateTime) as_of = g_date_time_new_from_iso8601("2026-08-02T12:00:00Z", NULL);
+	gint ran;
+	(void)data;
+	post_dimension(f, "2026-08-01T00:00:00Z", "dept-ops", 2500);
+	saved = venture_report_pack_service_save(venture_report_pack_service_get(f->db),
+		f->org, "Month pack report", "account_balances", "2026-08", options, "dept-ops", NULL, &error);
+	g_assert_no_error(error);
+	pack = venture_report_pack_service_schedule(venture_report_pack_service_get(f->db),
+		f->org, "Daily pack", "0 8 * * *",
+		venture_entity_get_id(saved), NULL, &error);
+	g_assert_no_error(error);
+	ran = venture_report_pack_service_run_due(venture_report_pack_service_get(f->db),
+		f->context, as_of, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(ran, ==, 1);
+	ran = venture_report_pack_service_run_due(venture_report_pack_service_get(f->db),
+		f->context, as_of, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(ran, ==, 0);
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/report-packs/save-run", Fixture, NULL, setup, test_save_and_run, teardown);
 	g_test_add("/report-packs/journal-dimension", Fixture, NULL, setup, test_journal_dimension, teardown);
+	g_test_add("/report-packs/dimension-org", Fixture, NULL, setup, test_dimension_and_org_scope, teardown);
+	g_test_add("/report-packs/scheduled-dispatch", Fixture, NULL, setup, test_scheduled_dispatch, teardown);
 	return g_test_run();
 }

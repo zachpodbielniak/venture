@@ -151,6 +151,9 @@ explained by source document in =pnl_reconciliation=.
 * Saved reports and dimensions
 
 =saved_report= stores report name, period, JSON options and an optional
-dimension. =report_pack= groups saved reports for a schedule. Journal lines
-accept an optional =dimension= string. =venture_report_pack_service_run=
-uses the same registry as the report page.
+dimension. Execution always scopes =organization_id= from the saved row and
+passes =dimension= into the shared ledger query so departmental packs do not
+see another team's postings. =report_pack= groups saved reports for a
+schedule. =venture_report_pack_service_run_due= dispatches due packs
+(cron-like =0 8 * * *= daily, =0 8 1 * *= monthly) and stamps
+=last-run-at=. Automation: =venture->report_packs_run("1")=.

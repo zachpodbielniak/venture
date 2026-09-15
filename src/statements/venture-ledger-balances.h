@@ -14,6 +14,14 @@ G_DECLARE_FINAL_TYPE(VentureLedgerBalances, venture_ledger_balances, VENTURE, LE
  */
 VentureLedgerBalances *venture_ledger_balances_new(VentureDatabase *database);
 /**
+ * venture_ledger_balances_set_dimension:
+ * @self: the query object
+ * @dimension: (nullable): journal-line dimension, or %NULL for all
+ *
+ * Restricts subsequent queries to lines tagged with @dimension.
+ */
+void venture_ledger_balances_set_dimension(VentureLedgerBalances *self, const gchar *dimension);
+/**
  * venture_ledger_balances_query:
  * @self: the query object
  * @organization_id: one exact legal entity

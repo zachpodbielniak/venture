@@ -16,7 +16,9 @@ static const VentureFieldDecl pack_fields[] = {
 	VENTURE_FIELD("schedule", "Schedule", "Cron-like delivery cadence",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("saved-report-ids", "Saved reports", "Comma-separated saved_report ids",
-		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("last-run-at", "Last run", "When run_due last dispatched this pack",
+		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureReportPack, venture_report_pack, pack_fields)
 static const VentureFieldDecl dimension_fields[] = {

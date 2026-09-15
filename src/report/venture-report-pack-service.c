@@ -104,12 +104,17 @@ venture_report_pack_service_run(VentureReportPackService *self, VentureContext *
 	g_autofree gchar *report_name = NULL;
 	g_autofree gchar *period_name = NULL;
 	g_autofree gchar *options_text = NULL;
+	g_autofree gchar *dimension = NULL;
 	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(VentureDateRange) period = NULL;
+	g_autoptr(JsonObject) owned = NULL;
 	VentureReport *report;
 	JsonObject *options = NULL;
+	gint64 org;
 	g_return_val_if_fail(VENTURE_IS_REPORT_PACK_SERVICE(self), NULL);
-	g_object_get(saved, "report-name", &report_name, "period", &period_name, "options", &options_text, NULL);
+	org = venture_entity_get_organization_id(VENTURE_ENTITY(saved));
+	g_object_get(saved, "report-name", &report_name, "period", &period_name, "options", &options_text,
+		"dimension", &dimension, NULL);
 	report = venture_report_registry_lookup(venture_context_get_report_registry(context), report_name);
 	if (report == NULL)
 	{
@@ -127,6 +132,15 @@ venture_report_pack_service_run(VentureReportPackService *self, VentureContext *
 		if (JSON_NODE_HOLDS_OBJECT(node))
 			options = json_node_get_object(node);
 	}
+	if (options == NULL)
+	{
+		owned = json_object_new();
+		options = owned;
+	}
+	if (!json_object_has_member(options, "organization_id") && org > 0)
+		json_object_set_int_member(options, "organization_id", org);
+	if (dimension != NULL && dimension[0] != '\0')
+		json_object_set_string_member(options, "dimension", dimension);
 	return venture_report_generate(report, context, period, options, error);
 }
 
@@ -180,4 +194,67 @@ venture_report_pack_service_run_pack(VentureReportPackService *self, VentureCont
 		g_ptr_array_add(results, result);
 	}
 	return results;
+}
+
+static gboolean
+pack_is_due(const gchar *schedule, GDateTime *last, GDateTime *as_of)
+{
+	g_auto(GStrv) parts = NULL;
+	const gchar *dom;
+	if (schedule == NULL || schedule[0] == '\0')
+		return FALSE;
+	if (last == NULL)
+		return TRUE;
+	if (g_date_time_compare(last, as_of) >= 0)
+		return FALSE;
+	if (g_strcmp0(schedule, "daily") == 0)
+		return g_date_time_get_year(last) != g_date_time_get_year(as_of) ||
+			g_date_time_get_day_of_year(last) != g_date_time_get_day_of_year(as_of);
+	parts = g_strsplit(schedule, " ", 5);
+	if (parts == NULL || parts[0] == NULL || parts[1] == NULL || parts[2] == NULL)
+		return g_date_time_get_year(last) != g_date_time_get_year(as_of) ||
+			g_date_time_get_day_of_year(last) != g_date_time_get_day_of_year(as_of);
+	dom = parts[2];
+	if (g_strcmp0(dom, "*") == 0)
+		return g_date_time_get_year(last) != g_date_time_get_year(as_of) ||
+			g_date_time_get_day_of_year(last) != g_date_time_get_day_of_year(as_of);
+	return g_date_time_get_year(last) != g_date_time_get_year(as_of) ||
+		g_date_time_get_month(last) != g_date_time_get_month(as_of);
+}
+
+gint
+venture_report_pack_service_run_due(VentureReportPackService *self, VentureContext *context,
+	GDateTime *as_of, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	gint ran = 0;
+	guint i;
+	g_return_val_if_fail(VENTURE_IS_REPORT_PACK_SERVICE(self), -1);
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), -1);
+	now = as_of != NULL ? g_date_time_ref(as_of) : venture_time_now();
+	query = venture_query_new(VENTURE_TYPE_REPORT_PACK);
+	venture_query_set_limit(query, 0);
+	rows = venture_database_find(self->database, query, error);
+	if (rows == NULL)
+		return -1;
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *pack = g_ptr_array_index(rows, i);
+		g_autofree gchar *schedule = NULL;
+		g_autoptr(GDateTime) last = NULL;
+		g_autoptr(GPtrArray) results = NULL;
+		g_object_get(pack, "schedule", &schedule, "last-run-at", &last, NULL);
+		if (!pack_is_due(schedule, last, now))
+			continue;
+		results = venture_report_pack_service_run_pack(self, context, VENTURE_REPORT_PACK(pack), error);
+		if (results == NULL)
+			return -1;
+		g_object_set(pack, "last-run-at", now, NULL);
+		if (!venture_database_save(self->database, pack, actor, error))
+			return -1;
+		ran++;
+	}
+	return ran;
 }

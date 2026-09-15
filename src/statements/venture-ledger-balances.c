@@ -8,6 +8,7 @@ typedef struct
 	gint64 journal_id;
 	gint64 source_id;
 	gchar *source_type;
+	gchar *dimension;
 	GDateTime *date;
 	VentureMoney *amount;
 	VentureLedgerSide side;
@@ -28,6 +29,7 @@ struct _VentureLedgerBalances
 {
 	GObject parent_instance;
 	VentureDatabase *database;
+	gchar *dimension;
 };
 G_DEFINE_TYPE(VentureLedgerBalances, venture_ledger_balances, G_TYPE_OBJECT)
 
@@ -35,6 +37,7 @@ static void
 balances_finalize(GObject *object)
 {
 	g_clear_object(&VENTURE_LEDGER_BALANCES(object)->database);
+	g_free(VENTURE_LEDGER_BALANCES(object)->dimension);
 	G_OBJECT_CLASS(venture_ledger_balances_parent_class)->finalize(object);
 }
 
@@ -85,11 +88,20 @@ venture_ledger_balances_new(VentureDatabase *database)
 	return g_object_new(VENTURE_TYPE_LEDGER_BALANCES, "database", database, NULL);
 }
 
+void
+venture_ledger_balances_set_dimension(VentureLedgerBalances *self, const gchar *dimension)
+{
+	g_return_if_fail(VENTURE_IS_LEDGER_BALANCES(self));
+	g_free(self->dimension);
+	self->dimension = dimension && dimension[0] ? g_strdup(dimension) : NULL;
+}
+
 static void
 evidence_free(gpointer data)
 {
 	Evidence *e = data;
 	g_free(e->source_type);
+	g_free(e->dimension);
 	g_date_time_unref(e->date);
 	venture_money_free(e->amount);
 	g_free(e);
@@ -169,7 +181,7 @@ add_currency(Books *books, const gchar *currency)
 
 static Books *
 read_books(VentureDatabase *db, gint64 org, const gchar *currency,
-	VentureDateRange *period, GDateTime *as_of, GError **error)
+	VentureDateRange *period, GDateTime *as_of, const gchar *dimension, GError **error)
 {
 	g_autoptr(Books) books = g_new0(Books, 1);
 	g_autoptr(VentureQuery) query = NULL;
@@ -298,10 +310,15 @@ read_books(VentureDatabase *db, gint64 org, const gchar *currency,
 		{
 			Evidence *e = g_new0(Evidence, 1);
 			g_object_get(g_ptr_array_index(lines, j), "account-id", &e->account_id,
-				"side", &e->side, "book-amount", &e->amount, NULL);
+				"side", &e->side, "book-amount", &e->amount, "dimension", &e->dimension, NULL);
 			g_object_get(journal, "source-type", &e->source_type, "source-id", &e->source_id, NULL);
 			e->journal_id = venture_entity_get_id(journal);
 			e->date = g_date_time_ref(date);
+			if (dimension != NULL && dimension[0] != '\0' && g_strcmp0(e->dimension, dimension) != 0)
+			{
+				evidence_free(e);
+				continue;
+			}
 			g_ptr_array_add(books->entries, e);
 		}
 	}
@@ -411,7 +428,7 @@ venture_ledger_balances_query(VentureLedgerBalances *self, gint64 organization_i
 	g_autoptr(VentureReportResult) result = NULL;
 	if (!venture_database_begin(self->database, error))
 		return NULL;
-	books = read_books(self->database, organization_id, currency, period, as_of, error);
+	books = read_books(self->database, organization_id, currency, period, as_of, self->dimension, error);
 	if (books != NULL)
 		result = balance_rows(books, period, rollup, error);
 	if (result == NULL)
@@ -1457,7 +1474,8 @@ generate(const gchar *name, VentureContext *context, VentureDateRange *period,
 	}
 	if (!venture_database_begin(db, error))
 		return NULL;
-	books = read_books(db, org, currency, period, as_of, error);
+	books = read_books(db, org, currency, period, as_of,
+		venture_json_object_get_string(options, "dimension", NULL), error);
 	if (books == NULL)
 		goto fail;
 	{
@@ -1475,7 +1493,8 @@ generate(const gchar *name, VentureContext *context, VentureDateRange *period,
 	}
 	if (prior_period != NULL)
 	{
-		previous = read_books(db, org, currency, prior_period, NULL, error);
+		previous = read_books(db, org, currency, prior_period, NULL,
+			venture_json_object_get_string(options, "dimension", NULL), error);
 		if (previous == NULL)
 			goto fail;
 		if (g_strcmp0(venture_json_object_get_string(options, "basis", "accrual"), "cash") == 0 &&
