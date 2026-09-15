@@ -1,0 +1,33 @@
+#+title: Contractor 1099-NEC
+#+description: Protected TIN records and calendar-year 1099-NEC packs from paid bills
+
+* TIN is stored, not shown
+
+=contractor_tax_form= holds a vendor TIN. The column is
+=VENTURE_COLUMN_FLAG_SENSITIVE=: it is omitted from JSON, YAML, generic CSV
+export, forms and the AI. Error messages never repeat it. Organization
+finance access applies because =tax_filing= requires =finance=, the same
+gate payroll would use.
+
+* Prepare from paid bills
+
+=venture_tax_filing_service_prepare_1099()= totals =bill_payment= rows for
+one vendor in a calendar year. The IRS 1099-NEC threshold is 600 USD;
+below that the prepare is refused. A contractor tax form must already
+exist. A second prepare for the same vendor and year returns the existing
+pack.
+
+Review, then approve, then export. Approve freezes the 1099-NEC CSV
+(including TIN) on the pack. Export after that returns those exact bytes;
+a second export of the same year and vendor is identical. Export before
+approval is refused.
+
+#+begin_src sh
+venturectl contractor-tax prepare vendor_id=1 year=2026
+venturectl contractor-tax review 1
+venturectl contractor-tax approve 1
+venturectl contractor-tax export 1
+#+end_src
+
+The same actions sit on =/e/contractor_tax_pack=, and the prepare form
+lives on =/tax-filings=.
