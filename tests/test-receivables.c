@@ -2061,6 +2061,47 @@ test_write_off_remaining(Fixture *f, gconstpointer data)
 	}
 }
 
+static void
+test_batch_approval(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) invoice = NULL, payment = NULL, allocation = NULL;
+	g_autoptr(VentureAccountingApprovalRule) rule = venture_accounting_approval_rule_new();
+	g_autoptr(GPtrArray) allocations = g_ptr_array_new_with_free_func(g_object_unref);
+	VentureActor actor;
+	(void)data;
+	invoice = invoice_new(f, "APPROVE-BATCH", "2026-08-10", "100 USD");
+	g_object_set(rule, "organization-id", f->organization_id, "action", "pay", "require-second-actor", TRUE, NULL);
+	save(f, VENTURE_ENTITY(rule));
+	payment = payment_new(f, 0, "100 USD", "2026-08-11");
+	allocation = allocation_new(f, 0, 0, venture_entity_get_id(invoice), "100 USD", "2026-08-11");
+	g_ptr_array_add(allocations, g_object_ref(allocation));
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "alice";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	g_assert_false(venture_settlement_service_apply_payment(venture_settlement_service_get(f->database),
+		VENTURE_PAYMENT(payment), allocations, &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	/* The approved intent includes amount and explicit allocations, even
+	 * though payment.invoice-id is zero. */
+	actor.name = "bob";
+	g_assert_true(venture_entity_set_field_from_string(payment, "amount", "50 USD", &error));
+	g_assert_true(venture_entity_set_field_from_string(allocation, "amount", "50 USD", &error));
+	g_assert_false(venture_settlement_service_apply_payment(venture_settlement_service_get(f->database),
+		VENTURE_PAYMENT(payment), allocations, &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	g_assert_true(venture_entity_set_field_from_string(payment, "amount", "100 USD", &error));
+	g_assert_true(venture_entity_set_field_from_string(allocation, "amount", "100 USD", &error));
+	g_assert_true(venture_settlement_service_apply_payment(venture_settlement_service_get(f->database),
+		VENTURE_PAYMENT(payment), allocations, &actor, &error));
+	g_assert_no_error(error);
+	assert_status(f, invoice, "paid");
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2131,6 +2172,7 @@ main(int argc, char **argv)
 	g_test_add("/receivables/zero", Fixture, "0 USD", set_up, test_invalid_amount, tear_down);
 	g_test_add("/receivables/negative", Fixture, "-10 USD", set_up, test_invalid_amount, tear_down);
 	g_test_add("/receivables/wrong-currency", Fixture, "100 EUR", set_up, test_invalid_amount, tear_down);
+	ADD("batch-approval", test_batch_approval);
 #undef ADD
 	return g_test_run();
 }

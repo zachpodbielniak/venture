@@ -30,3 +30,15 @@ Automation:
 pod shop_hour = cron->new("15 * * * *");
 shop_hour->on_schedule => venture->commerce_import("1", "shopify");
 #+end_src
+
+The REST adapter requests complete ISO timestamps for both ends of the import
+window and pages using =since_id= with at most 250 orders per response. It
+refuses a non-progressing or over-limit pagination sequence before importing
+anything. Authentication stays on URLs built from the configured shop; HTTP
+redirects are refused. See the [[https://shopify.dev/docs/api/admin-rest/2025-10/resources/order][Shopify Order API]]
+for the supported window and cursor parameters. The adapter currently pins
+REST version =2025-10= and requires an existing app with order access.
+
+The web importer uses the active organization; automation uses its explicit
+organization argument. Both share the live connector registry, including
+plugins, and use the same import transaction.

@@ -118,3 +118,18 @@ Public lead capture at =POST /f/:token= uses its form token authority even when 
 Public quote viewing (=GET /q/:token=) and acceptance (=POST /q/:token= or =POST /q/:token/accept=) likewise use the quote capability independently of an incidental session. Other quote paths or methods retain local request authority; quote token validation, allowed states, revision checks and the public field allowlist still apply.
 
 Assignment fields marked =VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME= grant record ownership to that account within its current organization membership: lead/activity/deal =owner= and ticket =assignee=. Username resolution uses the authenticated user id, including API tokens whose display name is a token label. Assignment, explicit =owner_user_id=, team membership and venture ownership are additive grants; reassignment does not revoke a separate explicit owner/team/venture grant. Assignment never grants organization membership or bypasses financial or viewer write restrictions.
+
+* Accounting second-actor rules
+
+The post/pay rule fingerprints the full proposed record and ordered journal
+lines or payment allocations. Persisted identities and versions participate;
+new records omit automatically generated identity timestamps and UUIDs so an
+identical retry can be approved. A changed amount, line, dimension, header or
+saved draft needs its own proposal. Explicit allocation batches and direct
+allocation/refund writes use the same pay gate.
+
+Approval evidence belongs to the operation that matched it. It is marked
+applied inside the financial transaction, and a failed approval save rolls
+back that transaction. Internal derived work with no user actor remains a
+service operation; callers must not drop an authenticated actor to bypass a
+rule.

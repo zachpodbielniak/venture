@@ -141,9 +141,7 @@
 #include "db/venture-schema.h"
 #include "db/venture-query.h"
 #include "db/venture-database.h"
-gboolean venture_accounting_approval_check_write(VentureDatabase *database, VentureEntity *record, gboolean removal, GError **error);
-gboolean venture_accounting_approval_allow(VentureDatabase *database, const gchar *action, VentureEntity *entity, const VentureActor *actor, GError **error);
-gboolean venture_accounting_approval_consume(VentureDatabase *database, const VentureActor *actor, GError **error);
+#include "orgaccess/venture-accounting-approval-service.h"
 #include "periods/venture-period-constraints.h"
 #include "periods/venture-period-check.h"
 #include "periods/venture-period-service.h"

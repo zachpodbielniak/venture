@@ -1535,24 +1535,15 @@ gboolean
 venture_settlement_service_apply_payment(VentureSettlementService *self,
 	VenturePayment *payment, GPtrArray *allocations, const VentureActor *actor, GError **error)
 {
+	g_autoptr(VentureEntity) approval = NULL;
 	g_autoptr(VentureEntity) original = NULL;
 	g_autoptr(GPtrArray) originals = NULL;
 	gboolean ok;
 	guint i;
 
-	{
-		gint64 invoice_id = 0;
-		g_autoptr(VentureEntity) invoice = NULL;
-		g_object_get(payment, "invoice-id", &invoice_id, NULL);
-		if (invoice_id > 0)
-		{
-			invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, invoice_id, error);
-			if (invoice == NULL)
-				return FALSE;
-			if (!venture_accounting_approval_allow(self->database, "pay", invoice, actor, error))
-				return FALSE;
-		}
-	}
+	if (!venture_accounting_approval_allow(self->database, "pay", VENTURE_ENTITY(payment),
+		allocations, actor, &approval, error))
+		return FALSE;
 	if (!begin_operation(self, "payment", error))
 		return FALSE;
 	original = snapshot(VENTURE_ENTITY(payment));
@@ -1568,9 +1559,9 @@ venture_settlement_service_apply_payment(VentureSettlementService *self,
 			g_ptr_array_add(originals, snapshot(g_ptr_array_index(allocations, i)));
 		}
 	ok = perform_payment(self, VENTURE_ENTITY(payment), allocations, actor, error);
-	ok = finish_operation(self, ok, error);
 	if (ok)
-		ok = venture_accounting_approval_consume(self->database, actor, error);
+		ok = venture_accounting_approval_consume(self->database, approval, actor, error);
+	ok = finish_operation(self, ok, error);
 	if (!ok)
 	{
 		venture_entity_copy_properties_from(VENTURE_ENTITY(payment), original, FALSE);
@@ -1793,6 +1784,7 @@ venture_receivables_save_hook(VentureDatabase *database, VentureEntity *record,
 	VentureSettlementService *self;
 	g_autoptr(VentureEntity) previous = NULL;
 	g_autoptr(VentureEntity) original = NULL;
+	g_autoptr(VentureEntity) approval = NULL;
 	gboolean ok;
 
 	*handled = FALSE;
@@ -1845,6 +1837,8 @@ venture_receivables_save_hook(VentureDatabase *database, VentureEntity *record,
 	*handled = TRUE;
 	if (VENTURE_IS_PAYMENT(record))
 		return venture_settlement_service_apply_payment(self, VENTURE_PAYMENT(record), NULL, actor, error);
+	if (!venture_accounting_approval_allow(database, "pay", record, NULL, actor, &approval, error))
+		return FALSE;
 	if (!begin_operation(self, "payment", error))
 		return FALSE;
 	original = snapshot(record);
@@ -1856,6 +1850,8 @@ venture_receivables_save_hook(VentureDatabase *database, VentureEntity *record,
 		ok = perform_refund(self, record, actor, error);
 	else
 		ok = refuse(error, VENTURE_ERROR_VALIDATION, "Invoice events can only be written by VentureSettlementService");
+	if (ok)
+		ok = venture_accounting_approval_consume(database, approval, actor, error);
 	ok = finish_operation(self, ok, error);
 	if (!ok)
 		venture_entity_copy_properties_from(record, original, FALSE);
@@ -1908,33 +1904,18 @@ venture_settlement_service_settle_invoice(VentureSettlementService *self,
 	g_autoptr(VentureEntity) invoice = NULL;
 	g_autoptr(VentureMoney) balance = NULL;
 	g_autoptr(VenturePayment) payment = NULL;
-	gboolean ok;
 
 	invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, invoice_id, error);
 	if (invoice == NULL)
 		return FALSE;
-	if (!venture_accounting_approval_allow(self->database, "pay", invoice, actor, error))
+	balance = venture_settlement_service_invoice_balance(self, invoice_id, NULL, error);
+	if (balance == NULL || !check_amount(balance, error))
 		return FALSE;
-	if (!begin_operation(self, "payment", error))
-		return FALSE;
-	ok = TRUE;
-	if (ok)
-	{
-		balance = venture_settlement_service_invoice_balance(self, invoice_id, NULL, error);
-		ok = balance != NULL && check_amount(balance, error);
-	}
-	if (ok)
-	{
-		payment = venture_payment_new();
-		g_object_set(payment, "customer-id", get_id(invoice, "company-id"), "invoice-id", invoice_id,
-			"date", date, "method", "manual", "amount", balance, NULL);
-		venture_entity_set_organization_id(VENTURE_ENTITY(payment), venture_entity_get_organization_id(invoice));
-		ok = perform_payment(self, VENTURE_ENTITY(payment), NULL, actor, error);
-	}
-	ok = finish_operation(self, ok, error);
-	if (ok)
-		ok = venture_accounting_approval_consume(self->database, actor, error);
-	return ok;
+	payment = venture_payment_new();
+	g_object_set(payment, "customer-id", get_id(invoice, "company-id"), "invoice-id", invoice_id,
+		"date", date, "method", "manual", "amount", balance, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(payment), venture_entity_get_organization_id(invoice));
+	return venture_settlement_service_apply_payment(self, payment, NULL, actor, error);
 }
 
 VentureMoney *

@@ -2,6 +2,21 @@
 #include "venture.h"
 #include <string.h>
 
+static gboolean schedule_fields(const gchar *schedule, gint fields[5], GError **error);
+
+static gboolean
+validate_pack(VentureDatabase *database, VentureEntity *record, VentureEntity *previous,
+	gpointer data, GError **error)
+{
+	g_autofree gchar *schedule = NULL;
+	gint fields[5];
+	(void)database;
+	(void)previous;
+	(void)data;
+	g_object_get(record, "schedule", &schedule, NULL);
+	return schedule == NULL || *schedule == '\0' || schedule_fields(schedule, fields, error);
+}
+
 struct _VentureReportPackService
 {
 	GObject parent_instance;
@@ -69,6 +84,7 @@ venture_report_pack_service_get(VentureDatabase *database)
 	{
 		self = g_object_new(VENTURE_TYPE_REPORT_PACK_SERVICE, "database", database, NULL);
 		g_object_set_data_full(G_OBJECT(database), "venture-report-pack-service", self, g_object_unref);
+		venture_database_add_save_validator(database, VENTURE_TYPE_REPORT_PACK, validate_pack, NULL, NULL);
 	}
 	return self;
 }
@@ -196,30 +212,81 @@ venture_report_pack_service_run_pack(VentureReportPackService *self, VentureCont
 	return results;
 }
 
+/* Numeric five-field cron; reject unsupported syntax rather than silently
+ * turning a monthly or weekly schedule into a daily one. */
 static gboolean
-pack_is_due(const gchar *schedule, GDateTime *last, GDateTime *as_of)
+schedule_fields(const gchar *schedule, gint fields[5], GError **error)
 {
+	static const gint minimum[] = { 0, 0, 1, 1, 0 };
+	static const gint maximum[] = { 59, 23, 31, 12, 7 };
 	g_auto(GStrv) parts = NULL;
-	const gchar *dom;
+	guint i;
+
+	parts = g_strsplit(schedule && g_str_equal(schedule, "daily") ? "0 0 * * *" : schedule, " ", -1);
+	if (g_strv_length(parts) != 5)
+		goto invalid;
+	for (i = 0; i < 5; i++)
+	{
+		gchar *end = NULL;
+		gint64 value;
+		if (g_str_equal(parts[i], "*"))
+		{
+			fields[i] = -1;
+			continue;
+		}
+		value = g_ascii_strtoll(parts[i], &end, 10);
+		if (end == parts[i] || *end != '\0' || value < minimum[i] || value > maximum[i])
+			goto invalid;
+		fields[i] = value;
+	}
+	return TRUE;
+invalid:
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		"Schedule requires five numeric or * fields (minute hour day month weekday), or daily");
+	return FALSE;
+}
+
+static gint
+pack_is_due(const gchar *schedule, GDateTime *last, GDateTime *as_of, GError **error)
+{
+	gint fields[5];
+	gint hour, minute, dom, dow;
+	gboolean day_matches;
+	g_autoptr(GDateTime) midnight = NULL;
+	g_autoptr(GDateTime) candidate = NULL;
 	if (schedule == NULL || schedule[0] == '\0')
 		return FALSE;
-	if (last == NULL)
-		return TRUE;
-	if (g_date_time_compare(last, as_of) >= 0)
+	if (!schedule_fields(schedule, fields, error))
+		return -1;
+	if (last != NULL && g_date_time_compare(last, as_of) >= 0)
 		return FALSE;
-	if (g_strcmp0(schedule, "daily") == 0)
-		return g_date_time_get_year(last) != g_date_time_get_year(as_of) ||
-			g_date_time_get_day_of_year(last) != g_date_time_get_day_of_year(as_of);
-	parts = g_strsplit(schedule, " ", 5);
-	if (parts == NULL || parts[0] == NULL || parts[1] == NULL || parts[2] == NULL)
-		return g_date_time_get_year(last) != g_date_time_get_year(as_of) ||
-			g_date_time_get_day_of_year(last) != g_date_time_get_day_of_year(as_of);
-	dom = parts[2];
-	if (g_strcmp0(dom, "*") == 0)
-		return g_date_time_get_year(last) != g_date_time_get_year(as_of) ||
-			g_date_time_get_day_of_year(last) != g_date_time_get_day_of_year(as_of);
-	return g_date_time_get_year(last) != g_date_time_get_year(as_of) ||
-		g_date_time_get_month(last) != g_date_time_get_month(as_of);
+	if (fields[3] >= 0 && fields[3] != g_date_time_get_month(as_of))
+		return FALSE;
+	dom = g_date_time_get_day_of_month(as_of);
+	dow = g_date_time_get_day_of_week(as_of) % 7;
+	day_matches = fields[2] < 0 ? fields[4] < 0 || fields[4] % 7 == dow :
+		fields[4] < 0 ? fields[2] == dom : fields[2] == dom || fields[4] % 7 == dow;
+	if (!day_matches)
+		return FALSE;
+	midnight = g_date_time_new(g_date_time_get_timezone(as_of), g_date_time_get_year(as_of),
+		g_date_time_get_month(as_of), dom, 0, 0, 0);
+	/* A delayed sweep catches up once on its scheduled day. Old days are
+	 * not replayed; the output describes the time of this execution. */
+	for (hour = g_date_time_get_hour(as_of); hour >= 0; hour--)
+	{
+		if (fields[1] >= 0 && fields[1] != hour)
+			continue;
+		for (minute = 59; minute >= 0; minute--)
+		{
+			if (fields[0] >= 0 && fields[0] != minute)
+				continue;
+			g_clear_pointer(&candidate, g_date_time_unref);
+			candidate = g_date_time_add_minutes(midnight, hour * 60 + minute);
+			if (g_date_time_compare(candidate, as_of) <= 0)
+				return last == NULL || g_date_time_compare(candidate, last) > 0;
+		}
+	}
+	return FALSE;
 }
 
 gint
@@ -233,7 +300,7 @@ venture_report_pack_service_run_due(VentureReportPackService *self, VentureConte
 	guint i;
 	g_return_val_if_fail(VENTURE_IS_REPORT_PACK_SERVICE(self), -1);
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), -1);
-	now = as_of != NULL ? g_date_time_ref(as_of) : venture_time_now();
+	now = as_of != NULL ? g_date_time_to_utc(as_of) : venture_time_now();
 	query = venture_query_new(VENTURE_TYPE_REPORT_PACK);
 	if (organization_id > 0)
 		venture_query_set_organization(query, organization_id);
@@ -247,13 +314,27 @@ venture_report_pack_service_run_due(VentureReportPackService *self, VentureConte
 		g_autofree gchar *schedule = NULL;
 		g_autoptr(GDateTime) last = NULL;
 		g_autoptr(GPtrArray) results = NULL;
+		gint due;
 		g_object_get(pack, "schedule", &schedule, "last-run-at", &last, NULL);
-		if (!pack_is_due(schedule, last, now))
+		due = pack_is_due(schedule, last, now, error);
+		if (due < 0)
+			return -1;
+		if (due == 0)
 			continue;
 		results = venture_report_pack_service_run_pack(self, context, VENTURE_REPORT_PACK(pack), error);
 		if (results == NULL)
 			return -1;
-		g_object_set(pack, "last-run-at", now, NULL);
+		{
+			g_autoptr(JsonNode) output = json_node_new(JSON_NODE_ARRAY);
+			g_autofree gchar *json = NULL;
+			JsonArray *array = json_array_new();
+			guint j;
+			json_node_take_array(output, array);
+			for (j = 0; j < results->len; j++)
+				json_array_add_element(array, venture_report_result_to_json(g_ptr_array_index(results, j)));
+			json = venture_json_to_string(output, FALSE);
+			g_object_set(pack, "last-run-at", now, "last-output", json, NULL);
+		}
 		if (!venture_database_save(self->database, pack, actor, error))
 			return -1;
 		ran++;

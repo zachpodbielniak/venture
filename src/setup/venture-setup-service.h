@@ -83,6 +83,10 @@ gboolean venture_setup_check_write(VentureDatabase *database, VentureEntity *rec
  */
 gboolean venture_setup_seed_defaults(VentureDatabase *database, gint64 organization_id,
 	const VentureActor *actor, GError **error);
+/**
+ * venture_setup_actions_register:
+ * @database: database owning the records
+ */
 void venture_setup_actions_register(VentureDatabase *database);
 G_END_DECLS
 #endif

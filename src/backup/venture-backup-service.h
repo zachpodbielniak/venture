@@ -14,6 +14,17 @@ G_DECLARE_FINAL_TYPE(VentureBackupService, venture_backup_service, VENTURE, BACK
  * Returns: (transfer none): the per-database service
  */
 VentureBackupService *venture_backup_service_get(VentureDatabase *database);
+/**
+ * venture_backup_check_write:
+ * @database: database owning the records
+ * @record: candidate record
+ * @removal: whether this is a removal operation
+ * @error: (out) (optional): return location for an error
+ *
+ * Checks service ownership and lifecycle restrictions before a generic write.
+ *
+ * Returns: TRUE on success, FALSE on failure
+ */
 gboolean venture_backup_check_write(VentureDatabase *database, VentureEntity *record,
 	gboolean removal, GError **error);
 /**
@@ -42,6 +53,10 @@ VentureEntity *venture_backup_service_export(VentureBackupService *self, gint64 
  */
 gboolean venture_backup_service_restore(VentureBackupService *self, gint64 organization_id,
 	const gchar *payload, const VentureActor *actor, GError **error);
+/**
+ * venture_backup_actions_register:
+ * @database: database owning the records
+ */
 void venture_backup_actions_register(VentureDatabase *database);
 G_END_DECLS
 #endif

@@ -202,9 +202,9 @@ venture_portal_service_invoices(VenturePortalService *self, VentureCustomerPorta
 	return venture_database_find(self->database, query, error);
 }
 
-gboolean
-venture_portal_service_pay(VenturePortalService *self, VentureCustomerPortalAccess *access,
-	gint64 invoice_id, const VentureMoney *amount, const VentureActor *actor, GError **error)
+static gboolean
+portal_invoice_allowed(VenturePortalService *self, VentureCustomerPortalAccess *access,
+	gint64 invoice_id, GError **error)
 {
 	g_autoptr(VentureEntity) invoice = NULL;
 	gint64 company, invoice_company, org;
@@ -222,10 +222,36 @@ venture_portal_service_pay(VenturePortalService *self, VentureCustomerPortalAcce
 		return refuse(error, "invoice does not belong to this customer");
 	if (status != VENTURE_INVOICE_STATUS_SENT && status != VENTURE_INVOICE_STATUS_PARTIALLY_PAID)
 		return refuse(error, "only issued open invoices can be paid");
+	return TRUE;
+}
+
+gboolean
+venture_portal_service_pay(VenturePortalService *self, VentureCustomerPortalAccess *access,
+	gint64 invoice_id, const VentureMoney *amount, const VentureActor *actor, GError **error)
+{
 	(void)amount;
 	(void)actor;
+	if (!portal_invoice_allowed(self, access, invoice_id, error))
+		return FALSE;
 	return refuse(error,
 		"the customer portal cannot record a receipt; pay through Checkout");
+}
+
+VentureStripeCheckout *
+venture_portal_service_checkout(VenturePortalService *self, VentureStripeService *stripe,
+	const gchar *token, gint64 invoice_id, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) access = NULL;
+
+	access = venture_portal_service_lookup(self, token, error);
+	if (access == NULL || !portal_invoice_allowed(self, VENTURE_CUSTOMER_PORTAL_ACCESS(access), invoice_id, error))
+		return NULL;
+	if (stripe == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "Checkout is not configured");
+		return NULL;
+	}
+	return venture_stripe_service_checkout(stripe, invoice_id, actor, error);
 }
 
 static gboolean

@@ -93,6 +93,7 @@ test_post_requires_second_actor(Fixture *f, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureAccountingApprovalRule) rule = venture_accounting_approval_rule_new();
 	g_autoptr(VentureJournal) journal = NULL;
+	g_autoptr(VentureJournal) unrelated = NULL;
 	g_autoptr(VentureJournal) posted = NULL;
 	VentureActor alice, bob;
 	(void)data;
@@ -111,6 +112,13 @@ test_post_requires_second_actor(Fixture *f, gconstpointer data)
 	posted = venture_posting_service_post(venture_database_get_posting_service(f->db),
 		journal, NULL, NULL, &alice, &error);
 	g_assert_null(posted);
+	g_clear_error(&error);
+	/* Identical amounts do not authorize a different saved draft. */
+	unrelated = draft_journal(f);
+	posted = venture_posting_service_post(venture_database_get_posting_service(f->db),
+		unrelated, NULL, NULL, &bob, &error);
+	g_assert_null(posted);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
 	g_clear_error(&error);
 	posted = venture_posting_service_post(venture_database_get_posting_service(f->db),
 		journal, NULL, NULL, &bob, &error);
@@ -157,11 +165,61 @@ test_pay_requires_second_actor(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 }
 
+static gboolean
+reject_applied(VentureDatabase *db, VentureEntity *record, VentureEntity *previous,
+	gpointer data, GError **error)
+{
+	g_autofree gchar *state = NULL;
+	(void)db;
+	(void)previous;
+	(void)data;
+	g_object_get(record, "state", &state, NULL);
+	if (g_strcmp0(state, "applied") != 0)
+		return TRUE;
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "injected approval failure");
+	return FALSE;
+}
+
+/* Approval evidence and its financial effect must commit together. */
+static void
+test_atomic_approval(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureAccountingApprovalRule) rule = venture_accounting_approval_rule_new();
+	g_autoptr(VentureJournal) journal = NULL;
+	g_autoptr(VentureJournal) posted = NULL;
+	g_autoptr(VentureEntity) stored = NULL;
+	VentureActor alice, bob;
+	gint state;
+	(void)data;
+	fill_actor(&alice, "alice");
+	fill_actor(&bob, "bob");
+	g_object_set(rule, "organization-id", f->org, "action", "post", "require-second-actor", TRUE, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(rule), NULL, &error));
+	journal = draft_journal(f);
+	posted = venture_posting_service_post(venture_database_get_posting_service(f->db),
+		journal, NULL, NULL, &alice, &error);
+	g_assert_null(posted);
+	g_clear_error(&error);
+	venture_database_add_save_validator(f->db, VENTURE_TYPE_ACCOUNTING_APPROVAL, reject_applied, NULL, NULL);
+	posted = venture_posting_service_post(venture_database_get_posting_service(f->db),
+		journal, NULL, NULL, &bob, &error);
+	g_assert_null(posted);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	stored = venture_database_get(f->db, VENTURE_TYPE_JOURNAL,
+		venture_entity_get_id(VENTURE_ENTITY(journal)), &error);
+	g_assert_no_error(error);
+	g_object_get(stored, "state", &state, NULL);
+	g_assert_cmpint(state, ==, VENTURE_JOURNAL_DRAFT);
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/approvals/post-second-actor", Fixture, NULL, setup, test_post_requires_second_actor, teardown);
 	g_test_add("/approvals/pay-second-actor", Fixture, NULL, setup, test_pay_requires_second_actor, teardown);
+	g_test_add("/approvals/atomic", Fixture, NULL, setup, test_atomic_approval, teardown);
 	return g_test_run();
 }

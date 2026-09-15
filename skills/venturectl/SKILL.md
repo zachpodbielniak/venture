@@ -600,3 +600,14 @@ For example: `venturectl -f csv report balance_sheet 2026-08 organization_id=1 c
 Synthetic totals have no single account ID; actual account/journal IDs link
 to their record pages. Cash-flow controls use the conventional chart codes
 documented in `docs/statements.org`.
+
+## Accounting custom values and scheduled output
+
+`fields value record_type=TYPE record_id=ID name=NAME value=VALUE` PATCHes the
+owning record's `attributes` object; direct writes to `custom_field_value` are
+refused. Empty values clear optional fields and fail required-field validation.
+Built-in property names cannot be declared as custom fields.
+
+Use `get report_pack ID` to read `last_output`, the last successful scheduled
+result array. Accounting pack exports are not full database backups; document
+packs and legacy packs are refused by restore. See `docs/backup.org`.

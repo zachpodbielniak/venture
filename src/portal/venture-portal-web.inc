@@ -19,25 +19,26 @@ venture_portal_web(HtmxRequest *request, GHashTable *params, gpointer user_data)
 	if (htmx_request_get_method(request) == HTMX_METHOD_POST)
 	{
 		const gchar *invoice = htmx_request_get_form_value(request, "invoice_id");
-		const gchar *amount = htmx_request_get_form_value(request, "amount");
-		g_autofree gchar *currency = NULL;
-		g_autoptr(VentureEntity) organization = NULL;
-		g_autoptr(VentureMoney) money = NULL;
-		organization = venture_database_get(venture_context_get_database(self->context),
-			VENTURE_TYPE_ORGANIZATION, venture_entity_get_organization_id(access), NULL);
-		if (organization != NULL)
-			g_object_get(organization, "default-currency", &currency, NULL);
-		money = amount ? venture_money_from_string(amount, currency, &error) : NULL;
+		g_autoptr(VentureStripeCheckout) checkout = NULL;
+		g_autofree gchar *url = NULL;
+		HtmxResponse *response;
 		VentureActor actor;
 		actor.kind = VENTURE_ACTOR_KIND_USER;
 		actor.name = "customer portal";
 		actor.prompt = NULL;
 		actor.request_id = NULL;
 		actor.approved_by = NULL;
-		if (money == NULL || !venture_portal_service_pay(venture_portal_service_get(venture_context_get_database(self->context)),
-			VENTURE_CUSTOMER_PORTAL_ACCESS(access), invoice ? g_ascii_strtoll(invoice, NULL, 10) : 0, money, &actor, &error))
+		checkout = venture_portal_service_checkout(
+			venture_portal_service_get(venture_context_get_database(self->context)),
+			venture_context_get_stripe_service(self->context), token,
+			invoice ? g_ascii_strtoll(invoice, NULL, 10) : 0, &actor, &error);
+		if (checkout == NULL)
 			return venture_web_error_response(error);
-		return htmx_response_new_with_content("<p>Use Checkout to pay this invoice.</p>");
+		g_object_get(checkout, "url", &url, NULL);
+		response = htmx_response_new();
+		htmx_response_set_status(response, 303);
+		htmx_response_add_header(response, "Location", url);
+		return response;
 	}
 	invoices = venture_portal_service_invoices(venture_portal_service_get(venture_context_get_database(self->context)),
 		VENTURE_CUSTOMER_PORTAL_ACCESS(access), &error);
@@ -55,7 +56,7 @@ venture_portal_web(HtmxRequest *request, GHashTable *params, gpointer user_data)
 		g_string_append(html, "</td><td>");
 		if (status == VENTURE_INVOICE_STATUS_SENT || status == VENTURE_INVOICE_STATUS_PARTIALLY_PAID)
 			g_string_append_printf(html, "<form method=\"post\"><input type=\"hidden\" name=\"invoice_id\" value=\"%" G_GINT64_FORMAT "\">"
-				"<input name=\"amount\" placeholder=\"10 USD\" required><button>Request Checkout</button></form>",
+				"<button>Pay with Checkout</button></form>",
 				venture_entity_get_id(invoice));
 		g_string_append(html, "</td></tr>");
 	}

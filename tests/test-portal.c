@@ -139,15 +139,31 @@ test_invite_pay_revoke(Fixture *f, gconstpointer data)
 	g_assert_cmpint(venture_entity_get_id(invoice), >, 0);
 }
 
+typedef struct
+{
+	gboolean done;
+	GBytes *bytes;
+	GError *error;
+} PortalResponse;
+
+static void
+portal_http_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+	PortalResponse *response = data;
+	response->bytes = soup_session_send_and_read_finish(SOUP_SESSION(source), result, &response->error);
+	response->done = TRUE;
+}
+
 static guint
 http_request(VentureWebServer *server, const gchar *method, const gchar *path,
 	const gchar *body, gchar **out)
 {
 	g_autoptr(SoupSession) session = soup_session_new_with_options("timeout", 15, NULL);
 	g_autoptr(SoupMessage) message = NULL;
-	g_autoptr(GError) error = NULL;
+
 	g_autofree gchar *url = g_strconcat(venture_web_server_get_base_url(server), path, NULL);
-	GBytes *response;
+	PortalResponse response;
+	memset(&response, 0, sizeof(response));
 	message = soup_message_new(method, url);
 	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
 	if (body != NULL)
@@ -155,16 +171,18 @@ http_request(VentureWebServer *server, const gchar *method, const gchar *path,
 		g_autoptr(GBytes) payload = g_bytes_new(body, strlen(body));
 		soup_message_set_request_body_from_bytes(message, "application/json", payload);
 	}
-	response = soup_session_send_and_read(session, message, NULL, &error);
-	g_assert_no_error(error);
-	if (out && response)
-		*out = g_strndup(g_bytes_get_data(response, NULL), g_bytes_get_size(response));
-	g_clear_pointer(&response, g_bytes_unref);
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, portal_http_done, &response);
+	while (!response.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(response.error);
+	if (out && response.bytes)
+		*out = g_strndup(g_bytes_get_data(response.bytes, NULL), g_bytes_get_size(response.bytes));
+	g_clear_pointer(&response.bytes, g_bytes_unref);
 	return soup_message_get_status(message);
 }
 
 static void
-G_GNUC_UNUSED test_http_isolation(Fixture *f, gconstpointer data)
+test_http_isolation(Fixture *f, gconstpointer data)
 {
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureWebServer) server = NULL;
@@ -205,6 +223,6 @@ main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/portal/invite-pay-revoke", Fixture, NULL, setup, test_invite_pay_revoke, teardown);
-	/* HTTP isolation uses the same token lookup as the service */
+	g_test_add("/portal/http-isolation", Fixture, NULL, setup, test_http_isolation, teardown);
 	return g_test_run();
 }

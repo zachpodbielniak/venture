@@ -11,7 +11,7 @@ static gboolean venture_pod_module_handle_commerce(VenturePodModule *self, GVari
 	if (!service || !organization) return FALSE;
 	org = g_ascii_strtoll(organization, &end, 10);
 	if (*end || org <= 0) return FALSE;
-	imported = venture_commerce_service_import(service, name, NULL, NULL, NULL, &error);
+	imported = venture_commerce_service_import_for_organization(service, org, name, NULL, NULL, NULL, &error);
 	if (imported < 0) {
 		g_warning("venture->commerce_import: %s", error->message);
 		return FALSE;

@@ -14,11 +14,46 @@ G_DECLARE_FINAL_TYPE(VentureReportPackService, venture_report_pack_service, VENT
  * Returns: (transfer none): the per-database service
  */
 VentureReportPackService *venture_report_pack_service_get(VentureDatabase *database);
+/**
+ * venture_report_pack_service_save:
+ * @self: the service or registry instance
+ * @organization_id: target legal entity ID
+ * @name: name or registry key
+ * @report_name: registered report name
+ * @period: reporting period
+ * @options: report or field options
+ * @dimension: optional accounting dimension
+ * @actor: (nullable): audit actor; NULL for internal service work
+ * @error: (out) (optional): return location for an error
+ *
+ * Returns: (transfer full) (nullable): owned result
+ */
 VentureEntity *venture_report_pack_service_save(VentureReportPackService *self, gint64 organization_id,
 	const gchar *name, const gchar *report_name, const gchar *period, JsonObject *options,
 	const gchar *dimension, const VentureActor *actor, GError **error);
+/**
+ * venture_report_pack_service_run:
+ * @self: the service or registry instance
+ * @context: application context
+ * @saved: saved report definition
+ * @error: (out) (optional): return location for an error
+ *
+ * Returns: (transfer full) (nullable): owned result
+ */
 VentureReportResult *venture_report_pack_service_run(VentureReportPackService *self, VentureContext *context,
 	VentureSavedReport *saved, GError **error);
+/**
+ * venture_report_pack_service_schedule:
+ * @self: the service or registry instance
+ * @organization_id: target legal entity ID
+ * @name: name or registry key
+ * @schedule: schedule record or expression
+ * @saved_report_id: saved report id
+ * @actor: (nullable): audit actor; NULL for internal service work
+ * @error: (out) (optional): return location for an error
+ *
+ * Returns: (transfer full) (nullable): owned result
+ */
 VentureEntity *venture_report_pack_service_schedule(VentureReportPackService *self, gint64 organization_id,
 	const gchar *name, const gchar *schedule, gint64 saved_report_id, const VentureActor *actor, GError **error);
 /**

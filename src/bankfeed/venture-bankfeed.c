@@ -118,6 +118,30 @@ venture_bank_feed_fetch(VentureBankFeed *self, const gchar *account_id, GDateTim
 	return VENTURE_BANK_FEED_GET_IFACE(self)->fetch(self, account_id, from, to, currency, error);
 }
 
+void
+venture_bank_feed_fetch_async(VentureBankFeed *self, const gchar *account_id,
+	GDateTime *from, GDateTime *to, const gchar *currency, GCancellable *cancellable,
+	GAsyncReadyCallback callback, gpointer user_data)
+{
+	g_return_if_fail(VENTURE_IS_BANK_FEED(self));
+	if (VENTURE_BANK_FEED_GET_IFACE(self)->fetch_async != NULL)
+		VENTURE_BANK_FEED_GET_IFACE(self)->fetch_async(self, account_id, from, to,
+			currency, cancellable, callback, user_data);
+	else
+	{
+		g_autoptr(GTask) task = g_task_new(self, cancellable, callback, user_data);
+		g_task_return_new_error(task, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED,
+			"The bank feed must implement nonblocking fetch_async");
+	}
+}
+
+GPtrArray *
+venture_bank_feed_fetch_finish(VentureBankFeed *self, GAsyncResult *result, GError **error)
+{
+	g_return_val_if_fail(g_task_is_valid(result, self), NULL);
+	return g_task_propagate_pointer(G_TASK(result), error);
+}
+
 struct _VentureBankFeedRegistry
 {
 	GObject parent_instance;
@@ -193,43 +217,39 @@ typedef struct { GObjectClass parent_class; } SoupBankFeedTransportClass;
 static void soup_transport_iface(VentureBankFeedTransportInterface *iface);
 G_DEFINE_TYPE_WITH_CODE(SoupBankFeedTransport, soup_bank_feed_transport, G_TYPE_OBJECT,
 	G_IMPLEMENT_INTERFACE(VENTURE_TYPE_BANK_FEED_TRANSPORT, soup_transport_iface))
+static void soup_transport_get_async(VentureBankFeedTransport *transport, const gchar *url,
+	const gchar *authorization, GCancellable *cancellable, GAsyncReadyCallback callback, gpointer user_data);
+
+typedef struct
+{
+	gboolean done;
+	gchar *body;
+	GError *error;
+} HttpWait;
+
+static void
+http_wait_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+	HttpWait *wait = data;
+	wait->body = venture_bank_feed_transport_get_finish(VENTURE_BANK_FEED_TRANSPORT(source), result, &wait->error);
+	wait->done = TRUE;
+}
+
 static gchar *
 soup_transport_get(VentureBankFeedTransport *transport, const gchar *url, const gchar *authorization, GError **error)
 {
-	SoupBankFeedTransport *self = (SoupBankFeedTransport *)transport;
-	g_autoptr(SoupMessage) message = soup_message_new("GET", url);
-	g_autoptr(GBytes) bytes = NULL;
-	gsize size = 0;
-	const guint8 *data;
-	if (message == NULL)
-	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NETWORK, "Invalid bank feed URL");
-		return NULL;
-	}
-	if (!venture_string_is_empty(authorization))
-	{
-		const gchar *colon = strstr(authorization, ": ");
-		if (colon != NULL && !g_str_has_prefix(authorization, "Basic ") &&
-			!g_str_has_prefix(authorization, "Bearer "))
-		{
-			g_autofree gchar *name = g_strndup(authorization, (gsize)(colon - authorization));
-			soup_message_headers_append(soup_message_get_request_headers(message),
-				name, colon + 2);
-		}
-		else
-			soup_message_headers_append(soup_message_get_request_headers(message),
-				"Authorization", authorization);
-	}
-	bytes = soup_session_send_and_read(self->session, message, NULL, error);
-	if (bytes == NULL) return NULL;
-	if (soup_message_get_status(message) < 200 || soup_message_get_status(message) >= 300)
-	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NETWORK, "Teller returned HTTP %u",
-			soup_message_get_status(message));
-		return NULL;
-	}
-	data = g_bytes_get_data(bytes, &size);
-	return g_strndup((const gchar *)data, size);
+	HttpWait wait;
+	GMainContext *context = g_main_context_get_thread_default();
+
+	memset(&wait, 0, sizeof(wait));
+	/* Synchronous service callers still dispatch sockets and cancellation.
+	 * The async implementation owns authentication and redirect policy. */
+	soup_transport_get_async(transport, url, authorization, NULL, http_wait_done, &wait);
+	while (!wait.done)
+		g_main_context_iteration(context, TRUE);
+	if (wait.error != NULL)
+		g_propagate_error(error, wait.error);
+	return wait.body;
 }
 static void
 soup_got(GObject *source, GAsyncResult *result, gpointer user_data)
@@ -248,7 +268,7 @@ soup_got(GObject *source, GAsyncResult *result, gpointer user_data)
 	}
 	if (soup_message_get_status(message) < 200 || soup_message_get_status(message) >= 300)
 	{
-		g_task_return_new_error(task, VENTURE_ERROR, VENTURE_ERROR_NETWORK, "Teller returned HTTP %u",
+		g_task_return_new_error(task, VENTURE_ERROR, VENTURE_ERROR_NETWORK, "Provider returned HTTP %u",
 			soup_message_get_status(message));
 		g_object_unref(task);
 		return;
@@ -289,6 +309,7 @@ soup_transport_get_async(VentureBankFeedTransport *transport, const gchar *url, 
 		g_object_unref(task);
 		return;
 	}
+	soup_message_set_flags(message, soup_message_get_flags(message) | SOUP_MESSAGE_NO_REDIRECT);
 	soup_apply_auth(message, authorization);
 	g_task_set_task_data(task, g_object_ref(message), g_object_unref);
 	soup_session_send_and_read_async(self->session, message, G_PRIORITY_DEFAULT, cancellable, soup_got, task);
@@ -399,10 +420,53 @@ teller_fetch(VentureBankFeed *feed, const gchar *account_id, GDateTime *from, GD
 	if (body == NULL) return NULL;
 	return teller_parse_body(body, currency, error);
 }
+static void
+teller_body_ready(GObject *source, GAsyncResult *result, gpointer data)
+{
+	g_autoptr(GTask) task = data;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *body = venture_bank_feed_transport_get_finish(VENTURE_BANK_FEED_TRANSPORT(source), result, &error);
+	GPtrArray *items;
+	if (body == NULL)
+	{
+		g_task_return_error(task, g_steal_pointer(&error));
+		return;
+	}
+	items = teller_parse_body(body, g_task_get_task_data(task), &error);
+	if (items == NULL)
+		g_task_return_error(task, g_steal_pointer(&error));
+	else
+		g_task_return_pointer(task, items, (GDestroyNotify)g_ptr_array_unref);
+}
+
+static void
+teller_fetch_async(VentureBankFeed *feed, const gchar *account_id, GDateTime *from,
+	GDateTime *to, const gchar *currency, GCancellable *cancellable,
+	GAsyncReadyCallback callback, gpointer user_data)
+{
+	VentureTellerFeed *self = VENTURE_TELLER_FEED(feed);
+	g_autoptr(GTask) task = g_task_new(feed, cancellable, callback, user_data);
+	g_autofree gchar *start = NULL, *end = NULL, *url = NULL, *auth = NULL, *account = NULL;
+	if (venture_string_is_empty(account_id) || from == NULL || to == NULL)
+	{
+		g_task_return_new_error(task, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Teller fetch needs account and window");
+		return;
+	}
+	start = g_date_time_format(from, "%Y-%m-%d");
+	end = g_date_time_format(to, "%Y-%m-%d");
+	account = g_uri_escape_string(account_id, NULL, FALSE);
+	url = g_strdup_printf("https://api.teller.io/accounts/%s/transactions?from=%s&to=%s", account, start, end);
+	auth = teller_basic(self->token);
+	g_task_set_task_data(task, g_strdup(currency), g_free);
+	venture_bank_feed_transport_get_async(self->transport, url, auth, cancellable,
+		teller_body_ready, g_steal_pointer(&task));
+}
+
 static void teller_iface(VentureBankFeedInterface *iface)
 {
 	iface->get_name = teller_name;
 	iface->fetch = teller_fetch;
+	iface->fetch_async = teller_fetch_async;
 }
 static void
 venture_teller_feed_finalize(GObject *object)
@@ -491,97 +555,40 @@ count_filter(VentureDatabase *db, GType type, gint64 org, const gchar *field, gi
 	return n < 0 ? -1 : (gint)n;
 }
 
+typedef struct
+{
+	gboolean done;
+	gint count;
+	GError *error;
+} SyncWait;
+
+static void
+sync_wait_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+	SyncWait *wait = data;
+	wait->count = venture_bankfeed_service_sync_finish(VENTURE_BANKFEED_SERVICE(source), result, &wait->error);
+	wait->done = TRUE;
+}
+
 gint
 venture_bankfeed_service_sync(VentureBankFeedService *self, gint64 connection_id,
 	GDateTime *from, GDateTime *to, const VentureActor *actor, GError **error)
 {
-	g_autoptr(VentureEntity) connection = NULL;
-	g_autoptr(VentureEntity) bank = NULL;
-	g_autoptr(GPtrArray) items = NULL;
-	g_autoptr(JsonObject) args = json_object_new();
-	g_autoptr(JsonArray) transactions = json_array_new();
-	g_autoptr(VentureEntity) result = NULL;
-	g_autoptr(GDateTime) window_from = NULL, window_to = NULL, now = NULL;
-	g_autofree gchar *provider = NULL, *account = NULL, *currency = NULL, *start = NULL, *end = NULL;
-	VentureBankFeed *feed;
-	gint64 bank_id = 0, before, after;
-	guint i;
-	g_return_val_if_fail(VENTURE_IS_BANKFEED_SERVICE(self), -1);
-	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "bank_connection") == G_TYPE_INVALID)
-	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "Bank feed module is disabled (bankfeed.enabled)");
-		return -1;
-	}
-	window_from = from != NULL ? g_date_time_ref(from) : g_date_time_add_days(now = venture_time_now(), -30);
-	if (now == NULL) now = venture_time_now();
-	window_to = to != NULL ? g_date_time_ref(to) : g_date_time_ref(now);
-	connection = venture_database_get(self->database, VENTURE_TYPE_BANK_CONNECTION, connection_id, error);
-	if (connection == NULL) return -1;
-	if (venture_entity_get_organization_id(connection) != self->organization_id)
-	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Bank connection belongs to another organization");
-		return -1;
-	}
-	g_object_get(connection, "provider", &provider, "provider-account-id", &account, "bank-account-id", &bank_id, NULL);
-	feed = venture_bank_feed_registry_lookup(self->registry, provider);
-	if (feed == NULL)
-	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "No bank feed named %s", provider);
-		return -1;
-	}
-	bank = venture_database_get(self->database, VENTURE_TYPE_BANK_ACCOUNT, bank_id, error);
-	if (bank == NULL) return -1;
-	g_object_get(bank, "currency", &currency, NULL);
-	items = venture_bank_feed_fetch(feed, account, window_from, window_to, currency, error);
-	if (items == NULL) return -1;
-	for (i = 0; i < items->len; i++)
-	{
-		JsonObject *item = g_ptr_array_index(items, i);
-		JsonObject *row = json_object_new();
-		const gchar *id = venture_json_object_get_string(item, "id", NULL);
-		const gchar *date = venture_json_object_get_string(item, "date", NULL);
-		const gchar *amount = venture_json_object_get_string(item, "amount", NULL);
-		const gchar *description = venture_json_object_get_string(item, "description", "Bank transaction");
-		json_object_set_string_member(row, "date", date);
-		json_object_set_string_member(row, "amount", amount);
-		json_object_set_string_member(row, "description", description);
-		json_object_set_string_member(row, "external_id", id);
-		json_array_add_object_element(transactions, row);
-	}
-	start = g_date_time_format(window_from, "%Y-%m-%d");
-	end = g_date_time_format(window_to, "%Y-%m-%d");
-	json_object_set_string_member(args, "period_start", start);
-	json_object_set_string_member(args, "period_end", end);
-	json_object_set_array_member(args, "transactions", g_steal_pointer(&transactions));
-	before = count_filter(self->database, VENTURE_TYPE_BANK_TRANSACTION, self->organization_id, "bank-account-id", bank_id, error);
-	if (before < 0) return -1;
-	if (!venture_database_begin(self->database, error)) return -1;
-	result = venture_bank_match_service_execute(venture_database_get_bank_match_service(self->database),
-		"feed", bank_id, args, actor, error);
-	if (result == NULL)
-	{
-		venture_database_rollback(self->database);
-		return -1;
-	}
-	after = count_filter(self->database, VENTURE_TYPE_BANK_TRANSACTION, self->organization_id, "bank-account-id", bank_id, error);
-	if (after < 0)
-	{
-		venture_database_rollback(self->database);
-		return -1;
-	}
-	g_object_set(connection, "last-synced-at", now, "last-imported", (gint64)(after - before), "status", "linked", NULL);
-	if (!venture_database_save(self->database, connection, actor, error))
-	{
-		venture_database_rollback(self->database);
-		return -1;
-	}
-	if (!venture_database_commit(self->database, error)) return -1;
-	return (gint)(after - before);
+	SyncWait wait;
+	GMainContext *context = g_main_context_get_thread_default();
+	memset(&wait, 0, sizeof(wait));
+	venture_bankfeed_service_sync_async(self, connection_id, from, to, actor, NULL, sync_wait_done, &wait);
+	while (!wait.done)
+		g_main_context_iteration(context, TRUE);
+	if (wait.error != NULL)
+		g_propagate_error(error, wait.error);
+	return wait.count;
 }
 
 typedef struct
 {
 	gint64 bank_id;
+	gint64 organization_id;
 	gchar *currency;
 	gchar *account;
 	GDateTime *from;
@@ -592,6 +599,9 @@ typedef struct
 	gboolean has_actor;
 	VentureActor actor;
 	gchar *actor_name;
+	gchar *actor_prompt;
+	gchar *actor_request_id;
+	gchar *actor_approved_by;
 } BankfeedSyncJob;
 
 static void
@@ -606,6 +616,9 @@ bankfeed_sync_job_free(gpointer data)
 	g_clear_object(&job->connection);
 	g_clear_object(&job->feed);
 	g_free(job->actor_name);
+	g_free(job->actor_prompt);
+	g_free(job->actor_request_id);
+	g_free(job->actor_approved_by);
 	g_free(job);
 }
 
@@ -638,7 +651,7 @@ bankfeed_import_items(VentureBankFeedService *self, BankfeedSyncJob *job, GPtrAr
 	json_object_set_string_member(args, "period_start", start);
 	json_object_set_string_member(args, "period_end", end);
 	json_object_set_array_member(args, "transactions", g_steal_pointer(&transactions));
-	before = count_filter(self->database, VENTURE_TYPE_BANK_TRANSACTION, self->organization_id, "bank-account-id", job->bank_id, error);
+	before = count_filter(self->database, VENTURE_TYPE_BANK_TRANSACTION, job->organization_id, "bank-account-id", job->bank_id, error);
 	if (before < 0) return -1;
 	if (!venture_database_begin(self->database, error)) return -1;
 	result = venture_bank_match_service_execute(venture_database_get_bank_match_service(self->database),
@@ -648,7 +661,7 @@ bankfeed_import_items(VentureBankFeedService *self, BankfeedSyncJob *job, GPtrAr
 		venture_database_rollback(self->database);
 		return -1;
 	}
-	after = count_filter(self->database, VENTURE_TYPE_BANK_TRANSACTION, self->organization_id, "bank-account-id", job->bank_id, error);
+	after = count_filter(self->database, VENTURE_TYPE_BANK_TRANSACTION, job->organization_id, "bank-account-id", job->bank_id, error);
 	if (after < 0)
 	{
 		venture_database_rollback(self->database);
@@ -687,9 +700,10 @@ bankfeed_sync_prepare(VentureBankFeedService *self, gint64 connection_id,
 		bankfeed_sync_job_free(job);
 		return NULL;
 	}
-	if (venture_entity_get_organization_id(job->connection) != self->organization_id)
+	job->organization_id = venture_entity_get_organization_id(job->connection);
+	if (job->organization_id <= 0)
 	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Bank connection belongs to another organization");
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Bank connection needs an organization");
 		bankfeed_sync_job_free(job);
 		return NULL;
 	}
@@ -709,6 +723,12 @@ bankfeed_sync_prepare(VentureBankFeedService *self, gint64 connection_id,
 		bankfeed_sync_job_free(job);
 		return NULL;
 	}
+	if (venture_entity_get_organization_id(bank) != job->organization_id)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Bank account belongs to another organization");
+		bankfeed_sync_job_free(job);
+		return NULL;
+	}
 	g_object_get(bank, "currency", &job->currency, NULL);
 	if (actor != NULL)
 	{
@@ -716,6 +736,9 @@ bankfeed_sync_prepare(VentureBankFeedService *self, gint64 connection_id,
 		job->actor = *actor;
 		job->actor_name = g_strdup(actor->name);
 		job->actor.name = job->actor_name;
+		job->actor.prompt = job->actor_prompt = g_strdup(actor->prompt);
+		job->actor.request_id = job->actor_request_id = g_strdup(actor->request_id);
+		job->actor.approved_by = job->actor_approved_by = g_strdup(actor->approved_by);
 	}
 	return job;
 }
@@ -723,36 +746,24 @@ bankfeed_sync_prepare(VentureBankFeedService *self, gint64 connection_id,
 static void
 bankfeed_body_ready(GObject *source, GAsyncResult *result, gpointer user_data)
 {
-	GTask *task = user_data;
+	g_autoptr(GTask) task = user_data;
 	VentureBankFeedService *self = g_task_get_source_object(task);
 	BankfeedSyncJob *job = g_task_get_task_data(task);
 	g_autoptr(GError) error = NULL;
-	g_autofree gchar *body = NULL;
-	g_autoptr(GPtrArray) items = NULL;
+	g_autoptr(GPtrArray) items = venture_bank_feed_fetch_finish(VENTURE_BANK_FEED(source), result, &error);
 	gint imported;
-	body = venture_bank_feed_transport_get_finish(VENTURE_BANK_FEED_TRANSPORT(source), result, &error);
 	if (g_task_return_error_if_cancelled(task))
+		return;
+	if (items == NULL)
 	{
-		g_object_unref(task);
+		g_task_return_error(task, g_steal_pointer(&error));
 		return;
 	}
-	if (body == NULL)
+	imported = bankfeed_import_items(self, job, items, &error);
+	if (imported < 0)
 		g_task_return_error(task, g_steal_pointer(&error));
 	else
-	{
-		items = teller_parse_body(body, job->currency, &error);
-		if (items == NULL)
-			g_task_return_error(task, g_steal_pointer(&error));
-		else
-		{
-			imported = bankfeed_import_items(self, job, items, &error);
-			if (imported < 0)
-				g_task_return_error(task, g_steal_pointer(&error));
-			else
-				g_task_return_int(task, imported);
-		}
-	}
-	g_object_unref(task);
+		g_task_return_int(task, imported);
 }
 
 void
@@ -773,34 +784,8 @@ venture_bankfeed_service_sync_async(VentureBankFeedService *self, gint64 connect
 		return;
 	}
 	g_task_set_task_data(task, job, bankfeed_sync_job_free);
-	if (VENTURE_IS_TELLER_FEED(job->feed))
-	{
-		VentureTellerFeed *teller = VENTURE_TELLER_FEED(job->feed);
-		g_autofree gchar *start = g_date_time_format(job->from, "%Y-%m-%d");
-		g_autofree gchar *end = g_date_time_format(job->to, "%Y-%m-%d");
-		g_autofree gchar *url = g_strdup_printf("https://api.teller.io/accounts/%s/transactions?from=%s&to=%s",
-			job->account, start, end);
-		g_autofree gchar *auth = teller_basic(teller->token);
-		venture_bank_feed_transport_get_async(teller->transport, url, auth, cancellable,
-			bankfeed_body_ready, task);
-		return;
-	}
-	{
-		g_autoptr(GPtrArray) items = venture_bank_feed_fetch(job->feed, job->account,
-			job->from, job->to, job->currency, &error);
-		gint imported;
-		if (items == NULL)
-			g_task_return_error(task, g_steal_pointer(&error));
-		else
-		{
-			imported = bankfeed_import_items(self, job, items, &error);
-			if (imported < 0)
-				g_task_return_error(task, g_steal_pointer(&error));
-			else
-				g_task_return_int(task, imported);
-		}
-	}
-	g_object_unref(task);
+	venture_bank_feed_fetch_async(job->feed, job->account, job->from, job->to,
+		job->currency, cancellable, bankfeed_body_ready, task);
 }
 
 gint

@@ -85,9 +85,14 @@ Mirrors #70 at the time of writing; the issue is the source of truth.
 
 * Known leftovers on this branch
 
-The tracker issues have landed. Runtime leftovers from the earlier review
-pass that this branch now covers: async bank-feed GET with cancellation,
-custom-field forms and kind checks, saved-report dimension/org scope and
-=run_due= dispatch, budget actuals by dimension, and backup receipts with
-frozen tax. Customer portal pay still starts Checkout rather than recording
-unverified cash.
+Tracker closure is not a claim of complete accounting parity. The reviewed
+paths now include operation-owned atomic approvals, exact FX conversion,
+provider-level bank-feed async dispatch, guarded Checkout, custom-field
+validation and mixed field layouts, and durable scheduled report output.
+
+Accounting packs are inspection exports with a limited manual opening-ledger
+import. Legacy and document/history packs are refused before any writes;
+full document recovery requires a full database backup. See [[file:backup.org][the restore contract]].
+Scheduled packs accept numeric/=*= cron fields or =daily=, use UTC, catch up
+on the scheduled day, and retain the latest JSON output; they do not promise
+email delivery or historical replay. See [[file:reporting.org][reporting]].

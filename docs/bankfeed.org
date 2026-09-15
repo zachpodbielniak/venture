@@ -38,3 +38,21 @@ bank_hour->on_schedule => venture->bankfeed_sync("1");
 
 =venturectl bankfeed sync ID= and =POST /api/v1/bankfeed/:id/sync= take an
 optional =period_start= / =period_end=. The web page is =/bankfeed=.
+
+* Provider lifetime and asynchronous contract
+
+Every provider used by service sync implements =fetch_async= and returns a
+=GTask= containing an owned array of owned JSON objects. Synchronous-only
+plugins are refused by that path. Completion and database application stay
+on the caller's main context. Sync and scheduled-sync entry points dispatch
+the same async operation while iterating that context. Providers must allow
+reentrancy during this wait. All actor strings are copied before returning.
+
+The HTTP transport refuses redirects, including redirects carrying custom
+Shopify authorization headers. Its synchronous adapter dispatches async I/O;
+no request or scheduled import blocks the event loop on a socket read.
+
+Connection records select the legal entity for each sync, and their bank
+account must belong to that same entity. The web handler also requires the
+connection to belong to the active organization. Scheduled sweeps filter
+connections by the organization supplied to the automation action.

@@ -38,10 +38,25 @@ fake_feed_fetch(VentureBankFeed *feed, const gchar *account_id, GDateTime *from,
 		g_ptr_array_add(copy, json_object_ref(g_ptr_array_index(self->items, i)));
 	return copy;
 }
+static void
+fake_feed_fetch_async(VentureBankFeed *feed, const gchar *account_id, GDateTime *from,
+	GDateTime *to, const gchar *currency, GCancellable *cancellable,
+	GAsyncReadyCallback callback, gpointer user_data)
+{
+	g_autoptr(GTask) task = g_task_new(feed, cancellable, callback, user_data);
+	g_autoptr(GError) error = NULL;
+	GPtrArray *items = fake_feed_fetch(feed, account_id, from, to, currency, &error);
+	if (items == NULL)
+		g_task_return_error(task, g_steal_pointer(&error));
+	else
+		g_task_return_pointer(task, items, (GDestroyNotify)g_ptr_array_unref);
+}
+
 static void fake_feed_iface(VentureBankFeedInterface *iface)
 {
 	iface->get_name = fake_feed_name;
 	iface->fetch = fake_feed_fetch;
+	iface->fetch_async = fake_feed_fetch_async;
 }
 static void fake_feed_finalize(GObject *object)
 {
@@ -469,6 +484,91 @@ test_async_cancel(Fixture *f, gconstpointer data)
 	g_clear_error(&sync.error);
 }
 
+static void
+test_actor_lifetime(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureBankFeedService) service = NULL;
+	g_autoptr(VentureBankConnection) connection = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_AUDIT_ENTRY);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autofree gchar *prompt = g_strdup("owned-prompt");
+	g_autoptr(GObject) transport = g_object_new(slow_transport_get_type(), NULL);
+	SyncDone sync = { FALSE, -1, NULL };
+	VentureActor actor;
+	gboolean found = FALSE;
+	guint i;
+	(void)data;
+	service = venture_bankfeed_service_new(f->db, f->org, VENTURE_BANK_FEED_TRANSPORT(transport), &error);
+	connection = link_account(f, "teller", "async-lifetime");
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "lifetime";
+	actor.prompt = prompt;
+	actor.request_id = "lifetime-request";
+	actor.approved_by = "lifetime-approver";
+	venture_bankfeed_service_sync_async(service, venture_entity_get_id(VENTURE_ENTITY(connection)),
+		NULL, NULL, &actor, NULL, sync_finished, &sync);
+	memset(prompt, 'x', strlen(prompt));
+	while (!sync.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(sync.error);
+	venture_query_set_limit(query, 0);
+	rows = venture_database_find(f->db, query, &error);
+	g_assert_no_error(error);
+	for (i = 0; i < rows->len; i++)
+	{
+		g_autofree gchar *stored = NULL;
+		g_object_get(g_ptr_array_index(rows, i), "prompt", &stored, NULL);
+		g_assert_cmpstr(stored, !=, prompt);
+		if (g_strcmp0(stored, "owned-prompt") == 0)
+			found = TRUE;
+	}
+	g_assert_true(found);
+}
+
+typedef struct { gchar *redirect; guint leaked; } RedirectFixture;
+
+static void
+redirect_handler(SoupServer *server, SoupServerMessage *message, const gchar *path,
+	GHashTable *query, gpointer data)
+{
+	RedirectFixture *fixture = data;
+	(void)server;
+	(void)query;
+	if (g_str_equal(path, "/redirect"))
+		soup_server_message_set_redirect(message, 302, fixture->redirect);
+	else
+	{
+		fixture->leaked++;
+		soup_server_message_set_status(message, 200, NULL);
+	}
+}
+
+/* Custom authorization headers must never reach a redirect-selected host. */
+static void
+test_transport_redirect(void)
+{
+	g_autoptr(SoupServer) server = soup_server_new(NULL, NULL);
+	g_autoptr(VentureBankFeedTransport) transport = venture_bank_feed_transport_new_http();
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *url = NULL;
+	g_autofree gchar *body = NULL;
+	GSList *uris;
+	RedirectFixture fixture;
+	fixture.leaked = 0;
+	g_assert_true(soup_server_listen_local(server, 0, SOUP_SERVER_LISTEN_IPV4_ONLY, &error));
+	uris = soup_server_get_uris(server);
+	url = g_strdup_printf("http://127.0.0.1:%d/redirect", g_uri_get_port(uris->data));
+	fixture.redirect = g_strdup_printf("http://localhost:%d/leak", g_uri_get_port(uris->data));
+	g_slist_free_full(uris, (GDestroyNotify)g_uri_unref);
+	soup_server_add_handler(server, NULL, redirect_handler, &fixture, NULL);
+	body = venture_bank_feed_transport_get(transport, url, "X-Shopify-Access-Token: synthetic-test-token", &error);
+	g_assert_null(body);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NETWORK);
+	g_assert_cmpuint(fixture.leaked, ==, 0);
+	g_free(fixture.redirect);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -482,5 +582,7 @@ main(int argc, char **argv)
 	g_test_add("/bankfeed/scheduled-sync", Fixture, NULL, setup, test_scheduled_sync, teardown);
 	g_test_add("/bankfeed/async-health", Fixture, NULL, setup, test_async_health_stays_responsive, teardown);
 	g_test_add("/bankfeed/async-cancel", Fixture, NULL, setup, test_async_cancel, teardown);
+	g_test_add("/bankfeed/actor-lifetime", Fixture, NULL, setup, test_actor_lifetime, teardown);
+	g_test_add_func("/bankfeed/redirect", test_transport_redirect);
 	return g_test_run();
 }

@@ -1049,6 +1049,52 @@ test_organization_uniqueness(Fixture *f, gconstpointer unused)
 	status(&other, other_bill, "approved");
 }
 
+static void
+test_batch_approval(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) invoice = NULL, paid = NULL, allocation = NULL;
+	g_autoptr(VentureAccountingApprovalRule) rule = venture_accounting_approval_rule_new();
+	g_autoptr(GPtrArray) allocations = g_ptr_array_new_with_free_func(g_object_unref);
+	VentureActor actor;
+	(void)data;
+	invoice = bill(f, "APPROVE-BATCH");
+	approve(f, invoice);
+	g_object_set(rule, "organization-id", f->org, "action", "pay", "require-second-actor", TRUE, NULL);
+	save(f, VENTURE_ENTITY(rule));
+	paid = payment(f, invoice, "100 USD", "2026-08-11");
+	g_object_set(paid, "bill-id", (gint64)0, NULL);
+	allocation = record(f, "bill_payment_allocation");
+	g_object_set(allocation, "bill-id", venture_entity_get_id(invoice), NULL);
+	field(allocation, "amount", "100 USD");
+	field(allocation, "date", "2026-08-11");
+	g_ptr_array_add(allocations, g_object_ref(allocation));
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "alice";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	g_assert_false(venture_payables_service_apply_payment(venture_payables_service_get(f->db),
+		VENTURE_BILL_PAYMENT(paid), allocations, &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	/* The approved intent includes amount and explicit allocations, even
+	 * though payment.bill-id is zero. */
+	actor.name = "bob";
+	g_assert_true(venture_entity_set_field_from_string(paid, "amount", "50 USD", &error));
+	g_assert_true(venture_entity_set_field_from_string(allocation, "amount", "50 USD", &error));
+	g_assert_false(venture_payables_service_apply_payment(venture_payables_service_get(f->db),
+		VENTURE_BILL_PAYMENT(paid), allocations, &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	g_assert_true(venture_entity_set_field_from_string(paid, "amount", "100 USD", &error));
+	g_assert_true(venture_entity_set_field_from_string(allocation, "amount", "100 USD", &error));
+	g_assert_true(venture_payables_service_apply_payment(venture_payables_service_get(f->db),
+		VENTURE_BILL_PAYMENT(paid), allocations, &actor, &error));
+	g_assert_no_error(error);
+	status(f, invoice, "paid");
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1067,6 +1113,7 @@ main(int argc, char **argv)
 	g_test_add("/payables/paid-line-expense", Fixture, NULL, setup, test_paid_line_expense, teardown);
 	g_test_add("/payables/periods", Fixture, NULL, setup, test_periods, teardown);
 	g_test_add("/payables/credit-void-refund", Fixture, NULL, setup, test_credit_void_refund, teardown);
+	g_test_add("/payables/batch-approval", Fixture, NULL, setup, test_batch_approval, teardown);
 	g_test_add("/payables/batch", Fixture, NULL, setup, test_batch, teardown);
 	g_test_add("/payables/bulk-workbench", Fixture, NULL, setup, test_bulk_workbench, teardown);
 	g_test_add("/payables/migration", Fixture, NULL, setup, test_migration, teardown);

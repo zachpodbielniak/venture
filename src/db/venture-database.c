@@ -1111,6 +1111,37 @@ venture_database_check_references(
 static gboolean database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
 	const VentureActor *actor, GError **error);
 
+/* Every lifecycle entry point uses the same subsystem guard set. Each
+ * guard owns its record types; adding a feature must not leave restore or
+ * purge as an unguarded alternate writer. */
+static gboolean
+check_subsystem_write(VentureDatabase *self, VentureEntity *entity, gboolean removal, GError **error)
+{
+	typedef gboolean (*WriteGuard)(VentureDatabase *, VentureEntity *, gboolean, GError **);
+	static const WriteGuard guards[] = {
+		venture_bank_check_write,
+		venture_cutover_check_write,
+		venture_setup_check_write,
+		venture_progress_check_write,
+		venture_portal_check_write,
+		venture_supplier_portal_check_write,
+		venture_backup_check_write,
+		venture_tax_filing_check_write,
+		venture_accounting_approval_check_write,
+		venture_claims_check_write,
+		venture_payroll_check_write,
+		venture_goods_check_write,
+		venture_budget_check_write,
+		venture_equity_check_write,
+		venture_group_check_write
+	};
+	guint i;
+	for (i = 0; i < G_N_ELEMENTS(guards); i++)
+		if (!guards[i](self, entity, removal, error))
+			return FALSE;
+	return TRUE;
+}
+
 gboolean
 venture_database_save(
 	VentureDatabase		 *self,
@@ -1139,21 +1170,7 @@ venture_database_save(
 		if (!ok || handled)
 			return ok;
 	}
-	if (!venture_bank_check_write(self, entity, FALSE, error) ||
-		!venture_cutover_check_write(self, entity, FALSE, error) ||
-		!venture_setup_check_write(self, entity, FALSE, error) ||
-		!venture_progress_check_write(self, entity, FALSE, error) ||
-		!venture_portal_check_write(self, entity, FALSE, error) ||
-		!venture_supplier_portal_check_write(self, entity, FALSE, error) ||
-		!venture_backup_check_write(self, entity, FALSE, error) ||
-		!venture_tax_filing_check_write(self, entity, FALSE, error) ||
-		!venture_accounting_approval_check_write(self, entity, FALSE, error) ||
-		!venture_claims_check_write(self, entity, FALSE, error) ||
-		!venture_payroll_check_write(self, entity, FALSE, error) ||
-		!venture_goods_check_write(self, entity, FALSE, error) ||
-		!venture_budget_check_write(self, entity, FALSE, error) ||
-		!venture_equity_check_write(self, entity, FALSE, error) ||
-		!venture_group_check_write(self, entity, FALSE, error))
+	if (!check_subsystem_write(self, entity, FALSE, error))
 		return FALSE;
 
 	VENTURE_AUTOJOURNAL_SAVE_HOOK(self, entity, actor, error);
@@ -1670,23 +1687,9 @@ venture_database_delete(
 	}
 	if (!venture_billing_check_removal(self, entity, error))
 		return FALSE;
-	if (!venture_bank_check_write(self, entity, TRUE, error) ||
-		!venture_cutover_check_write(self, entity, TRUE, error) ||
-		!venture_setup_check_write(self, entity, TRUE, error) ||
-		!venture_progress_check_write(self, entity, TRUE, error) ||
-		!venture_portal_check_write(self, entity, TRUE, error) ||
-		!venture_supplier_portal_check_write(self, entity, TRUE, error) ||
-		!venture_backup_check_write(self, entity, TRUE, error) ||
-		!venture_tax_filing_check_write(self, entity, TRUE, error) ||
-		!venture_accounting_approval_check_write(self, entity, TRUE, error) ||
-		!venture_goods_check_write(self, entity, TRUE, error) ||
-		!venture_budget_check_write(self, entity, TRUE, error) ||
-		!venture_equity_check_write(self, entity, TRUE, error) ||
-		!venture_group_check_write(self, entity, TRUE, error) ||
+	if (!check_subsystem_write(self, entity, TRUE, error) ||
 		!venture_payables_check_removal(self, entity, error) ||
-		!venture_receivables_check_removal(self, entity, error) ||
-		!venture_claims_check_write(self, entity, TRUE, error) ||
-		!venture_payroll_check_write(self, entity, TRUE, error))
+		!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_sequences_check_removal(entity, error))
 		return FALSE;
@@ -1772,23 +1775,9 @@ venture_database_restore(
 	}
 	if (!venture_billing_check_removal(self, entity, error))
 		return FALSE;
-	if (!venture_bank_check_write(self, entity, TRUE, error) ||
-		!venture_cutover_check_write(self, entity, TRUE, error) ||
-		!venture_setup_check_write(self, entity, TRUE, error) ||
-		!venture_progress_check_write(self, entity, TRUE, error) ||
-		!venture_portal_check_write(self, entity, TRUE, error) ||
-		!venture_supplier_portal_check_write(self, entity, TRUE, error) ||
-		!venture_backup_check_write(self, entity, TRUE, error) ||
-		!venture_tax_filing_check_write(self, entity, TRUE, error) ||
-		!venture_accounting_approval_check_write(self, entity, TRUE, error) ||
-		!venture_goods_check_write(self, entity, TRUE, error) ||
-		!venture_budget_check_write(self, entity, TRUE, error) ||
-		!venture_equity_check_write(self, entity, TRUE, error) ||
-		!venture_group_check_write(self, entity, TRUE, error) ||
+	if (!check_subsystem_write(self, entity, TRUE, error) ||
 		!venture_payables_check_removal(self, entity, error) ||
-		!venture_receivables_check_removal(self, entity, error) ||
-		!venture_claims_check_write(self, entity, TRUE, error) ||
-		!venture_payroll_check_write(self, entity, TRUE, error))
+		!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_sequences_check_removal(entity, error))
 		return FALSE;
@@ -1854,23 +1843,9 @@ venture_database_purge(
 	}
 	if (!venture_billing_check_removal(self, entity, error))
 		return FALSE;
-	if (!venture_bank_check_write(self, entity, TRUE, error) ||
-		!venture_cutover_check_write(self, entity, TRUE, error) ||
-		!venture_setup_check_write(self, entity, TRUE, error) ||
-		!venture_progress_check_write(self, entity, TRUE, error) ||
-		!venture_portal_check_write(self, entity, TRUE, error) ||
-		!venture_supplier_portal_check_write(self, entity, TRUE, error) ||
-		!venture_backup_check_write(self, entity, TRUE, error) ||
-		!venture_tax_filing_check_write(self, entity, TRUE, error) ||
-		!venture_accounting_approval_check_write(self, entity, TRUE, error) ||
-		!venture_goods_check_write(self, entity, TRUE, error) ||
-		!venture_budget_check_write(self, entity, TRUE, error) ||
-		!venture_equity_check_write(self, entity, TRUE, error) ||
-		!venture_group_check_write(self, entity, TRUE, error) ||
+	if (!check_subsystem_write(self, entity, TRUE, error) ||
 		!venture_payables_check_removal(self, entity, error) ||
-		!venture_receivables_check_removal(self, entity, error) ||
-		!venture_claims_check_write(self, entity, TRUE, error) ||
-		!venture_payroll_check_write(self, entity, TRUE, error))
+		!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_sequences_check_removal(entity, error))
 		return FALSE;

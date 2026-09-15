@@ -54,6 +54,11 @@ void venture_bank_feed_transport_get_async(VentureBankFeedTransport *self, const
  * Returns: (transfer full) (nullable): response body
  */
 gchar *venture_bank_feed_transport_get_finish(VentureBankFeedTransport *self, GAsyncResult *result, GError **error);
+/**
+ * venture_bank_feed_transport_new_http:
+ *
+ * Returns: (transfer full): owned result
+ */
 VentureBankFeedTransport *venture_bank_feed_transport_new_http(void);
 
 #define VENTURE_TYPE_BANK_FEED (venture_bank_feed_get_type())
@@ -62,6 +67,7 @@ G_DECLARE_INTERFACE(VentureBankFeed, venture_bank_feed, VENTURE, BANK_FEED, GObj
  * VentureBankFeedInterface:
  * @get_name: registry key
  * @fetch: provider transactions as JSON objects with id, date, amount, description
+ * @fetch_async: nonblocking fetch, returning a GTask with owned JSON objects
  */
 struct _VentureBankFeedInterface
 {
@@ -69,7 +75,16 @@ struct _VentureBankFeedInterface
 	const gchar *(*get_name)(VentureBankFeed *self);
 	GPtrArray *(*fetch)(VentureBankFeed *self, const gchar *account_id, GDateTime *from,
 		GDateTime *to, const gchar *currency, GError **error);
+	void (*fetch_async)(VentureBankFeed *self, const gchar *account_id, GDateTime *from,
+		GDateTime *to, const gchar *currency, GCancellable *cancellable,
+		GAsyncReadyCallback callback, gpointer user_data);
 };
+/**
+ * venture_bank_feed_get_name:
+ * @self: the service or registry instance
+ *
+ * Returns: (transfer none): provider registry key
+ */
 const gchar *venture_bank_feed_get_name(VentureBankFeed *self);
 /**
  * venture_bank_feed_fetch:
@@ -85,8 +100,41 @@ const gchar *venture_bank_feed_get_name(VentureBankFeed *self);
 GPtrArray *venture_bank_feed_fetch(VentureBankFeed *self, const gchar *account_id,
 	GDateTime *from, GDateTime *to, const gchar *currency, GError **error);
 
+/**
+ * venture_bank_feed_fetch_async:
+ * @self: provider
+ * @account_id: account identifier
+ * @from: inclusive start
+ * @to: exclusive end
+ * @currency: (nullable): book currency
+ * @cancellable: (nullable): cancellation
+ * @callback: (scope async): completion on the thread-default main context
+ * @user_data: (closure): callback data
+ *
+ * Providers implement fetch_async with a GTask returning an owned GPtrArray
+ * of owned JsonObject values. Implementations must copy borrowed arguments
+ * before returning. A synchronous-only plugin is refused by async callers.
+ */
+void venture_bank_feed_fetch_async(VentureBankFeed *self, const gchar *account_id,
+	GDateTime *from, GDateTime *to, const gchar *currency, GCancellable *cancellable,
+	GAsyncReadyCallback callback, gpointer user_data);
+/**
+ * venture_bank_feed_fetch_finish:
+ * @self: provider
+ * @result: async result
+ * @error: (out) (optional): failure
+ *
+ * Returns: (transfer full) (element-type JsonObject) (nullable): transactions
+ */
+GPtrArray *venture_bank_feed_fetch_finish(VentureBankFeed *self, GAsyncResult *result, GError **error);
+
 #define VENTURE_TYPE_BANK_FEED_REGISTRY (venture_bank_feed_registry_get_type())
 G_DECLARE_FINAL_TYPE(VentureBankFeedRegistry, venture_bank_feed_registry, VENTURE, BANK_FEED_REGISTRY, GObject)
+/**
+ * venture_bank_feed_registry_new:
+ *
+ * Returns: (transfer full): owned result
+ */
 VentureBankFeedRegistry *venture_bank_feed_registry_new(void);
 /**
  * venture_bank_feed_registry_add:
@@ -102,6 +150,13 @@ void venture_bank_feed_registry_add(VentureBankFeedRegistry *self, VentureBankFe
  * Returns: (transfer none) (nullable): borrowed feed
  */
 VentureBankFeed *venture_bank_feed_registry_lookup(VentureBankFeedRegistry *self, const gchar *name);
+/**
+ * venture_bank_feed_registry_remove:
+ * @self: the service or registry instance
+ * @name: name or registry key
+ *
+ * Returns: TRUE if an entry was removed
+ */
 gboolean venture_bank_feed_registry_remove(VentureBankFeedRegistry *self, const gchar *name);
 /**
  * venture_bank_feed_registry_list:
@@ -113,12 +168,34 @@ GPtrArray *venture_bank_feed_registry_list(VentureBankFeedRegistry *self);
 
 #define VENTURE_TYPE_TELLER_FEED (venture_teller_feed_get_type())
 G_DECLARE_FINAL_TYPE(VentureTellerFeed, venture_teller_feed, VENTURE, TELLER_FEED, GObject)
+/**
+ * venture_teller_feed_new:
+ * @access_token: provider credential, copied by the constructor
+ * @transport: (nullable): injected transport; NULL selects HTTP
+ *
+ * Returns: (transfer full): owned result
+ */
 VentureBankFeed *venture_teller_feed_new(const gchar *access_token, VentureBankFeedTransport *transport);
 
 #define VENTURE_TYPE_BANKFEED_SERVICE (venture_bankfeed_service_get_type())
 G_DECLARE_FINAL_TYPE(VentureBankFeedService, venture_bankfeed_service, VENTURE, BANKFEED_SERVICE, GObject)
+/**
+ * venture_bankfeed_service_new:
+ * @database: database owning the records
+ * @organization_id: target legal entity ID
+ * @transport: (nullable): injected transport; NULL selects HTTP
+ * @error: (out) (optional): return location for an error
+ *
+ * Returns: (transfer full) (nullable): owned result
+ */
 VentureBankFeedService *venture_bankfeed_service_new(VentureDatabase *database, gint64 organization_id,
 	VentureBankFeedTransport *transport, GError **error);
+/**
+ * venture_bankfeed_service_get_registry:
+ * @self: the service or registry instance
+ *
+ * Returns: (transfer none): borrowed result
+ */
 VentureBankFeedRegistry *venture_bankfeed_service_get_registry(VentureBankFeedService *self);
 /**
  * venture_bankfeed_service_sync:
@@ -162,6 +239,17 @@ void venture_bankfeed_service_sync_async(VentureBankFeedService *self, gint64 co
  * Returns: imported row count, or -1
  */
 gint venture_bankfeed_service_sync_finish(VentureBankFeedService *self, GAsyncResult *result, GError **error);
+/**
+ * venture_bankfeed_service_sync_due:
+ * @self: the service or registry instance
+ * @organization_id: target legal entity ID
+ * @actor: (nullable): audit actor; NULL for internal service work
+ * @error: (out) (optional): return location for an error
+ *
+ * Syncs connections belonging to the requested organization through the shared asynchronous import path.
+ *
+ * Returns: number processed, or -1 on failure
+ */
 gint venture_bankfeed_service_sync_due(VentureBankFeedService *self, gint64 organization_id,
 	const VentureActor *actor, GError **error);
 

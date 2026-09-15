@@ -5,3 +5,11 @@
 /portal/:token= lists that customer's invoices. Pay records a receipt through
 =VentureSettlementService=. Revoke ends access without deleting history.
 Unknown or revoked tokens return 404.
+
+* Checkout
+
+The customer page's Checkout action revalidates the invitation token and
+invoice ownership, then opens the existing Stripe Checkout service for the
+server-calculated outstanding balance. A missing Stripe configuration is an
+explicit error. Only verified Stripe completion records a receipt; submitting
+an amount to the portal does not pay an invoice.

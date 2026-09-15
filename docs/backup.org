@@ -1,12 +1,19 @@
-#+title: Accounting backup and restore
-#+description: Export an organization pack and restore into an empty org
+#+title: Accounting pack export and limited restore
+#+description: Inspect accounting exports; use full database backups for recovery
 
-=VentureBackupService= exports a versioned JSON pack: chart (code, name,
-kind), non-settlement posted journals, invoices with frozen line tax,
-invoice events, receipts, allocations, bills and bank accounts. Restore
-recreates accounts, posts opening journals, issues sent invoices (which
-rebuilds tax freeze and invoice journals), then applies receipts through
-=VentureSettlementService= so allocations and cash match the source.
-Settlement journals are not replayed as raw rows. Restore requires an
-organization with no journals. A second restore into the same books is
-refused.
+=VentureBackupService= exports a version 3 JSON accounting pack. It includes
+accounts, journal amounts and dimensions, invoice data, receipts, allocations,
+invoice events, refunds, customer credits, companies, control maps, bills and
+bank accounts. CSV is a section-count summary, not a restorable backup.
+
+This pack is not a full database backup. Document restore is refused before
+any writes because the format cannot reconstruct every original relationship,
+frozen tax decision, workflow event or provider record. Version 1 and 2 packs
+are also refused: missing history cannot be distinguished from empty history.
+Use a full database backup for recovery of an operating organization.
+
+The limited importer accepts only version 3 packs with accounts and manual
+organization journals and no document/customer/bank history. It requires an
+organization with no journals and performs all writes in one transaction.
+Default account mappings reuse the target's seeded accounts. This is an
+opening-ledger import, not an identity-preserving historical restore.

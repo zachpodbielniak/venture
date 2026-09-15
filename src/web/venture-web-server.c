@@ -6494,6 +6494,21 @@ venture_web_ui_form(
 	g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
 	                         "<div class=\"form-grid\">");
 
+	{
+		gint64 org = (0 != id)
+			? venture_entity_get_organization_id(record)
+			: venture_web_active_organization(self, request);
+		g_autoptr(GPtrArray) extra = NULL;
+		guint custom;
+		if (org == 0)
+			org = venture_context_get_default_organization_id(self->context);
+		extra = venture_custom_fields_form_specs(venture_context_get_database(self->context),
+			org, type_name, record, NULL);
+		for (custom = 0; extra && custom < extra->len; custom++)
+			g_ptr_array_add(specs, venture_field_spec_copy(g_ptr_array_index(extra, custom)));
+		venture_custom_fields_order_specs(venture_context_get_database(self->context), org, type_name, specs);
+	}
+
 	for (i = 0; i < specs->len; i++)
 	{
 		VentureFieldSpec *spec;
@@ -6520,19 +6535,6 @@ venture_web_ui_form(
 				return venture_web_error_response(error);
 		}
 		venture_web_append_form_field(self, content, spec, record);
-	}
-	{
-		gint64 org = (0 != id)
-			? venture_entity_get_organization_id(record)
-			: venture_web_active_organization(self, request);
-		g_autoptr(GPtrArray) extra = NULL;
-		guint custom;
-		if (org == 0)
-			org = venture_context_get_default_organization_id(self->context);
-		extra = venture_custom_fields_form_specs(venture_context_get_database(self->context),
-			org, type_name, record, NULL);
-		for (custom = 0; extra && custom < extra->len; custom++)
-			venture_web_append_form_field(self, content, g_ptr_array_index(extra, custom), record);
 	}
 
 	g_string_append(content, "</div></div></div>");

@@ -218,6 +218,28 @@ test_cannot_invoice_unfulfilled(Fixture *f, gconstpointer unused)
 	g_assert_nonnull(strstr(error->message, "fulfilled"));
 }
 
+static void
+test_derived_insert(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) order = record(f, "sales_order");
+	g_autoptr(VentureEntity) line = record(f, "sales_order_line");
+	g_autoptr(GError) error = NULL;
+	(void)unused;
+	g_object_set(order, "number", "SO-FORGED", "company-id", f->customer, "currency", "USD", "status", "draft", NULL);
+	field(order, "ordered-at", "2026-05-02");
+	save(f, order);
+	g_object_set(line, "sales-order-id", venture_entity_get_id(order), "product-id", f->product,
+		"inventory-item-id", f->item, "description", "Widget", "quantity", (gint64)2,
+		"allocated-qty", (gint64)2, "fulfilled-qty", (gint64)2, NULL);
+	field(line, "unit-price", "20 USD");
+	g_assert_false(venture_database_save(f->db, line, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_object_set(order, "status", "allocated", NULL);
+	g_assert_false(venture_database_save(f->db, order, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -226,5 +248,6 @@ main(int argc, char **argv)
 	g_test_add("/sales-orders/partial-invoice", Fixture, NULL, setup, test_partial_fulfill_invoice, teardown);
 	g_test_add("/sales-orders/service-line", Fixture, NULL, setup, test_service_without_fulfillment, teardown);
 	g_test_add("/sales-orders/unfulfilled", Fixture, NULL, setup, test_cannot_invoice_unfulfilled, teardown);
+	g_test_add("/sales-orders/derived-insert", Fixture, NULL, setup, test_derived_insert, teardown);
 	return g_test_run();
 }

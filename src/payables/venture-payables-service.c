@@ -1176,24 +1176,15 @@ gboolean
 venture_payables_service_apply_payment(VenturePayablesService *self,
 	VentureBillPayment *payment, GPtrArray *allocations, const VentureActor *actor, GError **error)
 {
+	g_autoptr(VentureEntity) approval = NULL;
 	g_autoptr(VentureEntity) original = NULL;
 	g_autoptr(GPtrArray) originals = NULL;
 	gboolean ok;
 	guint i;
 
-	{
-		gint64 bill_id = 0;
-		g_autoptr(VentureEntity) bill = NULL;
-		g_object_get(payment, "bill-id", &bill_id, NULL);
-		if (bill_id > 0)
-		{
-			bill = venture_database_get(self->database, VENTURE_TYPE_VENDOR_BILL, bill_id, error);
-			if (bill == NULL)
-				return FALSE;
-			if (!venture_accounting_approval_allow(self->database, "pay", bill, actor, error))
-				return FALSE;
-		}
-	}
+	if (!venture_accounting_approval_allow(self->database, "pay", VENTURE_ENTITY(payment),
+		allocations, actor, &approval, error))
+		return FALSE;
 	if (!begin_operation(self, "bill_payment", error))
 		return FALSE;
 	original = snapshot(VENTURE_ENTITY(payment));
@@ -1209,9 +1200,9 @@ venture_payables_service_apply_payment(VenturePayablesService *self,
 			g_ptr_array_add(originals, snapshot(g_ptr_array_index(allocations, i)));
 		}
 	ok = perform_payment(self, VENTURE_ENTITY(payment), allocations, actor, error);
-	ok = finish_operation(self, ok, error);
 	if (ok)
-		ok = venture_accounting_approval_consume(self->database, actor, error);
+		ok = venture_accounting_approval_consume(self->database, approval, actor, error);
+	ok = finish_operation(self, ok, error);
 	if (!ok)
 	{
 		venture_entity_copy_properties_from(VENTURE_ENTITY(payment), original, FALSE);
@@ -1410,6 +1401,7 @@ venture_payables_save_hook(VentureDatabase *database, VentureEntity *record,
 	VenturePayablesService *self;
 	g_autoptr(VentureEntity) previous = NULL;
 	g_autoptr(VentureEntity) original = NULL;
+	g_autoptr(VentureEntity) approval = NULL;
 	gboolean ok;
 
 	*handled = FALSE;
@@ -1492,6 +1484,8 @@ venture_payables_save_hook(VentureDatabase *database, VentureEntity *record,
 	}
 	if (VENTURE_IS_BILL_PAYMENT(record))
 		return venture_payables_service_apply_payment(self, VENTURE_BILL_PAYMENT(record), NULL, actor, error);
+	if (!venture_accounting_approval_allow(database, "pay", record, NULL, actor, &approval, error))
+		return FALSE;
 	if (!begin_operation(self, "bill_payment", error))
 		return FALSE;
 	original = snapshot(record);
@@ -1503,6 +1497,8 @@ venture_payables_save_hook(VentureDatabase *database, VentureEntity *record,
 		ok = perform_refund(self, record, actor, error);
 	else
 		ok = refuse(error, VENTURE_ERROR_VALIDATION, "Bill events can only be written by VenturePayablesService");
+	if (ok)
+		ok = venture_accounting_approval_consume(database, approval, actor, error);
 	ok = finish_operation(self, ok, error);
 	if (!ok)
 		venture_entity_copy_properties_from(record, original, FALSE);

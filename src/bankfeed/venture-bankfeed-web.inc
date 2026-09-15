@@ -31,6 +31,17 @@ bankfeed_sync(HtmxRequest *request, GHashTable *params, gpointer data)
 		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "Bank feed module is disabled (bankfeed.enabled)");
 		return venture_web_error_response(error);
 	}
+	{
+		g_autoptr(VentureEntity) connection = venture_database_get(venture_context_get_database(self->context),
+			VENTURE_TYPE_BANK_CONNECTION, id != NULL ? g_ascii_strtoll(id, NULL, 10) : 0, &error);
+		if (connection == NULL)
+			return venture_web_error_response(error);
+		if (venture_entity_get_organization_id(connection) != venture_web_active_organization(self, request))
+		{
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Bank connection is not in the active organization");
+			return venture_web_error_response(error);
+		}
+	}
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
 	body = htmx_request_get_json(request, NULL);

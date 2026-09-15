@@ -404,6 +404,37 @@ test_flow(Fixture *f, gconstpointer data)
 	price = record_new(f, "stripe_price_link");
 	g_object_set(price, "product-id", f->product_id, "stripe-price-id", "price_offline", NULL);
 	save(f, price);
+	if (!g_strcmp0(mode, "portal"))
+	{
+		g_autoptr(VentureWebServer) server = NULL;
+		g_autoptr(VentureEntity) access = NULL;
+		g_autofree gchar *state_dir = NULL, *token = NULL, *path = NULL, *form = NULL;
+		VenturePortalService *portal = venture_portal_service_get(f->database);
+		access = venture_portal_service_invite(portal, f->organization_id, f->customer_id,
+			"customer@example.test", NULL, &error);
+		g_assert_no_error(error);
+		g_object_get(access, "token", &token, NULL);
+		venture_context_set_stripe_service(f->context, service);
+		server = start_server(f, &state_dir);
+		g_object_set(f->config, "security-require-auth", TRUE, NULL);
+		path = g_strdup_printf("/portal/%s", token);
+		form = g_strdup_printf("invoice_id=%" G_GINT64_FORMAT "&amount=0.01", venture_entity_get_id(invoice));
+		/* The invitation authorizes Checkout, never a submitted receipt. */
+		g_assert_cmpuint(http_request(server, "POST", path, "application/x-www-form-urlencoded", form, NULL), ==, 303);
+		g_assert_cmpuint(((FakeTransport *)transport)->checkouts, ==, 1);
+		balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->database),
+			venture_entity_get_id(invoice), NULL, &error);
+		g_assert_no_error(error);
+		g_assert_cmpint(venture_money_get_amount(balance), ==, 10000);
+		g_assert_true(venture_portal_service_revoke(portal, VENTURE_CUSTOMER_PORTAL_ACCESS(access), NULL, &error));
+		g_assert_no_error(error);
+		g_assert_cmpuint(http_request(server, "POST", path, "application/x-www-form-urlencoded", form, NULL), ==, 404);
+		g_assert_cmpuint(((FakeTransport *)transport)->checkouts, ==, 1);
+		venture_web_server_stop(server);
+		g_clear_object(&server);
+		venture_test_remove_tree(state_dir);
+		return;
+	}
 	if (!g_strcmp0(mode, "surfaces"))
 	{
 		g_autoptr(VentureWebServer) server = NULL;
@@ -928,7 +959,7 @@ main(int argc, char **argv)
 
 	g_test_add_func("/stripe/missing-key", test_missing_key);
 	{
-		static const gchar *const cases[] = { "checkout", "customer-reuse", "surfaces", "module-off", "immutable", "completed-duplicate", "unknown-session", "amount-mismatch", "precision-mismatch", "overflow-mismatch", "currency-mismatch", "bad-signature", "rollback" };
+		static const gchar *const cases[] = { "checkout", "portal", "customer-reuse", "surfaces", "module-off", "immutable", "completed-duplicate", "unknown-session", "amount-mismatch", "precision-mismatch", "overflow-mismatch", "currency-mismatch", "bad-signature", "rollback" };
 		guint i;
 		for (i = 0; i < G_N_ELEMENTS(cases); i++)
 		{

@@ -52,7 +52,7 @@ account_id(Fixture *f, const gchar *code)
 }
 
 static void
-seed_books(Fixture *f)
+seed_books(Fixture *f, gboolean documents)
 {
 	g_autoptr(VentureJournal) journal = venture_journal_new();
 	g_autoptr(VentureJournalLine) debit = venture_journal_line_new();
@@ -75,6 +75,8 @@ seed_books(Fixture *f)
 	g_ptr_array_add(lines, g_object_ref(credit));
 	g_assert_nonnull(venture_posting_service_post(venture_database_get_posting_service(f->db),
 		journal, lines, NULL, NULL, &error));
+	if (!documents)
+		return;
 	g_object_set(customer, "name", "Acme", NULL);
 	venture_entity_set_organization_id(VENTURE_ENTITY(customer), f->org);
 	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(customer), NULL, &error));
@@ -128,7 +130,7 @@ test_export_restore_empty_org(Fixture *f, gconstpointer data)
 	actor.prompt = NULL;
 	actor.request_id = NULL;
 	actor.approved_by = NULL;
-	seed_books(f);
+	seed_books(f, TRUE);
 	backup = venture_backup_service_export(venture_backup_service_get(f->db),
 		f->org, "json", &actor, &error);
 	g_assert_no_error(error);
@@ -139,49 +141,16 @@ test_export_restore_empty_org(Fixture *f, gconstpointer data)
 		"default-currency", "USD", NULL);
 	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(empty), NULL, &error));
 	dest = venture_entity_get_id(VENTURE_ENTITY(empty));
-	g_assert_true(venture_backup_service_restore(venture_backup_service_get(f->db),
-		dest, payload, &actor, &error));
-	g_assert_no_error(error);
-	g_assert_cmpint(count_type(f, dest, VENTURE_TYPE_JOURNAL), >=, count_type(f, f->org, VENTURE_TYPE_JOURNAL));
-	g_assert_cmpint(count_type(f, dest, VENTURE_TYPE_INVOICE), >=, 1);
-	{
-		g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_ACCOUNT);
-		g_autoptr(GPtrArray) rows = NULL;
-		guint i;
-		gboolean found_ap = FALSE;
-		venture_query_set_organization(q, dest);
-		rows = venture_database_find(f->db, q, NULL);
-		for (i = 0; rows && i < rows->len; i++)
-		{
-			g_autofree gchar *code = NULL;
-			gint kind = 0;
-			g_object_get(g_ptr_array_index(rows, i), "code", &code, "kind", &kind, NULL);
-			if (code && g_str_has_suffix(code, "2000"))
-			{
-				g_assert_cmpint(kind, ==, VENTURE_ACCOUNT_KIND_LIABILITY);
-				found_ap = TRUE;
-			}
-		}
-		g_assert_true(found_ap);
-	}
-	{
-		g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_INVOICE);
-		g_autoptr(GPtrArray) rows = NULL;
-		gint status = 0;
-		venture_query_set_organization(q, dest);
-		rows = venture_database_find(f->db, q, NULL);
-		g_assert_cmpuint(rows->len, >=, 1);
-		g_object_get(g_ptr_array_index(rows, 0), "status", &status, NULL);
-		g_assert_true(status == VENTURE_INVOICE_STATUS_SENT || status == VENTURE_INVOICE_STATUS_PAID);
-	}
-	g_assert_cmpint(count_type(f, dest, VENTURE_TYPE_PAYMENT), >=, 1);
-	g_assert_cmpint(count_type(f, dest, VENTURE_TYPE_PAYMENT_ALLOCATION), >=, 1);
-	g_assert_cmpint(count_type(f, dest, VENTURE_TYPE_INVOICE_EVENT), >=, 1);
-	g_assert_nonnull(strstr(payload, "\"payments\""));
-	g_assert_nonnull(strstr(payload, "\"allocations\""));
+	/* A document pack cannot be faithfully reconstructed by replaying issue
+	 * and payment shortcuts. Refusal must leave the destination untouched. */
 	g_assert_false(venture_backup_service_restore(venture_backup_service_get(f->db),
 		dest, payload, &actor, &error));
-	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED);
+	g_assert_cmpint(count_type(f, dest, VENTURE_TYPE_JOURNAL), ==, 0);
+	g_assert_cmpint(count_type(f, dest, VENTURE_TYPE_INVOICE), ==, 0);
+	g_assert_cmpint(count_type(f, dest, VENTURE_TYPE_ACCOUNT), ==, 0);
+	g_assert_nonnull(strstr(payload, "\"refund\""));
+	g_assert_nonnull(strstr(payload, "\"company\""));
 }
 
 static void
@@ -197,7 +166,7 @@ test_csv_export(Fixture *f, gconstpointer data)
 	actor.prompt = NULL;
 	actor.request_id = NULL;
 	actor.approved_by = NULL;
-	seed_books(f);
+	seed_books(f, TRUE);
 	backup = venture_backup_service_export(venture_backup_service_get(f->db),
 		f->org, "csv", &actor, &error);
 	g_assert_no_error(error);
@@ -206,11 +175,34 @@ test_csv_export(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(payload, "invoices"));
 }
 
+static void
+test_manual_import(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) backup = NULL;
+	g_autoptr(VentureOrganization) empty = venture_organization_new();
+	g_autofree gchar *payload = NULL;
+	gint64 dest;
+	(void)data;
+	seed_books(f, FALSE);
+	backup = venture_backup_service_export(venture_backup_service_get(f->db), f->org, "json", NULL, &error);
+	g_assert_no_error(error);
+	g_object_get(backup, "payload", &payload, NULL);
+	g_object_set(empty, "name", "Opening books", "legal-name", "Opening books", "default-currency", "USD", NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(empty), NULL, &error));
+	dest = venture_entity_get_id(VENTURE_ENTITY(empty));
+	g_assert_true(venture_backup_service_restore(venture_backup_service_get(f->db), dest, payload, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(count_type(f, dest, VENTURE_TYPE_JOURNAL), ==, 1);
+	g_assert_cmpint(count_type(f, dest, VENTURE_TYPE_ACCOUNT), ==, count_type(f, f->org, VENTURE_TYPE_ACCOUNT));
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/backup/export-restore", Fixture, NULL, setup, test_export_restore_empty_org, teardown);
 	g_test_add("/backup/csv", Fixture, NULL, setup, test_csv_export, teardown);
+	g_test_add("/backup/manual-import", Fixture, NULL, setup, test_manual_import, teardown);
 	return g_test_run();
 }

@@ -130,6 +130,12 @@ test_required_value_and_layout(Fixture *f, gconstpointer data)
 		f->org, "company", venture_entity_get_id(VENTURE_ENTITY(company)),
 		"po_number", "PO-42", &actor, &error));
 	g_assert_no_error(error);
+	{
+		gint64 id = venture_entity_get_id(VENTURE_ENTITY(company));
+		g_clear_object(&company);
+		company = VENTURE_COMPANY(venture_database_get(f->db, VENTURE_TYPE_COMPANY, id, &error));
+		g_assert_no_error(error);
+	}
 	g_object_set(company, "name", "With extras named", NULL);
 	save(f, VENTURE_ENTITY(company));
 	query = venture_query_new(VENTURE_TYPE_CUSTOM_FIELD_VALUE);
@@ -258,7 +264,114 @@ test_form_shows_layout_field(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(http_request(server, "GET", "/e/company/new", NULL, NULL, &body), ==, 200);
 	g_assert_nonnull(strstr(body, "po_number"));
 	g_assert_nonnull(strstr(body, "name=\"po_number\""));
+	g_assert_true(strstr(body, "name=\"po_number\"") < strstr(body, "name=\"name\""));
 	venture_test_remove_tree(dir);
+}
+
+/* Custom definitions must never turn a built-in secret into a form input. */
+static void
+test_reserved_names(Fixture *f, gconstpointer data)
+{
+	const gchar *names[] = { "token", "id", "uuid", "created_at", "bad.name", NULL };
+	guint i;
+	(void)data;
+	for (i = 0; names[i] != NULL; i++)
+	{
+		g_autoptr(GError) error = NULL;
+		g_autoptr(VentureEntity) field = venture_custom_fields_service_define(
+			venture_custom_fields_service_get(f->db), f->org, "forge", names[i],
+			"string", FALSE, NULL, NULL, &error);
+		g_assert_null(field);
+		g_assert_nonnull(error);
+	}
+}
+
+static void
+test_clear_and_overflow(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) field = NULL;
+	g_autoptr(VentureCompany) company = venture_company_new();
+	(void)data;
+	field = venture_custom_fields_service_define(venture_custom_fields_service_get(f->db),
+		f->org, "company", "count", "integer", TRUE, NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_object_set(company, "name", "Counted", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(company), f->org);
+	venture_entity_set_attribute(VENTURE_ENTITY(company), "count", "12");
+	save(f, VENTURE_ENTITY(company));
+	venture_entity_set_attribute(VENTURE_ENTITY(company), "count", "");
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(company), NULL, &error));
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	venture_entity_set_attribute(VENTURE_ENTITY(company), "count", "9999999999999999999999999");
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(company), NULL, &error));
+	g_assert_nonnull(error);
+}
+
+/* Clearing an optional value must clear its index as well, so reopening
+ * the form cannot resurrect the old text. */
+static void
+test_optional_clear_and_direct_write(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) field = NULL;
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(VentureCompany) company = venture_company_new();
+	g_autoptr(VentureCustomFieldValue) direct = venture_custom_field_value_new();
+	g_autoptr(GPtrArray) specs = NULL;
+	(void)data;
+	field = venture_custom_fields_service_define(venture_custom_fields_service_get(f->db),
+		f->org, "company", "optional_code", "string", FALSE, NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_object_set(company, "name", "Optional", "organization-id", f->org, NULL);
+	venture_entity_set_attribute(VENTURE_ENTITY(company), "optional_code", "OLD");
+	save(f, VENTURE_ENTITY(company));
+	venture_entity_set_attribute(VENTURE_ENTITY(company), "optional_code", NULL);
+	save(f, VENTURE_ENTITY(company));
+	stored = venture_database_get(f->db, VENTURE_TYPE_COMPANY, venture_entity_get_id(VENTURE_ENTITY(company)), &error);
+	g_assert_no_error(error);
+	specs = venture_custom_fields_form_specs(f->db, f->org, "company", stored, &error);
+	g_assert_no_error(error);
+	g_assert_cmpstr(venture_entity_get_attribute(stored, "optional_code"), ==, "");
+	g_object_set(direct, "organization-id", f->org, "record-type", "company",
+		"record-id", venture_entity_get_id(stored), "name", "optional_code", "value", "BYPASS", NULL);
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(direct), NULL, &error));
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	g_clear_object(&field);
+	field = venture_custom_fields_service_define(venture_custom_fields_service_get(f->db),
+		f->org, "company", "bad_enum", "enum", FALSE, "[42]", NULL, &error);
+	g_assert_null(field);
+	g_assert_nonnull(error);
+}
+
+static void
+test_legacy_secret_redaction(void)
+{
+	g_autoptr(VentureForge) before = venture_forge_new();
+	g_autoptr(VentureForge) after = venture_forge_new();
+	g_autoptr(VentureCustomFieldValue) value = venture_custom_field_value_new();
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *json = NULL;
+	venture_entity_set_attribute(VENTURE_ENTITY(before), "token", "legacy-synthetic-secret");
+	venture_entity_set_attribute(VENTURE_ENTITY(after), "token", "legacy-synthetic-secret");
+	venture_entity_set_attribute(VENTURE_ENTITY(after), "label", "changed");
+	node = venture_serializable_to_json(VENTURE_SERIALIZABLE(after), FALSE);
+	json = venture_json_to_string(node, FALSE);
+	g_assert_null(strstr(json, "legacy-synthetic-secret"));
+	g_clear_pointer(&node, json_node_unref);
+	g_clear_pointer(&json, g_free);
+	node = venture_entity_diff(VENTURE_ENTITY(before), VENTURE_ENTITY(after));
+	json = venture_json_to_string(node, FALSE);
+	g_assert_null(strstr(json, "legacy-synthetic-secret"));
+	g_assert_nonnull(strstr(json, "redacted"));
+	g_clear_pointer(&node, json_node_unref);
+	g_clear_pointer(&json, g_free);
+	g_object_set(value, "value", "legacy-synthetic-secret", NULL);
+	node = venture_serializable_to_json(VENTURE_SERIALIZABLE(value), FALSE);
+	json = venture_json_to_string(node, FALSE);
+	g_assert_null(strstr(json, "legacy-synthetic-secret"));
 }
 
 int
@@ -275,5 +388,9 @@ main(int argc, char **argv)
 		test_kind_and_enum_validation, teardown);
 	g_test_add("/custom-fields/form-layout", Fixture, NULL, setup,
 		test_form_shows_layout_field, teardown);
+	g_test_add("/custom-fields/reserved-names", Fixture, NULL, setup, test_reserved_names, teardown);
+	g_test_add("/custom-fields/clear-overflow", Fixture, NULL, setup, test_clear_and_overflow, teardown);
+	g_test_add("/custom-fields/optional-clear-direct", Fixture, NULL, setup, test_optional_clear_and_direct_write, teardown);
+	g_test_add_func("/custom-fields/legacy-secret-redaction", test_legacy_secret_redaction);
 	return g_test_run();
 }

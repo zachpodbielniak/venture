@@ -157,3 +157,16 @@ see another team's postings. =report_pack= groups saved reports for a
 schedule. =venture_report_pack_service_run_due= dispatches due packs
 (cron-like =0 8 * * *= daily, =0 8 1 * *= monthly) and stamps
 =last-run-at=. Automation: =venture->report_packs_run("1")=.
+
+* Scheduled report packs
+
+Schedules accept =daily= or five space-separated numeric/=*= fields: minute,
+hour, day of month, month, weekday (0 or 7 is Sunday). Evaluation uses UTC.
+Unsupported expressions are refused instead of interpreted as daily. When
+both day fields are specified, either may match. A delayed sweep catches up
+once on the scheduled day; it does not replay missed historical days.
+
+A successful run stores its result array in =report_pack.last_output= and
+updates =last_run_at= in the same record save. Read that JSON through the
+generic record API or CLI. A failed run preserves the previous output and
+timestamp. No email delivery or historical output archive is implied.

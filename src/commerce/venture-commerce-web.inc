@@ -28,7 +28,7 @@ commerce_import(HtmxRequest *request, GHashTable *params, gpointer data)
 	body = htmx_request_get_json(request, NULL);
 	if (body != NULL && JSON_NODE_HOLDS_OBJECT(body))
 		name = venture_json_object_get_string(json_node_get_object(body), "connector", NULL);
-	imported = venture_commerce_service_import(service, name, NULL, NULL, &actor, &error);
+	imported = venture_commerce_service_import_for_organization(service, venture_web_active_organization(self, request), name, NULL, NULL, &actor, &error);
 	if (imported < 0) return venture_web_error_response(error);
 	json_object_set_int_member(object, "imported", imported);
 	json_node_take_object(node, g_steal_pointer(&object));

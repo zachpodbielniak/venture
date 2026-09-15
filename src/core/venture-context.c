@@ -118,6 +118,8 @@ venture_context_new(
 	/* The cross-row checks a polymorphic link needs, on every writer. */
 	venture_record_link_install_validator(database);
 	venture_federation_install_validators(database);
+	/* Scheduled packs must validate through generic writers too. */
+	venture_report_pack_service_get(database);
 
 	/* And the ones a dashboard needs: a widget kind that exists, a
 	 * report that exists, one home page at a time. */

@@ -83,6 +83,7 @@ setup(Fixture *f, gconstpointer data)
 	g_autoptr(VentureCompany) company = NULL;
 	(void)data;
 	g_setenv("VENTURE_COMMERCE_SHOPIFY_TOKEN", "test-token", TRUE);
+	g_setenv("VENTURE_COMMERCE_SHOPIFY_SHOP", "shop.myshopify.com", TRUE);
 	f->config = venture_config_new();
 	g_object_set(f->config, "commerce-enabled", TRUE, NULL);
 	f->db = venture_database_new("sqlite://:memory:", &error);
@@ -134,6 +135,7 @@ test_missing_key(void)
 	g_assert_no_error(error);
 	g_assert_null(venture_commerce_connector_registry_lookup(venture_commerce_service_get_registry(service), "shopify"));
 	g_setenv("VENTURE_COMMERCE_SHOPIFY_TOKEN", "test-token", TRUE);
+	g_setenv("VENTURE_COMMERCE_SHOPIFY_SHOP", "shop.myshopify.com", TRUE);
 }
 
 static void
@@ -187,7 +189,7 @@ test_failure_rolls_back(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(count_type(f, VENTURE_TYPE_INVOICE), ==, 0);
 }
 
-typedef struct { GObject parent; gchar *body; } FakeTransport;
+typedef struct { GObject parent; gchar *body; gchar *next; gchar *url; guint calls; } FakeTransport;
 typedef struct { GObjectClass parent; } FakeTransportClass;
 GType fake_transport_get_type(void);
 static void fake_transport_iface(VentureBankFeedTransportInterface *iface);
@@ -198,10 +200,13 @@ fake_transport_get(VentureBankFeedTransport *transport, const gchar *url,
 	const gchar *authorization, GError **error)
 {
 	FakeTransport *self = (FakeTransport *)transport;
-	(void)url;
+	g_free(self->url);
+	self->url = g_strdup(url);
+	self->calls++;
 	(void)authorization;
 	(void)error;
-	return g_strdup(self->body != NULL ? self->body : "{\"orders\":[]}");
+	return g_strdup(self->calls > 1 && self->next != NULL ? self->next :
+		self->body != NULL ? self->body : "{\"orders\":[]}");
 }
 static void fake_transport_iface(VentureBankFeedTransportInterface *iface)
 {
@@ -210,6 +215,8 @@ static void fake_transport_iface(VentureBankFeedTransportInterface *iface)
 static void fake_transport_finalize(GObject *object)
 {
 	g_free(((FakeTransport *)object)->body);
+	g_free(((FakeTransport *)object)->next);
+	g_free(((FakeTransport *)object)->url);
 	G_OBJECT_CLASS(fake_transport_parent_class)->finalize(object);
 }
 static void fake_transport_class_init(FakeTransportClass *klass)
@@ -282,6 +289,69 @@ test_shopify_refuses_bare_usd(Fixture *f, gconstpointer data)
 	g_object_unref(transport);
 }
 
+/* A full first page must not silently truncate a window's orders. */
+static void
+test_shopify_pages(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureCommerceConnector) connector = NULL;
+	g_autoptr(GPtrArray) orders = NULL;
+	g_autoptr(GString) body = g_string_new("{\"orders\":[");
+	g_autoptr(GDateTime) from = g_date_time_new_from_iso8601("2026-08-01T12:30:00Z", NULL);
+	g_autoptr(GDateTime) to = g_date_time_new_from_iso8601("2026-08-02T13:45:00Z", NULL);
+	FakeTransport *transport = g_object_new(fake_transport_get_type(), NULL);
+	guint i;
+	for (i = 1; i <= 250; i++)
+		g_string_append_printf(body, "%s{\"id\":%u,\"currency\":\"USD\",\"line_items\":[]}", i > 1 ? "," : "", i);
+	g_string_append(body, "]}");
+	transport->body = g_strdup(body->str);
+	transport->next = g_strdup("{\"orders\":[{\"id\":251,\"currency\":\"USD\",\"line_items\":[]}]}");
+	connector = venture_shopify_connector_new("shop.myshopify.com", "synthetic-token", VENTURE_BANK_FEED_TRANSPORT(transport));
+	orders = venture_commerce_connector_fetch_orders(connector, from, to, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(orders->len, ==, 251);
+	g_assert_cmpuint(transport->calls, ==, 2);
+	g_assert_nonnull(strstr(transport->url, "since_id=250"));
+	g_assert_nonnull(strstr(transport->url, "created_at_min=2026-08-01T12%3A30%3A00Z"));
+	g_assert_nonnull(strstr(transport->url, "created_at_max=2026-08-02T13%3A45%3A00Z"));
+	g_object_unref(transport);
+}
+
+static void
+test_scoped_plugin_import(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureCommerceService) service = NULL;
+	g_autoptr(VentureOrganization) other = venture_organization_new();
+	g_autoptr(VentureCompany) customer = venture_company_new();
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVOICE);
+	g_autoptr(GPtrArray) rows = NULL;
+	FakeConnector *connector = g_object_new(fake_connector_get_type(), NULL);
+	JsonObject *spec;
+	gint64 org;
+	(void)data;
+	g_object_set(other, "name", "Other shop", "legal-name", "Other shop", "default-currency", "USD", NULL);
+	save(f, VENTURE_ENTITY(other));
+	org = venture_entity_get_id(VENTURE_ENTITY(other));
+	g_object_set(customer, "name", "Other customer", "organization-id", org, NULL);
+	save(f, VENTURE_ENTITY(customer));
+	service = venture_commerce_service_new(f->db, f->org, NULL, &error);
+	g_assert_no_error(error);
+	spec = order(f, "scoped:1", "Service", "10 USD", FALSE);
+	json_object_set_int_member(spec, "company_id", venture_entity_get_id(VENTURE_ENTITY(customer)));
+	json_object_set_boolean_member(spec, "send", FALSE);
+	g_ptr_array_add(connector->orders, spec);
+	venture_commerce_connector_registry_add(venture_commerce_service_get_registry(service), VENTURE_COMMERCE_CONNECTOR(connector));
+	g_assert_cmpint(venture_commerce_service_import_for_organization(service, org,
+		venture_commerce_connector_get_name(VENTURE_COMMERCE_CONNECTOR(connector)), NULL, NULL, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	venture_query_set_organization(query, org);
+	rows = venture_database_find(f->db, query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(rows->len, ==, 1);
+	g_assert_cmpint(venture_entity_get_organization_id(g_ptr_array_index(rows, 0)), ==, org);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -291,5 +361,7 @@ main(int argc, char **argv)
 	g_test_add("/commerce/failure-rollback", Fixture, NULL, setup, test_failure_rolls_back, teardown);
 	g_test_add("/commerce/shopify-currency-cancelled", Fixture, NULL, setup, test_shopify_currency_and_cancelled, teardown);
 	g_test_add("/commerce/shopify-refuses-usd-default", Fixture, NULL, setup, test_shopify_refuses_bare_usd, teardown);
+	g_test_add_func("/commerce/pagination-window", test_shopify_pages);
+	g_test_add("/commerce/scoped-plugin", Fixture, NULL, setup, test_scoped_plugin_import, teardown);
 	return g_test_run();
 }

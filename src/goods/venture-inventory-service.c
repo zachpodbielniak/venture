@@ -711,7 +711,7 @@ venture_goods_check_write(VentureDatabase *database, VentureEntity *record, gboo
 				return FALSE;
 			}
 		}
-		else if (status != NULL && g_strcmp0(status, "draft") != 0)
+		if (status != NULL && g_strcmp0(status, "draft") != 0)
 		{
 			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 				g_strcmp0(name, "purchase_order") == 0 ?
@@ -720,18 +720,18 @@ venture_goods_check_write(VentureDatabase *database, VentureEntity *record, gboo
 			return FALSE;
 		}
 	}
-	if (g_strcmp0(name, "sales_order_line") == 0 && venture_entity_is_persisted(record))
+	if (g_strcmp0(name, "sales_order_line") == 0)
 	{
-		g_autoptr(VentureEntity) stored = venture_database_get(database,
-			G_OBJECT_TYPE(record), venture_entity_get_id(record), NULL);
+		g_autoptr(VentureEntity) stored = venture_entity_is_persisted(record)
+			? venture_database_get(database, G_OBJECT_TYPE(record), venture_entity_get_id(record), error) : NULL;
 		gint64 allocated = 0, fulfilled = 0, stored_a = 0, stored_f = 0;
+		if (venture_entity_is_persisted(record) && stored == NULL)
+			return FALSE;
+		g_object_get(record, "allocated-qty", &allocated, "fulfilled-qty", &fulfilled, NULL);
 		if (stored != NULL)
-		{
-			g_object_get(record, "allocated-qty", &allocated, "fulfilled-qty", &fulfilled, NULL);
 			g_object_get(stored, "allocated-qty", &stored_a, "fulfilled-qty", &stored_f, NULL);
-			if (allocated != stored_a || fulfilled != stored_f)
-				return refuse(error, "fulfillment counters are owned by VentureSalesOrderService");
-		}
+		if (allocated != stored_a || fulfilled != stored_f)
+			return refuse(error, "fulfillment counters are owned by VentureSalesOrderService");
 	}
 	return TRUE;
 }

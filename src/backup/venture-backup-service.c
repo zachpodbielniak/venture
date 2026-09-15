@@ -116,17 +116,15 @@ all(VentureBackupService *self, GType type, gint64 org, GError **error)
 	return venture_database_find(self->database, query, error);
 }
 
-static const gchar *
-account_code_of(VentureBackupService *self, gint64 id)
+static gchar *
+account_code_of(VentureBackupService *self, gint64 id, GError **error)
 {
-	static gchar code[64];
-	g_autoptr(VentureEntity) account = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, id, NULL);
-	g_autofree gchar *value = NULL;
+	g_autoptr(VentureEntity) account = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, id, error);
+	gchar *value = NULL;
 	if (account == NULL)
-		return "";
+		return NULL;
 	g_object_get(account, "code", &value, NULL);
-	g_strlcpy(code, value ? value : "", sizeof(code));
-	return code;
+	return value;
 }
 
 static JsonNode *
@@ -176,10 +174,12 @@ export_json(VentureBackupService *self, gint64 org, GError **error)
 			"source-type", &source_type, NULL);
 		if (state != VENTURE_JOURNAL_POSTED)
 			continue;
-		if (g_strcmp0(source_type, "invoice") == 0 || g_strcmp0(source_type, "payment") == 0 ||
+		if (g_strcmp0(source_type, "invoice") == 0 || g_strcmp0(source_type, "invoice_event") == 0 || g_strcmp0(source_type, "payment") == 0 ||
 			g_strcmp0(source_type, "payment_allocation") == 0 || g_strcmp0(source_type, "refund") == 0)
 			continue;
 		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "source_type");
+		json_builder_add_string_value(builder, source_type ? source_type : "");
 		json_builder_set_member_name(builder, "currency");
 		json_builder_add_string_value(builder, currency);
 		json_builder_set_member_name(builder, "occurred_at");
@@ -201,11 +201,19 @@ export_json(VentureBackupService *self, gint64 org, GError **error)
 			gint side;
 			gint64 account_id;
 			g_autofree gchar *text = NULL;
+			g_autofree gchar *dimension = NULL;
+			g_autofree gchar *code = NULL;
+			g_object_get(line, "dimension", &dimension, NULL);
 			g_object_get(line, "account-id", &account_id, "side", &side, "amount", &amount, NULL);
 			text = venture_money_to_string(amount);
+			code = account_code_of(self, account_id, error);
+			if (code == NULL)
+				return NULL;
 			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "dimension");
+			json_builder_add_string_value(builder, dimension ? dimension : "");
 			json_builder_set_member_name(builder, "account_code");
-			json_builder_add_string_value(builder, account_code_of(self, account_id));
+			json_builder_add_string_value(builder, code);
 			json_builder_set_member_name(builder, "side");
 			json_builder_add_string_value(builder, side == VENTURE_LEDGER_SIDE_DEBIT ? "debit" : "credit");
 			json_builder_set_member_name(builder, "amount");
@@ -340,8 +348,24 @@ export_json(VentureBackupService *self, gint64 org, GError **error)
 		}
 	}
 	json_builder_end_array(builder);
+	{
+		static const gchar *const names[] = { "refund", "customer_credit", "company", "accounting_control_map" };
+		guint n;
+		for (n = 0; n < G_N_ELEMENTS(names); n++)
+		{
+			GType type = venture_entity_registry_lookup_any(venture_entity_registry_get_default(), names[n]);
+			g_autoptr(GPtrArray) rows = all(self, type, org, error);
+			if (rows == NULL)
+				return NULL;
+			json_builder_set_member_name(builder, names[n]);
+			json_builder_begin_array(builder);
+			for (i = 0; i < rows->len; i++)
+				json_builder_add_value(builder, venture_serializable_to_json(VENTURE_SERIALIZABLE(g_ptr_array_index(rows, i)), FALSE));
+			json_builder_end_array(builder);
+		}
+	}
 	json_builder_set_member_name(builder, "version");
-	json_builder_add_int_value(builder, 2);
+	json_builder_add_int_value(builder, 3);
 	json_builder_end_object(builder);
 	return json_builder_get_root(builder);
 }
@@ -388,29 +412,15 @@ venture_backup_service_export(VentureBackupService *self, gint64 organization_id
 }
 
 static gint64
-account_by_code(VentureBackupService *self, gint64 org, const gchar *code, const VentureActor *actor)
+account_by_code(VentureBackupService *self, gint64 org, const gchar *code, GError **error)
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
 	g_autoptr(VentureEntity) row = NULL;
-	g_autoptr(VentureAccount) account = NULL;
 	venture_query_set_organization(query, org);
-	venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, NULL);
-	row = venture_database_find_one(self->database, query, NULL);
-	if (row != NULL)
-		return venture_entity_get_id(row);
-	account = venture_account_new();
-	venture_entity_set_organization_id(VENTURE_ENTITY(account), org);
-	g_object_set(account, "code", code, "name", code, "kind",
-		(g_strcmp0(code, "4000") == 0) ? VENTURE_ACCOUNT_KIND_INCOME : VENTURE_ACCOUNT_KIND_ASSET,
-		"active", TRUE, NULL);
-	if (!venture_database_save(self->database, VENTURE_ENTITY(account), actor, NULL))
-	{
-		g_autofree gchar *prefixed = g_strdup_printf("%" G_GINT64_FORMAT ":%s", org, code);
-		g_object_set(account, "code", prefixed, NULL);
-		if (!venture_database_save(self->database, VENTURE_ENTITY(account), actor, NULL))
-			return 0;
-	}
-	return venture_entity_get_id(VENTURE_ENTITY(account));
+	if (!venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, error))
+		return 0;
+	row = venture_database_find_one(self->database, query, error);
+	return row != NULL ? venture_entity_get_id(row) : 0;
 }
 
 
@@ -434,6 +444,16 @@ restore_accounts(VentureBackupService *self, gint64 org, JsonArray *accounts, co
 		venture_query_set_organization(query, org);
 		venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, NULL);
 		existing = venture_database_find_one(self->database, query, NULL);
+		if (existing == NULL)
+		{
+			g_autofree gchar *scoped = g_strdup_printf("%" G_GINT64_FORMAT ":%s", org, code);
+			g_autoptr(VentureQuery) seeded = venture_query_new(VENTURE_TYPE_ACCOUNT);
+			venture_query_set_organization(seeded, org);
+			venture_query_add_filter_string(seeded, "code", VENTURE_FILTER_OP_EQ, scoped, NULL);
+			existing = venture_database_find_one(self->database, seeded, NULL);
+			if (existing != NULL)
+				g_object_set(existing, "code", code, NULL);
+		}
 		if (existing != NULL)
 		{
 			g_object_set(existing, "kind", kind, "name", name, "active", TRUE, NULL);
@@ -470,13 +490,14 @@ restore_journals(VentureBackupService *self, gint64 org, JsonArray *journals, co
 		{
 			JsonObject *line = json_array_get_object_element(lines, j);
 			g_autoptr(VentureJournalLine) jl = venture_journal_line_new();
-			gint64 account = account_by_code(self, org, json_object_get_string_member(line, "account_code"), actor);
+			gint64 account = account_by_code(self, org, json_object_get_string_member(line, "account_code"), error);
 			if (account == 0)
-				return refuse(error, "restore is missing a mapped account");
+				return error != NULL && *error != NULL ? FALSE : refuse(error, "restore is missing a mapped account");
 			g_object_set(jl, "account-id", account, "side",
 				g_strcmp0(json_object_get_string_member(line, "side"), "debit") == 0 ?
 					VENTURE_LEDGER_SIDE_DEBIT : VENTURE_LEDGER_SIDE_CREDIT,
 				"organization-id", org, NULL);
+			g_object_set(jl, "dimension", venture_json_object_get_string(line, "dimension", ""), NULL);
 			if (!venture_entity_set_field_from_string(VENTURE_ENTITY(jl), "amount",
 				json_object_get_string_member(line, "amount"), error))
 				return FALSE;
@@ -512,8 +533,11 @@ static gboolean
 restore_invoices(VentureBackupService *self, gint64 org, JsonArray *invoices, const VentureActor *actor, GError **error)
 {
 	guint i, j;
-	gint64 company = ensure_company(self, org, actor, error);
-	if (company == 0 && invoices && json_array_get_length(invoices) > 0)
+	gint64 company;
+	if (invoices == NULL || json_array_get_length(invoices) == 0)
+		return TRUE;
+	company = ensure_company(self, org, actor, error);
+	if (company == 0)
 		return FALSE;
 	for (i = 0; invoices && i < json_array_get_length(invoices); i++)
 	{
@@ -653,6 +677,53 @@ restore_payments(VentureBackupService *self, gint64 org, JsonArray *payments, co
 	return TRUE;
 }
 
+/* The old format cannot distinguish missing history from an empty section.
+ * Refuse it before seeding or posting anything. Complex document restoration
+ * needs an identity-preserving importer, not replay of today's workflows. */
+static gboolean
+restore_preflight(JsonObject *root, GError **error)
+{
+	static const gchar *const unsupported[] = { "invoices", "vendor_bills", "bank_accounts",
+		"payments", "allocations", "invoice_events", "refund", "customer_credit", "company" };
+	guint i;
+	{
+		JsonNode *version = json_object_get_member(root, "version");
+		JsonNode *accounts = json_object_get_member(root, "accounts");
+		if (version == NULL || !JSON_NODE_HOLDS_VALUE(version) ||
+			json_node_get_value_type(version) != G_TYPE_INT64 || json_node_get_int(version) != 3)
+			return refuse(error, "legacy accounting packs omit history; use a full database backup");
+		if (accounts == NULL || !JSON_NODE_HOLDS_ARRAY(accounts))
+			return refuse(error, "accounting pack needs accounts");
+	}
+	for (i = 0; i < G_N_ELEMENTS(unsupported); i++)
+	{
+		JsonNode *node = json_object_get_member(root, unsupported[i]);
+		if (node == NULL || !JSON_NODE_HOLDS_ARRAY(node))
+			return refuse(error, "accounting pack is missing a required array");
+		if (json_array_get_length(json_node_get_array(node)) != 0)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED,
+				"Accounting pack contains %s; faithful document restore requires a full database backup", unsupported[i]);
+			return FALSE;
+		}
+	}
+	{
+		JsonNode *node = json_object_get_member(root, "journals");
+		JsonArray *journals;
+		if (node == NULL || !JSON_NODE_HOLDS_ARRAY(node))
+			return refuse(error, "accounting pack needs journals");
+		journals = json_node_get_array(node);
+		for (i = 0; i < json_array_get_length(journals); i++)
+		{
+			JsonNode *entry = json_array_get_element(journals, i);
+			if (!JSON_NODE_HOLDS_OBJECT(entry) || g_strcmp0(venture_json_object_get_string(
+				json_node_get_object(entry), "source_type", ""), "organization") != 0)
+				return refuse(error, "document journals require their original document history");
+		}
+	}
+	return TRUE;
+}
+
 gboolean
 venture_backup_service_restore(VentureBackupService *self, gint64 organization_id, const gchar *payload,
 	const VentureActor *actor, GError **error)
@@ -672,7 +743,11 @@ venture_backup_service_restore(VentureBackupService *self, gint64 organization_i
 		return refuse(error, "restore requires an empty organization");
 	if (!json_parser_load_from_data(parser, payload, -1, error))
 		return FALSE;
+	if (!JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser)))
+		return refuse(error, "accounting pack must be an object");
 	root = json_node_get_object(json_parser_get_root(parser));
+	if (!restore_preflight(root, error))
+		return FALSE;
 	if (!venture_database_begin(self->database, error))
 		return FALSE;
 	if (!venture_setup_seed_defaults(self->database, organization_id, actor, error))

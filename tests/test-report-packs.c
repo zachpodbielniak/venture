@@ -211,6 +211,8 @@ test_scheduled_dispatch(Fixture *f, gconstpointer data)
 	g_autoptr(VentureEntity) pack = NULL;
 	g_autoptr(GDateTime) as_of = g_date_time_new_from_iso8601("2026-08-02T12:00:00Z", NULL);
 	gint ran;
+	g_autoptr(GDateTime) early = g_date_time_new_from_iso8601("2026-08-02T07:00:00Z", NULL);
+	g_autofree gchar *output = NULL;
 	(void)data;
 	post_dimension(f, "2026-08-01T00:00:00Z", "dept-ops", 2500);
 	saved = venture_report_pack_service_save(venture_report_pack_service_get(f->db),
@@ -221,13 +223,69 @@ test_scheduled_dispatch(Fixture *f, gconstpointer data)
 		venture_entity_get_id(saved), NULL, &error);
 	g_assert_no_error(error);
 	ran = venture_report_pack_service_run_due(venture_report_pack_service_get(f->db),
+		f->context, f->org, early, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(ran, ==, 0);
+	ran = venture_report_pack_service_run_due(venture_report_pack_service_get(f->db),
 		f->context, f->org, as_of, NULL, &error);
 	g_assert_no_error(error);
 	g_assert_cmpint(ran, ==, 1);
+	{
+		g_autoptr(VentureEntity) stored = venture_database_get(f->db, VENTURE_TYPE_REPORT_PACK,
+			venture_entity_get_id(pack), &error);
+		g_assert_no_error(error);
+		g_object_get(stored, "last-output", &output, NULL);
+		g_assert_nonnull(output);
+		g_assert_nonnull(strstr(output, "2500"));
+	}
+
 	ran = venture_report_pack_service_run_due(venture_report_pack_service_get(f->db),
 		f->context, f->org, as_of, NULL, &error);
 	g_assert_no_error(error);
 	g_assert_cmpint(ran, ==, 0);
+}
+
+static void
+test_schedule_calendar(Fixture *f, gconstpointer data)
+{
+	static const struct { const gchar *schedule; const gchar *when; gint count; } cases[] = {
+		{ "0 8 1 * *", "2026-09-02T12:00:00Z", 0 },
+		{ "0 8 * * 1", "2026-08-02T12:00:00Z", 0 },
+		{ "0 8 * * 1", "2026-08-03T08:00:00Z", 1 },
+		{ "0 8 1 9 *", "2026-08-01T09:00:00Z", 0 },
+		{ "0 8 * * *", "2026-08-03T09:00:00+02:00", 0 },
+		{ "0 8 * * *", "2026-08-03T10:00:00+02:00", 1 }
+	};
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) saved = NULL;
+	g_autoptr(VentureEntity) pack = NULL;
+	g_autoptr(VentureEntity) invalid = NULL;
+	gint64 id;
+	guint i;
+	(void)data;
+	saved = venture_report_pack_service_save(venture_report_pack_service_get(f->db),
+		f->org, "Calendar report", "account_balances", "2026-08", NULL, NULL, NULL, &error);
+	g_assert_no_error(error);
+	pack = venture_report_pack_service_schedule(venture_report_pack_service_get(f->db),
+		f->org, "Calendar", "daily", venture_entity_get_id(saved), NULL, &error);
+	g_assert_no_error(error);
+	id = venture_entity_get_id(pack);
+	for (i = 0; i < G_N_ELEMENTS(cases); i++)
+	{
+		g_autoptr(GDateTime) when = g_date_time_new_from_iso8601(cases[i].when, NULL);
+		g_clear_object(&pack);
+		pack = venture_database_get(f->db, VENTURE_TYPE_REPORT_PACK, id, &error);
+		g_assert_no_error(error);
+		g_object_set(pack, "schedule", cases[i].schedule, "last-run-at", NULL, NULL);
+		g_assert_true(venture_database_save(f->db, pack, NULL, &error));
+		g_assert_cmpint(venture_report_pack_service_run_due(venture_report_pack_service_get(f->db),
+			f->context, f->org, when, NULL, &error), ==, cases[i].count);
+		g_assert_no_error(error);
+	}
+	invalid = venture_report_pack_service_schedule(venture_report_pack_service_get(f->db),
+		f->org, "Invalid", "0 99 * * *", venture_entity_get_id(saved), NULL, &error);
+	g_assert_null(invalid);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 }
 
 int
@@ -238,5 +296,6 @@ main(int argc, char **argv)
 	g_test_add("/report-packs/journal-dimension", Fixture, NULL, setup, test_journal_dimension, teardown);
 	g_test_add("/report-packs/dimension-org", Fixture, NULL, setup, test_dimension_and_org_scope, teardown);
 	g_test_add("/report-packs/scheduled-dispatch", Fixture, NULL, setup, test_scheduled_dispatch, teardown);
+	g_test_add("/report-packs/calendar", Fixture, NULL, setup, test_schedule_calendar, teardown);
 	return g_test_run();
 }

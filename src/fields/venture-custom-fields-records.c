@@ -33,8 +33,8 @@ static const VentureFieldDecl value_fields[] = {
 		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("name", "Field name", NULL, VENTURE_FIELD_KIND_STRING,
 		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD("value", "Value", "Stored as text; kind is on the field definition",
-		VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("value", "Value", "Private derived index; edit attributes on the owning record",
+		VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_SENSITIVE),
 	VENTURE_FIELD("value-key", "Value key", "record-type:id:name, unique inside the organization",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION | VENTURE_COLUMN_FLAG_NOT_NULL)
 };

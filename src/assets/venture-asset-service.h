@@ -65,6 +65,17 @@ gboolean venture_deferral_service_schedule(VentureDeferralService *self, Venture
  */
 gint venture_asset_service_run_period(VentureAssetService *self, const gchar *period,
  gint64 organization_id, gboolean dry_run, const VentureActor *actor, GError **error);
+/**
+ * venture_asset_service_run_tax_period:
+ * @self: the service or registry instance
+ * @period: reporting period
+ * @organization_id: target legal entity ID
+ * @dry_run: whether to calculate without applying writes
+ * @actor: (nullable): audit actor; NULL for internal service work
+ * @error: (out) (optional): return location for an error
+ *
+ * Returns: number processed, or -1 on failure
+ */
 gint venture_asset_service_run_tax_period(VentureAssetService *self, const gchar *period,
  gint64 organization_id, gboolean dry_run, const VentureActor *actor, GError **error);
 /**

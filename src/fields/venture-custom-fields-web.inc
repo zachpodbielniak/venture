@@ -25,7 +25,7 @@ venture_custom_fields_web(HtmxRequest *request, GHashTable *params, gpointer use
 	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, &error))
 		return venture_web_error_response(error);
 	venture_auth_to_actor(principal, &actor);
-	org = venture_context_get_default_organization_id(self->context);
+	org = venture_web_active_organization(self, request);
 	if (htmx_request_get_method(request) == HTMX_METHOD_POST)
 	{
 		const gchar *action = htmx_request_get_form_value(request, "action");

@@ -134,42 +134,10 @@ shopify_cancelled(JsonObject *raw)
 
 static const gchar *shopify_name(VentureCommerceConnector *self) { (void)self; return "shopify"; }
 static GPtrArray *
-shopify_fetch(VentureCommerceConnector *connector, GDateTime *from, GDateTime *to, GError **error)
+shopify_parse_orders(JsonArray *orders, GError **error)
 {
-	VentureShopifyConnector *self = VENTURE_SHOPIFY_CONNECTOR(connector);
-	g_autofree gchar *start = NULL, *url = NULL, *auth = NULL, *body = NULL;
-	g_autoptr(JsonParser) parser = json_parser_new();
-	JsonNode *root, *orders_node;
-	JsonArray *orders;
 	GPtrArray *items;
 	guint i;
-	if (self->transport == NULL)
-	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NETWORK,
-			"Shopify connector requires an injected transport");
-		return NULL;
-	}
-	start = from != NULL ? g_date_time_format(from, "%Y-%m-%d") : g_strdup("");
-	url = g_strdup_printf("https://%s/admin/api/2024-01/orders.json?status=any&created_at_min=%s",
-		self->shop != NULL && *self->shop ? self->shop : "example.myshopify.com", start);
-	auth = g_strdup_printf("X-Shopify-Access-Token: %s", self->token);
-	(void)to;
-	body = venture_bank_feed_transport_get(self->transport, url, auth, error);
-	if (body == NULL) return NULL;
-	if (!json_parser_load_from_data(parser, body, -1, error)) return NULL;
-	root = json_parser_get_root(parser);
-	if (root == NULL || !JSON_NODE_HOLDS_OBJECT(root))
-	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Shopify response must be a JSON object");
-		return NULL;
-	}
-	orders_node = json_object_get_member(json_node_get_object(root), "orders");
-	if (orders_node == NULL || !JSON_NODE_HOLDS_ARRAY(orders_node))
-	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Shopify response needs orders");
-		return NULL;
-	}
-	orders = json_node_get_array(orders_node);
 	items = g_ptr_array_new_with_free_func((GDestroyNotify)json_object_unref);
 	for (i = 0; i < json_array_get_length(orders); i++)
 	{
@@ -263,6 +231,78 @@ shopify_fetch(VentureCommerceConnector *connector, GDateTime *from, GDateTime *t
 		g_ptr_array_add(items, item);
 	}
 	return items;
+}
+static GPtrArray *
+shopify_fetch(VentureCommerceConnector *connector, GDateTime *from, GDateTime *to, GError **error)
+{
+	VentureShopifyConnector *self = VENTURE_SHOPIFY_CONNECTOR(connector);
+	g_autofree gchar *start = NULL, *end = NULL, *auth = NULL;
+	g_autofree gchar *escaped_start = NULL, *escaped_end = NULL;
+	g_autoptr(GPtrArray) items = g_ptr_array_new_with_free_func((GDestroyNotify)json_object_unref);
+	gint64 since = 0;
+	guint page;
+
+	if (venture_string_is_empty(self->shop) || self->transport == NULL ||
+		(from != NULL && to != NULL && g_date_time_compare(from, to) >= 0))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Shopify needs a shop and a valid date window");
+		return NULL;
+	}
+	start = from != NULL ? g_date_time_format_iso8601(from) : g_strdup("");
+	end = to != NULL ? g_date_time_format_iso8601(to) : g_strdup("");
+	escaped_start = g_uri_escape_string(start, NULL, FALSE);
+	escaped_end = g_uri_escape_string(end, NULL, FALSE);
+	auth = g_strdup_printf("X-Shopify-Access-Token: %s", self->token);
+	/* since_id keeps pagination on the configured origin; no server-provided
+	 * next-page URL gets to choose where the token is sent. */
+	for (page = 0; page < 1000; page++)
+	{
+		g_autofree gchar *url = g_strdup_printf(
+			"https://%s/admin/api/2025-10/orders.json?status=any&limit=250&since_id=%" G_GINT64_FORMAT
+			"&created_at_min=%s&created_at_max=%s", self->shop, since, escaped_start, escaped_end);
+		g_autofree gchar *body = venture_bank_feed_transport_get(self->transport, url, auth, error);
+		g_autoptr(JsonNode) root = NULL;
+		g_autoptr(GPtrArray) batch = NULL;
+		JsonNode *node;
+		JsonArray *orders;
+		gint64 next = since;
+		guint i;
+		if (body == NULL)
+			return NULL;
+		root = venture_json_parse(body, error);
+		if (root == NULL)
+			return NULL;
+		node = JSON_NODE_HOLDS_OBJECT(root) ? json_object_get_member(json_node_get_object(root), "orders") : NULL;
+		if (node == NULL || !JSON_NODE_HOLDS_ARRAY(node))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Shopify response needs orders");
+			return NULL;
+		}
+		orders = json_node_get_array(node);
+		batch = shopify_parse_orders(orders, error);
+		if (batch == NULL)
+			return NULL;
+		for (i = 0; i < batch->len; i++)
+			g_ptr_array_add(items, json_object_ref(g_ptr_array_index(batch, i)));
+		if (json_array_get_length(orders) < 250)
+			return g_steal_pointer(&items);
+		for (i = 0; i < json_array_get_length(orders); i++)
+		{
+			JsonObject *order = json_array_get_object_element(orders, i);
+			JsonNode *id = order != NULL ? json_object_get_member(order, "id") : NULL;
+			gint64 value = 0;
+			if (id != NULL && JSON_NODE_HOLDS_VALUE(id))
+				value = json_node_get_value_type(id) == G_TYPE_STRING ?
+					g_ascii_strtoll(json_node_get_string(id), NULL, 10) : json_node_get_int(id);
+			next = MAX(next, value);
+		}
+		if (next <= since)
+			break;
+		since = next;
+	}
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		"Shopify pagination did not complete; no orders were imported");
+	return NULL;
 }
 static void shopify_iface(VentureCommerceConnectorInterface *iface)
 {
@@ -422,10 +462,30 @@ find_invoice(VentureCommerceService *self, const gchar *external_id, GError **er
 }
 
 gint
+venture_commerce_service_import_for_organization(VentureCommerceService *self, gint64 organization_id,
+	const gchar *connector_name, GDateTime *from, GDateTime *to, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureCommerceService) scoped = NULL;
+	g_return_val_if_fail(VENTURE_IS_COMMERCE_SERVICE(self), -1);
+	if (organization_id <= 0)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Choose an organization to import into");
+		return -1;
+	}
+	/* Share the live plugin registry, rather than reconstructing just the
+	 * built-in connector and losing plugins for non-default organizations. */
+	scoped = g_object_new(VENTURE_TYPE_COMMERCE_SERVICE, NULL);
+	scoped->database = g_object_ref(self->database);
+	scoped->organization_id = organization_id;
+	g_set_object(&scoped->registry, self->registry);
+	return venture_commerce_service_import(scoped, connector_name, from, to, actor, error);
+}
+
+gint
 venture_commerce_service_import(VentureCommerceService *self, const gchar *connector_name,
 	GDateTime *from, GDateTime *to, const VentureActor *actor, GError **error)
 {
-	VentureCommerceConnector *connector;
+	g_autoptr(VentureCommerceConnector) connector = NULL;
 	g_autoptr(GPtrArray) orders = NULL;
 	guint i;
 	gint imported = 0;
@@ -443,6 +503,9 @@ venture_commerce_service_import(VentureCommerceService *self, const gchar *conne
 			connector_name != NULL ? connector_name : "shopify");
 		return -1;
 	}
+	/* Fetch may iterate the main context while a registry reload removes
+	 * its ownership. Keep this operation's connector alive independently. */
+	g_object_ref(connector);
 	orders = venture_commerce_connector_fetch_orders(connector, from, to, error);
 	if (orders == NULL) return -1;
 	if (!venture_database_begin(self->database, error)) return -1;
