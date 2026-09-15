@@ -628,6 +628,27 @@ static const gchar *const sequence_reports[] = { "sequence_performance", "sequen
 static GType (*const autojournal_types[]) (void) = { venture_posting_profile_get_type, NULL };
 static const gchar *const autojournal_requires[] = { "ledger", NULL };
 static const gchar *const autojournal_reports[] = { "unposted", NULL };
+static GType (*const venture_module_close_types[]) (void) = {
+	venture_close_workspace_get_type, venture_close_task_get_type,
+	venture_close_workpaper_get_type, venture_close_discrepancy_get_type,
+	venture_close_signoff_get_type, NULL
+};
+static const gchar *const venture_module_requires_close[] = {
+	"periods", "ledger", "statements", NULL
+};
+static const gchar *const venture_module_suggests_close[] = {
+	"banking", "receivables", "payables", "assets", NULL
+};
+static const gchar *const venture_module_reports_close[] = { "close_workspace", NULL };
+static GType (*const venture_module_capture_types[]) (void) = {
+	venture_capture_item_get_type, NULL
+};
+static const gchar *const venture_module_requires_capture[] = { "finance", NULL };
+static const gchar *const venture_module_suggests_capture[] = { "payables", NULL };
+static const gchar *const venture_module_requires_accounting[] = { "finance", NULL };
+static const gchar *const venture_module_suggests_accounting[] = {
+	"banking", "receivables", "payables", "periods", "close", "capture", NULL
+};
 static const gchar *const venture_module_requires_statements[] = { "ledger", "periods", NULL };
 static const gchar *const venture_module_reports_statements[] = {
 	"balance_sheet", "income_statement", "cash_flow", "general_ledger", "account_balances", "pnl_reconciliation", NULL
@@ -869,6 +890,21 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"recurring", "Recurring documents and collections",
 		"Reusable schedules, invoice reminders and batch financial entry.",
 		recurring_requires, NULL, recurring_types, recurring_reports, NULL, FALSE
+	},
+	{
+		"close", "Period close", "Accountant close workspace, signoff and subledger tie-outs.",
+		venture_module_requires_close, venture_module_suggests_close,
+		venture_module_close_types, venture_module_reports_close, NULL, FALSE
+	},
+	{
+		"capture", "Document capture", "Receipt and supplier-invoice inbox that becomes expenses or bills.",
+		venture_module_requires_capture, venture_module_suggests_capture,
+		venture_module_capture_types, NULL, NULL, FALSE
+	},
+	{
+		"accounting", "Daily accounting", "Guided next actions for the books.",
+		venture_module_requires_accounting, venture_module_suggests_accounting,
+		NULL, NULL, NULL, FALSE
 	}
 
 };

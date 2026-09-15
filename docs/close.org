@@ -1,0 +1,53 @@
+#+title: Accountant close workspace
+#+description: Period close checklist, subledger tie-outs, workpapers and signoff
+
+* A close belongs to one fiscal period
+
+The =close= module requires =periods=, =ledger= and =statements=. It
+suggests =banking=, =receivables=, =payables= and =assets=. It owns
+=close_workspace=, =close_task=, =close_workpaper=, =close_discrepancy= and
+=close_signoff=. Turning it off hides those records and the
+=close_workspace= report together.
+
+Open a workspace against an existing fiscal period. The service creates the
+nine checklist items twice, once for the preparer and once for the reviewer:
+bank reconciliation, AR control, AP control, suspense, tax, depreciation,
+deferrals, trial-balance tie-out and subledger tie-out.
+
+* Checks reuse the books you already keep
+
+=venture_close_service_run_checks()= compares:
+
+- unmatched =bank_transaction= rows in the period
+- receivables aging outstanding against control account 1100
+- payables aging outstanding against control account 2000
+- suspense (code 9999 or a name containing "suspense")
+- tax control 2200
+- scheduled, unposted =depreciation_entry= and =deferral_entry= rows
+- the authoritative =trial_balance= report
+
+Differences become =close_discrepancy= rows. An unexplained difference
+refuses the run. Explain it, or link =correction_type= and =correction_id=
+to the journal, bill or receipt that fixes it.
+
+* Signoff, pack, complete, reopen
+
+Every task must be done or waived. The preparer signs first, the reviewer
+second. Complete then closes the fiscal period through
+=VenturePeriodService=, so the ordinary close checklist, snapshots and
+=periods.reopen= permission still apply. Reopening the workspace reopens
+that period the same way. =venture_close_service_pack()= returns the
+trial balance, AR/AP aging, bank reconciliation and statements as JSON.
+
+Generic writes cannot mint a signoff or jump a workspace to =completed=.
+
+#+begin_src sh
+venturectl close open fiscal_period_id=1 currency=USD
+venturectl close run 1
+venturectl close sign 1 role=preparer
+venturectl close sign 1 role=reviewer
+venturectl close pack 1
+venturectl close complete 1
+venturectl close reopen 1
+venturectl report close_workspace 2026-01 organization_id=1
+#+end_src

@@ -58,6 +58,16 @@ historical approvals are inferred from an imported bill's current status.
 
 * Actions and historical reports
 
+The =/payables= workbench selects approved bills and pays them through
+=VenturePayablesService= using a named adapter (=manual=, =transfer=,
+=card=, =check=, =ach=). Adapters never write settlement tables themselves.
+=POST /api/v1/payables/pay= accepts =bills=, =date=, =adapter=, =method= and
+=reference=. One payment per vendor is allocated in a single transaction.
+
+#+begin_src sh
+venturectl bill pay-bulk 1,2,3 adapter=transfer date=2026-02-01
+#+end_src
+
 The bill page has Approve and Pay actions. REST accepts
 =POST /api/v1/vendor_bill/:id/approve=, =/pay= and =/void= with ordinary
 record fields in a JSON body; =?stage=1= queues the same request for

@@ -1149,6 +1149,18 @@ venture_database_save(
 		if (handled || !ok)
 			return ok;
 	}
+	{
+		gboolean handled;
+		gboolean ok = venture_close_save_hook(self, entity, actor, &handled, error);
+		if (handled || !ok)
+			return ok;
+	}
+	{
+		gboolean handled;
+		gboolean ok = venture_capture_save_hook(self, entity, actor, &handled, error);
+		if (handled || !ok)
+			return ok;
+	}
 
 	if (VENTURE_IS_MAIL_MESSAGE(entity)) venture_database_get_mail_outbox(self);
 	if (VENTURE_IS_USER(entity)) {

@@ -1,0 +1,18 @@
+#+title: Daily accounting home
+#+description: Guided next actions for unmatched bank, overdue invoices, bills and close
+
+* One page, one reason each
+
+The =accounting= module requires =finance= and suggests banking,
+receivables, payables, periods, close and capture. =GET /accounting= and
+=GET /api/v1/accounting/home= list the next actions that are actually
+waiting: unmatched bank lines, overdue sent invoices, approved bills to
+pay, open close-checklist tasks, and capture-inbox rows.
+
+Each action carries a count, a link and a sentence saying why it is on the
+list. A zero count is still listed so an empty inbox is explainable rather
+than missing. Disabled modules are omitted, never shown as errors.
+
+#+begin_src sh
+venturectl accounting
+#+end_src

@@ -830,6 +830,35 @@ test_batch(Fixture *f, gconstpointer unused)
 }
 
 static void
+test_bulk_workbench(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) first = bill(f, "BULK-1");
+	g_autoptr(VentureEntity) second = bill(f, "BULK-2");
+	g_autoptr(GArray) ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+	g_autoptr(GDateTime) date = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 a;
+	gint64 b;
+	approve(f, first);
+	approve(f, second);
+	a = venture_entity_get_id(first);
+	b = venture_entity_get_id(second);
+	g_array_append_val(ids, a);
+	g_array_append_val(ids, b);
+	date = g_date_time_new_from_iso8601("2026-02-01T00:00:00Z", NULL);
+	g_assert_true(venture_payables_service_pay_bills(venture_payables_service_get(f->db),
+		ids, date, "transfer", "transfer", "run-1", NULL, &error));
+	g_assert_no_error(error);
+	status(f, first, "paid");
+	status(f, second, "paid");
+	g_assert_cmpint(count(f, "bill_payment"), ==, 1);
+	g_assert_false(venture_payables_service_execute_payment(venture_payables_service_get(f->db),
+		"wire-unknown", VENTURE_BILL_PAYMENT(payment(f, first, "1 USD", "2026-02-02")),
+		NULL, NULL, &error));
+	g_assert_nonnull(error);
+}
+
+static void
 test_migration(Fixture *f, gconstpointer unused)
 {
 	g_autoptr(OrmResult) result = NULL;
@@ -1034,6 +1063,7 @@ main(int argc, char **argv)
 	g_test_add("/payables/periods", Fixture, NULL, setup, test_periods, teardown);
 	g_test_add("/payables/credit-void-refund", Fixture, NULL, setup, test_credit_void_refund, teardown);
 	g_test_add("/payables/batch", Fixture, NULL, setup, test_batch, teardown);
+	g_test_add("/payables/bulk-workbench", Fixture, NULL, setup, test_bulk_workbench, teardown);
 	g_test_add("/payables/migration", Fixture, NULL, setup, test_migration, teardown);
 	g_test_add("/payables/closed-draft-removal", Fixture, NULL, setup, test_closed_draft_removal, teardown);
 	g_test_add("/payables/module-off", Fixture, NULL, setup, test_module_off, teardown);

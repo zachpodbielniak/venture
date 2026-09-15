@@ -165,5 +165,41 @@ VentureEntity *venture_payables_service_prepare_action(VenturePayablesService *s
 gboolean venture_payables_expense_hook(VentureDatabase *database, VentureEntity *record,
 	const VentureActor *actor, gboolean *handled, GError **error);
 
+/**
+ * venture_payables_service_execute_payment:
+ * @self: the service
+ * @adapter: manual, transfer, card, check or ach
+ * @payment: an unsaved supplier payment
+ * @allocations: (nullable) (element-type VentureBillPaymentAllocation): unsaved allocations
+ * @actor: (nullable): the audit actor
+ * @error: (out) (optional): the error
+ *
+ * Payment execution adapters all call apply_payment. They never write
+ * settlement tables themselves.
+ * Returns: TRUE on success
+ */
+gboolean venture_payables_service_execute_payment(VenturePayablesService *self,
+	const gchar *adapter, VentureBillPayment *payment, GPtrArray *allocations,
+	const VentureActor *actor, GError **error);
+
+/**
+ * venture_payables_service_pay_bills:
+ * @self: the service
+ * @bill_ids: (element-type gint64): approved or partially paid bills
+ * @date: the payment date
+ * @method: (nullable): recorded method; defaults to @adapter
+ * @adapter: (nullable): execution adapter name, default transfer
+ * @reference: (nullable): payment reference
+ * @actor: (nullable): the audit actor
+ * @error: (out) (optional): the error
+ *
+ * Pays the selected bills through one payment per vendor, with allocations,
+ * inside one transaction.
+ * Returns: TRUE on success
+ */
+gboolean venture_payables_service_pay_bills(VenturePayablesService *self, GArray *bill_ids,
+	GDateTime *date, const gchar *method, const gchar *adapter, const gchar *reference,
+	const VentureActor *actor, GError **error);
+
 G_END_DECLS
 #endif

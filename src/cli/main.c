@@ -631,6 +631,9 @@ venture_cli_values_from_args(
 }
 
 #include "payables/venture-payables-cli.inc"
+#include "close/venture-close-cli.inc"
+#include "capture/venture-capture-cli.inc"
+#include "accounting/venture-accounting-cli.inc"
 
 static gint
 venture_cli_command_list(
@@ -3376,6 +3379,10 @@ main(
 		"  sequence status ID          enrollment and delivery history\n"
 		"  post backfill                post missing journals; --dry-run\n"
 		"  bill approve|pay|void ID [field=value ...]  supplier bill actions\n"
+		"  bill pay-bulk 1,2,3 [adapter=transfer]     pay selected approved bills\n"
+		"  close open|run|sign|complete|reopen|pack   accountant close workspace\n"
+		"  capture ingest|convert|reject              receipt and supplier-invoice inbox\n"
+		"  accounting                               daily books next actions\n"
 		"  factory                      the software factory at a glance\n"
 		"  lead convert ID              qualify first; deal=yes|no, company_id=ID\n"
 		"  lead reassign ID             owner=NAME or run assignment rules\n"
@@ -3632,6 +3639,12 @@ main(
 		result = venture_cli_command_lead(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "bill"))
 		result = venture_cli_command_bill(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "close"))
+		result = venture_cli_command_close(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "capture"))
+		result = venture_cli_command_capture(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "accounting"))
+		result = venture_cli_command_accounting(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "bank"))
 		result = venture_cli_command_bank(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "deal"))

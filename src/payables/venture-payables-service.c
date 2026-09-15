@@ -1732,3 +1732,115 @@ done:
 		venture_entity_copy_properties_from(record, original, FALSE);
 	return ok;
 }
+
+static gboolean
+adapter_known(const gchar *adapter)
+{
+	return g_strcmp0(adapter, "manual") == 0 || g_strcmp0(adapter, "transfer") == 0 ||
+		g_strcmp0(adapter, "card") == 0 || g_strcmp0(adapter, "check") == 0 ||
+		g_strcmp0(adapter, "ach") == 0;
+}
+
+gboolean
+venture_payables_service_execute_payment(VenturePayablesService *self,
+	const gchar *adapter, VentureBillPayment *payment, GPtrArray *allocations,
+	const VentureActor *actor, GError **error)
+{
+	g_autofree gchar *method = NULL;
+	if (adapter == NULL || !adapter_known(adapter))
+		return refuse(error, VENTURE_ERROR_VALIDATION,
+			"Payment adapter is manual, transfer, card, check or ach");
+	g_object_get(payment, "method", &method, NULL);
+	if (venture_string_is_empty(method))
+		g_object_set(payment, "method", adapter, NULL);
+	return venture_payables_service_apply_payment(self, payment, allocations, actor, error);
+}
+
+gboolean
+venture_payables_service_pay_bills(VenturePayablesService *self, GArray *bill_ids,
+	GDateTime *date, const gchar *method, const gchar *adapter, const gchar *reference,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(GHashTable) groups = NULL;
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
+	const gchar *used;
+	guint i;
+	if (adapter == NULL)
+		adapter = "transfer";
+	if (!adapter_known(adapter))
+		return refuse(error, VENTURE_ERROR_VALIDATION,
+			"Payment adapter is manual, transfer, card, check or ach");
+	if (bill_ids == NULL || bill_ids->len == 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Select at least one approved bill");
+	if (date == NULL)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "A payment date is required");
+	used = !venture_string_is_empty(method) ? method : adapter;
+	if (!begin_operation(self, "bill_payment", error))
+		return FALSE;
+	groups = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, (GDestroyNotify)g_ptr_array_unref);
+	for (i = 0; i < bill_ids->len; i++)
+	{
+		gint64 bill_id = g_array_index(bill_ids, gint64, i);
+		g_autoptr(VentureEntity) bill = NULL;
+		g_autoptr(VentureMoney) balance = NULL;
+		g_autofree gchar *status = NULL;
+		GPtrArray *bucket;
+		gint64 vendor;
+		bill = venture_database_get(self->database, VENTURE_TYPE_VENDOR_BILL, bill_id, error);
+		if (bill == NULL)
+			return finish_operation(self, FALSE, error);
+		g_object_get(bill, "status", &status, NULL);
+		if (g_strcmp0(status, "approved") != 0 && g_strcmp0(status, "partially_paid") != 0)
+		{
+			refuse(error, VENTURE_ERROR_VALIDATION, "The workbench pays approved or partially paid bills");
+			return finish_operation(self, FALSE, error);
+		}
+		balance = venture_payables_service_bill_balance(self, bill_id, NULL, error);
+		if (balance == NULL)
+			return finish_operation(self, FALSE, error);
+		if (venture_money_is_zero(balance))
+		{
+			refuse(error, VENTURE_ERROR_VALIDATION, "A selected bill has no outstanding balance");
+			return finish_operation(self, FALSE, error);
+		}
+		vendor = get_id(bill, "company-id");
+		bucket = g_hash_table_lookup(groups, (gpointer)(guintptr)vendor);
+		if (bucket == NULL)
+		{
+			bucket = g_ptr_array_new_with_free_func(g_object_unref);
+			g_hash_table_insert(groups, (gpointer)(guintptr)vendor, bucket);
+		}
+		{
+			VentureEntity *allocation = VENTURE_ENTITY(venture_bill_payment_allocation_new());
+			g_object_set(allocation, "bill-id", bill_id, "amount", balance, "date", date, NULL);
+			venture_entity_set_organization_id(allocation, venture_entity_get_organization_id(bill));
+			g_ptr_array_add(bucket, allocation);
+		}
+	}
+	g_hash_table_iter_init(&iter, groups);
+	while (g_hash_table_iter_next(&iter, &key, &value))
+	{
+		GPtrArray *bucket = value;
+		g_autoptr(VentureBillPayment) payment = venture_bill_payment_new();
+		g_autoptr(VentureMoney) total = NULL;
+		guint a;
+		for (a = 0; a < bucket->len; a++)
+		{
+			g_autoptr(VentureMoney) amount = NULL;
+			g_object_get(g_ptr_array_index(bucket, a), "amount", &amount, NULL);
+			if (total == NULL)
+				total = venture_money_copy(amount);
+			else if (!accumulate(&total, amount, FALSE, error))
+				return finish_operation(self, FALSE, error);
+		}
+		g_object_set(payment, "vendor-id", (gint64)(guintptr)key, "date", date, "amount", total,
+			"method", used, "reference", reference, NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(payment),
+			venture_entity_get_organization_id(g_ptr_array_index(bucket, 0)));
+		if (!perform_payment(self, VENTURE_ENTITY(payment), bucket, actor, error))
+			return finish_operation(self, FALSE, error);
+	}
+	return finish_operation(self, TRUE, error);
+}

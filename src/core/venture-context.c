@@ -180,6 +180,7 @@ venture_context_new(
 	                        G_CALLBACK(venture_context_on_modules_changed),
 	                        self, G_CONNECT_SWAPPED);
 	venture_period_service_install(self);
+	venture_close_service_install(self);
 
 	return self;
 }

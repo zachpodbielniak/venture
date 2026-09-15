@@ -793,6 +793,12 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_collection_case_get_type,
 		venture_collection_notice_get_type,
 		venture_financial_batch_get_type,
+		venture_close_workspace_get_type,
+		venture_close_task_get_type,
+		venture_close_workpaper_get_type,
+		venture_close_discrepancy_get_type,
+		venture_close_signoff_get_type,
+		venture_capture_item_get_type,
 	};
 	gsize i;
 

@@ -71,6 +71,8 @@ CORE_SRCS += src/billing/venture-billing-records.c
 CORE_SRCS += src/leads/venture-lead-records.c
 CORE_SRCS += src/activities/venture-activity-records.c
 CORE_SRCS += src/payables/venture-payable-records.c
+CORE_SRCS += src/close/venture-close-records.c
+CORE_SRCS += src/capture/venture-capture-records.c
 CORE_SRCS += src/banking/venture-bank-records.c
 CORE_SRCS += src/cutover/venture-cutover-records.c
 CORE_SRCS += src/setup/venture-setup-records.c
@@ -108,6 +110,9 @@ SERVER_ONLY_SRCS += $(filter-out src/quotes/venture-quote-records.c,$(wildcard s
 SERVER_ONLY_SRCS += src/leads/venture-lead-service.c src/leads/venture-lead-reports.c
 SERVER_ONLY_SRCS += $(filter-out src/activities/venture-activity-records.c,$(wildcard src/activities/*.c))
 SERVER_ONLY_SRCS += src/payables/venture-payables-service.c src/payables/venture-payable-reports.c
+SERVER_ONLY_SRCS += src/close/venture-close-service.c
+SERVER_ONLY_SRCS += src/capture/venture-capture-service.c
+SERVER_ONLY_SRCS += src/accounting/venture-accounting-home.c
 
 CORE_SRCS += src/pipelines/venture-pipeline-records.c
 SERVER_ONLY_SRCS += $(filter-out src/pipelines/venture-pipeline-records.c,$(wildcard src/pipelines/*.c))
@@ -164,6 +169,9 @@ PUBLIC_HDRS += $(wildcard src/billing/*.h)
 PUBLIC_HDRS += $(wildcard src/mail/*.h)
 
 PUBLIC_HDRS += $(wildcard src/payables/*.h)
+PUBLIC_HDRS += $(wildcard src/close/*.h)
+PUBLIC_HDRS += $(wildcard src/capture/*.h)
+PUBLIC_HDRS += $(wildcard src/accounting/*.h)
 PUBLIC_HDRS += $(wildcard src/banking/*.h)
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/pipelines/*.h))
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/sequences/*.h))
@@ -194,6 +202,9 @@ $(OUTDIR)/tests/test-billing-surfaces: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-quotes: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-leads: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-payables: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-close: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-capture: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-accounting: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sequences: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-recurring: | $(OUTDIR)/venturectl

@@ -510,7 +510,12 @@ a draft and its lines. Bill quantity is an exact decimal string, with at
 most three decimal places. Supplier companies have `kind=supplier`.
 
 Use `bill approve ID date=DATE`, `bill pay ID 'amount=40 USD' date=DATE`,
-and `bill void ID date=DATE` for financial actions. Omitted payment amount
+and `bill void ID date=DATE` for financial actions.
+`bill pay-bulk 1,2,3 adapter=transfer` pays selected approved bills through
+the payables service adapters, never generic writes.
+`close open|run|sign|complete|reopen|pack` is the accountant close
+workspace. `capture ingest|convert|reject` files receipts and supplier
+invoices. `accounting` lists the daily books next actions. Omitted payment amount
 pays the outstanding balance. Direct bill status updates are refused.
 These CLI actions apply directly; to stage, use generated record creation:
 `vendor_bill_event` with `bill_id`, `vendor_id`, `kind=approve`,

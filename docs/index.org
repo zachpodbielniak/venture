@@ -57,6 +57,9 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:setup.org][Accounting setup]] — guided books setup and control-account mappings
 - [[file:cutover.org][Accounting cutover]] — guided Zoho Books and QuickBooks opening balances
 - [[file:statements.org][Financial statements]] — posted ledger balances, statements, comparatives and P&L reconciliation
+- [[file:close.org][Accountant close]] — workspace, subledger tie-outs, workpapers and signoff
+- [[file:capture.org][Document capture]] — receipt and supplier-invoice inbox
+- [[file:accounting.org][Daily accounting home]] — guided next actions for the books
 
 - [[file:quotes.org][Commercial quotes]] — price lists, revisions, public acceptance and invoice handoff
 

@@ -319,6 +319,13 @@ setting a bill's financial status are refused.
 =report vendor_statement PERIOD vendor_id=ID= reads the supplier's dated
 statement. Both accept =organization_id=, =currency= and =as_of=.
 See [[file:payables.org][vendor payables]] for credits and cash-report projections.
+
+=bill pay-bulk 1,2,3 adapter=transfer= pays selected approved bills through
+the payables adapters. =close open|run|sign|complete|reopen|pack= is the
+accountant close workspace. =capture ingest|convert|reject= files receipts
+and supplier invoices. =accounting= lists the daily books next actions.
+See [[file:close.org][close]], [[file:capture.org][capture]] and
+[[file:accounting.org][accounting home]].
 * Banking actions
 
 =venturectl bank ACTION ID [JSON|@FILE]= calls the banking service over REST.
