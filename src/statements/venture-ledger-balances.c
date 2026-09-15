@@ -20,6 +20,8 @@ typedef struct
 	GPtrArray *currencies;
 	GDateTime *start;
 	GDateTime *end;
+	GHashTable *roles;
+	GHashTable *defaults;
 } Books;
 
 struct _VentureLedgerBalances
@@ -101,6 +103,8 @@ books_free(Books *books)
 	g_clear_pointer(&books->currencies, g_ptr_array_unref);
 	g_clear_pointer(&books->start, g_date_time_unref);
 	g_clear_pointer(&books->end, g_date_time_unref);
+	g_clear_pointer(&books->roles, g_hash_table_unref);
+	g_clear_pointer(&books->defaults, g_hash_table_unref);
 	g_free(books);
 }
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(Books, books_free)
@@ -201,6 +205,43 @@ read_books(VentureDatabase *db, gint64 org, const gchar *currency,
 	books->accounts = venture_database_find(db, query, error);
 	if (books->accounts == NULL)
 		return NULL;
+	books->roles = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)g_hash_table_unref);
+	books->defaults = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "accounting_control_map") != 0)
+	{
+		g_autoptr(VentureQuery) maps_query = venture_query_new(VENTURE_TYPE_ACCOUNTING_CONTROL_MAP);
+		g_autoptr(GPtrArray) maps = NULL;
+		guint m;
+		venture_query_set_organization(maps_query, org);
+		venture_query_set_limit(maps_query, 0);
+		maps = venture_database_find(db, maps_query, error);
+		if (maps == NULL)
+			return NULL;
+		for (m = 0; m < maps->len; m++)
+		{
+			VentureEntity *map = g_ptr_array_index(maps, m);
+			g_autofree gchar *role = NULL;
+			g_autofree gchar *subject = NULL;
+			g_autoptr(GDateTime) from = NULL;
+			gint64 account_id = 0, subject_id = 0;
+			GHashTable *ids;
+			g_object_get(map, "classification", &role, "account-id", &account_id,
+				"subject-type", &subject, "subject-id", &subject_id, "effective-from", &from, NULL);
+			if (role == NULL || account_id <= 0)
+				continue;
+			if (from != NULL && g_date_time_compare(from, books->end) >= 0)
+				continue;
+			ids = g_hash_table_lookup(books->roles, role);
+			if (ids == NULL)
+			{
+				ids = g_hash_table_new(g_direct_hash, g_direct_equal);
+				g_hash_table_insert(books->roles, g_strdup(role), ids);
+			}
+			g_hash_table_insert(ids, GSIZE_TO_POINTER((gsize)account_id), GINT_TO_POINTER(1));
+			if (subject_id == 0 && (subject == NULL || subject[0] == '\0' || g_str_equal(subject, "organization")))
+				g_hash_table_insert(books->defaults, g_strdup(role), GSIZE_TO_POINTER((gsize)account_id));
+		}
+	}
 	/* A corrupt hierarchy must not silently double or drop a balance. */
 	for (i = 0; i < books->accounts->len; i++)
 	{
@@ -515,31 +556,59 @@ financial_statement(Books *books, VentureDateRange *period, gboolean balance_she
 }
 
 static gboolean
-control_account(Books *books, gint64 id, const gchar *code)
+code_matches(const gchar *actual, const gchar *code)
 {
+	if (g_strcmp0(actual, code) == 0)
+		return TRUE;
+	return actual != NULL && strchr(actual, ':') != NULL &&
+		g_strcmp0(strrchr(actual, ':') + 1, code) == 0;
+}
+
+static gboolean
+control_account(Books *books, gint64 id, const gchar *classification)
+{
+	static const struct { const gchar *role; const gchar *code; } fallback[] = {
+		{ "cash", "1000" }, { "receivables", "1100" }, { "inventory", "1200" },
+		{ "payables", "2000" }, { "tax", "2100" }
+	};
+	GHashTable *ids = books->roles != NULL ? g_hash_table_lookup(books->roles, classification) : NULL;
 	guint depth;
+	guint i;
 	for (depth = 0; id != 0 && depth <= books->accounts->len; depth++)
 	{
 		VentureEntity *account = find_account(books, id);
 		g_autofree gchar *actual = NULL;
+		gint64 parent = 0;
 		if (account == NULL)
 			return FALSE;
-		g_object_get(account, "code", &actual, "parent-id", &id, NULL);
-		if (g_strcmp0(actual, code) == 0)
+		if (ids != NULL && g_hash_table_contains(ids, GSIZE_TO_POINTER((gsize)id)))
 			return TRUE;
-		/* Posting rules may create organization-prefixed chart codes. */
-		if (actual != NULL && strchr(actual, ':') != NULL &&
-			g_strcmp0(strrchr(actual, ':') + 1, code) == 0)
-			return TRUE;
+		g_object_get(account, "code", &actual, "parent-id", &parent, NULL);
+		if (ids == NULL)
+		{
+			for (i = 0; i < G_N_ELEMENTS(fallback); i++)
+				if (g_str_equal(classification, fallback[i].role) && code_matches(actual, fallback[i].code))
+					return TRUE;
+		}
+		id = parent;
 	}
 	return FALSE;
+}
+
+static gint64
+mapped_account(Books *books, const gchar *classification)
+{
+	gpointer value;
+	if (books->defaults != NULL && g_hash_table_lookup_extended(books->defaults, classification, NULL, &value))
+		return (gint64)GPOINTER_TO_SIZE(value);
+	return 0;
 }
 
 static VentureReportResult *
 cash_flow(Books *books, VentureDateRange *period, GError **error)
 {
 	static const gchar *const keys[] = { "receivables", "payables", "inventory", "tax_payable" };
-	static const gchar *const codes[] = { "1100", "2000", "1200", "2100" };
+	static const gchar *const codes[] = { "receivables", "payables", "inventory", "tax" };
 	static const gchar *const labels[] = { "Change in receivables", "Change in payables", "Change in inventory", "Change in tax payable" };
 	g_autoptr(VentureReportResult) r = venture_report_result_new("Cash flow (indirect)", period);
 	guint c, i;
@@ -567,7 +636,7 @@ cash_flow(Books *books, VentureDateRange *period, GError **error)
 			change = venture_money_subtract(credits, debits, error);
 			if (change == NULL)
 				return NULL;
-			if (control_account(books, id, "1000"))
+			if (control_account(books, id, "cash"))
 			{
 				if (!add(&start, opening, FALSE, error) || !add(&end, closing, FALSE, error))
 					return NULL;
@@ -919,16 +988,25 @@ with_comparative(VentureReportResult *current, VentureReportResult *prior,
 static gint64
 code_account(Books *books, const gchar *code)
 {
+	const gchar *role = g_str_equal(code, "1000") ? "cash" :
+		(g_str_equal(code, "1100") ? "receivables" :
+		(g_str_equal(code, "2000") ? "payables" :
+		(g_str_equal(code, "2100") ? "tax" :
+		(g_str_equal(code, "4000") ? "income" :
+		(g_str_equal(code, "6900") || g_str_equal(code, "5000") ? "expense" : NULL)))));
 	guint i;
+	if (role != NULL)
+	{
+		gint64 mapped = mapped_account(books, role);
+		if (mapped != 0)
+			return mapped;
+	}
 	for (i = 0; i < books->accounts->len; i++)
 	{
 		VentureEntity *account = g_ptr_array_index(books->accounts, i);
 		g_autofree gchar *actual = NULL;
 		g_object_get(account, "code", &actual, NULL);
-		if (g_strcmp0(actual, code) == 0)
-			return venture_entity_get_id(account);
-		if (actual != NULL && strchr(actual, ':') != NULL &&
-			g_strcmp0(strrchr(actual, ':') + 1, code) == 0)
+		if (code_matches(actual, code))
 			return venture_entity_get_id(account);
 	}
 	return 0;

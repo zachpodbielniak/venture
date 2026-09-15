@@ -527,6 +527,18 @@ resolve_code(VentureSettlementService *self, const gchar *code, gint64 organizat
 		configured = self->income_account;
 		kind = VENTURE_ACCOUNT_KIND_INCOME;
 	}
+	if (configured == 0)
+	{
+		const gchar *role = g_str_equal(code, "1000") ? "cash" :
+			(g_str_equal(code, "1100") ? "receivables" :
+			(g_str_equal(code, "2100") ? "tax" : "income"));
+		gint64 mapped = venture_setup_resolve_account(self->database, organization_id,
+			role, "organization", 0, NULL, error);
+		if (mapped != 0)
+			configured = mapped;
+		else if (error != NULL && *error != NULL)
+			return FALSE;
+	}
 	*account = account_id(self, configured, code, kind, organization_id, error);
 	return *account != 0;
 }

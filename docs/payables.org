@@ -122,4 +122,4 @@ identity. Exact allocation across the frozen bill lines preserves cents;
 the original expense is never edited. A line not converted to a cash-report
 expense does not acquire these optional adjustments.
 
-Default posting accounts reuse the organization's existing legacy code or its =organization-id:code= chart entry. Missing defaults use the namespaced form, so payables and the core posting rules retain one control-account balance per organization.
+Default posting accounts come from =accounting_control_map= (cash, payables, expense). When a mapping is absent they still reuse the organization's legacy code or its =organization-id:code= chart entry.

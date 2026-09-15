@@ -244,6 +244,14 @@ the GL. A payment that fails after the invoice is issued leaves the journal coun
 payroll or inventory parity. Invoice detail, cash-basis reports, bank reopen
 and the cutover wizard are asserted over HTTP in the module suites.
 
+** =test-setup=
+
+A new legal entity's checklist starts incomplete and the first invoice is
+refused until cash, AR, AP, tax, earnings and P&L control accounts are
+mapped, in bookkeeping language. Completing setup lets a synthetic business
+issue an invoice, take a receipt, record an expense and reconcile a bank
+statement. Renumbering the mapped cash account still reports it as cash.
+
 ** =test-cutover=
 
 Preview lists unsupported source fields, import is idempotent on source IDs,

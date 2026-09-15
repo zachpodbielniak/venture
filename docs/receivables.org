@@ -26,6 +26,8 @@ service derives an immutable =external_key= from the organization and ID;
 that field has a database UNIQUE constraint. Callers supply =external_id=,
 not the derived key. An empty external ID is optional and may recur.
 
+Posting uses mapped cash, receivables, income and tax control accounts; see [[file:setup.org][Accounting setup]].
+
 * Receiving and allocating money
 
 =VentureSettlementService= owns every financial invoice transition. A

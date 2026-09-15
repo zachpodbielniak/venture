@@ -1129,7 +1129,8 @@ venture_database_save(
 			return ok;
 	}
 	if (!venture_bank_check_write(self, entity, FALSE, error) ||
-		!venture_cutover_check_write(self, entity, FALSE, error))
+		!venture_cutover_check_write(self, entity, FALSE, error) ||
+		!venture_setup_check_write(self, entity, FALSE, error))
 		return FALSE;
 
 	VENTURE_AUTOJOURNAL_SAVE_HOOK(self, entity, actor, error);
@@ -1577,6 +1578,7 @@ venture_database_delete(
 		return FALSE;
 	if (!venture_bank_check_write(self, entity, TRUE, error) ||
 		!venture_cutover_check_write(self, entity, TRUE, error) ||
+		!venture_setup_check_write(self, entity, TRUE, error) ||
 		!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
@@ -1667,6 +1669,7 @@ venture_database_restore(
 		return FALSE;
 	if (!venture_bank_check_write(self, entity, TRUE, error) ||
 		!venture_cutover_check_write(self, entity, TRUE, error) ||
+		!venture_setup_check_write(self, entity, TRUE, error) ||
 		!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
@@ -1737,6 +1740,7 @@ venture_database_purge(
 		return FALSE;
 	if (!venture_bank_check_write(self, entity, TRUE, error) ||
 		!venture_cutover_check_write(self, entity, TRUE, error) ||
+		!venture_setup_check_write(self, entity, TRUE, error) ||
 		!venture_payables_check_removal(self, entity, error) ||
 		!venture_receivables_check_removal(self, entity, error))
 		return FALSE;
@@ -2217,6 +2221,7 @@ venture_database_migrate(
 	organization_id = venture_database_seed_default_organization(self, error);
 	if (organization_id == 0 || !venture_database_seed_accounts(self, organization_id, error) ||
 		!venture_database_seed_tax_categories(self, organization_id, error) ||
+		!venture_setup_seed_defaults(self, organization_id, NULL, error) ||
 		!venture_pipelines_migrate(self, error))
 		return FALSE;
 	return TRUE;
@@ -2330,6 +2335,7 @@ venture_database_get_action_registry(VentureDatabase *self)
 		self->actions = g_object_new(VENTURE_TYPE_ACTION_REGISTRY, "database", self, NULL);
 		venture_journal_actions_register(self);
 		venture_cutover_actions_register(self);
+		venture_setup_actions_register(self);
 	}
 	return self->actions;
 }

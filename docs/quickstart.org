@@ -79,7 +79,7 @@ gobject-introspection-devel
 ./build/debug/venture --state-dir ~/.local/share/venture
 #+end_src
 
-On a fresh database this creates the schema, seeds a default organisation, a chart of accounts and a set of tax categories, then prints an owner password once:
+On a fresh database this creates the schema, seeds a default organisation, a chart of accounts, tax categories and control-account mappings, then prints an owner password once. Open =/setup= to finish a new legal entity's books before the first invoice.
 
 #+begin_src
   Created the owner account.

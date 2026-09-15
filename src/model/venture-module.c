@@ -631,6 +631,10 @@ static const gchar *const venture_module_reports_statements[] = {
 	"balance_sheet", "income_statement", "cash_flow", "general_ledger", "account_balances", "pnl_reconciliation", NULL
 };
 static const gchar *const cutover_requires[] = { "ledger", NULL };
+static const gchar *const setup_requires[] = { "ledger", "periods", NULL };
+static GType (*const setup_types[]) (void) = {
+	venture_accounting_setup_get_type, venture_accounting_control_map_get_type, NULL
+};
 static GType (*const cutover_types[]) (void) = {
 	venture_accounting_cutover_get_type, venture_accounting_cutover_row_get_type, NULL
 };
@@ -843,6 +847,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"cutover", "Accounting cutover", "Guided Zoho Books and QuickBooks opening-balance migration.",
 		cutover_requires, NULL, cutover_types, NULL, NULL, FALSE
+	},
+	{
+		"setup", "Accounting setup", "Guided books setup, control-account mappings and first-posting checks.",
+		setup_requires, NULL, setup_types, NULL, NULL, FALSE
 	}
 
 };

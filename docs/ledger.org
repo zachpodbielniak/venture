@@ -5,6 +5,11 @@
 
 * One posting boundary
 
+Control accounts used by posting and statements are mapped on
+=accounting_control_map=; see [[file:setup.org][Accounting setup]]. A conventional chart is
+still seeded so a new install can post without inventing codes.
+
+
 The =ledger= module requires =finance=. It owns =journal=, =journal_line=,
 the posting service and =trial_balance=. The two records are field tables:
 the table, JSON, REST, forms, audit, AI schema and CLI come from the ordinary

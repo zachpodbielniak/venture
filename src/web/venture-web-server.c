@@ -947,6 +947,14 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"invoicing"
 	},
 	{
+		"/setup", "Setup",
+		VENTURE_ICON(
+			"<path d=\"M4 4h16v4H4z\"/><path d=\"M8 12h8\"/><path d=\"M8 16h5\"/>"
+		),
+		NULL,
+		"setup"
+	},
+	{
 		"/e/accounting_cutover", "Cutover",
 		VENTURE_ICON(
 			"<path d=\"M4 4h16v4H4z\"/><path d=\"M4 10h10v10H4z\"/><path d=\"M16 14h4v6h-4z\"/>"
@@ -7270,6 +7278,7 @@ venture_web_append_knowledge(
 
 #include "banking/venture-bank-panel.inc"
 #include "cutover/venture-cutover-panel.inc"
+#include "setup/venture-setup-panel.inc"
 
 static void
 venture_web_append_related(
@@ -8859,6 +8868,7 @@ venture_web_ui_detail(
 	venture_web_append_related(self, content, record);
 	venture_bank_append_actions(content, record);
 	venture_cutover_append_actions(content, record);
+	venture_setup_append_actions(content, record);
 	venture_web_sequence_panel(self, content, principal, record);
 
 	/* A link is not offered on a link; the audit log is not linkable. */
@@ -27766,6 +27776,7 @@ venture_web_api_ticket_draft(
 #include "activities/venture-activity-web.inc"
 #include "banking/venture-bank-web.inc"
 #include "cutover/venture-cutover-web.inc"
+#include "setup/venture-setup-web.inc"
 #include "autojournal/venture-autojournal-web.inc"
 
 #include "mail/venture-mail-web.inc"
@@ -28211,6 +28222,7 @@ venture_web_server_new(
 
 	venture_bank_web_register(router, self);
 	venture_cutover_web_register(router, self);
+	venture_setup_web_register(router, self);
 	htmx_router_post(router, "/api/v1/:type/:id/actions/:action", venture_web_api_action, self);
 	htmx_router_post(router, "/api/v1/journals/post", venture_web_api_action, self);
 

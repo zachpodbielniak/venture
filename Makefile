@@ -73,6 +73,7 @@ CORE_SRCS += src/activities/venture-activity-records.c
 CORE_SRCS += src/payables/venture-payable-records.c
 CORE_SRCS += src/banking/venture-bank-records.c
 CORE_SRCS += src/cutover/venture-cutover-records.c
+CORE_SRCS += src/setup/venture-setup-records.c
 
 # Server-only subsystems.
 SERVER_ONLY_SRCS := \
@@ -118,6 +119,7 @@ SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wil
 PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
 SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
 SERVER_ONLY_SRCS += src/cutover/venture-cutover-service.c
+SERVER_ONLY_SRCS += src/setup/venture-setup-service.c
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
@@ -165,6 +167,7 @@ PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/pipelines/*.h))
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/sequences/*.h))
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/statements/*.h))
 PUBLIC_HDRS += $(wildcard src/cutover/*.h)
+PUBLIC_HDRS += $(wildcard src/setup/*.h)
 
 TEST_SRCS := $(wildcard tests/test-*.c)
 

@@ -93,10 +93,12 @@ difference for comparisons. Zero-difference documents are omitted.
 Start with ledger net income. Add credits minus debits in every non-cash
 balance-sheet account: increasing receivables or inventory reduces cash;
 increasing payables or tax payable increases it. Account rows expose each
-adjustment. The four control subtotals use conventional chart codes and their
-descendants: receivables =1100=, payables =2000=, inventory =1200= and tax payable
-=2100=. Cash is =1000= and its descendants. Organization-prefixed conventional
-codes created by the posting rules are also recognized.
+adjustment. Control subtotals use semantic classifications from
+=accounting_control_map= — cash, receivables, payables, inventory and tax —
+and their descendants, not chart-code spelling. A conventional chart is seeded
+with those mappings; renumbering a mapped cash account still reports as cash.
+When no mapping exists the historical codes =1000= / =1100= / =1200= / =2000= /
+=2100= remain a fallback, including organization-prefixed posting codes.
 
 =adjustments= totals all non-cash balance-sheet movements, including the four
 control groups and other asset, liability and equity accounts. The latter
@@ -109,8 +111,8 @@ time. There is no unexplained residual or balancing plug.
 =cash_movement= is net income plus adjustments. =difference= compares this
 with Cash closing less Cash opening and must be zero exactly. Non-cash offsets
 cancel through the same ledger identity. No FX cash-flow adjustment or
-cash-equivalent classification is inferred. A custom chart must retain the
-conventional control codes or provide a replacement report through the registry.
+cash-equivalent classification is inferred. A custom chart keeps statements by mapping control accounts rather than by
+retaining conventional codes.
 
 ** Account balances and general ledger
 

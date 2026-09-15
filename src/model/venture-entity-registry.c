@@ -778,6 +778,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_posting_profile_get_type
 		, venture_accounting_cutover_get_type
 		, venture_accounting_cutover_row_get_type
+		, venture_accounting_setup_get_type
+		, venture_accounting_control_map_get_type
 		, venture_pipeline_get_type,
 		venture_pipeline_stage_get_type,
 		venture_deal_stage_entry_get_type,

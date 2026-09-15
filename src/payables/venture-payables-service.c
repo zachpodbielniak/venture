@@ -473,6 +473,21 @@ account_id(VenturePayablesService *self, gint64 configured, const gchar *code,
 	gboolean active;
 	gint actual_kind;
 
+	if (configured == 0)
+	{
+		const gchar *role = g_str_equal(code, "1000") ? "cash" :
+			(g_str_equal(code, "2000") ? "payables" :
+			(g_str_equal(code, "6900") ? "expense" : NULL));
+		if (role != NULL)
+		{
+			gint64 mapped = venture_setup_resolve_account(self->database, organization_id,
+				role, "organization", 0, NULL, error);
+			if (mapped != 0)
+				configured = mapped;
+			else if (error != NULL && *error != NULL)
+				return 0;
+		}
+	}
 	if (configured != 0)
 		account = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, configured, error);
 	else
