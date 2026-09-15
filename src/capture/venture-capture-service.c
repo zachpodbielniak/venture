@@ -279,6 +279,17 @@ venture_capture_save_hook(VentureDatabase *database, VentureEntity *record,
 	self = venture_capture_service_get(database);
 	if (self->writing == record)
 		return TRUE;
+	if (venture_entity_is_persisted(record))
+	{
+		g_autoptr(VentureEntity) stored = venture_database_get(database,
+			G_OBJECT_TYPE(record), venture_entity_get_id(record), NULL);
+		g_autofree gchar *stored_status = NULL;
+		if (stored != NULL)
+			g_object_get(stored, "status", &stored_status, NULL);
+		if (g_strcmp0(stored_status, "converted") == 0 || g_strcmp0(stored_status, "rejected") == 0)
+			return refuse(error, VENTURE_ERROR_PERMISSION_DENIED,
+				"Conversion and rejection go through VentureCaptureService");
+	}
 	g_object_get(record, "status", &status, NULL);
 	if (g_strcmp0(status, "converted") == 0 || g_strcmp0(status, "rejected") == 0)
 		return refuse(error, VENTURE_ERROR_PERMISSION_DENIED,
