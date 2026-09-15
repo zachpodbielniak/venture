@@ -136,7 +136,19 @@ soup_transport_get(VentureBankFeedTransport *transport, const gchar *url, const 
 		return NULL;
 	}
 	if (!venture_string_is_empty(authorization))
-		soup_message_headers_append(soup_message_get_request_headers(message), "Authorization", authorization);
+	{
+		const gchar *colon = strstr(authorization, ": ");
+		if (colon != NULL && !g_str_has_prefix(authorization, "Basic ") &&
+			!g_str_has_prefix(authorization, "Bearer "))
+		{
+			g_autofree gchar *name = g_strndup(authorization, (gsize)(colon - authorization));
+			soup_message_headers_append(soup_message_get_request_headers(message),
+				name, colon + 2);
+		}
+		else
+			soup_message_headers_append(soup_message_get_request_headers(message),
+				"Authorization", authorization);
+	}
 	bytes = soup_session_send_and_read(self->session, message, NULL, error);
 	if (bytes == NULL) return NULL;
 	if (soup_message_get_status(message) < 200 || soup_message_get_status(message) >= 300)
