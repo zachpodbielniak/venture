@@ -966,6 +966,7 @@ test_disabled_migration(void)
 	venture_entity_registry_register_builtins(registry);
 	venture_module_registry_register_builtins(modules);
 	venture_config_set_module_enabled(config, "payables", FALSE);
+	venture_config_set_module_enabled(config, "recurring", FALSE);
 	g_assert_true(venture_module_registry_configure(modules, config, &error));
 	g_assert_no_error(error);
 	venture_module_registry_apply(modules, registry);
