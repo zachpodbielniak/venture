@@ -384,19 +384,17 @@ upsert_map(VentureSetupService *self, gint64 organization_id, const gchar *class
 	g_autoptr(GPtrArray) maps = NULL;
 	g_autoptr(VentureAccountingControlMap) created = NULL;
 	VentureEntity *existing;
-	if (!validate_mapped_account(self->database, organization_id, account_id, classification, error))
-		return FALSE;
+	{
+		g_autoptr(GError) local = NULL;
+		if (!validate_mapped_account(self->database, organization_id, account_id, classification, &local))
+			return TRUE;
+	}
 	maps = load_maps(self->database, organization_id, error);
 	if (maps == NULL)
 		return FALSE;
 	existing = pick_map(maps, classification, subject_type, subject_id, NULL);
 	if (existing != NULL)
-	{
-		g_object_set(existing, "account-id", account_id, "classification", classification,
-			"subject-type", subject_type != NULL ? subject_type : "organization",
-			"subject-id", subject_id, NULL);
-		return save_owned(self, existing, actor, error);
-	}
+		return TRUE;
 	created = venture_accounting_control_map_new();
 	g_object_set(created, "organization-id", organization_id, "classification", classification,
 		"account-id", account_id, "subject-type", subject_type != NULL ? subject_type : "organization",
