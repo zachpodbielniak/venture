@@ -1,0 +1,18 @@
+#+title: Supplier accounting portal
+#+description: Isolated bills, payment status and print
+
+=VenturePortalService= issues a 256-bit token for one supplier company.
+=GET /supplier/:token= lists that vendor's bills with status and remaining
+balance. Pay is not offered; =GET /supplier/:token/bills/:id/print= is a
+clean printable page (the browser print dialog is the PDF). Revoke ends
+access without deleting payable history. Unknown or revoked tokens return
+404. Generic writes of =supplier_portal_access= are refused; invite and
+revoke go through the service.
+
+There is no purchase-order type on this branch, so the portal shows bills
+and payment status only.
+
+#+begin_src sh
+venturectl supplier invite company_id=1 email=ap@example.org
+venturectl supplier revoke ID
+#+end_src

@@ -27824,6 +27824,7 @@ venture_web_api_ticket_draft(
 #include "setup/venture-setup-web.inc"
 #include "documents/venture-document-web.inc"
 #include "portal/venture-portal-web.inc"
+#include "portal/venture-supplier-portal-web.inc"
 #include "autojournal/venture-autojournal-web.inc"
 
 #include "mail/venture-mail-web.inc"
@@ -27984,6 +27985,7 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/purchase_order/:id/:action", venture_web_goods_action, self);
 	htmx_router_post(router, "/sales_order/:id/:action", venture_web_goods_action, self);
 	htmx_router_post(router, "/api/v1/sales_order/:id/:action", venture_web_goods_action, self);
+	venture_supplier_portal_web_register(router, self);
 	htmx_router_get(router, "/close", close_ui, self);
 	htmx_router_post(router, "/api/v1/close/open", close_api, self);
 	htmx_router_post(router, "/api/v1/close/:id/:action", close_api, self);

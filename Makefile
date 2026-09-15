@@ -83,6 +83,7 @@ CORE_SRCS += src/cutover/venture-cutover-records.c
 CORE_SRCS += src/setup/venture-setup-records.c
 CORE_SRCS += src/progress/venture-progress-records.c
 CORE_SRCS += src/portal/venture-portal-records.c
+CORE_SRCS += src/portal/venture-supplier-portal-records.c
 CORE_SRCS += src/backup/venture-backup-records.c
 CORE_SRCS += src/orgaccess/venture-accounting-approval-records.c
 CORE_SRCS += src/report/venture-report-records.c
@@ -148,6 +149,7 @@ SERVER_ONLY_SRCS += src/setup/venture-setup-service.c
 SERVER_ONLY_SRCS += src/documents/venture-document-service.c
 SERVER_ONLY_SRCS += src/progress/venture-progress-service.c
 SERVER_ONLY_SRCS += src/portal/venture-portal-service.c
+SERVER_ONLY_SRCS += src/portal/venture-supplier-portal-service.c
 SERVER_ONLY_SRCS += src/backup/venture-backup-service.c
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)

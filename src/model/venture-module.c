@@ -726,6 +726,11 @@ static const gchar *const goods_reports[] = {
 	"committed_spend", "reorder_worklist", "inventory_valuation", NULL
 };
 
+static GType (*const venture_module_supplier_portal_types[]) (void) = {
+	venture_supplier_portal_access_get_type, NULL
+};
+static const gchar *const venture_module_requires_supplier_portal[] = { "payables", NULL };
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -912,6 +917,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"payables", "Payables", "Supplier bills, payments and dated vendor balances.",
 		venture_module_requires_payables, NULL, venture_module_payables_types,
 		venture_module_reports_payables, NULL, FALSE
+	},
+	{
+		"supplier_portal", "Supplier portal",
+		"Tokenized vendor access to isolated bills, payment status and print.",
+		venture_module_requires_supplier_portal, NULL, venture_module_supplier_portal_types, NULL, NULL, FALSE
 	},
 
 	{

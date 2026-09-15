@@ -1144,6 +1144,7 @@ venture_database_save(
 		!venture_setup_check_write(self, entity, FALSE, error) ||
 		!venture_progress_check_write(self, entity, FALSE, error) ||
 		!venture_portal_check_write(self, entity, FALSE, error) ||
+		!venture_supplier_portal_check_write(self, entity, FALSE, error) ||
 		!venture_backup_check_write(self, entity, FALSE, error) ||
 		!venture_tax_filing_check_write(self, entity, FALSE, error) ||
 		!venture_accounting_approval_check_write(self, entity, FALSE, error) ||
@@ -1645,6 +1646,7 @@ venture_database_delete(
 		!venture_setup_check_write(self, entity, TRUE, error) ||
 		!venture_progress_check_write(self, entity, TRUE, error) ||
 		!venture_portal_check_write(self, entity, TRUE, error) ||
+		!venture_supplier_portal_check_write(self, entity, TRUE, error) ||
 		!venture_backup_check_write(self, entity, TRUE, error) ||
 		!venture_tax_filing_check_write(self, entity, TRUE, error) ||
 		!venture_accounting_approval_check_write(self, entity, TRUE, error) ||
@@ -1743,6 +1745,7 @@ venture_database_restore(
 		!venture_setup_check_write(self, entity, TRUE, error) ||
 		!venture_progress_check_write(self, entity, TRUE, error) ||
 		!venture_portal_check_write(self, entity, TRUE, error) ||
+		!venture_supplier_portal_check_write(self, entity, TRUE, error) ||
 		!venture_backup_check_write(self, entity, TRUE, error) ||
 		!venture_tax_filing_check_write(self, entity, TRUE, error) ||
 		!venture_accounting_approval_check_write(self, entity, TRUE, error) ||
@@ -1821,6 +1824,7 @@ venture_database_purge(
 		!venture_setup_check_write(self, entity, TRUE, error) ||
 		!venture_progress_check_write(self, entity, TRUE, error) ||
 		!venture_portal_check_write(self, entity, TRUE, error) ||
+		!venture_supplier_portal_check_write(self, entity, TRUE, error) ||
 		!venture_backup_check_write(self, entity, TRUE, error) ||
 		!venture_tax_filing_check_write(self, entity, TRUE, error) ||
 		!venture_accounting_approval_check_write(self, entity, TRUE, error) ||
@@ -2431,6 +2435,7 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_recurring_register_actions(self);
 		venture_progress_actions_register(self);
 		venture_portal_actions_register(self);
+		venture_supplier_portal_actions_register(self);
 		venture_backup_actions_register(self);
 		venture_tax_filing_actions_register(self);
 	}
