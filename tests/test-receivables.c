@@ -1957,6 +1957,75 @@ test_foreign_currency_fx(Fixture *f, gconstpointer data)
 }
 
 static void
+test_foreign_partial_leaves_balance(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) line = NULL;
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(GError) error = NULL;
+
+	(void)data;
+	save_rate(f, "EUR", "USD", 110, 100, "2026-01-10");
+	invoice = record_new(f, "invoice");
+	g_object_set(invoice, "number", "EUR-P", "company-id", f->customer_id, NULL);
+	money_field(invoice, "issued-at", "2026-01-10");
+	save(f, invoice);
+	line = record_new(f, "invoice_line");
+	g_object_set(line, "invoice-id", venture_entity_get_id(invoice),
+		"description", "Work", "quantity", 1.0, NULL);
+	money_field(line, "unit-price", "100 EUR");
+	save(f, line);
+	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+	save(f, invoice);
+	save_rate(f, "EUR", "USD", 105, 100, "2026-02-01");
+	payment = payment_new(f, venture_entity_get_id(invoice), "55 USD", "2026-02-01");
+	save(f, payment);
+	assert_status(f, invoice, "partially_paid");
+	g_assert_cmpint(account_balance_amount(f, account_id_for_code(f, "1000"), "2026-02-01T23:59:59Z"), ==, 5500);
+	g_assert_cmpint(account_balance_amount(f, account_id_for_code(f, "1100"), "2026-02-01T23:59:59Z"), !=, 0);
+}
+
+static void
+test_deferred_mixed_terms(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) short_product = record_new(f, "product");
+	g_autoptr(VentureEntity) long_product = record_new(f, "product");
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) first = NULL;
+	g_autoptr(VentureEntity) second = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_DEFERRAL);
+	g_autoptr(GPtrArray) deferrals = NULL;
+
+	(void)data;
+	g_object_set(short_product, "name", "Short", "recognition-policy", (gint64)1,
+		"recognition-months", (gint64)2, NULL);
+	save(f, short_product);
+	g_object_set(long_product, "name", "Long", "recognition-policy", (gint64)1,
+		"recognition-months", (gint64)4, NULL);
+	save(f, long_product);
+	invoice = record_new(f, "invoice");
+	g_object_set(invoice, "number", "DEF-MIX", "company-id", f->customer_id, NULL);
+	money_field(invoice, "issued-at", "2026-01-01");
+	save(f, invoice);
+	first = record_new(f, "invoice_line");
+	g_object_set(first, "invoice-id", venture_entity_get_id(invoice), "description", "Short",
+		"quantity", 1.0, "product-id", venture_entity_get_id(short_product), NULL);
+	money_field(first, "unit-price", "40 USD");
+	save(f, first);
+	second = record_new(f, "invoice_line");
+	g_object_set(second, "invoice-id", venture_entity_get_id(invoice), "description", "Long",
+		"quantity", 1.0, "product-id", venture_entity_get_id(long_product), NULL);
+	money_field(second, "unit-price", "80 USD");
+	save(f, second);
+	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+	save(f, invoice);
+	deferrals = venture_database_find(f->database, query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(deferrals->len, ==, 2);
+}
+
+static void
 test_write_off_remaining(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureEntity) invoice = NULL;
@@ -2011,6 +2080,8 @@ main(int argc, char **argv)
 	ADD("tax-correction-skips-void", test_tax_correction_skips_void);
 	ADD("tax-code-liability", test_tax_code_liability);
 	ADD("foreign-currency-fx", test_foreign_currency_fx);
+	ADD("foreign-partial", test_foreign_partial_leaves_balance);
+	ADD("deferred-mixed-terms", test_deferred_mixed_terms);
 	ADD("write-off-remaining", test_write_off_remaining);
 	ADD("accounting-cycle", test_accounting_cycle);
 	ADD("module-off-invoice", test_module_off_invoice);

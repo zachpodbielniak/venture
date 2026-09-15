@@ -456,11 +456,21 @@ account_id(VentureSettlementService *self, gint64 configured, const gchar *code,
 		account = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, configured, error);
 	else
 	{
+		g_autofree gchar *scoped = g_strdup_printf("%" G_GINT64_FORMAT ":%s", organization_id, code);
 		query = venture_query_new(VENTURE_TYPE_ACCOUNT);
 		venture_query_set_organization(query, organization_id);
 		if (!venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, error))
 			return 0;
 		account = venture_database_find_one(self->database, query, error);
+		if (account == NULL && (error == NULL || *error == NULL))
+		{
+			g_clear_object(&query);
+			query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+			venture_query_set_organization(query, organization_id);
+			if (!venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, scoped, error))
+				return 0;
+			account = venture_database_find_one(self->database, query, error);
+		}
 	}
 	if (account == NULL)
 	{
@@ -566,6 +576,8 @@ resolve_code(VentureSettlementService *self, const gchar *code, gint64 organizat
 			role = "tax";
 		else if (g_str_equal(code, "4000"))
 			role = "income";
+		else if (g_str_equal(code, "2200"))
+			role = "deferred";
 		if (role != NULL)
 		{
 			gint64 mapped = venture_setup_resolve_account(self->database, organization_id,
@@ -904,9 +916,8 @@ static gboolean
 schedule_recognition(VentureSettlementService *self, VentureEntity *invoice, const VentureMoney *deferred,
 	GDateTime *date, const VentureActor *actor, GError **error)
 {
-	g_autoptr(VentureEntity) deferral = VENTURE_ENTITY(venture_deferral_new());
 	g_autoptr(GPtrArray) lines = NULL;
-	gint64 months = 0, source = 0, target = 0, org = venture_entity_get_organization_id(invoice);
+	gint64 source = 0, target = 0, org = venture_entity_get_organization_id(invoice);
 	guint i;
 	if (deferred == NULL || venture_money_is_zero(deferred))
 		return TRUE;
@@ -915,32 +926,38 @@ schedule_recognition(VentureSettlementService *self, VentureEntity *invoice, con
 	lines = find_rows(self, VENTURE_TYPE_INVOICE_LINE, "invoice-id", venture_entity_get_id(invoice), NULL, error);
 	if (lines == NULL)
 		return FALSE;
-	for (i = 0; i < lines->len; i++)
-	{
-		gint64 product_id = 0, policy = 0, line_months = 0;
-		g_autoptr(VentureEntity) product = NULL;
-		g_object_get(g_ptr_array_index(lines, i), "product-id", &product_id, NULL);
-		if (product_id <= 0)
-			continue;
-		product = venture_database_get(self->database, VENTURE_TYPE_PRODUCT, product_id, error);
-		if (product == NULL)
-			return FALSE;
-		g_object_get(product, "recognition-policy", &policy, "recognition-months", &line_months, NULL);
-		if (policy != 0 && line_months > months)
-			months = line_months;
-	}
-	if (months < 1)
-		months = 1;
 	if (!resolve_code(self, "2200", org, &source, error) || !resolve_code(self, "4000", org, &target, error))
 		return FALSE;
-	venture_entity_set_organization_id(deferral, org);
-	g_object_set(deferral, "kind", VENTURE_DEFERRAL_KIND_ACCRUAL, "description", "Invoice revenue recognition",
-		"total", deferred, "start", date, "months", months, "source-account-id", source,
-		"target-account-id", target, "source-invoice-id", venture_entity_get_id(invoice),
-		"status", VENTURE_DEFERRAL_STATUS_ACTIVE, NULL);
 	{
 		g_autoptr(VentureDeferralService) deferrals = venture_deferral_service_new(self->database);
-		return venture_deferral_service_schedule(deferrals, deferral, actor, error);
+		for (i = 0; i < lines->len; i++)
+		{
+			VentureEntity *line = g_ptr_array_index(lines, i);
+			g_autoptr(VentureEntity) product = NULL;
+			g_autoptr(VentureMoney) net = NULL;
+			g_autoptr(VentureEntity) row = NULL;
+			gint64 product_id = 0, policy = 0, line_months = 0;
+			if (venture_entity_is_deleted(line))
+				continue;
+			g_object_get(line, "product-id", &product_id, "income-amount", &net, NULL);
+			if (product_id <= 0 || net == NULL || venture_money_is_zero(net))
+				continue;
+			product = venture_database_get(self->database, VENTURE_TYPE_PRODUCT, product_id, error);
+			if (product == NULL)
+				return FALSE;
+			g_object_get(product, "recognition-policy", &policy, "recognition-months", &line_months, NULL);
+			if (policy == 0 || line_months < 1)
+				continue;
+			row = VENTURE_ENTITY(venture_deferral_new());
+			venture_entity_set_organization_id(row, org);
+			g_object_set(row, "kind", VENTURE_DEFERRAL_KIND_ACCRUAL, "description", "Invoice revenue recognition",
+				"total", net, "start", date, "months", line_months, "source-account-id", source,
+				"target-account-id", target, "source-invoice-id", venture_entity_get_id(invoice),
+				"status", VENTURE_DEFERRAL_STATUS_ACTIVE, NULL);
+			if (!venture_deferral_service_schedule(deferrals, row, actor, error))
+				return FALSE;
+		}
+		return TRUE;
 	}
 }
 
@@ -1347,24 +1364,68 @@ settle_foreign_payment(VentureSettlementService *self, VentureEntity *payment,
 	if (g_strcmp0(venture_money_get_currency(issued_book), venture_money_get_currency(cash)) != 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION,
 			"No exchange rate valued this invoice into the book currency; record an exchange_rate");
-	released = venture_money_multiply_rational(issued_book, remaining->amount, issued_total->amount, error);
-	if (released == NULL)
-		return FALSE;
-	allocation = venture_payment_allocation_new();
-	g_object_set(allocation, "payment-id", venture_entity_get_id(payment),
-		"invoice-id", venture_entity_get_id(invoice), "amount", remaining, "date", date, NULL);
-	venture_entity_set_organization_id(VENTURE_ENTITY(allocation), venture_entity_get_organization_id(invoice));
-	external = g_strdup_printf("allocation:%s", venture_entity_get_uuid(VENTURE_ENTITY(allocation)));
-	sale = venture_sale_new();
-	g_object_set(sale, "venture-id", get_id(invoice, "venture-id"), "gross", cash,
-		"occurred-at", date, "channel", "invoice", "external-id", external, NULL);
-	venture_entity_set_organization_id(VENTURE_ENTITY(sale), venture_entity_get_organization_id(invoice));
-	if (!write_record(self, VENTURE_ENTITY(sale), actor, error))
-		return FALSE;
-	g_object_set(allocation, "sale-id", venture_entity_get_id(VENTURE_ENTITY(sale)), NULL);
-	return write_record(self, VENTURE_ENTITY(allocation), actor, error) &&
-		post_fx_receipt(self, payment, date, cash, released, actor, error) &&
-		derive_invoice(self, invoice, date, actor, error);
+	{
+		g_autoptr(VentureExchangePolicy) policy = NULL;
+		g_autoptr(VentureMoney) remaining_book = NULL;
+		g_autoptr(VentureMoney) applied_doc = NULL;
+		g_autoptr(VentureMoney) applied_cash = NULL;
+		g_autoptr(VentureMoney) leftover = NULL;
+		gint64 org = venture_entity_get_organization_id(invoice);
+		policy = venture_rate_table_policy_new(self->database, org);
+		remaining_book = venture_exchange_policy_convert(policy, remaining, book, date, error);
+		if (remaining_book == NULL)
+			return FALSE;
+		if (venture_money_get_amount(cash) >= venture_money_get_amount(remaining_book))
+		{
+			applied_doc = venture_money_copy(remaining);
+			applied_cash = venture_money_copy(remaining_book);
+		}
+		else
+		{
+			applied_doc = venture_money_multiply_rational(remaining, cash->amount, remaining_book->amount, error);
+			applied_cash = venture_money_copy(cash);
+		}
+		if (applied_doc == NULL || applied_cash == NULL)
+			return FALSE;
+		released = venture_money_multiply_rational(issued_book, applied_doc->amount, issued_total->amount, error);
+		if (released == NULL)
+			return FALSE;
+		leftover = venture_money_subtract(cash, applied_cash, error);
+		if (leftover == NULL)
+			return FALSE;
+		if (venture_money_get_amount(leftover) < 0)
+		{
+			g_clear_pointer(&leftover, venture_money_free);
+			leftover = venture_money_new_zero(book);
+		}
+		allocation = venture_payment_allocation_new();
+		g_object_set(allocation, "payment-id", venture_entity_get_id(payment),
+			"invoice-id", venture_entity_get_id(invoice), "amount", applied_doc, "date", date, NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(allocation), org);
+		external = g_strdup_printf("allocation:%s", venture_entity_get_uuid(VENTURE_ENTITY(allocation)));
+		sale = venture_sale_new();
+		g_object_set(sale, "venture-id", get_id(invoice, "venture-id"), "gross", applied_cash,
+			"occurred-at", date, "channel", "invoice", "external-id", external, NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(sale), org);
+		if (!write_record(self, VENTURE_ENTITY(sale), actor, error))
+			return FALSE;
+		g_object_set(allocation, "sale-id", venture_entity_get_id(VENTURE_ENTITY(sale)), NULL);
+		if (!write_record(self, VENTURE_ENTITY(allocation), actor, error) ||
+			!post_fx_receipt(self, payment, date, applied_cash, released, actor, error))
+			return FALSE;
+		if (venture_money_get_amount(leftover) > 0)
+		{
+			g_autoptr(VentureCustomerCredit) credit = venture_customer_credit_new();
+			g_object_set(credit, "customer-id", get_id(invoice, "company-id"), "date", date,
+				"amount", leftover, "remaining", leftover, "payment-id", venture_entity_get_id(payment),
+				"kind", "overpayment", NULL);
+			venture_entity_set_organization_id(VENTURE_ENTITY(credit), org);
+			if (!write_record(self, VENTURE_ENTITY(credit), actor, error) ||
+				!post(self, payment, date, leftover, "1000", "1100", actor, error))
+				return FALSE;
+		}
+		return derive_invoice(self, invoice, date, actor, error);
+	}
 }
 
 static gboolean
