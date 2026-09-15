@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
+#include <string.h>
 
 typedef struct
 {
@@ -926,6 +927,9 @@ code_account(Books *books, const gchar *code)
 		g_object_get(account, "code", &actual, NULL);
 		if (g_strcmp0(actual, code) == 0)
 			return venture_entity_get_id(account);
+		if (actual != NULL && strchr(actual, ':') != NULL &&
+			g_strcmp0(strrchr(actual, ':') + 1, code) == 0)
+			return venture_entity_get_id(account);
 	}
 	return 0;
 }
@@ -957,6 +961,8 @@ apply_cash_basis(Books *books, VentureDatabase *db, gint64 org, GError **error)
 	gint64 income = code_account(books, "4000");
 	gint64 tax = code_account(books, "2100");
 	gint64 expense = code_account(books, "6900");
+	gint64 ar = code_account(books, "1100");
+	gint64 ap = code_account(books, "2000");
 	guint i;
 	for (i = 0; i < books->entries->len; i++)
 	{
@@ -1029,7 +1035,9 @@ apply_cash_basis(Books *books, VentureDatabase *db, gint64 org, GError **error)
 		if (!push_cash_entry(books, income, date, "payment_allocation",
 			venture_entity_get_id(allocation), VENTURE_LEDGER_SIDE_CREDIT, income_share) ||
 			!push_cash_entry(books, tax, date, "payment_allocation",
-			venture_entity_get_id(allocation), VENTURE_LEDGER_SIDE_CREDIT, tax_share))
+			venture_entity_get_id(allocation), VENTURE_LEDGER_SIDE_CREDIT, tax_share) ||
+			!push_cash_entry(books, ar, date, "payment_allocation",
+			venture_entity_get_id(allocation), VENTURE_LEDGER_SIDE_DEBIT, amount))
 			return FALSE;
 	}
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "bill_payment_allocation") != G_TYPE_INVALID)
@@ -1050,7 +1058,9 @@ apply_cash_basis(Books *books, VentureDatabase *db, gint64 org, GError **error)
 			if (date == NULL || g_date_time_compare(date, books->start) < 0 || g_date_time_compare(date, books->end) >= 0)
 				continue;
 			if (!push_cash_entry(books, expense, date, "bill_payment_allocation",
-				venture_entity_get_id(row), VENTURE_LEDGER_SIDE_DEBIT, amount))
+				venture_entity_get_id(row), VENTURE_LEDGER_SIDE_DEBIT, amount) ||
+				!push_cash_entry(books, ap, date, "bill_payment_allocation",
+				venture_entity_get_id(row), VENTURE_LEDGER_SIDE_CREDIT, amount))
 				return FALSE;
 		}
 	}
@@ -1126,11 +1136,16 @@ generate(const gchar *name, VentureContext *context, VentureDateRange *period,
 		}
 		if (g_strcmp0(basis, "cash") == 0 && !apply_cash_basis(books, db, org, error))
 			goto fail;
+		if (g_strcmp0(basis, "cash") == 0)
+			json_object_set_string_member(previous_options, "basis", "cash");
 	}
 	if (prior_period != NULL)
 	{
 		previous = read_books(db, org, currency, prior_period, NULL, error);
 		if (previous == NULL)
+			goto fail;
+		if (g_strcmp0(venture_json_object_get_string(options, "basis", "accrual"), "cash") == 0 &&
+			!apply_cash_basis(previous, db, org, error))
 			goto fail;
 		for (i = 0; i < previous->currencies->len; i++)
 			add_currency(books, g_ptr_array_index(previous->currencies, i));

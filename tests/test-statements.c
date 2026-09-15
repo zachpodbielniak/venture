@@ -576,6 +576,10 @@ test_surfaces(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(body, "name=\"compare_to\""));
 	g_assert_nonnull(strstr(body, "Prior"));
 	g_assert_nonnull(strstr(body, "compare_to=2026-07"));
+	g_assert_nonnull(strstr(body, "name=\"basis\""));
+	g_clear_pointer(&body, g_free);
+	body = http_get(session, base, "/reports/income_statement?period=2026-08&basis=cash&currency=USD&organization_id=1", 200);
+	g_assert_nonnull(strstr(body, "value=\"cash\" selected"));
 	g_clear_pointer(&body, g_free);
 	body = http_get(session, base, "/api/v1/reports/general_ledger?period=2026-08&compare_to=2026-07&account_id=1&currency=USD&organization_id=1", 200);
 	g_assert_nonnull(strstr(body, "prior"));
@@ -666,6 +670,14 @@ test_cash_basis(Fixture *f, gconstpointer data)
 	cash_feb = venture_report_generate(income, f->context, february, cash, &error);
 	g_assert_no_error(error);
 	g_assert_cmpint(cell(cash_feb, "income", "current"), ==, 10000);
+	{
+		VentureReport *sheet = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "balance_sheet");
+		g_autoptr(VentureReportResult) cash_sheet = NULL;
+		cash_sheet = venture_report_generate(sheet, f->context, february, cash, &error);
+		g_assert_no_error(error);
+		g_assert_cmpint(cell(cash_sheet, "difference", "current"), ==, 0);
+		g_assert_cmpint(cell(cash_sheet, "assets", "current"), ==, 10500);
+	}
 }
 
 int
