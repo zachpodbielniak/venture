@@ -207,8 +207,6 @@ venture_portal_service_pay(VenturePortalService *self, VentureCustomerPortalAcce
 	gint64 invoice_id, const VentureMoney *amount, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) invoice = NULL;
-	g_autoptr(VenturePayment) payment = NULL;
-	g_autoptr(GDateTime) now = NULL;
 	gint64 company, invoice_company, org;
 	gint status;
 	g_return_val_if_fail(VENTURE_IS_PORTAL_SERVICE(self), FALSE);
@@ -224,13 +222,10 @@ venture_portal_service_pay(VenturePortalService *self, VentureCustomerPortalAcce
 		return refuse(error, "invoice does not belong to this customer");
 	if (status != VENTURE_INVOICE_STATUS_SENT && status != VENTURE_INVOICE_STATUS_PARTIALLY_PAID)
 		return refuse(error, "only issued open invoices can be paid");
-	payment = venture_payment_new();
-	now = venture_time_now();
-	g_object_set(payment, "customer-id", company, "invoice-id", invoice_id, "date", now,
-		"method", "portal", "amount", amount, NULL);
-	venture_entity_set_organization_id(VENTURE_ENTITY(payment), org);
-	return venture_settlement_service_apply_payment(venture_settlement_service_get(self->database),
-		payment, NULL, actor, error);
+	(void)amount;
+	(void)actor;
+	return refuse(error,
+		"the customer portal cannot record a receipt; pay through Checkout");
 }
 
 static gboolean

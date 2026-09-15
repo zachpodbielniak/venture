@@ -124,13 +124,15 @@ test_invite_pay_revoke(Fixture *f, gconstpointer data)
 		VENTURE_CUSTOMER_PORTAL_ACCESS(access), venture_entity_get_id(stranger),
 		amount, &actor, &error));
 	g_clear_error(&error);
-	g_assert_true(venture_portal_service_pay(venture_portal_service_get(f->db),
+	g_assert_false(venture_portal_service_pay(venture_portal_service_get(f->db),
 		VENTURE_CUSTOMER_PORTAL_ACCESS(access), venture_entity_get_id(invoice),
 		amount, &actor, &error));
-	g_assert_no_error(error);
+	g_assert_nonnull(error);
+	g_assert_nonnull(strstr(error->message, "Checkout"));
+	g_clear_error(&error);
 	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db),
 		venture_entity_get_id(invoice), NULL, &error);
-	g_assert_cmpint(venture_money_get_amount(balance), ==, 0);
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 4000);
 	g_assert_true(venture_portal_service_revoke(venture_portal_service_get(f->db),
 		VENTURE_CUSTOMER_PORTAL_ACCESS(access), &actor, &error));
 	g_assert_null(venture_portal_service_lookup(venture_portal_service_get(f->db), token, &error));
@@ -193,7 +195,7 @@ G_GNUC_UNUSED test_http_isolation(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(http_request(server, "GET", path, NULL, &body), ==, 200);
 	g_assert_nonnull(strstr(body, "INV-WEB"));
 	g_assert_null(strstr(body, "INV-HIDDEN"));
-	g_assert_nonnull(strstr(body, "Pay"));
+	g_assert_nonnull(strstr(body, "Checkout"));
 	venture_test_remove_tree(dir);
 	(void)invoice;
 }

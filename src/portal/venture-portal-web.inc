@@ -37,7 +37,7 @@ venture_portal_web(HtmxRequest *request, GHashTable *params, gpointer user_data)
 		if (money == NULL || !venture_portal_service_pay(venture_portal_service_get(venture_context_get_database(self->context)),
 			VENTURE_CUSTOMER_PORTAL_ACCESS(access), invoice ? g_ascii_strtoll(invoice, NULL, 10) : 0, money, &actor, &error))
 			return venture_web_error_response(error);
-		return htmx_response_new_with_content("<p>Payment recorded. Thank you.</p>");
+		return htmx_response_new_with_content("<p>Use Checkout to pay this invoice.</p>");
 	}
 	invoices = venture_portal_service_invoices(venture_portal_service_get(venture_context_get_database(self->context)),
 		VENTURE_CUSTOMER_PORTAL_ACCESS(access), &error);
@@ -55,7 +55,7 @@ venture_portal_web(HtmxRequest *request, GHashTable *params, gpointer user_data)
 		g_string_append(html, "</td><td>");
 		if (status == VENTURE_INVOICE_STATUS_SENT || status == VENTURE_INVOICE_STATUS_PARTIALLY_PAID)
 			g_string_append_printf(html, "<form method=\"post\"><input type=\"hidden\" name=\"invoice_id\" value=\"%" G_GINT64_FORMAT "\">"
-				"<input name=\"amount\" placeholder=\"10 USD\" required><button>Pay</button></form>",
+				"<input name=\"amount\" placeholder=\"10 USD\" required><button>Request Checkout</button></form>",
 				venture_entity_get_id(invoice));
 		g_string_append(html, "</td></tr>");
 	}
