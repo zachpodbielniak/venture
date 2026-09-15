@@ -51,6 +51,21 @@ its own tests, merged into this branch rather than straight to =master=.
 - #62 backup, restore and complete export
 - #63 daily accounting home
 - #67 batch financial document entry
+- #21 pluggable bank-feed connectors
+- #30 jurisdiction tax filing adapters
+- #31 contractor 1099-NEC packs
+- #46 purchase orders, receiving and three-way match
+- #47 inventory FIFO valuation on the ledger
+- #48 sales orders through fulfillment to invoice
+- #50 reimbursements, mileage and expense claims
+- #55 budgets and cash forecasting
+- #59 owner equity, loans and draws
+- #60 payroll import and liability reconciliation
+- #61 commerce order connectors
+- #64 intercompany consolidation
+- #66 supplier portal
+- #68 accounting custom fields without code
+- #69 tax depreciation schedules
 
 * Open
 
@@ -63,4 +78,7 @@ Mirrors #70 at the time of writing; the issue is the source of truth.
 (landed)
 
 ** P2 — broader business and advanced parity
-#30 #31 #46 #47 #48 #50 #55 #59 #60 #61 #64 #66 #68 #69
+(landed)
+
+** Existing open work
+(landed: #21 bank feeds)
