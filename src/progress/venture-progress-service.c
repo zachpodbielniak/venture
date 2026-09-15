@@ -101,12 +101,34 @@ venture_progress_check_write(VentureDatabase *database, VentureEntity *record,
 }
 
 static gint64
-account_code(VentureProgressService *self, gint64 org, const gchar *code, GError **error)
+account_code(VentureProgressService *self, gint64 org, const gchar *role, const gchar *code, GError **error)
 {
-	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	g_autoptr(GError) local = NULL;
+	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(VentureEntity) row = NULL;
+	g_autofree gchar *scoped = NULL;
+	gint64 id;
+	id = venture_setup_resolve_account(self->database, org, role, "organization", 0, NULL, &local);
+	if (local != NULL)
+	{
+		g_propagate_error(error, g_steal_pointer(&local));
+		return 0;
+	}
+	if (id != 0)
+		return id;
+	query = venture_query_new(VENTURE_TYPE_ACCOUNT);
 	venture_query_set_organization(query, org);
 	venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, NULL);
+	row = venture_database_find_one(self->database, query, error);
+	if (row != NULL)
+		return venture_entity_get_id(row);
+	if (error != NULL && *error != NULL)
+		return 0;
+	scoped = g_strdup_printf("%" G_GINT64_FORMAT ":%s", org, code);
+	g_clear_object(&query);
+	query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	venture_query_set_organization(query, org);
+	venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, scoped, NULL);
 	row = venture_database_find_one(self->database, query, error);
 	if (row == NULL)
 	{
@@ -285,7 +307,7 @@ venture_progress_service_collect_retainer(VentureProgressService *self, gint64 o
 	}
 	if (!venture_database_begin(self->database, error))
 		return NULL;
-	cash = account_code(self, organization_id, "1000", error);
+	cash = account_code(self, organization_id, "cash", "1000", error);
 	if (cash == 0)
 		goto fail;
 	retainer = venture_customer_retainer_new();
@@ -322,7 +344,7 @@ venture_progress_service_release_retainer(VentureProgressService *self, VentureC
 	org = venture_entity_get_organization_id(VENTURE_ENTITY(retainer));
 	if (!venture_database_begin(self->database, error))
 		return FALSE;
-	income = account_code(self, org, "4000", error);
+	income = account_code(self, org, "income", "4000", error);
 	if (income == 0)
 		goto fail;
 	if (!post_pair(self, org, "customer_retainer", venture_entity_get_id(VENTURE_ENTITY(retainer)),
@@ -363,7 +385,7 @@ venture_progress_service_hold_retention(VentureProgressService *self, VentureQuo
 	org = venture_entity_get_organization_id(VENTURE_ENTITY(quote));
 	if (!venture_database_begin(self->database, error))
 		return NULL;
-	ar = account_code(self, org, "1100", error);
+	ar = account_code(self, org, "income", "4000", error);
 	if (ar == 0)
 		goto fail;
 	retention = venture_contract_retention_new();
@@ -401,7 +423,7 @@ venture_progress_service_release_retention(VentureProgressService *self, Venture
 	org = venture_entity_get_organization_id(VENTURE_ENTITY(retention));
 	if (!venture_database_begin(self->database, error))
 		return FALSE;
-	income = account_code(self, org, "4000", error);
+	income = account_code(self, org, "income", "4000", error);
 	if (income == 0)
 		goto fail;
 	if (!post_pair(self, org, "contract_retention", venture_entity_get_id(VENTURE_ENTITY(retention)),

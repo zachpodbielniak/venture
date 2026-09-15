@@ -198,6 +198,14 @@ test_retention_hold_and_release(Fixture *f, gconstpointer data)
 	g_assert_true(venture_progress_service_release_retention(venture_progress_service_get(f->db),
 		VENTURE_CONTRACT_RETENTION(retention), amount, &actor, &error));
 	g_assert_no_error(error);
+	{
+		g_autoptr(GDateTime) as_of = g_date_time_new_now_utc();
+		g_autoptr(VentureMoney) ar = venture_posting_service_account_balance(
+			venture_database_get_posting_service(f->db), account_id(f, "1100"),
+			f->org, "USD", as_of, &error);
+		g_assert_no_error(error);
+		g_assert_cmpint(venture_money_get_amount(ar), ==, 0);
+	}
 }
 
 static void
