@@ -239,6 +239,17 @@ test_elimination(Fixture *f, gconstpointer data)
 		f->parent, "consolidated_income_statement", period, "USD", &error);
 	g_assert_no_error(error);
 	g_assert_cmpint(cell_key(sheet, "income", "current"), ==, 0);
+	{
+		g_autoptr(VentureReportResult) balances = venture_group_service_consolidated(
+			venture_group_service_get(f->db), f->parent, "consolidated_balance_sheet",
+			period, "USD", &error);
+		g_autoptr(VentureReportResult) trial = venture_group_service_consolidated(
+			venture_group_service_get(f->db), f->parent, "consolidated_trial_balance",
+			period, "USD", &error);
+		g_assert_no_error(error);
+		g_assert_cmpint(cell_org(balances, "1100", "elimination", "current"), ==, -10000);
+		g_assert_cmpint(cell_org(trial, "1100", "elimination", "current"), ==, -10000);
+	}
 }
 
 int

@@ -187,6 +187,26 @@ add_money(VentureMoney **total, const VentureMoney *amount, GError **error)
 	return TRUE;
 }
 
+static gboolean
+period_matches(const gchar *elim_period, VentureDateRange *period)
+{
+	const gchar *label;
+	g_autoptr(VentureDateRange) named = NULL;
+	if (elim_period == NULL || elim_period[0] == '\0' || period == NULL)
+		return TRUE;
+	label = venture_date_range_get_label(period);
+	if (label != NULL && (g_str_equal(elim_period, label) ||
+		g_str_has_prefix(label, elim_period) || strstr(label, elim_period) != NULL))
+		return TRUE;
+	named = venture_date_range_parse(elim_period, NULL, 1, NULL);
+	if (named == NULL)
+		return FALSE;
+	return g_date_time_compare(venture_date_range_get_start(named),
+		venture_date_range_get_end(period)) < 0 &&
+		g_date_time_compare(venture_date_range_get_start(period),
+		venture_date_range_get_end(named)) < 0;
+}
+
 VentureReportResult *
 venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 	const gchar *report_name, VentureDateRange *period, const gchar *currency, GError **error)
@@ -281,7 +301,6 @@ venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 				return NULL;
 		}
 	}
-	if (!trial && !sheet)
 	{
 		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ELIMINATION);
 		g_autoptr(GPtrArray) rows = NULL;
@@ -296,21 +315,21 @@ venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 			VentureEntity *row = g_ptr_array_index(rows, i);
 			g_autofree gchar *elim_period = NULL;
 			g_autoptr(VentureMoney) amount = NULL;
-			gint64 debit_id = 0;
+			gint64 debit_id = 0, credit_id = 0;
 			g_autoptr(VentureEntity) debit = NULL;
+			g_autoptr(VentureEntity) credit = NULL;
 			gint kind;
-			g_object_get(row, "period", &elim_period, "amount", &amount, "debit-account-id", &debit_id, NULL);
-			if (elim_period != NULL && period != NULL && venture_date_range_get_label(period) != NULL &&
-				elim_period[0] != '\0' && !g_str_equal(elim_period, venture_date_range_get_label(period)) &&
-				(strlen(elim_period) < 4 || strstr(venture_date_range_get_label(period) ?
-					venture_date_range_get_label(period) : "", elim_period) == NULL) &&
-				!g_str_has_prefix(elim_period, "2026-08"))
+			g_object_get(row, "period", &elim_period, "amount", &amount,
+				"debit-account-id", &debit_id, "credit-account-id", &credit_id, NULL);
+			if (!period_matches(elim_period, period))
+				continue;
+			if (amount == NULL)
 				continue;
 			debit = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, debit_id, error);
 			if (debit == NULL)
 				return NULL;
 			g_object_get(debit, "kind", &kind, NULL);
-			if (kind == VENTURE_ACCOUNT_KIND_INCOME)
+			if (!trial && !sheet && kind == VENTURE_ACCOUNT_KIND_INCOME)
 			{
 				VentureMoney *next = venture_money_subtract(income, amount, error);
 				if (next == NULL)
@@ -318,17 +337,58 @@ venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 				venture_money_free(income);
 				income = next;
 			}
+			if (trial || sheet)
+			{
+				g_autoptr(VentureMoney) credit_amount = NULL;
+				g_autofree gchar *debit_code = NULL;
+				g_autofree gchar *debit_name = NULL;
+				g_autofree gchar *credit_code = NULL;
+				g_autofree gchar *credit_name = NULL;
+				credit = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, credit_id, error);
+				if (credit == NULL)
+					return NULL;
+				credit_amount = venture_money_negate(amount);
+				if (credit_amount == NULL)
+					return NULL;
+				g_object_get(debit, "code", &debit_code, "name", &debit_name, NULL);
+				g_object_get(credit, "code", &credit_code, "name", &credit_name, NULL);
+				venture_report_result_begin_row(result);
+				venture_report_result_set_text(result, "key", debit_code);
+				venture_report_result_set_text(result, "name", debit_name);
+				venture_report_result_set_text(result, "organization", "elimination");
+				venture_report_result_set_money(result, "current", amount);
+				if (trial)
+				{
+					g_autoptr(VentureMoney) zero = venture_money_new_zero(amount->currency);
+					venture_report_result_set_money(result, "debits", amount);
+					venture_report_result_set_money(result, "credits", zero);
+				}
+				venture_report_result_begin_row(result);
+				venture_report_result_set_text(result, "key", credit_code);
+				venture_report_result_set_text(result, "name", credit_name);
+				venture_report_result_set_text(result, "organization", "elimination");
+				venture_report_result_set_money(result, "current", credit_amount);
+				if (trial)
+				{
+					g_autoptr(VentureMoney) zero = venture_money_new_zero(amount->currency);
+					venture_report_result_set_money(result, "debits", zero);
+					venture_report_result_set_money(result, "credits", amount);
+				}
+			}
 		}
-		venture_report_result_begin_row(result);
-		venture_report_result_set_text(result, "key", "income");
-		venture_report_result_set_text(result, "name", "Total income");
-		venture_report_result_set_text(result, "organization", "group");
-		venture_report_result_set_money(result, "current", income);
-		venture_report_result_begin_row(result);
-		venture_report_result_set_text(result, "key", "expenses");
-		venture_report_result_set_text(result, "name", "Total expenses");
-		venture_report_result_set_text(result, "organization", "group");
-		venture_report_result_set_money(result, "current", expenses);
+		if (!trial && !sheet)
+		{
+			venture_report_result_begin_row(result);
+			venture_report_result_set_text(result, "key", "income");
+			venture_report_result_set_text(result, "name", "Total income");
+			venture_report_result_set_text(result, "organization", "group");
+			venture_report_result_set_money(result, "current", income);
+			venture_report_result_begin_row(result);
+			venture_report_result_set_text(result, "key", "expenses");
+			venture_report_result_set_text(result, "name", "Total expenses");
+			venture_report_result_set_text(result, "organization", "group");
+			venture_report_result_set_money(result, "current", expenses);
+		}
 	}
 	return g_steal_pointer(&result);
 }
