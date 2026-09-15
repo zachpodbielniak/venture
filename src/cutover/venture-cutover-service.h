@@ -18,6 +18,16 @@ gboolean venture_cutover_service_activate(VentureCutoverService *self, VentureAc
 	const VentureActor *actor, GError **error);
 gboolean venture_cutover_service_rollback(VentureCutoverService *self, VentureAccountingCutover *cutover,
 	const VentureActor *actor, GError **error);
+/**
+ * venture_cutover_check_write: (skip)
+ * @database: repository
+ * @record: candidate write
+ * @removal: TRUE when deleting
+ * @error: (out) (optional): location
+ * Returns: TRUE if the write is service-owned or not a cutover record
+ */
+gboolean venture_cutover_check_write(VentureDatabase *database, VentureEntity *record,
+	gboolean removal, GError **error);
 void venture_cutover_actions_register(VentureDatabase *database);
 G_END_DECLS
 #endif

@@ -233,11 +233,13 @@ The Stripe sub-build consumes the YAML archive produced by the parent build. It 
 The independent replacement pack: a synthetic business issues a taxed invoice,
 takes a partial receipt, records and pays a bill, and keeps subledgers tied to
 the GL. Rollback and retry leave no partial money. It does not claim country,
-payroll or inventory parity.
+payroll or inventory parity. Invoice detail, cash-basis reports, bank reopen
+and the cutover wizard are asserted over HTTP in the module suites.
 
 ** =test-cutover=
 
 Preview lists unsupported source fields, import is idempotent on source IDs,
-activation retains the reconciliation report, and rollback is refused after
-activation.
+reconcile checks trial balance and opening AR/bank totals, rollback reverses
+opening cash and voids imported invoices, generic writes are refused, and the
+Cutover page plus preview/action routes are covered over HTTP.
 

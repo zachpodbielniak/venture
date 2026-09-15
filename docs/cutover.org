@@ -15,8 +15,12 @@ reimport is idempotent.
 Open AR is imported as issued invoices (tax split at issuance) rather than as a
 second opening journal, so operational documents and opening cash are not
 double-posted. Bank opening cash is one balanced journal against equity.
-Activation is refused until reconcile has accepted trial balance, aging and bank
-opening totals. Rollback is allowed only before activation.
+Activation is refused until reconcile has accepted trial balance, issued
+opening AR and bank opening cash. Rollback is allowed only before activation:
+it reverses the opening cash journals and voids the imported invoices. Generic
+writes cannot stamp a reconciled state. The Cutover nav item opens the batch
+record; preview, import, reconcile, activate and rollback are actions on that
+page.
 
 #+begin_src sh
 venturectl action accounting_cutover import 1

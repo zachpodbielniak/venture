@@ -947,6 +947,14 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"invoicing"
 	},
 	{
+		"/e/accounting_cutover", "Cutover",
+		VENTURE_ICON(
+			"<path d=\"M4 4h16v4H4z\"/><path d=\"M4 10h10v10H4z\"/><path d=\"M16 14h4v6h-4z\"/>"
+		),
+		NULL,
+		"cutover"
+	},
+	{
 		"/e/product", "Products",
 		VENTURE_ICON(
 			"<path d=\"M21 8l-9-5-9 5 9 5 9-5z\"/>"
@@ -2532,7 +2540,7 @@ venture_web_api_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
@@ -3808,6 +3816,8 @@ venture_web_ui_invoice_print(
 	g_string_append(html, "<table><thead><tr><th>Description</th>"
 	                      "<th class=\"num\">Qty</th>"
 	                      "<th class=\"num\">Unit</th>"
+	                      "<th class=\"num\">Net</th>"
+	                      "<th class=\"num\">Tax</th>"
 	                      "<th class=\"num\">Amount</th></tr></thead><tbody>");
 
 	for (i = 0; i < lines->len; i++)
@@ -3816,12 +3826,15 @@ venture_web_ui_invoice_print(
 		g_autofree gchar *description = NULL;
 		g_autoptr(VentureMoney) unit_price = NULL;
 		g_autoptr(VentureMoney) amount = NULL;
+		g_autoptr(VentureMoney) net = NULL;
+		g_autoptr(VentureMoney) tax = NULL;
 		gdouble quantity;
 
 		line = g_ptr_array_index(lines, i);
 		g_object_get(line, "description", &description,
 		             "quantity", &quantity,
-		             "unit-price", &unit_price, NULL);
+		             "unit-price", &unit_price,
+		             "income-amount", &net, "tax-amount", &tax, NULL);
 		amount = venture_invoice_line_get_amount(line, NULL);
 
 		g_string_append(html, "<tr><td>");
@@ -3839,6 +3852,18 @@ venture_web_ui_invoice_print(
 		}
 
 		g_string_append(html, "</td><td class=\"num\">");
+		if (NULL != net)
+		{
+			g_autofree gchar *text = venture_money_to_display_string(net, TRUE);
+			venture_html_escape_append(html, text);
+		}
+		g_string_append(html, "</td><td class=\"num\">");
+		if (NULL != tax)
+		{
+			g_autofree gchar *text = venture_money_to_display_string(tax, TRUE);
+			venture_html_escape_append(html, text);
+		}
+		g_string_append(html, "</td><td class=\"num\">");
 
 		if (NULL != amount)
 		{
@@ -3852,7 +3877,7 @@ venture_web_ui_invoice_print(
 	}
 
 	g_string_append(html, "</tbody><tfoot><tr>"
-	                      "<td colspan=\"3\" class=\"num\">Total</td>"
+	                      "<td colspan=\"5\" class=\"num\">Total</td>"
 	                      "<td class=\"num\">");
 
 	{
@@ -5663,7 +5688,7 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
@@ -7244,6 +7269,7 @@ venture_web_append_knowledge(
 );
 
 #include "banking/venture-bank-panel.inc"
+#include "cutover/venture-cutover-panel.inc"
 
 static void
 venture_web_append_related(
@@ -8507,6 +8533,8 @@ venture_web_append_invoice_block(
 	                         "<table class=\"data\"><thead><tr>"
 	                         "<th>Description</th><th class=\"num\">Qty</th>"
 	                         "<th class=\"num\">Unit</th>"
+	                         "<th class=\"num\">Net</th>"
+	                         "<th class=\"num\">Tax</th>"
 	                         "<th class=\"num\">Amount</th></tr></thead>"
 	                         "<tbody>");
 
@@ -8516,12 +8544,15 @@ venture_web_append_invoice_block(
 		g_autofree gchar *description = NULL;
 		g_autoptr(VentureMoney) unit_price = NULL;
 		g_autoptr(VentureMoney) amount = NULL;
+		g_autoptr(VentureMoney) net = NULL;
+		g_autoptr(VentureMoney) tax = NULL;
 		gdouble quantity;
 
 		line = g_ptr_array_index(lines, i);
 		g_object_get(line, "description", &description,
 		             "quantity", &quantity,
-		             "unit-price", &unit_price, NULL);
+		             "unit-price", &unit_price,
+		             "income-amount", &net, "tax-amount", &tax, NULL);
 		amount = venture_invoice_line_get_amount(line, NULL);
 
 		g_string_append(content, "<tr><td>");
@@ -8539,6 +8570,18 @@ venture_web_append_invoice_block(
 		}
 
 		g_string_append(content, "</td><td class=\"num\">");
+		if (NULL != net)
+		{
+			g_autofree gchar *text = venture_money_to_display_string(net, TRUE);
+			venture_html_escape_append(content, text);
+		}
+		g_string_append(content, "</td><td class=\"num\">");
+		if (NULL != tax)
+		{
+			g_autofree gchar *text = venture_money_to_display_string(tax, TRUE);
+			venture_html_escape_append(content, text);
+		}
+		g_string_append(content, "</td><td class=\"num\">");
 
 		if (NULL != amount)
 		{
@@ -8552,7 +8595,7 @@ venture_web_append_invoice_block(
 	}
 
 	g_string_append(content, "</tbody><tfoot><tr>"
-	                         "<td colspan=\"3\" class=\"num\">"
+	                         "<td colspan=\"5\" class=\"num\">"
 	                         "<strong>Total</strong></td>"
 	                         "<td class=\"num\"><strong>");
 
@@ -8800,6 +8843,7 @@ venture_web_ui_detail(
 	venture_web_append_record_actions(self, content, record, principal);
 	venture_web_append_related(self, content, record);
 	venture_bank_append_actions(content, record);
+	venture_cutover_append_actions(content, record);
 	venture_web_sequence_panel(self, content, principal, record);
 
 	/* A link is not offered on a link; the audit log is not linkable. */
@@ -27706,6 +27750,7 @@ venture_web_api_ticket_draft(
 #include "reconciliation/venture-reconciliation-web.inc"
 #include "activities/venture-activity-web.inc"
 #include "banking/venture-bank-web.inc"
+#include "cutover/venture-cutover-web.inc"
 #include "autojournal/venture-autojournal-web.inc"
 
 #include "mail/venture-mail-web.inc"
@@ -28150,6 +28195,7 @@ venture_web_server_new(
 	                   self);
 
 	venture_bank_web_register(router, self);
+	venture_cutover_web_register(router, self);
 	htmx_router_post(router, "/api/v1/:type/:id/actions/:action", venture_web_api_action, self);
 	htmx_router_post(router, "/api/v1/journals/post", venture_web_api_action, self);
 

@@ -1332,8 +1332,17 @@ test_auth_api_refuses_anonymous_requests(
 			"/api/v1/bank_accounts/1/import",
 			"/banking/1/action"
 		};
+		static const gchar *const cutover[] = {
+			"/api/v1/accounting_cutovers/preview",
+			"/cutover/preview",
+			"/api/v1/accounting_cutovers/1/import",
+			"/cutover/1/action"
+		};
 		for (i = 0; i < G_N_ELEMENTS(banking); i++)
 			g_assert_cmpuint(server_fixture_request(fixture, "POST", banking[i],
+				NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+		for (i = 0; i < G_N_ELEMENTS(cutover); i++)
+			g_assert_cmpuint(server_fixture_request(fixture, "POST", cutover[i],
 				NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	}
 
