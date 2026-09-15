@@ -678,6 +678,15 @@ test_cash_basis(Fixture *f, gconstpointer data)
 		g_assert_cmpint(cell(cash_sheet, "difference", "current"), ==, 0);
 		g_assert_cmpint(cell(cash_sheet, "assets", "current"), ==, 10500);
 	}
+	{
+		VentureReport *sheet = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "balance_sheet");
+		g_autoptr(VentureDateRange) march = venture_context_parse_period(f->context, "2026-03", NULL);
+		g_autoptr(VentureReportResult) cash_sheet = NULL;
+		cash_sheet = venture_report_generate(sheet, f->context, march, cash, &error);
+		g_assert_no_error(error);
+		g_assert_cmpint(cell(cash_sheet, "difference", "current"), ==, 0);
+		g_assert_cmpint(cell(cash_sheet, "assets", "current"), ==, 10500);
+	}
 }
 
 int

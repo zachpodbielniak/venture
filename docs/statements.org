@@ -8,7 +8,9 @@ Reports accept =basis= of =accrual= (default) or =cash=. Cash recognition uses
 receipts and payments: invoice issues and bill approvals are excluded, and
 allocated receipts recognize frozen net income and tax in the receipt period.
 Cash also reclassifies AR and AP by the same receipt or payment so the
-balance sheet and cash-flow statement still tie. Compare-to periods use the
+balance sheet and cash-flow statement still tie, including later periods
+where the receipt is opening cash. Bill cash uses the paid bill's expense
+account rather than assuming code 6900. Compare-to periods use the
 same basis. The statements page keeps a Basis selector on every report form.
 Exports, dashboards and period snapshots retain the selected basis in their
 options; snapshots default to accrual so closed history is the ledger.

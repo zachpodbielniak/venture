@@ -936,11 +936,17 @@ code_account(Books *books, const gchar *code)
 
 static gboolean
 push_cash_entry(Books *books, gint64 account_id, GDateTime *date, const gchar *source_type,
-	gint64 source_id, VentureLedgerSide side, const VentureMoney *amount)
+	gint64 source_id, VentureLedgerSide side, const VentureMoney *amount, GError **error)
 {
 	Evidence *e;
-	if (account_id == 0 || amount == NULL || venture_money_is_zero(amount))
+	if (amount == NULL || venture_money_is_zero(amount))
 		return TRUE;
+	if (account_id == 0)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"Cash-basis conversion is missing a control account");
+		return FALSE;
+	}
 	e = g_new0(Evidence, 1);
 	e->account_id = account_id;
 	e->source_id = source_id;
@@ -952,6 +958,45 @@ push_cash_entry(Books *books, gint64 account_id, GDateTime *date, const gchar *s
 	return TRUE;
 }
 
+static gint64
+bill_expense_account(Books *books, VentureDatabase *db, VentureEntity *allocation, GError **error)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) lines = NULL;
+	gint64 bill_id = 0;
+	guint i;
+	g_object_get(allocation, "bill-id", &bill_id, NULL);
+	if (bill_id > 0)
+	{
+		query = venture_query_new(VENTURE_TYPE_VENDOR_BILL_LINE);
+		venture_query_set_limit(query, 0);
+		if (!venture_query_add_filter_int(query, "bill-id", VENTURE_FILTER_OP_EQ, bill_id, error))
+			return -1;
+		lines = venture_database_find(db, query, error);
+		if (lines == NULL)
+			return -1;
+		for (i = 0; i < lines->len; i++)
+		{
+			gint64 account_id = 0;
+			g_object_get(g_ptr_array_index(lines, i), "account-id", &account_id, NULL);
+			if (account_id > 0)
+				return account_id;
+		}
+	}
+	{
+		gint64 fallback = code_account(books, "6900");
+		if (fallback == 0)
+			fallback = code_account(books, "5000");
+		if (fallback == 0)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"Cash-basis bill payments need an expense account");
+			return -1;
+		}
+		return fallback;
+	}
+}
+
 static gboolean
 apply_cash_basis(Books *books, VentureDatabase *db, gint64 org, GError **error)
 {
@@ -960,7 +1005,6 @@ apply_cash_basis(Books *books, VentureDatabase *db, gint64 org, GError **error)
 	g_autoptr(VentureQuery) query = NULL;
 	gint64 income = code_account(books, "4000");
 	gint64 tax = code_account(books, "2100");
-	gint64 expense = code_account(books, "6900");
 	gint64 ar = code_account(books, "1100");
 	gint64 ap = code_account(books, "2000");
 	guint i;
@@ -1002,7 +1046,7 @@ apply_cash_basis(Books *books, VentureDatabase *db, gint64 org, GError **error)
 		gint64 invoice_id = 0;
 		guint j;
 		g_object_get(allocation, "date", &date, "amount", &amount, "invoice-id", &invoice_id, NULL);
-		if (date == NULL || g_date_time_compare(date, books->start) < 0 || g_date_time_compare(date, books->end) >= 0)
+		if (date == NULL || g_date_time_compare(date, books->end) >= 0)
 			continue;
 		events = venture_query_new(VENTURE_TYPE_INVOICE_EVENT);
 		venture_query_set_limit(events, 0);
@@ -1033,11 +1077,11 @@ apply_cash_basis(Books *books, VentureDatabase *db, gint64 org, GError **error)
 		if (income_share == NULL)
 			return FALSE;
 		if (!push_cash_entry(books, income, date, "payment_allocation",
-			venture_entity_get_id(allocation), VENTURE_LEDGER_SIDE_CREDIT, income_share) ||
+			venture_entity_get_id(allocation), VENTURE_LEDGER_SIDE_CREDIT, income_share, error) ||
 			!push_cash_entry(books, tax, date, "payment_allocation",
-			venture_entity_get_id(allocation), VENTURE_LEDGER_SIDE_CREDIT, tax_share) ||
+			venture_entity_get_id(allocation), VENTURE_LEDGER_SIDE_CREDIT, tax_share, error) ||
 			!push_cash_entry(books, ar, date, "payment_allocation",
-			venture_entity_get_id(allocation), VENTURE_LEDGER_SIDE_DEBIT, amount))
+			venture_entity_get_id(allocation), VENTURE_LEDGER_SIDE_DEBIT, amount, error))
 			return FALSE;
 	}
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "bill_payment_allocation") != G_TYPE_INVALID)
@@ -1054,13 +1098,17 @@ apply_cash_basis(Books *books, VentureDatabase *db, gint64 org, GError **error)
 			VentureEntity *row = g_ptr_array_index(bill_rows, i);
 			g_autoptr(GDateTime) date = NULL;
 			g_autoptr(VentureMoney) amount = NULL;
+			gint64 bill_expense;
 			g_object_get(row, "date", &date, "amount", &amount, NULL);
-			if (date == NULL || g_date_time_compare(date, books->start) < 0 || g_date_time_compare(date, books->end) >= 0)
+			if (date == NULL || g_date_time_compare(date, books->end) >= 0)
 				continue;
-			if (!push_cash_entry(books, expense, date, "bill_payment_allocation",
-				venture_entity_get_id(row), VENTURE_LEDGER_SIDE_DEBIT, amount) ||
+			bill_expense = bill_expense_account(books, db, row, error);
+			if (bill_expense < 0)
+				return FALSE;
+			if (!push_cash_entry(books, bill_expense, date, "bill_payment_allocation",
+				venture_entity_get_id(row), VENTURE_LEDGER_SIDE_DEBIT, amount, error) ||
 				!push_cash_entry(books, ap, date, "bill_payment_allocation",
-				venture_entity_get_id(row), VENTURE_LEDGER_SIDE_CREDIT, amount))
+				venture_entity_get_id(row), VENTURE_LEDGER_SIDE_CREDIT, amount, error))
 				return FALSE;
 		}
 	}
