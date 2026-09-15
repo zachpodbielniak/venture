@@ -27,9 +27,27 @@ GPtrArray *venture_commerce_connector_fetch_orders(VentureCommerceConnector *sel
 G_DECLARE_FINAL_TYPE(VentureCommerceConnectorRegistry, venture_commerce_connector_registry,
 	VENTURE, COMMERCE_CONNECTOR_REGISTRY, GObject)
 VentureCommerceConnectorRegistry *venture_commerce_connector_registry_new(void);
+/**
+ * venture_commerce_connector_registry_add:
+ * @self: the registry
+ * @connector: (transfer full): the registry takes ownership
+ */
 void venture_commerce_connector_registry_add(VentureCommerceConnectorRegistry *self, VentureCommerceConnector *connector);
+/**
+ * venture_commerce_connector_registry_lookup:
+ * @self: the registry
+ * @name: connector key
+ *
+ * Returns: (transfer none) (nullable): borrowed connector
+ */
 VentureCommerceConnector *venture_commerce_connector_registry_lookup(VentureCommerceConnectorRegistry *self, const gchar *name);
 gboolean venture_commerce_connector_registry_remove(VentureCommerceConnectorRegistry *self, const gchar *name);
+/**
+ * venture_commerce_connector_registry_list:
+ * @self: the registry
+ *
+ * Returns: (transfer container) (element-type VentureCommerceConnector): borrowed connectors
+ */
 GPtrArray *venture_commerce_connector_registry_list(VentureCommerceConnectorRegistry *self);
 
 #define VENTURE_TYPE_SHOPIFY_CONNECTOR (venture_shopify_connector_get_type())
