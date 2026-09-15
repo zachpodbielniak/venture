@@ -187,6 +187,101 @@ test_failure_rolls_back(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(count_type(f, VENTURE_TYPE_INVOICE), ==, 0);
 }
 
+typedef struct { GObject parent; gchar *body; } FakeTransport;
+typedef struct { GObjectClass parent; } FakeTransportClass;
+GType fake_transport_get_type(void);
+static void fake_transport_iface(VentureBankFeedTransportInterface *iface);
+G_DEFINE_TYPE_WITH_CODE(FakeTransport, fake_transport, G_TYPE_OBJECT,
+	G_IMPLEMENT_INTERFACE(VENTURE_TYPE_BANK_FEED_TRANSPORT, fake_transport_iface))
+static gchar *
+fake_transport_get(VentureBankFeedTransport *transport, const gchar *url,
+	const gchar *authorization, GError **error)
+{
+	FakeTransport *self = (FakeTransport *)transport;
+	(void)url;
+	(void)authorization;
+	(void)error;
+	return g_strdup(self->body != NULL ? self->body : "{\"orders\":[]}");
+}
+static void fake_transport_iface(VentureBankFeedTransportInterface *iface)
+{
+	iface->get = fake_transport_get;
+}
+static void fake_transport_finalize(GObject *object)
+{
+	g_free(((FakeTransport *)object)->body);
+	G_OBJECT_CLASS(fake_transport_parent_class)->finalize(object);
+}
+static void fake_transport_class_init(FakeTransportClass *klass)
+{
+	G_OBJECT_CLASS(klass)->finalize = fake_transport_finalize;
+}
+static void fake_transport_init(FakeTransport *self) { (void)self; }
+
+static void
+test_shopify_currency_and_cancelled(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureCommerceService) service = NULL;
+	FakeTransport *transport;
+	gint imported;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) invoices = NULL;
+	g_autoptr(GPtrArray) companies = NULL;
+	(void)data;
+	transport = g_object_new(fake_transport_get_type(), NULL);
+	transport->body = g_strdup("{\"orders\":["
+		"{\"id\":2001,\"currency\":\"EUR\",\"financial_status\":\"paid\","
+		"\"customer\":{\"id\":55,\"email\":\"buyer@example.com\",\"first_name\":\"Ada\",\"last_name\":\"Lovelace\"},"
+		"\"line_items\":[{\"title\":\"Hat\",\"quantity\":1,\"price\":\"25.00\"}]},"
+		"{\"id\":2002,\"currency\":\"EUR\",\"financial_status\":\"voided\",\"cancelled_at\":\"2026-08-01T00:00:00Z\","
+		"\"customer\":{\"id\":56,\"email\":\"skip@example.com\"},"
+		"\"line_items\":[{\"title\":\"Skip\",\"quantity\":1,\"price\":\"9.00\"}]}"
+		"]}");
+	service = venture_commerce_service_new(f->db, f->org, VENTURE_BANK_FEED_TRANSPORT(transport), &error);
+	g_assert_no_error(error);
+	imported = venture_commerce_service_import(service, "shopify", NULL, NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(imported, ==, 1);
+	query = venture_query_new(VENTURE_TYPE_INVOICE);
+	venture_query_set_organization(query, f->org);
+	invoices = venture_database_find(f->db, query, &error);
+	g_assert_cmpuint(invoices->len, ==, 1);
+	{
+		gint64 company_id = 0;
+		g_object_get(g_ptr_array_index(invoices, 0), "company-id", &company_id, NULL);
+		g_assert_cmpint(company_id, >, 0);
+		g_assert_cmpint(company_id, !=, f->company);
+	}
+	g_clear_object(&query);
+	query = venture_query_new(VENTURE_TYPE_COMPANY);
+	venture_query_set_organization(query, f->org);
+	venture_query_add_filter_string(query, "email", VENTURE_FILTER_OP_EQ, "buyer@example.com", NULL);
+	companies = venture_database_find(f->db, query, &error);
+	g_assert_cmpuint(companies->len, ==, 1);
+	g_object_unref(transport);
+}
+
+static void
+test_shopify_refuses_bare_usd(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureCommerceConnector) connector = NULL;
+	g_autoptr(GPtrArray) orders = NULL;
+	FakeTransport *transport;
+	(void)data;
+	transport = g_object_new(fake_transport_get_type(), NULL);
+	transport->body = g_strdup("{\"orders\":[{\"id\":9,\"financial_status\":\"paid\","
+		"\"line_items\":[{\"title\":\"Hat\",\"quantity\":1,\"price\":\"25.00\"}]}]}");
+	connector = venture_shopify_connector_new("shop.myshopify.com", "tok",
+		VENTURE_BANK_FEED_TRANSPORT(transport));
+	orders = venture_commerce_connector_fetch_orders(connector, NULL, NULL, &error);
+	g_assert_null(orders);
+	g_assert_nonnull(error);
+	g_assert_nonnull(strstr(error->message, "currency"));
+	g_object_unref(transport);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -194,5 +289,7 @@ main(int argc, char **argv)
 	g_test_add_func("/commerce/missing-key", test_missing_key);
 	g_test_add("/commerce/idempotent-import", Fixture, NULL, setup, test_idempotent_import, teardown);
 	g_test_add("/commerce/failure-rollback", Fixture, NULL, setup, test_failure_rolls_back, teardown);
+	g_test_add("/commerce/shopify-currency-cancelled", Fixture, NULL, setup, test_shopify_currency_and_cancelled, teardown);
+	g_test_add("/commerce/shopify-refuses-usd-default", Fixture, NULL, setup, test_shopify_refuses_bare_usd, teardown);
 	return g_test_run();
 }

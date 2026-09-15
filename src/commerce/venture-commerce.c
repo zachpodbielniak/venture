@@ -105,6 +105,33 @@ struct _VentureShopifyConnector
 static void shopify_iface(VentureCommerceConnectorInterface *iface);
 G_DEFINE_TYPE_WITH_CODE(VentureShopifyConnector, venture_shopify_connector, G_TYPE_OBJECT,
 	G_IMPLEMENT_INTERFACE(VENTURE_TYPE_COMMERCE_CONNECTOR, shopify_iface))
+
+static gboolean
+iso_currency(const gchar *code)
+{
+	return code != NULL && strlen(code) == 3 && g_ascii_isalpha(code[0]) &&
+		g_ascii_isalpha(code[1]) && g_ascii_isalpha(code[2]);
+}
+
+static gboolean
+shopify_cancelled(JsonObject *raw)
+{
+	JsonNode *node;
+	const gchar *financial;
+	if (json_object_has_member(raw, "cancelled_at"))
+	{
+		node = json_object_get_member(raw, "cancelled_at");
+		if (node != NULL && !JSON_NODE_HOLDS_NULL(node))
+		{
+			const gchar *when = JSON_NODE_HOLDS_VALUE(node) ? json_node_get_string(node) : NULL;
+			if (when != NULL && when[0] != '\0')
+				return TRUE;
+		}
+	}
+	financial = venture_json_object_get_string(raw, "financial_status", "");
+	return g_strcmp0(financial, "voided") == 0 || g_strcmp0(financial, "refunded") == 0;
+}
+
 static const gchar *shopify_name(VentureCommerceConnector *self) { (void)self; return "shopify"; }
 static GPtrArray *
 shopify_fetch(VentureCommerceConnector *connector, GDateTime *from, GDateTime *to, GError **error)
@@ -149,28 +176,69 @@ shopify_fetch(VentureCommerceConnector *connector, GDateTime *from, GDateTime *t
 		JsonObject *raw = json_array_get_object_element(orders, i);
 		JsonObject *item;
 		JsonArray *lines, *raw_lines;
-		const gchar *id, *financial;
+		const gchar *id, *financial, *currency;
 		guint l;
+		gboolean send;
 		if (raw == NULL) continue;
+		if (shopify_cancelled(raw))
+			continue;
+		currency = venture_json_object_get_string(raw, "currency", NULL);
+		if (!iso_currency(currency))
+			currency = venture_json_object_get_string(raw, "presentment_currency", NULL);
+		if (!iso_currency(currency))
+		{
+			g_ptr_array_unref(items);
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"Shopify order is missing a currency");
+			return NULL;
+		}
 		id = venture_json_object_get_string(raw, "id", NULL);
+		item = json_object_new();
 		if (id == NULL)
 		{
 			gint64 number = json_object_get_int_member(raw, "id");
-			id = NULL;
-			item = json_object_new();
-			{
-				g_autofree gchar *external = g_strdup_printf("shopify:%" G_GINT64_FORMAT, number);
-				json_object_set_string_member(item, "external_id", external);
-			}
+			g_autofree gchar *external = g_strdup_printf("shopify:%" G_GINT64_FORMAT, number);
+			json_object_set_string_member(item, "external_id", external);
 		}
 		else
 		{
 			g_autofree gchar *external = g_strdup_printf("shopify:%s", id);
-			item = json_object_new();
 			json_object_set_string_member(item, "external_id", external);
 		}
 		financial = venture_json_object_get_string(raw, "financial_status", "");
 		json_object_set_boolean_member(item, "paid", g_strcmp0(financial, "paid") == 0);
+		send = g_strcmp0(financial, "paid") == 0 || g_strcmp0(financial, "pending") == 0 ||
+			g_strcmp0(financial, "authorized") == 0 || g_strcmp0(financial, "partially_paid") == 0 ||
+			g_strcmp0(financial, "unpaid") == 0 || financial[0] == '\0';
+		json_object_set_boolean_member(item, "send", send);
+		if (json_object_has_member(raw, "customer") &&
+			JSON_NODE_HOLDS_OBJECT(json_object_get_member(raw, "customer")))
+		{
+			JsonObject *customer = json_object_get_object_member(raw, "customer");
+			const gchar *email = venture_json_object_get_string(customer, "email", NULL);
+			const gchar *first = venture_json_object_get_string(customer, "first_name", "");
+			const gchar *last = venture_json_object_get_string(customer, "last_name", "");
+			const gchar *cid = venture_json_object_get_string(customer, "id", NULL);
+			g_autofree gchar *name = NULL;
+			g_autofree gchar *external = NULL;
+			if (cid == NULL && json_object_has_member(customer, "id"))
+			{
+				gint64 number = json_object_get_int_member(customer, "id");
+				external = g_strdup_printf("shopify:customer:%" G_GINT64_FORMAT, number);
+			}
+			else if (cid != NULL)
+				external = g_strdup_printf("shopify:customer:%s", cid);
+			if (first[0] != '\0' || last[0] != '\0')
+				name = g_strconcat(first, first[0] && last[0] ? " " : "", last, NULL);
+			if (external != NULL)
+				json_object_set_string_member(item, "customer_external_id", external);
+			if (email != NULL && email[0] != '\0')
+				json_object_set_string_member(item, "customer_email", email);
+			if (name != NULL && name[0] != '\0')
+				json_object_set_string_member(item, "customer_name", name);
+			else if (email != NULL)
+				json_object_set_string_member(item, "customer_name", email);
+		}
 		lines = json_array_new();
 		raw_lines = json_object_has_member(raw, "line_items") && JSON_NODE_HOLDS_ARRAY(json_object_get_member(raw, "line_items"))
 			? json_object_get_array_member(raw, "line_items") : NULL;
@@ -186,7 +254,7 @@ shopify_fetch(VentureCommerceConnector *connector, GDateTime *from, GDateTime *t
 				g_autofree gchar *unit = NULL;
 				json_object_set_string_member(line, "description", title);
 				json_object_set_int_member(line, "quantity", quantity > 0 ? quantity : 1);
-				unit = strstr(price, " ") ? g_strdup(price) : g_strdup_printf("%s USD", price);
+				unit = strstr(price, " ") ? g_strdup(price) : g_strdup_printf("%s %s", price, currency);
 				json_object_set_string_member(line, "unit_price", unit);
 				json_array_add_object_element(lines, line);
 			}
@@ -282,6 +350,63 @@ venture_commerce_service_get_registry(VentureCommerceService *self)
 	return self->registry;
 }
 
+
+static gint64
+find_company_by(VentureCommerceService *self, const gchar *field, const gchar *value, GError **error)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureEntity) row = NULL;
+	if (venture_string_is_empty(value))
+		return 0;
+	query = venture_query_new(VENTURE_TYPE_COMPANY);
+	venture_query_set_organization(query, self->organization_id);
+	if (!venture_query_add_filter_string(query, field, VENTURE_FILTER_OP_EQ, value, error))
+		return 0;
+	row = venture_database_find_one(self->database, query, error);
+	if (row == NULL)
+		return error != NULL && *error != NULL ? -1 : 0;
+	return venture_entity_get_id(row);
+}
+
+static gboolean
+ensure_company(VentureCommerceService *self, JsonObject *spec, GError **error)
+{
+	gint64 company_id = venture_json_object_get_int(spec, "company_id", 0);
+	const gchar *external = venture_json_object_get_string(spec, "customer_external_id", NULL);
+	const gchar *email = venture_json_object_get_string(spec, "customer_email", NULL);
+	const gchar *name = venture_json_object_get_string(spec, "customer_name", NULL);
+	g_autoptr(VentureEntity) company = NULL;
+	if (company_id > 0)
+		return TRUE;
+	company_id = find_company_by(self, "external-id", external, error);
+	if (company_id < 0)
+		return FALSE;
+	if (company_id == 0)
+		company_id = find_company_by(self, "email", email, error);
+	if (company_id < 0)
+		return FALSE;
+	if (company_id > 0)
+	{
+		json_object_set_int_member(spec, "company_id", company_id);
+		return TRUE;
+	}
+	if (venture_string_is_empty(external) && venture_string_is_empty(email))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"Commerce import needs a customer or company_id");
+		return FALSE;
+	}
+	company = VENTURE_ENTITY(venture_company_new());
+	venture_entity_set_organization_id(company, self->organization_id);
+	g_object_set(company, "name", name != NULL && name[0] != '\0' ? name : (email != NULL ? email : external),
+		"kind", VENTURE_COMPANY_KIND_CUSTOMER, "email", email, "external-id", external,
+		"source", "shopify", "active", TRUE, NULL);
+	if (!venture_database_save(self->database, company, NULL, error))
+		return FALSE;
+	json_object_set_int_member(spec, "company_id", venture_entity_get_id(company));
+	return TRUE;
+}
+
 static VentureEntity *
 find_invoice(VentureCommerceService *self, const gchar *external_id, GError **error)
 {
@@ -332,6 +457,8 @@ venture_commerce_service_import(VentureCommerceService *self, const gchar *conne
 		existing = find_invoice(self, external, error);
 		if (error && *error) goto fail;
 		if (existing != NULL) continue;
+		if (!ensure_company(self, spec, error))
+			goto fail;
 		if (!json_object_has_member(spec, "send"))
 			json_object_set_boolean_member(spec, "send", TRUE);
 		invoice = venture_document_service_compose_invoice(venture_document_service_get(self->database),

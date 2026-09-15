@@ -14,7 +14,9 @@ Shopify-like connector turns orders into invoices through
 =VentureDocumentService= compose and, when the order is paid, through
 =VentureSettlementService=. There is no second ledger. The order id is
 stored as =invoice.external-id= and is unique within the organization, so
-a repeated import is a no-op.
+a repeated import is a no-op. Line prices use the order currency
+(never a silent USD default). Cancelled, voided and refunded orders
+are skipped. The Shopify customer is matched or created as a company.
 
 Tests register a fake connector and never open a network connection.
 
