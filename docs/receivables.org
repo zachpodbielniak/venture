@@ -132,3 +132,6 @@ Existing cash reports still read sales: each cash allocation creates an immutabl
 * Integrated verification
 
 The accounting-cycle regression issues a $100 invoice, receives $40, closes January, receives the remaining $60 in February and refunds $10 later in February. It checks actual cash, receivables and income account balances after every step, preserves January's balance and refuses editing the original cash projection. Separate HTTP coverage verifies customer-statement options reach the report and module-off coverage verifies invoice issuance still works.
+
+Issued invoice print and detail tables show frozen Net and Tax per line next to
+the line total, so tax is never presented as revenue.

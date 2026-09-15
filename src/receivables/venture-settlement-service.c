@@ -705,7 +705,9 @@ invoice_parts(VentureSettlementService *self, VentureEntity *invoice,
 		g_autoptr(VentureMoney) line_total = NULL;
 		gdouble quantity;
 		gint64 thousandths, discount_percent, tax_percent;
-		if (venture_entity_is_deleted(line) || !same_owner(invoice, line, error))
+		if (venture_entity_is_deleted(line))
+			continue;
+		if (!same_owner(invoice, line, error))
 			return FALSE;
 		g_object_get(line, "quantity", &quantity, "unit-price", &unit,
 			"discount-percent", &discount_percent, "tax-percent", &tax_percent, NULL);
