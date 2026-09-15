@@ -404,7 +404,13 @@ venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 	}
 	request = stripe_request_new(STRIPE_CHECKOUT_CREATE);
 	request->customer = g_steal_pointer(&customer_id);
-	if (!to_stripe_amount(expected, &request->unit_amount, error)) goto fail;
+	{
+		gint64 amount = 0;
+		if (!to_stripe_amount(expected, &amount, error)) goto fail;
+		if (amount <= 0)
+			goto fail;
+		request->unit_amount = (guint)amount;
+	}
 	request->currency = g_ascii_strdown(venture_money_get_currency(expected), -1);
 	request->product_name = g_strdup("Invoice");
 	request->quantity = 1;
