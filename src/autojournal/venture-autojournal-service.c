@@ -261,6 +261,13 @@ rule_lines(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *source,
 		if (debit == 0 && category != NULL && json_object_has_member(map, category)) debit = venture_json_object_get_int(map, category, 0);
 		if (debit != 0) g_object_set(profile, "default-expense-account-id", debit, NULL);
 		base = amount(source, "amount", "USD");
+		if (g_object_class_find_property(G_OBJECT_GET_CLASS(source), "cash-account-id") != NULL)
+		{
+			gint64 cash_id = 0;
+			g_object_get(source, "cash-account-id", &cash_id, NULL);
+			if (cash_id > 0)
+				g_object_set(profile, "cash-account-id", cash_id, NULL);
+		}
 		if (!leg(rows, profile, "default-expense-account-id", VENTURE_LEDGER_SIDE_DEBIT, base, error) ||
 			!leg(rows, profile, g_strcmp0(method, "credit") == 0 || g_strcmp0(method, "credit_card") == 0 || g_strcmp0(method, "accounts_payable") == 0 || g_strcmp0(method, "unpaid") == 0 ? "payable-account-id" : "cash-account-id", VENTURE_LEDGER_SIDE_CREDIT, base, error)) return NULL;
 	} else {

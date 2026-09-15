@@ -19,8 +19,12 @@ records and any source documents and journals created by existing services.
 
 Create a =bank_account= through the normal form or generic CLI, naming its
 organization, ledger =account_id= and currency. Store its CSV mapping in
-=date_column=, =amount_column=, =description_column=, =reference_column= and
-=external_id_column=. Mappings name header cells exactly. Supported date formats
+=date_column=, =amount_column=, =description_column=, =reference_column=,
+=external_id_column=, optional =debit_column= / =credit_column= and =locale=.
+Mappings name header cells exactly. The =map= action previews headers from a
+sample file and can save those columns. A debit column without a credit is a
+negative amount. Locale =de_DE= treats a comma as the decimal separator.
+Supported date formats
 are =%Y-%m-%d=, =%m/%d/%Y= and =%d/%m/%Y=. The sign convention is =normal= or
 =invert=. CSV supports quoted commas, doubled quotes and embedded newlines.
 
@@ -30,10 +34,16 @@ Calendar end dates include the entire UTC day. OFX/QFX reads =STMTTRN= blocks
 with =DTPOSTED=, =TRNAMT=, =FITID= and optional =MEMO= and =CHECKNUM=, including
 SGML leaf tags without closing tags. FITID supplies the external ID.
 
-Every line needs an external ID. A derived UNIQUE key combines organization,
-bank account and external ID. Reimport is refused rather than duplicated;
-a failure on any row rolls back the statement and every earlier line. The
-statement retains the SHA-256 of the original input and its import timestamp.
+Every line needs an external ID. OFX FITID supplies it. CSV may omit the
+column: the importer derives a stable identity from date, amount, description
+and a same-day occurrence index so two equal purchases on one day stay
+distinct. A derived UNIQUE key combines organization, bank account and
+external ID. A FITID already stored for this bank is skipped so overlapping
+statement windows cannot duplicate it; a file that repeats a FITID inside
+itself is still refused. If every line is an overlap, the import is refused
+rather than creating an empty statement. A failure on any new row rolls back
+the statement and every earlier line. The statement retains the SHA-256 of
+the original input and its import timestamp.
 
 #+begin_src sh
 venturectl bank import 1 @statement.json
@@ -54,6 +64,11 @@ venturectl bank exclude 2 '{"reason":"Duplicate supplied by bank"}'
 venturectl bank create 2 '{"type":"expense"}'
 venturectl bank create 3 '{"type":"receipt","customer_id":1}'
 venturectl bank reconcile 1
+venturectl bank preview 1
+venturectl bank bulk 1 '{"mode":"categorize"}'
+venturectl bank map 1 @mapping.json
+venturectl bank transfer 1 '{"counterparty_bank_account_id":2,"amount":"100 USD","date":"2026-01-10"}'
+venturectl bank reverse 2
 #+end_src
 
 The candidate seam is
@@ -70,10 +85,28 @@ amount. The parts must sum exactly to the transaction. Multiple parts produce
 split evidence; an amount smaller than the document produces partial evidence. Exclusion
 requires a reason. Unmatching retains the old match as soft-deleted audit history.
 
-Creating an expense saves an ordinary expense and invokes its registered
-posting rule. Creating a receipt calls the settlement service, with the linked
-bank ledger account selected as its cash account. The period guard is checked
-before creating either record. Banking never writes journals itself.
+Creating an expense saves an ordinary expense, stamps =cash_account_id= from
+the bank's ledger account, and invokes its registered posting rule so the
+cash credit is that account rather than hardcoded Cash (1000). Creating a
+receipt calls the settlement service, with the linked bank ledger account
+selected as its cash account. The period guard is checked before creating
+either record. Categorization still goes through these actions, never a
+direct journal write.
+
+=bank_rule= rows are prioritized conditions (merchant, description, signed
+amount bounds, bank account) and actions (categorize, match, split).
+=preview= scores historical unmatched rows without posting. A rule cannot be
+enabled until that preview exists. =inbox= writes confidence and an
+explanation onto unmatched lines; two rules of equal priority that both
+match leave the line reviewable. =bulk= applies unique high-confidence
+suggestions. =reverse= unmatches and reverses open-period journals for the
+linked documents. =correct= recategorizes and upserts a rule from the
+correction.
+
+=transfer= posts a paired movement: debit the destination bank's ledger
+account, credit the source. An optional fee is an expense on the source
+side only. The transfer key is unique, so a retry cannot post twice. Credit
+card repayment is the same action onto the card's bank account.
 
 * Reconciliation and surfaces
 
@@ -88,9 +121,10 @@ their matches, cannot be changed by any banking action or generic writer.
 
 The REST action shapes are:
 
-- =POST /api/v1/bank_accounts/:id/import=
-- =POST /api/v1/bank_statements/:id/auto|reconcile=
-- =POST /api/v1/bank_transactions/:id/match|unmatch|exclude|create=
+- =POST /api/v1/bank_accounts/:id/import|map|inbox|bulk|transfer=
+- =POST /api/v1/bank_statements/:id/auto|reconcile|reopen=
+- =POST /api/v1/bank_transactions/:id/match|unmatch|exclude|create|reverse|correct=
+- =POST /api/v1/bank_rules/:id/preview|enable=
 
 Bodies are JSON objects; actions without parameters accept ={}=. Editors may
 execute actions. Record detail pages contain action forms for statement contents, balances,
@@ -107,10 +141,10 @@ statement closing balance, current posted book balance and difference.
 
 An expense's configured posting rule must affect the bank account by the
 statement amount. The create action checks the actual posted balance change
-and rolls everything back if the rule selected another account. The built-in
-expense rule uses Cash (1000); another bank requires an installation posting
-rule selecting it. Receipt creation selects the linked bank directly through
-the settlement service's public cash-account property.
+and rolls everything back if the rule selected another account. Bank-created expenses set =cash_account_id= on the expense so the built-in
+rule credits that ledger account instead of Cash (1000). Receipt creation
+selects the linked bank directly through the settlement service's public
+cash-account property.
 
 To preserve an open review without finalizing it, call =reconcile= with
 ={"state":"open"}=. This records the balances and difference without locking

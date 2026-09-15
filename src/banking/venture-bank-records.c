@@ -14,6 +14,14 @@ static const VentureFieldDecl bank_account_fields[] = {
 	VENTURE_FIELD("external-id-column", "External id column", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("date-format", "Date format", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("sign-convention", "Sign convention", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("debit-column", "Debit column", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("credit-column", "Credit column", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("locale", "Locale", "CSV decimal and date locale, for example en_US or de_DE",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("last-inbox", "Last inbox", "Latest review suggestions; service-owned",
+		VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("last-mapping-preview", "Last mapping preview", "Latest CSV mapping preview; service-owned",
+		VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
 };
 VENTURE_DEFINE_ENTITY(VentureBankAccount, venture_bank_account, bank_account_fields)
 
@@ -40,6 +48,11 @@ static const VentureFieldDecl bank_transaction_fields[] = {
 	VENTURE_FIELD("state", "State", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("match-id", "Match id", NULL, "bank_match", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("exclusion-reason", "Exclusion reason", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("review-confidence", "Review confidence", "0-100 suggestion strength",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("review-explanation", "Review explanation", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("suggested-rule-id", "Suggested rule", NULL, "bank_rule", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("suggested-action", "Suggested action", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 };
 VENTURE_DEFINE_ENTITY(VentureBankTransaction, venture_bank_transaction, bank_transaction_fields)
 
@@ -72,3 +85,43 @@ static const VentureFieldDecl reconciliation_fields[] = {
 	VENTURE_FIELD("reopen-reason", "Reopen reason", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureReconciliation, venture_reconciliation, reconciliation_fields)
+
+static const VentureFieldDecl bank_rule_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", NULL),
+	VENTURE_FIELD("priority", "Priority", "Lower numbers win; equal priority that both match is ambiguous",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("enabled", "Enabled", "Requires a historical preview before turning on",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("merchant", "Merchant", "Case-insensitive substring of the statement description",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("description-contains", "Description contains", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("amount-min", "Amount min", "Inclusive signed amount bound; unset is unbounded"),
+	VENTURE_FIELD_MONEY("amount-max", "Amount max", "Inclusive signed amount bound; unset is unbounded"),
+	VENTURE_FIELD_REF("bank-account-id", "Bank account", "Empty means every account in the organization",
+		"bank_account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("account-id", "Ledger account", "Expense or income account for categorize",
+		"account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("action", "Action", "categorize, match, split or transfer",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("category", "Category", "Expense category code when categorizing",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("create-type", "Create type", "expense or receipt", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("splits", "Splits", "JSON array of category and amount or ratio parts",
+		VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("last-preview", "Last preview", "Historical sample matches; service-owned",
+		VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
+};
+VENTURE_DEFINE_ENTITY(VentureBankRule, venture_bank_rule, bank_rule_fields)
+
+static const VentureFieldDecl bank_transfer_fields[] = {
+	VENTURE_FIELD_REF("from-bank-account-id", "From bank", NULL, "bank_account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("to-bank-account-id", "To bank", NULL, "bank_account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("amount", "Amount", "Gross movement at the source, excluding optional fee"),
+	VENTURE_FIELD_MONEY("fee", "Fee", "Optional source-side fee; never income on the destination"),
+	VENTURE_FIELD("date", "Date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("cleared-at", "Cleared at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("memo", "Memo", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("transfer-key", "Transfer key", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE),
+	VENTURE_FIELD("state", "State", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+};
+VENTURE_DEFINE_ENTITY(VentureBankTransfer, venture_bank_transfer, bank_transfer_fields)

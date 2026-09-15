@@ -22,6 +22,9 @@ its own tests, merged into this branch rather than straight to =master=.
 - #24 cash-basis and accrual reports
 - #25 guided migration and opening balances
 - #65 acceptance and reliability gates
+- #33 bank review inbox and categorization rules
+- #34 overlapping statement import and CSV mapping
+- #35 bank transfers and cash account on payment
 
 * Open
 
@@ -31,7 +34,7 @@ Mirrors #70 at the time of writing; the issue is the source of truth.
 (landed)
 
 ** P1 — daily replacement workflows
-#26 #27 #28 #29 #32 #33 #34 #35 #36 #37 #38 #39 #40 #41 #42 #43 #44 #45 #49
+#26 #27 #28 #29 #32 #36 #37 #38 #39 #40 #41 #42 #43 #44 #45 #49
 #51 #52 #53 #54 #56 #57 #58 #62 #63 #67
 
 ** P2 — broader business and advanced parity

@@ -53,6 +53,14 @@ Two tests exist specifically to prove injection is impossible: a filter naming a
 
 The arithmetic against known data, not merely that reports run. Also that an unreviewed expense counts as zero in the tax report and that the report says so, that CSV export defuses spreadsheet formula injection, and that HTML export escapes its content.
 
+** =test-banking=
+
+Statement import, matching and reconciliation. Rule preview against historical
+rows does not post; bulk categorize applies a unique enabled rule and leaves
+ambiguous rows unmatched; overlapping FITIDs are refused rather than
+duplicated; a transfer posts both ledger sides once; a payment from a
+non-1000 bank credits that bank's account.
+
 ** =test-receivables=
 
 Receipts, partial and complete allocations, deposits, credit notes and

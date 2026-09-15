@@ -1330,6 +1330,7 @@ test_auth_api_refuses_anonymous_requests(
 			"/api/v1/bank_transactions/1/match",
 			"/api/v1/bank_statements/1/reconcile",
 			"/api/v1/bank_accounts/1/import",
+			"/api/v1/bank_rules/1/preview",
 			"/banking/1/action"
 		};
 		static const gchar *const cutover[] = {
