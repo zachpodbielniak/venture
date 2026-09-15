@@ -1,0 +1,22 @@
+#+title: Intercompany and consolidation
+#+description: Optional group books, eliminations and FX
+
+* Off by default
+
+The =group= module requires =statements= and is off until =group.enabled= is
+true (or =VENTURE_MODULE_GROUP=). It owns =intercompany_link= and
+=elimination=.
+
+An intercompany link names a subsidiary of the parent organization. Consolidated
+trial balance, income statement and balance sheet combine those legal entities,
+convert through the existing =exchange_rate= table (no invented inverse) and
+tag each row with the organization dimension.
+
+Elimination rows apply only to the consolidated reports. They do not rewrite
+either entity's posted book.
+
+#+begin_src sh
+venturectl group income 2026-08
+#+end_src
+
+The web page is =/group=.
