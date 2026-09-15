@@ -1,7 +1,9 @@
 #+title: Accounting backup and restore
 #+description: Export an organization pack and restore into an empty org
 
-=VentureBackupService= exports journals, invoices, bills and bank accounts as
-JSON or a CSV summary. Restore posts journals and recreates invoices in an
-organization that has no journals. A second restore into the same books is
-refused.
+=VentureBackupService= exports the chart (code, name, kind), posted journals,
+invoices, bills and bank accounts as JSON or a CSV summary. Restore recreates
+accounts with their original kinds, posts journals, and issues invoices that
+were sent. Receipts, tax freezes and allocations are not yet in the pack.
+Restore requires an organization with no journals. A second restore into the
+same books is refused.

@@ -135,13 +135,32 @@ export_json(VentureBackupService *self, gint64 org, GError **error)
 	g_autoptr(JsonBuilder) builder = json_builder_new();
 	g_autoptr(GPtrArray) journals = all(self, VENTURE_TYPE_JOURNAL, org, error);
 	g_autoptr(GPtrArray) invoices = all(self, VENTURE_TYPE_INVOICE, org, error);
+	g_autoptr(GPtrArray) accounts = all(self, VENTURE_TYPE_ACCOUNT, org, error);
 	g_autoptr(GPtrArray) bills = NULL;
 	g_autoptr(GPtrArray) banks = all(self, VENTURE_TYPE_BANK_ACCOUNT, org, error);
 	guint i, j;
-	if (journals == NULL || invoices == NULL)
+	if (journals == NULL || invoices == NULL || accounts == NULL)
 		return NULL;
 	bills = all(self, venture_entity_registry_lookup(venture_entity_registry_get_default(), "vendor_bill"), org, error);
 	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "accounts");
+	json_builder_begin_array(builder);
+	for (i = 0; i < accounts->len; i++)
+	{
+		g_autofree gchar *code = NULL;
+		g_autofree gchar *name = NULL;
+		gint kind = 0;
+		g_object_get(g_ptr_array_index(accounts, i), "code", &code, "name", &name, "kind", &kind, NULL);
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "code");
+		json_builder_add_string_value(builder, code);
+		json_builder_set_member_name(builder, "name");
+		json_builder_add_string_value(builder, name ? name : code);
+		json_builder_set_member_name(builder, "kind");
+		json_builder_add_int_value(builder, kind);
+		json_builder_end_object(builder);
+	}
+	json_builder_end_array(builder);
 	json_builder_set_member_name(builder, "journals");
 	json_builder_begin_array(builder);
 	for (i = 0; i < journals->len; i++)
@@ -210,8 +229,12 @@ export_json(VentureBackupService *self, gint64 org, GError **error)
 		}
 		json_builder_set_member_name(builder, "company_id");
 		json_builder_add_int_value(builder, json_object_get_int_member(object, "company_id"));
-		json_builder_set_member_name(builder, "status");
-		json_builder_add_int_value(builder, json_object_get_int_member(object, "status"));
+		{
+			gint status = 0;
+			g_object_get(invoice, "status", &status, NULL);
+			json_builder_set_member_name(builder, "status");
+			json_builder_add_int_value(builder, status);
+		}
 		json_builder_set_member_name(builder, "lines");
 		json_builder_begin_array(builder);
 		venture_query_add_filter_int(q, "invoice-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(invoice), NULL);
@@ -317,6 +340,43 @@ account_by_code(VentureBackupService *self, gint64 org, const gchar *code, const
 	return venture_entity_get_id(VENTURE_ENTITY(account));
 }
 
+
+static gboolean
+restore_accounts(VentureBackupService *self, gint64 org, JsonArray *accounts, const VentureActor *actor, GError **error)
+{
+	guint i;
+	if (accounts == NULL)
+		return TRUE;
+	for (i = 0; i < json_array_get_length(accounts); i++)
+	{
+		JsonObject *row = json_array_get_object_element(accounts, i);
+		const gchar *code = json_object_get_string_member(row, "code");
+		const gchar *name = json_object_has_member(row, "name") ? json_object_get_string_member(row, "name") : code;
+		gint kind = json_object_has_member(row, "kind") ? json_object_get_int_member(row, "kind") : VENTURE_ACCOUNT_KIND_ASSET;
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+		g_autoptr(VentureEntity) existing = NULL;
+		g_autoptr(VentureAccount) account = NULL;
+		if (code == NULL || code[0] == '\0')
+			continue;
+		venture_query_set_organization(query, org);
+		venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, NULL);
+		existing = venture_database_find_one(self->database, query, NULL);
+		if (existing != NULL)
+		{
+			g_object_set(existing, "kind", kind, "name", name, "active", TRUE, NULL);
+			if (!venture_database_save(self->database, existing, actor, error))
+				return FALSE;
+			continue;
+		}
+		account = venture_account_new();
+		venture_entity_set_organization_id(VENTURE_ENTITY(account), org);
+		g_object_set(account, "code", code, "name", name, "kind", kind, "active", TRUE, NULL);
+		if (!venture_database_save(self->database, VENTURE_ENTITY(account), actor, error))
+			return FALSE;
+	}
+	return TRUE;
+}
+
 static gboolean
 restore_journals(VentureBackupService *self, gint64 org, JsonArray *journals, const VentureActor *actor, GError **error)
 {
@@ -388,9 +448,11 @@ restore_invoices(VentureBackupService *self, gint64 org, JsonArray *invoices, co
 		JsonArray *lines = json_object_get_array_member(row, "lines");
 		g_autoptr(VentureInvoice) invoice = venture_invoice_new();
 		const gchar *source_number = json_object_get_string_member(row, "number");
-		g_autofree gchar *number = g_strdup_printf("%s-R", source_number ? source_number : "INV");
+		gint status = json_object_has_member(row, "status") ?
+			json_object_get_int_member(row, "status") : VENTURE_INVOICE_STATUS_DRAFT;
 		venture_entity_set_organization_id(VENTURE_ENTITY(invoice), org);
-		g_object_set(invoice, "number", number, "company-id", company, NULL);
+		g_object_set(invoice, "number", source_number && source_number[0] ? source_number : "INV-REST",
+			"company-id", company, NULL);
 		if (!venture_database_save(self->database, VENTURE_ENTITY(invoice), actor, error))
 			return FALSE;
 		for (j = 0; lines && j < json_array_get_length(lines); j++)
@@ -399,6 +461,8 @@ restore_invoices(VentureBackupService *self, gint64 org, JsonArray *invoices, co
 			JsonObject *line = json_array_get_object_element(lines, j);
 			JsonNode *price = json_object_get_member(line, "unit_price");
 			g_autoptr(VentureMoney) amount = NULL;
+			if (price == NULL)
+				price = json_object_get_member(line, "unit-price");
 			venture_entity_set_organization_id(VENTURE_ENTITY(il), org);
 			g_object_set(il, "invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)),
 				"description", json_object_get_string_member(line, "description"),
@@ -418,6 +482,14 @@ restore_invoices(VentureBackupService *self, gint64 org, JsonArray *invoices, co
 			if (amount != NULL)
 				g_object_set(il, "unit-price", amount, NULL);
 			if (!venture_database_save(self->database, VENTURE_ENTITY(il), actor, error))
+				return FALSE;
+		}
+		if (status == VENTURE_INVOICE_STATUS_SENT || status == VENTURE_INVOICE_STATUS_PARTIALLY_PAID ||
+			status == VENTURE_INVOICE_STATUS_PAID)
+		{
+			g_autoptr(GDateTime) now = venture_time_now();
+			if (!venture_settlement_service_transition(venture_settlement_service_get(self->database),
+				invoice, "sent", now, actor, error))
 				return FALSE;
 		}
 	}
@@ -446,7 +518,14 @@ venture_backup_service_restore(VentureBackupService *self, gint64 organization_i
 	root = json_node_get_object(json_parser_get_root(parser));
 	if (!venture_database_begin(self->database, error))
 		return FALSE;
-	if (!restore_journals(self, organization_id, json_object_get_array_member(root, "journals"), actor, error) ||
+	if (!venture_setup_seed_defaults(self->database, organization_id, actor, error))
+	{
+		venture_database_rollback(self->database);
+		return FALSE;
+	}
+	if (!restore_accounts(self, organization_id, json_object_has_member(root, "accounts") ?
+			json_object_get_array_member(root, "accounts") : NULL, actor, error) ||
+		!restore_journals(self, organization_id, json_object_get_array_member(root, "journals"), actor, error) ||
 		!restore_invoices(self, organization_id, json_object_get_array_member(root, "invoices"), actor, error))
 	{
 		venture_database_rollback(self->database);

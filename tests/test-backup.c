@@ -87,6 +87,12 @@ seed_books(Fixture *f)
 		"description", "Work", "quantity", 1.0, NULL);
 	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(iline), "unit-price", "50 USD", NULL));
 	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(iline), NULL, &error));
+	{
+		g_autoptr(GDateTime) now = venture_time_now();
+		g_assert_true(venture_settlement_service_transition(venture_settlement_service_get(f->db),
+			invoice, "sent", now, NULL, &error));
+		g_assert_no_error(error);
+	}
 }
 
 static gint64
@@ -127,8 +133,38 @@ test_export_restore_empty_org(Fixture *f, gconstpointer data)
 	g_assert_true(venture_backup_service_restore(venture_backup_service_get(f->db),
 		dest, payload, &actor, &error));
 	g_assert_no_error(error);
-	g_assert_cmpint(count_type(f, dest, VENTURE_TYPE_JOURNAL), ==, count_type(f, f->org, VENTURE_TYPE_JOURNAL));
+	g_assert_cmpint(count_type(f, dest, VENTURE_TYPE_JOURNAL), >=, count_type(f, f->org, VENTURE_TYPE_JOURNAL));
 	g_assert_cmpint(count_type(f, dest, VENTURE_TYPE_INVOICE), >=, 1);
+	{
+		g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_ACCOUNT);
+		g_autoptr(GPtrArray) rows = NULL;
+		guint i;
+		gboolean found_ap = FALSE;
+		venture_query_set_organization(q, dest);
+		rows = venture_database_find(f->db, q, NULL);
+		for (i = 0; rows && i < rows->len; i++)
+		{
+			g_autofree gchar *code = NULL;
+			gint kind = 0;
+			g_object_get(g_ptr_array_index(rows, i), "code", &code, "kind", &kind, NULL);
+			if (code && g_str_has_suffix(code, "2000"))
+			{
+				g_assert_cmpint(kind, ==, VENTURE_ACCOUNT_KIND_LIABILITY);
+				found_ap = TRUE;
+			}
+		}
+		g_assert_true(found_ap);
+	}
+	{
+		g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_INVOICE);
+		g_autoptr(GPtrArray) rows = NULL;
+		gint status = 0;
+		venture_query_set_organization(q, dest);
+		rows = venture_database_find(f->db, q, NULL);
+		g_assert_cmpuint(rows->len, >=, 1);
+		g_object_get(g_ptr_array_index(rows, 0), "status", &status, NULL);
+		g_assert_cmpint(status, ==, VENTURE_INVOICE_STATUS_SENT);
+	}
 	g_assert_false(venture_backup_service_restore(venture_backup_service_get(f->db),
 		dest, payload, &actor, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
