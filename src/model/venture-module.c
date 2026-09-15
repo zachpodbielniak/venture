@@ -526,7 +526,9 @@ static const gchar *const venture_module_reports_factory[] = {
 
 static GType (*const venture_module_stripe_types[]) (void) = {
 	venture_stripe_price_link_get_type, venture_stripe_customer_link_get_type,
-	venture_stripe_checkout_get_type, venture_stripe_event_get_type, NULL
+	venture_stripe_checkout_get_type, venture_stripe_event_get_type,
+	venture_processor_payout_get_type, venture_processor_payout_item_get_type,
+	venture_processor_dispute_get_type, venture_processor_exception_get_type, NULL
 };
 static const gchar *const venture_module_requires_stripe[] = { "receivables", NULL };
 

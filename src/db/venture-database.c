@@ -14,6 +14,18 @@
 
 #include <string.h>
 
+static gboolean
+stripe_owned(VentureEntity *entity)
+{
+	GType type = G_OBJECT_TYPE(entity);
+	return type == venture_stripe_checkout_get_type() ||
+		type == venture_stripe_event_get_type() ||
+		type == venture_processor_payout_get_type() ||
+		type == venture_processor_payout_item_get_type() ||
+		type == venture_processor_dispute_get_type() ||
+		type == venture_processor_exception_get_type();
+}
+
 struct _VentureDatabase
 {
 	GObject parent_instance;
@@ -1111,8 +1123,7 @@ venture_database_save(
 	if (!venture_access_policy_check_write(venture_database_get_access_policy(self), entity, "write", error)) return FALSE;
 	if (!venture_orgaccess_prepare(self, entity, error)) return FALSE;
 
-	if (G_OBJECT_TYPE(entity) == venture_stripe_checkout_get_type() ||
-	    G_OBJECT_TYPE(entity) == venture_stripe_event_get_type())
+	if (stripe_owned(entity))
 	{
 		if (self->stripe_write_permit != entity)
 		{
@@ -1583,8 +1594,7 @@ venture_database_delete(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
-	if (G_OBJECT_TYPE(entity) == venture_stripe_checkout_get_type() ||
-	    G_OBJECT_TYPE(entity) == venture_stripe_event_get_type())
+	if (stripe_owned(entity))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 			"Stripe evidence is retained by VentureStripeService");
@@ -1678,8 +1688,7 @@ venture_database_restore(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
-	if (G_OBJECT_TYPE(entity) == venture_stripe_checkout_get_type() ||
-	    G_OBJECT_TYPE(entity) == venture_stripe_event_get_type())
+	if (stripe_owned(entity))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 			"Stripe evidence is retained by VentureStripeService");
@@ -1753,8 +1762,7 @@ venture_database_purge(
 	ledger_lock = g_rec_mutex_locker_new(&self->lock);
 	if (!venture_ledger_check_write(self, entity, NULL, TRUE, NULL, error))
 		return FALSE;
-	if (G_OBJECT_TYPE(entity) == venture_stripe_checkout_get_type() ||
-	    G_OBJECT_TYPE(entity) == venture_stripe_event_get_type())
+	if (stripe_owned(entity))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 			"Stripe evidence is retained by VentureStripeService");
@@ -2079,6 +2087,7 @@ venture_database_seed_accounts(
 		VentureAccountKind	 kind;
 	} accounts[] = {
 		{ "1000", "Cash",                  VENTURE_ACCOUNT_KIND_ASSET },
+		{ "1050", "Processor clearing",    VENTURE_ACCOUNT_KIND_ASSET },
 		{ "1100", "Accounts receivable",   VENTURE_ACCOUNT_KIND_ASSET },
 		{ "1200", "Inventory",             VENTURE_ACCOUNT_KIND_ASSET },
 		{ "1300", "Recoverable tax",       VENTURE_ACCOUNT_KIND_ASSET },

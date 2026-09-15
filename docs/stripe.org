@@ -35,6 +35,11 @@ amount in Stripe charge units, and a product name). A =stripe_price_link=
 is optional catalog evidence; it is not required to open a session, and
 it cannot replace the invoice remaining. Subscription catalog mapping
 and payment-driven recovery are not implemented.
+Billing invoice lines copy =plan_price.product_id=, so a subscription invoice
+qualifies for Checkout when a =stripe_price_link= exists for that product.
+=billing collect= records an authorized =customer_payment_method= through
+settlement and recovers =past_due=. Do not rewrite issued invoice evidence to
+pass eligibility.
 
 1. Configure an HTTPS webhook endpoint at =/webhooks/stripe= for
    =checkout.session.completed=. Select the same explicit API version used
@@ -95,7 +100,15 @@ another payment.
 
 * Boundaries and verification
 
-There are no subscriptions, Billing Portal, refunds, Stripe Invoice creation,
+=processor_payout= records a payout batch's gross, fees and net bank amount.
+Fees post to platform fees (6000), never income. =processor_payout_item= names
+the receipts in the batch so a grouped deposit can be matched without
+double-posting cash. =processor_dispute= holds AR by moving the invoice to the
+built-in =disputed= workflow state. A lost dispute reverses the receipt through
+=VentureSettlementService= as a refund. =processor_exception= is the retry
+queue for mismatches, closed periods and out-of-order events.
+
+There are no Billing Portal, Stripe Invoice creation,
 Connect accounts or generic provider interface. A future provider should own
 its transport and verified external-event mapping, then call the same
 settlement service. A future provider interface would sit in front of

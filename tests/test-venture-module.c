@@ -27,3 +27,5 @@ main(int argc, char **argv)
 	g_test_add_func("/venture-module/tax-code", test_finance_owns_tax_code);
 	return g_test_run();
 }
+#include <venture.h>
+int main(int argc, char **argv) { g_test_init(&argc, &argv, NULL); return g_test_run(); }

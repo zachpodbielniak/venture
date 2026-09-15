@@ -69,9 +69,10 @@ venture_invoice_state_machine_init(VentureInvoiceStateMachine *self)
 	 * reopening caused by a refund. Services never repeat this table. */
 	static const gchar *const edges[][2] = {
 		{ "draft", "sent" }, { "draft", "void" },
-		{ "sent", "partially_paid" }, { "sent", "paid" }, { "sent", "void" },
-		{ "partially_paid", "paid" }, { "partially_paid", "sent" },
-		{ "paid", "partially_paid" }, { "paid", "sent" }
+		{ "sent", "partially_paid" }, { "sent", "paid" }, { "sent", "void" }, { "sent", "disputed" },
+		{ "partially_paid", "paid" }, { "partially_paid", "sent" }, { "partially_paid", "disputed" },
+		{ "paid", "partially_paid" }, { "paid", "sent" }, { "paid", "disputed" },
+		{ "disputed", "sent" }, { "disputed", "partially_paid" }, { "disputed", "paid" }
 	};
 	VentureInvoiceStateMachinePrivate *priv;
 	guint i;
@@ -82,6 +83,8 @@ venture_invoice_state_machine_init(VentureInvoiceStateMachine *self)
 	for (i = 0; i <= VENTURE_INVOICE_STATUS_PARTIALLY_PAID; i++)
 		g_hash_table_insert(priv->states, g_strdup(venture_enum_to_nick(
 			VENTURE_TYPE_INVOICE_STATUS, (gint)i)), GUINT_TO_POINTER(i + 1));
+	g_hash_table_insert(priv->states, g_strdup("disputed"),
+		GUINT_TO_POINTER((guint)VENTURE_INVOICE_STATUS_SENT + 1));
 	for (i = 0; i < G_N_ELEMENTS(edges); i++)
 		g_hash_table_add(priv->edges, g_strdup_printf("%s>%s", edges[i][0], edges[i][1]));
 }

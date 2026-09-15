@@ -24,3 +24,5 @@ main(int argc, char **argv)
 	g_test_add_func("/venture-database/seeded-tax-accounts", test_seeded_tax_accounts);
 	return g_test_run();
 }
+#include <venture.h>
+int main(int argc, char **argv) { g_test_init(&argc, &argv, NULL); return g_test_run(); }

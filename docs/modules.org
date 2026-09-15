@@ -30,7 +30,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =crm=        | core            | company, contact, interaction, deal; =pipeline=                   |                       |
 | =invoicing=  | finance, crm    | invoice, invoice_line                                            |                       |
 | =receivables= | finance, invoicing | payment, payment_allocation, customer_credit, refund, invoice_event; =receivables=, =customer_statement= | |
-| =stripe= | receivables | stripe_price_link, stripe_customer_link, stripe_checkout, stripe_event | =stripe.enabled= (opt-in) |
+| =stripe= | receivables | stripe_price_link, stripe_customer_link, stripe_checkout, stripe_event, processor_payout, processor_payout_item, processor_dispute, processor_exception | =stripe.enabled= (opt-in) |
 | =outreach=   | sales           | campaign, newsletter, subscriber, post; =campaigns=               |                       |
 | =ideas=      | core            | idea, research_note; =ideas=                                      |                       |
 | =kb=         | core            | knowledge_base, kb_article, kb_chunk, kb_link                     | =kb.enabled=          |

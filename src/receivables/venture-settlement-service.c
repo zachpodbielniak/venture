@@ -878,7 +878,8 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 	from = invoice_state(previous);
 	if (!venture_invoice_state_machine_get_phase(self->machine, from, &old_phase, error))
 		return FALSE;
-	if (old_phase == VENTURE_INVOICE_STATUS_PAID || old_phase == VENTURE_INVOICE_STATUS_PARTIALLY_PAID)
+	if ((old_phase == VENTURE_INVOICE_STATUS_PAID || old_phase == VENTURE_INVOICE_STATUS_PARTIALLY_PAID) &&
+		g_strcmp0(state, "disputed") != 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Refund allocations through VentureSettlementService to reopen a settled invoice");
 	if (old_phase != VENTURE_INVOICE_STATUS_DRAFT && phase == VENTURE_INVOICE_STATUS_DRAFT)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "An issued invoice cannot become a draft");

@@ -16,3 +16,5 @@ main(int argc, char **argv)
 	g_test_add_func("/venture-entity-registry/tax-and-rate-types", test_tax_and_rate_types);
 	return g_test_run();
 }
+#include <venture.h>
+int main(int argc, char **argv) { g_test_init(&argc, &argv, NULL); return g_test_run(); }

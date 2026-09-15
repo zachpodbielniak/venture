@@ -555,3 +555,181 @@ fail:
 	venture_database_rollback(self->database);
 	return FALSE;
 }
+
+static gint64
+account_code(VentureStripeService *self, const gchar *code, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	g_autoptr(VentureEntity) account = NULL;
+	venture_query_set_organization(query, self->organization_id);
+	if (!venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, error))
+		return 0;
+	account = venture_database_find_one(self->database, query, error);
+	if (account == NULL) return 0;
+	return venture_entity_get_id(account);
+}
+
+static gboolean
+ensure_disputed(VentureSettlementService *settlement, GError **error)
+{
+	VentureInvoiceStateMachine *machine = venture_settlement_service_get_state_machine(settlement);
+	g_autoptr(GError) local = NULL;
+	if (!venture_invoice_state_machine_add_state(machine, "disputed", VENTURE_INVOICE_STATUS_SENT, &local))
+	{
+		if (local == NULL || local->code != VENTURE_ERROR_ALREADY_EXISTS)
+		{
+			g_propagate_error(error, g_steal_pointer(&local));
+			return FALSE;
+		}
+		g_clear_error(&local);
+	}
+	venture_invoice_state_machine_add_transition(machine, "sent", "disputed", NULL);
+	venture_invoice_state_machine_add_transition(machine, "partially_paid", "disputed", NULL);
+	venture_invoice_state_machine_add_transition(machine, "paid", "disputed", NULL);
+	venture_invoice_state_machine_add_transition(machine, "disputed", "sent", NULL);
+	venture_invoice_state_machine_add_transition(machine, "disputed", "partially_paid", NULL);
+	venture_invoice_state_machine_add_transition(machine, "disputed", "paid", NULL);
+	return TRUE;
+}
+
+VentureProcessorPayout *
+venture_stripe_service_record_payout(VentureStripeService *self, const gchar *provider_id,
+	GDateTime *date, const VentureMoney *gross, const VentureMoney *fees, const VentureMoney *net,
+	gint64 cash_account_id, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureProcessorPayout) payout = NULL;
+	g_autoptr(GPtrArray) entries = NULL;
+	if (provider_id == NULL || *provider_id == '\0' || date == NULL || net == NULL)
+	{
+		refuse(error, "A payout needs a provider id, date and net amount");
+		return NULL;
+	}
+	if (!venture_database_begin(self->database, error)) return NULL;
+	payout = venture_processor_payout_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(payout), self->organization_id);
+	g_object_set(payout, "provider-id", provider_id, "date", date, "gross", gross, "fees", fees,
+		"amount", net, "bank-account-id", cash_account_id, "status", "paid", NULL);
+	if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(payout), actor, error)) goto fail;
+	if (fees != NULL && !venture_money_is_zero(fees) && cash_account_id > 0)
+	{
+		gint64 fee_account = account_code(self, "6000", error);
+		g_autofree gchar *transaction = g_strdup_printf("processor:payout:%s", venture_entity_get_uuid(VENTURE_ENTITY(payout)));
+		VentureLedgerEntry *debit, *credit;
+		if (fee_account == 0) goto fail;
+		entries = g_ptr_array_new_with_free_func(g_object_unref);
+		debit = venture_ledger_entry_new();
+		credit = venture_ledger_entry_new();
+		g_object_set(debit, "transaction-id", transaction, "account-id", fee_account,
+			"side", VENTURE_LEDGER_SIDE_DEBIT, "amount", fees, "occurred-at", date,
+			"source-type", "processor_payout", "source-id", venture_entity_get_id(VENTURE_ENTITY(payout)), NULL);
+		g_object_set(credit, "transaction-id", transaction, "account-id", cash_account_id,
+			"side", VENTURE_LEDGER_SIDE_CREDIT, "amount", fees, "occurred-at", date,
+			"source-type", "processor_payout", "source-id", venture_entity_get_id(VENTURE_ENTITY(payout)), NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(debit), self->organization_id);
+		venture_entity_set_organization_id(VENTURE_ENTITY(credit), self->organization_id);
+		g_ptr_array_add(entries, debit);
+		g_ptr_array_add(entries, credit);
+		if (!venture_posting_service_post_entries(venture_database_get_posting_service(self->database),
+			entries, NULL, actor, error)) goto fail;
+	}
+	if (!venture_database_commit(self->database, error)) goto fail;
+	return g_steal_pointer(&payout);
+fail:
+	venture_database_rollback(self->database);
+	return NULL;
+}
+
+gboolean
+venture_stripe_service_link_payout_item(VentureStripeService *self, gint64 payout_id, gint64 payment_id,
+	const VentureMoney *amount, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureProcessorPayoutItem) item = NULL;
+	g_autoptr(VentureEntity) payout = NULL;
+	g_autoptr(VentureEntity) payment = NULL;
+	if (!venture_database_begin(self->database, error)) return FALSE;
+	payout = owned_get(self, VENTURE_TYPE_PROCESSOR_PAYOUT, payout_id, error);
+	payment = owned_get(self, VENTURE_TYPE_PAYMENT, payment_id, error);
+	if (payout == NULL || payment == NULL) goto fail;
+	item = venture_processor_payout_item_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(item), self->organization_id);
+	g_object_set(item, "payout-id", payout_id, "payment-id", payment_id, "amount", amount, NULL);
+	if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(item), actor, error)) goto fail;
+	if (!venture_database_commit(self->database, error)) goto fail;
+	return TRUE;
+fail:
+	venture_database_rollback(self->database);
+	return FALSE;
+}
+
+VentureProcessorDispute *
+venture_stripe_service_open_dispute(VentureStripeService *self, const gchar *provider_id,
+	gint64 payment_id, GDateTime *date, const VentureMoney *amount, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureProcessorDispute) dispute = NULL;
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(VentureEntity) invoice = NULL;
+	VentureSettlementService *settlement;
+	gint64 invoice_id = 0;
+	if (!venture_database_begin(self->database, error)) return NULL;
+	payment = owned_get(self, VENTURE_TYPE_PAYMENT, payment_id, error);
+	if (payment == NULL) goto fail;
+	g_object_get(payment, "invoice-id", &invoice_id, NULL);
+	settlement = venture_settlement_service_get(self->database);
+	if (!ensure_disputed(settlement, error)) goto fail;
+	if (invoice_id > 0)
+	{
+		invoice = owned_get(self, VENTURE_TYPE_INVOICE, invoice_id, error);
+		if (invoice == NULL) goto fail;
+		if (!venture_settlement_service_transition(settlement, VENTURE_INVOICE(invoice), "disputed", date, actor, error))
+			goto fail;
+	}
+	dispute = venture_processor_dispute_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(dispute), self->organization_id);
+	g_object_set(dispute, "provider-id", provider_id, "payment-id", payment_id, "invoice-id", invoice_id,
+		"opened-at", date, "amount", amount, "status", "open", NULL);
+	if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(dispute), actor, error)) goto fail;
+	if (!venture_database_commit(self->database, error)) goto fail;
+	return g_steal_pointer(&dispute);
+fail:
+	venture_database_rollback(self->database);
+	return NULL;
+}
+
+gboolean
+venture_stripe_service_lose_chargeback(VentureStripeService *self, gint64 dispute_id, GDateTime *date,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) dispute = NULL;
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(GPtrArray) allocations = NULL;
+	g_autoptr(VentureRefund) refund = NULL;
+	g_autoptr(VentureMoney) amount = NULL;
+	gint64 payment_id = 0, customer_id = 0;
+	if (!venture_database_begin(self->database, error)) return FALSE;
+	dispute = owned_get(self, VENTURE_TYPE_PROCESSOR_DISPUTE, dispute_id, error);
+	if (dispute == NULL) goto fail;
+	g_object_get(dispute, "payment-id", &payment_id, "amount", &amount, NULL);
+	payment = owned_get(self, VENTURE_TYPE_PAYMENT, payment_id, error);
+	if (payment == NULL) goto fail;
+	g_object_get(payment, "customer-id", &customer_id, NULL);
+	allocations = find_id(self, VENTURE_TYPE_PAYMENT_ALLOCATION, "payment-id", payment_id, error);
+	if (allocations == NULL) goto fail;
+	if (allocations->len == 0)
+	{
+		refuse(error, "Chargeback requires an allocated receipt");
+		goto fail;
+	}
+	refund = venture_refund_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(refund), self->organization_id);
+	g_object_set(refund, "customer-id", customer_id,
+		"allocation-id", venture_entity_get_id(g_ptr_array_index(allocations, 0)),
+		"amount", amount, "date", date, "reference", "chargeback", NULL);
+	if (!venture_database_save(self->database, VENTURE_ENTITY(refund), actor, error)) goto fail;
+	g_object_set(dispute, "status", "lost", "closed-at", date, "refund-id", venture_entity_get_id(VENTURE_ENTITY(refund)), NULL);
+	if (!venture_stripe_save_owned(self->database, dispute, actor, error)) goto fail;
+	if (!venture_database_commit(self->database, error)) goto fail;
+	return TRUE;
+fail:
+	venture_database_rollback(self->database);
+	return FALSE;
+}

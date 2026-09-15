@@ -6,5 +6,13 @@ VENTURE_DECLARE_ENTITY(VentureStripePriceLink, venture_stripe_price_link, STRIPE
 VENTURE_DECLARE_ENTITY(VentureStripeCustomerLink, venture_stripe_customer_link, STRIPE_CUSTOMER_LINK)
 VENTURE_DECLARE_ENTITY(VentureStripeCheckout, venture_stripe_checkout, STRIPE_CHECKOUT)
 VENTURE_DECLARE_ENTITY(VentureStripeEvent, venture_stripe_event, STRIPE_EVENT)
+#define VENTURE_TYPE_PROCESSOR_PAYOUT (venture_processor_payout_get_type())
+VENTURE_DECLARE_ENTITY(VentureProcessorPayout, venture_processor_payout, PROCESSOR_PAYOUT)
+#define VENTURE_TYPE_PROCESSOR_PAYOUT_ITEM (venture_processor_payout_item_get_type())
+VENTURE_DECLARE_ENTITY(VentureProcessorPayoutItem, venture_processor_payout_item, PROCESSOR_PAYOUT_ITEM)
+#define VENTURE_TYPE_PROCESSOR_DISPUTE (venture_processor_dispute_get_type())
+VENTURE_DECLARE_ENTITY(VentureProcessorDispute, venture_processor_dispute, PROCESSOR_DISPUTE)
+#define VENTURE_TYPE_PROCESSOR_EXCEPTION (venture_processor_exception_get_type())
+VENTURE_DECLARE_ENTITY(VentureProcessorException, venture_processor_exception, PROCESSOR_EXCEPTION)
 G_END_DECLS
 #endif
