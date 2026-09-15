@@ -584,7 +584,11 @@ static const VentureFieldDecl venture_company_fields[] = {
 	VENTURE_FIELD_REF("owner-user-id", "Owner", "Responsible user", "user", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("default-price-list-id", "Default price list", "Customer-specific quote pricing", "price_list", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("tax-exempt", "Tax exempt", "Non-profit or other exemption: invoices freeze zero tax",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("tax-exempt-reason", "Exemption reason", "Certificate or statutory basis",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCompany, venture_company, venture_company_fields,
@@ -2692,7 +2696,11 @@ static const VentureFieldDecl venture_invoice_fields[] = {
 	VENTURE_FIELD("workflow-state", "Workflow state",
 		"Set through VentureSettlementService; plugins may extend the lifecycle",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_MONEY("shipping-amount", "Shipping", "Optional shipping frozen at issuance")
+	VENTURE_FIELD_MONEY("shipping-amount", "Shipping", "Optional shipping frozen at issuance"),
+	VENTURE_FIELD("tax-exempt", "Tax exempt", "Frozen at issue from the customer or this invoice",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("tax-exempt-reason", "Exemption reason", "Certificate or statutory basis frozen at issue",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY(VentureInvoice, venture_invoice, venture_invoice_fields)

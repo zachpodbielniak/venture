@@ -688,12 +688,26 @@ invoice_parts(VentureSettlementService *self, VentureEntity *invoice,
 {
 	g_autoptr(GPtrArray) lines = NULL;
 	g_autoptr(VentureMoney) ship = NULL;
+	g_autoptr(VentureEntity) company = NULL;
+	g_autofree gchar *exempt_reason = NULL;
 	const gchar *currency = NULL;
+	gboolean exempt = FALSE;
 	guint i;
 	lines = find_rows(self, VENTURE_TYPE_INVOICE_LINE, "invoice-id", venture_entity_get_id(invoice), NULL, error);
 	if (lines == NULL)
 		return FALSE;
-	g_object_get(invoice, "shipping-amount", &ship, NULL);
+	g_object_get(invoice, "shipping-amount", &ship, "tax-exempt", &exempt,
+		"tax-exempt-reason", &exempt_reason, NULL);
+	if (!exempt && get_id(invoice, "company-id") > 0)
+	{
+		company = venture_database_get(self->database, VENTURE_TYPE_COMPANY, get_id(invoice, "company-id"), error);
+		if (company == NULL)
+			return FALSE;
+		g_clear_pointer(&exempt_reason, g_free);
+		g_object_get(company, "tax-exempt", &exempt, "tax-exempt-reason", &exempt_reason, NULL);
+		if (exempt)
+			g_object_set(invoice, "tax-exempt", TRUE, "tax-exempt-reason", exempt_reason, NULL);
+	}
 	for (i = 0; i < lines->len; i++)
 	{
 		VentureEntity *line = g_ptr_array_index(lines, i);
@@ -710,16 +724,35 @@ invoice_parts(VentureSettlementService *self, VentureEntity *invoice,
 		if (!same_owner(invoice, line, error))
 			return FALSE;
 		g_object_get(line, "quantity", &quantity, "unit-price", &unit,
-			"discount-percent", &discount_percent, "tax-percent", &tax_percent, NULL);
+			"discount-percent", &discount_percent, "tax-percent", &tax_percent,
+			"income-amount", &line_net, "tax-amount", &line_tax, NULL);
 		if (unit == NULL)
 			return refuse(error, VENTURE_ERROR_VALIDATION, "The line has no unit price");
 		currency = venture_money_get_currency(unit);
 		thousandths = (gint64)(quantity * 1000.0 + ((quantity >= 0.0) ? 0.5 : -0.5));
 		subtotal = venture_money_multiply_rational(unit, thousandths, 1000, error);
-		if (subtotal == NULL ||
-			!venture_quote_percentage_parts(subtotal, discount_percent, tax_percent,
-				&line_discount, &line_net, &line_tax, &line_total, error))
+		if (subtotal == NULL)
 			return FALSE;
+		if (exempt)
+			tax_percent = 0;
+		if (!exempt && line_net != NULL && line_tax != NULL)
+		{
+			line_total = venture_money_add(line_net, line_tax, error);
+			if (line_total == NULL ||
+				!venture_quote_percentage_parts(subtotal, discount_percent, 0,
+					&line_discount, NULL, NULL, NULL, error))
+				return FALSE;
+		}
+		else
+		{
+			g_clear_pointer(&line_net, venture_money_free);
+			g_clear_pointer(&line_tax, venture_money_free);
+			if (!venture_quote_percentage_parts(subtotal, discount_percent, tax_percent,
+				&line_discount, &line_net, &line_tax, &line_total, error))
+				return FALSE;
+			if (exempt)
+				g_object_set(line, "tax-percent", (gint64)0, NULL);
+		}
 		if (!accumulate(total, line_total, FALSE, error) ||
 			!accumulate(net, line_net, FALSE, error) ||
 			!accumulate(tax, line_tax, FALSE, error) ||
@@ -1561,6 +1594,13 @@ venture_settlement_service_correct_tax_allocation(VentureSettlementService *self
 		invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, get_id(event, "invoice-id"), error);
 		if (invoice == NULL)
 			return finish_operation(self, FALSE, error);
+		{
+			gint status = 0;
+			gboolean exempt = FALSE;
+			g_object_get(invoice, "status", &status, "tax-exempt", &exempt, NULL);
+			if (status == VENTURE_INVOICE_STATUS_VOID || exempt)
+				continue;
+		}
 		if (!invoice_parts(self, invoice, &total, &net, &tax, &discount, &shipping, actor, error))
 			return finish_operation(self, FALSE, error);
 		if (tax == NULL || venture_money_is_zero(tax))

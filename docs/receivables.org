@@ -135,3 +135,12 @@ The accounting-cycle regression issues a $100 invoice, receives $40, closes Janu
 
 Issued invoice print and detail tables show frozen Net and Tax per line next to
 the line total, so tax is never presented as revenue.
+
+* Tax exemption
+
+A company or invoice may be marked =tax-exempt= with an optional reason
+(for example a non-profit certificate). At issuance the settlement service
+copies the customer's exemption onto the invoice, freezes tax at zero even
+when lines still carry a tax percent, and posts AR equal to net income.
+Print and invoice detail show the exemption. Tax-allocation corrections skip
+voided and exempt invoices.

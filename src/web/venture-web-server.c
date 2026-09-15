@@ -8624,6 +8624,21 @@ venture_web_append_invoice_block(
 	}
 
 	g_string_append(content, "</strong></td></tr></tfoot></table></div>");
+	{
+		gboolean exempt = FALSE;
+		g_autofree gchar *reason = NULL;
+		g_object_get(record, "tax-exempt", &exempt, "tax-exempt-reason", &reason, NULL);
+		if (exempt)
+		{
+			g_string_append(content, "<p class=\"muted\">Tax exempt");
+			if (reason != NULL && *reason != '\0')
+			{
+				g_string_append(content, ": ");
+				venture_html_escape_append(content, reason);
+			}
+			g_string_append(content, "</p>");
+		}
+	}
 
 	/* The transitions this status allows, each a form so nothing here
 	 * depends on scripting. */

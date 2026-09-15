@@ -1567,6 +1567,68 @@ test_tax_issue_receipt(Fixture *f, gconstpointer data)
 /* A void and a credit note reverse the frozen income and tax legs, not an
  * aggregate income credit of the tax-inclusive total. */
 static void
+test_tax_exempt_nonprofit(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) line = NULL;
+	g_autoptr(VentureMoney) tax = NULL;
+	g_autoptr(GError) error = NULL;
+	gboolean exempt = FALSE;
+	(void)data;
+	{
+		g_autoptr(VentureEntity) customer = venture_database_get(f->database, VENTURE_TYPE_COMPANY,
+			f->customer_id, NULL);
+		g_object_set(customer, "tax-exempt", TRUE, "tax-exempt-reason", "501(c)(3)", NULL);
+		save(f, customer);
+	}
+	invoice = record_new(f, "invoice");
+	g_object_set(invoice, "number", "NPE-1", "company-id", f->customer_id, NULL);
+	money_field(invoice, "issued-at", "2026-03-01");
+	save(f, invoice);
+	line = record_new(f, "invoice_line");
+	g_object_set(line, "invoice-id", venture_entity_get_id(invoice),
+		"description", "Grant work", "quantity", 1.0, "tax-percent", (gint64)5, NULL);
+	money_field(line, "unit-price", "100 USD");
+	save(f, line);
+	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+	save(f, invoice);
+	g_object_get(invoice, "tax-exempt", &exempt, NULL);
+	g_assert_true(exempt);
+	g_assert_cmpint(account_balance_amount(f, account_id_for_code(f, "1100"), "2026-03-01T23:59:59Z"), ==, 10000);
+	g_assert_cmpint(account_balance_amount(f, account_id_for_code(f, "4000"), "2026-03-01T23:59:59Z"), ==, -10000);
+	g_assert_cmpint(account_balance_amount(f, account_id_for_code(f, "2100"), "2026-03-01T23:59:59Z"), ==, 0);
+	{
+		g_autoptr(GPtrArray) events = rows(f, "invoice_event");
+		g_object_get(g_ptr_array_index(events, 0), "tax-amount", &tax, NULL);
+		g_assert_true(tax == NULL || venture_money_is_zero(tax));
+	}
+}
+
+static void
+test_tax_correction_skips_void(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(GDateTime) date = venture_time_from_string("2026-01-12", NULL);
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	(void)data;
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "bookkeeper";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	invoice = taxed_invoice(f, "VOIDCORR", "2026-01-10", "100 USD", 5);
+	g_assert_true(venture_settlement_service_transition(venture_settlement_service_get(f->database),
+		VENTURE_INVOICE(invoice), "void", date, &actor, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_settlement_service_correct_tax_allocation(
+		venture_settlement_service_get(f->database), f->organization_id, date, &actor, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(account_balance_amount(f, account_id_for_code(f, "2100"), "2026-01-12T23:59:59Z"), ==, 0);
+	g_assert_cmpint(account_balance_amount(f, account_id_for_code(f, "4000"), "2026-01-12T23:59:59Z"), ==, 0);
+}
+
+static void
 test_tax_void_credit(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureEntity) invoice = NULL;
@@ -1715,7 +1777,9 @@ main(int argc, char **argv)
 #define ADD(name, function) g_test_add("/receivables/" name, Fixture, NULL, set_up, function, tear_down)
 	ADD("records", test_records);
 	ADD("tax-issue-receipt", test_tax_issue_receipt);
+	ADD("tax-exempt-nonprofit", test_tax_exempt_nonprofit);
 	ADD("tax-void-credit", test_tax_void_credit);
+	ADD("tax-correction-skips-void", test_tax_correction_skips_void);
 	ADD("accounting-cycle", test_accounting_cycle);
 	ADD("module-off-invoice", test_module_off_invoice);
 	ADD("statement-options", test_statement_options);
