@@ -1141,7 +1141,7 @@ venture_database_save(
 	}
 	if (!venture_bank_check_write(self, entity, FALSE, error) ||
 		!venture_cutover_check_write(self, entity, FALSE, error) ||
-		!venture_setup_check_write(self, entity, FALSE, error))
+		!venture_setup_check_write(self, entity, FALSE, error) ||
 		!venture_progress_check_write(self, entity, FALSE, error) ||
 		!venture_portal_check_write(self, entity, FALSE, error) ||
 		!venture_backup_check_write(self, entity, FALSE, error) ||
@@ -2118,6 +2118,7 @@ venture_database_seed_accounts(
 		{ "6600", "Home office",           VENTURE_ACCOUNT_KIND_EXPENSE },
 		{ "6700", "Travel",                VENTURE_ACCOUNT_KIND_EXPENSE },
 		{ "6800", "Bad debt",              VENTURE_ACCOUNT_KIND_EXPENSE },
+		{ "6900", "General expenses",      VENTURE_ACCOUNT_KIND_EXPENSE },
 		{ "7600", "Exchange gain/loss",    VENTURE_ACCOUNT_KIND_EXPENSE }
 	};
 	g_autoptr(VentureQuery) query = NULL;

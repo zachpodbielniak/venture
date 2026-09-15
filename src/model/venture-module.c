@@ -930,6 +930,8 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"accounting", "Daily accounting", "Guided next actions for the books.",
 		venture_module_requires_accounting, venture_module_suggests_accounting,
 		NULL, NULL, NULL, FALSE
+	},
+	{
 		"backup", "Accounting backup", "Export and restore an organization accounting pack.",
 		cutover_requires, NULL, backup_types, NULL, NULL, FALSE
 	}
