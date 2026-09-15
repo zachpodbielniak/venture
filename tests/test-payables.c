@@ -4,6 +4,7 @@
 #include <string.h>
 #include <libsoup/soup.h>
 #include "venture-test-util.h"
+#include "venture-test-accounting.h"
 
 static void
 test_records(void)
@@ -62,7 +63,7 @@ setup(Fixture *f, gconstpointer unused)
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureEntity) vendor = NULL;
 	f->config = venture_config_new();
-	f->db = venture_database_new("sqlite://:memory:", &error);
+	f->db = venture_test_accounting_database(&error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
@@ -79,6 +80,7 @@ static void
 teardown(Fixture *f, gconstpointer unused)
 {
 	g_clear_object(&f->context);
+	venture_test_accounting_database_cleanup(f->db);
 	g_clear_object(&f->db);
 	g_clear_object(&f->config);
 }
@@ -796,6 +798,8 @@ test_credit_void_refund(Fixture *f, gconstpointer unused)
 	g_object_set(p, "external-id", "bank-42", NULL);
 	g_assert_false(venture_database_save(f->db, p, NULL, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS);
+	venture_test_accounting_roundtrip(f->db, f->org);
+
 }
 
 static void

@@ -4,6 +4,7 @@
 #include <string.h>
 #include <libsoup/soup.h>
 #include "venture-test-util.h"
+#include "venture-test-accounting.h"
 
 static void
 test_records(void)
@@ -1263,6 +1264,45 @@ test_transfer_balanced(BankFixture *f, gconstpointer data)
 	g_assert_nonnull(error);
 	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_TRANSFER), ==, 1);
 	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_JOURNAL), ==, 1);
+	g_clear_error(&error);
+	{
+		gint64 restored_org;
+		g_autoptr(VentureAccountingControlMap) override = venture_accounting_control_map_new();
+		g_autoptr(VentureQuery) maps = NULL;
+		g_autoptr(VentureEntity) restored_map = NULL;
+		g_autofree gchar *map_key = NULL, *expected_map_key = NULL;
+		gint64 subject = 0;
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_BANK_TRANSFER);
+		g_autoptr(VentureEntity) transfer = NULL, journal = NULL;
+		g_autofree gchar *transfer_key = NULL, *posting_key = NULL, *expected = NULL;
+		g_object_set(override, "organization-id", f->org, "classification", "cash",
+			"subject-type", "bank_account", "subject-id", venture_entity_get_id(f->bank),
+			"account-id", source_cash, NULL);
+		g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(override), NULL, &error));
+		g_assert_no_error(error);
+		restored_org = venture_test_accounting_roundtrip(f->database, f->org);
+		maps = venture_query_new(VENTURE_TYPE_ACCOUNTING_CONTROL_MAP);
+		venture_query_set_organization(maps, restored_org);
+		venture_query_add_filter_string(maps, "subject-type", VENTURE_FILTER_OP_EQ, "bank_account", NULL);
+		restored_map = venture_database_find_one(f->database, maps, &error);
+		g_assert_no_error(error);
+		g_object_get(restored_map, "subject-id", &subject, "map-key", &map_key, NULL);
+		g_assert_cmpint(subject, !=, venture_entity_get_id(f->bank));
+		expected_map_key = g_strdup_printf("cash|bank_account|%" G_GINT64_FORMAT "|", subject);
+		g_assert_cmpstr(map_key, ==, expected_map_key);
+		venture_query_set_organization(query, restored_org);
+		transfer = venture_database_find_one(f->database, query, &error);
+		g_assert_no_error(error);
+		g_object_get(transfer, "transfer-key", &transfer_key, NULL);
+		g_clear_object(&query);
+		query = venture_query_new(VENTURE_TYPE_JOURNAL);
+		venture_query_set_organization(query, restored_org);
+		journal = venture_database_find_one(f->database, query, &error);
+		g_assert_no_error(error);
+		g_object_get(journal, "posting-key", &posting_key, NULL);
+		expected = g_strconcat("bank_transfer:", transfer_key, NULL);
+		g_assert_cmpstr(posting_key, ==, expected);
+	}
 }
 
 /* Bank-created payments credit the bank's ledger account, not hardcoded 1000. */

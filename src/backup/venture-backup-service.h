@@ -35,7 +35,9 @@ gboolean venture_backup_check_write(VentureDatabase *database, VentureEntity *re
  * @actor: (nullable)
  * @error: (out) (optional)
  *
- * Versioned pack of chart, journals, invoices, frozen tax, receipts and allocations.
+ * Exports a version 4 consistent accounting snapshot, including historical
+ * document state and references. Sensitive fields are excluded. CSV is a
+ * type/count summary, not a restorable archive.
  *
  * Returns: (transfer full) (nullable): the backup record
  */
@@ -49,7 +51,11 @@ VentureEntity *venture_backup_service_export(VentureBackupService *self, gint64 
  * @actor: (nullable)
  * @error: (out) (optional)
  *
- * Remaps identities. Settlement journals are rebuilt from invoices and receipts.
+ * Restores a version 4 snapshot atomically into an empty organization. IDs and
+ * UUIDs are remapped; historical financial operations are not replayed. External
+ * references must resolve by UUID. Version 3 supports only manual ledger packs.
+ *
+ * Returns: TRUE on success, FALSE with no committed restore changes on failure
  */
 gboolean venture_backup_service_restore(VentureBackupService *self, gint64 organization_id,
 	const gchar *payload, const VentureActor *actor, GError **error);

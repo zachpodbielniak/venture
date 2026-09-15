@@ -289,6 +289,17 @@ venture_entity_registry_describe_all(VentureEntityRegistry *self);
 void
 venture_entity_registry_register_builtins(VentureEntityRegistry *self);
 
+/**
+ * venture_entity_registry_list_all_names:
+ * @self: the registry
+ *
+ * Lists persisted types, including disabled modules, for archival operations.
+ * User-facing surfaces must continue to use venture_entity_registry_list_names().
+ *
+ * Returns: (transfer full) (array zero-terminated=1): sorted entity names
+ */
+gchar **venture_entity_registry_list_all_names(VentureEntityRegistry *self);
+
 G_END_DECLS
 
 #endif /* VENTURE_ENTITY_REGISTRY_H */

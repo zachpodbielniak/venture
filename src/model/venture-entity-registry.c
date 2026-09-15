@@ -433,8 +433,8 @@ venture_entity_registry_create(
 	return g_object_new(entity_type, NULL);
 }
 
-gchar **
-venture_entity_registry_list_names(VentureEntityRegistry *self)
+static gchar **
+list_names(VentureEntityRegistry *self, gboolean include_hidden)
 {
 	g_autoptr(GPtrArray) names = NULL;
 	g_autoptr(GList) keys = NULL;
@@ -451,7 +451,7 @@ venture_entity_registry_list_names(VentureEntityRegistry *self)
 		/* A hidden type is not offered anywhere: not as a REST
 		 * resource, a schema entry, a form, an AI tool argument or a
 		 * CLI subcommand. This one loop is what makes that true. */
-		if (g_hash_table_contains(self->hidden, iter->data))
+		if (!include_hidden && g_hash_table_contains(self->hidden, iter->data))
 			continue;
 
 		g_ptr_array_add(names, g_strdup(iter->data));
@@ -460,6 +460,18 @@ venture_entity_registry_list_names(VentureEntityRegistry *self)
 	g_ptr_array_add(names, NULL);
 
 	return (gchar **)g_ptr_array_free(g_steal_pointer(&names), FALSE);
+}
+
+gchar **
+venture_entity_registry_list_names(VentureEntityRegistry *self)
+{
+	return list_names(self, FALSE);
+}
+
+gchar **
+venture_entity_registry_list_all_names(VentureEntityRegistry *self)
+{
+	return list_names(self, TRUE);
 }
 
 GType *

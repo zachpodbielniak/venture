@@ -12,6 +12,7 @@
 #include <libsoup/soup.h>
 
 #include "venture-test-util.h"
+#include "venture-test-accounting.h"
 
 typedef struct
 {
@@ -40,7 +41,7 @@ set_up(Fixture *f, gconstpointer data)
 	g_autoptr(VentureCompany) customer = NULL;
 
 	f->config = venture_config_new();
-	f->database = venture_database_new("sqlite://:memory:", &error);
+	f->database = venture_test_accounting_database(&error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->database,
 		venture_entity_registry_get_default(), &error));
@@ -58,6 +59,7 @@ static void
 tear_down(Fixture *f, gconstpointer data)
 {
 	g_clear_object(&f->context);
+	venture_test_accounting_database_cleanup(f->database);
 	g_clear_object(&f->database);
 	g_clear_object(&f->config);
 }
@@ -428,6 +430,8 @@ test_deposit_allocations_refund(Fixture *f, gconstpointer data)
 	g_clear_pointer(&credits, g_ptr_array_unref);
 	credits = rows(f, "customer_credit");
 	g_assert_cmpint(amount_field(g_ptr_array_index(credits, 0), "remaining"), ==, 0);
+	venture_test_accounting_roundtrip(f->database, f->organization_id);
+
 }
 
 static void
@@ -1562,6 +1566,8 @@ test_tax_issue_receipt(Fixture *f, gconstpointer data)
 	g_assert_cmpint(account_balance_amount(f, account_id_for_code(f, "4000"), "2026-01-15T23:59:59Z"), ==, -10000);
 	g_assert_cmpint(account_balance_amount(f, account_id_for_code(f, "2100"), "2026-01-15T23:59:59Z"), ==, -500);
 	g_assert_no_error(error);
+	venture_test_accounting_roundtrip(f->database, f->organization_id);
+
 }
 
 /* A void and a credit note reverse the frozen income and tax legs, not an
@@ -1954,6 +1960,8 @@ test_foreign_currency_fx(Fixture *f, gconstpointer data)
 			reversed = TRUE;
 	}
 	g_assert_false(reversed);
+	venture_test_accounting_roundtrip(f->database, f->organization_id);
+
 }
 
 static void

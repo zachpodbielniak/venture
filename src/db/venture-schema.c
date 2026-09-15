@@ -383,8 +383,9 @@ venture_schema_get_existing_columns(
 	else
 	{
 		sql = g_strdup_printf(
-			"SELECT column_name FROM information_schema.columns "
-			"WHERE table_name = '%s'", table_name);
+			"SELECT attname FROM pg_catalog.pg_attribute "
+			"WHERE attrelid = to_regclass('\"%s\"') "
+			"AND attnum > 0 AND NOT attisdropped", table_name);
 	}
 
 	result = orm_connection_query(connection, sql, error);
@@ -401,8 +402,9 @@ venture_schema_get_existing_columns(
 
 		row = orm_result_get_row(result);
 
-		/* PRAGMA table_info returns cid, name, type, ...; the
-		 * information_schema query selects the name alone. */
+		/* PostgreSQL resolves the same visible relation as ordinary queries;
+		 * a namesake in another schema must not supply its columns.
+		 * PRAGMA table_info places the name after cid. */
 		name = orm_row_get_string(row, (ORM_DIALECT_SQLITE == dialect) ? 1 : 0);
 
 		if (NULL != name)

@@ -6,6 +6,7 @@
  */
 
 #include "venture.h"
+#include "db/venture-database-snapshot-private.h"
 #include "sequences/venture-sequence-service-private.h"
 #include "ledger/venture-ledger-private.h"
 #include "db/venture-migrations.h"
@@ -982,6 +983,20 @@ venture_database_update(
 	}
 
 	return TRUE;
+}
+
+gboolean
+venture_database_snapshot_insert(VentureDatabase *self, VentureEntity *record, GError **error)
+{
+	g_return_val_if_fail(self->transaction_depth > 0 && self->transaction_owner == g_thread_self(), FALSE);
+	return venture_database_insert(self, record, error);
+}
+
+gboolean
+venture_database_snapshot_update(VentureDatabase *self, VentureEntity *record, gint64 expected_version, GError **error)
+{
+	g_return_val_if_fail(self->transaction_depth > 0 && self->transaction_owner == g_thread_self(), FALSE);
+	return venture_database_update(self, record, expected_version, error);
 }
 
 /*

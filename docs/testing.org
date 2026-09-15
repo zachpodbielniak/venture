@@ -14,7 +14,7 @@ make DEBUG=1 test-one T=test-money   # one binary, verbosely
 make DEBUG=1 test-valgrind           # under valgrind, if installed
 #+end_src
 
-Every test runs against a private in-memory SQLite database, so the suite needs no external service. It leaves nothing behind on disk either -- see [[#temporary-directories][Temporary directories]] below, which is a claim the suite now checks rather than one this page merely makes. Set =VENTURE_TEST_DB= to a =postgres://= URI to run the database tests against PostgreSQL instead:
+By default, tests use private SQLite fixtures, so the suite needs no external service. It leaves nothing behind on disk either -- see [[#temporary-directories][Temporary directories]] below, which is a claim the suite now checks rather than one this page merely makes. Set =VENTURE_TEST_DB= to a =postgres://= URI to run the database tests against PostgreSQL instead:
 
 #+begin_src sh
 podman run -d --rm --name pg -e POSTGRES_PASSWORD=t -e POSTGRES_USER=venture \
@@ -24,6 +24,26 @@ VENTURE_TEST_DB=postgres://venture:t@127.0.0.1:55432/venture \
 #+end_src
 
 Each test drops and recreates the schema before it runs. An external database is one shared database for the whole run, and several tests create a venture with the slug "books" -- a UNIQUE column -- so without that reset the second one fails for a reason that has nothing to do with what it tests. Worth knowing what that hid: the PostgreSQL run used to stop at the ninth test, and the money-summation bug behind it went unnoticed because SQLite returns =SUM()= as an integer while PostgreSQL widens it to numeric.
+
+Accounting integration fixtures also support PostgreSQL. They create and drop
+a unique schema per fixture and need permission to create schemas; they do not
+reset =public=. Use a disposable database for all integration runs:
+
+#+begin_src sh
+VENTURE_TEST_ACCOUNTING_POSTGRES_URI=postgres://venture:t@127.0.0.1:55432/venture \
+    ./build/debug/tests/test-backup
+VENTURE_TEST_ACCOUNTING_POSTGRES_URI=postgres://venture:t@127.0.0.1:55432/venture \
+    ./build/debug/tests/test-receivables -p /receivables/deposit-allocations-refund \
+    -p /receivables/tax-issue-receipt -p /receivables/foreign-currency-fx
+VENTURE_TEST_ACCOUNTING_POSTGRES_URI=postgres://venture:t@127.0.0.1:55432/venture \
+    ./build/debug/tests/test-payables -p /payables/credit-void-refund
+#+end_src
+
+These cases compare complete accounting snapshots, balances and relationships.
+The backup suite also restores between SQLite and PostgreSQL in both directions
+and checks rollback after malformed input and an injected late write failure.
+Migration integration uses =VENTURE_TEST_MIGRATION_POSTGRES_URI= with
+=test-migrations -p /migrations/postgresql= and owns a separate schema.
 
 The whole tree builds with =-Werror= and a wide warning set in =gnu89=. A warning is a latent bug; there are none.
 

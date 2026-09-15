@@ -90,9 +90,10 @@ paths now include operation-owned atomic approvals, exact FX conversion,
 provider-level bank-feed async dispatch, guarded Checkout, custom-field
 validation and mixed field layouts, and durable scheduled report output.
 
-Accounting packs are inspection exports with a limited manual opening-ledger
-import. Legacy and document/history packs are refused before any writes;
-full document recovery requires a full database backup. See [[file:backup.org][the restore contract]].
+Version 4 accounting snapshots restore historical documents, settlements and
+ledger state atomically into an empty organization. Legacy version 3 remains
+limited to manual opening-ledger imports. See [[file:backup.org][the restore contract]] for
+external identities and the distinction from a full installation backup.
 Scheduled packs accept numeric/=*= cron fields or =daily=, use UTC, catch up
 on the scheduled day, and retain the latest JSON output; they do not promise
 email delivery or historical replay. See [[file:reporting.org][reporting]].

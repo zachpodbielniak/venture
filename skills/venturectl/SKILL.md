@@ -609,5 +609,8 @@ refused. Empty values clear optional fields and fail required-field validation.
 Built-in property names cannot be declared as custom fields.
 
 Use `get report_pack ID` to read `last_output`, the last successful scheduled
-result array. Accounting pack exports are not full database backups; document
-packs and legacy packs are refused by restore. See `docs/backup.org`.
+result array. Version 4 accounting packs restore document history into an empty
+organization and remap record identities. External references resolve by UUID.
+Version 3 supports only manual ledger imports; old document packs remain
+refused. Accounting packs exclude installation credentials and attachments.
+See `docs/backup.org`.

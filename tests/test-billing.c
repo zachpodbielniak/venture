@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
 #include "venture-test-util.h"
+#include "venture-test-accounting.h"
 
 /* Billing must coexist with the example plugin's recurring-cost record. */
 static void
@@ -272,6 +273,24 @@ test_dunning(Fixture *f, gconstpointer data)
 	save(f, a);
 	g_assert_cmpint(count(f, "billing_notice"), ==, 1);
 	status_is(f, id, "paused");
+	{
+		gint64 restored_org = venture_test_accounting_roundtrip(f->db, f->org);
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_BILLING_NOTICE);
+		g_autoptr(VentureEntity) notice = NULL;
+		g_autoptr(GError) error = NULL;
+		g_autoptr(GDateTime) past_due = NULL;
+		g_autofree gchar *stamp = NULL, *expected = NULL, *key = NULL;
+		gint64 subscription_id = 0, step_id = 0;
+		venture_query_set_organization(query, restored_org);
+		notice = venture_database_find_one(f->db, query, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(notice);
+		g_object_get(notice, "subscription-id", &subscription_id, "dunning-step-id", &step_id,
+			"past-due-at", &past_due, "delivery-key", &key, NULL);
+		stamp = g_date_time_format_iso8601(past_due);
+		expected = g_strdup_printf("%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT ":%s", subscription_id, step_id, stamp);
+		g_assert_cmpstr(key, ==, expected);
+	}
 }
 
 static void
