@@ -3199,6 +3199,7 @@ venture_cli_command_mcp(
 #include "reconciliation/venture-reconciliation-cli.inc"
 #include "billing/venture-billing-cli.inc"
 #include "sequences/venture-sequence-cli.inc"
+#include "recurring/venture-recurring-cli.inc"
 
 /* --- Entry point --------------------------------------------------------- */
 
@@ -3426,6 +3427,9 @@ main(
 		"  health                       check the server is up\n"
 		"  billing start|change|cancel   manage customer subscription terms\n"
 		"  billing renew|dunning        sweep; --as-of DATE, --dry-run\n"
+		"  recurring run               generate due documents; --as-of DATE, --dry-run\n"
+		"  collections run             queue overdue reminders; --as-of DATE\n"
+		"  batch invoice|expense       CSV/JSON all-or-nothing create; --dry-run\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
 		"\n"
@@ -3490,9 +3494,9 @@ main(
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 
-	if (dry_run && g_strcmp0(args[0], "billing") != 0 && (g_strcmp0(args[0], "post") != 0 || g_strcmp0(args[1], "backfill") != 0))
+	if (dry_run && g_strcmp0(args[0], "billing") != 0 && g_strcmp0(args[0], "recurring") != 0 && g_strcmp0(args[0], "batch") != 0 && (g_strcmp0(args[0], "post") != 0 || g_strcmp0(args[1], "backfill") != 0))
 	{
-		g_printerr("venturectl: --dry-run requires post backfill or billing\n");
+		g_printerr("venturectl: --dry-run requires post backfill, billing, recurring or batch\n");
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 
@@ -3570,9 +3574,9 @@ main(
 		cli.format = (VentureOutputFormat)value;
 	}
 
-	if (sequence_as_of != NULL && g_strcmp0(args[0], "billing") != 0 && (g_strcmp0(args[0], "sequence") != 0 || g_strcmp0(args[1], "run") != 0))
+	if (sequence_as_of != NULL && g_strcmp0(args[0], "billing") != 0 && g_strcmp0(args[0], "recurring") != 0 && g_strcmp0(args[0], "collections") != 0 && (g_strcmp0(args[0], "sequence") != 0 || g_strcmp0(args[1], "run") != 0))
 	{
-		g_printerr("venturectl: --as-of is only valid for sequence run or billing\n");
+		g_printerr("venturectl: --as-of is only valid for sequence run, billing, recurring or collections\n");
 		g_free(cli.base_url);
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
@@ -3673,6 +3677,8 @@ main(
 		result = venture_cli_command_mcp(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "billing"))
 		result = venture_cli_command_billing(&cli, args, sequence_as_of, dry_run, &error);
+	else if (0 == g_strcmp0(args[0], "recurring") || 0 == g_strcmp0(args[0], "collections") || 0 == g_strcmp0(args[0], "batch"))
+		result = venture_cli_command_recurring(&cli, args, sequence_as_of, dry_run, &error);
 	else if (0 == g_strcmp0(args[0], "act"))
 		result = venture_cli_command_act(&cli, args, &error);
 	else

@@ -111,6 +111,11 @@ invoices predating its installation need an explicit migration of their
 issue and payment history. This module does not invent that history from
 the current status.
 
+* Collections
+
+Overdue reminder cadence lives in the =recurring= module and enqueues through
+the mail outbox. See [[file:recurring.org][recurring documents]].
+
 * Posting boundary
 
 =venture_receivables_post_batch()= supplies balanced source-document legs to =venture_posting_service_post_entries()=. Journals are the sole accounting authority; generated cash-report sales bypass automatic sale posting to avoid recognizing the same receipt twice. Invoice document rules are refused because issuance and settlement already post their own journals.

@@ -2336,6 +2336,7 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_journal_actions_register(self);
 		venture_cutover_actions_register(self);
 		venture_setup_actions_register(self);
+		venture_recurring_register_actions(self);
 	}
 	return self->actions;
 }

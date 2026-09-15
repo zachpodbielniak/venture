@@ -784,6 +784,13 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_pipeline_stage_get_type,
 		venture_deal_stage_entry_get_type,
 		venture_loss_reason_get_type,
+		venture_recurring_schedule_get_type,
+		venture_recurring_occurrence_get_type,
+		venture_collection_policy_get_type,
+		venture_collection_step_get_type,
+		venture_collection_case_get_type,
+		venture_collection_notice_get_type,
+		venture_financial_batch_get_type,
 	};
 	gsize i;
 

@@ -639,6 +639,17 @@ static GType (*const cutover_types[]) (void) = {
 	venture_accounting_cutover_get_type, venture_accounting_cutover_row_get_type, NULL
 };
 
+
+static const gchar *const recurring_requires[] = {
+	"invoicing", "payables", "ledger", "periods", "receivables", "mail", NULL
+};
+static const gchar *const recurring_reports[] = { "collections_worklist", NULL };
+static GType (*const recurring_types[]) (void) = {
+	venture_recurring_schedule_get_type, venture_recurring_occurrence_get_type,
+	venture_collection_policy_get_type, venture_collection_step_get_type,
+	venture_collection_case_get_type, venture_collection_notice_get_type,
+	venture_financial_batch_get_type, NULL
+};
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -851,6 +862,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"setup", "Accounting setup", "Guided books setup, control-account mappings and first-posting checks.",
 		setup_requires, NULL, setup_types, NULL, NULL, FALSE
+	},
+	{
+		"recurring", "Recurring documents and collections",
+		"Reusable schedules, invoice reminders and batch financial entry.",
+		recurring_requires, NULL, recurring_types, recurring_reports, NULL, FALSE
 	}
 
 };

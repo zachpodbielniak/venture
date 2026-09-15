@@ -62,6 +62,7 @@ Written bottom-up, because a module may only require what precedes it:
 
 | =quotes= | crm, invoicing | price_list, price_list_item, quote, quote_line, quote_event, quote_delivery, quote_action; =quotes= report and proposal actions | |
 | =assets= | ledger, periods | fixed_asset, depreciation_entry, deferral, deferral_entry; =fixed_assets=, =deferrals= | |
+| =recurring= | invoicing, payables, ledger, periods, receivables, mail | recurring_schedule, recurring_occurrence, collection_policy, collection_step, collection_case, collection_notice, financial_batch; =collections_worklist= | |
 
 Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.
 

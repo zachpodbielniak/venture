@@ -114,7 +114,9 @@ SERVER_ONLY_SRCS += $(filter-out src/pipelines/venture-pipeline-records.c,$(wild
 CORE_SRCS += src/sequences/venture-sequence-records.c
 SERVER_ONLY_SRCS += $(filter-out src/sequences/venture-sequence-records.c,$(wildcard src/sequences/*.c))
 CORE_SRCS += src/autojournal/venture-posting-profile.c
+CORE_SRCS += src/recurring/venture-recurring-records.c
 SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wildcard src/autojournal/*.c))
+SERVER_ONLY_SRCS += $(filter-out src/recurring/venture-recurring-records.c,$(wildcard src/recurring/*.c))
 
 PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
 SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
@@ -168,6 +170,7 @@ PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/sequences/*.h))
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/statements/*.h))
 PUBLIC_HDRS += $(wildcard src/cutover/*.h)
 PUBLIC_HDRS += $(wildcard src/setup/*.h)
+PUBLIC_HDRS += $(wildcard src/recurring/*.h)
 
 TEST_SRCS := $(wildcard tests/test-*.c)
 
@@ -193,6 +196,7 @@ $(OUTDIR)/tests/test-leads: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-payables: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sequences: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-recurring: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery

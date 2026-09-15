@@ -1079,6 +1079,16 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		NULL, "billing"
 	},
 	{
+		"/e/recurring_schedule", "Recurring",
+		VENTURE_ICON("<path d=\"M4 12a8 8 0 1 0 3-6\"/><path d=\"M3 3v6h6\"/>"),
+		NULL, "recurring"
+	},
+	{
+		"/e/collection_case", "Collections",
+		VENTURE_ICON("<path d=\"M4 4h16v4H4z\"/><path d=\"M4 12h16v8H4z\"/>"),
+		NULL, "recurring"
+	},
+	{
 		"/e/company", "Companies",
 		VENTURE_ICON(
 			"<path d=\"M3 21h18\"/>"

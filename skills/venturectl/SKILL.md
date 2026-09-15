@@ -104,6 +104,9 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `kb crossref TYPE ID` | link the knowledge bearing on one record |
 | `kb article TYPE ID --kb N` | write a KB article from a record |
 | `act TYPE ID ACTION [key=value ...]` | discover and perform a business action; `--stage` proposes it |
+| `recurring run [--as-of DATE] [--dry-run]` | generate due invoices, bills, expenses and journals |
+| `collections run [--as-of DATE]` | queue overdue invoice reminders through the outbox |
+| `batch invoice\|expense [--dry-run]` | all-or-nothing CSV/JSON document create |
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 
@@ -573,6 +576,13 @@ candidates, then `post backfill --dry-run` to validate without retaining writes.
 The response includes `candidates`, `posted`, `skipped` and `dry_run`. Period
 refusals abort the entire batch. `posting_profile` uses the normal generic
 CRUD commands; consult `describe posting_profile` for its account mappings.
+## Recurring documents, collections and batch entry
+
+`recurring run --as-of DATE [--dry-run]` generates due schedules through the
+existing settlement, payables and posting services. Closed periods are skipped.
+`collections run --as-of DATE` enqueues overdue reminders with durable
+idempotency keys. `act invoice 0 batch_create` / `act expense 0 batch_create`
+create many documents in one transaction. See `docs/recurring.org`.
 ## Ledger statements
 
 `report balance_sheet`, `income_statement`, `cash_flow`, `general_ledger`,

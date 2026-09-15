@@ -91,6 +91,7 @@
 #include "pipelines/venture-pipeline-records.h"
 #include "sequences/venture-sequence-records.h"
 #include "autojournal/venture-posting-profile.h"
+#include "recurring/venture-recurring-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -176,6 +177,7 @@
 #include "activities/venture-activity-reports.h"
 #include "core/venture-action.h"
 #include "ledger/venture-journal-actions.h"
+#include "recurring/venture-recurring-service.h"
 
 /* Auth comes before the AI service, which names VentureAuthPrincipal in its
  * signatures, and before the web server, which uses both. */
