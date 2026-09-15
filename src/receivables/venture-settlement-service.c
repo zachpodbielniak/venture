@@ -1710,10 +1710,14 @@ venture_settlement_service_settle_invoice(VentureSettlementService *self,
 	g_autoptr(VenturePayment) payment = NULL;
 	gboolean ok;
 
+	invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, invoice_id, error);
+	if (invoice == NULL)
+		return FALSE;
+	if (!venture_accounting_approval_allow(self->database, "pay", invoice, actor, error))
+		return FALSE;
 	if (!begin_operation(self, "payment", error))
 		return FALSE;
-	invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, invoice_id, error);
-	ok = invoice != NULL;
+	ok = TRUE;
 	if (ok)
 	{
 		balance = venture_settlement_service_invoice_balance(self, invoice_id, NULL, error);

@@ -614,6 +614,8 @@ post_internal(VenturePostingService *self, VentureJournal *input, GPtrArray *inp
 
 	if (!ledger_enabled(error) || NULL == db)
 		return NULL;
+	if (!venture_accounting_approval_allow(db, "post", VENTURE_ENTITY(input), actor, error))
+		return NULL;
 	if (!venture_database_begin(db, error))
 		return NULL;
 	if (id != 0)
