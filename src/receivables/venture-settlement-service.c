@@ -845,7 +845,7 @@ derive_invoice(VentureSettlementService *self, VentureEntity *invoice, GDateTime
 }
 
 static gboolean
-invoice_parts(VentureSettlementService *self, VentureEntity *invoice,
+invoice_parts(VentureSettlementService *self, VentureEntity *invoice, GDateTime *date,
 	VentureMoney **total, VentureMoney **net, VentureMoney **tax, VentureMoney **discount,
 	VentureMoney **shipping, const VentureActor *actor, GError **error)
 {
@@ -922,6 +922,13 @@ invoice_parts(VentureSettlementService *self, VentureEntity *invoice,
 						&tax_numerator, &tax_denominator, error))
 					return FALSE;
 			}
+			/* A line without an explicit tax code takes the jurisdiction rate
+			 * the customer's address selects; the answer is frozen below with
+			 * the rest of the line. */
+			if (tax_code_id == 0 &&
+				!venture_sales_tax_service_freeze_line(venture_sales_tax_service_get(self->database),
+					invoice, line, date, exempt, &tax_numerator, &tax_denominator, error))
+				return FALSE;
 			if (!venture_quote_rate_parts(subtotal, discount_percent, tax_numerator, tax_denominator,
 				&line_discount, &line_net, &line_tax, &line_total, error))
 				return FALSE;
@@ -1110,7 +1117,7 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 		g_autoptr(VentureMoney) shipping = NULL;
 		if (first_issue)
 		{
-			if (!invoice_parts(self, invoice, &total, &net, &tax, &discount, &shipping, actor, error))
+			if (!invoice_parts(self, invoice, date, &total, &net, &tax, &discount, &shipping, actor, error))
 				return FALSE;
 		}
 		else if (issued != NULL)
@@ -2502,10 +2509,11 @@ correct_tax_allocation_impl(VentureSettlementService *self,
 		g_autofree gchar *kind = NULL;
 		g_autofree gchar *transaction = NULL;
 		g_autoptr(GPtrArray) entries = NULL;
+		g_autoptr(GDateTime) issued_at = NULL;
 		gint64 income = 0, tax_account = 0;
 		if (venture_entity_get_organization_id(event) != organization_id)
 			continue;
-		g_object_get(event, "kind", &kind, "tax-amount", &tax, NULL);
+		g_object_get(event, "kind", &kind, "tax-amount", &tax, "date", &issued_at, NULL);
 		if (g_strcmp0(kind, "issue") != 0)
 			continue;
 		if (tax != NULL && !venture_money_is_zero(tax))
@@ -2520,7 +2528,9 @@ correct_tax_allocation_impl(VentureSettlementService *self,
 			if (status == VENTURE_INVOICE_STATUS_VOID || exempt)
 				continue;
 		}
-		if (!invoice_parts(self, invoice, &total, &net, &tax, &discount, &shipping, actor, error))
+		/* Rates are re-derived as of the original issue, not the correction. */
+		if (!invoice_parts(self, invoice, issued_at != NULL ? issued_at : date,
+				&total, &net, &tax, &discount, &shipping, actor, error))
 			return finish_operation(self, FALSE, error);
 		if (tax == NULL || venture_money_is_zero(tax))
 			continue;

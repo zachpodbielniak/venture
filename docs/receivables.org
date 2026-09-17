@@ -153,7 +153,9 @@ Invoice and bill lines may name a =tax_code= (exact rate, jurisdiction,
 recoverable flag) instead of an integer =tax-percent=. Frozen
 =income-amount= and =tax-amount= still come from issuance. The
 =tax_liability= report groups that frozen tax by code. Company and invoice
-=tax-exempt= still freeze tax at zero.
+=tax-exempt= still freeze tax at zero. Lines without a tax code take the
+jurisdiction rate the customer's address selects and freeze it alongside;
+see [[file:sales-tax.org][sales tax by jurisdiction]].
 
 Remaining AR is written off through =venture_settlement_service_write_off()=
 (the invoice Write off action). That records a =write_off= credit and

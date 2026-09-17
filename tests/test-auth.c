@@ -1437,7 +1437,7 @@ test_auth_api_refuses_anonymous_requests(
 		};
 		static const gchar *const gets[] = {
 			"/api/v1/budget_reports", "/api/v1/group/reports", "/api/v1/close/1/pack",
-			"/api/v1/contractor-tax/1/export"
+			"/api/v1/contractor-tax/1/export", "/api/v1/sales-tax/export?period=2026-Q1"
 		};
 		static const gchar *const redirects[] = {
 			"/settings/fields", "/equity/post", "/payables/pay", "/claims/1/submit",
