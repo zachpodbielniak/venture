@@ -174,6 +174,7 @@ test_module_dependency_conflict_is_refused(void)
 	venture_config_set_module_enabled(config, "projects", FALSE);
 	venture_config_set_module_enabled(config, "recurring", FALSE);
 	venture_config_set_module_enabled(config, "goods", FALSE);
+	venture_config_set_module_enabled(config, "dunning", FALSE);
 	g_assert_true(venture_module_registry_configure(registry, config, &error));
 	g_assert_no_error(error);
 	g_assert_true(venture_module_registry_is_enabled(registry, "sales"));

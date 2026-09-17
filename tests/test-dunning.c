@@ -436,11 +436,15 @@ static guint request(ServerFixture *s, const gchar *path, const gchar *body, gch
 {
 	g_autoptr(SoupSession) session = soup_session_new_with_options("timeout", 15, NULL);
 	g_autofree gchar *url = g_strconcat(venture_web_server_get_base_url(s->server), path, NULL);
-	g_autoptr(SoupMessage) message = soup_message_new("POST", url);
-	g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
+	g_autoptr(SoupMessage) message = soup_message_new(body ? "POST" : "GET", url);
 	Result result;
 	memset(&result, 0, sizeof(result));
-	soup_message_set_request_body_from_bytes(message, "application/json", bytes);
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	if (body)
+	{
+		g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
+		soup_message_set_request_body_from_bytes(message, "application/json", bytes);
+	}
 	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, http_done, &result);
 	while (!result.done) g_main_context_iteration(NULL, TRUE);
 	g_assert_no_error(result.error);
@@ -501,6 +505,18 @@ static void test_surfaces(ServerFixture *s, gconstpointer unused)
 	g_assert_cmpuint(request(s, "/api/v1/dunning_policy/0/actions/sweep", "{\"as_of\":\"not a date\"}", NULL), >=, 400);
 	deliver(f, "2026-01-17");
 	g_assert_cmpuint(venture_log_mailer_get_messages(f->mailer)->len, ==, 2);
+	{
+		g_autofree gchar *page_path = g_strdup_printf("/e/invoice/%" G_GINT64_FORMAT, f->invoice);
+		g_autofree gchar *api_path = g_strdup_printf("/api/v1/activity/invoice/%" G_GINT64_FORMAT, f->invoice);
+		g_autofree gchar *page = NULL, *timeline = NULL;
+		guint status = request(s, page_path, NULL, &page);
+		if (status == 200)
+			g_assert_nonnull(strstr(page, "reminder sent 2026-01-17"));
+		else
+			g_test_message("invoice page needs a session (%u); the JSON timeline is checked instead", status);
+		g_assert_cmpuint(request(s, api_path, NULL, &timeline), ==, 200);
+		g_assert_nonnull(strstr(timeline, "reminder sent 2026-01-17"));
+	}
 }
 int main(int argc, char **argv)
 {

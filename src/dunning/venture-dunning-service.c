@@ -1191,8 +1191,10 @@ venture_dunning_service_get(VentureDatabase *database)
 		g_object_set_data_full(G_OBJECT(database), "venture-dunning-service", self, g_object_unref);
 		venture_database_add_save_validator(database, VENTURE_TYPE_DUNNING_POLICY, policy_validate, self, NULL);
 		venture_database_add_save_validator(database, VENTURE_TYPE_DUNNING_EVENT, event_validate, self, NULL);
-		g_signal_connect(database, "entity-saved", G_CALLBACK(entity_saved), self);
-		g_signal_connect(venture_database_get_mail_outbox(database), "before-send", G_CALLBACK(before_send), self);
+		/* Both emitters are owned by the database, as is this service; the
+		 * object-bound connections make the order they die in irrelevant. */
+		g_signal_connect_object(database, "entity-saved", G_CALLBACK(entity_saved), self, 0);
+		g_signal_connect_object(venture_database_get_mail_outbox(database), "before-send", G_CALLBACK(before_send), self, 0);
 		venture_dunning_actions_register(database);
 	}
 	return self;

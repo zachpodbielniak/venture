@@ -24640,6 +24640,12 @@ venture_web_append_activity(
 				json_object_has_member(event, "hours")
 					? json_object_get_double_member(event, "hours") : 0.0);
 		}
+		else if (0 == g_strcmp0(kind, "reminder"))
+		{
+			/* A dunning event's whole story fits its head line. */
+			venture_html_escape_append(content,
+				venture_json_object_get_string(event, "body", "reminder"));
+		}
 		else
 		{
 			const gchar *action;
