@@ -258,6 +258,14 @@ version of its definition. In brief:
   tickets module off every figure is =n/a=: nobody counted, which is not the
   same as zero.
 
+*The P&L card's cuts.* Beside its *Report* button the P&L card links to
+the four cuts the =pnl_cuts= module adds --- revenue by customer, spend
+by vendor, recurring costs and the cash outlook --- each with the card's
+own period and scope, carried in the card's JSON as =links=, an array of
+=label=/=href= pairs. With =pnl_cuts= off there are no links, since the
+reports they would open are not there. They are described in
+[[file:reporting.org][Reporting]].
+
 *The period.* =?period== takes anything a report accepts, =this_month= by
 default; the page offers the same period buttons as a report page. A period
 that does not parse is shown as a notice above this month's cards rather
