@@ -11,7 +11,7 @@ static const VentureFieldDecl account_fields[] = {
 	INT("imap-port", "IMAP port", "993 for TLS, 143 otherwise"),
 	STR("imap-tls", "Security", "tls, starttls or none"),
 	STR("username", "Username", NULL),
-	STR("secret-env", "Secret variable", "NAME of the environment variable holding the password or app token; never the value"),
+	STR("secret-env", "Secret variable", "NAME of a VENTURE_IMAP_* environment variable holding the password or app token; never the value"),
 	STR("folders", "Folders", "Comma-separated folders to watch; INBOX when empty"),
 	STR("capture-address", "Capture address", "Mail to this address becomes a capture inbox item"),
 	STR("capture-folder", "Capture folder", "Every message in this folder becomes a capture inbox item"),

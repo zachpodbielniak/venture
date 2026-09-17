@@ -2,30 +2,35 @@
 #include <venture.h>
 #include <string.h>
 G_DEFINE_INTERFACE(VentureImapClient, venture_imap_client, G_TYPE_OBJECT)
-static void venture_imap_client_default_init(VentureImapClientInterface *iface) { }
+static void venture_imap_client_default_init(VentureImapClientInterface *iface) { (void)iface; }
 gboolean venture_imap_client_connect(VentureImapClient *self, const gchar *host, guint16 port, const gchar *security, const gchar *username, const gchar *secret, GCancellable *cancellable, GError **error)
 {
 	g_return_val_if_fail(VENTURE_IS_IMAP_CLIENT(self), FALSE);
+	g_return_val_if_fail(VENTURE_IMAP_CLIENT_GET_IFACE(self)->connect != NULL, FALSE);
 	return VENTURE_IMAP_CLIENT_GET_IFACE(self)->connect(self, host, port, security, username, secret, cancellable, error);
 }
 gboolean venture_imap_client_select(VentureImapClient *self, const gchar *folder, GCancellable *cancellable, GError **error)
 {
 	g_return_val_if_fail(VENTURE_IS_IMAP_CLIENT(self), FALSE);
+	g_return_val_if_fail(VENTURE_IMAP_CLIENT_GET_IFACE(self)->select != NULL, FALSE);
 	return VENTURE_IMAP_CLIENT_GET_IFACE(self)->select(self, folder, cancellable, error);
 }
 GArray *venture_imap_client_uids_after(VentureImapClient *self, guint32 last_uid, GCancellable *cancellable, GError **error)
 {
 	g_return_val_if_fail(VENTURE_IS_IMAP_CLIENT(self), NULL);
+	g_return_val_if_fail(VENTURE_IMAP_CLIENT_GET_IFACE(self)->uids_after != NULL, NULL);
 	return VENTURE_IMAP_CLIENT_GET_IFACE(self)->uids_after(self, last_uid, cancellable, error);
 }
 GBytes *venture_imap_client_fetch(VentureImapClient *self, guint32 uid, GCancellable *cancellable, GError **error)
 {
 	g_return_val_if_fail(VENTURE_IS_IMAP_CLIENT(self), NULL);
+	g_return_val_if_fail(VENTURE_IMAP_CLIENT_GET_IFACE(self)->fetch != NULL, NULL);
 	return VENTURE_IMAP_CLIENT_GET_IFACE(self)->fetch(self, uid, cancellable, error);
 }
 void venture_imap_client_disconnect(VentureImapClient *self)
 {
 	g_return_if_fail(VENTURE_IS_IMAP_CLIENT(self));
+	g_return_if_fail(VENTURE_IMAP_CLIENT_GET_IFACE(self)->disconnect != NULL);
 	VENTURE_IMAP_CLIENT_GET_IFACE(self)->disconnect(self);
 }
 
@@ -63,6 +68,7 @@ static void venture_fake_imap_client_init(VentureFakeImapClient *self)
 static gboolean fake_connect(VentureImapClient *client, const gchar *host, guint16 port, const gchar *security, const gchar *username, const gchar *secret, GCancellable *cancellable, GError **error)
 {
 	VentureFakeImapClient *self = VENTURE_FAKE_IMAP_CLIENT(client);
+	(void)host; (void)port; (void)security; (void)username; (void)cancellable;
 	if (!secret || !*secret) { g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "IMAP secret is empty"); return FALSE; }
 	self->connects++;
 	self->connected = TRUE;
@@ -71,6 +77,7 @@ static gboolean fake_connect(VentureImapClient *client, const gchar *host, guint
 static gboolean fake_select(VentureImapClient *client, const gchar *folder, GCancellable *cancellable, GError **error)
 {
 	VentureFakeImapClient *self = VENTURE_FAKE_IMAP_CLIENT(client);
+	(void)cancellable;
 	if (!self->connected) { g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_FAILED, "Not connected"); return FALSE; }
 	g_free(self->selected);
 	self->selected = g_strdup(folder);
@@ -87,6 +94,7 @@ static GArray *fake_uids_after(VentureImapClient *client, guint32 last_uid, GCan
 	GArray *result = g_array_new(FALSE, FALSE, sizeof(guint32));
 	GArray *messages = self->selected ? g_hash_table_lookup(self->folders, self->selected) : NULL;
 	guint i;
+	(void)cancellable; (void)error;
 	for (i = 0; messages && i < messages->len; i++) {
 		guint32 uid = g_array_index(messages, FakeMessage, i).uid;
 		if (uid > last_uid) g_array_append_val(result, uid);
@@ -99,6 +107,7 @@ static GBytes *fake_fetch(VentureImapClient *client, guint32 uid, GCancellable *
 	VentureFakeImapClient *self = VENTURE_FAKE_IMAP_CLIENT(client);
 	GArray *messages = self->selected ? g_hash_table_lookup(self->folders, self->selected) : NULL;
 	guint i;
+	(void)cancellable;
 	for (i = 0; messages && i < messages->len; i++)
 		if (g_array_index(messages, FakeMessage, i).uid == uid) return g_bytes_ref(g_array_index(messages, FakeMessage, i).raw);
 	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "No message with UID %u", uid);
@@ -137,6 +146,8 @@ gint venture_fake_imap_client_get_connects(VentureFakeImapClient *self)
 }
 
 /* --- Socket: the smallest IMAP4rev1 dialogue that does the job ----------- */
+#define VENTURE_IMAP_MAX_LINE ((gsize)8192)
+#define VENTURE_IMAP_MAX_MESSAGE ((gsize)(20 * 1024 * 1024))
 struct _VentureSocketImapClient {
 	GObject parent_instance;
 	GSocketConnection *connection;
@@ -174,6 +185,7 @@ static gchar *socket_read_line(VentureSocketImapClient *self, GCancellable *canc
 	gsize length = 0;
 	gchar *line = g_data_input_stream_read_line(self->in, &length, cancellable, error);
 	if (!line) { if (error && !*error) socket_protocol_error(error, "connection closed"); return NULL; }
+	if (length > VENTURE_IMAP_MAX_LINE) { g_free(line); socket_protocol_error(error, "line too long"); return NULL; }
 	if (length && line[length - 1] == '\r') line[length - 1] = '\0';
 	return line;
 }
@@ -203,10 +215,15 @@ static gboolean socket_command(VentureSocketImapClient *self, const gchar *comma
 		}
 		brace = strrchr(reply, '{');
 		if (brace && literal && g_str_has_suffix(reply, "}")) {
-			gsize size = (gsize)g_ascii_strtoull(brace + 1, NULL, 10);
+			guint64 parsed = g_ascii_strtoull(brace + 1, NULL, 10);
 			gsize old = literal->len;
-			g_byte_array_set_size(literal, (guint)(old + size));
-			if (size && !g_input_stream_read_all(G_INPUT_STREAM(self->in), literal->data + old, size, NULL, cancellable, error)) return FALSE;
+			/* g_byte_array_set_size takes guint. Truncating a huge
+			 * literal then reading the claimed size is an overflow. */
+			if (parsed > VENTURE_IMAP_MAX_MESSAGE || old > VENTURE_IMAP_MAX_MESSAGE ||
+			    parsed > G_MAXUINT - old || parsed + old > VENTURE_IMAP_MAX_MESSAGE)
+				return socket_protocol_error(error, "message too large");
+			g_byte_array_set_size(literal, (guint)(old + (gsize)parsed));
+			if (parsed && !g_input_stream_read_all(G_INPUT_STREAM(self->in), literal->data + old, (gsize)parsed, NULL, cancellable, error)) return FALSE;
 			{ g_autofree gchar *rest = socket_read_line(self, cancellable, error); if (!rest) return FALSE; }
 		}
 		if (untagged) g_ptr_array_add(untagged, g_steal_pointer(&reply));
@@ -223,15 +240,30 @@ static gchar *socket_quote(const gchar *value)
 	g_string_append_c(s, '"');
 	return g_string_free(s, FALSE);
 }
+static gboolean socket_quoted_safe(const gchar *value)
+{
+	const gchar *p;
+	for (p = value ? value : ""; *p; p++)
+		if (*p == '\r' || *p == '\n') return FALSE;
+	return TRUE;
+}
+static void socket_clear_secret(gchar *text)
+{
+	if (text) memset(text, 0, strlen(text));
+}
 static gboolean socket_connect(VentureImapClient *client, const gchar *host, guint16 port, const gchar *security, const gchar *username, const gchar *secret, GCancellable *cancellable, GError **error)
 {
 	VentureSocketImapClient *self = VENTURE_SOCKET_IMAP_CLIENT(client);
 	g_autoptr(GSocketClient) socket_client = g_socket_client_new();
 	g_autofree gchar *greeting = NULL, *user = NULL, *pass = NULL, *login = NULL;
 	gboolean tls = !g_strcmp0(security, "tls"), starttls = !g_strcmp0(security, "starttls");
+	gboolean ok;
 	socket_close(self);
 	if (!tls && !starttls && g_strcmp0(security, "none")) return socket_protocol_error(error, "security must be tls, starttls or none");
-	if (!g_strcmp0(security, "none") && username && *username) return socket_protocol_error(error, "authentication over an unencrypted connection is refused");
+	/* This client always authenticates. LOGIN over none would put the
+	 * password on the wire; an empty username used to skip that check. */
+	if (!g_strcmp0(security, "none")) return socket_protocol_error(error, "authentication over an unencrypted connection is refused");
+	if (!socket_quoted_safe(username) || !socket_quoted_safe(secret)) return socket_protocol_error(error, "credentials contain a line break");
 	g_socket_client_set_timeout(socket_client, 60);
 	if (tls) g_socket_client_set_tls(socket_client, TRUE);
 	self->connection = g_socket_client_connect_to_host(socket_client, host, port, cancellable, error);
@@ -242,9 +274,10 @@ static gboolean socket_connect(VentureImapClient *client, const gchar *host, gui
 	if (!greeting) return FALSE;
 	if (!g_str_has_prefix(greeting, "* OK") && !g_str_has_prefix(greeting, "* PREAUTH")) return socket_protocol_error(error, "unexpected greeting");
 	if (starttls) {
+		g_autoptr(GSocketConnectable) identity = g_network_address_new(host, port);
 		GIOStream *upgraded;
 		if (!socket_command(self, "STARTTLS", NULL, NULL, cancellable, error)) return FALSE;
-		upgraded = g_tls_client_connection_new(self->stream, G_SOCKET_CONNECTABLE(g_network_address_new(host, port)), error);
+		upgraded = g_tls_client_connection_new(self->stream, identity, error);
 		if (!upgraded) return FALSE;
 		if (!g_tls_connection_handshake(G_TLS_CONNECTION(upgraded), cancellable, error)) { g_object_unref(upgraded); return FALSE; }
 		g_object_unref(self->stream);
@@ -254,14 +287,19 @@ static gboolean socket_connect(VentureImapClient *client, const gchar *host, gui
 	user = socket_quote(username);
 	pass = socket_quote(secret);
 	login = g_strdup_printf("LOGIN %s %s", user, pass);
-	if (!socket_command(self, login, NULL, NULL, cancellable, error)) { socket_close(self); return FALSE; }
+	ok = socket_command(self, login, NULL, NULL, cancellable, error);
+	socket_clear_secret(pass);
+	socket_clear_secret(login);
+	if (!ok) { socket_close(self); return FALSE; }
 	return TRUE;
 }
 static gboolean socket_select(VentureImapClient *client, const gchar *folder, GCancellable *cancellable, GError **error)
 {
 	VentureSocketImapClient *self = VENTURE_SOCKET_IMAP_CLIENT(client);
-	g_autofree gchar *quoted = socket_quote(folder), *command = NULL;
+	g_autofree gchar *quoted = NULL, *command = NULL;
 	if (!self->out) return socket_protocol_error(error, "not connected");
+	if (!socket_quoted_safe(folder)) return socket_protocol_error(error, "folder contains a line break");
+	quoted = socket_quote(folder);
 	command = g_strdup_printf("EXAMINE %s", quoted);
 	return socket_command(self, command, NULL, NULL, cancellable, error);
 }

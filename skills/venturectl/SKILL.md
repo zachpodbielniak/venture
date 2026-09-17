@@ -318,8 +318,8 @@ parameter on a write route is ignored, so a quietly accepted `--stage` would
 apply the change it was asked to hold back.
 
 **Some types need more than an editor.** `forge` is owner-only, `forge_rule`
-and `plugin_config` are admin-only, `user` and `api_token` are owner-only. A
-403 here means the token's role, not a bug.
+and `plugin_config` are admin-only, `user`, `api_token` and `mail_account`
+are owner-only. A 403 here means the token's role, not a bug.
 
 ## Worked example: wire up a forge
 
@@ -479,10 +479,18 @@ next renewal. Billing sends no mail and integrates no card provider.
 `mail send to=... subject=... body=...` queues mail; `--html FILE` supplies
 HTML. `mail test to=...` immediately tests real SMTP. `mail deliver --limit N`
 submits due rows. `mail list state=uncertain` lists uncertain acceptance;
-`mail retry ID` is a deliberate resend with the same Message-ID. Pass
-`organization_id=N` to scope another organization. Never automatically retry
-uncertain rows. Actions reject `--stage`; propose an enqueue with the generic
-`--stage create mail_message` command when approval is required.
+`mail retry ID` is a deliberate resend with the same Message-ID. `mail sync
+[organization_id=N] [limit=N]` runs the bounded inbound IMAP sweep over every
+active `mail_account` in the organization. Pass `organization_id=N` to scope
+another organization. Never automatically retry uncertain rows. Actions reject
+`--stage`; propose an enqueue with the generic `--stage create mail_message`
+command when approval is required.
+
+`mail_account` is owner-only: it names the IMAP host and a `VENTURE_IMAP_*`
+environment variable holding the password, never the password itself. Generic
+writes to `mail_inbound` are refused; `mail_unmatched_sender` is ordinary CRM
+data. Use `list mail_inbound` and `list mail_unmatched_sender` to read what
+the sweep filed.
 
 ### Commercial quote actions
 

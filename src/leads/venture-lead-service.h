@@ -86,10 +86,6 @@ VentureConfirmation *venture_lead_service_stage_convert(VentureLeadService *self
  */
 gboolean venture_lead_service_apply_staged(VentureLeadService *self, VentureEntity *staged,
 	const VentureActor *actor, GError **error);
-G_END_DECLS
-#endif
-
-G_BEGIN_DECLS
 /**
  * venture_lead_normalize_email:
  * @value: (nullable): an address as typed
@@ -101,3 +97,4 @@ G_BEGIN_DECLS
  */
 gchar *venture_lead_normalize_email(const gchar *value);
 G_END_DECLS
+#endif

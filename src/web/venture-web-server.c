@@ -669,6 +669,16 @@ venture_web_require_for_type(
 		needed = VENTURE_USER_ROLE_OWNER;
 
 	/*
+	 * A mail_account names the IMAP host and which environment variable
+	 * holds the password. An editor who could change imap-host could
+	 * point the next sweep at a server they control and collect that
+	 * secret; an editor who could change secret-env could name any
+	 * variable in the process environment. Same reasoning as a forge.
+	 */
+	if (VENTURE_TYPE_MAIL_ACCOUNT == entity_type)
+		needed = VENTURE_USER_ROLE_OWNER;
+
+	/*
 	 * A webhook holds a signing secret and names the host this install's
 	 * business data is posted to. An editor who could change its URL
 	 * could point every change in the books at a server they control,
@@ -752,6 +762,18 @@ venture_web_type_accepts_writes(
 		                    VENTURE_ERROR_PERMISSION_DENIED,
 		                    "A delivery record is written as the delivery "
 		                    "happens; it cannot be edited");
+		return FALSE;
+	}
+
+	/* An inbound row is what the sweep filed, including the UID key that
+	 * makes a rerun a no-op. Editing one would let somebody plant mail
+	 * that never arrived, or reset a key so the next sweep double-files. */
+	if (VENTURE_TYPE_MAIL_INBOUND == entity_type)
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_PERMISSION_DENIED,
+		                    "An inbound mail record is written by the "
+		                    "sync; it cannot be edited");
 		return FALSE;
 	}
 

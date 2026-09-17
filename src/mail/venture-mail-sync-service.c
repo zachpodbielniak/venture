@@ -106,18 +106,23 @@ static gchar *strip_brackets(const gchar *id)
 static void collect_addresses(InternetAddressList *list, GPtrArray *into, const gchar *capture, gboolean *to_capture)
 {
 	gint i;
+	g_autofree gchar *wanted_capture = venture_lead_normalize_email(capture);
 	for (i = 0; list && i < internet_address_list_length(list); i++) {
 		InternetAddress *address = internet_address_list_get_address(list, i);
 		const gchar *addr = INTERNET_ADDRESS_IS_MAILBOX(address) ? internet_address_mailbox_get_addr(INTERNET_ADDRESS_MAILBOX(address)) : NULL;
+		g_autofree gchar *normal = NULL;
 		if (!addr) continue;
-		g_ptr_array_add(into, g_ascii_strdown(addr, -1));
-		if (capture && *capture && !g_ascii_strcasecmp(addr, capture)) *to_capture = TRUE;
+		normal = venture_lead_normalize_email(addr);
+		if (!*normal) continue;
+		if (*wanted_capture && !g_strcmp0(normal, wanted_capture)) *to_capture = TRUE;
+		g_ptr_array_add(into, g_steal_pointer(&normal));
 	}
 }
 static void walk_part(GMimeObject *parent, GMimeObject *part, gpointer data)
 {
 	Parsed *p = data;
 	const gchar *filename;
+	(void)parent;
 	if (!GMIME_IS_PART(part)) return;
 	filename = g_mime_part_get_filename(GMIME_PART(part));
 	if (filename || g_mime_part_is_attachment(GMIME_PART(part))) {
@@ -157,7 +162,7 @@ static gboolean parse_message(GBytes *raw, const gchar *capture_address, Parsed 
 	from = g_mime_message_get_from(message);
 	if (from && internet_address_list_length(from) > 0) {
 		InternetAddress *first = internet_address_list_get_address(from, 0);
-		if (INTERNET_ADDRESS_IS_MAILBOX(first)) p->from = g_ascii_strdown(internet_address_mailbox_get_addr(INTERNET_ADDRESS_MAILBOX(first)), -1);
+		if (INTERNET_ADDRESS_IS_MAILBOX(first)) p->from = venture_lead_normalize_email(internet_address_mailbox_get_addr(INTERNET_ADDRESS_MAILBOX(first)));
 		p->from_name = g_strdup(internet_address_get_name(first));
 	}
 	collect_addresses(from, p->addresses, capture_address, &p->to_capture);
@@ -175,6 +180,7 @@ static gboolean parse_message(GBytes *raw, const gchar *capture_address, Parsed 
 	p->subject = g_strdup(g_mime_message_get_subject(message));
 	{
 		GDateTime *date = g_mime_message_get_date(message);
+		/* GMime 3.2 returns a date owned by the message; do not unref it. */
 		p->date = date ? g_date_time_to_utc(date) : g_date_time_new_now_utc();
 	}
 	g_mime_message_foreach(message, walk_part, p);
@@ -322,9 +328,25 @@ static gboolean process_message(VentureMailSyncService *self, VentureEntity *acc
 		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_INBOUND);
 		venture_query_set_organization(query, org);
 		venture_query_add_filter_string(query, "uid-key", VENTURE_FILTER_OP_EQ, key, NULL);
-		if (venture_database_count(self->database, query, NULL) > 0) { venture_database_rollback(self->database); parsed_clear(&p); return TRUE; }
+		if (venture_database_count(self->database, query, NULL) > 0) {
+			/* The UID was already filed; still advance the high-water
+			 * mark so a repaired cursor does not re-fetch forever. */
+			json_object_set_int_member(cursors, folder, uid);
+			cursor_node = json_node_new(JSON_NODE_OBJECT);
+			json_node_set_object(cursor_node, cursors);
+			cursor_text = json_to_string(cursor_node, FALSE);
+			g_object_set(account, "cursors", cursor_text, NULL);
+			if (!venture_database_save(self->database, account, actor, error)) goto fail;
+			if (!venture_database_commit(self->database, error)) { parsed_clear(&p); return FALSE; }
+			parsed_clear(&p);
+			return TRUE;
+		}
 	}
-	outbound = own && p.from && !g_ascii_strcasecmp(own, p.from);
+	{
+		g_autofree gchar *own_normal = venture_lead_normalize_email(own);
+		g_autofree gchar *from_normal = venture_lead_normalize_email(p.from);
+		outbound = *own_normal && *from_normal && !g_strcmp0(own_normal, from_normal);
+	}
 	capture = p.to_capture || (capture_folder && *capture_folder && !g_strcmp0(capture_folder, folder));
 	raw_title = g_strdup_printf("%s.eml", p.subject && *p.subject ? p.subject : "message");
 	raw_document = file_document(self, org, raw_title, "email", "message/rfc822", raw, actor, error);
@@ -338,8 +360,12 @@ static gboolean process_message(VentureMailSyncService *self, VentureEntity *acc
 	if (!capture) {
 		/* The account's own address is never a contact match nor an unmatched sender. */
 		g_autoptr(GPtrArray) others = g_ptr_array_new_with_free_func(g_free);
-		for (i = 0; i < p.addresses->len; i++)
-			if (!own || g_ascii_strcasecmp(own, g_ptr_array_index(p.addresses, i))) g_ptr_array_add(others, g_strdup(g_ptr_array_index(p.addresses, i)));
+		g_autofree gchar *own_normal = venture_lead_normalize_email(own);
+		for (i = 0; i < p.addresses->len; i++) {
+			const gchar *addr = g_ptr_array_index(p.addresses, i);
+			if (*own_normal && !g_strcmp0(own_normal, addr)) continue;
+			g_ptr_array_add(others, g_strdup(addr));
+		}
 		unmatched = g_ptr_array_new_with_free_func(g_free);
 		matched = matching_contacts(self->database, org, others, unmatched, error);
 		if (!matched) goto fail;
@@ -425,6 +451,14 @@ gint venture_mail_sync_service_sync(VentureMailSyncService *self, VentureEntity 
 	g_object_get(account, "imap-host", &host, "imap-port", &port, "imap-tls", &security, "username", &username,
 		"secret-env", &secret_env, "folders", &folders, "cursors", &cursor_text, NULL);
 	if (venture_string_is_empty(secret_env)) return refuse(error, VENTURE_ERROR_CONFIG, "The account names no secret_env variable"), -1;
+	{
+		const gchar *p;
+		if (!g_str_has_prefix(secret_env, "VENTURE_IMAP_") || !secret_env[strlen("VENTURE_IMAP_")])
+			return refuse(error, VENTURE_ERROR_CONFIG, "secret_env must name a VENTURE_IMAP_* variable"), -1;
+		for (p = secret_env + strlen("VENTURE_IMAP_"); *p; p++)
+			if (!g_ascii_isalnum(*p) && *p != '_')
+				return refuse(error, VENTURE_ERROR_CONFIG, "secret_env must name a VENTURE_IMAP_* variable"), -1;
+	}
 	secret = g_getenv(secret_env);
 	if (!secret || !*secret) {
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "VentureMailSyncService: environment variable %s is not set; it must hold the IMAP password or app token", secret_env);

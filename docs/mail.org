@@ -161,14 +161,23 @@ SMTP tests enforce organization write authority and policy-plugin vetoes before 
 
 The =mail_sync= module requires =mail=, =crm= and =leads= and suggests
 =capture=. It owns =mail_account=, =mail_inbound= and
-=mail_unmatched_sender=, all generated record surfaces. An account names a
-mailbox address, IMAP host, port and security (=tls=, =starttls= or =none=),
-username, the folders to watch, an optional capture address and capture
-folder, and =secret_env=: the NAME of the environment variable holding the
-password or app token. The row never holds the secret, the same shape as
-the Stripe module and the SMTP =password_env= setting. A sync whose variable
-is unset fails with a =VENTURE_ERROR_CONFIG= error naming that variable and
-never opens a connection. Authentication over =none= is refused.
+=mail_unmatched_sender=. =mail_account= is owner-only: the row names the
+IMAP host and which environment variable holds the password, so an editor
+who could change either could point the next sweep at a host they control
+or name a different secret in the process environment. =mail_inbound= is
+written by the sweep and refuses generic writes, like a webhook delivery.
+=mail_unmatched_sender= stays ordinary CRM data.
+
+An account names a mailbox address, IMAP host, port and security (=tls= or
+=starttls=), username, the folders to watch, an optional capture address and
+capture folder, and =secret_env=: the NAME of a =VENTURE_IMAP_*= environment
+variable holding the password or app token. The row never holds the secret.
+A name that is not =VENTURE_IMAP_= followed by letters, digits or underscores
+is refused before any connection, so a row cannot exfiltrate
+=VENTURE_SMTP_PASSWORD= or the session secret. A sync whose variable is unset
+fails with a =VENTURE_ERROR_CONFIG= error naming that variable and never
+opens a connection. Authentication over =none= is refused even when the
+username is empty: this client always sends =LOGIN=.
 
 =VentureMailSyncService= is the one service behind every surface. For each
 watched folder it reads the stored high-water UID from =cursors=, asks the
@@ -242,10 +251,14 @@ disconnect). =deps/mail-glib= is sending-only, so =VentureSocketImapClient=
 in =src/mail/= is a minimal IMAP4rev1 client over GIO sockets: implicit TLS
 or STARTTLS through GTlsClientConnection, =LOGIN=, =EXAMINE= (read-only;
 nothing is flagged or moved), =UID SEARCH UID n:*= and =UID FETCH
-(BODY.PEEK[])=. Server response text is never surfaced in errors, because a
-rejected LOGIN line carries the credential. =VentureFakeImapClient= is an
-in-memory mailbox for tests; the suite opens no sockets. GMime, already a
-server dependency through mail-glib, parses the fetched bytes.
+(BODY.PEEK[])=. Literals larger than 20 MiB and control lines longer than
+8 KiB are refused; a truncated =guint= size would otherwise overflow the
+fetch buffer. Usernames, secrets and folder names containing CR or LF are
+refused so they cannot inject a second IMAP command. Server response text is
+never surfaced in errors, because a rejected LOGIN line carries the
+credential. =VentureFakeImapClient= is an in-memory mailbox for tests; the
+suite opens no sockets. GMime, already a server dependency through
+mail-glib, parses the fetched bytes.
 
 OAuth (XOAUTH2 for Google and Microsoft) would attach in
 =VentureSocketImapClient= as a second authentication step selected by a
@@ -256,8 +269,10 @@ the sync service would change. Calendar synchronisation would be a sibling
 one feeds interactions.
 
 =test-mail-sync= covers the field tables and module, the missing-secret
-refusal, the UID high-water mark and idempotent rerun, contact and company
-matching, threading, unmatched senders and one-click contact creation,
-capture with attachments and content-hash deduplication, the outbound
-interaction, and the organization sweep. =test-auth= covers anonymous
-refusal of the two routes.
+refusal, the =VENTURE_IMAP_*= secret_env prefix, the UID high-water mark and
+idempotent rerun, a repaired cursor behind an already-filed UID, contact and
+company matching, threading, unmatched senders and one-click contact
+creation, capture with attachments, +tag capture-address matching and
+content-hash deduplication, the outbound interaction, and the organization
+sweep. =test-auth= covers anonymous refusal of the two routes, owner-only
+=mail_account=, and the inbound write refusal.

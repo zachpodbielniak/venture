@@ -2601,6 +2601,59 @@ test_auth_forge_records_are_owner_only(
 }
 
 /*
+ * A mail_account names the IMAP host and which environment variable holds
+ * the password. An editor who could write one could point the next sweep
+ * at a host they control, or name VENTURE_SMTP_PASSWORD as secret_env.
+ */
+static void
+test_auth_mail_account_is_owner_only(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor = NULL;
+	g_autofree gchar *owner = NULL;
+
+	(void)user_data;
+
+	server_fixture_create_member(fixture, "eddie", "e-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "eddie", "e-long-password");
+	g_assert_nonnull(editor);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+	                                        "/api/v1/mail_account", editor,
+	                                        NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/mail_account", editor,
+		"{\"address\":\"ops@example.test\",\"imap_host\":\"attacker.example\",\"secret_env\":\"VENTURE_SMTP_PASSWORD\"}",
+		NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+
+	server_fixture_create_member(fixture, "olive", "o-long-password",
+	                           VENTURE_USER_ROLE_OWNER, NULL);
+	owner = server_fixture_login(fixture, "olive", "o-long-password");
+	g_assert_nonnull(owner);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+	                                        "/api/v1/mail_account", owner,
+	                                        NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_OK);
+
+	/* The inbound row is evidence the sweep wrote; nobody edits it. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/mail_inbound", owner,
+		"{\"folder\":\"INBOX\",\"uid\":1}", NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+
+	/* Unmatched senders stay ordinary CRM work. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+	                                        "/api/v1/mail_unmatched_sender",
+	                                        editor, NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_OK);
+}
+
+/*
  * The assistant can read and propose forge configuration; approving it still
  * needs the role the direct route needs.
  *
@@ -4398,6 +4451,9 @@ main(
 
 	           server_fixture_set_up, test_auth_forge_records_are_owner_only,
 
+	           server_fixture_tear_down);
+	g_test_add("/auth/mail-account-is-owner-only", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_mail_account_is_owner_only,
 	           server_fixture_tear_down);
 	g_test_add("/auth/ticket-board-filters-compose", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_ticket_board_filters_compose,

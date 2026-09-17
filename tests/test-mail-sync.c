@@ -52,7 +52,7 @@ static void setup(Fixture *f, gconstpointer data)
 	f->imap = venture_fake_imap_client_new();
 	f->service = venture_mail_sync_service_new(f->db, VENTURE_IMAP_CLIENT(f->imap));
 	g_object_set(f->service, "attachment-root", f->root, NULL);
-	g_setenv("VENTURE_TEST_IMAP_SECRET", "app-password", TRUE);
+	g_setenv("VENTURE_IMAP_SECRET", "app-password", TRUE);
 }
 
 static void teardown(Fixture *f, gconstpointer data)
@@ -104,19 +104,35 @@ static void test_records(void)
 /* Rule 1: a missing secret fails the sync with an error naming the variable. */
 static void test_missing_secret(Fixture *f, gconstpointer data)
 {
-	g_autoptr(VentureEntity) a = account(f, "VENTURE_TEST_IMAP_MISSING");
+	g_autoptr(VentureEntity) a = account(f, "VENTURE_IMAP_MISSING");
+	(void)data;
 	g_autoptr(GError) error = NULL;
-	g_unsetenv("VENTURE_TEST_IMAP_MISSING");
+	g_unsetenv("VENTURE_IMAP_MISSING");
 	g_assert_cmpint(venture_mail_sync_service_sync(f->service, a, NULL, &error), ==, -1);
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
-	g_assert_nonnull(strstr(error->message, "VENTURE_TEST_IMAP_MISSING"));
+	g_assert_nonnull(strstr(error->message, "VENTURE_IMAP_MISSING"));
 	g_assert_cmpint(venture_fake_imap_client_get_connects(f->imap), ==, 0);
+}
+
+/* A free-form secret_env would let a mail_account row name VENTURE_SMTP_PASSWORD
+ * (or the session secret) and ship it to an attacker-controlled IMAP host. */
+static void test_secret_env_prefix(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = account(f, "VENTURE_SMTP_PASSWORD");
+	g_autoptr(GError) error = NULL;
+	g_setenv("VENTURE_SMTP_PASSWORD", "not-for-imap", TRUE);
+	g_assert_cmpint(venture_mail_sync_service_sync(f->service, a, NULL, &error), ==, -1);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_assert_nonnull(strstr(error->message, "VENTURE_IMAP_"));
+	g_assert_null(strstr(error->message, "not-for-imap"));
+	g_assert_cmpint(venture_fake_imap_client_get_connects(f->imap), ==, 0);
+	g_unsetenv("VENTURE_SMTP_PASSWORD");
 }
 
 /* Rules 2 and 3: UID high-water mark, raw documents, matched interactions, threads, unmatched senders. */
 static void test_sync_matches_and_threads(Fixture *f, gconstpointer data)
 {
-	g_autoptr(VentureEntity) a = account(f, "VENTURE_TEST_IMAP_SECRET");
+	g_autoptr(VentureEntity) a = account(f, "VENTURE_IMAP_SECRET");
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureQuery) q = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
@@ -195,7 +211,7 @@ static void test_sync_matches_and_threads(Fixture *f, gconstpointer data)
 /* Rule 4: capture-address mail becomes an inbox item with its attachment; same hash is not duplicated. */
 static void test_capture(Fixture *f, gconstpointer data)
 {
-	g_autoptr(VentureEntity) a = account(f, "VENTURE_TEST_IMAP_SECRET");
+	g_autoptr(VentureEntity) a = account(f, "VENTURE_IMAP_SECRET");
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureQuery) q = NULL;
 	g_autoptr(VentureEntity) item = NULL, document = NULL;
@@ -272,8 +288,8 @@ static void test_outbound_recorded(Fixture *f, gconstpointer data)
 /* Rule 6: the sweep over an organization's accounts, and its refusal of a disabled account. */
 static void test_sweep(Fixture *f, gconstpointer data)
 {
-	g_autoptr(VentureEntity) a = account(f, "VENTURE_TEST_IMAP_SECRET");
-	g_autoptr(VentureEntity) off = account(f, "VENTURE_TEST_IMAP_MISSING");
+	g_autoptr(VentureEntity) a = account(f, "VENTURE_IMAP_SECRET");
+	g_autoptr(VentureEntity) off = account(f, "VENTURE_IMAP_MISSING");
 	g_autoptr(GError) error = NULL;
 	g_autoptr(JsonNode) report = NULL;
 	g_object_set(off, "active", FALSE, NULL);
@@ -286,14 +302,51 @@ static void test_sweep(Fixture *f, gconstpointer data)
 	g_assert_cmpint(venture_json_object_get_int(json_node_get_object(report), "messages", 0), ==, 1);
 }
 
+/* A cursor reset behind an already-filed UID must still advance, or every
+ * sweep re-fetches the same mail forever without creating rows. */
+static void test_cursor_repairs_duplicate_uid(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = account(f, "VENTURE_IMAP_SECRET");
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *cursors = NULL;
+	venture_fake_imap_client_add_message(f->imap, "INBOX", 5, msg_ada);
+	g_assert_cmpint(venture_mail_sync_service_sync(f->service, a, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	g_object_set(a, "cursors", "{}", NULL);
+	save(f, a);
+	g_assert_cmpint(venture_mail_sync_service_sync(f->service, a, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	g_assert_cmpint(count_type(f, "mail_inbound"), ==, 1);
+	g_assert_cmpint(count_type(f, "interaction"), ==, 1);
+	g_object_get(a, "cursors", &cursors, NULL);
+	g_assert_nonnull(strstr(cursors, "5"));
+}
+
+/* Capture address matching uses the same +tag normalisation as lead dedup. */
+static void test_capture_plus_tag(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = account(f, "VENTURE_IMAP_SECRET");
+	g_autoptr(GError) error = NULL;
+	venture_fake_imap_client_add_message(f->imap, "INBOX", 4,
+		"From: Shop <shop@store.test>\r\nTo: receipts+toner@venture.test\r\nSubject: Tagged\r\nDate: Tue, 15 Sep 2026 09:00:00 +0000\r\n"
+		"Message-ID: <tag@store.test>\r\nContent-Type: text/plain\r\n\r\nPlease file this.\r\n");
+	g_assert_cmpint(venture_mail_sync_service_sync(f->service, a, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	g_assert_cmpint(count_type(f, "capture_item"), ==, 1);
+	g_assert_cmpint(count_type(f, "interaction"), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/mail-sync/records", test_records);
 	g_test_add("/mail-sync/missing-secret", Fixture, NULL, setup, test_missing_secret, teardown);
+	g_test_add("/mail-sync/secret-env-prefix", Fixture, NULL, setup, test_secret_env_prefix, teardown);
 	g_test_add("/mail-sync/matches-and-threads", Fixture, NULL, setup, test_sync_matches_and_threads, teardown);
 	g_test_add("/mail-sync/capture", Fixture, NULL, setup, test_capture, teardown);
+	g_test_add("/mail-sync/capture-plus-tag", Fixture, NULL, setup, test_capture_plus_tag, teardown);
 	g_test_add("/mail-sync/outbound", Fixture, NULL, setup, test_outbound_recorded, teardown);
 	g_test_add("/mail-sync/sweep", Fixture, NULL, setup, test_sweep, teardown);
+	g_test_add("/mail-sync/cursor-repairs-duplicate", Fixture, NULL, setup, test_cursor_repairs_duplicate_uid, teardown);
 	return g_test_run();
 }
