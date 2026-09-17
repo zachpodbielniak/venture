@@ -291,31 +291,38 @@ cuts_group_add(
 	cuts_accumulate(&group->slot[slot], amount, NULL);
 }
 
-/* Descending on the sort slot; rows in the book currency before the rest,
- * because they are the ones the totals are made of. */
-static const gchar *cuts_sort_currency = NULL;
-static guint cuts_sort_slot = 0;
+/* What a sort is ordered by: the book currency, whose rows come first
+ * because they are the ones the totals are made of, and the slot that is
+ * compared. Passed to the comparator, not kept anywhere. */
+typedef struct
+{
+	const gchar	*currency;
+	guint		 slot;
+} CutsSortKey;
 
+/* Descending on the sort slot; rows in the book currency before the rest. */
 static gint
 cuts_group_compare(
 	gconstpointer	a,
-	gconstpointer	b
+	gconstpointer	b,
+	gpointer	user_data
 ){
 	const CutsGroup *left = *(CutsGroup *const *)a;
 	const CutsGroup *right = *(CutsGroup *const *)b;
+	const CutsSortKey *key = user_data;
 	gboolean left_book;
 	gboolean right_book;
 	gint64 l;
 	gint64 r;
 
-	left_book = (0 == g_strcmp0(left->currency, cuts_sort_currency));
-	right_book = (0 == g_strcmp0(right->currency, cuts_sort_currency));
+	left_book = (0 == g_strcmp0(left->currency, key->currency));
+	right_book = (0 == g_strcmp0(right->currency, key->currency));
 
 	if (left_book != right_book)
 		return left_book ? -1 : 1;
 
-	l = venture_money_get_amount(left->slot[cuts_sort_slot]);
-	r = venture_money_get_amount(right->slot[cuts_sort_slot]);
+	l = venture_money_get_amount(left->slot[key->slot]);
+	r = venture_money_get_amount(right->slot[key->slot]);
 
 	if (l != r)
 		return (l > r) ? -1 : 1;
@@ -329,10 +336,11 @@ cuts_groups_sort(
 	const gchar	*currency,
 	guint		 slot
 ){
-	cuts_sort_currency = currency;
-	cuts_sort_slot = slot;
-	g_ptr_array_sort(order, cuts_group_compare);
-	cuts_sort_currency = NULL;
+	CutsSortKey key;
+
+	key.currency = currency;
+	key.slot = slot;
+	g_ptr_array_sort_with_data(order, cuts_group_compare, &key);
 }
 
 /* --- Attribution: where a customer came from ------------------------------ */
@@ -1227,10 +1235,12 @@ recurring_monthly(
 static gint
 recurring_row_compare(
 	gconstpointer	a,
-	gconstpointer	b
+	gconstpointer	b,
+	gpointer	user_data
 ){
 	const RecurringRow *left = *(RecurringRow *const *)a;
 	const RecurringRow *right = *(RecurringRow *const *)b;
+	const gchar *currency = user_data;
 	gboolean left_book;
 	gboolean right_book;
 
@@ -1242,9 +1252,9 @@ recurring_row_compare(
 		return g_strcmp0(left->name, right->name);
 
 	left_book = (0 == g_strcmp0(venture_money_get_currency(left->monthly),
-	                            cuts_sort_currency));
+	                            currency));
 	right_book = (0 == g_strcmp0(venture_money_get_currency(right->monthly),
-	                             cuts_sort_currency));
+	                             currency));
 
 	if (left_book != right_book)
 		return left_book ? -1 : 1;
@@ -1346,9 +1356,7 @@ venture_report_recurring_costs(
 		g_ptr_array_add(rows, row);
 	}
 
-	cuts_sort_currency = currency;
-	g_ptr_array_sort(rows, recurring_row_compare);
-	cuts_sort_currency = NULL;
+	g_ptr_array_sort_with_data(rows, recurring_row_compare, currency);
 
 	monthly_total = venture_money_new_zero(currency);
 
