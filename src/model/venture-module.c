@@ -757,6 +757,9 @@ static const gchar *const headline_requires[] = { "receivables", "leads", NULL }
 static const gchar *const headline_suggests[] = { "outreach", "recurring", "tickets", "banking", "payables", "billing", NULL };
 static const gchar *const headline_reports[] = { "cac", "customer_churn", "ltv", "ltv_cac", "customer_cohorts", NULL };
 static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };
+/* Escalation writes an activity, and a collection case on the same invoice
+ * holds reminders back; the pay link needs only receivables, which is required. */
+static const gchar *const dunning_suggests[] = { "activities", "recurring", NULL };
 static GType (*const dunning_types[]) (void) = { venture_dunning_policy_get_type, venture_dunning_event_get_type, NULL };
 static const gchar *const dunning_reports[] = { "collections", "dunning_worklist", NULL };
 
@@ -988,7 +991,7 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		venture_module_reports_statements, NULL, FALSE
 	},
 	{
-		"cutover", "Accounting cutover", "Guided Zoho Books and QuickBooks opening-balance migration.",
+		"cutover", "Accounting cutover", "Guided opening-balance migration from Zoho Books, QuickBooks, Xero or any mapped ledger.",
 		cutover_requires, NULL, cutover_types, NULL, NULL, FALSE
 	},
 	{
@@ -1059,11 +1062,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	},
 	{
 		"dunning", "Overdue reminders", "Per-organization reminder policies, escalation and collection effectiveness.",
-		dunning_requires, NULL, dunning_types, dunning_reports, NULL, FALSE
+		dunning_requires, dunning_suggests, dunning_types, dunning_reports, NULL, FALSE
 	},
 	{
 		"headline", "Headline metrics",
-		"CAC, churn, LTV and LTV:CAC reports, and the five-card home page.",
+		"CAC, churn, LTV, LTV:CAC and cohort reports, and the headline home page.",
 		headline_requires, headline_suggests, headline_types, headline_reports, NULL, FALSE
 	}
 };

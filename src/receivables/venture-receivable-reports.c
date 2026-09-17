@@ -467,6 +467,19 @@ tax_liability(VentureContext *context, VentureDateRange *period, JsonObject *opt
 				date == NULL || g_date_time_compare(date, end) >= 0 ||
 				(start != NULL && g_date_time_compare(date, start) < 0))
 				continue;
+			/* A migrated document's tax was collected, and possibly filed,
+			 * in the source system; neither its issue nor a rollback void
+			 * belongs in this system's liability. */
+			{
+				g_autoptr(VentureEntity) document = venture_database_get(database,
+					purchase ? VENTURE_TYPE_VENDOR_BILL : VENTURE_TYPE_INVOICE, document_id, error);
+				g_autoptr(GDateTime) opening = NULL;
+				if (document == NULL)
+					return NULL;
+				g_object_get(document, "opening-at", &opening, NULL);
+				if (opening != NULL)
+					continue;
+			}
 			query = venture_query_new(purchase ? VENTURE_TYPE_VENDOR_BILL_LINE : VENTURE_TYPE_INVOICE_LINE);
 			venture_query_set_limit(query, 0);
 			venture_query_set_organization(query, organization(context, options));

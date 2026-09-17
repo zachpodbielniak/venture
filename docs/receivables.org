@@ -186,6 +186,29 @@ Tax-bearing credit notes reduce liability in their own period under =unassigned 
 
 Invoices valued into a different book currency accept direct receipts in that book currency. Document-currency receipts and explicit payment/credit allocations against those invoices are refused because the ordinary allocation path cannot release their frozen book-currency receivable. Invoices retained wholly in document currency continue to accept same-currency allocations.
 
+* Opening invoices and credits from a cutover
+
+A migrated receivable is not revenue here. =venture_settlement_service_issue_opening()=
+takes an unsaved draft invoice (source number, customer, issue and due dates)
+and its lines, writes them under the service's permit, and issues the invoice
+with its issue event dated at the source issue date but its only journal --
+receivables debited, the opening balance clearing account credited, for the
+total -- dated at the cutover instant. No income, tax, deferral schedule or
+stock movement is posted. The invoice is stamped with =opening_at=.
+=venture_settlement_service_credit_opening()= does the same for an unapplied
+customer credit note (clearing debited, receivables credited; no tax).
+
+The stamp is service-owned: a generic create or update cannot set, change or
+clear it. The =tax_liability= report and the tax filing adapter skip stamped
+invoices' issue and void events; allocating a receipt to a stamped invoice,
+or refunding that allocation, creates no cash-report sale; the period guard
+judges a stamped invoice at =opening_at=. An ordinary void of a stamped
+invoice is refused -- write it off, credit it, or roll back its cutover.
+=venture_settlement_service_void_opening()= voids it during a rollback,
+reversing the opening journal, optionally suffixing its number, and accepting
+allocations from opening credit notes whose postings that rollback already
+reversed. See [[file:cutover.org][accounting cutover]].
+
 * Whole-operation approval
 
 Invoice issue/void, receipt/allocation/refund, full-invoice settlement, write-off and tax-correction commands request second-actor consent for the entire operation before writing business records. A configured post or pay rule applies to the command; generated issue events, credits, sales and journals share its approval. The command arguments, current financial records and service account overrides are bound to that consent. Retry the same command as a different actor; changed inputs or financial state require a new proposal.

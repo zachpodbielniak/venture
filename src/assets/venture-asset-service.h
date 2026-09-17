@@ -154,6 +154,7 @@ gboolean venture_asset_service_import_opening(VentureAssetService *self, Venture
  * @self: service
  * @asset_id: an asset placed through venture_asset_service_import_opening()
  * @date: rollback date
+ * @tag_suffix: (nullable): appended to the tag so a corrected import can reuse it
  * @actor: (nullable): audit actor
  * @error: (out) (optional): failure details
  *
@@ -163,6 +164,6 @@ gboolean venture_asset_service_import_opening(VentureAssetService *self, Venture
  * Returns: %TRUE on success
  */
 gboolean venture_asset_service_rollback_opening(VentureAssetService *self, gint64 asset_id,
- GDateTime *date, const VentureActor *actor, GError **error);
+ GDateTime *date, const gchar *tag_suffix, const VentureActor *actor, GError **error);
 G_END_DECLS
 #endif

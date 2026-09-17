@@ -140,7 +140,12 @@ guard_record(VentureDatabase *database, VentureEntity *entity, GError **error)
 		entity = invoice;
 	}
 	field = VENTURE_IS_INVOICE(entity) ? "issued-at" : "occurred-at";
-	g_object_get(entity, field, &date, NULL);
+	/* A migrated invoice entered this ledger at its cutover instant; its
+	 * source issue date may sit in a period that was never this system's. */
+	if (VENTURE_IS_INVOICE(entity))
+		g_object_get(entity, "opening-at", &date, NULL);
+	if (NULL == date)
+		g_object_get(entity, field, &date, NULL);
 	return venture_period_guard_is_postable(VENTURE_PERIOD_GUARD(venture_database_get_period_guard(database)),
 		database, venture_entity_get_organization_id(entity), date, error);
 }

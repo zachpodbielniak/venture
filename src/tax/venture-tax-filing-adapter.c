@@ -267,6 +267,18 @@ us_prepare(VentureTaxFilingAdapter *self, VentureDatabase *database, VentureEnti
 		reversal = g_strcmp0(kind, "void") == 0;
 		if ((g_strcmp0(kind, "issue") != 0 && !reversal) || !in_period(when, start, end))
 			continue;
+		/* A migrated opening invoice's tax was filed by the source system;
+		 * filing it here, or unwinding it when a cutover rolls back, would
+		 * double-count or refund tax that was never this system's. */
+		{
+			g_autoptr(VentureEntity) invoice = venture_database_get(database, VENTURE_TYPE_INVOICE, invoice_id, error);
+			g_autoptr(GDateTime) opening = NULL;
+			if (invoice == NULL)
+				return FALSE;
+			g_object_get(invoice, "opening-at", &opening, NULL);
+			if (opening != NULL)
+				continue;
+		}
 		/* A void belongs to its own event period and unwinds the frozen issue tax. */
 		if (reversal && frozen != NULL)
 		{

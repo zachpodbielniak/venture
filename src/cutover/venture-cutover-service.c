@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
+#include <errno.h>
 #include <string.h>
 
 struct _VentureCutoverService
@@ -117,7 +118,8 @@ payload_of(VentureEntity *cutover)
 	g_autofree gchar *text = NULL;
 	g_autoptr(JsonParser) parser = json_parser_new();
 	g_object_get(cutover, "payload", &text, NULL);
-	if (text == NULL || !json_parser_load_from_data(parser, text, -1, NULL))
+	if (text == NULL || !json_parser_load_from_data(parser, text, -1, NULL) ||
+		!JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser)))
 		return NULL;
 	return json_object_ref(json_node_get_object(json_parser_get_root(parser)));
 }
@@ -134,435 +136,6 @@ add_row(VentureCutoverService *self, gint64 cutover_id, gint64 org, const gchar 
 	return save_owned(self, VENTURE_ENTITY(row), actor, error);
 }
 
-static gint64
-existing_record(VentureCutoverService *self, gint64 org, const gchar *source_id, const gchar *source_type, GError **error)
-{
-	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNTING_CUTOVER_ROW);
-	g_autoptr(GPtrArray) rows = NULL;
-	guint i;
-	if (source_id == NULL || *source_id == '\0')
-		return 0;
-	venture_query_set_organization(query, org);
-	venture_query_set_limit(query, 0);
-	if (!venture_query_add_filter_string(query, "source-id", VENTURE_FILTER_OP_EQ, source_id, error))
-		return -1;
-	rows = venture_database_find(self->database, query, error);
-	if (rows == NULL)
-		return -1;
-	for (i = 0; i < rows->len; i++)
-	{
-		g_autofree gchar *type = NULL;
-		g_autofree gchar *status = NULL;
-		gint64 record_id = 0;
-		g_object_get(g_ptr_array_index(rows, i), "source-type", &type, "record-id", &record_id,
-			"status", &status, NULL);
-		if (g_strcmp0(type, source_type) == 0 && record_id > 0 && g_strcmp0(status, "rolled_back") != 0)
-			return record_id;
-	}
-	return 0;
-}
-
-static gint64
-find_or_create_company(VentureCutoverService *self, gint64 cutover_id, gint64 org, const gchar *name,
-	const gchar *source_id, const gchar *source_type, const VentureActor *actor, GError **error)
-{
-	gint64 existing;
-	g_autoptr(VentureCompany) company = NULL;
-	existing = existing_record(self, org, source_id, source_type, error);
-	if (existing < 0)
-		return 0;
-	if (existing > 0)
-		return existing;
-	company = venture_company_new();
-	g_object_set(company, "name", name != NULL ? name : "Imported party", NULL);
-	venture_entity_set_organization_id(VENTURE_ENTITY(company), org);
-	if (!save_owned(self, VENTURE_ENTITY(company), actor, error))
-		return 0;
-	if (source_id != NULL && !add_row(self, cutover_id, org, source_id, source_type, "imported", NULL,
-		"company", venture_entity_get_id(VENTURE_ENTITY(company)), actor, error))
-		return 0;
-	return venture_entity_get_id(VENTURE_ENTITY(company));
-}
-
-static JsonArray *
-arr(JsonObject *object, const gchar *name)
-{
-	return json_object_has_member(object, name) ? json_object_get_array_member(object, name) : NULL;
-}
-
-static const gchar *
-obj_str(JsonObject *object, const gchar *name)
-{
-	return json_object_has_member(object, name) ? json_object_get_string_member(object, name) : NULL;
-}
-
-static gboolean
-text_names_currency(const gchar *text)
-{
-	gsize length;
-	if (text == NULL)
-		return FALSE;
-	length = strlen(text);
-	if (length > 4 && text[length - 4] == ' ' &&
-		g_ascii_isalpha(text[length - 3]) && g_ascii_isalpha(text[length - 2]) &&
-		g_ascii_isalpha(text[length - 1]))
-		return TRUE;
-	if (length > 4 && text[3] == ' ' &&
-		g_ascii_isalpha(text[0]) && g_ascii_isalpha(text[1]) && g_ascii_isalpha(text[2]))
-		return TRUE;
-	return FALSE;
-}
-
-static VentureMoney *
-parse_money(const gchar *text, const gchar *currency, GError **error)
-{
-	if (text == NULL || *text == '\0')
-	{
-		refuse(error, "monetary amount is required");
-		return NULL;
-	}
-	if (!text_names_currency(text) && (currency == NULL || *currency == '\0'))
-	{
-		refuse(error, "amount must include a currency");
-		return NULL;
-	}
-	return venture_money_from_string(text, currency, error);
-}
-
-static gboolean
-array_nonempty(JsonObject *payload, const gchar *name)
-{
-	JsonArray *rows = arr(payload, name);
-	return rows != NULL && json_array_get_length(rows) > 0;
-}
-
-/* Opening bills, credits and assets are refused only when the modules that
- * own them are switched off; otherwise their importers live in the include. */
-static gboolean
-refuse_unimported_sections(JsonObject *payload, GError **error)
-{
-	VentureEntityRegistry *registry = venture_entity_registry_get_default();
-	if (array_nonempty(payload, "open_ap") && !venture_entity_registry_is_type_enabled(registry, "vendor_bill"))
-		return refuse(error, "open_ap requires the payables module; enable it or list the bills under unsupported");
-	if (array_nonempty(payload, "credits"))
-	{
-		JsonArray *credits = arr(payload, "credits");
-		guint i;
-		gboolean need_vendor = FALSE, need_customer = FALSE;
-
-		for (i = 0; i < json_array_get_length(credits); i++)
-		{
-			JsonObject *row = json_array_get_object_element(credits, i);
-			const gchar *kind = obj_str(row, "kind");
-
-			if (g_strcmp0(kind, "vendor") == 0 || (kind == NULL && obj_str(row, "vendor_source_id") != NULL))
-				need_vendor = TRUE;
-			else
-				need_customer = TRUE;
-		}
-		if (need_vendor && !venture_entity_registry_is_type_enabled(registry, "vendor_credit"))
-			return refuse(error, "vendor credits require the payables module; enable it or list the credits under unsupported");
-		if (need_customer && !venture_entity_registry_is_type_enabled(registry, "customer_credit"))
-			return refuse(error, "customer credits require the receivables module; enable it or list the credits under unsupported");
-	}
-	if (array_nonempty(payload, "assets") && !venture_entity_registry_is_type_enabled(registry, "fixed_asset"))
-		return refuse(error, "assets require the assets module; enable it or list the assets under unsupported");
-	return TRUE;
-}
-
-#include "venture-cutover-openings.inc"
-
-VentureEntity *
-venture_cutover_service_preview(VentureCutoverService *self, gint64 organization_id,
-	JsonObject *payload, const VentureActor *actor, GError **error)
-{
-	g_autoptr(VentureAccountingCutover) cutover = NULL;
-	g_autoptr(GDateTime) cutoff = NULL;
-	g_autofree gchar *payload_text = NULL;
-	g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
-	g_autoptr(GString) report = g_string_new("Cutover preview\n");
-	JsonArray *unsupported;
-	JsonArray *open_ar;
-	const gchar *source;
-	guint i;
-	if (payload == NULL)
-	{
-		refuse(error, "mapped source payload is required");
-		return NULL;
-	}
-	source = obj_str(payload, "source");
-	if (g_strcmp0(source, "zoho_books") != 0 && g_strcmp0(source, "quickbooks") != 0)
-	{
-		refuse(error, "source must be zoho_books or quickbooks");
-		return NULL;
-	}
-	if (!refuse_unimported_sections(payload, error))
-		return NULL;
-	cutoff = venture_time_from_string(obj_str(payload, "cutoff"), error);
-	if (cutoff == NULL)
-		return NULL;
-	json_node_set_object(node, json_object_ref(payload));
-	payload_text = venture_json_to_string(node, FALSE);
-	unsupported = arr(payload, "unsupported");
-	if (unsupported != NULL)
-	{
-		g_string_append(report, "Unsupported source fields:\n");
-		for (i = 0; i < json_array_get_length(unsupported); i++)
-			g_string_append_printf(report, "- %s\n", json_array_get_string_element(unsupported, i));
-	}
-	if (!venture_database_begin(self->database, error))
-		return NULL;
-	cutover = venture_accounting_cutover_new();
-	g_object_set(cutover, "source", source, "cutoff", cutoff, "state", "preview",
-		"payload", payload_text, "reconciliation-report", report->str, NULL);
-	venture_entity_set_organization_id(VENTURE_ENTITY(cutover), organization_id);
-	if (!save_owned(self, VENTURE_ENTITY(cutover), actor, error))
-		goto fail;
-	open_ar = arr(payload, "open_ar");
-	if (open_ar != NULL)
-	{
-		for (i = 0; i < json_array_get_length(open_ar); i++)
-		{
-			JsonObject *row = json_array_get_object_element(open_ar, i);
-			if (!add_row(self, venture_entity_get_id(VENTURE_ENTITY(cutover)), organization_id,
-				obj_str(row, "source_id"), "open_ar", "preview", NULL, NULL, 0, actor, error))
-				goto fail;
-		}
-	}
-	if (!preview_opening_rows(self, venture_entity_get_id(VENTURE_ENTITY(cutover)), organization_id,
-		payload, actor, error))
-		goto fail;
-	if (!venture_database_commit(self->database, error))
-		return NULL;
-	return VENTURE_ENTITY(g_steal_pointer(&cutover));
-fail:
-	venture_database_rollback(self->database);
-	return NULL;
-}
-
-static gboolean
-import_open_ar(VentureCutoverService *self, VentureEntity *cutover, JsonObject *payload,
-	const VentureActor *actor, GError **error)
-{
-	JsonArray *open_ar = arr(payload, "open_ar");
-	JsonArray *customers = arr(payload, "customers");
-	gint64 org = venture_entity_get_organization_id(cutover);
-	gint64 cutover_id = venture_entity_get_id(cutover);
-	guint i;
-	if (open_ar == NULL)
-		return TRUE;
-	for (i = 0; i < json_array_get_length(open_ar); i++)
-	{
-		JsonObject *row = json_array_get_object_element(open_ar, i);
-		const gchar *source_id = obj_str(row, "source_id");
-		const gchar *customer_source = obj_str(row, "customer_source_id");
-		const gchar *customer_name = "Imported customer";
-		g_autoptr(VentureInvoice) invoice = NULL;
-		g_autoptr(VentureInvoiceLine) line = NULL;
-		g_autoptr(VentureMoney) net = NULL;
-		g_autoptr(VentureMoney) tax = NULL;
-		g_autoptr(VentureMoney) zero_tax = NULL;
-		gint64 customer_id, existing, tax_percent = 0;
-		guint c;
-		existing = existing_record(self, org, source_id, "open_ar", error);
-		if (existing < 0)
-			return FALSE;
-		if (existing > 0)
-			continue;
-		if (customers != NULL)
-		{
-			for (c = 0; c < json_array_get_length(customers); c++)
-			{
-				JsonObject *customer = json_array_get_object_element(customers, c);
-				if (g_strcmp0(obj_str(customer, "source_id"), customer_source) == 0)
-					customer_name = obj_str(customer, "name");
-			}
-		}
-		customer_id = find_or_create_company(self, cutover_id, org, customer_name, customer_source,
-			"customer", actor, error);
-		if (customer_id == 0)
-			return FALSE;
-		{
-			const gchar *currency = obj_str(row, "currency");
-			if (currency == NULL)
-				currency = obj_str(payload, "currency");
-			net = parse_money(obj_str(row, "net") != NULL ? obj_str(row, "net") : obj_str(row, "amount"),
-				currency, error);
-			if (net == NULL)
-				return FALSE;
-			if (obj_str(row, "tax") != NULL)
-				tax = parse_money(obj_str(row, "tax"), currency, error);
-			if (obj_str(row, "tax") != NULL && tax == NULL)
-				return FALSE;
-		}
-		if (tax != NULL && !venture_money_is_zero(net))
-		{
-			__int128 scaled = (__int128)venture_money_get_amount(tax) * 100;
-			__int128 percent = scaled / venture_money_get_amount(net);
-
-			if (scaled % venture_money_get_amount(net) == 0 && percent >= 0 && percent <= 100)
-				tax_percent = (gint64)percent;
-		}
-		invoice = venture_invoice_new();
-		g_object_set(invoice, "number", obj_str(row, "number"), "company-id", customer_id, NULL);
-		venture_entity_set_organization_id(VENTURE_ENTITY(invoice), org);
-		if (!venture_entity_set_field_from_string(VENTURE_ENTITY(invoice), "issued-at", obj_str(row, "date"), error) ||
-			!venture_database_save(self->database, VENTURE_ENTITY(invoice), actor, error))
-			return FALSE;
-		line = venture_invoice_line_new();
-		zero_tax = venture_money_new_zero(venture_money_get_currency(net));
-		g_object_set(line, "invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)),
-			"description", "Opening balance", "quantity", 1.0, "tax-percent", tax_percent,
-			"income-amount", net, "tax-amount", tax != NULL ? tax : zero_tax, NULL);
-		venture_entity_set_organization_id(VENTURE_ENTITY(line), org);
-		/* Reuse the parsed amount so a payload currency applies to bare
-		 * decimal strings as well as the frozen income/tax evidence. */
-		g_object_set(line, "unit-price", net, NULL);
-		if (!venture_database_save(self->database, VENTURE_ENTITY(line), actor, error))
-			return FALSE;
-		if (json_object_has_member(row, "tax_exempt") && json_object_get_boolean_member(row, "tax_exempt"))
-			g_object_set(invoice, "tax-exempt", TRUE, "tax-exempt-reason", obj_str(row, "tax_exempt_reason"), NULL);
-		g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
-		if (!venture_database_save(self->database, VENTURE_ENTITY(invoice), actor, error))
-			return FALSE;
-		if (!add_row(self, cutover_id, org, source_id, "open_ar", "imported", NULL,
-			"invoice", venture_entity_get_id(VENTURE_ENTITY(invoice)), actor, error))
-			return FALSE;
-	}
-	return TRUE;
-}
-
-static gboolean
-import_bank(VentureCutoverService *self, VentureEntity *cutover, JsonObject *payload,
-	const VentureActor *actor, GError **error)
-{
-	JsonArray *banks = arr(payload, "bank_balances");
-	gint64 org = venture_entity_get_organization_id(cutover);
-	guint i;
-	if (banks == NULL)
-		return TRUE;
-	for (i = 0; i < json_array_get_length(banks); i++)
-	{
-		JsonObject *row = json_array_get_object_element(banks, i);
-		gint64 existing;
-		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
-		g_autoptr(GPtrArray) accounts = NULL;
-		g_autoptr(VentureBankAccount) bank = NULL;
-		g_autoptr(VentureJournal) header = NULL;
-		g_autoptr(VentureJournal) posted = NULL;
-		g_autoptr(GPtrArray) lines = g_ptr_array_new_with_free_func(g_object_unref);
-		g_autoptr(VentureMoney) amount = NULL;
-		g_autoptr(GDateTime) cutoff = NULL;
-		const gchar *currency;
-		gint64 cash_id, equity_id;
-		VentureJournalLine *line;
-		existing = existing_record(self, org, obj_str(row, "source_id"), "bank", error);
-		if (existing < 0)
-			return FALSE;
-		if (existing > 0)
-			continue;
-		amount = parse_money(obj_str(row, "amount"),
-			obj_str(row, "currency") != NULL ? obj_str(row, "currency") : obj_str(payload, "currency"), error);
-		if (amount == NULL)
-			return FALSE;
-		currency = venture_money_get_currency(amount);
-		g_object_get(cutover, "cutoff", &cutoff, NULL);
-		venture_query_set_organization(query, org);
-		if (!venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ,
-			obj_str(row, "account_code") != NULL ? obj_str(row, "account_code") : "1000", error))
-			return FALSE;
-		accounts = venture_database_find(self->database, query, error);
-		if (accounts == NULL || accounts->len == 0)
-			return refuse(error, "bank account code is missing from the chart");
-		cash_id = venture_entity_get_id(g_ptr_array_index(accounts, 0));
-		g_clear_object(&query);
-		g_clear_pointer(&accounts, g_ptr_array_unref);
-		query = venture_query_new(VENTURE_TYPE_ACCOUNT);
-		venture_query_set_organization(query, org);
-		if (!venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, "3000", error))
-			return FALSE;
-		accounts = venture_database_find(self->database, query, error);
-		if (accounts == NULL || accounts->len == 0)
-			return refuse(error, "equity account 3000 is required for opening cash");
-		equity_id = venture_entity_get_id(g_ptr_array_index(accounts, 0));
-		bank = venture_bank_account_new();
-		g_object_set(bank, "name", obj_str(row, "name"), "currency", currency, "account-id", cash_id, NULL);
-		venture_entity_set_organization_id(VENTURE_ENTITY(bank), org);
-		if (!save_owned(self, VENTURE_ENTITY(bank), actor, error))
-			return FALSE;
-		header = venture_journal_new();
-		g_object_set(header, "organization-id", org, "source-type", "accounting_cutover",
-			"source-id", venture_entity_get_id(cutover), "occurred-at", cutoff, "currency", currency,
-			"memo", "Opening bank balance", NULL);
-		line = venture_journal_line_new();
-		g_object_set(line, "account-id", cash_id, "side", VENTURE_LEDGER_SIDE_DEBIT, "amount", amount, NULL);
-		g_ptr_array_add(lines, line);
-		line = venture_journal_line_new();
-		g_object_set(line, "account-id", equity_id, "side", VENTURE_LEDGER_SIDE_CREDIT, "amount", amount, NULL);
-		g_ptr_array_add(lines, line);
-		posted = venture_posting_service_post(venture_database_get_posting_service(self->database),
-			header, lines, NULL, actor, error);
-		if (posted == NULL)
-			return FALSE;
-		if (!add_row(self, venture_entity_get_id(cutover), org, obj_str(row, "source_id"), "bank",
-			"imported", NULL, "bank_account", venture_entity_get_id(VENTURE_ENTITY(bank)), actor, error))
-			return FALSE;
-	}
-	return TRUE;
-}
-
-static gboolean
-venture_cutover_service_import_impl(VentureCutoverService *self, VentureAccountingCutover *cutover,
-	const VentureActor *actor, GError **error)
-{
-	g_autoptr(JsonObject) payload = NULL;
-	g_autofree gchar *state = NULL;
-	g_object_get(cutover, "state", &state, NULL);
-	if (g_strcmp0(state, "preview") != 0 && g_strcmp0(state, "imported") != 0)
-		return refuse(error, "import requires a previewed batch");
-	payload = payload_of(VENTURE_ENTITY(cutover));
-	if (payload == NULL)
-		return refuse(error, "cutover payload is missing");
-	if (!refuse_unimported_sections(payload, error))
-		return FALSE;
-	if (!venture_database_begin(self->database, error))
-		return FALSE;
-	if (!import_open_ar(self, VENTURE_ENTITY(cutover), payload, actor, error) ||
-		!import_bank(self, VENTURE_ENTITY(cutover), payload, actor, error) ||
-		!import_open_ap(self, VENTURE_ENTITY(cutover), payload, actor, error) ||
-		!import_credits(self, VENTURE_ENTITY(cutover), payload, actor, error) ||
-		!import_assets(self, VENTURE_ENTITY(cutover), payload, actor, error))
-		goto fail;
-	g_object_set(cutover, "state", "imported", NULL);
-	if (!save_owned(self, VENTURE_ENTITY(cutover), actor, error) ||
-		!venture_database_commit(self->database, error))
-		goto fail;
-	return TRUE;
-fail:
-	venture_database_rollback(self->database);
-	return FALSE;
-}
-
-static gboolean
-add_money(VentureMoney **total, const VentureMoney *amount, GError **error)
-{
-	if (amount == NULL)
-		return TRUE;
-	if (*total == NULL)
-	{
-		*total = venture_money_copy((VentureMoney *)amount);
-		return TRUE;
-	}
-	{
-		VentureMoney *next = venture_money_add(*total, amount, error);
-		if (next == NULL)
-			return FALSE;
-		venture_money_free(*total);
-		*total = next;
-	}
-	return TRUE;
-}
-
 static gboolean
 cutover_rows(VentureCutoverService *self, gint64 cutover_id, GPtrArray **rows, GError **error)
 {
@@ -575,83 +148,308 @@ cutover_rows(VentureCutoverService *self, gint64 cutover_id, GPtrArray **rows, G
 }
 
 static gboolean
-issue_amount(VentureCutoverService *self, gint64 invoice_id, VentureMoney **amount, GError **error)
+array_nonempty(JsonObject *payload, const gchar *name)
 {
-	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVOICE_EVENT);
-	g_autoptr(GPtrArray) events = NULL;
-	guint i;
-	venture_query_set_limit(query, 0);
-	if (!venture_query_add_filter_int(query, "invoice-id", VENTURE_FILTER_OP_EQ, invoice_id, error))
-		return FALSE;
-	events = venture_database_find(self->database, query, error);
-	if (events == NULL)
-		return FALSE;
-	for (i = 0; i < events->len; i++)
+	JsonNode *node = json_object_has_member(payload, name) ? json_object_get_member(payload, name) : NULL;
+	return node != NULL && JSON_NODE_HOLDS_ARRAY(node) && json_array_get_length(json_node_get_array(node)) > 0;
+}
+
+/* Opening bills, credits and assets are refused only when the modules that
+ * own them are switched off; a payload naming them must not silently lose
+ * them. */
+static gboolean
+refuse_unimported_sections(JsonObject *payload, GError **error)
+{
+	VentureEntityRegistry *registry = venture_entity_registry_get_default();
+	if (array_nonempty(payload, "open_ar") && (!venture_entity_registry_is_type_enabled(registry, "invoice") ||
+		!venture_entity_registry_is_type_enabled(registry, "payment")))
+		return refuse(error, "open_ar requires the invoicing and receivables modules; enable them or list the invoices under unsupported");
+	if (array_nonempty(payload, "open_ap") && !venture_entity_registry_is_type_enabled(registry, "vendor_bill"))
+		return refuse(error, "open_ap requires the payables module; enable it or list the bills under unsupported");
+	if (array_nonempty(payload, "credits"))
 	{
-		g_autofree gchar *kind = NULL;
-		g_autoptr(VentureMoney) total = NULL;
-		g_object_get(g_ptr_array_index(events, i), "kind", &kind, "amount", &total, NULL);
-		if (g_strcmp0(kind, "issue") == 0)
+		JsonArray *credits = json_object_get_array_member(payload, "credits");
+		guint i;
+		gboolean need_vendor = FALSE, need_customer = FALSE;
+		for (i = 0; i < json_array_get_length(credits); i++)
 		{
-			*amount = total != NULL ? venture_money_copy(total) : NULL;
-			return TRUE;
+			JsonNode *node = json_array_get_element(credits, i);
+			JsonObject *row;
+			JsonNode *kind;
+			if (!JSON_NODE_HOLDS_OBJECT(node))
+				continue;
+			row = json_node_get_object(node);
+			kind = json_object_has_member(row, "kind") ? json_object_get_member(row, "kind") : NULL;
+			if ((kind != NULL && JSON_NODE_HOLDS_VALUE(kind) && json_node_get_value_type(kind) == G_TYPE_STRING &&
+				g_strcmp0(json_node_get_string(kind), "vendor") == 0) ||
+				(kind == NULL && json_object_has_member(row, "vendor_source_id")))
+				need_vendor = TRUE;
+			else
+				need_customer = TRUE;
 		}
+		if (need_vendor && !venture_entity_registry_is_type_enabled(registry, "vendor_credit"))
+			return refuse(error, "vendor credits require the payables module; enable it or list the credits under unsupported");
+		if (need_customer && !venture_entity_registry_is_type_enabled(registry, "customer_credit"))
+			return refuse(error, "customer credits require the receivables module; enable it or list the credits under unsupported");
 	}
-	*amount = NULL;
+	if (array_nonempty(payload, "assets") && !venture_entity_registry_is_type_enabled(registry, "fixed_asset"))
+		return refuse(error, "assets require the assets module; enable it or list the assets under unsupported");
+	if (array_nonempty(payload, "inventory") && (!venture_entity_registry_is_type_enabled(registry, "inventory_item") ||
+		!venture_entity_registry_is_type_enabled(registry, "inventory_cost_layer")))
+		return refuse(error, "inventory requires the goods module; enable it or list the stock under unsupported");
 	return TRUE;
 }
 
-static gboolean
-trial_balance(VentureCutoverService *self, gint64 org, GDateTime *cutoff, GError **error)
+#include "venture-cutover-payload.inc"
+#include "venture-cutover-csv.inc"
+#include "venture-cutover-openings.inc"
+#include "venture-cutover-reconcile.inc"
+#include "venture-cutover-rollback.inc"
+
+/* The problems belonging to one source row, joined for its exception. */
+static gchar *
+row_exception(Plan *plan, const gchar *section, gint position, gboolean *has_error)
 {
-	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_JOURNAL);
-	g_autoptr(GPtrArray) journals = NULL;
+	g_autoptr(GString) text = g_string_new(NULL);
 	guint i;
-	venture_query_set_organization(query, org);
-	venture_query_set_limit(query, 0);
-	journals = venture_database_find(self->database, query, error);
-	if (journals == NULL)
-		return FALSE;
-	for (i = 0; i < journals->len; i++)
+	*has_error = FALSE;
+	for (i = 0; i < plan->problems->len; i++)
 	{
-		VentureEntity *journal = g_ptr_array_index(journals, i);
-		g_autoptr(GDateTime) date = NULL;
-		g_autoptr(VentureQuery) lines_query = NULL;
-		g_autoptr(GPtrArray) lines = NULL;
-		VentureJournalState state;
-		guint j;
-		__int128 debit = 0, credit = 0;
-		g_object_get(journal, "state", &state, "occurred-at", &date, NULL);
-		if (state != VENTURE_JOURNAL_POSTED && state != VENTURE_JOURNAL_REVERSED)
+		Problem *problem = g_ptr_array_index(plan->problems, i);
+		if (g_strcmp0(problem->section, section) != 0 || problem->position != position)
 			continue;
-		if (date == NULL || g_date_time_compare(date, cutoff) > 0)
-			continue;
-		lines_query = venture_query_new(VENTURE_TYPE_JOURNAL_LINE);
-		venture_query_set_limit(lines_query, 0);
-		if (!venture_query_add_filter_int(lines_query, "journal-id", VENTURE_FILTER_OP_EQ,
-			venture_entity_get_id(journal), error))
-			return FALSE;
-		lines = venture_database_find(self->database, lines_query, error);
-		if (lines == NULL)
-			return FALSE;
-		for (j = 0; j < lines->len; j++)
-		{
-			g_autoptr(VentureMoney) amount = NULL;
-			gint side;
-			g_object_get(g_ptr_array_index(lines, j), "side", &side, "book-amount", &amount, NULL);
-			if (amount == NULL)
-				continue;
-			if (side == VENTURE_LEDGER_SIDE_DEBIT)
-				debit += venture_money_get_amount(amount);
-			else
-				credit += venture_money_get_amount(amount);
-		}
-		/* Balance each already single-currency journal separately. This
-		 * cannot net unrelated currencies or overflow across history. */
-		if (debit != credit)
-			return refuse(error, "trial balance does not tie at the cutoff");
+		if (!problem->warning)
+			*has_error = TRUE;
+		g_string_append_printf(text, "%s%s: %s", text->len > 0 ? "; " : "",
+			problem->warning ? "warning" : "error", problem->message);
 	}
+	return text->len > 0 ? g_string_free(g_steal_pointer(&text), FALSE) : NULL;
+}
+
+/* Every write-free check a payload can be given before import. */
+static Plan *
+plan_validate(VentureCutoverService *self, gint64 org, JsonObject *payload, GError **error)
+{
+	Plan *plan = plan_build(self, org, payload, error);
+	if (plan == NULL)
+		return NULL;
+	plan_check_database(plan);
+	plan_check_credit_caps(plan);
+	plan_predict(plan);
+	return plan;
+}
+
+static void
+append_plan_report(Plan *plan, GString *report)
+{
+	static const gchar *const sections[] = { "open_ar", "open_ap", "credits", "bank_balances", "assets", "trial_balance", "inventory" };
+	GPtrArray *rows[7];
+	guint i, errors = plan_error_count(plan);
+	g_autofree gchar *cutoff = g_date_time_format_iso8601(plan->cutoff);
+	rows[0] = plan->open_ar;
+	rows[1] = plan->open_ap;
+	rows[2] = plan->credits;
+	rows[3] = plan->bank;
+	rows[4] = plan->assets;
+	rows[5] = plan->trial_balance;
+	rows[6] = plan->inventory;
+	g_string_append_printf(report, "Source %s, cutoff %s: opening balances as of the end of the day before.\n",
+		plan->source, cutoff);
+	g_string_append(report, "Rows:");
+	for (i = 0; i < G_N_ELEMENTS(sections); i++)
+		g_string_append_printf(report, " %s %u%s", sections[i], rows[i]->len, i + 1 < G_N_ELEMENTS(sections) ? "," : "\n");
+	if (plan->problems->len == 0)
+	{
+		g_string_append(report, "No problems found.\n");
+		return;
+	}
+	g_string_append_printf(report, "Problems: %u error%s, %u warning%s%s\n", errors, errors == 1 ? "" : "s",
+		plan->problems->len - errors, plan->problems->len - errors == 1 ? "" : "s",
+		errors > 0 ? " (import is refused until the errors are fixed)" : "");
+	for (i = 0; i < plan->problems->len; i++)
+	{
+		Problem *problem = g_ptr_array_index(plan->problems, i);
+		g_autofree gchar *line = problem_format(problem);
+		g_string_append_printf(report, "- %s %s\n", problem->warning ? "WARNING" : "ERROR", line);
+	}
+}
+
+VentureEntity *
+venture_cutover_service_preview(VentureCutoverService *self, gint64 organization_id,
+	JsonObject *payload, const VentureActor *actor, GError **error)
+{
+	static const struct { const gchar *section; const gchar *type; } kinds[] = {
+		{ "open_ar", "open_ar" }, { "open_ap", "open_ap" }, { "credits", "credit" },
+		{ "bank_balances", "bank" }, { "assets", "asset" }, { "trial_balance", "trial_balance" },
+		{ "inventory", "inventory" }
+	};
+	g_autoptr(VentureAccountingCutover) cutover = NULL;
+	g_autoptr(Plan) plan = NULL;
+	g_autofree gchar *payload_text = NULL;
+	g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
+	g_autoptr(GString) report = g_string_new("Cutover preview\n");
+	JsonNode *unsupported;
+	guint k, i;
+	if (organization_id <= 0)
+	{
+		refuse(error, "a cutover needs one legal entity; choose an organization first");
+		return NULL;
+	}
+	plan = plan_validate(self, organization_id, payload, error);
+	if (plan == NULL)
+		return NULL;
+	json_node_set_object(node, json_object_ref(payload));
+	payload_text = venture_json_to_string(node, FALSE);
+	append_plan_report(plan, report);
+	unsupported = member(payload, "unsupported");
+	if (unsupported != NULL && JSON_NODE_HOLDS_ARRAY(unsupported))
+	{
+		JsonArray *list = json_node_get_array(unsupported);
+		g_string_append(report, "Unsupported source fields:\n");
+		for (i = 0; i < json_array_get_length(list); i++)
+		{
+			JsonNode *item = json_array_get_element(list, i);
+			if (JSON_NODE_HOLDS_VALUE(item) && json_node_get_value_type(item) == G_TYPE_STRING)
+				g_string_append_printf(report, "- %s\n", json_node_get_string(item));
+		}
+	}
+	if (!venture_database_begin(self->database, error))
+		return NULL;
+	cutover = venture_accounting_cutover_new();
+	g_object_set(cutover, "source", plan->source, "cutoff", plan->cutoff, "state", "preview",
+		"payload", payload_text, "reconciliation-report", report->str, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(cutover), organization_id);
+	if (!save_owned(self, VENTURE_ENTITY(cutover), actor, error))
+		goto fail;
+	/* One row per source row, carrying its located problems, so the batch
+	 * page lists exactly which rows need fixing. */
+	for (k = 0; k < G_N_ELEMENTS(kinds); k++)
+	{
+		JsonArray *array = plan_section(plan, kinds[k].section);
+		for (i = 0; array != NULL && i < json_array_get_length(array); i++)
+		{
+			JsonNode *element = json_array_get_element(array, i);
+			g_autofree gchar *exception = NULL;
+			g_autofree gchar *source_id = NULL;
+			gboolean has_error;
+			exception = row_exception(plan, kinds[k].section, (gint)i, &has_error);
+			if (JSON_NODE_HOLDS_OBJECT(element))
+			{
+				JsonNode *id = member(json_node_get_object(element), g_strcmp0(kinds[k].type, "trial_balance") == 0
+					? "account_code" : "source_id");
+				if (id != NULL && JSON_NODE_HOLDS_VALUE(id) && json_node_get_value_type(id) == G_TYPE_STRING)
+					source_id = g_strdup(json_node_get_string(id));
+			}
+			/* A row without a usable id is still listed, by position. */
+			if (source_id == NULL || *source_id == '\0')
+			{
+				g_free(source_id);
+				source_id = g_strdup_printf("%s[%u]", kinds[k].section, i);
+			}
+			if (!add_row(self, venture_entity_get_id(VENTURE_ENTITY(cutover)), organization_id, source_id,
+				kinds[k].type, has_error ? "exception" : "preview", exception, NULL, 0, actor, error))
+				goto fail;
+		}
+	}
+	if (!venture_database_commit(self->database, error))
+		return NULL;
+	return VENTURE_ENTITY(g_steal_pointer(&cutover));
+fail:
+	venture_database_rollback(self->database);
+	return NULL;
+}
+
+static Plan *
+plan_of(VentureCutoverService *self, VentureEntity *cutover, GError **error)
+{
+	g_autoptr(JsonObject) payload = payload_of(cutover);
+	g_autoptr(Plan) plan = NULL;
+	if (payload == NULL)
+	{
+		refuse(error, "cutover payload is missing");
+		return NULL;
+	}
+	plan = plan_build(self, venture_entity_get_organization_id(cutover), payload, error);
+	if (plan == NULL)
+		return NULL;
+	plan->cutover_id = venture_entity_get_id(cutover);
+	return g_steal_pointer(&plan);
+}
+
+static gboolean
+venture_cutover_service_import_impl(VentureCutoverService *self, VentureAccountingCutover *cutover,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(Plan) plan = NULL;
+	g_autoptr(PartyIndex) parties = NULL;
+	g_autofree gchar *state = NULL;
+	Import import;
+	g_object_get(cutover, "state", &state, NULL);
+	if (g_strcmp0(state, "preview") != 0 && g_strcmp0(state, "imported") != 0)
+		return refuse(error, "import requires a previewed batch");
+	plan = plan_of(self, VENTURE_ENTITY(cutover), error);
+	if (plan == NULL)
+		return FALSE;
+	/* Validate everything before the first write: a refusal names every bad
+	 * row at once and leaves nothing behind. */
+	plan_check_database(plan);
+	if (!plan_refuse_errors(plan, error))
+		return FALSE;
+	if (!venture_database_begin(self->database, error))
+		return FALSE;
+	parties = party_index_build(self, plan->org, error);
+	if (parties == NULL)
+		goto fail;
+	import.plan = plan;
+	import.cutover = VENTURE_ENTITY(cutover);
+	import.cutover_id = venture_entity_get_id(VENTURE_ENTITY(cutover));
+	import.parties = parties;
+	import.actor = actor;
+	import.clearing = clearing_account(plan, TRUE, actor, error);
+	if (import.clearing == 0 ||
+		!import_chart(&import, error) ||
+		!import_open_ar(&import, error) ||
+		!import_open_ap(&import, error) ||
+		!import_credits(&import, error) ||
+		!import_bank(&import, error) ||
+		!import_assets(&import, error) ||
+		!import_inventory(&import, error) ||
+		!import_trial_balance(&import, error))
+		goto fail;
+	g_object_set(cutover, "state", "imported", NULL);
+	if (!save_owned(self, VENTURE_ENTITY(cutover), actor, error) ||
+		!venture_database_commit(self->database, error))
+		goto fail;
 	return TRUE;
+fail:
+	venture_database_rollback(self->database);
+	return FALSE;
+}
+
+static gboolean
+append_report(VentureCutoverService *self, VentureEntity *cutover, const gchar *state, GString *block,
+	const VentureActor *actor, GError **error)
+{
+	g_autofree gchar *report = NULL;
+	g_autofree gchar *combined = NULL;
+	g_object_get(cutover, "reconciliation-report", &report, NULL);
+	combined = g_strconcat(report != NULL ? report : "", block->str, NULL);
+	g_object_set(cutover, "reconciliation-report", combined, NULL);
+	if (state != NULL)
+		g_object_set(cutover, "state", state, NULL);
+	return save_owned(self, cutover, actor, error);
+}
+
+/* Runs reconcile, appends its evidence either way and sets @passed. */
+static gboolean
+reconcile_and_record(VentureCutoverService *self, VentureEntity *cutover, const gchar *passed_state,
+	gboolean *passed, gchar **summary, const VentureActor *actor, GError **error)
+{
+	g_autoptr(Plan) plan = plan_of(self, cutover, error);
+	g_autoptr(GString) block = g_string_new(NULL);
+	if (plan == NULL || !reconcile_run(self, cutover, plan, block, passed, summary, error))
+		return FALSE;
+	return append_report(self, cutover, *passed ? passed_state : NULL, block, actor, error);
 }
 
 gboolean
@@ -659,125 +457,68 @@ venture_cutover_service_reconcile(VentureCutoverService *self, VentureAccounting
 	const VentureActor *actor, GError **error)
 {
 	g_autofree gchar *state = NULL;
-	g_autoptr(JsonObject) payload = NULL;
-	g_autoptr(GPtrArray) rows = NULL;
-	g_autoptr(VentureMoney) expected_ar = NULL;
-	g_autoptr(VentureMoney) imported_ar = NULL;
-	g_autoptr(GDateTime) cutoff = NULL;
-	g_autoptr(GString) report = g_string_new("Cutover reconciliation\n");
-	gint64 org;
-	guint i;
-	g_object_get(cutover, "state", &state, "cutoff", &cutoff, NULL);
+	g_autofree gchar *summary = NULL;
+	gboolean passed = FALSE;
+	g_object_get(cutover, "state", &state, NULL);
 	if (g_strcmp0(state, "imported") != 0 && g_strcmp0(state, "reconciled") != 0)
 		return refuse(error, "reconcile after import");
-	payload = payload_of(VENTURE_ENTITY(cutover));
-	if (payload == NULL)
-		return refuse(error, "cutover payload is missing");
-	org = venture_entity_get_organization_id(VENTURE_ENTITY(cutover));
-	if (!trial_balance(self, org, cutoff, error))
+	/* A failure is evidence too: it is appended to the report and saved
+	 * before the refusal, and a reconciled batch that drifted falls back to
+	 * imported so it cannot be activated on stale figures. */
+	if (!reconcile_and_record(self, VENTURE_ENTITY(cutover), "reconciled", &passed, &summary, actor, error))
 		return FALSE;
+	if (!passed)
 	{
-		JsonArray *open_ar = arr(payload, "open_ar");
-		guint r;
-		if (open_ar != NULL)
+		if (g_strcmp0(state, "reconciled") == 0)
 		{
-			for (r = 0; r < json_array_get_length(open_ar); r++)
-			{
-				JsonObject *row = json_array_get_object_element(open_ar, r);
-				g_autoptr(VentureMoney) piece = NULL;
-				const gchar *currency = obj_str(row, "currency");
-				if (currency == NULL)
-					currency = obj_str(payload, "currency");
-				if (obj_str(row, "amount") != NULL)
-					piece = parse_money(obj_str(row, "amount"), currency, error);
-				else
-				{
-					g_autoptr(VentureMoney) net = NULL;
-					g_autoptr(VentureMoney) tax = NULL;
-					if (obj_str(row, "net") == NULL)
-						continue;
-					net = parse_money(obj_str(row, "net"), currency, error);
-					if (net == NULL)
-						return FALSE;
-					if (obj_str(row, "tax") != NULL)
-					{
-						tax = parse_money(obj_str(row, "tax"), currency, error);
-						if (tax == NULL)
-							return FALSE;
-						piece = venture_money_add(net, tax, error);
-					}
-					else
-						piece = venture_money_copy(net);
-				}
-				if (piece == NULL)
-					return FALSE;
-				if (!add_money(&expected_ar, piece, error))
-					return FALSE;
-			}
-		}
-	}
-	if (!cutover_rows(self, venture_entity_get_id(VENTURE_ENTITY(cutover)), &rows, error))
-		return FALSE;
-	for (i = 0; i < rows->len; i++)
-	{
-		VentureEntity *row = g_ptr_array_index(rows, i);
-		g_autofree gchar *type = NULL;
-		g_autofree gchar *source_id = NULL;
-		gint64 record_id = 0;
-		g_object_get(row, "source-type", &type, "source-id", &source_id, "record-id", &record_id, NULL);
-		if (g_strcmp0(type, "open_ar") == 0 && record_id > 0)
-		{
-			g_autoptr(VentureMoney) amount = NULL;
-			if (!issue_amount(self, record_id, &amount, error))
-				return FALSE;
-			if (!add_money(&imported_ar, amount, error))
+			g_object_set(cutover, "state", "imported", NULL);
+			if (!save_owned(self, VENTURE_ENTITY(cutover), actor, error))
 				return FALSE;
 		}
-		if (g_strcmp0(type, "bank") == 0 && record_id > 0)
-		{
-			g_autoptr(VentureEntity) bank = venture_database_get(self->database, VENTURE_TYPE_BANK_ACCOUNT,
-				record_id, error);
-			g_autoptr(VentureMoney) cash = NULL;
-			g_autoptr(VentureMoney) expected = NULL;
-			g_autofree gchar *currency = NULL;
-			JsonArray *banks = arr(payload, "bank_balances");
-			gint64 account_id = 0;
-			guint b;
-			if (bank == NULL)
-				return FALSE;
-			g_object_get(bank, "account-id", &account_id, "currency", &currency, NULL);
-			cash = venture_posting_service_account_balance(venture_database_get_posting_service(self->database),
-				account_id, org, currency, cutoff, error);
-			if (cash == NULL)
-				return FALSE;
-			if (banks != NULL)
-			{
-				for (b = 0; b < json_array_get_length(banks); b++)
-				{
-					JsonObject *src = json_array_get_object_element(banks, b);
-					if (g_strcmp0(obj_str(src, "source_id"), source_id) == 0)
-					{
-						expected = parse_money(obj_str(src, "amount"), currency, error);
-						break;
-					}
-				}
-			}
-			if (expected == NULL || !venture_money_equal(cash, expected))
-				return refuse(error, "opening bank cash does not match the source total");
-			g_string_append_printf(report, "Bank cash %" G_GINT64_FORMAT "\n", venture_money_get_amount(cash));
-		}
-	}
-	if (expected_ar != NULL)
-	{
-		if (imported_ar == NULL || !venture_money_equal(expected_ar, imported_ar))
-			return refuse(error, "opening AR does not match issued invoice totals");
-		g_string_append_printf(report, "Open AR %" G_GINT64_FORMAT "\n", venture_money_get_amount(expected_ar));
-	}
-	if (!reconcile_openings(self, VENTURE_ENTITY(cutover), payload, rows, cutoff, report, error))
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"VentureCutoverService: reconcile failed: %s", summary);
 		return FALSE;
-	g_string_append(report, "Trial balance ties at cutoff.\n");
-	g_object_set(cutover, "state", "reconciled", "reconciliation-report", report->str, NULL);
-	return save_owned(self, VENTURE_ENTITY(cutover), actor, error);
+	}
+	return TRUE;
+}
+
+/*
+ * Activation re-runs reconcile against the books as they are now, then closes
+ * every open fiscal period that ends at or before the cutoff so nothing can
+ * later be posted underneath the opening balances. Reconciliation at 9 and
+ * activation at 5 are not the same books.
+ */
+static gboolean
+close_periods_through(VentureCutoverService *self, VentureEntity *cutover, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) periods = NULL;
+	g_autoptr(GDateTime) cutoff = NULL;
+	guint i;
+	if (!venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "fiscal_period"))
+		return TRUE;
+	g_object_get(cutover, "cutoff", &cutoff, NULL);
+	query = venture_query_new(VENTURE_TYPE_FISCAL_PERIOD);
+	venture_query_set_organization(query, venture_entity_get_organization_id(cutover));
+	venture_query_set_limit(query, 0);
+	if (!venture_query_add_order(query, "start-at", VENTURE_SORT_ASCENDING, error))
+		return FALSE;
+	periods = venture_database_find(self->database, query, error);
+	if (periods == NULL)
+		return FALSE;
+	for (i = 0; i < periods->len; i++)
+	{
+		VentureEntity *period = g_ptr_array_index(periods, i);
+		g_autoptr(GDateTime) end = NULL;
+		gint state;
+		g_object_get(period, "end-at", &end, "state", &state, NULL);
+		if (state != VENTURE_PERIOD_OPEN || end == NULL || g_date_time_compare(end, cutoff) > 0)
+			continue;
+		g_object_set(period, "state", VENTURE_PERIOD_CLOSED, NULL);
+		if (!venture_database_save(self->database, period, actor, error))
+			return FALSE;
+	}
+	return TRUE;
 }
 
 gboolean
@@ -785,12 +526,68 @@ venture_cutover_service_activate(VentureCutoverService *self, VentureAccountingC
 	const VentureActor *actor, GError **error)
 {
 	g_autofree gchar *state = NULL;
-	g_autoptr(GDateTime) now = g_date_time_new_now_utc();
+	g_autofree gchar *summary = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	gboolean passed = FALSE;
 	g_object_get(cutover, "state", &state, NULL);
 	if (g_strcmp0(state, "reconciled") != 0)
 		return refuse(error, "activate after reconciliation");
+	if (!reconcile_and_record(self, VENTURE_ENTITY(cutover), NULL, &passed, &summary, actor, error))
+		return FALSE;
+	if (!passed)
+	{
+		g_object_set(cutover, "state", "imported", NULL);
+		if (!save_owned(self, VENTURE_ENTITY(cutover), actor, error))
+			return FALSE;
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"VentureCutoverService: activation refused, the books no longer reconcile: %s", summary);
+		return FALSE;
+	}
+	if (!venture_database_begin(self->database, error))
+		return FALSE;
+	if (!close_periods_through(self, VENTURE_ENTITY(cutover), actor, error))
+		goto fail;
 	g_object_set(cutover, "state", "active", "activated-at", now, NULL);
-	return save_owned(self, VENTURE_ENTITY(cutover), actor, error);
+	if (!save_owned(self, VENTURE_ENTITY(cutover), actor, error) || !venture_database_commit(self->database, error))
+		goto fail;
+	return TRUE;
+fail:
+	venture_database_rollback(self->database);
+	return FALSE;
+}
+
+GPtrArray *
+venture_cutover_service_rollback_preflight(VentureCutoverService *self, VentureAccountingCutover *cutover,
+	GError **error)
+{
+	g_autoptr(GPtrArray) blockers = g_ptr_array_new_with_free_func(g_free);
+	g_autofree gchar *state = NULL;
+	Rollback walk;
+	gboolean ok;
+	g_return_val_if_fail(VENTURE_IS_CUTOVER_SERVICE(self), NULL);
+	g_object_get(cutover, "state", &state, NULL);
+	if (g_strcmp0(state, "active") == 0)
+	{
+		g_ptr_array_add(blockers, g_strdup("the batch is active; an activated cutover is the books and cannot be rolled back"));
+		return g_steal_pointer(&blockers);
+	}
+	if (g_strcmp0(state, "rolled_back") == 0)
+		return g_steal_pointer(&blockers);
+	memset(&walk, 0, sizeof(walk));
+	rollback_prepare(&walk, self, VENTURE_ENTITY(cutover), TRUE, blockers, NULL);
+	ok = rollback_walk(&walk, error);
+	rollback_clear(&walk);
+	return ok ? g_steal_pointer(&blockers) : NULL;
+}
+
+static gchar *
+blockers_text(GPtrArray *blockers)
+{
+	g_autoptr(GString) text = g_string_new(NULL);
+	guint i;
+	for (i = 0; i < blockers->len; i++)
+		g_string_append_printf(text, "\n- %s", (const gchar *)g_ptr_array_index(blockers, i));
+	return g_string_free(g_steal_pointer(&text), FALSE);
 }
 
 static gboolean
@@ -798,57 +595,39 @@ venture_cutover_service_rollback_impl(VentureCutoverService *self, VentureAccoun
 	const VentureActor *actor, GError **error)
 {
 	g_autofree gchar *state = NULL;
+	g_autoptr(GPtrArray) blockers = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
-	g_autoptr(GPtrArray) journals = NULL;
-	g_autoptr(GDateTime) cutoff = NULL;
-	gint64 org;
+	Rollback walk;
 	guint i;
-	g_object_get(cutover, "state", &state, "cutoff", &cutoff, NULL);
-	if (g_strcmp0(state, "active") == 0)
-		return refuse(error, "an activated cutover cannot be rolled back");
+	g_object_get(cutover, "state", &state, NULL);
 	/* Retrying rollback must never reverse the reversal and recreate cash. */
 	if (g_strcmp0(state, "rolled_back") == 0)
 		return TRUE;
-	org = venture_entity_get_organization_id(VENTURE_ENTITY(cutover));
+	blockers = venture_cutover_service_rollback_preflight(self, cutover, error);
+	if (blockers == NULL)
+		return FALSE;
+	if (blockers->len > 0)
+	{
+		g_autofree gchar *text = blockers_text(blockers);
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"VentureCutoverService: rollback is blocked; nothing was changed:%s", text);
+		return FALSE;
+	}
 	if (!venture_database_begin(self->database, error))
 		return FALSE;
-	journals = venture_posting_service_find_source(venture_database_get_posting_service(self->database),
-		"accounting_cutover", venture_entity_get_id(VENTURE_ENTITY(cutover)), org, error);
-	if (journals == NULL)
-		goto fail;
-	for (i = 0; i < journals->len; i++)
+	memset(&walk, 0, sizeof(walk));
+	rollback_prepare(&walk, self, VENTURE_ENTITY(cutover), FALSE, blockers, actor);
+	if (!rollback_walk(&walk, error))
 	{
-		VentureEntity *journal = g_ptr_array_index(journals, i);
-		g_autoptr(VentureJournal) reversed = NULL;
-		VentureJournalState journal_state;
-		g_object_get(journal, "state", &journal_state, NULL);
-		if (journal_state != VENTURE_JOURNAL_POSTED)
-			continue;
-		reversed = venture_posting_service_reverse(venture_database_get_posting_service(self->database),
-			venture_entity_get_id(journal), cutoff, "Cutover rollback", actor, error);
-		if (reversed == NULL)
-			goto fail;
+		rollback_clear(&walk);
+		goto fail;
 	}
+	rollback_clear(&walk);
 	if (!cutover_rows(self, venture_entity_get_id(VENTURE_ENTITY(cutover)), &rows, error))
 		goto fail;
 	for (i = 0; i < rows->len; i++)
 	{
 		VentureEntity *row = g_ptr_array_index(rows, i);
-		g_autofree gchar *type = NULL;
-		gint64 record_id = 0;
-		g_object_get(row, "record-type", &type, "record-id", &record_id, NULL);
-		if (g_strcmp0(type, "invoice") == 0 && record_id > 0)
-		{
-			g_autoptr(VentureEntity) invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE,
-				record_id, error);
-			if (invoice == NULL)
-				goto fail;
-			if (!venture_settlement_service_transition(venture_settlement_service_get(self->database),
-				VENTURE_INVOICE(invoice), "void", cutoff, actor, error))
-				goto fail;
-		}
-		if (!rollback_opening_row(self, VENTURE_ENTITY(cutover), type, record_id, cutoff, actor, error))
-			goto fail;
 		g_object_set(row, "status", "rolled_back", NULL);
 		if (!save_owned(self, row, actor, error))
 			goto fail;
@@ -874,6 +653,26 @@ cutover_allowed(VentureAction *action, VentureEntity *entity, const VentureActor
 }
 
 static VentureEntity *
+record_preflight(VentureCutoverService *service, VentureEntity *entity, const VentureActor *actor, GError **error)
+{
+	g_autoptr(GPtrArray) blockers = venture_cutover_service_rollback_preflight(service, VENTURE_ACCOUNTING_CUTOVER(entity), error);
+	g_autoptr(GString) block = g_string_new(NULL);
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autofree gchar *stamp = g_date_time_format_iso8601(now);
+	guint i;
+	if (blockers == NULL)
+		return NULL;
+	g_string_append_printf(block, "\n== Rollback preflight %s ==\n", stamp);
+	if (blockers->len == 0)
+		g_string_append(block, "No blockers: rollback can unwind every imported record.\n");
+	for (i = 0; i < blockers->len; i++)
+		g_string_append_printf(block, "BLOCKER %s\n", (const gchar *)g_ptr_array_index(blockers, i));
+	if (!append_report(service, entity, NULL, block, actor, error))
+		return NULL;
+	return g_object_ref(entity);
+}
+
+static VentureEntity *
 cutover_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params,
 	const VentureActor *actor, GError **error)
 {
@@ -886,6 +685,8 @@ cutover_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params,
 		return venture_cutover_service_reconcile(service, VENTURE_ACCOUNTING_CUTOVER(entity), actor, error) ? g_object_ref(entity) : NULL;
 	if (g_strcmp0(name, "activate") == 0)
 		return venture_cutover_service_activate(service, VENTURE_ACCOUNTING_CUTOVER(entity), actor, error) ? g_object_ref(entity) : NULL;
+	if (g_strcmp0(name, "rollback_preflight") == 0)
+		return record_preflight(service, entity, actor, error);
 	if (g_strcmp0(name, "rollback") == 0)
 		return venture_cutover_service_rollback(service, VENTURE_ACCOUNTING_CUTOVER(entity), actor, error) ? g_object_ref(entity) : NULL;
 	(void)params;
@@ -896,7 +697,7 @@ void
 venture_cutover_actions_register(VentureDatabase *database)
 {
 	VentureActionRegistry *registry = venture_database_get_action_registry(database);
-	static const gchar *const names[] = { "import", "reconcile", "activate", "rollback" };
+	static const gchar *const names[] = { "import", "reconcile", "activate", "rollback_preflight", "rollback" };
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(names); i++)
 	{

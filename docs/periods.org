@@ -50,7 +50,9 @@ A closed fiscal year must be reopened before one of its periods. A locked
 period cannot reopen or be edited.
 
 Sales, expenses, invoices, invoice lines and ledger entries are checked at
-the repository boundary. Both the old accounting date and the proposed one
+the repository boundary. A migrated invoice or bill stamped with
+=opening_at= by a cutover is judged at that instant instead of its source
+issue date, which may lie in a period this organization never kept. Both the old accounting date and the proposed one
 must be postable, so changing a date or organization cannot move a closed
 record out of the restriction. Delete and restore are checked too. Web
 forms, REST, CLI and approved AI proposals reach this same boundary; a

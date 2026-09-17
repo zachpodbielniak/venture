@@ -136,6 +136,27 @@ expense does not acquire these optional adjustments.
 
 Default posting accounts come from =accounting_control_map= (cash, payables, expense). When a mapping is absent they still reuse the organization's legacy code or its =organization-id:code= chart entry.
 
+* Opening bills and credits from a cutover
+
+=venture_payables_service_approve_opening()= takes an unsaved draft bill and
+its lines, writes them under the service's permit and approves the bill: the
+approval event keeps the source bill and due dates (the fiscal guard judges
+it at the cutover instant), and the only journal debits the opening balance
+clearing account and credits Accounts payable for the total at the cutover
+instant. Nothing is expensed, and recoverable tax is not debited: the source
+system already did both. The bill is stamped with =opening_at=.
+=venture_payables_service_credit_opening()= records an unapplied vendor
+credit note against clearing instead of General expenses.
+
+The stamp is service-owned and cannot be set, changed or cleared through a
+generic write; a later edit of a stamped bill is period-guarded at
+=opening_at=. An ordinary void of a stamped bill is refused.
+=venture_payables_service_void_opening()= voids it during a cutover rollback
+by reversing its approval journal exactly as posted, accepts a partially paid
+bill whose only remaining allocations come from opening credits already
+reversed by that rollback, and optionally suffixes its number. See
+[[file:cutover.org][accounting cutover]].
+
 * Workbench approval
 
 Batch payments use the same second-actor approval checks as individual payments. A refused proposal remains pending for a second actor; no vendor is paid until all proposals are allowed. Execution and approval consumption are one transaction, so a failed vendor payment rolls back the entire batch.

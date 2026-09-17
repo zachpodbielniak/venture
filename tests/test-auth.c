@@ -1388,7 +1388,14 @@ test_auth_api_refuses_anonymous_requests(
 			"/api/v1/accounting_cutovers/preview",
 			"/cutover/preview",
 			"/api/v1/accounting_cutovers/1/import",
-			"/cutover/1/action"
+			"/api/v1/accounting_cutovers/1/rollback_preflight",
+			"/cutover/1/action",
+			"/api/v1/accounting_cutovers/csv",
+			"/cutover/csv"
+		};
+		static const gchar *const cutover_templates[] = {
+			"/api/v1/accounting_cutovers/template/open_ar",
+			"/cutover/template/open_ar"
 		};
 		static const gchar *const setup[] = {
 			"/api/v1/accounting_setups/preview",
@@ -1402,6 +1409,11 @@ test_auth_api_refuses_anonymous_requests(
 		for (i = 0; i < G_N_ELEMENTS(cutover); i++)
 			g_assert_cmpuint(server_fixture_request(fixture, "POST", cutover[i],
 				NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+		/* A template names no business data, but it is the migration's
+		 * surface and is guarded like the rest of it. */
+		for (i = 0; i < G_N_ELEMENTS(cutover_templates); i++)
+			g_assert_cmpuint(server_fixture_request(fixture, "GET", cutover_templates[i],
+				NULL, NULL, NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 		for (i = 0; i < G_N_ELEMENTS(setup); i++)
 			g_assert_cmpuint(server_fixture_request(fixture, "POST", setup[i],
 				NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);

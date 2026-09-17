@@ -364,6 +364,13 @@ and supplier invoices. =accounting= lists the daily books next actions.
 See [[file:close.org][close]], [[file:capture.org][capture]] and
 [[file:accounting.org][accounting home]].
 
+=venturectl cutover template SECTION= prints a cutover CSV template;
+=venturectl cutover csv source=S cutoff=DATE [currency=C] SECTION=@FILE ...=
+sends CSV files to preview a new cutover batch (=build_only=true= returns the
+payload JSON instead). Batch actions are ordinary record actions:
+=act accounting_cutover ID import|reconcile|rollback_preflight|activate|rollback=.
+See [[file:cutover.org][accounting cutover]].
+
 =venturectl tax-filing prepare|review|submit|acknowledge|amend= prepares a
 jurisdiction return pack. =contractor-tax prepare|review|approve|export=
 builds a 1099-NEC pack from paid bills. See [[file:tax-filing.org][tax

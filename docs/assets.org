@@ -196,6 +196,18 @@ before financial writes. Snapshot edits are ignored; the first owned
 needing committed journal effects should use the posting service's
 =posted= signal.
 
+* Migrated assets
+
+=venture_asset_service_import_opening()= places an asset a cutover migrates
+without recomputing its history (see [[file:cutover.org][accounting cutover]]);
+the cutover passes its opening balance clearing account as the equity side.
+=venture_asset_service_rollback_opening()= retires such an asset after the
+caller reversed its opening journal and any depreciation posted after the
+cutoff: remaining scheduled entries become skipped, the asset is written off
+at the given date without a second journal, and a tag suffix frees the tag
+for a corrected import (tags are unique per organization, retired assets
+included).
+
 * Reports and upgrades
 
 =fixed_assets= shows cost, accumulated depreciation and net book value per

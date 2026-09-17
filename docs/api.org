@@ -512,6 +512,19 @@ runs assignment rules. Staged reassignment is refused. Lead CRUD remains
 at the generated =/api/v1/lead= resource; qualification changes write history.
 Reports =lead_sources=, =lead_response_time= and =leads_recycled_due= use the
 ordinary report endpoint and accept =organization_id=.
+* Accounting cutover
+
+=POST /api/v1/accounting_cutovers/preview= takes a mapped payload and returns
+a previewed batch in the selected legal entity; =POST
+/api/v1/accounting_cutovers/:id/:action= performs =import=, =reconcile=,
+=activate=, =rollback_preflight= or =rollback=. =GET
+/api/v1/accounting_cutovers/template/:section= returns a CSV template and
+=POST /api/v1/accounting_cutovers/csv= builds a payload from CSV text
+(=files= by section, plus =source=, =cutoff= and =currency=) and previews it,
+or returns the payload with ="build_only": true=. All require an editor. See
+[[file:cutover.org][accounting cutover]] for the payload, reconcile checks and
+rollback rules.
+
 * Vendor payables
 
 =POST /api/v1/vendor_bill/:id/approve=, =/pay= and =/void= call

@@ -108,6 +108,54 @@ gboolean venture_settlement_service_refresh_credit(VentureSettlementService *sel
 	gint64 credit_id, const VentureActor *actor, GError **error);
 
 /**
+ * venture_settlement_service_issue_opening:
+ * @self: the service
+ * @invoice: an unsaved draft carrying its source number, customer, issue and due dates
+ * @lines: (element-type VentureInvoiceLine): unsaved lines with frozen income and tax
+ * @opening_at: the cutover instant; the issue date must precede it
+ * @clearing_account_id: the opening balance clearing account
+ * @actor: (nullable): the audit actor
+ * @error: (out) (optional): the error
+ *
+ * Issues a migrated invoice whose journal posts at @opening_at against the
+ * clearing account instead of income and tax.
+ * Returns: TRUE on success
+ */
+gboolean venture_settlement_service_issue_opening(VentureSettlementService *self, VentureInvoice *invoice,
+	GPtrArray *lines, GDateTime *opening_at, gint64 clearing_account_id,
+	const VentureActor *actor, GError **error);
+
+/**
+ * venture_settlement_service_void_opening:
+ * @self: the service
+ * @invoice: a migrated invoice
+ * @date: the void date
+ * @number_suffix: (nullable): appended to the number to free it for a re-import
+ * @actor: (nullable): the audit actor
+ * @error: (out) (optional): the error
+ *
+ * Voids a migrated invoice during a cutover rollback.
+ * Returns: TRUE on success
+ */
+gboolean venture_settlement_service_void_opening(VentureSettlementService *self, VentureInvoice *invoice,
+	GDateTime *date, const gchar *number_suffix, const VentureActor *actor, GError **error);
+
+/**
+ * venture_settlement_service_credit_opening:
+ * @self: the service
+ * @credit: an unsaved customer credit note dated in the source system
+ * @opening_at: the cutover instant
+ * @clearing_account_id: the opening balance clearing account
+ * @actor: (nullable): the audit actor
+ * @error: (out) (optional): the error
+ *
+ * Records a migrated unapplied credit note against the clearing account.
+ * Returns: TRUE on success
+ */
+gboolean venture_settlement_service_credit_opening(VentureSettlementService *self, VentureCustomerCredit *credit,
+	GDateTime *opening_at, gint64 clearing_account_id, const VentureActor *actor, GError **error);
+
+/**
  * venture_receivables_save_hook: (skip)
  * @database: the database, with its save lock held
  * @record: the proposed record

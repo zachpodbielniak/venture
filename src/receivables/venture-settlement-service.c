@@ -55,6 +55,19 @@ G_DEFINE_FINAL_TYPE(VentureSettlementService, venture_settlement_service, G_TYPE
 static gboolean check_invoice_edit(VentureSettlementService *self, VentureEntity *record,
 	VentureEntity *previous, GError **error);
 
+/* How a migrated document reaches the ledger. It keeps its own issue and due
+ * dates for aging, statements and chronology, but its journal posts at the
+ * cutover instant against opening clearing rather than income and tax: that
+ * revenue and tax were recognised, and possibly filed, by the source system.
+ * Posting them again on the document date would put last year's sales into
+ * this year's P&L and last quarter's tax into this quarter's return. */
+typedef struct
+{
+	GDateTime *opening_at;
+	gint64 clearing_account;
+	const gchar *number_suffix;
+} OpeningPosting;
+
 static gboolean
 refuse(GError **error, VentureError code, const gchar *message)
 {
@@ -703,6 +716,54 @@ post(VentureSettlementService *self, VentureEntity *source, GDateTime *date,
 	return venture_receivables_post_batch(self, entries, NULL, actor, error);
 }
 
+/* One opening leg pair at the cutover instant: receivables against the
+ * opening clearing account. A foreign document is valued at the cutover's
+ * stored rate when one exists, exactly as an ordinary issue would be. */
+static gboolean
+post_opening(VentureSettlementService *self, VentureEntity *source, GDateTime *date,
+	const VentureMoney *amount, gint64 clearing, gboolean debit_receivable,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(GPtrArray) entries = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autoptr(VentureExchangePolicy) policy = NULL;
+	g_autofree gchar *transaction = NULL;
+	g_autofree gchar *book = NULL;
+	gint64 ar = 0, org = venture_entity_get_organization_id(source);
+	if (!check_amount(amount, error))
+		return FALSE;
+	if (clearing <= 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening document needs an opening clearing account");
+	if (!resolve_code(self, "1100", org, &ar, error))
+		return FALSE;
+	book = book_currency(self, org, error);
+	if (book == NULL)
+		return FALSE;
+	if (g_strcmp0(venture_money_get_currency(amount), book) != 0)
+	{
+		g_autoptr(VentureMoney) trial = NULL;
+		g_autoptr(GError) missing = NULL;
+		policy = venture_rate_table_policy_new(self->database, org);
+		trial = venture_exchange_policy_convert(policy, amount, book, date, &missing);
+		if (trial == NULL)
+			g_clear_object(&policy);
+	}
+	transaction = g_strdup_printf("receivables:%s:%s:opening", venture_entity_get_entity_name(source),
+		venture_entity_get_uuid(source));
+	add_leg(entries, source, date, transaction, debit_receivable ? ar : clearing, VENTURE_LEDGER_SIDE_DEBIT, amount);
+	add_leg(entries, source, date, transaction, debit_receivable ? clearing : ar, VENTURE_LEDGER_SIDE_CREDIT, amount);
+	return venture_receivables_post_batch(self, entries, policy, actor, error);
+}
+
+static gboolean
+opening_invoice(VentureEntity *invoice)
+{
+	g_autoptr(GDateTime) opening = NULL;
+	if (invoice == NULL)
+		return FALSE;
+	g_object_get(invoice, "opening-at", &opening, NULL);
+	return opening != NULL;
+}
+
 static gboolean
 begin_operation(VentureSettlementService *self, const gchar *type, GError **error)
 {
@@ -982,7 +1043,8 @@ schedule_recognition(VentureSettlementService *self, VentureEntity *invoice, con
 
 static gboolean
 perform_transition(VentureSettlementService *self, VentureEntity *invoice,
-	const gchar *state, GDateTime *date, const VentureActor *actor, GError **error)
+	const gchar *state, GDateTime *date, const OpeningPosting *opening,
+	const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) previous = NULL;
 	g_autoptr(VentureEntity) issued = NULL;
@@ -1009,8 +1071,11 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 	from = invoice_state(previous);
 	if (!venture_invoice_state_machine_get_phase(self->machine, from, &old_phase, error))
 		return FALSE;
+	/* An opening void may find the invoice settled by an opening credit
+	 * whose posting the same rollback reversed; the balance check below
+	 * decides whether that is all that settled it. */
 	if ((old_phase == VENTURE_INVOICE_STATUS_PAID || old_phase == VENTURE_INVOICE_STATUS_PARTIALLY_PAID) &&
-		g_strcmp0(state, "disputed") != 0)
+		g_strcmp0(state, "disputed") != 0 && !(opening != NULL && phase == VENTURE_INVOICE_STATUS_VOID))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Refund allocations through VentureSettlementService to reopen a settled invoice");
 	if (old_phase != VENTURE_INVOICE_STATUS_DRAFT && phase == VENTURE_INVOICE_STATUS_DRAFT)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "An issued invoice cannot become a draft");
@@ -1021,9 +1086,23 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 		g_object_get(issued, "date", &issue_date, "amount", &total, NULL);
 	if (!check_date(date, issue_date, error) ||
 		!check_invoice_chronology(self, venture_entity_get_id(invoice), date, error) ||
-		!venture_invoice_state_machine_check(self->machine, VENTURE_INVOICE(invoice), from, state, error))
+		/* A rollback undoes the migration whatever workflow state the
+		 * invoice reached since, so its void is checked as one from sent. */
+		!venture_invoice_state_machine_check(self->machine, VENTURE_INVOICE(invoice),
+			opening != NULL && phase == VENTURE_INVOICE_STATUS_VOID ? "sent" : from, state, error))
 		return FALSE;
 	first_issue = issued == NULL && phase == VENTURE_INVOICE_STATUS_SENT;
+	if (opening != NULL && !first_issue && phase != VENTURE_INVOICE_STATUS_VOID)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening invoice can only be issued or voided through its opening path");
+	/* An ordinary void would reverse the opening journal into the clearing
+	 * account long after the cutover balanced it. Settle an unwanted opening
+	 * invoice with a write-off or credit note, or roll back its batch. */
+	if (opening == NULL && phase == VENTURE_INVOICE_STATUS_VOID && opening_invoice(previous))
+		return refuse(error, VENTURE_ERROR_VALIDATION,
+			"A migrated opening invoice cannot be voided; write it off, credit it, or roll back its cutover batch");
+	if (opening != NULL && first_issue && (opening->opening_at == NULL ||
+		g_date_time_compare(date, opening->opening_at) >= 0))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening invoice must be dated before its cutover instant");
 	{
 		g_autoptr(VentureMoney) net = NULL;
 		g_autoptr(VentureMoney) tax = NULL;
@@ -1047,6 +1126,41 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 			balance = venture_settlement_service_invoice_balance(self, venture_entity_get_id(invoice), NULL, error);
 			if (balance == NULL)
 				return FALSE;
+			/* Rolling back a migration may void an opening invoice that an
+			 * opening credit note of the same migration settled: that
+			 * credit's posting is already reversed, so its allocation no
+			 * longer carries any balance in the ledger. Anything else
+			 * applied must be refunded first, or AR would drift from the
+			 * subledger. */
+			if (opening != NULL && !venture_money_equal(balance, total))
+			{
+				g_autoptr(GPtrArray) allocations = find_rows(self, VENTURE_TYPE_PAYMENT_ALLOCATION, "invoice-id",
+					venture_entity_get_id(invoice), NULL, error);
+				guint a;
+				if (allocations == NULL)
+					return FALSE;
+				for (a = 0; a < allocations->len; a++)
+				{
+					VentureEntity *allocation = g_ptr_array_index(allocations, a);
+					g_autoptr(VentureEntity) credit = NULL;
+					if (get_id(allocation, "credit-id") == 0)
+						continue;
+					credit = venture_database_get(self->database, VENTURE_TYPE_CUSTOMER_CREDIT,
+						get_id(allocation, "credit-id"), error);
+					if (credit == NULL)
+						return FALSE;
+					if (get_id(credit, "payment-id") != 0 ||
+						!venture_posting_service_source_has_reversal(venture_database_get_posting_service(self->database),
+							"customer_credit", venture_entity_get_id(credit), venture_entity_get_organization_id(credit), error))
+					{
+						if (error != NULL && *error != NULL)
+							return FALSE;
+						continue;
+					}
+					if (!accumulate_record(&balance, allocation, FALSE, error))
+						return FALSE;
+				}
+			}
 			if (!venture_money_equal(balance, total))
 				return refuse(error, VENTURE_ERROR_VALIDATION, "Refund allocated money before voiding the invoice");
 		}
@@ -1066,7 +1180,9 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 				g_autoptr(VentureExchangePolicy) policy = venture_rate_table_policy_new(self->database,
 					venture_entity_get_organization_id(invoice));
 				g_autoptr(GError) missing = NULL;
-				book_total = venture_exchange_policy_convert(policy, total, book, date, &missing);
+				/* An opening invoice is valued where its journal posts. */
+				book_total = venture_exchange_policy_convert(policy, total, book,
+					opening != NULL && opening->opening_at != NULL && first_issue ? opening->opening_at : date, &missing);
 				if (book_total == NULL)
 					book_total = venture_money_copy(total);
 			}
@@ -1082,7 +1198,15 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 		if (!check_customer(self, VENTURE_ENTITY(event), error) ||
 			!write_record(self, VENTURE_ENTITY(event), actor, error))
 			return FALSE;
-		if (first_issue)
+		if (first_issue && opening != NULL)
+		{
+			/* No income, tax, deferral schedule or stock movement: the
+			 * source system already recognised all of them. */
+			if (!post_opening(self, VENTURE_ENTITY(event), opening->opening_at, total,
+				opening->clearing_account, TRUE, actor, error))
+				return FALSE;
+		}
+		else if (first_issue)
 		{
 			g_autoptr(VentureMoney) deferred = NULL;
 			g_autoptr(VentureMoney) income = NULL;
@@ -1132,6 +1256,18 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 	g_object_set(invoice, "status", phase, "workflow-state", state, "paid-at", NULL, NULL);
 	if (first_issue)
 		g_object_set(invoice, "issued-at", date, NULL);
+	if (first_issue && opening != NULL)
+		g_object_set(invoice, "opening-at", opening->opening_at, NULL);
+	/* A rolled-back migration frees the number so the corrected batch can
+	 * issue the same document again; the void keeps its history. */
+	if (phase == VENTURE_INVOICE_STATUS_VOID && opening != NULL && opening->number_suffix != NULL)
+	{
+		g_autofree gchar *number = NULL;
+		g_autofree gchar *renamed = NULL;
+		g_object_get(invoice, "number", &number, NULL);
+		renamed = g_strconcat(number != NULL ? number : "", opening->number_suffix, NULL);
+		g_object_set(invoice, "number", renamed, NULL);
+	}
 	return write_record(self, invoice, actor, error);
 }
 
@@ -1150,7 +1286,7 @@ venture_settlement_service_transition(VentureSettlementService *self,
 	if (!begin_operation(self, "invoice", error))
 		return FALSE;
 	original = snapshot(VENTURE_ENTITY(invoice));
-	ok = perform_transition(self, VENTURE_ENTITY(invoice), state, date, actor, error);
+	ok = perform_transition(self, VENTURE_ENTITY(invoice), state, date, NULL, actor, error);
 	ok = finish_operation(self, ok, error);
 	if (ok) ok = venture_accounting_operation_finish(operation, error);
 	if (!ok)
@@ -1306,8 +1442,10 @@ perform_allocation(VentureSettlementService *self, VentureEntity *allocation,
 		return FALSE;
 	/* Legacy cash reports still read sale. Each applied cash amount creates
 	 * one sale, including receipts applied from an earlier deposit. Credit
-	 * notes have no cash proceeds and create no fictitious sale. */
-	if (get_id(credit, "payment-id") != 0)
+	 * notes have no cash proceeds and create no fictitious sale, and nor does
+	 * collecting a migrated opening invoice: the source system already
+	 * counted that revenue, and a sale here would count it twice. */
+	if (get_id(credit, "payment-id") != 0 && !opening_invoice(invoice))
 	{
 		g_autoptr(VentureSale) sale = NULL;
 		g_autofree gchar *external = g_strdup_printf("allocation:%s", venture_entity_get_uuid(allocation));
@@ -1335,6 +1473,8 @@ perform_credit(VentureSettlementService *self, VentureEntity *credit,
 
 	if (venture_entity_is_persisted(credit))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Credits and their derived remaining balances are immutable");
+	if (opening_invoice(credit))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening credit is created by the cutover through VentureSettlementService");
 	g_object_get(credit, "amount", &amount, "date", &date, "kind", &kind, NULL);
 	if ((g_strcmp0(kind, "credit_note") != 0 && g_strcmp0(kind, "write_off") != 0) || get_id(credit, "payment-id") != 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Create a payment for a deposit or overpayment; only credit_note or write_off may be entered directly");
@@ -1740,7 +1880,12 @@ perform_refund(VentureSettlementService *self, VentureEntity *refund,
 		return FALSE;
 	if (!write_record(self, refund, actor, error) || !post(self, refund, date, amount, "1100", "1000", actor, error))
 		return FALSE;
-	if (allocation != NULL)
+	if (allocation != NULL && opening_invoice(invoice))
+	{
+		if (!derive_invoice(self, invoice, date, actor, error))
+			return FALSE;
+	}
+	else if (allocation != NULL)
 	{
 		g_autoptr(VentureSale) adjustment = venture_sale_new();
 		g_autoptr(VentureMoney) zero = venture_money_new_zero(amount->currency);
@@ -1783,7 +1928,7 @@ check_invoice_edit(VentureSettlementService *self, VentureEntity *record,
 	static const gchar *const financial[] = {
 		"company_id", "organization_id", "venture_id", "issued_at", "due_at", "number", NULL
 	};
-	static const gchar *const derived[] = { "paid_at", "workflow_state", "deleted_at", NULL };
+	static const gchar *const derived[] = { "paid_at", "workflow_state", "deleted_at", "opening_at", NULL };
 	gint status;
 	gint old_status;
 
@@ -1800,7 +1945,8 @@ check_invoice_edit(VentureSettlementService *self, VentureEntity *record,
 		g_autofree gchar *workflow = NULL;
 
 		g_object_get(record, "paid-at", &paid, "workflow-state", &workflow, NULL);
-		if (status != VENTURE_INVOICE_STATUS_DRAFT || paid != NULL || (workflow != NULL && *workflow != '\0'))
+		if (status != VENTURE_INVOICE_STATUS_DRAFT || paid != NULL || (workflow != NULL && *workflow != '\0') ||
+			opening_invoice(record))
 			return refuse(error, VENTURE_ERROR_VALIDATION, "Create a draft, add its lines, then issue it through VentureSettlementService");
 	}
 	else
@@ -2113,6 +2259,199 @@ venture_settlement_service_customer_balance(VentureSettlementService *self,
 		}
 	}
 	return g_steal_pointer(&total);
+}
+
+static gboolean
+perform_issue_opening(VentureSettlementService *self, VentureEntity *invoice, GPtrArray *lines,
+	const OpeningPosting *opening, const VentureActor *actor, GError **error)
+{
+	g_autoptr(GDateTime) date = NULL;
+	gint status;
+	guint i;
+	if (venture_entity_is_persisted(invoice))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening invoice is written by the service from an unsaved draft");
+	g_object_get(invoice, "issued-at", &date, "status", &status, NULL);
+	if (date == NULL || status != VENTURE_INVOICE_STATUS_DRAFT || lines == NULL || lines->len == 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening invoice needs a draft, its issue date and at least one line");
+	/* The draft is written under this service's permit so the fiscal guard
+	 * judges the cutover instant, not a source-system date that may lie in a
+	 * period this organization has already closed. */
+	if (!write_record(self, invoice, actor, error))
+		return FALSE;
+	for (i = 0; i < lines->len; i++)
+	{
+		VentureEntity *line = g_ptr_array_index(lines, i);
+		if (!VENTURE_IS_INVOICE_LINE(line) || venture_entity_is_persisted(line))
+			return refuse(error, VENTURE_ERROR_VALIDATION, "Opening invoice lines must be unsaved invoice lines");
+		g_object_set(line, "invoice-id", venture_entity_get_id(invoice), NULL);
+		venture_entity_set_organization_id(line, venture_entity_get_organization_id(invoice));
+		if (!write_record(self, line, actor, error))
+			return FALSE;
+	}
+	return perform_transition(self, invoice, "sent", date, opening, actor, error);
+}
+
+/**
+ * venture_settlement_service_issue_opening:
+ * @self: the service
+ * @invoice: an unsaved draft carrying its source number, customer, issue and due dates
+ * @lines: (element-type VentureInvoiceLine): unsaved lines with frozen income and tax
+ * @opening_at: the cutover instant; the issue date must precede it
+ * @clearing_account_id: the opening balance clearing account
+ * @actor: (nullable): the audit actor
+ * @error: (out) (optional): the error
+ *
+ * Issues a migrated invoice. Its event keeps the source issue and due dates,
+ * but its only journal debits receivables and credits @clearing_account_id at
+ * @opening_at, and the invoice is stamped with opening-at so tax filing and
+ * cash-report sales never count it again.
+ * Returns: TRUE when the draft, lines, event and journal committed together
+ */
+gboolean
+venture_settlement_service_issue_opening(VentureSettlementService *self, VentureInvoice *invoice,
+	GPtrArray *lines, GDateTime *opening_at, gint64 clearing_account_id,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureEntity) original = NULL;
+	OpeningPosting opening;
+	gboolean ok;
+
+	g_return_val_if_fail(VENTURE_IS_SETTLEMENT_SERVICE(self), FALSE);
+	if (opening_at == NULL || clearing_account_id <= 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening invoice needs its cutover instant and clearing account");
+	operation = accounting_operation(self, "receivables.issue_opening", VENTURE_ENTITY(invoice), lines,
+		operation_date(opening_at, "sent"), venture_entity_get_organization_id(VENTURE_ENTITY(invoice)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	if (!begin_operation(self, "invoice", error))
+		return FALSE;
+	opening.opening_at = opening_at;
+	opening.clearing_account = clearing_account_id;
+	opening.number_suffix = NULL;
+	original = snapshot(VENTURE_ENTITY(invoice));
+	ok = perform_issue_opening(self, VENTURE_ENTITY(invoice), lines, &opening, actor, error);
+	ok = finish_operation(self, ok, error);
+	if (ok)
+		ok = venture_accounting_operation_finish(operation, error);
+	if (!ok)
+		venture_entity_copy_properties_from(VENTURE_ENTITY(invoice), original, FALSE);
+	return ok;
+}
+
+/**
+ * venture_settlement_service_void_opening:
+ * @self: the service
+ * @invoice: a migrated invoice
+ * @date: the void date; on or after the cutover and every later event
+ * @number_suffix: (nullable): appended to the number so the source number can be issued again
+ * @actor: (nullable): the audit actor
+ * @error: (out) (optional): the error
+ *
+ * Voids a migrated invoice when its cutover is rolled back, reversing its
+ * opening journal. Cash receipts must already be refunded; allocations from
+ * opening credit notes whose postings were reversed by the same rollback no
+ * longer hold a balance and do not block the void.
+ * Returns: TRUE on success
+ */
+gboolean
+venture_settlement_service_void_opening(VentureSettlementService *self, VentureInvoice *invoice,
+	GDateTime *date, const gchar *number_suffix, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureEntity) original = NULL;
+	OpeningPosting opening;
+	gboolean ok;
+
+	g_return_val_if_fail(VENTURE_IS_SETTLEMENT_SERVICE(self), FALSE);
+	if (!opening_invoice(VENTURE_ENTITY(invoice)))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Only a migrated opening invoice has an opening void");
+	operation = accounting_operation(self, "receivables.void_opening", VENTURE_ENTITY(invoice), NULL,
+		operation_date(date, number_suffix), venture_entity_get_organization_id(VENTURE_ENTITY(invoice)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	if (!begin_operation(self, "invoice", error))
+		return FALSE;
+	g_object_get(invoice, "opening-at", &opening.opening_at, NULL);
+	opening.clearing_account = 0;
+	opening.number_suffix = number_suffix;
+	original = snapshot(VENTURE_ENTITY(invoice));
+	ok = perform_transition(self, VENTURE_ENTITY(invoice), "void", date, &opening, actor, error);
+	g_clear_pointer(&opening.opening_at, g_date_time_unref);
+	ok = finish_operation(self, ok, error);
+	if (ok)
+		ok = venture_accounting_operation_finish(operation, error);
+	if (!ok)
+		venture_entity_copy_properties_from(VENTURE_ENTITY(invoice), original, FALSE);
+	return ok;
+}
+
+static gboolean
+perform_credit_opening(VentureSettlementService *self, VentureEntity *credit, GDateTime *opening_at,
+	gint64 clearing, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autoptr(VentureMoney) tax = NULL;
+	g_autoptr(GDateTime) date = NULL;
+	g_autofree gchar *kind = NULL;
+
+	if (venture_entity_is_persisted(credit))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Credits and their derived remaining balances are immutable");
+	g_object_get(credit, "amount", &amount, "date", &date, "kind", &kind, "tax-amount", &tax, NULL);
+	if (g_strcmp0(kind, "credit_note") != 0 || get_id(credit, "payment-id") != 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening credit is a credit note");
+	/* A credit note's tax was reported by the source system; an opening
+	 * credit carrying tax would reduce this system's liability a second time. */
+	if (tax != NULL && !venture_money_is_zero(tax))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening credit note carries no tax of its own");
+	if (!check_amount(amount, error) || !check_date(date, NULL, error) || !check_customer(self, credit, error))
+		return FALSE;
+	if (g_date_time_compare(date, opening_at) >= 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening credit must be dated before its cutover instant");
+	g_object_set(credit, "remaining", amount, "opening-at", opening_at, NULL);
+	return write_record(self, credit, actor, error) &&
+		post_opening(self, credit, opening_at, amount, clearing, FALSE, actor, error);
+}
+
+/**
+ * venture_settlement_service_credit_opening:
+ * @self: the service
+ * @credit: an unsaved credit_note for a customer, dated in the source system
+ * @opening_at: the cutover instant; the credit date must precede it
+ * @clearing_account_id: the opening balance clearing account
+ * @actor: (nullable): the audit actor
+ * @error: (out) (optional): the error
+ *
+ * Records an unapplied migrated credit note. Its journal debits the clearing
+ * account, not income, at @opening_at, so the source system's credited
+ * revenue is not reduced a second time.
+ * Returns: TRUE on success
+ */
+gboolean
+venture_settlement_service_credit_opening(VentureSettlementService *self, VentureCustomerCredit *credit,
+	GDateTime *opening_at, gint64 clearing_account_id, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureEntity) original = NULL;
+	gboolean ok;
+
+	g_return_val_if_fail(VENTURE_IS_SETTLEMENT_SERVICE(self), FALSE);
+	if (opening_at == NULL || clearing_account_id <= 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening credit needs its cutover instant and clearing account");
+	operation = accounting_operation(self, "receivables.credit_opening", VENTURE_ENTITY(credit), NULL,
+		operation_date(opening_at, NULL), venture_entity_get_organization_id(VENTURE_ENTITY(credit)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	if (!begin_operation(self, "payment", error))
+		return FALSE;
+	original = snapshot(VENTURE_ENTITY(credit));
+	ok = perform_credit_opening(self, VENTURE_ENTITY(credit), opening_at, clearing_account_id, actor, error);
+	ok = finish_operation(self, ok, error);
+	if (ok)
+		ok = venture_accounting_operation_finish(operation, error);
+	if (!ok)
+		venture_entity_copy_properties_from(VENTURE_ENTITY(credit), original, FALSE);
+	return ok;
 }
 
 gboolean

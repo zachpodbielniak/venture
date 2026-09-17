@@ -304,7 +304,20 @@ statement. Renumbering the mapped cash account still reports it as cash.
 
 ** =test-cutover=
 
-Preview lists unsupported source fields, import is idempotent on source IDs,
-reconcile checks trial balance and opening AR/bank totals, rollback reverses
-opening cash and voids imported invoices, generic writes are refused, and the
-Cutover page plus preview/action routes are covered over HTTP.
+The opening posting rule on a July cutover with March receivables and a closed
+March: no income, expense or tax, every journal at the cutoff, an empty tax
+liability report and a service-owned =opening_at= stamp. Preview collects
+located problems (JSON numbers, numeric strings, non-object rows, duplicate
+ids, cross-vendor bill numbers) and the strict money grammar refuses locale
+formats unless separators are declared. Trial balance ties and mismatches,
+per-currency and per-bank-account totals, prepayments and negative balances,
+party matching, and AR dates, paid amounts and totals. Receipts on the cutoff
+day are not drift; a payment before the cutoff is, with row evidence kept in
+the appended report. Activation re-runs reconcile and closes periods through
+the cutoff. Rollback unwinds a migrated credit, a real payment and January
+depreciation; preflight lists a foreign credit note and a closed period as
+blockers; a batch rolled back frees its numbers and tags for a reimport. A
+posting veto after the first documents leaves nothing; the row limit, CSV
+templates and CSV payloads, opening stock and its rollback, the module switch,
+and the page, preview, action,
+template and CSV routes (including the selected legal entity) are covered.

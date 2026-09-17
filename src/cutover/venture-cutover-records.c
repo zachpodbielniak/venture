@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
 static const VentureFieldDecl cutover_fields[] = {
-	VENTURE_FIELD_NAME("source", "Source", "zoho_books or quickbooks"),
+	VENTURE_FIELD_NAME("source", "Source", "zoho_books, quickbooks, xero or generic"),
 	VENTURE_FIELD("cutoff", "Cutoff", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD_NAME("state", "State", "preview, imported, reconciled, active, rolled_back"),
 	VENTURE_FIELD_TEXT("payload", "Payload", "Mapped source JSON"),

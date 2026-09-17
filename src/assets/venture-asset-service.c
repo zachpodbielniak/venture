@@ -1771,7 +1771,7 @@ venture_asset_service_import_opening(VentureAssetService *self, VentureEntity *a
 
 static gboolean
 venture_asset_service_rollback_opening_impl(VentureAssetService *self, gint64 asset_id,
-	GDateTime *date, const VentureActor *actor, GError **error)
+	GDateTime *date, const gchar *tag_suffix, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
 	g_autoptr(VentureEntity) current = NULL;
@@ -1822,6 +1822,16 @@ venture_asset_service_rollback_opening_impl(VentureAssetService *self, gint64 as
 		note != NULL ? note : "", note != NULL ? " " : "");
 	g_object_set(current, "status", VENTURE_ASSET_STATUS_WRITTEN_OFF, "disposed-at", date,
 		"disposal-proceeds", zero, "schedule-note", combined, NULL);
+	/* Tags are unique per organization, retired assets included; freeing the
+	 * tag is what lets a corrected migration place the same asset again. */
+	if (tag_suffix != NULL && *tag_suffix != '\0')
+	{
+		g_autofree gchar *tag = NULL;
+		g_autofree gchar *renamed = NULL;
+		g_object_get(current, "tag", &tag, NULL);
+		renamed = g_strconcat(tag != NULL ? tag : "", tag_suffix, NULL);
+		g_object_set(current, "tag", renamed, NULL);
+	}
 	if (!save_internal(self, db, current, actor, error) || !venture_database_commit(db, error))
 		goto fail;
 	return TRUE;
@@ -1832,7 +1842,7 @@ fail:
 
 gboolean
 venture_asset_service_rollback_opening(VentureAssetService *self, gint64 asset_id,
-	GDateTime *date, const VentureActor *actor, GError **error)
+	GDateTime *date, const gchar *tag_suffix, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureAccountingOperation) operation = NULL;
 	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
@@ -1848,11 +1858,13 @@ venture_asset_service_rollback_opening(VentureAssetService *self, gint64 asset_i
 	if (subject == NULL)
 		return FALSE;
 	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	if (tag_suffix != NULL)
+		g_variant_builder_add(&arguments, "{sv}", "tag_suffix", g_variant_new_string(tag_suffix));
 	operation = venture_accounting_operation_begin(db, "asset-rollback-opening", subject, NULL,
 		g_variant_builder_end(&arguments), venture_entity_get_organization_id(subject), actor, error);
 	if (operation == NULL)
 		return FALSE;
-	result = venture_asset_service_rollback_opening_impl(self, asset_id, date, actor, error);
+	result = venture_asset_service_rollback_opening_impl(self, asset_id, date, tag_suffix, actor, error);
 	if (!result)
 		return FALSE;
 	if (!venture_accounting_operation_finish(operation, error))

@@ -33,7 +33,9 @@ static const VentureFieldDecl credit_fields[] = {
 	VENTURE_FIELD_NAME("kind", "Kind", "credit_note, write_off, deposit, or overpayment; receipts create deposits and overpayments"),
 	VENTURE_FIELD_REF("payment-id", "Payment", "Set by the service for unused receipts", "payment", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("reference", "Reference", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
-	VENTURE_FIELD_MONEY("tax-amount", "Tax amount", "Optional tax portion of a credit note")
+	VENTURE_FIELD_MONEY("tax-amount", "Tax amount", "Optional tax portion of a credit note"),
+	VENTURE_FIELD("opening-at", "Opening balance at", "Cutover instant a migrated credit entered the ledger",
+		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureCustomerCredit, venture_customer_credit, credit_fields)
 

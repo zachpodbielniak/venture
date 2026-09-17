@@ -62,6 +62,22 @@ gboolean venture_cutover_service_reconcile(VentureCutoverService *self, VentureA
 gboolean venture_cutover_service_activate(VentureCutoverService *self, VentureAccountingCutover *cutover,
 	const VentureActor *actor, GError **error);
 /**
+ * venture_cutover_service_rollback_preflight:
+ * @self: the service or registry instance
+ * @cutover: cutover record
+ * @error: (out) (optional): return location for an error
+ *
+ * Walks the rollback without writing and lists every record or date that
+ * would stop it: credit notes from outside the batch applied to imported
+ * documents, imported credits used outside the batch, cash refunds of
+ * imported prepayments, disposed assets and unwinding dates in closed or
+ * locked periods. An empty array means rollback can proceed.
+ *
+ * Returns: (transfer full) (element-type utf8) (nullable): the blockers, or %NULL on failure
+ */
+GPtrArray *venture_cutover_service_rollback_preflight(VentureCutoverService *self,
+	VentureAccountingCutover *cutover, GError **error);
+/**
  * venture_cutover_service_rollback:
  * @self: the service or registry instance
  * @cutover: cutover record
@@ -72,6 +88,37 @@ gboolean venture_cutover_service_activate(VentureCutoverService *self, VentureAc
  */
 gboolean venture_cutover_service_rollback(VentureCutoverService *self, VentureAccountingCutover *cutover,
 	const VentureActor *actor, GError **error);
+/**
+ * venture_cutover_service_payload_from_csv:
+ * @self: the service or registry instance
+ * @settings: (nullable): source, cutoff, currency, decimal_separator, thousands_separator and clearing_account_code
+ * @tables: (element-type utf8 GPtrArray) (nullable): section name to its parsed CSV rows, header row first,
+ *   each row a %NULL-terminated string array
+ * @error: (out) (optional): return location for an error
+ *
+ * Builds a batch payload from one CSV per section: customers, vendors, chart,
+ * account_map, open_ar, open_ap (one row per bill line), credits,
+ * bank_balances, assets and trial_balance. Cells become strings and every
+ * payload rule still applies at preview. Unknown columns, sections and
+ * conflicting bill rows are refused together.
+ *
+ * Returns: (transfer full) (nullable): the payload
+ */
+JsonObject *venture_cutover_service_payload_from_csv(VentureCutoverService *self, JsonObject *settings,
+	GHashTable *tables, GError **error);
+/**
+ * venture_cutover_csv_template:
+ * @section: a CSV section name
+ *
+ * Returns: (transfer full) (nullable): the section's header row, or %NULL for an unknown section
+ */
+gchar *venture_cutover_csv_template(const gchar *section);
+/**
+ * venture_cutover_csv_sections:
+ *
+ * Returns: (transfer full): the CSV section names, in template order
+ */
+gchar **venture_cutover_csv_sections(void);
 /**
  * venture_cutover_check_write: (skip)
  * @database: repository

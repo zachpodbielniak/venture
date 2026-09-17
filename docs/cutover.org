@@ -1,126 +1,582 @@
 #+title: Accounting cutover
-#+description: Guided Zoho Books and QuickBooks opening-balance migration
+#+description: Migrating opening balances from Zoho Books, QuickBooks, Xero or any mapped ledger
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-12]
+#+updated: [2026-09-17]
+#+version: 0.7.0
 
 * Cutover
 
-The =cutover= module requires =ledger=. =VentureCutoverService= owns preview, import, reconcile, activate
-and rollback. Generic writes do not create opening journals.
-
-A mapped JSON payload names the source (=zoho_books= or =quickbooks=), an
-explicit cutoff, chart mapping, customers, vendors, items, open AR, and bank
-balances. Amounts must include an ISO currency (or a payload-level
-=currency=). Mapped tax amounts are frozen on the opening invoice rather than
-rounded through an integer percent. =open_ap=, =credits= and =assets= are
-imported through the payables, receivables and assets modules (below); a
-payload naming one of them while its module is switched off is refused, and
-anything the mapping cannot express is listed under =unsupported=. Each
-source ID is stored on =accounting_cutover_row= so reimport is idempotent.
-
-Open AR is imported as issued invoices (tax split at issuance) rather than as a
-second opening journal, so operational documents and opening cash are not
-double-posted. Bank opening cash is one balanced journal against equity.
-Activation is refused until reconcile has accepted trial balance, issued
-opening AR, bank opening cash, open AP, unapplied credits and asset net book
-value. Rollback is allowed only before activation: it reverses every opening
-journal with a reversing journal and voids the imported invoices and bills.
-Generic writes cannot stamp a reconciled state. The Cutover nav item opens the batch
-record; preview, import, reconcile, activate and rollback are actions on that
-page.
+The =cutover= module requires =ledger=. It registers =accounting_cutover= (a
+batch) and =accounting_cutover_row= (one row per source row or created
+record). =VentureCutoverService= owns preview, import, reconcile, activate,
+rollback preflight and rollback; generic writes to either record are refused,
+so no form, REST call or approved AI write can stamp a batch reconciled or
+active. The Cutover nav item opens the batch list; every action is on the
+batch page, at =POST /api/v1/accounting_cutovers/:id/:action=, and through
+the CLI:
 
 #+begin_src sh
-venturectl action accounting_cutover import 1
+venturectl act accounting_cutover 1 import
+venturectl act accounting_cutover 1 reconcile
+venturectl act accounting_cutover 1 rollback_preflight
+venturectl act accounting_cutover 1 activate
 #+end_src
 
-Rollback is idempotent: repeating a completed rollback leaves its reversal journals intact and cannot recreate opening cash. Opening line unit prices inherit the row or payload currency when their source amount has no ISO suffix. Reconciliation checks each posted journal separately, without netting currencies or overflowing a running 64-bit total across history.
+A batch moves =preview= → =imported= → =reconciled= → =active=, or to
+=rolled_back= from any state before =active=. Import and rollback are each
+one database transaction: a failure anywhere leaves no invoice, bill,
+payment, credit, asset, account, company or journal behind.
 
-* Open vendor bills
+** The opening posting rule
 
-Each =open_ap= row becomes an approved =vendor_bill= through
-=VenturePayablesService=, keeping its original =number=, =date=, =due_date=,
-vendor (matched by =vendor_source_id= against earlier rows, or created as a
-supplier from =vendors=) and =lines=. A line carries =description=, =amount=
-(net), a frozen =tax= and an optional =account_code= or =category=; approval
-posts the lines against Accounts payable on the bill date, so the frozen tax
-is never recomputed. =paid= names the amount settled before the cutoff. It is
-recorded as one =bill_payment= dated at the cutoff, method =opening=, applied
-to the full bill, so the bill's balance is =lines - paid= rather than a
-smaller bill. Because that cash already sits inside the imported bank
-balance, the payment's cash leg is offset by an opening journal against
-equity 3000. An optional =balance= must equal =lines - paid=; a paid amount
-at or above the total is refused (=open-ap-balance=), because such a bill is
-not open.
+The cutoff is an instant; a date means midnight UTC at its start. Opening
+balances are the source system's position at the end of the day before the
+cutoff, and they enter the VENTURE ledger at the cutoff instant.
 
-#+begin_src json
-{"open_ap": [{"source_id": "bill-1", "vendor_source_id": "vend-1",
-  "number": "B-1", "date": "2025-12-10", "due_date": "2026-01-09",
-  "paid": "30 USD", "balance": "75 USD",
-  "lines": [{"description": "Hosting", "amount": "100 USD", "tax": "5 USD"}]}]}
+Every opening posting has the opening balance clearing account on its other
+side: code =3900=, "Opening balance clearing", an equity account created
+inside the import transaction when the chart lacks it (=clearing_account_code=
+chooses another; it must be an active equity account). Nothing a migration
+imports touches income, expense, sales tax payable or recoverable tax:
+
+| Source row             | Document in VENTURE                        | Journal at the cutoff                  |
+|------------------------+--------------------------------------------+----------------------------------------|
+| open receivable        | issued invoice, source issue and due dates | Dr receivables / Cr clearing (total)   |
+| paid part of it        | opening receipt allocated to the invoice   | Dr cash / Cr receivables, then Dr clearing / Cr cash |
+| open payable           | approved bill, source bill and due dates   | Dr clearing / Cr payables (total)      |
+| paid part of it        | opening payment allocated to the bill      | Dr payables / Cr cash, then Dr cash / Cr clearing |
+| customer credit note   | unapplied credit note, source date         | Dr clearing / Cr receivables           |
+| vendor credit note     | unapplied vendor credit, source date       | Dr payables / Cr clearing              |
+| customer prepayment    | unapplied receipt (deposit) at the cutoff  | net Dr clearing / Cr receivables       |
+| vendor prepayment      | unapplied payment (deposit) at the cutoff  | net Dr payables / Cr clearing          |
+| bank balance           | bank account                               | Dr bank / Cr clearing (flipped when negative) |
+| fixed asset            | in-service asset, schedule from the cutoff | Dr cost / Cr accumulated / Cr clearing |
+| stock on hand          | inventory receipt and FIFO cost layer      | Dr inventory / Cr goods received not invoiced, then Dr GRNI / Cr clearing |
+| trial balance          | none                                       | one journal per currency, see below    |
+
+Why: the source system already recognised that revenue, expense and tax. An
+open invoice from March issued as ordinary revenue in a July cutover would put
+40,000 of last half-year's sales into this year's P&L and 3,200 of tax, which
+may already have been filed, into this quarter's return. And once fiscal
+periods exist, a March-dated posting is refused by the period guard; the
+opening documents post at the cutoff, so a closed March does not stop them.
+
+Migrated invoices, bills and credit notes are stamped with =opening_at=, the
+cutoff their journal posted at. The stamp is service-owned: a generic write
+cannot set, change or clear it. It is what the rest of the system reads:
+
+- The =tax_liability= report and the US sales-tax filing adapter skip issue
+  and void events of stamped documents, including a rollback's voids.
+- Allocating cash to a stamped invoice, or refunding that allocation, creates
+  no cash-report sale, so collecting a migrated invoice is not revenue twice.
+  (Cash-basis statements already recognise the issue journal's non-receivable
+  side, which is clearing, not income.)
+- The period guard judges a stamped invoice or bill, on any later edit, at its
+  =opening_at= rather than its source issue date.
+- An ordinary void of a stamped invoice or bill is refused: it would reverse
+  the opening journal into clearing long after the cutover balanced it. Write
+  it off, credit it, or roll back its batch.
+
+The services own the posting. =venture_settlement_service_issue_opening()=,
+=venture_settlement_service_credit_opening()=,
+=venture_payables_service_approve_opening()= and
+=venture_payables_service_credit_opening()= write the draft, its lines, the
+issue or approval event (with the source dates) and the clearing journal in
+one transaction; =..._void_opening()= reverses it during rollback. The
+subledger events keep the source dates, so aging, customer and vendor
+statements show the document as issued in the source system. The general
+ledger carries it from the cutoff.
+
+** The trial balance
+
+=trial_balance= rows post one journal per currency at the cutoff for every
+account no subledger owns -- loans, credit cards, prepaids, tax payable,
+retained earnings, equity -- with clearing as the balancing leg. Rows on a
+control account are *not* posted; they are asserted at reconcile. The control
+accounts are:
+
+- receivables: the =receivables= control mapping, else code =1100=;
+- payables: the =payables= control mapping, else code =2000=;
+- every GL account a =bank_balances= row names;
+- every asset cost and accumulated depreciation account an =assets= row names;
+- inventory (the =inventory= control mapping, else code =1200=) when the
+  payload has =inventory= rows.
+
+Once the subledgers and the trial balance are in, clearing nets to zero in
+every currency. That is the proof the subledgers agree with the source
+ledger: a receivable missing from =open_ar= leaves clearing short by exactly
+its amount. Without a trial balance, clearing holds the subledgers' opposite
+side and reconcile reports it as a note; import the trial balance to move it.
+
+* The payload
+
+A batch is one JSON object. Every member except =source= and =cutoff= is
+optional. Arrays of rows are the sections; a row names its =source_id=, the
+stable identifier from the source system.
+
+| Member                | Meaning |
+|-----------------------+---------|
+| =source=              | =zoho_books=, =quickbooks=, =xero= or =generic= |
+| =cutoff=              | ISO date or timestamp; must not be in the future |
+| =currency=            | default ISO code for amounts and JSON numbers without one |
+| =decimal_separator=   | ="."= (default) or =","= |
+| =thousands_separator= | none (default), =","=, ="."=, ="'"= or =" "=; must differ from the decimal separator |
+| =clearing_account_code= | default =3900= |
+| =account_map=         | object of source code → VENTURE code, applied to every account code in the payload |
+| =chart=               | accounts to create when missing |
+| =customers=, =vendors= | party details, by =source_id= |
+| =open_ar=, =open_ap=, =credits=, =bank_balances=, =assets=, =inventory=, =trial_balance= | the opening balances |
+| =items=               | accepted and listed as not imported; products are not opening balances |
+| =unsupported=         | strings copied into the preview report |
+
+** Amounts
+
+An amount is a string =[-]1234.56 CUR=: an optional minus, digits, an
+optional fraction no longer than the currency's minor unit, and a space and
+three uppercase letters. The currency may be omitted when the row's
+=currency= or the payload's =currency= supplies it. With
+=thousands_separator= set, grouping is allowed and checked (=1,234,567.89=);
+with =decimal_separator= =","=, =1.234,56 EUR= reads as 1234.56.
+
+Anything else is refused with its row's location, never guessed:
+=1,50 EUR= without separators, =€1.234=, =100.00 CR=, =1.005 USD=,
+=1.5 JPY=, =12.34 usd=. The general money parser used for marketplace
+imports is deliberately forgiving and is not changed; this grammar applies
+to cutover payloads only.
+
+Also accepted: the serialised money object (={"amount":10500,"currency":"USD","exponent":2}=)
+and a JSON number when the row or payload names a currency. A JSON number
+is binary floating point, so it is accepted only when the currency's minor
+units print it exactly: =105.0= is 105.00, =0.1= is 0.10, =1.005= in a
+two-decimal currency is refused.
+
+Text fields accept a JSON integer (="number": 1001=); whole-number fields
+accept a string of digits (="useful_life_months": "36"=); booleans accept
+=true=/=false= or the strings =true=, =yes=, =1=, =false=, =no=, =0=.
+Dates are ISO dates or timestamps only -- =now= and =today= are refused,
+because in a migration file they would date history at the moment of import.
+
+** chart and account_map
+
+=chart= rows: =code=, =name=, =kind= (=asset=, =liability=, =equity=,
+=income=, =expense=) and optional =active=. The code passes through
+=account_map=. A missing account is created inside the import transaction;
+an existing one is kept (a different kind is a preview warning). A code
+appearing twice, or the clearing code, is refused.
+
+Every account code elsewhere -- bank rows, bill lines, assets, trial balance
+rows -- is mapped, then must exist in the chart or in =chart=. A code mapped
+to the clearing account is refused.
+
+** Parties
+
+=customers= and =vendors= rows: =source_id= (required, unique), =name=,
+=email=, =phone=, =website=, =address=, =external_id=, =terms= and
+=tax_exempt=. A document row names its party by =customer_source_id= /
+=vendor_source_id=, or by =customer_name= / =vendor_name= alone; one of them
+is required.
+
+A party is resolved, in order, to:
+
+1. the company an earlier live cutover row created or matched for that source id;
+2. the company whose external ID is the party's =external_id= (default: its source id);
+3. the company with the same name, ignoring case and runs of whitespace;
+4. for rows with a name and no source id, the one company this batch created for that name;
+5. a new company, stamped with that external ID and carrying email, phone,
+   website, address, tax exemption and =Payment terms (source): …= in its notes
+   (companies have no terms field).
+
+More than one match at step 2 or 3 is a located error: give the companies
+distinct external IDs. A company used as a vendor is marked a supplier,
+which payables requires; preview warns when that changes an existing company.
+A =customers= or =vendors= row no document references creates nothing: a
+cutover imports balances, not a contact list.
+
+** open_ar
+
+| Field | |
+|-------+-|
+| =source_id= | required |
+| =customer_source_id= / =customer_name= | one required |
+| =number= | required; invoice numbers are unique per organization |
+| =date= | required, before the cutoff; an undated invoice would be issued today |
+| =due_date= | optional; carried onto the invoice and its issue event for aging and dunning |
+| =terms=, =memo= | stored on the invoice's terms and notes |
+| =amount= | the gross document total |
+| =net=, =tax= | income before tax and its frozen tax |
+| =paid= | received before the cutoff |
+| =balance= | optional; must equal the total less =paid= |
+| =currency=, =tax_exempt=, =tax_exempt_reason= | |
+
+One total rule serves import and reconcile: with =net=, the total is
+=net + tax= and an =amount= given as well must equal it; with only
+=amount=, the total is =amount= and =net= is =amount - tax=. A zero total is
+refused. =paid= must be at least zero and below the total (rule
+=open-ar-balance=); the open balance is total less paid.
+
+A negative total is money owed back to the customer and imports as an
+unapplied opening customer credit note of that size; it may not carry =paid=
+or =tax=. No terms-to-due-date calculation is made: VENTURE has no payment
+terms helper, so give =due_date=.
+
+** open_ap
+
+| Field | |
+|-------+-|
+| =source_id=, =number=, =date= | required; =date= before the cutoff; bill numbers are unique per organization, not per vendor |
+| =vendor_source_id= / =vendor_name= | one required |
+| =due_date=, =memo=, =currency= | optional |
+| =lines= | at least one (rule =open-ap-lines=): =description=, =amount= (net, positive), =tax= (frozen, nonnegative), =account_code= or =category= |
+| =paid= | paid before the cutoff; nonnegative and below the lines' total (rule =open-ap-balance=) |
+| =balance= | optional; must equal lines less paid |
+
+A negative line is refused with a pointer: record a supplier credit under
+=credits= with kind =vendor=. Two vendors' bill =1001= cannot both be stored
+as =1001=; preview names both rows and suggests a distinct number.
+
+** credits
+
+| Field | |
+|-------+-|
+| =source_id=, =date= (before the cutoff), =amount= (positive) | required |
+| =kind= | =customer= or =vendor=; omitted, a row with =vendor_source_id= is a vendor credit (rule =credit-identity=) |
+| =type= | =credit_note= (default) or =prepayment= |
+| party | =customer_source_id= / =customer_name= or =vendor_source_id= / =vendor_name= |
+| =number= | stored as the credit's reference (default: the source id) |
+
+A credit note stays unapplied for later settlements. A prepayment -- a
+retainer received, or a deposit paid, with no document yet -- becomes an
+unapplied receipt or payment dated at the cutoff (its reference keeps the
+source date) with its cash offset against clearing, so it can later settle
+an invoice or bill or be refunded like any deposit. A credit may not carry
+=tax=: its tax was reported by the source system.
+
+A credit larger than the open documents its party has in the payload is a
+preview warning (rule =credit-within-open-balance=), not a refusal: a
+customer's retainer with no invoice is an ordinary unapplied balance.
+
+** bank_balances
+
+=source_id= and =name= are required; =account_code= defaults to =1000=;
+=amount= is signed. A negative balance -- a credit card owing, an overdraft
+-- credits the account. More than one row without =account_code= is
+refused as ambiguous, as is a repeated name. Several rows may name the same
+GL account explicitly; they are reconciled as one per-account total. A bank
+account record with the same name and GL account is reused, so a corrected
+batch does not grow a second "Checking".
+
+** assets
+
+| Field | |
+|-------+-|
+| =source_id=, =cost=, =in_service_at= (before the cutoff), =useful_life_months= (1-1200) | required |
+| =tag=, =name= | default to the source id; tags are unique per organization |
+| =category=, =salvage= (0 to cost), =acquired_at= (on or before service) | optional |
+| =method= | =straight_line= (default), =declining_balance= or =none= |
+| =accumulated_depreciation= | 0 to cost less salvage (rule =opening-accumulated-within-basis=) |
+| =asset_account_code=, =accumulated_depreciation_account_code=, =depreciation_expense_account_code= | required, must exist |
+
+Placed through =venture_asset_service_import_opening()= against clearing.
+History is not recomputed: one opening journal at the cutoff debits cost and
+credits accumulated depreciation and clearing for net book value, and one
+posted =depreciation_entry= for the month holding the last instant before the
+cutoff carries the accumulated amount. That month and every earlier one are
+history; the remaining depreciable amount (cost less salvage less
+accumulated) is spread over the months of life left, from the month after, so
+the first post-cutover run continues from the source register. An asset past
+its life keeps its residual value until disposed. No tax schedule is
+created.
+
+** inventory
+
+=source_id=, =sku=, =quantity= (a positive whole number) and =unit_cost=
+(positive money) are required; =location= chooses between inventory items
+sharing a SKU, and =currency= applies as elsewhere. The item must already
+exist -- items belong to products, and products are not opening balances -- so
+an unknown or ambiguous SKU is a located error.
+
+Stock is received through =venture_inventory_service_receive()= at the cutoff,
+creating a FIFO cost layer post-cutover sales consume like any purchase. The
+receipt debits inventory and credits goods received not invoiced; a batch
+journal moves that credit to clearing, because nothing was received from a
+supplier. Reconcile compares quantity times unit cost with the receipt, and
+the trial balance's inventory row with the ledger.
+
+** trial_balance
+
+=account_code= (required, mapped), optional =name=, =currency=, and =debit=
+and/or =credit= (nonnegative, one currency). An account may appear once per
+currency. Debits must equal credits in every currency; the difference is
+reported. See [[The trial balance]].
+
+** Modules
+
+A non-empty section whose owner is switched off refuses the whole payload at
+preview, rather than importing it partially: =open_ar= needs invoicing and
+receivables, =open_ap= and vendor credits need payables, customer credits
+need receivables, =assets= need the assets module and =inventory= needs
+goods. List what cannot be imported under =unsupported=.
+
+* CSV
+
+Most source systems export spreadsheets. Each section has a CSV template,
+and a set of CSVs becomes exactly the payload JSON above, previewed like any
+other payload: every rule, located problem and the strict money grammar
+still apply. The CSV path is a second way to write a payload, not a second
+importer.
+
+| Section         | Columns |
+|-----------------+---------|
+| =customers=, =vendors= | source_id, name, email, phone, website, address, external_id, terms, tax_exempt |
+| =chart=         | code, name, kind, active |
+| =account_map=   | source_code, venture_code |
+| =open_ar=       | source_id, customer_source_id, customer_name, number, date, due_date, terms, currency, amount, net, tax, paid, balance, tax_exempt, tax_exempt_reason, memo |
+| =open_ap=       | source_id, vendor_source_id, vendor_name, number, date, due_date, currency, paid, balance, memo, line_description, line_amount, line_tax, line_account_code, line_category |
+| =credits=       | source_id, kind, type, customer_source_id, customer_name, vendor_source_id, vendor_name, number, date, currency, amount |
+| =bank_balances= | source_id, name, account_code, currency, amount |
+| =assets=        | source_id, tag, name, category, currency, cost, salvage, accumulated_depreciation, in_service_at, acquired_at, method, useful_life_months, asset_account_code, accumulated_depreciation_account_code, depreciation_expense_account_code |
+| =trial_balance= | account_code, name, currency, debit, credit |
+| =inventory=     | source_id, sku, location, quantity, unit_cost, currency |
+
+Headers match as the generic CSV importer's do: case, spaces and dashes do
+not matter (=Due date= is =due_date=). Files are RFC 4180, parsed by the same
+parser as =/e/:type/import=. Every non-empty cell becomes a string member, so
+the payload rules judge it. =open_ap= has one CSV row per bill line: rows
+sharing a =source_id= are one bill, the bill columns taken from its first row;
+a later row's bill columns must be empty or agree. An unknown column (a
+misspelling would drop a figure silently), an unknown section, a row wider
+than its header, an incomplete =account_map= row and more than 5,000 data
+rows in a file are refused together, before preview.
+
+| Route | |
+|-------+-|
+| =GET /cutover/template/:section=, =GET /api/v1/accounting_cutovers/template/:section= | the header row as =cutover-SECTION.csv= |
+| =POST /cutover/csv= | multipart form from the batch page: =source=, =cutoff=, =currency= (and the separators and clearing code) plus one file per section; redirects to the new batch |
+| =POST /api/v1/accounting_cutovers/csv= | JSON: the same settings plus =files= mapping section to CSV text; returns the previewed batch, or with ="build_only": true= the payload without creating a batch |
+
+All require an editor and the cutover module, and preview into the selected
+legal entity.
+
+#+begin_src sh
+venturectl cutover template open_ap > open_ap.csv
+venturectl cutover csv source=quickbooks cutoff=2026-01-01 currency=USD \
+  vendors=@vendors.csv open_ap=@open_ap.csv trial_balance=@tb.csv
+venturectl cutover csv source=generic cutoff=2026-01-01 open_ar=@ar.csv build_only=true
 #+end_src
 
-* Credits
+The CLI reads the files and sends their text; the server parses and validates
+them exactly as it would an upload.
 
-Each =credits= row is a =credit_note= created through the receivables or
-payables service: =kind= must be =customer= with =customer_source_id=, or
-=vendor= with =vendor_source_id=; omitting =kind= still infers vendor when
-=vendor_source_id= is present. It carries =date=, =amount= and an optional
-=number= stored as the reference, and remains unapplied so later settlements
-can use it. A credit larger than its counterpart's open balance after the AR
-and AP imports is refused (=credit-within-open-balance=). Customer credits
-need receivables; vendor credits need payables.
+* Preview: the write-free validation pass
 
-#+begin_src json
-{"credits": [{"source_id": "cr-1", "kind": "customer", "customer_source_id": "cust-1",
-  "number": "CN-1", "date": "2025-12-20", "amount": "20 USD"}]}
-#+end_src
+Preview parses the whole payload once and collects every problem instead of
+stopping at the first. A payload that cannot be read at all -- unknown
+source, missing or future cutoff, bad separators, a section that is not an
+array, a module switched off for a non-empty section, more than 5,000 rows
+-- is refused and no batch is created. Everything row-shaped is recorded:
 
-* Fixed assets
+- one =accounting_cutover_row= per source row of =open_ar=, =open_ap=,
+  =credits=, =bank_balances=, =assets=, =inventory= and =trial_balance=, status =preview=
+  or =exception=, with its errors and warnings in =exception=;
+- the batch report lists every problem located as
+  =open_ap[12] bill-9: amount …=, followed by the unsupported fields.
 
-Each =assets= row is placed through =venture_asset_service_import_opening()=
-with =cost=, optional =salvage=, =in_service_at=, optional =acquired_at=,
-=method= (=straight_line=, =declining_balance= or =none=),
-=useful_life_months= and =accumulated_depreciation= to the cutoff. The three
-account codes =asset_account_code=, =accumulated_depreciation_account_code=
-and =depreciation_expense_account_code= must exist in the chart; the module
-seeds none. History is not recomputed: one opening journal dated at the
-cutoff debits the asset account for cost and credits accumulated
-depreciation and equity 3000 for net book value, and one posted
-=depreciation_entry= for the cutoff month carries the accumulated amount so
-the register, disposals and reports see it. The month holding the last
-instant before the cutoff, and every earlier month, is history; the schedule
-resumes with the month after it, and the remaining depreciable amount
-(cost less salvage less accumulated) is spread over the months of life that
-remain, so the first post-cutover run continues from the cutoff. An asset
-past its life keeps its residual value until disposed. In-service dates
-after the cutoff and accumulated amounts outside zero to cost less salvage
-are refused (=opening-accumulated-within-basis=). No tax schedule is created.
+Preview checks, besides every field rule above: duplicate =source_id=
+within a section (a copy-pasted id silently imported one row and reconciled
+against two); duplicate invoice or bill numbers and asset tags within the
+payload and against existing documents (a rolled-back batch's numbers are
+free, see [[Rollback]]); ambiguous party matches; missing account codes;
+rows another live batch already imported (warning: this batch will skip
+them); the clearing account being usable; the credit cap (warning); and a
+predicted reconcile of the trial balance: what each control account will
+hold once the subledgers are imported, against the trial balance's figure
+(warning, with both amounts).
 
-#+begin_src json
-{"assets": [{"source_id": "as-1", "tag": "LAPTOP-1", "name": "Laptop",
-  "cost": "3600 USD", "in_service_at": "2025-01-01", "method": "straight_line",
-  "useful_life_months": 36, "accumulated_depreciation": "1250 USD",
-  "asset_account_code": "1500", "accumulated_depreciation_account_code": "1590",
-  "depreciation_expense_account_code": "6850"}]}
-#+end_src
+Import re-runs the same parse and refuses before its first write while any
+error remains, listing up to twenty located errors and a count.
 
-* Reconciling and rolling back the three
+The batch is limited to 5,000 rows across =chart=, =customers=, =vendors=
+and the seven opening sections, the generic CSV importer's limit; the refusal
+suggests splitting the migration into batches.
 
-Reconcile compares the payload's open AP (=lines - paid= per bill) with the
-approved bills' balances, the credit amounts with the unapplied =remaining=
-balances, and =cost - accumulated_depreciation= with the register's net book
-value at the cutoff, in addition to the per-journal trial balance, AR and
-bank checks. Any drift, such as a payment recorded after import, fails
-reconcile and so blocks activation.
+** No transactional dry run
 
-Rollback keeps every imported row and marks it =rolled_back=. Opening
-journals, including the asset openings and payment offsets, are reversed by
-reversing journals dated at the cutoff. An opening payment is refunded to
-its allocation and the bill is voided through the payables service; credit
-postings are reversed and remaining is refreshed to zero so the credit cannot
-be allocated onto a later bill or invoice; the asset's remaining schedule is
-skipped and the asset is written off at the cutoff without a second journal.
-AP, credits and asset net book value net to zero and nothing posted is
-deleted. Everything runs inside the single cutover transaction: a failure
-after the first bill is written leaves no bill, payment, credit, asset or
-journal behind. Reimport of the same source ids is a no-op only while those
-rows are not rolled back; unique bill numbers and asset tags still occupy the
-voided and written-off records.
+A dry run of import and reconcile inside a transaction that is always rolled
+back was considered and not shipped. Saving a record emits =audit= and
+=entity-saved= synchronously inside the transaction: outbound webhooks start
+their HTTP POST from the =audit= handler and automation pods fire on
+=entity-saved=, and neither is deferred to commit. A dry run would announce
+invoices and bills to external systems that the rollback then erased.
+Preview's predicted reconcile covers the same ground without writes.
+
+* Import
+
+Import requires a =preview= or =imported= batch, re-validates, and then in
+one transaction: creates the clearing account and =chart= accounts, imports
+=open_ar=, =open_ap=, =credits=, =bank_balances=, =assets=, =inventory=
+and the trial balance, and sets the batch =imported=.
+
+For every row it first checks ownership. A source id this batch already
+imported is done (re-running import is a no-op). A source id another live
+batch imported is recorded here as a =skipped= row naming the owner, and is
+left out of this batch's reconcile expectations. Rows record what was
+written: =company= (=imported= or =matched=), =invoice=, =vendor_bill=,
+=customer_credit=, =vendor_credit=, =payment= or =bill_payment= (opening
+payments as =open_ar_payment= / =open_ap_payment=, prepayments under
+=credit=), =bank_account=, =fixed_asset=, =inventory_txn= and the trial
+balance =journal=.
+
+* Reconcile
+
+Reconcile compares figures *as of the opening*: every journal and
+subledger event strictly before the cutoff instant, plus the opening
+postings at it. Activity recorded in VENTURE at or after the cutoff is the
+new books, not drift: a receipt dated on the cutoff day is January's cash,
+so it is left out of both sides. At the cutoff instant a journal counts when
+it was posted for a live batch -- the batch's own journals, and the issue,
+approval, credit and payment postings of records a live batch imported.
+Opening journals of a rolled-back batch and their reversals drop out, so a
+corrected batch is not compared against the one it replaced.
+
+Every total is kept per currency and never netted.
+
+Subledger checks, over this batch's imported rows (rows owned by other
+batches are listed and not counted):
+
+- =open_ar CUR=: each row's open balance against the invoice's balance as of
+  the opening (issue, less allocations before the cutoff and the opening
+  receipt); a negative row against its credit's unapplied amount.
+- =open_ap CUR=: the same for bills.
+- =credits CUR=: each amount against the credit's or prepayment's unapplied
+  amount as of the opening.
+- =assets CUR=: cost less accumulated against the register's net book value
+  (cost less depreciation posted on or before the cutoff).
+- =inventory CUR=: quantity times unit cost against the opening receipt.
+
+Ledger checks, over the whole payload against the opening ledger:
+
+- =bank ACCOUNT CUR=: the sum of the bank rows mapped to each GL account.
+- With a trial balance, =trial_balance ACCOUNT [(control)] CUR= for every
+  row: a control account proves its subledger, any other account proves the
+  trial balance journal.
+- A control account holding a balance the trial balance does not name fails
+  as =missing from the trial balance=.
+- =clearing 3900 CUR= must be zero in every currency the trial balance or
+  clearing uses. When everything passes, the report says
+  "Trial balance ties at cutoff".
+
+The report is appended, never overwritten: each run adds a dated block with
+=PASS= or =FAIL= lines of expected, subledger or ledger, and difference, in
+formatted amounts with their currency; up to the first failing rows under
+each failing check (=open_ap[1] bill-2: expected 200.00 USD, subledger
+100.00 USD, difference -100.00 USD=); rows owned by other batches; notes; and
+=Result: reconciled= or =FAILED=. A failed run is saved before the refusal,
+whose message names the first three failing checks, and a =reconciled= batch
+that no longer reconciles returns to =imported=.
+
+* Activate
+
+Activation requires =reconciled=, re-runs reconcile against the books as
+they are now (appending its block) and refuses -- returning the batch to
+=imported= -- if anything drifted since. It then closes, in order, every open
+fiscal period that ends at or before the cutoff, through the ordinary period
+close (checklist and snapshots included), so nothing can later be posted
+underneath the opening balances, and sets =active= with =activated_at=. An
+active batch is the books and cannot be rolled back.
+
+* Rollback
+
+=rollback_preflight= walks the rollback without writing and lists every
+blocker; the action appends them to the report as =BLOCKER= lines (or "No
+blockers"). Rollback runs the same walk first and refuses with the whole
+list, changing nothing, if any blocker exists. Repeating a completed rollback
+is a no-op: it never reverses a reversal.
+
+The walk, inside one transaction, in this order:
+
+1. *Cash on imported documents.* Every cash allocation on an imported
+   invoice or bill -- the opening receipt or payment, or a real one recorded
+   after the cutoff -- is refunded for what is still applied, dated at the
+   document's latest event (never before the cutoff): allocations are
+   immutable, and a refund may not precede a later event on the same
+   document. A real receipt or payment is then recorded again as an unapplied
+   deposit on the same date, method and a =Cutover rollback: unapplied from
+   NUMBER= reference: that cash really moved, and the bank statement still
+   shows it.
+2. *Imported payments.* An opening receipt, payment or prepayment applied to
+   a document outside the batch is refunded there at that document's latest
+   event; whatever is still unused is refunded at its latest allocation.
+3. *Imported credit notes.* The opening posting is reversed at the latest
+   date the credit was applied (never before the cutoff) and its remaining
+   balance refreshed to zero, so it can never settle a later document.
+4. *Void.* Every imported invoice and bill is voided through its service's
+   opening void at its latest event, reversing its opening journal exactly as
+   posted, and its number gets the suffix =-rb<batch id>=. An allocation from
+   a credit note reversed in step 3 no longer blocks the void.
+5. *Batch journals.* Every journal the batch posted itself -- bank balances,
+   trial balance, payment offsets, asset openings -- is reversed at the
+   cutoff.
+6. *Assets and stock.* Depreciation (book and tax) posted after the cutoff is
+   reversed at its own date; the asset is then retired through
+   =venture_asset_service_rollback_opening()= at the latest of those dates,
+   its remaining schedule skipped and its tag suffixed =-rb<batch id>=.
+   Imported stock goes back out through =venture_inventory_service_restore()=
+   at the item's latest movement, reversing inventory against goods received
+   not invoiced; the batch journal of step 5 already moved that back from
+   clearing.
+
+Every row is marked =rolled_back= and the batch =rolled_back=. Nothing is
+deleted; companies and bank accounts stay and are matched by a corrected
+batch. With the numbers and tags freed, a corrected payload imports again as
+a new batch.
+
+Blockers, which only a person can resolve:
+
+- the batch is =active=;
+- a credit note or write-off *from outside the batch* applied to an imported
+  document: an applied credit cannot be unapplied;
+- an imported credit note applied to a document *outside the batch*, or
+  refunded as cash;
+- an imported prepayment or opening payment whose unused credit was refunded
+  as cash;
+- an imported asset no longer in service (disposed or written off);
+- imported stock of which fewer units are on hand than were imported (sold
+  or moved after the cutoff);
+- any unwinding date in a closed or locked period, named with the period's
+  refusal.
+
+* Schema
+
+Migration =000360_cutover_opening_marks.sql= is paired for SQLite and
+PostgreSQL. =opening_at= on =invoices=, =vendor_bills=, =customer_credits=
+and =vendor_credits= comes from additive field metadata; the script verifies
+the column on each table that exists and accepts a table left absent by a
+disabled module. Existing documents keep =NULL= -- nothing issued before this
+release is reclassified as an opening balance.
+
+* Verification
+
+=test-cutover= covers: the opening posting rule on a July cutover with March
+receivables and a closed March (no income, expense or tax; journals at the
+cutoff; tax liability empty; the service-owned stamp); trial balance ties and
+mismatches with per-account differences and the clearing check; mixed USD
+and EUR; located preview problems including JSON numbers, integer numbers,
+numeric strings, non-object rows, duplicate ids and cross-vendor bill numbers;
+the strict money grammar and declared separators; parties matched by
+normalised name and external ID, created with their details, and ambiguous
+names; open AR dates, due dates, paid amounts and the one total rule;
+prepayments, negative bank and receivable rows; per-account bank totals;
+post-cutover receipts not counting as drift; drift before the cutoff failing
+reconcile with row evidence; activation re-checking and closing periods;
+rollback unwinding a credit, a real payment and January depreciation;
+preflight blockers for a foreign credit note and a closed period; a failure
+after the first documents leaving nothing; reimport after rollback with
+numbers and tags reused and rows owned by another batch; the row limit; the
+module switch; opening stock received, reconciled and returned on rollback,
+and stock sold after the cutoff blocking it; CSV templates and CSV to payload
+with grouped bill lines,
+account_map and refused columns; and the pages and routes, including that
+preview uses the selected legal entity and that anonymous requests to every
+cutover route are refused (=test-auth=).

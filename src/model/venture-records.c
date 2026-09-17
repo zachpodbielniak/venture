@@ -2802,7 +2802,12 @@ static const VentureFieldDecl venture_invoice_fields[] = {
 	VENTURE_FIELD("dunning-paused-until", "Reminders paused until", "Promise to pay: no reminder for this invoice before this date",
 		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("dunning-pause-reason", "Pause reason", "Why reminders are paused",
-		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	/* Set only by VentureSettlementService for a migrated invoice: the cutoff
+	 * its journal posts at. Tax filing and cash-report sales skip such an
+	 * invoice, because its revenue and tax belong to the source system. */
+	VENTURE_FIELD("opening-at", "Opening balance at", "Cutover instant a migrated invoice entered the ledger",
+		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY(VentureInvoice, venture_invoice, venture_invoice_fields)

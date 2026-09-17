@@ -54,6 +54,17 @@ static gboolean reject_projection_journal(VentureDatabase *db, VentureEntity *jo
 static gboolean check_bill_edit(VenturePayablesService *self, VentureEntity *record,
 	VentureEntity *previous, GError **error);
 
+/* How a migrated bill or credit reaches the ledger: at the cutover instant,
+ * against opening clearing, never against expense or recoverable tax. The
+ * source system already expensed it; a second expense on the bill date would
+ * land in a period this organization may have closed or already filed. */
+typedef struct
+{
+	GDateTime *opening_at;
+	gint64 clearing_account;
+	const gchar *number_suffix;
+} OpeningPosting;
+
 static gboolean
 refuse(GError **error, VentureError code, const gchar *message)
 {
@@ -426,8 +437,10 @@ within(const VentureMoney *amount, const VentureMoney *available, GError **error
 	return TRUE;
 }
 
+/* @effective, when set, is the instant the record reaches the ledger. A
+ * migrated event keeps its source date but is judged at the cutover. */
 static gboolean
-write_record(VenturePayablesService *self, VentureEntity *record,
+write_record_at(VenturePayablesService *self, VentureEntity *record, GDateTime *effective,
 	const VentureActor *actor, GError **error)
 {
 	gboolean ok;
@@ -435,7 +448,10 @@ write_record(VenturePayablesService *self, VentureEntity *record,
 	if (!venture_entity_is_persisted(record) && g_object_class_find_property(G_OBJECT_GET_CLASS(record), "date") != NULL)
 	{
 		g_autoptr(GDateTime) date = NULL;
-		g_object_get(record, "date", &date, NULL);
+		if (effective != NULL)
+			date = g_date_time_ref(effective);
+		else
+			g_object_get(record, "date", &date, NULL);
 		if (!venture_period_guard_is_postable(VENTURE_PERIOD_GUARD(venture_database_get_period_guard(self->database)),
 			self->database, venture_entity_get_organization_id(record), date, error))
 			return FALSE;
@@ -446,6 +462,23 @@ write_record(VenturePayablesService *self, VentureEntity *record,
 	ok = venture_database_save(self->database, record, actor, error);
 	self->writing = NULL;
 	return ok;
+}
+
+static gboolean
+write_record(VenturePayablesService *self, VentureEntity *record,
+	const VentureActor *actor, GError **error)
+{
+	return write_record_at(self, record, NULL, actor, error);
+}
+
+static gboolean
+opening_record(VentureEntity *record)
+{
+	g_autoptr(GDateTime) opening = NULL;
+	if (record == NULL)
+		return FALSE;
+	g_object_get(record, "opening-at", &opening, NULL);
+	return opening != NULL;
 }
 
 gboolean
@@ -616,6 +649,41 @@ post(VenturePayablesService *self, VentureEntity *source, GDateTime *date,
 			"amount", amount, "occurred-at", date,
 			"source-type", venture_entity_get_entity_name(source), "source-id", venture_entity_get_id(source), NULL);
 		venture_entity_set_organization_id(VENTURE_ENTITY(entry), venture_entity_get_organization_id(source));
+		g_ptr_array_add(entries, entry);
+	}
+	return venture_payables_post_batch(self, entries, actor, error);
+}
+
+/* Payables against opening clearing at the cutover instant. */
+static gboolean
+post_opening(VenturePayablesService *self, VentureEntity *source, GDateTime *date,
+	const VentureMoney *amount, gint64 clearing, gboolean credit_payable,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(GPtrArray) entries = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autofree gchar *transaction = NULL;
+	gint64 payable, org = venture_entity_get_organization_id(source);
+	guint i;
+
+	if (!check_amount(amount, error))
+		return FALSE;
+	if (clearing <= 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening document needs an opening clearing account");
+	payable = account_id(self, self->payable_account, "2000", VENTURE_ACCOUNT_KIND_LIABILITY, org, error);
+	if (payable == 0)
+		return FALSE;
+	transaction = g_strdup_printf("payables:%s:%s:opening", venture_entity_get_entity_name(source),
+		venture_entity_get_uuid(source));
+	for (i = 0; i < 2; i++)
+	{
+		VentureLedgerEntry *entry = venture_ledger_entry_new();
+		gboolean debit = i == 0;
+		g_object_set(entry, "transaction-id", transaction,
+			"account-id", (debit == credit_payable) ? clearing : payable,
+			"side", debit ? VENTURE_LEDGER_SIDE_DEBIT : VENTURE_LEDGER_SIDE_CREDIT,
+			"amount", amount, "occurred-at", date,
+			"source-type", venture_entity_get_entity_name(source), "source-id", venture_entity_get_id(source), NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(entry), org);
 		g_ptr_array_add(entries, entry);
 	}
 	return venture_payables_post_batch(self, entries, actor, error);
@@ -814,7 +882,7 @@ post_bill(VenturePayablesService *self, VentureEntity *bill, VentureEntity *even
 
 static gboolean
 perform_transition(VenturePayablesService *self, VentureEntity *bill, VentureVendorBillEvent *request,
-	const gchar *state, GDateTime *date, const VentureActor *actor, GError **error)
+	const gchar *state, GDateTime *date, const OpeningPosting *opening, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) previous = NULL;
 	g_autoptr(VentureEntity) issued = NULL;
@@ -835,9 +903,20 @@ perform_transition(VenturePayablesService *self, VentureEntity *bill, VentureVen
 		return FALSE;
 	old_phase = bill_phase(previous);
 	if ((approval && old_phase != VENTURE_VENDOR_BILL_STATUS_DRAFT) ||
-		(!approval && (g_strcmp0(state, "void") != 0 || old_phase != VENTURE_VENDOR_BILL_STATUS_SENT)))
+		(!approval && (g_strcmp0(state, "void") != 0 || (old_phase != VENTURE_VENDOR_BILL_STATUS_SENT &&
+			!(opening != NULL && (old_phase == VENTURE_VENDOR_BILL_STATUS_PARTIALLY_PAID ||
+				old_phase == VENTURE_VENDOR_BILL_STATUS_PAID))))))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Approve a draft or void an unpaid approved bill");
+	/* An ordinary void would post the reversal against expense, and an
+	 * ordinary approval of a stamped bill would expense it: both must go
+	 * through the opening path. */
+	if (opening == NULL && opening_record(previous))
+		return refuse(error, VENTURE_ERROR_VALIDATION,
+			"A migrated opening bill cannot be voided; credit it, or roll back its cutover batch");
 	g_object_get(bill, "bill-date", &earliest, "due-date", &due, NULL);
+	if (opening != NULL && approval && (opening->opening_at == NULL || earliest == NULL ||
+		g_date_time_compare(earliest, opening->opening_at) >= 0))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening bill must be dated before its cutover instant");
 	if (!check_date(date, earliest, error) || !check_bill_chronology(self, venture_entity_get_id(bill), date, error))
 		return FALSE;
 	if (approval && !venture_purchasing_check_bill_approval(self->database, bill, error))
@@ -851,7 +930,40 @@ perform_transition(VenturePayablesService *self, VentureEntity *bill, VentureVen
 			return refuse(error, VENTURE_ERROR_VALIDATION, "The bill has no approval event");
 		g_object_get(issued, "amount", &total, NULL);
 		balance = venture_payables_service_bill_balance(self, venture_entity_get_id(bill), NULL, error);
-		if (balance == NULL || !venture_money_equal(balance, total))
+		if (balance == NULL)
+			return FALSE;
+		/* A rollback may void a bill settled by an opening vendor credit of
+		 * the same migration once that credit's posting is reversed: the
+		 * allocation then carries no balance in the ledger. */
+		if (opening != NULL && !venture_money_equal(balance, total))
+		{
+			g_autoptr(GPtrArray) allocations = find_rows(self, VENTURE_TYPE_BILL_PAYMENT_ALLOCATION, "bill-id",
+				venture_entity_get_id(bill), NULL, error);
+			guint a;
+			if (allocations == NULL)
+				return FALSE;
+			for (a = 0; a < allocations->len; a++)
+			{
+				VentureEntity *allocation = g_ptr_array_index(allocations, a);
+				g_autoptr(VentureEntity) credit = NULL;
+				if (get_id(allocation, "credit-id") == 0)
+					continue;
+				credit = venture_database_get(self->database, VENTURE_TYPE_VENDOR_CREDIT, get_id(allocation, "credit-id"), error);
+				if (credit == NULL)
+					return FALSE;
+				if (get_id(credit, "payment-id") != 0 ||
+					!venture_posting_service_source_has_reversal(venture_database_get_posting_service(self->database),
+						"vendor_credit", venture_entity_get_id(credit), venture_entity_get_organization_id(credit), error))
+				{
+					if (error != NULL && *error != NULL)
+						return FALSE;
+					continue;
+				}
+				if (!accumulate_record(&balance, allocation, FALSE, error))
+					return FALSE;
+			}
+		}
+		if (!venture_money_equal(balance, total))
 			return refuse(error, VENTURE_ERROR_VALIDATION, "Only an unpaid bill can be voided");
 	}
 	if (total == NULL)
@@ -861,7 +973,48 @@ perform_transition(VenturePayablesService *self, VentureEntity *bill, VentureVen
 		"date", date, "kind", approval ? "issue" : "void", "state", state,
 		"due-date", due, "amount", total, "venture-id", get_id(bill, "venture-id"), NULL);
 	venture_entity_set_organization_id(VENTURE_ENTITY(event), venture_entity_get_organization_id(bill));
-	if (!check_vendor(self, VENTURE_ENTITY(event), error) || !write_record(self, VENTURE_ENTITY(event), actor, error) ||
+	if (!check_vendor(self, VENTURE_ENTITY(event), error))
+		return FALSE;
+	if (opening != NULL && approval)
+	{
+		if (!write_record_at(self, VENTURE_ENTITY(event), opening->opening_at, actor, error) ||
+			!post_opening(self, VENTURE_ENTITY(event), opening->opening_at, total, opening->clearing_account, TRUE, actor, error))
+			return FALSE;
+		g_object_set(bill, "opening-at", opening->opening_at, NULL);
+	}
+	else if (opening != NULL)
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_JOURNAL);
+		g_autoptr(VentureEntity) journal = NULL;
+		g_autoptr(VentureJournal) reversal = NULL;
+		/* Reverse the approval exactly as posted, to clearing. */
+		venture_query_set_organization(query, venture_entity_get_organization_id(bill));
+		if (!write_record(self, VENTURE_ENTITY(event), actor, error) ||
+			!venture_query_add_filter_string(query, "source-type", VENTURE_FILTER_OP_EQ, "vendor_bill_event", error) ||
+			!venture_query_add_filter_int(query, "source-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(issued), error) ||
+			!venture_query_add_filter_int(query, "reverses-id", VENTURE_FILTER_OP_EQ, 0, error))
+			return FALSE;
+		journal = venture_database_find_one(self->database, query, error);
+		if (journal == NULL)
+		{
+			if (error != NULL && *error != NULL)
+				return FALSE;
+			return refuse(error, VENTURE_ERROR_VALIDATION, "The opening bill has no approval journal to reverse");
+		}
+		reversal = venture_posting_service_reverse(venture_database_get_posting_service(self->database),
+			venture_entity_get_id(journal), date, "Cutover rollback", actor, error);
+		if (reversal == NULL)
+			return FALSE;
+		if (opening->number_suffix != NULL)
+		{
+			g_autofree gchar *number = NULL;
+			g_autofree gchar *renamed = NULL;
+			g_object_get(bill, "number", &number, NULL);
+			renamed = g_strconcat(number != NULL ? number : "", opening->number_suffix, NULL);
+			g_object_set(bill, "number", renamed, NULL);
+		}
+	}
+	else if (!write_record(self, VENTURE_ENTITY(event), actor, error) ||
 		!post_bill(self, bill, VENTURE_ENTITY(event), date, approval, actor, error))
 		return FALSE;
 	g_object_set(bill, "status", state, NULL);
@@ -883,7 +1036,7 @@ venture_payables_service_transition(VenturePayablesService *self,
 	if (!begin_operation(self, "vendor_bill", error))
 		return FALSE;
 	original = snapshot(VENTURE_ENTITY(bill));
-	ok = perform_transition(self, VENTURE_ENTITY(bill), NULL, state, date, actor, error);
+	ok = perform_transition(self, VENTURE_ENTITY(bill), NULL, state, date, NULL, actor, error);
 	ok = finish_operation(self, ok, error);
 	if (ok) ok = venture_accounting_operation_finish(operation, error);
 	if (!ok)
@@ -1108,6 +1261,8 @@ perform_credit(VenturePayablesService *self, VentureEntity *credit,
 
 	if (venture_entity_is_persisted(credit))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Credits and their derived remaining balances are immutable");
+	if (opening_record(credit))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening credit is created by the cutover through VenturePayablesService");
 	g_object_get(credit, "amount", &amount, "date", &date, "kind", &kind, NULL);
 	if (g_strcmp0(kind, "credit_note") != 0 || get_id(credit, "payment-id") != 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Create a payment for a deposit or overpayment; only credit_note may be entered directly");
@@ -1344,10 +1499,16 @@ check_bill_edit(VenturePayablesService *self, VentureEntity *record,
 	static const gchar *const financial[] = {
 		"company_id", "organization_id", "venture_id", "bill_date", "due_date", "number", "currency", "deleted_at", NULL
 	};
+	static const gchar *const service_owned[] = { "opening_at", NULL };
 	gint phase = bill_phase(record);
 	gint old = previous != NULL ? bill_phase(previous) : VENTURE_VENDOR_BILL_STATUS_DRAFT;
 	if (phase < 0 || phase != old)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Financial status is derived; approve, pay or void through VenturePayablesService");
+	/* The opening stamp decides whether a bill is expensed here or was
+	 * expensed by the source system; only the cutover sets it. */
+	if ((previous == NULL && opening_record(record)) ||
+		(previous != NULL && has_changed(previous, record, service_owned)))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Opening balance marks are set by the cutover through VenturePayablesService");
 	if (previous != NULL && old != VENTURE_VENDOR_BILL_STATUS_DRAFT && has_changed(previous, record, financial))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "The approved bill's vendor, amount, currency and dates are frozen");
 	return TRUE;
@@ -1412,7 +1573,9 @@ venture_payables_check_removal(VentureDatabase *database, VentureEntity *record,
 				return FALSE;
 			bill = parent;
 		}
-		g_object_get(bill, "bill-date", &date, NULL);
+		g_object_get(bill, "opening-at", &date, NULL);
+		if (date == NULL)
+			g_object_get(bill, "bill-date", &date, NULL);
 		if (!venture_period_guard_is_postable(VENTURE_PERIOD_GUARD(venture_database_get_period_guard(database)),
 			database, venture_entity_get_organization_id(bill), date, error))
 			return FALSE;
@@ -1486,7 +1649,10 @@ venture_payables_save_hook(VentureDatabase *database, VentureEntity *record,
 					return FALSE;
 				bill = parent;
 			}
-			g_object_get(bill, "bill-date", &date, NULL);
+			/* A migrated bill reached the ledger at its cutover instant. */
+			g_object_get(bill, "opening-at", &date, NULL);
+			if (date == NULL)
+				g_object_get(bill, "bill-date", &date, NULL);
 			if (!venture_period_guard_is_postable(VENTURE_PERIOD_GUARD(venture_database_get_period_guard(database)),
 				database, venture_entity_get_organization_id(bill), date, error))
 				return FALSE;
@@ -1518,7 +1684,7 @@ venture_payables_save_hook(VentureDatabase *database, VentureEntity *record,
 			return FALSE;
 		original = snapshot(record);
 		ok = perform_transition(self, bill, VENTURE_VENDOR_BILL_EVENT(record),
-			g_str_equal(kind, "approve") ? "approved" : "void", date, actor, error);
+			g_str_equal(kind, "approve") ? "approved" : "void", date, NULL, actor, error);
 		ok = finish_operation(self, ok, error);
 		if (ok) ok = venture_accounting_operation_finish(operation, error);
 		if (!ok)
@@ -1652,6 +1818,191 @@ venture_payables_service_vendor_balance(VenturePayablesService *self,
 		}
 	}
 	return g_steal_pointer(&total);
+}
+
+static gboolean
+perform_approve_opening(VenturePayablesService *self, VentureEntity *bill, GPtrArray *lines,
+	const OpeningPosting *opening, const VentureActor *actor, GError **error)
+{
+	g_autoptr(GDateTime) date = NULL;
+	guint i;
+	if (venture_entity_is_persisted(bill) || bill_phase(bill) != VENTURE_VENDOR_BILL_STATUS_DRAFT)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening bill is written by the service from an unsaved draft");
+	if (lines == NULL || lines->len == 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "A bill requires expense lines");
+	g_object_get(bill, "bill-date", &date, NULL);
+	if (date == NULL)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening bill needs its source bill date");
+	/* Written under this service's permit so the fiscal guard judges the
+	 * cutover instant rather than a source date in a closed period. */
+	if (!write_record(self, bill, actor, error))
+		return FALSE;
+	for (i = 0; i < lines->len; i++)
+	{
+		VentureEntity *line = g_ptr_array_index(lines, i);
+		if (!VENTURE_IS_VENDOR_BILL_LINE(line) || venture_entity_is_persisted(line))
+			return refuse(error, VENTURE_ERROR_VALIDATION, "Opening bill lines must be unsaved bill lines");
+		g_object_set(line, "bill-id", venture_entity_get_id(bill), NULL);
+		venture_entity_set_organization_id(line, venture_entity_get_organization_id(bill));
+		if (!write_record(self, line, actor, error))
+			return FALSE;
+	}
+	return perform_transition(self, bill, NULL, "approved", date, opening, actor, error);
+}
+
+/**
+ * venture_payables_service_approve_opening:
+ * @self: the service
+ * @bill: an unsaved draft carrying its source number, vendor, bill and due dates
+ * @lines: (element-type VentureVendorBillLine): unsaved lines with frozen tax
+ * @opening_at: the cutover instant; the bill date must precede it
+ * @clearing_account_id: the opening balance clearing account
+ * @actor: (nullable): the audit actor
+ * @error: (out) (optional): the error
+ *
+ * Approves a migrated bill. The approval event keeps the source bill and due
+ * dates; the only journal debits @clearing_account_id and credits payables at
+ * @opening_at, and the bill is stamped with opening-at.
+ * Returns: TRUE when the draft, lines, event and journal committed together
+ */
+gboolean
+venture_payables_service_approve_opening(VenturePayablesService *self, VentureVendorBill *bill,
+	GPtrArray *lines, GDateTime *opening_at, gint64 clearing_account_id,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureEntity) original = NULL;
+	OpeningPosting opening;
+	gboolean ok;
+
+	g_return_val_if_fail(VENTURE_IS_PAYABLES_SERVICE(self), FALSE);
+	if (opening_at == NULL || clearing_account_id <= 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening bill needs its cutover instant and clearing account");
+	operation = accounting_operation(self, "payables.approve_opening", VENTURE_ENTITY(bill), lines,
+		operation_date(opening_at, "approved"), venture_entity_get_organization_id(VENTURE_ENTITY(bill)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	if (!begin_operation(self, "vendor_bill", error))
+		return FALSE;
+	opening.opening_at = opening_at;
+	opening.clearing_account = clearing_account_id;
+	opening.number_suffix = NULL;
+	original = snapshot(VENTURE_ENTITY(bill));
+	ok = perform_approve_opening(self, VENTURE_ENTITY(bill), lines, &opening, actor, error);
+	ok = finish_operation(self, ok, error);
+	if (ok)
+		ok = venture_accounting_operation_finish(operation, error);
+	if (!ok)
+		venture_entity_copy_properties_from(VENTURE_ENTITY(bill), original, FALSE);
+	return ok;
+}
+
+/**
+ * venture_payables_service_void_opening:
+ * @self: the service
+ * @bill: a migrated bill
+ * @date: the void date; on or after the cutover and every later event
+ * @number_suffix: (nullable): appended to the number so the source number can be approved again
+ * @actor: (nullable): the audit actor
+ * @error: (out) (optional): the error
+ *
+ * Voids a migrated bill during a cutover rollback by reversing its opening
+ * approval journal. Cash payments must already be refunded; allocations from
+ * opening vendor credits whose postings were reversed do not block the void.
+ * Returns: TRUE on success
+ */
+gboolean
+venture_payables_service_void_opening(VenturePayablesService *self, VentureVendorBill *bill,
+	GDateTime *date, const gchar *number_suffix, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureEntity) original = NULL;
+	OpeningPosting opening;
+	gboolean ok;
+
+	g_return_val_if_fail(VENTURE_IS_PAYABLES_SERVICE(self), FALSE);
+	if (!opening_record(VENTURE_ENTITY(bill)))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Only a migrated opening bill has an opening void");
+	operation = accounting_operation(self, "payables.void_opening", VENTURE_ENTITY(bill), NULL,
+		operation_date(date, number_suffix), venture_entity_get_organization_id(VENTURE_ENTITY(bill)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	if (!begin_operation(self, "vendor_bill", error))
+		return FALSE;
+	g_object_get(bill, "opening-at", &opening.opening_at, NULL);
+	opening.clearing_account = 0;
+	opening.number_suffix = number_suffix;
+	original = snapshot(VENTURE_ENTITY(bill));
+	ok = perform_transition(self, VENTURE_ENTITY(bill), NULL, "void", date, &opening, actor, error);
+	g_clear_pointer(&opening.opening_at, g_date_time_unref);
+	ok = finish_operation(self, ok, error);
+	if (ok)
+		ok = venture_accounting_operation_finish(operation, error);
+	if (!ok)
+		venture_entity_copy_properties_from(VENTURE_ENTITY(bill), original, FALSE);
+	return ok;
+}
+
+static gboolean
+perform_credit_opening(VenturePayablesService *self, VentureEntity *credit, GDateTime *opening_at,
+	gint64 clearing, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autoptr(GDateTime) date = NULL;
+	g_autofree gchar *kind = NULL;
+
+	if (venture_entity_is_persisted(credit))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Credits and their derived remaining balances are immutable");
+	g_object_get(credit, "amount", &amount, "date", &date, "kind", &kind, NULL);
+	if (g_strcmp0(kind, "credit_note") != 0 || get_id(credit, "payment-id") != 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening vendor credit is a credit note");
+	if (!check_amount(amount, error) || !check_date(date, NULL, error) || !check_vendor(self, credit, error))
+		return FALSE;
+	if (g_date_time_compare(date, opening_at) >= 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening credit must be dated before its cutover instant");
+	g_object_set(credit, "remaining", amount, "opening-at", opening_at, NULL);
+	return write_record_at(self, credit, opening_at, actor, error) &&
+		post_opening(self, credit, opening_at, amount, clearing, FALSE, actor, error);
+}
+
+/**
+ * venture_payables_service_credit_opening:
+ * @self: the service
+ * @credit: an unsaved vendor credit_note dated in the source system
+ * @opening_at: the cutover instant; the credit date must precede it
+ * @clearing_account_id: the opening balance clearing account
+ * @actor: (nullable): the audit actor
+ * @error: (out) (optional): the error
+ *
+ * Records an unapplied migrated vendor credit: payables debited, clearing
+ * credited at @opening_at, never general expenses.
+ * Returns: TRUE on success
+ */
+gboolean
+venture_payables_service_credit_opening(VenturePayablesService *self, VentureVendorCredit *credit,
+	GDateTime *opening_at, gint64 clearing_account_id, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureEntity) original = NULL;
+	gboolean ok;
+
+	g_return_val_if_fail(VENTURE_IS_PAYABLES_SERVICE(self), FALSE);
+	if (opening_at == NULL || clearing_account_id <= 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening credit needs its cutover instant and clearing account");
+	operation = accounting_operation(self, "payables.credit_opening", VENTURE_ENTITY(credit), NULL,
+		operation_date(opening_at, NULL), venture_entity_get_organization_id(VENTURE_ENTITY(credit)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	if (!begin_operation(self, "bill_payment", error))
+		return FALSE;
+	original = snapshot(VENTURE_ENTITY(credit));
+	ok = perform_credit_opening(self, VENTURE_ENTITY(credit), opening_at, clearing_account_id, actor, error);
+	ok = finish_operation(self, ok, error);
+	if (ok)
+		ok = venture_accounting_operation_finish(operation, error);
+	if (!ok)
+		venture_entity_copy_properties_from(VENTURE_ENTITY(credit), original, FALSE);
+	return ok;
 }
 
 gboolean

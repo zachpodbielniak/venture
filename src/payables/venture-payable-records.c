@@ -32,7 +32,9 @@ static const VentureFieldDecl credit_fields[] = {
 	VENTURE_FIELD_MONEY("remaining", "Remaining", "Derived from allocations and refunds"),
 	VENTURE_FIELD_NAME("kind", "Kind", "credit_note, deposit, or overpayment; payments create deposits and overpayments"),
 	VENTURE_FIELD_REF("payment-id", "Payment", "Set by the service for unused payments", "bill_payment", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("reference", "Reference", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE)
+	VENTURE_FIELD("reference", "Reference", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD("opening-at", "Opening balance at", "Cutover instant a migrated credit entered the ledger",
+		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureVendorCredit, venture_vendor_credit, credit_fields)
 
@@ -69,7 +71,11 @@ static const VentureFieldDecl bill_fields[] = {
 	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("purchase-order-id", "Purchase order", "Optional three-way match",
 		"purchase_order", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_TEXT("memo", "Memo", NULL)
+	VENTURE_FIELD_TEXT("memo", "Memo", NULL),
+	/* Set only by VenturePayablesService for a migrated bill: the cutoff its
+	 * journal posts at, against opening clearing rather than expense. */
+	VENTURE_FIELD("opening-at", "Opening balance at", "Cutover instant a migrated bill entered the ledger",
+		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureVendorBill, venture_vendor_bill, bill_fields)
 

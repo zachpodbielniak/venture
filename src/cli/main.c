@@ -637,6 +637,7 @@ venture_cli_values_from_args(
 #include "close/venture-close-cli.inc"
 #include "tax/venture-tax-cli.inc"
 #include "capture/venture-capture-cli.inc"
+#include "cutover/venture-cutover-cli.inc"
 #include "claims/venture-claims-cli.inc"
 #include "payroll/venture-payroll-cli.inc"
 #include "accounting/venture-accounting-cli.inc"
@@ -3402,6 +3403,7 @@ main(
 		"  tax-filing prepare|review|submit|acknowledge|amend  jurisdiction tax return\n"
 		"  contractor-tax prepare|review|approve|export     1099-NEC packs\n"
 		"  capture ingest|convert|reject              receipt and supplier-invoice inbox\n"
+		"  cutover template SECTION | csv source=S cutoff=D SECTION=@FILE  opening-balance CSVs to a previewed batch\n"
 		"  claim submit|approve|pay ID               employee expense claims\n"
 		"  payroll import|disburse|reverse           imported pay runs\n"
 		"  accounting                               daily books next actions\n"
@@ -3686,6 +3688,8 @@ main(
 		result = venture_cli_command_contractor_tax(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "capture"))
 		result = venture_cli_command_capture(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "cutover"))
+		result = venture_cli_command_cutover(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "claim"))
 		result = venture_cli_command_claim(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "payroll"))
