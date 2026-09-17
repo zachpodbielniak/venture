@@ -747,6 +747,11 @@ static GType (*const venture_module_supplier_portal_types[]) (void) = {
 };
 static const gchar *const venture_module_requires_supplier_portal[] = { "payables", NULL };
 
+static GType (*const headline_types[]) (void) = { venture_headline_setting_get_type, NULL };
+static const gchar *const headline_requires[] = { "receivables", "leads", NULL };
+static const gchar *const headline_suggests[] = { "outreach", "recurring", "tickets", "banking", "payables", NULL };
+static const gchar *const headline_reports[] = { "cac", "churn", "ltv", "ltv_cac", NULL };
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -1038,6 +1043,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"group", "Intercompany group", "Optional consolidation, eliminations and FX.",
 		group_requires, NULL, group_types, group_reports, "group-enabled", FALSE
+	},
+	{
+		"headline", "Headline metrics",
+		"CAC, churn, LTV and LTV:CAC reports, and the five-card home page.",
+		headline_requires, headline_suggests, headline_types, headline_reports, NULL, FALSE
 	}
 
 };
