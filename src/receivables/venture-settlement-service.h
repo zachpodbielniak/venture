@@ -95,6 +95,19 @@ VentureMoney *venture_settlement_service_customer_balance(VentureSettlementServi
 	const gchar *currency, GError **error);
 
 /**
+ * venture_settlement_service_refresh_credit:
+ * @self: the service
+ * @credit_id: a customer credit
+ * @actor: (nullable): the audit actor
+ * @error: (out) (optional): the error
+ *
+ * Rewrites remaining from allocations, refunds and reversed postings.
+ * Returns: TRUE on success
+ */
+gboolean venture_settlement_service_refresh_credit(VentureSettlementService *self,
+	gint64 credit_id, const VentureActor *actor, GError **error);
+
+/**
  * venture_receivables_save_hook: (skip)
  * @database: the database, with its save lock held
  * @record: the proposed record

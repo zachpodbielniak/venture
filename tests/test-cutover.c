@@ -292,10 +292,11 @@ parse_json(const gchar *json)
 	return json_object_ref(json_node_get_object(json_parser_get_root(parser)));
 }
 
-/* open_ap, credits and assets are imported now: a payload naming them
- * previews, and each source id gets its preview row. */
+/* Preview writes a cutover row per opening source id so import can match
+ * them. What breaks if this regresses: a payload that names bills, credits
+ * and assets would preview with no rows and import would look untracked. */
 static void
-test_refuse_unimported(Fixture *f, gconstpointer data)
+test_preview_opening_rows(Fixture *f, gconstpointer data)
 {
 	g_autoptr(JsonObject) payload = parse_json(
 		"{\"source\":\"zoho_books\",\"cutoff\":\"2026-01-01\","
@@ -442,7 +443,7 @@ test_openings_import(Fixture *f, gconstpointer data)
 	g_autoptr(GDateTime) bill_date = NULL;
 	g_autofree gchar *status = NULL;
 	g_autofree gchar *report = NULL;
-	g_autofree gchar *method = NULL;
+	gint method;
 	gint state;
 	VentureActor actor;
 	(void)data;
@@ -488,6 +489,7 @@ test_openings_import(Fixture *f, gconstpointer data)
 	asset = find_one(f, VENTURE_TYPE_FIXED_ASSET, "tag", "LAPTOP-1");
 	g_object_get(asset, "status", &state, "method", &method, NULL);
 	g_assert_cmpint(state, ==, VENTURE_ASSET_STATUS_IN_SERVICE);
+	g_assert_cmpint(method, ==, VENTURE_ASSET_METHOD_STRAIGHT_LINE);
 	g_assert_cmpuint(count_type(f, VENTURE_TYPE_DEPRECIATION_ENTRY), ==, 25);
 	g_assert_cmpint(entry_amount(f, "2025-12", VENTURE_SCHEDULE_STATE_POSTED), ==, 125000);
 	g_assert_cmpint(account_balance(f, "1500", "2026-01-01T00:00:00Z"), ==, 360000);
@@ -649,6 +651,111 @@ test_openings_rollback(Fixture *f, gconstpointer data)
 	g_assert_cmpint(venture_asset_service_run_period(venture_asset_service_get(f->db), "2026-01", f->org,
 		FALSE, &actor, &error), ==, 0);
 	g_assert_no_error(error);
+	{
+		g_autoptr(VentureEntity) credit = find_one(f, VENTURE_TYPE_CUSTOMER_CREDIT, "reference", "CN-1");
+		g_autoptr(VentureMoney) remaining = NULL;
+		g_autoptr(VentureInvoice) invoice = venture_invoice_new();
+		g_autoptr(VentureInvoiceLine) line = venture_invoice_line_new();
+		g_autoptr(VenturePaymentAllocation) allocation = venture_payment_allocation_new();
+		g_autoptr(VentureMoney) net = venture_money_new_for_currency(10000, "USD");
+		g_autoptr(VentureMoney) tax = venture_money_new_for_currency(0, "USD");
+		g_autoptr(VentureMoney) apply = venture_money_new_for_currency(2000, "USD");
+		g_autoptr(GDateTime) issued = g_date_time_new_utc(2026, 1, 2, 0, 0, 0);
+		gint64 customer_id = 0;
+
+		/* What breaks if this regresses: the reversed credit still
+		 * looks unapplied and would settle a later invoice. */
+		g_object_get(credit, "remaining", &remaining, "customer-id", &customer_id, NULL);
+		g_assert_cmpint(venture_money_get_amount(remaining), ==, 0);
+		g_object_set(invoice, "number", "LIVE-1", "company-id", customer_id, "issued-at", issued, NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(invoice), f->org);
+		g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(invoice), &actor, &error));
+		g_assert_no_error(error);
+		g_object_set(line, "invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)),
+			"description", "Work", "quantity", 1.0, "unit-price", net, "income-amount", net,
+			"tax-amount", tax, NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(line), f->org);
+		g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(line), &actor, &error));
+		g_assert_no_error(error);
+		g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+		g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(invoice), &actor, &error));
+		g_assert_no_error(error);
+		g_object_set(allocation, "credit-id", venture_entity_get_id(credit),
+			"invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)), "amount", apply,
+			"date", issued, NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(allocation), f->org);
+		g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(allocation), &actor, &error));
+		g_assert_nonnull(error);
+		g_clear_error(&error);
+	}
+}
+
+/* Rule 3: accumulated depreciation outside zero to cost less salvage is
+ * refused by name, and an in-service date after the cutoff is refused. */
+static void
+test_openings_asset_refusals(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) cutover = NULL;
+	(void)data;
+	asset_accounts(f);
+	cutover = import_payload(f, OPENING_HEAD
+		"\"open_ap\":[],\"credits\":[],"
+		"\"assets\":[{\"source_id\":\"as-9\",\"tag\":\"X\",\"name\":\"X\",\"cost\":\"100 USD\","
+		"\"in_service_at\":\"2025-01-01\",\"method\":\"straight_line\",\"useful_life_months\":12,"
+		"\"accumulated_depreciation\":\"100 USD\",\"salvage\":\"10 USD\","
+		"\"asset_account_code\":\"1500\",\"accumulated_depreciation_account_code\":\"1590\","
+		"\"depreciation_expense_account_code\":\"6850\"}]}", FALSE, &error);
+	g_assert_nonnull(strstr(error->message, "opening-accumulated-within-basis"));
+	g_assert_cmpuint(count_type(f, VENTURE_TYPE_FIXED_ASSET), ==, 0);
+	g_clear_error(&error);
+	g_clear_object(&cutover);
+	cutover = import_payload(f, OPENING_HEAD
+		"\"open_ap\":[],\"credits\":[],"
+		"\"assets\":[{\"source_id\":\"as-8\",\"tag\":\"Y\",\"name\":\"Y\",\"cost\":\"100 USD\","
+		"\"in_service_at\":\"2026-06-01\",\"method\":\"straight_line\",\"useful_life_months\":12,"
+		"\"asset_account_code\":\"1500\",\"accumulated_depreciation_account_code\":\"1590\","
+		"\"depreciation_expense_account_code\":\"6850\"}]}", FALSE, &error);
+	g_assert_nonnull(strstr(error->message, "in service on or before the cutoff"));
+	g_assert_cmpuint(count_type(f, VENTURE_TYPE_FIXED_ASSET), ==, 0);
+}
+
+/* A payload that names assets while the module is off is refused rather than
+ * imported as a draft with no register. */
+static void
+test_openings_module_off(Fixture *f, gconstpointer data)
+{
+	g_autoptr(JsonObject) payload = parse_json(OPENING_HEAD
+		"\"open_ap\":[],\"credits\":[],"
+		"\"assets\":[{\"source_id\":\"as-1\",\"tag\":\"LAPTOP-1\",\"name\":\"Laptop\",\"cost\":\"100 USD\","
+		"\"in_service_at\":\"2025-01-01\",\"useful_life_months\":12,"
+		"\"asset_account_code\":\"1500\",\"accumulated_depreciation_account_code\":\"1590\","
+		"\"depreciation_expense_account_code\":\"6850\"}]}");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) cutover = NULL;
+	VentureActor actor;
+	(void)data;
+	actor_init(&actor);
+	venture_config_set_module_enabled(f->config, "assets", FALSE);
+	cutover = venture_cutover_service_preview(venture_cutover_service_get(f->db),
+		f->org, payload, &actor, &error);
+	g_assert_null(cutover);
+	g_assert_nonnull(strstr(error->message, "assets require the assets module"));
+}
+
+/* kind must be customer or vendor; a typo is not inferred. */
+static void
+test_openings_credit_kind(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) cutover = NULL;
+	(void)data;
+	cutover = import_payload(f, OPENING_HEAD
+		"\"credits\":[{\"source_id\":\"cr-x\",\"kind\":\"note\",\"customer_source_id\":\"cust-1\","
+		"\"date\":\"2025-12-20\",\"amount\":\"1 USD\"}]}", FALSE, &error);
+	g_assert_nonnull(strstr(error->message, "credit-identity"));
+	g_assert_cmpuint(count_type(f, VENTURE_TYPE_CUSTOMER_CREDIT), ==, 0);
+	(void)cutover;
 }
 
 static void
@@ -712,7 +819,7 @@ main(int argc, char **argv)
 	g_test_add("/cutover/preview-import-activate", Fixture, NULL, setup, test_preview_import_activate, teardown);
 	g_test_add("/cutover/idempotent-rollback", Fixture, NULL, setup, test_idempotent_rollback, teardown);
 	g_test_add("/cutover/generic-write", Fixture, NULL, setup, test_generic_write_refused, teardown);
-	g_test_add("/cutover/refuse-unimported", Fixture, NULL, setup, test_refuse_unimported, teardown);
+	g_test_add("/cutover/preview-opening-rows", Fixture, NULL, setup, test_preview_opening_rows, teardown);
 	g_test_add("/cutover/currency-required", Fixture, NULL, setup, test_currency_required, teardown);
 	g_test_add("/cutover/exact-opening-tax", Fixture, NULL, setup, test_exact_opening_tax, teardown);
 	g_test_add("/cutover/surfaces", Fixture, NULL, setup, test_surfaces, teardown);
@@ -721,5 +828,8 @@ main(int argc, char **argv)
 	g_test_add("/cutover/openings-atomic", Fixture, NULL, setup, test_openings_atomic, teardown);
 	g_test_add("/cutover/openings-out-of-balance", Fixture, NULL, setup, test_openings_out_of_balance, teardown);
 	g_test_add("/cutover/openings-rollback", Fixture, NULL, setup, test_openings_rollback, teardown);
+	g_test_add("/cutover/openings-asset-refusals", Fixture, NULL, setup, test_openings_asset_refusals, teardown);
+	g_test_add("/cutover/openings-module-off", Fixture, NULL, setup, test_openings_module_off, teardown);
+	g_test_add("/cutover/openings-credit-kind", Fixture, NULL, setup, test_openings_credit_kind, teardown);
 	return g_test_run();
 }

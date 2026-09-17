@@ -60,11 +60,13 @@ not open.
 * Credits
 
 Each =credits= row is a =credit_note= created through the receivables or
-payables service: =kind= =customer= with =customer_source_id=, or =vendor=
-with =vendor_source_id=. It carries =date=, =amount= and an optional =number=
-stored as the reference, and remains unapplied so later settlements can use
-it. A credit larger than its counterpart's open balance after the AR and AP
-imports is refused (=credit-within-open-balance=).
+payables service: =kind= must be =customer= with =customer_source_id=, or
+=vendor= with =vendor_source_id=; omitting =kind= still infers vendor when
+=vendor_source_id= is present. It carries =date=, =amount= and an optional
+=number= stored as the reference, and remains unapplied so later settlements
+can use it. A credit larger than its counterpart's open balance after the AR
+and AP imports is refused (=credit-within-open-balance=). Customer credits
+need receivables; vendor credits need payables.
 
 #+begin_src json
 {"credits": [{"source_id": "cr-1", "kind": "customer", "customer_source_id": "cust-1",
@@ -113,8 +115,12 @@ Rollback keeps every imported row and marks it =rolled_back=. Opening
 journals, including the asset openings and payment offsets, are reversed by
 reversing journals dated at the cutoff. An opening payment is refunded to
 its allocation and the bill is voided through the payables service; credit
-postings are reversed; the asset's remaining schedule is skipped and the
-asset is written off at the cutoff without a second journal. AP, credits and
-asset net book value net to zero and nothing posted is deleted. Everything
-runs inside the single cutover transaction: a failure after the first bill
-is written leaves no bill, payment, credit, asset or journal behind.
+postings are reversed and remaining is refreshed to zero so the credit cannot
+be allocated onto a later bill or invoice; the asset's remaining schedule is
+skipped and the asset is written off at the cutoff without a second journal.
+AP, credits and asset net book value net to zero and nothing posted is
+deleted. Everything runs inside the single cutover transaction: a failure
+after the first bill is written leaves no bill, payment, credit, asset or
+journal behind. Reimport of the same source ids is a no-op only while those
+rows are not rolled back; unique bill numbers and asset tags still occupy the
+voided and written-off records.

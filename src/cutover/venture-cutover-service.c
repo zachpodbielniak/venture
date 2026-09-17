@@ -244,10 +244,27 @@ refuse_unimported_sections(JsonObject *payload, GError **error)
 	VentureEntityRegistry *registry = venture_entity_registry_get_default();
 	if (array_nonempty(payload, "open_ap") && !venture_entity_registry_is_type_enabled(registry, "vendor_bill"))
 		return refuse(error, "open_ap requires the payables module; enable it or list the bills under unsupported");
-	if (array_nonempty(payload, "credits") &&
-		(!venture_entity_registry_is_type_enabled(registry, "vendor_credit") ||
-		!venture_entity_registry_is_type_enabled(registry, "customer_credit")))
-		return refuse(error, "credits require the payables and receivables modules; enable them or list the credits under unsupported");
+	if (array_nonempty(payload, "credits"))
+	{
+		JsonArray *credits = arr(payload, "credits");
+		guint i;
+		gboolean need_vendor = FALSE, need_customer = FALSE;
+
+		for (i = 0; i < json_array_get_length(credits); i++)
+		{
+			JsonObject *row = json_array_get_object_element(credits, i);
+			const gchar *kind = obj_str(row, "kind");
+
+			if (g_strcmp0(kind, "vendor") == 0 || (kind == NULL && obj_str(row, "vendor_source_id") != NULL))
+				need_vendor = TRUE;
+			else
+				need_customer = TRUE;
+		}
+		if (need_vendor && !venture_entity_registry_is_type_enabled(registry, "vendor_credit"))
+			return refuse(error, "vendor credits require the payables module; enable it or list the credits under unsupported");
+		if (need_customer && !venture_entity_registry_is_type_enabled(registry, "customer_credit"))
+			return refuse(error, "customer credits require the receivables module; enable it or list the credits under unsupported");
+	}
 	if (array_nonempty(payload, "assets") && !venture_entity_registry_is_type_enabled(registry, "fixed_asset"))
 		return refuse(error, "assets require the assets module; enable it or list the assets under unsupported");
 	return TRUE;

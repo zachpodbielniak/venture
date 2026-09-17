@@ -140,7 +140,7 @@ venture_asset_service_class_init(VentureAssetServiceClass *klass)
 	 * VentureAssetService::transition:
 	 * @self: service
 	 * @asset: detached source snapshot; edits are ignored
-	 * @operation: place, dispose or write-off
+	 * @operation: place, dispose, write-off, import-opening or rollback-opening
 	 *
 	 * RUN_LAST after validation, before financial writes, inside the
 	 * transaction. Return an owned GError to veto. First error wins.

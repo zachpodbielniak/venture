@@ -368,6 +368,12 @@ import_credits(VentureCutoverService *self, VentureEntity *cutover, JsonObject *
 			continue;
 		if (source_id == NULL || obj_str(row, "date") == NULL)
 			return refuse_rule(error, source_id, "credit-identity", "needs source_id and date");
+		{
+			const gchar *kind = obj_str(row, "kind");
+
+			if (kind != NULL && g_strcmp0(kind, "customer") != 0 && g_strcmp0(kind, "vendor") != 0)
+				return refuse_rule(error, source_id, "credit-identity", "kind must be customer or vendor");
+		}
 		amount = parse_money(obj_str(row, "amount"), row_currency(row, payload), error);
 		if (amount == NULL)
 			return FALSE;
@@ -740,7 +746,15 @@ rollback_opening_row(VentureCutoverService *self, VentureEntity *cutover, const 
 		return venture_payables_service_transition(payables, VENTURE_VENDOR_BILL(bill), "void", cutoff, actor, error);
 	}
 	if (g_strcmp0(record_type, "vendor_credit") == 0 || g_strcmp0(record_type, "customer_credit") == 0)
-		return reverse_source_journals(self, record_type, record_id, org, cutoff, actor, error);
+	{
+		if (!reverse_source_journals(self, record_type, record_id, org, cutoff, actor, error))
+			return FALSE;
+		return g_strcmp0(record_type, "vendor_credit") == 0
+			? venture_payables_service_refresh_credit(venture_payables_service_get(self->database),
+				record_id, actor, error)
+			: venture_settlement_service_refresh_credit(venture_settlement_service_get(self->database),
+				record_id, actor, error);
+	}
 	if (g_strcmp0(record_type, "fixed_asset") == 0)
 	{
 		g_autoptr(VentureEntity) asset = venture_database_get(self->database, VENTURE_TYPE_FIXED_ASSET, record_id, error);
