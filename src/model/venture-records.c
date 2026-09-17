@@ -419,6 +419,8 @@ static const VentureFieldDecl venture_expense_fields[] = {
 	              VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
 	VENTURE_FIELD("reimbursable", "Reimbursable", NULL,
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("acquisition", "Customer acquisition", "Include this expense in customer acquisition spend",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
@@ -546,6 +548,8 @@ static const VentureFieldDecl venture_tax_category_fields[] = {
 	VENTURE_FIELD("schedule-line", "Schedule line",
 	              "Where this lands on the tax form",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("acquisition", "Default customer acquisition", "Classify new expenses and bill lines in this category as acquisition",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("description", "Description", NULL),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };

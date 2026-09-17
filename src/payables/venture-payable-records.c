@@ -86,7 +86,9 @@ static const VentureFieldDecl bill_line_fields[] = {
 		"tax_code", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("position", "Position", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("purchase-order-line-id", "Purchase order line", NULL,
-		"purchase_order_line", VENTURE_COLUMN_FLAG_NONE)
+		"purchase_order_line", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("acquisition", "Customer acquisition", "Include this bill line in customer acquisition spend",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureVendorBillLine, venture_vendor_bill_line, bill_line_fields)
 
