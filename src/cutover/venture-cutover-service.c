@@ -236,14 +236,41 @@ array_nonempty(JsonObject *payload, const gchar *name)
 	return rows != NULL && json_array_get_length(rows) > 0;
 }
 
+/* Opening bills, credits and assets are refused only when the modules that
+ * own them are switched off; otherwise their importers live in the include. */
 static gboolean
 refuse_unimported_sections(JsonObject *payload, GError **error)
 {
-	if (array_nonempty(payload, "open_ap") || array_nonempty(payload, "credits") ||
-		array_nonempty(payload, "assets"))
-		return refuse(error, "open_ap, credits and assets are not imported; omit them or list them under unsupported");
+	VentureEntityRegistry *registry = venture_entity_registry_get_default();
+	if (array_nonempty(payload, "open_ap") && !venture_entity_registry_is_type_enabled(registry, "vendor_bill"))
+		return refuse(error, "open_ap requires the payables module; enable it or list the bills under unsupported");
+	if (array_nonempty(payload, "credits"))
+	{
+		JsonArray *credits = arr(payload, "credits");
+		guint i;
+		gboolean need_vendor = FALSE, need_customer = FALSE;
+
+		for (i = 0; i < json_array_get_length(credits); i++)
+		{
+			JsonObject *row = json_array_get_object_element(credits, i);
+			const gchar *kind = obj_str(row, "kind");
+
+			if (g_strcmp0(kind, "vendor") == 0 || (kind == NULL && obj_str(row, "vendor_source_id") != NULL))
+				need_vendor = TRUE;
+			else
+				need_customer = TRUE;
+		}
+		if (need_vendor && !venture_entity_registry_is_type_enabled(registry, "vendor_credit"))
+			return refuse(error, "vendor credits require the payables module; enable it or list the credits under unsupported");
+		if (need_customer && !venture_entity_registry_is_type_enabled(registry, "customer_credit"))
+			return refuse(error, "customer credits require the receivables module; enable it or list the credits under unsupported");
+	}
+	if (array_nonempty(payload, "assets") && !venture_entity_registry_is_type_enabled(registry, "fixed_asset"))
+		return refuse(error, "assets require the assets module; enable it or list the assets under unsupported");
 	return TRUE;
 }
+
+#include "venture-cutover-openings.inc"
 
 VentureEntity *
 venture_cutover_service_preview(VentureCutoverService *self, gint64 organization_id,
@@ -302,6 +329,9 @@ venture_cutover_service_preview(VentureCutoverService *self, gint64 organization
 				goto fail;
 		}
 	}
+	if (!preview_opening_rows(self, venture_entity_get_id(VENTURE_ENTITY(cutover)), organization_id,
+		payload, actor, error))
+		goto fail;
 	if (!venture_database_commit(self->database, error))
 		return NULL;
 	return VENTURE_ENTITY(g_steal_pointer(&cutover));
@@ -498,7 +528,10 @@ venture_cutover_service_import_impl(VentureCutoverService *self, VentureAccounti
 	if (!venture_database_begin(self->database, error))
 		return FALSE;
 	if (!import_open_ar(self, VENTURE_ENTITY(cutover), payload, actor, error) ||
-		!import_bank(self, VENTURE_ENTITY(cutover), payload, actor, error))
+		!import_bank(self, VENTURE_ENTITY(cutover), payload, actor, error) ||
+		!import_open_ap(self, VENTURE_ENTITY(cutover), payload, actor, error) ||
+		!import_credits(self, VENTURE_ENTITY(cutover), payload, actor, error) ||
+		!import_assets(self, VENTURE_ENTITY(cutover), payload, actor, error))
 		goto fail;
 	g_object_set(cutover, "state", "imported", NULL);
 	if (!save_owned(self, VENTURE_ENTITY(cutover), actor, error) ||
@@ -740,6 +773,8 @@ venture_cutover_service_reconcile(VentureCutoverService *self, VentureAccounting
 			return refuse(error, "opening AR does not match issued invoice totals");
 		g_string_append_printf(report, "Open AR %" G_GINT64_FORMAT "\n", venture_money_get_amount(expected_ar));
 	}
+	if (!reconcile_openings(self, VENTURE_ENTITY(cutover), payload, rows, cutoff, report, error))
+		return FALSE;
 	g_string_append(report, "Trial balance ties at cutoff.\n");
 	g_object_set(cutover, "state", "reconciled", "reconciliation-report", report->str, NULL);
 	return save_owned(self, VENTURE_ENTITY(cutover), actor, error);
@@ -812,6 +847,8 @@ venture_cutover_service_rollback_impl(VentureCutoverService *self, VentureAccoun
 				VENTURE_INVOICE(invoice), "void", cutoff, actor, error))
 				goto fail;
 		}
+		if (!rollback_opening_row(self, VENTURE_ENTITY(cutover), type, record_id, cutoff, actor, error))
+			goto fail;
 		g_object_set(row, "status", "rolled_back", NULL);
 		if (!save_owned(self, row, actor, error))
 			goto fail;

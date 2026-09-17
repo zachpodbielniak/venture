@@ -918,6 +918,15 @@ credit_remaining(VenturePayablesService *self, VentureEntity *credit,
 	guint i;
 
 	g_object_get(credit, "amount", &remaining, NULL);
+	/* A reversed credit-note posting (cutover rollback) still has its
+	 * original amount and no allocations; treat it as consumed. */
+	if (remaining != NULL && get_id(credit, "payment-id") == 0 &&
+		venture_posting_service_source_has_reversal(venture_database_get_posting_service(self->database),
+			venture_entity_get_entity_name(credit), venture_entity_get_id(credit),
+			venture_entity_get_organization_id(credit), error))
+		return venture_money_new_zero(venture_money_get_currency(remaining));
+	if (error != NULL && *error != NULL)
+		return NULL;
 	allocations = find_rows(self, VENTURE_TYPE_BILL_PAYMENT_ALLOCATION, "credit-id", venture_entity_get_id(credit), cutoff, error);
 	if (allocations == NULL)
 		return NULL;
@@ -1643,6 +1652,31 @@ venture_payables_service_vendor_balance(VenturePayablesService *self,
 		}
 	}
 	return g_steal_pointer(&total);
+}
+
+gboolean
+venture_payables_service_refresh_credit(VenturePayablesService *self, gint64 credit_id,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureEntity) credit = NULL;
+	gboolean ok;
+
+	g_return_val_if_fail(VENTURE_IS_PAYABLES_SERVICE(self), FALSE);
+	credit = venture_database_get(self->database, VENTURE_TYPE_VENDOR_CREDIT, credit_id, error);
+	if (credit == NULL)
+		return FALSE;
+	operation = accounting_operation(self, "payables.refresh_credit", credit, NULL, NULL,
+		venture_entity_get_organization_id(credit), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	if (!begin_operation(self, "bill_payment", error))
+		return FALSE;
+	ok = update_credit(self, credit, actor, error);
+	ok = finish_operation(self, ok, error);
+	if (ok)
+		ok = venture_accounting_operation_finish(operation, error);
+	return ok;
 }
 
 VentureEntity *

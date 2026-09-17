@@ -137,3 +137,9 @@ PostgreSQL is supported by the shared repository; the default suite runs
 SQLite and does not constitute a live PostgreSQL integration run.
 
 An explicit CRM reference must continue to match the related subject when edited; changing only the explicit reference is refused so completion history cannot attach to a different customer.
+
+Email is recorded as history here as well: the =mail_sync= module writes an
+=interaction= of kind =email= on each matched contact for inbound mail, and
+the outbox writes one with =outbound= set when a message is sent, so a
+contact's timeline shows both directions. See [[file:mail.org][mail]],
+section Inbound.

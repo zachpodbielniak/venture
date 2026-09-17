@@ -284,6 +284,13 @@ that row and Message-ID. All accept =organization_id=N= where relevant.
 See [[file:mail.org][mail]] for uncertainty and scheduling. Actions reject
 =--stage=; =--stage create mail_message= proposes an enqueue instead.
 
+=venturectl mail sync [organization_id=N] [limit=N]= runs the bounded
+inbound sweep over every active =mail_account= in the organization and
+prints the accounts and messages processed with any per-account error. The
+raw messages, interactions, unmatched senders and capture items it creates
+are ordinary records: =venturectl list mail_inbound=, =venturectl list
+mail_unmatched_sender=. See [[file:mail.org][mail]], section Inbound.
+
 * Quote actions
 
 =venturectl quote send ID= freezes and queues a proposal.

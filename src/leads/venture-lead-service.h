@@ -86,5 +86,15 @@ VentureConfirmation *venture_lead_service_stage_convert(VentureLeadService *self
  */
 gboolean venture_lead_service_apply_staged(VentureLeadService *self, VentureEntity *staged,
 	const VentureActor *actor, GError **error);
+/**
+ * venture_lead_normalize_email:
+ * @value: (nullable): an address as typed
+ *
+ * The leads module's duplicate-detection normalisation for email: lower
+ * case, trimmed, with a +tag removed. Exposed so inbound mail matches the
+ * way lead deduplication does rather than reimplementing it.
+ * Returns: (transfer full): the normalised address, possibly empty
+ */
+gchar *venture_lead_normalize_email(const gchar *value);
 G_END_DECLS
 #endif

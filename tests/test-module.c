@@ -174,6 +174,7 @@ test_module_dependency_conflict_is_refused(void)
 	venture_config_set_module_enabled(config, "projects", FALSE);
 	venture_config_set_module_enabled(config, "recurring", FALSE);
 	venture_config_set_module_enabled(config, "goods", FALSE);
+	venture_config_set_module_enabled(config, "mail_sync", FALSE);
 	venture_config_set_module_enabled(config, "dunning", FALSE);
 	g_assert_true(venture_module_registry_configure(registry, config, &error));
 	g_assert_no_error(error);
@@ -622,6 +623,7 @@ fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "projects", FALSE);
 	venture_config_set_module_enabled(fixture->config, "recurring", FALSE);
 	venture_config_set_module_enabled(fixture->config, "goods", FALSE);
+	venture_config_set_module_enabled(fixture->config, "mail_sync", FALSE);
 	venture_config_set_module_enabled(fixture->config, "dunning", FALSE);
 
 	fixture->database = venture_database_new("sqlite://:memory:", &error);
@@ -995,6 +997,7 @@ server_fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "projects", FALSE);
 	venture_config_set_module_enabled(fixture->config, "recurring", FALSE);
 	venture_config_set_module_enabled(fixture->config, "goods", FALSE);
+	venture_config_set_module_enabled(fixture->config, "mail_sync", FALSE);
 	venture_config_set_module_enabled(fixture->config, "dunning", FALSE);
 	venture_config_set_module_enabled(fixture->config, "tickets", FALSE);
 	venture_config_set_module_enabled(fixture->config, "forge", FALSE);

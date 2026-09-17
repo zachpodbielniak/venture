@@ -22,3 +22,9 @@ venturectl capture reject 3 reason=personal
 #+end_src
 
 Capture ingestion through the API files the item under the active organization. =venture_capture_service_ingest_for_organization()= provides that explicit scope to other callers; the original ingest API uses the configured default organization. Conversion preserves the captured item's organization for the expense or supplier bill.
+
+Inbound mail feeds the same path: the =mail_sync= module files each
+attachment of a message sent to the account's capture address (or found in
+its capture folder) as a document and ingests it with source =email=,
+skipping any attachment whose content hash already backs a capture item.
+See [[file:mail.org][mail]], section Inbound.

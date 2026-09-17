@@ -102,6 +102,7 @@
 #include "billing/venture-billing-records.h"
 #include "projects/venture-project-records.h"
 #include "mail/venture-mail-records.h"
+#include "mail/venture-mail-sync-records.h"
 
 #include "leads/venture-lead-records.h"
 #include "activities/venture-activity-records.h"
@@ -160,6 +161,8 @@
 #include "mail/venture-smtp-mailer.h"
 #include "mail/venture-mail-outbox.h"
 #include "mail/venture-mail-template.h"
+#include "mail/venture-imap-client.h"
+#include "mail/venture-mail-sync-service.h"
 #include "quotes/venture-quote-service.h"
 #include "goods/venture-purchasing-service.h"
 #include "goods/venture-inventory-service.h"
