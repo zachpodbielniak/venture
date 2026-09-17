@@ -1868,7 +1868,7 @@ venture_headline_register_reports(VentureReportRegistry *registry)
 		"the period, broken down by the converted lead's source and campaign",
 		venture_report_cac)));
 	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
-		"churn", "Churn",
+		"customer_churn", "Customer churn (recurring and activity)",
 		"Recurring churn: invoice schedules cancelled or lapsed in the period "
 		"over those running at its start. Activity churn: customers paid in "
 		"the trailing twelve months with nothing in the last N days "

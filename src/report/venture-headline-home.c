@@ -372,7 +372,7 @@ venture_headline_home_cards(
 
 	pnl = headline_run(context, "pnl", organization_id, period);
 	cac = headline_run(context, "cac", organization_id, period);
-	churn = headline_run(context, "churn", organization_id, period);
+	churn = headline_run(context, "customer_churn", organization_id, period);
 	ratio = headline_run(context, "ltv_cac", organization_id, period);
 	support = headline_run(context, "support", organization_id, period);
 
@@ -381,7 +381,7 @@ venture_headline_home_cards(
 	{
 		pnl_before = headline_run(context, "pnl", organization_id, previous);
 		cac_before = headline_run(context, "cac", organization_id, previous);
-		churn_before = headline_run(context, "churn", organization_id, previous);
+		churn_before = headline_run(context, "customer_churn", organization_id, previous);
 		ratio_before = headline_run(context, "ltv_cac", organization_id, previous);
 	}
 
@@ -426,7 +426,7 @@ venture_headline_home_cards(
 	headline_add_card(cards, "churn", "Churn",
 	                  headline_metric(churn, "activity_churn"),
 	                  headline_metric(churn_before, "activity_churn"), FALSE,
-	                  "/reports/churn", lines);
+	                  "/reports/customer_churn", lines);
 
 	/* 4. Whether a customer is worth acquiring. */
 	lines = json_array_new();

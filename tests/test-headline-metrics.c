@@ -348,7 +348,7 @@ test_churn(Fixture *f, gconstpointer unused)
 	gboolean saw_activity = FALSE;
 
 	/* Nothing yet: neither ratio has a denominator. */
-	bare = run_report(f, "churn", "this_month", NULL);
+	bare = run_report(f, "customer_churn", "this_month", NULL);
 	g_assert_cmpstr(venture_metric_get_text(metric(bare, "recurring_churn")), ==, "n/a");
 	g_assert_cmpstr(venture_metric_get_text(metric(bare, "activity_churn")), ==, "n/a");
 
@@ -374,7 +374,7 @@ test_churn(Fixture *f, gconstpointer unused)
 	paid_invoice(f, y, "Y-1", "80 USD", last_month);
 	paid_invoice(f, z, "Z-1", "80 USD", just_now);
 
-	result = run_report(f, "churn", "this_month", NULL);
+	result = run_report(f, "customer_churn", "this_month", NULL);
 	g_assert_cmpfloat(venture_metric_get_number(metric(result, "active_at_start")), ==, 3.0);
 	g_assert_cmpfloat(venture_metric_get_number(metric(result, "churned")), ==, 2.0);
 	/* 2 of 3, in basis points, rendered: 6666 / 10000. */
@@ -408,7 +408,7 @@ test_churn(Fixture *f, gconstpointer unused)
 
 	/* A looser threshold -- 300 quiet days -- keeps X active. */
 	json_object_set_int_member(options, "days", 300);
-	loose = run_report(f, "churn", "this_month", options);
+	loose = run_report(f, "customer_churn", "this_month", options);
 	g_assert_cmpfloat(venture_metric_get_number(metric(loose, "inactive_customers")), ==, 0.0);
 	g_assert_cmpfloat(venture_metric_get_number(metric(loose, "days")), ==, 300.0);
 }
