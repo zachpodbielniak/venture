@@ -69,6 +69,26 @@ const VentureAuthPrincipal *venture_access_policy_get_actor(VentureAccessPolicy 
  */
 gboolean venture_access_policy_has_membership(VentureAccessPolicy *self, const VentureAuthPrincipal *actor);
 /**
+ * venture_access_policy_has_organization_role:
+ * @self: the policy
+ * @actor: (nullable): the principal asking
+ * @organization_id: the organisation
+ * @roles: (array length=n_roles): acceptable #VentureOrganizationRole values
+ * @n_roles: the number of @roles
+ *
+ * Whether @actor may act in @organization_id as one of @roles. A global
+ * owner or administrator always may. Anybody else needs an active
+ * membership there holding one of them, and a token additionally needs its
+ * membership snapshot to hold one of them, the same double check the record
+ * policy makes. For a question about a whole organisation -- a total, a
+ * rate -- where filtering row by row would produce a smaller number
+ * presented as the same one.
+ *
+ * Returns: %TRUE when @actor holds one of @roles
+ */
+gboolean venture_access_policy_has_organization_role(VentureAccessPolicy *self, const VentureAuthPrincipal *actor,
+	gint64 organization_id, const gint *roles, gsize n_roles);
+/**
  * venture_access_policy_find:
  * @self: the policy
  * @query: query, whose filters and pagination are preserved

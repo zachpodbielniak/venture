@@ -191,6 +191,33 @@ venture_access_policy_has_membership(VentureAccessPolicy *self, const VentureAut
 	member = membership(self, actor, 0);
 	return NULL != member;
 }
+gboolean
+venture_access_policy_has_organization_role(VentureAccessPolicy *self, const VentureAuthPrincipal *actor,
+	gint64 organization_id, const gint *roles, gsize n_roles)
+{
+	g_autoptr(VentureEntity) member = NULL;
+	gboolean member_allowed = FALSE;
+	gboolean token_allowed = FALSE;
+	gint role = -1;
+	gint token = -1;
+	gsize i;
+	if (administrator(actor))
+		return TRUE;
+	if (NULL == actor || !actor->authenticated || organization_id <= 0)
+		return FALSE;
+	member = membership(self, actor, organization_id);
+	if (NULL == member)
+		return FALSE;
+	g_object_get(member, "role", &role, NULL);
+	if (actor->token_id > 0)
+		token = token_role(self, actor, organization_id);
+	for (i = 0; i < n_roles; i++)
+	{
+		member_allowed = member_allowed || (roles[i] == role);
+		token_allowed = token_allowed || (roles[i] == token);
+	}
+	return member_allowed && ((actor->token_id <= 0) || token_allowed);
+}
 static gint64
 reference(VentureEntity *entity, const gchar *name)
 {

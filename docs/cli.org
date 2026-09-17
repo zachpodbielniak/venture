@@ -268,18 +268,23 @@ venturectl report subscriptions_due 2026-03 days=14 organization_id=1
 
 * Headline metrics
 
-No new verb: the four headline reports run through =report=, and the
-per-organisation settings are an ordinary record type.
+No new verb: the headline reports run through =report=, and the
+per-organisation settings are an ordinary record type. Definitions are in
+[[file:reporting.org][Reporting]].
 
 #+begin_src sh
 venturectl report cac 2026-Q1
+venturectl report cac 2026-Q1 venture_id=2 as_of=2026-03-15
 venturectl report customer_churn this_month days=60
 venturectl report ltv this_year organization_id=1
 venturectl report ltv_cac last_quarter
+venturectl report customer_cohorts this_year
 venturectl create headline_setting organization_id=1 'hourly_rate=45 USD' \
   minimum_customer_months=6 activity_days=60
 venturectl update headline_setting 1 classic_home=true   # / back to the old dashboard
 venturectl update expense 42 acquisition=true             # count it in CAC
+venturectl update expense 43 cost_of_revenue=true         # count it against gross margin
+venturectl update expense 44 campaign_id=3                # a campaign's recorded cost
 #+end_src
 
 =renew= without an ID sweeps all due subscriptions in the selected

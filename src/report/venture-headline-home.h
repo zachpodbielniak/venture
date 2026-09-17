@@ -4,10 +4,11 @@
  * Copyright (C) 2026 Zach Podbielniak
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * The four headline reports -- cac, churn, ltv, ltv_cac -- are ordinary
- * registry reports. This is the layer above them: the per-organisation
- * tuning row, and the five cards the home page shows, computed once here
- * so the page and the API cannot disagree.
+ * The headline reports -- cac, customer_churn, ltv, ltv_cac and
+ * customer_cohorts -- are ordinary registry reports. This is the layer above
+ * them: the per-organisation tuning row, and the cards the home page shows,
+ * written as JSON, HTML and CSV in one pass so the page, the API and an
+ * export cannot disagree.
  */
 
 #ifndef VENTURE_HEADLINE_HOME_H
@@ -55,26 +56,68 @@ venture_headline_home_enabled(
 );
 
 /**
+ * venture_headline_home_render:
+ * @context: the wiring
+ * @options: (nullable): the scope: organization_id (0 or absent for the
+ *   default), venture_id and as_of
+ * @period: the period each card covers
+ * @period_text: (nullable): the period as it was asked for, carried into
+ *   each card's report link; %NULL means this_month
+ * @now: (nullable): the instant treated as now when choosing the comparison
+ *   period, or %NULL for the clock
+ * @may_see_totals: whether the viewer may see organisation totals; when
+ *   %FALSE every card is written in its restricted state and nothing is
+ *   computed
+ * @out_cards: (out) (optional) (transfer full): the cards as a JSON array
+ * @out_html: (out) (optional) (transfer full): the cards as HTML
+ * @out_csv: (out) (optional) (transfer full): the cards as CSV, one row per
+ *   figure and one per line under it
+ * @error: (out) (optional): an invalid scope
+ *
+ * Computes the headline cards and writes each one to JSON, HTML and CSV in
+ * the same pass: P&L with bank cash, recurring revenue (only when billing is
+ * on and the organisation has subscription history), CAC, churn, LTV:CAC
+ * and support load. Each card is an object with `key`, `label`, `value`
+ * (text), `trend` (-1, 0 or 1 against the comparison period chosen by
+ * venture_date_range_comparison_period()), `higher_is_better`, `link` (the
+ * report page with the same period and scope), `definition`, `state` (ok,
+ * error or restricted), `error` and `lines` (an array of `label`/`value`
+ * pairs). A card that fails is an error card; the others still render.
+ *
+ * Returns: %TRUE unless the scope itself was invalid
+ */
+gboolean
+venture_headline_home_render(
+	VentureContext		 *context,
+	JsonObject		 *options,
+	VentureDateRange	 *period,
+	const gchar		 *period_text,
+	GDateTime		 *now,
+	gboolean		  may_see_totals,
+	JsonNode		**out_cards,
+	gchar			**out_html,
+	gchar			**out_csv,
+	GError			**error
+);
+
+/**
  * venture_headline_home_cards:
  * @context: the wiring
  * @organization_id: the organisation, or 0 for the default
- * @period: the period each card covers; the trend compares it with the
- *   period before
+ * @period: the period each card covers
  * @error: (out) (optional): return location for a #GError
  *
- * Computes the five cards: P&L with bank cash, CAC, churn, LTV:CAC and
- * support load. Each is an object with `key`, `label`, `value` (text),
- * `trend` (-1, 0 or 1 against the previous period), `higher_is_better`,
- * `link` (the report page) and `lines` (an array of `label`/`value` pairs).
+ * The cards of venture_headline_home_render() as JSON, for a caller already
+ * entitled to organisation totals.
  *
- * Returns: (transfer full) (nullable): a JSON array of five cards
+ * Returns: (transfer full) (nullable): a JSON array of cards
  */
 JsonNode *
 venture_headline_home_cards(
-	VentureContext		 *context,
-	gint64			  organization_id,
-	VentureDateRange	 *period,
-	GError			**error
+	VentureContext       *context,
+	gint64            organization_id,
+	VentureDateRange     *period,
+	GError          **error
 );
 
 G_END_DECLS

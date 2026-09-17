@@ -754,8 +754,8 @@ static const gchar *const venture_module_requires_supplier_portal[] = { "payable
 
 static GType (*const headline_types[]) (void) = { venture_headline_setting_get_type, NULL };
 static const gchar *const headline_requires[] = { "receivables", "leads", NULL };
-static const gchar *const headline_suggests[] = { "outreach", "recurring", "tickets", "banking", "payables", NULL };
-static const gchar *const headline_reports[] = { "cac", "customer_churn", "ltv", "ltv_cac", NULL };
+static const gchar *const headline_suggests[] = { "outreach", "recurring", "tickets", "banking", "payables", "billing", NULL };
+static const gchar *const headline_reports[] = { "cac", "customer_churn", "ltv", "ltv_cac", "customer_cohorts", NULL };
 static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };
 static GType (*const dunning_types[]) (void) = { venture_dunning_policy_get_type, venture_dunning_event_get_type, NULL };
 static const gchar *const dunning_reports[] = { "collections", "dunning_worklist", NULL };

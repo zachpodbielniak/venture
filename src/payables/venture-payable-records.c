@@ -88,7 +88,11 @@ static const VentureFieldDecl bill_line_fields[] = {
 	VENTURE_FIELD_REF("purchase-order-line-id", "Purchase order line", NULL,
 		"purchase_order_line", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("acquisition", "Customer acquisition", "Include this bill line in customer acquisition spend",
-		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("cost-of-revenue", "Cost of revenue", "Count this bill line against revenue in gross margin; acquisition spend never does",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("campaign-id", "Campaign", "The outreach campaign this paid for; its own spend figure is then not counted again",
+		"campaign", VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureVendorBillLine, venture_vendor_bill_line, bill_line_fields)
 

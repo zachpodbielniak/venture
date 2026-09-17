@@ -187,12 +187,29 @@ supplied); they never add currencies. Their notes carry these definitions:
   a subsequent return from zero, =expansion= and =contraction= changes
   between positive amounts, =churn= a fall to zero, including pause.
   All movement metrics are positive magnitudes.
-- =churn=: opening companies with positive MRR are the cohort. A logo is
+- =customers= are the companies whose combined MRR is positive at the
+  endpoint (two subscriptions of one company are one customer); =arpa= is
+  MRR over them, half-even, and absent when there are none.
+- =quick_ratio= is =(new + expansion + reactivation) / (contraction +
+  churn)= within the period, to hundredths half-even; absent when nothing
+  was lost, because there is no denominator.
+- =churn= (titled /Subscription churn (billing)/, to tell it apart from the
+  headline module's =customer_churn=, which counts paying customers going
+  quiet): opening companies with positive MRR are the cohort. A logo is
   lost when its combined closing subscriptions have zero MRR. Revenue loss
   sums positive opening-minus-closing differences per opening company,
   including contraction, excluding new companies and gains. Rates are
   also returned in basis points (10,000 = 100%); an empty denominator has
   no rate metric. Numerators and denominators remain visible.
+- =expansion_mrr= sums positive closing-minus-opening differences of opening
+  companies only: a company that arrived during the period is new business,
+  not retention.
+- =grr_bps= (gross revenue retention) is =10,000 - revenue_churn_bps=, so the
+  two always sum to 100% exactly. =nrr_bps= (net revenue retention) is
+  =(opening_mrr - lost_mrr + expansion_mrr) / opening_mrr= in basis points,
+  half-even. Worked through: opening Alpha $100 and Beta $50; Alpha grows to
+  $150, Beta cancels, Gamma starts at $50. Revenue churn 33.33%, GRR 66.67%,
+  NRR 100.00%, quick ratio (50 + 50) / 50 = 2.00, ARPA $200 / 2 = $100.
 - =subscriptions_due=: the current operational renewal queue from the
   period endpoint through the next =days=, default 30, inclusive. It
   excludes scheduled cancellations and paused/past-due subscriptions.

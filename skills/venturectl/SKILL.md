@@ -472,9 +472,15 @@ Approval refuses a subscription changed since staging.
 
 `report mrr PERIOD currency=USD`, `report churn PERIOD currency=USD`, and
 `report subscriptions_due PERIOD days=14` read the registered reports.
-`churn` is the billing cohort (MRR lost). Headline activity and subscription
-churn is `customer_churn`; `cac`, `ltv` and `ltv_cac` are the other three.
-Do not guess `churn` for the five-card home page.
+`churn` ("Subscription churn (billing)") is the billing cohort: logos and MRR
+lost, gross and net revenue retention (`grr_bps`, `nrr_bps`); `mrr` also
+gives `arpa` and `quick_ratio`. Headline activity and recurring churn is
+`customer_churn`; `cac`, `ltv`, `ltv_cac` and `customer_cohorts` are the
+others, and all accept `venture_id=` and `as_of=`. The home page's churn card
+reads `churn` only when billing is in use, else `customer_churn` -- follow
+the card's `link` rather than guessing. `/api/v1/headline?format=csv` exports
+the cards; a viewer without the owner, admin or finance role gets them with
+`state` `restricted` and no figures.
 Read their notes: MRR is contracted revenue, not cash or recognized income;
 churn rates are in basis points. Proration adjustments are settled on the
 next renewal. Billing sends no mail and integrates no card provider.

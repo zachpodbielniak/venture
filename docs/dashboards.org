@@ -25,7 +25,7 @@ The module requires only =core=. A widget can point at any module's records or r
 | =/dashboards/:slug/widgets/:id/edit= | change one                                                 |
 | =/dashboards/:slug/export=      | the definition, as a JSON download                             |
 | =/overview=                     | the built-in overview, always                                  |
-| =/=                             | the dashboard marked as home, else the five headline cards, else the built-in overview |
+| =/=                             | the dashboard marked as home, else the headline cards, else the built-in overview |
 
 Every dashboard you may see is listed in the sidebar under *Views*, so a page you built is one click from anywhere.
 
@@ -206,43 +206,115 @@ For current UTC day counts, use =kind=metric=, =report_name=worklist= and
 with =report_name=worklist= shows overdue, due today, due this week and
 done this week per owner. These sources require the activities module.
 
-* The five cards
+* The headline cards
 
-With the =headline= module on, =/= is five cards by default, one per
-question in issue #75. A dashboard you have marked as *home* still wins,
-as the table above says; the cards are what you get when you have not
-chosen one. Each is a number for the period
-(=?period==, =this_month= by default), an arrow against the period before,
-two or three lines of detail, and a link to the report it was read from.
+With the =headline= module on, =/= is the headline cards by default, one
+per question in issue #75. A dashboard you have marked as *home* still wins,
+as the table above says; the cards are what you get when you have not chosen
+one. Each card is a number for the period, an arrow against the comparison
+period, two to four lines of detail, the card's definition, and a link to
+the report it was read from.
 
-| Card         | Number                     | Beside it                              | Report              |
-|--------------+----------------------------+----------------------------------------+---------------------|
-| P&L          | profit                     | revenue, expenses, cash in the bank    | =pnl=               |
-| CAC          | cost per new customer      | acquisition spend, new customers       | =cac=               |
-| Churn        | activity churn             | recurring churn, customers gone quiet  | =customer_churn=    |
-| LTV:CAC      | the ratio                  | projected LTV, CAC                     | =ltv_cac=           |
-| Support      | tickets open now           | service levels missed, raised in period | =support=          |
+| Card          | Number                  | Beside it                                   | Report                     |
+|---------------+-------------------------+---------------------------------------------+----------------------------|
+| P&L           | profit                  | revenue, expenses, cash in the bank         | =pnl=                      |
+| Recurring revenue | MRR (billing in use only) | ARR, quick ratio, net revenue retention | =mrr=                  |
+| CAC           | cost per new customer   | acquisition spend, new customers            | =cac=                      |
+| Churn         | logo churn (billing in use), else monthly activity churn | revenue churn and activity churn, or recurring churn and customers gone quiet | =churn= or =customer_churn= |
+| LTV:CAC       | the ratio               | projected LTV, CAC, ARPA, CAC payback       | =ltv_cac=                  |
+| Support       | tickets open now        | service levels missed, raised in period     | =support=                  |
 
-*Cash in the bank* is the sum of every bank account's last statement
-balance --- what is actually in the account, beside what the books say was
-earned. It says =no statements= until one has been imported.
+Every number is defined exactly in [[file:reporting.org][Reporting]] and
+[[file:billing.org][SaaS billing]]; each card carries a one-paragraph
+version of its definition. In brief:
 
-*The arrow* compares the card's number with the same number for the period
-before: up, down or flat, coloured for whether up is good (profit, LTV:CAC)
-or bad (CAC, churn, open tickets). A number that is =n/a= on either side
-has no arrow. The support card's arrow compares the queue now with the
-queue when the period began --- tickets raised before it and not resolved
-before it --- because "what is waiting" is a live question and the support
-report's "raised in March" is a different one.
+- *Profit* is the =pnl= report's net revenue (sales less refunds, platform
+  fees and shipping cost) minus every expense dated in the period. *Cash in
+  the bank* is the sum of every bank account's last statement balance ---
+  what is actually in the account, beside what the books say was earned. It
+  says =no statements= until one has been imported.
+- *Billing in use* means the =billing= module is on and the organisation has
+  at least one subscription event. Only then is there a recurring revenue
+  card, and only then is churn read from subscriptions: an install with
+  billing switched on but unused keeps activity churn rather than showing a
+  subscription churn of nobody.
+- *Recurring revenue* is contracted MRR at the period's end; ARR is twelve
+  times MRR; the quick ratio is MRR gained (new, expansion, reactivation)
+  over MRR lost (contraction, churn) in the period; net revenue retention is
+  what the period's opening subscribers pay at its end, their expansion
+  included, over what they paid at its start.
+- *CAC* is acquisition spend (acquisition-flagged expenses and bill lines,
+  and campaign spend pro-rated over each campaign) over new customers:
+  companies whose first cash receipt fell in the period.
+- *Churn*, with billing in use, is logo churn: companies paying for a
+  subscription when the period opened and for none at its end, over those
+  paying at its start; revenue churn is the MRR they lost, contraction
+  included, over their opening MRR. Otherwise it is monthly activity churn:
+  churn events in the trailing twelve months over customer-months at risk.
+- *LTV:CAC* is projected LTV over CAC; *ARPA* is billing MRR per paying
+  company, else cash per customer-month; *CAC payback* is CAC over ARPA times
+  gross margin, in months.
+- *Support* counts tickets open now and those past a service level. With the
+  tickets module off every figure is =n/a=: nobody counted, which is not the
+  same as zero.
 
-The cards are one JSON pass, =GET /api/v1/headline?period=this_month=,
-rendered by the page; the API and the browser cannot disagree. Each card
-carries =key=, =label=, =value=, =trend= (-1, 0, 1), =higher_is_better=,
-=link= and =lines=.
+*The period.* =?period== takes anything a report accepts, =this_month= by
+default; the page offers the same period buttons as a report page. A period
+that does not parse is shown as a notice above this month's cards rather
+than dropping back to the old dashboard; the API refuses it.
+
+*The arrow* compares the card's number with the same number for the
+comparison period (=venture_date_range_comparison_period()=): up, down or
+flat, coloured for whether up is good (profit, MRR, LTV:CAC) or bad (CAC,
+churn, open tickets). A number that is =n/a= on either side has no arrow.
+
+- A range of whole calendar months --- a month, a quarter, a year, a fiscal
+  year --- is compared with the same number of months immediately before it,
+  on the calendar and in the configured timezone: September with August,
+  March with February, whatever their lengths and whether or not a
+  daylight-saving change falls inside. Subtracting a length compared
+  September with 2 August to 1 September.
+- A range of whole days is compared with the same number of days before it.
+- A range containing today is compared with the same elapsed part of the
+  previous one, to the hour: on 3 September at ten, the first two days and
+  ten hours of September against the first two days and ten hours of
+  August. Comparing two days with a whole month put a red arrow on every
+  card at the start of every month. The elapsed part is capped at the
+  period's start, so 31 March compares with all of February.
+- Month, quarter and year to date end tomorrow; they are compared with the
+  smallest calendar unit that starts where they start and contains them.
+
+The support card's arrow compares the queue now with the queue when the
+period began --- tickets raised before it and not resolved before it ---
+because "what is waiting" is a live question and the support report's
+"raised in March" is a different one.
+
+*Who sees the numbers.* The cards are organisation totals, so they are
+computed only for a global owner or administrator, or a member holding the
+owner, admin or finance role in the organisation
+(=venture_access_policy_has_organization_role()=), and then computed over
+every row of the organisation. Anybody else gets the same cards in a
+=restricted= state with no figures: a total of only the rows a viewer's
+record policy lets them read, presented as the organisation's, is a smaller
+and wrong number that looks exactly like the right one.
+
+*A card that fails* is an error card --- =n/a=, the message in its place,
+and a warning in the log --- and every other card still renders. A page is
+a set of independent questions.
+
+*One pass.* =venture_headline_home_render()= writes every card as JSON, HTML
+and CSV in the loop that computes it, so the page, the API and an export
+cannot disagree. =GET /api/v1/headline?period=this_month= is the JSON; add
+=format=csv= for one row per figure and per line (=card,metric,value,trend,state=);
+=organization_id=, =venture_id= and =as_of= narrow it. Each card carries
+=key=, =label=, =value=, =trend= (-1, 0, 1), =higher_is_better=, =link=,
+=definition=, =state= (=ok=, =error= or =restricted=), =error= and =lines=.
+Each card's =link= opens its report with the same =period=,
+=organization_id= and, when given, =venture_id= and =as_of=.
 
 *Back to the old dashboard.* Save a =headline_setting= for the
 organisation with =classic_home=true= (=venturectl create headline_setting
 organization_id=1 classic_home=true=) and =/= is the built-in overview,
-exactly as before. The cards are still at
-=/api/v1/headline= and the reports on =/reports=. One settings row per
-organisation; a second is refused.
+exactly as before. The cards are still at =/api/v1/headline= and the
+reports on =/reports=. One living settings row per organisation; a second
+is refused.

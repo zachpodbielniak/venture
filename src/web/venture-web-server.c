@@ -5709,6 +5709,13 @@ venture_web_ui_reports(
 		venture_web_page(self, request, "/reports", "Reports", content->str), 200);
 }
 
+/* The period buttons every report page offers, and the headline home page
+ * too, so the two pages step through the same periods. */
+static const gchar *const venture_web_report_periods[] = {
+	"this_month", "last_month", "this_quarter", "ytd", "this_year",
+	NULL
+};
+
 static HtmxResponse *
 venture_web_ui_report(
 	HtmxRequest	*request,
@@ -5826,10 +5833,7 @@ venture_web_ui_report(
 	g_string_append(content, "</h1></div><div class=\"page-actions\">");
 
 	{
-		static const gchar *const periods[] = {
-			"this_month", "last_month", "this_quarter", "ytd", "this_year",
-			NULL
-		};
+		const gchar *const *periods = venture_web_report_periods;
 		gsize i;
 
 		g_string_append(content, "<div class=\"btn-group\">");

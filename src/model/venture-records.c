@@ -421,6 +421,10 @@ static const VentureFieldDecl venture_expense_fields[] = {
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("acquisition", "Customer acquisition", "Include this expense in customer acquisition spend",
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("cost-of-revenue", "Cost of revenue", "Count this expense against revenue in gross margin; acquisition spend never does",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("campaign-id", "Campaign", "The outreach campaign this paid for; its own spend figure is then not counted again",
+	                  "campaign", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
@@ -549,6 +553,8 @@ static const VentureFieldDecl venture_tax_category_fields[] = {
 	              "Where this lands on the tax form",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("acquisition", "Default customer acquisition", "Classify new expenses and bill lines in this category as acquisition",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("cost-of-revenue", "Default cost of revenue", "Classify new expenses and bill lines in this category as cost of revenue",
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("description", "Description", NULL),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)

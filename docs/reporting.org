@@ -32,10 +32,11 @@ about it.
 | =releases=   | releases out in the period, with tickets, builds, deployments |
 | =lead_time=  | days from a ticket being raised to its release going out     |
 | =incidents=  | incidents in the period, hours to resolve, the mean          |
-| =cac=        | acquisition spend over first-paid customers; =n/a= if none  |
-| =customer_churn= | recurring schedule churn and activity churn (=days=)    |
+| =cac=        | acquisition spend over customers with a first cash receipt; =n/a= if none |
+| =customer_churn= | recurring churn in customers and monthly activity churn (=days=) |
 | =ltv=        | realised and projected lifetime value; withheld below a minimum |
-| =ltv_cac=    | projected LTV over CAC; =n/a= when either side is           |
+| =ltv_cac=    | projected LTV over CAC, ARPA and CAC payback; =n/a= when a side is |
+| =customer_cohorts= | companies by month of first cash, share still paying in months 0-12 |
 
 #+begin_src sh
 venturectl report                       # list them
@@ -189,124 +190,284 @@ A report pack may reference only saved reports in its own organization. The runn
 
 * The headline numbers
 
-The =headline= module adds the four numbers the business is run on, as
-ordinary registry reports: =cac=, =customer_churn=, =ltv= and =ltv_cac=.
-They serve the five questions of issue #75: what a customer costs, who is
-leaving, what a customer is worth, and whether the first is worth paying
-for the third. Each is written in plain words here, refusals included,
-because a number whose formula you cannot say is not one you can run a
-business on.
+The =headline= module adds the numbers the business is run on, as ordinary
+registry reports: =cac=, =customer_churn=, =ltv=, =ltv_cac= and
+=customer_cohorts=. They serve the questions of issue #75: what a customer
+costs, who is leaving, what a customer is worth, whether the first is worth
+paying for the third, and how long customers stay. Each is written in plain
+words here, refusals included, because a number whose formula you cannot say
+is not one you can run a business on.
 
-Three rules hold across all four. Every amount is a =VentureMoney= carried
-in the organisation's book currency (=default-currency=, or the process
-default); an amount in another currency is counted and noted, never
-converted. Every ratio is integer arithmetic in basis points and becomes a
-fraction only when rendered. Every division names its zero and answers
-=n/a= rather than dividing --- =n/a= is a text metric, so a dashboard
-cannot mistake it for zero.
+** Rules that hold across all of them
 
-All four accept =organization_id=. =customer_churn= and =ltv= accept
-=days=. A =headline_setting= row per organisation tunes them:
-=hourly_rate= (what a logged support hour costs), =minimum_customer_months=
-(zero means 12) and =activity_days= (zero means 90); the save refuses a
-second row for the same organisation.
+- *Currency.* Every amount is a =VentureMoney= carried in the organisation's
+  book currency (=default-currency=, or the process default). An amount in
+  another currency is counted, noted and left out, never converted.
+- *Ratios.* Every ratio is integer arithmetic in basis points, rounded once,
+  half to even, and becomes a fraction only when rendered: two of three is
+  6,667 basis points (66.67%), not the 6,666 truncation gives. LTV:CAC and
+  CAC payback are kept to hundredths the same way.
+- *Refusals.* Every division names its zero and answers =n/a= rather than
+  dividing. =n/a= is a text metric, so a dashboard cannot mistake it for 0.
+- *The anchor.* A trailing window is measured back from the anchor: the
+  period's end, now, or the =as_of= cutoff, whichever is earliest --- the
+  same anchor the receivables aging uses. A period still in progress has an
+  end that has not happened yet.
+- *The trailing window* is the twelve months before the anchor, cut into
+  twelve months counted back from it (=anchor - 12 months= to =anchor - 11
+  months=, and so on). For a calendar month period these are calendar months.
+- *Scope.* All accept =organization_id=, =venture_id= and =as_of=.
+  =venture_id= keeps only cash sales, expenses, vendor bills, campaigns,
+  leads, tickets, schedules (the =venture_id= in their template) and
+  subscriptions (their plan's venture) of that venture; rows with no
+  venture are then left out, as the P&L does. =as_of= hides deletions made
+  after it and every dated movement after it. Both are passed to the =pnl=
+  report the gross margin is read from; the billing reports ARPA and the
+  home page read from take =as_of= but are organisation-wide, not per
+  venture.
+- *One read.* The reports read their records once, through a snapshot, and
+  derive every period from it; the home page asks for two periods of four
+  reports from one set of queries.
+
+A =headline_setting= row per organisation tunes them: =hourly_rate= (what a
+logged support hour costs), =minimum_customer_months= (zero means 12) and
+=activity_days= (zero means 90). =customer_churn= and =ltv= accept =days= to
+override the last. The save refuses a second living row for the same
+organisation, on every save --- moving a row to an organisation that already
+has one is refused too --- and migration =000350= backs this with a unique
+partial index, because a restore does not run save validators. That
+migration keeps the lowest-id living row of any existing duplicates (the row
+every reader already used) and soft-deletes the rest.
+
+** Cash: what a customer paid
+
+Cash is decided by the settlement service, not reconstructed here. The
+service derives a cash =sale= whenever money a customer paid is applied to
+one of their invoices, and a negative cash adjustment whenever an applied
+receipt is refunded. So:
+
+- a =payment_allocation= that names a sale is a receipt, and a =refund= that
+  names a sale is a refund; the amount is that sale's =gross=, which for a
+  foreign invoice paid in book currency is the book-currency cash;
+- a deposit or overpayment is not cash until it is applied to an invoice,
+  and then each application is a receipt on the day it was applied;
+- a credit note or write-off applied to an invoice is not cash, and the
+  refund of unapplied money is not a refund of cash (it was never counted).
+
+Worked through: a $500 invoice paid with $600, $100 of it refunded, is $500
+of cash. A $6,000 retainer applied to twelve $500 invoices is twelve $500
+receipts. The receipt belongs to the invoice's company; a refund to the
+refund's customer. The first version counted allocations funded by a payment
+and subtracted every refund: the first example read $400, and the retainer
+customer had no cash at all.
+
+A company's *first cash* is its earliest positive receipt. That is when it
+became a customer --- not when an invoice was marked paid, which a write-off
+also does and a later refund undoes.
 
 ** =cac=: what a new customer cost
 
-*Acquisition spend* in the period is three things added together: the
-=spend= of every outreach campaign whose =started_at= falls in the period;
-every expense dated in the period whose =acquisition= flag is on; and every
-=acquisition=-flagged line of a vendor bill dated in the period, drafts and
-voids excluded. The flag is an ordinary boolean on =expense= and
-=vendor_bill_line=, so it is set from the form, REST, CSV and =venturectl=
-like any field; a =tax_category= marked =acquisition= turns it on for new
-expenses and bill lines filed under it, and only for new ones --- changing
-a category later does not rewrite what was already spent.
+*Acquisition spend* in the period is:
 
-A *new customer* is a company whose *first* paid invoice fell in the
-period. Not first invoice, not first sale: first invoice that reached
-=paid=, by its =paid_at=. A company that paid in January and again in
-February is January's.
+- every expense and every vendor bill line flagged =acquisition=, or naming a
+  =campaign_id=, dated in the period. A bill line counts at its bill's date,
+  drafts and voids excluded, and costs its net plus any tax that cannot be
+  recovered (the tax code's =recoverable= flag; tax with no code counts). The
+  cash expenses the payables service projects from a paid bill line
+  (external id =bill_line:...= or =bill_cash:...=) are never counted: the
+  line already was, at its bill date.
+- each outreach campaign's own =spend=, spread evenly over the time it ran,
+  =[started_at, ended_at)= or =[started_at, now)= while it has no end, by
+  VentureMoney allocation so consecutive periods sum back to the spend. A
+  campaign with no duration belongs whole to the period of its start. Only
+  campaigns no expense or bill line names are counted this way: once a
+  campaign's costs are recorded as rows, its =spend= figure is a summary of
+  the same money. A campaign still running is re-spread every day, so its
+  earlier months' shares shrink as it runs on.
 
-=CAC = acquisition spend / new customers=, one rational multiplication of
-money. The table breaks the new customers down by the *source* and
-*campaign* of the lead that converted into the company (=lead_sources=
-measures the same attribution from the other end); a company with no lead
-behind it is attributed to its own =source= field, or =(unattributed)=.
-Where a group's campaign is known, the row also shows that campaign's spend
-and its own CAC.
+The =acquisition= flag is an ordinary boolean on =expense= and
+=vendor_bill_line=; a =tax_category= marked =acquisition= turns it on for
+new expenses and bill lines filed under it, and only for new ones ---
+changing a category later does not rewrite what was already spent. The
+=campaign_id= reference on both, and the =cost_of_revenue= flags described
+under =ltv=, are ordinary fields too; migration =000351= checks each table
+has its new columns (or, for a disabled module, none) and backfills nothing:
+no historical row is inferred to be cost of revenue or a campaign's cost.
+
+A *new customer* is a company whose first cash fell in the period. A company
+paying in instalments is new at its first. =CAC = acquisition spend / new
+customers=, one rational multiplication rounded half to even.
+
+Metrics: =spend=, =campaign_spend= (campaign figures and rows naming a
+campaign), =expense_spend= (other flagged rows), =new_customers=, =cac=.
+
+The table breaks the new customers down by the *campaign* and *source* of
+the lead they were converted from (the first converted lead, in id order); a
+company with no lead is attributed to its own =source=, or =(unattributed)=.
+A campaign's spend in the period is split across its source rows in
+proportion to the customers each brought, by VentureMoney allocation, and
+each row shows its share and its own CAC. The first version gave every row
+the whole campaign spend.
 
 *Refusal.* Zero new customers reports the spend and =n/a= for CAC, with a
-note saying so. Spend with nobody to divide it by is a cost, not a cost per
-customer.
+note. Spend with nobody to divide it by is a cost, not a cost per customer.
 
 ** =customer_churn=: who is leaving
 
 Two measures, because a business has two kinds of customer.
 
-*Recurring churn* is over invoice schedules --- the =recurring= module's
-subscriptions. A schedule counts as active at the period's start when it
-started before the period and had neither ended nor been deleted by then.
-It churned in the period when it was *cancelled* (deleted inside the
-period) or *lapsed* (its =end_at= fell inside the period). The ratio is
-churned over active-at-start. Bills, expenses and journal schedules are
-costs, not customers, and are not counted.
+*Recurring churn* counts customers, not schedules. A customer is recurring
+at an instant when any of their commitments is running then:
 
-*Activity churn* is over paying customers. The window is the twelve months
-before the period's end --- or before now, when the period is still in
-progress, for the reason the receivables aging gives. A customer is in the
-window when a receipt was applied to one of their invoices inside it
-(credit notes are not cash and do not count). They have *gone quiet* when
-their last such receipt is older than =days= (default 90, or the
-organisation's =activity_days=). The ratio is quiet over in-window.
+- an invoice =recurring_schedule= (kind invoice, the company in its
+  template) runs from =start_at= until the earlier of =end_at= and its
+  deletion; a paused schedule is paused whatever the date, because the flag
+  carries none;
+- with billing on, a =customer_subscription= is what its latest
+  =subscription_event= before the instant left it: active and past_due run,
+  trialing and paused are paused, cancelled and expired are gone.
 
-Both list the customers behind the number: each cancelled or lapsed
-schedule with its customer and the date, each quiet customer with the
-date they last paid.
+The cohort is the customers running at the period's start. One is lost when
+none of their commitments is running *or paused* at the anchor. Recurring
+churn is lost over the cohort. Cancelling one of three schedules is not a
+lost customer, replacing one schedule or plan with another is not churn, and
+a pause is not churn. The rows list each lost customer, how their last
+commitment ended (cancelled, lapsed, expired) and when. Bills, expenses and
+journal schedules are costs, not customers, and are not counted.
 
-*Refusals.* No schedule active at the start, or the =recurring= module
-off, makes recurring churn =n/a=. Nobody paid in the window makes activity
-churn =n/a=.
+*Monthly activity churn* is over paying customers, in the trailing window.
+For each customer, from their positive receipts before the anchor:
+
+- their *rhythm* is the gap between receipts they are expected to keep: the
+  cadence of their latest receipt's invoice when it is known --- a billing
+  price interval (31 days a month, 366 a year) or the recurring schedule that
+  generated it (monthly 31, weekly 7, daily 1, yearly 366) --- else the median
+  gap between their receipts on distinct days (the upper median for an even
+  count), else 31 days;
+- their *quiet threshold* is =max(days, ceil(1.5 x rhythm))= when the rhythm
+  is evidence (a known cadence, or at least two receipts), else =days=;
+- they are *covered* until their latest receipt plus their rhythm;
+- they *churned* at their latest receipt plus their threshold, if that is
+  before the anchor.
+
+A *churn event* is a customer whose churn moment falls inside the window. A
+customer is *at risk* in a month of the window when, at its first instant,
+they had paid before (first receipt earlier) and were still covered. Monthly
+activity churn is =events / customer-months at risk=. A customer who went
+quiet and paid again is judged by their latest receipt, so only a final
+departure is an event.
+
+Worked through: fifty monthly customers, one leaving and one joining every
+month, is 12 events over 600 customer-months: 2.00% a month. The first
+version divided customers quiet at the end by everyone who paid in the year
+times twelve (1.25%). Twelve annual customers renewing one a month is no
+churn at all; the first version's single 90-day threshold called nine of
+them churned.
+
+Metrics: =active_at_start=, =churned= and =recurring_churn=;
+=active_customers= (paid in the window), =inactive_customers= (churn events),
+=customer_months= (at risk), =activity_churn= and =activity_churn_bps=;
+=days=. The rows list each churn event with the date they last paid.
+
+*Refusals.* No customer running at the start, or both the recurring and
+billing modules off, makes recurring churn =n/a=. No customer-month at risk
+makes activity churn =n/a=.
+
+The billing module's =churn= report, titled /Subscription churn (billing)/,
+answers a different question --- MRR and logos lost from an opening
+subscription cohort --- and is described in [[file:billing.org][SaaS billing]].
 
 ** =ltv=: what a customer is worth
 
-*Realised* lifetime value is what each customer has actually paid, net of
-what was handed back: applied receipts less refunds, over all time. The
-report gives the mean, the median (the middle customer, or the average of
-the two middle ones), the total, and the ten largest customers as rows.
+*Realised* lifetime value is each customer's cash before the anchor,
+receipts less refunds. The report gives the mean, the median (the middle
+customer, or the average of the two middle ones), the total, and the ten
+largest customers as rows.
 
 *Projected* lifetime value is
-=revenue per customer-month x gross margin / monthly activity churn=:
+=revenue per customer-month x gross margin / monthly activity churn=, all
+over the trailing window:
 
-- *Revenue per customer-month* is the trailing twelve months' paid revenue
-  (as above, net of refunds) over the number of distinct customer-months
-  in it --- a customer-month being one customer with at least one receipt
-  in one calendar month. A customer who paid in March and April is two
-  customer-months.
-- *Gross margin* is the P&L margin over the same twelve months --- the
-  =pnl= report's own net revenue less its expenses --- less the cost of
-  support: every =worklog= hour on a ticket that names a company, priced
-  at the organisation's =hourly_rate= and attributed to that customer (the
-  table shows each customer's share). Hours are stored by the ticket
-  module as a double; they are rounded once to hundredths of an hour and
-  everything after that is exact money times a rational. With no rate
-  configured support costs nothing, and the note says so.
-- *Monthly activity churn* is activity churn as above, spread over the
-  twelve months of its window: quiet over in-window over twelve. Dividing
-  by it is multiplying by =in-window x 12 / quiet=, one exact rational.
+- *Revenue per customer-month* (=arpu=) is cash revenue in the window over
+  the customer-months it was earned in. A receipt on a yearly cadence is
+  split evenly across the twelve months starting with the one it arrived
+  in; every other receipt belongs to its own month; a refund is spread like
+  the receipt it refunds. Only the parts inside the window count, so an
+  annual receipt from before the window still contributes its later months.
+  A customer-month is one customer in one month of the window with a
+  positive part that made it into the total --- a part left out as another
+  currency adds no customer-month. Twelve annual customers at $1,200 are
+  $14,400 over 144 customer-months: $100 (the first version said $1,200).
+- *Gross margin* is =(revenue - cost of revenue) / revenue=. Revenue is the
+  =pnl= report's net revenue over the window, scoped as this report is.
+  Cost of revenue is every expense and vendor bill line flagged
+  =cost_of_revenue= and dated in the window (bill lines costed as for CAC),
+  plus the attributed support cost. A row flagged =acquisition=, or naming a
+  campaign, is never cost of revenue: that spend is what CAC divides, and
+  counting it here too charged it twice. Nothing else on the P&L ---
+  salaries, rent, advertising --- is cost of revenue unless flagged. The
+  =cost_of_revenue= flag is set like =acquisition=, and a =tax_category=
+  marked =cost_of_revenue= defaults it on for new rows. With nothing flagged
+  and no support cost the margin is 100%, and a note says so.
+- *Support cost* is every =worklog= hour in the window on a ticket that
+  names a company, priced at the organisation's =hourly_rate=, attributed to
+  that customer (the table shows each customer's share). Hours are stored as
+  a double; they are rounded once to hundredths and everything after is
+  exact money times a rational. With no rate, support costs nothing, and the
+  note says so. Do not also flag the salaries of the same support staff as
+  cost of revenue, or they are counted twice.
+- *Monthly activity churn* is as =customer_churn= defines it. Dividing by it
+  is multiplying by =customer-months at risk / events=, one exact rational.
 
-*Refusals.* Below =minimum_customer_months= (default 12) the projection is
-=insufficient data=, with the count and the minimum in the note --- a
-lifetime projected from two customer-months is a guess with a currency
-symbol on it. No net revenue, or revenue and expenses in different
-currencies, means no margin and =n/a=. Nobody gone quiet means zero churn,
-an unbounded lifetime, and =n/a= --- good news, but not a number.
+Worked through: revenue $120,000, hosting $20,000 flagged cost of revenue,
+advertising $40,000 flagged acquisition, salaries and rent $70,000. Gross
+margin is 83.33%. The first version subtracted every expense and got
+-8.33%, a negative LTV and a negative LTV:CAC.
+
+Metrics: =customers=, =realised_total=, =realised_mean=, =realised_median=,
+=projected=, =arpu=, =revenue_12m=, =gross_margin= and =gross_margin_bps=,
+=cost_of_revenue=, =monthly_churn=, =churn_events=, =risk_months=,
+=customer_months= (of revenue) and =support_cost=.
+
+*Refusals.* Below =minimum_customer_months= (default 12) customer-months of
+revenue the projection is =insufficient data=, with the count and the
+minimum in the note --- a lifetime projected from two customer-months is a
+guess with a currency symbol on it. No P&L revenue in the book currency,
+revenue at or below zero, or a margin at or below zero means =n/a= for the
+margin and the projection, with the reason: a lifetime value projected from
+a negative margin reads as a precise loss per customer rather than as the
+absence of an answer. No churn event means an unbounded lifetime and =n/a=
+--- good news, but not a number.
 
 ** =ltv_cac=: whether it is worth it
 
-Projected LTV over CAC for the same period, as a plain number to two
-places: one integer division of minor units, both sides being in the same
-currency. Whenever either side is =n/a= or =insufficient data=, so is the
-ratio, and the note says which side. Sides in different currencies are
-refused rather than converted. The two sides are shown beside the ratio,
-so a reader can see what was divided.
+- =ltv_cac= is projected LTV over CAC for the same period, to hundredths
+  rounded half to even, both sides being in the same currency. Whenever
+  either side is =n/a= or =insufficient data=, so is the ratio, and the note
+  says which. Sides in different currencies are refused rather than
+  converted. =projected_ltv= and =cac= are shown beside it.
+- =arpa= is average revenue per account per month. With billing in use (the
+  module on and the organisation having subscription history) it is the
+  billing =mrr= report's ARPA: contracted MRR at the period's end over the
+  companies with positive MRR. Otherwise it is revenue per customer-month
+  from =ltv=: the trailing twelve months' cash per paying customer per month.
+  The note says which.
+- =payback_months= is =CAC / (ARPA x gross margin)=: the months of gross
+  profit a new customer takes to repay what acquiring them cost, to
+  hundredths rounded half to even. It is =n/a= when CAC, ARPA or the margin
+  is unknown, the margin is at or below zero, or they are in different
+  currencies --- a customer who never repays has no payback period, not a
+  very long one.
+
+** =customer_cohorts=: how long customers stay
+
+A cohort is the companies whose first cash fell in the period, grouped by
+the calendar month of that receipt (in UTC, like every calendar date). Month /k/ of
+a cohort (month 0 being its own) is the share of the cohort still paying: a
+positive receipt covers that calendar month, received in it or on a yearly
+cadence in the eleven months before. The period only chooses the cohorts:
+they are followed up to now, or =as_of=, so last quarter's cohorts show how
+they have done since. Months that have not started by then are blank, not
+zero. =month_1=, =month_3=, =month_6= and =month_12= pool every cohort that
+has reached that month: the companies still paying over the companies in
+those cohorts; =n/a= when no cohort has.

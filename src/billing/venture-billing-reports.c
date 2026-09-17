@@ -76,6 +76,9 @@ remember(GHashTable *table, gint64 id, VentureEntity *event)
 	g_hash_table_replace(table, key, event);
 }
 
+static gboolean
+company_totals(VentureContext *context, GHashTable *latest, GHashTable *totals, const gchar *code, GError **error);
+
 static VentureReportResult *
 recurring(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
 {
@@ -191,7 +194,49 @@ recurring(VentureContext *context, VentureDateRange *period, JsonObject *options
 	venture_report_result_add_metric(result, venture_metric_new_money("arr", "ARR", arr));
 	for (i = 0; i < G_N_ELEMENTS(keys); i++)
 		venture_report_result_add_metric(result, venture_metric_new_money(keys[i], keys[i], g_ptr_array_index(movements, i)));
-	venture_report_result_set_note(result, "MRR is contracted active or past_due recurring revenue immediately before the exclusive period end; trials, pauses and cancellations contribute zero. Annual terms are divided by 12 with half-even rounding; ARR is 12 times rounded MRR. Events freeze money at their effective date. New is the first positive MRR, reactivation a later return from zero, expansion/contraction changes between positive amounts, and churn a fall to zero (including pause). Movements are positive magnitudes within the period. One organization and requested currency only; other currencies are excluded. This is neither cash nor recognized revenue.");
+	/* Paying customers are companies, not subscriptions: two seats on two
+	 * plans are one account, and ARPA is revenue per account. */
+	{
+		g_autoptr(GHashTable) companies = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, (GDestroyNotify)venture_money_free);
+		gint64 customers = 0;
+		if (!company_totals(context, latest, companies, currency(options), error))
+			return NULL;
+		g_hash_table_iter_init(&iter, companies);
+		while (g_hash_table_iter_next(&iter, &key, &value))
+			if (venture_money_get_amount(value) > 0)
+				customers++;
+		venture_report_result_add_metric(result, venture_metric_new_count("customers", "Paying customers", customers));
+		if (customers > 0)
+		{
+			g_autoptr(VentureMoney) arpa = venture_money_multiply_rational(total, 1, customers, error);
+			if (arpa == NULL)
+				return NULL;
+			venture_report_result_add_metric(result, venture_metric_new_money("arpa", "ARPA", arpa));
+		}
+	}
+	/* Quick ratio: MRR gained over MRR lost within the period, in exact
+	 * hundredths rounded half to even. No loss is no denominator, so no
+	 * metric, the same rule as the churn rates. */
+	{
+		const VentureMoney *gained[] = { g_ptr_array_index(movements, 0), g_ptr_array_index(movements, 1), g_ptr_array_index(movements, 4) };
+		const VentureMoney *lost[] = { g_ptr_array_index(movements, 2), g_ptr_array_index(movements, 3) };
+		gint64 up = 0;
+		gint64 down = 0;
+		for (i = 0; i < G_N_ELEMENTS(gained); i++)
+			up += venture_money_get_amount(gained[i]);
+		for (i = 0; i < G_N_ELEMENTS(lost); i++)
+			down += venture_money_get_amount(lost[i]);
+		if (down > 0)
+		{
+			g_autoptr(VentureMoney) numerator = venture_money_new(up, "XXX", 0);
+			g_autoptr(VentureMoney) hundredths = venture_money_multiply_rational(numerator, 100, down, error);
+			if (hundredths == NULL)
+				return NULL;
+			venture_report_result_add_metric(result, venture_metric_new_number("quick_ratio", "Quick ratio",
+				(gdouble)venture_money_get_amount(hundredths) / 100.0));
+		}
+	}
+	venture_report_result_set_note(result, "MRR is contracted active or past_due recurring revenue immediately before the exclusive period end; trials, pauses and cancellations contribute zero. Annual terms are divided by 12 with half-even rounding; ARR is 12 times rounded MRR. Events freeze money at their effective date. New is the first positive MRR, reactivation a later return from zero, expansion/contraction changes between positive amounts, and churn a fall to zero (including pause). Movements are positive magnitudes within the period. Paying customers are companies whose combined MRR is positive at the endpoint; ARPA is MRR over them, half-even. Quick ratio is (new + expansion + reactivation) / (contraction + churn) within the period, to hundredths half-even, absent when nothing was lost. One organization and requested currency only; other currencies are excluded. This is neither cash nor recognized revenue.");
 	return g_steal_pointer(&result);
 }
 
@@ -229,7 +274,7 @@ company_totals(VentureContext *context, GHashTable *latest, GHashTable *totals, 
 static VentureReportResult *
 churn(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
 {
-	g_autoptr(VentureReportResult) result = venture_report_result_new("Customer churn", period);
+	g_autoptr(VentureReportResult) result = venture_report_result_new("Subscription churn", period);
 	g_autoptr(GDateTime) end = cutoff(period, options, error);
 	g_autoptr(GPtrArray) history = NULL;
 	g_autoptr(GHashTable) opening = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
@@ -238,6 +283,7 @@ churn(VentureContext *context, VentureDateRange *period, JsonObject *options, GE
 	g_autoptr(GHashTable) companies_end = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, (GDestroyNotify)venture_money_free);
 	g_autoptr(VentureMoney) initial = venture_money_new_zero(currency(options));
 	g_autoptr(VentureMoney) lost = venture_money_new_zero(currency(options));
+	g_autoptr(VentureMoney) gained = venture_money_new_zero(currency(options));
 	GDateTime *start = period != NULL ? venture_date_range_get_start(period) : NULL;
 	GHashTableIter iter;
 	gpointer key;
@@ -278,6 +324,15 @@ churn(VentureContext *context, VentureDateRange *period, JsonObject *options, GE
 			return NULL;
 		if (venture_money_get_amount(loss) > 0 && !add(&lost, loss, error))
 			return NULL;
+		/* Net retention also credits an opening company's growth; a
+		 * company that arrived during the period is new business, not
+		 * retention, so only the opening cohort's gains count. */
+		if (venture_money_get_amount(loss) < 0)
+		{
+			g_autoptr(VentureMoney) gain = venture_money_negate(loss);
+			if (gain == NULL || !add(&gained, gain, error))
+				return NULL;
+		}
 	}
 	venture_report_result_add_metric(result, venture_metric_new_count("opening_logos", "Opening customers", logos));
 	venture_report_result_add_metric(result, venture_metric_new_count("lost_logos", "Lost customers", lost_logos));
@@ -297,8 +352,31 @@ churn(VentureContext *context, VentureDateRange *period, JsonObject *options, GE
 		if (rate == NULL)
 			return NULL;
 		venture_report_result_add_metric(result, venture_metric_new_count("revenue_churn_bps", "Revenue churn (basis points)", venture_money_get_amount(rate)));
+		/* Gross retention is exactly what revenue churn did not take, so
+		 * it is derived from the same rounded figure and the two always
+		 * sum to 10,000. Net retention adds the cohort's expansion. */
+		venture_report_result_add_metric(result, venture_metric_new_count("grr_bps", "Gross revenue retention (basis points)",
+			10000 - venture_money_get_amount(rate)));
+		{
+			g_autoptr(VentureMoney) kept = venture_money_subtract(initial, lost, error);
+			g_autoptr(VentureMoney) net = NULL;
+			g_autoptr(VentureMoney) numerator = NULL;
+			g_autoptr(VentureMoney) nrr = NULL;
+			if (kept == NULL)
+				return NULL;
+			net = venture_money_add(kept, gained, error);
+			if (net == NULL)
+				return NULL;
+			numerator = venture_money_new(venture_money_get_amount(net), "XXX", 0);
+			nrr = venture_money_multiply_rational(numerator, 10000, venture_money_get_amount(initial), error);
+			if (nrr == NULL)
+				return NULL;
+			venture_report_result_add_metric(result, venture_metric_new_count("nrr_bps", "Net revenue retention (basis points)",
+				venture_money_get_amount(nrr)));
+		}
 	}
-	venture_report_result_set_note(result, "Opening cohort is companies with positive contracted MRR before period start. Logo churn is lost_logos / opening_logos; lost logos have zero closing MRR across all subscriptions. Revenue churn is lost_mrr / opening_mrr, summing positive opening-minus-closing losses per opening company (including contractions, excluding new customers and gains). Zero denominators mean undefined churn. Both boundaries use dated events, one organization and currency. Pauses count as loss; past_due remains contracted MRR.");
+	venture_report_result_add_metric(result, venture_metric_new_money("expansion_mrr", "Opening cohort expansion", gained));
+	venture_report_result_set_note(result, "Opening cohort is companies with positive contracted MRR before period start. Logo churn is lost_logos / opening_logos; lost logos have zero closing MRR across all subscriptions. Revenue churn is lost_mrr / opening_mrr, summing positive opening-minus-closing losses per opening company (including contractions, excluding new customers and gains). Gross revenue retention is 10,000 minus revenue churn in basis points; net revenue retention is (opening_mrr - lost_mrr + expansion_mrr) / opening_mrr, where expansion_mrr sums positive closing-minus-opening gains of opening companies only. Zero denominators mean undefined churn and retention. Both boundaries use dated events, one organization and currency. Pauses count as loss; past_due remains contracted MRR.");
 	return g_steal_pointer(&result);
 }
 
@@ -384,7 +462,10 @@ due_checked(VentureContext *context, VentureDateRange *period, JsonObject *optio
 void
 venture_billing_register_reports(VentureReportRegistry *registry)
 {
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("mrr", "Recurring revenue", "Contracted MRR, ARR and dated movements", recurring_checked)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("churn", "Customer churn", "Opening customer cohort and recurring revenue losses", churn_checked)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("mrr", "Recurring revenue", "Contracted MRR, ARR, ARPA, dated movements and the quick ratio", recurring_checked)));
+	/* Titled apart from the headline module's customer_churn, which counts
+	 * paying customers going quiet: two reports both called "Customer
+	 * churn" gave two different answers to what read as one question. */
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("churn", "Subscription churn (billing)", "Opening subscription cohort, logo and revenue churn, gross and net revenue retention", churn_checked)));
 	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("subscriptions_due", "Subscriptions due", "Renewals in the next days", due_checked)));
 }
