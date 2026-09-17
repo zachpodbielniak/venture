@@ -87,6 +87,16 @@ appears correctly in the browser, the terminal, a CSV export and an org file.
 CSV escaping defuses a leading =​== that a spreadsheet would otherwise execute
 as a formula; HTML output escapes its content.
 
+** Periods and calendar dates
+
+A date typed without a time (=2026-03-01=, or =today=) is a calendar date, stored as midnight UTC on that day by =venture_time_from_string()=. Every period boundary =venture_date_range_parse()= builds is a midnight UTC for the same reason, whatever =locale.timezone= says; the configured zone only decides what /today/, /this month/ and /this year/ are, so at nine in the evening on 31 March in New York =this_month= is still March. The consequence is the one that matters in a ledger: an expense dated 1 March is in March's P&L, and one dated 1 January is in the same year as the tax filing, whose years were always UTC.
+
+Built in the configured zone instead, as periods once were, 1 March sat five hours before March began in New York, so every document dated the first of a month was reported in the month before. =/report/period-boundaries-are-calendar-dates= and =/headline/timezone/bare-date= pin this.
+
+A true instant -- a payment recorded from a webhook at 21:00 on the last evening of a month in New York -- is judged against the same UTC boundaries and so falls in the next month. That is the smaller error of the two: it touches only events stamped in the last few hours of a period, where the old rule moved every calendar date on the first of one.
+
+=venture_time_to_date_string()= shows a value at exactly midnight UTC as the calendar date it is, in any zone, and converts anything else to the zone it is given. A list page rendered in New York used to show 1 March as 28 February while the record page showed 1 March.
+
 * Writing one
 
 A report is a function:

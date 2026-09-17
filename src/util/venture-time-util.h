@@ -75,7 +75,8 @@ venture_time_to_string(GDateTime *when);
  * @timezone: (nullable): the timezone to render in; %NULL means UTC
  *
  * Formats as "YYYY-MM-DD" in @timezone. Used wherever only the calendar day
- * matters, such as an expense date.
+ * matters, such as an expense date. A value at exactly midnight UTC is a
+ * stored calendar date and is formatted as that date, whatever @timezone is.
  *
  * Returns: (transfer full) (nullable): the formatted date, or %NULL
  */

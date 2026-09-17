@@ -193,11 +193,14 @@ venture_date_range_new_all_time(void);
 /**
  * venture_date_range_parse:
  * @text: the period expression to parse
- * @timezone: (nullable): the timezone defining period boundaries
+ * @timezone: (nullable): the operator's calendar, which decides what "today", "this month" and "this year" are; %NULL means local time
  * @fiscal_year_start_month: the month the fiscal year begins, 1-12
  * @error: (out) (optional): return location for a #GError
  *
- * Parses a period expression. This is the vocabulary the CLI, the REST API
+ * Parses a period expression. Every boundary of the result is a midnight
+ * UTC, whatever @timezone is, because a calendar date is stored as midnight
+ * UTC on that day (see venture_time_from_string()); only the reading of the
+ * current date uses @timezone. This is the vocabulary the CLI, the REST API
  * and the AI's report tool all accept, so a person and a model can ask for
  * the same period the same way:
  *
@@ -329,6 +332,43 @@ venture_date_range_get_days(const VentureDateRange *self);
  */
 VentureDateRange *
 venture_date_range_previous_period(const VentureDateRange *self);
+
+/**
+ * venture_date_range_comparison_period:
+ * @self: a #VentureDateRange
+ * @now: (nullable): the instant treated as now, or %NULL for a range that
+ *   is never in progress
+ *
+ * The period a figure for @self is compared against, as a person reading a
+ * calendar would pick it. A range made of whole calendar months in its own
+ * timezone -- a month, a quarter, a year, a fiscal year -- is compared with
+ * the same number of months immediately before it, found by calendar
+ * arithmetic, so September is compared with August and March with February
+ * whatever their lengths and whichever of them crosses a daylight-saving
+ * change. A range made of whole days is compared with the same number of
+ * calendar days before it. Anything else falls back to
+ * venture_date_range_previous_period().
+ *
+ * A range that contains @now is compared with the same elapsed part of the
+ * previous one: the third of September at ten in the morning compares the
+ * first two days and ten hours of September with the first two days and ten
+ * hours of August, never with the whole of August. A "to date" range (month,
+ * quarter or year to date) starts on a month boundary but ends tomorrow; it
+ * is compared against the smallest calendar unit that starts where it starts
+ * and contains it. The elapsed part is capped at the start of @self, so the
+ * thirty-first of March compares against the whole of February.
+ *
+ * Unlike venture_date_range_previous_period(), the result need not be as
+ * long as @self: that is the point.
+ *
+ * Returns: (transfer full) (nullable): the comparison range, or %NULL if
+ *   @self is unbounded
+ */
+VentureDateRange *
+venture_date_range_comparison_period(
+	const VentureDateRange	*self,
+	GDateTime		*now
+);
 
 /**
  * venture_date_range_split_by_month:

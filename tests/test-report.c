@@ -816,6 +816,93 @@ test_report_monthly_splits_period(
 	g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 3);
 }
 
+/* --- Calendar dates and periods ----------------------------------------- */
+
+/*
+ * Every period boundary is a midnight UTC, because that is how a calendar
+ * date is stored. Built in the configured zone instead (New York), 1 March
+ * sat five hours before March began: an expense dated the first of a month
+ * was reported in the month before, and one dated 1 January in the year
+ * before -- while the tax filing, whose years are UTC, disagreed with the
+ * P&L about which year it belonged to.
+ */
+static void
+test_report_period_boundaries_are_calendar_dates(void)
+{
+	static const gchar *const periods[] = {
+		"2026-03", "2026", "2026-Q1", "fy_2026", "2026-03-01",
+		"2026-01-01..2026-03-01", "today", "yesterday", "this_week",
+		"this_month", "last_month", "this_quarter", "this_year", "ytd",
+		"mtd", "qtd", "last_30_days"
+	};
+	g_autoptr(GTimeZone) new_york = g_time_zone_new_identifier("America/New_York");
+	g_autoptr(GDateTime) first_of_march = NULL;
+	g_autoptr(GDateTime) new_year = NULL;
+	gsize i;
+
+	g_assert_nonnull(new_york);
+
+	for (i = 0; i < G_N_ELEMENTS(periods); i++)
+	{
+		g_autoptr(VentureDateRange) period = NULL;
+		g_autoptr(GError) error = NULL;
+		GDateTime *bounds[2];
+		gsize b;
+
+		period = venture_date_range_parse(periods[i], new_york, 1, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(period);
+		bounds[0] = venture_date_range_get_start(period);
+		bounds[1] = venture_date_range_get_end(period);
+
+		for (b = 0; b < G_N_ELEMENTS(bounds); b++)
+		{
+			g_assert_nonnull(bounds[b]);
+			g_assert_cmpint(g_date_time_get_utc_offset(bounds[b]), ==, 0);
+			g_assert_cmpint(g_date_time_get_hour(bounds[b]), ==, 0);
+			g_assert_cmpint(g_date_time_get_minute(bounds[b]), ==, 0);
+			g_assert_cmpint(g_date_time_get_second(bounds[b]), ==, 0);
+		}
+	}
+
+	first_of_march = venture_time_from_string("2026-03-01", NULL);
+	new_year = venture_time_from_string("2026-01-01", NULL);
+
+	{
+		g_autoptr(VentureDateRange) february = venture_date_range_parse("2026-02", new_york, 1, NULL);
+		g_autoptr(VentureDateRange) march = venture_date_range_parse("2026-03", new_york, 1, NULL);
+		g_autoptr(VentureDateRange) last_year = venture_date_range_parse("2025", new_york, 1, NULL);
+		g_autoptr(VentureDateRange) this_year = venture_date_range_parse("2026", new_york, 1, NULL);
+
+		g_assert_false(venture_date_range_contains(february, first_of_march));
+		g_assert_true(venture_date_range_contains(march, first_of_march));
+		g_assert_false(venture_date_range_contains(last_year, new_year));
+		g_assert_true(venture_date_range_contains(this_year, new_year));
+	}
+}
+
+/*
+ * A stored calendar date is shown as itself in any zone. Rendered in New
+ * York, 1 March read 28 February on every list page while the record page
+ * said 1 March; a real instant still takes the zone it is shown in.
+ */
+static void
+test_report_date_string_keeps_calendar_dates(void)
+{
+	g_autoptr(GTimeZone) new_york = g_time_zone_new_identifier("America/New_York");
+	g_autoptr(GDateTime) day = venture_time_from_string("2026-03-01", NULL);
+	g_autoptr(GDateTime) today = venture_time_from_string("today", NULL);
+	g_autoptr(GDateTime) evening = venture_time_from_string("2026-03-01T02:00:00Z", NULL);
+	g_autofree gchar *day_text = venture_time_to_date_string(day, new_york);
+	g_autofree gchar *today_text = venture_time_to_date_string(today, new_york);
+	g_autofree gchar *today_utc = venture_time_to_date_string(today, NULL);
+	g_autofree gchar *evening_text = venture_time_to_date_string(evening, new_york);
+
+	g_assert_cmpstr(day_text, ==, "2026-03-01");
+	g_assert_cmpstr(today_text, ==, today_utc);
+	g_assert_cmpstr(evening_text, ==, "2026-02-28");
+}
+
 /* --- Ideas --------------------------------------------------------------- */
 
 static void
@@ -1028,6 +1115,10 @@ main(
 	    test_report_receivables_buckets_by_age);
 
 	ADD("/report/monthly-splits-period", test_report_monthly_splits_period);
+	g_test_add_func("/report/period-boundaries-are-calendar-dates",
+	                test_report_period_boundaries_are_calendar_dates);
+	g_test_add_func("/report/date-string-keeps-calendar-dates",
+	                test_report_date_string_keeps_calendar_dates);
 
 	ADD("/report/ideas-ranks-by-score", test_report_ideas_ranks_by_score);
 

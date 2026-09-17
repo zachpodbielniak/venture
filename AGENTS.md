@@ -268,6 +268,14 @@ first seven columns were empty.
   wall clock.** `deliver_due()` takes an explicit `now`, and the claimed
   row's `lease-until` minus `VENTURE_MAIL_LEASE_SECONDS` recovers it; wall
   time makes a delivery run "as of" a day decide against another day.
+- **A calendar date is midnight UTC, and so is every period boundary.**
+  `venture_time_from_string()` stores "2026-03-01" and "today" as midnight
+  UTC on that day; `venture_date_range_parse()` reads *which* day it is in
+  the configured zone but builds every boundary at midnight UTC. Building
+  them in `locale.timezone` put the first of every month in the month before
+  (and 1 January in the previous year) for any zone west of UTC, on every
+  report. `venture_time_to_date_string()` shows an exact UTC midnight as the
+  date it is in any zone. Do not "fix" a boundary back into local time.
 - **`make DEBUG=1 test` does not relink the server binary.** After editing
   `data/static/*` verify `build/debug/venture` is newer than
   `build/debug/venture-assets.h`, or the browser serves last hour's JS

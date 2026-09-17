@@ -185,8 +185,24 @@ venture_time_to_date_string(
 	g_autoptr(GTimeZone) tz = NULL;
 	g_autoptr(GDateTime) local = NULL;
 
+	g_autoptr(GDateTime) utc = NULL;
+
 	if (NULL == when)
 		return NULL;
+
+	/* Midnight UTC to the microsecond is how a calendar date is stored
+	 * (venture_time_from_string() on "2026-03-01", or on "today"), and a
+	 * calendar date has no zone to convert: rendered in New York, 1 March
+	 * became 28 February on every list while the record page, which reads
+	 * the stored value, still said 1 March. A real instant lands there
+	 * exactly only by coincidence, so it keeps the caller's zone. */
+	utc = g_date_time_to_utc(when);
+
+	if ((NULL != utc) && (0 == g_date_time_get_hour(utc)) &&
+	    (0 == g_date_time_get_minute(utc)) &&
+	    (0 == g_date_time_get_second(utc)) &&
+	    (0 == g_date_time_get_microsecond(utc)))
+		return g_date_time_format(utc, "%Y-%m-%d");
 
 	tz = (NULL != timezone) ? g_time_zone_ref(timezone) : g_time_zone_new_utc();
 	local = g_date_time_to_timezone(when, tz);

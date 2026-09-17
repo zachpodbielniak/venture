@@ -305,7 +305,9 @@ venture_date_range_parse(
 	GError		**error
 ){
 	g_autoptr(GTimeZone) tz = NULL;
+	g_autoptr(GTimeZone) utc = NULL;
 	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GDateTime) today = NULL;
 	g_autofree gchar *normalised = NULL;
 	const gchar *separator;
 	gint year;
@@ -320,6 +322,30 @@ venture_date_range_parse(
 
 	tz = venture_date_range_resolve_tz(timezone);
 	now = g_date_time_new_now(tz);
+
+	/*
+	 * Two zones with two jobs. @timezone is the operator's calendar and
+	 * decides which day, month and year it is now: at nine in the evening
+	 * on 31 March in New York it is still March. Every boundary, though,
+	 * is a midnight UTC, because that is how a calendar date is stored --
+	 * venture_time_from_string() turns "2026-03-01" into midnight UTC on
+	 * that day, and "today" into midnight UTC on the local date. Building
+	 * boundaries in the local zone put 1 March five hours before its own
+	 * boundary, so an expense dated the first of a month was counted in
+	 * the month before and one dated 1 January in the previous year, while
+	 * the tax filing, whose years are UTC, counted it in the right one.
+	 */
+	utc = g_time_zone_new_utc();
+	today = g_date_time_new(utc, g_date_time_get_year(now),
+	                        g_date_time_get_month(now),
+	                        g_date_time_get_day_of_month(now), 0, 0, 0.0);
+
+	if (NULL == today)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "The current date could not be resolved");
+		return NULL;
+	}
 
 	/* Accept dashes, spaces and mixed case interchangeably: this string
 	 * arrives from a CLI flag, a query parameter and an AI tool argument,
@@ -345,8 +371,8 @@ venture_date_range_parse(
 		start_text = g_strstrip(g_strndup(text, (gsize)(separator - text)));
 		end_text = g_strstrip(g_strdup(separator + 2));
 
-		start = venture_date_range_parse_iso_day(start_text, tz);
-		parsed_end = venture_date_range_parse_iso_day(end_text, tz);
+		start = venture_date_range_parse_iso_day(start_text, utc);
+		parsed_end = venture_date_range_parse_iso_day(end_text, utc);
 
 		if ((NULL == start) || (NULL == parsed_end))
 		{
@@ -371,26 +397,24 @@ venture_date_range_parse(
 	}
 
 	if (0 == g_strcmp0(normalised, "today"))
-		return venture_date_range_new_day(now, tz);
+		return venture_date_range_new_day(today, utc);
 
 	if (0 == g_strcmp0(normalised, "yesterday"))
 	{
 		g_autoptr(GDateTime) yesterday = NULL;
 
-		yesterday = g_date_time_add_days(now, -1);
+		yesterday = g_date_time_add_days(today, -1);
 
-		return venture_date_range_new_day(yesterday, tz);
+		return venture_date_range_new_day(yesterday, utc);
 	}
 
 	if ((0 == g_strcmp0(normalised, "this_week")) ||
 	    (0 == g_strcmp0(normalised, "last_week")))
 	{
-		g_autoptr(GDateTime) today = NULL;
 		g_autoptr(GDateTime) start = NULL;
 		g_autoptr(GDateTime) end = NULL;
 		gint weekday;
 
-		today = venture_date_range_day_start(now, tz);
 		/* GLib numbers Monday as 1 through Sunday as 7. Weeks here start
 		 * on Monday, which is the ISO convention and the one that makes
 		 * a "this week" report match a calendar. */
@@ -416,7 +440,7 @@ venture_date_range_parse(
 	if (0 == g_strcmp0(normalised, "this_month"))
 	{
 		return venture_date_range_new_month(g_date_time_get_year(now),
-		                                    g_date_time_get_month(now), tz);
+		                                    g_date_time_get_month(now), utc);
 	}
 
 	if (0 == g_strcmp0(normalised, "last_month"))
@@ -427,7 +451,7 @@ venture_date_range_parse(
 
 		return venture_date_range_new_month(g_date_time_get_year(previous),
 		                                    g_date_time_get_month(previous),
-		                                    tz);
+		                                    utc);
 	}
 
 	if (0 == g_strcmp0(normalised, "this_quarter"))
@@ -435,7 +459,7 @@ venture_date_range_parse(
 		quarter = ((g_date_time_get_month(now) - 1) / 3) + 1;
 
 		return venture_date_range_new_quarter(g_date_time_get_year(now),
-		                                      quarter, tz);
+		                                      quarter, utc);
 	}
 
 	if (0 == g_strcmp0(normalised, "last_quarter"))
@@ -446,14 +470,14 @@ venture_date_range_parse(
 		quarter = ((g_date_time_get_month(previous) - 1) / 3) + 1;
 
 		return venture_date_range_new_quarter(g_date_time_get_year(previous),
-		                                      quarter, tz);
+		                                      quarter, utc);
 	}
 
 	if (0 == g_strcmp0(normalised, "this_year"))
-		return venture_date_range_new_year(g_date_time_get_year(now), tz);
+		return venture_date_range_new_year(g_date_time_get_year(now), utc);
 
 	if (0 == g_strcmp0(normalised, "last_year"))
-		return venture_date_range_new_year(g_date_time_get_year(now) - 1, tz);
+		return venture_date_range_new_year(g_date_time_get_year(now) - 1, utc);
 
 	/* The "to date" forms all share a shape: the start of some period up
 	 * to the end of today. */
@@ -461,30 +485,28 @@ venture_date_range_parse(
 	    (0 == g_strcmp0(normalised, "mtd")) ||
 	    (0 == g_strcmp0(normalised, "qtd")))
 	{
-		g_autoptr(GDateTime) today = NULL;
 		g_autoptr(GDateTime) start = NULL;
 		g_autoptr(GDateTime) end = NULL;
 		const gchar *label;
 
-		today = venture_date_range_day_start(now, tz);
 		end = g_date_time_add_days(today, 1);
 
 		if (0 == g_strcmp0(normalised, "ytd"))
 		{
-			start = g_date_time_new(tz, g_date_time_get_year(now),
+			start = g_date_time_new(utc, g_date_time_get_year(now),
 			                        1, 1, 0, 0, 0.0);
 			label = "Year to date";
 		}
 		else if (0 == g_strcmp0(normalised, "mtd"))
 		{
-			start = g_date_time_new(tz, g_date_time_get_year(now),
+			start = g_date_time_new(utc, g_date_time_get_year(now),
 			                        g_date_time_get_month(now), 1, 0, 0, 0.0);
 			label = "Month to date";
 		}
 		else
 		{
 			quarter = ((g_date_time_get_month(now) - 1) / 3) + 1;
-			start = g_date_time_new(tz, g_date_time_get_year(now),
+			start = g_date_time_new(utc, g_date_time_get_year(now),
 			                        ((quarter - 1) * 3) + 1, 1, 0, 0, 0.0);
 			label = "Quarter to date";
 		}
@@ -503,36 +525,48 @@ venture_date_range_parse(
 			year -= 1;
 
 		return venture_date_range_new_fiscal_year(year,
-		                                          fiscal_year_start_month, tz);
+		                                          fiscal_year_start_month, utc);
 	}
 
 	if (1 == sscanf(normalised, "fy_%4d", &year))
 	{
 		return venture_date_range_new_fiscal_year(year,
-		                                          fiscal_year_start_month, tz);
+		                                          fiscal_year_start_month, utc);
 	}
 
-	if (1 == sscanf(normalised, "last_%u_days", &days))
-		return venture_date_range_new_last_days(days, tz);
+	if ((1 == sscanf(normalised, "last_%u_days", &days)) && (days > 0))
+	{
+		g_autoptr(GDateTime) start = NULL;
+		g_autoptr(GDateTime) end = NULL;
+		g_autofree gchar *label = NULL;
+
+		/* The same whole days venture_date_range_new_last_days() counts,
+		 * ending at the end of the operator's today. */
+		end = g_date_time_add_days(today, 1);
+		start = g_date_time_add_days(end, -(gint)days);
+		label = g_strdup_printf("Last %u days", days);
+
+		return venture_date_range_new_labelled(start, end, label);
+	}
 
 	if (2 == sscanf(normalised, "%4d_q%1d", &year, &quarter))
-		return venture_date_range_new_quarter(year, quarter, tz);
+		return venture_date_range_new_quarter(year, quarter, utc);
 
 	if (2 == sscanf(normalised, "%4d_%2d", &year, &month))
-		return venture_date_range_new_month(year, month, tz);
+		return venture_date_range_new_month(year, month, utc);
 
 	if ((4 == strlen(normalised)) && (1 == sscanf(normalised, "%4d", &year)))
-		return venture_date_range_new_year(year, tz);
+		return venture_date_range_new_year(year, utc);
 
 	/* A bare ISO day is a one-day range, which is what someone asking for
 	 * "2026-03-14" almost certainly means. */
 	{
 		g_autoptr(GDateTime) day = NULL;
 
-		day = venture_date_range_parse_iso_day(text, tz);
+		day = venture_date_range_parse_iso_day(text, utc);
 
 		if (NULL != day)
-			return venture_date_range_new_day(day, tz);
+			return venture_date_range_new_day(day, utc);
 	}
 
 	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
@@ -647,6 +681,169 @@ venture_date_range_previous_period(const VentureDateRange *self)
 	start = g_date_time_add(self->start, -span);
 
 	return venture_date_range_new(start, self->start);
+}
+
+/* Midnight, to the microsecond, in the instant's own zone. */
+static gboolean
+venture_date_range_is_day_start(GDateTime *when)
+{
+	return (0 == g_date_time_get_hour(when)) &&
+	       (0 == g_date_time_get_minute(when)) &&
+	       (0 == g_date_time_get_second(when)) &&
+	       (0 == g_date_time_get_microsecond(when));
+}
+
+/* Midnight on the first of a month, in the instant's own zone. */
+static gboolean
+venture_date_range_is_month_start(GDateTime *when)
+{
+	return (1 == g_date_time_get_day_of_month(when)) &&
+	       venture_date_range_is_day_start(when);
+}
+
+/*
+ * Calendar days from the date of @from to the date of @to, both read in
+ * their own zones. Counted on dates rather than on elapsed time, so a day
+ * that lost an hour to daylight saving is still one day.
+ */
+static gint
+venture_date_range_calendar_days(
+	GDateTime	*from,
+	GDateTime	*to
+){
+	GDate first;
+	GDate second;
+
+	g_date_clear(&first, 1);
+	g_date_clear(&second, 1);
+	g_date_set_dmy(&first, (GDateDay)g_date_time_get_day_of_month(from),
+	               (GDateMonth)g_date_time_get_month(from),
+	               (GDateYear)g_date_time_get_year(from));
+	g_date_set_dmy(&second, (GDateDay)g_date_time_get_day_of_month(to),
+	               (GDateMonth)g_date_time_get_month(to),
+	               (GDateYear)g_date_time_get_year(to));
+
+	return g_date_days_between(&first, &second);
+}
+
+VentureDateRange *
+venture_date_range_comparison_period(
+	const VentureDateRange	*self,
+	GDateTime		*now
+){
+	g_autoptr(GDateTime) local_end = NULL;
+	g_autoptr(GDateTime) previous_start = NULL;
+	g_autoptr(GDateTime) previous_end = NULL;
+	GTimeZone *zone;
+	gboolean in_progress;
+	gint months;
+
+	g_return_val_if_fail(NULL != self, NULL);
+
+	if ((NULL == self->start) || (NULL == self->end))
+		return NULL;
+
+	/* Every boundary is judged in the zone the range was built in, which
+	 * is the operator's calendar; UTC would call a New York month
+	 * misaligned. */
+	zone = g_date_time_get_timezone(self->start);
+	local_end = g_date_time_to_timezone(self->end, zone);
+
+	if (NULL == local_end)
+		return venture_date_range_previous_period(self);
+
+	in_progress = (NULL != now) &&
+		(g_date_time_compare(now, self->start) >= 0) &&
+		(g_date_time_compare(now, self->end) < 0);
+	months = 0;
+
+	if (venture_date_range_is_month_start(self->start) &&
+	    venture_date_range_is_month_start(local_end))
+	{
+		months = ((g_date_time_get_year(local_end) * 12) +
+		          g_date_time_get_month(local_end)) -
+		         ((g_date_time_get_year(self->start) * 12) +
+		          g_date_time_get_month(self->start));
+	}
+	else if (in_progress && venture_date_range_is_month_start(self->start))
+	{
+		static const gint units[] = { 1, 3, 12 };
+		gsize i;
+
+		/* Month, quarter or year to date: the same range serves all
+		 * three on the first of January, so the smallest unit that
+		 * starts here and contains it is the honest reading. */
+		for (i = 0; i < G_N_ELEMENTS(units); i++)
+		{
+			g_autoptr(GDateTime) container_end = NULL;
+
+			if ((3 == units[i]) &&
+			    (0 != ((g_date_time_get_month(self->start) - 1) % 3)))
+				continue;
+
+			container_end = g_date_time_add_months(self->start, units[i]);
+
+			if ((NULL != container_end) &&
+			    (g_date_time_compare(self->end, container_end) <= 0))
+			{
+				months = units[i];
+				break;
+			}
+		}
+	}
+
+	if (months > 0)
+	{
+		previous_start = g_date_time_add_months(self->start, -months);
+	}
+	else if (venture_date_range_is_day_start(self->start) &&
+	         venture_date_range_is_day_start(local_end))
+	{
+		previous_start = g_date_time_add_days(self->start,
+			-venture_date_range_calendar_days(self->start, local_end));
+	}
+	else
+	{
+		return venture_date_range_previous_period(self);
+	}
+
+	if (NULL == previous_start)
+		return venture_date_range_previous_period(self);
+
+	if (!in_progress)
+		return venture_date_range_new(previous_start, self->start);
+
+	/* The same calendar days and the same time of day into the previous
+	 * range, built from fields rather than added as a span so a
+	 * daylight-saving change in either range cannot move it an hour. */
+	{
+		g_autoptr(GDateTime) local_now = NULL;
+		g_autoptr(GDateTime) shifted = NULL;
+
+		local_now = g_date_time_to_timezone(now, zone);
+		shifted = g_date_time_add_days(previous_start,
+			venture_date_range_calendar_days(self->start, local_now));
+
+		if ((NULL != shifted) && (NULL != local_now))
+			previous_end = g_date_time_new(zone,
+			                               g_date_time_get_year(shifted),
+			                               g_date_time_get_month(shifted),
+			                               g_date_time_get_day_of_month(shifted),
+			                               g_date_time_get_hour(local_now),
+			                               g_date_time_get_minute(local_now),
+			                               g_date_time_get_seconds(local_now));
+	}
+
+	/* Thirty-one days into March is past the end of February: the whole
+	 * of February is the fair comparison, never a slice of March. */
+	if ((NULL == previous_end) ||
+	    (g_date_time_compare(previous_end, self->start) > 0))
+	{
+		g_clear_pointer(&previous_end, g_date_time_unref);
+		previous_end = g_date_time_ref(self->start);
+	}
+
+	return venture_date_range_new(previous_start, previous_end);
 }
 
 GPtrArray *
