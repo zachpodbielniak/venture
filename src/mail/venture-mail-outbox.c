@@ -88,6 +88,7 @@ static gboolean validate(VentureDatabase *db, VentureEntity *entity, VentureEnti
 {
 	VentureMailOutbox *self = data;
 	g_autofree gchar *private_body = NULL;
+	g_autofree gchar *private_html = NULL;
 	g_autofree gchar *state = NULL;
 	g_autofree gchar *id = NULL;
 	g_autofree gchar *key = NULL;
@@ -97,8 +98,8 @@ static gboolean validate(VentureDatabase *db, VentureEntity *entity, VentureEnti
 	if (!enabled(self, venture_entity_get_organization_id(entity), error)) return FALSE;
 	if (permitted) return TRUE;
 	if (previous) return refuse(error, "Stored messages are immutable; use retry for a deliberate resend");
-	g_object_get(entity, "private-text-body", &private_body, NULL);
-	if (private_body && *private_body && self->enqueue_permit != entity)
+	g_object_get(entity, "private-text-body", &private_body, "private-html-body", &private_html, NULL);
+	if (((private_body && *private_body) || (private_html && *private_html)) && self->enqueue_permit != entity)
 		return refuse(error, "Private delivery content requires the outbox enqueue service");
 	g_object_get(entity, "state", &state, "message-id", &id, "idempotency-key", &key, "attempts", &attempts, NULL);
 	if ((state && *state && strcmp(state, "queued")) || (id && *id) || attempts)

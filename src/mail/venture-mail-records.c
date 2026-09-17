@@ -11,6 +11,9 @@ static const VentureFieldDecl message_fields[] = {
 	/* Bearer links belong only in delivery, never generated records or audit. */
 	VENTURE_FIELD("private-text-body", "Private text body", "Service-owned delivery content", VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_SENSITIVE),
 	VENTURE_FIELD_TEXT("html-body", "HTML body", NULL),
+	/* The HTML twin of the private text body: an HTML-only template's bearer
+	 * link would otherwise vanish when the private text replaces the bodies. */
+	VENTURE_FIELD("private-html-body", "Private HTML body", "Service-owned delivery content", VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_SENSITIVE),
 	VENTURE_FIELD("attachments", "Attachments", "Document references: JSON array of type and id", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
 	STR("related-type", "Related type"), INT("related-id", "Related record"),
 	STR("state", "State"), INT("attempts", "Attempts"),

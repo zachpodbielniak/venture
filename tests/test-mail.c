@@ -259,6 +259,50 @@ static void test_smtp_uncertain_wire(void)
 	g_free(f.bodies[0]); g_free(f.bodies[1]); g_object_unref(f.listener);
 }
 
+/* A private HTML body replaces the public HTML on the wire. Before it
+ * existed the private text body cleared the HTML alternative, so a reminder
+ * rendered from an HTML-only template lost its pay link. */
+static void test_smtp_private_html_wire(void)
+{
+	SmtpFixture f;
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureSmtpMailer) mailer = NULL;
+	g_autoptr(VentureMailMessage) message = venture_mail_message_new();
+	g_autoptr(GError) error = NULL;
+	GThread *thread;
+	guint16 port;
+	f.listener = g_socket_listener_new(); f.bodies[0] = NULL; f.bodies[1] = NULL; f.recipients = 0;
+	port = g_socket_listener_add_any_inet_port(f.listener, NULL, &error);
+	g_assert_no_error(error);
+	g_object_set(config, "mail-host", "127.0.0.1", "mail-port", (gint64)port,
+		"mail-security", "none", "mail-from-address", "sender@example.test", NULL);
+	mailer = venture_smtp_mailer_new(config);
+	g_object_set(message, "to", "reader@example.test", "subject", "Test",
+		"text-body", "", "html-body", "<p>publicmarker</p>",
+		"private-html-body", "<p>privatemarker</p>", "message-id", "html@example.test", NULL);
+	thread = g_thread_new("local-smtp", smtp_server, &f);
+	g_assert_false(venture_mailer_send(VENTURE_MAILER(mailer), message, NULL, &error));
+	g_clear_error(&error);
+	g_assert_true(venture_mailer_send(VENTURE_MAILER(mailer), message, NULL, &error));
+	g_assert_no_error(error);
+	g_thread_join(thread);
+	g_assert_nonnull(strstr(f.bodies[1], "privatemarker"));
+	g_assert_null(strstr(f.bodies[1], "publicmarker"));
+	g_free(f.bodies[0]); g_free(f.bodies[1]); g_object_unref(f.listener);
+}
+
+/* Private HTML is delivery content like private text: only the enqueue
+ * service may write it. */
+static void test_private_html_refused(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureMailMessage) input = venture_mail_message_new();
+	g_autoptr(GError) error = NULL;
+	g_object_set(input, "organization-id", f->org, "to", "reader@example.test", "subject", "Invitation",
+		"text-body", "Private invitation", "private-html-body", "<a href=\"https://example.test/portal/secret\">pay</a>", NULL);
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(input), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
 static gboolean reject_mail(VentureDatabase *, VentureEntity *, VentureEntity *, gpointer, GError **);
 static void test_invoice_consumer(Fixture *f, gconstpointer data)
 {
@@ -499,6 +543,8 @@ main(int argc, char **argv)
 	g_test_add_func("/mail/template", test_template);
 	g_test_add_func("/mail/smtp-connection-failure", test_smtp_configuration);
 	g_test_add_func("/mail/smtp-uncertain-wire", test_smtp_uncertain_wire);
+	g_test_add_func("/mail/smtp-private-html-wire", test_smtp_private_html_wire);
+	g_test_add("/mail/private-html-refused", Fixture, NULL, setup, test_private_html_refused, teardown);
 	g_test_add("/mail/invoice-consumer", Fixture, NULL, setup, test_invoice_consumer, teardown);
 	g_test_add("/mail/invoice-atomic-failure", Fixture, GINT_TO_POINTER(1), setup, test_invoice_consumer, teardown);
 	g_test_add("/mail/user-notices", Fixture, NULL, setup, test_user_notices, teardown);

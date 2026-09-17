@@ -78,7 +78,7 @@ static gboolean smtp_send(VentureMailer *mailer, VentureMailMessage *message, GC
 	g_autoptr(GError) local = NULL;
 	g_autoptr(GBytes) rendered = NULL, wire = NULL;
 	g_autofree gchar *path = NULL, *to = NULL, *cc = NULL, *bcc = NULL, *reply = NULL;
-	g_autofree gchar *subject = NULL, *text = NULL, *html = NULL, *id = NULL, *private_text = NULL;
+	g_autofree gchar *subject = NULL, *text = NULL, *html = NULL, *id = NULL, *private_text = NULL, *private_html = NULL;
 	MailReceipt *receipt = NULL;
 	GMimeStream *input = NULL, *output = NULL;
 	GMimeParser *parser = NULL;
@@ -100,12 +100,18 @@ static gboolean smtp_send(VentureMailer *mailer, VentureMailMessage *message, GC
 	if (!transport) goto out;
 	g_object_get(message, "to", &to, "cc", &cc, "bcc", &bcc, "reply-to", &reply,
 		"subject", &subject, "text-body", &text, "html-body", &html, "message-id", &id,
-		"private-text-body", &private_text, NULL);
-	/* Do not let a public HTML alternative hide the invitation link. */
+		"private-text-body", &private_text, "private-html-body", &private_html, NULL);
+	/* Do not let a public HTML alternative hide the invitation link: a
+	 * private text body drops the public HTML, and a private HTML body, when
+	 * the sender rendered one, replaces it so an HTML-only link survives. */
 	if (private_text && *private_text) {
 		g_free(text);
 		text = g_steal_pointer(&private_text);
 		g_clear_pointer(&html, g_free);
+	}
+	if (private_html && *private_html) {
+		g_free(html);
+		html = g_steal_pointer(&private_html);
 	}
 	if (!mail_message_add_address(mail, GMIME_ADDRESS_TYPE_FROM, self->from_name, self->from, &local) ||
 		!addresses(mail, GMIME_ADDRESS_TYPE_TO, to, &local) || !addresses(mail, GMIME_ADDRESS_TYPE_CC, cc, &local) ||
