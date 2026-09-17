@@ -2637,9 +2637,13 @@ venture_web_ui_overview(
 	gpointer	 user_data
 );
 
+static gchar *
+venture_web_render_headline_home(VentureWebServer *self, HtmxRequest *request);
+
 /*
- * GET / - the home page: a dashboard marked as home, if the viewer may
- * see one, otherwise the built-in overview, which is always at /overview.
+ * GET / - the home page: the five headline cards unless the organisation
+ * opted out, else a dashboard marked as home, if the viewer may see one,
+ * otherwise the built-in overview, which is always at /overview.
  */
 static HtmxResponse *
 venture_web_ui_dashboard(
@@ -2656,6 +2660,11 @@ venture_web_ui_dashboard(
 
 	if (!principal->authenticated)
 		return venture_web_ui_overview(request, params, user_data);
+
+	home = venture_web_render_headline_home(self, request);
+
+	if (NULL != home)
+		return venture_web_html_response(home, 200);
 
 	home = venture_web_render_home_dashboard(self, request);
 
@@ -27886,6 +27895,7 @@ venture_web_api_ticket_draft(
 #include "budgets/venture-budget-web.inc"
 #include "equity/venture-equity-web.inc"
 #include "group/venture-group-web.inc"
+#include "report/venture-headline-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -28351,6 +28361,7 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
 	htmx_router_post(router, "/ui/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
 	htmx_router_post(router, "/api/v1/sequences/run", venture_web_sequence_run, self);
+	htmx_router_get(router, "/api/v1/headline", venture_web_api_headline, self);
 
 	htmx_router_get(router, "/api/v1/:type", venture_web_api_list, self);
 	htmx_router_post(router, "/api/v1/:type", venture_web_api_create, self);
