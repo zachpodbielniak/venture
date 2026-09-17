@@ -15,6 +15,8 @@ acquisition_default(VentureDatabase *database, VentureEntity *record,
 	g_autofree gchar *code = NULL;
 	gboolean acquisition = FALSE;
 	gint64 id = 0;
+
+	(void)unused;
 	if (previous != NULL)
 		return TRUE;
 	g_object_get(record, "acquisition", &acquisition, "category", &code, NULL);
@@ -49,6 +51,8 @@ one_setting_per_organization(VentureDatabase *database, VentureEntity *record,
 	VentureEntity *previous, gpointer unused, GError **error)
 {
 	g_autoptr(VentureEntity) existing = NULL;
+
+	(void)unused;
 	if (previous != NULL)
 		return TRUE;
 	existing = venture_headline_setting_find(database, venture_entity_get_organization_id(record));

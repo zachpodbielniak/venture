@@ -220,6 +220,38 @@ test_acquisition(Fixture *f, gconstpointer unused)
 		venture_entity_get_id(VENTURE_ENTITY(expense)), NULL);
 	g_object_get(stored, "acquisition", &acquisition, NULL);
 	g_assert_false(acquisition);
+
+	/* Bill lines inherit from the category code, and only on create. */
+	{
+		g_autoptr(VentureEntity) vendor = record_new(f, "company");
+		g_autoptr(VentureEntity) bill = record_new(f, "vendor_bill");
+		g_autoptr(VentureEntity) bill_line = record_new(f, "vendor_bill_line");
+		g_autoptr(VentureEntity) stored_line = NULL;
+
+		g_object_set(vendor, "name", "Ads vendor", "kind",
+			VENTURE_COMPANY_KIND_SUPPLIER, NULL);
+		save(f, vendor);
+		g_object_set(bill, "company-id", venture_entity_get_id(vendor),
+			"number", "ACQ-1", "currency", "USD", "status", "draft", NULL);
+		field(bill, "bill-date", "2026-01-15");
+		save(f, bill);
+		g_object_set(bill_line, "bill-id", venture_entity_get_id(bill),
+			"description", "Ads", "quantity", "1", "category",
+			"headline-acquisition", NULL);
+		field(bill_line, "unit-price", "40 USD");
+		save(f, bill_line);
+		stored_line = venture_database_get(f->db, VENTURE_TYPE_VENDOR_BILL_LINE,
+			venture_entity_get_id(bill_line), NULL);
+		g_object_get(stored_line, "acquisition", &acquisition, NULL);
+		g_assert_true(acquisition);
+		g_object_set(stored_line, "acquisition", FALSE, NULL);
+		save(f, stored_line);
+		g_clear_object(&stored_line);
+		stored_line = venture_database_get(f->db, VENTURE_TYPE_VENDOR_BILL_LINE,
+			venture_entity_get_id(bill_line), NULL);
+		g_object_get(stored_line, "acquisition", &acquisition, NULL);
+		g_assert_false(acquisition);
+	}
 }
 
 /* --- 2. CAC ---------------------------------------------------------------- */
@@ -264,12 +296,59 @@ test_cac(Fixture *f, gconstpointer unused)
 	expense(f, "Rent", "1000 USD", "2026-02-11", FALSE);
 	expense(f, "March ads", "999 USD", "2026-03-03", TRUE);
 
+	/* Flagged bill lines of issued bills count; drafts and unflagged
+	 * lines do not. Status is derived, so the issued one is approved. */
+	{
+		g_autoptr(VentureEntity) vendor = record_new(f, "company");
+		g_autoptr(VentureEntity) issued = record_new(f, "vendor_bill");
+		g_autoptr(VentureEntity) draft = record_new(f, "vendor_bill");
+		g_autoptr(VentureEntity) issued_line = record_new(f, "vendor_bill_line");
+		g_autoptr(VentureEntity) other_line = record_new(f, "vendor_bill_line");
+		g_autoptr(VentureEntity) draft_line = record_new(f, "vendor_bill_line");
+		g_autoptr(VentureEntity) event = NULL;
+		gint64 vendor_id;
+
+		g_object_set(vendor, "name", "Printer", "kind",
+			VENTURE_COMPANY_KIND_SUPPLIER, NULL);
+		save(f, vendor);
+		vendor_id = venture_entity_get_id(vendor);
+		g_object_set(issued, "company-id", vendor_id, "number", "BILL-1",
+			"currency", "USD", "status", "draft", NULL);
+		field(issued, "bill-date", "2026-02-12");
+		save(f, issued);
+		g_object_set(issued_line, "bill-id", venture_entity_get_id(issued),
+			"description", "Flyers", "quantity", "1", "acquisition", TRUE,
+			NULL);
+		field(issued_line, "unit-price", "50 USD");
+		save(f, issued_line);
+		g_object_set(other_line, "bill-id", venture_entity_get_id(issued),
+			"description", "Paper", "quantity", "1", "acquisition", FALSE,
+			NULL);
+		field(other_line, "unit-price", "25 USD");
+		save(f, other_line);
+		event = record_new(f, "vendor_bill_event");
+		g_object_set(event, "bill-id", venture_entity_get_id(issued),
+			"vendor-id", vendor_id, "kind", "approve", "state", "approved",
+			NULL);
+		field(event, "date", "2026-02-12");
+		save(f, event);
+		g_object_set(draft, "company-id", vendor_id, "number", "BILL-DRAFT",
+			"currency", "USD", "status", "draft", NULL);
+		field(draft, "bill-date", "2026-02-13");
+		save(f, draft);
+		g_object_set(draft_line, "bill-id", venture_entity_get_id(draft),
+			"description", "Unsent ads", "quantity", "1", "acquisition", TRUE,
+			NULL);
+		field(draft_line, "unit-price", "999 USD");
+		save(f, draft_line);
+	}
+
 	result = run_report(f, "cac", "2026-02", NULL);
-	g_assert_cmpint(money_metric(result, "spend"), ==, 50000);
+	g_assert_cmpint(money_metric(result, "spend"), ==, 55000);
 	g_assert_cmpint(money_metric(result, "campaign_spend"), ==, 30000);
-	g_assert_cmpint(money_metric(result, "expense_spend"), ==, 20000);
+	g_assert_cmpint(money_metric(result, "expense_spend"), ==, 25000);
 	g_assert_cmpfloat(venture_metric_get_number(metric(result, "new_customers")), ==, 2.0);
-	g_assert_cmpint(money_metric(result, "cac"), ==, 25000);
+	g_assert_cmpint(money_metric(result, "cac"), ==, 27500);
 	g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 2);
 	source = cell(result, 0, "source");
 	if (g_strcmp0(source, "web") != 0)
@@ -770,13 +849,45 @@ test_home_page(ServerFixture *f, gconstpointer unused)
 	g_assert_nonnull(strstr(body, "data-card=\"support\""));
 	g_assert_nonnull(strstr(body, "href=\"/reports/cac\""));
 
+	/* /overview is the built-in page even while / is the cards. */
+	{
+		g_autofree gchar *overview = NULL;
+
+		status = server_request(f, "GET", "/overview", NULL, &overview);
+		g_assert_cmpuint(status, ==, 200);
+		g_assert_nonnull(strstr(overview, "<h1>Dashboard</h1>"));
+		g_assert_null(strstr(overview, "headline-cards"));
+	}
+
 	status = server_request(f, "GET", "/api/v1/headline?period=this_month", NULL, &api);
 	g_assert_cmpuint(status, ==, 200);
 	node = venture_json_parse(api, &error);
 	g_assert_no_error(error);
 	g_assert_cmpuint(json_array_get_length(json_node_get_array(node)), ==, 5);
 
-	/* Opting out sends / back to the old dashboard. */
+	/* The module off hides the cards and the API; reports stay registered
+	 * until the mask is applied, and / falls through to the built-in. */
+	venture_config_set_module_enabled(f->config, "headline", FALSE);
+	{
+		g_autofree gchar *off_home = NULL;
+		g_autofree gchar *off_api = NULL;
+
+		status = server_request(f, "GET", "/", NULL, &off_home);
+		g_assert_cmpuint(status, ==, 200);
+		g_assert_null(strstr(off_home, "headline-cards"));
+		g_assert_nonnull(strstr(off_home, "<h1>Dashboard</h1>"));
+		status = server_request(f, "GET", "/api/v1/headline?period=this_month",
+		                        NULL, &off_api);
+		g_assert_cmpuint(status, ==, SOUP_STATUS_NOT_FOUND);
+	}
+	venture_config_set_module_enabled(f->config, "headline", TRUE);
+
+	g_clear_pointer(&body, g_free);
+	status = server_request(f, "GET", "/", NULL, &body);
+	g_assert_cmpuint(status, ==, 200);
+	g_assert_nonnull(strstr(body, "headline-cards"));
+
+	/* Opting out sends / back to the old dashboard. The API stays. */
 	setting = g_object_new(VENTURE_TYPE_HEADLINE_SETTING, NULL);
 	venture_entity_set_organization_id(setting, f->org);
 	g_object_set(setting, "classic-home", TRUE, NULL);
@@ -786,6 +897,18 @@ test_home_page(ServerFixture *f, gconstpointer unused)
 	status = server_request(f, "GET", "/", NULL, &classic);
 	g_assert_cmpuint(status, ==, 200);
 	g_assert_null(strstr(classic, "headline-cards"));
+	g_assert_nonnull(strstr(classic, "<h1>Dashboard</h1>"));
+	{
+		g_autofree gchar *overview = NULL;
+		g_autofree gchar *still = NULL;
+
+		status = server_request(f, "GET", "/overview", NULL, &overview);
+		g_assert_cmpuint(status, ==, 200);
+		g_assert_nonnull(strstr(overview, "<h1>Dashboard</h1>"));
+		status = server_request(f, "GET", "/api/v1/headline?period=this_month",
+		                        NULL, &still);
+		g_assert_cmpuint(status, ==, 200);
+	}
 }
 
 int

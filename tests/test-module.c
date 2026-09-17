@@ -739,8 +739,18 @@ test_module_context_masks_registries(
 	/* Reports follow their module. */
 	g_assert_null(venture_report_registry_lookup(reports, "pipeline"));
 	g_assert_null(venture_report_registry_lookup(reports, "receivables"));
+	g_assert_null(venture_report_registry_lookup(reports, "cac"));
+	g_assert_null(venture_report_registry_lookup(reports, "customer_churn"));
+	g_assert_null(venture_report_registry_lookup(reports, "ltv"));
+	g_assert_null(venture_report_registry_lookup(reports, "ltv_cac"));
 	g_assert_nonnull(venture_report_registry_lookup(reports, "pnl"));
 	g_assert_nonnull(venture_report_registry_lookup(reports, "inventory"));
+
+	/* Hidden, not unregistered: the type is still known. */
+	g_assert_cmpuint(venture_entity_registry_lookup(entities, "headline_setting"),
+	                 ==, G_TYPE_INVALID);
+	g_assert_cmpuint(venture_entity_registry_lookup_any(entities,
+	                 "headline_setting"), ==, VENTURE_TYPE_HEADLINE_SETTING);
 
 	/* The module registry knows the type's owner too. */
 	g_assert_cmpstr(venture_module_get_name(
@@ -820,6 +830,13 @@ test_module_reapply_restores_types(
 		VENTURE_TYPE_CONTACT);
 	g_assert_nonnull(venture_report_registry_lookup(
 		venture_context_get_report_registry(context), "pipeline"));
+	g_assert_nonnull(venture_report_registry_lookup(
+		venture_context_get_report_registry(context), "cac"));
+	g_assert_nonnull(venture_report_registry_lookup(
+		venture_context_get_report_registry(context), "customer_churn"));
+	g_assert_cmpuint(venture_entity_registry_lookup(
+		venture_entity_registry_get_default(), "headline_setting"), ==,
+		VENTURE_TYPE_HEADLINE_SETTING);
 }
 
 /*

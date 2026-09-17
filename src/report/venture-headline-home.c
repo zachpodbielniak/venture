@@ -364,6 +364,7 @@ venture_headline_home_cards(
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 	g_return_val_if_fail(NULL != period, NULL);
+	g_return_val_if_fail(error == NULL || *error == NULL, NULL);
 
 	if (0 == organization_id)
 		organization_id = venture_context_get_default_organization_id(context);

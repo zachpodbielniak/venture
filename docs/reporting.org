@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-11]
+#+updated: [2026-09-17]
 #+version: 0.5.0
 
 * Reporting
@@ -32,6 +32,10 @@ about it.
 | =releases=   | releases out in the period, with tickets, builds, deployments |
 | =lead_time=  | days from a ticket being raised to its release going out     |
 | =incidents=  | incidents in the period, hours to resolve, the mean          |
+| =cac=        | acquisition spend over first-paid customers; =n/a= if none  |
+| =customer_churn= | recurring schedule churn and activity churn (=days=)    |
+| =ltv=        | realised and projected lifetime value; withheld below a minimum |
+| =ltv_cac=    | projected LTV over CAC; =n/a= when either side is           |
 
 #+begin_src sh
 venturectl report                       # list them

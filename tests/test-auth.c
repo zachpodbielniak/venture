@@ -1239,6 +1239,7 @@ test_auth_api_refuses_anonymous_requests(
 		"/api/v1/sale",
 		"/api/v1/reports",
 		"/api/v1/reports/pnl",
+		"/api/v1/headline",
 		"/api/v1/settings",
 		"/api/v1/plugins",
 		"/api/v1/venture-types",

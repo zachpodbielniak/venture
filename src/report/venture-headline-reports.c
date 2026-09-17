@@ -903,6 +903,9 @@ churn_activity(
 
 	anchor = headline_anchor(period);
 	window_start = g_date_time_add_months(anchor, -12);
+	/* g_date_time_add_days takes gint; a settings row can hold more. */
+	if (days > G_MAXINT)
+		days = G_MAXINT;
 	cutoff = g_date_time_add_days(anchor, -(gint)days);
 
 	g_hash_table_iter_init(&iter, cash);

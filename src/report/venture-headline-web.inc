@@ -70,9 +70,11 @@ venture_web_render_headline_home(
 		tone = (0 == trend) ? "flat"
 			: (((trend > 0) == higher_is_better) ? "up" : "down");
 
-		g_string_append_printf(content,
-			"<div class=\"card widget headline-card\" data-card=\"%s\"><h3>",
+		g_string_append(content,
+			"<div class=\"card widget headline-card\" data-card=\"");
+		venture_html_escape_append(content,
 			json_object_get_string_member(card, "key"));
+		g_string_append(content, "\"><h3>");
 		venture_html_escape_append(content, json_object_get_string_member(card, "label"));
 		g_string_append(content, "</h3><div class=\"widget-figure\"><span class=\"figure\">");
 		venture_html_escape_append(content, json_object_get_string_member(card, "value"));
@@ -94,9 +96,10 @@ venture_web_render_headline_home(
 			g_string_append(content, "</li>");
 		}
 
-		g_string_append_printf(content,
-			"</ul><p><a class=\"btn\" href=\"%s\">Report</a></p></div>",
+		g_string_append(content, "</ul><p><a class=\"btn\" href=\"");
+		venture_html_escape_append(content,
 			json_object_get_string_member(card, "link"));
+		g_string_append(content, "\">Report</a></p></div>");
 	}
 
 	g_string_append(content, "</div>");
