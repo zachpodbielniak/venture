@@ -91,7 +91,11 @@ where they were.
 =sales_tax_return= is a period report: one row per jurisdiction code, with
 =gross_sales=, =exempt_sales=, =taxable_sales= (gross less exempt),
 =tax_collected=, =tax_credited= and =net_due= (collected less credited),
-plus =name=, =kind= and =rate_percent=. It dates sales by invoice issue and
+plus =name=, =kind= and =rate_percent=. Every window of one code shares
+the code's row; =rate_percent= is the rate of the first frozen window the
+report meets, while =tax_collected= is the sum of what each line froze, so
+a mid-period rate change is one row whose figures are still exact. It
+dates sales by invoice issue and
 void events exactly as =tax_liability= does, so a void in the same period
 removes its base and tax and a later void is a reduction in that later
 period. Rows are keyed by the frozen =tax-jurisdiction-id=; a line that

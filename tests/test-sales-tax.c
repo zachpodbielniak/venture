@@ -371,7 +371,8 @@ test_exempt_customer_and_product(Fixture *f, gconstpointer unused)
 	g_autoptr(VentureEntity) frozen = NULL;
 	g_autoptr(VentureEntity) frozen_exempt = NULL;
 	g_autoptr(GPtrArray) events = NULL;
-	gint64 taxed_id, exempt_id, both_id;
+	gint64 taxed_id, exempt_id, both_id, unruled_id;
+	gint64 nowhere;
 	gboolean flag = FALSE;
 	(void)unused;
 	g_object_set(venture, "name", "Books", NULL);
@@ -420,6 +421,21 @@ test_exempt_customer_and_product(Fixture *f, gconstpointer unused)
 		g_assert_true(flag);
 		g_assert_cmpstr(reason, ==, "501(c)(3)");
 	}
+
+	/* An exempt product with no matching rule levies nothing even when the
+	 * line carries its own percent; no jurisdiction is recorded. */
+	nowhere = customer_at(f, "Nowhere", "", "", "");
+	g_clear_object(&invoice);
+	invoice = draft(f, "INV-UNRULED", nowhere, "2026-02-03");
+	unruled_id = line(f, invoice, "80 USD", venture_entity_get_id(exempt), 10);
+	issue(f, invoice, "2026-02-03");
+	g_clear_object(&frozen);
+	frozen = line_by_id(f, unruled_id);
+	g_assert_cmpint(money_of(frozen, "tax-amount"), ==, 0);
+	g_assert_cmpint(int_of(frozen, "tax-jurisdiction-id"), ==, 0);
+	g_assert_cmpint(int_of(frozen, "tax-rate-scaled"), ==, 0);
+	g_object_get(frozen, "tax-exempt", &flag, NULL);
+	g_assert_true(flag);
 }
 
 /* The most specific matching rule wins; a rule for another state never matches. */
