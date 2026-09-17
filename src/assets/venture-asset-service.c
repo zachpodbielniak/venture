@@ -140,7 +140,7 @@ venture_asset_service_class_init(VentureAssetServiceClass *klass)
 	 * VentureAssetService::transition:
 	 * @self: service
 	 * @asset: detached source snapshot; edits are ignored
-	 * @operation: place, dispose or write-off
+	 * @operation: place, dispose, write-off, import-opening or rollback-opening
 	 *
 	 * RUN_LAST after validation, before financial writes, inside the
 	 * transaction. Return an owned GError to veto. First error wins.
@@ -1539,6 +1539,320 @@ venture_deferral_service_cancel_invoice(VentureDeferralService *service,
 	if (operation == NULL)
 		return FALSE;
 	result = venture_deferral_service_cancel_invoice_impl(service, invoice_id, date, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
+}
+
+/* The month holding the last instant before the cutoff is the final month of
+ * source history; scheduling resumes with the month after it. */
+static GDateTime *
+first_period_after(GDateTime *cutoff)
+{
+	g_autoptr(GDateTime) last = g_date_time_add_seconds(cutoff, -1);
+	g_autoptr(GDateTime) month = g_date_time_new_utc(g_date_time_get_year(last), g_date_time_get_month(last), 1, 0, 0, 0);
+	return g_date_time_add_months(month, 1);
+}
+
+static gboolean
+venture_asset_service_import_opening_impl(VentureAssetService *self, VentureEntity *asset,
+	const VentureMoney *accumulated, GDateTime *cutoff, gint64 equity_account_id,
+	const gchar *source_type, gint64 source_id, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
+	g_autoptr(VentureEntity) current = NULL;
+	g_autoptr(VentureMoney) cost = NULL;
+	g_autoptr(VentureMoney) salvage = NULL;
+	g_autoptr(VentureMoney) base = NULL;
+	g_autoptr(VentureMoney) remaining = NULL;
+	g_autoptr(VentureMoney) book = NULL;
+	g_autoptr(GDateTime) start = NULL;
+	g_autoptr(GDateTime) acquired = NULL;
+	g_autoptr(GDateTime) first = NULL;
+	g_autoptr(GPtrArray) parts = NULL;
+	g_autofree gchar *tag = NULL;
+	g_autofree gchar *note = NULL;
+	gint64 months, account, accumulated_account, expense, journal_id = 0, elapsed, left;
+	gint state, method;
+	guint i;
+	gint64 org = venture_entity_get_organization_id(asset);
+	if (!venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "fixed_asset"))
+		return refuse(error, "The assets module is disabled");
+	if (accumulated == NULL || cutoff == NULL)
+		return refuse(error, "An opening import needs the accumulated depreciation and the cutoff");
+	if (!venture_database_begin(db, error))
+		return FALSE;
+	current = load_record(db, VENTURE_TYPE_FIXED_ASSET, venture_entity_get_id(asset), error);
+	if (current == NULL)
+		goto fail;
+	g_object_get(current, "status", &state, NULL);
+	if (state != VENTURE_ASSET_STATUS_DRAFT || venture_entity_get_version(current) != venture_entity_get_version(asset))
+	{
+		refuse(error, "VentureAssetService requires the current draft asset");
+		goto fail;
+	}
+	venture_entity_copy_properties_from(current, asset, TRUE);
+	g_object_get(asset, "cost", &cost, "salvage-value", &salvage, "in-service-at", &start,
+		"acquired-at", &acquired, "useful-life-months", &months, "method", &method, "tag", &tag,
+		"asset-account-id", &account, "accumulated-depreciation-account-id", &accumulated_account,
+		"depreciation-expense-account-id", &expense, NULL);
+	if (cost == NULL || salvage == NULL || acquired == NULL || start == NULL ||
+		cost->amount < 0 || salvage->amount < 0 || months < 1 || months > 1200 ||
+		g_date_time_compare(start, acquired) < 0)
+	{
+		refuse(error, "An asset needs nonnegative cost and salvage, acquisition and service dates, and 1-1200 months");
+		goto fail;
+	}
+	if (g_date_time_compare(start, cutoff) > 0)
+	{
+		refuse(error, "An opening asset must be in service on or before the cutoff");
+		goto fail;
+	}
+	base = venture_money_subtract(cost, salvage, error);
+	if (base == NULL)
+		goto fail;
+	if (base->amount < 0)
+	{
+		refuse(error, "Salvage cannot exceed cost");
+		goto fail;
+	}
+	remaining = venture_money_subtract(base, accumulated, error);
+	book = venture_money_subtract(cost, accumulated, error);
+	if (remaining == NULL || book == NULL)
+		goto fail;
+	if (accumulated->amount < 0 || remaining->amount < 0)
+	{
+		refuse(error, "Accumulated depreciation must lie between zero and cost less salvage (rule: opening-accumulated-within-basis)");
+		goto fail;
+	}
+	if (!check_account(db, account, org, error) || !check_account(db, accumulated_account, org, error) ||
+		!check_account(db, expense, org, error) || !check_account(db, equity_account_id, org, error))
+		goto fail;
+	first = first_period_after(cutoff);
+	elapsed = ((gint64)g_date_time_get_year(first) * 12 + g_date_time_get_month(first)) -
+		((gint64)g_date_time_get_year(start) * 12 + g_date_time_get_month(start));
+	left = months - elapsed;
+	if (left > 0 && method != VENTURE_ASSET_METHOD_NONE && remaining->amount > 0)
+	{
+		parts = split(remaining, (guint)left, error);
+		if (parts == NULL)
+			goto fail;
+		if (method == VENTURE_ASSET_METHOD_DECLINING_BALANCE)
+		{
+			g_autoptr(VentureMoney) open = venture_money_copy(remaining);
+			g_autoptr(VentureMoney) carrying = venture_money_copy(book);
+			for (i = 0; i < parts->len; i++)
+			{
+				g_autoptr(VentureMoney) charge = venture_money_multiply_rational(carrying, 2, months, error);
+				g_autoptr(VentureMoney) next = NULL;
+				g_autoptr(VentureMoney) after = NULL;
+				if (charge == NULL)
+					goto fail;
+				if (i + 1 == parts->len || venture_money_compare(charge, open) > 0)
+				{
+					g_clear_pointer(&charge, venture_money_free);
+					charge = venture_money_copy(open);
+				}
+				next = venture_money_subtract(open, charge, error);
+				after = venture_money_subtract(carrying, charge, error);
+				if (next == NULL || after == NULL)
+					goto fail;
+				g_clear_pointer(&open, venture_money_free);
+				g_clear_pointer(&carrying, venture_money_free);
+				open = g_steal_pointer(&next);
+				carrying = g_steal_pointer(&after);
+				venture_money_free(g_ptr_array_index(parts, i));
+				g_ptr_array_index(parts, i) = g_steal_pointer(&charge);
+			}
+		}
+	}
+	if (!transition(G_OBJECT(self), current, "import-opening", error))
+		goto fail;
+	if (cost->amount > 0)
+	{
+		g_autoptr(VentureJournal) header = venture_journal_new();
+		g_autoptr(VentureJournal) posted = NULL;
+		g_autoptr(GPtrArray) lines = g_ptr_array_new_with_free_func(g_object_unref);
+		g_autofree gchar *memo = g_strdup_printf("Opening fixed asset %s", tag != NULL ? tag : "");
+		VentureJournalLine *line;
+		g_object_set(header, "organization-id", org, "source-type", source_type, "source-id", source_id,
+			"occurred-at", cutoff, "currency", cost->currency, "memo", memo, NULL);
+		line = venture_journal_line_new();
+		g_object_set(line, "account-id", account, "side", VENTURE_LEDGER_SIDE_DEBIT, "amount", cost, NULL);
+		g_ptr_array_add(lines, line);
+		if (accumulated->amount > 0)
+		{
+			line = venture_journal_line_new();
+			g_object_set(line, "account-id", accumulated_account, "side", VENTURE_LEDGER_SIDE_CREDIT,
+				"amount", accumulated, NULL);
+			g_ptr_array_add(lines, line);
+		}
+		if (book->amount > 0)
+		{
+			line = venture_journal_line_new();
+			g_object_set(line, "account-id", equity_account_id, "side", VENTURE_LEDGER_SIDE_CREDIT,
+				"amount", book, NULL);
+			g_ptr_array_add(lines, line);
+		}
+		posted = venture_posting_service_post(venture_database_get_posting_service(db), header, lines, NULL, actor, error);
+		if (posted == NULL)
+			goto fail;
+		journal_id = venture_entity_get_id(VENTURE_ENTITY(posted));
+	}
+	if (accumulated->amount > 0)
+	{
+		g_autoptr(VentureEntity) row = VENTURE_ENTITY(venture_depreciation_entry_new());
+		g_autoptr(GDateTime) last = g_date_time_add_months(first, -1);
+		g_autofree gchar *period = g_date_time_format(last, "%Y-%m");
+		g_object_set(row, "organization-id", org, "asset-id", venture_entity_get_id(asset),
+			"period", period, "amount", accumulated, "journal-id", journal_id,
+			"state", VENTURE_SCHEDULE_STATE_POSTED, NULL);
+		if (!save_internal(self, db, row, actor, error))
+			goto fail;
+	}
+	for (i = 0; parts != NULL && i < parts->len; i++)
+	{
+		g_autoptr(VentureEntity) row = VENTURE_ENTITY(venture_depreciation_entry_new());
+		g_autoptr(GDateTime) date = g_date_time_add_months(first, (gint)i);
+		g_autofree gchar *period = g_date_time_format(date, "%Y-%m");
+		g_object_set(row, "organization-id", org, "asset-id", venture_entity_get_id(asset),
+			"period", period, "amount", g_ptr_array_index(parts, i), NULL);
+		if (!save_internal(self, db, row, actor, error))
+			goto fail;
+	}
+	{
+		g_autofree gchar *label = g_date_time_format(first, "%Y-%m");
+		note = g_strdup_printf("Imported at cutover: %" G_GINT64_FORMAT " months of source history carried as an opening balance; schedule resumes %s for %" G_GINT64_FORMAT " months.",
+			elapsed, label, left > 0 ? left : 0);
+	}
+	g_object_set(current, "operation", NULL, "schedule-note", note, NULL);
+	g_object_set(current, "status", VENTURE_ASSET_STATUS_IN_SERVICE, "in-service-at", start, NULL);
+	if (!save_internal(self, db, current, actor, error) || !venture_database_commit(db, error))
+		goto fail;
+	venture_entity_copy_properties_from(asset, current, FALSE);
+	return TRUE;
+fail:
+	venture_database_rollback(db);
+	return FALSE;
+}
+
+gboolean
+venture_asset_service_import_opening(VentureAssetService *self, VentureEntity *asset,
+	const VentureMoney *accumulated, GDateTime *cutoff, gint64 equity_account_id,
+	const gchar *source_type, gint64 source_id, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
+	GVariantBuilder arguments;
+	gboolean result;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	g_return_val_if_fail(VENTURE_IS_ENTITY(asset), FALSE);
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	if (accumulated != NULL)
+		g_variant_builder_add(&arguments, "{sv}", "accumulated", g_variant_new_int64(accumulated->amount));
+	operation = venture_accounting_operation_begin(db, "asset-import-opening", VENTURE_ENTITY(asset), NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(VENTURE_ENTITY(asset)), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_asset_service_import_opening_impl(self, asset, accumulated, cutoff, equity_account_id,
+		source_type, source_id, actor, error);
+	if (!result)
+		return FALSE;
+	if (!venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	return result;
+}
+
+static gboolean
+venture_asset_service_rollback_opening_impl(VentureAssetService *self, gint64 asset_id,
+	GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
+	g_autoptr(VentureEntity) current = NULL;
+	g_autoptr(VentureMoney) cost = NULL;
+	g_autoptr(VentureMoney) zero = NULL;
+	g_autofree gchar *note = NULL;
+	g_autofree gchar *combined = NULL;
+	gint state;
+	guint kind;
+	if (!venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "fixed_asset"))
+		return refuse(error, "The assets module is disabled");
+	if (date == NULL)
+		return refuse(error, "A rollback date is required");
+	if (!venture_database_begin(db, error))
+		return FALSE;
+	current = load_record(db, VENTURE_TYPE_FIXED_ASSET, asset_id, error);
+	if (current == NULL)
+		goto fail;
+	g_object_get(current, "status", &state, "cost", &cost, "schedule-note", &note, NULL);
+	if (state != VENTURE_ASSET_STATUS_IN_SERVICE || cost == NULL)
+	{
+		refuse(error, "Only an in-service asset can have its opening import rolled back");
+		goto fail;
+	}
+	if (!transition(G_OBJECT(self), current, "rollback-opening", error))
+		goto fail;
+	for (kind = 0; kind < 2; kind++)
+	{
+		g_autoptr(GPtrArray) rows = scheduled(db, kind == 0 ? VENTURE_TYPE_DEPRECIATION_ENTRY :
+			VENTURE_TYPE_TAX_DEPRECIATION_ENTRY, venture_entity_get_organization_id(current), NULL, error);
+		guint i;
+		if (rows == NULL)
+			goto fail;
+		for (i = 0; i < rows->len; i++)
+		{
+			VentureEntity *row = g_ptr_array_index(rows, i);
+			gint64 owner = 0;
+			g_object_get(row, "asset-id", &owner, NULL);
+			if (owner != asset_id)
+				continue;
+			g_object_set(row, "state", VENTURE_SCHEDULE_STATE_SKIPPED, NULL);
+			if (!save_internal(self, db, row, actor, error))
+				goto fail;
+		}
+	}
+	zero = venture_money_new(0, cost->currency, cost->exponent);
+	combined = g_strdup_printf("%s%sCutover rollback: opening journal reversed, schedule skipped.",
+		note != NULL ? note : "", note != NULL ? " " : "");
+	g_object_set(current, "status", VENTURE_ASSET_STATUS_WRITTEN_OFF, "disposed-at", date,
+		"disposal-proceeds", zero, "schedule-note", combined, NULL);
+	if (!save_internal(self, db, current, actor, error) || !venture_database_commit(db, error))
+		goto fail;
+	return TRUE;
+fail:
+	venture_database_rollback(db);
+	return FALSE;
+}
+
+gboolean
+venture_asset_service_rollback_opening(VentureAssetService *self, gint64 asset_id,
+	GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
+	g_autoptr(VentureEntity) subject = NULL;
+	GVariantBuilder arguments;
+	gboolean result;
+	if (db == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
+		return FALSE;
+	}
+	subject = venture_database_get(db, VENTURE_TYPE_FIXED_ASSET, asset_id, error);
+	if (subject == NULL)
+		return FALSE;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	operation = venture_accounting_operation_begin(db, "asset-rollback-opening", subject, NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	result = venture_asset_service_rollback_opening_impl(self, asset_id, date, actor, error);
 	if (!result)
 		return FALSE;
 	if (!venture_accounting_operation_finish(operation, error))

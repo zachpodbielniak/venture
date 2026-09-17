@@ -766,6 +766,9 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		, venture_project_billing_get_type
 		, venture_mail_message_get_type
 		, venture_mail_template_get_type
+		, venture_mail_account_get_type
+		, venture_mail_inbound_get_type
+		, venture_mail_unmatched_sender_get_type
 
 		, venture_price_list_get_type
 		, venture_price_list_item_get_type
@@ -858,6 +861,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_elimination_get_type,
 		venture_tax_depreciation_entry_get_type,
 		venture_headline_setting_get_type,
+		venture_dunning_policy_get_type,
+		venture_dunning_event_get_type,
 	};
 	gsize i;
 

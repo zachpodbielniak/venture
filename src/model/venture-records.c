@@ -663,7 +663,11 @@ static const VentureFieldDecl venture_company_fields[] = {
 	VENTURE_FIELD("tax-exempt", "Tax exempt", "Non-profit or other exemption: invoices freeze zero tax",
 		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("tax-exempt-reason", "Exemption reason", "Certificate or statutory basis",
-		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE)
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD_REF("dunning-policy-id", "Reminder policy", "Overrides the organization default for this customer's invoices",
+		"dunning_policy", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("dunning-opt-out", "No reminders", "Suppresses overdue reminders for every invoice, with the reason recorded",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCompany, venture_company, venture_company_fields,
@@ -2778,7 +2782,13 @@ static const VentureFieldDecl venture_invoice_fields[] = {
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("external-id", "External ID",
 		"Connector order identifier; nonempty values are unique per organization",
-		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION)
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	VENTURE_FIELD("owner", "Owner", "Username who collects on it, like a deal owner",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME),
+	VENTURE_FIELD_REF("dunning-policy-id", "Reminder policy", "Overrides the customer's and the organization default",
+		"dunning_policy", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("dunning-disabled", "No reminders", "Never send overdue reminders for this invoice",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY(VentureInvoice, venture_invoice, venture_invoice_fields)

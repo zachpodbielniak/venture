@@ -107,6 +107,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `act TYPE ID ACTION [key=value ...]` | discover and perform a business action; `--stage` proposes it |
 | `recurring run [--as-of DATE] [--dry-run]` | generate due invoices, bills, expenses and journals |
 | `collections run [--as-of DATE]` | queue overdue invoice reminders through the outbox |
+| `dunning sweep [as_of=DATE] [organization_id=N] [limit=N]` | templated reminder policies: one step per invoice per day, escalation to the owner |
 | `batch invoice\|expense format=csv\|json payload=... [post=false] [--dry-run]` | all-or-nothing CSV/JSON document create |
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
@@ -312,14 +313,14 @@ venturectl --stage create expense description="Cover art" amount=250.00
 #   approve: POST /api/v1/confirmations/a3f9c118/approve
 ```
 
-It is refused on any command other than `create`, `update`, `delete`, `act`, `journal post`, `sequence enroll`, `lead convert` and `billing`,
+It is refused on any command other than `create`, `update`, `delete`, `act`, `dunning sweep`, `journal post`, `sequence enroll`, `lead convert` and `billing`,
 because those are the only routes that read it -- and an unknown query
 parameter on a write route is ignored, so a quietly accepted `--stage` would
 apply the change it was asked to hold back.
 
 **Some types need more than an editor.** `forge` is owner-only, `forge_rule`
-and `plugin_config` are admin-only, `user` and `api_token` are owner-only. A
-403 here means the token's role, not a bug.
+and `plugin_config` are admin-only, `user`, `api_token` and `mail_account`
+are owner-only. A 403 here means the token's role, not a bug.
 
 ## Worked example: wire up a forge
 
@@ -482,10 +483,18 @@ next renewal. Billing sends no mail and integrates no card provider.
 `mail send to=... subject=... body=...` queues mail; `--html FILE` supplies
 HTML. `mail test to=...` immediately tests real SMTP. `mail deliver --limit N`
 submits due rows. `mail list state=uncertain` lists uncertain acceptance;
-`mail retry ID` is a deliberate resend with the same Message-ID. Pass
-`organization_id=N` to scope another organization. Never automatically retry
-uncertain rows. Actions reject `--stage`; propose an enqueue with the generic
-`--stage create mail_message` command when approval is required.
+`mail retry ID` is a deliberate resend with the same Message-ID. `mail sync
+[organization_id=N] [limit=N]` runs the bounded inbound IMAP sweep over every
+active `mail_account` in the organization. Pass `organization_id=N` to scope
+another organization. Never automatically retry uncertain rows. Actions reject
+`--stage`; propose an enqueue with the generic `--stage create mail_message`
+command when approval is required.
+
+`mail_account` is owner-only: it names the IMAP host and a `VENTURE_IMAP_*`
+environment variable holding the password, never the password itself. Generic
+writes to `mail_inbound` are refused; `mail_unmatched_sender` is ordinary CRM
+data. Use `list mail_inbound` and `list mail_unmatched_sender` to read what
+the sweep filed.
 
 ### Commercial quote actions
 
@@ -581,7 +590,7 @@ with header fields and a `lines` array. Both support `--stage`. Use real
 source and account IDs from the same organization. Invalid lines leave no
 draft behind; closed periods and repeat reversals are refused.
 
-The `--stage` help lists `create/update/delete/act/sequence enroll/lead convert/billing`; the same flag also
+The `--stage` help lists `create/update/delete/act/dunning sweep/sequence enroll/lead convert/billing`; the same flag also
 applies to a type-level journal creation at ID zero.
 
 ### Accounting second-person consent
@@ -613,6 +622,18 @@ existing settlement, payables and posting services. Closed periods are skipped.
 `collections run --as-of DATE` enqueues overdue reminders with durable
 idempotency keys. `act invoice 0 batch_create` / `act expense 0 batch_create`
 create many documents in one transaction. See `docs/recurring.org`.
+
+## Overdue reminders (dunning)
+
+`dunning sweep as_of=DATE` enqueues the due step of each issued, unpaid,
+undisputed invoice's `dunning_policy` (invoice's, else its company's, else the
+organization default) and records a `dunning_event`; rerunning it sends
+nothing twice. Arguments are `key=value`, not flags. `--stage dunning sweep`
+proposes the sweep for approval. The flagged final step creates a
+`collect: <invoice>` activity for `invoice.owner`. Follow with `mail deliver`.
+`report collections` measures effectiveness per step. `dunning_event` cannot
+be created or edited directly (exit 8). See `docs/dunning.org`.
+
 ## Ledger statements
 
 `report balance_sheet`, `income_statement`, `cash_flow`, `general_ledger`,

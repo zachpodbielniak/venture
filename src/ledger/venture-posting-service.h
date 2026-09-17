@@ -95,6 +95,21 @@ VentureJournal *venture_posting_service_post_document(VenturePostingService *sel
 GPtrArray *venture_posting_service_find_source(VenturePostingService *self,
 	const gchar *source_type, gint64 source_id, gint64 organization_id, GError **error);
 /**
+ * venture_posting_service_source_has_reversal:
+ * @self: posting service
+ * @source_type: registered source record type
+ * @source_id: source identifier
+ * @organization_id: exact owning legal entity
+ * @error: (out) (optional): error location
+ *
+ * True when a reversing journal exists for the source. Cutover rollback
+ * reverses credit postings this way; the remaining balance must then be
+ * treated as consumed so the credit cannot be allocated again.
+ * Returns: TRUE if a reversal is on file
+ */
+gboolean venture_posting_service_source_has_reversal(VenturePostingService *self,
+	const gchar *source_type, gint64 source_id, gint64 organization_id, GError **error);
+/**
  * venture_posting_service_reverse:
  * @self: posting service
  * @journal_id: original posted journal

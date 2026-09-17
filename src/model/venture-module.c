@@ -581,6 +581,11 @@ static GType (*const billing_types[]) (void) = {
 static GType (*const venture_module_mail_types[]) (void) = {
 	venture_mail_message_get_type, venture_mail_template_get_type, NULL
 };
+static const gchar *const venture_module_mail_sync_requires[] = { "mail", "crm", "leads", NULL };
+static const gchar *const venture_module_mail_sync_suggests[] = { "capture", NULL };
+static GType (*const venture_module_mail_sync_types[]) (void) = {
+	venture_mail_account_get_type, venture_mail_inbound_get_type, venture_mail_unmatched_sender_get_type, NULL
+};
 static const gchar *const quotes_requires[] = { "crm", "invoicing", NULL };
 static const gchar *const quotes_reports[] = { "quotes", NULL };
 static GType (*const quotes_types[]) (void) = {
@@ -751,6 +756,9 @@ static GType (*const headline_types[]) (void) = { venture_headline_setting_get_t
 static const gchar *const headline_requires[] = { "receivables", "leads", NULL };
 static const gchar *const headline_suggests[] = { "outreach", "recurring", "tickets", "banking", "payables", NULL };
 static const gchar *const headline_reports[] = { "cac", "customer_churn", "ltv", "ltv_cac", NULL };
+static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };
+static GType (*const dunning_types[]) (void) = { venture_dunning_policy_get_type, venture_dunning_event_get_type, NULL };
+static const gchar *const dunning_reports[] = { "collections", NULL };
 
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
@@ -1045,11 +1053,19 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		group_requires, NULL, group_types, group_reports, "group-enabled", FALSE
 	},
 	{
+		"mail_sync", "Inbound mail", "IMAP mailboxes onto contact timelines and the capture inbox.",
+		venture_module_mail_sync_requires, venture_module_mail_sync_suggests,
+		venture_module_mail_sync_types, NULL, NULL, FALSE
+	},
+	{
+		"dunning", "Overdue reminders", "Per-organization reminder policies, escalation and collection effectiveness.",
+		dunning_requires, NULL, dunning_types, dunning_reports, NULL, FALSE
+	},
+	{
 		"headline", "Headline metrics",
 		"CAC, churn, LTV and LTV:CAC reports, and the five-card home page.",
 		headline_requires, headline_suggests, headline_types, headline_reports, NULL, FALSE
 	}
-
 };
 
 const VentureModuleInfo *

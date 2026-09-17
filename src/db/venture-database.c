@@ -2596,6 +2596,7 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_supplier_portal_actions_register(self);
 		venture_backup_actions_register(self);
 		venture_tax_filing_actions_register(self);
+		venture_dunning_actions_register(self);
 	}
 	return self->actions;
 }

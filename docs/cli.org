@@ -75,6 +75,7 @@ venturectl invoice checkout ID           # hosted Stripe payment URL; editor rol
 venturectl release publish ID            # cut it on the forge; --prerelease
 venturectl recurring run [--as-of DATE] [--dry-run]
 venturectl collections run [--as-of DATE]
+venturectl dunning sweep [as_of=DATE] [organization_id=N] [limit=N]  # templated overdue reminders, once per step
 venturectl batch invoice|expense [--dry-run]
 venturectl inbox [--all]                 # what you have been told
 venturectl inbox read ID|all             # mark it read
@@ -298,6 +299,13 @@ shows outcomes needing an operator, and =mail retry ID= deliberately reuses
 that row and Message-ID. All accept =organization_id=N= where relevant.
 See [[file:mail.org][mail]] for uncertainty and scheduling. Actions reject
 =--stage=; =--stage create mail_message= proposes an enqueue instead.
+
+=venturectl mail sync [organization_id=N] [limit=N]= runs the bounded
+inbound sweep over every active =mail_account= in the organization and
+prints the accounts and messages processed with any per-account error. The
+raw messages, interactions, unmatched senders and capture items it creates
+are ordinary records: =venturectl list mail_inbound=, =venturectl list
+mail_unmatched_sender=. See [[file:mail.org][mail]], section Inbound.
 
 * Quote actions
 

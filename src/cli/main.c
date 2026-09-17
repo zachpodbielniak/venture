@@ -3215,6 +3215,7 @@ venture_cli_command_mcp(
 #include "billing/venture-billing-cli.inc"
 #include "sequences/venture-sequence-cli.inc"
 #include "recurring/venture-recurring-cli.inc"
+#include "dunning/venture-dunning-cli.inc"
 
 /* --- Entry point --------------------------------------------------------- */
 
@@ -3333,7 +3334,7 @@ main(
 		{ "apply-writes", 0, 0, G_OPTION_ARG_NONE, &apply_writes,
 		  "mcp only: let write tools apply instead of staging", NULL },
 		{ "stage", 0, 0, G_OPTION_ARG_NONE, &stage,
-		  "create/update/delete/act/sequence enroll/lead convert/billing: propose the change for approval "
+		  "create/update/delete/act/dunning sweep/sequence enroll/lead convert/billing: propose the change for approval "
 		  "instead of making it", NULL },
 		{ "version", 'V', 0, G_OPTION_ARG_NONE, &show_version,
 		  "Print the version and exit", NULL },
@@ -3461,6 +3462,7 @@ main(
 		"  recurring run               generate due documents; --as-of DATE, --dry-run\n"
 		"  collections run             queue overdue reminders; --as-of DATE\n"
 		"  batch invoice|expense format=csv|json payload=... [post=false] [--dry-run]\n"
+		"  dunning sweep [as_of=DATE] [organization_id=N] [limit=N]  send due overdue reminders once\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
 		"\n"
@@ -3578,10 +3580,11 @@ main(
 	    (0 != g_strcmp0(args[0], "billing")) &&
 	    !(0 == g_strcmp0(args[0], "lead") && 0 == g_strcmp0(args[1], "convert")) &&
 	    (0 != g_strcmp0(args[0], "act")) &&
+	    (0 != g_strcmp0(args[0], "dunning")) &&
 	    !((0 == g_strcmp0(args[0], "sequence")) && (0 == g_strcmp0(args[1], "enroll"))))
 	{
 		g_printerr("venturectl: --stage only means something to create, "
-		           "update, delete, act, journal post, sequence enroll, lead convert and billing. \"%s\" would ignore it.\n", args[0]);
+		           "update, delete, act, dunning sweep, journal post, sequence enroll, lead convert and billing. \"%s\" would ignore it.\n", args[0]);
 		g_free(cli.base_url);
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
@@ -3746,6 +3749,8 @@ main(
 		result = venture_cli_command_recurring(&cli, args, sequence_as_of, dry_run, &error);
 	else if (0 == g_strcmp0(args[0], "act"))
 		result = venture_cli_command_act(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "dunning"))
+		result = venture_cli_command_dunning(&cli, args, &error);
 	else
 	{
 		g_printerr("venturectl: \"%s\" is not a command. Try --help.\n",

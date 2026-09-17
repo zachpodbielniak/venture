@@ -10,18 +10,20 @@ A mapped JSON payload names the source (=zoho_books= or =quickbooks=), an
 explicit cutoff, chart mapping, customers, vendors, items, open AR, and bank
 balances. Amounts must include an ISO currency (or a payload-level
 =currency=). Mapped tax amounts are frozen on the opening invoice rather than
-rounded through an integer percent. Non-empty =open_ap=, =credits= or
-=assets= arrays are refused until those importers exist; list them under
-=unsupported= instead. Each source ID is stored on =accounting_cutover_row= so
-reimport is idempotent.
+rounded through an integer percent. =open_ap=, =credits= and =assets= are
+imported through the payables, receivables and assets modules (below); a
+payload naming one of them while its module is switched off is refused, and
+anything the mapping cannot express is listed under =unsupported=. Each
+source ID is stored on =accounting_cutover_row= so reimport is idempotent.
 
 Open AR is imported as issued invoices (tax split at issuance) rather than as a
 second opening journal, so operational documents and opening cash are not
 double-posted. Bank opening cash is one balanced journal against equity.
 Activation is refused until reconcile has accepted trial balance, issued
-opening AR and bank opening cash. Rollback is allowed only before activation:
-it reverses the opening cash journals and voids the imported invoices. Generic
-writes cannot stamp a reconciled state. The Cutover nav item opens the batch
+opening AR, bank opening cash, open AP, unapplied credits and asset net book
+value. Rollback is allowed only before activation: it reverses every opening
+journal with a reversing journal and voids the imported invoices and bills.
+Generic writes cannot stamp a reconciled state. The Cutover nav item opens the batch
 record; preview, import, reconcile, activate and rollback are actions on that
 page.
 
@@ -30,3 +32,95 @@ venturectl action accounting_cutover import 1
 #+end_src
 
 Rollback is idempotent: repeating a completed rollback leaves its reversal journals intact and cannot recreate opening cash. Opening line unit prices inherit the row or payload currency when their source amount has no ISO suffix. Reconciliation checks each posted journal separately, without netting currencies or overflowing a running 64-bit total across history.
+
+* Open vendor bills
+
+Each =open_ap= row becomes an approved =vendor_bill= through
+=VenturePayablesService=, keeping its original =number=, =date=, =due_date=,
+vendor (matched by =vendor_source_id= against earlier rows, or created as a
+supplier from =vendors=) and =lines=. A line carries =description=, =amount=
+(net), a frozen =tax= and an optional =account_code= or =category=; approval
+posts the lines against Accounts payable on the bill date, so the frozen tax
+is never recomputed. =paid= names the amount settled before the cutoff. It is
+recorded as one =bill_payment= dated at the cutoff, method =opening=, applied
+to the full bill, so the bill's balance is =lines - paid= rather than a
+smaller bill. Because that cash already sits inside the imported bank
+balance, the payment's cash leg is offset by an opening journal against
+equity 3000. An optional =balance= must equal =lines - paid=; a paid amount
+at or above the total is refused (=open-ap-balance=), because such a bill is
+not open.
+
+#+begin_src json
+{"open_ap": [{"source_id": "bill-1", "vendor_source_id": "vend-1",
+  "number": "B-1", "date": "2025-12-10", "due_date": "2026-01-09",
+  "paid": "30 USD", "balance": "75 USD",
+  "lines": [{"description": "Hosting", "amount": "100 USD", "tax": "5 USD"}]}]}
+#+end_src
+
+* Credits
+
+Each =credits= row is a =credit_note= created through the receivables or
+payables service: =kind= must be =customer= with =customer_source_id=, or
+=vendor= with =vendor_source_id=; omitting =kind= still infers vendor when
+=vendor_source_id= is present. It carries =date=, =amount= and an optional
+=number= stored as the reference, and remains unapplied so later settlements
+can use it. A credit larger than its counterpart's open balance after the AR
+and AP imports is refused (=credit-within-open-balance=). Customer credits
+need receivables; vendor credits need payables.
+
+#+begin_src json
+{"credits": [{"source_id": "cr-1", "kind": "customer", "customer_source_id": "cust-1",
+  "number": "CN-1", "date": "2025-12-20", "amount": "20 USD"}]}
+#+end_src
+
+* Fixed assets
+
+Each =assets= row is placed through =venture_asset_service_import_opening()=
+with =cost=, optional =salvage=, =in_service_at=, optional =acquired_at=,
+=method= (=straight_line=, =declining_balance= or =none=),
+=useful_life_months= and =accumulated_depreciation= to the cutoff. The three
+account codes =asset_account_code=, =accumulated_depreciation_account_code=
+and =depreciation_expense_account_code= must exist in the chart; the module
+seeds none. History is not recomputed: one opening journal dated at the
+cutoff debits the asset account for cost and credits accumulated
+depreciation and equity 3000 for net book value, and one posted
+=depreciation_entry= for the cutoff month carries the accumulated amount so
+the register, disposals and reports see it. The month holding the last
+instant before the cutoff, and every earlier month, is history; the schedule
+resumes with the month after it, and the remaining depreciable amount
+(cost less salvage less accumulated) is spread over the months of life that
+remain, so the first post-cutover run continues from the cutoff. An asset
+past its life keeps its residual value until disposed. In-service dates
+after the cutoff and accumulated amounts outside zero to cost less salvage
+are refused (=opening-accumulated-within-basis=). No tax schedule is created.
+
+#+begin_src json
+{"assets": [{"source_id": "as-1", "tag": "LAPTOP-1", "name": "Laptop",
+  "cost": "3600 USD", "in_service_at": "2025-01-01", "method": "straight_line",
+  "useful_life_months": 36, "accumulated_depreciation": "1250 USD",
+  "asset_account_code": "1500", "accumulated_depreciation_account_code": "1590",
+  "depreciation_expense_account_code": "6850"}]}
+#+end_src
+
+* Reconciling and rolling back the three
+
+Reconcile compares the payload's open AP (=lines - paid= per bill) with the
+approved bills' balances, the credit amounts with the unapplied =remaining=
+balances, and =cost - accumulated_depreciation= with the register's net book
+value at the cutoff, in addition to the per-journal trial balance, AR and
+bank checks. Any drift, such as a payment recorded after import, fails
+reconcile and so blocks activation.
+
+Rollback keeps every imported row and marks it =rolled_back=. Opening
+journals, including the asset openings and payment offsets, are reversed by
+reversing journals dated at the cutoff. An opening payment is refunded to
+its allocation and the bill is voided through the payables service; credit
+postings are reversed and remaining is refreshed to zero so the credit cannot
+be allocated onto a later bill or invoice; the asset's remaining schedule is
+skipped and the asset is written off at the cutoff without a second journal.
+AP, credits and asset net book value net to zero and nothing posted is
+deleted. Everything runs inside the single cutover transaction: a failure
+after the first bill is written leaves no bill, payment, credit, asset or
+journal behind. Reimport of the same source ids is a no-op only while those
+rows are not rolled back; unique bill numbers and asset tags still occupy the
+voided and written-off records.
