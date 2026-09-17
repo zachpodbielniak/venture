@@ -114,7 +114,9 @@ the current status.
 * Collections
 
 Overdue reminder cadence lives in the =recurring= module and enqueues through
-the mail outbox. See [[file:recurring.org][recurring documents]].
+the mail outbox. See [[file:recurring.org][recurring documents]]. Templated,
+per-customer reminder policies with escalation and an effectiveness report are
+the =dunning= module; see [[file:dunning.org][overdue reminders]].
 
 * Posting boundary
 

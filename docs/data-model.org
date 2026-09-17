@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-12]
+#+updated: [2026-09-17]
 #+version: 0.6.0
 
 * Data model
@@ -107,6 +107,14 @@ Every record derives from =VentureEntity= and carries the same spine:
   balance; void reverses an unpaid invoice. Applied cash creates its sale
   in the same transaction. See [[file:receivables.org][customer receivables]].
   =/invoices/:id/print= renders the printable document.
+
+** Overdue reminders
+
+- *dunning_policy*, *dunning_event* — a named reminder cadence (steps at
+  offsets from the invoice due date, each a =mail_template=) and one recorded
+  step per invoice. Company and invoice may override the organization default;
+  =company.dunning_opt_out= records a suppressed reason, =invoice.dunning_disabled=
+  skips the invoice. See [[file:dunning.org][overdue reminders]].
 
 ** Conversations
 

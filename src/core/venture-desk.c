@@ -1217,6 +1217,7 @@ venture_desk_activity(
 		}
 	}
 
+	venture_dunning_append_timeline(context, target_type, target_id, limit, venture_desk_add_event, events);
 	g_ptr_array_sort(events, venture_desk_compare_events);
 
 	out = json_builder_new();

@@ -752,6 +752,10 @@ static GType (*const venture_module_supplier_portal_types[]) (void) = {
 };
 static const gchar *const venture_module_requires_supplier_portal[] = { "payables", NULL };
 
+static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };
+static GType (*const dunning_types[]) (void) = { venture_dunning_policy_get_type, venture_dunning_event_get_type, NULL };
+static const gchar *const dunning_reports[] = { "collections", NULL };
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -1048,6 +1052,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"mail_sync", "Inbound mail", "IMAP mailboxes onto contact timelines and the capture inbox.",
 		venture_module_mail_sync_requires, venture_module_mail_sync_suggests,
 		venture_module_mail_sync_types, NULL, NULL, FALSE
+	},
+	{
+		"dunning", "Overdue reminders", "Per-organization reminder policies, escalation and collection effectiveness.",
+		dunning_requires, NULL, dunning_types, dunning_reports, NULL, FALSE
 	}
 };
 

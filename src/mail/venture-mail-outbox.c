@@ -14,6 +14,8 @@ struct _VentureMailOutbox {
 	guint max_attempts;
 };
 G_DEFINE_FINAL_TYPE(VentureMailOutbox, venture_mail_outbox, G_TYPE_OBJECT)
+enum { SIGNAL_BEFORE_SEND, N_SIGNALS };
+static guint signals[N_SIGNALS];
 static gboolean refuse(GError **error, const gchar *message)
 {
 	venture_set_error_validation(error, "mail", "%s (VentureMailOutbox)", message);
@@ -167,6 +169,24 @@ static void venture_mail_outbox_class_init(VentureMailOutboxClass *klass)
 	g_object_class_install_property(object, 2, g_param_spec_object("mailer", "Mailer", "One-attempt transport", VENTURE_TYPE_MAILER, G_PARAM_READWRITE | G_PARAM_CONSTRUCT | G_PARAM_STATIC_STRINGS));
 	g_object_class_install_property(object, 3, g_param_spec_uint("max-attempts", "Maximum attempts", "Automatic retry budget", 1, 20, 5, G_PARAM_READWRITE | G_PARAM_CONSTRUCT | G_PARAM_STATIC_STRINGS));
 	g_object_class_install_property(object, 4, g_param_spec_string("attachment-root", "Attachment root", "Root containing uploaded document files", NULL, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+	/**
+	 * VentureMailOutbox::before-send:
+	 * @self: the outbox
+	 * @message: the claimed message about to be handed to the transport
+	 * @error: (out): a #GError location the vetoing handler fills
+	 *
+	 * Emitted after the sending lease is committed and before the one
+	 * transport attempt. The source lane that enqueued a message rechecks
+	 * its eligibility here (an invoice settled after its reminder was
+	 * queued, a customer who opted out). A handler returning %TRUE vetoes
+	 * the attempt; the row becomes =cancelled= with the handler's message
+	 * and is never retried automatically. Handlers run in connection order
+	 * and the first veto stops the emission.
+	 *
+	 * Returns: %TRUE to veto the send
+	 */
+	signals[SIGNAL_BEFORE_SEND] = g_signal_new("before-send", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0,
+		g_signal_accumulator_true_handled, NULL, NULL, G_TYPE_BOOLEAN, 2, VENTURE_TYPE_MAIL_MESSAGE, G_TYPE_POINTER);
 }
 static void venture_mail_outbox_init(VentureMailOutbox *self) { }
 VentureMailOutbox *venture_mail_outbox_new(VentureDatabase *database, VentureMailer *mailer)
@@ -293,6 +313,20 @@ gint venture_mail_outbox_deliver_due(VentureMailOutbox *self, gint64 org, guint 
 			g_propagate_error(error, g_steal_pointer(&send_error)); return -1;
 		}
 		count++;
+		{
+			gboolean vetoed = FALSE;
+			g_signal_emit(self, signals[SIGNAL_BEFORE_SEND], 0, claimed, &send_error, &vetoed);
+			if (vetoed) {
+				/* A veto is a decision, not a transport outcome: undo the claim's
+				 * attempt increment so cancelled rows spend no retry budget. */
+				g_object_get(claimed, "attempts", &attempts, NULL);
+				g_object_set(claimed, "state", "cancelled", "lease-until", NULL, "next-attempt-at", NULL,
+					"attempts", attempts > 0 ? attempts - 1 : (gint64)0,
+					"last-error", send_error ? send_error->message : "Cancelled before submission", NULL);
+				if (!save(self, VENTURE_ENTITY(claimed), NULL, error)) return -1;
+				continue;
+			}
+		}
 		sent = venture_mailer_send(self->mailer, claimed, cancellable, &send_error);
 		g_object_get(claimed, "attempts", &attempts, NULL);
 		if (sent) g_object_set(claimed, "state", "sent", "sent-at", clock, "last-error", NULL, NULL);
