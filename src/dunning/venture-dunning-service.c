@@ -10,7 +10,7 @@
  * reuse the sequences engine: a sequence is enrolled per contact and paced
  * from enrollment, a reminder is paced from an invoice's due date and ends
  * the moment the invoice is settled, so the identity that must be unique
- * is (invoice, step), which is what dunning_event.dunning_key pins.
+ * is (invoice, policy, step), which is what dunning_event.dunning_key pins.
  */
 
 struct _VentureDunningService
@@ -404,8 +404,9 @@ record_suppressed(VentureDunningService *self, VentureEntity *invoice, VentureEn
 	return save_event(self, event, actor, error);
 }
 
-/* The final step: an owned next action, never another customer email. */
-static gboolean
+/* The final step: an owned next action, never another customer email.
+ * Returns 1 when the action exists, 0 when only the attempt was recorded, -1 on failure. */
+static gint
 escalate(VentureDunningService *self, VentureEntity *invoice, VentureEntity *policy, guint step_no,
 	const Step *step, const gchar *key, GDateTime *as_of, const VentureActor *actor, GError **error)
 {
@@ -423,7 +424,7 @@ escalate(VentureDunningService *self, VentureEntity *invoice, VentureEntity *pol
 	{
 		/* The attempt is still recorded so the invoice is not silently forgotten. */
 		g_object_set(event, "delivery-status", STATUS_FAILED, "last-error", "Escalation needs the activities module", NULL);
-		return save_event(self, event, actor, error);
+		return save_event(self, event, actor, error) ? 0 : -1;
 	}
 	body = g_strdup_printf("Reminder policy exhausted after %u steps; %s still outstanding. Call, agree a date or write off.",
 		step_no - 1, display);
@@ -433,12 +434,13 @@ escalate(VentureDunningService *self, VentureEntity *invoice, VentureEntity *pol
 		"status", VENTURE_ACTIVITY_STATUS_PLANNED, "related-type", "invoice", "related-id", venture_entity_get_id(invoice),
 		"company-id", number(invoice, "company-id"), "contact-id", number(invoice, "contact-id"), NULL);
 	if (!venture_database_save(self->database, activity, actor, error))
-		return FALSE;
+		return -1;
 	g_object_set(event, "activity-id", venture_entity_get_id(activity), NULL);
-	return save_event(self, event, actor, error);
+	return save_event(self, event, actor, error) ? 1 : -1;
 }
 
-static gboolean
+/* Returns 1 when a reminder is queued, 0 when only the attempt was recorded, -1 on failure. */
+static gint
 send_step(VentureDunningService *self, VentureEntity *invoice, VentureEntity *company, VentureEntity *contact,
 	VentureEntity *policy, guint step_no, const Step *step, const gchar *key, GDateTime *as_of, gint days,
 	const VentureActor *actor, GError **error)
@@ -460,13 +462,13 @@ send_step(VentureDunningService *self, VentureEntity *invoice, VentureEntity *co
 	if (venture_string_is_empty(recipient))
 	{
 		g_object_set(event, "delivery-status", STATUS_SUPPRESSED, "suppressed-reason", "no_recipient", NULL);
-		return save_event(self, event, actor, error);
+		return save_event(self, event, actor, error) ? 0 : -1;
 	}
 	template = load(self, venture_entity_registry_lookup(venture_entity_registry_get_default(), "mail_template"), step->template_id, org);
 	if (template == NULL)
 	{
 		g_object_set(event, "delivery-status", STATUS_FAILED, "last-error", "The step's mail_template is missing", NULL);
-		return save_event(self, event, actor, error);
+		return save_event(self, event, actor, error) ? 0 : -1;
 	}
 	pay_link = live_portal_link(self, org, number(invoice, "company-id"));
 	public_values = render_values(self, invoice, company, contact, policy, step, step_no, days, NULL);
@@ -474,7 +476,7 @@ send_step(VentureDunningService *self, VentureEntity *invoice, VentureEntity *co
 	if (message == NULL)
 	{
 		g_object_set(event, "delivery-status", STATUS_FAILED, "last-error", local->message, NULL);
-		return save_event(self, event, actor, error);
+		return save_event(self, event, actor, error) ? 0 : -1;
 	}
 	if (pay_link != NULL)
 	{
@@ -486,20 +488,20 @@ send_step(VentureDunningService *self, VentureEntity *invoice, VentureEntity *co
 		if (private_message == NULL)
 		{
 			g_object_set(event, "delivery-status", STATUS_FAILED, "last-error", local->message, NULL);
-			return save_event(self, event, actor, error);
+			return save_event(self, event, actor, error) ? 0 : -1;
 		}
 		private_text = text(VENTURE_ENTITY(private_message), "text-body");
 		g_object_set(message, "private-text-body", private_text, NULL);
 	}
 	if (!save_event(self, event, actor, error))
-		return FALSE;
+		return -1;
 	g_object_set(message, "to", recipient, "idempotency-key", key,
 		"related-type", "dunning_event", "related-id", venture_entity_get_id(event), NULL);
 	queued = venture_mail_outbox_enqueue(venture_database_get_mail_outbox(self->database), message, actor, error);
 	if (queued == NULL)
-		return FALSE;
+		return -1;
 	g_object_set(event, "mail-message-id", venture_entity_get_id(VENTURE_ENTITY(queued)), NULL);
-	return save_event(self, event, actor, error);
+	return save_event(self, event, actor, error) ? 1 : -1;
 }
 
 /* After a per-invoice transaction failed, keep the attempt as evidence in a
@@ -515,14 +517,17 @@ record_failure(VentureDunningService *self, VentureEntity *invoice, VentureEntit
 	save_event(self, event, actor, &ignored);
 }
 
+/* The identity a sweep never repeats is the step of one policy for one
+ * invoice; moving an invoice to another policy starts that cadence afresh. */
 static gchar *
-step_key(VentureEntity *invoice, guint step_no)
+step_key(VentureEntity *invoice, VentureEntity *policy, guint step_no)
 {
-	return g_strdup_printf("dunning:inv:%" G_GINT64_FORMAT ":step:%u", venture_entity_get_id(invoice), step_no);
+	return g_strdup_printf("dunning:inv:%" G_GINT64_FORMAT ":policy:%" G_GINT64_FORMAT ":step:%u",
+		venture_entity_get_id(invoice), venture_entity_get_id(policy), step_no);
 }
 
 static GHashTable *
-recorded_steps(VentureDunningService *self, VentureEntity *invoice, GError **error)
+recorded_steps(VentureDunningService *self, VentureEntity *invoice, VentureEntity *policy, GError **error)
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_DUNNING_EVENT);
 	g_autoptr(GPtrArray) rows = NULL;
@@ -531,6 +536,7 @@ recorded_steps(VentureDunningService *self, VentureEntity *invoice, GError **err
 	venture_query_set_organization(query, venture_entity_get_organization_id(invoice));
 	venture_query_set_include_deleted(query, TRUE);
 	venture_query_add_filter_int(query, "invoice-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(invoice), NULL);
+	venture_query_add_filter_int(query, "policy-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(policy), NULL);
 	venture_query_set_limit(query, 0);
 	rows = venture_database_find(self->database, query, error);
 	if (rows == NULL)
@@ -572,7 +578,7 @@ sweep_invoice(VentureDunningService *self, VentureEntity *invoice, GDateTime *as
 	if (reason != NULL && !recorded_reason(reason))
 		return 0;
 	days = calendar_days(as_of, due);
-	done = recorded_steps(self, invoice, error);
+	done = recorded_steps(self, invoice, policy, error);
 	if (done == NULL)
 		return -1;
 	for (i = 0; i < steps->len; i++)
@@ -592,31 +598,26 @@ sweep_invoice(VentureDunningService *self, VentureEntity *invoice, GDateTime *as
 	{
 		guint step_no = g_array_index(pending, guint, i);
 		const Step *step = &g_array_index(steps, Step, step_no - 1);
-		g_autofree gchar *key = step_key(invoice, step_no);
-		gboolean ok;
+		g_autofree gchar *key = step_key(invoice, policy, step_no);
+		gint outcome;
 		if (reason != NULL)
-			ok = record_suppressed(self, invoice, policy, step_no, step, key, as_of, reason, actor, error);
+			outcome = record_suppressed(self, invoice, policy, step_no, step, key, as_of, reason, actor, error) ? 0 : -1;
 		else if (step_no != latest)
 			/* Several steps fell due since the last sweep: the customer gets
 			 * the current one, not a burst of every message they missed. */
-			ok = record_suppressed(self, invoice, policy, step_no, step, key, as_of, "superseded", actor, error);
+			outcome = record_suppressed(self, invoice, policy, step_no, step, key, as_of, "superseded", actor, error) ? 0 : -1;
 		else if (step_no == steps->len && flag(policy, "final-escalation"))
-		{
-			ok = escalate(self, invoice, policy, step_no, step, key, as_of, actor, error);
-			acted += ok;
-		}
+			outcome = escalate(self, invoice, policy, step_no, step, key, as_of, actor, error);
 		else
-		{
-			ok = send_step(self, invoice, company, contact, policy, step_no, step, key, as_of, days, actor, error);
-			acted += ok;
-		}
-		if (!ok)
+			outcome = send_step(self, invoice, company, contact, policy, step_no, step, key, as_of, days, actor, error);
+		if (outcome < 0)
 		{
 			g_autofree gchar *why = g_strdup(error && *error ? (*error)->message : "sweep failed");
 			venture_database_rollback(self->database);
 			record_failure(self, invoice, policy, step_no, step, key, as_of, why, actor);
 			return -1;
 		}
+		acted += outcome;
 	}
 	if (!venture_database_commit(self->database, error))
 		return -1;

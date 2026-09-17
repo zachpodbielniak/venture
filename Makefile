@@ -264,6 +264,7 @@ $(OUTDIR)/tests/test-accounting: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sequences: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-recurring: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-dunning: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery

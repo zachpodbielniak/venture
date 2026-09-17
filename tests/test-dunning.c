@@ -205,6 +205,303 @@ static void test_report(Fixture *f, gconstpointer unused)
 	g_assert_nonnull(strstr(text, "paid_within_7_days"));
 	g_assert_nonnull(strstr(text, "average_days_after"));
 }
+/* Reminder history is service-owned: a generic write must be refused. */
+static void test_event_generic_write(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) event = record(f, "dunning_event");
+	g_autoptr(GError) error = NULL;
+	(void)unused;
+	g_object_set(event, "invoice-id", f->invoice, "step", (gint64)1, "dunning-key", "forged", "delivery-status", "sent", NULL);
+	g_assert_false(venture_database_save(f->db, event, NULL, &error));
+	g_assert_nonnull(error);
+	g_assert_nonnull(strstr(error->message, "sweep"));
+}
+/* A policy that names a missing template or unordered offsets is refused. */
+static void test_policy_steps(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) policy = record(f, "dunning_policy");
+	g_autoptr(GError) error = NULL;
+	(void)unused;
+	g_object_set(policy, "name", "Broken", "steps", "[{\"offset\":7,\"template_id\":999999}]", NULL);
+	g_assert_false(venture_database_save(f->db, policy, NULL, &error));
+	g_clear_error(&error);
+	g_object_set(policy, "steps", "[{\"offset\":7},{\"offset\":3}]", NULL);
+	g_assert_false(venture_database_save(f->db, policy, NULL, &error));
+	g_clear_error(&error);
+	g_object_set(policy, "steps", "not json", NULL);
+	g_assert_false(venture_database_save(f->db, policy, NULL, &error));
+}
+static gint64 make_policy(Fixture *f, const gchar *name, gint offset)
+{
+	g_autoptr(GPtrArray) templates = rows(f, "mail_template");
+	g_autoptr(VentureEntity) policy = record(f, "dunning_policy");
+	g_autofree gchar *steps = g_strdup_printf("[{\"offset\":%d,\"template_id\":%" G_GINT64_FORMAT "}]",
+		offset, venture_entity_get_id(g_ptr_array_index(templates, 0)));
+	g_object_set(policy, "name", name, "steps", steps, NULL);
+	save(f, policy);
+	return venture_entity_get_id(policy);
+}
+/* The invoice's policy beats the customer's, which beats the default. */
+static void test_overrides(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) company = venture_database_get(f->db, VENTURE_TYPE_COMPANY, f->company, NULL);
+	g_autoptr(VentureEntity) invoice = venture_database_get(f->db, VENTURE_TYPE_INVOICE, f->invoice, NULL);
+	g_autoptr(GPtrArray) events = NULL;
+	gint64 company_policy = make_policy(f, "Gentle", 1);
+	gint64 invoice_policy = make_policy(f, "Patient", 30);
+	gint64 used = 0;
+	(void)unused;
+	g_object_set(company, "dunning-policy-id", company_policy, NULL); save(f, company);
+	g_assert_cmpint(sweep(f, "2026-01-07"), ==, 0);
+	g_assert_cmpint(sweep(f, "2026-01-11"), ==, 1);
+	events = rows(f, "dunning_event");
+	g_assert_cmpuint(events->len, ==, 1);
+	g_object_get(g_ptr_array_index(events, 0), "policy-id", &used, NULL);
+	g_assert_cmpint(used, ==, company_policy);
+	g_object_set(invoice, "dunning-policy-id", invoice_policy, NULL); save(f, invoice);
+	g_assert_cmpint(sweep(f, "2026-02-01"), ==, 0);
+	g_assert_cmpint(sweep(f, "2026-02-09"), ==, 1);
+}
+/* A disputed invoice leaves dunning until the dispute is resolved. */
+static void test_dispute(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) invoice = venture_database_get(f->db, VENTURE_TYPE_INVOICE, f->invoice, NULL);
+	g_autoptr(GDateTime) at = venture_time_from_string("2026-01-05", NULL);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) events = NULL;
+	(void)unused;
+	g_assert_true(venture_settlement_service_transition(venture_settlement_service_get(f->db), VENTURE_INVOICE(invoice), "disputed", at, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(sweep(f, "2026-01-17"), ==, 0);
+	deliver(f, "2026-01-17");
+	g_assert_cmpuint(venture_log_mailer_get_messages(f->mailer)->len, ==, 0);
+	events = rows(f, "dunning_event");
+	g_assert_cmpuint(events->len, ==, 0);
+}
+/* A dispute raised after a reminder was queued cancels it before the transport. */
+static void test_dispute_after_queue(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) invoice = venture_database_get(f->db, VENTURE_TYPE_INVOICE, f->invoice, NULL);
+	g_autoptr(GDateTime) at = venture_time_from_string("2026-01-07", NULL);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) events = NULL;
+	g_autoptr(GPtrArray) mail = NULL;
+	g_autofree gchar *status = NULL, *reason = NULL, *state = NULL;
+	(void)unused;
+	g_assert_cmpint(sweep(f, "2026-01-07"), ==, 1);
+	g_assert_true(venture_settlement_service_transition(venture_settlement_service_get(f->db), VENTURE_INVOICE(invoice), "disputed", at, NULL, &error));
+	g_assert_no_error(error);
+	deliver(f, "2026-01-07");
+	g_assert_cmpuint(venture_log_mailer_get_messages(f->mailer)->len, ==, 0);
+	events = rows(f, "dunning_event");
+	g_object_get(g_ptr_array_index(events, 0), "delivery-status", &status, "suppressed-reason", &reason, NULL);
+	g_assert_cmpstr(status, ==, "cancelled"); g_assert_cmpstr(reason, ==, "disputed");
+	mail = rows(f, "mail_message");
+	g_assert_cmpuint(mail->len, ==, 1);
+	g_object_get(g_ptr_array_index(mail, 0), "state", &state, NULL);
+	g_assert_cmpstr(state, ==, "cancelled");
+}
+/* A template that cannot render records a failed attempt once and moves on. */
+static void test_render_failure(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GPtrArray) templates = rows(f, "mail_template");
+	g_autoptr(GPtrArray) events = NULL;
+	g_autofree gchar *status = NULL, *why = NULL;
+	(void)unused;
+	g_object_set(g_ptr_array_index(templates, 0), "text-body", "Hello {no_such_field}", NULL);
+	save(f, g_ptr_array_index(templates, 0));
+	g_assert_cmpint(sweep(f, "2026-01-07"), ==, 0);
+	g_assert_cmpint(sweep(f, "2026-01-07"), ==, 0);
+	deliver(f, "2026-01-07");
+	g_assert_cmpuint(venture_log_mailer_get_messages(f->mailer)->len, ==, 0);
+	events = rows(f, "dunning_event");
+	g_assert_cmpuint(events->len, ==, 1);
+	g_object_get(g_ptr_array_index(events, 0), "delivery-status", &status, "last-error", &why, NULL);
+	g_assert_cmpstr(status, ==, "failed");
+	g_assert_nonnull(strstr(why, "placeholder"));
+}
+static gboolean refuse_mail(VentureDatabase *db, VentureEntity *entity, VentureEntity *previous, gpointer data, GError **error)
+{
+	(void)db; (void)entity; (void)previous; (void)data;
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE, "relay down");
+	return FALSE;
+}
+/* A failure after the event was written rolls the invoice's transaction
+ * back, and the attempt is still recorded as evidence in its own. */
+static void test_atomic_attempt(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GDateTime) at = venture_time_from_string("2026-01-07", NULL);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) events = NULL;
+	g_autoptr(GPtrArray) mail = NULL;
+	g_autofree gchar *status = NULL, *why = NULL;
+	(void)unused;
+	venture_database_add_save_validator(f->db, VENTURE_TYPE_MAIL_MESSAGE, refuse_mail, NULL, NULL);
+	g_assert_cmpint(venture_dunning_service_sweep(venture_dunning_service_get(f->db), f->org, at, 100, NULL, &error), ==, -1);
+	g_assert_nonnull(error);
+	g_assert_false(venture_database_has_transaction(f->db));
+	mail = rows(f, "mail_message"); g_assert_cmpuint(mail->len, ==, 0);
+	events = rows(f, "dunning_event"); g_assert_cmpuint(events->len, ==, 1);
+	g_object_get(g_ptr_array_index(events, 0), "delivery-status", &status, "last-error", &why, NULL);
+	g_assert_cmpstr(status, ==, "failed");
+	g_assert_nonnull(strstr(why, "relay down"));
+}
+/* Several steps falling due at once send the current one, not a burst. */
+static void test_superseded(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GPtrArray) events = NULL;
+	g_autofree gchar *first = NULL, *reason = NULL, *second = NULL;
+	(void)unused;
+	g_assert_cmpint(sweep(f, "2026-01-20"), ==, 1);
+	deliver(f, "2026-01-20");
+	g_assert_cmpuint(venture_log_mailer_get_messages(f->mailer)->len, ==, 1);
+	events = rows(f, "dunning_event");
+	g_assert_cmpuint(events->len, ==, 2);
+	g_object_get(g_ptr_array_index(events, 0), "delivery-status", &first, "suppressed-reason", &reason, NULL);
+	g_object_get(g_ptr_array_index(events, 1), "delivery-status", &second, NULL);
+	g_assert_cmpstr(first, ==, "suppressed"); g_assert_cmpstr(reason, ==, "superseded");
+	g_assert_cmpstr(second, ==, "sent");
+}
+/* Every send is on the invoice, contact and company timelines and in the portal. */
+static void test_timeline(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) invoice = venture_database_get(f->db, VENTURE_TYPE_INVOICE, f->invoice, NULL);
+	const gchar *types[] = { "invoice", "contact", "company" };
+	gint64 ids[3];
+	g_autofree gchar *portal = NULL;
+	guint i;
+	(void)unused;
+	ids[0] = f->invoice; ids[1] = f->contact; ids[2] = f->company;
+	sweep(f, "2026-01-07"); deliver(f, "2026-01-07");
+	for (i = 0; i < G_N_ELEMENTS(types); i++)
+	{
+		g_autoptr(GError) error = NULL;
+		g_autoptr(JsonNode) timeline = venture_desk_activity(f->context, types[i], ids[i], 0, &error);
+		g_autofree gchar *text = NULL;
+		g_assert_no_error(error); g_assert_nonnull(timeline);
+		text = venture_json_to_string(timeline, FALSE);
+		g_assert_nonnull(strstr(text, "reminder sent 2026-01-07"));
+	}
+	portal = venture_dunning_portal_summary(f->db, invoice);
+	g_assert_cmpstr(portal, ==, "reminder sent 2026-01-07");
+}
+/* Switching the module off hides its records and refuses the sweep. */
+static void test_module_off(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GDateTime) at = venture_time_from_string("2026-01-07", NULL);
+	g_autoptr(GError) error = NULL;
+	(void)unused;
+	venture_config_set_module_enabled(f->config, "dunning", FALSE);
+	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(), "dunning_policy"), ==, G_TYPE_INVALID);
+	g_assert_cmpint(venture_dunning_service_sweep(venture_dunning_service_get(f->db), f->org, at, 100, NULL, &error), ==, -1);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "collections"));
+	venture_config_set_module_enabled(f->config, "dunning", TRUE);
+	g_assert_cmpint(sweep(f, "2026-01-07"), ==, 1);
+}
+/* The REST action and the CLI verb reach the same service. */
+typedef struct { gboolean done; GError *error; GBytes *bytes; gchar *out, *err; } Result;
+typedef struct { Fixture base; VentureWebServer *server; gchar *directory; } ServerFixture;
+static void server_setup(ServerFixture *s, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GSocketListener) listener = g_socket_listener_new();
+	guint16 port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
+	g_assert_no_error(error);
+	g_socket_listener_close(listener);
+	s->directory = g_dir_make_tmp("venture-dunning-XXXXXX", &error);
+	g_assert_no_error(error);
+	setup(&s->base, unused);
+	g_object_set(s->base.config, "state-dir", s->directory, "server-bind-address", "127.0.0.1", "server-port", (gint64)port, "security-require-auth", FALSE, NULL);
+	venture_context_set_mailer(s->base.context, VENTURE_MAILER(s->base.mailer));
+	s->server = venture_web_server_new(s->base.context, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(s->server, &error));
+	g_assert_no_error(error);
+}
+static void server_teardown(ServerFixture *s, gconstpointer unused)
+{
+	venture_web_server_stop(s->server);
+	g_clear_object(&s->server);
+	teardown(&s->base, unused);
+	venture_test_remove_tree(s->directory); g_free(s->directory);
+}
+static void http_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+	Result *r = data;
+	r->bytes = soup_session_send_and_read_finish(SOUP_SESSION(source), result, &r->error);
+	r->done = TRUE;
+}
+static guint request(ServerFixture *s, const gchar *path, const gchar *body, gchar **out)
+{
+	g_autoptr(SoupSession) session = soup_session_new_with_options("timeout", 15, NULL);
+	g_autofree gchar *url = g_strconcat(venture_web_server_get_base_url(s->server), path, NULL);
+	g_autoptr(SoupMessage) message = soup_message_new("POST", url);
+	g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
+	Result result;
+	memset(&result, 0, sizeof(result));
+	soup_message_set_request_body_from_bytes(message, "application/json", bytes);
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, http_done, &result);
+	while (!result.done) g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(result.error);
+	if (out) *out = g_strndup(g_bytes_get_data(result.bytes, NULL), g_bytes_get_size(result.bytes));
+	g_bytes_unref(result.bytes);
+	return soup_message_get_status(message);
+}
+static void cli_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+	Result *r = data;
+	g_subprocess_communicate_utf8_finish(G_SUBPROCESS(source), result, &r->out, &r->err, &r->error);
+	r->done = TRUE;
+}
+static gboolean cli_timeout(gpointer process) { g_subprocess_force_exit(process); return G_SOURCE_CONTINUE; }
+static gchar *cli(ServerFixture *s, const gchar *const *args, gboolean expect_success)
+{
+	g_autoptr(GSubprocessLauncher) launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
+	g_autoptr(GSubprocess) process = NULL;
+	g_autoptr(GPtrArray) argv = g_ptr_array_new_with_free_func(g_free);
+	g_autoptr(GError) error = NULL;
+	Result result;
+	guint i, timeout;
+	memset(&result, 0, sizeof(result));
+	g_ptr_array_add(argv, g_canonicalize_filename("build/debug/venturectl", NULL));
+	g_ptr_array_add(argv, g_strdup("--server")); g_ptr_array_add(argv, g_strdup(venture_web_server_get_base_url(s->server)));
+	g_ptr_array_add(argv, g_strdup("-f")); g_ptr_array_add(argv, g_strdup("json"));
+	for (i = 0; args[i]; i++) g_ptr_array_add(argv, g_strdup(args[i]));
+	g_ptr_array_add(argv, NULL);
+	g_subprocess_launcher_setenv(launcher, "VENTURE_TOKEN", "dunning-fixture", TRUE);
+	process = g_subprocess_launcher_spawnv(launcher, (const gchar *const *)argv->pdata, &error);
+	g_assert_no_error(error);
+	timeout = g_timeout_add_seconds(30, cli_timeout, process);
+	g_subprocess_communicate_utf8_async(process, NULL, NULL, cli_done, &result);
+	while (!result.done) g_main_context_iteration(NULL, TRUE);
+	g_source_remove(timeout);
+	g_assert_no_error(result.error);
+	if (g_subprocess_get_successful(process) != expect_success) g_test_message("CLI: %s%s", result.out, result.err);
+	g_assert_true(g_subprocess_get_successful(process) == expect_success);
+	g_free(result.err);
+	return result.out;
+}
+static void test_surfaces(ServerFixture *s, gconstpointer unused)
+{
+	Fixture *f = &s->base;
+	const gchar *sweep_args[] = { "dunning", "sweep", "as_of=2026-01-17", NULL };
+	const gchar *bad_args[] = { "dunning", "nope", NULL };
+	g_autofree gchar *body = NULL, *out = NULL, *bad = NULL;
+	g_autoptr(GPtrArray) events = NULL;
+	(void)unused;
+	g_assert_cmpuint(request(s, "/api/v1/dunning_policy/0/actions/sweep", "{\"as_of\":\"2026-01-07\"}", &body), ==, 200);
+	events = rows(f, "dunning_event");
+	g_assert_cmpuint(events->len, ==, 1);
+	g_clear_pointer(&events, g_ptr_array_unref);
+	out = cli(s, sweep_args, TRUE);
+	events = rows(f, "dunning_event");
+	g_assert_cmpuint(events->len, ==, 2);
+	bad = cli(s, bad_args, FALSE);
+	g_assert_cmpuint(request(s, "/api/v1/dunning_policy/0/actions/sweep", "{\"as_of\":\"not a date\"}", NULL), >=, 400);
+	deliver(f, "2026-01-17");
+	g_assert_cmpuint(venture_log_mailer_get_messages(f->mailer)->len, ==, 2);
+}
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
@@ -214,5 +511,16 @@ int main(int argc, char **argv)
 	g_test_add("/dunning/optout", Fixture, NULL, setup, test_optout, teardown);
 	g_test_add("/dunning/escalation", Fixture, NULL, setup, test_escalation, teardown);
 	g_test_add("/dunning/report", Fixture, NULL, setup, test_report, teardown);
+	g_test_add("/dunning/event-generic-write", Fixture, NULL, setup, test_event_generic_write, teardown);
+	g_test_add("/dunning/policy-steps", Fixture, NULL, setup, test_policy_steps, teardown);
+	g_test_add("/dunning/overrides", Fixture, NULL, setup, test_overrides, teardown);
+	g_test_add("/dunning/dispute", Fixture, NULL, setup, test_dispute, teardown);
+	g_test_add("/dunning/dispute-after-queue", Fixture, NULL, setup, test_dispute_after_queue, teardown);
+	g_test_add("/dunning/render-failure", Fixture, NULL, setup, test_render_failure, teardown);
+	g_test_add("/dunning/atomic-attempt", Fixture, NULL, setup, test_atomic_attempt, teardown);
+	g_test_add("/dunning/superseded", Fixture, NULL, setup, test_superseded, teardown);
+	g_test_add("/dunning/timeline", Fixture, NULL, setup, test_timeline, teardown);
+	g_test_add("/dunning/module-off", Fixture, NULL, setup, test_module_off, teardown);
+	g_test_add("/dunning/surfaces", ServerFixture, NULL, server_setup, test_surfaces, server_teardown);
 	return g_test_run();
 }
