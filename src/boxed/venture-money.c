@@ -991,6 +991,21 @@ venture_money_to_display_string(
 	                       magnitude);
 }
 
+/*
+ * Refuses an amount that could be read as more than one number, naming
+ * why. Returns %NULL so a parser can return it directly.
+ */
+static VentureMoney *
+venture_money_refuse_ambiguous(
+	GError		**error,
+	const gchar	 *text,
+	const gchar	 *why
+){
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+	            "\"%s\" is not an unambiguous amount: %s", text, why);
+	return NULL;
+}
+
 VentureMoney *
 venture_money_from_string(
 	const gchar	 *text,
@@ -1006,6 +1021,8 @@ venture_money_from_string(
 	gint64 amount;
 	gsize length;
 	gsize fraction_digits;
+	gsize leading_digits;
+	gint group;
 	gsize i;
 
 	g_return_val_if_fail(NULL != text, NULL);
@@ -1083,6 +1100,9 @@ venture_money_from_string(
 	digits = g_string_new(NULL);
 	seen_point = FALSE;
 	fraction_digits = 0;
+	leading_digits = 0;
+	/* Digits since the last thousands separator, or -1 before the first. */
+	group = -1;
 
 	for (i = 0; i < length; i++)
 	{
@@ -1105,26 +1125,68 @@ venture_money_from_string(
 
 			if (seen_point)
 				fraction_digits++;
+			else if (group >= 0)
+				group++;
+			else
+				leading_digits++;
 
 			continue;
 		}
 
-		if (('.' == c) && !seen_point)
+		/*
+		 * Everything below refuses a form that used to be read as some
+		 * other number without a word. Each was found in an import:
+		 * "1,50 EUR" (a decimal comma) became 150.00, "1.2.3" became
+		 * 1.23 and "100.00 CR" became a positive hundred. An amount that
+		 * cannot be read one way only is an error, never a guess.
+		 */
+		if ('.' == c)
 		{
+			if (seen_point)
+				return venture_money_refuse_ambiguous(error, text,
+					"it has more than one decimal point");
+
+			if ((group >= 0) && (3 != group))
+				return venture_money_refuse_ambiguous(error, text,
+					"a thousands separator must be followed by three digits");
+
 			seen_point = TRUE;
 			continue;
 		}
 
-		/* A comma before any decimal point is a thousands separator in
-		 * the notation VENTURE emits; ignore it. A comma after one
-		 * would be ambiguous, so it is treated as decoration too. */
+		/* A comma is a thousands separator in the notation VENTURE
+		 * emits, so it may only sit between groups of three digits
+		 * before the decimal point. */
 		if (',' == c)
+		{
+			if (seen_point)
+				return venture_money_refuse_ambiguous(error, text,
+					"a comma follows the decimal point");
+
+			if ((0 == digits->len) || ((group < 0) && (leading_digits > 3)) ||
+			    ((group >= 0) && (3 != group)))
+				return venture_money_refuse_ambiguous(error, text,
+					"a comma that is not a thousands separator may be a decimal comma");
+
+			group = 0;
 			continue;
+		}
+
+		/* Letters after the number has started are a suffix like "CR"
+		 * or "DR" that changes its meaning, or a typo inside it. Before
+		 * the first digit they are part of a symbol such as "US$". */
+		if (g_ascii_isalpha(c) && (0 != digits->len))
+			return venture_money_refuse_ambiguous(error, text,
+				"letters follow the digits");
 
 		/* Any other character is a currency symbol or stray
 		 * punctuation. Skip it rather than failing: this text comes
 		 * from spreadsheets and marketplace exports. */
 	}
+
+	if (!seen_point && (group >= 0) && (3 != group))
+		return venture_money_refuse_ambiguous(error, text,
+			"a comma that is not a thousands separator may be a decimal comma");
 
 	if (0 == digits->len)
 	{

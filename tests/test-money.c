@@ -409,7 +409,10 @@ test_money_parse_tolerant_forms(void)
 		/* A whole-unit amount must be scaled to the currency's natural
 		 * precision so it adds cleanly to a fractional one. */
 		{ "5",              500,    "USD" },
-		{ "12.34 EUR",      1234,   "EUR" }
+		{ "12.34 EUR",      1234,   "EUR" },
+		{ "1,234,567.89",   123456789, "USD" },
+		{ "US$12.34",       1234,   "USD" },
+		{ "1,000",          100000, "USD" }
 	};
 	gsize i;
 
@@ -439,6 +442,35 @@ test_money_parse_rejects_garbage(void)
 
 	g_assert_null(parsed);
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+}
+
+/*
+ * Forms that were once read as a different number without a word: a
+ * decimal comma, a second point, a credit suffix, letters inside the
+ * digits. Each must now be refused, because an import that turns 1,50 EUR
+ * into 150.00 EUR posts a hundred times the amount.
+ */
+static void
+test_money_parse_refuses_ambiguous_forms(void)
+{
+	static const gchar *const cases[] = {
+		"1.2.3", "1,50", "1,50 EUR", "1.234,56 EUR", "12,34", "1,2345.00",
+		"1234,567", "1.2,3", "100.00 CR", "12abc34", ",100", "1,00,000"
+	};
+	gsize i;
+
+	for (i = 0; i < G_N_ELEMENTS(cases); i++)
+	{
+		g_autoptr(VentureMoney) parsed = NULL;
+		g_autoptr(GError) error = NULL;
+
+		parsed = venture_money_from_string(cases[i], "USD", &error);
+
+		if (NULL != parsed)
+			g_error("\"%s\" parsed as %" G_GINT64_FORMAT " instead of being refused",
+			        cases[i], venture_money_get_amount(parsed));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	}
 }
 
 static void
@@ -654,6 +686,8 @@ main(
 	g_test_add_func("/money/to-string-round-trip", test_money_to_string_round_trip);
 	g_test_add_func("/money/parse-tolerant-forms", test_money_parse_tolerant_forms);
 	g_test_add_func("/money/parse-rejects-garbage", test_money_parse_rejects_garbage);
+	g_test_add_func("/money/parse-refuses-ambiguous-forms",
+	                test_money_parse_refuses_ambiguous_forms);
 	g_test_add_func("/money/parse-rejects-excess-precision",
 	                test_money_parse_rejects_excess_precision);
 	g_test_add_func("/money/display-string", test_money_display_string);

@@ -45,6 +45,21 @@ Remainder minor units go to the largest ratios first, deterministically, because
 
 There is no exchange rate in the type. =venture_money_add()= on USD and EUR returns =NULL= with an error rather than guessing. Reports that aggregate across records group by currency and report the majority one, with a note, rather than folding them together.
 
+** Parsing reads one number or refuses
+
+=venture_money_from_string()= is tolerant of decoration and strict about meaning. It accepts =12.34=, =$12.34=, =US$12.34=, =12.34 USD=, =USD 12.34=, =1,234,567.89=, =(12.34)= and =-12.34=, and scales a whole amount such as =5= to the currency's precision. It refuses anything that could be read as more than one number, with an error that says why:
+
+| Input          | Why it is refused                                   |
+|----------------+-----------------------------------------------------|
+| =1,50 EUR=     | a comma that is not a thousands separator may be a decimal comma |
+| =1.234,56 EUR= | the same, after a point used as a thousands separator |
+| =1.2.3=        | more than one decimal point                         |
+| =1.2,3=        | a comma after the decimal point                     |
+| =100.00 CR=    | letters after the digits change the meaning         |
+| =1.234567=     | more decimals than the currency holds               |
+
+Each of the first four was once read without a word: =1,50 EUR= as 150.00, =1.2.3= as 1.23, =100.00 CR= as a positive hundred. An import that posts a hundred times an amount is worse than one that stops at the row, so a locale-formatted file must be converted first (cutover takes an explicit =decimal_separator=).
+
 ** Overflow is detected
 
 Every operation checks. A monetary addition that would wrap returns an error instead of a negative balance that looks legitimate.
