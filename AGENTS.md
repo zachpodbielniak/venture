@@ -258,6 +258,16 @@ first seven columns were empty.
   type with a long text field participates. Do not add a hardcoded list --
   that is the thing this design exists to avoid, and a plugin's record type
   should be covered the day it registers.
+- **A convenience CLI verb over an action must type its arguments.**
+  `venture_cli_values_from_args()` sends every `key=value` as a JSON string,
+  and `venture_action_validate_parameters()` refuses a string for an
+  integer or boolean parameter. `dunning sweep organization_id=1` failed
+  that way for as long as it was documented; `act` types from the schema,
+  a hand-written verb has to do it itself.
+- **A `before-send` handler judges by the delivery run's clock, not the
+  wall clock.** `deliver_due()` takes an explicit `now`, and the claimed
+  row's `lease-until` minus `VENTURE_MAIL_LEASE_SECONDS` recovers it; wall
+  time makes a delivery run "as of" a day decide against another day.
 - **`make DEBUG=1 test` does not relink the server binary.** After editing
   `data/static/*` verify `build/debug/venture` is newer than
   `build/debug/venture-assets.h`, or the browser serves last hour's JS

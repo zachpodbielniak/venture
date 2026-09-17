@@ -758,7 +758,7 @@ static const gchar *const headline_suggests[] = { "outreach", "recurring", "tick
 static const gchar *const headline_reports[] = { "cac", "customer_churn", "ltv", "ltv_cac", NULL };
 static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };
 static GType (*const dunning_types[]) (void) = { venture_dunning_policy_get_type, venture_dunning_event_get_type, NULL };
-static const gchar *const dunning_reports[] = { "collections", NULL };
+static const gchar *const dunning_reports[] = { "collections", "dunning_worklist", NULL };
 
 static const VentureModuleInfo venture_module_builtins[] = {
 	{

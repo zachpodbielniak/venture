@@ -11,113 +11,322 @@
 The =dunning= module requires =receivables= and =mail=. Its two records are
 field tables: the same declarations produce the database tables, forms, REST
 resources, CLI commands, AI schemas and audit entries. Switching the module
-off hides both records, the =collections= report and the sweep action
-together; invoices, customers and the mail outbox are untouched.
+off hides both records, the =collections= and =dunning_worklist= reports and
+the sweep, retry and test-send actions together; invoices, customers and the
+mail outbox are untouched, and a reminder it had already queued is cancelled
+at delivery (see [[*Stopping and cancelling][Stopping and cancelling]]).
 
 | Record | Meaning |
 |--------+---------|
-| =dunning_policy= | A named cadence: steps at day offsets relative to the due date, each with a =mail_template=; whether the last step escalates; when it was adopted |
-| =dunning_event= | One step of one policy for one invoice: queued, sent, cancelled, suppressed with a reason, failed, or escalated; the mail message or next action it produced |
+| =dunning_policy= | A named cadence: steps at day offsets relative to the due date, each with a =mail_template=; whether the last step escalates and to whom when nobody owns the invoice; when it was adopted |
+| =dunning_event= | One step of one policy for one invoice: queued, sent, cancelled, suppressed with a reason, failed, or escalated; the mail message or next action it produced; the exact balance it rendered |
 
 =steps= is a JSON array, ordered by strictly increasing offset:
 
 #+begin_src json
 [{"offset": -3, "template_id": 12},
  {"offset": 7, "template_id": 13},
- {"offset": 14, "template_id": 14}]
+ {"offset": 14}]
 #+end_src
 
 A negative offset is before the due date; =-3= becomes eligible on the third
 calendar day before it and never earlier. Offsets are calendar days in UTC.
+The save validator refuses anything it would otherwise have to guess at:
+
+- =offset= must be a JSON integer, within 365 days either side of the due
+  date. ="abc"=, =null=, =7.9=, =7.0= and =true= are refused; they used to be
+  coerced into 0, 0, 7, 7 and 1.
+- =template_id= must be a JSON integer naming a live =mail_template= of the
+  policy's organization. Only the last step of a =final_escalation= policy
+  may omit it, because that step sends no email.
+- At most 20 steps.
+- An =is_default= policy needs at least one step; an empty default is every
+  invoice in the organization silently leaving dunning.
+- =last_sweep= is the sweep action's answer (below) and is never stored.
 
 Exactly one policy per organization may be =is_default=; a second is refused
 naming the first. A company may name =dunning_policy_id= to override the
 default for every invoice it is billed, and an invoice may name its own to
-override both. =invoice.dunning_disabled= names no policy at all; the invoice
-is simply skipped. =company.dunning_opt_out= is different: every step that
-falls due is recorded as =suppressed= with reason =company_opt_out=, so the
-decision not to chase is visible on the invoice and in the report.
+override both. A level naming a deleted policy falls through to the next --
+the invoice's to the company's, the company's to the default -- and the sweep
+warns once per missing policy (=g_warning= and the answer's =warnings=), rather
+than the invoice quietly leaving dunning. =invoice.dunning_disabled= names no
+policy at all; the invoice is simply skipped. =company.dunning_opt_out= is
+different: every email step that falls due is recorded as =suppressed= with
+reason =company_opt_out=, so the decision not to chase is visible on the
+invoice and in the report, and the escalation step still creates its internal
+task.
 
-Invoices carry an =owner= (a username, like a deal owner). The final step
-escalates to that person.
+** Pausing: promise to pay
+
+| Field | On | Meaning |
+|-------+----+---------|
+| =dunning_paused_until= | =invoice=, =company= | No reminder before this calendar day; the company's pause covers all of its invoices |
+| =dunning_pause_reason= | =invoice=, =company= | Why, for the next person to read it |
+
+A pause is not recorded as an event: nothing was decided. When it ends, the
+current step goes out and the superseded rule keeps it from being a burst. A
+pause set after a reminder was queued cancels that reminder at delivery with
+reason =paused=.
+
+When the =recurring= module is on, an invoice with a =collection_case= that is
+=held= or =disputed=, or whose =promised_at= is still in the future, is held the
+same way (cancel reason =collection_case=): two modules chasing one invoice is
+how a customer receives two different letters on the same morning.
 
 * The sweep
 
-=VentureDunningService.sweep(organization, as_of, limit)= is the one
-implementation behind =POST /api/v1/dunning_policy/0/actions/sweep=,
-=venturectl dunning sweep= and the assistant's action tool. It is bounded
-and synchronous; there is no background thread. Schedule it like the mail
-delivery sweep, after business transactions commit:
+=VentureDunningService.sweep_detailed(organization, as_of, limit, dry_run)=
+is the one implementation behind =POST /api/v1/dunning_policy/0/actions/sweep=,
+=venturectl dunning sweep=, the assistant's action tool and the
+=venture->dunning_sweep= automation handler. It is bounded and synchronous;
+there is no background thread. Schedule it like the mail delivery sweep, after
+business transactions commit (=data/examples/dunning.pod=):
 
 #+begin_src text
 pod dunning_daily = cron->new("0 8 * * *");
-dunning_daily->on_schedule => venture->act("dunning_policy", "0", "sweep");
+dunning_daily->on_schedule => venture->dunning_sweep("", "1", "100");
 #+end_src
 
-For each issued invoice (=sent= or =partially_paid=) the sweep resolves the
-policy, refuses to continue when the invoice is paid, void, disputed
-(=workflow_state=disputed=) or has no open balance, and computes the steps
-whose offset has been reached and which have no =dunning_event= yet. The
-identity that is never repeated is =(invoice, policy, step)=, pinned by the
-per-organization unique =dunning_key=; moving an invoice to another policy
-starts that policy's cadence. Rerunning the sweep for the same day therefore
-produces nothing, which =test-dunning= proves.
+The handler's positional arguments are =as_of=, organization and limit; an
+empty string takes the default (now, the default organization, 100). A limit
+outside 1–1000 or an unparsable organization fails the handler rather than
+being guessed. The pipe result's =count= is reminders queued plus escalations
+and its =summary= is the sweep's JSON answer.
+
+** Which invoices, which steps
+
+The sweep reads only issued invoices (=sent= or =partially_paid=) whose due
+date is on or before =as_of= minus the earliest first-step offset of any valid
+policy in the organization; the rest of the ledger is never loaded. For each,
+cheapest test first, it resolves the policy, skips the invoice when no step's
+offset has been reached, loads what has already been recorded, and only then
+checks holds (pause, collection case) and computes the open balance to refuse
+an invoice that is paid, void, disputed (=workflow_state=disputed=) or has no
+open balance. The default policy is looked up once per sweep.
+
+The identity that is never repeated is =(invoice, policy, step offset)=,
+pinned by the per-organization unique =dunning_key=
+(=dunning:inv:<id>:policy:<id>:offset:<days>=). The offset, not the position:
+prepending a step to a policy moves every position, and a position-keyed
+history then re-sent one reminder and skipped another. =step= stays on the
+event as the position when it was recorded, for display. Rows recorded before
+this change are keyed by position (=...:step:<n>=) and are not rewritten;
+recorded-ness is read from their =offset_days=, which they already carry, so
+they still count. Moving an invoice to another policy starts that policy's
+cadence. Rerunning the sweep for the same day produces nothing, which
+=test-dunning= proves.
+
+Every step whose offset is at or below the highest offset already recorded
+for the invoice counts as done, whatever its own row says. When the newest
+due step fails and its transaction rolls back, the older steps it superseded
+roll back with it; without this rule they came due again the next day and a
+7-day reminder went out after the 14-day one had been attempted
+(=/dunning/failed-latest=).
 
 When several steps fell due since the last sweep (a policy adopted late, a
-sweep that was not run for a fortnight) the customer receives the current
-step only; the earlier ones are recorded as =suppressed= with reason
-=superseded= rather than sent as a burst.
+sweep that was not run for a fortnight, a pause that ended) the customer
+receives the current step only; the earlier ones are recorded as =suppressed=
+with reason =superseded= rather than sent as a burst.
+
+** Adoption and catch-up
+
+=adopted_at= (the policy's creation time when unset) is when the policy began
+to govern. Enabling dunning over an existing ledger used to supersede every
+step of every old invoice and escalate each of them at once: a collect task
+per overdue invoice and not one email. The rule now is:
+
+1. Due steps that fell due before the adoption day are recorded as
+   =suppressed= with reason =before_adoption=, except the current (latest due)
+   step, which is handled normally.
+2. A catch-up never escalates straight away. When the current step is the
+   escalation and no email step has ever been decided for the invoice under
+   this policy (anything recorded other than =superseded=/=before_adoption=
+   counts, including an opt-out or no-recipient suppression), the latest
+   email step is sent instead and the escalation is left pending. If the
+   policy has no email step, it escalates.
+3. After a catch-up reminder, the next step keeps the policy's spacing
+   counted from the adoption day: a step at offset S following a catch-up at
+   offset O becomes eligible on adoption + (S − O). Catching up is an email
+   today and the escalation a policy-gap later, not tomorrow. The spacing is
+   measured from adoption rather than from the day the catch-up was queued;
+   a first sweep run well after adoption therefore gets a shorter gap.
+
+=/dunning/adoption= proves it: a policy adopted 50 days after the due date
+sends the 7-day step, records the -3 step as =before_adoption=, creates no
+activity, and escalates seven days later.
+
+** Rendering and the pay link
 
 The current step renders its template with the invoice's public fields plus
 ={customer_name}=, ={contact_name}=, ={due_at}= and ={issued_at}= as dates,
 ={open_balance}= (display form) and ={open_balance_exact}=, ={days_overdue}=,
 ={days_until_due}=, ={step}=, ={offset_days}=, ={policy_name}= and
 ={pay_link}=. The recipient is the invoice contact's email, or the customer's
-when the invoice names no contact; with neither the step is recorded as
-=suppressed= (=no_recipient=). A template naming an unknown placeholder
-records the step as =failed= with the error and is not retried; fix the
-template and later steps proceed.
+when the invoice names no live contact; with neither the step is recorded as
+=suppressed= (=no_recipient=). A template naming an unknown placeholder, or a
+missing template, records the step as =failed= with the error; see
+[[*Retry][Retry]].
+
+A soft-deleted contact or company is treated as absent: the event, the
+activity and the recipient use only rows that load live. The event used to
+copy the deleted row's id, the save's reference check refused it, the
+failure record was refused the same way, and the sweep stopped on that
+invoice every day (=/dunning/deleted-contact=).
 
 ={pay_link}= is the customer's portal link, =server.base_url= + =/portal/= +
-their live =customer_portal_access= token, from which Stripe Checkout opens
-for the exact outstanding balance. The token is a bearer credential, so the
-rendered body containing it goes only into the message's sensitive
-=private_text_body=, which the transport sends in place of the public bodies;
-the stored public bodies render ={pay_link}= empty. With no portal access or
-no =base_url= the placeholder is empty. Reminders never charge a card.
+a live =customer_portal_access= token, from which Stripe Checkout opens for
+the exact outstanding balance. The token is a bearer credential, so it is
+used only when
 
-Each invoice is one transaction: the event, the outbox row and the audit
-entries commit together or not at all. If the transaction fails after the
-first write it is rolled back and the attempt is then recorded on its own as
-a =failed= event with the error, so a step that reached the outbox is never
-mistaken next sweep for one that was never due; =/dunning/atomic-attempt=
-pins this. Delivery itself is the outbox's at-least-once contract described
-in [[file:mail.org][Transactional mail]]: the sweep enqueues, =mail deliver=
-submits.
+- the access is unrevoked and was issued to the reminder's recipient
+  (compared case-insensitively, surrounding space ignored) -- an access
+  issued to someone else at the customer is their credential; and
+- =server.base_url= is a public HTTPS URL without credentials, query or
+  fragment, exactly the rule the portal service applies before it sends an
+  invitation.
 
-The event's =delivery_status= mirrors the outbox row (=queued=, =sent= with
-=sent_at=, =failed=, =dead=, =uncertain=, =cancelled=), so the invoice page,
-the timelines and the report read one column.
+Otherwise the placeholder is empty. =base_url= is bound to the running
+configuration, so a corrected URL applies to the next reminder. The rendered
+bodies containing the link go only into the message's sensitive
+=private_text_body= and =private_html_body=; the transport sends the private
+text in place of the public text and the private HTML in place of the public
+HTML (a private text body with no private HTML drops the public HTML, as
+before), so an HTML-only template keeps its link. The stored public bodies
+render ={pay_link}= empty. Reminders never charge a card.
 
-* Stopping
+** One transaction per invoice
+
+Each invoice is one transaction: its events, the outbox row, the activity and
+the audit entries commit together or not at all. If the transaction fails it
+is rolled back, the attempt is recorded on its own as a =failed= event on the
+current step with the error (so a step that reached the outbox is never
+mistaken next sweep for one that was never due), the invoice is added to
+=failed_invoice_ids=, a =g_warning= names it, and *the sweep goes on to the
+next invoice*. It used to return -1 at the first failing invoice, so every
+invoice behind it went unreminded. If even the failure record cannot be
+written, that is logged too. =/dunning/atomic-attempt= pins both.
+
+Delivery itself is the outbox's at-least-once contract described in
+[[file:mail.org][Transactional mail]]: the sweep enqueues, =mail deliver=
+submits. The event's =delivery_status= mirrors the outbox row (=queued=,
+=sent= with =sent_at=, =failed=, =dead=, =uncertain=, =cancelled=), so the
+invoice page, the timelines and the reports read one column. =queued_at= is
+the real time the sweep recorded the step, whatever =as_of= it was run for.
+
+Only the message recorded on the event (its =mail_message_id=) moves that
+status or is rechecked before sending. A message's =related_type= and
+=related_id= are ordinary columns anybody who may write mail can fill in; a
+forged message pointing at a reminder once flipped a sent event back to
+queued, and a forged failure made a =retry= -- a second email to the
+customer -- legal. =/dunning/forged-message= pins this.
+
+** Limits, the future and the answer
+
+=as_of= defaults to now. A sweep more than one day ahead of now is refused:
+it would send next month's reminders today and spend those steps. A dry run
+may look ahead freely. =limit= is invoices acted on per call, 1–1000, default
+100, including invoices whose due steps were only recorded as suppressed and
+invoices that failed; quiet invoices do not count.
+
+The action returns an unsaved =dunning_policy= whose =last_sweep= is the JSON
+answer (a type-level action returns a record; the answer rides on it the way
+a financial batch carries =last_result=):
+
+| Member | Meaning |
+|--------+---------|
+| =organization_id=, =as_of=, =dry_run= | What was swept |
+| =invoices= | Invoices acted on, against =limit= |
+| =queued=, =escalated=, =suppressed=, =failed= | Steps by outcome (for a dry run, what would happen) |
+| =failed_invoice_ids= | Invoices whose transaction failed and were skipped |
+| =warnings= | Missing or invalid policies, and "No mail transport is configured" when the outbox has no mailer |
+| =plan= | Dry run only: one entry per step with =invoice_id=, =invoice_number=, =step=, =offset=, =outcome= (=send=, =escalate=, =suppress=, =fail=), =reason=, =recipient=, =subject=, =owner= |
+
+=dry_run=true= plans each invoice exactly as the real sweep would (resolving
+the recipient and rendering the subject) and writes nothing.
+=venture_dunning_service_sweep()= remains for C callers and returns queued
+plus escalated.
+
+* Stopping and cancelling
 
 Settlement, void or a dispute stops every later step: the sweep skips the
-invoice, and a reminder already queued but not yet submitted is cancelled by
-the outbox's =before-send= recheck with the reason recorded on the event
-(=/dunning/settlement=, =/dunning/dispute-after-queue=). The same recheck
-enforces a customer opt-out that arrives after a reminder was queued
-(=/dunning/optout=). Partial payment does not stop reminders; the balance in
-the next one is the remaining amount.
+invoice. Partial payment does not stop reminders; the balance in the next one
+is the remaining amount.
+
+A reminder already queued but not yet submitted is rechecked by the outbox's
+=before-send= signal, judged by the delivery run's own clock (the claim's
+lease minus =VENTURE_MAIL_LEASE_SECONDS=), and cancelled with the reason on
+the event. A queued reminder used to be rechecked only for settlement, so
+with mail unconfigured or the relay down step 1 and step 2 went out together
+on recovery. The reasons, in the order they are checked:
+
+| Reason | When |
+|--------+------|
+| =module_disabled= | The dunning module was switched off after queueing |
+| =invoice_gone= | The invoice was deleted |
+| =settled=, =not_issued=, =disputed=, =invoice_disabled=, =company_opt_out= | The invoice left dunning (=/dunning/settlement=, =/dunning/void=, =/dunning/dispute-after-queue=, =/dunning/optout=) |
+| =paused= | The invoice or its customer is paused past the delivery day |
+| =collection_case= | A held or disputed collection case, or a promise still in the future |
+| =superseded= | A later step for the same invoice and policy has been recorded |
+| =no_longer_due= | The step's offset is beyond the days overdue, because the due date moved |
+| =balance_changed= | The open balance differs from =rendered_balance=, the exact balance the reminder states |
+| =stale= | Queued more than 7 days (=VENTURE_DUNNING_STALE_DAYS=) before delivery |
+
+A cancelled row spends no outbox attempt and is never retried automatically.
+Rows queued before =rendered_balance= existed skip the balance check.
 
 * Escalation
 
 When =final_escalation= is set, the last step creates an =activity= of kind
-=followup=, subject =collect: <invoice number>=, owned by =invoice.owner=,
-due on the sweep day, related to the invoice, instead of another email. The
-event is =escalated= and names the activity. A settled invoice never
-escalates. Late fees are not applied anywhere; if they are ever wanted they
-belong on the escalation step as a credit-note-shaped adjustment through
-=VentureSettlementService=, not in the reminder.
+=followup=, subject =collect: <invoice number>=, due on the sweep day,
+related to the invoice, instead of another email. Its owner is the first of:
+=invoice.owner=; the username of the customer's =owner_user_id=; the policy's
+=escalation_owner=. Invoices created before =owner= existed used to escalate to
+nobody. The event is =escalated= and names the activity. A settled invoice
+never escalates; a customer who opted out of reminders, or who has no email
+address, still gets the internal task. With the activities module off the
+step is recorded as =failed=. Late fees are not applied anywhere; if they are
+ever wanted they belong on the escalation step as a credit-note-shaped
+adjustment through =VentureSettlementService=, not in the reminder.
+
+* Retry
+
+A failed step used to be final: a fixed template could never send the step
+it broke. =dunning_event= has a =retry= action (editor, stageable), allowed on
+=failed=, =dead= and =uncertain= rows:
+
+#+begin_src sh
+venturectl act dunning_event 57 retry
+#+end_src
+
+It runs that step again for the invoice now -- escalate, suppress for an
+opt-out, or render and enqueue -- under the original key with =:retry:N=
+appended, so the attempt is its own idempotent outbox message and the
+original row stays as evidence. It is refused when a later step or another
+attempt at this one is already recorded (retrying would send an older
+reminder), when the invoice has left dunning or is on hold, or when the
+policy no longer has a step at that offset. Retrying an =uncertain= row may
+duplicate a message the relay did accept; that is the operator's call.
+
+* Test send
+
+=dunning_policy= has a =test_send= action (editor, not stageable) taking
+=invoice_id= and an optional =offset=:
+
+#+begin_src sh
+venturectl act dunning_policy 2 test_send invoice_id=42 offset=7
+#+end_src
+
+It renders the step (by default the invoice's next email step under this
+policy, else the policy's first email step) with that invoice's values and
+enqueues it to the acting user's own email only, subject prefixed =[TEST]=,
+with a random idempotency key. It writes no =dunning_event= -- nothing about
+the invoice is decided -- and the customer's pay link is replaced with
+=[pay link withheld from test sends]=, because the link is the customer's
+credential. A request with no signed-in user (an API token), a user with no
+email address, or an escalation step is refused with a message saying so. It
+is not stageable because an approval would mail the approver's colleague a
+day later.
 
 * Where reminders show
 
@@ -125,19 +334,46 @@ Every event appears as a =reminder= entry on the invoice's timeline and on
 the timelines of its contact and company ("reminder sent 2026-01-07 (step 1)",
 "reminder step 2 suppressed: company_opt_out", "collection escalated to the
 owner"), from the same =venture_desk_activity()= the pages and
-=GET /api/v1/activity/:type/:id= render. The customer portal's invoice list
-shows only what reached the customer: "reminder sent <date>".
+=GET /api/v1/activity/:type/:id= render. The invoice's timeline also carries
+one computed entry, never written: "next reminder: step 2 on 2026-01-17",
+"next: collection escalation on <date> (step 3)" or "reminders paused until
+<date>" (=delivery_status= =scheduled=, =id= 0). The customer portal's invoice
+list shows only what reached the customer: "reminder sent <date>".
 
-* The collections report
+Reminder history cannot be deleted, restored or purged
+(=venture_dunning_check_write()=): a deleted event is a step the sweep still
+counts as recorded while no page shows it, and a purged one lets a step be
+sent twice.
 
-=collections= has one row per policy step: reminders sent, escalations,
-suppressed, invoices paid within 7 days of that step's send, and the average
+* Reports
+
+** =collections=
+
+One row per policy step, matched by offset: reminders sent, still queued,
+failed (=failed=, =dead=, =uncertain=), escalations, suppressed (suppressed or
+cancelled), invoices paid within 7 days of that step's send, and the average
 days from issue to payment for invoices issued before and after the policy's
-=adopted_at= (its creation time when unset). The default policy's averages
-cover invoices naming no policy; a named policy's cover those naming it.
+=adopted_at= (its creation time when unset). The step counts cover events
+queued in the report's period (the API's default period is this month;
+=all= for everything). The averages attribute an invoice the way the sweep
+resolves it: the invoice's own policy, else its customer's, else the default.
 
 #+begin_src sh
-venturectl -f csv report collections
+venturectl -f csv report collections all
+#+end_src
+
+** =dunning_worklist=
+
+One row per open invoice that is overdue or already has a reminder, most
+overdue first: invoice number, customer, days overdue, aging bucket
+(=current=, =1-30=, =31-60=, =61-90=, =90+=), open balance, the last step with
+its status (and reason) and date, what happens next and when ("step 2 (offset
+7)" with its date, "escalation (...)", "escalated", "exhausted", "paused until
+<date>", "held by a collection case", "disputed", "no reminders"), and the
+escalation owner.
+
+#+begin_src sh
+venturectl report dunning_worklist
 #+end_src
 
 * Relationship to =recurring= collections and =billing dunning=
@@ -146,8 +382,9 @@ The =recurring= module's =collection_policy= predates this one and remains:
 it sends plain-text notices and monthly statements and keeps a
 =collection_case= worklist. =dunning= is the templated, per-customer,
 escalating cadence with an effectiveness report; run one or the other for
-an organization, not both. =billing dunning= is subscription past-due
-recovery and unrelated to invoices.
+an organization, not both. Where both are on, a held, disputed or promised
+=collection_case= holds dunning for that invoice. =billing dunning= is
+subscription past-due recovery and unrelated to invoices.
 
 The sequences engine was considered and not reused: a sequence is enrolled
 per contact and paced from enrollment with its own delivery rows, while a
@@ -162,18 +399,34 @@ the settlement service's balance and the activities record.
 venturectl create mail_template name=Reminder subject='Invoice {number}' \
   text_body='Hello {customer_name}, {number} for {open_balance} was due {due_at}. {pay_link}'
 venturectl create dunning_policy name=Standard is_default=true final_escalation=true \
-  adopted_at=2026-01-01 'steps=[{"offset":-3,"template_id":1},{"offset":7,"template_id":1},{"offset":14,"template_id":1}]'
+  escalation_owner=alice adopted_at=2026-01-01 \
+  'steps=[{"offset":-3,"template_id":1},{"offset":7,"template_id":1},{"offset":14}]'
 venturectl update company 7 dunning_opt_out=true
 venturectl update invoice 42 dunning_policy_id=2 owner=alice
+venturectl update invoice 43 dunning_paused_until=2026-02-01 dunning_pause_reason='promised by phone'
+venturectl dunning sweep as_of=2026-01-17 organization_id=1 limit=100 dry_run=true
 venturectl dunning sweep as_of=2026-01-17 organization_id=1 limit=100
 venturectl mail deliver --limit 100
 venturectl list dunning_event invoice_id=42
+venturectl act dunning_event 57 retry
+venturectl act dunning_policy 2 test_send invoice_id=42
+venturectl report dunning_worklist
 #+end_src
 
-=as_of= defaults to now; =limit= is invoices acted on per call, 1–1000,
-default 100, including invoices whose due steps were only recorded as
-suppressed. The sweep action is stageable: =venturectl --stage dunning sweep=
-proposes it for approval like any other action.
+=organization_id=, =limit= and =dry_run= are sent as JSON numbers and a
+boolean; as text the action refused them. The sweep and retry actions are
+stageable: =venturectl --stage dunning sweep= proposes the sweep for approval
+like any other action.
+
+* Migrations
+
+=000320_dunning= verifies the two tables are present together or absent.
+=000330_dunning_hardening= verifies =escalation_owner= and =last_sweep= on
+policies, the three =rendered_balance= money columns on events and the pause
+columns on invoices and companies, each group wholly present or wholly absent;
+it invents nothing and does not rewrite legacy position keys.
+=000331_private_mail_html= verifies =private_html_body= on =mail_messages=.
+All three succeed with the module disabled (=/dunning/migrate-disabled=).
 
 * Verification
 
@@ -182,7 +435,20 @@ cadence and idempotent resweep, settlement, void and dispute stops including
 a dispute after queueing, customer opt-out with the recorded reason and a
 cancelled outbox row that spent no attempt, override resolution, superseded
 bursts, the sweep limit on suppressed writes, render failure, transaction
-rollback with the recorded attempt, the pay link staying out of public
-bodies, escalation to the owner, the timelines and portal text, module
-switch-off, migration with the module disabled, the REST action and the CLI
-verb against a private server with a logging mailer. No test sends mail.
+rollback with the recorded attempt and the sweep continuing past it, the pay
+link staying out of public bodies, escalation to the owner, the timelines and
+portal text, module switch-off, migration with the module disabled, the REST
+action's answer and the CLI verb with typed and dry-run arguments against a
+private server with a logging mailer. The hardening adds: a deleted contact
+(=/dunning/deleted-contact=), the pay link's recipient and HTTPS rules with a
+live base URL (=/dunning/pay-link-guard=), the private HTML body
+(=/dunning/private-html=, and =/mail/smtp-private-html-wire= on the wire),
+policy edits and legacy position keys (=/dunning/policy-edit=), each delivery
+cancellation (=/dunning/queue-superseded=, =/dunning/queue-balance=,
+=/dunning/queue-due-moved=, =/dunning/queue-stale=, =/dunning/pause=,
+=/dunning/module-off-queued=), retry, adoption catch-up, escalation owners
+and opt-out escalation, a failed latest step, collection cases, dry runs and
+the future =as_of= refusal, the worklist, the next-reminder timeline entry,
+test sends, deleted-policy fallback, step validation, the report's period and
+attribution, and history that cannot be deleted. =test-automation= covers
+=venture->dunning_sweep=. No test sends mail.

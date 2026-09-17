@@ -667,7 +667,11 @@ static const VentureFieldDecl venture_company_fields[] = {
 	VENTURE_FIELD_REF("dunning-policy-id", "Reminder policy", "Overrides the organization default for this customer's invoices",
 		"dunning_policy", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("dunning-opt-out", "No reminders", "Suppresses overdue reminders for every invoice, with the reason recorded",
-		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("dunning-paused-until", "Reminders paused until", "Promise to pay: no reminder for any of their invoices before this date",
+		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("dunning-pause-reason", "Pause reason", "Why reminders are paused",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCompany, venture_company, venture_company_fields,
@@ -2788,7 +2792,11 @@ static const VentureFieldDecl venture_invoice_fields[] = {
 	VENTURE_FIELD_REF("dunning-policy-id", "Reminder policy", "Overrides the customer's and the organization default",
 		"dunning_policy", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("dunning-disabled", "No reminders", "Never send overdue reminders for this invoice",
-		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("dunning-paused-until", "Reminders paused until", "Promise to pay: no reminder for this invoice before this date",
+		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("dunning-pause-reason", "Pause reason", "Why reminders are paused",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY(VentureInvoice, venture_invoice, venture_invoice_fields)

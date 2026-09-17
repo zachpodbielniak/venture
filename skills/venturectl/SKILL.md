@@ -626,13 +626,56 @@ create many documents in one transaction. See `docs/recurring.org`.
 ## Overdue reminders (dunning)
 
 `dunning sweep as_of=DATE` enqueues the due step of each issued, unpaid,
-undisputed invoice's `dunning_policy` (invoice's, else its company's, else the
-organization default) and records a `dunning_event`; rerunning it sends
-nothing twice. Arguments are `key=value`, not flags. `--stage dunning sweep`
-proposes the sweep for approval. The flagged final step creates a
-`collect: <invoice>` activity for `invoice.owner`. Follow with `mail deliver`.
-`report collections` measures effectiveness per step. `dunning_event` cannot
-be created or edited directly (exit 8). See `docs/dunning.org`.
+undisputed, unpaused invoice's `dunning_policy` (invoice's, else its
+company's, else the organization default; a deleted one falls through to the
+next) and records a `dunning_event`; rerunning it sends nothing twice.
+Arguments are `key=value`, not flags; `organization_id`, `limit` and
+`dry_run` are sent typed. The answer is an unsaved policy whose `last_sweep`
+is a JSON string: `queued`, `escalated`, `suppressed`, `failed`,
+`failed_invoice_ids`, `warnings`, and with `dry_run=true` a `plan` (invoice,
+step, offset, outcome, reason, recipient, subject) with nothing written. A
+failing invoice is recorded and skipped, not fatal: read `failed_invoice_ids`.
+`as_of` more than a day ahead is refused except for a dry run.
+`--stage dunning sweep` proposes the sweep for approval. The escalating final
+step creates a `collect: <invoice>` activity owned by `invoice.owner`, else the
+customer's owner, else the policy's `escalation_owner`; an opted-out customer
+still escalates. Follow with `mail deliver`.
+
+`act dunning_event ID retry` re-runs a `failed`, `dead` or `uncertain` step
+under a new key (stageable; refused once a later step or attempt exists).
+`act dunning_policy ID test_send invoice_id=N [offset=N]` mails the rendered
+step to your own user email only, `[TEST]` subject, pay link withheld, no
+event recorded; not stageable, and refused for a token or a user without an
+email. Pause with `update invoice|company ID dunning_paused_until=DATE
+dunning_pause_reason=...`. `report collections [PERIOD]` measures effectiveness per
+step over events queued in the period (default this month; `report
+collections all` for everything); `report dunning_worklist` lists open overdue invoices with aging, last
+step and next step. `dunning_event` cannot be created, edited or deleted
+directly (exit 8). See `docs/dunning.org`.
+
+## Accounting cutover
+
+Opening balances from another ledger go in as a batch: preview, import,
+reconcile, activate. Always preview first and read the batch's
+`reconciliation_report` and its `accounting_cutover_row` exceptions: every
+bad row is listed, located as `open_ap[12] bill-9: ...`, and import refuses
+until the errors are gone. `venturectl cutover template SECTION` prints a CSV
+header; `venturectl cutover csv source=quickbooks cutoff=2026-01-01
+currency=USD open_ar=@ar.csv open_ap=@ap.csv trial_balance=@tb.csv`
+previews a batch from CSVs (`build_only=true` prints the payload JSON
+instead). Then `act accounting_cutover ID import`, `reconcile`, `activate`.
+These actions cannot be staged.
+
+Traps: amounts are strict `[-]1234.56 CUR` strings (no symbols, no `CR`, no
+locale formats unless the payload sets `decimal_separator` and
+`thousands_separator`); every document date must be before the cutoff; open
+AR needs `date`; migrated invoices and bills post to opening clearing (3900),
+never income, expense or tax, and cannot be voided normally afterwards.
+Reconcile ignores activity dated at or after the cutoff, appends to the
+report and names failing checks with expected, ledger and difference.
+Before `rollback`, run `act accounting_cutover ID rollback_preflight` and
+read the `BLOCKER` lines; an active batch cannot be rolled back. See
+`docs/cutover.org`.
 
 ## Ledger statements
 

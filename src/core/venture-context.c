@@ -161,11 +161,10 @@ venture_context_new(
 	venture_report_registry_register_builtins(self->reports);
 	/* Registered collection actions need the same reports as explicit callers. */
 	venture_collection_service_set_context(venture_collection_service_get(self->database), self);
-	{
-		g_autofree gchar *base_url = NULL;
-		g_object_get(config, "server-base-url", &base_url, NULL);
-		g_object_set(venture_dunning_service_get(self->database), "base-url", base_url, NULL);
-	}
+	/* Bound rather than copied: a base URL corrected on a running install
+	 * must change the next reminder's pay link, not the one after a restart. */
+	g_object_bind_property(config, "server-base-url", venture_dunning_service_get(self->database), "base-url",
+		G_BINDING_SYNC_CREATE);
 
 	/*
 	 * Modules, resolved against this configuration and applied to the

@@ -5,6 +5,14 @@
 #include "db/venture-database.h"
 G_BEGIN_DECLS
 #define VENTURE_TYPE_MAIL_OUTBOX (venture_mail_outbox_get_type())
+/**
+ * VENTURE_MAIL_LEASE_SECONDS:
+ *
+ * How long a claimed message's sending lease lasts. A #VentureMailOutbox::before-send
+ * handler recovers the delivery clock as the claimed row's lease-until minus
+ * this, so a sweep run with an explicit clock is judged by that clock.
+ */
+#define VENTURE_MAIL_LEASE_SECONDS (600)
 G_DECLARE_FINAL_TYPE(VentureMailOutbox, venture_mail_outbox, VENTURE, MAIL_OUTBOX, GObject)
 /**
  * venture_mail_outbox_new:

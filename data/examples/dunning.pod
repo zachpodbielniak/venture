@@ -1,0 +1,4 @@
+# Overdue-invoice reminders every morning at 08:00: as of now, organization 1,
+# at most 100 invoices. Deliver them with the mail sweep (see mail.pod).
+pod dunning_daily = cron->new("0 8 * * *");
+dunning_daily->on_schedule => venture->dunning_sweep("", "1", "100");

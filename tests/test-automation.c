@@ -217,6 +217,147 @@ test_automation_does_not_cascade(
 	venture_automation_stop(automation);
 }
 
+/* Sets one field from its text form, the way a form or the CLI would. */
+static void
+dunning_field(
+	VentureEntity	*row,
+	const gchar	*name,
+	const gchar	*value
+){
+	g_autoptr(GError) error = NULL;
+
+	g_assert_true(venture_entity_set_field_from_string(row, name, value, &error));
+	g_assert_no_error(error);
+}
+
+static gint64
+dunning_save(
+	Fixture		*fixture,
+	VentureEntity	*row
+){
+	g_autoptr(GError) error = NULL;
+
+	g_assert_true(venture_database_save(fixture->database, row, NULL, &error));
+	g_assert_no_error(error);
+
+	return venture_entity_get_id(row);
+}
+
+/*
+ * venture->dunning_sweep() runs the overdue-reminder sweep on a schedule.
+ *
+ * What breaks if this regresses: docs/dunning.org told operators to schedule
+ * venture->act("dunning_policy", "0", "sweep"), and the venture module has
+ * no act handler, so that rule failed on every tick and automation never
+ * sent a reminder. The handler takes as_of, organization and limit, like
+ * the recurring sweeps, and a second tick on the same day sends nothing.
+ */
+static void
+test_automation_dunning_sweep(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureAutomation) automation = NULL;
+	g_autoptr(VentureLogMailer) mailer = NULL;
+	g_autoptr(VentureEntity) company = NULL;
+	g_autoptr(VentureEntity) template = NULL;
+	g_autoptr(VentureEntity) policy = NULL;
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) line = NULL;
+	g_autoptr(VentureQuery) events = NULL;
+	g_autoptr(GVariant) result = NULL;
+	g_autoptr(GDateTime) issued = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *org_text = NULL;
+	g_autofree gchar *steps = NULL;
+	const gchar *arguments[4];
+	const gchar *malformed[4];
+	gint64 org;
+	gint64 count;
+
+	(void)user_data;
+
+	org = venture_context_get_default_organization_id(fixture->context);
+	org_text = g_strdup_printf("%" G_GINT64_FORMAT, org);
+	mailer = venture_log_mailer_new();
+	g_object_set(venture_database_get_mail_outbox(fixture->database),
+	             "mailer", mailer, NULL);
+
+	company = VENTURE_ENTITY(venture_company_new());
+	g_object_set(company, "organization-id", org, "name", "Overdue Ltd",
+	             "email", "accounts@example.test", NULL);
+	dunning_save(fixture, company);
+
+	template = VENTURE_ENTITY(venture_mail_template_new());
+	g_object_set(template, "organization-id", org, "name", "Reminder",
+	             "subject", "Invoice {number}", "text-body", "{open_balance}",
+	             NULL);
+	dunning_save(fixture, template);
+
+	policy = VENTURE_ENTITY(venture_dunning_policy_new());
+	steps = g_strdup_printf("[{\"offset\":-3,\"template_id\":%" G_GINT64_FORMAT "}]",
+	                        venture_entity_get_id(template));
+	g_object_set(policy, "organization-id", org, "name", "Standard",
+	             "steps", steps, "is-default", TRUE, NULL);
+	dunning_save(fixture, policy);
+
+	invoice = VENTURE_ENTITY(venture_invoice_new());
+	g_object_set(invoice, "organization-id", org, "number", "INV-AUTO",
+	             "company-id", venture_entity_get_id(company), NULL);
+	dunning_field(invoice, "issued-at", "2026-01-01");
+	dunning_field(invoice, "due-at", "2026-01-10");
+	dunning_save(fixture, invoice);
+
+	line = VENTURE_ENTITY(venture_invoice_line_new());
+	g_object_set(line, "organization-id", org,
+	             "invoice-id", venture_entity_get_id(invoice),
+	             "description", "Work", "quantity", 1.0, NULL);
+	dunning_field(line, "unit-price", "40 USD");
+	dunning_save(fixture, line);
+
+	issued = venture_time_from_string("2026-01-01", NULL);
+	g_assert_true(venture_settlement_service_transition(
+		venture_settlement_service_get(fixture->database),
+		VENTURE_INVOICE(invoice), "sent", issued, NULL, &error));
+	g_assert_no_error(error);
+
+	automation = venture_automation_new(fixture->context, &error);
+	g_assert_no_error(error);
+
+	arguments[0] = "2026-01-07";
+	arguments[1] = org_text;
+	arguments[2] = "10";
+	arguments[3] = NULL;
+
+	g_assert_true(venture_automation_invoke(automation, "dunning_sweep",
+	                                        arguments, &result, &error));
+	g_assert_no_error(error);
+	g_assert_true(g_variant_lookup(result, "count", "x", &count));
+	g_assert_cmpint(count, ==, 1);
+
+	events = venture_query_new(VENTURE_TYPE_DUNNING_EVENT);
+	venture_query_set_organization(events, org);
+	g_assert_cmpint(venture_database_count(fixture->database, events, NULL),
+	                ==, 1);
+
+	/* The same day again is idempotent. */
+	g_clear_pointer(&result, g_variant_unref);
+	g_assert_true(venture_automation_invoke(automation, "dunning_sweep",
+	                                        arguments, &result, &error));
+	g_assert_no_error(error);
+	g_assert_true(g_variant_lookup(result, "count", "x", &count));
+	g_assert_cmpint(count, ==, 0);
+
+	/* A limit outside 1..1000 is refused, not clamped into something else. */
+	malformed[0] = "";
+	malformed[1] = org_text;
+	malformed[2] = "0";
+	malformed[3] = NULL;
+	g_assert_false(venture_automation_invoke(automation, "dunning_sweep",
+	                                         malformed, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_AUTOMATION);
+}
+
 /*
  * Every rule file shipped in data/examples/ parses.
  *
@@ -282,6 +423,10 @@ main(
 	           fixture_tear_down);
 	g_test_add("/automation/does-not-cascade", Fixture, NULL,
 	           fixture_set_up, test_automation_does_not_cascade,
+	           fixture_tear_down);
+
+	g_test_add("/automation/dunning-sweep", Fixture, NULL,
+	           fixture_set_up, test_automation_dunning_sweep,
 	           fixture_tear_down);
 
 	g_test_add_func("/automation/shipped-examples-parse",

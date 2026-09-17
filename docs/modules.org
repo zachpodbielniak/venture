@@ -80,7 +80,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =budgets= | statements | budget, budget_line; =budget_vs_actual=, =cash_forecast=; =/budgets= | |
 | =equity= | ledger, setup | equity_transaction; =/equity= | |
 | =group= | statements | intercompany_link, elimination; consolidated trial balance, income and balance sheet; =/group= | =group.enabled= (opt-in) |
-| =dunning= | receivables, mail | dunning_policy, dunning_event; =collections=; =dunning_policy= sweep action | activities, portal |
+| =dunning= | receivables, mail | dunning_policy, dunning_event; =collections=, =dunning_worklist=; =dunning_policy= sweep and test_send actions, =dunning_event= retry; =venture->dunning_sweep= | activities, recurring |
 | =headline= | receivables, leads | headline_setting; =cac=, =customer_churn=, =ltv=, =ltv_cac=; the five cards at =/= and =/api/v1/headline= | outreach, recurring, tickets, banking, payables |
 
 Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.

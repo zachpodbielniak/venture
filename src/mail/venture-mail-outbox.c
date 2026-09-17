@@ -263,7 +263,7 @@ VentureMailMessage *venture_mail_outbox_claim(VentureMailOutbox *self, gint64 or
 	if (!row) goto fail;
 	if (!due(row, now)) { g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "Message is not due or already claimed"); goto fail; }
 	g_object_get(row, "attempts", &attempts, NULL);
-	lease = g_date_time_add_seconds(now, 600);
+	lease = g_date_time_add_seconds(now, VENTURE_MAIL_LEASE_SECONDS);
 	g_object_set(row, "state", "sending", "attempts", attempts + 1, "lease-until", lease, NULL);
 	if (!save(self, row, NULL, error)) goto fail;
 	if (!venture_database_commit(self->database, error)) return NULL;
