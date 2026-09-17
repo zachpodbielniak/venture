@@ -578,6 +578,19 @@ invalid parameters 422, using the ordinary error JSON shape.
 
 =?stage=1= returns 202 with an action confirmation. Approval checks the
 current record, version, approver role and service eligibility again.
+
+A type-level action (ID =0=) that declares no subject record -- a sweep, a
+run, a batch -- is judged as belonging to the organization its
+=organization_id= parameter names (a JSON integer; a string of digits is
+accepted too). The organization access role matrix then applies exactly as
+it does to a record there: a member of another organization is answered
+404, and an organization editor is refused a financial type such as
+=dunning_policy= or =invoice= with 403. A member who is not a global owner
+or admin must name the organization; without =organization_id= the answer
+is 422 =organization_id: ... runs in one organization=. Global owners,
+admins and internal jobs without one keep running in the default
+organization. The action then runs in the organization it was judged in,
+never a different one.
 =GET /api/v1/schema/:type= and the full schema include =actions= with
 labels, descriptions, minimum roles, =stageable=, parameters and input schemas.
 See [[file:actions.org][record actions]] for registration and signals.
@@ -594,10 +607,10 @@ Generated actions on the =recurring= records:
 |---------------+---------|
 | =/api/v1/recurring_schedule/:id/actions/pause= | Pause generation |
 | =/api/v1/recurring_schedule/:id/actions/resume= | Resume generation |
-| =/api/v1/recurring_schedule/0/actions/run= | Sweep due occurrences; =as_of=, =dry_run= |
-| =/api/v1/collection_policy/0/actions/run= | Queue overdue reminders; =as_of= |
-| =/api/v1/invoice/0/actions/batch_create= | All-or-nothing invoice import |
-| =/api/v1/expense/0/actions/batch_create= | All-or-nothing expense import |
+| =/api/v1/recurring_schedule/0/actions/run= | Sweep due occurrences; =as_of=, =organization_id=, =dry_run= |
+| =/api/v1/collection_policy/0/actions/run= | Queue overdue reminders; =as_of=, =organization_id= |
+| =/api/v1/invoice/0/actions/batch_create= | All-or-nothing invoice import; =organization_id= |
+| =/api/v1/expense/0/actions/batch_create= | All-or-nothing expense import; =organization_id= |
 | =/api/v1/financial_batch/:id/actions/apply= | Apply a stored payload |
 
 See [[file:recurring.org][recurring documents]].

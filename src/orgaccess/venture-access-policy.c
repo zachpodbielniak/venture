@@ -143,6 +143,11 @@ administrator(const VentureAuthPrincipal *actor)
 	return NULL != actor && actor->authenticated &&
 		(actor->role == VENTURE_USER_ROLE_OWNER || actor->role == VENTURE_USER_ROLE_ADMIN);
 }
+gboolean
+venture_access_policy_is_administrator(const VentureAuthPrincipal *actor)
+{
+	return administrator(actor);
+}
 static gint
 token_role(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, gint64 org)
 {

@@ -414,7 +414,13 @@ venturectl report dunning_worklist
 #+end_src
 
 =organization_id=, =limit= and =dry_run= are sent as JSON numbers and a
-boolean; as text the action refused them. The sweep and retry actions are
+boolean; as text the action refused them. With organization access on, a
+member who is not a global owner or admin must pass =organization_id=, and
+only an owner, admin or finance member of that organization may sweep it:
+reminder policies are financial records. The sweep runs in exactly the
+organization it was authorised for. Without =organization_id= a member is
+answered =organization_id: Send due reminders runs in one organization=; a
+global owner or admin still sweeps the default organization. The sweep and retry actions are
 stageable: =venturectl --stage dunning sweep= proposes the sweep for approval
 like any other action.
 

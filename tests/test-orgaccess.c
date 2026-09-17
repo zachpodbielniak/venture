@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
+#include <string.h>
 
 /* Access records must participate in the generated model, not a private
  * authorization table that the forms and CLI cannot manage. */
@@ -704,6 +705,162 @@ test_nested_protocol_scope(gconstpointer data)
 	g_assert_cmpint(venture_access_policy_get_actor(policy)->user_id, ==, actor.user_id);
 }
 
+/* A member of @org with @role, returned as the principal a request carries. */
+static void
+type_level_member(VentureDatabase *db, gint64 org, gint role, const gchar *username, VentureAuthPrincipal *principal)
+{
+	g_autoptr(VentureEntity) user = g_object_new(VENTURE_TYPE_USER, "username", username, "active", TRUE,
+		"role", VENTURE_USER_ROLE_EDITOR, NULL);
+	g_autoptr(VentureEntity) member = NULL;
+	g_autoptr(GError) error = NULL;
+	g_assert_true(venture_database_save(db, user, NULL, &error));
+	g_assert_no_error(error);
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", venture_entity_get_id(user),
+		"organization-id", org, "role", role, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(db, member, NULL, &error));
+	g_assert_no_error(error);
+	principal->authenticated = TRUE;
+	principal->user_id = venture_entity_get_id(user);
+	principal->token_id = 0;
+	principal->role = VENTURE_USER_ROLE_EDITOR;
+	principal->name = NULL;
+}
+
+/* Performs @type_name/@name at ID zero as @principal inside its request
+ * scope, the way the REST route, the CLI and the assistant do. */
+static VentureEntity *
+type_level_perform(VentureDatabase *db, VentureAuthPrincipal *principal, const gchar *type_name,
+	const gchar *name, gint64 organization_id, gboolean stage, VentureContext *context, GError **error)
+{
+	g_autoptr(VentureAccessScope) scope = venture_access_policy_enter(venture_database_get_access_policy(db), principal);
+	g_autoptr(GHashTable) params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)json_node_unref);
+	VentureActionRegistry *registry = venture_database_get_action_registry(db);
+	VentureActor actor;
+	venture_auth_to_actor(principal, &actor);
+	if (organization_id != 0)
+	{
+		JsonNode *node = json_node_new(JSON_NODE_VALUE);
+		json_node_set_int(node, organization_id);
+		g_hash_table_insert(params, g_strdup("organization_id"), node);
+	}
+	if (g_strcmp0(name, "batch_create") == 0)
+	{
+		JsonNode *node = json_node_new(JSON_NODE_VALUE);
+		json_node_set_string(node, "[]");
+		g_hash_table_insert(params, g_strdup("payload"), node);
+	}
+	if (g_strcmp0(name, "sweep") == 0 || g_strcmp0(name, "run") == 0 || g_strcmp0(name, "batch_create") == 0)
+	{
+		JsonNode *node = json_node_new(JSON_NODE_VALUE);
+		json_node_set_boolean(node, TRUE);
+		g_hash_table_insert(params, g_strdup("dry_run"), node);
+	}
+	if (stage)
+	{
+		g_autoptr(VentureEntity) placeholder = g_object_new(venture_entity_registry_lookup(venture_entity_registry_get_default(), type_name), NULL);
+		VentureConfirmation *confirmation = venture_confirmation_store_stage_action(venture_context_get_confirmations(context),
+			venture_action_registry_lookup(registry, type_name, name), placeholder, params, &actor, principal->role, "test", error);
+		/* The staged copy is private to the store; success is the answer. */
+		return confirmation != NULL ? g_steal_pointer(&placeholder) : NULL;
+	}
+	return venture_action_registry_perform(registry, type_name, 0, name, params, &actor, principal->role, error);
+}
+
+/*
+ * A type-level action (a sweep, a run) is performed on an unsaved
+ * placeholder, and the placeholder belonged to no organization, so the
+ * policy refused every member who was not a global owner or admin: an
+ * organization's own finance member could not run its reminders through
+ * REST, the CLI or the assistant. The action's organization_id names the
+ * organization it runs in; the ordinary role matrix then decides, so a
+ * member of another organization, and an editor on a financial type, stay
+ * refused, and a member who names no organization is told to name one.
+ */
+static void
+test_type_level_actions(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureEntity) other = NULL;
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureAuthPrincipal finance_a, editor_a, finance_b, owner;
+	gint64 org_a, org_b;
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	context = venture_context_new(config, db);
+	org_a = venture_context_get_default_organization_id(context);
+	other = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Other entity", "slug", "other-entity", NULL);
+	g_assert_true(venture_database_save(db, other, NULL, &error));
+	g_assert_no_error(error);
+	org_b = venture_entity_get_id(other);
+	type_level_member(db, org_a, VENTURE_ORGANIZATION_ROLE_FINANCE, "finance-a", &finance_a);
+	type_level_member(db, org_a, VENTURE_ORGANIZATION_ROLE_EDITOR, "editor-a", &editor_a);
+	type_level_member(db, org_b, VENTURE_ORGANIZATION_ROLE_FINANCE, "finance-b", &finance_b);
+	owner.authenticated = TRUE;
+	owner.user_id = finance_a.user_id;
+	owner.token_id = 0;
+	owner.role = VENTURE_USER_ROLE_OWNER;
+	owner.name = NULL;
+
+	/* The organization's finance member runs its reminders and its schedules,
+	 * directly and staged, and the answer is about that organization. */
+	result = type_level_perform(db, &finance_a, "dunning_policy", "sweep", org_a, FALSE, context, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_assert_cmpint(venture_entity_get_organization_id(result), ==, org_a);
+	g_clear_object(&result);
+	result = type_level_perform(db, &finance_a, "recurring_schedule", "run", org_a, FALSE, context, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_clear_object(&result);
+	/* A type-level batch declared no organization_id at all, so no member
+	 * could ever name one; it now takes the parameter like the others. */
+	result = type_level_perform(db, &finance_a, "invoice", "batch_create", org_a, FALSE, context, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_clear_object(&result);
+	result = type_level_perform(db, &finance_a, "dunning_policy", "sweep", org_a, TRUE, context, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_clear_object(&result);
+
+	/* A member of another organization asking for this one learns nothing,
+	 * directly or staged. */
+	result = type_level_perform(db, &finance_b, "dunning_policy", "sweep", org_a, FALSE, context, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+	g_clear_error(&error);
+	result = type_level_perform(db, &finance_b, "dunning_policy", "sweep", org_a, TRUE, context, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+	g_clear_error(&error);
+
+	/* Reminders are financial: an organization editor may not run them. */
+	result = type_level_perform(db, &editor_a, "dunning_policy", "sweep", org_a, FALSE, context, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+
+	/* A member who names no organization is told to, not told "no such record". */
+	result = type_level_perform(db, &finance_a, "dunning_policy", "sweep", 0, FALSE, context, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "organization_id"));
+	g_clear_error(&error);
+	result = type_level_perform(db, &finance_a, "dunning_policy", "sweep", -3, FALSE, context, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+
+	/* A global owner keeps the default organization, as before. */
+	result = type_level_perform(db, &owner, "dunning_policy", "sweep", 0, FALSE, context, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_assert_cmpint(venture_entity_get_organization_id(result), ==, org_a);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -725,5 +882,6 @@ main(int argc, char **argv)
 	g_test_add_func("/orgaccess/watched-change-scope", test_watched_change_scope);
 	g_test_add_func("/orgaccess/assignment-ownership", test_assignment_ownership);
 	g_test_add_func("/orgaccess/crm-ai-scopes", test_crm_ai_scopes);
+	g_test_add_func("/orgaccess/type-level-actions", test_type_level_actions);
 	return g_test_run();
 }

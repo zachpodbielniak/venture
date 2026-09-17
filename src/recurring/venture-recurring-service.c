@@ -1575,9 +1575,12 @@ schedule_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params
 		return venture_recurring_service_pause(self, entity, actor, error) ? g_object_ref(entity) : NULL;
 	if (g_strcmp0(name, "resume") == 0)
 		return venture_recurring_service_resume(self, entity, actor, error) ? g_object_ref(entity) : NULL;
-	org = param_id(params, "organization_id");
+	/* The organization the access policy judged, which prepare_target set
+	 * from organization_id; the parameter and the default only for callers
+	 * that ran without a prepared subject. */
+	org = venture_entity_get_organization_id(entity);
 	if (org <= 0)
-		org = venture_entity_get_organization_id(entity);
+		org = param_id(params, "organization_id");
 	if (org <= 0)
 		org = default_organization(self);
 	if (venture_recurring_service_run(self, org, as_of, param_bool(params, "dry_run"), actor, error) < 0)
@@ -1601,13 +1604,13 @@ policy_run(VentureAction *action, VentureEntity *entity, GHashTable *params,
 {
 	VentureCollectionService *self = venture_action_get_data(action);
 	g_autoptr(GDateTime) as_of = param_date(params, "as_of", error);
-	gint64 org = param_id(params, "organization_id");
+	gint64 org = entity != NULL ? venture_entity_get_organization_id(entity) : 0;
 	if (as_of == NULL)
 		return NULL;
-	if (org <= 0 && entity != NULL)
-		org = venture_entity_get_organization_id(entity);
 	if (org <= 0)
-		org = 1;
+		org = param_id(params, "organization_id");
+	if (org <= 0)
+		org = default_organization(venture_recurring_service_get(self->database));
 	if (venture_collection_service_run(self, NULL, org, as_of, actor, error) < 0)
 		return NULL;
 	return entity ? g_object_ref(entity) : g_object_new(VENTURE_TYPE_COLLECTION_POLICY, NULL);
@@ -1626,7 +1629,8 @@ batch_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params,
 	g_autofree gchar *stored = NULL;
 	g_autofree gchar *stored_format = NULL;
 	gboolean stored_post = FALSE;
-	gint64 org = param_id(params, "organization_id");
+	/* A type-level batch runs where the access policy placed its subject. */
+	gint64 org = entity != NULL ? venture_entity_get_organization_id(entity) : 0;
 	const gchar *kind = param_string(params, "kind");
 	const gchar *format = param_string(params, "format");
 	const gchar *payload = param_string(params, "payload");
@@ -1650,8 +1654,8 @@ batch_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params,
 			format = stored_format;
 		org = venture_entity_get_organization_id(entity);
 	}
-	if (org <= 0 && entity != NULL)
-		org = venture_entity_get_organization_id(entity);
+	if (org <= 0)
+		org = param_id(params, "organization_id");
 	if (org <= 0)
 		org = default_organization(self);
 	if (format == NULL)
@@ -1733,6 +1737,9 @@ venture_recurring_register_actions(VentureDatabase *database)
 	g_ptr_array_add(parameters, venture_field_spec_new("post", "Post", VENTURE_FIELD_KIND_BOOLEAN));
 	g_ptr_array_add(parameters, venture_field_spec_new("dry_run", "Dry run", VENTURE_FIELD_KIND_BOOLEAN));
 	register_one(registry, "financial_batch", "apply", "Apply", FALSE, parameters, always_allowed, batch_invoke, recurring);
+	/* A saved batch already belongs to an organization; a type-level one
+	 * names it, or an organization member could never create one. */
+	g_ptr_array_add(parameters, venture_field_spec_new("organization_id", "Organization", VENTURE_FIELD_KIND_INTEGER));
 	register_one(registry, "invoice", "batch_create", "Batch create", TRUE, parameters, always_allowed, batch_invoke, recurring);
 	register_one(registry, "expense", "batch_create", "Batch create", TRUE, parameters, always_allowed, batch_invoke, recurring);
 }

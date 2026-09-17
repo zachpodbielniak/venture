@@ -61,6 +61,16 @@ VentureAccessScope *venture_access_policy_enter(VentureAccessPolicy *self, const
  */
 const VentureAuthPrincipal *venture_access_policy_get_actor(VentureAccessPolicy *self);
 /**
+ * venture_access_policy_is_administrator:
+ * @actor: (nullable): the principal
+ *
+ * Whether @actor is an authenticated global owner or administrator, the
+ * principals every organization check lets through.
+ *
+ * Returns: %TRUE for a global owner or administrator
+ */
+gboolean venture_access_policy_is_administrator(const VentureAuthPrincipal *actor);
+/**
  * venture_access_policy_has_membership:
  * @self: the policy
  * @actor: the authenticated user

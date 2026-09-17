@@ -276,6 +276,16 @@ first seven columns were empty.
   (and 1 January in the previous year) for any zone west of UTC, on every
   report. `venture_time_to_date_string()` shows an exact UTC midnight as the
   date it is in any zone. Do not "fix" a boundary back into local time.
+- **A type-level action is judged in the organization it names.** With no
+  `subject-parameter`, the ID-0 placeholder used to belong to organization
+  0, which the access policy refuses for every non-administrator -- so an
+  organization's own finance member could not run its dunning sweep.
+  `venture_action_prepare_target()` now places it from `organization_id`,
+  and `venture_action_require_organization()` refuses a member who names
+  none. A new type-level action must declare an `organization_id`
+  parameter (or a subject parameter), call both on any new checking path,
+  and run in `venture_entity_get_organization_id(entity)`, not a re-read
+  parameter or the default.
 - **`make DEBUG=1 test` does not relink the server binary.** After editing
   `data/static/*` verify `build/debug/venture` is newer than
   `build/debug/venture-assets.h`, or the browser serves last hour's JS

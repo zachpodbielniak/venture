@@ -159,10 +159,33 @@ gboolean venture_confirmation_store_approve_as(VentureConfirmationStore *self,
  * @params: (element-type utf8 JsonNode): invocation values
  * @error: (out) (optional): invalid subject
  *
- * Hydrates a type-level action's declared subject before access checks.
+ * Hydrates a type-level action's declared subject before access checks. A
+ * type-level action that declares no subject parameter is placed in the
+ * organization its organization_id parameter names (a JSON integer, or a
+ * string of digits), so the access policy judges the organization the
+ * action will run in rather than none.
  * Returns: TRUE when the target represents the declared input record
  */
 gboolean venture_action_prepare_target(VentureAction *self, VentureEntity *entity,
 	GHashTable *params, GError **error);
+/**
+ * venture_action_require_organization:
+ * @self: action declaration
+ * @entity: the prepared target
+ * @database: the repository whose access scope is current
+ * @error: (out) (optional): refusal naming organization_id
+ *
+ * Refuses a type-level action with no subject parameter and no named
+ * organization when the current access scope is an authenticated member
+ * who is not a global owner or administrator. Internal work and global
+ * administrators keep running such actions in the default organization.
+ * Call it after venture_action_prepare_target() on every path that checks
+ * an action, so a member is told to name an organization rather than told
+ * there is no such record.
+ *
+ * Returns: TRUE when the action may go on to the access checks
+ */
+gboolean venture_action_require_organization(VentureAction *self, VentureEntity *entity,
+	VentureDatabase *database, GError **error);
 G_END_DECLS
 #endif

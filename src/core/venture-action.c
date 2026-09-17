@@ -376,13 +376,59 @@ venture_action_validate_parameters(VentureAction *self, GHashTable *params, GErr
 	}
 	return TRUE;
 }
+/*
+ * The organization a type-level action with no declared subject was asked
+ * to run in, from its organization_id parameter: a JSON integer, or a
+ * string of digits as a form sends it. Returns 0 when none is named (0 has
+ * always meant "the default" to these actions) and -1 when the value is not
+ * an organization id at all.
+ */
+static gint64
+action_named_organization(GHashTable *params)
+{
+	JsonNode *node = NULL != params ? g_hash_table_lookup(params, "organization_id") : NULL;
+	const gchar *text;
+	gchar *end = NULL;
+	gint64 id;
+	if (NULL == node || JSON_NODE_HOLDS_NULL(node)) return 0;
+	if (!JSON_NODE_HOLDS_VALUE(node)) return -1;
+	if (G_TYPE_INT64 == json_node_get_value_type(node))
+	{
+		id = json_node_get_int(node);
+		return id >= 0 ? id : -1;
+	}
+	if (G_TYPE_STRING != json_node_get_value_type(node)) return -1;
+	text = json_node_get_string(node);
+	if (NULL == text || !g_ascii_isdigit(text[0])) return -1;
+	id = g_ascii_strtoll(text, &end, 10);
+	return (NULL != end && '\0' == *end) ? id : -1;
+}
+
 gboolean
 venture_action_prepare_target(VentureAction *self, VentureEntity *entity,
 	GHashTable *params, GError **error)
 {
 	JsonNode *node;
 	g_autoptr(JsonNode) parsed = NULL;
-	if (!self->subject_parameter) return TRUE;
+	if (!self->subject_parameter)
+	{
+		gint64 organization;
+		/* A type-level action with no declared record still acts inside one
+		 * organization -- a sweep, a run, a batch -- and its placeholder is
+		 * what the access policy judges. Left at organization 0 it refused
+		 * every member who was not a global administrator, so the member
+		 * whose organization it was could not run it at all. */
+		if (!self->type_level || 0 != venture_entity_get_id(entity)) return TRUE;
+		organization = action_named_organization(params);
+		if (organization < 0)
+		{
+			venture_set_error_validation(error, "organization_id", "must be the id of an organization");
+			return FALSE;
+		}
+		if (organization > 0)
+			venture_entity_set_organization_id(entity, organization);
+		return TRUE;
+	}
 	/* A type-level action declares which nested record it will write so
 	 * queue visibility and policy plugins see its real organization. */
 	if (venture_entity_get_id(entity) != 0)
@@ -411,6 +457,29 @@ venture_action_prepare_target(VentureAction *self, VentureEntity *entity,
 	return TRUE;
 }
 
+gboolean
+venture_action_require_organization(VentureAction *self, VentureEntity *entity,
+	VentureDatabase *database, GError **error)
+{
+	const VentureAuthPrincipal *actor;
+	g_return_val_if_fail(VENTURE_IS_ACTION(self), FALSE);
+	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), FALSE);
+	if (!self->type_level || NULL != self->subject_parameter || 0 != venture_entity_get_id(entity) ||
+		venture_entity_get_organization_id(entity) > 0)
+		return TRUE;
+	/* Internal work and global administrators keep the old default. A
+	 * member without an organization would only be told "No such record"
+	 * by the policy, which reads like a missing sweep rather than a
+	 * missing parameter. Unauthenticated callers get the policy's answer. */
+	actor = venture_access_policy_get_actor(venture_database_get_access_policy(database));
+	if (NULL == actor || !actor->authenticated || venture_access_policy_is_administrator(actor))
+		return TRUE;
+	venture_set_error_validation(error, "organization_id",
+		"%s runs in one organization; name the organization it should run in", self->label);
+	return FALSE;
+}
+
 static VentureEntity *
 action_registry_perform_internal(VentureActionRegistry *self, const gchar *type_name,
 	gint64 id, const gchar *name, GHashTable *params, const VentureActor *actor,
@@ -432,6 +501,7 @@ action_registry_perform_internal(VentureActionRegistry *self, const gchar *type_
 	entity = (0 == id && action->type_level) ? g_object_new(type, NULL) : venture_database_get(db, type, id, error);
 	if (!entity || !venture_action_validate_parameters(action, params, error) ||
 		!venture_action_prepare_target(action, entity, params, error) ||
+		!venture_action_require_organization(action, entity, db, error) ||
 		!venture_action_registry_allowed(self, action, entity, actor, role, error) ||
 		!venture_access_policy_check_write(venture_database_get_access_policy(db), entity, "write", error)) goto fail;
 	venture_accounting_operation_suspend(db);
@@ -446,6 +516,7 @@ action_registry_perform_internal(VentureActionRegistry *self, const gchar *type_
 	g_clear_object(&entity);
 	entity = (0 == id && action->type_level) ? g_object_new(type, NULL) : venture_database_get(db, type, id, error);
 	if (!entity || !venture_action_prepare_target(action, entity, params, error) ||
+		!venture_action_require_organization(action, entity, db, error) ||
 		!venture_action_registry_allowed(self, action, entity, actor, role, error) ||
 		!venture_access_policy_check_write(venture_database_get_access_policy(db), entity, "write", error)) goto fail;
 	result = action->invoke(action, entity, params, actor, error);
@@ -481,6 +552,7 @@ venture_action_registry_perform(VentureActionRegistry *self, const gchar *type_n
 	subject = id == 0 && action->type_level ? g_object_new(type, NULL) : venture_database_get(database, type, id, error);
 	if (subject == NULL || !venture_action_validate_parameters(action, params, error) ||
 		!venture_action_prepare_target(action, subject, params, error) ||
+		!venture_action_require_organization(action, subject, database, error) ||
 		!venture_action_registry_allowed(self, action, subject, actor, role, error) ||
 		!venture_access_policy_check_write(venture_database_get_access_policy(database), subject, "write", error))
 		return NULL;

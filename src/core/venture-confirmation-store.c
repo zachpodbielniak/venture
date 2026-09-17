@@ -958,6 +958,7 @@ venture_confirmation_store_stage_action(VentureConfirmationStore *self, VentureA
 	current = venture_entity_get_id(entity) ? venture_database_get(self->database, G_OBJECT_TYPE(entity), venture_entity_get_id(entity), error) : g_object_new(G_OBJECT_TYPE(entity), NULL);
 	if (!current || !venture_action_validate_parameters(action, params, error) ||
 		!venture_action_prepare_target(action, current, params, error) ||
+		!venture_action_require_organization(action, current, self->database, error) ||
 		!venture_action_registry_allowed(venture_database_get_action_registry(self->database),
 			action, current, origin, role, error) ||
 		!venture_access_policy_check_write(venture_database_get_access_policy(self->database), current, "write", error)) return NULL;

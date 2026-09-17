@@ -1880,7 +1880,10 @@ sweep_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params, c
 	g_autoptr(JsonNode) answer = NULL;
 	g_autofree gchar *serialized = NULL;
 	VentureEntity *result;
-	gint64 org = param_id(params, "organization_id");
+	/* The placeholder carries the organization the access policy judged
+	 * (venture_action_prepare_target() set it from organization_id), so
+	 * that is the one swept; a caller never reaches a different one. */
+	gint64 org = entity != NULL ? venture_entity_get_organization_id(entity) : 0;
 	gint64 limit = param_id(params, "limit");
 	if (!venture_string_is_empty(as_of_text))
 	{
@@ -1888,8 +1891,8 @@ sweep_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params, c
 		if (as_of == NULL)
 			return NULL;
 	}
-	if (org <= 0 && entity != NULL)
-		org = venture_entity_get_organization_id(entity);
+	if (org <= 0)
+		org = param_id(params, "organization_id");
 	if (org <= 0)
 	{
 		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION);

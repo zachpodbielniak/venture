@@ -81,6 +81,19 @@ Organization membership, including organization owner or admin, cannot grant acc
 
 Watch and notification rows also require current read access to their referenced business record, so retained labels and excerpts do not expose revoked access through the inbox.
 
+A type-level action performed at ID 0 with no declared subject record --
+the dunning sweep, a recurring or collections run, a batch create -- is
+checked as a new record of its type in the organization its
+=organization_id= parameter names. =venture_action_prepare_target()= places
+the placeholder there on every path that checks an action (direct, staged,
+approved) and the action runs in that organization. A member who is not a
+global owner or admin and names none is refused with a validation error on
+=organization_id= (=venture_action_require_organization()=) rather than the
+policy's "No such record"; global administrators and internal jobs keep the
+default organization. =/orgaccess/type-level-actions= pins the matrix: the
+organization's finance member may, a member of another organization gets
+404, an organization editor on a financial type gets 403.
+
 Filters supplied by callers only narrow access. The current implementation
 filters candidate records before applying offset and limit; its cost grows
 with the candidate set. Reports and plugins must use the repository's typed

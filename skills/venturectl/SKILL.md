@@ -105,10 +105,10 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `kb crossref TYPE ID` | link the knowledge bearing on one record |
 | `kb article TYPE ID --kb N` | write a KB article from a record |
 | `act TYPE ID ACTION [key=value ...]` | discover and perform a business action; `--stage` proposes it |
-| `recurring run [--as-of DATE] [--dry-run]` | generate due invoices, bills, expenses and journals |
-| `collections run [--as-of DATE]` | queue overdue invoice reminders through the outbox |
-| `dunning sweep [as_of=DATE] [organization_id=N] [limit=N]` | templated reminder policies: one step per invoice per day, escalation to the owner |
-| `batch invoice\|expense format=csv\|json payload=... [post=false] [--dry-run]` | all-or-nothing CSV/JSON document create |
+| `recurring run [--as-of DATE] [--dry-run] [organization_id=N]` | generate due invoices, bills, expenses and journals; a non-admin must name the organization |
+| `collections run [--as-of DATE] [organization_id=N]` | queue overdue invoice reminders through the outbox; a non-admin must name the organization |
+| `dunning sweep [as_of=DATE] [organization_id=N] [limit=N] [dry_run=true]` | templated reminder policies: one step per invoice per day, escalation to the owner; `dry_run=true` returns the plan and writes nothing |
+| `batch invoice\|expense format=csv\|json payload=... [post=false] [organization_id=N] [--dry-run]` | all-or-nothing CSV/JSON document create |
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 
@@ -648,7 +648,13 @@ undisputed, unpaused invoice's `dunning_policy` (invoice's, else its
 company's, else the organization default; a deleted one falls through to the
 next) and records a `dunning_event`; rerunning it sends nothing twice.
 Arguments are `key=value`, not flags; `organization_id`, `limit` and
-`dry_run` are sent typed. The answer is an unsaved policy whose `last_sweep`
+`dry_run` are sent typed. A token or user that is not a global owner/admin
+must pass `organization_id=N` and needs the owner, admin or finance role in
+that organization (reminders are financial); without it the answer is 422
+`organization_id: ... runs in one organization`, from another organization
+404, as an organization editor 403. The same holds for `act` on any
+type-level action (`recurring_schedule 0 run`, `collection_policy 0 run`,
+`invoice 0 batch_create`). The answer is an unsaved policy whose `last_sweep`
 is a JSON string: `queued`, `escalated`, `suppressed`, `failed`,
 `failed_invoice_ids`, `warnings`, and with `dry_run=true` a `plan` (invoice,
 step, offset, outcome, reason, recipient, subject) with nothing written. A

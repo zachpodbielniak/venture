@@ -73,8 +73,8 @@ venturectl factory                       # the software factory at a glance
 venturectl release changelog ID          # draft its changelog; --replace
 venturectl invoice checkout ID           # hosted Stripe payment URL; editor role
 venturectl release publish ID            # cut it on the forge; --prerelease
-venturectl recurring run [--as-of DATE] [--dry-run]
-venturectl collections run [--as-of DATE]
+venturectl recurring run [--as-of DATE] [--dry-run] [organization_id=N]
+venturectl collections run [--as-of DATE] [organization_id=N]
 venturectl dunning sweep [as_of=DATE] [organization_id=N] [limit=N]  # templated overdue reminders, once per step
 venturectl batch invoice|expense [--dry-run]
 venturectl inbox [--all]                 # what you have been told
