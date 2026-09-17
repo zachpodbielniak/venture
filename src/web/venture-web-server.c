@@ -2592,8 +2592,8 @@ venture_web_api_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -5770,8 +5770,8 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{

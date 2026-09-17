@@ -762,6 +762,11 @@ static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };
 static const gchar *const dunning_suggests[] = { "activities", "recurring", NULL };
 static GType (*const dunning_types[]) (void) = { venture_dunning_policy_get_type, venture_dunning_event_get_type, NULL };
 static const gchar *const dunning_reports[] = { "collections", "dunning_worklist", NULL };
+static const gchar *const pnl_cuts_requires[] = { "receivables", "payables", NULL };
+static const gchar *const pnl_cuts_suggests[] = { "leads", "recurring", "banking", "headline", NULL };
+static const gchar *const pnl_cuts_reports[] = {
+	"revenue_by_customer", "spend_by_vendor", "recurring_costs", "cash_outlook", NULL
+};
 
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
@@ -1068,6 +1073,12 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"headline", "Headline metrics",
 		"CAC, churn, LTV, LTV:CAC and cohort reports, and the headline home page.",
 		headline_requires, headline_suggests, headline_types, headline_reports, NULL, FALSE
+	},
+	{
+		"pnl_cuts", "P&L cuts",
+		"Revenue by customer and source, spend by vendor and category, the "
+		"recurring-cost run-rate and the weekly cash outlook.",
+		pnl_cuts_requires, pnl_cuts_suggests, NULL, pnl_cuts_reports, NULL, FALSE
 	}
 };
 

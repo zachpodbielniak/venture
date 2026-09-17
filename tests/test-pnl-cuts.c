@@ -850,9 +850,13 @@ test_pnl_card_links(Fixture *f, gconstpointer unused)
 	JsonObject *card;
 	JsonArray *links;
 	JsonArray *lines;
+	/* Each cut is linked with the card's own period and scope, the way
+	 * the Report button is; a period given as a range is spelled out. */
 	static const gchar *const expected[] = {
-		"/reports/revenue_by_customer", "/reports/spend_by_vendor",
-		"/reports/recurring_costs", "/reports/cash_outlook"
+		"/reports/revenue_by_customer?period=2026-01-01..2026-01-31&organization_id=",
+		"/reports/spend_by_vendor?period=2026-01-01..2026-01-31&organization_id=",
+		"/reports/recurring_costs?period=2026-01-01..2026-01-31&organization_id=",
+		"/reports/cash_outlook?period=2026-01-01..2026-01-31&organization_id="
 	};
 	guint i;
 	(void)unused;
@@ -877,11 +881,36 @@ test_pnl_card_links(Fixture *f, gconstpointer unused)
 	for (i = 0; i < 4; i++)
 	{
 		JsonObject *link = json_array_get_object_element(links, i);
-		g_assert_cmpstr(json_object_get_string_member(link, "href"), ==, expected[i]);
+		g_autofree gchar *href = g_strdup_printf("%s%" G_GINT64_FORMAT,
+		                                         expected[i], f->org);
+		g_assert_cmpstr(json_object_get_string_member(link, "href"), ==, href);
 		g_assert_true(json_object_has_member(link, "label"));
 	}
 	/* The other cards carry no links; the P&L is the one with cuts. */
 	card = json_array_get_object_element(array, 1);
+	g_assert_false(json_object_has_member(card, "links"));
+}
+
+/* With the module off the reports are gone, so the card must not link
+ * to them: a button to a report that answers 404 is worse than none. */
+static void
+test_pnl_card_links_off(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureConfig) off = venture_config_new();
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(JsonNode) cards = NULL;
+	g_autoptr(VentureDateRange) period = NULL;
+	g_autoptr(GError) error = NULL;
+	JsonObject *card;
+	(void)unused;
+	venture_config_set_module_enabled(off, "pnl_cuts", FALSE);
+	context = venture_context_new(off, f->db);
+	period = venture_context_parse_period(context, "2026-01", &error);
+	g_assert_no_error(error);
+	cards = venture_headline_home_cards(context, f->org, period, &error);
+	g_assert_no_error(error);
+	card = json_array_get_object_element(json_node_get_array(cards), 0);
+	g_assert_cmpstr(json_object_get_string_member(card, "key"), ==, "pnl");
 	g_assert_false(json_object_has_member(card, "links"));
 }
 
@@ -926,6 +955,7 @@ main(int argc, char **argv)
 	g_test_add("/pnl_cuts/cash_outlook/without_bank", Fixture, NULL, setup, test_cash_outlook_without_bank, teardown);
 	g_test_add("/pnl_cuts/cash_outlook/refusals", Fixture, NULL, setup, test_cash_outlook_refusals, teardown);
 	g_test_add("/pnl_cuts/pnl_card/links", Fixture, NULL, setup, test_pnl_card_links, teardown);
+	g_test_add("/pnl_cuts/pnl_card/links_off", Fixture, NULL, setup, test_pnl_card_links_off, teardown);
 	g_test_add("/pnl_cuts/module", Fixture, NULL, setup, test_module_switch, teardown);
 	return g_test_run();
 }

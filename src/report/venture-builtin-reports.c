@@ -14,6 +14,7 @@
 #include "billing/venture-billing-reports.h"
 #include "ledger/venture-ledger-private.h"
 #include "report/venture-headline-private.h"
+#include "report/venture-pnl-cuts-private.h"
 
 #include <string.h>
 
@@ -2738,5 +2739,6 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 	venture_payroll_register_reports(self);
 	venture_goods_register_reports(self);
 	venture_headline_register_reports(self);
+	venture_pnl_cuts_register_reports(self);
 
 }
