@@ -127,5 +127,42 @@ VentureEntity *venture_asset_service_create_from_expense(VentureAssetService *se
  * Registers the financial asset register and remaining-deferral report.
  */
 void venture_assets_register_reports(VentureReportRegistry *registry);
+/**
+ * venture_asset_service_import_opening:
+ * @self: service
+ * @asset: saved draft carrying the source register's cost, dates, method and life
+ * @accumulated: depreciation already taken in the source system up to @cutoff
+ * @cutoff: migration cutoff; months up to and including the cutoff month are history
+ * @equity_account_id: opening-balance equity account credited with net book value
+ * @source_type: source record type stamped on the opening journal
+ * @source_id: source record ID stamped on the opening journal
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): failure details
+ *
+ * Places a migrated asset in service without recomputing its history. The
+ * accumulated amount is posted once, at the cutoff, as an opening journal
+ * (asset cost against accumulated depreciation and equity) and recorded as a
+ * posted opening depreciation entry. The remaining depreciable amount is
+ * scheduled over the months left after the cutoff.
+ * Returns: %TRUE if the opening journal, schedule and state committed atomically
+ */
+gboolean venture_asset_service_import_opening(VentureAssetService *self, VentureEntity *asset,
+ const VentureMoney *accumulated, GDateTime *cutoff, gint64 equity_account_id,
+ const gchar *source_type, gint64 source_id, const VentureActor *actor, GError **error);
+/**
+ * venture_asset_service_rollback_opening:
+ * @self: service
+ * @asset_id: an asset placed through venture_asset_service_import_opening()
+ * @date: rollback date
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): failure details
+ *
+ * Retires a migrated asset after its opening journal has been reversed by the
+ * caller: remaining scheduled entries become skipped and the asset is written
+ * off at @date without a second journal. Posted history is retained.
+ * Returns: %TRUE on success
+ */
+gboolean venture_asset_service_rollback_opening(VentureAssetService *self, gint64 asset_id,
+ GDateTime *date, const VentureActor *actor, GError **error);
 G_END_DECLS
 #endif

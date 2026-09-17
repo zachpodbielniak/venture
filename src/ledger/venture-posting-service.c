@@ -835,6 +835,27 @@ venture_posting_service_find_source(VenturePostingService *self, const gchar *so
 	return venture_database_find(db, query, error);
 }
 
+gboolean
+venture_posting_service_source_has_reversal(VenturePostingService *self, const gchar *source_type,
+	gint64 source_id, gint64 organization_id, GError **error)
+{
+	g_autoptr(GPtrArray) journals = NULL;
+	guint i;
+
+	journals = venture_posting_service_find_source(self, source_type, source_id, organization_id, error);
+	if (journals == NULL)
+		return FALSE;
+	for (i = 0; i < journals->len; i++)
+	{
+		gint64 reverses_id = 0;
+
+		g_object_get(g_ptr_array_index(journals, i), "reverses-id", &reverses_id, NULL);
+		if (reverses_id > 0)
+			return TRUE;
+	}
+	return FALSE;
+}
+
 static VentureJournal *
 reverse_impl(VenturePostingService *self, gint64 journal_id,
 	GDateTime *when, const gchar *memo, const VentureActor *actor, GError **error)

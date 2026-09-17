@@ -88,6 +88,19 @@ VentureMoney *venture_payables_service_vendor_balance(VenturePayablesService *se
 	const gchar *currency, GError **error);
 
 /**
+ * venture_payables_service_refresh_credit:
+ * @self: the service
+ * @credit_id: a vendor credit
+ * @actor: (nullable): the audit actor
+ * @error: (out) (optional): the error
+ *
+ * Rewrites remaining from allocations, refunds and reversed postings.
+ * Returns: TRUE on success
+ */
+gboolean venture_payables_service_refresh_credit(VenturePayablesService *self,
+	gint64 credit_id, const VentureActor *actor, GError **error);
+
+/**
  * venture_payables_save_hook: (skip)
  * @database: the database, with its save lock held
  * @record: the proposed record
