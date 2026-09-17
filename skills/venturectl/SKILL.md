@@ -313,7 +313,7 @@ venturectl --stage create expense description="Cover art" amount=250.00
 #   approve: POST /api/v1/confirmations/a3f9c118/approve
 ```
 
-It is refused on any command other than `create`, `update`, `delete`, `act`, `journal post`, `sequence enroll`, `lead convert` and `billing`,
+It is refused on any command other than `create`, `update`, `delete`, `act`, `dunning sweep`, `journal post`, `sequence enroll`, `lead convert` and `billing`,
 because those are the only routes that read it -- and an unknown query
 parameter on a write route is ignored, so a quietly accepted `--stage` would
 apply the change it was asked to hold back.
@@ -579,7 +579,7 @@ with header fields and a `lines` array. Both support `--stage`. Use real
 source and account IDs from the same organization. Invalid lines leave no
 draft behind; closed periods and repeat reversals are refused.
 
-The `--stage` help lists `create/update/delete/act/sequence enroll/lead convert/billing`; the same flag also
+The `--stage` help lists `create/update/delete/act/dunning sweep/sequence enroll/lead convert/billing`; the same flag also
 applies to a type-level journal creation at ID zero.
 
 ### Accounting second-person consent
@@ -617,10 +617,12 @@ create many documents in one transaction. See `docs/recurring.org`.
 `dunning sweep as_of=DATE` enqueues the due step of each issued, unpaid,
 undisputed invoice's `dunning_policy` (invoice's, else its company's, else the
 organization default) and records a `dunning_event`; rerunning it sends
-nothing twice. Arguments are `key=value`, not flags. The flagged final step
-creates a `collect: <invoice>` activity for `invoice.owner`. Follow with
-`mail deliver`. `report collections` measures effectiveness per step.
-`dunning_event` cannot be created or edited directly. See `docs/dunning.org`.
+nothing twice. Arguments are `key=value`, not flags. `--stage dunning sweep`
+proposes the sweep for approval. The flagged final step creates a
+`collect: <invoice>` activity for `invoice.owner`. Follow with `mail deliver`.
+`report collections` measures effectiveness per step. `dunning_event` cannot
+be created or edited directly (exit 8). See `docs/dunning.org`.
+
 ## Ledger statements
 
 `report balance_sheet`, `income_statement`, `cash_flow`, `general_ledger`,

@@ -171,15 +171,18 @@ venturectl list dunning_event invoice_id=42
 #+end_src
 
 =as_of= defaults to now; =limit= is invoices acted on per call, 1–1000,
-default 100. The sweep action is stageable: =--stage= proposes it for
-approval like any other action.
+default 100, including invoices whose due steps were only recorded as
+suppressed. The sweep action is stageable: =venturectl --stage dunning sweep=
+proposes it for approval like any other action.
 
 * Verification
 
 =test-dunning= covers the default-policy uniqueness and invoice opt-out,
-cadence and idempotent resweep, settlement and dispute stops including a
-dispute after queueing, customer opt-out with the recorded reason, override
-resolution, superseded bursts, render failure, transaction rollback with
-the recorded attempt, escalation to the owner, the timelines and portal
-text, module switch-off, the REST action and the CLI verb against a private
-server with a logging mailer. No test sends mail.
+cadence and idempotent resweep, settlement, void and dispute stops including
+a dispute after queueing, customer opt-out with the recorded reason and a
+cancelled outbox row that spent no attempt, override resolution, superseded
+bursts, the sweep limit on suppressed writes, render failure, transaction
+rollback with the recorded attempt, the pay link staying out of public
+bodies, escalation to the owner, the timelines and portal text, module
+switch-off, migration with the module disabled, the REST action and the CLI
+verb against a private server with a logging mailer. No test sends mail.

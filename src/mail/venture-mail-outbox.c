@@ -317,8 +317,11 @@ gint venture_mail_outbox_deliver_due(VentureMailOutbox *self, gint64 org, guint 
 			gboolean vetoed = FALSE;
 			g_signal_emit(self, signals[SIGNAL_BEFORE_SEND], 0, claimed, &send_error, &vetoed);
 			if (vetoed) {
-				/* A veto is a decision, not a transport outcome: no retry budget is spent. */
+				/* A veto is a decision, not a transport outcome: undo the claim's
+				 * attempt increment so cancelled rows spend no retry budget. */
+				g_object_get(claimed, "attempts", &attempts, NULL);
 				g_object_set(claimed, "state", "cancelled", "lease-until", NULL, "next-attempt-at", NULL,
+					"attempts", attempts > 0 ? attempts - 1 : (gint64)0,
 					"last-error", send_error ? send_error->message : "Cancelled before submission", NULL);
 				if (!save(self, VENTURE_ENTITY(claimed), NULL, error)) return -1;
 				continue;

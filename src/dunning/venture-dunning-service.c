@@ -547,9 +547,12 @@ recorded_steps(VentureDunningService *self, VentureEntity *invoice, VentureEntit
 	return steps;
 }
 
-/* One invoice, one transaction. Returns sends plus escalations, or -1. */
+/* One invoice, one transaction. Returns sends plus escalations, or -1.
+ * @touched is set when this invoice had a due step, including suppressed ones,
+ * so a book of opted-out invoices cannot write unbounded events. */
 static gint
-sweep_invoice(VentureDunningService *self, VentureEntity *invoice, GDateTime *as_of, const VentureActor *actor, GError **error)
+sweep_invoice(VentureDunningService *self, VentureEntity *invoice, GDateTime *as_of,
+	const VentureActor *actor, gboolean *touched, GError **error)
 {
 	gint64 org = venture_entity_get_organization_id(invoice);
 	g_autoptr(VentureEntity) company = load(self, VENTURE_TYPE_COMPANY, number(invoice, "company-id"), org);
@@ -591,6 +594,8 @@ sweep_invoice(VentureDunningService *self, VentureEntity *invoice, GDateTime *as
 	}
 	if (pending->len == 0)
 		return 0;
+	if (touched != NULL)
+		*touched = TRUE;
 	latest = g_array_index(pending, guint, pending->len - 1);
 	if (!venture_database_begin(self->database, error))
 		return -1;
@@ -673,12 +678,13 @@ venture_dunning_service_sweep(VentureDunningService *self, gint64 organization_i
 		guint j;
 		for (j = 0; j < sets[i]->len && visited < limit; j++)
 		{
-			gint n = sweep_invoice(self, g_ptr_array_index(sets[i], j), clock, actor, error);
+			gboolean touched = FALSE;
+			gint n = sweep_invoice(self, g_ptr_array_index(sets[i], j), clock, actor, &touched, error);
 			if (n < 0)
 				return -1;
-			/* Bounded by invoices that produced something, so a large book of
-			 * quiet invoices does not exhaust the budget before the due ones. */
-			if (n > 0)
+			/* Quiet invoices (no step due) do not exhaust the budget; an
+			 * opted-out or superseded write still counts as acting. */
+			if (touched)
 				visited++;
 			total += n;
 		}
@@ -809,7 +815,19 @@ sweep_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params, c
 	if (org <= 0 && entity != NULL)
 		org = venture_entity_get_organization_id(entity);
 	if (org <= 0)
-		org = 1;
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
+		g_autoptr(VentureEntity) organization = NULL;
+		venture_query_add_filter_string(query, "is-default", VENTURE_FILTER_OP_EQ, "true", NULL);
+		organization = venture_database_find_one(self->database, query, NULL);
+		if (organization == NULL)
+		{
+			g_clear_object(&query);
+			query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
+			organization = venture_database_find_one(self->database, query, NULL);
+		}
+		org = organization != NULL ? venture_entity_get_id(organization) : 1;
+	}
 	if (venture_dunning_service_sweep(self, org, as_of, (guint)CLAMP(limit, 0, 1000), actor, error) < 0)
 		return NULL;
 	return entity ? g_object_ref(entity) : g_object_new(VENTURE_TYPE_DUNNING_POLICY, NULL);

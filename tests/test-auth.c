@@ -1320,6 +1320,9 @@ test_auth_api_refuses_anonymous_requests(
 		"/api/v1/webhook_delivery",
 		"/api/v1/routing_rule",
 		"/api/v1/tickets/1/summary",
+		"/api/v1/dunning_policy",
+		"/api/v1/dunning_event",
+		"/api/v1/reports/collections",
 		NULL
 	};
 	gsize i;
@@ -1634,6 +1637,13 @@ test_auth_api_refuses_anonymous_requests(
 		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/tickets/1/draft", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/dunning_policy"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/reports/collections"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/dunning_policy/0/actions/sweep", NULL, "{}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
 
 	/* The dashboard writes: making, changing and removing pages and

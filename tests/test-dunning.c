@@ -64,6 +64,7 @@ static void setup(Fixture *f, gconstpointer unused)
 	g_autofree gchar *steps = NULL;
 	(void)unused;
 	f->config = venture_config_new();
+	g_object_set(f->config, "server-base-url", "https://books.example.test", NULL);
 	f->db = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
@@ -168,6 +169,15 @@ static void test_optout(Fixture *f, gconstpointer unused)
 	g_assert_cmpuint(events->len, >=, 1);
 	g_object_get(g_ptr_array_index(events, 0), "suppressed-reason", &reason, NULL);
 	g_assert_cmpstr(reason, ==, "company_opt_out");
+	{
+		g_autoptr(GPtrArray) mail = rows(f, "mail_message");
+		gint64 attempts = -1;
+		g_autofree gchar *state = NULL;
+		g_assert_cmpuint(mail->len, ==, 1);
+		g_object_get(g_ptr_array_index(mail, 0), "state", &state, "attempts", &attempts, NULL);
+		g_assert_cmpstr(state, ==, "cancelled");
+		g_assert_cmpint(attempts, ==, 0);
+	}
 }
 /* Escalation is an owned next action, never a third customer email. */
 static void test_escalation(Fixture *f, gconstpointer unused)
@@ -240,6 +250,25 @@ static gint64 make_policy(Fixture *f, const gchar *name, gint offset)
 	g_object_set(policy, "name", name, "steps", steps, NULL);
 	save(f, policy);
 	return venture_entity_get_id(policy);
+}
+static gint64
+issued_invoice(Fixture *f, const gchar *number)
+{
+	g_autoptr(VentureEntity) invoice = record(f, "invoice");
+	g_autoptr(VentureEntity) line = record(f, "invoice_line");
+	g_autoptr(GDateTime) issued = venture_time_from_string("2026-01-01", NULL);
+	g_autoptr(GError) error = NULL;
+	g_object_set(invoice, "number", number, "company-id", f->company, "contact-id", f->contact, "owner", "alice", NULL);
+	field(invoice, "issued-at", "2026-01-01");
+	field(invoice, "due-at", "2026-01-10");
+	save(f, invoice);
+	g_object_set(line, "invoice-id", venture_entity_get_id(invoice), "description", "Work", "quantity", 1.0, NULL);
+	field(line, "unit-price", "40 USD");
+	save(f, line);
+	g_assert_true(venture_settlement_service_transition(venture_settlement_service_get(f->db),
+		VENTURE_INVOICE(invoice), "sent", issued, NULL, &error));
+	g_assert_no_error(error);
+	return venture_entity_get_id(invoice);
 }
 /* The invoice's policy beats the customer's, which beats the default. */
 static void test_overrides(Fixture *f, gconstpointer unused)
@@ -518,6 +547,119 @@ static void test_surfaces(ServerFixture *s, gconstpointer unused)
 		g_assert_nonnull(strstr(timeline, "reminder sent 2026-01-17"));
 	}
 }
+/* A voided invoice leaves dunning, including a reminder already queued. */
+static void test_void(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) invoice = venture_database_get(f->db, VENTURE_TYPE_INVOICE, f->invoice, NULL);
+	g_autoptr(GDateTime) at = venture_time_from_string("2026-01-07", NULL);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) events = NULL;
+	g_autofree gchar *status = NULL, *reason = NULL;
+	(void)unused;
+	g_assert_cmpint(sweep(f, "2026-01-07"), ==, 1);
+	g_assert_true(venture_settlement_service_transition(venture_settlement_service_get(f->db),
+		VENTURE_INVOICE(invoice), "void", at, NULL, &error));
+	g_assert_no_error(error);
+	deliver(f, "2026-01-07");
+	g_assert_cmpuint(venture_log_mailer_get_messages(f->mailer)->len, ==, 0);
+	events = rows(f, "dunning_event");
+	g_object_get(g_ptr_array_index(events, 0), "delivery-status", &status, "suppressed-reason", &reason, NULL);
+	g_assert_cmpstr(status, ==, "cancelled");
+	g_assert_true(g_strcmp0(reason, "not_issued") == 0 || g_strcmp0(reason, "settled") == 0);
+	g_assert_cmpint(sweep(f, "2026-01-24"), ==, 0);
+}
+/* The portal token is a bearer credential: public bodies stay empty. */
+static void test_pay_link(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) access = NULL;
+	g_autoptr(GPtrArray) mail = NULL;
+	g_autofree gchar *token = NULL, *public_body = NULL, *private_body = NULL;
+	(void)unused;
+	access = venture_portal_service_invite(venture_portal_service_get(f->db), f->org, f->company,
+		"alice@example.test", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(access);
+	g_object_get(access, "token", &token, NULL);
+	g_assert_false(venture_string_is_empty(token));
+	g_assert_cmpint(sweep(f, "2026-01-07"), ==, 1);
+	mail = rows(f, "mail_message");
+	g_assert_cmpuint(mail->len, ==, 1);
+	g_object_get(g_ptr_array_index(mail, 0), "text-body", &public_body, "private-text-body", &private_body, NULL);
+	g_assert_null(strstr(public_body, token));
+	g_assert_nonnull(private_body);
+	g_assert_nonnull(strstr(private_body, token));
+	g_assert_nonnull(strstr(private_body, "https://books.example.test/portal/"));
+}
+/* Opted-out invoices that still write suppressed events count toward the limit. */
+static void test_limit(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) company = venture_database_get(f->db, VENTURE_TYPE_COMPANY, f->company, NULL);
+	g_autoptr(GDateTime) at = venture_time_from_string("2026-01-07", NULL);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) events = NULL;
+	gint64 other;
+	(void)unused;
+	other = issued_invoice(f, "INV-DUN-2");
+	g_object_set(company, "dunning-opt-out", TRUE, NULL);
+	save(f, company);
+	g_assert_cmpint(venture_dunning_service_sweep(venture_dunning_service_get(f->db), f->org, at, 1, NULL, &error), ==, 0);
+	g_assert_no_error(error);
+	events = rows(f, "dunning_event");
+	g_assert_cmpuint(events->len, ==, 1);
+	{
+		gint64 invoice_id = 0;
+		g_object_get(g_ptr_array_index(events, 0), "invoice-id", &invoice_id, NULL);
+		g_assert_cmpint(invoice_id, ==, f->invoice);
+	}
+	g_clear_pointer(&events, g_ptr_array_unref);
+	g_assert_cmpint(venture_dunning_service_sweep(venture_dunning_service_get(f->db), f->org, at, 1, NULL, &error), ==, 0);
+	events = rows(f, "dunning_event");
+	g_assert_cmpuint(events->len, ==, 2);
+	{
+		gint64 invoice_id = 0;
+		g_object_get(g_ptr_array_index(events, 1), "invoice-id", &invoice_id, NULL);
+		g_assert_cmpint(invoice_id, ==, other);
+	}
+}
+/* Migration 000320 must succeed with the module off and must not invent events. */
+static void test_migrate_disabled(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = NULL;
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(OrmResult) result = NULL;
+	g_autoptr(VentureConfig) everything = NULL;
+	g_autoptr(VentureModuleRegistry) registry = NULL;
+
+	venture_config_set_module_enabled(config, "dunning", FALSE);
+	db = venture_database_new("sqlite://:memory:", &error);
+	g_assert_no_error(error);
+	context = venture_context_new(config, db);
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	result = venture_database_query_raw(db,
+		"SELECT CAST(COUNT(*) AS BIGINT) FROM sqlite_master WHERE type = 'table' AND name IN ('dunning_policies', 'dunning_events')",
+		NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_result_next(result));
+	g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 0);
+	g_clear_object(&result);
+	result = venture_database_query_raw(db,
+		"SELECT CAST(COUNT(*) AS BIGINT) FROM sqlite_master WHERE type = 'table' AND name = 'invoices'",
+		NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_result_next(result));
+	g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 1);
+	g_clear_object(&context);
+	g_clear_object(&db);
+	everything = venture_config_new();
+	registry = venture_module_registry_new();
+	venture_module_registry_register_builtins(registry);
+	g_assert_true(venture_module_registry_configure(registry, everything, NULL));
+	venture_module_registry_apply(registry, venture_entity_registry_get_default());
+}
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
@@ -537,6 +679,10 @@ int main(int argc, char **argv)
 	g_test_add("/dunning/superseded", Fixture, NULL, setup, test_superseded, teardown);
 	g_test_add("/dunning/timeline", Fixture, NULL, setup, test_timeline, teardown);
 	g_test_add("/dunning/module-off", Fixture, NULL, setup, test_module_off, teardown);
+	g_test_add("/dunning/void", Fixture, NULL, setup, test_void, teardown);
+	g_test_add("/dunning/pay-link", Fixture, NULL, setup, test_pay_link, teardown);
+	g_test_add("/dunning/limit", Fixture, NULL, setup, test_limit, teardown);
+	g_test_add_func("/dunning/migrate-disabled", test_migrate_disabled);
 	g_test_add("/dunning/surfaces", ServerFixture, NULL, server_setup, test_surfaces, server_teardown);
 	return g_test_run();
 }

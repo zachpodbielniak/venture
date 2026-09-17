@@ -3334,7 +3334,7 @@ main(
 		{ "apply-writes", 0, 0, G_OPTION_ARG_NONE, &apply_writes,
 		  "mcp only: let write tools apply instead of staging", NULL },
 		{ "stage", 0, 0, G_OPTION_ARG_NONE, &stage,
-		  "create/update/delete/act/sequence enroll/lead convert/billing: propose the change for approval "
+		  "create/update/delete/act/dunning sweep/sequence enroll/lead convert/billing: propose the change for approval "
 		  "instead of making it", NULL },
 		{ "version", 'V', 0, G_OPTION_ARG_NONE, &show_version,
 		  "Print the version and exit", NULL },
@@ -3580,10 +3580,11 @@ main(
 	    (0 != g_strcmp0(args[0], "billing")) &&
 	    !(0 == g_strcmp0(args[0], "lead") && 0 == g_strcmp0(args[1], "convert")) &&
 	    (0 != g_strcmp0(args[0], "act")) &&
+	    (0 != g_strcmp0(args[0], "dunning")) &&
 	    !((0 == g_strcmp0(args[0], "sequence")) && (0 == g_strcmp0(args[1], "enroll"))))
 	{
 		g_printerr("venturectl: --stage only means something to create, "
-		           "update, delete, act, journal post, sequence enroll, lead convert and billing. \"%s\" would ignore it.\n", args[0]);
+		           "update, delete, act, dunning sweep, journal post, sequence enroll, lead convert and billing. \"%s\" would ignore it.\n", args[0]);
 		g_free(cli.base_url);
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
