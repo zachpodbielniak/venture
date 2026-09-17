@@ -2641,9 +2641,9 @@ static gchar *
 venture_web_render_headline_home(VentureWebServer *self, HtmxRequest *request);
 
 /*
- * GET / - the home page: the five headline cards unless the organisation
- * opted out, else a dashboard marked as home, if the viewer may see one,
- * otherwise the built-in overview, which is always at /overview.
+ * GET / - the home page: a dashboard marked as home, if the viewer may
+ * see one; else the five headline cards, unless the organisation opted
+ * out; otherwise the built-in overview, which is always at /overview.
  */
 static HtmxResponse *
 venture_web_ui_dashboard(
@@ -2661,12 +2661,12 @@ venture_web_ui_dashboard(
 	if (!principal->authenticated)
 		return venture_web_ui_overview(request, params, user_data);
 
-	home = venture_web_render_headline_home(self, request);
+	home = venture_web_render_home_dashboard(self, request);
 
 	if (NULL != home)
 		return venture_web_html_response(home, 200);
 
-	home = venture_web_render_home_dashboard(self, request);
+	home = venture_web_render_headline_home(self, request);
 
 	if (NULL != home)
 		return venture_web_html_response(home, 200);

@@ -25,7 +25,7 @@ The module requires only =core=. A widget can point at any module's records or r
 | =/dashboards/:slug/widgets/:id/edit= | change one                                                 |
 | =/dashboards/:slug/export=      | the definition, as a JSON download                             |
 | =/overview=                     | the built-in overview, always                                  |
-| =/=                             | the dashboard marked as home, or the built-in overview         |
+| =/=                             | the dashboard marked as home, else the five headline cards, else the built-in overview |
 
 Every dashboard you may see is listed in the sidebar under *Views*, so a page you built is one click from anywhere.
 
@@ -208,8 +208,10 @@ done this week per owner. These sources require the activities module.
 
 * The five cards
 
-With the =headline= module on, =/= is five cards rather than a dashboard:
-one per question in issue #75. Each is a number for the period
+With the =headline= module on, =/= is five cards by default, one per
+question in issue #75. A dashboard you have marked as *home* still wins,
+as the table above says; the cards are what you get when you have not
+chosen one. Each is a number for the period
 (=?period==, =this_month= by default), an arrow against the period before,
 two or three lines of detail, and a link to the report it was read from.
 
@@ -240,7 +242,7 @@ carries =key=, =label=, =value=, =trend= (-1, 0, 1), =higher_is_better=,
 
 *Back to the old dashboard.* Save a =headline_setting= for the
 organisation with =classic_home=true= (=venturectl create headline_setting
-organization_id=1 classic_home=true=) and =/= is the dashboard marked as
-home, or the built-in overview, exactly as before. The cards are still at
+organization_id=1 classic_home=true=) and =/= is the built-in overview,
+exactly as before. The cards are still at
 =/api/v1/headline= and the reports on =/reports=. One settings row per
 organisation; a second is refused.
