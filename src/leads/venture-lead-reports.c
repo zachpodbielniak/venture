@@ -164,6 +164,129 @@ recycled_report(VentureContext *context, VentureDateRange *period, JsonObject *o
 	return g_steal_pointer(&result);
 }
 
+typedef struct { gint64 rule; gchar *rule_name; gchar *owner; gint64 count; } Route;
+
+static void
+route_free(gpointer data)
+{
+	Route *route = data;
+	g_free(route->rule_name);
+	g_free(route->owner);
+	g_free(route);
+}
+
+/* Leads created in the period by the rule and owner that placed them; a
+ * lead with neither a rule nor an owner is unrouted. */
+static VentureReportResult *
+routing_report(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
+{
+	g_autoptr(GPtrArray) found = leads(context, period, options, error);
+	g_autoptr(GPtrArray) groups = g_ptr_array_new_with_free_func(route_free);
+	g_autoptr(VentureReportResult) result = venture_report_result_new("Lead routing", period);
+	gint64 unrouted = 0;
+	guint i;
+	if (found == NULL) return NULL;
+	venture_report_result_add_column(result, "rule_id", "Rule id", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "rule", "Rule", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "owner", "Owner", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "count", "Leads", VENTURE_REPORT_COLUMN_NUMBER);
+	for (i = 0; i < found->len; i++)
+	{
+		VentureEntity *lead = g_ptr_array_index(found, i);
+		g_autofree gchar *owner = NULL;
+		gint64 rule = 0;
+		Route *group = NULL;
+		guint j;
+		g_object_get(lead, "owner", &owner, "routing-rule-id", &rule, NULL);
+		if (rule == 0 && venture_string_is_empty(owner)) { unrouted++; continue; }
+		for (j = 0; j < groups->len; j++)
+		{
+			Route *candidate = g_ptr_array_index(groups, j);
+			if (candidate->rule == rule && g_strcmp0(candidate->owner, owner) == 0) { group = candidate; break; }
+		}
+		if (group == NULL)
+		{
+			g_autoptr(VentureEntity) named = rule != 0 ?
+				venture_database_get(venture_context_get_database(context), VENTURE_TYPE_LEAD_ROUTING_RULE, rule, NULL) : NULL;
+			group = g_new0(Route, 1);
+			group->rule = rule;
+			group->owner = g_strdup(owner != NULL ? owner : "");
+			if (named != NULL) g_object_get(named, "name", &group->rule_name, NULL);
+			if (group->rule_name == NULL) group->rule_name = g_strdup("");
+			g_ptr_array_add(groups, group);
+		}
+		group->count++;
+	}
+	for (i = 0; i < groups->len; i++)
+	{
+		Route *group = g_ptr_array_index(groups, i);
+		venture_report_result_begin_row(result);
+		venture_report_result_set_number(result, "rule_id", group->rule);
+		venture_report_result_set_text(result, "rule", group->rule_name);
+		venture_report_result_set_text(result, "owner", group->owner);
+		venture_report_result_set_number(result, "count", group->count);
+	}
+	venture_report_result_add_metric(result, venture_metric_new_count("routed", "Routed", found->len - unrouted));
+	venture_report_result_add_metric(result, venture_metric_new_count("unrouted", "Unrouted", unrouted));
+	return g_steal_pointer(&result);
+}
+
+typedef struct { gint64 lower; gint64 count; gint64 converted; } Band;
+
+/* Score distribution in bands of band_size (default 25) with the share of
+ * each band that has converted; negative scores share a band below zero. */
+static VentureReportResult *
+scoring_report(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
+{
+	g_autoptr(GPtrArray) found = leads(context, period, options, error);
+	g_autoptr(GArray) bands = g_array_new(FALSE, TRUE, sizeof(Band));
+	g_autoptr(VentureReportResult) result = venture_report_result_new("Lead scoring", period);
+	gint64 size = options != NULL ? venture_json_object_get_int(options, "band_size", 25) : 25;
+	gdouble total = 0;
+	guint i;
+	if (found == NULL) return NULL;
+	if (size <= 0) size = 25;
+	venture_report_result_add_column(result, "band", "Score band", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "count", "Leads", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "converted", "Converted", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "conversion_rate", "Conversion rate", VENTURE_REPORT_COLUMN_PERCENT);
+	for (i = 0; i < found->len; i++)
+	{
+		VentureLeadStatus state;
+		gint64 score = 0, lower;
+		Band *band = NULL;
+		guint j;
+		g_object_get(g_ptr_array_index(found, i), "score", &score, "status", &state, NULL);
+		total += score;
+		lower = score < 0 ? -size : (score / size) * size;
+		for (j = 0; j < bands->len; j++)
+			if (g_array_index(bands, Band, j).lower == lower) { band = &g_array_index(bands, Band, j); break; }
+		if (band == NULL)
+		{
+			Band fresh = { lower, 0, 0 };
+			for (j = 0; j < bands->len && g_array_index(bands, Band, j).lower < lower; j++) { }
+			g_array_insert_val(bands, j, fresh);
+			band = &g_array_index(bands, Band, j);
+		}
+		band->count++;
+		if (state == VENTURE_LEAD_CONVERTED) band->converted++;
+	}
+	for (i = 0; i < bands->len; i++)
+	{
+		Band *band = &g_array_index(bands, Band, i);
+		g_autofree gchar *label = band->lower < 0 ? g_strdup("<0") :
+			g_strdup_printf("%" G_GINT64_FORMAT "-%" G_GINT64_FORMAT, band->lower, band->lower + size - 1);
+		venture_report_result_begin_row(result);
+		venture_report_result_set_text(result, "band", label);
+		venture_report_result_set_number(result, "count", band->count);
+		venture_report_result_set_number(result, "converted", band->converted);
+		venture_report_result_set_number(result, "conversion_rate", 100.0 * band->converted / band->count);
+	}
+	venture_report_result_add_metric(result, venture_metric_new_count("leads", "Leads", found->len));
+	venture_report_result_add_metric(result, venture_metric_new_number("average_score", "Average score", found->len != 0 ? total / found->len : 0));
+	return g_steal_pointer(&result);
+}
+
 void
 venture_leads_register_reports(VentureReportRegistry *registry)
 {
@@ -173,4 +296,8 @@ venture_leads_register_reports(VentureReportRegistry *registry)
 		"Creation to the first outbound interaction; unanswered leads are counted separately", response_report)));
 	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("leads_recycled_due", "Recycled leads due",
 		"Recycled leads whose return date has arrived", recycled_report)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("routing", "Lead routing",
+		"Leads created in the period by routing rule and owner, with the unrouted count", routing_report)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("scoring", "Lead scoring",
+		"Score distribution by band and conversion rate per band for leads created in the period", scoring_report)));
 }

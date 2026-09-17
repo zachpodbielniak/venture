@@ -321,3 +321,21 @@ posting veto after the first documents leaves nothing; the row limit, CSV
 templates and CSV payloads, opening stock and its rollback, the module switch,
 and the page, preview, action,
 template and CSV routes (including the selected legal entity) are covered.
+
+** =test-lead-routing=
+
+Routing rules act in position order and the first match wins, an inactive
+rule never does; with routing configured and nothing matching the lead stays
+unassigned and its timeline says "No rule matched", while an organization
+without routing rules keeps the older assignment rules and stays quiet.
+Conditions read columns, references by name and custom attributes, and a
+rule that does not parse is refused when written. Round-robin rotates fairly
+over three team members with a persisted cursor, skips a member whose team or
+organization membership was deactivated, and refuses an empty rota. The score
+is the sum of matching rules with a history row naming them, an unrelated
+edit writes none, a hand-typed score is marked manual and left alone until
+cleared or rescored, and history rows and the routing reference cannot be
+written generically. Both reports are checked on values, and =venturectl
+leads reroute= / =rescore= run against the real binary over HTTP. The binary
+did not compile against master before the feature (=VENTURE_LEAD_ROUTING_ASSIGN_USER=
+undeclared), which is the red step for a feature made of new types.

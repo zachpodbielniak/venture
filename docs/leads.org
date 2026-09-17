@@ -3,18 +3,21 @@
 
 * An inquiry has its own lifecycle
 
-The =leads= module requires =crm=. It owns =lead=, =lead_form= and
-=lead_assignment_rule=. Their tables, forms, REST resources, CLI commands,
+The =leads= module requires =crm=. It owns =lead=, =lead_form=,
+=lead_assignment_rule=, =lead_routing_rule=, =lead_scoring_rule= and
+=lead_score_history=. Their tables, forms, REST resources, CLI commands,
 CSV import and audit records derive from the field tables. Switching the
 module off hides its records and reports and refuses its actions. A deal's
 existing stage remains the opportunity's stage; leads add no pipeline.
 
 A lead belongs to one organization and may name a venture and a campaign.
 It carries name, company name, email, phone, website, source, integer score,
-owner, qualification state, notes, first-seen and last-activity timestamps.
-The score is entered by the operator or integration; there is no implicit
-scoring formula. Campaign references require outreach to be enabled when
-written, but leads otherwise work without outreach.
+owner, qualification state, notes, first-seen and last-activity timestamps,
+the =score_manual= mark and =routing_rule_id=, the rule that last placed it.
+The score is the sum of the organization's scoring rules unless an operator
+types one; see [[*Scoring formula][Scoring formula]]. Campaign references
+require outreach to be enabled when written, but leads otherwise work
+without outreach.
 
 | State | Meaning |
 |-------+---------|
@@ -95,7 +98,9 @@ rolls back as a whole when an inquiry duplicates existing data. Form capture
 uses the form's selected policy. Two submissions to a merging form create
 one lead and a second-source interaction.
 
-Active assignment rules filter by source and venture within the lead's
+Routing rules run first (see [[*Routing rules][Routing rules]]). When no
+routing rule matches, the older assignment rules still apply: active
+assignment rules filter by source and venture within the lead's
 organization. The rule with more filters wins; equal specificity uses the
 lowest id. =round_robin= advances a persisted cursor in the creation
 transaction; =least_busy= counts new, working and qualified leads; =first=
@@ -103,6 +108,91 @@ uses the first nonempty username. An explicit owner is preserved. No
 matching rule leaves the lead unassigned; a matching empty rota is refused.
 Reassignment uses the same service from REST and CLI; editing Owner in the
 web form also records its history.
+
+* Routing rules
+
+A =lead_routing_rule= belongs to one organization and carries =position=,
+=conditions=, =action=, =assign_to=, =team_id=, =venture_id=, a persisted
+round-robin =cursor= and =active=. Create and edit rules through the
+ordinary record editor, REST or =venturectl create lead_routing_rule=.
+
+=conditions= is text with one condition per line or semicolon. Each is
+=field=value= (case-insensitive equality) or =field~pattern= (case-insensitive
+regular expression). A field is any lead column in its wire spelling
+(=source=, =company_name=, =status=, =campaign_id=), a reference by its
+target's name (=campaign=Spring=, =venture=Rockets=) or a custom field or
+attribute (=country=US=, =company_size~^[0-9]{3,}=). Every condition must
+hold; an empty text matches every lead. A rule whose conditions do not
+parse, whose pattern does not compile, or whose action lacks its target is
+refused when written, not discovered when a lead arrives.
+
+| Action | Effect |
+|--------+--------|
+| =assign_user= | Sets =owner= to =assign_to= |
+| =round_robin= | Rotates =owner= over the active members of =team_id= |
+| =assign_venture= | Sets the lead's venture to =venture_id=; the owner is untouched |
+
+Rules are evaluated in ascending =position= (ties by id) when a lead is
+created without an explicit owner and on an explicit re-route. The first
+active match acts and is recorded on the lead as =routing_rule_id= with a
+"Lead routed" interaction. When the organization has active routing rules
+and none matches, the lead stays unassigned and a "No rule matched"
+interaction is appended; an organization with no routing rules writes no
+routing history. Generic writes cannot set =routing_rule_id=.
+
+Round-robin state is the rule's own =cursor=, advanced in the same
+transaction as the lead. The rota is the team's members, by user id, whose
+team membership, organization membership in the lead's organization and
+account are all active; a member who leaves or is deactivated is skipped and
+the cursor continues fairly over the rest. A rota with nobody left refuses
+the write. Round-robin needs =orgaccess= for teams and memberships; the
+team must belong to the rule's organization.
+
+#+begin_src sh
+venturectl create lead_routing_rule organization_id=1 name='Web to sales rota' \
+  position=10 'conditions=source=web' action=round_robin team_id=3 active=true
+venturectl create lead_routing_rule organization_id=1 name='Enterprise US' \
+  position=20 $'conditions=country=US\ncompany_size~^[0-9]{3,}$' \
+  action=assign_user assign_to=alice active=true
+venturectl leads reroute 42
+#+end_src
+
+=POST /api/v1/leads/:id/reroute= and =venturectl leads reroute ID= (also
+=lead reroute=) clear the owner and run the rules again, recording the
+verdict either way. Converted leads are read-only and cannot be re-routed.
+Staging (=?stage=1=) is not offered for re-routing.
+
+* Scoring formula
+
+A =lead_scoring_rule= carries =conditions= in the same syntax, integer
+=points= (negative allowed) and =active=. A lead's =score= is the sum of the
+points of every active rule in its organization whose conditions hold. The
+lead service recomputes it on every save it handles -- creation, capture,
+qualification, reassignment, routing -- so there is no generic write that
+leaves a stale score. Each change appends a =lead_score_history= row with
+the previous score, the new score, the comma-separated ids of the rules
+that fired, the =manual= mark and =scored_at=. History rows are written only
+by the service; a generic write to =lead_score_history= is refused.
+
+An operator may still type a score. A saved score that differs from the
+stored one without =score_manual= set takes the mark automatically, as does
+a nonzero score on a new lead; a marked lead keeps its score while rules and
+fields change. Clear =score_manual= through the ordinary editor, or run
+=POST /api/v1/leads/:id/rescore= / =venturectl leads rescore ID=, which
+clears the mark and applies the formula. Both write history when the score
+changes. Scoring rules in another organization never count.
+
+#+begin_src sh
+venturectl create lead_scoring_rule organization_id=1 name='Web inquiry' \
+  'conditions=source=web' points=30 active=true
+venturectl create lead_scoring_rule organization_id=1 name='Large company' \
+  'conditions=company_size~^[0-9]{3,}$' points=20 active=true
+venturectl update lead 42 score=80            # marks score_manual
+venturectl leads rescore 42                   # clears it and recomputes
+#+end_src
+
+The formula is rule-based only; there is no model training, behavioural
+tracking or external enrichment.
 
 * Conversion is one transaction
 
@@ -158,7 +248,15 @@ leads whose return date has arrived. It is a live queue, independent of the
 report period. Use the ordinary report metric dashboard widget with report
 =leads_recycled_due= and field =leads_recycled_due=.
 
-All three reports accept =organization_id= and default to the installation's
+=routing= groups leads created in the period by the routing rule and owner
+that placed them, one row per pair with the count, and reports =routed=
+and =unrouted= metrics; a lead with neither a rule nor an owner is unrouted.
+
+=scoring= bands scores in steps of =band_size= (default 25; negative scores
+share a =<0= band) and reports, per band, the count, converted count and
+conversion rate, with =leads= and =average_score= metrics.
+
+All five reports accept =organization_id= and default to the installation's
 default organization. They do not combine organizations. Interaction writers
 should retain =lead_id= for response-time attribution, including after
 conversion. A nurturing lane may consume recycled leads and their dates;
@@ -178,7 +276,18 @@ The PostgreSQL script is shipped but has not been run against a live server.
 capture, rate limiting, assignment, qualification history, recycling,
 conversion and injected rollback, lifecycle signals, REST staging and actual
 CLI execution, report values, module hiding and upgrades. =test-auth= checks
-that lead business actions refuse anonymous callers.
+that lead business actions refuse anonymous callers. =test-lead-routing=
+covers position order and first match, the no-match timeline note, the
+legacy fallback, condition syntax over columns, references and attributes,
+refusal of malformed rules, fair round-robin rotation with persisted cursor
+and skipped members, venture placement, re-route, the scoring sum and its
+history, manual override and rescore, refusal of generic history and
+routing-reference writes, both reports and the real CLI verbs.
+
+Paired migration =000370_lead_routing.sql= verifies that the three routing
+and scoring tables are present together, or all absent when the module is
+disabled; the lead's =score_manual= and =routing_rule_id= columns come from
+additive metadata reconciliation.
 
 Conversion refuses recursive conversion calls from its callbacks, and archived leads cannot be converted. Interaction history may reference a deal alone, including activity completion history.
 
