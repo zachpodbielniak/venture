@@ -54,3 +54,35 @@ VentureMailMessage *venture_mail_template_render(VentureMailTemplate *self, Vent
 	venture_entity_set_organization_id(VENTURE_ENTITY(message), venture_entity_get_organization_id(record));
 	return g_steal_pointer(&message);
 }
+/**
+ * venture_mail_template_render_values:
+ * @self: organization template
+ * @values: placeholder values; a key is matched with hyphens folded to underscores
+ * @error: (out) (optional): missing or malformed placeholder
+ *
+ * Renders from an explicit value set instead of one record, for a message
+ * composed from several records (an invoice, its customer, a payment link).
+ * The caller decides which values are safe to expose; sensitive fields must
+ * never be put in @values. The returned message carries the template's
+ * organization.
+ *
+ * Returns: (transfer full) (nullable): unsaved message with rendered bodies
+ */
+VentureMailMessage *venture_mail_template_render_values(VentureMailTemplate *self, JsonObject *values, GError **error)
+{
+	g_autoptr(VentureMailMessage) message = venture_mail_message_new();
+	const gchar *fields[] = { "subject", "text-body", "html-body" };
+	guint i;
+	g_return_val_if_fail(VENTURE_IS_MAIL_TEMPLATE(self), NULL);
+	g_return_val_if_fail(values != NULL, NULL);
+	for (i = 0; i < G_N_ELEMENTS(fields); i++) {
+		g_autofree gchar *format = NULL;
+		g_autofree gchar *result = NULL;
+		g_object_get(self, fields[i], &format, NULL);
+		result = render(format, values, i == 2, error);
+		if (!result) return NULL;
+		g_object_set(message, fields[i], result, NULL);
+	}
+	venture_entity_set_organization_id(VENTURE_ENTITY(message), venture_entity_get_organization_id(VENTURE_ENTITY(self)));
+	return g_steal_pointer(&message);
+}

@@ -3215,6 +3215,7 @@ venture_cli_command_mcp(
 #include "billing/venture-billing-cli.inc"
 #include "sequences/venture-sequence-cli.inc"
 #include "recurring/venture-recurring-cli.inc"
+#include "dunning/venture-dunning-cli.inc"
 
 /* --- Entry point --------------------------------------------------------- */
 
@@ -3461,6 +3462,7 @@ main(
 		"  recurring run               generate due documents; --as-of DATE, --dry-run\n"
 		"  collections run             queue overdue reminders; --as-of DATE\n"
 		"  batch invoice|expense format=csv|json payload=... [post=false] [--dry-run]\n"
+		"  dunning sweep [as_of=DATE] [organization_id=N] [limit=N]  send due overdue reminders once\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
 		"\n"
@@ -3746,6 +3748,8 @@ main(
 		result = venture_cli_command_recurring(&cli, args, sequence_as_of, dry_run, &error);
 	else if (0 == g_strcmp0(args[0], "act"))
 		result = venture_cli_command_act(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "dunning"))
+		result = venture_cli_command_dunning(&cli, args, &error);
 	else
 	{
 		g_printerr("venturectl: \"%s\" is not a command. Try --help.\n",

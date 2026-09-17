@@ -58,6 +58,11 @@ venture_portal_web(HtmxRequest *request, GHashTable *params, gpointer user_data)
 			g_string_append_printf(html, "<form method=\"post\"><input type=\"hidden\" name=\"invoice_id\" value=\"%" G_GINT64_FORMAT "\">"
 				"<button>Pay with Checkout</button></form>",
 				venture_entity_get_id(invoice));
+		g_string_append(html, "</td><td>");
+		{
+			g_autofree gchar *reminders = venture_dunning_portal_summary(venture_context_get_database(self->context), invoice);
+			venture_html_escape_append(html, reminders);
+		}
 		g_string_append(html, "</td></tr>");
 	}
 	g_string_append(html, "</table></body></html>");

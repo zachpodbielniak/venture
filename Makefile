@@ -145,6 +145,8 @@ CORE_SRCS += src/autojournal/venture-posting-profile.c
 CORE_SRCS += src/recurring/venture-recurring-records.c
 SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wildcard src/autojournal/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/recurring/venture-recurring-records.c,$(wildcard src/recurring/*.c))
+CORE_SRCS += src/dunning/venture-dunning-records.c
+SERVER_ONLY_SRCS += $(filter-out src/dunning/venture-dunning-records.c,$(wildcard src/dunning/*.c))
 
 PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
 SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
@@ -222,6 +224,7 @@ PUBLIC_HDRS += $(wildcard src/recurring/*.h)
 PUBLIC_HDRS += $(wildcard src/progress/*.h)
 PUBLIC_HDRS += $(wildcard src/portal/*.h)
 PUBLIC_HDRS += $(wildcard src/fields/*.h)
+PUBLIC_HDRS += $(wildcard src/dunning/*.h)
 PUBLIC_HDRS += $(wildcard src/backup/*.h)
 PUBLIC_HDRS += $(wildcard src/budgets/*.h)
 PUBLIC_HDRS += $(wildcard src/equity/*.h)

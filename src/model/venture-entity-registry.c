@@ -857,6 +857,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_intercompany_link_get_type,
 		venture_elimination_get_type,
 		venture_tax_depreciation_entry_get_type,
+		venture_dunning_policy_get_type,
+		venture_dunning_event_get_type,
 	};
 	gsize i;
 
