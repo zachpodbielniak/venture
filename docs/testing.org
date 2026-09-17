@@ -223,6 +223,10 @@ That runs are off unless the operator turns them on, that starting one returns w
 
 That pod handlers run on the thread that dispatched them. podomation's default handler timeout selects an async dispatch path that runs a synchronous handler on a worker thread while the caller blocks in a nested main loop — and VENTURE's handler writes to the database and reads a cascade guard that is not atomic.
 
+** =test-pnl-cuts=
+
+The four cuts of the P&L, each written to fail before the report existed (the registry lookup returned nothing) and to pass by arithmetic checkable by hand. Revenue by customer: a receipt counts as paid and a refund comes off it, an issue event counts as issued and a credit note comes off it, a draft counts for nothing, a January customer has no February row, the converted lead's source is on the row and =by=source= folds the same figures by it; an unknown =by= is refused, and a euro customer keeps a euro row that the dollar totals note rather than add. Spend by vendor: approved bill lines and expenses sum per vendor with the acquisition share split out, a draft and a March bill count for nothing, =by=category= regroups the same money, an uncategorised expense lands in its own group and a euro bill is noted. Recurring costs: monthly, weekly, daily and yearly schedules scale to the month exactly, a cancelled, a paused and an ended schedule are excluded and counted, an invoice schedule is not a cost, a template with no amount is listed unpriced, and ending a running schedule takes it out. Cash outlook: eight weekly buckets from the period's start with overdue, later and undated rows, part-paid balances, drafts and paid documents counting for nothing, the running balance from the bank statement, =weeks= narrowing the horizon and refusing 0 or 200, and no statement meaning no balance rather than zero. The P&L card still shows bank cash and now carries the four links; the =pnl_cuts= switch hides the four reports and leaves =budgets='s =cash_forecast= alone.
+
 * Adding tests
 
 The =test-ledger= binary pins the universal posting boundary, including
