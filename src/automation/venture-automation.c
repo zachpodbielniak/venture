@@ -51,7 +51,7 @@ static const gchar *const venture_pod_module_events[] = {
 };
 
 static const gchar *const venture_pod_module_handlers[] = {
-	"query", "count", "report", "create", "low_stock", "assets_run_period", "mail_deliver", "recurring_run", "collections_run", "bankfeed_sync", "commerce_import", "report_packs_run", "dunning_sweep", NULL
+	"query", "count", "report", "create", "low_stock", "assets_run_period", "mail_deliver", "mail_sync", "recurring_run", "collections_run", "bankfeed_sync", "commerce_import", "report_packs_run", "dunning_sweep", NULL
 };
 
 /* --- Event source --------------------------------------------------------- */
@@ -597,6 +597,8 @@ venture_pod_module_handle_event(
 		return venture_pod_module_assets_run(self, params, result);
 	if (0 == g_strcmp0(event_name, "mail_deliver"))
 		return venture_pod_module_handle_mail(self, params, result);
+	if (0 == g_strcmp0(event_name, "mail_sync"))
+		return venture_pod_module_handle_mail_sync(self, params, result);
 	if (0 == g_strcmp0(event_name, "recurring_run"))
 		return venture_pod_module_recurring_run(self, params, result);
 	if (0 == g_strcmp0(event_name, "collections_run"))

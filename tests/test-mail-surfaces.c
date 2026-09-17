@@ -175,6 +175,67 @@ static void test_automation_sweep(Fixture *f, gconstpointer unused)
 	g_assert_cmpuint(venture_log_mailer_get_messages(f->mailer)->len, ==, 1);
 }
 
+/* The inbound actions an operator reaches from a page or the command line:
+ * dismissing and converting an unmatched sender and syncing one account.
+ * If a route loses its handler the buttons post into a 404, and if the CLI
+ * verbs drift from the routes the skill documents commands that fail. */
+static void test_inbound_actions(Fixture *f, gconstpointer unused)
+{
+	gint64 org = venture_context_get_default_organization_id(f->context);
+	g_autoptr(VentureEntity) keep = g_object_new(VENTURE_TYPE_MAIL_UNMATCHED_SENDER, "organization-id", org, "address", "keep@else.test", "name", "Keep", "seen", (gint64)1, NULL);
+	g_autoptr(VentureEntity) quiet = g_object_new(VENTURE_TYPE_MAIL_UNMATCHED_SENDER, "organization-id", org, "address", "quiet@else.test", "seen", (gint64)1, NULL);
+	g_autoptr(VentureEntity) account = g_object_new(VENTURE_TYPE_MAIL_ACCOUNT, "organization-id", org, "address", "ops@example.test",
+		"imap-host", "imap.example.test", "secret-env", "VENTURE_IMAP_SURFACES_MISSING", "active", TRUE, NULL);
+	g_autoptr(VentureEntity) reread = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *keep_id = NULL, *quiet_id = NULL, *account_arg = NULL, *dismissed = NULL, *contact = NULL, *synced = NULL;
+	g_autofree gchar *page = NULL, *sender_page = NULL, *path = NULL;
+	const gchar *dismiss[] = { "mail", "dismiss", NULL, NULL };
+	const gchar *convert[] = { "mail", "contact", NULL, NULL };
+	const gchar *sync_one[] = { "mail", "sync", NULL, NULL };
+	gboolean is_dismissed = FALSE;
+	g_unsetenv("VENTURE_IMAP_SURFACES_MISSING");
+	g_assert_true(venture_database_save(f->db, keep, NULL, &error));
+	g_assert_true(venture_database_save(f->db, quiet, NULL, &error));
+	g_assert_true(venture_database_save(f->db, account, NULL, &error));
+	g_assert_no_error(error);
+	keep_id = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(keep));
+	quiet_id = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(quiet));
+	account_arg = g_strdup_printf("account_id=%" G_GINT64_FORMAT, venture_entity_get_id(account));
+	/* The pages carry the buttons. */
+	path = g_strdup_printf("/e/mail_account/%" G_GINT64_FORMAT, venture_entity_get_id(account));
+	g_assert_cmpuint(request(f, "GET", path, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "/sync\">"));
+	g_assert_nonnull(strstr(page, "Sync now"));
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/e/mail_unmatched_sender/%s", quiet_id);
+	g_assert_cmpuint(request(f, "GET", path, NULL, &sender_page), ==, 200);
+	g_assert_nonnull(strstr(sender_page, "Create contact"));
+	g_assert_nonnull(strstr(sender_page, "Dismiss"));
+	/* A button's form post lands back on a page. */
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/mail_accounts/%" G_GINT64_FORMAT "/sync", venture_entity_get_id(account));
+	g_assert_cmpuint(request(f, "POST", path, NULL, NULL), ==, 302);
+	g_assert_cmpuint(request(f, "POST", "/mail_unmatched_senders/999999/dismiss", NULL, NULL), ==, 404);
+	dismiss[2] = quiet_id;
+	dismissed = cli(f, dismiss);
+	g_assert_nonnull(strstr(dismissed, "\"dismissed\""));
+	reread = venture_database_get(f->db, VENTURE_TYPE_MAIL_UNMATCHED_SENDER, venture_entity_get_id(quiet), &error);
+	g_object_get(reread, "dismissed", &is_dismissed, NULL);
+	g_assert_true(is_dismissed);
+	convert[2] = keep_id;
+	contact = cli(f, convert);
+	g_assert_nonnull(strstr(contact, "keep@else.test"));
+	g_clear_object(&reread);
+	reread = venture_database_get(f->db, VENTURE_TYPE_MAIL_UNMATCHED_SENDER, venture_entity_get_id(keep), &error);
+	g_assert_true(venture_entity_is_deleted(reread));
+	/* One account now: the missing secret is reported, not a failure of the command. */
+	sync_one[2] = account_arg;
+	synced = cli(f, sync_one);
+	g_assert_nonnull(strstr(synced, "VENTURE_IMAP_SURFACES_MISSING"));
+	g_assert_nonnull(strstr(synced, "\"accounts\""));
+}
+
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
@@ -182,5 +243,6 @@ int main(int argc, char **argv)
 	g_test_add("/mail-surfaces/api-guards", Fixture, NULL, setup, test_api_guards, teardown);
 	g_test_add("/mail-surfaces/automation-sweep", Fixture, NULL, setup, test_automation_sweep, teardown);
 	g_test_add("/mail-surfaces/smtp-policy", Fixture, NULL, setup, test_smtp_policy, teardown);
+	g_test_add("/mail-surfaces/inbound-actions", Fixture, NULL, setup, test_inbound_actions, teardown);
 	return g_test_run();
 }

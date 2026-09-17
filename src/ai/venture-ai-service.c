@@ -1219,111 +1219,6 @@ venture_ai_host_is_public(
 	return allowed;
 }
 
-/*
- * Strips tags, scripts and styles out of HTML, leaving the readable text.
- *
- * A parser rather than a regex, because the input is somebody else's markup
- * and the output goes into a model's context: unbalanced tags must degrade
- * to text, not to an infinite loop.
- *
- * Returns: (transfer full): the text
- */
-static gchar *
-venture_ai_html_to_text(
-	const gchar	*html,
-	gsize		 length
-){
-	g_autoptr(GString) text = NULL;
-	gboolean in_tag;
-	gboolean in_space;
-	gsize i;
-
-	text = g_string_new(NULL);
-	in_tag = FALSE;
-	in_space = TRUE;
-
-	for (i = 0; i < length; i++)
-	{
-		if (!in_tag && ('<' == html[i]))
-		{
-			/* Everything inside script and style is code, not
-			 * content; skip to the matching close tag. */
-			if (g_ascii_strncasecmp(html + i, "<script", 7) == 0)
-			{
-				const gchar *end;
-
-				end = g_strstr_len(html + i, (gssize)(length - i),
-				                   "</script");
-				i = (NULL != end) ? (gsize)(end - html) + 8 : length;
-				continue;
-			}
-
-			if (g_ascii_strncasecmp(html + i, "<style", 6) == 0)
-			{
-				const gchar *end;
-
-				end = g_strstr_len(html + i, (gssize)(length - i),
-				                   "</style");
-				i = (NULL != end) ? (gsize)(end - html) + 7 : length;
-				continue;
-			}
-
-			in_tag = TRUE;
-			continue;
-		}
-
-		if (in_tag)
-		{
-			if ('>' == html[i])
-			{
-				in_tag = FALSE;
-
-				/* A tag boundary is a word boundary. */
-				if (!in_space)
-				{
-					g_string_append_c(text, ' ');
-					in_space = TRUE;
-				}
-			}
-
-			continue;
-		}
-
-		if (g_ascii_isspace(html[i]))
-		{
-			if (!in_space)
-			{
-				g_string_append_c(text, ' ');
-				in_space = TRUE;
-			}
-
-			continue;
-		}
-
-		g_string_append_c(text, html[i]);
-		in_space = FALSE;
-	}
-
-	{
-		g_autofree gchar *raw = NULL;
-		g_autoptr(GString) decoded = NULL;
-
-		raw = g_string_free(g_steal_pointer(&text), FALSE);
-		decoded = g_string_new(raw);
-
-		/* The handful of entities that actually appear in prices and
-		 * titles. "&amp;" last, so "&amp;lt;" stays literal. */
-		g_string_replace(decoded, "&nbsp;", " ", 0);
-		g_string_replace(decoded, "&lt;", "<", 0);
-		g_string_replace(decoded, "&gt;", ">", 0);
-		g_string_replace(decoded, "&quot;", "\"", 0);
-		g_string_replace(decoded, "&#39;", "'", 0);
-		g_string_replace(decoded, "&amp;", "&", 0);
-
-		return g_string_free(g_steal_pointer(&decoded), FALSE);
-	}
-}
-
 gboolean
 venture_ai_url_is_fetchable(
 	const gchar	 *url,
@@ -1455,7 +1350,8 @@ venture_ai_tool_fetch_url(
 			"That address serves %s, which is not a web page",
 			content_type);
 
-	text = venture_ai_html_to_text(data, length);
+	/* Shared with inbound mail, which reads HTML-only receipts the same way. */
+	text = venture_document_html_to_text(data, (gssize)length);
 
 	if (strlen(text) > VENTURE_AI_FETCH_MAX_TEXT)
 	{

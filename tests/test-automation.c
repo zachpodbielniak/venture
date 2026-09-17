@@ -359,6 +359,70 @@ test_automation_dunning_sweep(
 }
 
 /*
+ * venture->mail_sync("1", "N") sweeps an organization's inbound accounts.
+ *
+ * What breaks if this regresses: docs/mail.org tells operators to schedule
+ * inbound sync with this rule. Without the handler podomation logs "venture
+ * has no handler" every run and no mailbox is ever read; with a handler that
+ * treats one failing account as a failed rule, a single bad password makes
+ * the whole schedule look broken. A malformed budget must refuse rather than
+ * silently sweep with no bound.
+ */
+static void
+test_automation_mail_sync_handler(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureAutomation) automation = NULL;
+	g_autoptr(VentureEntity) account = NULL;
+	g_autoptr(GVariant) result = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *org = NULL;
+	gint accounts = -1, messages = -1, errors = -1;
+	const gchar *args[] = { NULL, "50", NULL };
+	const gchar *bad[] = { NULL, "0", NULL };
+
+	(void)user_data;
+
+	org = g_strdup_printf("%" G_GINT64_FORMAT,
+		venture_context_get_default_organization_id(fixture->context));
+	args[0] = org;
+	bad[0] = org;
+
+	/* An account whose secret is not in the environment: the sweep
+	 * reaches it, records the failure on it and still succeeds. */
+	g_unsetenv("VENTURE_IMAP_AUTOMATION_MISSING");
+	account = g_object_new(VENTURE_TYPE_MAIL_ACCOUNT,
+	                       "organization-id",
+	                       venture_context_get_default_organization_id(fixture->context),
+	                       "address", "ops@example.test",
+	                       "imap-host", "imap.example.test",
+	                       "secret-env", "VENTURE_IMAP_AUTOMATION_MISSING",
+	                       "active", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, account, NULL,
+	                                    &error));
+	g_assert_no_error(error);
+
+	automation = venture_automation_new(fixture->context, &error);
+	g_assert_no_error(error);
+
+	g_assert_true(venture_automation_invoke(automation, "mail_sync", args,
+	                                        &result, &error));
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_assert_true(g_variant_lookup(result, "accounts", "i", &accounts));
+	g_assert_true(g_variant_lookup(result, "messages", "i", &messages));
+	g_assert_true(g_variant_lookup(result, "errors", "i", &errors));
+	g_assert_cmpint(accounts, ==, 1);
+	g_assert_cmpint(messages, ==, 0);
+	g_assert_cmpint(errors, ==, 1);
+
+	g_clear_pointer(&result, g_variant_unref);
+	g_assert_false(venture_automation_invoke(automation, "mail_sync", bad,
+	                                         &result, NULL));
+}
+
+/*
  * Every rule file shipped in data/examples/ parses.
  *
  * These are documentation people copy into a live rules file, and the
@@ -427,6 +491,9 @@ main(
 
 	g_test_add("/automation/dunning-sweep", Fixture, NULL,
 	           fixture_set_up, test_automation_dunning_sweep,
+	           fixture_tear_down);
+	g_test_add("/automation/mail-sync-handler", Fixture, NULL,
+	           fixture_set_up, test_automation_mail_sync_handler,
 	           fixture_tear_down);
 
 	g_test_add_func("/automation/shipped-examples-parse",

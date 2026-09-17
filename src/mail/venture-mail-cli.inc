@@ -20,10 +20,28 @@ static gint venture_cli_command_mail(VentureCli *cli, gchar **args, const gchar 
 		g_autoptr(JsonNode) values = venture_cli_values_from_args(args, 2);
 		g_autoptr(JsonNode) result = NULL;
 		JsonObject *fields = json_node_get_object(values);
-		g_autofree gchar *sync_path = json_object_has_member(fields, "organization_id")
-			? g_strdup_printf("/api/v1/mail/sync?organization_id=%" G_GINT64_FORMAT, venture_json_object_get_int(fields, "organization_id", 0))
-			: g_strdup("/api/v1/mail/sync");
+		g_autofree gchar *sync_path = NULL;
+		/* One account now, ignoring its backoff; otherwise the organization's sweep. */
+		if (json_object_has_member(fields, "account_id")) {
+			gint64 account = venture_json_object_get_int(fields, "account_id", 0);
+			if (account <= 0) goto usage;
+			sync_path = g_strdup_printf("/api/v1/mail_accounts/%" G_GINT64_FORMAT "/sync", account);
+		} else if (json_object_has_member(fields, "organization_id"))
+			sync_path = g_strdup_printf("/api/v1/mail/sync?organization_id=%" G_GINT64_FORMAT, venture_json_object_get_int(fields, "organization_id", 0));
+		else sync_path = g_strdup("/api/v1/mail/sync");
 		result = venture_cli_request(cli, "POST", sync_path, values, error);
+		if (!result) return -1;
+		venture_cli_output(cli, result);
+		return 0;
+	}
+	if (!g_strcmp0(verb, "contact") || !g_strcmp0(verb, "dismiss")) {
+		g_autoptr(JsonNode) result = NULL;
+		g_autofree gchar *id = NULL, *sender_path = NULL;
+		gchar *end = NULL;
+		if (!args[2] || args[3] || g_ascii_strtoll(args[2], &end, 10) <= 0 || *end) goto usage;
+		id = g_uri_escape_string(args[2], NULL, FALSE);
+		sender_path = g_strdup_printf("/api/v1/mail_unmatched_senders/%s/%s", id, !g_strcmp0(verb, "contact") ? "create_contact" : "dismiss");
+		result = venture_cli_request(cli, "POST", sender_path, NULL, error);
 		if (!result) return -1;
 		venture_cli_output(cli, result);
 		return 0;
@@ -73,6 +91,6 @@ static gint venture_cli_command_mail(VentureCli *cli, gchar **args, const gchar 
 	return 0;
 usage:
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		"usage: mail list [state=uncertain] | mail sync [organization_id=N] [limit=N] | mail deliver [--limit N] | mail send to=... subject=... body=... [--html FILE] | mail test to=... | mail retry ID");
+		"usage: mail list [state=uncertain] | mail sync [organization_id=N] [limit=N] | mail sync account_id=N | mail contact SENDER_ID | mail dismiss SENDER_ID | mail deliver [--limit N] | mail send to=... subject=... body=... [--html FILE] | mail test to=... | mail retry ID");
 	return -1;
 }

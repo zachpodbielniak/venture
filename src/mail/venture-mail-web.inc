@@ -118,16 +118,9 @@ static HtmxResponse *venture_web_mail_invoice_ui(HtmxRequest *request, GHashTabl
 	return response;
 }
 
-/* Inbound sync. A fresh service per request: the sweep is bounded and
- * synchronous, and the socket client holds no state between calls. */
-static VentureMailSyncService *venture_web_mail_sync_service(VentureWebServer *self)
-{
-	g_autoptr(VentureSocketImapClient) client = venture_socket_imap_client_new();
-	g_autofree gchar *root = g_build_filename(venture_config_get_state_dir(venture_context_get_config(self->context)), "attachments", NULL);
-	VentureMailSyncService *service = venture_mail_sync_service_new(venture_context_get_database(self->context), VENTURE_IMAP_CLIENT(client));
-	g_object_set(service, "attachment-root", root, NULL);
-	return service;
-}
+/* Inbound sync. A fresh service per request: the sweep is bounded by its
+ * message and time budgets, and the socket client holds no state between
+ * calls. */
 static gint64 venture_web_mail_sync_organization(VentureWebServer *self, HtmxRequest *request, JsonObject *body)
 {
 	const gchar *value = htmx_request_get_query_param(request, "organization_id");
@@ -159,8 +152,50 @@ static HtmxResponse *venture_web_mail_sync(HtmxRequest *request, GHashTable *par
 	if (body && JSON_NODE_HOLDS_OBJECT(body)) object = json_node_get_object(body);
 	if (object) limit = venture_json_object_get_int(object, "limit", 100);
 	if (limit < 1 || limit > 1000) { venture_set_error_validation(&error, "limit", "Expected 1 through 1000"); return venture_web_error_response(error); }
-	service = venture_web_mail_sync_service(self);
+	service = venture_mail_sync_service_new_for_context(self->context);
 	report = venture_mail_sync_service_sweep(service, venture_web_mail_sync_organization(self, request, object), (guint)limit, &actor, &error);
+	if (!report) return venture_web_error_response(error);
+	return venture_web_json_response(report, 200);
+}
+/* The row a per-record mail action names, refused as not found when it is
+ * gone or deleted so a stale button cannot act on history. */
+static VentureEntity *venture_web_mail_record(VentureWebServer *self, GType type, GHashTable *params, const gchar *what, GError **error)
+{
+	gchar *end = NULL;
+	const gchar *text = g_hash_table_lookup(params, "id");
+	gint64 id = text ? g_ascii_strtoll(text, &end, 10) : 0;
+	VentureEntity *row = id > 0 && end && !*end ? venture_database_get(venture_context_get_database(self->context), type, id, NULL) : NULL;
+	if (!row || venture_entity_is_deleted(row)) {
+		g_clear_object(&row);
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "%s not found", what);
+	}
+	return row;
+}
+/* POST /api/v1/mail_accounts/:id/sync - one account now, ignoring its backoff. */
+static HtmxResponse *venture_web_mail_account_sync(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureMailSyncService) service = NULL;
+	g_autoptr(VentureEntity) account = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) report = NULL;
+	VentureActor actor;
+	HtmxResponse *gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+	if (gate) return gate;
+	gate = venture_web_require_module_api(self, "mail_sync");
+	if (gate) return gate;
+	principal = venture_auth_authenticate(self->auth, request);
+	/* The account row is owner-only, and so is acting on one by id. */
+	if (!venture_web_require_for_type(self, principal, VENTURE_TYPE_MAIL_ACCOUNT, VENTURE_USER_ROLE_EDITOR, &error)) return venture_web_error_response(error);
+	if (htmx_request_get_query_param(request, "stage")) {
+		venture_set_error_validation(&error, "stage", "Mail sync is an immediate action"); return venture_web_error_response(error);
+	}
+	account = venture_web_mail_record(self, VENTURE_TYPE_MAIL_ACCOUNT, params, "Mail account", &error);
+	if (!account) return venture_web_error_response(error);
+	venture_auth_to_actor(principal, &actor);
+	service = venture_mail_sync_service_new_for_context(self->context);
+	report = venture_mail_sync_service_sync_now(service, account, &actor, &error);
 	if (!report) return venture_web_error_response(error);
 	return venture_web_json_response(report, 200);
 }
@@ -179,14 +214,90 @@ static HtmxResponse *venture_web_mail_unmatched_contact(HtmxRequest *request, GH
 	if (gate) return gate;
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
-	sender = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_MAIL_UNMATCHED_SENDER, g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10), &error);
-	if (!sender || venture_entity_is_deleted(sender)) {
-		if (!error) g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Unmatched sender not found");
-		return venture_web_error_response(error);
-	}
-	service = venture_web_mail_sync_service(self);
+	sender = venture_web_mail_record(self, VENTURE_TYPE_MAIL_UNMATCHED_SENDER, params, "Unmatched sender", &error);
+	if (!sender) return venture_web_error_response(error);
+	service = venture_mail_sync_service_new_for_context(self->context);
 	contact = venture_mail_sync_service_create_contact(service, sender, &actor, &error);
 	if (!contact) return venture_web_error_response(error);
 	node = venture_serializable_to_json(VENTURE_SERIALIZABLE(contact), FALSE);
 	return venture_web_json_response(node, 201);
+}
+/* POST /api/v1/mail_unmatched_senders/:id/dismiss */
+static HtmxResponse *venture_web_mail_unmatched_dismiss(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureMailSyncService) service = NULL;
+	g_autoptr(VentureEntity) sender = NULL, dismissed = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	VentureActor actor;
+	HtmxResponse *gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+	if (gate) return gate;
+	gate = venture_web_require_module_api(self, "mail_sync");
+	if (gate) return gate;
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+	sender = venture_web_mail_record(self, VENTURE_TYPE_MAIL_UNMATCHED_SENDER, params, "Unmatched sender", &error);
+	if (!sender) return venture_web_error_response(error);
+	service = venture_mail_sync_service_new_for_context(self->context);
+	dismissed = venture_mail_sync_service_dismiss(service, sender, &actor, &error);
+	if (!dismissed) return venture_web_error_response(error);
+	node = venture_serializable_to_json(VENTURE_SERIALIZABLE(dismissed), FALSE);
+	return venture_web_json_response(node, 200);
+}
+/* The page buttons post here and land back on a page; the API handlers do
+ * the work and the checks. With @append_id the page is the record the
+ * action created, named by the id in the API's reply. */
+static HtmxResponse *venture_web_mail_ui_action(HtmxRequest *request, GHashTable *params, gpointer data,
+	HtmxRouteCallback api, guint expected, const gchar *destination, gboolean append_id)
+{
+	VentureWebServer *self = data;
+	HtmxResponse *gate = venture_web_ui_require_session(self, request);
+	HtmxResponse *response;
+	g_autofree gchar *path = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	gint64 id = 0;
+	if (gate) return gate;
+	response = api(request, params, data);
+	if (htmx_response_get_status(response) != expected) return response;
+	if (append_id) {
+		const gchar *content = htmx_response_get_content(response);
+		body = content ? json_from_string(content, NULL) : NULL;
+		if (body && JSON_NODE_HOLDS_OBJECT(body)) id = venture_json_object_get_int(json_node_get_object(body), "id", 0);
+		path = g_strdup_printf("%s%" G_GINT64_FORMAT, destination, id);
+	} else path = g_strdup(destination);
+	g_object_unref(response);
+	return venture_web_redirect_to(path);
+}
+static HtmxResponse *venture_web_mail_account_sync_ui(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	g_autofree gchar *destination = g_strdup_printf("/e/mail_account/%s", (const gchar *)g_hash_table_lookup(params, "id"));
+	return venture_web_mail_ui_action(request, params, data, venture_web_mail_account_sync, 200, destination, FALSE);
+}
+static HtmxResponse *venture_web_mail_unmatched_contact_ui(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	return venture_web_mail_ui_action(request, params, data, venture_web_mail_unmatched_contact, 201, "/e/contact/", TRUE);
+}
+static HtmxResponse *venture_web_mail_unmatched_dismiss_ui(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	return venture_web_mail_ui_action(request, params, data, venture_web_mail_unmatched_dismiss, 200, "/e/mail_unmatched_sender?dismissed=false", FALSE);
+}
+/* The buttons a mail_account and an unmatched sender page carry. */
+static void venture_web_mail_append_actions(VentureWebServer *self, GString *html, VentureEntity *record)
+{
+	gint64 id = venture_entity_get_id(record);
+	if (!venture_context_module_enabled(self->context, "mail_sync") || venture_entity_is_deleted(record)) return;
+	if (VENTURE_IS_MAIL_ACCOUNT(record))
+		g_string_append_printf(html, "<form method=\"post\" action=\"/mail_accounts/%" G_GINT64_FORMAT "/sync\">"
+			"<button class=\"btn\" type=\"submit\">Sync now</button></form>", id);
+	if (VENTURE_IS_MAIL_UNMATCHED_SENDER(record)) {
+		gboolean dismissed = FALSE;
+		g_object_get(record, "dismissed", &dismissed, NULL);
+		g_string_append_printf(html, "<form method=\"post\" action=\"/mail_unmatched_senders/%" G_GINT64_FORMAT "/create_contact\">"
+			"<button class=\"btn btn-primary\" type=\"submit\">Create contact</button></form>", id);
+		if (!dismissed)
+			g_string_append_printf(html, "<form method=\"post\" action=\"/mail_unmatched_senders/%" G_GINT64_FORMAT "/dismiss\">"
+				"<button class=\"btn\" type=\"submit\">Dismiss</button></form>", id);
+	}
 }

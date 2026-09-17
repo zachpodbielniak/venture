@@ -3415,6 +3415,7 @@ main(
 		"  assets run-period YYYY-MM      post due schedules; --dry-run previews\n"
 		"  journal post ID              post a draft, or propose for approval\n"
 		"  mail list|send|test|deliver|retry  transactional mail\n"
+		"  mail sync|contact|dismiss          inbound mail sync and unmatched senders\n"
 		"  quote send|accept|decline|revise ID [by=NAME] [reason=TEXT]\n"
 		"  compose invoice|quote JSON   lines, tax and optional send\n"
 		"  bank ACTION ID [JSON|@FILE] banking action; import map inbox bulk transfer\n"

@@ -485,16 +485,28 @@ HTML. `mail test to=...` immediately tests real SMTP. `mail deliver --limit N`
 submits due rows. `mail list state=uncertain` lists uncertain acceptance;
 `mail retry ID` is a deliberate resend with the same Message-ID. `mail sync
 [organization_id=N] [limit=N]` runs the bounded inbound IMAP sweep over every
-active `mail_account` in the organization. Pass `organization_id=N` to scope
-another organization. Never automatically retry uncertain rows. Actions reject
-`--stage`; propose an enqueue with the generic `--stage create mail_message`
-command when approval is required.
+active `mail_account` in the organization that is not backing off; the
+report's `skipped` counts accounts in backoff or mid-sync elsewhere and
+`deferred: true` means a message or time budget ran out, so run it again to
+continue. `mail sync account_id=N` syncs one account now, ignoring its backoff
+(owner only). Pass `organization_id=N` to scope another organization. Never
+automatically retry uncertain rows. Actions reject `--stage`; propose an
+enqueue with the generic `--stage create mail_message` command when approval
+is required.
 
 `mail_account` is owner-only: it names the IMAP host and a `VENTURE_IMAP_*`
-environment variable holding the password, never the password itself. Generic
-writes to `mail_inbound` are refused; `mail_unmatched_sender` is ordinary CRM
-data. Use `list mail_inbound` and `list mail_unmatched_sender` to read what
-the sweep filed.
+environment variable holding the password, never the password itself. Its
+`consecutive_failures`, `next_attempt_at`, `last_error`, `cursors` and
+`sync_lease_until` are maintained by the sync; do not write them. Five failed
+syncs ending in a refused login set `active=false`: fix the credentials, then
+update `active=true`. Generic writes to `mail_inbound` are refused;
+`mail_unmatched_sender` is ordinary CRM data. Use `list mail_inbound` and
+`list mail_unmatched_sender dismissed=false` to read what the sweep filed; a
+`mail_inbound` row with `skip_reason` is a message filed as a stub after
+repeated failures or read truncated for size. `mail contact ID` turns an
+unmatched sender into a contact and backfills its earlier mail; `mail dismiss
+ID` keeps the address as an ignore-list entry. Both take the unmatched
+sender's id, not a contact id.
 
 ### Commercial quote actions
 

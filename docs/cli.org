@@ -301,11 +301,17 @@ See [[file:mail.org][mail]] for uncertainty and scheduling. Actions reject
 =--stage=; =--stage create mail_message= proposes an enqueue instead.
 
 =venturectl mail sync [organization_id=N] [limit=N]= runs the bounded
-inbound sweep over every active =mail_account= in the organization and
-prints the accounts and messages processed with any per-account error. The
-raw messages, interactions, unmatched senders and capture items it creates
-are ordinary records: =venturectl list mail_inbound=, =venturectl list
-mail_unmatched_sender=. See [[file:mail.org][mail]], section Inbound.
+inbound sweep over every active =mail_account= in the organization that is
+not backing off and prints the accounts and messages processed, the accounts
+skipped, whether a budget deferred the rest, and any per-account error.
+=venturectl mail sync account_id=N= syncs one account now, ignoring its
+backoff (owner only). =venturectl mail contact ID= turns an unmatched sender
+into a contact and backfills its earlier mail onto the timeline;
+=venturectl mail dismiss ID= keeps the address as an ignore-list entry. The
+raw messages, interactions, unmatched senders and capture items the sync
+creates are ordinary records: =venturectl list mail_inbound=, =venturectl
+list mail_unmatched_sender dismissed=false=. See [[file:mail.org][mail]],
+section Inbound.
 
 * Quote actions
 

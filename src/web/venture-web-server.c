@@ -16,10 +16,6 @@
 
 #include <string.h>
 
-#ifdef VENTURE_HAVE_POPPLER
-#include <poppler.h>
-#endif
-
 #include "venture-assets.h"
 
 /*
@@ -149,6 +145,7 @@ struct _VentureWebServer
 G_DEFINE_FINAL_TYPE(VentureWebServer, venture_web_server, G_TYPE_OBJECT)
 
 static void venture_web_append_lead_actions(GString *html, VentureEntity *record);
+static void venture_web_mail_append_actions(VentureWebServer *self, GString *html, VentureEntity *record);
 
 /*
  * The server is reachable from route callbacks through the user_data pointer
@@ -9019,6 +9016,7 @@ venture_web_ui_detail(
 		venture_web_append_repo_block(self, content, record);
 
 	if (VENTURE_IS_LEAD(record)) venture_web_append_lead_actions(content, record);
+	venture_web_mail_append_actions(self, content, record);
 
 	/* The factory's pages: what a release shipped and the actions on it,
 	 * a milestone's progress, what an environment is running. */
@@ -15166,112 +15164,6 @@ venture_web_image_mime_type(
 }
 
 /*
- * Pulls readable text out of an uploaded file.
- *
- * PDFs go through poppler when the build has it; anything that announces
- * itself as text -- including JSON, CSV and YAML, which is what exports and
- * invoices actually arrive as -- is taken verbatim if it is valid UTF-8.
- * Everything else yields %NULL, which is stored as "no text" rather than
- * treated as an error: the file itself is still kept.
- *
- * Returns: (transfer full) (nullable): the text, or %NULL
- */
-static gchar *
-venture_web_extract_text(
-	const gchar	*content_type,
-	const gchar	*filename,
-	GBytes		*data
-){
-	gboolean looks_pdf;
-	gboolean looks_text;
-
-	looks_pdf = ((NULL != content_type) &&
-	             g_str_has_prefix(content_type, "application/pdf")) ||
-	            ((NULL != filename) &&
-	             g_str_has_suffix(filename, ".pdf"));
-
-	looks_text = ((NULL != content_type) &&
-	              (g_str_has_prefix(content_type, "text/") ||
-	               g_str_has_prefix(content_type, "application/json") ||
-	               g_str_has_prefix(content_type, "application/csv") ||
-	               g_str_has_prefix(content_type, "application/x-yaml") ||
-	               g_str_has_prefix(content_type, "application/yaml"))) ||
-	             ((NULL != filename) &&
-	              (g_str_has_suffix(filename, ".txt") ||
-	               g_str_has_suffix(filename, ".md") ||
-	               g_str_has_suffix(filename, ".org") ||
-	               g_str_has_suffix(filename, ".csv") ||
-	               g_str_has_suffix(filename, ".json") ||
-	               g_str_has_suffix(filename, ".yaml") ||
-	               g_str_has_suffix(filename, ".yml")));
-
-	if (looks_pdf)
-	{
-#ifdef VENTURE_HAVE_POPPLER
-		g_autoptr(PopplerDocument) document = NULL;
-		g_autoptr(GString) text = NULL;
-		gint pages;
-		gint i;
-
-		document = poppler_document_new_from_bytes(data, NULL, NULL);
-
-		if (NULL == document)
-			return NULL;
-
-		text = g_string_new(NULL);
-		pages = poppler_document_get_n_pages(document);
-
-		for (i = 0; i < pages; i++)
-		{
-			g_autoptr(PopplerPage) page = NULL;
-			g_autofree gchar *page_text = NULL;
-
-			page = poppler_document_get_page(document, i);
-
-			if (NULL == page)
-				continue;
-
-			page_text = poppler_page_get_text(page);
-
-			if (venture_string_is_empty(page_text))
-				continue;
-
-			if (0 != text->len)
-				g_string_append(text, "\n\n");
-
-			g_string_append(text, page_text);
-		}
-
-		if (0 == text->len)
-			return NULL;
-
-		return g_string_free(g_steal_pointer(&text), FALSE);
-#else
-		/* Built without poppler: the PDF is stored, its text is not.
-		 * The chat message says so instead of silently attaching an
-		 * empty context. */
-		return NULL;
-#endif
-	}
-
-	if (looks_text)
-	{
-		const gchar *bytes;
-		gsize length;
-
-		bytes = g_bytes_get_data(data, &length);
-
-		if ((NULL == bytes) || (0 == length) ||
-		    !g_utf8_validate(bytes, (gssize)length, NULL))
-			return NULL;
-
-		return g_strndup(bytes, length);
-	}
-
-	return NULL;
-}
-
-/*
  * POST /ui/chat/upload - one file in, one document record out.
  *
  * The file lands under the state directory and becomes an ordinary document
@@ -15380,7 +15272,7 @@ venture_web_ui_chat_upload(
 
 		data = htmx_uploaded_file_get_data(file);
 		checksum = g_compute_checksum_for_bytes(G_CHECKSUM_SHA256, data);
-		extracted = venture_web_extract_text(
+		extracted = venture_document_extract_text(
 			htmx_uploaded_file_get_content_type(file), filename, data);
 
 		image_mime = venture_web_image_mime_type(
@@ -28383,6 +28275,11 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/mail_messages/:id/retry", venture_web_mail_action, self);
 	htmx_router_post(router, "/api/v1/mail/sync", venture_web_mail_sync, self);
 	htmx_router_post(router, "/api/v1/mail_unmatched_senders/:id/create_contact", venture_web_mail_unmatched_contact, self);
+	htmx_router_post(router, "/api/v1/mail_unmatched_senders/:id/dismiss", venture_web_mail_unmatched_dismiss, self);
+	htmx_router_post(router, "/api/v1/mail_accounts/:id/sync", venture_web_mail_account_sync, self);
+	htmx_router_post(router, "/mail_unmatched_senders/:id/create_contact", venture_web_mail_unmatched_contact_ui, self);
+	htmx_router_post(router, "/mail_unmatched_senders/:id/dismiss", venture_web_mail_unmatched_dismiss_ui, self);
+	htmx_router_post(router, "/mail_accounts/:id/sync", venture_web_mail_account_sync_ui, self);
 	htmx_router_post(router, "/api/v1/invoices/:id/send", venture_web_mail_invoice, self);
 	htmx_router_post(router, "/api/v1/deals/:id/move", venture_web_deal_move, self);
 	htmx_router_post(router, "/deals/:id/move", venture_web_deal_move_ui, self);

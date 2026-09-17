@@ -243,6 +243,7 @@ venture_database_init(VentureDatabase *self)
 		venture_database_validator_free);
 	self->activities = venture_activity_service_new(self);
 	venture_headline_install_validators(self);
+	venture_mail_sync_install_validators(self);
 }
 
 VentureQuoteService *

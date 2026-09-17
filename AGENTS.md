@@ -742,6 +742,41 @@ than one that fails.
   z-index 9000, above every overlay, pointer-events none, hidden in
   print. A new fixed overlay does not need to go above them.
 
+## Inbound mail
+
+- **No IMAP reply may grow with the mailbox.** A `UID SEARCH` answer is one
+  line naming every UID; it passed the 8 KiB line cap at about 1,200
+  messages and that inbox never synced. List with paged `UID FETCH a:b (UID
+  RFC822.SIZE)`, and read lines with the bounded reader in
+  `venture-imap-client.c`, never `g_data_input_stream_read_line()`, which
+  buffers the whole line before anything can refuse it.
+- **A blocking socket on the main loop needs a deadline, not a timeout.** A
+  per-read timeout lets a server that trickles a byte just inside it hold
+  every request forever. The IMAP client re-arms each read with what is left
+  of the call's time budget; a new blocking client must do the same.
+- **`VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION` indexes include soft-deleted
+  rows.** An upsert that looks up only live rows inserts a duplicate of a
+  deleted one and fails the index on every retry -- a deleted unmatched
+  sender stalled its mailbox this way. Look up with
+  `venture_query_set_include_deleted()` and restore.
+- **After rolling back a transaction that saved a record, re-read it.** The
+  save bumped the object's version before the UPDATE the rollback undid, so
+  the next save of that object conflicts with itself. The sync's
+  `refresh_account()` exists for this.
+- **One message must not stall an account.** The sync classifies: the
+  session or a locked database stops and retries; a failure that is the
+  message's own spends an attempt, and the third files a stub with
+  `skip_reason`. A new per-message step must fail with an error code
+  `error_is_transient()` classifies the right way.
+- **The outbox commits `sent` before the timeline.** The relay already has
+  the message; rolling its state back because a CRM write failed made the
+  row `uncertain`, and the operator's retry mailed the customer twice. Keep
+  `venture_mail_sync_record_outbound()` after the commit and non-fatal.
+- **IMAP tests talk to the scripted server in `tests/test-mail-sync.c`**, on
+  its own thread with a cancellable accept, through the socket client's
+  test-only `allow-plaintext`. The fake hides exactly the protocol bugs
+  worth testing.
+
 ## Versioned database migrations
 
 Every database feature ships paired, append-only SQL in `migrations/sqlite/` and `migrations/postgresql/`, meaningful upgrade/restart/failure tests, and docs in the same change. Read `docs/migrations.org` before editing persistent fields or storage behavior. Keep the GObject field table authoritative; the SQL expresses backfills and backend-specific invariants, and runs after additive schema reconciliation but before seeds. Never edit an applied script or manage transactions/history inside it. Test representative old data and affected disabled-module configurations; do not infer historical accounting events from current status. `OrmMigrator` validates checksums and unknown versions before schema reconciliation and applies each SQL batch atomically. Build embeds the complete script history into the server. Run DEBUG build/tests and ShellCheck for generator changes.

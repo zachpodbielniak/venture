@@ -2,6 +2,9 @@
 #include "venture.h"
 #include <string.h>
 #include <math.h>
+#ifdef VENTURE_HAVE_POPPLER
+#include <poppler.h>
+#endif
 
 struct _VentureDocumentService
 {
@@ -339,4 +342,238 @@ venture_document_service_compose_invoice(VentureDocumentService *self, gint64 or
 	if (!venture_accounting_operation_finish(operation, error))
 		return NULL;
 	return g_steal_pointer(&result);
+}
+
+/* --- Text extraction, shared by uploads and inbound mail --------------------- */
+
+static gboolean
+html_is_block(const gchar *name)
+{
+	static const gchar *const blocks[] = {
+		"br", "p", "div", "tr", "li", "ul", "ol", "table", "blockquote", "hr", "pre",
+		"h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "header", "footer", "title", NULL
+	};
+	return g_strv_contains(blocks, name);
+}
+
+/* Appends the character a reference names, or the ampersand itself when it
+ * names nothing this knows; returns how many input bytes were consumed. */
+static gsize
+html_append_reference(GString *text, const gchar *html, gsize size)
+{
+	static const struct { const gchar *name; const gchar *value; } named[] = {
+		{ "&nbsp;", " " }, { "&lt;", "<" }, { "&gt;", ">" }, { "&quot;", "\"" },
+		{ "&apos;", "'" }, { "&amp;", "&" }, { "&euro;", "\xe2\x82\xac" }, { "&pound;", "\xc2\xa3" },
+		{ "&copy;", "\xc2\xa9" }, { "&ndash;", "\xe2\x80\x93" }, { "&mdash;", "\xe2\x80\x94" }
+	};
+	gsize i;
+	if (size > 2 && html[1] == '#')
+	{
+		gboolean hex = (html[2] == 'x' || html[2] == 'X');
+		gsize start = hex ? 3 : 2;
+		gsize end = start;
+		guint64 code = 0;
+		while (end < size && end < start + 8 && (hex ? g_ascii_isxdigit(html[end]) : g_ascii_isdigit(html[end])))
+		{
+			code = code * (hex ? 16 : 10) + (guint64)(hex ? g_ascii_xdigit_value(html[end]) : g_ascii_digit_value(html[end]));
+			end++;
+		}
+		if (end > start && end < size && html[end] == ';' && code > 0 && code <= 0x10ffff &&
+		    g_unichar_validate((gunichar)code))
+		{
+			g_string_append_unichar(text, (gunichar)code);
+			return end + 1;
+		}
+	}
+	for (i = 0; i < G_N_ELEMENTS(named); i++)
+	{
+		gsize length = strlen(named[i].name);
+		if (size >= length && g_ascii_strncasecmp(html, named[i].name, length) == 0)
+		{
+			g_string_append(text, named[i].value);
+			return length;
+		}
+	}
+	g_string_append_c(text, '&');
+	return 1;
+}
+
+gchar *
+venture_document_html_to_text(const gchar *html, gssize length)
+{
+	g_autoptr(GString) text = NULL;
+	gsize size;
+	gsize i;
+	guint newlines = 2;
+	gboolean in_space = TRUE;
+
+	g_return_val_if_fail(html != NULL || length == 0, NULL);
+	size = length < 0 ? strlen(html) : (gsize)length;
+	text = g_string_new(NULL);
+
+	for (i = 0; i < size; i++)
+	{
+		gchar c = html[i];
+
+		if (c == '<' && i + 1 < size && (g_ascii_isalpha(html[i + 1]) || html[i + 1] == '/' || html[i + 1] == '!'))
+		{
+			const gchar *close;
+			gchar name[16];
+			gsize n = 0;
+			gsize at = i + 1;
+
+			/* Everything inside script, style and a comment is not content. */
+			/* Bounded by what is left: callers pass attachment bytes and
+			 * fetched pages that are not NUL-terminated, so an unbounded
+			 * compare on a body ending in "<s" read past the buffer. */
+			if ((size - i >= 7 && g_ascii_strncasecmp(html + i, "<script", 7) == 0) ||
+			    (size - i >= 6 && g_ascii_strncasecmp(html + i, "<style", 6) == 0))
+			{
+				const gchar *end_tag = (size - i >= 7 && g_ascii_strncasecmp(html + i, "<script", 7) == 0) ? "</script" : "</style";
+				gsize k;
+				for (k = i + 1; k + strlen(end_tag) <= size; k++)
+					if (g_ascii_strncasecmp(html + k, end_tag, strlen(end_tag)) == 0) break;
+				close = k + strlen(end_tag) <= size ? memchr(html + k, '>', size - k) : NULL;
+				if (close == NULL) break;
+				i = (gsize)(close - html);
+				continue;
+			}
+			if (size - i >= 4 && strncmp(html + i, "<!--", 4) == 0)
+			{
+				const gchar *end = g_strstr_len(html + i + 4, (gssize)(size - i - 4), "-->");
+				if (end == NULL) break;
+				i = (gsize)(end - html) + 2;
+				continue;
+			}
+			close = memchr(html + i, '>', size - i);
+			/* An unterminated tag: the rest is markup, not text. */
+			if (close == NULL) break;
+			if (html[at] == '/') at++;
+			while (at < size && n + 1 < sizeof name && g_ascii_isalnum(html[at])) name[n++] = g_ascii_tolower(html[at++]);
+			name[n] = '\0';
+			if (html_is_block(name))
+			{
+				while (text->len && text->str[text->len - 1] == ' ') g_string_truncate(text, text->len - 1);
+				if (newlines < 2) { g_string_append_c(text, '\n'); newlines++; }
+				in_space = TRUE;
+			}
+			else if (!in_space && newlines == 0)
+			{
+				/* A tag boundary is a word boundary. */
+				g_string_append_c(text, ' ');
+				in_space = TRUE;
+			}
+			i = (gsize)(close - html);
+			continue;
+		}
+
+		if (g_ascii_isspace(c))
+		{
+			if (!in_space && newlines == 0) { g_string_append_c(text, ' '); in_space = TRUE; }
+			continue;
+		}
+
+		if (c == '&')
+		{
+			i += html_append_reference(text, html + i, size - i) - 1;
+			in_space = FALSE;
+			newlines = 0;
+			continue;
+		}
+
+		g_string_append_c(text, c);
+		in_space = FALSE;
+		newlines = 0;
+	}
+
+	while (text->len && g_ascii_isspace(text->str[text->len - 1])) g_string_truncate(text, text->len - 1);
+	return g_utf8_make_valid(text->str, (gssize)text->len);
+}
+
+gchar *
+venture_document_extract_text(const gchar *content_type, const gchar *filename, GBytes *data)
+{
+	g_autofree gchar *lower_name = filename != NULL ? g_ascii_strdown(filename, -1) : NULL;
+	g_autofree gchar *lower_type = content_type != NULL ? g_ascii_strdown(content_type, -1) : NULL;
+	g_autofree gchar *converted = NULL;
+	const gchar *bytes;
+	gsize length = 0;
+	gboolean looks_pdf, looks_html, looks_text;
+
+	g_return_val_if_fail(data != NULL, NULL);
+
+	looks_pdf = (lower_type != NULL && g_str_has_prefix(lower_type, "application/pdf")) ||
+	            (lower_name != NULL && g_str_has_suffix(lower_name, ".pdf"));
+	looks_html = (lower_type != NULL && (g_str_has_prefix(lower_type, "text/html") || g_str_has_prefix(lower_type, "application/xhtml"))) ||
+	             (lower_name != NULL && (g_str_has_suffix(lower_name, ".html") || g_str_has_suffix(lower_name, ".htm")));
+	looks_text = (lower_type != NULL &&
+	              (g_str_has_prefix(lower_type, "text/") ||
+	               g_str_has_prefix(lower_type, "application/json") ||
+	               g_str_has_prefix(lower_type, "application/csv") ||
+	               g_str_has_prefix(lower_type, "application/x-yaml") ||
+	               g_str_has_prefix(lower_type, "application/yaml"))) ||
+	             (lower_name != NULL &&
+	              (g_str_has_suffix(lower_name, ".txt") || g_str_has_suffix(lower_name, ".md") ||
+	               g_str_has_suffix(lower_name, ".org") || g_str_has_suffix(lower_name, ".csv") ||
+	               g_str_has_suffix(lower_name, ".json") || g_str_has_suffix(lower_name, ".yaml") ||
+	               g_str_has_suffix(lower_name, ".yml")));
+
+	if (looks_pdf)
+	{
+#ifdef VENTURE_HAVE_POPPLER
+		g_autoptr(PopplerDocument) document = poppler_document_new_from_bytes(data, NULL, NULL);
+		g_autoptr(GString) text = NULL;
+		gint pages;
+		gint i;
+
+		if (document == NULL)
+			return NULL;
+		text = g_string_new(NULL);
+		/* A PDF reaches this from a stranger's email to the capture
+		 * address, parsed on the main loop: a small file can declare
+		 * hundreds of thousands of pages. Stop at a page and a size cap;
+		 * a receipt or a manuscript fits well inside both. */
+		pages = MIN(poppler_document_get_n_pages(document), VENTURE_DOCUMENT_EXTRACT_MAX_PAGES);
+		for (i = 0; i < pages && text->len < VENTURE_DOCUMENT_EXTRACT_MAX_BYTES; i++)
+		{
+			g_autoptr(PopplerPage) page = poppler_document_get_page(document, i);
+			g_autofree gchar *page_text = NULL;
+
+			if (page == NULL)
+				continue;
+			page_text = poppler_page_get_text(page);
+			if (venture_string_is_empty(page_text))
+				continue;
+			if (text->len != 0)
+				g_string_append(text, "\n\n");
+			g_string_append(text, page_text);
+		}
+		if (text->len == 0)
+			return NULL;
+		return g_string_free(g_steal_pointer(&text), FALSE);
+#else
+		/* Built without poppler: the PDF is stored, its text is not. */
+		return NULL;
+#endif
+	}
+
+	if (!looks_html && !looks_text)
+		return NULL;
+
+	bytes = g_bytes_get_data(data, &length);
+	if (bytes == NULL || length == 0)
+		return NULL;
+	/* Mail without a declared charset is usually windows-1252, and a
+	 * superset of Latin-1 converts every byte, so nothing is dropped. */
+	if (!g_utf8_validate(bytes, (gssize)length, NULL))
+	{
+		converted = g_convert(bytes, (gssize)length, "UTF-8", "WINDOWS-1252", NULL, &length, NULL);
+		if (converted == NULL)
+			converted = g_utf8_make_valid(bytes, (gssize)length);
+		bytes = converted;
+		length = strlen(converted);
+	}
+	if (looks_html)
+		return venture_document_html_to_text(bytes, (gssize)length);
+	return g_strndup(bytes, length);
 }

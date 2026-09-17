@@ -1189,6 +1189,11 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/mail_messages/1/retry", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/mail/sync", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/mail_unmatched_senders/1/create_contact", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/mail_unmatched_senders/1/dismiss", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/mail_accounts/1/sync", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/mail_unmatched_senders/1/create_contact", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/mail_unmatched_senders/1/dismiss", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/mail_accounts/1/sync", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/invoices/1/send", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/webhooks"),
@@ -2662,6 +2667,18 @@ test_auth_mail_account_is_owner_only(
 	                                        "/api/v1/mail_unmatched_sender",
 	                                        editor, NULL, NULL, NULL),
 	                 ==, SOUP_STATUS_OK);
+
+	/* Syncing one account by id acts on the owner-only row, so an editor
+	 * who may run the organization's sweep still may not name an account. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/mail_accounts/1/sync", editor, "{}", NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/mail_accounts/999999/sync", owner, "{}", NULL, NULL),
+		==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/mail_unmatched_senders/999999/dismiss", editor, "{}", NULL, NULL),
+		==, SOUP_STATUS_NOT_FOUND);
 }
 
 /*

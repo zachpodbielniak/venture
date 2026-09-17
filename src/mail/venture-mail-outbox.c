@@ -341,13 +341,19 @@ gint venture_mail_outbox_deliver_due(VentureMailOutbox *self, gint64 org, guint 
 		}
 		g_object_set(claimed, "lease-until", NULL, "next-attempt-at", next, NULL);
 		/* If persistence fails the committed sending lease remains. Its
-		 * expiry is uncertain, so a crash never causes an automatic resend.
-		 * The sent state and the recipient's timeline entry commit together. */
-		if (!venture_database_begin(self->database, error)) return -1;
-		if (!save(self, VENTURE_ENTITY(claimed), NULL, error) || (sent && !venture_mail_sync_record_outbound(self->database, claimed, error))) {
-			venture_database_rollback(self->database); return -1;
+		 * expiry is uncertain, so a crash never causes an automatic resend. */
+		if (!save(self, VENTURE_ENTITY(claimed), NULL, error)) return -1;
+		/* The relay already accepted the message, so the timeline entry is
+		 * recorded after the sent state commits and its failure is only
+		 * logged. Rolling the sent state back with it left the row to
+		 * become uncertain, and the operator's retry mailed the customer
+		 * a second time. */
+		if (sent) {
+			g_autoptr(GError) timeline_error = NULL;
+			if (!venture_mail_sync_record_outbound(self->database, claimed, &timeline_error))
+				g_warning("VentureMailOutbox: message %" G_GINT64_FORMAT " was sent but its timeline entry was not recorded: %s",
+					venture_entity_get_id(VENTURE_ENTITY(claimed)), timeline_error ? timeline_error->message : "unknown error");
 		}
-		if (!venture_database_commit(self->database, error)) return -1;
 	}
 	return count;
 }

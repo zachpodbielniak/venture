@@ -27,4 +27,8 @@ Inbound mail feeds the same path: the =mail_sync= module files each
 attachment of a message sent to the account's capture address (or found in
 its capture folder) as a document and ingests it with source =email=,
 skipping any attachment whose content hash already backs a capture item.
-See [[file:mail.org][mail]], section Inbound.
+Attachments inside a forwarded message count; inline logos, signatures,
+invitations and =winmail.dat= do not. A message without attachments is its
+own receipt, filed as HTML when that is all it has. Text is extracted with
+=venture_document_extract_text()=, the extractor an upload uses. See
+[[file:mail.org][mail]], section Inbound, Capture.

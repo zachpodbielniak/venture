@@ -1,3 +1,8 @@
 # Sweep organization 1 every minute, at most 100 attempts.
 pod mail_minute = cron->new("* * * * *");
 mail_minute->on_schedule => venture->mail_deliver("1", "100");
+
+# Read organization 1's mailboxes every five minutes, at most 200 messages a
+# run; each account resumes where the last run stopped and backs off alone.
+pod mail_sync_five = cron->new("*/5 * * * *");
+mail_sync_five->on_schedule => venture->mail_sync("1", "200");
