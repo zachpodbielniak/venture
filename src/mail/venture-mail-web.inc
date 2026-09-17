@@ -1,8 +1,11 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later
  * Included by the web server so these thin action adapters share its guards. */
+static HtmxResponse *venture_web_mail_sync(HtmxRequest *request, GHashTable *params, gpointer data);
 static HtmxResponse *venture_web_mail_action(HtmxRequest *request, GHashTable *params, gpointer data)
 {
 	VentureWebServer *self = data;
+	/* The inbound sweep has its own module guard; the router may hand it here first. */
+	if (!g_strcmp0(g_hash_table_lookup(params, "action"), "sync")) return venture_web_mail_sync(request, params, data);
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autoptr(JsonNode) body = NULL, node = NULL;
@@ -113,4 +116,77 @@ static HtmxResponse *venture_web_mail_invoice_ui(HtmxRequest *request, GHashTabl
 	htmx_response_set_status(response, 303);
 	htmx_response_add_header(response, "Location", path);
 	return response;
+}
+
+/* Inbound sync. A fresh service per request: the sweep is bounded and
+ * synchronous, and the socket client holds no state between calls. */
+static VentureMailSyncService *venture_web_mail_sync_service(VentureWebServer *self)
+{
+	g_autoptr(VentureSocketImapClient) client = venture_socket_imap_client_new();
+	g_autofree gchar *root = g_build_filename(venture_config_get_state_dir(venture_context_get_config(self->context)), "attachments", NULL);
+	VentureMailSyncService *service = venture_mail_sync_service_new(venture_context_get_database(self->context), VENTURE_IMAP_CLIENT(client));
+	g_object_set(service, "attachment-root", root, NULL);
+	return service;
+}
+static gint64 venture_web_mail_sync_organization(VentureWebServer *self, HtmxRequest *request, JsonObject *body)
+{
+	const gchar *value = htmx_request_get_query_param(request, "organization_id");
+	gint64 org = value ? g_ascii_strtoll(value, NULL, 10) : 0;
+	if (org <= 0 && body) org = venture_json_object_get_int(body, "organization_id", 0);
+	if (org <= 0) org = venture_web_active_organization(self, request);
+	return org > 0 ? org : venture_context_get_default_organization_id(self->context);
+}
+static HtmxResponse *venture_web_mail_sync(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureMailSyncService) service = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) body = NULL, report = NULL;
+	JsonObject *object = NULL;
+	VentureActor actor;
+	gint64 limit = 100;
+	HtmxResponse *gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+	if (gate) return gate;
+	gate = venture_web_require_module_api(self, "mail_sync");
+	if (gate) return gate;
+	if (htmx_request_get_query_param(request, "stage")) {
+		venture_set_error_validation(&error, "stage", "Mail sync is an immediate sweep"); return venture_web_error_response(error);
+	}
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+	body = htmx_request_get_json(request, NULL);
+	if (body && JSON_NODE_HOLDS_OBJECT(body)) object = json_node_get_object(body);
+	if (object) limit = venture_json_object_get_int(object, "limit", 100);
+	if (limit < 1 || limit > 1000) { venture_set_error_validation(&error, "limit", "Expected 1 through 1000"); return venture_web_error_response(error); }
+	service = venture_web_mail_sync_service(self);
+	report = venture_mail_sync_service_sweep(service, venture_web_mail_sync_organization(self, request, object), (guint)limit, &actor, &error);
+	if (!report) return venture_web_error_response(error);
+	return venture_web_json_response(report, 200);
+}
+static HtmxResponse *venture_web_mail_unmatched_contact(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureMailSyncService) service = NULL;
+	g_autoptr(VentureEntity) sender = NULL, contact = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	VentureActor actor;
+	HtmxResponse *gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+	if (gate) return gate;
+	gate = venture_web_require_module_api(self, "mail_sync");
+	if (gate) return gate;
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+	sender = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_MAIL_UNMATCHED_SENDER, g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10), &error);
+	if (!sender || venture_entity_is_deleted(sender)) {
+		if (!error) g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Unmatched sender not found");
+		return venture_web_error_response(error);
+	}
+	service = venture_web_mail_sync_service(self);
+	contact = venture_mail_sync_service_create_contact(service, sender, &actor, &error);
+	if (!contact) return venture_web_error_response(error);
+	node = venture_serializable_to_json(VENTURE_SERIALIZABLE(contact), FALSE);
+	return venture_web_json_response(node, 201);
 }

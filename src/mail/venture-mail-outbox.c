@@ -306,8 +306,13 @@ gint venture_mail_outbox_deliver_due(VentureMailOutbox *self, gint64 org, guint 
 		}
 		g_object_set(claimed, "lease-until", NULL, "next-attempt-at", next, NULL);
 		/* If persistence fails the committed sending lease remains. Its
-		 * expiry is uncertain, so a crash never causes an automatic resend. */
-		if (!save(self, VENTURE_ENTITY(claimed), NULL, error)) return -1;
+		 * expiry is uncertain, so a crash never causes an automatic resend.
+		 * The sent state and the recipient's timeline entry commit together. */
+		if (!venture_database_begin(self->database, error)) return -1;
+		if (!save(self, VENTURE_ENTITY(claimed), NULL, error) || (sent && !venture_mail_sync_record_outbound(self->database, claimed, error))) {
+			venture_database_rollback(self->database); return -1;
+		}
+		if (!venture_database_commit(self->database, error)) return -1;
 	}
 	return count;
 }

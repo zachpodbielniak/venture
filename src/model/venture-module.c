@@ -581,6 +581,11 @@ static GType (*const billing_types[]) (void) = {
 static GType (*const venture_module_mail_types[]) (void) = {
 	venture_mail_message_get_type, venture_mail_template_get_type, NULL
 };
+static const gchar *const venture_module_mail_sync_requires[] = { "mail", "crm", "leads", NULL };
+static const gchar *const venture_module_mail_sync_suggests[] = { "capture", NULL };
+static GType (*const venture_module_mail_sync_types[]) (void) = {
+	venture_mail_account_get_type, venture_mail_inbound_get_type, venture_mail_unmatched_sender_get_type, NULL
+};
 static const gchar *const quotes_requires[] = { "crm", "invoicing", NULL };
 static const gchar *const quotes_reports[] = { "quotes", NULL };
 static GType (*const quotes_types[]) (void) = {
@@ -1038,8 +1043,12 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"group", "Intercompany group", "Optional consolidation, eliminations and FX.",
 		group_requires, NULL, group_types, group_reports, "group-enabled", FALSE
+	},
+	{
+		"mail_sync", "Inbound mail", "IMAP mailboxes onto contact timelines and the capture inbox.",
+		venture_module_mail_sync_requires, venture_module_mail_sync_suggests,
+		venture_module_mail_sync_types, NULL, NULL, FALSE
 	}
-
 };
 
 const VentureModuleInfo *

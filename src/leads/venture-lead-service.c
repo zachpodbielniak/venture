@@ -768,3 +768,9 @@ venture_lead_service_apply_staged(VentureLeadService *self, VentureEntity *stage
 	converted = venture_lead_service_convert(self, staged, json_node_get_object(node), actor, error);
 	return converted != NULL;
 }
+
+gchar *
+venture_lead_normalize_email(const gchar *value)
+{
+	return normalize(value, 0);
+}
