@@ -156,3 +156,123 @@ its =smtp= slot; =venture_context_set_mailer()= replaces it for tests or plugins
 Async send completes on the initiating main context and never accesses the database.
 
 SMTP tests enforce organization write authority and policy-plugin vetoes before invoking the mail transport, just as an outbox enqueue does.
+
+* Inbound
+
+The =mail_sync= module requires =mail=, =crm= and =leads= and suggests
+=capture=. It owns =mail_account=, =mail_inbound= and
+=mail_unmatched_sender=. =mail_account= is owner-only: the row names the
+IMAP host and which environment variable holds the password, so an editor
+who could change either could point the next sweep at a host they control
+or name a different secret in the process environment. =mail_inbound= is
+written by the sweep and refuses generic writes, like a webhook delivery.
+=mail_unmatched_sender= stays ordinary CRM data.
+
+An account names a mailbox address, IMAP host, port and security (=tls= or
+=starttls=), username, the folders to watch, an optional capture address and
+capture folder, and =secret_env=: the NAME of a =VENTURE_IMAP_*= environment
+variable holding the password or app token. The row never holds the secret.
+A name that is not =VENTURE_IMAP_= followed by letters, digits or underscores
+is refused before any connection, so a row cannot exfiltrate
+=VENTURE_SMTP_PASSWORD= or the session secret. A sync whose variable is unset
+fails with a =VENTURE_ERROR_CONFIG= error naming that variable and never
+opens a connection. Authentication over =none= is refused even when the
+username is empty: this client always sends =LOGIN=.
+
+=VentureMailSyncService= is the one service behind every surface. For each
+watched folder it reads the stored high-water UID from =cursors=, asks the
+transport for the UIDs above it, fetches each message and processes it in
+its own transaction: the raw RFC 5322 bytes are filed as a =document= of kind
+=email= under =state-dir/attachments/=, a =mail_inbound= row records the
+folder, UID, Message-ID, thread root and what was created, and the cursor
+advances. The =(account, folder, uid)= key is unique within the organization,
+so a rerun against the same mailbox creates nothing even if a cursor write
+was lost. A failure stops the sweep at that message and is recorded on the
+account's =last_error=; the messages before it stay committed.
+
+** Matching and threading
+
+Every From, To and Cc address is normalised the way lead deduplication does
+(=venture_lead_normalize_email()=: lower case, trimmed, +tag removed) and
+compared with each contact's email. Each matched contact receives an
+=interaction= of kind =email= carrying the contact's company, the subject,
+the text body, the message date and =outbound= when the message came from
+the account's own address. Threads are resolved by In-Reply-To and
+References: a reply inherits the =thread_id= of the earliest known ancestor,
+otherwise the oldest reference or its own Message-ID becomes the root, so
+=/e/mail_inbound?thread_id=...= lists a conversation.
+
+Addresses that match no contact create nothing on the CRM side. They are
+upserted into =mail_unmatched_sender= with a count, the last subject and the
+display name, listed at =/e/mail_unmatched_sender=. =POST
+/api/v1/mail_unmatched_senders/:id/create_contact= creates the contact from
+that row and removes it in the same transaction. The account's own address
+is never a match nor an unmatched sender.
+
+** Capture
+
+A message addressed to the capture address, or sitting in the capture
+folder, does not touch the timeline. Each attachment is filed as a
+=document= of kind =receipt= with its SHA-256 =hash=, =extracted_text= for
+textual attachments, and handed to
+=venture_capture_service_ingest_for_organization()= with source =email=, the
+subject as title, the sender as vendor, the message date and the body as
+notes — the same path an upload takes, so conversion, period guards and
+approvals are unchanged. A message with no attachment files its text body as
+the receipt. An attachment whose content hash already backs a capture item in
+the organization is skipped, so a receipt uploaded by hand and forwarded by
+mail is one inbox row.
+
+** Outbound on the timeline
+
+When the outbox's delivery sweep records a message as =sent=, the same
+transaction records an =email= interaction with =outbound= set on every
+contact whose email matches a To or Cc recipient. The private text body is
+never copied. Unknown recipients record nothing.
+
+** Running it
+
+#+begin_src sh
+venturectl mail sync                     # every active account in the default organization
+venturectl mail sync organization_id=2 limit=10
+curl -X POST .../api/v1/mail/sync?organization_id=1
+#+end_src
+
+The sweep is bounded and synchronous, like the activities sweep: it runs on
+the main thread, one account after another, and returns
+={"accounts", "messages", "errors": [{"account", "error"}]}=. There is no
+background thread; schedule it the way =mail deliver= is scheduled. The
+action requires editor access and refuses =--stage=.
+
+** Transport
+
+=VentureImapClient= is a GInterface (connect, select, uids_after, fetch,
+disconnect). =deps/mail-glib= is sending-only, so =VentureSocketImapClient=
+in =src/mail/= is a minimal IMAP4rev1 client over GIO sockets: implicit TLS
+or STARTTLS through GTlsClientConnection, =LOGIN=, =EXAMINE= (read-only;
+nothing is flagged or moved), =UID SEARCH UID n:*= and =UID FETCH
+(BODY.PEEK[])=. Literals larger than 20 MiB and control lines longer than
+8 KiB are refused; a truncated =guint= size would otherwise overflow the
+fetch buffer. Usernames, secrets and folder names containing CR or LF are
+refused so they cannot inject a second IMAP command. Server response text is
+never surfaced in errors, because a rejected LOGIN line carries the
+credential. =VentureFakeImapClient= is an in-memory mailbox for tests; the
+suite opens no sockets. GMime, already a server dependency through
+mail-glib, parses the fetched bytes.
+
+OAuth (XOAUTH2 for Google and Microsoft) would attach in
+=VentureSocketImapClient= as a second authentication step selected by a
+=secret_kind= on the account, with the token refresh living in a separate
+service that writes the access token to the same secret source; nothing in
+the sync service would change. Calendar synchronisation would be a sibling
+=VentureCalendarClient= interface feeding the activities module the way this
+one feeds interactions.
+
+=test-mail-sync= covers the field tables and module, the missing-secret
+refusal, the =VENTURE_IMAP_*= secret_env prefix, the UID high-water mark and
+idempotent rerun, a repaired cursor behind an already-filed UID, contact and
+company matching, threading, unmatched senders and one-click contact
+creation, capture with attachments, +tag capture-address matching and
+content-hash deduplication, the outbound interaction, and the organization
+sweep. =test-auth= covers anonymous refusal of the two routes, owner-only
+=mail_account=, and the inbound write refusal.

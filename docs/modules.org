@@ -52,6 +52,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =billing= | invoicing, receivables | plan, plan_price, customer_subscription, subscription_event, dunning_step, billing_notice, billing_request, customer_payment_method; =mrr=, =churn=, =subscriptions_due= | |
 | =projects= | invoicing, receivables | client_project, project_rate, project_time, project_cost, project_billing; =project_margin= | |
 | =mail= | core | mail_message, mail_template; durable outbox and SMTP actions | |
+| =mail_sync= | mail, crm, leads (suggests capture) | mail_account, mail_inbound, mail_unmatched_sender; IMAP sync onto contact timelines and the capture inbox | |
 
 | =payables= | finance, ledger, crm | vendor_bill, vendor_bill_line, bill_payment, bill_payment_allocation, vendor_credit, vendor_bill_event, bill_refund; =payables=, =vendor_statement= | |
 | =supplier_portal= | payables | supplier_portal_access; =/supplier/:token= | |
