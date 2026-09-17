@@ -1614,9 +1614,10 @@ test_dashboard_http_round_trip(
 	g_clear_pointer(&body, g_free);
 	g_clear_pointer(&node, json_node_unref);
 
-	/* Making it home puts it at /, with the built-in still at /overview. */
+	/* Making it home puts it at /, with the built-in still at /overview.
+	 * Before that, / is the headline module's five cards. */
 	g_assert_cmpuint(server_get(fixture, "/", &page), ==, SOUP_STATUS_OK);
-	g_assert_nonnull(strstr(page, "<h1>Dashboard</h1>"));
+	g_assert_nonnull(strstr(page, "headline-cards"));
 	g_clear_pointer(&page, g_free);
 
 	g_clear_pointer(&location, g_free);
@@ -1787,8 +1788,9 @@ test_dashboard_http_module_off(
 	g_assert_cmpuint(server_get(fixture, "/api/v1/dashboard", NULL), ==,
 	                 SOUP_STATUS_NOT_FOUND);
 
+	/* Without dashboards, / is the headline cards, which are not one. */
 	g_assert_cmpuint(server_get(fixture, "/", &page), ==, SOUP_STATUS_OK);
-	g_assert_nonnull(strstr(page, "<h1>Dashboard</h1>"));
+	g_assert_nonnull(strstr(page, "headline-cards"));
 	g_assert_null(strstr(page, "href=\"/dashboards\""));
 	g_clear_pointer(&page, g_free);
 

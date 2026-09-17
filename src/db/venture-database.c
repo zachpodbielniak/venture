@@ -12,6 +12,7 @@
 #include "db/venture-migrations.h"
 #include "activities/venture-activity-private.h"
 #include "pipelines/venture-pipelines-private.h"
+#include "report/venture-headline-private.h"
 
 #include <string.h>
 
@@ -241,6 +242,7 @@ venture_database_init(VentureDatabase *self)
 	self->validators = g_ptr_array_new_with_free_func(
 		venture_database_validator_free);
 	self->activities = venture_activity_service_new(self);
+	venture_headline_install_validators(self);
 }
 
 VentureQuoteService *

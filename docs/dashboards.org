@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-11]
-#+updated: [2026-09-12]
+#+updated: [2026-09-17]
 #+version: 0.6.0
 
 * What this is
@@ -25,7 +25,7 @@ The module requires only =core=. A widget can point at any module's records or r
 | =/dashboards/:slug/widgets/:id/edit= | change one                                                 |
 | =/dashboards/:slug/export=      | the definition, as a JSON download                             |
 | =/overview=                     | the built-in overview, always                                  |
-| =/=                             | the dashboard marked as home, or the built-in overview         |
+| =/=                             | the dashboard marked as home, else the five headline cards, else the built-in overview |
 
 Every dashboard you may see is listed in the sidebar under *Views*, so a page you built is one click from anywhere.
 
@@ -205,3 +205,44 @@ For current UTC day counts, use =kind=metric=, =report_name=worklist= and
 =field=activities_overdue= or =field=activities_today=. A =report= widget
 with =report_name=worklist= shows overdue, due today, due this week and
 done this week per owner. These sources require the activities module.
+
+* The five cards
+
+With the =headline= module on, =/= is five cards by default, one per
+question in issue #75. A dashboard you have marked as *home* still wins,
+as the table above says; the cards are what you get when you have not
+chosen one. Each is a number for the period
+(=?period==, =this_month= by default), an arrow against the period before,
+two or three lines of detail, and a link to the report it was read from.
+
+| Card         | Number                     | Beside it                              | Report              |
+|--------------+----------------------------+----------------------------------------+---------------------|
+| P&L          | profit                     | revenue, expenses, cash in the bank    | =pnl=               |
+| CAC          | cost per new customer      | acquisition spend, new customers       | =cac=               |
+| Churn        | activity churn             | recurring churn, customers gone quiet  | =customer_churn=    |
+| LTV:CAC      | the ratio                  | projected LTV, CAC                     | =ltv_cac=           |
+| Support      | tickets open now           | service levels missed, raised in period | =support=          |
+
+*Cash in the bank* is the sum of every bank account's last statement
+balance --- what is actually in the account, beside what the books say was
+earned. It says =no statements= until one has been imported.
+
+*The arrow* compares the card's number with the same number for the period
+before: up, down or flat, coloured for whether up is good (profit, LTV:CAC)
+or bad (CAC, churn, open tickets). A number that is =n/a= on either side
+has no arrow. The support card's arrow compares the queue now with the
+queue when the period began --- tickets raised before it and not resolved
+before it --- because "what is waiting" is a live question and the support
+report's "raised in March" is a different one.
+
+The cards are one JSON pass, =GET /api/v1/headline?period=this_month=,
+rendered by the page; the API and the browser cannot disagree. Each card
+carries =key=, =label=, =value=, =trend= (-1, 0, 1), =higher_is_better=,
+=link= and =lines=.
+
+*Back to the old dashboard.* Save a =headline_setting= for the
+organisation with =classic_home=true= (=venturectl create headline_setting
+organization_id=1 classic_home=true=) and =/= is the built-in overview,
+exactly as before. The cards are still at
+=/api/v1/headline= and the reports on =/reports=. One settings row per
+organisation; a second is refused.

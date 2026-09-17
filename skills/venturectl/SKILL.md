@@ -472,6 +472,9 @@ Approval refuses a subscription changed since staging.
 
 `report mrr PERIOD currency=USD`, `report churn PERIOD currency=USD`, and
 `report subscriptions_due PERIOD days=14` read the registered reports.
+`churn` is the billing cohort (MRR lost). Headline activity and subscription
+churn is `customer_churn`; `cac`, `ltv` and `ltv_cac` are the other three.
+Do not guess `churn` for the five-card home page.
 Read their notes: MRR is contracted revenue, not cash or recognized income;
 churn rates are in basis points. Proration adjustments are settled on the
 next renewal. Billing sends no mail and integrates no card provider.

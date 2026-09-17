@@ -108,6 +108,7 @@
 #include "activities/venture-activity-records.h"
 #include "pipelines/venture-pipeline-records.h"
 #include "sequences/venture-sequence-records.h"
+#include "report/venture-headline-records.h"
 #include "autojournal/venture-posting-profile.h"
 #include "recurring/venture-recurring-records.h"
 #include "dunning/venture-dunning-records.h"
@@ -255,6 +256,7 @@
 
 #include "reconciliation/venture-reconciliation-matcher.h"
 #include "reconciliation/venture-reconciliation-service.h"
+#include "report/venture-headline-home.h"
 #include "dunning/venture-dunning-service.h"
 
 #endif /* VENTURE_SERVER_BUILD */

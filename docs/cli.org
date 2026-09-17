@@ -266,6 +266,22 @@ venturectl report churn 2026-03 organization_id=1 currency=USD
 venturectl report subscriptions_due 2026-03 days=14 organization_id=1
 #+end_src
 
+* Headline metrics
+
+No new verb: the four headline reports run through =report=, and the
+per-organisation settings are an ordinary record type.
+
+#+begin_src sh
+venturectl report cac 2026-Q1
+venturectl report customer_churn this_month days=60
+venturectl report ltv this_year organization_id=1
+venturectl report ltv_cac last_quarter
+venturectl create headline_setting organization_id=1 'hourly_rate=45 USD' \
+  minimum_customer_months=6 activity_days=60
+venturectl update headline_setting 1 classic_home=true   # / back to the old dashboard
+venturectl update expense 42 acquisition=true             # count it in CAC
+#+end_src
+
 =renew= without an ID sweeps all due subscriptions in the selected
 organization; =renew ID= renews one. =--as-of= sets the effective action
 or sweep date. =--dry-run= previews sweeps without writing anything.
