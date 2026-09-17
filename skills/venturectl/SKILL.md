@@ -107,6 +107,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `act TYPE ID ACTION [key=value ...]` | discover and perform a business action; `--stage` proposes it |
 | `recurring run [--as-of DATE] [--dry-run]` | generate due invoices, bills, expenses and journals |
 | `collections run [--as-of DATE]` | queue overdue invoice reminders through the outbox |
+| `dunning sweep [as_of=DATE] [organization_id=N] [limit=N]` | templated reminder policies: one step per invoice per day, escalation to the owner |
 | `batch invoice\|expense format=csv\|json payload=... [post=false] [--dry-run]` | all-or-nothing CSV/JSON document create |
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
@@ -610,6 +611,16 @@ existing settlement, payables and posting services. Closed periods are skipped.
 `collections run --as-of DATE` enqueues overdue reminders with durable
 idempotency keys. `act invoice 0 batch_create` / `act expense 0 batch_create`
 create many documents in one transaction. See `docs/recurring.org`.
+
+## Overdue reminders (dunning)
+
+`dunning sweep as_of=DATE` enqueues the due step of each issued, unpaid,
+undisputed invoice's `dunning_policy` (invoice's, else its company's, else the
+organization default) and records a `dunning_event`; rerunning it sends
+nothing twice. Arguments are `key=value`, not flags. The flagged final step
+creates a `collect: <invoice>` activity for `invoice.owner`. Follow with
+`mail deliver`. `report collections` measures effectiveness per step.
+`dunning_event` cannot be created or edited directly. See `docs/dunning.org`.
 ## Ledger statements
 
 `report balance_sheet`, `income_statement`, `cash_flow`, `general_ledger`,

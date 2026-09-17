@@ -11,8 +11,12 @@ The delivery contract is "at-least-once submission, at-most-once automatic
 retry, operator-resolved uncertainty". This does not promise duplicate-free
 SMTP delivery. A successful send means relay acceptance, not inbox delivery.
 
-A sweep commits =sending= with a lease before attempting submission. A
-definite failure before submission becomes =failed= with exponential backoff
+A sweep commits =sending= with a lease before attempting submission. Between
+the lease and the transport the outbox emits =before-send=; a source lane
+that enqueued the message may recheck its eligibility there (an invoice paid
+after its reminder was queued) and veto, which makes the row =cancelled= with
+the handler's reason. A cancelled row spent no attempt and cannot be retried.
+A definite failure before submission becomes =failed= with exponential backoff
 (60 seconds, 120 seconds, and so on), then =dead= at the attempt limit.
 A lost submission reply becomes =uncertain= and is never automatically
 retried. An expired =sending= lease also becomes =uncertain=: a process crash
@@ -43,7 +47,9 @@ Service-generated invitations use the sensitive =private_text_body= field for th
 Templates substitute ={field}= values from a record's public JSON fields
 into subject, text and HTML. HTML values are escaped. Unknown and sensitive
 fields are refused, and a template cannot render a different organization's
-record.
+record. =venture_mail_template_render_values()= renders from an explicit
+value set instead, for a message composed from several records; the caller
+owns what enters it.
 
 * SMTP configuration
 

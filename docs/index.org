@@ -107,5 +107,6 @@ Two binaries, both statically linked against every vendored dependency: =venture
 - [[file:projects.org][Client projects]] — approved time, billable costs and invoices through settlement
 - [[file:billing.org][SaaS billing]] — plans, customer subscriptions and recurring revenue
 - [[file:recurring.org][Recurring documents]] — reusable invoices, bills, expenses and journals; collections; batch entry
+- [[file:dunning.org][Overdue reminders]] — per-organization reminder policies, escalation to the owner and collection effectiveness
 - [[file:pipelines.org][Sales pipelines]] — configurable stages, next actions, history, loss reasons and forecasts
 - [[file:autojournal.org][Automatic journals]] — configurable sale/expense legs, dated refunds and backfill
