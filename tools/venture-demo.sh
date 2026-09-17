@@ -629,10 +629,12 @@ seed_books () {
 
     # Four accounts the default chart does not carry, because they only
     # matter once there are assets to depreciate and rent paid in advance.
-    add account code=1300 name="Prepaid expenses" kind=asset active=true
+    # 1300 and 6800 are not free: the default chart seeds them as
+    # recoverable tax and bad debt, so these sit beside them instead.
+    add account code=1400 name="Prepaid expenses" kind=asset active=true
     add account code=1500 name="Equipment" kind=asset active=true
     add account code=1590 name="Accumulated depreciation" kind=asset active=true
-    add account code=6800 name="Depreciation" kind=expense active=true
+    add account code=6850 name="Depreciation" kind=expense active=true
 
     # The posting profile is deliberately not written here. The
     # autojournal service builds one the first time it posts anything,
@@ -1268,7 +1270,7 @@ seed_assets () {
         method=straight_line status=draft \
         asset_account_id="$(account_id 1500)" \
         accumulated_depreciation_account_id="$(account_id 1590)" \
-        depreciation_expense_account_id="$(account_id 6800)")"
+        depreciation_expense_account_id="$(account_id 6850)")"
 
     # Placing it in service is what builds the thirty-six month schedule.
     ctl asset place "${laptop}" in_service_at="$(month_start 4)" > /dev/null \
@@ -1277,7 +1279,7 @@ seed_assets () {
     # Rent paid up front, spread over the months it covers.
     add deferral kind=prepayment description="Studio rent, six months" \
         total=1800.00 start="$(month_start 3)" months=6 \
-        source_account_id="$(account_id 1300)" \
+        source_account_id="$(account_id 1400)" \
         target_account_id="$(account_id 6600)" \
         funding_account_id="$(account_id 1000)" status=active
 
