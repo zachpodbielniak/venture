@@ -75,7 +75,8 @@ transaction the service:
 
 1. re-points every reference field the field tables declare against the
    kind, in whatever module and whether or not that module is on, from the
-   loser to the survivor. The list is not hand-written: it is every
+   loser to the survivor; a type whose table was never created because its
+   module has never been on is skipped rather than failing the merge. The list is not hand-written: it is every
    =VENTURE_FIELD_REF= whose target is =company= or =contact=, so
    interactions, activities, deals, quotes, invoices, bills, tickets, leads,
    payments, credits, subscriptions and a plugin's records are all covered,
@@ -153,10 +154,15 @@ venturectl act duplicate_candidate 12 merge survivor=7
 #+end_src
 
 =kind= defaults to =company=; =organization_id= to the default organization.
+The scan is a type-level action and is judged in the organization it names
+(see [[file:orgaccess.org][organization access]]): a member who is not a
+global owner or administrator must pass =organization_id=, and the scan
+runs in that organization and no other. The CLI verbs are spelled through
+=venturectl act=, so =survivor= and =organization_id= are sent as integers.
 
 * Upgrades and verification
 
-Paired migration =000336_dedupe.sql= verifies, after additive metadata
+Paired migration =000400_dedupe.sql= verifies, after additive metadata
 reconciliation, that the =merged_into_id= columns are present on both CRM
 tables and that the candidate table is present or, with the module disabled,
 absent. It preserves every existing row and infers nothing.

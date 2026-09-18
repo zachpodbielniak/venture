@@ -947,10 +947,13 @@ scan_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params, co
 {
 	VentureDedupeService *self = venture_action_get_data(action);
 	const gchar *kind = param_string(params, "kind");
-	gint64 org = param_id(params, "organization_id");
+	/* The placeholder carries the organization the access policy judged
+	 * (venture_action_prepare_target() set it from organization_id), so
+	 * that is the one scanned; a caller never reaches a different one. */
+	gint64 org = entity != NULL ? venture_entity_get_organization_id(entity) : 0;
 	gint open;
 	if (venture_string_is_empty(kind)) kind = KIND_COMPANY;
-	if (org <= 0 && entity != NULL) org = venture_entity_get_organization_id(entity);
+	if (org <= 0) org = param_id(params, "organization_id");
 	if (org <= 0)
 	{
 		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION);

@@ -453,5 +453,6 @@ merges nothing; its answer reports the number of open candidates as =score=.
 =dedupe merge= folds the other record of candidate =ID= into the survivor in
 one transaction; =--stage= proposes it for approval. =dedupe dismiss= closes
 a candidate as not a duplicate. =list duplicate_candidate status=open= reads
-the proposals. See [[file:dedupe.org][duplicates]] for the matching rules and
+the proposals. A non-admin must name the organization to scan; each verb is
+the =act= command on =duplicate_candidate= with typed arguments. See [[file:dedupe.org][duplicates]] for the matching rules and
 what a merge moves.
