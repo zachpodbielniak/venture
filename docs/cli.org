@@ -234,7 +234,18 @@ records. Lifecycle status and schedule history are service-owned. See
 * Organization access and journal posting
 
 The ordinary =list/get/create/update/delete/describe= commands also manage
-=organization_membership=, =team= and =team_membership=. Tokens constrain all
+=organization_membership=, =team= and =team_membership=. Inviting an outside
+accountant is the same two records — no new verb:
+
+#+begin_src sh
+venturectl create user username=cpa role=viewer password=...      # global owner
+venturectl create organization_membership user_id=7 organization_id=1 role=accountant active=true
+venturectl create organization_membership user_id=7 organization_id=2 role=accountant active=true
+#+end_src
+
+Signed in as that user, =venturectl= reads and exports the books of each
+client organisation and nothing else; a write is refused with a message
+naming the accountant role. See [[file:orgaccess.org][the role matrix]]. Tokens constrain all
 responses to their mint-time memberships intersected with current authority.
 Selecting =organization_id= only narrows that scope. Global owners keep the
 existing output formats and data authority.
@@ -440,3 +451,19 @@ venturectl -f csv report general_ledger 2026-08 organization_id=1 currency=USD a
 The =statements= reports accept =compare_to= for a prior period, =as_of= for
 an accounting cutoff, and one =organization_id= and =currency=. General
 ledger optionally accepts =account_id=. See [[file:statements.org][financial statement definitions]].
+
+The year-end pack is a report too, so the same verb runs it; =-f csv= gives
+the retained shape (one line per file line) and the zip comes from the web
+route:
+
+#+begin_src sh
+venturectl report year_end_pack fy_2025 organization_id=1 basis=accrual
+venturectl create saved_report name="FY2025 year end" report_name=year_end_pack period=fy_2025
+venturectl create report_pack name="Year end" schedule="0 8 1 1 *" saved_report_ids=3
+curl -H "Authorization: Bearer $TOKEN" -o year-end-pack.zip \
+  'https://venture.example/books/year-end-pack.zip?period=fy_2025'
+curl -H "Authorization: Bearer $TOKEN" -o retained.zip \
+  'https://venture.example/books/packs/5/year-end-pack.zip'
+#+end_src
+
+See [[file:reporting.org][the year-end pack]] for what is in it.

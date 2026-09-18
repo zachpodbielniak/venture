@@ -321,3 +321,21 @@ posting veto after the first documents leaves nothing; the row limit, CSV
 templates and CSV payloads, opening stock and its rollback, the module switch,
 and the page, preview, action,
 template and CSV routes (including the selected legal entity) are covered.
+
+** =test-accountant=
+
+The accountant membership reads and exports every finance-owned type but
+payroll, the organisation and company rows and expense-attached documents;
+every write and delete is refused naming the role before any row is
+touched, and no proposal is raised. Leads, deals, activities, tickets, mail,
+sequences, contacts, sales, payroll, teams, memberships, other users,
+webhooks and saved views answer not-found for reads and writes alike. A
+CPA's memberships in several organisations scope the picker and the books
+to exactly those; a token minted as an accountant cannot write after a
+promotion. =year_end_pack= yields every file and =index.txt=, names an
+omitted member when its module is off, rides the scheduled pack path into
+=last_output= and rebuilds its zip from those retained bytes. Over HTTP the
+owner invites through the existing user and membership routes; the
+accountant lands on =/books= with a Books-only sidebar, switches entity,
+downloads the zip, reads and exports the books, and receives 404 for CRM
+and 403 naming the role for a write.
