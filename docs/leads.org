@@ -284,7 +284,7 @@ and skipped members, venture placement, re-route, the scoring sum and its
 history, manual override and rescore, refusal of generic history and
 routing-reference writes, both reports and the real CLI verbs.
 
-Paired migration =000370_lead_routing.sql= verifies that the three routing
+Paired migration =000371_lead_routing.sql= verifies that the three routing
 and scoring tables are present together, or all absent when the module is
 disabled; the lead's =score_manual= and =routing_rule_id= columns come from
 additive metadata reconciliation.
