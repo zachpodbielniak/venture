@@ -4,6 +4,9 @@
 
 #define BOOKING_MAX_SLOTS 500
 #define BOOKING_DEFAULT_HORIZON 14
+#define BOOKING_MAX_NAME 200
+#define BOOKING_MAX_EMAIL 254
+#define BOOKING_MAX_NOTES 4000
 
 struct _VentureBookingService {
 	GObject parent_instance;
@@ -266,6 +269,11 @@ VentureEntity *venture_booking_service_book(VentureBookingService *self, Venture
 	normal = venture_lead_normalize_email(email);
 	if (venture_string_is_empty(name)) return refuse(error, VENTURE_ERROR_VALIDATION, "A name is required"), NULL;
 	if (!*normal || !strchr(normal, '@')) return refuse(error, VENTURE_ERROR_VALIDATION, "An email address is required"), NULL;
+	/* The page is public: what a stranger types is bounded before it becomes a subject. */
+	if (strlen(name) > BOOKING_MAX_NAME || strlen(normal) > BOOKING_MAX_EMAIL || (notes && strlen(notes) > BOOKING_MAX_NOTES))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "The name, email or notes are too long"), NULL;
+	if (!g_utf8_validate(name, -1, NULL) || (notes && !g_utf8_validate(notes, -1, NULL)))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "The name and notes must be UTF-8"), NULL;
 	when = venture_string_is_empty(start) ? NULL : venture_time_from_string(start, NULL);
 	if (!when) return refuse(error, VENTURE_ERROR_VALIDATION, "A start time is required"), NULL;
 	if (!page_read(page, &p, error)) { page_clear(&p); return NULL; }

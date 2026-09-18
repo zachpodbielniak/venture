@@ -71,9 +71,11 @@ static HtmxResponse *venture_web_booking_page(HtmxRequest *request, GHashTable *
 	g_autoptr(JsonNode) slots = NULL;
 	g_autofree gchar *address = venture_auth_remote_address(request);
 	const gchar *slug = g_hash_table_lookup(params, "slug");
-	gint64 rate = 0;
+	GBytes *bytes = htmx_request_get_body_bytes(request);
+	gint64 rate = 0, max_mb = 0;
 	if (!venture_web_module_enabled(self, "calendar")) return venture_web_booking_plain(404, "Not found");
-	g_object_get(venture_context_get_config(self->context), "security-login-rate-limit", &rate, NULL);
+	g_object_get(venture_context_get_config(self->context), "security-login-rate-limit", &rate, "server-max-request-size-mb", &max_mb, NULL);
+	if (bytes && g_bytes_get_size(bytes) > (guint64)MAX(max_mb, 1) * 1024 * 1024) return venture_web_booking_plain(413, "Too large");
 	if (self->lead_limiter == NULL) self->lead_limiter = htmx_rate_limiter_new((guint)MAX(rate, 1), MAX(rate, 1) / 60.0);
 	if (!htmx_rate_limiter_allow(self->lead_limiter, address != NULL ? address : "unknown")) return venture_web_booking_plain(429, "Try again later");
 	service = venture_booking_service_new(venture_context_get_database(self->context));

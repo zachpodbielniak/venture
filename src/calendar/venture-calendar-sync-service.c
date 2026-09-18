@@ -71,37 +71,22 @@ gchar *venture_calendar_sync_event_uid(VentureEntity *activity)
 }
 
 /* --- Mapping between an activity and a VEVENT ----------------------------- */
-static const gchar *rrule_for(gint recurrence)
-{
-	switch (recurrence) {
-	case VENTURE_ACTIVITY_RECURRENCE_DAILY: return "FREQ=DAILY";
-	case VENTURE_ACTIVITY_RECURRENCE_WEEKLY: return "FREQ=WEEKLY";
-	case VENTURE_ACTIVITY_RECURRENCE_MONTHLY: return "FREQ=MONTHLY";
-	default: return NULL;
-	}
-}
-/* Only the frequency an activity can repeat by is read; the rule itself
- * is not expanded, the calendar displays it. */
-static gint recurrence_for(const gchar *rrule)
-{
-	g_autofree gchar *upper = g_ascii_strup(rrule ? rrule : "", -1);
-	if (strstr(upper, "FREQ=DAILY")) return VENTURE_ACTIVITY_RECURRENCE_DAILY;
-	if (strstr(upper, "FREQ=WEEKLY")) return VENTURE_ACTIVITY_RECURRENCE_WEEKLY;
-	if (strstr(upper, "FREQ=MONTHLY")) return VENTURE_ACTIVITY_RECURRENCE_MONTHLY;
-	return VENTURE_ACTIVITY_RECURRENCE_NONE;
-}
+/* Recurrence is not carried either way, for the reason the .ics export gives:
+ * each stored occurrence is a separate event and recurrence is advanced by
+ * completion, so a series written as RRULE would be duplicated by the next
+ * occurrence, and a series read from the calendar is the calendar's to expand.
+ * The RRULE text stays on the parsed event for display; it is never expanded. */
 static VentureICalEvent *event_for_activity(VentureEntity *activity)
 {
 	VentureICalEvent *event = venture_ical_event_new();
 	g_autoptr(GDateTime) starts = NULL, ends = NULL, due = NULL;
-	gint status, recurrence;
+	gint status;
 	g_object_get(activity, "subject", &event->summary, "body", &event->description, "starts-at", &starts, "ends-at", &ends,
-		"due-at", &due, "status", &status, "recurrence", &recurrence, NULL);
+		"due-at", &due, "status", &status, NULL);
 	event->uid = venture_calendar_sync_event_uid(activity);
 	event->starts = g_date_time_ref(starts ? starts : due);
 	event->ends = ends ? g_date_time_ref(ends) : NULL;
 	event->status = g_strdup(status == VENTURE_ACTIVITY_STATUS_CANCELLED || venture_entity_is_deleted(activity) ? "CANCELLED" : "CONFIRMED");
-	event->rrule = g_strdup(rrule_for(recurrence));
 	event->last_modified = venture_entity_get_updated_at(activity) ? g_date_time_to_utc(venture_entity_get_updated_at(activity)) : NULL;
 	event->sequence = venture_entity_get_version(activity);
 	return event;
@@ -118,7 +103,7 @@ static void apply_event(VentureEntity *activity, const VentureICalEvent *event)
 	gint status;
 	g_object_get(activity, "status", &status, NULL);
 	g_object_set(activity, "subject", event->summary && *event->summary ? event->summary : "(untitled)", "body", event->description,
-		"starts-at", event->starts, "ends-at", event->ends, "due-at", event->starts, "recurrence", recurrence_for(event->rrule), NULL);
+		"starts-at", event->starts, "ends-at", event->ends, "due-at", event->starts, NULL);
 	/* A done activity keeps its completion; planned and cancelled follow the calendar. */
 	if (status != VENTURE_ACTIVITY_STATUS_DONE)
 		g_object_set(activity, "status", !g_strcmp0(event->status, "CANCELLED") ? VENTURE_ACTIVITY_STATUS_CANCELLED : VENTURE_ACTIVITY_STATUS_PLANNED, NULL);
@@ -271,7 +256,11 @@ static gboolean pull_event(Pass *pass, const VentureCalDavItem *item, GError **e
 		g_propagate_error(error, g_steal_pointer(&parse_error));
 		return FALSE;
 	}
-	if (!link) link = link_by(pass, "uid", event->uid);
+	if (!link) {
+		/* Known UID at a new path: the event was moved on the server; follow it. */
+		link = link_by(pass, "uid", event->uid);
+		if (link) g_object_set(link, "href", item->href, NULL);
+	}
 	if (link) {
 		g_hash_table_add(pass->seen, GINT_TO_POINTER((gint)venture_entity_get_id(link)));
 		g_object_get(link, "activity-id", &activity_id, "local-version", &local_version, NULL);
@@ -314,11 +303,12 @@ static gboolean pull_event(Pass *pass, const VentureCalDavItem *item, GError **e
 	} else {
 		gint status;
 		g_object_get(activity, "status", &status, NULL);
+		/* A done activity keeps its values; the note is only written when something was replaced. */
 		if (status != VENTURE_ACTIVITY_STATUS_DONE) {
 			apply_event(activity, event);
 			if (!venture_database_save(db, activity, pass->actor, error)) goto fail;
+			if (previous && !note_on_timeline(db, activity, "Calendar copy was newer and replaced these values", previous, error)) goto fail;
 		}
-		if (previous && !note_on_timeline(db, activity, "Calendar copy was newer and replaced these values", previous, error)) goto fail;
 	}
 	if (!link) { created = new_link(pass, activity, event->uid, item->href); link = created; }
 	stamp_link(link, activity, etag, event->last_modified);

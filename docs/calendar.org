@@ -52,10 +52,13 @@ sweep. One pass over an account:
    =calendar_event= link is fetched and parsed. A UID the sync has not seen
    becomes a planned activity of kind =meeting= owned by the account owner,
    with the summary as subject, the description as body, DTSTART and DTEND
-   as start and end (and start as due), STATUS:CANCELLED as =cancelled=, and
-   the RRULE's frequency as the activity's =recurrence= when it is daily,
-   weekly or monthly. A UID already linked updates that one activity. A
-   VTODO, a journal entry or an event without UID or DTSTART is skipped.
+   as start and end (and start as due) and STATUS:CANCELLED as =cancelled=.
+   A UID already linked updates that one activity, and follows it if the
+   server moved it to another path. A VTODO, a journal entry or an event
+   without UID or DTSTART is skipped. An RRULE is kept on the parsed event
+   for display and is neither expanded nor turned into a local
+   =recurrence=: a series is the calendar's to expand, and the activity is
+   its first occurrence.
 3. *Removed on the server.* A link whose event is no longer listed cancels
    its activity — a planned one becomes =cancelled=, a done one is left as it
    is — and a note is written to the activity's timeline. Nothing is
@@ -65,7 +68,10 @@ sweep. One pass over an account:
    uses, at =<calendar_path>/<uid>.ics=. A new activity is created with
    =If-None-Match: *=; a changed one is replaced with =If-Match= on the etag
    last seen. An activity cancelled or deleted here is pushed once more as
-   =STATUS:CANCELLED= rather than removed from the calendar.
+   =STATUS:CANCELLED= rather than removed from the calendar. No RRULE is
+   written, for the reason the =.ics= export gives none: each stored
+   occurrence is a separate event and recurrence is advanced by completion,
+   so a series would be duplicated by the next occurrence.
 5. Records the ctag and the outcome on the account.
 
 Each pulled event, cancellation and push is its own transaction, and the
@@ -76,7 +82,7 @@ so a repaired or lost link cannot double-file an event: an event carrying
 our own =@venture= UID with no link is re-attached to its activity by uuid.
 
 Done activities keep their completion and outcome; a change to one on the
-calendar is not applied. Tasks, email and followups are not pushed; only
+calendar is not applied and leaves no note. Tasks, email and followups are not pushed; only
 calls and meetings with a start or due time are. Calendar events pulled in
 are owned by the account owner and, like any activity, can be completed,
 snoozed, reassigned or cancelled through =VentureActivityService=.
@@ -129,8 +135,11 @@ meeting appears on the owner's worklist and, on the next sweep, their
 calendar. Sending a confirmation is one enqueue on the mail outbox, in
 =VentureBookingService=, when the product wants it.
 
-The page is public: no session, the same per-address rate limit as lead
-capture, 404 for an unknown or inactive slug or when the module is off.
+The page is public: no session, the same per-address rate limit and
+request-size cap as lead capture, 404 for an unknown or inactive slug or
+when the module is off, and what a stranger types is bounded — a name over
+200 characters, an address over 254 or notes over 4000 are refused with 422
+before anything is written.
 
 * Running it
 
@@ -169,16 +178,23 @@ event is escaped and folded exactly as the =.ics= export is.
 
 Field metadata adds the three tables when the module is enabled. Existing
 activities are unchanged; nothing is pushed until an account is created and
-synced.
+synced. Migration =000380_calendar= rewrites nothing: it verifies the three
+tables are present together or all absent (the module off), and that the
+=(organization, uid_key)= key on =calendar_event= and the =(organization,
+slug)= key on =booking_page= exist, since a rerun being a no-op and
+=/book/<slug>= answering one page rest on them. =test-calendar= runs the
+guard against a half-present schema and migrates with the module disabled.
 
 =test-calendar= covers the field tables and module, the missing-secret
 refusal naming the variable, the =VENTURE_CALDAV_*= prefix, push with stable
-UIDs and an idempotent rerun, pull into meetings by UID and update in place,
+UIDs and an idempotent rerun, pull into meetings by UID and update in place
+(following an event the server moved, leaving a done activity alone),
 cancellation on both sides rather than deletion, last-modified conflict
 resolution with the timeline note in both directions, the iCalendar reader
 and writer, slot computation in the owner's zone with busy times and
-buffers, booking with contact deduplication, double-booking and bad-input
-refusals, and the organization sweep. =test-auth= covers anonymous refusal
+buffers, booking with contact deduplication, double-booking, bad-input and
+oversized-input refusals, the organization sweep, and migration =000380=
+with the module on, off and against a half-present schema. =test-auth= covers anonymous refusal
 of the sync route, owner-only =calendar_account= and the =calendar_event=
 write refusal. =test-calendar-surfaces= drives =venturectl calendar sync=
 and =/book/<slug>= over HTTP against a private server.

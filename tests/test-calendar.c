@@ -212,6 +212,7 @@ static void test_pull(Fixture *f, gconstpointer data)
 	g_autofree gchar *ics = remote_ics("abc-123@phone", "Dentist", "20260922T130000Z", "20260922T140000Z", "20260917T090000Z",
 		"DESCRIPTION:Bring the\\, forms\\nSecond line\r\nRRULE:FREQ=WEEKLY\r\nBEGIN:VALARM\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\n");
 	g_autofree gchar *changed = NULL;
+	g_autoptr(GError) error = NULL;
 	(void)data;
 	venture_fake_caldav_client_set_remote(f->caldav, "/calendars/ben/default/abc-123.ics", ics);
 	g_assert_cmpint(run_sync(f, a), ==, 1);
@@ -230,7 +231,8 @@ static void test_pull(Fixture *f, gconstpointer data)
 		g_assert_cmpint(g_date_time_difference(ends, starts), ==, G_TIME_SPAN_HOUR);
 		g_assert_cmpint(status, ==, VENTURE_ACTIVITY_STATUS_PLANNED);
 		g_assert_cmpstr(body, ==, "Bring the, forms\nSecond line");
-		g_assert_cmpint(recurrence, ==, VENTURE_ACTIVITY_RECURRENCE_WEEKLY);
+		/* The RRULE is the calendar's to expand: it does not become a local recurrence, which completion would duplicate. */
+		g_assert_cmpint(recurrence, ==, VENTURE_ACTIVITY_RECURRENCE_NONE);
 	}
 	/* The pulled event is not pushed back, and a rerun creates nothing. */
 	g_assert_cmpint(venture_fake_caldav_client_get_puts(f->caldav), ==, 0);
@@ -247,6 +249,44 @@ static void test_pull(Fixture *f, gconstpointer data)
 	g_assert_cmpint(venture_entity_get_id(again), ==, venture_entity_get_id(activity));
 	g_assert_cmpint(venture_fake_caldav_client_get_puts(f->caldav), ==, 0);
 	g_assert_cmpint(run_sync(f, a), ==, 0);
+	/* Moved on the server (same UID, new path): the same activity follows it; nothing is cancelled or duplicated. */
+	venture_fake_caldav_client_remove_remote(f->caldav, "/calendars/ben/default/abc-123.ics");
+	g_free(changed);
+	changed = remote_ics("abc-123@phone", "Dentist (moved again)", "20260924T130000Z", "20260924T140000Z", "20260917T110000Z", NULL);
+	venture_fake_caldav_client_set_remote(f->caldav, "/calendars/ben/default/renamed.ics", changed);
+	g_assert_cmpint(run_sync(f, a), ==, 1);
+	g_assert_cmpint(count_type(f, "activity"), ==, 1);
+	g_assert_cmpint(count_type(f, "calendar_event"), ==, 1);
+	g_clear_object(&again);
+	again = activity_by_subject(f, "Dentist (moved again)");
+	g_assert_nonnull(again);
+	{
+		gint status;
+		g_object_get(again, "status", &status, NULL);
+		g_assert_cmpint(status, ==, VENTURE_ACTIVITY_STATUS_PLANNED);
+	}
+	g_assert_cmpint(run_sync(f, a), ==, 0);
+	/* Done here: a later calendar change neither reopens it nor rewrites it, and leaves no note. */
+	{
+		g_autoptr(VentureEntity) acted = venture_activity_service_act(venture_database_get_activity_service(f->db), again, "complete", NULL, NULL, &error);
+		g_autoptr(VentureEntity) kept = NULL;
+		g_autoptr(GPtrArray) notes = NULL;
+		g_autofree gchar *subject = NULL;
+		gint status;
+		g_assert_no_error(error);
+		g_assert_nonnull(acted);
+		g_free(changed);
+		changed = remote_ics("abc-123@phone", "Dentist (after done)", "20260925T130000Z", "20260925T140000Z", "20991231T000000Z", NULL);
+		venture_fake_caldav_client_set_remote(f->caldav, "/calendars/ben/default/renamed.ics", changed);
+		g_assert_cmpint(run_sync(f, a), ==, 1);
+		kept = venture_database_get(f->db, VENTURE_TYPE_ACTIVITY, venture_entity_get_id(again), NULL);
+		g_object_get(kept, "subject", &subject, "status", &status, NULL);
+		g_assert_cmpstr(subject, ==, "Dentist (moved again)");
+		g_assert_cmpint(status, ==, VENTURE_ACTIVITY_STATUS_DONE);
+		notes = timeline_notes(f, kept);
+		g_assert_cmpuint(notes->len, ==, 0);
+		g_assert_cmpint(run_sync(f, a), ==, 0);
+	}
 }
 
 /* Rule 2c: a deletion on either side cancels the other side; nothing is deleted. */
@@ -495,6 +535,20 @@ static void test_booking_books_and_refuses_double(Fixture *f, gconstpointer data
 	g_assert_null(off);
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 	g_clear_error(&error);
+	/* Public input is bounded: an oversized name or notes is refused before anything is written. */
+	{
+		g_autofree gchar *huge = g_strnfill(4001, 'n');
+		off = venture_booking_service_book(f->booking, p, "2026-09-22T14:00:00Z", huge, "x@example.test", NULL, now, NULL, &error);
+		g_assert_null(off);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_clear_error(&error);
+		off = venture_booking_service_book(f->booking, p, "2026-09-22T14:00:00Z", "X", "x@example.test", huge, now, NULL, &error);
+		g_assert_null(off);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_clear_error(&error);
+		g_assert_cmpint(count_type(f, "activity"), ==, 2);
+		g_assert_cmpint(count_type(f, "contact"), ==, 2);
+	}
 	/* An inactive page is not found by its slug. */
 	g_object_set(p, "active", FALSE, NULL);
 	save(f, p);
@@ -534,6 +588,70 @@ static void test_sweep(Fixture *f, gconstpointer data)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 }
 
+/* Migration 000380 is recorded on a fresh database and sees the three tables
+ * and the two unique keys it guards; run against a half-present schema the
+ * guard refuses; with the module off it succeeds and creates nothing. */
+static gint64 scalar(Fixture *f, const gchar *sql)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(OrmResult) result = venture_database_query_raw(f->db, sql, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_result_next(result));
+	return orm_row_get_integer(orm_result_get_row(result), 0);
+}
+static void test_migration(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureDatabase) partial = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *guard = NULL;
+	(void)data;
+	g_assert_cmpint(scalar(f, "SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations WHERE version = 380"), ==, 1);
+	g_assert_cmpint(scalar(f, "SELECT CAST(COUNT(*) AS BIGINT) FROM sqlite_master WHERE type = 'table' AND name IN ('calendar_accounts', 'calendar_events', 'booking_pages')"), ==, 3);
+	g_assert_cmpint(scalar(f, "SELECT CAST(COUNT(*) AS BIGINT) FROM sqlite_master WHERE type = 'index' AND name IN ('uq_calendar_events_organization_uid_key', 'uq_booking_pages_organization_slug')"), ==, 2);
+	g_assert_true(g_file_get_contents("migrations/sqlite/000380_calendar.sql", &guard, NULL, &error));
+	g_assert_no_error(error);
+	partial = venture_database_new("sqlite://:memory:", &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(partial, guard, NULL, &error)); /* absent: the module is off */
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(partial, "CREATE TABLE calendar_events (id INTEGER, uid_key TEXT)", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_database_execute(partial, guard, NULL, &error)); /* one table, no key */
+	g_assert_nonnull(error);
+}
+static void test_migrate_disabled(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = NULL;
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(OrmResult) result = NULL;
+	g_autoptr(VentureConfig) everything = NULL;
+	g_autoptr(VentureModuleRegistry) registry = NULL;
+	venture_config_set_module_enabled(config, "calendar", FALSE);
+	db = venture_database_new("sqlite://:memory:", &error);
+	g_assert_no_error(error);
+	context = venture_context_new(config, db);
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	result = venture_database_query_raw(db, "SELECT CAST(COUNT(*) AS BIGINT) FROM sqlite_master WHERE type = 'table' AND name IN ('calendar_accounts', 'calendar_events', 'booking_pages')", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_result_next(result));
+	g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 0);
+	g_clear_object(&result);
+	result = venture_database_query_raw(db, "SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations WHERE version = 380", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_result_next(result));
+	g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 1);
+	g_clear_object(&context);
+	g_clear_object(&db);
+	everything = venture_config_new();
+	registry = venture_module_registry_new();
+	venture_module_registry_register_builtins(registry);
+	g_assert_true(venture_module_registry_configure(registry, everything, NULL));
+	venture_module_registry_apply(registry, venture_entity_registry_get_default());
+}
+
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
@@ -548,5 +666,7 @@ int main(int argc, char **argv)
 	g_test_add("/calendar/booking-slots", Fixture, NULL, setup, test_booking_slots, teardown);
 	g_test_add("/calendar/booking-books-and-refuses-double", Fixture, NULL, setup, test_booking_books_and_refuses_double, teardown);
 	g_test_add("/calendar/sweep", Fixture, NULL, setup, test_sweep, teardown);
+	g_test_add("/calendar/migration", Fixture, NULL, setup, test_migration, teardown);
+	g_test_add_func("/calendar/migrate-disabled", test_migrate_disabled);
 	return g_test_run();
 }
