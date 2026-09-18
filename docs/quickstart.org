@@ -1,212 +1,252 @@
 #+title: VENTURE quickstart
-#+description: Build it, run it, record your first sale
+#+description: Zero to a running VENTURE with the demo organisation, an invoice, a bank statement and a closed period
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-13]
+#+updated: [2026-09-17]
 #+version: 0.6.0
 
+* Zero to running
 
-* Seeing it with data in it
+This page is one path, in order: get the prerequisites, build, start an
+instance seeded with the demo organisation, open the five-card home,
+issue an invoice, import a bank statement that pays it, close a period,
+stop. Every block is copy-pasteable from a checkout, and every block
+after the build is run by the test suite exactly as printed here, against
+SQLite, with its result asserted (=tests/docs-quickstart.sh=, driven by
+=test-docs=). If a command is on this page, it works; if it stops
+working, the suite goes red before you find out.
 
-An empty ERP tells you nothing about what it is for. =make demo= builds the debug binaries, starts a throwaway instance on 127.0.0.1:8749 and seeds a small but complete business into it:
+The build is the slow part: a fresh tree compiles seven vendored
+libraries as well as VENTURE, which takes several minutes on four cores.
+Everything after it takes under a minute.
 
-#+begin_src bash
-make demo               # build, seed, run in the foreground; Ctrl+C stops it
-make DEMOFLAGS=-d demo  # leave it running in the background
-make demo-stop          # stop that one and delete its data
+* 1. Prerequisites
+
+On Fedora, =make list-deps= prints the packages the build needs; two more
+are podomation's and easy to miss:
+
+#+begin_src sh
+sudo dnf install -y git gcc make $(make list-deps) libetpan-devel libgudev-devel
 #+end_src
 
-It prints the URL and the owner password when it is ready. What is in there: two ventures, a year of sales and expenses, companies and contacts, a sales pipeline whose deals have been walked through their stages and one of them lost with a reason, invoices raised and issued and one settled by a receipt, a support desk with service-level policies, macros, a rota, a sprint, fourteen tickets with a conversation and logged time and one deliberately missed promise, a release that went out and the incident that followed, and two dashboards — one for the desk, one for the money.
+You also need =curl= and =python3=, which the demo seeding uses to talk
+to the API. Emacs is optional: it is what renders the documentation
+site when present, and the builtin renderer does the job when it is not
+(see [[file:docs-site.org][the documentation site]]).
 
-Behind that sits a full set of books. A general ledger posted by the trade itself rather than typed in beside it, a fiscal year with its first quarter closed and every report snapshotted at the close, supplier bills approved and part paid, customer and vendor credits with refunds against them, a bank statement imported and matched against the documents it corresponds to, a capitalised laptop on a thirty-six month depreciation schedule and rent paid six months in advance, quotes sent and one accepted into an invoice, subscriptions with an MRR and a dunning ladder behind them, a follow-up sequence enrolled and run, and an outbox with mail queued in it. Every report has figures.
+* 2. Build
 
-Two things it deliberately does not fake. *Stripe and federation stay off*, because one needs an account and the other needs a second server. And there are no dunning notices, because a notice is what happens when a renewal goes unpaid and a financial event cannot be dated into the future — the ladder that would produce them is seeded, the failures have simply not happened yet.
+** Native, from the tree
 
-Three things worth knowing about it. It listens on *8749*, not 8747 or 8748, so it cannot collide with a container or with =just start=; it refuses to start if something else is already answering there, because seeding example data into a real instance is the one mistake it must never make. The database is =build/demo/venture.db= and is *deleted and rebuilt on every run*, so nothing you do to the demo matters. And every record goes in through =venturectl= and the REST API rather than into the database directly, so a demo that seeds is also a demonstration that the API can build one.
-
-The script is =tools/venture-demo.sh= and takes =--help=. Everything it creates is readable there: it is the shortest description of what a working VENTURE looks like.
-
-* Running a local instance
-
-There is a =Justfile= for this, because it is a workflow rather than a build:
-
-#+begin_src bash
-just start          # build if needed, then run on 127.0.0.1:8748
-just status         # is it up
-just password       # the owner password, from the first-run log
-just ctl list ticket
-just sql "SELECT id, title FROM tickets"
-just logs           # follow
-just restart
-just stop
-just reset          # throw the database away -- asks twice
-#+end_src
-
-Run =just= on its own for the grouped list.
-
-Port 8748, not the configured default of 8747: that is where a containerised instance from =compose.yaml= listens, and colliding with it would mean either failing to bind or — worse — talking to the container while you believe you are testing the build tree.
-
-The session secret is generated once into the state directory rather than at each startup, so a restart does not log you out. =just reset= removes it along with the database, since both belong to the instance being discarded.
-
-=just reset= is the only recipe that destroys anything, so it asks twice and prints what is actually there first — "delete 47 tickets and 12 invoices?" gets read, where "delete the database?" gets answered by reflex. With no terminal to ask it refuses rather than assuming, which is what stops a pipeline eating a local database. =just force=true reset= skips both prompts for a script that means it.
-
-=just sql= is the reason to prefer this over =make compose-up=: when a report is wrong, opening the database with the same tools you would use on any other file is the first useful thing, and it works while the server is still running.
-
-make still builds. The Justfile only ever calls it.
-* Quickstart
-
-** Build
-
+#+name: build-native
 #+begin_src sh
 git submodule update --init --recursive
 make DEBUG=1
 #+end_src
 
-Output lands in =build/debug/=. A release build (=make=) lands in =build/release/=.
+Output lands in =build/debug/=: the =venture= server, the =venturectl=
+client, the example plugins and the pod modules. A release build
+(=make=) lands in =build/release/= and the rest of this page works the
+same with =BUILD_TYPE=release=.
 
-On Fedora, =make list-deps= prints the packages to layer into an image build:
+** Or a container
 
-#+begin_src
-gcc make pkgconf-pkg-config glib2-devel libyaml-devel json-glib-devel
-libsoup3-devel libxml2-devel sqlite-devel libpq-devel readline-devel
-gobject-introspection-devel
-#+end_src
-
-** First run
-
-#+begin_src sh
-./build/debug/venture --state-dir ~/.local/share/venture
-#+end_src
-
-On a fresh database this creates the schema, seeds a default organisation, a chart of accounts, tax categories and control-account mappings, then prints an owner password once. Open =/setup= to finish a new legal entity's books before the first invoice.
-
-#+begin_src
-  Created the owner account.
-  Username: owner
-  Password: ffda5449ded6106ab817d6ec
-
-  This is shown once. Save it now.
-
-VENTURE 0.6.0 listening on http://127.0.0.1:8747
-#+end_src
-
-Pass =--owner-password= to choose it yourself.
-
-** Mint a token for the CLI
-
-In the browser: *Your account → API tokens*, or
-[[http://localhost:8747/account/tokens][localhost:8747/account/tokens]].
-Name it, optionally give it an expiry, and copy the secret — it is shown
-exactly once. The same page revokes it again.
-
-Over HTTP, if you would rather not leave the terminal:
+If you would rather not install a toolchain, the container builds
+everything inside the image and gives you an empty instance on
+127.0.0.1:8747 with the owner password in its log:
 
 #+begin_src sh
-# Sign in and keep the session cookie
-COOKIE=$(curl -s -i -X POST -d 'username=owner&password=YOURPASSWORD' \
-  localhost:8747/login | grep -oP 'Set-Cookie: \K[^;]+')
-
-# Mint a token; it is shown exactly once
-curl -s -X POST -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
-  -d '{"name":"laptop"}' localhost:8747/api/v1/tokens
+git submodule update --init --recursive
+podman-compose up --build -d
+podman logs venture-dev | grep -A3 'owner account'
 #+end_src
 
+The container path stops here: the demo organisation below is seeded by
+a script that drives the binaries in =build/=, so it is a build-tree
+feature. Follow [[file:containers.org][Containers]] for the rest of a
+containerised install, and come back to step 5 with an API token from
+=/account/tokens= once you have data of your own.
+
+* 3. First run, with the demo organisation
+
+Two variables for the rest of the page. The defaults are what a person
+wants; the test suite overrides both so its run is private.
+
+#+name: qs-env
 #+begin_src sh
-export VENTURE_TOKEN=vk_...
-export VENTURE_SERVER=http://127.0.0.1:8747
+export VENTURE_SERVER="http://127.0.0.1:${PORT:-8749}"
+export VENTURE_DEMO_STATE="${VENTURE_DEMO_STATE:-$PWD/build/demo}"
+export PATH="$PWD/build/${BUILD_TYPE:-debug}:$PATH"
 #+end_src
 
-Put those in =~/.bashrc-secrets= rather than =~/.bashrc=.
+Then start a throwaway instance and seed it. This is the same thing
+=make DEBUG=1 DEMOFLAGS=-d demo= does after building; the script takes
+=--help=.
 
-** Record something
-
+#+name: qs-seed
 #+begin_src sh
-venturectl create venture name='Book imprint' slug=books \
-                          venture_type=books status=active
-
-venturectl create product venture_id=1 name='Starfall' \
-                          genre=science-fiction list_price=14.99
-
-venturectl create sale venture_id=1 product_id=1 quantity=1 \
-                       gross=14.99 fees=2.10 occurred_at=2026-08-14
-
-venturectl create expense venture_id=1 description='Cover art' \
-                          amount=250.00 category=supplies \
-                          deductibility=full occurred_at=2026-08-01
+tools/venture-demo.sh --detach
+export VENTURE_TOKEN="$(cat "$VENTURE_DEMO_STATE/token")"
+venturectl health
 #+end_src
 
-** Look at it
+It prints the URL and the owner password when it is ready, and leaves an
+owner API token in =$VENTURE_DEMO_STATE/token= so the CLI works at once.
+What is in there: two ventures, a year of sales and expenses posted
+through to a general ledger, companies and contacts, a sales pipeline,
+invoices issued and one settled, supplier bills, a matched bank
+statement, a fiscal year with its first quarter closed, a support desk,
+a sprint, a release and an incident, and two dashboards. Every record
+went in through =venturectl= and the REST API, so the script itself
+(=tools/venture-demo.sh=) is the shortest description of what a working
+VENTURE looks like.
 
+It listens on 8749, not 8747 or 8748, so it cannot collide with a
+container or with =just start=, and it refuses to start if something
+else answers there. Its database is =$VENTURE_DEMO_STATE/venture.db=
+and is deleted and rebuilt on every run.
+
+* 4. Open the five-card home
+
+Open =$VENTURE_SERVER= in a browser and sign in as =owner= with the
+password the script printed. The home page is the headline cards, one per
+question the business is run on: P&L, CAC, churn, LTV:CAC and support
+(and recurring revenue when billing is on), each a number for this month,
+an arrow against last month, and a link to the report it came from. The
+same cards are one JSON call, an array with one object per card:
+
+#+name: qs-home
 #+begin_src sh
-venturectl report pnl this_month
-venturectl report categories this_year     # by genre
-venturectl list sale period=this_month
-venturectl types expense                   # every field of a record type
+curl -s -H "Authorization: Bearer $VENTURE_TOKEN" \
+  "$VENTURE_SERVER/api/v1/headline?period=this_month" \
+  | python3 -c 'import json, sys
+for card in json.load(sys.stdin):
+    print(card["key"].ljust(10), card["label"].ljust(28), card["value"])'
 #+end_src
 
-Or open http://127.0.0.1:8747 in a browser. Worth knowing there:
+See [[file:dashboards.org][Dashboards]] for what each card reads and how
+to put a dashboard of your own in its place.
 
-- =Ctrl+K= focuses the search box in the sidebar; =/search= sweeps every
-  record type at once, honouring each type's searchable fields and the
-  active entity's scope.
-- Every list paginates, sorts by clicking a column header (again to
-  reverse), and exports the current view — same search, same sort — as CSV
-  via the Export button.
-- The dashboard shows open tickets by status, the weighted deal pipeline,
-  and the latest audit-trail activity alongside the report cards.
-- Every list has Import as well as Export: CSV in, all-or-nothing, with the
-  Template button giving the exact headers.
-- =/e/invoice= is invoicing: lines with exact money arithmetic, a printable
-  view, and marking paid records the sale automatically.
-- =/automations= edits the automation rules with live parser diagnostics;
-  =/plugins= configures loaded plugins, and plugins follow the changes
-  without a restart.
-- The AI panel takes attachments and screenshots — paste an ad dashboard
-  and it stages the campaign for approval.
-- =?= shows the keyboard shortcuts.
+* 5. Issue an invoice
 
-** Ask about it
+An invoice is a record with lines; issuing it is a state change the
+settlement service owns, which is why =status=sent= goes through
+=update= and not a hand-written flag. Bill the first company in the
+demo for 250 USD, dated today:
 
-With an API key in the environment for your provider, the *Ask VENTURE*
-launcher at the bottom right of every page opens the AI panel (=Ctrl+/=). It
-answers questions and drafts changes; changes are staged for approval, not
-applied. Conversations are stored server-side, so the panel resumes where
-you left off — even in a different browser — and the ☰ button lists earlier
-ones:
-
+#+name: qs-invoice
 #+begin_src sh
-export ANTHROPIC_API_KEY=sk-...
-./build/debug/venture --state-dir ~/.local/share/venture
+CUSTOMER="$(venturectl -f json list company limit=1 \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["records"][0]["id"])')"
+INVOICE="$(venturectl -f json create invoice number=QS-1 status=draft \
+  company_id="$CUSTOMER" issued_at="$(date -u +%F)" \
+  due_at="$(date -u -d '+30 days' +%F)" terms='30 days' \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')"
+venturectl create invoice_line invoice_id="$INVOICE" \
+  description='Onboarding workshop' quantity=1 unit_price=250.00 position=1
+venturectl update invoice "$INVOICE" status=sent
+venturectl get invoice "$INVOICE"
 #+end_src
 
-** Run it as a service
+The invoice is now =sent=, one line of 250.00 USD, nothing paid against
+it yet; =/e/invoice/$INVOICE= shows it with its lines and a printable
+view. See
+[[file:receivables.org][Customer receivables]] for receipts, credits and
+refunds.
 
+* 6. Import a bank statement
+
+The bank says the customer paid. A statement is imported, never typed:
+the file below is one CSV line wrapped in the import's JSON, against the
+demo's current account. Then the receipt is created from the bank line
+and allocated to the invoice, which settles it.
+
+#+name: qs-bank
 #+begin_src sh
-mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/venture.service <<'EOF'
-[Unit]
-Description=VENTURE
-After=network.target
-
-[Service]
-ExecStart=%h/.local/bin/venture --state-dir %h/.local/share/venture
-Environment=VENTURE_SESSION_SECRET=CHANGE-ME
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
+BANK="$(venturectl -f json list bank_account limit=1 \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["records"][0]["id"])')"
+TODAY="$(date -u +%F)"
+python3 - "$TODAY" > "$VENTURE_DEMO_STATE/statement.json" <<'EOF'
+import json, sys
+today = sys.argv[1]
+print(json.dumps({
+    "format": "csv",
+    "data": "Date,Amount,Description,Reference,FitID\n"
+            f"{today},250.00,ONBOARDING WORKSHOP,QS-1,QS-FIT-1",
+    "period_start": today, "period_end": today,
+    "opening_balance": "1000.00", "closing_balance": "1250.00"}))
 EOF
-
-systemctl --user enable --now venture
+STATEMENT="$(venturectl -f json bank import "$BANK" @"$VENTURE_DEMO_STATE/statement.json" \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')"
+LINE="$(venturectl -f json list bank_transaction statement_id__eq="$STATEMENT" \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["records"][0]["id"])')"
+venturectl bank create "$LINE" "{\"type\":\"receipt\",\"customer_id\":$CUSTOMER}"
+RECEIPT="$(venturectl -f json list payment customer_id__eq="$CUSTOMER" \
+  | python3 -c 'import json, sys; print(max(r["id"] for r in json.load(sys.stdin)["records"]))')"
+venturectl create payment_allocation payment_id="$RECEIPT" invoice_id="$INVOICE" \
+  date="$TODAY" amount=250.00
+venturectl get invoice "$INVOICE"
 #+end_src
 
-Set =VENTURE_SESSION_SECRET= to something persistent, or sessions end at every restart.
+The bank line is =matched= to the receipt it created, and the invoice is
+=paid=, because a receipt was allocated to it rather than because
+anybody said so. =/banking= shows the statement and what is still open.
+See [[file:banking.org][Banking]] for automatic matching, rules and
+reconciliation.
 
-** Tests
+* 7. Close a period
 
+The demo's fiscal year has its first quarter closed. Close the next open
+period: the close checks refuse unbalanced batches and draft invoices
+dated inside it, snapshot every report as it stood, and refuse any later
+posting dated into it.
+
+#+name: qs-close
 #+begin_src sh
-make DEBUG=1 test
-make DEBUG=1 test-one T=test-money
-make DEBUG=1 test-valgrind
+PERIOD="$(venturectl -f json list fiscal_period state__eq=open \
+  | python3 -c 'import json, sys
+rows = sorted(json.load(sys.stdin)["records"], key=lambda r: r["start_at"])
+print(rows[0]["id"])')"
+venturectl update fiscal_period "$PERIOD" state=closed
+venturectl get fiscal_period "$PERIOD"
 #+end_src
+
+The period is =closed= with =closed_by= and =closed_at= stamped by the
+service. See [[file:periods.org][Fiscal periods]] for reopening,
+locking, and reports as of a close.
+
+* 8. Stop
+
+#+name: qs-stop
+#+begin_src sh
+tools/venture-demo.sh --stop
+#+end_src
+
+That stops the instance and deletes =$VENTURE_DEMO_STATE=. Run step 3
+again for a fresh one; nothing you did to the demo matters.
+
+* Where next
+
+- The documentation you are reading is served by every running instance
+  at =/docs=, and =make docs-site= renders it into =build/docs-site=. See
+  [[file:docs-site.org][The documentation site]].
+- A local instance that keeps its data between restarts: =just start=,
+  on 127.0.0.1:8748, with =just sql= to read the database while it runs.
+  =just= on its own lists the recipes.
+- A real first run of your own: =./build/debug/venture --state-dir
+  ~/.local/share/venture= creates the schema, seeds a chart of accounts
+  and prints the owner password once. Open =/setup= to finish the legal
+  entity's books before the first invoice --- see
+  [[file:setup.org][Accounting setup]] --- and mint a token at
+  =/account/tokens= for =venturectl=.
+- Record your own trade with =venturectl create venture=, =product=,
+  =sale= and =expense=, then =venturectl report pnl this_month=;
+  =venturectl types expense= lists every field of a record type. See
+  [[file:cli.org][venturectl]].
+- Run it as a service: a user unit with =ExecStart=%h/.local/bin/venture
+  --state-dir %h/.local/share/venture= and a persistent
+  =VENTURE_SESSION_SECRET=, or sessions end at every restart. See
+  [[file:configuration.org][Configuration]].
+- The tests: =make DEBUG=1 test=, =make DEBUG=1 test-one T=test-docs=.
+  See [[file:testing.org][Testing]].
