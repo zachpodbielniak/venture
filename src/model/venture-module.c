@@ -762,6 +762,8 @@ static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };
 static const gchar *const dunning_suggests[] = { "activities", "recurring", NULL };
 static GType (*const dunning_types[]) (void) = { venture_dunning_policy_get_type, venture_dunning_event_get_type, NULL };
 static const gchar *const dunning_reports[] = { "collections", "dunning_worklist", NULL };
+static const gchar *const calendar_requires[] = { "activities", "crm", "leads", NULL };
+static GType (*const calendar_types[]) (void) = { venture_calendar_account_get_type, venture_calendar_event_get_type, venture_booking_page_get_type, NULL };
 
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
@@ -1068,6 +1070,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"headline", "Headline metrics",
 		"CAC, churn, LTV, LTV:CAC and cohort reports, and the headline home page.",
 		headline_requires, headline_suggests, headline_types, headline_reports, NULL, FALSE
+	},
+	{
+		"calendar", "Calendar sync",
+		"Two-way CalDAV sync of calls and meetings, and public scheduling links.",
+		calendar_requires, NULL, calendar_types, NULL, NULL, FALSE
 	}
 };
 

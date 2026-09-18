@@ -675,6 +675,11 @@ venture_web_require_for_type(
 	if (VENTURE_TYPE_MAIL_ACCOUNT == entity_type)
 		needed = VENTURE_USER_ROLE_OWNER;
 
+	/* A calendar_account names the CalDAV host and which environment
+	 * variable holds the app password; the same reasoning applies. */
+	if (VENTURE_TYPE_CALENDAR_ACCOUNT == entity_type)
+		needed = VENTURE_USER_ROLE_OWNER;
+
 	/*
 	 * A webhook holds a signing secret and names the host this install's
 	 * business data is posted to. An editor who could change its URL
@@ -770,6 +775,17 @@ venture_web_type_accepts_writes(
 		g_set_error_literal(error, VENTURE_ERROR,
 		                    VENTURE_ERROR_PERMISSION_DENIED,
 		                    "An inbound mail record is written by the "
+		                    "sync; it cannot be edited");
+		return FALSE;
+	}
+
+	/* A calendar_event row is the sync's memory of what both sides looked
+	 * like; editing one would make the next sweep overwrite or duplicate. */
+	if (VENTURE_TYPE_CALENDAR_EVENT == entity_type)
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_PERMISSION_DENIED,
+		                    "A calendar event link is written by the "
 		                    "sync; it cannot be edited");
 		return FALSE;
 	}
@@ -27820,6 +27836,7 @@ venture_web_api_ticket_draft(
 #include "equity/venture-equity-web.inc"
 #include "group/venture-group-web.inc"
 #include "report/venture-headline-web.inc"
+#include "calendar/venture-calendar-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -28293,6 +28310,9 @@ venture_web_server_new(
 	htmx_router_post(router, "/ui/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
 	htmx_router_post(router, "/api/v1/sequences/run", venture_web_sequence_run, self);
 	htmx_router_get(router, "/api/v1/headline", venture_web_api_headline, self);
+	htmx_router_post(router, "/api/v1/calendar/sync", venture_web_calendar_sync, self);
+	htmx_router_get(router, "/book/:slug", venture_web_booking_page, self);
+	htmx_router_post(router, "/book/:slug", venture_web_booking_page, self);
 
 	htmx_router_get(router, "/api/v1/:type", venture_web_api_list, self);
 	htmx_router_post(router, "/api/v1/:type", venture_web_api_create, self);

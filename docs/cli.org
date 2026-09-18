@@ -318,6 +318,21 @@ creates are ordinary records: =venturectl list mail_inbound=, =venturectl
 list mail_unmatched_sender dismissed=false=. See [[file:mail.org][mail]],
 section Inbound.
 
+* Calendar sync
+
+=venturectl calendar sync [organization_id=N] [limit=N]= runs the bounded
+two-way CalDAV sweep over every active =calendar_account= in the
+organization and prints the accounts and changes processed with any
+per-account error. It requires an editor, refuses =--stage=, and never
+deletes: a removal on either side cancels the other. The accounts and
+scheduling links are ordinary records — =venturectl create calendar_account
+url=... owner=ben username=... secret_env=VENTURE_CALDAV_BEN
+calendar_path=/calendars/ben/default/ active=true= (owner-only) and
+=venturectl create booking_page slug=intro owner=ben duration_minutes=30
+timezone=America/Chicago availability='{"mon":"09:00-17:00"}' active=true=;
+=venturectl list calendar_event= shows what the sync linked. See
+[[file:calendar.org][calendar sync]].
+
 * Quote actions
 
 =venturectl quote send ID= freezes and queues a proposal.

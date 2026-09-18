@@ -1,0 +1,184 @@
+#+title: Calendar sync and scheduling links
+#+description: Calls and meetings on a CalDAV calendar, both ways, and a public link a customer books from
+
+* What it does
+
+The =calendar= module requires =activities=, =crm= and =leads=. It does two
+things. A =calendar_account= mirrors one user's dated calls and meetings onto
+a CalDAV calendar and brings events created on that calendar back as planned
+meetings, so the worklist and the phone agree. A =booking_page= is a public
+link, =/book/<slug>=, that offers the owner's free times and turns a
+customer's choice into a contact and a planned meeting.
+
+This serves the customer question of the product spine: a booked slot is a
+nurture touch that lands on the timeline like any other activity.
+
+* Accounts and secrets
+
+=calendar_account= is owner-only, for the same reason a =mail_account= is:
+the row names the CalDAV host and which environment variable holds the app
+password, and an editor who could change either could point the next sweep
+at a host they control or read another secret out of the process
+environment.
+
+An account names the CalDAV base URL, the owner (a username, whose
+activities are mirrored), the login username, the collection's
+=calendar_path= (for example =/calendars/ben/default/=) and =secret_env=:
+the NAME of a =VENTURE_CALDAV_*= environment variable holding the password
+or app token. The row never holds the secret. A name that is not
+=VENTURE_CALDAV_= followed by letters, digits or underscores is refused
+before any connection, so a row cannot name =VENTURE_SMTP_PASSWORD= or the
+session secret. A sync whose variable is unset fails with a
+=VENTURE_ERROR_CONFIG= error naming that variable and never opens a
+connection. =sync_token= holds the collection's ctag after the last sweep;
+=last_synced_at= and =last_error= record the outcome either way so the list
+at =/e/calendar_account= shows a failing calendar.
+
+Authentication is HTTP basic with an app password, which is what Fastmail,
+Nextcloud, Radicale, iCloud and Google's CalDAV endpoint all accept. OAuth
+would attach in =VentureSoupCalDavClient= as a bearer token selected by a
+=secret_kind= on the account, with the refresh living in a separate service
+that writes the access token to the same secret source; nothing in the sync
+service would change. Google's and Microsoft's proprietary calendar APIs are
+not implemented; both speak CalDAV.
+
+* The sync
+
+=VentureCalendarSyncService= is the one service behind REST, the CLI and the
+sweep. One pass over an account:
+
+1. Reads the collection's ctag and lists its members with their etags.
+2. *Pull.* Every member whose etag differs from the one recorded on its
+   =calendar_event= link is fetched and parsed. A UID the sync has not seen
+   becomes a planned activity of kind =meeting= owned by the account owner,
+   with the summary as subject, the description as body, DTSTART and DTEND
+   as start and end (and start as due), STATUS:CANCELLED as =cancelled=, and
+   the RRULE's frequency as the activity's =recurrence= when it is daily,
+   weekly or monthly. A UID already linked updates that one activity. A
+   VTODO, a journal entry or an event without UID or DTSTART is skipped.
+3. *Removed on the server.* A link whose event is no longer listed cancels
+   its activity — a planned one becomes =cancelled=, a done one is left as it
+   is — and a note is written to the activity's timeline. Nothing is
+   deleted.
+4. *Push.* Every dated call or meeting owned by the account owner is written
+   as a VEVENT whose UID is =<uuid>@venture=, the same UID the =.ics= export
+   uses, at =<calendar_path>/<uid>.ics=. A new activity is created with
+   =If-None-Match: *=; a changed one is replaced with =If-Match= on the etag
+   last seen. An activity cancelled or deleted here is pushed once more as
+   =STATUS:CANCELLED= rather than removed from the calendar.
+5. Records the ctag and the outcome on the account.
+
+Each pulled event, cancellation and push is its own transaction, and the
+link row records the activity version and the server etag after it. A rerun
+against an unchanged calendar therefore fetches nothing, writes nothing and
+returns zero. The =(account, uid)= key is unique within the organization,
+so a repaired or lost link cannot double-file an event: an event carrying
+our own =@venture= UID with no link is re-attached to its activity by uuid.
+
+Done activities keep their completion and outcome; a change to one on the
+calendar is not applied. Tasks, email and followups are not pushed; only
+calls and meetings with a start or due time are. Calendar events pulled in
+are owned by the account owner and, like any activity, can be completed,
+snoozed, reassigned or cancelled through =VentureActivityService=.
+
+** Conflicts
+
+When an event changed on both sides since the last pass — the activity's
+version moved and the server's etag moved — the later modification wins:
+the VEVENT's LAST-MODIFIED against the activity's =updated_at=. The winner's
+values are applied to the loser and the loser's previous values are kept on
+the activity's timeline as a note, an audit entry with =source=calendar=
+whose =diff= carries ={"note": ..., "previous": {subject, body, starts_at,
+ends_at, due_at, status}}=. =GET /api/v1/activity/activity/:id= and
+=venturectl activity activity ID= show it. An event without LAST-MODIFIED
+loses to a local edit.
+
+* Scheduling links
+
+A =booking_page= names a title, a =slug=, the owner, the slot
+=duration_minutes=, a =buffer_minutes= kept free before and after every
+meeting, the owner's IANA =timezone=, an =availability= object of weekday to
+windows written in that zone, for example
+
+#+begin_src json
+{"mon": "09:00-12:00,13:00-17:00", "tue": "09:00-12:00", "fri": "13:00-16:00"}
+#+end_src
+
+and an optional =horizon_days= (14 when empty). The slug is unique within
+the organization; the public path carries no organization, so the first
+active page with that slug across the install answers — keep slugs distinct
+per install.
+
+=GET /book/<slug>= offers the free slots: each window is cut into
+duration-long slots from now to the horizon, and a slot is dropped when,
+widened by the buffer, it overlaps any of the owner's planned calls and
+meetings — which is where synced calendar events live, so a dentist
+appointment on the phone blocks the same half hour here. Times are shown in
+the owner's zone and submitted as UTC. =?format=json= returns the slots as
+={"start", "end", "label"}=.
+
+=POST /book/<slug>= with =start=, =name=, =email= and optional =notes=, as a
+form or JSON, books one. The contact is found by normalised email the way
+lead deduplication and inbound mail match (lower case, trimmed, +tag
+removed) or created with =source=booking=; a planned meeting owned by the
+page owner, related to that contact, is written in the same transaction,
+with the customer's notes and address in its body. The slot is recomputed
+first, so a second booking of the same time — or a time that was never
+offered — is refused with 409 and nothing is written. No mail is sent: the
+meeting appears on the owner's worklist and, on the next sweep, their
+calendar. Sending a confirmation is one enqueue on the mail outbox, in
+=VentureBookingService=, when the product wants it.
+
+The page is public: no session, the same per-address rate limit as lead
+capture, 404 for an unknown or inactive slug or when the module is off.
+
+* Running it
+
+#+begin_src sh
+venturectl calendar sync                     # every active account in the default organization
+venturectl calendar sync organization_id=2 limit=10
+curl -X POST .../api/v1/calendar/sync?organization_id=1
+#+end_src
+
+The sweep is bounded and synchronous, like the mail and activities sweeps:
+it runs on the main thread, one account after another, and returns
+={"accounts", "changes", "errors": [{"account", "error"}]}=. There is no
+background thread; schedule it the way =mail deliver= is scheduled, every
+few minutes, after business transactions commit. The action requires editor
+access and refuses =--stage=. Generic writes to =calendar_event= are
+refused: the row is the sync's memory of what both sides looked like.
+
+* Transport
+
+=VentureCalDavClient= is a GInterface (connect, get_token, list, fetch, put,
+disconnect). =VentureSoupCalDavClient= speaks the four requests the service
+needs over libsoup — =PROPFIND= depth 0 for the ctag, =PROPFIND= depth 1 for
+members and etags, =GET= for one event and =PUT= with =If-Match= or
+=If-None-Match= — with basic authentication, a 20 MiB response cap and no
+server text in error messages. There is no =DELETE=: the service cancels
+rather than removes. =VentureFakeCalDavClient= is an in-memory collection
+for tests; the suite opens no sockets.
+
+=VentureICalEvent= reads the first VEVENT of a VCALENDAR: unfolding, TZID
+resolved through the IANA database, floating times as UTC, DATE values as
+all-day, backslash escapes, nested VALARMs skipped, RRULE kept as text.
+Writing reuses the activities module's content-line folder, so a pushed
+event is escaped and folded exactly as the =.ics= export is.
+
+* Upgrade and verification
+
+Field metadata adds the three tables when the module is enabled. Existing
+activities are unchanged; nothing is pushed until an account is created and
+synced.
+
+=test-calendar= covers the field tables and module, the missing-secret
+refusal naming the variable, the =VENTURE_CALDAV_*= prefix, push with stable
+UIDs and an idempotent rerun, pull into meetings by UID and update in place,
+cancellation on both sides rather than deletion, last-modified conflict
+resolution with the timeline note in both directions, the iCalendar reader
+and writer, slot computation in the owner's zone with busy times and
+buffers, booking with contact deduplication, double-booking and bad-input
+refusals, and the organization sweep. =test-auth= covers anonymous refusal
+of the sync route, owner-only =calendar_account= and the =calendar_event=
+write refusal. =test-calendar-surfaces= drives =venturectl calendar sync=
+and =/book/<slug>= over HTTP against a private server.

@@ -1194,6 +1194,7 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/mail_unmatched_senders/1/create_contact", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/mail_unmatched_senders/1/dismiss", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/mail_accounts/1/sync", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/calendar/sync", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/invoices/1/send", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/webhooks"),
@@ -4383,6 +4384,58 @@ test_auth_equity_input(ServerFixture *fixture, gconstpointer data)
 	}
 }
 
+/*
+ * A calendar_account names the CalDAV host and which environment variable
+ * holds the app password: owner-only, for the reasons a mail_account is.
+ * A calendar_event link is the sync's memory of both sides; nobody edits it.
+ */
+static void
+test_auth_calendar_account_is_owner_only(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor = NULL;
+	g_autofree gchar *owner = NULL;
+
+	(void)user_data;
+
+	server_fixture_create_member(fixture, "cal-editor", "e-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "cal-editor", "e-long-password");
+	g_assert_nonnull(editor);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+	                                        "/api/v1/calendar_account", editor,
+	                                        NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/calendar_account", editor,
+		"{\"url\":\"https://attacker.example/\",\"owner\":\"ben\",\"secret_env\":\"VENTURE_SMTP_PASSWORD\"}",
+		NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+
+	server_fixture_create_member(fixture, "cal-owner", "o-long-password",
+	                           VENTURE_USER_ROLE_OWNER, NULL);
+	owner = server_fixture_login(fixture, "cal-owner", "o-long-password");
+	g_assert_nonnull(owner);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+	                                        "/api/v1/calendar_account", owner,
+	                                        NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_OK);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/calendar_event", owner,
+		"{\"uid\":\"x\",\"uid_key\":\"1:x\"}", NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+
+	/* Booking pages are ordinary editor configuration. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+	                                        "/api/v1/booking_page",
+	                                        editor, NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_OK);
+}
+
 int
 main(
 	int	  argc,
@@ -4594,5 +4647,8 @@ main(
 	g_test_add("/orgaccess/journal-action-veto", ServerFixture, "action-veto", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
 	g_test_add("/orgaccess/journal-header-changed", ServerFixture, "header-changed", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
 	g_test_add("/orgaccess/public-capabilities-session", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_public_capabilities, server_fixture_tear_down);
+	g_test_add("/auth/calendar-account-is-owner-only", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_calendar_account_is_owner_only,
+	           server_fixture_tear_down);
 	return g_test_run();
 }

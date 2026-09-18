@@ -321,3 +321,16 @@ posting veto after the first documents leaves nothing; the row limit, CSV
 templates and CSV payloads, opening stock and its rollback, the module switch,
 and the page, preview, action,
 template and CSV routes (including the selected legal entity) are covered.
+
+** =test-calendar= and =test-calendar-surfaces=
+
+Calendar sync against an in-memory CalDAV fake: a missing secret refused by
+name before any connection, the =VENTURE_CALDAV_*= prefix, dated calls and
+meetings pushed with the export's UUID-based UIDs, calendar events pulled
+into meetings and updated in place by UID, a rerun that fetches and writes
+nothing, cancellation on both sides instead of deletion, last-modified
+conflict resolution with the loser noted on the timeline, the iCalendar
+reader and writer, booking slots in the owner's zone with busy times and
+buffers, contact deduplication, double-booking refusal and the organization
+sweep. The surfaces binary drives =venturectl calendar sync= and the public
+=/book/<slug>= page over HTTP against a private server.

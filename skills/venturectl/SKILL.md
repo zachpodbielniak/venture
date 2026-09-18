@@ -514,6 +514,19 @@ unmatched sender into a contact and backfills its earlier mail; `mail dismiss
 ID` keeps the address as an ignore-list entry. Both take the unmatched
 sender's id, not a contact id.
 
+## Calendar sync
+
+`calendar sync [organization_id=N] [limit=N]` runs the bounded two-way CalDAV
+sweep over every active `calendar_account`: dated calls and meetings go up as
+VEVENTs, events made on the calendar come back as planned meetings, removals
+cancel rather than delete, and a change on both sides is settled by
+last-modified with the loser noted on the activity timeline. It refuses
+`--stage`. `calendar_account` is owner-only and names a `VENTURE_CALDAV_*`
+variable, never a password; generic writes to `calendar_event` are refused.
+`booking_page` (slug, owner, duration, buffer, IANA timezone, availability
+JSON of weekday to `HH:MM-HH:MM` windows) is ordinary editor data and serves
+the public `/book/<slug>` page, which books a contact and a meeting.
+
 ### Commercial quote actions
 
 `quote send ID`, `quote accept ID 'by=Full Name'`,

@@ -162,6 +162,8 @@ SERVER_ONLY_SRCS += $(filter-out src/budgets/venture-budget-records.c,$(wildcard
 SERVER_ONLY_SRCS += $(filter-out src/equity/venture-equity-records.c,$(wildcard src/equity/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/group/venture-group-records.c,$(wildcard src/group/*.c))
 CORE_SRCS += src/report/venture-headline-records.c
+CORE_SRCS += src/calendar/venture-calendar-records.c
+SERVER_ONLY_SRCS += $(filter-out src/calendar/venture-calendar-records.c,$(wildcard src/calendar/*.c))
 SERVER_ONLY_SRCS := $(filter-out src/report/venture-headline-records.c,$(SERVER_ONLY_SRCS))
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)

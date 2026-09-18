@@ -110,3 +110,4 @@ Two binaries, both statically linked against every vendored dependency: =venture
 - [[file:dunning.org][Overdue reminders]] — per-organization reminder policies, escalation to the owner and collection effectiveness
 - [[file:pipelines.org][Sales pipelines]] — configurable stages, next actions, history, loss reasons and forecasts
 - [[file:autojournal.org][Automatic journals]] — configurable sale/expense legs, dated refunds and backfill
+- [[file:calendar.org][Calendar sync and scheduling links]] — two-way CalDAV sync of calls and meetings, and a public /book/<slug> a customer books from
