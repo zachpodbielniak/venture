@@ -37,6 +37,7 @@ about it.
 | =ltv=        | realised and projected lifetime value; withheld below a minimum |
 | =ltv_cac=    | projected LTV over CAC, ARPA and CAC payback; =n/a= when a side is |
 | =customer_cohorts= | companies by month of first cash, share still paying in months 0-12 |
+| =cash_vs_booked= | revenue booked beside cash received per month or week and per currency, with the gap and its running total |
 
 #+begin_src sh
 venturectl report                       # list them
@@ -47,6 +48,50 @@ curl '.../api/v1/reports/tax?period=2026&format=csv'
 
 =categories= takes =group_by=, so the same report answers "how did each genre
 do", "how did each format do" and "how did each product do".
+
+** What =cash_vs_booked= compares
+
+The first question -- how much money is coming in -- has two answers that
+drift apart, and this report puts them side by side per bucket and per
+currency: *booked* is invoices issued in the bucket (the frozen issue
+amount, tax included) less voids, credit notes and write-offs dated in it;
+*received* is receipts dated in the bucket less refunds dated in it. Every
+receipt -- manual, Stripe, or a matched bank credit -- is a =payment=
+written by the settlement service, so receipts are counted once whichever
+door they came through. The *gap* is booked less received, and the
+*cumulative gap* runs it from the period start, so a month that collects
+last month's invoices shows a negative gap and a shrinking total. Migrated
+invoices and credits carrying the cutover =opening_at= stamp are neither
+booked nor received here.
+
+#+begin_src sh
+venturectl report cash_vs_booked this_quarter
+venturectl report cash_vs_booked 2026-07-01..2026-07-31 bucket=week
+venturectl report cash_vs_booked 2026 customer_id=7
+curl '.../api/v1/reports/cash_vs_booked?period=2026&bucket=week&format=csv'
+#+end_src
+
+=bucket= is =month= (default) or =week=; weeks run Monday to Sunday, are
+clipped to the period and labelled by their Monday. =customer_id= keeps one
+customer's invoices and receipts. =venture_id= keeps the venture's invoices
+and reaches cash through them: a receipt belongs to a customer, not a
+venture, so receipts and cash credits *applied* to the venture's invoices
+count as received on the application date, credit notes and write-offs
+applied to them count against booked, and an unapplied deposit is nobody's
+venture cash. =currency= (default the instance default) picks the currency
+the total tiles are in; every other currency keeps its own rows and is
+named in the tiles' note, never converted or added in. =as_of= stops the
+evidence at that instant. Any other option, and a =bucket= other than
+month or week, is refused with a validation error rather than ignored --
+including =dimension=, which journal lines carry and invoices and receipts
+do not, so a report pack cut by dimension cannot include this report.
+
+The report has no rows of its own until something is dated in the period;
+an empty period is one zero row per bucket in the report currency, so the
+reader sees the months they asked about. The home page's Profit and loss
+card carries a *Booked vs received* line taken from this report's own
+=booked_vs_received= metric, so the card and the report cannot disagree;
+with receivables off it reads =n/a=.
 
 ** What =receivables= ages against
 
