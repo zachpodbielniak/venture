@@ -92,7 +92,18 @@ venturectl health
 #+end_src
 
 It prints the URL and the owner password when it is ready, and leaves an
-owner API token in =$VENTURE_DEMO_STATE/token= so the CLI works at once.
+owner API token in =$VENTURE_DEMO_STATE/token= so the CLI works at once:
+
+#+begin_src
+  Created the owner account.
+  Username: owner
+  Password: ffda5449ded6106ab817d6ec
+
+  This is shown once. Save it now.
+
+VENTURE 0.6.0 listening on http://127.0.0.1:8749
+#+end_src
+
 What is in there: two ventures, a year of sales and expenses posted
 through to a general ledger, companies and contacts, a sales pipeline,
 invoices issued and one settled, supplier bills, a matched bank
