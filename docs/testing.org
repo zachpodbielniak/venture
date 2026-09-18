@@ -311,7 +311,12 @@ located problems (JSON numbers, numeric strings, non-object rows, duplicate
 ids, cross-vendor bill numbers) and the strict money grammar refuses locale
 formats unless separators are declared. Trial balance ties and mismatches,
 per-currency and per-bank-account totals, prepayments and negative balances,
-party matching, and AR dates, paid amounts and totals. Receipts on the cutoff
+party matching, and AR dates, paid amounts and totals. An open AR, open AP or
+credit row whose party id is missing, empty, unknown to the payload's
+=customers[]= / =vendors[]= or names an entry without a name is refused
+(=open-ar-customer=, =open-ap-vendor=, =credit-party=) with no company or
+document written and the batch left in preview, and the preview row carries
+the same rule. Receipts on the cutoff
 day are not drift; a payment before the cutoff is, with row evidence kept in
 the appended report. Activation re-runs reconcile and closes periods through
 the cutoff. Rollback unwinds a migrated credit, a real payment and January
