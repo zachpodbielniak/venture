@@ -1470,6 +1470,12 @@ venture_web_navigation(void)
 	return venture_web_nav_links;
 }
 
+/* The sidebar an accountant-only user gets; defined with the Books page. */
+static const VentureWebNavLink *
+venture_accountant_web_navigation(VentureWebServer *self, HtmxRequest *request);
+static void
+venture_accountant_web_append_inbox_nav(VentureWebServer *self, HtmxRequest *request, GString *html, const gchar *active);
+
 static gchar *
 venture_web_page(
 	VentureWebServer	*self,
@@ -1553,7 +1559,7 @@ venture_web_page(
 		"data-global-search title=\"Search everything (Ctrl+K)\">"
 		"</form>");
 
-	venture_web_append_inbox_nav(self, request, html, active);
+	venture_accountant_web_append_inbox_nav(self, request, html, active);
 
 	{
 		const VentureWebNavLink *links;
@@ -1562,7 +1568,7 @@ venture_web_page(
 		const gchar *section = NULL;
 		const gchar *shown = NULL;
 
-		links = venture_web_navigation();
+		links = venture_accountant_web_navigation(self, request);
 
 		g_string_append(html, "<div class=\"nav\">");
 
@@ -27820,6 +27826,7 @@ venture_web_api_ticket_draft(
 #include "equity/venture-equity-web.inc"
 #include "group/venture-group-web.inc"
 #include "report/venture-headline-web.inc"
+#include "orgaccess/venture-accountant-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -28309,6 +28316,7 @@ venture_web_server_new(
 venture_document_web_register(router, self);
 	venture_portal_web_register(router, self);
 	venture_backup_web_register(router, self);
+	venture_accountant_web_register(router, self);
 	htmx_router_post(router, "/api/v1/:type/:id/actions/:action", venture_web_api_action, self);
 	htmx_router_post(router, "/api/v1/journals/post", venture_web_api_action, self);
 
