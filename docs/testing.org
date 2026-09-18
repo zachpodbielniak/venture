@@ -321,3 +321,15 @@ posting veto after the first documents leaves nothing; the row limit, CSV
 templates and CSV payloads, opening stock and its rollback, the module switch,
 and the page, preview, action,
 template and CSV routes (including the selected legal entity) are covered.
+
+** =test-plugin= and =test-auth=, on the five-question sidebar
+
+The sidebar is grouped by the question a page answers (=docs/navigation.org=).
+=test-plugin= holds the section map to its membership: the five headings in
+order, each path a section gathers, that every gathered path is a row in the
+link table and is gathered once, and that no row is orphaned by the regrouping.
+=test-auth= renders the sidebar and checks the headings are drawn in order
+after Overview, a gathered page is drawn once under its question, the emptied
+headings are gone, and a module switched off loses its row while the question
+keeps its heading. The anonymous-route sweep walks the unchanged link table,
+so every URL still redirects when nobody is signed in.
