@@ -321,3 +321,15 @@ posting veto after the first documents leaves nothing; the row limit, CSV
 templates and CSV payloads, opening stock and its rollback, the module switch,
 and the page, preview, action,
 template and CSV routes (including the selected legal entity) are covered.
+
+** =test-mfa=
+
+The second factor end to end: RFC 6238 appendix B vectors, base32, the QR
+matrix, enrolment with a pending-secret refresh and the key requirement,
+refusal of the password-only sign-in, drift and replay, the five-in-fifteen
+failure window, single-use recovery codes and regeneration, audit
+attribution and redaction, disable, the owner-only reset through the action
+registry and =venturectl=, the =require_mfa_for_admins= setting, and the HTTP
+gate, sign-in flow and REST/CSV/audit redaction. Every clock-dependent
+check uses =VentureMfaService:fixed-time=. Needs =venturectl= built, like
+=test-auth=.

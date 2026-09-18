@@ -244,6 +244,13 @@ editor receives a pending confirmation; finance and organization admin/owner
 can post directly. =venturectl --stage journal post ID= always proposes.
 A pending confirmation is not a posted journal. Generic =update journal=
 cannot advance state. See [[file:orgaccess.org][Organization access]].
+=venturectl user mfa reset USER= (an id or a username) is the owner-only
+break-glass path for a lost phone and lost recovery codes: it calls the
+=mfa_reset= action on =user=, turns the account's second factor off, spends
+its recovery codes and writes an =mfa_reset= audit row naming the token or
+person that ran it. The ordinary commands manage =mfa_policy=, the
+per-organization =require_mfa_for_admins= setting. See
+[[file:security.org][Security: the second factor]].
 * SaaS billing
 
 =billing= actions change =customer_subscription= through the billing service:

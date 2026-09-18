@@ -1,0 +1,167 @@
+#+title: Security: the second factor
+#+description: TOTP enrolment, verification at sign-in, recovery codes and the require-MFA setting
+
+* What it is
+
+The =mfa= module adds a second factor to the browser sign-in: after the
+password, a six-digit code from an authenticator app (RFC 6238 TOTP, the
+kind Google Authenticator, Aegis, 1Password and the rest all produce). It
+requires =orgaccess= and is on by default; =modules.mfa.enabled: false=
+switches every part of it off as one thing, after which passwords alone
+sign in again.
+
+It exists because the books are about to be other people's. A password
+that leaks from a laptop, a paste or a reused site should not be enough
+to open a company's ledger, and an organization that asks its
+administrators to carry a second factor should be able to insist.
+
+* Records
+
+The module declares three ordinary records through the field tables, so
+REST, JSON, YAML, CSV, the list pages, the forms and =venturectl describe=
+all derive from the same declaration.
+
+| Record | Fields | Notes |
+|--------+--------+-------|
+| =user_mfa= | =user_id=, =secret_ref=, =enabled=, =enrolled_at=, =last_used_counter=, =last_used_at=, =failure_count=, =failure_window_started_at= | one per account; =user_id= is the personal owner |
+| =mfa_recovery_code= | =user_id=, =prefix=, =code_hash=, =used_at= | ten per enrolment; spent codes stay as evidence |
+| =mfa_policy= | =require_mfa_for_admins=, =notes= | one per organization; the setting described below |
+
+=secret_ref= and =code_hash= carry the sensitive flag. That is the same
+mechanism that hides a user's password hash and an API token's hash: the
+value is never serialised to a REST response, a CSV export, a list, a
+form, an audit diff (which says =changed: true, redacted: true= instead)
+or anything the assistant can read. =test-mfa= asserts this on every one
+of those surfaces.
+
+Generic writes to =user_mfa= and =mfa_recovery_code= are refused with an
+error naming =VentureMfaService=; every change goes through the service,
+which is what makes the rules below hold from the web, REST, the CLI and
+the assistant alike.
+
+* The secret at rest
+
+The TOTP secret is twenty bytes from the system CSPRNG. It is stored
+encrypted with AES-256-GCM under a key derived from an environment
+variable, the same shape as every other secret in VENTURE: configuration
+names the variable and never holds the value.
+
+#+begin_src yaml
+security:
+  mfa_key_env: VENTURE_MFA_KEY        # the default
+#+end_src
+
+When the named variable is unset the session signing secret
+(=security.session_secret_env=) is used instead, so an install that
+already keeps its sessions across restarts needs nothing new. With
+neither set, enrolment is refused with a configuration error rather than
+storing a secret in the clear. Changing the key after enrolments exist
+makes those secrets undecryptable; people would re-enrol, or an owner
+would reset them.
+
+The stored form is =gcm1$<nonce>$<ciphertext>$<tag>= in base64, so a
+future format can be told apart from this one.
+
+* Enrolment
+
+=/account= links to =/account/mfa=. Setting up:
+
+1. The service generates a secret, stores it with =enabled= false, and
+   renders an =otpauth://totp/= URI as a QR code. The QR code is an SVG
+   drawn in-process (ISO/IEC 18004 byte mode, error-correction M,
+   versions 1-10); the secret never leaves the server to be drawn.
+2. The page also shows the base32 key for typing by hand.
+3. The person enters one code from the app. Only a code that verifies
+   turns =enabled= on, in the same transaction that issues the recovery
+   codes and writes the =mfa_enrolled= audit row. A wrong code leaves
+   nothing enabled and is audited as =mfa_enrolment_failed=.
+4. Ten recovery codes are shown exactly once. They are stored as
+   password hashes with a four-character prefix for lookup, the same
+   shape as an API token.
+
+Refreshing the enrolment page re-renders the pending secret rather than
+minting another; =POST /account/mfa/enrol= mints a fresh one. An enabled
+factor must be turned off before enrolling again.
+
+* Signing in
+
+With the factor enabled, =POST /login= with the right password no longer
+opens a session. It sets a five-minute challenge cookie, signed with the
+session secret under a different label so it cannot be presented as a
+session, and redirects to =/login/mfa=. The code page answers the
+challenge; only then is the session cookie minted, exactly as a
+password-only sign-in mints it. Existing session handling is unchanged.
+
+Verification, in =VentureMfaService=:
+
+- RFC 6238 with a thirty-second step and six digits, accepting the step
+  either side of now, compared in constant time across the whole window.
+- The highest accepted step is kept; a code for that step or an earlier
+  one is refused as a replay, audited as =mfa_replay_refused=.
+- Five wrong codes within fifteen minutes lock the second factor for the
+  rest of the window: the sixth attempt is refused before the code is
+  looked at, audited as =mfa_rate_limited=. A success clears the count.
+- A recovery code is accepted in place of a TOTP code, upper or lower
+  case, with or without the dash, and is spent on use.
+
+Every outcome writes an audit row with =source: mfa= and the peer
+address: =mfa_enrolment_started=, =mfa_enrolment_failed=, =mfa_enrolled=,
+=mfa_success=, =mfa_recovery_success=, =mfa_failure=,
+=mfa_replay_refused=, =mfa_rate_limited=, =mfa_disabled=, =mfa_reset=,
+=mfa_recovery_codes_regenerated=.
+
+The in-process =venture_auth_login()= refuses an account with the factor
+enabled outright, so no caller that only knows a password can open a
+session for it. API tokens are unaffected: a token is a credential of its
+own, minted by an owner, and its scope is the existing membership snapshot.
+
+* The organization setting
+
+=require_mfa_for_admins= on =mfa_policy=, one row per organization, set
+through the ordinary form, REST or =venturectl create mfa_policy
+organization_id=N require_mfa_for_admins=true=.
+
+While it is on, an account that is an organization owner or admin there
+and has no enabled second factor is sent to =/account/mfa/enrol= from
+every browser path, and every =/api/= path answers 403 naming the
+requirement. A global owner or admin administers every organization, so
+any organization's requirement reaches them. The gate runs in the
+request middleware before any route, so a new page cannot forget it. It
+leaves alone the enrolment pages, the account page, =/login=, =/logout=
+and =/look=, which is what a person needs to get through it. Editors,
+finance, sales, support and viewers are untouched.
+
+* Turning it off
+
+=/account/mfa= offers two forms, each needing a code from the app:
+regenerate the recovery codes (spending the old ones), and turn the
+factor off, which also asks for the current password so an unlocked
+browser is not enough. Turning it off discards the secret and spends
+every unused recovery code.
+
+The break-glass path, for a lost phone and lost recovery codes:
+
+#+begin_src sh
+venturectl user mfa reset alice      # by username or id; owner only
+#+end_src
+
+It is the =mfa_reset= action on =user=, so =POST
+/api/v1/users/:id/actions/mfa_reset= and the assistant's action tool are
+the same thing. The audit row is =mfa_reset=, attributed to whoever ran
+it, and the password alone signs the account in until it enrols again.
+
+* Not done
+
+WebAuthn/passkeys, SMS and the OIDC integration are out of scope here.
+Nothing in this module depends on =deps/oidc-glib=.
+
+* Tests
+
+=test-mfa= covers the RFC 6238 appendix B vectors, base32, the QR
+matrix's function patterns, enrolment, the pending-secret refresh, the
+key requirement, refusal of the password-only path, drift, replay, the
+failure window, single-use recovery codes and regeneration, audit
+attribution and redaction, disable, the owner-only reset through the
+action registry and =venturectl=, the organization setting, and the HTTP
+gate, sign-in and REST/CSV/audit redaction. Every clock-dependent check
+uses the service's =fixed-time= property.

@@ -209,3 +209,11 @@ and uses outreach when available. See [[file:leads.org][leads]].
 
 See [[file:autojournal.org][automatic journals]] for profile defaults and the
 source-save transaction boundary.
+* Second factor
+
+| Module | Requires | Owns |
+|--------+----------+------|
+| =mfa= | orgaccess | user_mfa, mfa_recovery_code, mfa_policy; the challenge step of the browser sign-in, =/account/mfa=, the =mfa_reset= action on =user= |
+
+See [[file:security.org][Security: the second factor]]. Switching it off returns
+sign-in to password only.

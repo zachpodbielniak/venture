@@ -110,3 +110,4 @@ Two binaries, both statically linked against every vendored dependency: =venture
 - [[file:dunning.org][Overdue reminders]] — per-organization reminder policies, escalation to the owner and collection effectiveness
 - [[file:pipelines.org][Sales pipelines]] — configurable stages, next actions, history, loss reasons and forecasts
 - [[file:autojournal.org][Automatic journals]] — configurable sale/expense legs, dated refunds and backfill
+- [[file:security.org][Security: the second factor]] — TOTP enrolment with a QR code, verification at sign-in, recovery codes, and the require-MFA-for-admins organization setting
