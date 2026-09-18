@@ -440,3 +440,22 @@ venturectl -f csv report general_ledger 2026-08 organization_id=1 currency=USD a
 The =statements= reports accept =compare_to= for a prior period, =as_of= for
 an accounting cutoff, and one =organization_id= and =currency=. General
 ledger optionally accepts =account_id=. See [[file:statements.org][financial statement definitions]].
+
+* Documentation
+
+=venturectl docs build= renders =docs/*.org= and =README.org= to a static
+site; it is the one verb that needs no server, so an installed CLI can
+rebuild the site a hosted instance serves at =/docs=. =make docs-site=
+runs the same thing.
+
+#+begin_src sh
+venturectl docs build                                   # ./docs -> ./build/docs-site
+venturectl docs build source=/srv/venture/src output=/srv/venture/docs-site
+venturectl docs build renderer=builtin                  # without Emacs
+#+end_src
+
+=renderer= is =auto= (Emacs's exporter when =emacs= is on =PATH=, the
+builtin otherwise), =emacs= or =builtin=. A broken internal link or a
+document not linked from =docs/index.org= is refused with exit code 8
+and a message naming it; nothing is written. See
+[[file:docs-site.org][The documentation site]].
