@@ -4383,6 +4383,90 @@ test_auth_equity_input(ServerFixture *fixture, gconstpointer data)
 	}
 }
 
+/*
+ * The sidebar, as drawn, asks the five questions in order right after the
+ * overview, and every page it gathers appears once, under its question. A
+ * heading the regrouping emptied (Sales pipelines, whose one row is now
+ * under Growth) is not drawn over nothing. With a module off, its row goes
+ * -- exactly as before -- and the question keeps its heading as long as
+ * another row answers it.
+ */
+static void
+test_auth_sidebar_asks_the_five_questions(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	static const gchar *const headings[] = {
+		"<div class=\"nav-section\">Overview</div>",
+		"<div class=\"nav-section\">Money in</div>",
+		"<div class=\"nav-section\">Money out</div>",
+		"<div class=\"nav-section\">Growth</div>",
+		"<div class=\"nav-section\">Customers</div>",
+		"<div class=\"nav-section\">Support</div>",
+		"<div class=\"nav-section\">Business</div>",
+	};
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *page = NULL;
+	const gchar *at;
+	const gchar *invoice;
+	const gchar *money_in;
+	const gchar *money_out;
+	gsize i;
+
+	(void)user_data;
+
+	server_fixture_create_member(fixture, "adam", "a-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	cookie = server_fixture_login(fixture, "adam", "a-long-password");
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/reports",
+		cookie, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+
+	at = page;
+
+	for (i = 0; i < G_N_ELEMENTS(headings); i++)
+	{
+		const gchar *next;
+
+		next = strstr(at, headings[i]);
+
+		if (NULL == next)
+			g_error("%s is missing, or out of order", headings[i]);
+
+		at = next + strlen(headings[i]);
+	}
+
+	/* A gathered row sits under its question, and only there. */
+	money_in = strstr(page, headings[1]);
+	money_out = strstr(page, headings[2]);
+	invoice = strstr(page, "href=\"/e/invoice\"");
+	g_assert_nonnull(invoice);
+	g_assert_true(invoice > money_in);
+	g_assert_true(invoice < money_out);
+	g_assert_null(strstr(invoice + 1, "href=\"/e/invoice\""));
+
+	/* The heading it left behind is gone; the ones it shares stay. */
+	g_assert_null(strstr(page, "<div class=\"nav-section\">Sales pipelines</div>"));
+	g_assert_null(strstr(page, "<div class=\"nav-section\">Invoicing</div>"));
+	g_assert_null(strstr(page, "<div class=\"nav-section\">Quotes</div>"));
+	g_assert_null(strstr(page, "<div class=\"nav-section\">Activities</div>"));
+	g_assert_nonnull(strstr(page, "<div class=\"nav-section\">Money</div>"));
+	g_assert_nonnull(strstr(page, "<div class=\"nav-section\">Accounting</div>"));
+	g_assert_nonnull(strstr(page, "href=\"/deals\""));
+	g_clear_pointer(&page, g_free);
+
+	/* Module off: the row goes, the question stays. */
+	venture_config_set_module_enabled(fixture->config, "quotes", FALSE);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/reports",
+		cookie, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(page, "href=\"/quotes/compose\""));
+	g_assert_nonnull(strstr(page, headings[1]));
+	g_assert_nonnull(strstr(page, "href=\"/e/invoice\""));
+
+	venture_config_set_module_enabled(fixture->config, "quotes", TRUE);
+}
+
 int
 main(
 	int	  argc,
@@ -4594,5 +4678,6 @@ main(
 	g_test_add("/orgaccess/journal-action-veto", ServerFixture, "action-veto", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
 	g_test_add("/orgaccess/journal-header-changed", ServerFixture, "header-changed", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
 	g_test_add("/orgaccess/public-capabilities-session", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_public_capabilities, server_fixture_tear_down);
+	g_test_add("/auth/sidebar-asks-the-five-questions", ServerFixture, NULL, server_fixture_set_up, test_auth_sidebar_asks_the_five_questions, server_fixture_tear_down);
 	return g_test_run();
 }
