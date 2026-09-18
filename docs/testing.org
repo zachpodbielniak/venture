@@ -331,5 +331,6 @@ failure window, single-use recovery codes and regeneration, audit
 attribution and redaction, disable, the owner-only reset through the action
 registry and =venturectl=, the =require_mfa_for_admins= setting, and the HTTP
 gate, sign-in flow and REST/CSV/audit redaction. Every clock-dependent
-check uses =VentureMfaService:fixed-time=. Needs =venturectl= built, like
+check uses =VentureMfaService:fixed-time=; the =000410= guard is proven to
+refuse a half-present schema. Needs =venturectl= built, like
 =test-auth=.

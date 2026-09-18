@@ -269,6 +269,54 @@ test_generic_writes_refused(Fixture *fixture, gconstpointer user_data)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS);
 }
 
+/* Migration 000410 is recorded on a fresh database and sees every column it
+ * guards. Run against a half-present install (a policies table with no
+ * secret rows, then a secret table missing the replay counter) the guard
+ * refuses, so a partial upgrade cannot start. */
+static void
+test_migration_guard(Fixture *fixture, gconstpointer user_data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(OrmResult) result = NULL;
+	g_autoptr(VentureDatabase) partial = NULL;
+	g_autofree gchar *guard = NULL;
+	(void)user_data;
+	result = venture_database_query_raw(fixture->database,
+		"SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations WHERE version = 410", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_result_next(result));
+	g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 1);
+	g_clear_object(&result);
+	result = venture_database_query_raw(fixture->database,
+		"SELECT CAST(COUNT(*) AS BIGINT) FROM pragma_table_info('user_mfas') "
+		"WHERE name IN ('secret_ref', 'enabled', 'enrolled_at', 'last_used_counter')", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_result_next(result));
+	g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 4);
+	g_assert_true(g_file_get_contents("migrations/sqlite/000410_mfa.sql", &guard, NULL, &error));
+	g_assert_no_error(error);
+	partial = venture_database_new("sqlite://:memory:", &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(partial, "CREATE TABLE mfa_policies (id INTEGER, require_mfa_for_admins INTEGER)", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_database_execute(partial, guard, NULL, &error));
+	g_assert_nonnull(error);
+	g_assert_nonnull(strstr(error->message, "table_count IN (0, 3)"));
+	g_clear_error(&error);
+	/* A refused batch leaves its temp table behind, so the column case
+	 * needs its own database. */
+	g_clear_object(&partial);
+	partial = venture_database_new("sqlite://:memory:", &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(partial, "CREATE TABLE mfa_policies (id INTEGER, require_mfa_for_admins INTEGER)", NULL, &error));
+	g_assert_true(venture_database_execute(partial, "CREATE TABLE mfa_recovery_codes (id INTEGER, code_hash TEXT, used_at TEXT)", NULL, &error));
+	g_assert_true(venture_database_execute(partial, "CREATE TABLE user_mfas (id INTEGER, secret_ref TEXT, enabled INTEGER, enrolled_at TEXT)", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_database_execute(partial, guard, NULL, &error));
+	g_assert_nonnull(error);
+	g_assert_nonnull(strstr(error->message, "valid = 1"));
+}
+
 /* --- TOTP, base32 and the QR code ------------------------------------------------ */
 
 /* RFC 6238 appendix B, SHA-1 column, against the 20-byte ASCII secret. */
@@ -1213,6 +1261,7 @@ main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/mfa/records/registered", Fixture, GINT_TO_POINTER(FALSE), fixture_set_up, test_records_registered, fixture_tear_down);
 	g_test_add("/mfa/records/generic-writes-refused", Fixture, GINT_TO_POINTER(FALSE), fixture_set_up, test_generic_writes_refused, fixture_tear_down);
+	g_test_add("/mfa/records/migration-guard", Fixture, GINT_TO_POINTER(FALSE), fixture_set_up, test_migration_guard, fixture_tear_down);
 	g_test_add("/mfa/totp/rfc6238-vectors", Fixture, GINT_TO_POINTER(FALSE), fixture_set_up, test_totp_vectors, fixture_tear_down);
 	g_test_add("/mfa/totp/drift-window", Fixture, GINT_TO_POINTER(FALSE), fixture_set_up, test_totp_drift_window, fixture_tear_down);
 	g_test_add("/mfa/qr/svg", Fixture, GINT_TO_POINTER(FALSE), fixture_set_up, test_qr_svg, fixture_tear_down);

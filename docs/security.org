@@ -155,6 +155,16 @@ it, and the password alone signs the account in until it enrols again.
 WebAuthn/passkeys, SMS and the OIDC integration are out of scope here.
 Nothing in this module depends on =deps/oidc-glib=.
 
+* Migrations
+
+=000410_mfa= is paired for SQLite and PostgreSQL. It verifies that
+=user_mfas=, =mfa_recovery_codes= and =mfa_policies= are present together,
+or all absent when the module is off, and that a present =user_mfas= carries
+=secret_ref=, =enabled=, =enrolled_at= and =last_used_counter= and a present
+=mfa_recovery_codes= carries =code_hash= and =used_at=. A half-upgraded
+install refuses to start rather than sign people in without the replay
+counter.
+
 * Tests
 
 =test-mfa= covers the RFC 6238 appendix B vectors, base32, the QR
@@ -164,4 +174,5 @@ failure window, single-use recovery codes and regeneration, audit
 attribution and redaction, disable, the owner-only reset through the
 action registry and =venturectl=, the organization setting, and the HTTP
 gate, sign-in and REST/CSV/audit redaction. Every clock-dependent check
-uses the service's =fixed-time= property.
+uses the service's =fixed-time= property. The migration guard is run
+against half-present schemas and refuses each.
