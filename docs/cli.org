@@ -295,6 +295,22 @@ Direct subscription state writes are refused. The assistant can stage
 =billing_request= through its generated create tool; all CLI billing
 actions also honor =--stage=. See [[file:billing.org][SaaS billing]] for prices,
 trial activation, proration, historical report definitions and limitations.
+* The money calendar
+
+=money calendar= prints the agenda of every dated money event between two
+inclusive days, through the =money_calendar= report:
+
+#+begin_src sh
+venturectl money calendar --from 2026-03-01 --to 2026-03-31
+venturectl money calendar --from 2026-03-01 --to 2026-03-31 --kind bill --as-of 2026-03-02
+venturectl -f json money calendar --from 2026-03-01 --to 2026-03-31
+#+end_src
+
+=--from= and =--to= are required. =--kind= keeps one of =recurring=,
+=bill=, =invoice=, =dunning=, =payroll= or =tax=; an unknown kind is
+refused. =--as-of= is the day overdue items are carried to. Each day prints
+with its ISO week and per-currency net, then one line per event. =-f json=
+prints the report unchanged. See [[file:money-calendar.org][the money calendar]].
 * Transactional mail
 
 =venturectl mail send to=... subject=... body=...= enqueues; =--html FILE=

@@ -110,3 +110,4 @@ Two binaries, both statically linked against every vendored dependency: =venture
 - [[file:dunning.org][Overdue reminders]] — per-organization reminder policies, escalation to the owner and collection effectiveness
 - [[file:pipelines.org][Sales pipelines]] — configurable stages, next actions, history, loss reasons and forecasts
 - [[file:autojournal.org][Automatic journals]] — configurable sale/expense legs, dated refunds and backfill
+- [[file:money-calendar.org][The money calendar]] — recurring, bills, invoices, dunning, payroll and tax on one grid with daily and weekly nets, a subscribable feed and a CLI agenda

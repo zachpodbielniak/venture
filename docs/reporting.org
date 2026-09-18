@@ -37,6 +37,7 @@ about it.
 | =ltv=        | realised and projected lifetime value; withheld below a minimum |
 | =ltv_cac=    | projected LTV over CAC, ARPA and CAC payback; =n/a= when a side is |
 | =customer_cohorts= | companies by month of first cash, share still paying in months 0-12 |
+| =money_calendar= | every dated money event with daily and ISO-week nets per currency |
 
 #+begin_src sh
 venturectl report                       # list them
@@ -471,3 +472,14 @@ they have done since. Months that have not started by then are blank, not
 zero. =month_1=, =month_3=, =month_6= and =month_12= pool every cohort that
 has reached that month: the companies still paying over the companies in
 those cohorts; =n/a= when no cohort has.
+
+* The money calendar
+
+The =money_calendar= module adds =money_calendar=: every dated money event
+in the period (recurring schedules expanded forward, bills and invoices on
+their due dates with overdue ones carried to =as_of=, dunning steps,
+payroll runs, tax packs) with per-day and per-ISO-week nets per currency,
+never folded across them. It accepts =from= and =to= as an explicit span,
+=as_of=, =kind=, =customer_id= or =vendor_id=, =venture_id= and
+=currency=. The same events feed =/money/calendar= and
+=/money/calendar.ics=; see [[file:money-calendar.org][the money calendar]].
