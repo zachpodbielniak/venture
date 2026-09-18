@@ -96,5 +96,16 @@ gboolean venture_lead_service_apply_staged(VentureLeadService *self, VentureEnti
  * Returns: (transfer full): the normalised address, possibly empty
  */
 gchar *venture_lead_normalize_email(const gchar *value);
+/**
+ * venture_lead_normalize_website:
+ * @value: (nullable): a website or bare domain as typed
+ *
+ * The leads module's duplicate-detection normalisation for a website:
+ * the lower-case host without a leading www., or empty when the text is
+ * not a host. Exposed so a CRM migration matches companies by domain the
+ * way lead deduplication does rather than reimplementing it.
+ * Returns: (transfer full): the normalised host, possibly empty
+ */
+gchar *venture_lead_normalize_website(const gchar *value);
 G_END_DECLS
 #endif

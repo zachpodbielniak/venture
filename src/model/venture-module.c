@@ -756,6 +756,8 @@ static GType (*const headline_types[]) (void) = { venture_headline_setting_get_t
 static const gchar *const headline_requires[] = { "receivables", "leads", NULL };
 static const gchar *const headline_suggests[] = { "outreach", "recurring", "tickets", "banking", "payables", "billing", NULL };
 static const gchar *const headline_reports[] = { "cac", "customer_churn", "ltv", "ltv_cac", "customer_cohorts", NULL };
+static const gchar *const crm_import_requires[] = { "crm", "pipelines", "activities", "leads", NULL };
+static GType (*const crm_import_types[]) (void) = { venture_crm_import_get_type, venture_crm_import_row_get_type, NULL };
 static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };
 /* Escalation writes an activity, and a collection case on the same invoice
  * holds reminders back; the pay link needs only receivables, which is required. */
@@ -1068,6 +1070,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"headline", "Headline metrics",
 		"CAC, churn, LTV, LTV:CAC and cohort reports, and the headline home page.",
 		headline_requires, headline_suggests, headline_types, headline_reports, NULL, FALSE
+	},
+	{
+		"crm_import", "CRM migration",
+		"HubSpot, Zoho CRM and Salesforce exports into companies, contacts, deals, history and next actions.",
+		crm_import_requires, NULL, crm_import_types, NULL, NULL, FALSE
 	}
 };
 

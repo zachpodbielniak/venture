@@ -27820,6 +27820,7 @@ venture_web_api_ticket_draft(
 #include "equity/venture-equity-web.inc"
 #include "group/venture-group-web.inc"
 #include "report/venture-headline-web.inc"
+#include "crm-import/venture-crm-import-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -28309,6 +28310,7 @@ venture_web_server_new(
 venture_document_web_register(router, self);
 	venture_portal_web_register(router, self);
 	venture_backup_web_register(router, self);
+	venture_crm_import_web_register(router, self);
 	htmx_router_post(router, "/api/v1/:type/:id/actions/:action", venture_web_api_action, self);
 	htmx_router_post(router, "/api/v1/journals/post", venture_web_api_action, self);
 

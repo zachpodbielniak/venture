@@ -3217,6 +3217,7 @@ venture_cli_command_mcp(
 #include "sequences/venture-sequence-cli.inc"
 #include "recurring/venture-recurring-cli.inc"
 #include "dunning/venture-dunning-cli.inc"
+#include "crm-import/venture-crm-import-cli.inc"
 
 /* --- Entry point --------------------------------------------------------- */
 
@@ -3757,6 +3758,8 @@ main(
 		result = venture_cli_command_act(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dunning"))
 		result = venture_cli_command_dunning(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "crm"))
+		result = venture_cli_command_crm(&cli, args, &error);
 	else
 	{
 		g_printerr("venturectl: \"%s\" is not a command. Try --help.\n",
