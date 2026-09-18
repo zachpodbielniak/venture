@@ -763,6 +763,9 @@ static const gchar *const dunning_suggests[] = { "activities", "recurring", NULL
 static GType (*const dunning_types[]) (void) = { venture_dunning_policy_get_type, venture_dunning_event_get_type, NULL };
 static const gchar *const dunning_reports[] = { "collections", "dunning_worklist", NULL };
 
+static const gchar *const mfa_requires[] = { "orgaccess", NULL };
+static GType (*const mfa_types[]) (void) = { venture_user_mfa_get_type, venture_mfa_recovery_code_get_type, venture_mfa_policy_get_type, NULL };
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -1068,6 +1071,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"headline", "Headline metrics",
 		"CAC, churn, LTV, LTV:CAC and cohort reports, and the headline home page.",
 		headline_requires, headline_suggests, headline_types, headline_reports, NULL, FALSE
+	},
+	{
+		"mfa", "Second factor",
+		"TOTP enrolment, verification at sign-in, recovery codes and the require-MFA organization setting.",
+		mfa_requires, NULL, mfa_types, NULL, NULL, FALSE
 	}
 };
 

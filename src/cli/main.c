@@ -3296,6 +3296,7 @@ venture_cli_command_act(VentureCli *cli, gchar **args, GError **error)
 }
 
 #include "autojournal/venture-autojournal-cli.inc"
+#include "orgaccess/venture-mfa-cli.inc"
 
 int
 main(
@@ -3467,6 +3468,7 @@ main(
 		"  batch invoice|expense format=csv|json payload=... [post=false] [organization_id=N] [--dry-run]\n"
 		"  dunning sweep [as_of=DATE] [organization_id=N] [limit=N] [dry_run=true]\n"
 		"                               send due overdue reminders once; dry_run previews\n"
+		"  user mfa reset USER      break glass: turn off a user's second factor (owner only, audited)\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
 		"\n"
@@ -3757,6 +3759,8 @@ main(
 		result = venture_cli_command_act(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dunning"))
 		result = venture_cli_command_dunning(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "user"))
+		result = venture_cli_command_user(&cli, args, &error);
 	else
 	{
 		g_printerr("venturectl: \"%s\" is not a command. Try --help.\n",

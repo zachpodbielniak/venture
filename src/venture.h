@@ -112,6 +112,7 @@
 #include "autojournal/venture-posting-profile.h"
 #include "recurring/venture-recurring-records.h"
 #include "dunning/venture-dunning-records.h"
+#include "orgaccess/venture-mfa-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -258,6 +259,9 @@
 #include "reconciliation/venture-reconciliation-service.h"
 #include "report/venture-headline-home.h"
 #include "dunning/venture-dunning-service.h"
+#include "orgaccess/venture-totp.h"
+#include "orgaccess/venture-qr-svg.h"
+#include "orgaccess/venture-mfa-service.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

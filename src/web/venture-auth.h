@@ -141,6 +141,85 @@ venture_auth_login(
 );
 
 /**
+ * venture_auth_login_with_mfa:
+ * @self: a #VentureAuth
+ * @username: the username or email
+ * @password: the password
+ * @remote_address: (nullable): the peer address the attempt came from
+ * @out_cookie: (out) (transfer full): the cookie to set: a session cookie,
+ *   or a short-lived challenge cookie when a second factor is required
+ * @out_mfa_pending: (out): whether @out_cookie is a challenge that
+ *   venture_auth_complete_mfa() must answer before a session exists
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The browser sign-in: the same password check and rate limit as
+ * venture_auth_login(), but an account with a second factor enabled gets a
+ * signed five-minute challenge cookie instead of a session. The challenge
+ * is signed under a different label from a session, so it cannot be
+ * presented as one.
+ *
+ * Returns: %TRUE when the password was accepted
+ */
+gboolean
+venture_auth_login_with_mfa(
+	VentureAuth	 *self,
+	const gchar	 *username,
+	const gchar	 *password,
+	const gchar	 *remote_address,
+	gchar		**out_cookie,
+	gboolean	 *out_mfa_pending,
+	GError		**error
+);
+
+/**
+ * venture_auth_mfa_challenge_user:
+ * @self: a #VentureAuth
+ * @request: the request carrying the challenge cookie
+ *
+ * Returns: the user a valid, unexpired challenge cookie names, or 0
+ */
+gint64
+venture_auth_mfa_challenge_user(
+	VentureAuth	*self,
+	HtmxRequest	*request
+);
+
+/**
+ * venture_auth_complete_mfa:
+ * @self: a #VentureAuth
+ * @request: the request carrying the challenge cookie
+ * @code: the six-digit or recovery code
+ * @remote_address: (nullable): the peer address, for the audit row
+ * @out_cookie: (out) (transfer full): the session cookie to set
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Answers a challenge: verifies @code through the MFA service, which
+ * enforces drift, replay and the failure limit and audits the outcome,
+ * then mints the session cookie exactly as a password-only sign-in does.
+ *
+ * Returns: %TRUE when the code was accepted
+ */
+gboolean
+venture_auth_complete_mfa(
+	VentureAuth	 *self,
+	HtmxRequest	 *request,
+	const gchar	 *code,
+	const gchar	 *remote_address,
+	gchar		**out_cookie,
+	GError		**error
+);
+
+/**
+ * venture_auth_mfa_clear_cookie:
+ * @self: a #VentureAuth
+ *
+ * Returns: (transfer full): a Set-Cookie header value that discards the
+ *   challenge cookie
+ */
+gchar *
+venture_auth_mfa_clear_cookie(VentureAuth *self);
+
+/**
  * venture_auth_remote_address:
  * @request: an #HtmxRequest
  *

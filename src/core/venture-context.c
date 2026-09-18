@@ -165,6 +165,7 @@ venture_context_new(
 	 * must change the next reminder's pay link, not the one after a restart. */
 	g_object_bind_property(config, "server-base-url", venture_dunning_service_get(self->database), "base-url",
 		G_BINDING_SYNC_CREATE);
+	venture_mfa_service_configure(venture_mfa_service_get(self->database), config);
 
 	/*
 	 * Modules, resolved against this configuration and applied to the

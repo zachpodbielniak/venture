@@ -163,6 +163,8 @@ SERVER_ONLY_SRCS += $(filter-out src/equity/venture-equity-records.c,$(wildcard 
 SERVER_ONLY_SRCS += $(filter-out src/group/venture-group-records.c,$(wildcard src/group/*.c))
 CORE_SRCS += src/report/venture-headline-records.c
 SERVER_ONLY_SRCS := $(filter-out src/report/venture-headline-records.c,$(SERVER_ONLY_SRCS))
+CORE_SRCS += src/orgaccess/venture-mfa-records.c
+SERVER_ONLY_SRCS := $(filter-out src/orgaccess/venture-mfa-records.c,$(SERVER_ONLY_SRCS))
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
@@ -267,6 +269,7 @@ $(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sequences: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-recurring: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-dunning: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-mfa: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery
