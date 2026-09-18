@@ -597,12 +597,17 @@ headline_card_pnl(HeadlineRender *render)
 {
 	g_auto(HeadlinePair) pnl = { NULL, NULL, NULL };
 	g_autoptr(VentureMetric) cash = NULL;
-	HeadlineLine lines[3];
+	g_autoptr(VentureReportResult) booked = NULL;
+	HeadlineLine lines[4];
 
 	if (!render->restricted)
 	{
 		headline_run_pair(render, "pnl", &pnl);
 		cash = headline_bank_cash(render);
+		/* The cash_vs_booked report's own headline line, so the card and
+		 * the report cannot disagree. With receivables off the report is
+		 * not registered and the line reads n/a -- nobody counted. */
+		booked = headline_run(render, "cash_vs_booked", render->period, NULL);
 	}
 
 	lines[0].label = "Revenue";
@@ -611,12 +616,16 @@ headline_card_pnl(HeadlineRender *render)
 	lines[1].metric = headline_metric(pnl.current, "expenses");
 	lines[2].label = "Bank cash";
 	lines[2].metric = cash;
+	lines[3].label = "Booked vs received";
+	lines[3].metric = headline_metric(booked, "booked_vs_received");
 
 	headline_add_card(render, "pnl", "Profit and loss", "pnl",
 		"Profit is net revenue (sales less refunds, platform fees and "
 		"shipping cost) minus every expense dated in the period. Bank cash "
 		"is the sum of every bank account's last imported statement "
-		"balance.",
+		"balance. Booked vs received is the cash_vs_booked report's total: "
+		"invoices issued less voids and credits, beside receipts less "
+		"refunds, in the period.",
 		headline_metric(pnl.current, "profit"),
 		headline_metric(pnl.previous, "profit"), TRUE,
 		lines, G_N_ELEMENTS(lines), pnl.error);

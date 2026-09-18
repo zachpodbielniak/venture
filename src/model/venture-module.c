@@ -503,7 +503,7 @@ static const gchar *const venture_module_reports_finance[] = {
 };
 static const gchar *const venture_module_reports_crm[] = { "pipeline", NULL };
 static const gchar *const venture_module_reports_receivables[] = {
-	"receivables", "customer_statement", NULL
+	"receivables", "customer_statement", "cash_vs_booked", NULL
 };
 static const gchar *const venture_module_requires_receivables[] = {
 	"finance", "invoicing", NULL
