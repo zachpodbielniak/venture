@@ -39,6 +39,8 @@ static const gchar *const venture_error_slugs[] = {
 	"mail_uncertain",
 	"mail_transient",
 	"mail_permanent",
+	"docs_broken_link",
+	"docs_unlinked",
 	NULL
 };
 
@@ -66,6 +68,8 @@ static const GEnumValue venture_error_values[] = {
 	{ VENTURE_ERROR_MAIL_UNCERTAIN, "VENTURE_ERROR_MAIL_UNCERTAIN", "mail_uncertain" },
 	{ VENTURE_ERROR_MAIL_TRANSIENT, "VENTURE_ERROR_MAIL_TRANSIENT", "mail_transient" },
 	{ VENTURE_ERROR_MAIL_PERMANENT, "VENTURE_ERROR_MAIL_PERMANENT", "mail_permanent" },
+	{ VENTURE_ERROR_DOCS_BROKEN_LINK, "VENTURE_ERROR_DOCS_BROKEN_LINK", "docs_broken_link" },
+	{ VENTURE_ERROR_DOCS_UNLINKED, "VENTURE_ERROR_DOCS_UNLINKED", "docs_unlinked" },
 	{ 0, NULL, NULL }
 };
 
@@ -115,6 +119,8 @@ venture_error_to_http_status(VentureError code)
 	 * range that runs backwards, a required field left blank. */
 	case VENTURE_ERROR_VALIDATION:
 	case VENTURE_ERROR_BALANCE:
+	case VENTURE_ERROR_DOCS_BROKEN_LINK:
+	case VENTURE_ERROR_DOCS_UNLINKED:
 		return 422;
 
 	/* A staged AI write is not an error the client did anything wrong to
@@ -176,6 +182,8 @@ venture_error_to_exit_code(VentureError code)
 
 	case VENTURE_ERROR_VALIDATION:
 	case VENTURE_ERROR_BALANCE:
+	case VENTURE_ERROR_DOCS_BROKEN_LINK:
+	case VENTURE_ERROR_DOCS_UNLINKED:
 		return 8;
 
 	default:

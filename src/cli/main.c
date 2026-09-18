@@ -3296,6 +3296,7 @@ venture_cli_command_act(VentureCli *cli, gchar **args, GError **error)
 }
 
 #include "autojournal/venture-autojournal-cli.inc"
+#include "docs/venture-docs-cli.inc"
 
 int
 main(
@@ -3469,6 +3470,9 @@ main(
 		"                               send due overdue reminders once; dry_run previews\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
+		"  docs build [source=DIR] [output=DIR] [renderer=auto|emacs|builtin]\n"
+		"                               render docs/*.org to a static site;\n"
+		"                               needs no server\n"
 		"\n"
 		"Examples:\n"
 		"  venturectl types sale\n"
@@ -3757,6 +3761,8 @@ main(
 		result = venture_cli_command_act(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dunning"))
 		result = venture_cli_command_dunning(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "docs"))
+		result = venture_cli_command_docs(&cli, args, &error);
 	else
 	{
 		g_printerr("venturectl: \"%s\" is not a command. Try --help.\n",

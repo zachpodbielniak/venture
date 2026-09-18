@@ -163,6 +163,8 @@ SERVER_ONLY_SRCS += $(filter-out src/equity/venture-equity-records.c,$(wildcard 
 SERVER_ONLY_SRCS += $(filter-out src/group/venture-group-records.c,$(wildcard src/group/*.c))
 CORE_SRCS += src/report/venture-headline-records.c
 SERVER_ONLY_SRCS := $(filter-out src/report/venture-headline-records.c,$(SERVER_ONLY_SRCS))
+# The documentation site generator is core: venturectl renders the site.
+CORE_SRCS += src/docs/venture-org-html.c src/docs/venture-docs-site.c
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
@@ -231,6 +233,7 @@ PUBLIC_HDRS += $(wildcard src/backup/*.h)
 PUBLIC_HDRS += $(wildcard src/budgets/*.h)
 PUBLIC_HDRS += $(wildcard src/equity/*.h)
 PUBLIC_HDRS += $(wildcard src/group/*.h)
+PUBLIC_HDRS += $(wildcard src/docs/*.h)
 
 # Private implementation fragments are included by their owning C source;
 # they are neither installable headers nor introspection declarations.
@@ -267,6 +270,9 @@ $(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sequences: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-recurring: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-dunning: | $(OUTDIR)/venturectl
+# The docs test drives `venturectl docs build` and the quickstart against
+# a real server: both binaries, and the docs it renders are the real ones.
+$(OUTDIR)/tests/test-docs: | $(OUTDIR)/venturectl $(OUTDIR)/venture
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery
@@ -480,6 +486,7 @@ run: venture plugins pod-modules dep-podomation-modules
 	VENTURE_PLUGIN_PATH="$(abspath $(OUTDIR)/plugins)" \
 	VENTURE_VENTURE_TYPE_PATH="$(abspath data/venture-types)" \
 	VENTURE_POD_MODULE_PATH="$(abspath $(OUTDIR)/pod-modules):$(abspath $(PODOMATION_DIR)/build/$(BUILD_TYPE)/modules)" \
+	VENTURE_DOCS_SITE_DIR="$(abspath $(DOCS_SITE_DIR))" \
 	$(OUTDIR)/venture --database "sqlite://$(abspath $(BUILDDIR)/run)/venture.db" \
 	                  --state-dir "$(abspath $(BUILDDIR)/run)" $(RUNFLAGS)
 
@@ -554,6 +561,7 @@ help:
 	@echo "  demo              Throwaway instance seeded with example data"
 	@echo "  demo-stop         Stop a detached demo and delete its data"
 	@echo "  print-VAR         Print the value of any make variable"
+	@echo "  docs-site         Render docs/*.org and README.org to build/docs-site"
 	@echo ""
 	@echo "Agent skill:"
 	@echo "  install-skill     Symlink skills/venturectl into each agent's dir"
@@ -577,3 +585,33 @@ endif
 deps: $(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB)
 
 $(OUTDIR)/tests/test-mail-surfaces: | $(OUTDIR)/venturectl
+
+# ---------------------------------------------------------------------------
+# The documentation site
+# ---------------------------------------------------------------------------
+#
+# Rendered by venturectl rather than by a script, so an installed CLI can
+# do it too (`venturectl docs build`), and so the checks -- no broken
+# internal link, no document missing from docs/index.org -- are the same
+# code whichever way it is invoked. Org's own exporter is used when Emacs
+# is on PATH and the builtin renderer otherwise; the command says which.
+#
+# Not under $(OUTDIR): the site is the same whichever build type rendered
+# it, and `venture` looks for it at $(VENTUREDATADIR)/docs-site once
+# installed, or wherever VENTURE_DOCS_SITE_DIR points from the tree.
+DOCS_SITE_DIR := $(BUILDDIR)/docs-site
+DOCS_SOURCES := README.org $(wildcard docs/*.org)
+
+.PHONY: docs-site
+docs-site: $(OUTDIR)/venturectl $(DOCS_SOURCES)
+	@echo "  DOCS    $(DOCS_SITE_DIR)"
+	$(Q)$(OUTDIR)/venturectl docs build source=$(CURDIR) output=$(abspath $(DOCS_SITE_DIR)) $(if $(DOCS_RENDERER),renderer=$(DOCS_RENDERER))
+
+.PHONY: install-docs-site
+install-docs-site: docs-site
+	$(MKDIR_P) $(DESTDIR)$(VENTUREDATADIR)/docs-site
+	@for f in $(DOCS_SITE_DIR)/*; do \
+		if [ -f "$$f" ]; then $(INSTALL_DATA) "$$f" $(DESTDIR)$(VENTUREDATADIR)/docs-site/; fi \
+	done
+
+install: install-docs-site

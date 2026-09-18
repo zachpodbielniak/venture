@@ -1068,6 +1068,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"headline", "Headline metrics",
 		"CAC, churn, LTV, LTV:CAC and cohort reports, and the headline home page.",
 		headline_requires, headline_suggests, headline_types, headline_reports, NULL, FALSE
+	},
+	{
+		"docs", "Documentation",
+		"The rendered documentation site, served read-only at /docs.",
+		venture_module_requires_core, NULL, NULL, NULL, NULL, FALSE
 	}
 };
 
