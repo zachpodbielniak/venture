@@ -1665,6 +1665,11 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/dunning_policy/0/actions/sweep", NULL, "{}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/customers/health/sweep", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/reports/customer_health"),
+		==, SOUP_STATUS_FOUND);
 
 	/* The dashboard writes: making, changing and removing pages and
 	 * their widgets. */
@@ -4383,6 +4388,48 @@ test_auth_equity_input(ServerFixture *fixture, gconstpointer data)
 	}
 }
 
+/*
+ * The customer health sweep reads a whole organisation's customers and
+ * writes a next action for each red one, so it is judged in the
+ * organisation it names: a global editor with no membership there is
+ * refused, a member is not, and naming an organisation the member is not
+ * in is refused too.
+ */
+static void
+test_auth_health_sweep_is_judged_in_its_organization(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *outsider = NULL;
+	g_autofree gchar *member = NULL;
+	g_autofree gchar *path = NULL;
+
+	(void)user_data;
+
+	path = g_strdup_printf("/api/v1/customers/health/sweep?organization_id=%" G_GINT64_FORMAT,
+		venture_context_get_default_organization_id(fixture->context));
+
+	server_fixture_create_user(fixture, "oscar", "o-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	outsider = server_fixture_login(fixture, "oscar", "o-long-password");
+	g_assert_nonnull(outsider);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, outsider,
+	                                        "{}", NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+
+	server_fixture_create_member(fixture, "mira", "m-long-password",
+	                             VENTURE_USER_ROLE_EDITOR, NULL);
+	member = server_fixture_login(fixture, "mira", "m-long-password");
+	g_assert_nonnull(member);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, member,
+	                                        "{}", NULL, NULL),
+	                 ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/customers/health/sweep?organization_id=999999", member,
+		"{}", NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+}
+
 int
 main(
 	int	  argc,
@@ -4594,5 +4641,8 @@ main(
 	g_test_add("/orgaccess/journal-action-veto", ServerFixture, "action-veto", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
 	g_test_add("/orgaccess/journal-header-changed", ServerFixture, "header-changed", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
 	g_test_add("/orgaccess/public-capabilities-session", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_public_capabilities, server_fixture_tear_down);
+	g_test_add("/auth/health-sweep-is-judged-in-its-organization", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_health_sweep_is_judged_in_its_organization,
+	           server_fixture_tear_down);
 	return g_test_run();
 }
