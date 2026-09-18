@@ -17,6 +17,7 @@ VENTURE_DEFINE_ENTITY(VentureCrmImport, venture_crm_import, crm_import_fields)
  * what the import created and a rerun finds what it already did. */
 static const VentureFieldDecl crm_import_row_fields[] = {
 	VENTURE_FIELD_REF("import-id", "Import", NULL, "crm_import", VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_NAME("source", "Source", "The batch's vendor; a source id is stable only within one vendor"),
 	VENTURE_FIELD_NAME("source-object", "Source object", "company, contact, deal, note or task"),
 	VENTURE_FIELD_NAME("source-id", "Source ID", "Stable identifier from the source CRM"),
 	VENTURE_FIELD("record-type", "Record type", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),

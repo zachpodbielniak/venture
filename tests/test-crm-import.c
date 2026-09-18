@@ -526,6 +526,15 @@ test_manifest_refusals(Fixture *f, gconstpointer data)
 		g_clear_error(&error);
 	}
 	{
+		/* "All entities" is not a place a migration can land. */
+		g_autoptr(JsonObject) payload = manifest(f, "hubspot", hubspot_files, NULL, NULL);
+		batch = venture_crm_import_service_preview(venture_crm_import_service_get(f->db), 0, payload, &actor, &error);
+		g_assert_null(batch);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(error->message, "organization"));
+		g_clear_error(&error);
+	}
+	{
 		g_autoptr(JsonObject) payload = manifest(f, "pipedrive", hubspot_files, NULL, NULL);
 		batch = venture_crm_import_service_preview(venture_crm_import_service_get(f->db), f->org, payload, &actor, &error);
 		g_assert_null(batch);
@@ -863,6 +872,87 @@ test_import_atomic(Fixture *f, gconstpointer data)
 	}
 }
 
+/* Source ids are stable only within one vendor: a HubSpot company 101 and
+ * a Zoho account 101 are two companies. What breaks if this regresses: a
+ * second vendor's export silently lands on the first vendor's records. */
+static void
+test_source_ids_scoped_by_vendor(Fixture *f, gconstpointer data)
+{
+	static const gchar *const zoho_files[] = { "companies", "zoho-accounts.csv", NULL };
+	g_autoptr(JsonObject) hubspot = manifest(f, "hubspot", hubspot_files, NULL, NULL);
+	g_autoptr(JsonObject) zoho = manifest(f, "zoho_crm", zoho_files, "{}", NULL);
+	g_autoptr(VentureEntity) first = NULL;
+	g_autoptr(VentureEntity) second = NULL;
+	g_autoptr(VentureEntity) company = NULL;
+	g_autofree gchar *status = NULL;
+	g_autofree gchar *name = NULL;
+	(void)data;
+	first = preview(f, hubspot);
+	import(f, first);
+	g_assert_cmpuint(count(f, VENTURE_TYPE_COMPANY), ==, 3);
+	/* The Zoho export reuses HubSpot's id 101 for a company that matches
+	 * nothing by domain or email. */
+	json_object_set_string_member(json_object_get_object_member(zoho, "csv"), "companies",
+		"Record Id,Account Name,Website,Phone,Industry,Account Owner,Created Time\n"
+		"101,Wayne Enterprises,wayne.example,,Holdings,Zoe Owner,2025-01-01 08:00\n");
+	second = preview(f, zoho);
+	import(f, second);
+	status = row_status(f, second, "company", "101", NULL);
+	g_assert_cmpstr(status, ==, "imported");
+	company = record_of(f, second, "company", "101", VENTURE_TYPE_COMPANY);
+	name = string_of(company, "name");
+	g_assert_cmpstr(name, ==, "Wayne Enterprises");
+	g_assert_cmpuint(count(f, VENTURE_TYPE_COMPANY), ==, 4);
+	{
+		g_autoptr(VentureEntity) row = row_for(f, second, "company", "101");
+		g_autofree gchar *source = string_of(row, "source");
+		g_assert_cmpstr(source, ==, "zoho_crm");
+	}
+}
+
+static gint64
+scalar(VentureDatabase *db, const gchar *sql)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(OrmResult) result = venture_database_query_raw(db, sql, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_result_next(result));
+	return orm_row_get_integer(orm_result_get_row(result), 0);
+}
+
+/* Migration 000390 records the pair of tables on a database with the
+ * module on, and succeeds without them when the module is off. */
+static void
+test_migration(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = NULL;
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureConfig) everything = NULL;
+	g_autoptr(VentureModuleRegistry) registry = NULL;
+	(void)data;
+	g_assert_cmpint(scalar(f->db, "SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations WHERE version = 390"), ==, 1);
+	g_assert_cmpint(scalar(f->db, "SELECT CAST(COUNT(*) AS BIGINT) FROM sqlite_master WHERE type = 'table' AND name IN ('crm_imports', 'crm_import_rows')"), ==, 2);
+
+	venture_config_set_module_enabled(config, "crm_import", FALSE);
+	db = venture_database_new("sqlite://:memory:", &error);
+	g_assert_no_error(error);
+	context = venture_context_new(config, db);
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(scalar(db, "SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations WHERE version = 390"), ==, 1);
+	g_assert_cmpint(scalar(db, "SELECT CAST(COUNT(*) AS BIGINT) FROM sqlite_master WHERE type = 'table' AND name IN ('crm_imports', 'crm_import_rows')"), ==, 0);
+	g_assert_cmpint(scalar(db, "SELECT CAST(COUNT(*) AS BIGINT) FROM sqlite_master WHERE type = 'table' AND name = 'companies'"), ==, 1);
+	g_clear_object(&context);
+	g_clear_object(&db);
+	everything = venture_config_new();
+	registry = venture_module_registry_new();
+	venture_module_registry_register_builtins(registry);
+	g_assert_true(venture_module_registry_configure(registry, everything, NULL));
+	venture_module_registry_apply(registry, venture_entity_registry_get_default());
+}
+
 typedef struct
 {
 	gboolean done;
@@ -1047,6 +1137,8 @@ main(int argc, char **argv)
 	g_test_add("/crm-import/vendor-maps", Fixture, NULL, setup, test_vendor_maps, teardown);
 	g_test_add("/crm-import/generic-write", Fixture, NULL, setup, test_generic_write_refused, teardown);
 	g_test_add("/crm-import/import-atomic", Fixture, NULL, setup, test_import_atomic, teardown);
+	g_test_add("/crm-import/source-ids-scoped-by-vendor", Fixture, NULL, setup, test_source_ids_scoped_by_vendor, teardown);
+	g_test_add("/crm-import/migration", Fixture, NULL, setup, test_migration, teardown);
 	g_test_add("/crm-import/surfaces", Fixture, NULL, setup, test_surfaces, teardown);
 	return g_test_run();
 }

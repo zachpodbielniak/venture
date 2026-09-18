@@ -550,11 +550,11 @@ validate_deals(VentureCrmImportService *self, gint64 org, JsonObject *manifest, 
  * ---------------------------------------------------------------------- */
 
 static gboolean
-add_row(VentureCrmImportService *self, gint64 import_id, gint64 org, const gchar *object, const gchar *source_id,
-	const gchar *status, const gchar *exception, const VentureActor *actor, GError **error)
+add_row(VentureCrmImportService *self, gint64 import_id, gint64 org, const gchar *source, const gchar *object,
+	const gchar *source_id, const gchar *status, const gchar *exception, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureCrmImportRow) row = venture_crm_import_row_new();
-	g_object_set(row, "import-id", import_id, "source-object", object, "source-id", source_id,
+	g_object_set(row, "import-id", import_id, "source", source, "source-object", object, "source-id", source_id,
 		"status", status, "exception", exception, "created", FALSE, NULL);
 	venture_entity_set_organization_id(VENTURE_ENTITY(row), org);
 	return save_owned(self, VENTURE_ENTITY(row), actor, error);
@@ -573,6 +573,11 @@ venture_crm_import_service_preview(VentureCrmImportService *self, gint64 organiz
 	JsonArray *unsupported;
 	guint t, r, i;
 	g_return_val_if_fail(VENTURE_IS_CRM_IMPORT_SERVICE(self), NULL);
+	if (organization_id <= 0)
+	{
+		refuse(error, "a migration needs one legal entity; choose an organization first");
+		return NULL;
+	}
 	if (manifest == NULL)
 	{
 		refuse(error, "a mapped manifest is required");
@@ -621,12 +626,12 @@ venture_crm_import_service_preview(VentureCrmImportService *self, gint64 organiz
 			if (blank(id))
 			{
 				placeholder = g_strdup_printf("%s#%u", table->file, r);
-				if (!add_row(self, venture_entity_get_id(VENTURE_ENTITY(batch)), organization_id, table->object,
+				if (!add_row(self, venture_entity_get_id(VENTURE_ENTITY(batch)), organization_id, source, table->object,
 					placeholder, "skipped", "row has no source id", actor, error))
 					goto fail;
 				continue;
 			}
-			if (!add_row(self, venture_entity_get_id(VENTURE_ENTITY(batch)), organization_id, table->object, id,
+			if (!add_row(self, venture_entity_get_id(VENTURE_ENTITY(batch)), organization_id, source, table->object, id,
 				"preview", NULL, actor, error))
 				goto fail;
 		}
@@ -702,8 +707,10 @@ finish_row(Run *run, VentureEntity *row, const gchar *status, const gchar *excep
 	return save_owned(run->self, row, run->actor, error);
 }
 
-/* A record already imported for this source id, in this batch or an
- * earlier one that was not rolled back. Zero when none, -1 on error. */
+/* A record already imported for this source id from the same vendor, in
+ * this batch or an earlier one that was not rolled back. Zero when none,
+ * -1 on error. Two vendors may reuse an id, so the vendor is part of the
+ * key. */
 static gint64
 imported_record(Run *run, const gchar *object, const gchar *source_id, gchar **record_type, GError **error)
 {
@@ -715,7 +722,8 @@ imported_record(Run *run, const gchar *object, const gchar *source_id, gchar **r
 	venture_query_set_organization(query, run->org);
 	venture_query_set_limit(query, 0);
 	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
-	if (!venture_query_add_filter_string(query, "source-object", VENTURE_FILTER_OP_EQ, object, error) ||
+	if (!venture_query_add_filter_string(query, "source", VENTURE_FILTER_OP_EQ, run->source, error) ||
+		!venture_query_add_filter_string(query, "source-object", VENTURE_FILTER_OP_EQ, object, error) ||
 		!venture_query_add_filter_string(query, "source-id", VENTURE_FILTER_OP_EQ, source_id, error))
 		return -1;
 	rows = venture_database_find(run->self->database, query, error);

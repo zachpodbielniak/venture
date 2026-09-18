@@ -23,8 +23,10 @@ venture_crm_import_web_preview(HtmxRequest *request, GHashTable *params, gpointe
 		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "CRM import preview requires a JSON manifest");
 		return venture_web_error_response(error);
 	}
+	/* The selected legal entity, as cutover: a migration lands in one
+	 * organization, and "all" is refused by the service. */
 	result = venture_crm_import_service_preview(venture_crm_import_service_get(venture_context_get_database(self->context)),
-		venture_context_get_default_organization_id(self->context), json_node_get_object(body), &actor, &error);
+		venture_web_active_organization(self, request), json_node_get_object(body), &actor, &error);
 	if (result == NULL) return venture_web_error_response(error);
 	return venture_web_json_response(venture_serializable_to_json(VENTURE_SERIALIZABLE(result), FALSE), 200);
 }

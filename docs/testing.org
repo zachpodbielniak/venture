@@ -330,10 +330,12 @@ dedupe against existing records by normalised domain and email, a
 conflicting match is an exception that leaves the record untouched, and
 contact-to-company links resolve by source id; deals carry money with
 currency, the mapped stage, owner and close date; an unmapped stage, a lost
-stage without a loss reason, a missing currency and an =attachments= file
-are refused before any write; notes, calls and completed tasks become dated
+stage without a loss reason, a missing currency, an =attachments= file and
+the "all entities" organization are refused before any write; notes, calls and completed tasks become dated
 interactions and open tasks planned activities; rollback on a database with
 pre-existing records removes exactly what the import created; the Zoho CRM
 and Salesforce built-in column maps and a manifest override are exercised;
 generic writes are refused; an unreadable date rolls the whole import back;
-and the REST routes and =venturectl crm= verbs run over HTTP.
+a second vendor reusing the first vendor's id creates a new record rather
+than matching; migration 000390 records the table pair and succeeds with
+the module off; and the REST routes and =venturectl crm= verbs run over HTTP.

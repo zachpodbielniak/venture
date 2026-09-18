@@ -13,6 +13,16 @@ transaction, a row per source id so a rerun is idempotent, and a rollback
 that removes exactly what the import created. It calls no vendor API,
 imports no attachments and touches no accounting record.
 
+=crm_import= holds =source=, =state=, the =manifest= as submitted (CSV
+text inlined), the preview =report= and =activated_at=. =crm_import_row=
+holds =import_id=, =source= (the vendor), =source_object= (=company=,
+=contact=, =deal=, =note= or =task=), =source_id=, the =record_type= and
+=record_id= it became or matched, =status= (=preview=, =imported=,
+=matched=, =exception=, =skipped=, =rolled_back=), the =exception= text
+and =created=, set only when this batch made the record. Both tables come
+from the field tables; migration =000390_crm_import= verifies the pair is
+present together or absent with the module off.
+
 A batch moves =preview= → =imported= → =active=, or =preview= /
 =imported= → =rolled_back=. Import may be repeated on an imported batch;
 rows already carrying a record are skipped. Activation accepts the
@@ -99,7 +109,8 @@ earlier imports. Timestamps accept ISO 8601 and =YYYY-MM-DD[ HH:MM[:SS]]=.
 * What preview refuses
 
 Preview validates before any write and refuses, writing nothing, when:
-the source is unknown; an object is unknown or =attachments=; a CSV
+the organization is zero (a migration lands in one legal entity, so the
+"all entities" selection is refused); the source is unknown; an object is unknown or =attachments=; a CSV
 cannot be parsed or lacks a required column; a deal names a stage
 missing from =stage_map=; a mapped stage id does not exist in the
 organization; a lost stage is mapped without an active =loss_reason_id=;
@@ -116,8 +127,10 @@ an unreadable note date, leaves nothing persisted and the batch in
 =preview=. Rows resolve in manifest order: companies, contacts, deals,
 then notes, emails, calls, meetings and tasks.
 
-A source id already imported by this batch or by an earlier batch that
-was not rolled back is =matched= to that record. Otherwise companies are
+A source id already imported by this batch or by an earlier batch of
+the same vendor that was not rolled back is =matched= to that record;
+each row carries its batch's =source=, because HubSpot and Zoho CRM both
+number records and a Zoho account 101 is not a HubSpot company 101. Otherwise companies are
 matched against live companies by normalised domain, website or email,
 and contacts against live contacts by normalised email, using the same
 normalisation as [[file:leads.org][leads]] (lower case, =+tag= removed,
@@ -166,12 +179,13 @@ retained, as for any deleted deal. =activate= moves an imported batch to
 
 | Surface | Call |
 |---------+------|
-| REST | =POST /api/v1/crm_imports/preview= with the manifest (=csv= inline) |
+| REST | =POST /api/v1/crm_imports/preview= with the manifest (=csv= inline), into the selected legal entity |
 | REST | =POST /api/v1/crm_imports/:id/import=, =/activate=, =/rollback= |
 | CLI | =venturectl crm preview MANIFEST=, =crm import MANIFEST= (preview then import), =crm import ID=, =crm activate ID=, =crm rollback ID= |
 | Generic | =venturectl act crm_import ID import= |
 
-All require an editor and the module. =test-crm-import= covers the
+All require an editor and the module, and answer 401 unauthenticated
+(=test-auth= lists them). =test-crm-import= covers the
 lifecycle and idempotent rerun, dedupe and conflict exceptions, contact
 → company links, deals with money, stage, owner and close date, the
 unmapped-stage and other manifest refusals, history and tasks, exact

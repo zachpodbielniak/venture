@@ -28,6 +28,8 @@ VentureCrmImportService *venture_crm_import_service_get(VentureDatabase *databas
  * Validates the manifest, the column maps and every deal stage, and
  * records a batch in the preview state with one row per source row.
  * Nothing but the batch and its rows is written; a refusal writes nothing.
+ * A migration belongs to one legal entity: @organization_id of zero
+ * (the "all entities" selection) is refused.
  *
  * Returns: (transfer full) (nullable): the crm_import batch
  */
