@@ -592,7 +592,7 @@ test_module_off(Fixture *f, gconstpointer data)
 	venture_config_set_module_enabled(f->config, "backup", TRUE);
 }
 
-/* Migration 000370 must succeed with the module off, leaving no backup
+/* Migration 000372 must succeed with the module off, leaving no backup
  * tables behind, and with it on both tables exist and carry no invented
  * runs. */
 static void

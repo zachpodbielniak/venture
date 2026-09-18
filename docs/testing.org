@@ -336,7 +336,7 @@ counts against a restore into an empty in-memory database, reports a
 mismatch once the live books move on, runs inside the sweep when the
 schedule says =verify=, and refuses a pruned run or a missing file. The
 drill keeps its report as a named run that retention never counts.
-Migration 000370 succeeds with the module off and leaves no backup tables;
+Migration 000372 succeeds with the module off and leaves no backup tables;
 with it on, both tables exist and hold no invented runs. Over HTTP and the
 CLI: the Backups page shows runs and verdicts to any session,
 owners trigger run, verify and drill, editors and viewers get 403 from the
