@@ -436,3 +436,14 @@ venture_backup_actions_register(VentureDatabase *database)
 	venture_action_registry_register(venture_database_get_action_registry(database), action,
 		backup_allowed, backup_invoke, venture_backup_service_get(database), NULL, &error);
 }
+
+gchar *
+venture_backup_service_snapshot(VentureBackupService *self, gint64 organization_id, GError **error)
+{
+	g_autoptr(JsonNode) node = NULL;
+	g_return_val_if_fail(VENTURE_IS_BACKUP_SERVICE(self), NULL);
+	node = snapshot_export(self, organization_id, error);
+	if (node == NULL)
+		return NULL;
+	return venture_json_to_string(node, FALSE);
+}

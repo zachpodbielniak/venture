@@ -158,6 +158,7 @@ SERVER_ONLY_SRCS += src/portal/venture-portal-service.c
 SERVER_ONLY_SRCS += src/portal/venture-supplier-portal-service.c
 SERVER_ONLY_SRCS += src/fields/venture-custom-fields-service.c
 SERVER_ONLY_SRCS += src/backup/venture-backup-service.c
+SERVER_ONLY_SRCS += src/backup/venture-backup-schedule-service.c
 SERVER_ONLY_SRCS += $(filter-out src/budgets/venture-budget-records.c,$(wildcard src/budgets/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/equity/venture-equity-records.c,$(wildcard src/equity/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/group/venture-group-records.c,$(wildcard src/group/*.c))
@@ -267,6 +268,7 @@ $(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sequences: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-recurring: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-dunning: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-backup-schedule: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery

@@ -12279,6 +12279,7 @@ venture_web_ui_settings(
 	                       "layered, so edit the file or the environment and "
 	                       "restart.</p>"
 	                       "<p><a href=\"/settings/fields\">Custom fields and layouts</a></p>"
+	                       "<p><a href=\"/settings/backups\">Backups</a></p>"
 	                       "</div></div>");
 
 	/* Where things stand right now, before the settings themselves. */

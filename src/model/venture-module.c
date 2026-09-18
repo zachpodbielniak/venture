@@ -700,7 +700,7 @@ static GType (*const statements_types[]) (void) = {
 	venture_saved_report_get_type, venture_report_pack_get_type,
 	venture_accounting_dimension_get_type, NULL
 };
-static GType (*const backup_types[]) (void) = { venture_accounting_backup_get_type, NULL };
+static GType (*const backup_types[]) (void) = { venture_accounting_backup_get_type, venture_backup_schedule_get_type, venture_backup_run_get_type, NULL };
 static GType (*const venture_module_tax_filing_types[]) (void) = {
 	venture_tax_filing_get_type, venture_contractor_tax_form_get_type,
 	venture_contractor_tax_pack_get_type, NULL

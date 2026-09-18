@@ -64,5 +64,17 @@ gboolean venture_backup_service_restore(VentureBackupService *self, gint64 organ
  * @database: database owning the records
  */
 void venture_backup_actions_register(VentureDatabase *database);
+/**
+ * venture_backup_service_snapshot:
+ * @self: the service
+ * @organization_id: legal entity
+ * @error: (out) (optional)
+ *
+ * The same version 4 snapshot venture_backup_service_export() stores, as
+ * JSON text and without an accounting_backup record: for writing to a file.
+ *
+ * Returns: (transfer full) (nullable): the archive
+ */
+gchar *venture_backup_service_snapshot(VentureBackupService *self, gint64 organization_id, GError **error);
 G_END_DECLS
 #endif
