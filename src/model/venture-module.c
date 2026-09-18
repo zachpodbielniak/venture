@@ -762,6 +762,9 @@ static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };
 static const gchar *const dunning_suggests[] = { "activities", "recurring", NULL };
 static GType (*const dunning_types[]) (void) = { venture_dunning_policy_get_type, venture_dunning_event_get_type, NULL };
 static const gchar *const dunning_reports[] = { "collections", "dunning_worklist", NULL };
+static const gchar *const dedupe_requires[] = { "crm", NULL };
+static const gchar *const dedupe_suggests[] = { "leads", "invoicing", "payables", NULL };
+static GType (*const dedupe_types[]) (void) = { venture_duplicate_candidate_get_type, NULL };
 
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
@@ -1068,6 +1071,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"headline", "Headline metrics",
 		"CAC, churn, LTV, LTV:CAC and cohort reports, and the headline home page.",
 		headline_requires, headline_suggests, headline_types, headline_reports, NULL, FALSE
+	},
+	{
+		"dedupe", "Duplicates",
+		"Find and merge duplicate companies and contacts; a scan proposes, a person merges.",
+		dedupe_requires, dedupe_suggests, dedupe_types, NULL, NULL, FALSE
 	}
 };
 

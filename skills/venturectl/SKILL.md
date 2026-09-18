@@ -109,6 +109,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `collections run [--as-of DATE] [organization_id=N]` | queue overdue invoice reminders through the outbox; a non-admin must name the organization |
 | `dunning sweep [as_of=DATE] [organization_id=N] [limit=N] [dry_run=true]` | templated reminder policies: one step per invoice per day, escalation to the owner; `dry_run=true` returns the plan and writes nothing |
 | `batch invoice\|expense format=csv\|json payload=... [post=false] [organization_id=N] [--dry-run]` | all-or-nothing CSV/JSON document create |
+| `dedupe scan [kind=company\|contact] [organization_id=N]`, `dedupe merge ID survivor=N`, `dedupe dismiss ID` | propose duplicate companies or contacts; fold one into the other; close a proposal |
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 
@@ -313,7 +314,7 @@ venturectl --stage create expense description="Cover art" amount=250.00
 #   approve: POST /api/v1/confirmations/a3f9c118/approve
 ```
 
-It is refused on any command other than `create`, `update`, `delete`, `act`, `dunning sweep`, `journal post`, `sequence enroll`, `lead convert` and `billing`,
+It is refused on any command other than `create`, `update`, `delete`, `act`, `dunning sweep`, `dedupe`, `journal post`, `sequence enroll`, `lead convert` and `billing`,
 because those are the only routes that read it -- and an unknown query
 parameter on a write route is ignored, so a quietly accepted `--stage` would
 apply the change it was asked to hold back.
@@ -725,3 +726,17 @@ organization and remap record identities. External references resolve by UUID.
 Version 3 supports only manual ledger imports; old document packs remain
 refused. Accounting packs exclude installation credentials and attachments.
 See `docs/backup.org`.
+
+## Duplicates (dedupe)
+
+`dedupe scan kind=company|contact [organization_id=N]` proposes
+`duplicate_candidate` rows (exact normalised email/phone/website, same email
+domain with a similar name, or a similar name) and merges nothing; rerunning
+it updates the same rows and drops pairs that stopped matching. `dedupe merge
+ID survivor=N` folds the other record into `survivor` in one transaction:
+every reference field naming the loser is re-pointed, empty survivor fields
+are filled, the loser is soft-deleted with `merged_into_id`, and the old id
+answers 301 to the survivor. Refused across organizations, onto itself, or
+when the loser has issued invoices/bills in a currency the survivor's issued
+documents do not use. `dedupe dismiss ID` closes a proposal. Arguments are
+`key=value`; `--stage dedupe merge` proposes the merge for approval.

@@ -147,6 +147,8 @@ SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wil
 SERVER_ONLY_SRCS += $(filter-out src/recurring/venture-recurring-records.c,$(wildcard src/recurring/*.c))
 CORE_SRCS += src/dunning/venture-dunning-records.c
 SERVER_ONLY_SRCS += $(filter-out src/dunning/venture-dunning-records.c,$(wildcard src/dunning/*.c))
+CORE_SRCS += src/dedupe/venture-dedupe-records.c
+SERVER_ONLY_SRCS += $(filter-out src/dedupe/venture-dedupe-records.c,$(wildcard src/dedupe/*.c))
 
 PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
 SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
@@ -231,6 +233,7 @@ PUBLIC_HDRS += $(wildcard src/backup/*.h)
 PUBLIC_HDRS += $(wildcard src/budgets/*.h)
 PUBLIC_HDRS += $(wildcard src/equity/*.h)
 PUBLIC_HDRS += $(wildcard src/group/*.h)
+PUBLIC_HDRS += $(wildcard src/dedupe/*.h)
 
 # Private implementation fragments are included by their owning C source;
 # they are neither installable headers nor introspection declarations.
@@ -267,6 +270,7 @@ $(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sequences: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-recurring: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-dunning: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-dedupe: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery

@@ -96,5 +96,23 @@ gboolean venture_lead_service_apply_staged(VentureLeadService *self, VentureEnti
  * Returns: (transfer full): the normalised address, possibly empty
  */
 gchar *venture_lead_normalize_email(const gchar *value);
+/**
+ * venture_lead_normalize_phone:
+ * @value: (nullable): a number as typed
+ *
+ * The leads module's phone normalisation: digits only. Exposed so the
+ * dedupe module matches existing records the way capture does.
+ * Returns: (transfer full): the digits, possibly empty
+ */
+gchar *venture_lead_normalize_phone(const gchar *value);
+/**
+ * venture_lead_normalize_website:
+ * @value: (nullable): a URL or bare host as typed
+ *
+ * The leads module's website normalisation: the lower-case host without a
+ * leading www. Exposed for the same reason as the email form.
+ * Returns: (transfer full): the host, or an empty string when none parses
+ */
+gchar *venture_lead_normalize_website(const gchar *value);
 G_END_DECLS
 #endif

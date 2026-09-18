@@ -440,3 +440,18 @@ venturectl -f csv report general_ledger 2026-08 organization_id=1 currency=USD a
 The =statements= reports accept =compare_to= for a prior period, =as_of= for
 an accounting cutoff, and one =organization_id= and =currency=. General
 ledger optionally accepts =account_id=. See [[file:statements.org][financial statement definitions]].
+* Duplicates
+
+#+begin_src sh
+venturectl dedupe scan [kind=company|contact] [organization_id=N]
+venturectl dedupe merge ID survivor=N
+venturectl dedupe dismiss ID
+#+end_src
+
+=dedupe scan= proposes =duplicate_candidate= rows for one organization and
+merges nothing; its answer reports the number of open candidates as =score=.
+=dedupe merge= folds the other record of candidate =ID= into the survivor in
+one transaction; =--stage= proposes it for approval. =dedupe dismiss= closes
+a candidate as not a duplicate. =list duplicate_candidate status=open= reads
+the proposals. See [[file:dedupe.org][duplicates]] for the matching rules and
+what a merge moves.

@@ -822,6 +822,11 @@ venture_web_active_organization(
 static HtmxResponse *
 venture_web_redirect_to(const gchar *path);
 
+/* A merged-away company or contact id forwards to its survivor; defined in
+ * dedupe/venture-dedupe-web.inc, reached from the generic record routes. */
+static HtmxResponse *
+venture_web_dedupe_forward(VentureWebServer *self, VentureEntity *record, const gchar *prefix);
+
 
 static void
 venture_web_append_entity_picker(
@@ -1136,6 +1141,15 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		),
 		NULL,
 		"crm"
+	},
+	{
+		"/customers/duplicates", "Duplicates",
+		VENTURE_ICON(
+			"<rect x=\"3\" y=\"5\" width=\"11\" height=\"11\" rx=\"1\"/>"
+			"<rect x=\"10\" y=\"9\" width=\"11\" height=\"11\" rx=\"1\"/>"
+		),
+		NULL,
+		"dedupe"
 	},
 	{
 		"/e/campaign", "Campaigns",
@@ -2067,6 +2081,14 @@ venture_web_api_get(
 		}
 
 		return venture_web_error_response(error);
+	}
+
+	{
+		/* A merged-away id forwards to its survivor; see docs/dedupe.org. */
+		HtmxResponse *forward = venture_web_dedupe_forward(self, record, "/api/v1");
+
+		if (NULL != forward)
+			return forward;
 	}
 
 	node = venture_serializable_to_json(VENTURE_SERIALIZABLE(record), FALSE);
@@ -8923,6 +8945,13 @@ venture_web_ui_detail(
 
 	if (NULL == record)
 		return venture_web_error_response(error);
+
+	{
+		HtmxResponse *forward = venture_web_dedupe_forward(self, record, "/e");
+
+		if (NULL != forward)
+			return forward;
+	}
 
 	specs = venture_entity_get_field_specs(record);
 	g_ptr_array_sort_values(specs, venture_field_spec_compare_display_order);
@@ -27820,6 +27849,7 @@ venture_web_api_ticket_draft(
 #include "equity/venture-equity-web.inc"
 #include "group/venture-group-web.inc"
 #include "report/venture-headline-web.inc"
+#include "dedupe/venture-dedupe-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -28128,6 +28158,9 @@ venture_web_server_new(
 	htmx_router_post(router, "/f/:token", venture_web_lead_capture, self);
 	htmx_router_post(router, "/api/v1/leads/:id/:action", venture_web_lead_action, self);
 	htmx_router_post(router, "/leads/:id/:action", venture_web_lead_action, self);
+	htmx_router_get(router, "/customers/duplicates", venture_web_ui_duplicates, self);
+	htmx_router_post(router, "/customers/duplicates/scan", venture_web_ui_duplicates_action, self);
+	htmx_router_post(router, "/customers/duplicates/:id/:action", venture_web_ui_duplicates_action, self);
 	htmx_router_get(router, "/api/v1/factory", venture_web_api_factory, self);
 	htmx_router_post(router, "/api/v1/post/backfill", venture_web_autojournal_backfill, self);
 	htmx_router_get(router, "/api/v1/inbox", venture_web_api_inbox, self);

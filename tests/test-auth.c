@@ -1331,6 +1331,7 @@ test_auth_api_refuses_anonymous_requests(
 		"/api/v1/dunning_policy",
 		"/api/v1/dunning_event",
 		"/api/v1/reports/collections",
+		"/api/v1/duplicate_candidate",
 		NULL
 	};
 	gsize i;
@@ -1664,6 +1665,20 @@ test_auth_api_refuses_anonymous_requests(
 		==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/dunning_policy/0/actions/sweep", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/customers/duplicates"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/customers/duplicates/scan", NULL, "kind=company", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/customers/duplicates/1/merge", NULL, "survivor=1", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/duplicate_candidate/0/actions/scan", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/duplicate_candidate/1/actions/merge", NULL, "{}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
 
 	/* The dashboard writes: making, changing and removing pages and
