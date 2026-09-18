@@ -68,7 +68,7 @@ retention and an empty destination fall back to =backup.retention= and
 default to seven copies under the state directory's =backups=. Saving a
 schedule with an unparseable expression, an unknown scope or a negative
 retention is refused. Both tables come from the field tables; migration
-=000370_backup_schedules= verifies they are present together, or absent
+=000372_backup_schedules= verifies they are present together, or absent
 when the module is off, and backfills nothing.
 
 =VentureBackupScheduleService= (=src/backup/venture-backup-schedule-service.c=)
