@@ -1102,8 +1102,8 @@ venture_report_support_rollup(
 	g_ptr_array_sort_with_data(ordered, rollup_compare_rows, &sort);
 
 	result = venture_report_result_new(parsed.by_product
-	                                   	? "Support rollup by product"
-	                                   	: "Support rollup", period);
+	                                   ? "Support rollup by product"
+	                                   : "Support rollup", period);
 
 	for (i = 0; i < G_N_ELEMENTS(rollup_columns); i++)
 		venture_report_result_add_column(result,
