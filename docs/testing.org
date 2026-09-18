@@ -223,6 +223,10 @@ That runs are off unless the operator turns them on, that starting one returns w
 
 That pod handlers run on the thread that dispatched them. podomation's default handler timeout selects an async dispatch path that runs a synchronous handler on a worker thread while the caller blocks in a nested main loop — and VENTURE's handler writes to the database and reads a cascade guard that is not atomic.
 
+** =test-money-calendar=
+
+That the calendar shows what is due, not what was scheduled: month-end and daylight-saving expansion in the schedule's own timezone (a 23:30 Auckland occurrence stays on the 1st where UTC arithmetic would slip to the 2nd), paused, ended, generated and journal schedules left out, bills and invoices at their open balance with settled and draft ones absent, overdue items carried to today with the anchor day kept so the feed UID is stable, dunning steps against the events already recorded, payroll net and liabilities as two events, tax packs by status, and nets per currency that are never added across currencies. The negative cases: an unknown =kind=, a source whose module is off, the whole module off (report gone, events refused, page and feed 404), and the CLI verb without =--from= and =--to=. The test was written before the module existed and did not compile against the baseline.
+
 * Adding tests
 
 The =test-ledger= binary pins the universal posting boundary, including
