@@ -335,6 +335,14 @@ runs matching rules again. Generic =create/update lead= supports capture and
 qualification; converted state and references belong to the service.
 Recycle with =status=recycled unqualified_reason=... recycle_until=YYYY-MM-DD=.
 See [[file:leads.org][leads]] for capture forms, duplicate policies and reports.
+
+=venturectl crm preview MANIFEST= reads a migration manifest, inlines the
+CSV files its =files= member names (relative to the manifest) and creates a
+=crm_import= batch in the preview state. =venturectl crm import MANIFEST=
+does the same and imports it; =crm import ID= imports a previewed batch,
+=crm activate ID= accepts it and =crm rollback ID= removes what the batch
+created. See [[file:crm-import.org][CRM migration]] for the manifest, the
+built-in HubSpot, Zoho CRM and Salesforce column maps and the refusals.
 * Planned activities
 
 =venturectl activity complete ID outcome=...= completes planned work through

@@ -1,0 +1,180 @@
+#+title: CRM migration
+#+description: HubSpot, Zoho CRM and Salesforce exports into companies, contacts, deals, history and next actions
+
+* Migration is a cutover for the customer side
+
+The =crm_import= module requires =crm=, =pipelines=, =activities= and
+=leads=. It owns =crm_import= and =crm_import_row=, and
+=VentureCrmImportService= owns preview, import, activate and rollback.
+Generic writes to either record are refused naming the service. It
+mirrors the accounting cutover ([[file:cutover.org][cutover]]): a mapped
+manifest, a preview that refuses before writing, an import that is one
+transaction, a row per source id so a rerun is idempotent, and a rollback
+that removes exactly what the import created. It calls no vendor API,
+imports no attachments and touches no accounting record.
+
+A batch moves =preview= → =imported= → =active=, or =preview= /
+=imported= → =rolled_back=. Import may be repeated on an imported batch;
+rows already carrying a record are skipped. Activation accepts the
+result and closes the door on rollback.
+
+* The manifest
+
+#+begin_src json
+{"source": "hubspot",
+ "files": {"companies": "companies.csv", "contacts": "contacts.csv",
+           "deals": "deals.csv", "notes": "notes.csv", "tasks": "tasks.csv"},
+ "stage_map": {"presentationscheduled": 3, "closedwon": 5, "closedlost": 6},
+ "loss_reason_id": 1,
+ "currency": "USD",
+ "owner_map": {"Jane Doe": "jane"},
+ "columns": {"contacts": {"email": "Email address"}},
+ "unsupported": ["attachments", "custom objects"]}
+#+end_src
+
+- =source= is =hubspot=, =zoho_crm= or =salesforce=; anything else is refused.
+- =files= names one CSV per object, relative to the manifest. =venturectl=
+  reads them and sends their text under =csv=; a caller of the REST route
+  sends =csv= directly. The objects are =companies=, =contacts=, =deals=,
+  =notes=, =emails=, =calls=, =meetings= and =tasks=. An unknown object is
+  refused, and =attachments= is refused with a message saying it is
+  unsupported: list it under =unsupported= instead, where it appears in
+  the preview report.
+- =stage_map= maps every source deal stage to a =pipeline_stage= id in the
+  organization. The mapped stage's pipeline becomes the deal's pipeline.
+- =loss_reason_id= names an active =loss_reason=; required when any deal
+  maps to a lost stage, because the deal service requires one.
+- =currency= supplies deals whose export has no currency column.
+- =owner_map= turns source owner names or ids into VENTURE usernames for
+  deal and activity owners. Unmapped owners are kept as typed.
+- =columns= overrides the built-in column map per object; =notes= applies
+  to =emails=, =calls= and =meetings= unless they carry their own entry.
+
+* Column maps
+
+Each map names the canonical field on the left and the vendor's default
+export header on the right. Headers match case-insensitively. A missing
+required column (=id= and =name= for companies, =id= for contacts, =id=,
+=name= and =stage= for deals, =id= for notes, =id= and =subject= for
+tasks) is refused naming the header the map expected.
+=venture_crm_import_default_columns()= returns a map.
+
+| Object | Canonical fields |
+|--------+------------------|
+| companies | =id=, =name=, =domain=, =website=, =phone=, =industry=, =email=, =owner=, =created_at= |
+| contacts | =id=, =name= or =first_name= + =last_name=, =email=, =phone=, =company_id=, =title=, =owner=, =created_at= |
+| deals | =id=, =name=, =amount=, =currency=, =stage=, =pipeline=, =close_date=, =owner=, =company_id=, =contact_id=, =created_at= |
+| notes | =id=, =kind=, =subject=, =body=, =occurred_at=, =author=, =contact_id=, =company_id=, =deal_id=, =related_id= |
+| tasks | =id=, =subject=, =body=, =kind=, =status=, =owner=, =due_at=, =completed_at=, =created_at=, =contact_id=, =company_id=, =deal_id=, =related_id= |
+
+HubSpot defaults: =Record ID=, =Company name=, =Company Domain Name=,
+=Website URL=, =Phone Number=, =Industry=, =Company owner=, =Create Date=;
+=First Name=, =Last Name=, =Email=, =Associated Company IDs=, =Job Title=,
+=Contact owner=; =Deal Name=, =Amount=, =Currency=, =Deal Stage=,
+=Pipeline=, =Close Date=, =Deal owner=, =Associated Contact IDs=; notes
+=Activity type=, =Title=, =Body=, =Activity date=, =Activity assigned to=,
+=Associated Deal IDs=; tasks =Task title=, =Task body=, =Due date=,
+=Task status=, =Task type=, =Assigned to=, =Completion date=. A
+semicolon-separated association list uses its first id.
+
+Zoho CRM defaults: =Record Id=, =Account Name=, =Website=, =Phone=,
+=Industry=, =Account Owner=, =Created Time=; =First Name=, =Last Name=,
+=Email=, =Account Name.id=, =Title=, =Contact Owner=; =Deal Name=,
+=Amount=, =Currency=, =Stage=, =Pipeline=, =Closing Date=, =Deal Owner=,
+=Contact Name.id=; notes =Note Title=, =Note Content=, =Note Owner=,
+=Parent Id=; tasks =Subject=, =Description=, =Due Date=, =Status=,
+=Task Owner=, =Related To.id=, =Closed Time=.
+
+Salesforce defaults: =Id=, =Name=, =Website=, =Phone=, =Industry=,
+=OwnerId=, =CreatedDate=; =FirstName=, =LastName=, =Email=, =AccountId=,
+=Title=; =Amount=, =CurrencyIsoCode=, =StageName=, =CloseDate=,
+=ContactId=; notes =Title=, =Body=, =CreatedById=, =ParentId=; tasks
+=Subject=, =Description=, =ActivityDate=, =Status=, =WhoId=, =WhatId=,
+=TaskSubtype=, =CompletedDateTime=.
+
+A =related_id= (Zoho =Parent Id=, Salesforce =ParentId= / =WhatId=) is
+resolved against the contacts, then companies, then deals of this and
+earlier imports. Timestamps accept ISO 8601 and =YYYY-MM-DD[ HH:MM[:SS]]=.
+
+* What preview refuses
+
+Preview validates before any write and refuses, writing nothing, when:
+the source is unknown; an object is unknown or =attachments=; a CSV
+cannot be parsed or lacks a required column; a deal names a stage
+missing from =stage_map=; a mapped stage id does not exist in the
+organization; a lost stage is mapped without an active =loss_reason_id=;
+a deal has an amount but neither a currency column value nor a manifest
+=currency=; an amount cannot be read. A successful preview stores the
+manifest with its CSV text on the batch and one =crm_import_row= per
+source row in =preview= status, or =skipped= for a row without an id.
+The report lists row counts per object and the unsupported objects.
+
+* Import: dedupe, relations, deals, history
+
+Import runs in one transaction; a failure after the first write, such as
+an unreadable note date, leaves nothing persisted and the batch in
+=preview=. Rows resolve in manifest order: companies, contacts, deals,
+then notes, emails, calls, meetings and tasks.
+
+A source id already imported by this batch or by an earlier batch that
+was not rolled back is =matched= to that record. Otherwise companies are
+matched against live companies by normalised domain, website or email,
+and contacts against live contacts by normalised email, using the same
+normalisation as [[file:leads.org][leads]] (lower case, =+tag= removed,
+host without =www.=). A match whose populated fields disagree (name,
+phone, industry, website for companies; name, phone, role for contacts)
+is recorded as an =exception= naming each difference; the existing
+record is never overwritten, and the row still resolves to it so the
+source's deals and history attach correctly. New records are =imported=
+with =created= set and =source= naming the vendor.
+
+A contact's =company_id= resolves through the company rows. An unknown
+company creates the contact without one and records the exception on
+the row. Deals resolve company and contact the same way.
+
+Deals carry =value= as =VentureMoney= with the row or manifest currency,
+=owner= through =owner_map=, =expected_close_at= from the close date and
+the mapped stage. They are created in the mapped stage's pipeline and
+moved through =VentureDealService=, so stage history records
+"Imported from hubspot stage …", won and lost stages stamp =closed_at=
+and lost deals carry =loss_reason_id=. =closed_at= is the import time:
+the deal service stamps it and a generic write cannot backdate it.
+
+Notes, emails, calls and meetings become =interaction= records of that
+kind on the contact, company and deal the row names, at the original
+=occurred_at=. The interaction record has no author field, so the source
+author is kept as a trailing attribution line in the body. A row naming
+no record is an =exception= and writes nothing. Tasks whose status is
+=Completed=, =Done= or =Closed= become interactions dated at completion
+(or due, or creation); every other task becomes a planned =activity= of
+the mapped kind with its owner, due time and relations, so open work
+appears on the worklist as a next action.
+
+* Rollback and activation
+
+Rollback is allowed in =preview= and =imported=. It soft-deletes exactly
+the records whose rows carry =created= (history and activities first,
+then deals, contacts, companies), leaves matched and exception matches
+untouched, marks every row =rolled_back= and the batch =rolled_back=.
+A rolled-back batch cannot be imported again, and its source ids no
+longer count as imported, so a fresh preview and import recreates them.
+Repeating a rollback is a no-op. Stage history of a deleted deal is
+retained, as for any deleted deal. =activate= moves an imported batch to
+=active= and stamps =activated_at=; an active batch refuses rollback.
+
+* Surfaces
+
+| Surface | Call |
+|---------+------|
+| REST | =POST /api/v1/crm_imports/preview= with the manifest (=csv= inline) |
+| REST | =POST /api/v1/crm_imports/:id/import=, =/activate=, =/rollback= |
+| CLI | =venturectl crm preview MANIFEST=, =crm import MANIFEST= (preview then import), =crm import ID=, =crm activate ID=, =crm rollback ID= |
+| Generic | =venturectl act crm_import ID import= |
+
+All require an editor and the module. =test-crm-import= covers the
+lifecycle and idempotent rerun, dedupe and conflict exceptions, contact
+→ company links, deals with money, stage, owner and close date, the
+unmapped-stage and other manifest refusals, history and tasks, exact
+rollback on a database with pre-existing records, the three vendor maps
+with an override, the generic-write refusal, transactional atomicity,
+and the REST and CLI surfaces.
