@@ -1470,6 +1470,149 @@ venture_web_navigation(void)
 	return venture_web_nav_links;
 }
 
+/*
+ * The five questions an owner asks, and the pages that answer each. The
+ * link table above is not reordered for them: a row named here is drawn
+ * under its question, everything else stays under the heading it carries.
+ * A page is named under one question only; test-plugin holds it to that.
+ */
+static const gchar *const venture_web_nav_money_in[] = {
+	"/e/sale", "/e/invoice", "/invoices/compose", "/quotes/compose",
+	"/e/payment", "/e/payment_allocation", "/e/customer_credit",
+	"/e/refund", "/e/collection_case", "/e/customer_subscription",
+	"/sales-orders", "/bankfeed",
+	NULL
+};
+
+static const gchar *const venture_web_nav_money_out[] = {
+	"/e/expense", "/payables", "/purchasing", "/claims", "/payroll",
+	"/e/recurring_schedule",
+	NULL
+};
+
+static const gchar *const venture_web_nav_growth[] = {
+	"/deals", "/e/deal", "/e/campaign", "/e/newsletter", "/e/post",
+	NULL
+};
+
+static const gchar *const venture_web_nav_customers[] = {
+	"/e/company", "/e/contact", "/worklist",
+	NULL
+};
+
+static const gchar *const venture_web_nav_support[] = {
+	"/tickets", "/sprints", "/kb",
+	NULL
+};
+
+static const VentureWebNavSection venture_web_nav_sections[] = {
+	{ "Money in", venture_web_nav_money_in },
+	{ "Money out", venture_web_nav_money_out },
+	{ "Growth", venture_web_nav_growth },
+	{ "Customers", venture_web_nav_customers },
+	{ "Support", venture_web_nav_support },
+	{ NULL, NULL }
+};
+
+const VentureWebNavSection *
+venture_web_navigation_sections(void)
+{
+	return venture_web_nav_sections;
+}
+
+/* Whether a row is drawn under one of the five questions, not in place. */
+static gboolean
+venture_web_nav_link_claimed(const gchar *path)
+{
+	const VentureWebNavSection *sections;
+	gsize i;
+
+	sections = venture_web_navigation_sections();
+
+	for (i = 0; NULL != sections[i].heading; i++)
+	{
+		if (g_strv_contains(sections[i].paths, path))
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+static void
+venture_web_append_nav_heading(
+	GString		*html,
+	const gchar	*heading
+){
+	g_string_append(html, "<div class=\"nav-section\">");
+	venture_html_escape_append(html, heading);
+	g_string_append(html, "</div>");
+}
+
+static void
+venture_web_append_nav_item(
+	GString			*html,
+	const VentureWebNavLink	*link,
+	const gchar		*active
+){
+	g_string_append_printf(html, "<a class=\"nav-item%s\" href=\"%s\">",
+		(0 == g_strcmp0(active, link->path)) ? " active" : "",
+		link->path);
+	g_string_append(html, "<span class=\"icon\">");
+	g_string_append(html, link->icon);
+	g_string_append(html, "</span>");
+	venture_html_escape_append(html, link->label);
+	g_string_append(html, "</a>");
+}
+
+/*
+ * The five questions, each drawn from the rows it names. A row whose
+ * module is off is not offered, and the heading follows the first row
+ * actually shown, so a question every one of whose modules is off leaves
+ * no heading over nothing -- the same rule the table's own headings keep.
+ */
+static void
+venture_web_append_nav_sections(
+	VentureWebServer	*self,
+	GString			*html,
+	const gchar		*active
+){
+	const VentureWebNavSection *sections;
+	const VentureWebNavLink *links;
+	gsize i;
+
+	sections = venture_web_navigation_sections();
+	links = venture_web_navigation();
+
+	for (i = 0; NULL != sections[i].heading; i++)
+	{
+		gboolean shown = FALSE;
+		gsize j;
+
+		for (j = 0; NULL != sections[i].paths[j]; j++)
+		{
+			gsize k;
+
+			for (k = 0; NULL != links[k].path; k++)
+			{
+				if (0 != g_strcmp0(links[k].path, sections[i].paths[j]))
+					continue;
+
+				if (!venture_web_module_enabled(self, links[k].module))
+					continue;
+
+				if (!shown)
+				{
+					venture_web_append_nav_heading(html,
+						sections[i].heading);
+					shown = TRUE;
+				}
+
+				venture_web_append_nav_item(html, &links[k], active);
+			}
+		}
+	}
+}
+
 static gchar *
 venture_web_page(
 	VentureWebServer	*self,
@@ -1561,6 +1704,7 @@ venture_web_page(
 
 		const gchar *section = NULL;
 		const gchar *shown = NULL;
+		gboolean questions_shown = FALSE;
 
 		links = venture_web_navigation();
 
@@ -1573,6 +1717,11 @@ venture_web_page(
 			if (NULL != links[i].section)
 				section = links[i].section;
 
+			/* A row one of the five questions gathers is drawn there,
+			 * not here. */
+			if (venture_web_nav_link_claimed(links[i].path))
+				continue;
+
 			/* A link whose module is off is not offered. The heading
 			 * follows the first link actually shown under it, so a
 			 * section emptied by configuration leaves no orphan. */
@@ -1581,21 +1730,24 @@ venture_web_page(
 
 			if ((NULL != section) && (section != shown))
 			{
-				g_string_append(html, "<div class=\"nav-section\">");
-				venture_html_escape_append(html, section);
-				g_string_append(html, "</div>");
+				/* The five questions come right after the first
+				 * heading: the overview stays on top, the questions
+				 * follow, and the rest keep their place. */
+				if ((NULL != shown) && !questions_shown)
+				{
+					venture_web_append_nav_sections(self, html, active);
+					questions_shown = TRUE;
+				}
+
+				venture_web_append_nav_heading(html, section);
 				shown = section;
 			}
 
-			g_string_append_printf(html, "<a class=\"nav-item%s\" href=\"%s\">",
-				(0 == g_strcmp0(active, links[i].path)) ? " active" : "",
-				links[i].path);
-			g_string_append(html, "<span class=\"icon\">");
-			g_string_append(html, links[i].icon);
-			g_string_append(html, "</span>");
-			venture_html_escape_append(html, links[i].label);
-			g_string_append(html, "</a>");
+			venture_web_append_nav_item(html, &links[i], active);
 		}
+
+		if (!questions_shown)
+			venture_web_append_nav_sections(self, html, active);
 
 		/* The operator's own pages, after the built-in ones. */
 		venture_web_append_dashboard_nav(self, request, html, active);
