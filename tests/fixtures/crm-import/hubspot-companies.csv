@@ -1,0 +1,4 @@
+Record ID,Company name,Company Domain Name,Website URL,Phone Number,Industry,Company owner,Create Date
+101,Acme Corp,acme.com,https://www.acme.com,+1 555 0100,Manufacturing,Jane Doe,2025-01-10 09:00
+102,Globex,globex.example,http://globex.example,,Software,Jane Doe,2025-02-01 10:30
+103,Initech,initech.example,,,Services,Sam Lee,2025-03-05 11:00
