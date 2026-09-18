@@ -321,3 +321,29 @@ posting veto after the first documents leaves nothing; the row limit, CSV
 templates and CSV payloads, opening stock and its rollback, the module switch,
 and the page, preview, action,
 template and CSV routes (including the selected legal entity) are covered.
+
+** =test-support-rollup=
+
+The support rollup's worked example --- two customers, an unfiled ticket
+and one from the month before --- checked figure by figure: raised, closed,
+open, breaches, median reply and resolve minutes, satisfaction, agent
+minutes and the cost per row and in total, with a July ticket's August
+minutes kept out of August. The rates and their defaults: =n/a= with no
+rate, the worklog =hourly_rate= when =support_hourly_rate= is zero, the
+integer rate overriding it, a foreign-currency rate left out and noted, a
+flat rate pricing only unlogged tickets, and a third of an hour rounding
+once to 20 minutes. Every option and every refusal: =sort= both ways and
+on the group column, an unknown column, an unknown option, =min_tickets=
+hiding rows without moving the totals and refusing a negative or a word,
+=company= narrowing to one customer and refusing text or zero, =group_by=
+refusing anything but company or product, and the standard organisation
+and venture scope. The product breakdown through a custom field, grouped
+and filtered. The one function: =venture_support_rollup_cost()= equals the
+report's total and the Support card's number, and a company's share.
+Over HTTP: a viewer with a session reads it, an option refusal is a
+refusal, the CSV export is the report's own rendering, no session is 401,
+and with the =tickets= module off the report is not registered and the
+route is 404; the company page shows this month's cost from the same
+function and the home page carries the organisation's; and =venturectl
+support rollup --from --to --sort= in JSON and CSV, with the missing-span,
+wrong-verb and bad-sort refusals.

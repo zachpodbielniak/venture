@@ -37,6 +37,7 @@ about it.
 | =ltv=        | realised and projected lifetime value; withheld below a minimum |
 | =ltv_cac=    | projected LTV over CAC, ARPA and CAC payback; =n/a= when a side is |
 | =customer_cohorts= | companies by month of first cash, share still paying in months 0-12 |
+| =support_rollup= | support cost and ticket volume per customer, or per product; =sort=, =min_tickets=, =company=, =product= |
 
 #+begin_src sh
 venturectl report                       # list them
@@ -231,8 +232,11 @@ is not one you can run a business on.
 
 A =headline_setting= row per organisation tunes them: =hourly_rate= (what a
 logged support hour costs), =minimum_customer_months= (zero means 12) and
-=activity_days= (zero means 90). =customer_churn= and =ltv= accept =days= to
-override the last. The save refuses a second living row for the same
+=activity_days= (zero means 90), and the support rollup's
+=support_hourly_rate= and =support_ticket_rate= (whole units of the book
+currency; zero means the worklog rate, and nothing, respectively --- see
+[[*The support rollup][The support rollup]]). =customer_churn= and =ltv=
+accept =days= to override the last. The save refuses a second living row for the same
 organisation, on every save --- moving a row to an organisation that already
 has one is refused too --- and migration =000350= backs this with a unique
 partial index, because a restore does not run save validators. That
@@ -471,3 +475,85 @@ they have done since. Months that have not started by then are blank, not
 zero. =month_1=, =month_3=, =month_6= and =month_12= pool every cohort that
 has reached that month: the companies still paying over the companies in
 those cohorts; =n/a= when no cohort has.
+
+* The support rollup
+
+=support_rollup= answers question 5 of issue #75 --- how do I support
+existing customers --- with a number per customer rather than a list of
+tickets. It is an ordinary registry report of the =tickets= module, so it
+has the report page, =GET /api/v1/reports/support_rollup=, the CSV export,
+=venturectl report support_rollup= and =venturectl support rollup=, and a
+=metric=, =report= or =chart= widget can read it. The Support card on the
+home page and the Support block on a company's page read their figure from
+the same function, =venture_support_rollup_cost()=, which runs this report
+and hands back its =support_cost= metric, so the card, the page and the
+table cannot disagree.
+
+** The rows
+
+One row per company, for the tickets *raised* in the period --- the same
+rule as the =support= report: "the tickets of March" is what somebody
+means. A ticket that names no company is counted under =(no company)=, so
+the total is the whole desk. Each row has:
+
+- =tickets= raised, =closed= (done or cancelled) and =open= now;
+- =breaches=: tickets the service-level sweep marked breached;
+- =response= and =resolution=: the *median* whole minutes from the ticket
+  being raised to its first visible reply and to its resolution, over the
+  tickets that have one (the middle sample, or the mean of the two middle
+  ones rounded half up). A median rather than the =support= report's mean
+  because one ticket left open for a month should not move a customer's
+  figure by weeks; blank when no ticket has one;
+- =csat=: the share of ratings that were =good=, over the ratings given,
+  exactly as the =support= report scores it; blank when nobody rated;
+- =minutes=: agent minutes from the worklogs on those tickets, each worklog
+  rounded once to whole minutes;
+- =support_cost=: what those tickets cost, below.
+
+The figures above the table are the same over the whole scope, with
+=companies= (or =products=) counting the rows listed.
+
+** What it costs
+
+Two integer rates on the organisation's =headline_setting= row, in whole
+units of the book currency:
+
+| Field                 | Means                                                    | Zero means                                            |
+|-----------------------+----------------------------------------------------------+-------------------------------------------------------|
+| =support_hourly_rate= | the cost of one agent hour logged on tickets             | the worklog =hourly_rate= (money) the LTV margin uses |
+| =support_ticket_rate= | a flat cost for a ticket with no logged minutes          | such tickets cost nothing                             |
+
+A row's cost is its minutes at the hourly rate --- =rate x minutes / 60=,
+multiplied then divided once, rounded half to even --- plus the per-ticket
+rate for each of its tickets with no minutes, and the total is the sum of
+the rows. With neither rate the cost is =n/a= and the note says which
+field to set; a desk that logs no time sets the per-ticket rate and gets a
+number, a desk that logs time sets the hourly one. A worklog =hourly_rate=
+in a currency other than the book currency is not converted: it is left
+out and the note says so. Nothing is stored: the figure is computed from
+the tickets and worklogs at the moment of asking.
+
+** Options
+
+- =sort=[-]column=: any column key, =-= for descending; the default is
+  =-support_cost=. A column that does not exist is refused, as is any
+  option this report does not take.
+- =min_tickets=N=: list only rows with at least =N= tickets. The figures
+  above the table still cover every row, so hiding small customers never
+  changes the total; the note says how many were hidden.
+- =company=ID=: one company's tickets only. The total is then that
+  company's cost, which is what its page shows.
+- =product=NAME=: only tickets about that product.
+- =group_by=product=: one row per product instead of per company, the same
+  columns, with tickets that name no product under =(no product)=.
+
+A ticket's product is a custom field called =product= on the ticket (the
+=custom_fields= module; =venturectl fields define ticket product string=),
+or a =product_id= field when the ticket type has one. The core ticket has
+neither, so without the custom field the product breakdown is one row and
+a note saying how to add it.
+
+=organization_id=, =venture_id= and =as_of= scope it as they do every
+report. The reads are gated as every report is: the viewer role over the
+API and the report page, and with the =tickets= module off the report is
+not registered, so asking for it is a 404 rather than an empty table.

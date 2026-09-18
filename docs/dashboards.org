@@ -222,7 +222,7 @@ the report it was read from.
 | CAC           | cost per new customer   | acquisition spend, new customers            | =cac=                      |
 | Churn         | logo churn (billing in use), else monthly activity churn | revenue churn and activity churn, or recurring churn and customers gone quiet | =churn= or =customer_churn= |
 | LTV:CAC       | the ratio               | projected LTV, CAC, ARPA, CAC payback       | =ltv_cac=                  |
-| Support       | tickets open now        | service levels missed, raised in period     | =support=                  |
+| Support       | support cost            | tickets open now, service levels missed, raised in period | =support_rollup=  |
 
 Every number is defined exactly in [[file:reporting.org][Reporting]] and
 [[file:billing.org][SaaS billing]]; each card carries a one-paragraph
@@ -254,9 +254,13 @@ version of its definition. In brief:
 - *LTV:CAC* is projected LTV over CAC; *ARPA* is billing MRR per paying
   company, else cash per customer-month; *CAC payback* is CAC over ARPA times
   gross margin, in months.
-- *Support* counts tickets open now and those past a service level. With the
-  tickets module off every figure is =n/a=: nobody counted, which is not the
-  same as zero.
+- *Support* is what supporting customers cost in the period: the
+  =support_rollup= report's total, agent minutes on the tickets raised in
+  the period at the support hourly rate plus the per-ticket rate for
+  tickets with no minutes, and =n/a= until a rate is set. Beneath it,
+  tickets open now, those past a service level, and tickets raised in the
+  period. With the tickets module off every figure is =n/a=: nobody
+  counted, which is not the same as zero.
 
 *The period.* =?period== takes anything a report accepts, =this_month= by
 default; the page offers the same period buttons as a report page. A period
@@ -284,10 +288,10 @@ churn, open tickets). A number that is =n/a= on either side has no arrow.
 - Month, quarter and year to date end tomorrow; they are compared with the
   smallest calendar unit that starts where they start and contains them.
 
-The support card's arrow compares the queue now with the queue when the
-period began --- tickets raised before it and not resolved before it ---
-because "what is waiting" is a live question and the support report's
-"raised in March" is a different one.
+The support card's arrow compares the period's support cost with the
+comparison period's, and down is good. The queue --- tickets open now ---
+is a line under it rather than the number, because "what is waiting" is a
+live question and "what did March cost" is the one the card answers.
 
 *Who sees the numbers.* The cards are organisation totals, so they are
 computed only for a global owner or administrator, or a member holding the
