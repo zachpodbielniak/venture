@@ -1087,6 +1087,8 @@ venture_cli_command_forge(
 	return 0;
 }
 
+static gint venture_cli_command_report_packs(VentureCli *cli, gchar **args, GError **error);
+
 static gint
 venture_cli_command_report(
 	VentureCli	 *cli,
@@ -1095,6 +1097,10 @@ venture_cli_command_report(
 ){
 	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(GString) path = NULL;
+
+	/* "packs" is a business action on scheduled packs, not a report name. */
+	if ((NULL != args) && (NULL != args[1]) && (0 == g_strcmp0(args[1], "packs")))
+		return venture_cli_command_report_packs(cli, args, error);
 
 	if ((NULL == args) || (NULL == args[1]))
 	{
@@ -3296,6 +3302,7 @@ venture_cli_command_act(VentureCli *cli, gchar **args, GError **error)
 }
 
 #include "autojournal/venture-autojournal-cli.inc"
+#include "report/venture-report-pack-cli.inc"
 
 int
 main(
@@ -3469,6 +3476,7 @@ main(
 		"                               send due overdue reminders once; dry_run previews\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
+		"  report packs deliver ID     re-send a pack's last retained output by email\n"
 		"\n"
 		"Examples:\n"
 		"  venturectl types sale\n"

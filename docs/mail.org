@@ -40,6 +40,11 @@ idempotency key and call enqueue. The source lane owns eligibility and
 content; the outbox owns submission. Those source-row adapters remain a
 cross-lane integration function, not additional SMTP implementations.
 
+A scheduled =report_pack= with =deliver=email= is one more such source: the
+pack sweep enqueues the run's retained output with its JSON and CSV files
+attached, keyed by pack and delivery clock, and records the outcome on the
+pack. See [[file:reporting.org][Reporting]], Delivery.
+
 Service-generated invitations use the sensitive =private_text_body= field for their bearer link. Only the outbox enqueue service may create this content; stored messages remain immutable. Public record serialization, forms and audit omit it. SMTP sends this private text in place of both public body alternatives, so an HTML mail client cannot hide the access link. Its HTML twin, the equally sensitive =private_html_body= (migration =000331_private_mail_html=), is used by senders that render an HTML template around the link, such as overdue reminders: when present it replaces the public HTML alternative, and a private text body without it still drops the public HTML. The same enqueue-only rule applies to both. The protected content remains in the database for durable retries and must be treated as a credential in database backups.
 
 * Templates
@@ -125,7 +130,10 @@ Running it.
 * Attachments and durable snapshots
 
 =attachments= is a JSON field containing document references, for example
-=[{"type":"document","id":42}]=. Each document must exist, be live and
+=[{"type":"document","id":42}]=, or inline content generated at enqueue time,
+=[{"type":"inline","name":"pack.csv","mime":"text/csv","data":"<base64>"}]=,
+which needs no document row and no attachment storage (a report pack's CSV
+is one). Each document must exist, be live and
 belong to the message's organization. Its file must be under the server's
 =state-dir/attachments/= directory. At enqueue time the outbox copies the
 bytes and metadata into its retained message attributes. Later file edits or

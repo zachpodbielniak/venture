@@ -184,9 +184,73 @@ once on the scheduled day; it does not replay missed historical days.
 A successful run stores its result array in =report_pack.last_output= and
 updates =last_run_at= in the same record save. Read that JSON through the
 generic record API or CLI. A failed run preserves the previous output and
-timestamp. No email delivery or historical output archive is implied.
+timestamp. No historical output archive is implied; mailing the output is
+described under Delivery below.
 
 A report pack may reference only saved reports in its own organization. The runner validates this boundary before generating each result, including scheduled packs; foreign saved-report ids fail instead of copying another organization's report into the pack output.
+
+** Delivery
+
+A pack can mail each run's output. Two fields on =report_pack= decide it:
+
+| Field        | Meaning                                                                     |
+|--------------+-----------------------------------------------------------------------------|
+| =recipients= | Comma-separated addresses. Each is trimmed and must look like a mailbox     |
+|              | (one =@=, a local part, a dotted domain, no whitespace or separators); an   |
+|              | invalid one, or an empty entry from a trailing comma, refuses the save.     |
+| =deliver=    | =none= (the default, written when the field is empty) or =email=. Anything  |
+|              | else is refused, and =email= with no recipients is refused too.             |
+
+When the sweep (=venture_report_pack_service_run_due=, the =report_packs_run=
+automation) runs a due pack whose =deliver= is =email=, it first saves the
+run --- =last_run_at= and =last_output= --- and then hands that output to the
+transactional mail outbox (=venture_report_pack_service_deliver=). The message
+goes to the pack's recipients with:
+
+- the retained output as =<pack-name>.json=;
+- a =<report-title>.csv= for every result that has columns and rows, built
+  the way the web export builds it (formatted cells, CSV escaping that
+  defuses a leading ===);
+- a subject and body from the organization's =mail_template= named
+  =report_pack=, or the built-in wording when there is none. The placeholders
+  are ={name}= (the pack), ={period}= (the distinct period labels of its
+  reports), ={run_at}= and ={reports}= (one line per report with its
+  headline metrics).
+
+Nothing is sent from the sweep: the outbox queues the message and its own
+delivery sweep submits it, with the at-least-once, retry and uncertainty
+rules of [[file:mail.org][Transactional mail]]. That is also where a relay
+failure lives: on the =mail_message= row, not on the pack.
+
+The pack records the hand-over. =last_delivered_at=, =last_delivery_message_id=
+(the durable Message-ID) and =last_delivery_mail_id= (the outbox row, for
+=venturectl mail retry=) are set when the message was queued;
+=last_delivery_error= holds the reason when it was not, and the other three
+are cleared. The run is never marked failed by its delivery: a refused send
+--- the mail module off, no transport configured (=mail.host= empty), a
+policy plugin refusing the enqueue, no output retained yet --- leaves
+=last_run_at= and =last_output= as the run wrote them, so the report is not
+run again for it, and the sweep goes on to the next pack. The hand-over and
+its record commit together; a refusal is recorded in a transaction of its own.
+
+Re-send the last retained output at any time:
+
+#+begin_src sh
+venturectl report packs deliver 7
+curl -X POST .../api/v1/report_pack/7/deliver
+#+end_src
+
+Both require editor access and the =statements= module, refuse =--stage=, and
+answer with the queued =mail_message= (202). They send what the last run kept;
+they never run the report. Each hand-over gets its own idempotency key
+(=report_pack:<uuid>:<delivery clock>=), so a deliberate re-send is a new
+message rather than the queued one returned again.
+
+Not covered: a year-end archive is not a registry report on this base, so no
+zip is attached; when one lands, its file rides as one more entry in the
+same attachment list the composer builds. =test-report-delivery= proves the
+field rules, the queued message and its attachments, the refusals, and the
+CLI and REST surfaces.
 
 * The headline numbers
 

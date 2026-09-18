@@ -98,6 +98,7 @@ venturectl dashboard create TEMPLATE     # factory, reporting, work, overview
 venturectl dashboard templates|kinds     # what create and widgets accept
 venturectl health                        # is the server up
 venturectl mcp [--apply-writes]          # serve the API to an agent over stdio
+venturectl report packs deliver ID       # re-send a pack's last retained output by email
 #+end_src
 
 * Examples
