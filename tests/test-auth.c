@@ -1125,6 +1125,8 @@ test_auth_pages_refuse_anonymous_requests(
 	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/settings/fields"),
 	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/settings/backups"),
+	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/budgets"),
 	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/equity"),
@@ -1433,7 +1435,7 @@ test_auth_api_refuses_anonymous_requests(
 			"/payroll/1/post", "/api/v1/payroll_run/1/post", "/purchase_order/1/approve",
 			"/api/v1/purchase_order/1/approve", "/sales_order/1/confirm", "/api/v1/sales_order/1/confirm",
 			"/api/v1/close/1/complete", "/api/v1/tax-filings/1/export", "/api/v1/contractor-tax/1/export",
-			"/api/v1/capture/1/convert"
+			"/api/v1/capture/1/convert", "/settings/backups"
 		};
 		static const gchar *const gets[] = {
 			"/api/v1/budget_reports", "/api/v1/group/reports", "/api/v1/close/1/pack",
@@ -1441,7 +1443,7 @@ test_auth_api_refuses_anonymous_requests(
 		};
 		static const gchar *const redirects[] = {
 			"/settings/fields", "/equity/post", "/payables/pay", "/claims/1/submit",
-			"/payroll/1/post", "/purchase_order/1/approve", "/sales_order/1/confirm", NULL
+			"/payroll/1/post", "/purchase_order/1/approve", "/sales_order/1/confirm", "/settings/backups", NULL
 		};
 		for (i = 0; i < G_N_ELEMENTS(posts); i++)
 		{
