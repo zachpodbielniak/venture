@@ -338,3 +338,16 @@ HTTP. Written red first: the binary does not compile without =deal_line=,
 and removing the value refusal or the currency check turns the matching
 case red.
 
+** =test-sequence-tracking=
+
+Consent is off by default at the organization. With both switches on, a
+delivery gets a 64-character token, its links become =/t/c/<token>/<n>=
+with the originals retained and the pixel appended, and the token field is
+omitted from generic JSON. Either switch off leaves the body untouched. Opens count
+once per delivery per UTC day and land on the timeline as outbound
+outreach that never exits the enrollment; every click is recorded and
+resolves to its URL; unknown tokens and link numbers record nothing;
+generic writes and removals of links and events are refused; the per-step
+engagement report counts sent, opened, clicked and replies with whole
+percent rates; and the pixel, redirect, contact page, report route and
+module-off 404s are exercised over real HTTP.

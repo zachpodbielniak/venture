@@ -1752,6 +1752,8 @@ test_auth_api_refuses_anonymous_requests(
 	 * public by design and answer 404 for an unknown token. */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/deals/1/quote", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/deals/1/quote", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/t/o/unknown.gif"), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/t/c/unknown/1"), ==, SOUP_STATUS_NOT_FOUND);
 
 }
 

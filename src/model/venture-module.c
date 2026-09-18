@@ -647,10 +647,11 @@ static const gchar *const venture_module_reports_pipelines[] = {
 static GType (*const sequence_types[]) (void) = {
 	venture_sequence_get_type, venture_sequence_step_get_type,
 	venture_sequence_enrollment_get_type, venture_sequence_delivery_get_type,
-	venture_suppression_get_type, NULL
+	venture_suppression_get_type, venture_sequence_link_get_type,
+	venture_sequence_tracking_event_get_type, NULL
 };
 static const gchar *const sequence_requires[] = { "crm", NULL };
-static const gchar *const sequence_reports[] = { "sequence_performance", "sequence_failures", NULL };
+static const gchar *const sequence_reports[] = { "sequence_performance", "sequence_failures", "sequence_engagement", NULL };
 static GType (*const autojournal_types[]) (void) = { venture_posting_profile_get_type, NULL };
 static const gchar *const autojournal_requires[] = { "ledger", NULL };
 static const gchar *const autojournal_reports[] = { "unposted", NULL };

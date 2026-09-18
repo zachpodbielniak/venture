@@ -558,6 +558,8 @@ These editor actions belong to =sequences=, which requires =crm=:
 | POST | /api/v1/sequence_enrollment/:id/exit | Exit and cancel pending deliveries. |
 | POST | /api/v1/sequence_enrollment/:id/goal | Record an explicitly met goal and exit. |
 | POST | /api/v1/sequences/run | ={ "as_of": "2026-09-14T13:00:00Z", "organization_id": 1 }=; both fields optional, returns =processed=. |
+| GET | /t/o/:token.gif | Public open pixel for a tracked sequence delivery; records at most one open per delivery per UTC day. Unknown tokens answer 404 and record nothing. |
+| GET | /t/c/:token/:n | Public wrapped link; records the click and answers 302 to the original destination. Unknown tokens or link numbers answer 404 and record nothing. |
 | POST | /api/v1/deals/:id/quote | Editor action of =pipelines= with =quotes=: copies the deal's =deal_line= records into a draft quote (201), or revises the deal's latest quote on a rerun. |
 
 The five sequence records use ordinary schema-driven CRUD for configuration

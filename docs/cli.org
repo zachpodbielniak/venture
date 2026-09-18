@@ -416,6 +416,9 @@ commands after =describe sequence= and =describe sequence_step=. Sending
 hours and weekdays are interpreted in the sequence timezone. See
 [[file:sequences.org][follow-up sequences]] for checkpoints and the adapter contract.
 
+=report sequence_engagement [PERIOD]= lists sent, opened, clicked and reply
+counts and rates per step. Tracking is on only when =update organization ID
+sequence_tracking=true= and the sequence's =tracking= flag are both set.
 * Record actions
 
 =venturectl act TYPE ID ACTION [key=value ...]= discovers the action and

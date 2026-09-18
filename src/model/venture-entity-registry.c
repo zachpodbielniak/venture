@@ -864,6 +864,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_dunning_policy_get_type,
 		venture_dunning_event_get_type,
 		venture_deal_line_get_type,
+		venture_sequence_link_get_type,
+		venture_sequence_tracking_event_get_type,
 	};
 	gsize i;
 

@@ -120,3 +120,48 @@ staged approval, real HTTP and CLI calls, task notifications, module enable
 and file-backed restart.
 
 Sending or enrollment times beyond the representable calendar range are refused as validation errors; the sweep retains no delivery or progress from that failed transition.
+
+* Open and click tracking
+
+Tracking is off unless two switches agree: the organization's
+=sequence_tracking= (off by default, the privacy switch) and the sequence's
+=tracking=. Only sequence mail is tracked; invoices, dunning and other
+transactional mail are untouched.
+
+When both are on, each email delivery receives a =tracking_token= (256 bits
+from the operating system, hex encoded) at the moment
+=venture_sequence_service_run_due()= renders it. Every absolute =http://= or
+=https://= link in the rendered body is rewritten to
+=<base>/t/c/<token>/<n>=, numbered from one, and the original destinations
+are retained as =sequence_link= records. A one-pixel GIF,
+=<base>/t/o/<token>.gif=, is appended. =<base>= is the installation's
+=server.base_url=; when it is empty the paths are relative and only resolve
+inside the web UI. The token is a sensitive field: it is omitted from
+generic output and audit diffs, although the stored body naturally carries
+it inside the wrapped links. Untracked deliveries keep their body as
+rendered and have no token.
+
+=GET /t/o/<token>.gif= records an open at most once per delivery per UTC
+day and returns the pixel. =GET /t/c/<token>/<n>= records every click and
+answers 302 to the original URL. Both are public, need no session, are 404
+when the module is off, and record nothing for an unknown token, an unknown
+link number or a malformed path. Each recorded open or click is a
+=sequence_tracking_event= (delivery, enrollment, step, contact, kind,
+=link_position=, =occurred_at=) and an =interaction= of kind =outreach= with
+=outbound= set on the contact's timeline, subject =Opened: <subject>= or
+=Clicked link <n>: <url>=. Because the interaction is outbound it never
+counts as a reply and never exits an enrollment. Links and events are
+evidence: generic creation, edits and removal are refused with an error
+naming =VentureSequenceService=.
+
+=sequence_engagement= reports one row per email step: =sent= deliveries
+(state =sent=) scheduled in the period, =opened= and =clicked= as distinct
+deliveries with at least one event, =replies= as enrollments that exited
+with reason =reply= whose newest sent delivery was that step, and =open_rate=, =click_rate= and
+=reply_rate= as whole percentages of sent. Steps with nothing sent report
+zero rates. It uses one exact organization and ordinary report rendering.
+
+=test-sequence-tracking= covers the records and the off-by-default switch,
+link wrapping and retained originals, both switches individually, opens
+once per day, clicks with redirects, unknown tokens recording nothing,
+refused generic writes, the per-step report and the real HTTP endpoints.

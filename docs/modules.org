@@ -56,7 +56,7 @@ Written bottom-up, because a module may only require what precedes it:
 
 | =payables= | finance, ledger, crm | vendor_bill, vendor_bill_line, bill_payment, bill_payment_allocation, vendor_credit, vendor_bill_event, bill_refund; =payables=, =vendor_statement= | |
 | =supplier_portal= | payables | supplier_portal_access; =/supplier/:token= | |
-| =sequences= | crm | sequence, sequence_step, sequence_enrollment, sequence_delivery, suppression; =sequence_performance=, =sequence_failures= | |
+| =sequences= | crm | sequence, sequence_step, sequence_enrollment, sequence_delivery, suppression, sequence_link, sequence_tracking_event; =sequence_performance=, =sequence_failures=, =sequence_engagement=; /t/o, /t/c | |
 | =ledger=     | finance         | journal, journal_line, exchange_rate; posting service, post/reverse/create-and-post actions, =trial_balance=           |                       |
 
 | =pipelines= | crm | pipeline, pipeline_stage, deal_stage_entry, loss_reason, deal_line; stage_duration, funnel, forecast, loss_reasons, overdue_deals; /deals, /deals/:id/quote | |

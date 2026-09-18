@@ -28297,6 +28297,8 @@ venture_web_server_new(
 	htmx_router_get(router, "/api/v1/headline", venture_web_api_headline, self);
 	htmx_router_post(router, "/api/v1/deals/:id/quote", venture_web_deal_quote, self);
 	htmx_router_post(router, "/deals/:id/quote", venture_web_deal_quote, self);
+	htmx_router_get(router, "/t/o/:token", venture_web_sequence_open, self);
+	htmx_router_get(router, "/t/c/:token/:n", venture_web_sequence_click, self);
 
 	htmx_router_get(router, "/api/v1/:type", venture_web_api_list, self);
 	htmx_router_post(router, "/api/v1/:type", venture_web_api_create, self);

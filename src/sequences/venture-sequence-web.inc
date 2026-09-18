@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 /* Surface adapters share the enclosing web server's authentication helpers. */
+#include "sequences/venture-sequence-tracking-private.h"
 static void
 venture_web_sequence_prefill(VentureEntity *record, HtmxRequest *request)
 {
@@ -254,4 +255,66 @@ venture_web_sequence_panel(VentureWebServer *self, GString *content,
 			venture_web_sequence_fields(self, content, g_ptr_array_index(history, j));
 	}
 	g_string_append(content, "</div></section>");
+}
+
+/* Public tracking endpoints. They never require a session, never reveal
+ * whether a token exists beyond the 404, and record nothing for unknown
+ * tokens. Both are 404 when the module is off. */
+static HtmxResponse *
+venture_web_sequence_tracking_missing(void)
+{
+	HtmxResponse *response = htmx_response_new_with_content("Not found");
+	htmx_response_set_status(response, 404);
+	return response;
+}
+
+static HtmxResponse *
+venture_web_sequence_open(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	g_autofree gchar *token = g_strdup(g_hash_table_lookup(params, "token"));
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) bytes = NULL;
+	HtmxResponse *response;
+	const guint8 *pixel;
+	gsize length;
+	(void)request;
+	if (!venture_web_module_enabled(self, "sequences") || token == NULL || !g_str_has_suffix(token, ".gif"))
+		return venture_web_sequence_tracking_missing();
+	token[strlen(token) - 4] = '\0';
+	if (!venture_sequence_service_record_open(venture_sequence_service_get(venture_context_get_database(self->context)),
+		token, now, NULL, &error))
+		return venture_web_sequence_tracking_missing();
+	pixel = venture_sequence_tracking_pixel(&length);
+	bytes = g_bytes_new_static(pixel, length);
+	response = htmx_response_new();
+	htmx_response_set_bytes(response, bytes);
+	htmx_response_set_content_type(response, "image/gif");
+	htmx_response_add_header(response, "Cache-Control", "no-store, private");
+	return response;
+}
+
+static HtmxResponse *
+venture_web_sequence_click(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	const gchar *token = g_hash_table_lookup(params, "token");
+	const gchar *text = g_hash_table_lookup(params, "n");
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *url = NULL;
+	gchar *end = NULL;
+	gint64 position;
+	(void)request;
+	if (!venture_web_module_enabled(self, "sequences") || token == NULL || text == NULL)
+		return venture_web_sequence_tracking_missing();
+	position = g_ascii_strtoll(text, &end, 10);
+	if (position <= 0 || end == text || *end != '\0')
+		return venture_web_sequence_tracking_missing();
+	url = venture_sequence_service_record_click(venture_sequence_service_get(venture_context_get_database(self->context)),
+		token, position, now, NULL, &error);
+	if (url == NULL)
+		return venture_web_sequence_tracking_missing();
+	return venture_web_redirect_to(url);
 }
