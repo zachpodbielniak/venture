@@ -15,6 +15,15 @@ static const VentureFieldDecl headline_setting_fields[] = {
 		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("activity-days", "Activity churn days",
 		"Days without paid revenue before a customer counts as churned; zero means 90",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	/* The support rollup's two rates, whole units of the book currency.
+	 * Integers rather than money so a rate is one number to type; the
+	 * currency is the organisation's. */
+	VENTURE_FIELD("support-hourly-rate", "Support hourly rate",
+		"Cost of one agent hour logged on tickets, in whole units of the book currency; zero means the worklog hourly rate above",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("support-ticket-rate", "Support per-ticket rate",
+		"Flat cost of a ticket with no logged minutes, in whole units of the book currency; zero means such tickets cost nothing",
 		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureHeadlineSetting, venture_headline_setting, headline_setting_fields)

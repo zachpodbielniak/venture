@@ -1146,10 +1146,11 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "venture_id")) && (0 != g_strcmp0(parts[0], "group_by")) &&
 				 (0 != g_strcmp0(parts[0], "compare_to")) && (0 != g_strcmp0(parts[0], "account_id")) &&
 				 (0 != g_strcmp0(parts[0], "basis")) && (0 != g_strcmp0(parts[0], "dimension")) &&
-				 (0 != g_strcmp0(parts[0], "vendor_id")) && (0 != g_strcmp0(parts[0], "pipeline_id")) && (0 != g_strcmp0(parts[0], "owner"))))
+				 (0 != g_strcmp0(parts[0], "vendor_id")) && (0 != g_strcmp0(parts[0], "pipeline_id")) && (0 != g_strcmp0(parts[0], "owner")) &&
+				 (0 != g_strcmp0(parts[0], "sort")) && (0 != g_strcmp0(parts[0], "min_tickets")) && (0 != g_strcmp0(parts[0], "company")) && (0 != g_strcmp0(parts[0], "product"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, sort, min_tickets, company, product");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -3217,6 +3218,7 @@ venture_cli_command_mcp(
 #include "sequences/venture-sequence-cli.inc"
 #include "recurring/venture-recurring-cli.inc"
 #include "dunning/venture-dunning-cli.inc"
+#include "report/venture-support-rollup-cli.inc"
 
 /* --- Entry point --------------------------------------------------------- */
 
@@ -3313,6 +3315,9 @@ main(
 	g_autofree gchar *mail_html = NULL;
 	g_autofree gchar *mail_limit = NULL;
 	g_autofree gchar *sequence_as_of = NULL;
+	g_autofree gchar *support_from = NULL;
+	g_autofree gchar *support_to = NULL;
+	g_autofree gchar *support_sort = NULL;
 	gboolean show_version = FALSE;
 	gboolean show_license = FALSE;
 	gboolean quiet = FALSE;
@@ -3351,6 +3356,12 @@ main(
 		  NULL, NULL },
 		{ "dry-run", 0, 0, G_OPTION_ARG_NONE, &dry_run,
 		  "post backfill or billing: validate without retaining writes", NULL },
+		{ "from", 0, 0, G_OPTION_ARG_STRING, &support_from,
+		  "support rollup: first day of the span", "DATE" },
+		{ "to", 0, 0, G_OPTION_ARG_STRING, &support_to,
+		  "support rollup: last day of the span", "DATE" },
+		{ "sort", 0, 0, G_OPTION_ARG_STRING, &support_sort,
+		  "support rollup: column to order by, - for descending", "COLUMN" },
 		{ NULL }
 	};
 
@@ -3469,6 +3480,8 @@ main(
 		"                               send due overdue reminders once; dry_run previews\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
+		"  support rollup --from DATE --to DATE [--sort [-]COLUMN] [min_tickets=N] [company=ID] [product=NAME] [group_by=product]\n"
+		"                               support cost and ticket volume per customer\n"
 		"\n"
 		"Examples:\n"
 		"  venturectl types sale\n"
@@ -3757,6 +3770,9 @@ main(
 		result = venture_cli_command_act(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dunning"))
 		result = venture_cli_command_dunning(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "support"))
+		result = venture_cli_command_support(&cli, args, support_from,
+		                                     support_to, support_sort, &error);
 	else
 	{
 		g_printerr("venturectl: \"%s\" is not a command. Try --help.\n",
