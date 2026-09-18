@@ -77,4 +77,18 @@ GPtrArray *venture_activity_service_list(VentureActivityService *self, gint64 or
 gchar *venture_activity_service_calendar(VentureActivityService *self, gint64 organization,
 	const gchar *owner, GError **error);
 G_END_DECLS
+/**
+ * venture_activity_calendar_append_line:
+ * @calendar: the calendar being written
+ * @name: the property name, with any parameters ("DTSTART;VALUE=DATE")
+ * @value: (nullable): the value
+ * @escape: whether to escape backslash, semicolon and comma as RFC 5545 text
+ *
+ * Appends one content line with CRLF, "\n" for newlines and UTF-8-safe
+ * 75-octet folding: the writer behind /api/v1/activities.ics, shared so
+ * another module's feed folds and escapes identically.
+ */
+void venture_activity_calendar_append_line(GString *calendar, const gchar *name,
+	const gchar *value, gboolean escape);
+
 #endif

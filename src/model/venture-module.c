@@ -756,6 +756,9 @@ static GType (*const headline_types[]) (void) = { venture_headline_setting_get_t
 static const gchar *const headline_requires[] = { "receivables", "leads", NULL };
 static const gchar *const headline_suggests[] = { "outreach", "recurring", "tickets", "banking", "payables", "billing", NULL };
 static const gchar *const headline_reports[] = { "cac", "customer_churn", "ltv", "ltv_cac", "customer_cohorts", NULL };
+static const gchar *const money_calendar_requires[] = { "receivables", "payables", NULL };
+static const gchar *const money_calendar_suggests[] = { "recurring", "dunning", "payroll", "tax_filing", NULL };
+static const gchar *const money_calendar_reports[] = { "money_calendar", NULL };
 static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };
 /* Escalation writes an activity, and a collection case on the same invoice
  * holds reminders back; the pay link needs only receivables, which is required. */
@@ -1068,6 +1071,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"headline", "Headline metrics",
 		"CAC, churn, LTV, LTV:CAC and cohort reports, and the headline home page.",
 		headline_requires, headline_suggests, headline_types, headline_reports, NULL, FALSE
+	},
+	{
+		"money_calendar", "Money calendar",
+		"Every dated money event on one grid: recurring, bills, invoices, dunning, payroll and tax, with daily and weekly nets.",
+		money_calendar_requires, money_calendar_suggests, NULL, money_calendar_reports, NULL, FALSE
 	}
 };
 
