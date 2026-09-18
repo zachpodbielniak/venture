@@ -205,6 +205,7 @@ enqueue_output(VentureContext *context, VentureReportPack *pack, GDateTime *cloc
 	g_autoptr(JsonObject) values = json_object_new();
 	g_autoptr(GString) reports = g_string_new(NULL);
 	g_autoptr(GString) period = g_string_new(NULL);
+	g_autoptr(GPtrArray) labels = g_ptr_array_new_with_free_func(g_free);
 	g_autoptr(VentureMailTemplate) template = NULL;
 	g_autoptr(VentureMailMessage) message = NULL;
 	g_autofree gchar *pack_slug = NULL;
@@ -283,8 +284,9 @@ enqueue_output(VentureContext *context, VentureReportPack *pack, GDateTime *cloc
 		title = venture_json_object_get_string(result, "title", "Report");
 		if (json_object_has_member(result, "period") && JSON_NODE_HOLDS_OBJECT(json_object_get_member(result, "period")))
 			label = venture_json_object_get_string(json_object_get_object_member(result, "period"), "label", "");
-		if (label[0] != '\0' && strstr(period->str, label) == NULL)
+		if (label[0] != '\0' && !g_ptr_array_find_with_equal_func(labels, label, g_str_equal, NULL))
 		{
+			g_ptr_array_add(labels, g_strdup(label));
 			if (period->len > 0)
 				g_string_append(period, ", ");
 			g_string_append(period, label);

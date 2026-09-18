@@ -451,6 +451,56 @@ test_deliver_resends(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(error->message, "deliver"));
 }
 
+/* The outbox's inline attachments, which the delivery relies on: content
+ * without a document row is retained as a snapshot, and malformed entries
+ * are refused, as is a document reference when no storage is configured. */
+static void
+test_inline_attachments(Fixture *f, gconstpointer data)
+{
+	VentureMailOutbox *outbox = venture_context_get_mail_outbox(f->context);
+	static const gchar *const refused[] = {
+		"[{\"type\":\"inline\",\"mime\":\"text/csv\",\"data\":\"YQ==\"}]",
+		"[{\"type\":\"inline\",\"name\":\"a.csv\",\"mime\":\"text/csv\"}]",
+		"[{\"type\":\"inline\",\"name\":\"a.csv\",\"mime\":\"text/csv\",\"data\":\"!!\"}]",
+		"[{\"type\":\"document\",\"id\":1}]",
+		"[{\"type\":\"clip\"}]"
+	};
+	guint i;
+	(void)data;
+	for (i = 0; i < G_N_ELEMENTS(refused); i++)
+	{
+		g_autoptr(VentureMailMessage) message = venture_mail_message_new();
+		g_autoptr(VentureMailMessage) queued = NULL;
+		g_autoptr(GError) error = NULL;
+		g_autofree gchar *key = g_strdup_printf("inline-refused-%u", i);
+		g_object_set(message, "organization-id", f->org, "to", "reader@example.test", "subject", "Inline",
+			"text-body", "Hello", "idempotency-key", key, "attachments", refused[i], NULL);
+		queued = venture_mail_outbox_enqueue(outbox, message, NULL, &error);
+		g_assert_null(queued);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	}
+	{
+		g_autoptr(VentureMailMessage) message = venture_mail_message_new();
+		g_autoptr(VentureMailMessage) queued = NULL;
+		g_autoptr(VentureEntity) stored = NULL;
+		g_autoptr(GError) error = NULL;
+		const gchar *snapshot;
+		g_object_set(message, "organization-id", f->org, "to", "reader@example.test", "subject", "Inline",
+			"text-body", "Hello", "idempotency-key", "inline-ok", "attachments",
+			"[{\"type\":\"inline\",\"name\":\"a.csv\",\"mime\":\"text/csv\",\"data\":\"YSxiCg==\"}]", NULL);
+		queued = venture_mail_outbox_enqueue(outbox, message, NULL, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(queued);
+		stored = venture_database_get(f->db, VENTURE_TYPE_MAIL_MESSAGE, venture_entity_get_id(VENTURE_ENTITY(queued)), &error);
+		g_assert_no_error(error);
+		snapshot = venture_entity_get_attribute(stored, "_mail_attachments");
+		g_assert_nonnull(snapshot);
+		g_assert_nonnull(strstr(snapshot, "\"a.csv\""));
+		g_assert_nonnull(strstr(snapshot, "YSxiCg=="));
+		g_assert_null(strstr(snapshot, "\"type\""));
+	}
+}
+
 /* --- REST and CLI surfaces ---------------------------------------------- */
 
 typedef struct
@@ -660,6 +710,11 @@ test_surfaces(WebFixture *w, gconstpointer data)
 	g_assert_nonnull(strstr(body, "output"));
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(request(w, "POST", missing, editor, NULL, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	{
+		/* Delivery queues mail from output that already exists; it is not staged. */
+		g_autofree gchar *staged = g_strconcat(path, "?stage=1", NULL);
+		g_assert_cmpuint(request(w, "POST", staged, editor, NULL, NULL, NULL, NULL), ==, SOUP_STATUS_UNPROCESSABLE_ENTITY);
+	}
 
 	g_assert_cmpint(sweep(&w->base, "2026-08-02T09:00:00Z"), ==, 1);
 	g_assert_cmpuint(request(w, "POST", path, editor, NULL, NULL, &body, NULL), ==, SOUP_STATUS_ACCEPTED);
@@ -697,6 +752,7 @@ main(int argc, char **argv)
 	g_test_add("/report-delivery/mail-module-off", Fixture, NULL, setup, test_mail_module_off, teardown);
 	g_test_add("/report-delivery/no-transport", Fixture, NULL, setup, test_no_transport, teardown);
 	g_test_add("/report-delivery/deliver-resends", Fixture, NULL, setup, test_deliver_resends, teardown);
+	g_test_add("/report-delivery/inline-attachments", Fixture, NULL, setup, test_inline_attachments, teardown);
 	g_test_add("/report-delivery/surfaces", WebFixture, NULL, web_setup, test_surfaces, web_teardown);
 	return g_test_run();
 }
