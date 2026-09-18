@@ -1,8 +1,9 @@
 -- The candidate table comes from the dedupe module field table, and the
 -- merged_into_id columns on companies and contacts from additive metadata.
--- Verify the CRM columns are present, and the candidate table is present or,
--- with the module disabled, absent. Nothing is inferred or backfilled.
-CREATE TEMP TABLE venture_dedupe_upgrade_guard (column_count INTEGER CHECK (column_count = 2));
+-- Verify the CRM columns are present together (or absent with the CRM off),
+-- and the candidate table is present or, with the module disabled, absent.
+-- Nothing is inferred or backfilled.
+CREATE TEMP TABLE venture_dedupe_upgrade_guard (column_count INTEGER CHECK (column_count IN (0, 2)));
 INSERT INTO venture_dedupe_upgrade_guard SELECT
  (SELECT COUNT(*) FROM pragma_table_info('companies') WHERE name = 'merged_into_id') +
  (SELECT COUNT(*) FROM pragma_table_info('contacts') WHERE name = 'merged_into_id');
