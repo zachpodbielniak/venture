@@ -762,6 +762,9 @@ static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };
 static const gchar *const dunning_suggests[] = { "activities", "recurring", NULL };
 static GType (*const dunning_types[]) (void) = { venture_dunning_policy_get_type, venture_dunning_event_get_type, NULL };
 static const gchar *const dunning_reports[] = { "collections", "dunning_worklist", NULL };
+static const gchar *const customer_health_requires[] = { "headline", "activities", NULL };
+static const gchar *const customer_health_suggests[] = { "tickets", "dunning", "mail_sync", NULL };
+static const gchar *const customer_health_reports[] = { "customer_health", NULL };
 
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
@@ -1068,6 +1071,12 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"headline", "Headline metrics",
 		"CAC, churn, LTV, LTV:CAC and cohort reports, and the headline home page.",
 		headline_requires, headline_suggests, headline_types, headline_reports, NULL, FALSE
+	},
+	{
+		"customer_health", "Customer health",
+		"Per-customer health bands from touch, receivables and support, the "
+		"at-risk sweep and the churn card's at-risk count.",
+		customer_health_requires, customer_health_suggests, NULL, customer_health_reports, NULL, FALSE
 	}
 };
 

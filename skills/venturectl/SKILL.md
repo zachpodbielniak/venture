@@ -109,6 +109,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `collections run [--as-of DATE] [organization_id=N]` | queue overdue invoice reminders through the outbox; a non-admin must name the organization |
 | `dunning sweep [as_of=DATE] [organization_id=N] [limit=N] [dry_run=true]` | templated reminder policies: one step per invoice per day, escalation to the owner; `dry_run=true` returns the plan and writes nothing |
 | `batch invoice\|expense format=csv\|json payload=... [post=false] [organization_id=N] [--dry-run]` | all-or-nothing CSV/JSON document create |
+| `customers health-sweep [as_of=DATE] [organization_id=N] [limit=N]` | one `check in: <company>` activity per red customer, never a second while one is open |
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 
@@ -700,6 +701,19 @@ report and names failing checks with expected, ledger and difference.
 Before `rollback`, run `act accounting_cutover ID rollback_preflight` and
 read the `BLOCKER` lines; an active batch cannot be rolled back. See
 `docs/cutover.org`.
+
+## Customer health
+
+`report customer_health PERIOD [band=red|amber|green] [owner=USERNAME] [sort=[-]column]`
+lists every customer company with last touch, open deals, overdue invoices
+and days, open tickets and SLA breaches, dunning step and trailing-12-month
+revenue, banded against the organisation's `headline_setting` thresholds
+(`health_touch_days` 30, `health_overdue_days` 15, `health_open_tickets` 3;
+zero means the default). An unknown band or sort column is refused (exit 2).
+`customers health-sweep [as_of=DATE] [organization_id=N] [limit=N]` creates
+one planned `check in: <company>` activity for each red company's account
+owner and answers `{"created": N}`; it never duplicates an open one. Needs
+the `customer_health` and `activities` modules. See `docs/reporting.org`.
 
 ## Ledger statements
 

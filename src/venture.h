@@ -258,6 +258,7 @@
 #include "reconciliation/venture-reconciliation-service.h"
 #include "report/venture-headline-home.h"
 #include "dunning/venture-dunning-service.h"
+#include "report/venture-customer-health.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 
