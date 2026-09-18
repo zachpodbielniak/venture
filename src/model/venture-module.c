@@ -686,7 +686,8 @@ static const gchar *const venture_module_suggests_accounting[] = {
 };
 static const gchar *const venture_module_requires_statements[] = { "ledger", "periods", NULL };
 static const gchar *const venture_module_reports_statements[] = {
-	"balance_sheet", "income_statement", "cash_flow", "general_ledger", "account_balances", "pnl_reconciliation", NULL
+	"balance_sheet", "income_statement", "cash_flow", "general_ledger", "account_balances", "pnl_reconciliation",
+	"year_end_pack", NULL
 };
 static const gchar *const cutover_requires[] = { "ledger", NULL };
 static const gchar *const setup_requires[] = { "ledger", "periods", NULL };
