@@ -3762,6 +3762,7 @@ venture_web_ui_invoice_status(
  * PDF generator; it is already installed everywhere.
  */
 static void quote_buttons(GString *html, VentureEntity *record);
+static void venture_web_deal_buttons(VentureWebServer *self, GString *html, VentureEntity *record);
 
 static HtmxResponse *
 venture_web_ui_invoice_print(
@@ -9006,6 +9007,7 @@ venture_web_ui_detail(
 	quote_buttons(content, record);
 	venture_web_append_payables_actions(self, content, record);
 	venture_web_append_claims_actions(self, content, record);
+	venture_web_deal_buttons(self, content, record);
 
 	if (VENTURE_TYPE_FIXED_ASSET == entity_type)
 		venture_web_append_asset_actions(content, record);
@@ -28293,6 +28295,8 @@ venture_web_server_new(
 	htmx_router_post(router, "/ui/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
 	htmx_router_post(router, "/api/v1/sequences/run", venture_web_sequence_run, self);
 	htmx_router_get(router, "/api/v1/headline", venture_web_api_headline, self);
+	htmx_router_post(router, "/api/v1/deals/:id/quote", venture_web_deal_quote, self);
+	htmx_router_post(router, "/deals/:id/quote", venture_web_deal_quote, self);
 
 	htmx_router_get(router, "/api/v1/:type", venture_web_api_list, self);
 	htmx_router_post(router, "/api/v1/:type", venture_web_api_create, self);

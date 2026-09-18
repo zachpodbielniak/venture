@@ -636,7 +636,8 @@ static GType (*const banking_types[]) (void) = {
 };
 static GType (*const venture_module_pipelines_types[]) (void) = {
 	venture_pipeline_get_type, venture_pipeline_stage_get_type,
-	venture_deal_stage_entry_get_type, venture_loss_reason_get_type, NULL
+	venture_deal_stage_entry_get_type, venture_loss_reason_get_type,
+	venture_deal_line_get_type, NULL
 };
 static const gchar *const venture_module_requires_crm[] = { "crm", NULL };
 static const gchar *const venture_module_reports_pipelines[] = {

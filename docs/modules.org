@@ -59,7 +59,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =sequences= | crm | sequence, sequence_step, sequence_enrollment, sequence_delivery, suppression; =sequence_performance=, =sequence_failures= | |
 | =ledger=     | finance         | journal, journal_line, exchange_rate; posting service, post/reverse/create-and-post actions, =trial_balance=           |                       |
 
-| =pipelines= | crm | pipeline, pipeline_stage, deal_stage_entry, loss_reason; stage_duration, funnel, forecast, loss_reasons, overdue_deals; /deals | |
+| =pipelines= | crm | pipeline, pipeline_stage, deal_stage_entry, loss_reason, deal_line; stage_duration, funnel, forecast, loss_reasons, overdue_deals; /deals, /deals/:id/quote | |
 | =statements= | ledger, periods | ledger balances query; balance sheet, income statement, cash flow, general ledger, account balances, P&L reconciliation | |
 | =cutover= | ledger | accounting_cutover, accounting_cutover_row | |
 | =setup= | ledger, periods | accounting_setup, accounting_control_map | |

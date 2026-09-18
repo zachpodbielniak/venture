@@ -321,3 +321,20 @@ posting veto after the first documents leaves nothing; the row limit, CSV
 templates and CSV payloads, opening stock and its rollback, the module switch,
 and the page, preview, action,
 template and CSV routes (including the selected legal entity) are covered.
+
+** =test-deal-lines=
+
+Deal lines drive the deal value: three units at $19.99 less 1000 basis
+points make $53.97, editing and deleting a line recomputes in the same
+transaction, a generic write of =value= is refused by name while lines
+exist and allowed again once none remain, a second currency is refused and
+not persisted, invalid quantities, discounts, prices and references are
+refused, and a line cannot move between deals. The quote handoff copies the
+lines into =DEAL-<id>=, a rerun revises to =-R2= with the current lines and
+no duplicates, refusals (no lines, fractional percent, since-deleted
+product after the header is written) leave no quote behind, and the REST
+route, the deal page button and =venturectl deal quote= are exercised over
+HTTP. Written red first: the binary does not compile without =deal_line=,
+and removing the value refusal or the currency check turns the matching
+case red.
+

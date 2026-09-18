@@ -3425,6 +3425,7 @@ main(
 		"  bankfeed sync ID [JSON]      sync a linked bank feed connection\n"
 		"  commerce import [JSON]       import connector orders as invoices\n"
 		"  deal move ID STAGE [NOTE]     move a deal through its pipeline\n"
+		"  deal quote ID                create or revise a quote from the deal's lines\n"
 		"  release publish ID           cut it on the forge; --prerelease\n"
 		"  dashboards                   list the dashboards\n"
 		"  dashboard SLUG               a dashboard, every widget evaluated\n"

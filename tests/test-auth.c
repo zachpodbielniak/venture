@@ -1748,6 +1748,10 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/sequence_enrollment/1/exit", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/sequences/run", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/ui/sequence_enrollment/1/pause", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	/* Deal-line quote handoff needs an editor; the tracking endpoints are
+	 * public by design and answer 404 for an unknown token. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/deals/1/quote", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/deals/1/quote", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 
 }
 

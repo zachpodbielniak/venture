@@ -1840,6 +1840,11 @@ venture_database_delete(
 		return FALSE;
 	if (!venture_quotes_check_removal(self, entity, error))
 		return FALSE;
+	{
+		gboolean handled;
+		gboolean result = venture_pipelines_remove_hook(self, entity, 0, actor, &handled, error);
+		if (handled || !result) return result;
+	}
 
 	if (!venture_entity_is_persisted(entity))
 	{
@@ -1933,6 +1938,11 @@ venture_database_restore(
 		return FALSE;
 	if (!venture_quotes_check_removal(self, entity, error))
 		return FALSE;
+	{
+		gboolean handled;
+		gboolean result = venture_pipelines_remove_hook(self, entity, 1, actor, &handled, error);
+		if (handled || !result) return result;
+	}
 
 	if (!venture_entity_is_deleted(entity))
 		return TRUE;
@@ -2003,6 +2013,11 @@ venture_database_purge(
 		return FALSE;
 	if (!venture_quotes_check_removal(self, entity, error))
 		return FALSE;
+	{
+		gboolean handled;
+		gboolean result = venture_pipelines_remove_hook(self, entity, 2, actor, &handled, error);
+		if (handled || !result) return result;
+	}
 
 	if (!venture_entity_is_persisted(entity))
 		return TRUE;

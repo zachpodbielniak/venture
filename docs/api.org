@@ -558,6 +558,7 @@ These editor actions belong to =sequences=, which requires =crm=:
 | POST | /api/v1/sequence_enrollment/:id/exit | Exit and cancel pending deliveries. |
 | POST | /api/v1/sequence_enrollment/:id/goal | Record an explicitly met goal and exit. |
 | POST | /api/v1/sequences/run | ={ "as_of": "2026-09-14T13:00:00Z", "organization_id": 1 }=; both fields optional, returns =processed=. |
+| POST | /api/v1/deals/:id/quote | Editor action of =pipelines= with =quotes=: copies the deal's =deal_line= records into a draft quote (201), or revises the deal's latest quote on a rerun. |
 
 The five sequence records use ordinary schema-driven CRUD for configuration
 and reading. New enrollment writes route through =VentureSequenceService=;
