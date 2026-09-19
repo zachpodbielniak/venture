@@ -1470,6 +1470,12 @@ venture_web_navigation(void)
 	return venture_web_nav_links;
 }
 
+/* The sidebar an accountant-only user gets; defined with the Books page. */
+static const VentureWebNavLink *
+venture_accountant_web_navigation(VentureWebServer *self, HtmxRequest *request);
+static void
+venture_accountant_web_append_inbox_nav(VentureWebServer *self, HtmxRequest *request, GString *html, const gchar *active);
+
 static gchar *
 venture_web_page(
 	VentureWebServer	*self,
@@ -1553,7 +1559,7 @@ venture_web_page(
 		"data-global-search title=\"Search everything (Ctrl+K)\">"
 		"</form>");
 
-	venture_web_append_inbox_nav(self, request, html, active);
+	venture_accountant_web_append_inbox_nav(self, request, html, active);
 
 	{
 		const VentureWebNavLink *links;
@@ -1562,7 +1568,7 @@ venture_web_page(
 		const gchar *section = NULL;
 		const gchar *shown = NULL;
 
-		links = venture_web_navigation();
+		links = venture_accountant_web_navigation(self, request);
 
 		g_string_append(html, "<div class=\"nav\">");
 
@@ -2592,8 +2598,8 @@ venture_web_api_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "band", "sort", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -5772,8 +5778,8 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "band", "sort", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -12284,6 +12290,7 @@ venture_web_ui_settings(
 	                       "layered, so edit the file or the environment and "
 	                       "restart.</p>"
 	                       "<p><a href=\"/settings/fields\">Custom fields and layouts</a></p>"
+	                       "<p><a href=\"/settings/backups\">Backups</a></p>"
 	                       "</div></div>");
 
 	/* Where things stand right now, before the settings themselves. */
@@ -27817,6 +27824,7 @@ venture_web_api_ticket_draft(
 #include "leads/venture-lead-web.inc"
 #include "close/venture-close-web.inc"
 #include "tax/venture-tax-web.inc"
+#include "tax/venture-sales-tax-web.inc"
 #include "capture/venture-capture-web.inc"
 #include "accounting/venture-accounting-web.inc"
 #include "bankfeed/venture-bankfeed-web.inc"
@@ -27825,6 +27833,7 @@ venture_web_api_ticket_draft(
 #include "equity/venture-equity-web.inc"
 #include "group/venture-group-web.inc"
 #include "report/venture-headline-web.inc"
+#include "orgaccess/venture-accountant-web.inc"
 #include "report/venture-customer-health-web.inc"
 
 VentureWebServer *
@@ -27985,6 +27994,7 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/contractor-tax/prepare", contractor_tax_api, self);
 	htmx_router_post(router, "/api/v1/contractor-tax/:id/:action", contractor_tax_api, self);
 	htmx_router_get(router, "/api/v1/contractor-tax/:id/export", contractor_tax_api, self);
+	htmx_router_get(router, "/api/v1/sales-tax/export", sales_tax_export_api, self);
 	htmx_router_get(router, "/capture", capture_ui, self);
 	htmx_router_post(router, "/api/v1/commerce/import", commerce_import, self);
 	htmx_router_post(router, "/api/v1/capture", capture_api, self);
@@ -28316,6 +28326,7 @@ venture_web_server_new(
 venture_document_web_register(router, self);
 	venture_portal_web_register(router, self);
 	venture_backup_web_register(router, self);
+	venture_accountant_web_register(router, self);
 	htmx_router_post(router, "/api/v1/:type/:id/actions/:action", venture_web_api_action, self);
 	htmx_router_post(router, "/api/v1/journals/post", venture_web_api_action, self);
 

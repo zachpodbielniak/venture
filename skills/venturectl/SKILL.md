@@ -66,7 +66,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `forge set-token ID` | set a forge's access token, read from stdin |
 | `forge set-secret ID` | set or generate its webhook secret |
 | `forge verify ID` | record which account the token belongs to |
-| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID] [basis=cash\|accrual] [dimension=VALUE]` | list reports, or run one with an optional historical cutoff, legal entity, accounting basis and dimension |
+| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID] [basis=cash\|accrual] [dimension=VALUE] [band_size=N]` | list reports, or run one with an optional historical cutoff, legal entity, accounting basis, dimension and score-band width |
 | `links TYPE ID` | every link touching a record, read from it |
 | `link TYPE ID TYPE ID [kind=K] [note=T]` | link two records; kinds: related, blocks, blocked_by, depends_on, required_by, parent_of, child_of, duplicates, causes, caused_by, produces, produced_by, references, referenced_by, supersedes, superseded_by; unlink with `delete record_link ID` |
 | `reconcile suggest TYPE ID [--matcher NAME] [--threshold N]` | rank matching book records; scores above the threshold (default 80) stage bank transaction action confirmations when banking is installed; never applies |
@@ -109,6 +109,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `collections run [--as-of DATE] [organization_id=N]` | queue overdue invoice reminders through the outbox; a non-admin must name the organization |
 | `dunning sweep [as_of=DATE] [organization_id=N] [limit=N] [dry_run=true]` | templated reminder policies: one step per invoice per day, escalation to the owner; `dry_run=true` returns the plan and writes nothing |
 | `batch invoice\|expense format=csv\|json payload=... [post=false] [organization_id=N] [--dry-run]` | all-or-nothing CSV/JSON document create |
+| `sales-tax export period=PERIOD [jurisdiction=CODE]` | sales tax return CSV per jurisdiction: gross, exempt, taxable, collected, credited, net due |
 | `customers health-sweep [as_of=DATE] [organization_id=N] [limit=N]` | one `check in: <company>` activity per red customer, never a second while one is open |
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
@@ -482,6 +483,11 @@ reads `churn` only when billing is in use, else `customer_churn` -- follow
 the card's `link` rather than guessing. `/api/v1/headline?format=csv` exports
 the cards; a viewer without the owner, admin or finance role gets them with
 `state` `restricted` and no figures.
+The P&L cuts are `revenue_by_customer` (`by=source` to group by lead
+source), `spend_by_vendor` (`by=category`), `recurring_costs` and
+`cash_outlook` (`weeks=N`, default 8). `cash_forecast` is the budgets
+module's ledger-driven forecast, a different report. The P&L card's
+`links` open the four with the card's period and scope.
 Read their notes: MRR is contracted revenue, not cash or recognized income;
 churn rates are in basis points. Proration adjustments are settled on the
 next renewal. Billing sends no mail and integrates no card provider.
@@ -533,8 +539,24 @@ approval. Never set `status=converted` or conversion ids with generic updates.
 `lead reassign ID [owner=NAME]` assigns explicitly or reruns the matching
 rules; staged reassignment is refused. Recycle with `update lead ID
 status=recycled unqualified_reason=... recycle_until=YYYY-MM-DD`.
-Reports are `lead_sources`, `lead_response_time` and `leads_recycled_due`;
-see `docs/leads.org` for definitions and public capture forms.
+
+`leads reroute ID` clears the owner and evaluates the `lead_routing_rule`
+records again in `position` order, writing "Lead routed" or "No rule matched"
+to the timeline. `leads rescore ID` clears the `score_manual` mark and applies
+the `lead_scoring_rule` formula. Both take no other arguments, refuse a
+converted lead, and refuse `--stage`; each is also spelled `lead reroute` /
+`lead rescore`. Rules are ordinary records -- `create lead_routing_rule
+position=N 'conditions=source=web' action=assign_user|round_robin|assign_venture
+...` and `create lead_scoring_rule 'conditions=...' points=N` -- so use
+`describe lead_routing_rule` for the exact enum values. A malformed condition
+or an action missing its target is refused at the create, not when a lead
+arrives. `round_robin` needs the `orgaccess` module for teams. Never set
+`routing_rule_id` with a generic update, and never create a
+`lead_score_history` row: both are refused.
+
+Reports are `lead_sources`, `lead_response_time`, `leads_recycled_due`,
+`lead_routing` and `lead_scoring`; `lead_scoring` takes `band_size=N` (default
+25). See `docs/leads.org` for definitions and public capture forms.
 ## Planned activities
 
 `activity complete ID outcome=...` completes a planned activity, writes interaction history and advances recurrence atomically. `activity list mine|overdue|today` reads your daily worklist. Generic `create activity` and `update activity` edit the plan; generic `status=done` is refused. The existing `activity TYPE ID` command still reads a record timeline. Use `report worklist organization_id=ID` for the current UTC week per owner.

@@ -112,6 +112,8 @@
 #include "autojournal/venture-posting-profile.h"
 #include "recurring/venture-recurring-records.h"
 #include "dunning/venture-dunning-records.h"
+#include "leads/venture-lead-routing-records.h"
+#include "tax/venture-sales-tax-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -228,6 +230,7 @@
  * signatures, and before the web server, which uses both. */
 #include "web/venture-auth.h"
 #include "orgaccess/venture-access-policy.h"
+#include "orgaccess/venture-accountant-role.h"
 
 #include "ai/venture-ai-service.h"
 #include "ai/venture-ai-assist.h"
@@ -258,6 +261,10 @@
 #include "reconciliation/venture-reconciliation-service.h"
 #include "report/venture-headline-home.h"
 #include "dunning/venture-dunning-service.h"
+#include "backup/venture-backup-schedule-service.h"
+#include "leads/venture-lead-routing.h"
+#include "tax/venture-sales-tax-service.h"
+#include "report/venture-year-end-pack.h"
 #include "report/venture-customer-health.h"
 
 #endif /* VENTURE_SERVER_BUILD */

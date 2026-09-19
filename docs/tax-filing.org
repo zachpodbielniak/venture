@@ -9,6 +9,9 @@ The optional =tax_filing= module requires =finance= and =periods=, and
 suggests =invoicing= and =payables=. Turning it off hides =tax_filing=,
 =contractor_tax_form= and =contractor_tax_pack= together. It does not
 touch =tax_code=: exact rates and the =tax_liability= report keep working.
+Jurisdiction rates selected by customer address, and the per-jurisdiction
+=sales_tax_return= a CPA files from, are the separate =sales_tax= module;
+see [[file:sales-tax.org][sales tax by jurisdiction]].
 
 =VentureTaxFilingAdapter= is the seam. The registry is the same shape as
 =VenturePostingRuleRegistry=: add, lookup, remove, list. The built-in US

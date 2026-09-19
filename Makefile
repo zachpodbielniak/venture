@@ -147,6 +147,8 @@ SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wil
 SERVER_ONLY_SRCS += $(filter-out src/recurring/venture-recurring-records.c,$(wildcard src/recurring/*.c))
 CORE_SRCS += src/dunning/venture-dunning-records.c
 SERVER_ONLY_SRCS += $(filter-out src/dunning/venture-dunning-records.c,$(wildcard src/dunning/*.c))
+CORE_SRCS += src/tax/venture-sales-tax-records.c
+SERVER_ONLY_SRCS += src/tax/venture-sales-tax-service.c
 
 PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
 SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
@@ -158,11 +160,14 @@ SERVER_ONLY_SRCS += src/portal/venture-portal-service.c
 SERVER_ONLY_SRCS += src/portal/venture-supplier-portal-service.c
 SERVER_ONLY_SRCS += src/fields/venture-custom-fields-service.c
 SERVER_ONLY_SRCS += src/backup/venture-backup-service.c
+SERVER_ONLY_SRCS += src/backup/venture-backup-schedule-service.c
 SERVER_ONLY_SRCS += $(filter-out src/budgets/venture-budget-records.c,$(wildcard src/budgets/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/equity/venture-equity-records.c,$(wildcard src/equity/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/group/venture-group-records.c,$(wildcard src/group/*.c))
 CORE_SRCS += src/report/venture-headline-records.c
 SERVER_ONLY_SRCS := $(filter-out src/report/venture-headline-records.c,$(SERVER_ONLY_SRCS))
+CORE_SRCS += src/leads/venture-lead-routing-records.c
+SERVER_ONLY_SRCS += src/leads/venture-lead-routing.c
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
@@ -267,6 +272,8 @@ $(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sequences: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-recurring: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-dunning: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-sales-tax: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-backup-schedule: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-customer-health: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
@@ -578,3 +585,4 @@ endif
 deps: $(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB)
 
 $(OUTDIR)/tests/test-mail-surfaces: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-lead-routing: | $(OUTDIR)/venturectl

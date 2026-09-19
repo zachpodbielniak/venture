@@ -1125,6 +1125,8 @@ test_auth_pages_refuse_anonymous_requests(
 	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/settings/fields"),
 	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/settings/backups"),
+	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/budgets"),
 	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/equity"),
@@ -1433,15 +1435,15 @@ test_auth_api_refuses_anonymous_requests(
 			"/payroll/1/post", "/api/v1/payroll_run/1/post", "/purchase_order/1/approve",
 			"/api/v1/purchase_order/1/approve", "/sales_order/1/confirm", "/api/v1/sales_order/1/confirm",
 			"/api/v1/close/1/complete", "/api/v1/tax-filings/1/export", "/api/v1/contractor-tax/1/export",
-			"/api/v1/capture/1/convert"
+			"/api/v1/capture/1/convert", "/settings/backups"
 		};
 		static const gchar *const gets[] = {
 			"/api/v1/budget_reports", "/api/v1/group/reports", "/api/v1/close/1/pack",
-			"/api/v1/contractor-tax/1/export"
+			"/api/v1/contractor-tax/1/export", "/api/v1/sales-tax/export?period=2026-Q1"
 		};
 		static const gchar *const redirects[] = {
 			"/settings/fields", "/equity/post", "/payables/pay", "/claims/1/submit",
-			"/payroll/1/post", "/purchase_order/1/approve", "/sales_order/1/confirm", NULL
+			"/payroll/1/post", "/purchase_order/1/approve", "/sales_order/1/confirm", "/settings/backups", NULL
 		};
 		for (i = 0; i < G_N_ELEMENTS(posts); i++)
 		{
@@ -1600,6 +1602,10 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/leads/1/reassign", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/leads/1/convert", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/leads/1/reassign", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/leads/1/reroute", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/leads/1/rescore", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/leads/1/reroute", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/leads/1/rescore", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/journal/1/actions/post", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
@@ -1753,6 +1759,10 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/sequence_enrollment/1/exit", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/sequences/run", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/ui/sequence_enrollment/1/pause", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	/* The accountant's Books page and the two year-end pack downloads. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/books"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/books/year-end-pack.zip?period=fy_2025"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/books/packs/1/year-end-pack.zip"), ==, SOUP_STATUS_UNAUTHORIZED);
 
 }
 

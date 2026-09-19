@@ -82,5 +82,25 @@ GPtrArray *venture_report_pack_service_run_pack(VentureReportPackService *self, 
  */
 gint venture_report_pack_service_run_due(VentureReportPackService *self, VentureContext *context,
 	gint64 organization_id, GDateTime *as_of, const VentureActor *actor, GError **error);
+/**
+ * venture_report_pack_schedule_validate:
+ * @schedule: =daily= or five numeric/=*= cron fields
+ * @error: (out) (optional)
+ *
+ * Returns: TRUE when the expression is one a sweep can evaluate
+ */
+gboolean venture_report_pack_schedule_validate(const gchar *schedule, GError **error);
+/**
+ * venture_report_pack_schedule_due:
+ * @schedule: (nullable): the expression; empty means never
+ * @last: (nullable): when the schedule last ran
+ * @as_of: the sweep time, UTC
+ * @error: (out) (optional)
+ *
+ * The same catch-up-once rule scheduled report packs use.
+ *
+ * Returns: 1 when due, 0 when not, -1 on an invalid expression
+ */
+gint venture_report_pack_schedule_due(const gchar *schedule, GDateTime *last, GDateTime *as_of, GError **error);
 G_END_DECLS
 #endif
