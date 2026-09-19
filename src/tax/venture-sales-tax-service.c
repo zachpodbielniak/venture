@@ -208,7 +208,14 @@ venture_sales_tax_service_resolve(VentureSalesTaxService *self, VentureEntity *c
 		g_autofree gchar *rule_state = normalise(string_of(rule, "state"));
 		g_autofree gchar *rule_county = normalise(string_of(rule, "county"));
 		g_autofree gchar *rule_city = normalise(string_of(rule, "city"));
+		gboolean active = FALSE;
 		guint specificity = 0;
+		/* A rule the operator switched off must stop levying. Charging tax
+		 * from an inactive rule is money taken from a customer and remitted
+		 * to a jurisdiction on the strength of a row nobody meant to use. */
+		g_object_get(rule, "active", &active, NULL);
+		if (!active)
+			continue;
 		if (g_strcmp0(rule_state, state) != 0)
 			continue;
 		specificity = 1;
@@ -576,6 +583,7 @@ sales_tax_return(VentureContext *context, VentureDateRange *period, JsonObject *
 		VentureEntity *event = g_ptr_array_index(events, i);
 		g_autofree gchar *kind = NULL;
 		g_autoptr(GDateTime) date = NULL;
+		g_autoptr(GDateTime) opening_at = NULL;
 		g_autoptr(VentureQuery) line_query = NULL;
 		g_autoptr(GPtrArray) lines = NULL;
 		VentureEntity *invoice;
@@ -603,7 +611,13 @@ sales_tax_return(VentureContext *context, VentureDateRange *period, JsonObject *
 			}
 			g_hash_table_insert(invoices, invoice_key, invoice);
 		}
-		g_object_get(invoice, "tax-exempt", &invoice_exempt, NULL);
+		/* A migrated opening invoice's tax was collected, and possibly
+		 * filed, in the source system; tax_liability and the filing adapter
+		 * both skip it, and a return that did not would ask the filer to
+		 * remit it twice. */
+		g_object_get(invoice, "opening-at", &opening_at, "tax-exempt", &invoice_exempt, NULL);
+		if (opening_at != NULL)
+			continue;
 		line_query = venture_query_new(VENTURE_TYPE_INVOICE_LINE);
 		venture_query_set_limit(line_query, 0);
 		venture_query_set_organization(line_query, organization_id);

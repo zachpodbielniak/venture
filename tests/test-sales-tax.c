@@ -131,7 +131,7 @@ rule(Fixture *f, gint64 jurisdiction_id, const gchar *state, const gchar *county
 {
 	g_autoptr(VentureEntity) r = record(f, "tax_rule");
 	g_object_set(r, "jurisdiction-id", jurisdiction_id, "state", state,
-		"county", county, "city", city, NULL);
+		"county", county, "city", city, "active", TRUE, NULL);
 	save(f, r);
 	return venture_entity_get_id(r);
 }
@@ -490,6 +490,37 @@ test_exact_match_only(Fixture *f, gconstpointer unused)
 	g_assert_cmpint(money_of(fb, "tax-amount"), ==, 0);
 }
 
+/* An operator who switches a rule off must stop being charged for it. The
+ * flag was carried on the record and never read once, so an inactive rule
+ * kept levying and remitting tax nobody had asked for. */
+static void
+test_inactive_rule_levies_nothing(Fixture *f, gconstpointer unused)
+{
+	gint64 j = jurisdiction(f, "US-NY-NYC", "New York City", 88750, "2026-01-01", NULL);
+	gint64 rule_id = rule(f, j, "NY", "NEW YORK", "NEW YORK");
+	g_autoptr(VentureEntity) rule_row = NULL;
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) frozen = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 id;
+	(void)unused;
+	rule_row = venture_database_get(f->db, venture_entity_registry_lookup(
+		venture_entity_registry_get_default(), "tax_rule"), rule_id, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(rule_row);
+	g_object_set(rule_row, "active", FALSE, NULL);
+	save(f, rule_row);
+
+	invoice = draft(f, "INV-OFF-RULE", f->customer, "2026-02-01");
+	id = line(f, invoice, "80 USD", 0, 5);
+	issue(f, invoice, "2026-02-01");
+	frozen = line_by_id(f, id);
+	g_assert_cmpint(int_of(frozen, "tax-jurisdiction-id"), ==, 0);
+	g_assert_cmpint(int_of(frozen, "tax-rate-scaled"), ==, 0);
+	/* Nothing else changes: the line falls back to its own percent. */
+	g_assert_cmpint(money_of(frozen, "tax-amount"), ==, 400);
+}
+
 /* The rate effective on the issue date applies; an issued invoice never moves
  * when the rate changes later, and a new invoice takes the new rate. */
 static void
@@ -726,6 +757,103 @@ test_return_ties_to_liability(Fixture *f, gconstpointer unused)
 	g_assert_cmpuint(venture_report_result_get_row_count(march), ==, 0);
 }
 
+/* A migrated invoice's tax was collected, and possibly filed, in the system
+ * it came from. tax_liability and the US filing adapter both skip a document
+ * stamped opening-at; a return that counted it would tell the filer to remit
+ * the same tax twice, and would break the tie to tax_liability. The stamp is
+ * only reachable through the service -- opening_at is a derived field an
+ * ordinary save refuses -- so this posts a real opening invoice. */
+/* The default chart already carries most codes; only make the ones it does
+ * not, so this works whatever the seeded chart holds. */
+static gint64
+account_id_for(Fixture *f, const gchar *code, VentureAccountKind kind)
+{
+	g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	g_autoptr(GPtrArray) accounts = NULL;
+	g_autoptr(VentureEntity) account = NULL;
+	g_autoptr(GError) error = NULL;
+	venture_query_set_organization(q, f->org);
+	g_assert_true(venture_query_add_filter_string(q, "code", VENTURE_FILTER_OP_EQ, code, NULL));
+	accounts = venture_database_find(f->db, q, NULL);
+	g_assert_nonnull(accounts);
+	if (accounts->len > 0)
+		return venture_entity_get_id(g_ptr_array_index(accounts, 0));
+	account = VENTURE_ENTITY(venture_account_new());
+	g_object_set(account, "organization-id", f->org, "name", code, "code", code,
+		"kind", kind, "active", TRUE, NULL);
+	if (!venture_database_save(f->db, account, NULL, &error))
+		g_error("account %s: %s", code, error ? error->message : "(no error)");
+	return venture_entity_get_id(account);
+}
+
+static void
+test_opening_invoice_stays_off_the_return(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) migrated = VENTURE_ENTITY(venture_invoice_new());
+	g_autoptr(VentureEntity) migrated_line = VENTURE_ENTITY(venture_invoice_line_new());
+	g_autoptr(GPtrArray) lines = g_ptr_array_new();
+	g_autoptr(VentureEntity) current = NULL;
+	g_autoptr(VentureDateRange) period = NULL;
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(VentureReportResult) liability = NULL;
+	g_autoptr(GTimeZone) utc = g_time_zone_new_utc();
+	g_autoptr(GDateTime) opening_at = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 net_due_sum = 0, output_sum = 0;
+	gint64 clearing;
+	gint row;
+	guint i;
+	(void)unused;
+	nyc(f);
+	account_id_for(f, "1100", VENTURE_ACCOUNT_KIND_ASSET);
+	clearing = account_id_for(f, "3900", VENTURE_ACCOUNT_KIND_EQUITY);
+
+	/* The migrated invoice: same customer, same jurisdiction, same month as
+	 * the live one, so only the opening-at stamp can keep it off the return. */
+	venture_entity_set_organization_id(migrated, f->org);
+	g_object_set(migrated, "number", "OPEN-1", "company-id", f->customer, NULL);
+	field(migrated, "issued-at", "2026-02-03");
+	field(migrated, "due-at", "2026-02-03");
+	g_object_set(migrated_line, "description", "Work", "quantity", 1.0,
+		"product-id", (gint64)0, "tax-percent", (gint64)0, NULL);
+	field(migrated_line, "unit-price", "80 USD");
+	g_ptr_array_add(lines, migrated_line);
+	opening_at = venture_time_from_string("2026-02-05", NULL);
+	g_assert_nonnull(opening_at);
+	g_assert_true(venture_settlement_service_issue_opening(venture_settlement_service_get(f->db),
+		VENTURE_INVOICE(migrated), lines, opening_at, clearing, NULL, &error));
+	g_assert_no_error(error);
+
+	current = draft(f, "INV-1", f->customer, "2026-02-04");
+	line(f, current, "80 USD", 0, 0);
+	issue(f, current, "2026-02-04");
+
+	period = venture_date_range_parse("2026-02", utc, 1, &error);
+	g_assert_no_error(error);
+	result = venture_report_generate(venture_report_registry_lookup(
+		venture_context_get_report_registry(f->context), "sales_tax_return"),
+		f->context, period, NULL, &error);
+	g_assert_no_error(error);
+	row = row_for(result, "US-NY-NYC");
+	g_assert_cmpint(row, >=, 0);
+	/* One invoice of the two, not both. */
+	g_assert_cmpint(cell_money(result, row, "gross_sales")->amount, ==, 8000);
+	g_assert_cmpint(cell_money(result, row, "tax_collected")->amount, ==, 710);
+
+	/* And the return still ties to tax_liability, which skips it too. */
+	for (i = 0; i < venture_report_result_get_row_count(result); i++)
+		net_due_sum += cell_money(result, i, "net_due")->amount;
+	liability = venture_report_generate(venture_report_registry_lookup(
+		venture_context_get_report_registry(f->context), "tax_liability"),
+		f->context, period, NULL, &error);
+	g_assert_no_error(error);
+	for (i = 0; i < venture_report_result_get_row_count(liability); i++)
+		if (g_strcmp0(cell_text(liability, i, "direction"), "output") == 0)
+			output_sum += cell_money(liability, i, "liability")->amount;
+	g_assert_cmpint(output_sum, ==, 710);
+	g_assert_cmpint(net_due_sum, ==, output_sum);
+}
+
 /* The CSV has the 1099 pack's shape: a header of keys and every cell quoted. */
 static void
 test_csv_export(Fixture *f, gconstpointer unused)
@@ -945,8 +1073,10 @@ main(int argc, char **argv)
 	g_test_add("/sales-tax/exempt-customer-and-product", Fixture, NULL, setup, test_exempt_customer_and_product, teardown);
 	g_test_add("/sales-tax/rule-specificity", Fixture, NULL, setup, test_rule_specificity, teardown);
 	g_test_add("/sales-tax/exact-match-only", Fixture, NULL, setup, test_exact_match_only, teardown);
+	g_test_add("/sales-tax/inactive-rule-levies-nothing", Fixture, NULL, setup, test_inactive_rule_levies_nothing, teardown);
 	g_test_add("/sales-tax/rate-change-leaves-issued", Fixture, NULL, setup, test_rate_change_leaves_issued_invoice, teardown);
 	g_test_add("/sales-tax/return-ties-to-liability", Fixture, NULL, setup, test_return_ties_to_liability, teardown);
+	g_test_add("/sales-tax/opening-invoice-off-the-return", Fixture, NULL, setup, test_opening_invoice_stays_off_the_return, teardown);
 	g_test_add("/sales-tax/csv-export", Fixture, NULL, setup, test_csv_export, teardown);
 	g_test_add("/sales-tax/module-off", Fixture, NULL, setup, test_module_off, teardown);
 	g_test_add("/sales-tax/surfaces", ServerFixture, NULL, server_setup, test_surfaces, server_teardown);

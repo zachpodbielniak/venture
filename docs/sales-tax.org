@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-17]
-#+updated: [2026-09-17]
+#+updated: [2026-09-18]
 #+version: 0.6.0
 
 * A rate is a window, a jurisdiction is a code
@@ -17,7 +17,7 @@ invoices keep what they froze, and new invoices fall back to their line's
 | Record | Meaning |
 |--------+---------|
 | =tax_jurisdiction= | One rate window: =code=, =name=, =kind= (=sales= or =use=), =rate-scaled=, =effective-from= (inclusive), =effective-to= (exclusive, empty for open) |
-| =tax_rule= | Address codes that select a jurisdiction: required =state=, optional =county= and =city=, and any window of the jurisdiction |
+| =tax_rule= | Address codes that select a jurisdiction: required =state=, optional =county= and =city=, =active=, and any window of the jurisdiction |
 
 The rate is an exact percent with up to four decimals, stored as an integer
 scaled by 10000: =88750= is 8.875%. Issuance applies it as the fraction
@@ -35,8 +35,15 @@ of the next. A negative rate, a kind other than =sales= or =use=, a missing
 
 * Customers, products and rules
 
+A rule only selects while =active= is true, and a field table cannot
+default a boolean to true: a rule created without =active=true= levies
+nothing, which is the direction to be wrong in for money taken from a
+customer. Switching =active= off stops the rule without destroying the
+history that explains an already issued invoice; soft-deleting it does the
+same.
+
 A company carries =address-state=, =address-county= and =address-city=.
-These are codes, not addresses: =NY=, =NEW YORK=, =NEW YORK=. A rule matches
+These are codes, not addresses: =NY=, =NEW YORK=, =NEW YORK=. An active rule matches
 when its state equals the customer's, and each of its county and city is
 either empty or equal. Comparison trims and upper-cases both sides and does
 nothing else; there is no geocoding, no abbreviation table and no fuzzy
@@ -95,10 +102,13 @@ plus =name=, =kind= and =rate_percent=. Every window of one code shares
 the code's row; =rate_percent= is the rate of the first frozen window the
 report meets, while =tax_collected= is the sum of what each line froze, so
 a mid-period rate change is one row whose figures are still exact. It
-dates sales by invoice issue and
-void events exactly as =tax_liability= does, so a void in the same period
-removes its base and tax and a later void is a reduction in that later
-period. Rows are keyed by the frozen =tax-jurisdiction-id=; a line that
+dates sales by invoice issue and void events exactly as =tax_liability=
+does, so a void in the same period removes its base and tax and a later
+void is a reduction in that later period. It also skips a migrated invoice
+carrying =opening-at=, for the same reason =tax_liability= and the US
+filing adapter do: that tax was collected, and possibly filed, in the
+source system, so remitting it here would remit it twice.
+Rows are keyed by the frozen =tax-jurisdiction-id=; a line that
 used a =tax_code= instead lands on a row keyed by the code's jurisdiction
 string with kind =tax_code=; percent-only tax and credits with no
 jurisdiction land on =unassigned=, so nothing the books owe is hidden.
