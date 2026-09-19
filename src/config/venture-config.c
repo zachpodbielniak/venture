@@ -313,6 +313,8 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_STR("mail-from-address", "mail", "from_address", "", "Sender address"),
 	VC_STR("mail-from-name", "mail", "from_name", "Venture", "Sender display name"),
 	VC_STR("mail-reply-to", "mail", "reply_to", "", "Default reply address"),
+	VC_STR("backup-directory", "backup", "directory", "backups", "Where scheduled backups are written when a schedule names no destination; relative to the state directory"),
+	VC_INT("backup-retention", "backup", "retention", 7, "Successful backups kept per schedule when the schedule says zero"),
 
 };
 

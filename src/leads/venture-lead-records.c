@@ -42,7 +42,9 @@ static const VentureFieldDecl lead_fields[] = {
 	VENTURE_FIELD("first-seen-at", "First seen at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("last-activity-at", "Last activity at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("recycle-until", "Recycle until", NULL, VENTURE_FIELD_KIND_DATE, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("notes", "Notes", NULL, VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("notes", "Notes", NULL, VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("score-manual", "Score set by hand", "A hand-typed score is kept until cleared or rescored", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("routing-rule-id", "Routed by", "The routing rule that last placed this lead", "lead_routing_rule", VENTURE_COLUMN_FLAG_INDEXED)
 };
 VENTURE_DEFINE_ENTITY(VentureLead, venture_lead, lead_fields)
 

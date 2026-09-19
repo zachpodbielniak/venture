@@ -97,6 +97,33 @@ gboolean venture_lead_service_apply_staged(VentureLeadService *self, VentureEnti
  */
 gchar *venture_lead_normalize_email(const gchar *value);
 /**
+ * venture_lead_service_reroute:
+ * @self: the canonical service
+ * @lead: saved, unconverted lead
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): error
+ *
+ * Runs the routing rules again in position order, replacing the current
+ * owner with the first match's verdict, and records the outcome on the
+ * lead's timeline even when no rule matched.
+ * Returns: whether re-routing succeeded
+ */
+gboolean venture_lead_service_reroute(VentureLeadService *self, VentureEntity *lead,
+	const VentureActor *actor, GError **error);
+/**
+ * venture_lead_service_rescore:
+ * @self: the canonical service
+ * @lead: saved, unconverted lead
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): error
+ *
+ * Clears a manual score override and applies the scoring formula, writing a
+ * history row when the score changes.
+ * Returns: whether rescoring succeeded
+ */
+gboolean venture_lead_service_rescore(VentureLeadService *self, VentureEntity *lead,
+	const VentureActor *actor, GError **error);
+/**
  * venture_lead_normalize_website:
  * @value: (nullable): a website or bare domain as typed
  *
