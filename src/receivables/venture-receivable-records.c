@@ -35,7 +35,9 @@ static const VentureFieldDecl credit_fields[] = {
 	VENTURE_FIELD("reference", "Reference", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD_MONEY("tax-amount", "Tax amount", "Optional tax portion of a credit note"),
 	VENTURE_FIELD("opening-at", "Opening balance at", "Cutover instant a migrated credit entered the ledger",
-		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
+		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("tax-jurisdiction-id", "Tax jurisdiction", "Jurisdiction the credited tax belongs to on the sales tax return",
+		"tax_jurisdiction", VENTURE_COLUMN_FLAG_INDEXED)
 };
 VENTURE_DEFINE_ENTITY(VentureCustomerCredit, venture_customer_credit, credit_fields)
 

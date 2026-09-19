@@ -992,6 +992,7 @@ test_disabled_migration(void)
 	venture_config_set_module_enabled(config, "supplier_portal", FALSE);
 	venture_config_set_module_enabled(config, "recurring", FALSE);
 	venture_config_set_module_enabled(config, "goods", FALSE);
+	venture_config_set_module_enabled(config, "pnl_cuts", FALSE);
 	venture_config_set_module_enabled(config, "money_calendar", FALSE);
 	g_assert_true(venture_module_registry_configure(modules, config, &error));
 	g_assert_no_error(error);

@@ -120,6 +120,17 @@ gchar *venture_tax_filing_service_export_1099(VentureTaxFilingService *self, Ven
 	const VentureActor *actor, GError **error);
 
 /**
+ * venture_tax_filing_csv_cell:
+ * @value: (nullable): the cell text; %NULL is empty
+ *
+ * Quotes one cell the way every tax pack CSV does: always wrapped in
+ * quotation marks, with embedded quotation marks doubled per RFC 4180.
+ *
+ * Returns: (transfer full): the quoted cell
+ */
+gchar *venture_tax_filing_csv_cell(const gchar *value);
+
+/**
  * venture_tax_filing_check_write:
  * @database: database owning the records
  * @record: candidate record
