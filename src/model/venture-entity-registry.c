@@ -879,6 +879,9 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_sequence_link_get_type,
 		venture_sequence_tracking_event_get_type,
 		venture_duplicate_candidate_get_type,
+		venture_user_mfa_get_type,
+		venture_mfa_recovery_code_get_type,
+		venture_mfa_policy_get_type,
 	};
 	gsize i;
 

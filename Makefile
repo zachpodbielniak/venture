@@ -177,6 +177,8 @@ CORE_SRCS += src/crm-import/venture-crm-import-records.c
 SERVER_ONLY_SRCS += src/crm-import/venture-crm-import-service.c
 # The documentation site generator is core: venturectl renders the site.
 CORE_SRCS += src/docs/venture-org-html.c src/docs/venture-docs-site.c
+CORE_SRCS += src/orgaccess/venture-mfa-records.c
+SERVER_ONLY_SRCS := $(filter-out src/orgaccess/venture-mfa-records.c,$(SERVER_ONLY_SRCS))
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
@@ -295,6 +297,7 @@ $(OUTDIR)/tests/test-dedupe: | $(OUTDIR)/venturectl
 # The docs test drives `venturectl docs build` and the quickstart against
 # a real server: both binaries, and the docs it renders are the real ones.
 $(OUTDIR)/tests/test-docs: | $(OUTDIR)/venturectl $(OUTDIR)/venture
+$(OUTDIR)/tests/test-mfa: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery

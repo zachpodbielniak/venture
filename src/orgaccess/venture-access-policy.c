@@ -647,6 +647,8 @@ venture_orgaccess_web_dispatch(VentureAuth *auth, VentureContext *context,
 			}
 		}
 	}
+	if (venture_mfa_web_gate(context, http, actor))
+		return;
 	if (NULL != scope && (g_str_has_suffix(path, "/export") || 0 == g_strcmp0(htmx_request_get_query_param(request, "format"), "csv")))
 		scope->policy->read_action = "export";
 	next(http, next_data);

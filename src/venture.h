@@ -117,6 +117,7 @@
 #include "calendar/venture-calendar-records.h"
 #include "crm-import/venture-crm-import-records.h"
 #include "dedupe/venture-dedupe-records.h"
+#include "orgaccess/venture-mfa-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -285,6 +286,9 @@
 #include "dedupe/venture-dedupe-service.h"
 #include "report/venture-support-rollup.h"
 #include "report/venture-report-pack-delivery.h"
+#include "orgaccess/venture-totp.h"
+#include "orgaccess/venture-qr-svg.h"
+#include "orgaccess/venture-mfa-service.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

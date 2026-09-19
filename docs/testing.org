@@ -552,3 +552,15 @@ base64, and a document reference without attachment storage). The REST
 route refuses anonymous (401), viewer (403), staged and unknown-pack
 requests and answers an editor with the queued message (202); =report packs
 deliver ID= reaches it with an API token, and refuses a missing id.
+** =test-mfa=
+
+The second factor end to end: RFC 6238 appendix B vectors, base32, the QR
+matrix, enrolment with a pending-secret refresh and the key requirement,
+refusal of the password-only sign-in, drift and replay, the five-in-fifteen
+failure window, single-use recovery codes and regeneration, audit
+attribution and redaction, disable, the owner-only reset through the action
+registry and =venturectl=, the =require_mfa_for_admins= setting, and the HTTP
+gate, sign-in flow and REST/CSV/audit redaction. Every clock-dependent
+check uses =VentureMfaService:fixed-time=; the =000410= guard is proven to
+refuse a half-present schema. Needs =venturectl= built, like
+=test-auth=.

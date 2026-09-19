@@ -1189,6 +1189,18 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/mail/test", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/mail/deliver", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/report_pack/1/deliver", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	/* Second-factor pages need a session like any other account page. The
+	 * two /login/mfa routes are the one exception by construction: they run
+	 * between password and session, so they send an unauthenticated caller
+	 * back to /login rather than serving a challenge for nobody. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/account/mfa"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/account/mfa/enrol"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/mfa/enrol", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/mfa/confirm", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/mfa/disable", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/mfa/recovery", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/login/mfa"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/login/mfa", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/mail_messages/1/retry", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/mail/sync", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/mail_unmatched_senders/1/create_contact", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);

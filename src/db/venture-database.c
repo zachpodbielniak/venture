@@ -2620,6 +2620,7 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_backup_schedule_actions_register(self);
 		venture_crm_import_actions_register(self);
 		venture_dedupe_actions_register(self);
+		venture_mfa_actions_register(self);
 	}
 	return self->actions;
 }

@@ -3321,6 +3321,7 @@ venture_cli_command_act(VentureCli *cli, gchar **args, GError **error)
 #include "autojournal/venture-autojournal-cli.inc"
 #include "docs/venture-docs-cli.inc"
 #include "report/venture-report-pack-cli.inc"
+#include "orgaccess/venture-mfa-cli.inc"
 
 int
 main(
@@ -3520,6 +3521,7 @@ main(
 		"  dedupe scan [kind=company|contact] [organization_id=N]  propose duplicate pairs\n"
 		"  dedupe merge ID survivor=N   fold the other record of a candidate into the survivor; --stage\n"
 		"  dedupe dismiss ID            close a candidate as not a duplicate\n"
+		"  user mfa reset USER      break glass: turn off a user's second factor (owner only, audited)\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
 		"  support rollup --from DATE --to DATE [--sort [-]COLUMN] [min_tickets=N] [company=ID] [product=NAME] [group_by=product]\n"
@@ -3838,6 +3840,8 @@ main(
 		                                     span_to, support_sort, &error);
 	else if (0 == g_strcmp0(args[0], "docs"))
 		result = venture_cli_command_docs(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "user"))
+		result = venture_cli_command_user(&cli, args, &error);
 	else
 	{
 		g_printerr("venturectl: \"%s\" is not a command. Try --help.\n",

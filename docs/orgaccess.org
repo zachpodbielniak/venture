@@ -200,3 +200,16 @@ Internal derived work without an authenticated request principal or explicit use
 Consent snapshots run in the same serializable transaction as the protected command. Pending proposals expire after 24 hours, and a process restart or posting-rule registry replacement requires a fresh proposal. A final policy-revision check precedes consumption. Opaque exchange-policy callbacks are refused under second-actor rules; the supported exchange policy is the same organization's persisted rate table.
 
 The transaction binding, server-side enforcement, expiry and single-use consumption follow the principles in [[https://cheatsheetseries.owasp.org/cheatsheets/Transaction_Authorization_Cheat_Sheet.html][OWASP Transaction Authorization]]. Operators authorize the significant inputs by repeating the exact business command under their own account; approval records store the fingerprint rather than a second copy of sensitive input data.
+
+* Second factor
+
+The =mfa= module (requires =orgaccess=) adds TOTP enrolment, verification
+at sign-in, recovery codes and the organization setting
+=require_mfa_for_admins= on the =mfa_policy= record. While that setting is
+on, an organization owner or admin without an enabled second factor is
+redirected to =/account/mfa/enrol= from every browser path and refused with
+403 from every API path, by the same request middleware that applies the
+membership boundary. A global owner or admin is reached by any
+organization's requirement. =user_mfa= and =mfa_recovery_code= are personal
+records: =user_id= is their personal owner, and their secret and hash
+fields are sensitive. See [[file:security.org][Security: the second factor]].

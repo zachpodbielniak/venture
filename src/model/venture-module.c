@@ -789,6 +789,9 @@ static const gchar *const dedupe_requires[] = { "crm", NULL };
 static const gchar *const dedupe_suggests[] = { "leads", "invoicing", "payables", NULL };
 static GType (*const dedupe_types[]) (void) = { venture_duplicate_candidate_get_type, NULL };
 
+static const gchar *const mfa_requires[] = { "orgaccess", NULL };
+static GType (*const mfa_types[]) (void) = { venture_user_mfa_get_type, venture_mfa_recovery_code_get_type, venture_mfa_policy_get_type, NULL };
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -1136,6 +1139,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"docs", "Documentation",
 		"The rendered documentation site, served read-only at /docs.",
 		venture_module_requires_core, NULL, NULL, NULL, NULL, FALSE
+	},
+	{
+		"mfa", "Second factor",
+		"TOTP enrolment, verification at sign-in, recovery codes and the require-MFA organization setting.",
+		mfa_requires, NULL, mfa_types, NULL, NULL, FALSE
 	}
 };
 

@@ -6058,13 +6058,15 @@ venture_web_ui_login_submit(
 	g_autoptr(GError) error = NULL;
 	HtmxResponse *response;
 
+	gboolean mfa_pending = FALSE;
+
 	self = user_data;
 	remote = venture_auth_remote_address(request);
 
-	if (!venture_auth_login(self->auth,
+	if (!venture_auth_login_with_mfa(self->auth,
 	                        htmx_request_get_form_value(request, "username"),
 	                        htmx_request_get_form_value(request, "password"),
-	                        remote, &cookie, &error))
+	                        remote, &cookie, &mfa_pending, &error))
 	{
 		g_autoptr(GString) body = NULL;
 		g_autofree gchar *html = NULL;
@@ -6090,7 +6092,8 @@ venture_web_ui_login_submit(
 
 	response = htmx_response_new();
 	htmx_response_set_status(response, 302);
-	htmx_response_add_header(response, "Location", "/");
+	/* A challenge is not a session: the code page comes first. */
+	htmx_response_add_header(response, "Location", mfa_pending ? "/login/mfa" : "/");
 	htmx_response_add_header(response, "Set-Cookie", cookie);
 
 	return response;
@@ -10862,6 +10865,13 @@ venture_web_ui_account(
 				"anything else using the API.</p>"
 				"<a class=\"btn\" href=\"/account/tokens\">Manage API "
 				"tokens</a>");
+
+		if (venture_web_module_enabled(self, "mfa"))
+			g_string_append(content,
+				"<h2>Second factor</h2>"
+				"<p class=\"muted small\">A code from an authenticator app "
+				"after the password.</p>"
+				"<a class=\"btn\" href=\"/account/mfa\">Manage second factor</a>");
 	}
 
 	g_string_append(content, "</div></div>");
@@ -27898,6 +27908,7 @@ venture_web_api_ticket_draft(
 #include "report/venture-support-rollup-web.inc"
 #include "docs/venture-docs-web.inc"
 #include "report/venture-report-pack-web.inc"
+#include "orgaccess/venture-mfa-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -28401,6 +28412,7 @@ venture_document_web_register(router, self);
 	venture_backup_web_register(router, self);
 	venture_accountant_web_register(router, self);
 	venture_crm_import_web_register(router, self);
+	venture_mfa_web_register(router, self);
 	htmx_router_post(router, "/api/v1/:type/:id/actions/:action", venture_web_api_action, self);
 	htmx_router_post(router, "/api/v1/journals/post", venture_web_api_action, self);
 	venture_money_calendar_web_register(router, self);

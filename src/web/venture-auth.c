@@ -595,21 +595,24 @@ venture_auth_authenticate(
 	return principal;
 }
 
-gboolean
-venture_auth_login(
+/*
+ * The password half of a sign-in: the rate limit, the lookup and the
+ * hash comparison, shared by the session-only and the second-factor
+ * flows so the two cannot drift apart.
+ *
+ * Returns: (transfer full) (nullable): the account, or %NULL with @error
+ */
+static VentureEntity *
+venture_auth_check_credentials(
 	VentureAuth	 *self,
 	const gchar	 *username,
 	const gchar	 *password,
 	const gchar	 *remote_address,
-	gchar		**out_cookie,
 	GError		**error
 ){
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(VentureEntity) user = NULL;
 	VentureDatabase *database;
-
-	g_return_val_if_fail(VENTURE_IS_AUTH(self), FALSE);
-	g_return_val_if_fail(NULL != out_cookie, FALSE);
 
 	/* The attempt is spent before the password is looked at, because the
 	 * guesses a brute force needs are exactly the ones arriving after the
@@ -621,7 +624,7 @@ venture_auth_login(
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED,
 		                    "Too many sign-in attempts; wait a minute and "
 		                    "try again");
-		return FALSE;
+		return NULL;
 	}
 
 	database = venture_context_get_database(self->context);
@@ -630,14 +633,14 @@ venture_auth_login(
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED,
 		                    "That username and password do not match");
-		return FALSE;
+		return NULL;
 	}
 
 	query = venture_query_new(VENTURE_TYPE_USER);
 
 	if (!venture_query_add_filter_string(query, "username",
 	                                     VENTURE_FILTER_OP_EQ, username, error))
-		return FALSE;
+		return NULL;
 
 	user = venture_database_find_one(database, query, NULL);
 
@@ -664,20 +667,315 @@ venture_auth_login(
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED,
 		                    "That username and password do not match");
+		return NULL;
+	}
+
+	return g_steal_pointer(&user);
+}
+
+/*
+ * Stamps the account and mints the session cookie. The last step of both
+ * sign-in flows, reached only once every factor has been accepted.
+ */
+static gchar *
+venture_auth_open_session(
+	VentureAuth	*self,
+	VentureEntity	*user
+){
+	g_autoptr(GDateTime) now = NULL;
+
+	now = venture_time_now();
+	g_object_set(user, "last-login-at", now, NULL);
+	venture_database_save(venture_context_get_database(self->context), user, NULL, NULL);
+
+	return venture_auth_make_cookie(self, venture_entity_get_id(user));
+}
+
+static gboolean
+venture_auth_mfa_enabled_for(
+	VentureAuth	*self,
+	gint64		 user_id
+){
+	VentureDatabase *database;
+
+	database = venture_context_get_database(self->context);
+
+	if (!venture_context_module_enabled(self->context, "mfa"))
+		return FALSE;
+
+	return venture_mfa_service_is_enabled(venture_mfa_service_get(database), user_id);
+}
+
+gboolean
+venture_auth_login(
+	VentureAuth	 *self,
+	const gchar	 *username,
+	const gchar	 *password,
+	const gchar	 *remote_address,
+	gchar		**out_cookie,
+	GError		**error
+){
+	g_autoptr(VentureEntity) user = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_AUTH(self), FALSE);
+	g_return_val_if_fail(NULL != out_cookie, FALSE);
+
+	user = venture_auth_check_credentials(self, username, password, remote_address, error);
+
+	if (NULL == user)
+		return FALSE;
+
+	/* A password alone must never open a session for an account that
+	 * enrolled a second factor; that is the whole point of enrolling. */
+	if (venture_auth_mfa_enabled_for(self, venture_entity_get_id(user)))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED,
+		                    "This account requires a second factor; sign in through the browser");
 		return FALSE;
 	}
 
-	{
-		g_autoptr(GDateTime) now = NULL;
-
-		now = venture_time_now();
-		g_object_set(user, "last-login-at", now, NULL);
-		venture_database_save(database, user, NULL, NULL);
-	}
-
-	*out_cookie = venture_auth_make_cookie(self, venture_entity_get_id(user));
+	*out_cookie = venture_auth_open_session(self, user);
 
 	return TRUE;
+}
+
+/* --- Second-factor challenge -------------------------------------------- */
+
+#define VENTURE_AUTH_MFA_COOKIE_NAME "venture_mfa"
+#define VENTURE_AUTH_MFA_LIFETIME 300
+
+/*
+ * The challenge carries the same fields as a session but is signed under
+ * a distinct label, so neither cookie verifies as the other.
+ */
+static gchar *
+venture_auth_sign_challenge(
+	VentureAuth	*self,
+	gint64		 user_id,
+	gint64		 issued_at,
+	gint64		 expires_at
+){
+	g_autoptr(GHmac) hmac = NULL;
+	g_autofree gchar *payload = NULL;
+
+	payload = g_strdup_printf("mfa:%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT
+	                          ":%" G_GINT64_FORMAT,
+	                          user_id, issued_at, expires_at);
+	hmac = g_hmac_new(G_CHECKSUM_SHA256, (const guchar *)self->secret,
+	                  strlen(self->secret));
+	g_hmac_update(hmac, (const guchar *)payload, (gssize)strlen(payload));
+
+	return g_strdup(g_hmac_get_string(hmac));
+}
+
+static gchar *
+venture_auth_make_challenge_cookie(
+	VentureAuth	*self,
+	gint64		 user_id
+){
+	g_autoptr(HtmxCookie) cookie = NULL;
+	g_autofree gchar *value = NULL;
+	g_autofree gchar *signature = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	gint64 issued_at;
+	gint64 expires_at;
+
+	now = venture_time_now();
+	issued_at = (g_date_time_to_unix(now) * G_USEC_PER_SEC) +
+		g_date_time_get_microsecond(now);
+	expires_at = g_date_time_to_unix(now) + VENTURE_AUTH_MFA_LIFETIME;
+	signature = venture_auth_sign_challenge(self, user_id, issued_at, expires_at);
+	value = g_strdup_printf("%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT
+	                        ":%" G_GINT64_FORMAT ":%s",
+	                        user_id, issued_at, expires_at, signature);
+
+	cookie = htmx_cookie_new(VENTURE_AUTH_MFA_COOKIE_NAME, value);
+	htmx_cookie_set_path(cookie, "/login");
+	htmx_cookie_set_max_age(cookie, VENTURE_AUTH_MFA_LIFETIME);
+	htmx_cookie_set_http_only(cookie, TRUE);
+	htmx_cookie_set_same_site(cookie, HTMX_COOKIE_SAME_SITE_LAX);
+	htmx_cookie_set_secure(cookie, self->cookie_secure);
+
+	return htmx_cookie_to_set_cookie(cookie);
+}
+
+static gint64
+venture_auth_verify_challenge(
+	VentureAuth	*self,
+	const gchar	*value
+){
+	g_auto(GStrv) parts = NULL;
+	g_autofree gchar *expected = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	gint64 user_id;
+	gint64 issued_at;
+	gint64 expires_at;
+
+	if (venture_string_is_empty(value))
+		return 0;
+
+	parts = g_strsplit(value, ":", 4);
+
+	if ((NULL == parts[0]) || (NULL == parts[1]) || (NULL == parts[2]) ||
+	    (NULL == parts[3]))
+		return 0;
+
+	user_id = g_ascii_strtoll(parts[0], NULL, 10);
+	issued_at = g_ascii_strtoll(parts[1], NULL, 10);
+	expires_at = g_ascii_strtoll(parts[2], NULL, 10);
+
+	if (0 == user_id)
+		return 0;
+
+	expected = venture_auth_sign_challenge(self, user_id, issued_at, expires_at);
+
+	if (!venture_constant_time_equal(expected, parts[3]))
+		return 0;
+
+	now = venture_time_now();
+
+	if (g_date_time_to_unix(now) >= expires_at)
+		return 0;
+
+	return user_id;
+}
+
+gboolean
+venture_auth_login_with_mfa(
+	VentureAuth	 *self,
+	const gchar	 *username,
+	const gchar	 *password,
+	const gchar	 *remote_address,
+	gchar		**out_cookie,
+	gboolean	 *out_mfa_pending,
+	GError		**error
+){
+	g_autoptr(VentureEntity) user = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_AUTH(self), FALSE);
+	g_return_val_if_fail(NULL != out_cookie, FALSE);
+	g_return_val_if_fail(NULL != out_mfa_pending, FALSE);
+
+	*out_mfa_pending = FALSE;
+	user = venture_auth_check_credentials(self, username, password, remote_address, error);
+
+	if (NULL == user)
+		return FALSE;
+
+	if (venture_auth_mfa_enabled_for(self, venture_entity_get_id(user)))
+	{
+		*out_mfa_pending = TRUE;
+		*out_cookie = venture_auth_make_challenge_cookie(self, venture_entity_get_id(user));
+		return TRUE;
+	}
+
+	*out_cookie = venture_auth_open_session(self, user);
+
+	return TRUE;
+}
+
+gint64
+venture_auth_mfa_challenge_user(
+	VentureAuth	*self,
+	HtmxRequest	*request
+){
+	SoupServerMessage *message;
+	SoupMessageHeaders *headers;
+	const gchar *cookie_header;
+	g_autoptr(GHashTable) cookies = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_AUTH(self), 0);
+	g_return_val_if_fail(HTMX_IS_REQUEST(request), 0);
+
+	message = htmx_request_get_message(request);
+	headers = (NULL != message)
+		? soup_server_message_get_request_headers(message) : NULL;
+	cookie_header = (NULL != headers)
+		? soup_message_headers_get_list(headers, "Cookie") : NULL;
+
+	if (NULL == cookie_header)
+		return 0;
+
+	cookies = htmx_cookie_parse_request(cookie_header);
+
+	if (NULL == cookies)
+		return 0;
+
+	return venture_auth_verify_challenge(self,
+		g_hash_table_lookup(cookies, VENTURE_AUTH_MFA_COOKIE_NAME));
+}
+
+gboolean
+venture_auth_complete_mfa(
+	VentureAuth	 *self,
+	HtmxRequest	 *request,
+	const gchar	 *code,
+	const gchar	 *remote_address,
+	gchar		**out_cookie,
+	GError		**error
+){
+	g_autoptr(VentureEntity) user = NULL;
+	g_autofree gchar *username = NULL;
+	VentureDatabase *database;
+	VentureActor actor;
+	gint64 user_id;
+	gboolean active;
+
+	g_return_val_if_fail(VENTURE_IS_AUTH(self), FALSE);
+	g_return_val_if_fail(NULL != out_cookie, FALSE);
+
+	user_id = venture_auth_mfa_challenge_user(self, request);
+
+	if (0 == user_id)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED,
+		                    "Sign in with your password first");
+		return FALSE;
+	}
+
+	database = venture_context_get_database(self->context);
+	user = venture_database_get(database, VENTURE_TYPE_USER, user_id, NULL);
+
+	if (NULL != user)
+		g_object_get(user, "active", &active, "username", &username, NULL);
+
+	/* Deactivated between the password and the code: the challenge was
+	 * honestly minted, but the account is gone. */
+	if ((NULL == user) || !active)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED,
+		                    "Sign in with your password first");
+		return FALSE;
+	}
+
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = username;
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+
+	if (!venture_mfa_service_verify(venture_mfa_service_get(database), user_id,
+	                                code, &actor, remote_address, error))
+		return FALSE;
+
+	*out_cookie = venture_auth_open_session(self, user);
+
+	return TRUE;
+}
+
+gchar *
+venture_auth_mfa_clear_cookie(VentureAuth *self)
+{
+	g_autoptr(HtmxCookie) cookie = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_AUTH(self), NULL);
+
+	cookie = htmx_cookie_new(VENTURE_AUTH_MFA_COOKIE_NAME, "");
+	htmx_cookie_set_path(cookie, "/login");
+	htmx_cookie_set_max_age(cookie, 0);
+	htmx_cookie_set_http_only(cookie, TRUE);
+
+	return htmx_cookie_to_set_cookie(cookie);
 }
 
 /*
