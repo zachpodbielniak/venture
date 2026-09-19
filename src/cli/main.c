@@ -3330,11 +3330,9 @@ main(
 	g_autofree gchar *mail_html = NULL;
 	g_autofree gchar *mail_limit = NULL;
 	g_autofree gchar *sequence_as_of = NULL;
-	g_autofree gchar *calendar_from = NULL;
-	g_autofree gchar *calendar_to = NULL;
+	g_autofree gchar *span_from = NULL;
+	g_autofree gchar *span_to = NULL;
 	g_autofree gchar *calendar_kind = NULL;
-	g_autofree gchar *support_from = NULL;
-	g_autofree gchar *support_to = NULL;
 	g_autofree gchar *support_sort = NULL;
 	gboolean show_version = FALSE;
 	gboolean show_license = FALSE;
@@ -3374,13 +3372,15 @@ main(
 		  NULL, NULL },
 		{ "dry-run", 0, 0, G_OPTION_ARG_NONE, &dry_run,
 		  "post backfill or billing: validate without retaining writes", NULL },
-		{ "from", 0, 0, G_OPTION_ARG_STRING, &calendar_from, "money calendar: first day", "DATE" },
-		{ "to", 0, 0, G_OPTION_ARG_STRING, &calendar_to, "money calendar: last day (inclusive)", "DATE" },
+		/* One --from/--to pair serves every span-taking verb. Registering
+		 * it twice made GOption keep the first and leave the second
+		 * variable NULL, so support rollup refused a span the user had
+		 * given. */
+		{ "from", 0, 0, G_OPTION_ARG_STRING, &span_from,
+		  "money calendar, support rollup: first day", "DATE" },
+		{ "to", 0, 0, G_OPTION_ARG_STRING, &span_to,
+		  "money calendar, support rollup: last day (inclusive)", "DATE" },
 		{ "kind", 0, 0, G_OPTION_ARG_STRING, &calendar_kind, "money calendar: one kind only", "KIND" },
-		{ "from", 0, 0, G_OPTION_ARG_STRING, &support_from,
-		  "support rollup: first day of the span", "DATE" },
-		{ "to", 0, 0, G_OPTION_ARG_STRING, &support_to,
-		  "support rollup: last day of the span", "DATE" },
 		{ "sort", 0, 0, G_OPTION_ARG_STRING, &support_sort,
 		  "support rollup: column to order by, - for descending", "COLUMN" },
 		{ NULL }
@@ -3816,14 +3816,14 @@ main(
 	else if (0 == g_strcmp0(args[0], "customers"))
 		result = venture_cli_command_customers(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "money"))
-		result = venture_cli_command_money(&cli, args, calendar_from, calendar_to, calendar_kind, sequence_as_of, &error);
+		result = venture_cli_command_money(&cli, args, span_from, span_to, calendar_kind, sequence_as_of, &error);
 	else if (0 == g_strcmp0(args[0], "crm"))
 		result = venture_cli_command_crm(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dedupe"))
 		result = venture_cli_command_dedupe(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "support"))
-		result = venture_cli_command_support(&cli, args, support_from,
-		                                     support_to, support_sort, &error);
+		result = venture_cli_command_support(&cli, args, span_from,
+		                                     span_to, support_sort, &error);
 	else
 	{
 		g_printerr("venturectl: \"%s\" is not a command. Try --help.\n",
