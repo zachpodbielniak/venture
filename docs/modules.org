@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-11]
-#+updated: [2026-09-12]
+#+updated: [2026-09-18]
 #+version: 0.6.0
 
 * Modules
@@ -56,16 +56,20 @@ Written bottom-up, because a module may only require what precedes it:
 
 | =payables= | finance, ledger, crm | vendor_bill, vendor_bill_line, bill_payment, bill_payment_allocation, vendor_credit, vendor_bill_event, bill_refund; =payables=, =vendor_statement= | |
 | =supplier_portal= | payables | supplier_portal_access; =/supplier/:token= | |
-| =sequences= | crm | sequence, sequence_step, sequence_enrollment, sequence_delivery, suppression; =sequence_performance=, =sequence_failures= | |
+| =sequences= | crm | sequence, sequence_step, sequence_enrollment, sequence_delivery, suppression, sequence_link, sequence_tracking_event; =sequence_performance=, =sequence_failures=, =sequence_engagement=; /t/o, /t/c | |
 | =ledger=     | finance         | journal, journal_line, exchange_rate; posting service, post/reverse/create-and-post actions, =trial_balance=           |                       |
 
 | =pipelines= | crm | pipeline, pipeline_stage, deal_stage_entry, loss_reason; stage_duration, funnel, forecast, loss_reasons, overdue_deals; /deals | |
+| =statements= | ledger, periods | ledger balances query; balance sheet, income statement, cash flow, general ledger, account balances, P&L reconciliation, year-end pack; =/books= | |
+| =pipelines= | crm | pipeline, pipeline_stage, deal_stage_entry, loss_reason, deal_line; stage_duration, funnel, forecast, loss_reasons, overdue_deals; /deals, /deals/:id/quote | |
 | =statements= | ledger, periods | ledger balances query; balance sheet, income statement, cash flow, general ledger, account balances, P&L reconciliation | |
 | =cutover= | ledger | accounting_cutover, accounting_cutover_row | |
 | =setup= | ledger, periods | accounting_setup, accounting_control_map | |
-| =backup= | ledger | accounting_backup | |
+| =backup= | ledger | accounting_backup, backup_schedule, backup_run; =backup_schedule= run, =backup_run= verify and restore_drill actions | |
 | =activities= | crm | activity, activity_type; =worklist=, reminders, calendar export and =/worklist= | |
+| =leads= | crm | lead, lead_form, lead_assignment_rule, lead_routing_rule, lead_scoring_rule, lead_score_history; =lead_sources=, =lead_response_time=, =leads_recycled_due=, =lead_routing=, =lead_scoring=; capture, routing (round-robin needs orgaccess), scoring and conversion | |
 | =leads= | crm | lead, lead_form, lead_assignment_rule; =lead_sources=, =lead_response_time=, =leads_recycled_due=; capture and conversion | |
+| =crm_import= | crm, pipelines, activities, leads | crm_import, crm_import_row; HubSpot, Zoho CRM and Salesforce migration with preview, import, activate and rollback | |
 
 | =quotes= | crm, invoicing | price_list, price_list_item, quote, quote_line, quote_event, quote_delivery, quote_action; =quotes= report and proposal actions | |
 | =assets= | ledger, periods | fixed_asset, depreciation_entry, deferral, deferral_entry, tax_depreciation_entry; =fixed_assets=, =deferrals= | |
@@ -82,6 +86,13 @@ Written bottom-up, because a module may only require what precedes it:
 | =group= | statements | intercompany_link, elimination; consolidated trial balance, income and balance sheet; =/group= | =group.enabled= (opt-in) |
 | =dunning= | receivables, mail | dunning_policy, dunning_event; =collections=, =dunning_worklist=; =dunning_policy= sweep and test_send actions, =dunning_event= retry; =venture->dunning_sweep= | activities, recurring |
 | =headline= | receivables, leads | headline_setting; =cac=, =customer_churn=, =ltv=, =ltv_cac=, =customer_cohorts=; the headline cards at =/= and =/api/v1/headline= | outreach, recurring, tickets, banking, payables, billing |
+| =sales_tax= | receivables | tax_jurisdiction, tax_rule; =sales_tax_return=; =sales-tax export= | |
+| =pnl_cuts= | receivables, payables | =revenue_by_customer=, =spend_by_vendor=, =recurring_costs=, =cash_outlook=; the links on the P&L card | leads, recurring, banking, headline |
+| =customer_health= | headline, activities | =customer_health=; =/api/v1/customers/health/sweep=; the churn card's at-risk line; health on a company page | tickets, dunning, mail_sync |
+| =calendar= | activities, crm, leads | calendar_account, calendar_event, booking_page; =calendar sync= sweep, =/book/<slug>= | |
+| =money_calendar= | receivables, payables | no records; =money_calendar=; =/money/calendar=, =/money/calendar.ics=, =money calendar= | recurring, dunning, payroll, tax_filing |
+| =dedupe= | crm | duplicate_candidate; =duplicate_candidate= scan, merge and dismiss actions; =/customers/duplicates= | leads, invoicing, payables |
+| =docs= | core | the rendered documentation site at =/docs= (read-only, no session); =venturectl docs build= | |
 
 Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.
 

@@ -1,0 +1,272 @@
+/*
+ * venture-docs.css - The documentation site
+ *
+ * Copyright (C) 2026 Zach Podbielniak
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * Embedded into venturectl and written beside the pages by `docs build`.
+ * One stylesheet, no framework: a left nav, a reading column, and enough
+ * to make org's tables and code blocks legible in both colour schemes.
+ */
+
+:root {
+	--docs-bg: #f7f5f0;
+	--docs-panel: #ffffff;
+	--docs-ink: #1d1d1b;
+	--docs-muted: #6b6a66;
+	--docs-rule: #dedbd3;
+	--docs-accent: #1f6c9f;
+	--docs-code-bg: #eeebe3;
+	--docs-mark: #fff3b0;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--docs-bg: #1e1e22;
+		--docs-panel: #26262b;
+		--docs-ink: #e8e6df;
+		--docs-muted: #a3a19a;
+		--docs-rule: #3a3a41;
+		--docs-accent: #7fb3d9;
+		--docs-code-bg: #2f2f36;
+		--docs-mark: #5a4d13;
+	}
+}
+
+* { box-sizing: border-box; }
+
+html { font-size: 16px; }
+
+body {
+	margin: 0;
+	background: var(--docs-bg);
+	color: var(--docs-ink);
+	font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+	line-height: 1.55;
+}
+
+a { color: var(--docs-accent); }
+
+.docs {
+	display: grid;
+	grid-template-columns: 17rem minmax(0, 1fr);
+	min-height: 100vh;
+}
+
+/* The nav */
+
+.docs-nav {
+	position: sticky;
+	top: 0;
+	height: 100vh;
+	overflow-y: auto;
+	padding: 1.25rem 1rem 2rem;
+	border-right: 1px solid var(--docs-rule);
+	background: var(--docs-panel);
+	font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+	font-size: 0.9rem;
+}
+
+.docs-brand {
+	display: block;
+	margin-bottom: 0.75rem;
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	text-decoration: none;
+	color: var(--docs-ink);
+}
+
+.docs-nav h2 {
+	margin: 1.25rem 0 0.35rem;
+	font-size: 0.72rem;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--docs-muted);
+}
+
+.docs-nav ul { list-style: none; margin: 0; padding: 0; }
+
+.docs-nav li a {
+	display: block;
+	padding: 0.2rem 0.5rem;
+	border-radius: 4px;
+	color: var(--docs-ink);
+	text-decoration: none;
+}
+
+.docs-nav li a:hover { background: var(--docs-code-bg); }
+
+.docs-nav li a[aria-current="page"] {
+	background: var(--docs-accent);
+	color: #ffffff;
+}
+
+/* Search */
+
+.docs-search-box { position: relative; }
+
+#docs-search {
+	width: 100%;
+	padding: 0.45rem 0.6rem;
+	border: 1px solid var(--docs-rule);
+	border-radius: 4px;
+	background: var(--docs-bg);
+	color: var(--docs-ink);
+	font: inherit;
+}
+
+#docs-search:focus {
+	outline: 2px solid var(--docs-accent);
+	outline-offset: 1px;
+}
+
+.docs-results {
+	position: absolute;
+	left: 0;
+	right: 0;
+	z-index: 10;
+	max-height: 24rem;
+	overflow-y: auto;
+	margin: 0.25rem 0 0;
+	padding: 0.25rem 0;
+	border: 1px solid var(--docs-rule);
+	border-radius: 4px;
+	background: var(--docs-panel);
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.docs-results li a {
+	display: block;
+	padding: 0.4rem 0.6rem;
+	color: var(--docs-ink);
+	text-decoration: none;
+}
+
+.docs-results li a:hover,
+.docs-results li a:focus { background: var(--docs-code-bg); }
+
+.docs-results .docs-result-title { font-weight: 600; }
+
+.docs-results .docs-result-snippet {
+	display: block;
+	font-size: 0.8rem;
+	color: var(--docs-muted);
+}
+
+.docs-results .docs-result-empty {
+	padding: 0.4rem 0.6rem;
+	color: var(--docs-muted);
+}
+
+.docs-results mark {
+	background: var(--docs-mark);
+	color: inherit;
+	padding: 0;
+}
+
+/* The page */
+
+.docs-main { padding: 2.5rem 3rem 4rem; }
+
+.docs-article { max-width: 46rem; }
+
+.docs-article h1 {
+	margin: 0 0 0.25rem;
+	font-size: 2rem;
+	line-height: 1.15;
+}
+
+.docs-lede {
+	margin: 0 0 2rem;
+	font-size: 1.1rem;
+	color: var(--docs-muted);
+}
+
+.docs-article h2 {
+	margin: 2.25rem 0 0.75rem;
+	padding-top: 1rem;
+	border-top: 1px solid var(--docs-rule);
+	font-size: 1.45rem;
+}
+
+.docs-article h3 { margin: 1.75rem 0 0.5rem; font-size: 1.15rem; }
+.docs-article h4 { margin: 1.5rem 0 0.5rem; font-size: 1rem; }
+
+.docs-article p { margin: 0 0 1rem; }
+
+.docs-article li { margin: 0.2rem 0; }
+
+.docs-article code {
+	padding: 0.05em 0.3em;
+	border-radius: 3px;
+	background: var(--docs-code-bg);
+	font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+	font-size: 0.88em;
+}
+
+.docs-article pre {
+	margin: 0 0 1.25rem;
+	padding: 0.85rem 1rem;
+	overflow-x: auto;
+	border: 1px solid var(--docs-rule);
+	border-radius: 4px;
+	background: var(--docs-code-bg);
+	font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+	font-size: 0.85rem;
+	line-height: 1.45;
+}
+
+.docs-article pre code { padding: 0; background: none; font-size: inherit; }
+
+.docs-article blockquote {
+	margin: 0 0 1.25rem;
+	padding: 0.25rem 1rem;
+	border-left: 3px solid var(--docs-accent);
+	color: var(--docs-muted);
+}
+
+.docs-article table {
+	margin: 0 0 1.5rem;
+	border-collapse: collapse;
+	font-size: 0.92rem;
+}
+
+.docs-article th,
+.docs-article td {
+	padding: 0.4rem 0.7rem;
+	border: 1px solid var(--docs-rule);
+	text-align: left;
+	vertical-align: top;
+}
+
+.docs-article th { background: var(--docs-code-bg); }
+
+.docs-article hr {
+	margin: 2rem 0;
+	border: 0;
+	border-top: 1px solid var(--docs-rule);
+}
+
+/* Org's own exporter wraps sections in these; they need no chrome. */
+.outline-text-2, .outline-text-3, .outline-text-4 { margin: 0; }
+.org-src-container { margin: 0; }
+
+@media (max-width: 52rem) {
+	.docs { grid-template-columns: 1fr; }
+
+	.docs-nav {
+		position: static;
+		height: auto;
+		border-right: 0;
+		border-bottom: 1px solid var(--docs-rule);
+	}
+
+	.docs-main { padding: 1.5rem 1.25rem 3rem; }
+}
+
+@media print {
+	.docs-nav { display: none; }
+	.docs { display: block; }
+}

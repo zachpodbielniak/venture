@@ -10,6 +10,13 @@ VENTURE_DECLARE_ENTITY(VenturePipelineStage, venture_pipeline_stage, PIPELINE_ST
 VENTURE_DECLARE_ENTITY(VentureDealStageEntry, venture_deal_stage_entry, DEAL_STAGE_ENTRY)
 #define VENTURE_TYPE_LOSS_REASON (venture_loss_reason_get_type())
 VENTURE_DECLARE_ENTITY(VentureLossReason, venture_loss_reason, LOSS_REASON)
+#define VENTURE_TYPE_DEAL_LINE (venture_deal_line_get_type())
+VENTURE_DECLARE_ENTITY(VentureDealLine, venture_deal_line, DEAL_LINE)
+/**
+ * venture_deal_line_new:
+ * Returns: (transfer full): a priced product or service on a deal; the deal
+ * value is derived from its lines by VentureDealService
+ */
 /**
  * venture_pipeline_new:
  * Returns: (transfer full): a sales process

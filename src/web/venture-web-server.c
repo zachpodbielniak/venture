@@ -675,6 +675,11 @@ venture_web_require_for_type(
 	if (VENTURE_TYPE_MAIL_ACCOUNT == entity_type)
 		needed = VENTURE_USER_ROLE_OWNER;
 
+	/* A calendar_account names the CalDAV host and which environment
+	 * variable holds the app password; the same reasoning applies. */
+	if (VENTURE_TYPE_CALENDAR_ACCOUNT == entity_type)
+		needed = VENTURE_USER_ROLE_OWNER;
+
 	/*
 	 * A webhook holds a signing secret and names the host this install's
 	 * business data is posted to. An editor who could change its URL
@@ -774,6 +779,17 @@ venture_web_type_accepts_writes(
 		return FALSE;
 	}
 
+	/* A calendar_event row is the sync's memory of what both sides looked
+	 * like; editing one would make the next sweep overwrite or duplicate. */
+	if (VENTURE_TYPE_CALENDAR_EVENT == entity_type)
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_PERMISSION_DENIED,
+		                    "A calendar event link is written by the "
+		                    "sync; it cannot be edited");
+		return FALSE;
+	}
+
 	return TRUE;
 }
 
@@ -821,6 +837,11 @@ venture_web_active_organization(
 
 static HtmxResponse *
 venture_web_redirect_to(const gchar *path);
+
+/* A merged-away company or contact id forwards to its survivor; defined in
+ * dedupe/venture-dedupe-web.inc, reached from the generic record routes. */
+static HtmxResponse *
+venture_web_dedupe_forward(VentureWebServer *self, VentureEntity *record, const gchar *prefix);
 
 
 static void
@@ -1136,6 +1157,15 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		),
 		NULL,
 		"crm"
+	},
+	{
+		"/customers/duplicates", "Duplicates",
+		VENTURE_ICON(
+			"<rect x=\"3\" y=\"5\" width=\"11\" height=\"11\" rx=\"1\"/>"
+			"<rect x=\"10\" y=\"9\" width=\"11\" height=\"11\" rx=\"1\"/>"
+		),
+		NULL,
+		"dedupe"
 	},
 	{
 		"/e/campaign", "Campaigns",
@@ -1461,6 +1491,7 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/deals", "Sales board", VENTURE_ICON("<path d=\"M4 4v16M12 4v16M20 4v16\"/>"), "Sales pipelines", "pipelines" },
 	{ "/invoices/compose", "New invoice", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h8M8 16h5\"/>"), "Invoicing", "invoicing" },
 	{ "/quotes/compose", "New quote", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), "Quotes", "quotes" },
+	{ "/money/calendar", "Money calendar", VENTURE_ICON("<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M3 10h18M8 3v4M16 3v4\"/>"), "Money", "money_calendar" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 
@@ -1469,6 +1500,12 @@ venture_web_navigation(void)
 {
 	return venture_web_nav_links;
 }
+
+/* The sidebar an accountant-only user gets; defined with the Books page. */
+static const VentureWebNavLink *
+venture_accountant_web_navigation(VentureWebServer *self, HtmxRequest *request);
+static void
+venture_accountant_web_append_inbox_nav(VentureWebServer *self, HtmxRequest *request, GString *html, const gchar *active);
 
 static gchar *
 venture_web_page(
@@ -1553,7 +1590,7 @@ venture_web_page(
 		"data-global-search title=\"Search everything (Ctrl+K)\">"
 		"</form>");
 
-	venture_web_append_inbox_nav(self, request, html, active);
+	venture_accountant_web_append_inbox_nav(self, request, html, active);
 
 	{
 		const VentureWebNavLink *links;
@@ -1562,7 +1599,7 @@ venture_web_page(
 		const gchar *section = NULL;
 		const gchar *shown = NULL;
 
-		links = venture_web_navigation();
+		links = venture_accountant_web_navigation(self, request);
 
 		g_string_append(html, "<div class=\"nav\">");
 
@@ -2067,6 +2104,14 @@ venture_web_api_get(
 		}
 
 		return venture_web_error_response(error);
+	}
+
+	{
+		/* A merged-away id forwards to its survivor; see docs/dedupe.org. */
+		HtmxResponse *forward = venture_web_dedupe_forward(self, record, "/api/v1");
+
+		if (NULL != forward)
+			return forward;
 	}
 
 	node = venture_serializable_to_json(VENTURE_SERIALIZABLE(record), FALSE);
@@ -2592,8 +2637,8 @@ venture_web_api_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -2658,6 +2703,12 @@ venture_web_ui_overview(
 
 static gchar *
 venture_web_render_headline_home(VentureWebServer *self, HtmxRequest *request);
+static void
+venture_web_customer_health_controls(HtmxRequest *request, VentureReport *report, GString *content);
+
+static void
+venture_web_support_rollup_append_company_block(VentureWebServer *self,
+	HtmxRequest *request, GString *content, VentureEntity *record);
 
 /*
  * GET / - the home page: a dashboard marked as home, if the viewer may
@@ -3762,6 +3813,7 @@ venture_web_ui_invoice_status(
  * PDF generator; it is already installed everywhere.
  */
 static void quote_buttons(GString *html, VentureEntity *record);
+static void venture_web_deal_buttons(VentureWebServer *self, GString *html, VentureEntity *record);
 
 static HtmxResponse *
 venture_web_ui_invoice_print(
@@ -5770,8 +5822,8 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -5805,7 +5857,7 @@ venture_web_ui_report(
 
 	{
 		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
-		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", NULL };
+		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", NULL };
 		guint i;
 		for (i = 0; names[i] != NULL; i++)
 		{
@@ -5869,7 +5921,7 @@ venture_web_ui_report(
 				g_string_append_printf(content, "<input type=\"hidden\" name=\"organization_id\" value=\"%" G_GINT64_FORMAT "\">",
 					venture_json_object_get_int(report_options, "organization_id", 0));
 			{
-				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", NULL };
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", NULL };
 				guint i;
 				/* Preserve the question when changing only its cutoff. */
 				for (i = 0; names[i] != NULL; i++)
@@ -5887,6 +5939,7 @@ venture_web_ui_report(
 		}
 	}
 
+	venture_web_customer_health_controls(request, report, content);
 	rendered = venture_report_result_render(result, VENTURE_OUTPUT_FORMAT_HTML);
 	g_string_append(content, rendered);
 
@@ -8924,6 +8977,13 @@ venture_web_ui_detail(
 	if (NULL == record)
 		return venture_web_error_response(error);
 
+	{
+		HtmxResponse *forward = venture_web_dedupe_forward(self, record, "/e");
+
+		if (NULL != forward)
+			return forward;
+	}
+
 	specs = venture_entity_get_field_specs(record);
 	g_ptr_array_sort_values(specs, venture_field_spec_compare_display_order);
 
@@ -9006,6 +9066,7 @@ venture_web_ui_detail(
 	quote_buttons(content, record);
 	venture_web_append_payables_actions(self, content, record);
 	venture_web_append_claims_actions(self, content, record);
+	venture_web_deal_buttons(self, content, record);
 
 	if (VENTURE_TYPE_FIXED_ASSET == entity_type)
 		venture_web_append_asset_actions(content, record);
@@ -9094,6 +9155,12 @@ venture_web_ui_detail(
 			"<button class=\"btn btn-primary\" type=\"submit\">"
 			"Comment</button></div></form></div></div>");
 	}
+
+	venture_customer_health_append_block(self->context, content, record);
+	/* What supporting a company costs this month, from the same function
+	 * the home page's Support card reads. */
+	venture_web_support_rollup_append_company_block(self, request, content,
+	                                                record);
 
 	/* What happened, last. The audit log has its own page; this is the
 	 * record's own story, with its conversation woven in. */
@@ -12279,6 +12346,7 @@ venture_web_ui_settings(
 	                       "layered, so edit the file or the environment and "
 	                       "restart.</p>"
 	                       "<p><a href=\"/settings/fields\">Custom fields and layouts</a></p>"
+	                       "<p><a href=\"/settings/backups\">Backups</a></p>"
 	                       "</div></div>");
 
 	/* Where things stand right now, before the settings themselves. */
@@ -27812,6 +27880,7 @@ venture_web_api_ticket_draft(
 #include "leads/venture-lead-web.inc"
 #include "close/venture-close-web.inc"
 #include "tax/venture-tax-web.inc"
+#include "tax/venture-sales-tax-web.inc"
 #include "capture/venture-capture-web.inc"
 #include "accounting/venture-accounting-web.inc"
 #include "bankfeed/venture-bankfeed-web.inc"
@@ -27820,6 +27889,14 @@ venture_web_api_ticket_draft(
 #include "equity/venture-equity-web.inc"
 #include "group/venture-group-web.inc"
 #include "report/venture-headline-web.inc"
+#include "orgaccess/venture-accountant-web.inc"
+#include "report/venture-customer-health-web.inc"
+#include "calendar/venture-calendar-web.inc"
+#include "money-calendar/venture-money-calendar-web.inc"
+#include "crm-import/venture-crm-import-web.inc"
+#include "dedupe/venture-dedupe-web.inc"
+#include "report/venture-support-rollup-web.inc"
+#include "docs/venture-docs-web.inc"
 #include "report/venture-report-pack-web.inc"
 
 VentureWebServer *
@@ -27980,6 +28057,7 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/contractor-tax/prepare", contractor_tax_api, self);
 	htmx_router_post(router, "/api/v1/contractor-tax/:id/:action", contractor_tax_api, self);
 	htmx_router_get(router, "/api/v1/contractor-tax/:id/export", contractor_tax_api, self);
+	htmx_router_get(router, "/api/v1/sales-tax/export", sales_tax_export_api, self);
 	htmx_router_get(router, "/capture", capture_ui, self);
 	htmx_router_post(router, "/api/v1/commerce/import", commerce_import, self);
 	htmx_router_post(router, "/api/v1/capture", capture_api, self);
@@ -28129,6 +28207,9 @@ venture_web_server_new(
 	htmx_router_post(router, "/f/:token", venture_web_lead_capture, self);
 	htmx_router_post(router, "/api/v1/leads/:id/:action", venture_web_lead_action, self);
 	htmx_router_post(router, "/leads/:id/:action", venture_web_lead_action, self);
+	htmx_router_get(router, "/customers/duplicates", venture_web_ui_duplicates, self);
+	htmx_router_post(router, "/customers/duplicates/scan", venture_web_ui_duplicates_action, self);
+	htmx_router_post(router, "/customers/duplicates/:id/:action", venture_web_ui_duplicates_action, self);
 	htmx_router_get(router, "/api/v1/factory", venture_web_api_factory, self);
 	htmx_router_post(router, "/api/v1/post/backfill", venture_web_autojournal_backfill, self);
 	htmx_router_get(router, "/api/v1/inbox", venture_web_api_inbox, self);
@@ -28294,6 +28375,14 @@ venture_web_server_new(
 	htmx_router_post(router, "/ui/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
 	htmx_router_post(router, "/api/v1/sequences/run", venture_web_sequence_run, self);
 	htmx_router_get(router, "/api/v1/headline", venture_web_api_headline, self);
+	htmx_router_post(router, "/api/v1/customers/health/sweep", venture_web_api_customer_health_sweep, self);
+	htmx_router_post(router, "/api/v1/calendar/sync", venture_web_calendar_sync, self);
+	htmx_router_get(router, "/book/:slug", venture_web_booking_page, self);
+	htmx_router_post(router, "/book/:slug", venture_web_booking_page, self);
+	htmx_router_post(router, "/api/v1/deals/:id/quote", venture_web_deal_quote, self);
+	htmx_router_post(router, "/deals/:id/quote", venture_web_deal_quote, self);
+	htmx_router_get(router, "/t/o/:token", venture_web_sequence_open, self);
+	htmx_router_get(router, "/t/c/:token/:n", venture_web_sequence_click, self);
 
 	htmx_router_get(router, "/api/v1/:type", venture_web_api_list, self);
 	htmx_router_post(router, "/api/v1/:type", venture_web_api_create, self);
@@ -28310,8 +28399,12 @@ venture_web_server_new(
 venture_document_web_register(router, self);
 	venture_portal_web_register(router, self);
 	venture_backup_web_register(router, self);
+	venture_accountant_web_register(router, self);
+	venture_crm_import_web_register(router, self);
 	htmx_router_post(router, "/api/v1/:type/:id/actions/:action", venture_web_api_action, self);
 	htmx_router_post(router, "/api/v1/journals/post", venture_web_api_action, self);
+	venture_money_calendar_web_register(router, self);
+	venture_docs_web_register(router, self);
 	htmx_router_post(router, "/api/v1/report_pack/:id/deliver", venture_web_report_pack_deliver, self);
 
 	return g_steal_pointer(&self);
