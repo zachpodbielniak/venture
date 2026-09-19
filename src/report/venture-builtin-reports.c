@@ -2746,4 +2746,5 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 	venture_money_calendar_register_reports(self);
 	venture_support_rollup_register_reports(self);
 
+	venture_cash_vs_booked_register_report(self);
 }

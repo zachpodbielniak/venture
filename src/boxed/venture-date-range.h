@@ -394,6 +394,20 @@ GPtrArray *
 venture_date_range_split_by_day(const VentureDateRange *self);
 
 /**
+ * venture_date_range_split_by_week:
+ * @self: a #VentureDateRange
+ *
+ * Divides the range into one sub-range per calendar week it touches. Weeks
+ * run Monday to Sunday; the first and last are clipped to the range, and
+ * each is labelled by its Monday ("Week of 6 Jul 2026") even when the range
+ * begins later in that week.
+ *
+ * Returns: (transfer full) (element-type VentureDateRange): the sub-ranges
+ */
+GPtrArray *
+venture_date_range_split_by_week(const VentureDateRange *self);
+
+/**
  * venture_date_range_equal:
  * @a: (nullable): the first range
  * @b: (nullable): the second range

@@ -1161,10 +1161,11 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "sort")) &&
 				 (0 != g_strcmp0(parts[0], "min_tickets")) &&
 				 (0 != g_strcmp0(parts[0], "company")) &&
-				 (0 != g_strcmp0(parts[0], "product"))))
+				 (0 != g_strcmp0(parts[0], "product")) &&
+				 (0 != g_strcmp0(parts[0], "bucket"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -3412,8 +3413,7 @@ main(
 		"  forge set-token ID           set a forge's access token (stdin)\n"
 		"  forge set-secret ID          set or generate its webhook secret\n"
 		"  forge verify ID              record which account the token is\n"
-		"  report [NAME] [PERIOD]       run; options: as_of, organization_id, customer_id, currency, venture_id, group_by, vendor_id, pipeline_id, owner, days, by, weeks\n"
-		"  report [NAME] [PERIOD]       run; options: as_of, organization_id, customer_id, currency, venture_id, group_by, vendor_id, pipeline_id, owner, band, sort\n"
+		"  report [NAME] [PERIOD]       run; options: as_of, organization_id, customer_id, currency, venture_id, group_by, vendor_id, pipeline_id, owner, days, by, weeks, band, sort, bucket\n"
 		"  kb search QUERY              search the knowledge bases by\n"
 		"                               meaning; --kb SLUG, --limit N\n"
 		"  kb sync KB_ID                bring a base into line with its\n"

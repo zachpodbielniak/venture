@@ -289,6 +289,7 @@
 #include "orgaccess/venture-totp.h"
 #include "orgaccess/venture-qr-svg.h"
 #include "orgaccess/venture-mfa-service.h"
+#include "report/venture-cash-vs-booked.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

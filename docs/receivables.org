@@ -211,6 +211,20 @@ reversing the opening journal, optionally suffixing its number, and accepting
 allocations from opening credit notes whose postings that rollback already
 reversed. See [[file:cutover.org][accounting cutover]].
 
+* Booked against received
+
+=cash_vs_booked= reads the same retained history as the aging report and
+the statement -- issue and void events, credit notes and write-offs,
+payments and refunds, soft-deleted rows included -- and lays revenue
+booked beside cash received per month or week and per currency, with the
+gap and its running total. It is the answer to "we invoiced 12k in July,
+how much of it has actually arrived" without opening each customer's
+statement. Because every receipt the settlement service records is a
+=payment=, a Stripe Checkout, a matched bank credit and a manual receipt
+are one figure, counted once. Opening invoices and credits from a cutover
+are excluded on both sides. Options, buckets and the home-card line are
+described in [[file:reporting.org][reporting]].
+
 * Whole-operation approval
 
 Invoice issue/void, receipt/allocation/refund, full-invoice settlement, write-off and tax-correction commands request second-actor consent for the entire operation before writing business records. A configured post or pay rule applies to the command; generated issue events, credits, sales and journals share its approval. The command arguments, current financial records and service account overrides are bound to that consent. Retry the same command as a different actor; changed inputs or financial state require a new proposal.

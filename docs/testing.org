@@ -575,3 +575,21 @@ after Overview, a gathered page is drawn once under its question, the emptied
 headings are gone, and a module switched off loses its row while the question
 keeps its heading. The anonymous-route sweep walks the unchanged link table,
 so every URL still redirects when nobody is signed in.
+** =test-cash-vs-booked=
+
+The =cash_vs_booked= report over two months of invoices, a void, a credit
+note, a second receipt and a refund: booked and received land in the bucket
+of their own date, the gap accumulates from the period start, and a
+narrower period starts the running total afresh. Week buckets on a period
+that opens mid-week are clipped and labelled by their Monday, and the
+splitter behind them is checked on its own. Two currencies stay two rows
+and the tiles name the currency they left out; =customer_id= keeps one
+customer, =venture_id= reaches cash through the venture's invoices and
+leaves an unapplied deposit out; a cutover opening invoice is neither
+booked nor received; =as_of= stops the evidence. An unknown option and a
+=bucket= other than month or week are refused. The Profit and loss home
+card's Booked vs received line equals the report's own metric and reads
+=n/a= with receivables off. Over the API, the CSV export and =venturectl
+report=, =bucket=week= reaches the report, the JSON agrees between the two,
+the report page keeps the option in its links, and a bad bucket comes back
+422 from both.

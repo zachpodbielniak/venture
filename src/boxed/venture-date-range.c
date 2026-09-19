@@ -1039,3 +1039,58 @@ venture_date_range_to_json(VentureDateRange *self)
 
 	return json_builder_get_root(builder);
 }
+
+GPtrArray *
+venture_date_range_split_by_week(const VentureDateRange *self)
+{
+	g_autoptr(GPtrArray) parts = NULL;
+	g_autoptr(GDateTime) cursor = NULL;
+	g_autoptr(GDateTime) midnight = NULL;
+
+	g_return_val_if_fail(NULL != self, NULL);
+
+	parts = g_ptr_array_new_with_free_func(
+		(GDestroyNotify)venture_date_range_free);
+
+	if ((NULL == self->start) || (NULL == self->end))
+		return g_steal_pointer(&parts);
+
+	/* Start at the Monday of the week containing the range start, then
+	 * clip each bucket to the range so the first and last are partial
+	 * weeks when the range does not begin or end on a Monday. */
+	midnight = g_date_time_new(g_date_time_get_timezone(self->start),
+	                           g_date_time_get_year(self->start),
+	                           g_date_time_get_month(self->start),
+	                           g_date_time_get_day_of_month(self->start),
+	                           0, 0, 0.0);
+	cursor = g_date_time_add_days(midnight,
+		1 - g_date_time_get_day_of_week(self->start));
+
+	while ((NULL != cursor) && (g_date_time_compare(cursor, self->end) < 0))
+	{
+		g_autoptr(GDateTime) next = NULL;
+		g_autoptr(GDateTime) bucket_start = NULL;
+		g_autoptr(GDateTime) bucket_end = NULL;
+		g_autofree gchar *label = NULL;
+
+		next = g_date_time_add_weeks(cursor, 1);
+
+		bucket_start = (g_date_time_compare(cursor, self->start) < 0)
+			? g_date_time_ref(self->start)
+			: g_date_time_ref(cursor);
+
+		bucket_end = (g_date_time_compare(next, self->end) > 0)
+			? g_date_time_ref(self->end)
+			: g_date_time_ref(next);
+
+		label = g_date_time_format(cursor, "Week of %-d %b %Y");
+
+		g_ptr_array_add(parts,
+			venture_date_range_new_labelled(bucket_start, bucket_end, label));
+
+		g_clear_pointer(&cursor, g_date_time_unref);
+		cursor = g_steal_pointer(&next);
+	}
+
+	return g_steal_pointer(&parts);
+}
