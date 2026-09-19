@@ -1232,6 +1232,29 @@ recurring_monthly(
 	return venture_money_copy(amount);
 }
 
+/*
+ * Whether a schedule has run its course by @now. `end-at` is the *inclusive*
+ * last occurrence date, stored as midnight UTC on that day, and
+ * run_schedule() compares it by day -- a schedule ending today still fires
+ * today. Comparing the instant retired every schedule on its own last day,
+ * which took a cost out of the run-rate while it was still being paid, so
+ * the comparison is against the end of that day.
+ */
+static gboolean
+recurring_has_ended(
+	GDateTime	*end_at,
+	GDateTime	*now
+){
+	g_autoptr(GDateTime) after_end = NULL;
+
+	if (NULL == end_at)
+		return FALSE;
+
+	after_end = g_date_time_add_days(end_at, 1);
+
+	return (NULL != after_end) && (g_date_time_compare(after_end, now) <= 0);
+}
+
 static gint
 recurring_row_compare(
 	gconstpointer	a,
@@ -1332,7 +1355,7 @@ venture_report_recurring_costs(
 
 		/* Cancelled (deleted), paused, or run its course. */
 		if (venture_entity_is_deleted(schedule) || paused ||
-		    ((NULL != end_at) && (g_date_time_compare(end_at, now) < 0)))
+		    recurring_has_ended(end_at, now))
 		{
 			excluded++;
 			continue;
@@ -1598,12 +1621,21 @@ venture_report_cash_outlook(
 	}
 	else
 	{
+		g_autoptr(GTimeZone) utc = NULL;
 		g_autoptr(GDateTime) now = NULL;
 		g_autoptr(GDateTime) local = NULL;
 
+		/* Two zones with two jobs, exactly as venture_date_range_parse()
+		 * splits them: the configured zone decides *which* day it is, and
+		 * the boundary itself is midnight UTC, because that is how a
+		 * calendar date -- a due date among them -- is stored. Built in
+		 * the local zone the start sat hours after the due dates that
+		 * share its day, so west of UTC every document due on the start
+		 * day fell into Overdue. */
 		now = venture_time_now();
 		local = g_date_time_to_timezone(now, venture_context_get_timezone(context));
-		start = g_date_time_new(venture_context_get_timezone(context),
+		utc = g_time_zone_new_utc();
+		start = g_date_time_new(utc,
 		                        g_date_time_get_year(local),
 		                        g_date_time_get_month(local),
 		                        g_date_time_get_day_of_month(local), 0, 0, 0);

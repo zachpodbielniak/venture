@@ -164,7 +164,9 @@ row_record(VentureEntity *row)
  * Resolves a row's party. Order: an earlier cutover row for the same source
  * id, a company whose external ID is the party's, a company with the same
  * name ignoring case and spacing. A row with only a name reuses one company
- * per name. With @create FALSE nothing is written: 0 means "will be created".
+ * per name. With @import NULL nothing is written: 0 means "will be created".
+ * A party nothing matched and the payload cannot name is a located error,
+ * never an invented company (issue #84).
  * Returns: the company id, 0, or -1 with a located problem on @row.
  */
 static gint64
@@ -236,19 +238,21 @@ resolve_party(Plan *plan, PartyIndex *index, Row *row, Import *import, GError **
 		if (existing != NULL && kind != VENTURE_COMPANY_KIND_SUPPLIER)
 			row_warning(plan, row, "company %" G_GINT64_FORMAT " matched for this vendor will be marked a supplier", id);
 	}
-	if (import == NULL)
+	/* Nothing matched and the payload cannot name the party: refuse rather
+	 * than invent a company named after its source id (issue #84). */
+	if (id == 0 && name == NULL)
 	{
-		if (id == 0 && name == NULL)
-			row_warning(plan, row, "%s %s is not listed under %ss; the company will be named after its source id",
-				type, row->party_source, type);
-		return id;
+		row_error(plan, row, "%s %s must name an entry with a name in %ss[] (rule: %s)",
+			row->vendor ? "vendor_source_id" : "customer_source_id", row->party_source, type, party_rule(row));
+		return -1;
 	}
+	if (import == NULL)
+		return id;
 	if (id == 0)
 	{
 		gint64 *slot;
 		company = venture_company_new();
-		g_object_set(company, "name", name != NULL ? name : row->party_source, "external-id", external,
-			"active", TRUE, NULL);
+		g_object_set(company, "name", name, "external-id", external, "active", TRUE, NULL);
 		if (row->vendor)
 			g_object_set(company, "kind", VENTURE_COMPANY_KIND_SUPPLIER, NULL);
 		if (details != NULL)

@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-17]
+#+updated: [2026-09-18]
 #+version: 0.6.0
 
 * Reporting
@@ -562,8 +562,11 @@ The metrics are the monthly run-rate, the annual run-rate (twelve times
 it), the number of schedules counted and the number excluded.
 
 *Excluded* are schedules that are cancelled (deleted), paused, or whose
-=end_at= has passed. Invoice schedules are revenue and journal schedules
-are bookkeeping; neither is a cost and neither is counted or excluded.
+=end_at= day has gone by. =end_at= is the /inclusive/ last occurrence
+date, the way the recurring service reads it, so a schedule ending today
+is still a cost today. Invoice schedules are revenue and journal
+schedules are bookkeeping; neither is a cost and neither is counted or
+excluded.
 
 *Refusals.* A schedule whose template carries no price --- no =amount=,
 no lines, a line without a unit price, lines in two currencies --- is
@@ -575,7 +578,12 @@ note saying so. With =recurring= off the run-rate is empty and says so.
 
 The next =weeks= weeks (default 8, at most 104) of expected cash,
 starting where the period does: today for =today= or =this_week=, the
-first of the month for =2026-04=; all-time starts now.
+first of the month for =2026-04=. All-time has no start, so the outlook
+builds its own the way every period boundary is built --- the configured
+calendar decides /which/ day it is, and the boundary itself is midnight
+UTC, because that is how a due date is stored. Built at local midnight it
+would sit hours after the due dates that share its day, and west of UTC
+everything due on the start day would read as overdue.
 
 *Cash out* is what is still owed on every approved or part-paid vendor
 bill, by its due date, valued by the payables service (issued less paid

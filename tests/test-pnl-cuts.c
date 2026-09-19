@@ -228,20 +228,29 @@ schedule(Fixture *f, const gchar *name, const gchar *kind, const gchar *frequenc
 	return record;
 }
 
+/* Against an explicit context, so a test can ask the same question of an
+ * install whose calendar is not UTC. */
 static VentureReportResult *
-run_report(Fixture *f, const gchar *name, const gchar *period_text, JsonObject *options)
+run_report_in(VentureContext *context, const gchar *name, const gchar *period_text,
+	JsonObject *options)
 {
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureDateRange) period = NULL;
-	VentureReport *report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), name);
+	VentureReport *report = venture_report_registry_lookup(venture_context_get_report_registry(context), name);
 	VentureReportResult *result;
 	g_assert_nonnull(report);
-	period = venture_context_parse_period(f->context, period_text, &error);
+	period = venture_context_parse_period(context, period_text, &error);
 	g_assert_no_error(error);
-	result = venture_report_generate(report, f->context, period, options, &error);
+	result = venture_report_generate(report, context, period, options, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(result);
 	return result;
+}
+
+static VentureReportResult *
+run_report(Fixture *f, const gchar *name, const gchar *period_text, JsonObject *options)
+{
+	return run_report_in(f->context, name, period_text, options);
 }
 
 static VentureMetric *
@@ -665,6 +674,35 @@ test_recurring_costs_edges(Fixture *f, gconstpointer unused)
 	g_assert_nonnull(strstr(note(result), "priced"));
 }
 
+/*
+ * `end_at` is the inclusive last occurrence date, and the recurring service
+ * compares it by day: a schedule ending today still fires today. Comparing
+ * the stored instant -- midnight UTC on that day -- against now retired it
+ * hours into its own last day, taking a cost out of the run-rate while it
+ * was still being paid.
+ */
+static void
+test_recurring_costs_ends_today(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(VentureEntity) ending = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autofree gchar *today = g_date_time_format(now, "%Y-%m-%d");
+	(void)unused;
+	ending = record_new(f, "recurring_schedule");
+	g_object_set(ending, "name", "Last month", "timezone", "UTC",
+		"template", "{\"description\":\"Tool\",\"amount\":\"12 USD\",\"vendor\":\"Tools\"}", NULL);
+	field(ending, "kind", "expense");
+	field(ending, "frequency", "monthly");
+	field(ending, "start-at", "2026-01-01");
+	field(ending, "end-at", today);
+	save(f, ending);
+	result = run_report(f, "recurring_costs", "this_month", NULL);
+	g_assert_cmpint(money_metric(result, "monthly"), ==, 1200);
+	g_assert_cmpfloat(venture_metric_get_number(metric(result, "excluded")), ==, 0.0);
+	g_assert_true(has_row(result, "schedule", "Last month"));
+}
+
 /* --- 4. The weekly cash outlook -------------------------------------------- */
 
 static void
@@ -816,6 +854,40 @@ test_cash_outlook_without_bank(Fixture *f, gconstpointer unused)
 	g_assert_nonnull(strstr(note(result), "statement"));
 }
 
+/*
+ * With no period start to take, the outlook builds its own -- which day it
+ * is from the configured calendar, but the boundary at midnight UTC, the
+ * way every period boundary is built. Built at local midnight instead, the
+ * start sat five hours after the due dates that share its day, so in New
+ * York every bill due on the start day was reported as already overdue.
+ */
+static void
+test_cash_outlook_start_is_utc_midnight(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureConfig) west = venture_config_new();
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureReportResult) probe = NULL;
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autofree gchar *start_day = NULL;
+	gint64 host = vendor(f, "Host");
+	guint row;
+	(void)unused;
+	g_object_set(west, "locale-timezone", "America/New_York", NULL);
+	context = venture_context_new(west, f->db);
+
+	/* Ask the report where its first week begins rather than computing
+	 * the local date again: one clock, one answer. */
+	probe = run_report_in(context, "cash_outlook", "all", NULL);
+	start_day = cell(probe, row_named(probe, "bucket", "Week 1"), "from");
+	bill(f, host, "TZ1", "100 USD", "hosting", FALSE, "2026-01-05", start_day, TRUE);
+
+	result = run_report_in(context, "cash_outlook", "all", NULL);
+	row = row_named(result, "bucket", "Week 1");
+	g_assert_cmpint(money_cell(result, row, "cash_out"), ==, 10000);
+	row = row_named(result, "bucket", "Overdue");
+	g_assert_cmpint(money_cell(result, row, "cash_out"), ==, 0);
+}
+
 /* A horizon of zero or a negative number of weeks is refused. */
 static void
 test_cash_outlook_refusals(Fixture *f, gconstpointer unused)
@@ -951,7 +1023,9 @@ main(int argc, char **argv)
 	g_test_add("/pnl_cuts/spend_by_vendor/edges", Fixture, NULL, setup, test_spend_edges, teardown);
 	g_test_add("/pnl_cuts/recurring_costs", Fixture, NULL, setup, test_recurring_costs, teardown);
 	g_test_add("/pnl_cuts/recurring_costs/edges", Fixture, NULL, setup, test_recurring_costs_edges, teardown);
+	g_test_add("/pnl_cuts/recurring_costs/ends_today", Fixture, NULL, setup, test_recurring_costs_ends_today, teardown);
 	g_test_add("/pnl_cuts/cash_outlook", Fixture, NULL, setup, test_cash_outlook, teardown);
+	g_test_add("/pnl_cuts/cash_outlook/utc_start", Fixture, NULL, setup, test_cash_outlook_start_is_utc_midnight, teardown);
 	g_test_add("/pnl_cuts/cash_outlook/without_bank", Fixture, NULL, setup, test_cash_outlook_without_bank, teardown);
 	g_test_add("/pnl_cuts/cash_outlook/refusals", Fixture, NULL, setup, test_cash_outlook_refusals, teardown);
 	g_test_add("/pnl_cuts/pnl_card/links", Fixture, NULL, setup, test_pnl_card_links, teardown);
