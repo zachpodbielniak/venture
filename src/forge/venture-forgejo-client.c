@@ -1112,9 +1112,88 @@ venture_forgejo_delivery_id(SoupMessageHeaders *headers)
 }
 
 /*
- * A workflow_run delivery, as Forgejo Actions and Gitea Actions send it:
- * the run under "workflow_run", its workflow under "workflow", and the
- * repository and sender beside them.
+ * Forgejo's own shape: action_run_success and action_run_failure.
+ *
+ * Forgejo does not send workflow_run -- that is Gitea's, and GitHub's. It
+ * sends one delivery when a run is done, with the run under "run", its
+ * repository inside it, and the outcome in the run's status. Read into the
+ * same event as a workflow_run's "completed", so one handler records a
+ * build from either forge.
+ *
+ * The field names are Forgejo's modules/structs ActionRun: id,
+ * index_in_repo, title, workflow_id (the workflow's file name, which is
+ * what Forgejo calls a workflow), prettyref, commit_sha, status, started,
+ * stopped, html_url, trigger_user.
+ */
+static gboolean
+venture_forgejo_parse_action_run(
+	JsonObject			 *root,
+	JsonObject			 *run,
+	SoupMessageHeaders		 *headers,
+	VentureForgeWorkflowEvent	 *out_event,
+	GError				**error
+){
+	JsonObject *repository;
+	JsonObject *trigger;
+
+	repository = json_object_has_member(run, "repository")
+		? json_object_get_object_member(run, "repository") : NULL;
+	trigger = json_object_has_member(run, "trigger_user")
+		? json_object_get_object_member(run, "trigger_user") : NULL;
+
+	if (NULL == repository)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "The action run names no repository");
+		return FALSE;
+	}
+
+	/* Only a done run is delivered, so it is always "completed"; the
+	 * run's status -- success, failure, cancelled, skipped -- is the
+	 * conclusion, in the same words workflow_run uses. */
+	out_event->action = g_strdup("completed");
+	out_event->status = g_strdup("completed");
+	out_event->conclusion = g_strdup(venture_json_object_get_string(
+		run, "status", venture_json_object_get_string(root, "action", "")));
+	out_event->repo_full_name = g_strdup(venture_json_object_get_string(
+		repository, "full_name", ""));
+	out_event->run_id = venture_json_object_get_int(run, "id", 0);
+	out_event->run_number = venture_json_object_get_int(run, "index_in_repo",
+	                                                    0);
+	out_event->title = g_strdup(venture_json_object_get_string(run, "title",
+	                                                           ""));
+	out_event->workflow_name = g_strdup(venture_json_object_get_string(
+		run, "workflow_id", ""));
+	out_event->head_branch = g_strdup(venture_json_object_get_string(
+		run, "prettyref", ""));
+	out_event->head_sha = g_strdup(venture_json_object_get_string(
+		run, "commit_sha", ""));
+	out_event->url = g_strdup(venture_json_object_get_string(run, "html_url",
+	                                                         ""));
+	out_event->started_at = g_strdup(venture_json_object_get_string(
+		run, "started", NULL));
+	out_event->finished_at = g_strdup(venture_json_object_get_string(
+		run, "stopped", NULL));
+	out_event->sender = g_strdup((NULL != trigger)
+		? venture_json_object_get_string(trigger, "login", "") : "");
+	out_event->delivery_id = venture_forgejo_delivery_id(headers);
+
+	if (0 == out_event->run_id)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "The action run has no id");
+		venture_forge_workflow_event_clear(out_event);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ * A workflow_run delivery, as Gitea Actions sends it: the run under
+ * "workflow_run", its workflow under "workflow", and the repository and
+ * sender beside them. Forgejo's action_run_* deliveries are read by
+ * venture_forgejo_parse_action_run().
  */
 static gboolean
 venture_forgejo_parse_workflow_event(
@@ -1145,6 +1224,14 @@ venture_forgejo_parse_workflow_event(
 	}
 
 	root = json_node_get_object(payload);
+
+	/* Forgejo's action_run_* carries "run" and no "workflow_run". */
+	if (!json_object_has_member(root, "workflow_run") &&
+	    json_object_has_member(root, "run") &&
+	    JSON_NODE_HOLDS_OBJECT(json_object_get_member(root, "run")))
+		return venture_forgejo_parse_action_run(root,
+			json_object_get_object_member(root, "run"), headers, out_event,
+			error);
 
 	run = json_object_has_member(root, "workflow_run")
 		? json_object_get_object_member(root, "workflow_run") : NULL;
@@ -1181,10 +1268,28 @@ venture_forgejo_parse_workflow_event(
 		run, "conclusion", ""));
 	out_event->url = g_strdup(venture_json_object_get_string(run, "html_url",
 	                                                         ""));
+	/* The two shapes in the wild: Gitea and Forgejo send started_at and
+	 * completed_at, the GitHub shape sends run_started_at and only an
+	 * updated_at. Whichever is there is read. */
 	out_event->started_at = g_strdup(venture_json_object_get_string(
 		run, "started_at", NULL));
+
+	if (venture_string_is_empty(out_event->started_at))
+	{
+		g_free(out_event->started_at);
+		out_event->started_at = g_strdup(venture_json_object_get_string(
+			run, "run_started_at", NULL));
+	}
+
 	out_event->finished_at = g_strdup(venture_json_object_get_string(
-		run, "updated_at", NULL));
+		run, "completed_at", NULL));
+
+	if (venture_string_is_empty(out_event->finished_at))
+	{
+		g_free(out_event->finished_at);
+		out_event->finished_at = g_strdup(venture_json_object_get_string(
+			run, "updated_at", NULL));
+	}
 
 	/* The workflow's own name where the payload carries the workflow,
 	 * else the run's; the two agree on a normal delivery. */
