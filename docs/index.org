@@ -66,6 +66,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:close.org][Accountant close]] — workspace, subledger tie-outs, workpapers and signoff
 - [[file:tax-filing.org][Jurisdiction tax filing]] — adapter-prepared sales-tax return packs
 - [[file:contractor-tax.org][Contractor 1099-NEC]] — protected TINs and calendar-year packs from paid bills
+- [[file:sales-tax.org][Sales tax by jurisdiction]] — address-selected rates frozen on invoice lines and the return per jurisdiction
 - [[file:capture.org][Document capture]] — receipt and supplier-invoice inbox
 - [[file:claims.org][Employee reimbursements]] — mileage, receipts, submit, approve and pay
 - [[file:payroll.org][Payroll import]] — imported pay runs, liability disbursement and reconciliation

@@ -2739,6 +2739,7 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 	venture_payroll_register_reports(self);
 	venture_goods_register_reports(self);
 	venture_headline_register_reports(self);
+	venture_sales_tax_register_reports(self);
 	venture_pnl_cuts_register_reports(self);
 
 }

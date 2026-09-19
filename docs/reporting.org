@@ -24,6 +24,7 @@ about it.
 | =inventory=  | quantity on hand and carrying value; reorder flags           |
 | =tax=        | expenses by category with deductible amounts                 |
 | =tax_liability= | frozen invoice and bill tax grouped by tax code            |
+| =sales_tax_return= | gross, exempt, taxable sales and net tax due per jurisdiction |
 | =campaigns=  | spend, attributed revenue, return                            |
 | =pipeline=   | open deals by stage, probability-weighted                    |
 | =monthly=    | revenue, expenses and profit month by month                  |
