@@ -85,6 +85,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =sales_tax= | receivables | tax_jurisdiction, tax_rule; =sales_tax_return=; =sales-tax export= | |
 | =pnl_cuts= | receivables, payables | =revenue_by_customer=, =spend_by_vendor=, =recurring_costs=, =cash_outlook=; the links on the P&L card | leads, recurring, banking, headline |
 | =customer_health= | headline, activities | =customer_health=; =/api/v1/customers/health/sweep=; the churn card's at-risk line; health on a company page | tickets, dunning, mail_sync |
+| =calendar= | activities, crm, leads | calendar_account, calendar_event, booking_page; =calendar sync= sweep, =/book/<slug>= | |
 
 Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.
 

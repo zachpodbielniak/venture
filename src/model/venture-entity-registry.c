@@ -870,6 +870,9 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_tax_rule_get_type,
 		venture_backup_schedule_get_type,
 		venture_backup_run_get_type,
+		venture_calendar_account_get_type,
+		venture_calendar_event_get_type,
+		venture_booking_page_get_type,
 	};
 	gsize i;
 

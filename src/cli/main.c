@@ -2112,6 +2112,7 @@ venture_cli_command_factory(
  * venturectl release publish ID [--prerelease]
  */
 #include "mail/venture-mail-cli.inc"
+#include "calendar/venture-calendar-cli.inc"
 #include "banking/venture-bank-cli.inc"
 #include "bankfeed/venture-bankfeed-cli.inc"
 #include "commerce/venture-commerce-cli.inc"
@@ -3426,6 +3427,7 @@ main(
 		"  journal post ID              post a draft, or propose for approval\n"
 		"  mail list|send|test|deliver|retry  transactional mail\n"
 		"  mail sync|contact|dismiss          inbound mail sync and unmatched senders\n"
+		"  calendar sync [organization_id=N]  two-way CalDAV sweep\n"
 		"  quote send|accept|decline|revise ID [by=NAME] [reason=TEXT]\n"
 		"  compose invoice|quote JSON   lines, tax and optional send\n"
 		"  bank ACTION ID [JSON|@FILE] banking action; import map inbox bulk transfer\n"
@@ -3677,6 +3679,8 @@ main(
 		result = venture_cli_command_journal(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "mail"))
 		result = venture_cli_command_mail(&cli, args, mail_html, mail_limit, &error);
+	else if (0 == g_strcmp0(args[0], "calendar"))
+		result = venture_cli_command_calendar(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "quote"))
 		result = venture_cli_command_quote(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "compose"))

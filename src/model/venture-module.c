@@ -776,6 +776,8 @@ static const gchar *const pnl_cuts_reports[] = {
 static const gchar *const customer_health_requires[] = { "headline", "activities", NULL };
 static const gchar *const customer_health_suggests[] = { "tickets", "dunning", "mail_sync", NULL };
 static const gchar *const customer_health_reports[] = { "customer_health", NULL };
+static const gchar *const calendar_requires[] = { "activities", "crm", "leads", NULL };
+static GType (*const calendar_types[]) (void) = { venture_calendar_account_get_type, venture_calendar_event_get_type, venture_booking_page_get_type, NULL };
 
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
@@ -1099,6 +1101,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"Per-customer health bands from touch, receivables and support, the "
 		"at-risk sweep and the churn card's at-risk count.",
 		customer_health_requires, customer_health_suggests, NULL, customer_health_reports, NULL, FALSE
+	},
+	{
+		"calendar", "Calendar sync",
+		"Two-way CalDAV sync of calls and meetings, and public scheduling links.",
+		calendar_requires, NULL, calendar_types, NULL, NULL, FALSE
 	}
 };
 

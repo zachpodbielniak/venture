@@ -114,6 +114,7 @@
 #include "dunning/venture-dunning-records.h"
 #include "leads/venture-lead-routing-records.h"
 #include "tax/venture-sales-tax-records.h"
+#include "calendar/venture-calendar-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -266,6 +267,10 @@
 #include "tax/venture-sales-tax-service.h"
 #include "report/venture-year-end-pack.h"
 #include "report/venture-customer-health.h"
+#include "calendar/venture-caldav-client.h"
+#include "calendar/venture-icalendar.h"
+#include "calendar/venture-calendar-sync-service.h"
+#include "calendar/venture-booking-service.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 
