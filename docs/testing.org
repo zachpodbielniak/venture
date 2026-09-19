@@ -326,3 +326,22 @@ posting veto after the first documents leaves nothing; the row limit, CSV
 templates and CSV payloads, opening stock and its rollback, the module switch,
 and the page, preview, action,
 template and CSV routes (including the selected legal entity) are covered.
+
+** =test-sales-tax=
+
+Jurisdiction rate windows and address rules from field tables; overlapping
+windows for one code refused with the code named, adjacent windows allowed,
+bad rate, kind or window refused; issuance picks the jurisdiction from the
+customer's address codes and freezes jurisdiction, scaled rate and amount
+on the line while an exempt customer or product freezes the jurisdiction
+at zero; an explicit tax code overrides the rule; exact code matching and
+most-specific-rule precedence; a rule switched off levies nothing while
+the line falls back to its own percent; a rate change after issue leaves the line,
+the event and the return untouched while a later invoice takes the new
+window; =sales_tax_return= per jurisdiction ties to =tax_liability= to the
+cent across issued, exempt, coded, percent-only and voided invoices and
+credit notes; a migrated invoice stamped =opening-at= stays off the return,
+as it does off =tax_liability=, so a cutover's tax is not remitted twice;
+the 1099-shaped CSV export; the module off; and the export
+route and CLI verb over HTTP. Red before the module: the test does not
+compile against the base tree.

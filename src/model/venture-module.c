@@ -762,6 +762,9 @@ static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };
 static const gchar *const dunning_suggests[] = { "activities", "recurring", NULL };
 static GType (*const dunning_types[]) (void) = { venture_dunning_policy_get_type, venture_dunning_event_get_type, NULL };
 static const gchar *const dunning_reports[] = { "collections", "dunning_worklist", NULL };
+static GType (*const sales_tax_types[]) (void) = { venture_tax_jurisdiction_get_type, venture_tax_rule_get_type, NULL };
+static const gchar *const sales_tax_requires[] = { "receivables", NULL };
+static const gchar *const sales_tax_reports[] = { "sales_tax_return", NULL };
 
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
@@ -1068,6 +1071,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"headline", "Headline metrics",
 		"CAC, churn, LTV, LTV:CAC and cohort reports, and the headline home page.",
 		headline_requires, headline_suggests, headline_types, headline_reports, NULL, FALSE
+	},
+	{
+		"sales_tax", "Sales tax",
+		"Jurisdiction rates picked by customer address, frozen on invoice lines, and the sales tax return.",
+		sales_tax_requires, NULL, sales_tax_types, sales_tax_reports, NULL, FALSE
 	}
 };
 

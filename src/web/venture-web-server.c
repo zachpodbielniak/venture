@@ -27812,6 +27812,7 @@ venture_web_api_ticket_draft(
 #include "leads/venture-lead-web.inc"
 #include "close/venture-close-web.inc"
 #include "tax/venture-tax-web.inc"
+#include "tax/venture-sales-tax-web.inc"
 #include "capture/venture-capture-web.inc"
 #include "accounting/venture-accounting-web.inc"
 #include "bankfeed/venture-bankfeed-web.inc"
@@ -27979,6 +27980,7 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/contractor-tax/prepare", contractor_tax_api, self);
 	htmx_router_post(router, "/api/v1/contractor-tax/:id/:action", contractor_tax_api, self);
 	htmx_router_get(router, "/api/v1/contractor-tax/:id/export", contractor_tax_api, self);
+	htmx_router_get(router, "/api/v1/sales-tax/export", sales_tax_export_api, self);
 	htmx_router_get(router, "/capture", capture_ui, self);
 	htmx_router_post(router, "/api/v1/commerce/import", commerce_import, self);
 	htmx_router_post(router, "/api/v1/capture", capture_api, self);

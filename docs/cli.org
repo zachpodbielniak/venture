@@ -76,6 +76,7 @@ venturectl release publish ID            # cut it on the forge; --prerelease
 venturectl recurring run [--as-of DATE] [--dry-run] [organization_id=N]
 venturectl collections run [--as-of DATE] [organization_id=N]
 venturectl dunning sweep [as_of=DATE] [organization_id=N] [limit=N]  # templated overdue reminders, once per step
+venturectl sales-tax export period=2026-Q1 [jurisdiction=CODE]   # sales tax return CSV per jurisdiction
 venturectl batch invoice|expense [--dry-run]
 venturectl inbox [--all]                 # what you have been told
 venturectl inbox read ID|all             # mark it read
@@ -375,6 +376,13 @@ See [[file:cutover.org][accounting cutover]].
 jurisdiction return pack. =contractor-tax prepare|review|approve|export=
 builds a 1099-NEC pack from paid bills. See [[file:tax-filing.org][tax
 filing]] and [[file:contractor-tax.org][contractor 1099]].
+
+=venturectl sales-tax export period=PERIOD [jurisdiction=CODE]
+[organization_id=N] [as_of=DATE]= writes the =sales_tax_return= report as
+the CSV a filer keeps: one quoted row per jurisdiction with gross, exempt
+and taxable sales, tax collected, tax credited and net due. =report
+sales_tax_return PERIOD= is the same figures through the generic report
+surface. See [[file:sales-tax.org][sales tax by jurisdiction]].
 * Banking actions
 
 =venturectl bank ACTION ID [JSON|@FILE]= calls the banking service over REST.
