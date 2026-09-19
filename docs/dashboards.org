@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-11]
-#+updated: [2026-09-17]
+#+updated: [2026-09-18]
 #+version: 0.6.0
 
 * What this is
@@ -220,9 +220,9 @@ the report it was read from.
 | P&L           | profit                  | revenue, expenses, cash in the bank         | =pnl=                      |
 | Recurring revenue | MRR (billing in use only) | ARR, quick ratio, net revenue retention | =mrr=                  |
 | CAC           | cost per new customer   | acquisition spend, new customers            | =cac=                      |
-| Churn         | logo churn (billing in use), else monthly activity churn | revenue churn and activity churn, or recurring churn and customers gone quiet | =churn= or =customer_churn= |
+| Churn         | logo churn (billing in use), else monthly activity churn | revenue churn and activity churn, or recurring churn, customers gone quiet and at risk | =churn= or =customer_churn= |
 | LTV:CAC       | the ratio               | projected LTV, CAC, ARPA, CAC payback       | =ltv_cac=                  |
-| Support       | tickets open now        | service levels missed, raised in period     | =support=                  |
+| Support       | support cost            | tickets open now, service levels missed, raised in period | =support_rollup=  |
 
 Every number is defined exactly in [[file:reporting.org][Reporting]] and
 [[file:billing.org][SaaS billing]]; each card carries a one-paragraph
@@ -254,9 +254,21 @@ version of its definition. In brief:
 - *LTV:CAC* is projected LTV over CAC; *ARPA* is billing MRR per paying
   company, else cash per customer-month; *CAC payback* is CAC over ARPA times
   gross margin, in months.
-- *Support* counts tickets open now and those past a service level. With the
-  tickets module off every figure is =n/a=: nobody counted, which is not the
-  same as zero.
+- *Support* is what supporting customers cost in the period: the
+  =support_rollup= report's total, agent minutes on the tickets raised in
+  the period at the support hourly rate plus the per-ticket rate for
+  tickets with no minutes, and =n/a= until a rate is set. Beneath it,
+  tickets open now, those past a service level, and tickets raised in the
+  period. With the tickets module off every figure is =n/a=: nobody
+  counted, which is not the same as zero.
+
+*The P&L card's cuts.* Beside its *Report* button the P&L card links to
+the four cuts the =pnl_cuts= module adds --- revenue by customer, spend
+by vendor, recurring costs and the cash outlook --- each with the card's
+own period and scope, carried in the card's JSON as =links=, an array of
+=label=/=href= pairs. With =pnl_cuts= off there are no links, since the
+reports they would open are not there. They are described in
+[[file:reporting.org][Reporting]].
 
 *The period.* =?period== takes anything a report accepts, =this_month= by
 default; the page offers the same period buttons as a report page. A period
@@ -284,10 +296,10 @@ churn, open tickets). A number that is =n/a= on either side has no arrow.
 - Month, quarter and year to date end tomorrow; they are compared with the
   smallest calendar unit that starts where they start and contains them.
 
-The support card's arrow compares the queue now with the queue when the
-period began --- tickets raised before it and not resolved before it ---
-because "what is waiting" is a live question and the support report's
-"raised in March" is a different one.
+The support card's arrow compares the period's support cost with the
+comparison period's, and down is good. The queue --- tickets open now ---
+is a line under it rather than the number, because "what is waiting" is a
+live question and "what did March cost" is the one the card answers.
 
 *Who sees the numbers.* The cards are organisation totals, so they are
 computed only for a global owner or administrator, or a member holding the
@@ -310,7 +322,16 @@ cannot disagree. =GET /api/v1/headline?period=this_month= is the JSON; add
 =key=, =label=, =value=, =trend= (-1, 0, 1), =higher_is_better=, =link=,
 =definition=, =state= (=ok=, =error= or =restricted=), =error= and =lines=.
 Each card's =link= opens its report with the same =period=,
-=organization_id= and, when given, =venture_id= and =as_of=.
+=organization_id= and, when given, =venture_id= and =as_of=. A line may
+carry a =link= of its own, and the page renders its value as one.
+
+*At risk.* With the =customer_health= module on, the churn card's last
+line is *At risk: N* --- the number of customers banded red as of the
+period's end, linking to the =customer_health= report for the same
+period and organisation with =band=red=, the list of who they are and
+why. With the module off the line is absent and the card is exactly as
+before; a health report that fails costs the line (=n/a=), not the card.
+See [[file:reporting.org][the customer health report]].
 
 *Back to the old dashboard.* Save a =headline_setting= for the
 organisation with =classic_home=true= (=venturectl create headline_setting

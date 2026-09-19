@@ -1087,6 +1087,8 @@ venture_cli_command_forge(
 	return 0;
 }
 
+static gint venture_cli_command_report_packs(VentureCli *cli, gchar **args, GError **error);
+
 static gint
 venture_cli_command_report(
 	VentureCli	 *cli,
@@ -1095,6 +1097,10 @@ venture_cli_command_report(
 ){
 	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(GString) path = NULL;
+
+	/* "packs" is a business action on scheduled packs, not a report name. */
+	if ((NULL != args) && (NULL != args[1]) && (0 == g_strcmp0(args[1], "packs")))
+		return venture_cli_command_report_packs(cli, args, error);
 
 	if ((NULL == args) || (NULL == args[1]))
 	{
@@ -1146,10 +1152,19 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "venture_id")) && (0 != g_strcmp0(parts[0], "group_by")) &&
 				 (0 != g_strcmp0(parts[0], "compare_to")) && (0 != g_strcmp0(parts[0], "account_id")) &&
 				 (0 != g_strcmp0(parts[0], "basis")) && (0 != g_strcmp0(parts[0], "dimension")) &&
-				 (0 != g_strcmp0(parts[0], "vendor_id")) && (0 != g_strcmp0(parts[0], "pipeline_id")) && (0 != g_strcmp0(parts[0], "owner"))))
+				 (0 != g_strcmp0(parts[0], "vendor_id")) && (0 != g_strcmp0(parts[0], "pipeline_id")) && (0 != g_strcmp0(parts[0], "owner")) &&
+				 (0 != g_strcmp0(parts[0], "days")) &&
+				 (0 != g_strcmp0(parts[0], "by")) &&
+				 (0 != g_strcmp0(parts[0], "weeks")) &&
+				 (0 != g_strcmp0(parts[0], "band_size")) &&
+				 (0 != g_strcmp0(parts[0], "band")) &&
+				 (0 != g_strcmp0(parts[0], "sort")) &&
+				 (0 != g_strcmp0(parts[0], "min_tickets")) &&
+				 (0 != g_strcmp0(parts[0], "company")) &&
+				 (0 != g_strcmp0(parts[0], "product"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -2109,6 +2124,7 @@ venture_cli_command_factory(
  * venturectl release publish ID [--prerelease]
  */
 #include "mail/venture-mail-cli.inc"
+#include "calendar/venture-calendar-cli.inc"
 #include "banking/venture-bank-cli.inc"
 #include "bankfeed/venture-bankfeed-cli.inc"
 #include "commerce/venture-commerce-cli.inc"
@@ -3217,6 +3233,13 @@ venture_cli_command_mcp(
 #include "sequences/venture-sequence-cli.inc"
 #include "recurring/venture-recurring-cli.inc"
 #include "dunning/venture-dunning-cli.inc"
+#include "backup/venture-backup-cli.inc"
+#include "tax/venture-sales-tax-cli.inc"
+#include "report/venture-customer-health-cli.inc"
+#include "money-calendar/venture-money-calendar-cli.inc"
+#include "crm-import/venture-crm-import-cli.inc"
+#include "dedupe/venture-dedupe-cli.inc"
+#include "report/venture-support-rollup-cli.inc"
 
 /* --- Entry point --------------------------------------------------------- */
 
@@ -3296,6 +3319,8 @@ venture_cli_command_act(VentureCli *cli, gchar **args, GError **error)
 }
 
 #include "autojournal/venture-autojournal-cli.inc"
+#include "docs/venture-docs-cli.inc"
+#include "report/venture-report-pack-cli.inc"
 #include "orgaccess/venture-mfa-cli.inc"
 
 int
@@ -3314,6 +3339,10 @@ main(
 	g_autofree gchar *mail_html = NULL;
 	g_autofree gchar *mail_limit = NULL;
 	g_autofree gchar *sequence_as_of = NULL;
+	g_autofree gchar *span_from = NULL;
+	g_autofree gchar *span_to = NULL;
+	g_autofree gchar *calendar_kind = NULL;
+	g_autofree gchar *support_sort = NULL;
 	gboolean show_version = FALSE;
 	gboolean show_license = FALSE;
 	gboolean quiet = FALSE;
@@ -3352,6 +3381,17 @@ main(
 		  NULL, NULL },
 		{ "dry-run", 0, 0, G_OPTION_ARG_NONE, &dry_run,
 		  "post backfill or billing: validate without retaining writes", NULL },
+		/* One --from/--to pair serves every span-taking verb. Registering
+		 * it twice made GOption keep the first and leave the second
+		 * variable NULL, so support rollup refused a span the user had
+		 * given. */
+		{ "from", 0, 0, G_OPTION_ARG_STRING, &span_from,
+		  "money calendar, support rollup: first day", "DATE" },
+		{ "to", 0, 0, G_OPTION_ARG_STRING, &span_to,
+		  "money calendar, support rollup: last day (inclusive)", "DATE" },
+		{ "kind", 0, 0, G_OPTION_ARG_STRING, &calendar_kind, "money calendar: one kind only", "KIND" },
+		{ "sort", 0, 0, G_OPTION_ARG_STRING, &support_sort,
+		  "support rollup: column to order by, - for descending", "COLUMN" },
 		{ NULL }
 	};
 
@@ -3372,7 +3412,8 @@ main(
 		"  forge set-token ID           set a forge's access token (stdin)\n"
 		"  forge set-secret ID          set or generate its webhook secret\n"
 		"  forge verify ID              record which account the token is\n"
-		"  report [NAME] [PERIOD]       run; options: as_of, organization_id, customer_id, currency, venture_id, group_by, vendor_id, pipeline_id, owner\n"
+		"  report [NAME] [PERIOD]       run; options: as_of, organization_id, customer_id, currency, venture_id, group_by, vendor_id, pipeline_id, owner, days, by, weeks\n"
+		"  report [NAME] [PERIOD]       run; options: as_of, organization_id, customer_id, currency, venture_id, group_by, vendor_id, pipeline_id, owner, band, sort\n"
 		"  kb search QUERY              search the knowledge bases by\n"
 		"                               meaning; --kb SLUG, --limit N\n"
 		"  kb sync KB_ID                bring a base into line with its\n"
@@ -3411,6 +3452,7 @@ main(
 		"  factory                      the software factory at a glance\n"
 		"  lead convert ID              qualify first; deal=yes|no, company_id=ID\n"
 		"  lead reassign ID             owner=NAME or run assignment rules\n"
+		"  leads reroute|rescore ID     run routing rules / the scoring formula again\n"
 		"  release changelog ID         draft a release's changelog from\n"
 		"                               its tickets; --replace overwrites\n"
 		"  invoice checkout ID          create a hosted Stripe payment URL\n"
@@ -3419,6 +3461,7 @@ main(
 		"  journal post ID              post a draft, or propose for approval\n"
 		"  mail list|send|test|deliver|retry  transactional mail\n"
 		"  mail sync|contact|dismiss          inbound mail sync and unmatched senders\n"
+		"  calendar sync [organization_id=N]  two-way CalDAV sweep\n"
 		"  quote send|accept|decline|revise ID [by=NAME] [reason=TEXT]\n"
 		"  compose invoice|quote JSON   lines, tax and optional send\n"
 		"  bank ACTION ID [JSON|@FILE] banking action; import map inbox bulk transfer\n"
@@ -3426,6 +3469,7 @@ main(
 		"  bankfeed sync ID [JSON]      sync a linked bank feed connection\n"
 		"  commerce import [JSON]       import connector orders as invoices\n"
 		"  deal move ID STAGE [NOTE]     move a deal through its pipeline\n"
+		"  deal quote ID                create or revise a quote from the deal's lines\n"
 		"  release publish ID           cut it on the forge; --prerelease\n"
 		"  dashboards                   list the dashboards\n"
 		"  dashboard SLUG               a dashboard, every widget evaluated\n"
@@ -3468,9 +3512,24 @@ main(
 		"  batch invoice|expense format=csv|json payload=... [post=false] [organization_id=N] [--dry-run]\n"
 		"  dunning sweep [as_of=DATE] [organization_id=N] [limit=N] [dry_run=true]\n"
 		"                               send due overdue reminders once; dry_run previews\n"
+		"  backup run SCHEDULE_ID       write a scheduled backup now\n"
+		"  backup verify RUN_ID         restore a backup into an empty database and tie it out\n"
+		"  backup restore-drill [run_id=N] [organization_id=N] [name=...]  the same, kept as a named drill\n"
+		"  sales-tax export period=PERIOD [jurisdiction=CODE]  sales tax return CSV per jurisdiction\n"
+		"  customers health-sweep [as_of=DATE] [organization_id=N] [limit=N]  one check-in per at-risk customer\n"
+		"  money calendar --from DATE --to DATE [--kind K] [--as-of DATE]  the agenda of dated money events\n"
+		"  dedupe scan [kind=company|contact] [organization_id=N]  propose duplicate pairs\n"
+		"  dedupe merge ID survivor=N   fold the other record of a candidate into the survivor; --stage\n"
+		"  dedupe dismiss ID            close a candidate as not a duplicate\n"
 		"  user mfa reset USER      break glass: turn off a user's second factor (owner only, audited)\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
+		"  support rollup --from DATE --to DATE [--sort [-]COLUMN] [min_tickets=N] [company=ID] [product=NAME] [group_by=product]\n"
+		"                               support cost and ticket volume per customer\n"
+		"  docs build [source=DIR] [output=DIR] [renderer=auto|emacs|builtin]\n"
+		"                               render docs/*.org to a static site;\n"
+		"                               needs no server\n"
+		"  report packs deliver ID     re-send a pack's last retained output by email\n"
 		"\n"
 		"Examples:\n"
 		"  venturectl types sale\n"
@@ -3587,10 +3646,11 @@ main(
 	    !(0 == g_strcmp0(args[0], "lead") && 0 == g_strcmp0(args[1], "convert")) &&
 	    (0 != g_strcmp0(args[0], "act")) &&
 	    (0 != g_strcmp0(args[0], "dunning")) &&
+	    (0 != g_strcmp0(args[0], "dedupe")) &&
 	    !((0 == g_strcmp0(args[0], "sequence")) && (0 == g_strcmp0(args[1], "enroll"))))
 	{
 		g_printerr("venturectl: --stage only means something to create, "
-		           "update, delete, act, dunning sweep, journal post, sequence enroll, lead convert and billing. \"%s\" would ignore it.\n", args[0]);
+		           "update, delete, act, dunning sweep, dedupe, journal post, sequence enroll, lead convert and billing. \"%s\" would ignore it.\n", args[0]);
 		g_free(cli.base_url);
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
@@ -3614,9 +3674,9 @@ main(
 		cli.format = (VentureOutputFormat)value;
 	}
 
-	if (sequence_as_of != NULL && g_strcmp0(args[0], "billing") != 0 && g_strcmp0(args[0], "recurring") != 0 && g_strcmp0(args[0], "collections") != 0 && (g_strcmp0(args[0], "sequence") != 0 || g_strcmp0(args[1], "run") != 0))
+	if (sequence_as_of != NULL && g_strcmp0(args[0], "billing") != 0 && g_strcmp0(args[0], "recurring") != 0 && g_strcmp0(args[0], "collections") != 0 && g_strcmp0(args[0], "money") != 0 && (g_strcmp0(args[0], "sequence") != 0 || g_strcmp0(args[1], "run") != 0))
 	{
-		g_printerr("venturectl: --as-of is only valid for sequence run, billing, recurring or collections\n");
+		g_printerr("venturectl: --as-of is only valid for sequence run, billing, recurring, collections or money calendar\n");
 		g_free(cli.base_url);
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
@@ -3666,6 +3726,8 @@ main(
 		result = venture_cli_command_journal(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "mail"))
 		result = venture_cli_command_mail(&cli, args, mail_html, mail_limit, &error);
+	else if (0 == g_strcmp0(args[0], "calendar"))
+		result = venture_cli_command_calendar(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "quote"))
 		result = venture_cli_command_quote(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "compose"))
@@ -3759,6 +3821,25 @@ main(
 		result = venture_cli_command_act(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dunning"))
 		result = venture_cli_command_dunning(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "backup"))
+		result = venture_cli_command_backup(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "leads"))
+		result = venture_cli_command_lead(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "sales-tax"))
+		result = venture_cli_command_sales_tax(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "customers"))
+		result = venture_cli_command_customers(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "money"))
+		result = venture_cli_command_money(&cli, args, span_from, span_to, calendar_kind, sequence_as_of, &error);
+	else if (0 == g_strcmp0(args[0], "crm"))
+		result = venture_cli_command_crm(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "dedupe"))
+		result = venture_cli_command_dedupe(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "support"))
+		result = venture_cli_command_support(&cli, args, span_from,
+		                                     span_to, support_sort, &error);
+	else if (0 == g_strcmp0(args[0], "docs"))
+		result = venture_cli_command_docs(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "user"))
 		result = venture_cli_command_user(&cli, args, &error);
 	else

@@ -146,3 +146,67 @@ venture_web_deal_move_ui(HtmxRequest *request, GHashTable *params, gpointer data
 	HtmxResponse *gate = venture_web_ui_require_session(data, request);
 	return NULL != gate ? gate : venture_web_deal_move(request, params, data);
 }
+
+/* POST /api/v1/deals/:id/quote and the deal page's form both reach the
+ * deal service; the page form arrives without an Accept: JSON header. */
+static HtmxResponse *
+venture_web_deal_quote(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+	VentureWebServer *self = user_data;
+	VentureDatabase *db = venture_context_get_database(self->context);
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) deal = NULL;
+	g_autoptr(VentureQuote) quote = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *gate;
+	VentureActor actor;
+	gboolean api = g_str_has_prefix(htmx_request_get_path(request), "/api/");
+
+	if (!api)
+	{
+		gate = venture_web_ui_require_session(self, request);
+		if (NULL != gate)
+			return gate;
+	}
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+	if (NULL != gate)
+		return gate;
+	gate = venture_web_require_module_api(self, "pipelines");
+	if (NULL != gate)
+		return gate;
+	gate = venture_web_require_module_api(self, "quotes");
+	if (NULL != gate)
+		return gate;
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+	deal = venture_database_get(db, VENTURE_TYPE_DEAL,
+		g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10), &error);
+	if (NULL == deal)
+	{
+		if (NULL == error)
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Deal not found");
+		return venture_web_error_response(error);
+	}
+	quote = venture_deal_service_create_quote(venture_database_get_deal_service(db), VENTURE_DEAL(deal), &actor, &error);
+	if (NULL == quote)
+		return venture_web_error_response(error);
+	if (!api)
+	{
+		g_autofree gchar *destination = g_strdup_printf("/e/quote/%" G_GINT64_FORMAT, venture_entity_get_id(VENTURE_ENTITY(quote)));
+		return venture_web_redirect_to(destination);
+	}
+	node = venture_serializable_to_json(VENTURE_SERIALIZABLE(quote), FALSE);
+	return venture_web_json_response(node, 201);
+}
+
+/* The deal page offers the quote handoff only when both modules can act. */
+static void
+venture_web_deal_buttons(VentureWebServer *self, GString *html, VentureEntity *record)
+{
+	if (!VENTURE_IS_DEAL(record) || !venture_web_module_enabled(self, "pipelines") ||
+		!venture_web_module_enabled(self, "quotes"))
+		return;
+	g_string_append_printf(html, "<form method=\"post\" action=\"/deals/%" G_GINT64_FORMAT "/quote\"><button>Create quote from lines</button></form>",
+		venture_entity_get_id(record));
+}

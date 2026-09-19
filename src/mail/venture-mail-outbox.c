@@ -46,8 +46,7 @@ static gboolean snapshot_attachments(VentureMailOutbox *self, VentureEntity *ent
 	array = json_node_get_array(parsed);
 	if (!json_array_get_length(array)) return TRUE;
 	root = self->attachment_root ? realpath(self->attachment_root, NULL) : NULL;
-	if (!root) return refuse(error, "Attachment storage is not configured");
-	prefix = g_strconcat(root, G_DIR_SEPARATOR_S, NULL);
+	prefix = root ? g_strconcat(root, G_DIR_SEPARATOR_S, NULL) : NULL;
 	json_builder_begin_array(builder);
 	for (i = 0; i < json_array_get_length(array); i++) {
 		JsonNode *element = json_array_get_element(array, i);
@@ -57,7 +56,28 @@ static gboolean snapshot_attachments(VentureMailOutbox *self, VentureEntity *ent
 		gsize length;
 		if (!JSON_NODE_HOLDS_OBJECT(element)) return refuse(error, "Invalid attachment reference");
 		ref = json_node_get_object(element);
+		/* An inline attachment carries its own bytes, base64 in "data", for
+		 * content generated at enqueue time (a report pack's CSV) that has
+		 * no document row. It is retained like a document snapshot. */
+		if (!g_strcmp0(venture_json_object_get_string(ref, "type", ""), "inline")) {
+			const gchar *name = venture_json_object_get_string(ref, "name", NULL);
+			const gchar *data = venture_json_object_get_string(ref, "data", NULL);
+			g_autofree guchar *decoded = NULL;
+			if (!name || !*name || !data || !*data) return refuse(error, "Inline attachments need a name and base64 data");
+			decoded = g_base64_decode(data, &length);
+			if (!length) return refuse(error, "Inline attachment data is not base64");
+			if (length > 20 * 1024 * 1024) return refuse(error, "Attachment exceeds 20 MiB");
+			total += length;
+			if (total > 20 * 1024 * 1024) return refuse(error, "Combined attachments exceed 20 MiB");
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "name"); json_builder_add_string_value(builder, name);
+			json_builder_set_member_name(builder, "mime"); json_builder_add_string_value(builder, venture_json_object_get_string(ref, "mime", "application/octet-stream"));
+			json_builder_set_member_name(builder, "data"); json_builder_add_string_value(builder, data);
+			json_builder_end_object(builder);
+			continue;
+		}
 		if (g_strcmp0(venture_json_object_get_string(ref, "type", ""), "document")) return refuse(error, "Attachments must reference documents");
+		if (!root) return refuse(error, "Attachment storage is not configured");
 		document = venture_database_get(self->database, VENTURE_TYPE_DOCUMENT, venture_json_object_get_int(ref, "id", 0), error);
 		if (!document || venture_entity_is_deleted(document)) { if (!error || !*error) refuse(error, "Attachment document not found"); return FALSE; }
 		if (venture_entity_get_organization_id(document) != venture_entity_get_organization_id(entity)) return refuse(error, "Attachment belongs to another organization");

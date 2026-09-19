@@ -373,6 +373,10 @@ role_allows(VentureAccessPolicy *self, const VentureAuthPrincipal *actor,
 		return FALSE;
 	if (manager)
 		return TRUE;
+	/* An outside accountant reads and exports the books; the write refusal
+	 * that names the role is raised by the caller before reaching here. */
+	if (role == VENTURE_ORGANIZATION_ROLE_ACCOUNTANT)
+		return read && venture_accountant_role_readable(self->database, entity);
 	/* A payer must not disable the second-person rule that constrains it. */
 	if (VENTURE_IS_ACCOUNTING_APPROVAL_RULE(entity) && !read)
 		return FALSE;
@@ -447,6 +451,12 @@ venture_access_policy_can(VentureAccessPolicy *self, const VentureAuthPrincipal 
 		if (NULL == member)
 			return refuse(error, TRUE);
 		g_object_get(member, "role", &role, NULL);
+		/* Outside the books a write is refused as not found, like the read;
+		 * inside them the refusal names the role so the answer is actionable. */
+		if (!read && (role == VENTURE_ORGANIZATION_ROLE_ACCOUNTANT ||
+			(actor->token_id > 0 && token_role(self, actor, org) == VENTURE_ORGANIZATION_ROLE_ACCOUNTANT)))
+			return venture_accountant_role_readable(self->database, entity) ?
+				venture_accountant_role_refuse_write(action, error) : refuse(error, TRUE);
 		if (!role_allows(self, actor, action, entity, role) ||
 			(actor->token_id > 0 && !role_allows(self, actor, action, entity, token_role(self, actor, org))))
 			return refuse(error, read);
@@ -622,6 +632,16 @@ venture_orgaccess_web_dispatch(VentureAuth *auth, VentureContext *context,
 				HtmxResponse *response = htmx_response_new();
 				htmx_response_set_status(response, 302);
 				htmx_response_add_header(response, "Location", "/account");
+				htmx_context_set_response(http, response);
+				return;
+			}
+			/* The books are the accountant's home; the dashboard is not
+			 * theirs to see, so the root lands on /books instead. */
+			if (0 == g_strcmp0(path, "/") && venture_accountant_role_only(venture_context_get_database(context), actor))
+			{
+				HtmxResponse *response = htmx_response_new();
+				htmx_response_set_status(response, 302);
+				htmx_response_add_header(response, "Location", "/books");
 				htmx_context_set_response(http, response);
 				return;
 			}

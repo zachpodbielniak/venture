@@ -61,7 +61,8 @@ static const VentureFieldDecl venture_organization_fields[] = {
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
 	              VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD("quote-valid-days", "Quote validity days", "Zero uses 30 days", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("quote-valid-days", "Quote validity days", "Zero uses 30 days", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("sequence-tracking", "Sequence mail tracking", "Allow open and click tracking on sequence mail; off by default", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureOrganization, venture_organization, venture_organization_fields,
@@ -158,7 +159,9 @@ static const VentureFieldDecl venture_product_fields[] = {
 	VENTURE_FIELD("recognition-policy", "Recognition policy", "0 immediate, 1 deferred, 2 milestone",
 		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("recognition-months", "Recognition months", "Service period for deferred income; 0 means immediate",
-		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("tax-exempt", "Tax exempt", "Not subject to sales tax; products are taxable unless this is set",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureProduct, venture_product, venture_product_fields,
@@ -677,7 +680,17 @@ static const VentureFieldDecl venture_company_fields[] = {
 	VENTURE_FIELD("dunning-paused-until", "Reminders paused until", "Promise to pay: no reminder for any of their invoices before this date",
 		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("dunning-pause-reason", "Pause reason", "Why reminders are paused",
-		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("tax-exemption-number", "Exemption number", "Resale or exemption certificate number shown on the return",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD("address-state", "State code", "Sales-tax address code matched exactly by tax rules, for example NY",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("address-county", "County code", "Sales-tax address code matched exactly by tax rules",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("address-city", "City code", "Sales-tax address code matched exactly by tax rules",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("merged-into-id", "Merged into", "Set by a dedupe merge on the record that was folded away; its old id forwards here",
+		"company", VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCompany, venture_company, venture_company_fields,
@@ -714,7 +727,9 @@ static const VentureFieldDecl venture_contact_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
 	VENTURE_FIELD_REF("owner-user-id", "Owner", "Responsible user", "user", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("merged-into-id", "Merged into", "Set by a dedupe merge on the record that was folded away; its old id forwards here",
+		"contact", VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureContact, venture_contact, venture_contact_fields,
@@ -2839,7 +2854,13 @@ static const VentureFieldDecl venture_invoice_line_fields[] = {
 	VENTURE_FIELD_MONEY("income-amount", "Frozen income", "Net after discount, frozen at issuance"),
 	VENTURE_FIELD_MONEY("discount-amount", "Frozen discount", "Frozen at issuance"),
 	VENTURE_FIELD_MONEY("tax-amount", "Frozen tax", "Frozen at issuance"),
-	VENTURE_FIELD_MONEY("shipping-amount", "Frozen shipping", "Frozen at issuance")
+	VENTURE_FIELD_MONEY("shipping-amount", "Frozen shipping", "Frozen at issuance"),
+	VENTURE_FIELD_REF("tax-jurisdiction-id", "Tax jurisdiction", "Selected by the customer's address at issuance and frozen",
+		"tax_jurisdiction", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("tax-rate-scaled", "Frozen tax rate", "Percent times 10000 applied at issuance; 0 when exempt",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("tax-exempt", "Tax exempt", "Frozen at issuance from the customer or the product",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY(VentureInvoiceLine, venture_invoice_line,

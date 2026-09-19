@@ -14,6 +14,7 @@ G_BEGIN_DECLS
  * @VENTURE_ORGANIZATION_ROLE_FINANCE: edits financial records
  * @VENTURE_ORGANIZATION_ROLE_SALES: edits assigned sales records
  * @VENTURE_ORGANIZATION_ROLE_SUPPORT: edits assigned support records
+ * @VENTURE_ORGANIZATION_ROLE_ACCOUNTANT: reads and exports the books only
  *
  * Organization authority is independent of the global user role.
  */
@@ -25,7 +26,8 @@ typedef enum
 	VENTURE_ORGANIZATION_ROLE_EDITOR,
 	VENTURE_ORGANIZATION_ROLE_FINANCE,
 	VENTURE_ORGANIZATION_ROLE_SALES,
-	VENTURE_ORGANIZATION_ROLE_SUPPORT
+	VENTURE_ORGANIZATION_ROLE_SUPPORT,
+	VENTURE_ORGANIZATION_ROLE_ACCOUNTANT
 } VentureOrganizationRole;
 /**
  * venture_organization_role_get_type:

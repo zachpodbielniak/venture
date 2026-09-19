@@ -66,7 +66,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `forge set-token ID` | set a forge's access token, read from stdin |
 | `forge set-secret ID` | set or generate its webhook secret |
 | `forge verify ID` | record which account the token belongs to |
-| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID] [basis=cash\|accrual] [dimension=VALUE]` | list reports, or run one with an optional historical cutoff, legal entity, accounting basis and dimension |
+| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID] [basis=cash\|accrual] [dimension=VALUE] [band_size=N]` | list reports, or run one with an optional historical cutoff, legal entity, accounting basis, dimension and score-band width |
 | `links TYPE ID` | every link touching a record, read from it |
 | `link TYPE ID TYPE ID [kind=K] [note=T]` | link two records; kinds: related, blocks, blocked_by, depends_on, required_by, parent_of, child_of, duplicates, causes, caused_by, produces, produced_by, references, referenced_by, supersedes, superseded_by; unlink with `delete record_link ID` |
 | `reconcile suggest TYPE ID [--matcher NAME] [--threshold N]` | rank matching book records; scores above the threshold (default 80) stage bank transaction action confirmations when banking is installed; never applies |
@@ -109,6 +109,9 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `collections run [--as-of DATE] [organization_id=N]` | queue overdue invoice reminders through the outbox; a non-admin must name the organization |
 | `dunning sweep [as_of=DATE] [organization_id=N] [limit=N] [dry_run=true]` | templated reminder policies: one step per invoice per day, escalation to the owner; `dry_run=true` returns the plan and writes nothing |
 | `batch invoice\|expense format=csv\|json payload=... [post=false] [organization_id=N] [--dry-run]` | all-or-nothing CSV/JSON document create |
+| `sales-tax export period=PERIOD [jurisdiction=CODE]` | sales tax return CSV per jurisdiction: gross, exempt, taxable, collected, credited, net due |
+| `customers health-sweep [as_of=DATE] [organization_id=N] [limit=N]` | one `check in: <company>` activity per red customer, never a second while one is open |
+| `dedupe scan [kind=company\|contact] [organization_id=N]`, `dedupe merge ID survivor=N`, `dedupe dismiss ID` | propose duplicate companies or contacts; fold one into the other; close a proposal |
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 
@@ -313,7 +316,7 @@ venturectl --stage create expense description="Cover art" amount=250.00
 #   approve: POST /api/v1/confirmations/a3f9c118/approve
 ```
 
-It is refused on any command other than `create`, `update`, `delete`, `act`, `dunning sweep`, `journal post`, `sequence enroll`, `lead convert` and `billing`,
+It is refused on any command other than `create`, `update`, `delete`, `act`, `dunning sweep`, `dedupe`, `journal post`, `sequence enroll`, `lead convert` and `billing`,
 because those are the only routes that read it -- and an unknown query
 parameter on a write route is ignored, so a quietly accepted `--stage` would
 apply the change it was asked to hold back.
@@ -481,6 +484,11 @@ reads `churn` only when billing is in use, else `customer_churn` -- follow
 the card's `link` rather than guessing. `/api/v1/headline?format=csv` exports
 the cards; a viewer without the owner, admin or finance role gets them with
 `state` `restricted` and no figures.
+The P&L cuts are `revenue_by_customer` (`by=source` to group by lead
+source), `spend_by_vendor` (`by=category`), `recurring_costs` and
+`cash_outlook` (`weeks=N`, default 8). `cash_forecast` is the budgets
+module's ledger-driven forecast, a different report. The P&L card's
+`links` open the four with the card's period and scope.
 Read their notes: MRR is contracted revenue, not cash or recognized income;
 churn rates are in basis points. Proration adjustments are settled on the
 next renewal. Billing sends no mail and integrates no card provider.
@@ -514,6 +522,19 @@ unmatched sender into a contact and backfills its earlier mail; `mail dismiss
 ID` keeps the address as an ignore-list entry. Both take the unmatched
 sender's id, not a contact id.
 
+## Calendar sync
+
+`calendar sync [organization_id=N] [limit=N]` runs the bounded two-way CalDAV
+sweep over every active `calendar_account`: dated calls and meetings go up as
+VEVENTs, events made on the calendar come back as planned meetings, removals
+cancel rather than delete, and a change on both sides is settled by
+last-modified with the loser noted on the activity timeline. It refuses
+`--stage`. `calendar_account` is owner-only and names a `VENTURE_CALDAV_*`
+variable, never a password; generic writes to `calendar_event` are refused.
+`booking_page` (slug, owner, duration, buffer, IANA timezone, availability
+JSON of weekday to `HH:MM-HH:MM` windows) is ordinary editor data and serves
+the public `/book/<slug>` page, which books a contact and a meeting.
+
 ### Commercial quote actions
 
 `quote send ID`, `quote accept ID 'by=Full Name'`,
@@ -532,8 +553,24 @@ approval. Never set `status=converted` or conversion ids with generic updates.
 `lead reassign ID [owner=NAME]` assigns explicitly or reruns the matching
 rules; staged reassignment is refused. Recycle with `update lead ID
 status=recycled unqualified_reason=... recycle_until=YYYY-MM-DD`.
-Reports are `lead_sources`, `lead_response_time` and `leads_recycled_due`;
-see `docs/leads.org` for definitions and public capture forms.
+
+`leads reroute ID` clears the owner and evaluates the `lead_routing_rule`
+records again in `position` order, writing "Lead routed" or "No rule matched"
+to the timeline. `leads rescore ID` clears the `score_manual` mark and applies
+the `lead_scoring_rule` formula. Both take no other arguments, refuse a
+converted lead, and refuse `--stage`; each is also spelled `lead reroute` /
+`lead rescore`. Rules are ordinary records -- `create lead_routing_rule
+position=N 'conditions=source=web' action=assign_user|round_robin|assign_venture
+...` and `create lead_scoring_rule 'conditions=...' points=N` -- so use
+`describe lead_routing_rule` for the exact enum values. A malformed condition
+or an action missing its target is refused at the create, not when a lead
+arrives. `round_robin` needs the `orgaccess` module for teams. Never set
+`routing_rule_id` with a generic update, and never create a
+`lead_score_history` row: both are refused.
+
+Reports are `lead_sources`, `lead_response_time`, `leads_recycled_due`,
+`lead_routing` and `lead_scoring`; `lead_scoring` takes `band_size=N` (default
+25). See `docs/leads.org` for definitions and public capture forms.
 ## Planned activities
 
 `activity complete ID outcome=...` completes a planned activity, writes interaction history and advances recurrence atomically. `activity list mine|overdue|today` reads your daily worklist. Generic `create activity` and `update activity` edit the plan; generic `status=done` is refused. The existing `activity TYPE ID` command still reads a record timeline. Use `report worklist organization_id=ID` for the current UTC week per owner.
@@ -701,6 +738,19 @@ Before `rollback`, run `act accounting_cutover ID rollback_preflight` and
 read the `BLOCKER` lines; an active batch cannot be rolled back. See
 `docs/cutover.org`.
 
+## Customer health
+
+`report customer_health PERIOD [band=red|amber|green] [owner=USERNAME] [sort=[-]column]`
+lists every customer company with last touch, open deals, overdue invoices
+and days, open tickets and SLA breaches, dunning step and trailing-12-month
+revenue, banded against the organisation's `headline_setting` thresholds
+(`health_touch_days` 30, `health_overdue_days` 15, `health_open_tickets` 3;
+zero means the default). An unknown band or sort column is refused (exit 2).
+`customers health-sweep [as_of=DATE] [organization_id=N] [limit=N]` creates
+one planned `check in: <company>` activity for each red company's account
+owner and answers `{"created": N}`; it never duplicates an open one. Needs
+the `customer_health` and `activities` modules. See `docs/reporting.org`.
+
 ## Ledger statements
 
 `report balance_sheet`, `income_statement`, `cash_flow`, `general_ledger`,
@@ -725,3 +775,17 @@ organization and remap record identities. External references resolve by UUID.
 Version 3 supports only manual ledger imports; old document packs remain
 refused. Accounting packs exclude installation credentials and attachments.
 See `docs/backup.org`.
+
+## Duplicates (dedupe)
+
+`dedupe scan kind=company|contact [organization_id=N]` proposes
+`duplicate_candidate` rows (exact normalised email/phone/website, same email
+domain with a similar name, or a similar name) and merges nothing; rerunning
+it updates the same rows and drops pairs that stopped matching. `dedupe merge
+ID survivor=N` folds the other record into `survivor` in one transaction:
+every reference field naming the loser is re-pointed, empty survivor fields
+are filled, the loser is soft-deleted with `merged_into_id`, and the old id
+answers 301 to the survivor. Refused across organizations, onto itself, or
+when the loser has issued invoices/bills in a currency the survivor's issued
+documents do not use. `dedupe dismiss ID` closes a proposal. Arguments are
+`key=value`; `--stage dedupe merge` proposes the merge for approval.
