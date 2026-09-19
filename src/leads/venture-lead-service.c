@@ -923,3 +923,9 @@ venture_lead_normalize_email(const gchar *value)
 {
 	return normalize(value, 0);
 }
+
+gchar *
+venture_lead_normalize_website(const gchar *value)
+{
+	return normalize(value, 2);
+}

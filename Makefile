@@ -171,6 +171,8 @@ SERVER_ONLY_SRCS := $(filter-out src/report/venture-headline-records.c,$(SERVER_
 CORE_SRCS += src/leads/venture-lead-routing-records.c
 SERVER_ONLY_SRCS += src/leads/venture-lead-routing.c
 SERVER_ONLY_SRCS += $(wildcard src/money-calendar/*.c)
+CORE_SRCS += src/crm-import/venture-crm-import-records.c
+SERVER_ONLY_SRCS += src/crm-import/venture-crm-import-service.c
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
@@ -240,6 +242,7 @@ PUBLIC_HDRS += $(wildcard src/budgets/*.h)
 PUBLIC_HDRS += $(wildcard src/equity/*.h)
 PUBLIC_HDRS += $(wildcard src/group/*.h)
 PUBLIC_HDRS += $(wildcard src/money-calendar/*.h)
+PUBLIC_HDRS += $(wildcard src/crm-import/*.h)
 
 # Private implementation fragments are included by their owning C source;
 # they are neither installable headers nor introspection declarations.

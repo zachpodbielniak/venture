@@ -762,6 +762,8 @@ static const gchar *const headline_reports[] = { "cac", "customer_churn", "ltv",
 static const gchar *const money_calendar_requires[] = { "receivables", "payables", NULL };
 static const gchar *const money_calendar_suggests[] = { "recurring", "dunning", "payroll", "tax_filing", NULL };
 static const gchar *const money_calendar_reports[] = { "money_calendar", NULL };
+static const gchar *const crm_import_requires[] = { "crm", "pipelines", "activities", "leads", NULL };
+static GType (*const crm_import_types[]) (void) = { venture_crm_import_get_type, venture_crm_import_row_get_type, NULL };
 static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };
 /* Escalation writes an activity, and a collection case on the same invoice
  * holds reminders back; the pay link needs only receivables, which is required. */
@@ -1114,6 +1116,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"money_calendar", "Money calendar",
 		"Every dated money event on one grid: recurring, bills, invoices, dunning, payroll and tax, with daily and weekly nets.",
 		money_calendar_requires, money_calendar_suggests, NULL, money_calendar_reports, NULL, FALSE
+	},
+	{
+		"crm_import", "CRM migration",
+		"HubSpot, Zoho CRM and Salesforce exports into companies, contacts, deals, history and next actions.",
+		crm_import_requires, NULL, crm_import_types, NULL, NULL, FALSE
 	}
 };
 

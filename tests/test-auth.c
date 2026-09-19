@@ -1406,6 +1406,12 @@ test_auth_api_refuses_anonymous_requests(
 			"/api/v1/accounting_setups/1/complete",
 			"/setup/1/action"
 		};
+		static const gchar *const crm_import[] = {
+			"/api/v1/crm_imports/preview",
+			"/api/v1/crm_imports/1/import",
+			"/api/v1/crm_imports/1/activate",
+			"/api/v1/crm_imports/1/rollback"
+		};
 		for (i = 0; i < G_N_ELEMENTS(banking); i++)
 			g_assert_cmpuint(server_fixture_request(fixture, "POST", banking[i],
 				NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
@@ -1419,6 +1425,9 @@ test_auth_api_refuses_anonymous_requests(
 				NULL, NULL, NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 		for (i = 0; i < G_N_ELEMENTS(setup); i++)
 			g_assert_cmpuint(server_fixture_request(fixture, "POST", setup[i],
+				NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+		for (i = 0; i < G_N_ELEMENTS(crm_import); i++)
+			g_assert_cmpuint(server_fixture_request(fixture, "POST", crm_import[i],
 				NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	}
 

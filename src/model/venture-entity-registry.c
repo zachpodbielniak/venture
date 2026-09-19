@@ -873,6 +873,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_calendar_account_get_type,
 		venture_calendar_event_get_type,
 		venture_booking_page_get_type,
+		venture_crm_import_get_type,
+		venture_crm_import_row_get_type,
 	};
 	gsize i;
 

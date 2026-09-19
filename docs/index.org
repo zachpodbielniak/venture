@@ -113,3 +113,4 @@ Two binaries, both statically linked against every vendored dependency: =venture
 - [[file:autojournal.org][Automatic journals]] — configurable sale/expense legs, dated refunds and backfill
 - [[file:calendar.org][Calendar sync and scheduling links]] — two-way CalDAV sync of calls and meetings, and a public /book/<slug> a customer books from
 - [[file:money-calendar.org][The money calendar]] — recurring, bills, invoices, dunning, payroll and tax on one grid with daily and weekly nets, a subscribable feed and a CLI agenda
+- [[file:crm-import.org][CRM migration]] — HubSpot, Zoho CRM and Salesforce exports into companies, contacts, deals, history and next actions

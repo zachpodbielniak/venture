@@ -422,6 +422,15 @@ converted leads, do not accept =--stage=, and are also spelled =lead reroute=
 =venturectl create lead_scoring_rule ...=.
 See [[file:leads.org][leads]] for capture forms, duplicate policies,
 routing, scoring and reports.
+See [[file:leads.org][leads]] for capture forms, duplicate policies and reports.
+
+=venturectl crm preview MANIFEST= reads a migration manifest, inlines the
+CSV files its =files= member names (relative to the manifest) and creates a
+=crm_import= batch in the preview state. =venturectl crm import MANIFEST=
+does the same and imports it; =crm import ID= imports a previewed batch,
+=crm activate ID= accepts it and =crm rollback ID= removes what the batch
+created. See [[file:crm-import.org][CRM migration]] for the manifest, the
+built-in HubSpot, Zoho CRM and Salesforce column maps and the refusals.
 * Planned activities
 
 =venturectl activity complete ID outcome=...= completes planned work through

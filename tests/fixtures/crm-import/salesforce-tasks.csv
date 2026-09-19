@@ -1,0 +1,3 @@
+Id,Subject,Description,ActivityDate,Status,OwnerId,WhoId,WhatId,TaskSubtype,CompletedDateTime,CreatedDate
+00TA,Call Tony,,2025-01-10,Not Started,005X,003A,006A,Call,,2025-01-05T09:00:00.000Z
+00TB,Email Tony,Sent the deck.,2025-01-06,Completed,005X,003A,001A,Email,2025-01-06T10:00:00.000Z,2025-01-05T09:00:00.000Z

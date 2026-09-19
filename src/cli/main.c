@@ -3225,6 +3225,7 @@ venture_cli_command_mcp(
 #include "tax/venture-sales-tax-cli.inc"
 #include "report/venture-customer-health-cli.inc"
 #include "money-calendar/venture-money-calendar-cli.inc"
+#include "crm-import/venture-crm-import-cli.inc"
 
 /* --- Entry point --------------------------------------------------------- */
 
@@ -3792,6 +3793,8 @@ main(
 		result = venture_cli_command_customers(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "money"))
 		result = venture_cli_command_money(&cli, args, calendar_from, calendar_to, calendar_kind, sequence_as_of, &error);
+	else if (0 == g_strcmp0(args[0], "crm"))
+		result = venture_cli_command_crm(&cli, args, &error);
 	else
 	{
 		g_printerr("venturectl: \"%s\" is not a command. Try --help.\n",
