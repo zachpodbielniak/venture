@@ -141,3 +141,8 @@ Action routes validate =stage= with the shared confirmation parser; invalid valu
 When pipelines is enabled, acceptance moves the linked deal to its own pipeline's first won stage (ordered by position, then id). The stage must satisfy the ordinary transition rules; a refusal rolls back acceptance and invoice issuance together. The stage history records the move. When pipelines is disabled, acceptance retains the legacy won-stage transition.
 
 With follow-up sequences enabled, acceptance's won-stage transition also exits the deal's matching enrollments in the same transaction as the invoice and quote acceptance.
+
+With pipelines enabled, a deal's lines can be handed to a quote in one step:
+=POST /api/v1/deals/:id/quote= creates =DEAL-<id>= with the deal's lines, and
+a rerun revises the latest quote through this service's =revise= action. See
+[[file:pipelines.org][Sales pipelines]] for the line arithmetic and refusals.

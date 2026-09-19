@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
 #include "sequences/venture-sequence-service-private.h"
+#include "sequences/venture-sequence-tracking-private.h"
 #include <string.h>
 
 struct _VentureSequenceService
@@ -9,10 +10,12 @@ struct _VentureSequenceService
 	VentureDatabase *database;
 	VentureEntity *writing;
 	gboolean busy;
+	/* Public address the open pixel and wrapped links are composed with. */
+	gchar *base_url;
 };
 G_DEFINE_FINAL_TYPE(VentureSequenceService, venture_sequence_service, G_TYPE_OBJECT)
 
-enum { PROP_0, PROP_DATABASE };
+enum { PROP_0, PROP_DATABASE, PROP_BASE_URL };
 
 static gboolean
 refuse(GError **error, VentureError code, const gchar *message)
@@ -26,6 +29,8 @@ get_property(GObject *object, guint id, GValue *value, GParamSpec *spec)
 {
 	if (id == PROP_DATABASE)
 		g_value_set_object(value, VENTURE_SEQUENCE_SERVICE(object)->database);
+	else if (id == PROP_BASE_URL)
+		g_value_set_string(value, VENTURE_SEQUENCE_SERVICE(object)->base_url);
 	else
 		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
 }
@@ -40,6 +45,11 @@ set_property(GObject *object, guint id, const GValue *value, GParamSpec *spec)
 		if (self->database != NULL)
 			g_object_add_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
 	}
+	else if (id == PROP_BASE_URL)
+	{
+		g_free(self->base_url);
+		self->base_url = g_value_dup_string(value);
+	}
 	else
 		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
 }
@@ -50,6 +60,7 @@ finalize(GObject *object)
 	VentureSequenceService *self = VENTURE_SEQUENCE_SERVICE(object);
 	if (self->database != NULL)
 		g_object_remove_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
+	g_clear_pointer(&self->base_url, g_free);
 	G_OBJECT_CLASS(venture_sequence_service_parent_class)->finalize(object);
 }
 
@@ -63,6 +74,16 @@ venture_sequence_service_class_init(VentureSequenceServiceClass *klass)
 	g_object_class_install_property(object, PROP_DATABASE,
 		g_param_spec_object("database", "Database", "Weak reference to the owning repository",
 		VENTURE_TYPE_DATABASE, G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_STRINGS));
+	/**
+	 * VentureSequenceService:base-url:
+	 *
+	 * The installation's public base URL, without a trailing slash. Empty
+	 * means the tracking pixel and wrapped links are written as relative
+	 * paths, which only resolve inside the web UI.
+	 */
+	g_object_class_install_property(object, PROP_BASE_URL,
+		g_param_spec_string("base-url", "Base URL", "Public address for tracking links", "",
+		G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 }
 
 static void
@@ -554,6 +575,8 @@ process_save(VentureSequenceService *self, VentureEntity *row, const VentureActo
 	}
 	if (type == VENTURE_TYPE_SEQUENCE_DELIVERY)
 		return adapter_update(self, row, previous, actor, error);
+	if (type == VENTURE_TYPE_SEQUENCE_LINK || type == VENTURE_TYPE_SEQUENCE_TRACKING_EVENT)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Tracking links and events are evidence written only by VentureSequenceService");
 	if (type == VENTURE_TYPE_SUPPRESSION)
 	{
 		g_autofree gchar *email = normalized_email(row);
@@ -591,7 +614,8 @@ venture_sequences_save_hook(VentureDatabase *database, VentureEntity *record,
 	*handled = FALSE;
 	if (type != VENTURE_TYPE_SEQUENCE && type != VENTURE_TYPE_SEQUENCE_STEP &&
 		type != VENTURE_TYPE_SEQUENCE_ENROLLMENT && type != VENTURE_TYPE_SEQUENCE_DELIVERY &&
-		type != VENTURE_TYPE_SUPPRESSION && type != VENTURE_TYPE_INTERACTION && type != VENTURE_TYPE_DEAL)
+		type != VENTURE_TYPE_SUPPRESSION && type != VENTURE_TYPE_INTERACTION && type != VENTURE_TYPE_DEAL &&
+		type != VENTURE_TYPE_SEQUENCE_LINK && type != VENTURE_TYPE_SEQUENCE_TRACKING_EVENT)
 		return TRUE;
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "sequence") == G_TYPE_INVALID)
 		return TRUE;
@@ -637,7 +661,8 @@ gboolean
 venture_sequences_check_removal(VentureEntity *record, GError **error)
 {
 	GType type = G_OBJECT_TYPE(record);
-	if (type == VENTURE_TYPE_SEQUENCE_ENROLLMENT || type == VENTURE_TYPE_SEQUENCE_DELIVERY || type == VENTURE_TYPE_SUPPRESSION)
+	if (type == VENTURE_TYPE_SEQUENCE_ENROLLMENT || type == VENTURE_TYPE_SEQUENCE_DELIVERY || type == VENTURE_TYPE_SUPPRESSION ||
+		type == VENTURE_TYPE_SEQUENCE_LINK || type == VENTURE_TYPE_SEQUENCE_TRACKING_EVENT)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Sequence history and suppression cannot be removed");
 	return TRUE;
 }
@@ -786,11 +811,30 @@ new_delivery(VentureEntity *row, VentureEntity *step, GDateTime *scheduled, GDat
 		"scheduled-at", scheduled, "executed-at", executed, NULL);
 }
 
+/* Tracking needs both the sequence's switch and the organization's consent. */
 static gboolean
-execute_step(VentureSequenceService *self, VentureEntity *row, VentureEntity *step,
+tracking_allowed(VentureSequenceService *self, VentureEntity *sequence, gboolean *allowed, GError **error)
+{
+	g_autoptr(VentureEntity) organization = NULL;
+	*allowed = FALSE;
+	if (!flag(sequence, "tracking"))
+		return TRUE;
+	organization = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION,
+		venture_entity_get_organization_id(sequence), error);
+	/* No organization row means nobody consented: tracking stays off. */
+	if (organization == NULL)
+		return error == NULL || *error == NULL;
+	*allowed = flag(organization, "sequence-tracking");
+	return TRUE;
+}
+
+static gboolean
+execute_step(VentureSequenceService *self, VentureEntity *row, VentureEntity *sequence, VentureEntity *step,
 	GDateTime *scheduled, GDateTime *as_of, const VentureActor *actor, gboolean *failed, GError **error)
 {
 	g_autoptr(VentureEntity) delivery = new_delivery(row, step, scheduled, as_of);
+	g_autoptr(GPtrArray) urls = g_ptr_array_new_with_free_func(g_free);
+	g_autofree gchar *token = NULL;
 	g_autoptr(VentureEntity) contact = NULL;
 	g_autoptr(VentureEntity) company = NULL;
 	g_autoptr(VentureEntity) deal = NULL;
@@ -862,9 +906,36 @@ execute_step(VentureSequenceService *self, VentureEntity *row, VentureEntity *st
 		if (channel == 3)
 			g_object_set(delivery, "error", "Wait completed; no delivery required", NULL);
 		if (channel == 0)
+		{
+			gboolean allowed;
 			g_object_set(delivery, "executed-at", NULL, NULL);
+			if (!tracking_allowed(self, sequence, &allowed, error))
+				return FALSE;
+			if (allowed)
+			{
+				g_autofree gchar *wrapped = NULL;
+				token = venture_sequence_tracking_token(error);
+				if (token == NULL)
+					return FALSE;
+				wrapped = venture_sequence_tracking_wrap(body, self->base_url, token, urls);
+				g_object_set(delivery, "body", wrapped, "tracking-token", token, NULL);
+			}
+		}
 	}
-	return persist(self, delivery, actor, error);
+	if (!persist(self, delivery, actor, error))
+		return FALSE;
+	{
+		guint i;
+		for (i = 0; i < urls->len; i++)
+		{
+			g_autoptr(VentureEntity) link = g_object_new(VENTURE_TYPE_SEQUENCE_LINK,
+				"organization-id", org, "delivery-id", venture_entity_get_id(delivery),
+				"position", (gint64)(i + 1), "url", g_ptr_array_index(urls, i), NULL);
+			if (!persist(self, link, actor, error))
+				return FALSE;
+		}
+	}
+	return TRUE;
 }
 
 static gint
@@ -939,7 +1010,7 @@ run_one(VentureSequenceService *self, gint64 org, gint64 id, GDateTime *as_of,
 		g_object_set(row, "status", 2, "next-run-at", NULL, NULL);
 		return persist(self, row, actor, error) ? 0 : -1;
 	}
-	if (!execute_step(self, row, selected, scheduled, as_of, actor, &failed, error))
+	if (!execute_step(self, row, sequence, selected, scheduled, as_of, actor, &failed, error))
 		return -1;
 	g_object_set(row, "current-step", number(selected, "position"), NULL);
 	if (failed)
@@ -1003,4 +1074,143 @@ venture_sequence_service_run_due(VentureSequenceService *self, gint64 organizati
 		processed += count;
 	}
 	return processed;
+}
+
+static VentureEntity *
+delivery_by_token(VentureSequenceService *self, const gchar *token, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_SEQUENCE_DELIVERY);
+	VentureEntity *delivery;
+	if (venture_string_is_empty(token) || strlen(token) != 64)
+	{
+		refuse(error, VENTURE_ERROR_NOT_FOUND, "Unknown tracking token");
+		return NULL;
+	}
+	venture_query_add_filter_string(query, "tracking-token", VENTURE_FILTER_OP_EQ, token, NULL);
+	delivery = venture_database_find_one(self->database, query, error);
+	if (delivery == NULL && (error == NULL || *error == NULL))
+		refuse(error, VENTURE_ERROR_NOT_FOUND, "Unknown tracking token");
+	return delivery;
+}
+
+/* One tracking event plus its timeline interaction. The interaction is
+ * outbound so it never counts as a reply and never exits an enrollment. */
+static gboolean
+record_hit(VentureSequenceService *self, VentureEntity *delivery, gint kind, gint64 position,
+	const gchar *url, GDateTime *now, const VentureActor *actor, GError **error)
+{
+	gint64 org = venture_entity_get_organization_id(delivery);
+	g_autoptr(VentureEntity) enrollment = reference(self, VENTURE_TYPE_SEQUENCE_ENROLLMENT, number(delivery, "enrollment-id"), org, error);
+	g_autoptr(VentureEntity) contact = NULL;
+	g_autoptr(VentureEntity) event = NULL;
+	g_autoptr(VentureEntity) interaction = NULL;
+	g_autofree gchar *key = NULL;
+	g_autofree gchar *subject = string(delivery, "subject");
+	g_autofree gchar *title = NULL;
+	if (enrollment == NULL)
+		return FALSE;
+	contact = reference(self, VENTURE_TYPE_CONTACT, number(enrollment, "contact-id"), org, error);
+	if (contact == NULL)
+		return FALSE;
+	if (kind == 0)
+	{
+		g_autofree gchar *day = g_date_time_format(now, "%Y-%m-%d");
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_SEQUENCE_TRACKING_EVENT);
+		g_autoptr(VentureEntity) existing = NULL;
+		key = g_strdup_printf("o:%" G_GINT64_FORMAT ":%s", venture_entity_get_id(delivery), day);
+		venture_query_add_filter_int(query, "organization-id", VENTURE_FILTER_OP_EQ, org, NULL);
+		venture_query_add_filter_string(query, "dedupe-key", VENTURE_FILTER_OP_EQ, key, NULL);
+		existing = venture_database_find_one(self->database, query, error);
+		if (existing != NULL)
+			return TRUE;
+		if (error != NULL && *error != NULL)
+			return FALSE;
+	}
+	event = g_object_new(VENTURE_TYPE_SEQUENCE_TRACKING_EVENT, "organization-id", org,
+		"delivery-id", venture_entity_get_id(delivery), "enrollment-id", venture_entity_get_id(enrollment),
+		"step-id", number(delivery, "step-id"), "contact-id", venture_entity_get_id(contact),
+		"kind", kind, "link-position", position, "occurred-at", now, "dedupe-key", key, NULL);
+	if (!persist(self, event, actor, error))
+		return FALSE;
+	title = kind == 0 ? g_strdup_printf("Opened: %s", subject != NULL ? subject : "")
+		: g_strdup_printf("Clicked link %" G_GINT64_FORMAT ": %s", position, url != NULL ? url : "");
+	interaction = g_object_new(VENTURE_TYPE_INTERACTION, "organization-id", org,
+		"contact-id", venture_entity_get_id(contact), "company-id", number(contact, "company-id"),
+		"deal-id", number(enrollment, "deal-id"), "kind", VENTURE_INTERACTION_KIND_OUTREACH,
+		"outbound", TRUE, "subject", title, "body", url, "occurred-at", now, NULL);
+	return persist(self, interaction, actor, error);
+}
+
+static gboolean
+tracking_ready(VentureSequenceService *self, GError **error)
+{
+	if (self->database == NULL)
+		return refuse(error, VENTURE_ERROR_INVALID_ARGUMENT, "A live database is required");
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "sequence") == G_TYPE_INVALID)
+		return refuse(error, VENTURE_ERROR_NOT_FOUND, "The sequences module is disabled");
+	if (self->busy)
+		return refuse(error, VENTURE_ERROR_CONFLICT, "Reentrant sequence transition refused");
+	return TRUE;
+}
+
+gboolean
+venture_sequence_service_record_open(VentureSequenceService *self, const gchar *token,
+	GDateTime *now, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) delivery = NULL;
+	gboolean ok;
+	g_return_val_if_fail(VENTURE_IS_SEQUENCE_SERVICE(self), FALSE);
+	g_return_val_if_fail(now != NULL, FALSE);
+	if (!tracking_ready(self, error) || !venture_database_begin(self->database, error))
+		return FALSE;
+	self->busy = TRUE;
+	delivery = delivery_by_token(self, token, error);
+	ok = delivery != NULL && record_hit(self, delivery, 0, 0, NULL, now, actor, error);
+	self->busy = FALSE;
+	if (!ok)
+	{
+		venture_database_rollback(self->database);
+		return FALSE;
+	}
+	return venture_database_commit(self->database, error);
+}
+
+gchar *
+venture_sequence_service_record_click(VentureSequenceService *self, const gchar *token,
+	gint64 position, GDateTime *now, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) delivery = NULL;
+	g_autoptr(VentureEntity) link = NULL;
+	g_autofree gchar *url = NULL;
+	gboolean ok = FALSE;
+	g_return_val_if_fail(VENTURE_IS_SEQUENCE_SERVICE(self), NULL);
+	g_return_val_if_fail(now != NULL, NULL);
+	if (!tracking_ready(self, error) || !venture_database_begin(self->database, error))
+		return NULL;
+	self->busy = TRUE;
+	delivery = delivery_by_token(self, token, error);
+	if (delivery != NULL)
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_SEQUENCE_LINK);
+		venture_query_add_filter_int(query, "organization-id", VENTURE_FILTER_OP_EQ, venture_entity_get_organization_id(delivery), NULL);
+		venture_query_add_filter_int(query, "delivery-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(delivery), NULL);
+		venture_query_add_filter_int(query, "position", VENTURE_FILTER_OP_EQ, position, NULL);
+		link = venture_database_find_one(self->database, query, error);
+		if (link == NULL && (error == NULL || *error == NULL))
+			refuse(error, VENTURE_ERROR_NOT_FOUND, "Unknown tracked link");
+	}
+	if (link != NULL)
+	{
+		url = string(link, "url");
+		ok = record_hit(self, delivery, 1, position, url, now, actor, error);
+	}
+	self->busy = FALSE;
+	if (!ok)
+	{
+		venture_database_rollback(self->database);
+		return NULL;
+	}
+	if (!venture_database_commit(self->database, error))
+		return NULL;
+	return g_steal_pointer(&url);
 }

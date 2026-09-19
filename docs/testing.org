@@ -440,3 +440,32 @@ generic writes are refused; an unreadable date rolls the whole import back;
 a second vendor reusing the first vendor's id creates a new record rather
 than matching; migration 000390 records the table pair and succeeds with
 the module off; and the REST routes and =venturectl crm= verbs run over HTTP.
+** =test-deal-lines=
+
+Deal lines drive the deal value: three units at $19.99 less 1000 basis
+points make $53.97, editing and deleting a line recomputes in the same
+transaction, a generic write of =value= is refused by name while lines
+exist and allowed again once none remain, a second currency is refused and
+not persisted, invalid quantities, discounts, prices and references are
+refused, and a line cannot move between deals. The quote handoff copies the
+lines into =DEAL-<id>=, a rerun revises to =-R2= with the current lines and
+no duplicates, refusals (no lines, fractional percent, since-deleted
+product after the header is written) leave no quote behind, and the REST
+route, the deal page button and =venturectl deal quote= are exercised over
+HTTP. Written red first: the binary does not compile without =deal_line=,
+and removing the value refusal or the currency check turns the matching
+case red.
+
+** =test-sequence-tracking=
+
+Consent is off by default at the organization. With both switches on, a
+delivery gets a 64-character token, its links become =/t/c/<token>/<n>=
+with the originals retained and the pixel appended, and the token field is
+omitted from generic JSON. Either switch off leaves the body untouched. Opens count
+once per delivery per UTC day and land on the timeline as outbound
+outreach that never exits the enrollment; every click is recorded and
+resolves to its URL; unknown tokens and link numbers record nothing;
+generic writes and removals of links and events are refused; the per-step
+engagement report counts sent, opened, clicked and replies with whole
+percent rates; and the pixel, redirect, contact page, report route and
+module-off 404s are exercised over real HTTP.

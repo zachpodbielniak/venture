@@ -119,6 +119,146 @@ failures(VentureContext *context, VentureDateRange *period, JsonObject *options,
 	return g_steal_pointer(&result);
 }
 
+/* Per-step engagement for deliveries scheduled in the period: a delivery
+ * counts as sent when the adapter marked it sent, opened or clicked when
+ * at least one event exists, and replied when it is the last delivery its
+ * enrollment sent before exiting with a reply. Rates are whole percentages
+ * of sent. */
+static gint
+by_position(gconstpointer a, gconstpointer b)
+{
+	gint64 left, right;
+	g_object_get(*(VentureEntity *const *)a, "position", &left, NULL);
+	g_object_get(*(VentureEntity *const *)b, "position", &right, NULL);
+	return left < right ? -1 : (left > right ? 1 : 0);
+}
+
+static VentureReportResult *
+engagement(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
+{
+	gint64 org = report_org(context, options);
+	g_autoptr(GPtrArray) sequences = report_rows(context, VENTURE_TYPE_SEQUENCE, org, NULL, NULL, error);
+	g_autoptr(GPtrArray) steps = NULL;
+	g_autoptr(GPtrArray) deliveries = NULL;
+	g_autoptr(GPtrArray) events = NULL;
+	g_autoptr(GPtrArray) enrollments = NULL;
+	g_autoptr(GHashTable) opened = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+	g_autoptr(GHashTable) clicked = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+	g_autoptr(GHashTable) by_enrollment = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+	g_autoptr(GHashTable) last_sent = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
+	g_autoptr(VentureReportResult) result = venture_report_result_new("Sequence engagement", period);
+	guint i, j, k;
+	if (sequences == NULL)
+		return NULL;
+	steps = report_rows(context, VENTURE_TYPE_SEQUENCE_STEP, org, NULL, NULL, error);
+	if (steps == NULL)
+		return NULL;
+	g_ptr_array_sort(steps, by_position);
+	deliveries = report_rows(context, VENTURE_TYPE_SEQUENCE_DELIVERY, org, "scheduled-at", period, error);
+	if (deliveries == NULL)
+		return NULL;
+	events = report_rows(context, VENTURE_TYPE_SEQUENCE_TRACKING_EVENT, org, NULL, NULL, error);
+	if (events == NULL)
+		return NULL;
+	enrollments = report_rows(context, VENTURE_TYPE_SEQUENCE_ENROLLMENT, org, NULL, NULL, error);
+	if (enrollments == NULL)
+		return NULL;
+	for (i = 0; i < events->len; i++)
+	{
+		VentureEntity *event = g_ptr_array_index(events, i);
+		gint64 *delivery_id = g_new(gint64, 1);
+		gint kind;
+		g_object_get(event, "kind", &kind, "delivery-id", delivery_id, NULL);
+		g_hash_table_add(kind == 0 ? opened : clicked, delivery_id);
+	}
+	for (i = 0; i < enrollments->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(enrollments, i);
+		gint64 *enrollment_id = g_new(gint64, 1);
+		*enrollment_id = venture_entity_get_id(row);
+		g_hash_table_insert(by_enrollment, enrollment_id, row);
+	}
+	/* The reply is answered to the newest sent delivery of its enrollment;
+	 * the enrollment's current step already points at the one scheduled next. */
+	for (i = 0; i < deliveries->len; i++)
+	{
+		VentureEntity *delivery = g_ptr_array_index(deliveries, i);
+		gint64 *enrollment_id = g_new(gint64, 1);
+		gint64 *delivery_id;
+		gint state;
+		g_object_get(delivery, "state", &state, "enrollment-id", enrollment_id, NULL);
+		delivery_id = g_hash_table_lookup(last_sent, enrollment_id);
+		if (state != 1 || (delivery_id != NULL && *delivery_id > venture_entity_get_id(delivery)))
+		{
+			g_free(enrollment_id);
+			continue;
+		}
+		delivery_id = g_new(gint64, 1);
+		*delivery_id = venture_entity_get_id(delivery);
+		g_hash_table_insert(last_sent, enrollment_id, delivery_id);
+	}
+	venture_report_result_add_column(result, "sequence", "Sequence", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "step", "Step", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "subject", "Subject", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "sent", "Sent", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "opened", "Opened", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "clicked", "Clicked", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "replies", "Replies", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "open_rate", "Open rate", VENTURE_REPORT_COLUMN_PERCENT);
+	venture_report_result_add_column(result, "click_rate", "Click rate", VENTURE_REPORT_COLUMN_PERCENT);
+	venture_report_result_add_column(result, "reply_rate", "Reply rate", VENTURE_REPORT_COLUMN_PERCENT);
+	for (i = 0; i < sequences->len; i++)
+	{
+		VentureEntity *sequence = g_ptr_array_index(sequences, i);
+		g_autofree gchar *name = NULL;
+		g_object_get(sequence, "name", &name, NULL);
+		for (j = 0; j < steps->len; j++)
+		{
+			VentureEntity *step = g_ptr_array_index(steps, j);
+			g_autofree gchar *subject = NULL;
+			gint64 sequence_id, position, sent = 0, opens = 0, clicks = 0, replies = 0;
+			gint channel;
+			g_object_get(step, "sequence-id", &sequence_id, "position", &position, "subject", &subject, "channel", &channel, NULL);
+			if (sequence_id != venture_entity_get_id(sequence) || channel != 0)
+				continue;
+			for (k = 0; k < deliveries->len; k++)
+			{
+				VentureEntity *delivery = g_ptr_array_index(deliveries, k);
+				VentureEntity *enrollment;
+				gint64 step_id, delivery_id, enrollment_id;
+				gint state;
+				g_object_get(delivery, "step-id", &step_id, "state", &state, "enrollment-id", &enrollment_id, NULL);
+				delivery_id = venture_entity_get_id(delivery);
+				if (step_id != venture_entity_get_id(step) || state != 1)
+					continue;
+				sent++;
+				opens += g_hash_table_contains(opened, &delivery_id);
+				clicks += g_hash_table_contains(clicked, &delivery_id);
+				enrollment = g_hash_table_lookup(by_enrollment, &enrollment_id);
+				if (enrollment != NULL)
+				{
+					g_autofree gchar *reason = NULL;
+					const gint64 *last = g_hash_table_lookup(last_sent, &enrollment_id);
+					g_object_get(enrollment, "exit-reason", &reason, NULL);
+					replies += g_strcmp0(reason, "reply") == 0 && last != NULL && *last == delivery_id;
+				}
+			}
+			venture_report_result_begin_row(result);
+			venture_report_result_set_text(result, "sequence", name);
+			venture_report_result_set_number(result, "step", position);
+			venture_report_result_set_text(result, "subject", subject);
+			venture_report_result_set_number(result, "sent", sent);
+			venture_report_result_set_number(result, "opened", opens);
+			venture_report_result_set_number(result, "clicked", clicks);
+			venture_report_result_set_number(result, "replies", replies);
+			venture_report_result_set_number(result, "open_rate", sent > 0 ? 100 * opens / sent : 0);
+			venture_report_result_set_number(result, "click_rate", sent > 0 ? 100 * clicks / sent : 0);
+			venture_report_result_set_number(result, "reply_rate", sent > 0 ? 100 * replies / sent : 0);
+		}
+	}
+	return g_steal_pointer(&result);
+}
+
 void
 venture_sequences_register_reports(VentureReportRegistry *registry)
 {
@@ -126,4 +266,6 @@ venture_sequences_register_reports(VentureReportRegistry *registry)
 		"Sequence performance", "Current outcomes of enrollments started during the selected period", performance)));
 	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("sequence_failures",
 		"Sequence failures", "Failed deliveries scheduled during the selected period", failures)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("sequence_engagement",
+		"Sequence engagement", "Sent, opened, clicked and replied counts and rates per step for deliveries scheduled in the period", engagement)));
 }

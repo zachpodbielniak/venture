@@ -875,6 +875,9 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_booking_page_get_type,
 		venture_crm_import_get_type,
 		venture_crm_import_row_get_type,
+		venture_deal_line_get_type,
+		venture_sequence_link_get_type,
+		venture_sequence_tracking_event_get_type,
 	};
 	gsize i;
 

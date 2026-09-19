@@ -283,6 +283,8 @@ $(OUTDIR)/tests/test-sales-tax: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-backup-schedule: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-customer-health: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-money-calendar: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-deal-lines: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-sequence-tracking: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery

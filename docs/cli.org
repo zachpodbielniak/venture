@@ -492,6 +492,13 @@ See [[file:banking.org][Banking]] for import mappings and action parameters.
 Fill its required fields and loss reason first with ordinary =update deal=.
 Generic updates cannot change =stage=, =stage_id= or =closed_at=.
 See [[file:pipelines.org][Sales pipelines]] for configuration and forecasting.
+
+=venturectl deal quote ID= copies the deal's =deal_line= records into a
+draft quote linked to the deal, or revises the deal's latest quote when one
+exists, through =VentureDealService=. It needs the =quotes= module and at
+least one line. Manage lines with ordinary =create= / =update= / =delete
+deal_line= after =describe deal_line=; the deal's =value= is derived from
+them while any exist and cannot be updated directly.
 * Follow-up sequences
 
 =sequence enroll ID contact_id=ID [field=value ...]= enrolls through the
@@ -511,6 +518,10 @@ Configure sequences and their steps with ordinary =create= / =update=
 commands after =describe sequence= and =describe sequence_step=. Sending
 hours and weekdays are interpreted in the sequence timezone. See
 [[file:sequences.org][follow-up sequences]] for checkpoints and the adapter contract.
+
+=report sequence_engagement [PERIOD]= lists sent, opened, clicked and reply
+counts and rates per step. Tracking is on only when =update organization ID
+sequence_tracking=true= and the sequence's =tracking= flag are both set.
 * Record actions
 
 =venturectl act TYPE ID ACTION [key=value ...]= discovers the action and
