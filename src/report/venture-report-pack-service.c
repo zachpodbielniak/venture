@@ -351,3 +351,20 @@ venture_report_pack_service_run_due(VentureReportPackService *self, VentureConte
 	}
 	return ran;
 }
+
+/* The schedule grammar and due test are shared with other scheduled work
+ * (backups) so every sweep in the system reads a schedule the same way. */
+gboolean
+venture_report_pack_schedule_validate(const gchar *schedule, GError **error)
+{
+	gint fields[5];
+	g_return_val_if_fail(schedule != NULL, FALSE);
+	return schedule_fields(schedule, fields, error);
+}
+
+gint
+venture_report_pack_schedule_due(const gchar *schedule, GDateTime *last, GDateTime *as_of, GError **error)
+{
+	g_return_val_if_fail(as_of != NULL, -1);
+	return pack_is_due(schedule, last, as_of, error);
+}

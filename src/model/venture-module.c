@@ -604,9 +604,11 @@ static GType (*const quotes_types[]) (void) = {
 
 static GType (*const venture_module_leads_types[]) (void) = {
 	venture_lead_get_type, venture_lead_form_get_type,
-	venture_lead_assignment_rule_get_type, NULL
+	venture_lead_assignment_rule_get_type,
+	venture_lead_routing_rule_get_type, venture_lead_scoring_rule_get_type,
+	venture_lead_score_history_get_type, NULL
 };
-static const gchar *const venture_module_reports_leads[] = { "lead_sources", "lead_response_time", "leads_recycled_due", NULL };
+static const gchar *const venture_module_reports_leads[] = { "lead_sources", "lead_response_time", "leads_recycled_due", "lead_routing", "lead_scoring", NULL };
 static const gchar *const venture_module_requires_leads[] = { "crm", NULL };
 static GType (*const venture_module_activities_types[]) (void) = {
 	venture_activity_get_type, venture_activity_type_get_type, NULL
@@ -701,7 +703,7 @@ static GType (*const statements_types[]) (void) = {
 	venture_saved_report_get_type, venture_report_pack_get_type,
 	venture_accounting_dimension_get_type, NULL
 };
-static GType (*const backup_types[]) (void) = { venture_accounting_backup_get_type, NULL };
+static GType (*const backup_types[]) (void) = { venture_accounting_backup_get_type, venture_backup_schedule_get_type, venture_backup_run_get_type, NULL };
 static GType (*const venture_module_tax_filing_types[]) (void) = {
 	venture_tax_filing_get_type, venture_contractor_tax_form_get_type,
 	venture_contractor_tax_pack_get_type, NULL
@@ -763,6 +765,14 @@ static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };
 static const gchar *const dunning_suggests[] = { "activities", "recurring", NULL };
 static GType (*const dunning_types[]) (void) = { venture_dunning_policy_get_type, venture_dunning_event_get_type, NULL };
 static const gchar *const dunning_reports[] = { "collections", "dunning_worklist", NULL };
+static GType (*const sales_tax_types[]) (void) = { venture_tax_jurisdiction_get_type, venture_tax_rule_get_type, NULL };
+static const gchar *const sales_tax_requires[] = { "receivables", NULL };
+static const gchar *const sales_tax_reports[] = { "sales_tax_return", NULL };
+static const gchar *const pnl_cuts_requires[] = { "receivables", "payables", NULL };
+static const gchar *const pnl_cuts_suggests[] = { "leads", "recurring", "banking", "headline", NULL };
+static const gchar *const pnl_cuts_reports[] = {
+	"revenue_by_customer", "spend_by_vendor", "recurring_costs", "cash_outlook", NULL
+};
 
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
@@ -1069,6 +1079,17 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"headline", "Headline metrics",
 		"CAC, churn, LTV, LTV:CAC and cohort reports, and the headline home page.",
 		headline_requires, headline_suggests, headline_types, headline_reports, NULL, FALSE
+	},
+	{
+		"sales_tax", "Sales tax",
+		"Jurisdiction rates picked by customer address, frozen on invoice lines, and the sales tax return.",
+		sales_tax_requires, NULL, sales_tax_types, sales_tax_reports, NULL, FALSE
+	},
+	{
+		"pnl_cuts", "P&L cuts",
+		"Revenue by customer and source, spend by vendor and category, the "
+		"recurring-cost run-rate and the weekly cash outlook.",
+		pnl_cuts_requires, pnl_cuts_suggests, NULL, pnl_cuts_reports, NULL, FALSE
 	}
 };
 

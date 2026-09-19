@@ -2029,6 +2029,130 @@ test_inventory_sold_blocks_rollback(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(g_ptr_array_index(blockers, 0), "7 of the 10 units imported are still on hand"));
 }
 
+/* Issue #84: refuses a row whose party cannot be named from the payload and
+ * proves nothing was written for it: no company, no document, no journal,
+ * and the batch still in preview. @row_id and @field are what the refusal
+ * must name, @rule its rule code. */
+static void
+assert_party_refused(Fixture *f, const gchar *json, const gchar *rule, const gchar *row_id, const gchar *field)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) cutover = NULL;
+	g_autofree gchar *state = NULL;
+	g_autofree gchar *rule_text = g_strdup_printf("(rule: %s)", rule);
+	guint companies = count_type(f, VENTURE_TYPE_COMPANY);
+	cutover = import_payload(f, json, FALSE, &error);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	if (strstr(error->message, rule_text) == NULL || strstr(error->message, row_id) == NULL
+		|| strstr(error->message, field) == NULL)
+		g_error("refusal \"%s\" lacks \"%s\", \"%s\" or \"%s\"", error->message, rule_text, row_id, field);
+	g_assert_cmpuint(count_type(f, VENTURE_TYPE_COMPANY), ==, companies);
+	g_assert_cmpuint(count_type(f, VENTURE_TYPE_INVOICE), ==, 0);
+	g_assert_cmpuint(count_type(f, VENTURE_TYPE_VENDOR_BILL), ==, 0);
+	g_assert_cmpuint(count_type(f, VENTURE_TYPE_CUSTOMER_CREDIT), ==, 0);
+	g_assert_cmpuint(count_type(f, VENTURE_TYPE_VENDOR_CREDIT), ==, 0);
+	g_assert_cmpuint(count_type(f, VENTURE_TYPE_JOURNAL), ==, 0);
+	g_object_get(cutover, "state", &state, NULL);
+	g_assert_cmpstr(state, ==, "preview");
+}
+
+#define PARTY_HEAD \
+	"{\"source\":\"zoho_books\",\"cutoff\":\"2026-01-01\",\"currency\":\"USD\"," \
+	"\"customers\":[{\"source_id\":\"cust-1\",\"name\":\"Acme\"}]," \
+	"\"vendors\":[{\"source_id\":\"vend-1\",\"name\":\"Supplier\"}],"
+
+/* Issue #84, rule open-ar-customer: an open AR row with no customer, an
+ * empty customer_source_id, or one the payload's customers[] does not carry
+ * is refused rather than invoiced to an invented company. */
+static void
+test_party_open_ar(Fixture *f, gconstpointer data)
+{
+	(void)data;
+	assert_party_refused(f, PARTY_HEAD
+		"\"open_ar\":[{\"source_id\":\"inv-9\",\"number\":\"OB-9\",\"net\":\"100 USD\",\"date\":\"2025-12-15\"}]}",
+		"open-ar-customer", "inv-9", "customer_source_id");
+	assert_party_refused(f, PARTY_HEAD
+		"\"open_ar\":[{\"source_id\":\"inv-8\",\"customer_source_id\":\"\",\"number\":\"OB-8\","
+		"\"net\":\"100 USD\",\"date\":\"2025-12-15\"}]}",
+		"open-ar-customer", "inv-8", "customer_source_id");
+	assert_party_refused(f, PARTY_HEAD
+		"\"open_ar\":[{\"source_id\":\"inv-7\",\"customer_source_id\":\"cust-404\",\"number\":\"OB-7\","
+		"\"net\":\"100 USD\",\"date\":\"2025-12-15\"}]}",
+		"open-ar-customer", "inv-7", "customer_source_id");
+}
+
+/* Issue #84, rule open-ap-vendor: the same for bills and vendors[]. */
+static void
+test_party_open_ap(Fixture *f, gconstpointer data)
+{
+	(void)data;
+	assert_party_refused(f, PARTY_HEAD
+		"\"open_ap\":[{\"source_id\":\"bill-9\",\"number\":\"B-9\",\"date\":\"2025-12-10\","
+		"\"lines\":[{\"amount\":\"100 USD\"}]}]}",
+		"open-ap-vendor", "bill-9", "vendor_source_id");
+	assert_party_refused(f, PARTY_HEAD
+		"\"open_ap\":[{\"source_id\":\"bill-8\",\"vendor_source_id\":\"\",\"number\":\"B-8\",\"date\":\"2025-12-10\","
+		"\"lines\":[{\"amount\":\"100 USD\"}]}]}",
+		"open-ap-vendor", "bill-8", "vendor_source_id");
+	assert_party_refused(f, PARTY_HEAD
+		"\"open_ap\":[{\"source_id\":\"bill-7\",\"vendor_source_id\":\"vend-404\",\"number\":\"B-7\","
+		"\"date\":\"2025-12-10\",\"lines\":[{\"amount\":\"100 USD\"}]}]}",
+		"open-ap-vendor", "bill-7", "vendor_source_id");
+}
+
+/* Issue #84, rule credit-party: a credit names its customer or vendor from
+ * the payload; a missing, empty or unknown id is refused for either kind. */
+static void
+test_party_credit(Fixture *f, gconstpointer data)
+{
+	(void)data;
+	assert_party_refused(f, PARTY_HEAD
+		"\"credits\":[{\"source_id\":\"cr-9\",\"kind\":\"customer\",\"date\":\"2025-12-20\",\"amount\":\"1 USD\"}]}",
+		"credit-party", "cr-9", "customer_source_id");
+	assert_party_refused(f, PARTY_HEAD
+		"\"credits\":[{\"source_id\":\"cr-8\",\"kind\":\"customer\",\"customer_source_id\":\"cust-404\","
+		"\"date\":\"2025-12-20\",\"amount\":\"1 USD\"}]}",
+		"credit-party", "cr-8", "customer_source_id");
+	assert_party_refused(f, PARTY_HEAD
+		"\"credits\":[{\"source_id\":\"cr-7\",\"kind\":\"vendor\",\"date\":\"2025-12-20\",\"amount\":\"1 USD\"}]}",
+		"credit-party", "cr-7", "vendor_source_id");
+	assert_party_refused(f, PARTY_HEAD
+		"\"credits\":[{\"source_id\":\"cr-6\",\"kind\":\"vendor\",\"vendor_source_id\":\"\","
+		"\"date\":\"2025-12-20\",\"amount\":\"1 USD\"}]}",
+		"credit-party", "cr-6", "vendor_source_id");
+	assert_party_refused(f, PARTY_HEAD
+		"\"credits\":[{\"source_id\":\"cr-5\",\"kind\":\"vendor\",\"vendor_source_id\":\"vend-404\","
+		"\"date\":\"2025-12-20\",\"amount\":\"1 USD\"}]}",
+		"credit-party", "cr-5", "vendor_source_id");
+}
+
+/* Issue #84: the company's name comes from the payload, never from the
+ * source id. A customers[] entry without a name does not name a party, and
+ * the preview lists the refusal on the row like any other row problem. */
+static void
+test_party_name_required(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) preview = NULL;
+	(void)data;
+	assert_party_refused(f,
+		"{\"source\":\"zoho_books\",\"cutoff\":\"2026-01-01\",\"currency\":\"USD\","
+		"\"customers\":[{\"source_id\":\"cust-2\"}],"
+		"\"open_ar\":[{\"source_id\":\"inv-6\",\"customer_source_id\":\"cust-2\",\"number\":\"OB-6\","
+		"\"net\":\"100 USD\",\"date\":\"2025-12-15\"}]}",
+		"open-ar-customer", "inv-6", "customer_source_id");
+	preview = preview_payload(f, PARTY_HEAD
+		"\"open_ar\":[{\"source_id\":\"inv-5\",\"customer_source_id\":\"cust-404\",\"number\":\"OB-5\","
+		"\"net\":\"100 USD\",\"date\":\"2025-12-15\"}],"
+		"\"open_ap\":[{\"source_id\":\"bill-5\",\"number\":\"B-5\",\"date\":\"2025-12-10\","
+		"\"lines\":[{\"amount\":\"100 USD\"}]}],"
+		"\"credits\":[{\"source_id\":\"cr-4\",\"kind\":\"vendor\",\"vendor_source_id\":\"vend-404\","
+		"\"date\":\"2025-12-20\",\"amount\":\"1 USD\"}]}");
+	assert_row_exception(f, preview, "open_ar", 0, "(rule: open-ar-customer)");
+	assert_row_exception(f, preview, "open_ap", 0, "(rule: open-ap-vendor)");
+	assert_row_exception(f, preview, "credit", 0, "(rule: credit-party)");
+	g_assert_cmpuint(count_type(f, VENTURE_TYPE_COMPANY), ==, 0);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2070,5 +2194,9 @@ main(int argc, char **argv)
 	g_test_add("/cutover/csv-payload", Fixture, NULL, setup, test_csv_payload, teardown);
 	g_test_add("/cutover/inventory-on-hand", Fixture, NULL, setup, test_inventory_on_hand, teardown);
 	g_test_add("/cutover/inventory-sold-blocks-rollback", Fixture, NULL, setup, test_inventory_sold_blocks_rollback, teardown);
+	g_test_add("/cutover/party-open-ar", Fixture, NULL, setup, test_party_open_ar, teardown);
+	g_test_add("/cutover/party-open-ap", Fixture, NULL, setup, test_party_open_ap, teardown);
+	g_test_add("/cutover/party-credit", Fixture, NULL, setup, test_party_credit, teardown);
+	g_test_add("/cutover/party-name-required", Fixture, NULL, setup, test_party_name_required, teardown);
 	return g_test_run();
 }

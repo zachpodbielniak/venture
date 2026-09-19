@@ -53,3 +53,101 @@ Its document packs lack the relationships needed for historical restoration and
 remain refused, as do versions 1 and 2. Export a fresh version 4 snapshot from
 the source database to restore document history; missing evidence cannot be
 recovered by upgrading the JSON version number.
+
+* Scheduled backups
+
+A =backup_schedule= is an ordinary record of the =backup= module, edited
+through the generic record surfaces (REST, CLI, the record form). It names a
+=scope=, =organization= for a version 4 accounting snapshot of the schedule's
+own organization or =installation= for a copy of the whole database; a
+=schedule= in the grammar scheduled report packs use (=daily=, or five
+numeric/=*= cron fields evaluated in UTC, empty for manual-only); a
+=retention= count; a =destination= directory; and a =verify= flag. Zero
+retention and an empty destination fall back to =backup.retention= and
+=backup.directory= from the [[file:configuration.org][configuration]], which
+default to seven copies under the state directory's =backups=. Saving a
+schedule with an unparseable expression, an unknown scope or a negative
+retention is refused. Both tables come from the field tables; migration
+=000372_backup_schedules= verifies they are present together, or absent
+when the module is off, and backfills nothing.
+
+=VentureBackupScheduleService= (=src/backup/venture-backup-schedule-service.c=)
+is the one place a scheduled backup is written, verified and pruned. Its
+sweep, =venture_backup_schedule_service_run_due=, dispatches every due
+schedule the way report packs are dispatched, catching up once on the
+scheduled day and stamping =last-run-at=. Automation reaches it as
+=venture->backups_run("ORG")= (=0= for every organization); there is no
+background thread, so something must call the sweep -- a pod automation, or
+=venturectl backup run= from cron.
+
+Every attempt records a =backup_run=: =started-at=, =finished-at=, =path=,
+=size=, =sha256=, =status= (=running=, =succeeded=, =failed= or =pruned=)
+and a =message= when it failed. Runs are evidence and are written only by
+the service; generic writes and deletes of a =backup_run= are refused by
+name. An organization run writes the snapshot as
+=organization-<org>-<stamp>-<run>.json=; an installation run writes
+=installation-<org>-<stamp>-<run>.sqlite= using SQLite's =VACUUM INTO=, a
+consistent copy taken in-process. On PostgreSQL an installation schedule
+records a =failed= run saying so: =pg_dump= is the tool there, and the
+schedule's destination directory is where its output belongs.
+
+After a successful run the schedule's successful backups beyond =retention=
+are pruned oldest-first: the file is removed and the run keeps its record
+with status =pruned=. Pruning only ever follows a success. A failed run
+records its status and deletes nothing, however many files there are.
+
+Off-site transport is not implemented. The destination directory is the
+hand-off: point rsync, restic or an S3 sync at it, and keep the =backup_run=
+row as the inventory of what should be there and what it should hash to.
+
+* Verification
+
+=venturectl backup verify RUN= -- =POST /api/v1/backup_run/:id/actions/verify=,
+or the Verify button on the Backups page -- proves a backup restores. The
+file's SHA-256 is recomputed and must match the run; a changed file is a
+refusal, not a verdict. An organization snapshot is then restored through
+=venture_backup_service_restore= into a fresh, empty, in-memory SQLite
+database and compared with the live organization: every account's balance
+per currency from each side's own posting service (the trial balance), the
+debit and credit totals those balances add up to (the ledger totals), and
+the row count of every record type the archive carries, soft-deleted rows
+included (the document counts). An installation copy is verified by opening
+a scratch copy of the file -- opening SQLite rewrites its header, and the
+retained artefact is never touched -- and running the same comparison for
+every organization, leaving out the backup module's own records and the
+audit trail, which the act of backing up writes after the copy is taken.
+
+The verdict, =tie= or =mismatch=, is recorded on the run with =verified-at=
+and a JSON =report= holding each comparison and a =mismatches= list in plain
+words ("account 4000 USD: live -75.00 USD, restored -50.00 USD"). A mismatch
+is a statement about the live books having moved since the snapshot as much
+as about the snapshot; verifying immediately after a run ties, and a
+schedule with =verify= set does exactly that inside the sweep. A run that
+never succeeded or whose file is gone cannot be verified. The live database
+is never written by a verification.
+
+* The restore drill
+
+=venturectl backup restore-drill [run_id=N] [organization_id=N] [name=...]=
+-- =POST /api/v1/backup_run/0/actions/restore_drill= -- is the same restore
+and tie-out kept as its own record: a =backup_run= of kind =drill= naming
+its =source-run-id=, with the verdict and the full report retained the way a
+scheduled report pack keeps its last output. Without =run_id= the latest
+succeeded backup of the organization is drilled. Drills never count toward
+retention and are never pruned, so the evidence that a restore worked
+outlives the file it restored.
+
+* The Backups page
+
+=/settings/backups=, linked from Settings, lists the active organization's
+schedules and runs with their sizes, digests and verification verdicts.
+Anyone signed in may read it. Run now, Verify and Restore drill are shown
+to, and accepted from, owners and admins only; the actions behind the REST
+routes carry the same =admin= gate, so an accountant (editor) or a read-only
+viewer cannot trigger a backup from any surface.
+
+The schedule and run ids arrive in a form, so each is checked against the
+active organization before anything runs: the service reads the organization
+off the record it is handed, and without that check an admin of one
+organization could have snapshotted, verified or drilled another's by posting
+its number. A record from elsewhere is reported as not found.

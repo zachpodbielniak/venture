@@ -793,6 +793,18 @@ require_before_cutoff(Plan *plan, Row *row, const gchar *name, GDateTime *date)
 	}
 }
 
+/* The rule code a row's party problem carries: one per section, so the
+ * refusal names the row and the field it needs (issue #84). */
+static const gchar *
+party_rule(Row *row)
+{
+	if (g_strcmp0(row->section, "open_ar") == 0)
+		return "open-ar-customer";
+	if (g_strcmp0(row->section, "open_ap") == 0)
+		return "open-ap-vendor";
+	return "credit-party";
+}
+
 static void
 parse_party(Plan *plan, Row *row, JsonObject *object, gboolean vendor)
 {
@@ -800,8 +812,8 @@ parse_party(Plan *plan, Row *row, JsonObject *object, gboolean vendor)
 	row->party_source = field_text(plan, row, object, "", vendor ? "vendor_source_id" : "customer_source_id", FALSE);
 	row->party_name = field_text(plan, row, object, "", vendor ? "vendor_name" : "customer_name", FALSE);
 	if (row->party_source == NULL && row->party_name == NULL)
-		row_error(plan, row, "needs %s or %s", vendor ? "vendor_source_id" : "customer_source_id",
-			vendor ? "vendor_name" : "customer_name");
+		row_error(plan, row, "needs %s or %s (rule: %s)", vendor ? "vendor_source_id" : "customer_source_id",
+			vendor ? "vendor_name" : "customer_name", party_rule(row));
 }
 
 /* One total rule for import and reconcile. amount is the gross document
