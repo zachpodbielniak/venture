@@ -518,7 +518,7 @@ static const gchar *const venture_module_reports_outreach[] = {
 };
 static const gchar *const venture_module_reports_ideas[] = { "ideas", NULL };
 static const gchar *const venture_module_reports_tickets[] = {
-	"support", NULL
+	"support", "support_rollup", NULL
 };
 static const gchar *const venture_module_reports_factory[] = {
 	"releases", "lead_time", "incidents", "delivery", NULL

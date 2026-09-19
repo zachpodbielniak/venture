@@ -1869,9 +1869,11 @@ test_home_cards(Fixture *f, gconstpointer unused)
 	card = json_array_get_object_element(array, 0);
 	g_assert_cmpint(json_object_get_int_member(card, "trend"), ==, 1);
 	g_assert_cmpstr(line_value(card, "Bank cash"), ==, "$1,234.00");
-	/* One open ticket on the support card. */
+	/* The support card's number is the support cost, n/a until a rate is
+	 * set; the one open ticket is the line beneath it. */
 	card = card_with_key(array, "support");
-	g_assert_cmpstr(json_object_get_string_member(card, "value"), ==, "1");
+	g_assert_cmpstr(json_object_get_string_member(card, "value"), ==, "n/a");
+	g_assert_cmpstr(line_value(card, "Open tickets"), ==, "1");
 
 	/* The tickets module off: nobody counted, so n/a -- not zero. */
 	venture_config_set_module_enabled(f->config, "tickets", FALSE);

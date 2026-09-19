@@ -2637,8 +2637,8 @@ venture_web_api_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -2705,6 +2705,10 @@ static gchar *
 venture_web_render_headline_home(VentureWebServer *self, HtmxRequest *request);
 static void
 venture_web_customer_health_controls(HtmxRequest *request, VentureReport *report, GString *content);
+
+static void
+venture_web_support_rollup_append_company_block(VentureWebServer *self,
+	HtmxRequest *request, GString *content, VentureEntity *record);
 
 /*
  * GET / - the home page: a dashboard marked as home, if the viewer may
@@ -5818,8 +5822,8 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -5853,7 +5857,7 @@ venture_web_ui_report(
 
 	{
 		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
-		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", NULL };
+		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", NULL };
 		guint i;
 		for (i = 0; names[i] != NULL; i++)
 		{
@@ -5917,7 +5921,7 @@ venture_web_ui_report(
 				g_string_append_printf(content, "<input type=\"hidden\" name=\"organization_id\" value=\"%" G_GINT64_FORMAT "\">",
 					venture_json_object_get_int(report_options, "organization_id", 0));
 			{
-				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", NULL };
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", NULL };
 				guint i;
 				/* Preserve the question when changing only its cutoff. */
 				for (i = 0; names[i] != NULL; i++)
@@ -9153,6 +9157,10 @@ venture_web_ui_detail(
 	}
 
 	venture_customer_health_append_block(self->context, content, record);
+	/* What supporting a company costs this month, from the same function
+	 * the home page's Support card reads. */
+	venture_web_support_rollup_append_company_block(self, request, content,
+	                                                record);
 
 	/* What happened, last. The audit log has its own page; this is the
 	 * record's own story, with its conversation woven in. */
@@ -27887,6 +27895,7 @@ venture_web_api_ticket_draft(
 #include "money-calendar/venture-money-calendar-web.inc"
 #include "crm-import/venture-crm-import-web.inc"
 #include "dedupe/venture-dedupe-web.inc"
+#include "report/venture-support-rollup-web.inc"
 
 VentureWebServer *
 venture_web_server_new(

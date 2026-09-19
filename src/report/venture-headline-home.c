@@ -899,15 +899,23 @@ headline_card_ltv_cac(
 		lines, G_N_ELEMENTS(lines), NULL, 0, error);
 }
 
+/*
+ * The card's number is what supporting customers cost in the period, read
+ * through venture_support_rollup_cost() -- the same function a company's
+ * page reads its line from, so the two cannot disagree. The queue (open
+ * now, past a service level) and the tickets raised are the lines under
+ * it.
+ */
 static void
 headline_card_support(HeadlineRender *render)
 {
 	g_autoptr(VentureReportResult) support = NULL;
 	g_autoptr(VentureMetric) open_now = NULL;
-	g_autoptr(VentureMetric) open_before = NULL;
 	g_autoptr(VentureMetric) breaches = NULL;
+	g_autoptr(VentureMetric) cost = NULL;
+	g_autoptr(VentureMetric) cost_before = NULL;
 	g_autoptr(GError) error = NULL;
-	HeadlineLine lines[2] = { { NULL, NULL, NULL } };
+	HeadlineLine lines[3] = { { NULL, NULL, NULL } };
 	gint64 open_count = 0;
 	gint64 breached_count = 0;
 	gint64 open_at_start = 0;
@@ -920,27 +928,41 @@ headline_card_support(HeadlineRender *render)
 		{
 			open_now = venture_metric_new_count("open", "Open tickets",
 			                                    open_count);
-			open_before = venture_metric_new_count("open", "Open tickets",
-			                                       open_at_start);
 			breaches = venture_metric_new_count("breaches",
 			                                    "Service levels missed",
 			                                    breached_count);
 			support = headline_run(render, "support", render->period, &error);
 		}
+
+		if (NULL == error)
+		{
+			cost = venture_support_rollup_cost(render->context,
+				venture_headline_snapshot_get_options(render->snapshot),
+				render->period, &error);
+
+			if ((NULL != cost) && (NULL != render->previous))
+				cost_before = venture_support_rollup_cost(render->context,
+					venture_headline_snapshot_get_options(render->snapshot),
+					render->previous, NULL);
+		}
 	}
 
 	/* With the tickets module off every figure is n/a: nobody counted
 	 * tickets, which is not the same as there being none. */
-	lines[0].label = "Service levels missed";
-	lines[0].metric = breaches;
-	lines[1].label = "Raised in period";
-	lines[1].metric = headline_metric(support, "tickets");
+	lines[0].label = "Open tickets";
+	lines[0].metric = open_now;
+	lines[1].label = "Service levels missed";
+	lines[1].metric = breaches;
+	lines[2].label = "Raised in period";
+	lines[2].metric = headline_metric(support, "tickets");
 
-	headline_add_card(render, "support", "Support", "support",
-		"Tickets open now and the ones among them past a service level, "
-		"and tickets raised in the period. The arrow compares the queue "
-		"now with the queue when the period began.",
-		open_now, open_before, FALSE, lines, G_N_ELEMENTS(lines), NULL, 0, error);
+	headline_add_card(render, "support", "Support", "support_rollup",
+		"What supporting customers cost in the period: agent minutes logged "
+		"on the tickets raised in it at the support hourly rate, plus the "
+		"per-ticket rate for tickets with no minutes, from the support "
+		"rollup. Beneath it, tickets open now, the ones among them past a "
+		"service level, and tickets raised in the period.",
+		cost, cost_before, FALSE, lines, G_N_ELEMENTS(lines), NULL, 0, error);
 }
 
 /* A range as the text that parses back to it: "all" when unbounded, else

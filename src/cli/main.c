@@ -1147,12 +1147,18 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "compare_to")) && (0 != g_strcmp0(parts[0], "account_id")) &&
 				 (0 != g_strcmp0(parts[0], "basis")) && (0 != g_strcmp0(parts[0], "dimension")) &&
 				 (0 != g_strcmp0(parts[0], "vendor_id")) && (0 != g_strcmp0(parts[0], "pipeline_id")) && (0 != g_strcmp0(parts[0], "owner")) &&
-				 (0 != g_strcmp0(parts[0], "days")) && (0 != g_strcmp0(parts[0], "by")) && (0 != g_strcmp0(parts[0], "weeks")) &&
+				 (0 != g_strcmp0(parts[0], "days")) &&
+				 (0 != g_strcmp0(parts[0], "by")) &&
+				 (0 != g_strcmp0(parts[0], "weeks")) &&
 				 (0 != g_strcmp0(parts[0], "band_size")) &&
-				 (0 != g_strcmp0(parts[0], "band")) && (0 != g_strcmp0(parts[0], "sort"))))
+				 (0 != g_strcmp0(parts[0], "band")) &&
+				 (0 != g_strcmp0(parts[0], "sort")) &&
+				 (0 != g_strcmp0(parts[0], "min_tickets")) &&
+				 (0 != g_strcmp0(parts[0], "company")) &&
+				 (0 != g_strcmp0(parts[0], "product"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -3227,6 +3233,7 @@ venture_cli_command_mcp(
 #include "money-calendar/venture-money-calendar-cli.inc"
 #include "crm-import/venture-crm-import-cli.inc"
 #include "dedupe/venture-dedupe-cli.inc"
+#include "report/venture-support-rollup-cli.inc"
 
 /* --- Entry point --------------------------------------------------------- */
 
@@ -3323,9 +3330,10 @@ main(
 	g_autofree gchar *mail_html = NULL;
 	g_autofree gchar *mail_limit = NULL;
 	g_autofree gchar *sequence_as_of = NULL;
-	g_autofree gchar *calendar_from = NULL;
-	g_autofree gchar *calendar_to = NULL;
+	g_autofree gchar *span_from = NULL;
+	g_autofree gchar *span_to = NULL;
 	g_autofree gchar *calendar_kind = NULL;
+	g_autofree gchar *support_sort = NULL;
 	gboolean show_version = FALSE;
 	gboolean show_license = FALSE;
 	gboolean quiet = FALSE;
@@ -3364,9 +3372,17 @@ main(
 		  NULL, NULL },
 		{ "dry-run", 0, 0, G_OPTION_ARG_NONE, &dry_run,
 		  "post backfill or billing: validate without retaining writes", NULL },
-		{ "from", 0, 0, G_OPTION_ARG_STRING, &calendar_from, "money calendar: first day", "DATE" },
-		{ "to", 0, 0, G_OPTION_ARG_STRING, &calendar_to, "money calendar: last day (inclusive)", "DATE" },
+		/* One --from/--to pair serves every span-taking verb. Registering
+		 * it twice made GOption keep the first and leave the second
+		 * variable NULL, so support rollup refused a span the user had
+		 * given. */
+		{ "from", 0, 0, G_OPTION_ARG_STRING, &span_from,
+		  "money calendar, support rollup: first day", "DATE" },
+		{ "to", 0, 0, G_OPTION_ARG_STRING, &span_to,
+		  "money calendar, support rollup: last day (inclusive)", "DATE" },
 		{ "kind", 0, 0, G_OPTION_ARG_STRING, &calendar_kind, "money calendar: one kind only", "KIND" },
+		{ "sort", 0, 0, G_OPTION_ARG_STRING, &support_sort,
+		  "support rollup: column to order by, - for descending", "COLUMN" },
 		{ NULL }
 	};
 
@@ -3498,6 +3514,8 @@ main(
 		"  dedupe dismiss ID            close a candidate as not a duplicate\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
+		"  support rollup --from DATE --to DATE [--sort [-]COLUMN] [min_tickets=N] [company=ID] [product=NAME] [group_by=product]\n"
+		"                               support cost and ticket volume per customer\n"
 		"\n"
 		"Examples:\n"
 		"  venturectl types sale\n"
@@ -3798,11 +3816,14 @@ main(
 	else if (0 == g_strcmp0(args[0], "customers"))
 		result = venture_cli_command_customers(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "money"))
-		result = venture_cli_command_money(&cli, args, calendar_from, calendar_to, calendar_kind, sequence_as_of, &error);
+		result = venture_cli_command_money(&cli, args, span_from, span_to, calendar_kind, sequence_as_of, &error);
 	else if (0 == g_strcmp0(args[0], "crm"))
 		result = venture_cli_command_crm(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dedupe"))
 		result = venture_cli_command_dedupe(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "support"))
+		result = venture_cli_command_support(&cli, args, span_from,
+		                                     span_to, support_sort, &error);
 	else
 	{
 		g_printerr("venturectl: \"%s\" is not a command. Try --help.\n",

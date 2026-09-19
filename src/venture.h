@@ -276,6 +276,7 @@
 #include "money-calendar/venture-money-calendar.h"
 #include "crm-import/venture-crm-import-service.h"
 #include "dedupe/venture-dedupe-service.h"
+#include "report/venture-support-rollup.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 
