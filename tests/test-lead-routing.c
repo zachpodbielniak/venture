@@ -607,7 +607,7 @@ test_reports(Fixture *f, gconstpointer data)
 	converted = venture_lead_service_convert(venture_database_get_lead_service(f->db), a, NULL, NULL, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(converted);
-	routing = run_report(f, "routing");
+	routing = run_report(f, "lead_routing");
 	g_assert_cmpuint(venture_report_result_get_row_count(routing), ==, 1);
 	g_assert_cmpstr(text(routing, 0, "rule"), ==, "Web");
 	g_assert_cmpstr(text(routing, 0, "owner"), ==, "alice");
@@ -615,7 +615,7 @@ test_reports(Fixture *f, gconstpointer data)
 	g_assert_cmpfloat(metric(routing, "routed"), ==, 2);
 	g_assert_cmpfloat(metric(routing, "unrouted"), ==, 1);
 	(void)web;
-	scoring = run_report(f, "scoring");
+	scoring = run_report(f, "lead_scoring");
 	g_assert_cmpuint(venture_report_result_get_row_count(scoring), ==, 2);
 	g_assert_cmpstr(text(scoring, 0, "band"), ==, "0-24");
 	g_assert_cmpfloat(cell(scoring, 0, "count"), ==, 1);
@@ -711,10 +711,10 @@ test_report_http(Fixture *f, gconstpointer data)
 	(void)data; (void)hot;
 	save(f, inquiry);
 	start_http(f);
-	wide = http_get(f, "/api/v1/reports/scoring?period=all&band_size=100", &status);
+	wide = http_get(f, "/api/v1/reports/lead_scoring?period=all&band_size=100", &status);
 	g_assert_cmpuint(status, ==, 200);
 	g_assert_nonnull(strstr(wide, "\"0-99\""));
-	narrow = http_get(f, "/api/v1/reports/scoring?period=all", &status);
+	narrow = http_get(f, "/api/v1/reports/lead_scoring?period=all", &status);
 	g_assert_cmpuint(status, ==, 200);
 	g_assert_nonnull(strstr(narrow, "\"50-74\""));
 	g_assert_null(strstr(narrow, "\"0-99\""));

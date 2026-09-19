@@ -248,11 +248,11 @@ leads whose return date has arrived. It is a live queue, independent of the
 report period. Use the ordinary report metric dashboard widget with report
 =leads_recycled_due= and field =leads_recycled_due=.
 
-=routing= groups leads created in the period by the routing rule and owner
+=lead_routing= groups leads created in the period by the routing rule and owner
 that placed them, one row per pair with the count, and reports =routed=
 and =unrouted= metrics; a lead with neither a rule nor an owner is unrouted.
 
-=scoring= bands scores in steps of =band_size= (default 25; negative scores
+=lead_scoring= bands scores in steps of =band_size= (default 25; negative scores
 share a =<0= band) and reports, per band, the count, converted count and
 conversion rate, with =leads= and =average_score= metrics.
 

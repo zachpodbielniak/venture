@@ -65,7 +65,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =setup= | ledger, periods | accounting_setup, accounting_control_map | |
 | =backup= | ledger | accounting_backup | |
 | =activities= | crm | activity, activity_type; =worklist=, reminders, calendar export and =/worklist= | |
-| =leads= | crm | lead, lead_form, lead_assignment_rule, lead_routing_rule, lead_scoring_rule, lead_score_history; =lead_sources=, =lead_response_time=, =leads_recycled_due=, =routing=, =scoring=; capture, routing, scoring and conversion | orgaccess (round-robin teams) |
+| =leads= | crm | lead, lead_form, lead_assignment_rule, lead_routing_rule, lead_scoring_rule, lead_score_history; =lead_sources=, =lead_response_time=, =leads_recycled_due=, =lead_routing=, =lead_scoring=; capture, routing (round-robin needs orgaccess), scoring and conversion | |
 
 | =quotes= | crm, invoicing | price_list, price_list_item, quote, quote_line, quote_event, quote_delivery, quote_action; =quotes= report and proposal actions | |
 | =assets= | ledger, periods | fixed_asset, depreciation_entry, deferral, deferral_entry, tax_depreciation_entry; =fixed_assets=, =deferrals= | |

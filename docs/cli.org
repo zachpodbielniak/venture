@@ -125,7 +125,7 @@ venturectl dashboard export factory > factory.json
 * Periods
 
 Ledger reports accept =basis=cash= or =basis=accrual= and =dimension=VALUE= alongside the period; these options pass through to the same report implementation used by the web page.
-The leads =scoring= report accepts =band_size=N= for the width of its score bands (default 25).
+The leads =lead_scoring= report accepts =band_size=N= for the width of its score bands (default 25).
 
 Anywhere a period is accepted — a =report= argument, a =period== filter on a
 list — the full grammar is:
