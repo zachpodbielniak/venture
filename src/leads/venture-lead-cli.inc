@@ -9,7 +9,10 @@ venture_cli_command_lead(VentureCli *cli, gchar **args, GError **error)
 	guint i;
 	json_node_take_object(body, options);
 	if (args[1] == NULL || args[2] == NULL ||
-		(g_strcmp0(args[1], "convert") != 0 && g_strcmp0(args[1], "reassign") != 0)) goto invalid;
+		(g_strcmp0(args[1], "convert") != 0 && g_strcmp0(args[1], "reassign") != 0 &&
+		 g_strcmp0(args[1], "reroute") != 0 && g_strcmp0(args[1], "rescore") != 0)) goto invalid;
+	/* Re-route and rescore take no options: the rules are the input. */
+	if ((g_strcmp0(args[1], "reroute") == 0 || g_strcmp0(args[1], "rescore") == 0) && args[3] != NULL) goto invalid;
 	for (i = 0; args[2][i] != '\0'; i++) if (!g_ascii_isdigit(args[2][i])) goto invalid;
 	if (i == 0 || g_ascii_strtoll(args[2], NULL, 10) <= 0) goto invalid;
 	for (i = 3; args[i] != NULL; i++)
@@ -43,6 +46,6 @@ venture_cli_command_lead(VentureCli *cli, gchar **args, GError **error)
 	return 0;
 invalid:
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		"usage: venturectl lead convert ID [deal=yes|no] [company_id=ID] [contact_id=ID] | lead reassign ID [owner=NAME]");
+		"usage: venturectl lead convert ID [deal=yes|no] [company_id=ID] [contact_id=ID] | lead reassign ID [owner=NAME] | leads reroute ID | leads rescore ID");
 	return -1;
 }

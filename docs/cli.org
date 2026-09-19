@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-12]
+#+updated: [2026-09-18]
 #+version: 0.6.0
 
 
@@ -79,6 +79,7 @@ venturectl dunning sweep [as_of=DATE] [organization_id=N] [limit=N]  # templated
 venturectl backup run SCHEDULE_ID        # write a scheduled backup now; admin
 venturectl backup verify RUN_ID          # restore it into an empty database and tie it out
 venturectl backup restore-drill [run_id=N] [organization_id=N] [name=...]  # the same, kept as a named drill
+venturectl sales-tax export period=2026-Q1 [jurisdiction=CODE]   # sales tax return CSV per jurisdiction
 venturectl batch invoice|expense [--dry-run]
 venturectl inbox [--all]                 # what you have been told
 venturectl inbox read ID|all             # mark it read
@@ -128,6 +129,7 @@ venturectl dashboard export factory > factory.json
 * Periods
 
 Ledger reports accept =basis=cash= or =basis=accrual= and =dimension=VALUE= alongside the period; these options pass through to the same report implementation used by the web page.
+The leads =lead_scoring= report accepts =band_size=N= for the width of its score bands (default 25).
 
 Anywhere a period is accepted — a =report= argument, a =period== filter on a
 list — the full grammar is:
@@ -298,6 +300,25 @@ Direct subscription state writes are refused. The assistant can stage
 =billing_request= through its generated create tool; all CLI billing
 actions also honor =--stage=. See [[file:billing.org][SaaS billing]] for prices,
 trial activation, proration, historical report definitions and limitations.
+
+* The cuts of the P&L
+
+No new verb: the four cuts run through =report=. =by= picks the grouping
+where a report offers one and =weeks= sets the cash outlook's horizon.
+
+#+begin_src sh
+venturectl report revenue_by_customer this_quarter
+venturectl report revenue_by_customer 2026-Q1 by=source
+venturectl report spend_by_vendor last_month
+venturectl report spend_by_vendor ytd by=category
+venturectl report recurring_costs
+venturectl report cash_outlook today weeks=12
+venturectl -f csv report cash_outlook this_month > outlook.csv
+#+end_src
+
+The same options pass through =GET /api/v1/reports/NAME?period=...&by=...&weeks=...=
+and the =/reports/NAME= page.
+
 * Transactional mail
 
 =venturectl mail send to=... subject=... body=...= enqueues; =--html FILE=
@@ -337,7 +358,17 @@ approval. =venturectl lead reassign ID [owner=NAME]= assigns explicitly or
 runs matching rules again. Generic =create/update lead= supports capture and
 qualification; converted state and references belong to the service.
 Recycle with =status=recycled unqualified_reason=... recycle_until=YYYY-MM-DD=.
-See [[file:leads.org][leads]] for capture forms, duplicate policies and reports.
+
+=venturectl leads reroute ID= clears the owner and evaluates the routing
+rules again in position order, recording "Lead routed" or "No rule matched"
+on the timeline. =venturectl leads rescore ID= clears a manual score mark
+and applies the scoring formula. Both take no other arguments, refuse
+converted leads, do not accept =--stage=, and are also spelled =lead reroute=
+/ =lead rescore=. Rules themselves are ordinary records:
+=venturectl create lead_routing_rule ...= and
+=venturectl create lead_scoring_rule ...=.
+See [[file:leads.org][leads]] for capture forms, duplicate policies,
+routing, scoring and reports.
 * Planned activities
 
 =venturectl activity complete ID outcome=...= completes planned work through
@@ -378,6 +409,13 @@ See [[file:cutover.org][accounting cutover]].
 jurisdiction return pack. =contractor-tax prepare|review|approve|export=
 builds a 1099-NEC pack from paid bills. See [[file:tax-filing.org][tax
 filing]] and [[file:contractor-tax.org][contractor 1099]].
+
+=venturectl sales-tax export period=PERIOD [jurisdiction=CODE]
+[organization_id=N] [as_of=DATE]= writes the =sales_tax_return= report as
+the CSV a filer keeps: one quoted row per jurisdiction with gross, exempt
+and taxable sales, tax collected, tax credited and net due. =report
+sales_tax_return PERIOD= is the same figures through the generic report
+surface. See [[file:sales-tax.org][sales tax by jurisdiction]].
 * Banking actions
 
 =venturectl bank ACTION ID [JSON|@FILE]= calls the banking service over REST.

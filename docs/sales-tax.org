@@ -1,0 +1,148 @@
+#+title: Sales tax by jurisdiction
+#+description: Address-selected jurisdiction rates frozen on invoice lines, and the return a CPA files from
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-17]
+#+updated: [2026-09-18]
+#+version: 0.6.0
+
+* A rate is a window, a jurisdiction is a code
+
+The optional =sales_tax= module requires =receivables=. It adds two field
+tables and four columns, and one report. Switching it off hides
+=tax_jurisdiction=, =tax_rule= and =sales_tax_return= together; issued
+invoices keep what they froze, and new invoices fall back to their line's
+=tax_code= or =tax-percent= exactly as before the module existed.
+
+| Record | Meaning |
+|--------+---------|
+| =tax_jurisdiction= | One rate window: =code=, =name=, =kind= (=sales= or =use=), =rate-scaled=, =effective-from= (inclusive), =effective-to= (exclusive, empty for open) |
+| =tax_rule= | Address codes that select a jurisdiction: required =state=, optional =county= and =city=, =active=, and any window of the jurisdiction |
+
+The rate is an exact percent with up to four decimals, stored as an integer
+scaled by 10000: =88750= is 8.875%. Issuance applies it as the fraction
+=rate-scaled / 1000000= through the same rounding as a =tax_code=, so a
+jurisdiction never truncates to a whole percent.
+
+Windows of one code in one organization never overlap. A second row for
+=US-NY-NYC= whose window touches an open or overlapping window is refused
+with =VENTURE_ERROR_CONFLICT= naming the code and the window in the way. To
+change a rate, close the current window with an =effective-to= and open the
+next window from that instant; the exclusive end of one may equal the start
+of the next. A negative rate, a kind other than =sales= or =use=, a missing
+=effective-from=, or an =effective-to= at or before it, is refused with
+=VENTURE_ERROR_VALIDATION=.
+
+* Customers, products and rules
+
+A rule only selects while =active= is true, and a field table cannot
+default a boolean to true: a rule created without =active=true= levies
+nothing, which is the direction to be wrong in for money taken from a
+customer. Switching =active= off stops the rule without destroying the
+history that explains an already issued invoice; soft-deleting it does the
+same.
+
+A company carries =address-state=, =address-county= and =address-city=.
+These are codes, not addresses: =NY=, =NEW YORK=, =NEW YORK=. An active rule matches
+when its state equals the customer's, and each of its county and city is
+either empty or equal. Comparison trims and upper-cases both sides and does
+nothing else; there is no geocoding, no abbreviation table and no fuzzy
+match. A customer whose city is =NEW YORK CITY= does not match a rule for
+=NEW YORK=. Among matching rules the one naming the most parts wins, so a
+state-wide rule and a city rule coexist; the earliest rule wins a tie.
+
+The rule names a jurisdiction row; issuance looks up that row's code and
+applies the window in force on the issue date. No window on that date
+means no jurisdiction tax, not an error, so a customer in a state you have
+not configured is invoiced as before.
+
+A company's existing =tax-exempt= and =tax-exempt-reason= keep their
+meaning; =tax-exemption-number= holds the certificate or resale number the
+return will need. A product's =tax-exempt= marks it as never subject to
+sales tax; products are taxable unless that is set. The flag is named for
+the exception rather than the default because a field table cannot default
+a boolean to true, and a =taxable= column defaulting to false would have
+made every existing product exempt on upgrade.
+
+* What issuance freezes
+
+Issuing an invoice already freezes each line's =income-amount=,
+=discount-amount=, =tax-amount= and =shipping-amount=, and the event's
+totals. That code is unchanged. For a line that names no explicit
+=tax_code=, =VentureSettlementService= now asks
+=venture_sales_tax_service_freeze_line()= for the rate before computing
+the parts, and the answer is frozen on the line with them:
+
+| Line column | Frozen value |
+|-------------+--------------|
+| =tax-jurisdiction-id= | The window row applied, or 0 when no rule matched |
+| =tax-rate-scaled= | The scaled rate actually levied; 0 when exempt |
+| =tax-exempt= | True when the customer, the invoice or the product is exempt |
+
+Precedence on a line is: an explicit =tax_code= (the operator's override,
+the rule is not consulted), then the jurisdiction rule, then the line's
+integer =tax-percent=. An exempt customer or product still records the
+jurisdiction with a zero rate, so exempt sales appear on the right return
+rather than vanishing. A tax-exempt product with no matching rule levies
+nothing even if the line carries a =tax-percent=.
+
+A later rate change is a new window row, and editing an old row's rate in
+place is allowed for correcting a typo; neither reaches an issued line,
+because the report reads the frozen columns and never the jurisdiction's
+current rate. =tests/test-sales-tax.c= issues at 8.875%, changes the rate
+twice, and asserts the line, the event and the return are byte-for-byte
+where they were.
+
+* The return
+
+=sales_tax_return= is a period report: one row per jurisdiction code, with
+=gross_sales=, =exempt_sales=, =taxable_sales= (gross less exempt),
+=tax_collected=, =tax_credited= and =net_due= (collected less credited),
+plus =name=, =kind= and =rate_percent=. Every window of one code shares
+the code's row; =rate_percent= is the rate of the first frozen window the
+report meets, while =tax_collected= is the sum of what each line froze, so
+a mid-period rate change is one row whose figures are still exact. It
+dates sales by invoice issue and void events exactly as =tax_liability=
+does, so a void in the same period removes its base and tax and a later
+void is a reduction in that later period. It also skips a migrated invoice
+carrying =opening-at=, for the same reason =tax_liability= and the US
+filing adapter do: that tax was collected, and possibly filed, in the
+source system, so remitting it here would remit it twice.
+Rows are keyed by the frozen =tax-jurisdiction-id=; a line that
+used a =tax_code= instead lands on a row keyed by the code's jurisdiction
+string with kind =tax_code=; percent-only tax and credits with no
+jurisdiction land on =unassigned=, so nothing the books owe is hidden.
+
+A =customer_credit= of kind =credit_note= that carries =tax-amount= may
+name =tax-jurisdiction-id=; its tax is =tax_credited= on that row. Credit
+notes are left out under a =venture_id= filter, as in =tax_liability=.
+
+The sum of =net_due= across rows equals the sum of =tax_liability='s
+output-direction =liability= for the same period and options. The test
+issues taxed, exempt, coded, percent-only and voided invoices and two
+credit notes in one month and asserts that equality to the cent.
+
+#+begin_src sh
+venturectl report sales_tax_return 2026-Q1
+venturectl -f csv report sales_tax_return 2026-Q1 > q1-return.csv
+venturectl sales-tax export period=2026-Q1 [jurisdiction=US-NY-NYC] > q1-nyc.csv
+#+end_src
+
+The =sales-tax export= verb, =GET /api/v1/sales-tax/export?period=…=, is
+the same report in the shape the 1099-NEC pack exports: a header of keys
+(=report,period_start,period_end,jurisdiction,name,kind,rate_percent,gross_sales,exempt_sales,taxable_sales,tax_collected,tax_credited,net_due=),
+every cell quoted per RFC 4180, money as =7.10 USD=. =jurisdiction= keeps
+one code and is refused with =VENTURE_ERROR_NOT_FOUND= when no jurisdiction
+has that code; =organization_id=, =currency=, =as_of= and =venture_id= pass
+through to the report. The generic =-f csv report= rendering remains
+available with labelled headers.
+
+* Scope
+
+This is a per-invoice, single-jurisdiction levy: one rule selects one
+jurisdiction, so a stacked state plus city rate is modelled as one combined
+jurisdiction row such as =US-NY-NYC= at 8.875%. Nothing here looks up
+rates, applies marketplace facilitator rules, or submits a return; see
+[[file:tax-filing.org][jurisdiction tax filing]] for review and submission of
+prepared packs. Use-tax windows are recorded with =kind=use= and reported
+on their own rows; nothing accrues use tax on purchases.

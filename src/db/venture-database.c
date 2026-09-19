@@ -1178,6 +1178,7 @@ check_subsystem_write(VentureDatabase *self, VentureEntity *entity, gboolean rem
 		venture_equity_check_write,
 		venture_group_check_write,
 		venture_dunning_check_write,
+		venture_sales_tax_check_write,
 		venture_backup_schedule_check_write
 	};
 	guint i;
