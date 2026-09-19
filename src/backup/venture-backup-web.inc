@@ -115,6 +115,15 @@ venture_backup_web_settings(HtmxRequest *request, GHashTable *params, gpointer u
 				schedule_id != NULL ? g_ascii_strtoll(schedule_id, NULL, 10) : 0, &error);
 			if (subject == NULL)
 				return venture_web_error_response(error);
+			/* The page lists only the active organization's schedules, but the
+			 * id comes from the form: an admin of one organization must not be
+			 * able to snapshot another's by posting its number. */
+			if (venture_entity_get_organization_id(subject) != org)
+			{
+				g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+					"Backup schedule is not in the active organization");
+				return venture_web_error_response(error);
+			}
 			produced = venture_backup_schedule_service_run(service, VENTURE_BACKUP_SCHEDULE(subject), NULL, &actor, &error);
 			if (produced == NULL)
 				return venture_web_error_response(error);
@@ -125,6 +134,12 @@ venture_backup_web_settings(HtmxRequest *request, GHashTable *params, gpointer u
 				run_id != NULL ? g_ascii_strtoll(run_id, NULL, 10) : 0, &error);
 			if (subject == NULL)
 				return venture_web_error_response(error);
+			if (venture_entity_get_organization_id(subject) != org)
+			{
+				g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+					"Backup run is not in the active organization");
+				return venture_web_error_response(error);
+			}
 			if (g_strcmp0(action, "verify") == 0)
 			{
 				if (!venture_backup_schedule_service_verify(service, VENTURE_BACKUP_RUN(subject), &actor, &error))

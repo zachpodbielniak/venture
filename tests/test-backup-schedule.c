@@ -866,6 +866,41 @@ test_surfaces(ServerFixture *s, gconstpointer data)
 }
 
 /* With the module off the page and the actions are gone. */
+/*
+ * The settings page lists only the active organization's schedules and runs,
+ * but the ids come back in a form. Without a scope check an administrator of
+ * one organization could snapshot, verify or restore-drill another's by
+ * posting its number -- the service reads the organization off the record it
+ * was handed, so nothing further down would have noticed.
+ */
+static void
+test_surfaces_other_organization_refused(ServerFixture *s, gconstpointer data)
+{
+	Fixture *f = &s->base;
+	g_autoptr(VentureEntity) other = VENTURE_ENTITY(g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Other Co", NULL));
+	g_autoptr(VentureEntity) schedule = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *form = NULL, *schedule_id = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	(void)data;
+	seed_books(f);
+	g_assert_true(venture_database_save(f->db, other, NULL, &error));
+	g_assert_no_error(error);
+
+	schedule = make_schedule(f, "organization", "daily", 3, FALSE);
+	venture_entity_set_organization_id(schedule, venture_entity_get_id(other));
+	g_assert_true(venture_database_save(f->db, schedule, NULL, &error));
+	g_assert_no_error(error);
+
+	schedule_id = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(schedule));
+	form = g_strdup_printf("action=run&schedule_id=%s", schedule_id);
+	g_assert_cmpuint(request(s, s->owner, "POST", "/settings/backups",
+		"application/x-www-form-urlencoded", form, NULL), ==, 404);
+	/* And nothing was written for it. */
+	rows = runs(f);
+	g_assert_cmpuint(rows->len, ==, 0);
+}
+
 static void
 test_surfaces_module_off(ServerFixture *s, gconstpointer data)
 {
@@ -893,6 +928,7 @@ main(int argc, char **argv)
 	g_test_add("/backup/module-off", Fixture, NULL, setup, test_module_off, teardown);
 	g_test_add_func("/backup/migration", test_migrate_disabled);
 	g_test_add("/backup/surfaces", ServerFixture, NULL, server_setup, test_surfaces, server_teardown);
+	g_test_add("/backup/surfaces-other-organization", ServerFixture, NULL, server_setup, test_surfaces_other_organization_refused, server_teardown);
 	g_test_add("/backup/surfaces/module-off", ServerFixture, NULL, server_setup, test_surfaces_module_off, server_teardown);
 	return g_test_run();
 }

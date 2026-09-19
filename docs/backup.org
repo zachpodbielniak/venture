@@ -145,3 +145,9 @@ Anyone signed in may read it. Run now, Verify and Restore drill are shown
 to, and accepted from, owners and admins only; the actions behind the REST
 routes carry the same =admin= gate, so an accountant (editor) or a read-only
 viewer cannot trigger a backup from any surface.
+
+The schedule and run ids arrive in a form, so each is checked against the
+active organization before anything runs: the service reads the organization
+off the record it is handed, and without that check an admin of one
+organization could have snapshotted, verified or drilled another's by posting
+its number. A record from elsewhere is reported as not found.
