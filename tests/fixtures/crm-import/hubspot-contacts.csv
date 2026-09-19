@@ -1,0 +1,5 @@
+Record ID,First Name,Last Name,Email,Phone Number,Associated Company IDs,Job Title,Contact owner,Create Date
+201,Alice,Adams,Alice.Adams+crm@acme.com,+1 555 0101,101,CEO,Jane Doe,2025-01-11 09:00
+202,Bob,Brown,bob@globex.example,+1 555 0202,102,CTO,Jane Doe,2025-02-02 10:00
+203,Carol,Cole,carol@initech.example,,103,Buyer,Sam Lee,2025-03-06 11:00
+204,Dan,Dyer,dan@nowhere.example,,999,,Sam Lee,2025-03-07 11:00

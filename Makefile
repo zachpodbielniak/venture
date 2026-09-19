@@ -147,6 +147,10 @@ SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wil
 SERVER_ONLY_SRCS += $(filter-out src/recurring/venture-recurring-records.c,$(wildcard src/recurring/*.c))
 CORE_SRCS += src/dunning/venture-dunning-records.c
 SERVER_ONLY_SRCS += $(filter-out src/dunning/venture-dunning-records.c,$(wildcard src/dunning/*.c))
+CORE_SRCS += src/tax/venture-sales-tax-records.c
+SERVER_ONLY_SRCS += src/tax/venture-sales-tax-service.c
+CORE_SRCS += src/dedupe/venture-dedupe-records.c
+SERVER_ONLY_SRCS += $(filter-out src/dedupe/venture-dedupe-records.c,$(wildcard src/dedupe/*.c))
 
 PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
 SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
@@ -158,11 +162,19 @@ SERVER_ONLY_SRCS += src/portal/venture-portal-service.c
 SERVER_ONLY_SRCS += src/portal/venture-supplier-portal-service.c
 SERVER_ONLY_SRCS += src/fields/venture-custom-fields-service.c
 SERVER_ONLY_SRCS += src/backup/venture-backup-service.c
+SERVER_ONLY_SRCS += src/backup/venture-backup-schedule-service.c
 SERVER_ONLY_SRCS += $(filter-out src/budgets/venture-budget-records.c,$(wildcard src/budgets/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/equity/venture-equity-records.c,$(wildcard src/equity/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/group/venture-group-records.c,$(wildcard src/group/*.c))
 CORE_SRCS += src/report/venture-headline-records.c
+CORE_SRCS += src/calendar/venture-calendar-records.c
+SERVER_ONLY_SRCS += $(filter-out src/calendar/venture-calendar-records.c,$(wildcard src/calendar/*.c))
 SERVER_ONLY_SRCS := $(filter-out src/report/venture-headline-records.c,$(SERVER_ONLY_SRCS))
+CORE_SRCS += src/leads/venture-lead-routing-records.c
+SERVER_ONLY_SRCS += src/leads/venture-lead-routing.c
+SERVER_ONLY_SRCS += $(wildcard src/money-calendar/*.c)
+CORE_SRCS += src/crm-import/venture-crm-import-records.c
+SERVER_ONLY_SRCS += src/crm-import/venture-crm-import-service.c
 # The documentation site generator is core: venturectl renders the site.
 CORE_SRCS += src/docs/venture-org-html.c src/docs/venture-docs-site.c
 
@@ -233,6 +245,9 @@ PUBLIC_HDRS += $(wildcard src/backup/*.h)
 PUBLIC_HDRS += $(wildcard src/budgets/*.h)
 PUBLIC_HDRS += $(wildcard src/equity/*.h)
 PUBLIC_HDRS += $(wildcard src/group/*.h)
+PUBLIC_HDRS += $(wildcard src/money-calendar/*.h)
+PUBLIC_HDRS += $(wildcard src/crm-import/*.h)
+PUBLIC_HDRS += $(wildcard src/dedupe/*.h)
 PUBLIC_HDRS += $(wildcard src/docs/*.h)
 
 # Private implementation fragments are included by their owning C source;
@@ -270,6 +285,13 @@ $(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sequences: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-recurring: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-dunning: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-sales-tax: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-backup-schedule: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-customer-health: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-money-calendar: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-deal-lines: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-sequence-tracking: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-dedupe: | $(OUTDIR)/venturectl
 # The docs test drives `venturectl docs build` and the quickstart against
 # a real server: both binaries, and the docs it renders are the real ones.
 $(OUTDIR)/tests/test-docs: | $(OUTDIR)/venturectl $(OUTDIR)/venture
@@ -585,6 +607,7 @@ endif
 deps: $(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB)
 
 $(OUTDIR)/tests/test-mail-surfaces: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-lead-routing: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # The documentation site

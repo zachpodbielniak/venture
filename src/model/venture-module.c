@@ -518,7 +518,7 @@ static const gchar *const venture_module_reports_outreach[] = {
 };
 static const gchar *const venture_module_reports_ideas[] = { "ideas", NULL };
 static const gchar *const venture_module_reports_tickets[] = {
-	"support", NULL
+	"support", "support_rollup", NULL
 };
 static const gchar *const venture_module_reports_factory[] = {
 	"releases", "lead_time", "incidents", "delivery", NULL
@@ -604,9 +604,11 @@ static GType (*const quotes_types[]) (void) = {
 
 static GType (*const venture_module_leads_types[]) (void) = {
 	venture_lead_get_type, venture_lead_form_get_type,
-	venture_lead_assignment_rule_get_type, NULL
+	venture_lead_assignment_rule_get_type,
+	venture_lead_routing_rule_get_type, venture_lead_scoring_rule_get_type,
+	venture_lead_score_history_get_type, NULL
 };
-static const gchar *const venture_module_reports_leads[] = { "lead_sources", "lead_response_time", "leads_recycled_due", NULL };
+static const gchar *const venture_module_reports_leads[] = { "lead_sources", "lead_response_time", "leads_recycled_due", "lead_routing", "lead_scoring", NULL };
 static const gchar *const venture_module_requires_leads[] = { "crm", NULL };
 static GType (*const venture_module_activities_types[]) (void) = {
 	venture_activity_get_type, venture_activity_type_get_type, NULL
@@ -636,7 +638,8 @@ static GType (*const banking_types[]) (void) = {
 };
 static GType (*const venture_module_pipelines_types[]) (void) = {
 	venture_pipeline_get_type, venture_pipeline_stage_get_type,
-	venture_deal_stage_entry_get_type, venture_loss_reason_get_type, NULL
+	venture_deal_stage_entry_get_type, venture_loss_reason_get_type,
+	venture_deal_line_get_type, NULL
 };
 static const gchar *const venture_module_requires_crm[] = { "crm", NULL };
 static const gchar *const venture_module_reports_pipelines[] = {
@@ -646,10 +649,11 @@ static const gchar *const venture_module_reports_pipelines[] = {
 static GType (*const sequence_types[]) (void) = {
 	venture_sequence_get_type, venture_sequence_step_get_type,
 	venture_sequence_enrollment_get_type, venture_sequence_delivery_get_type,
-	venture_suppression_get_type, NULL
+	venture_suppression_get_type, venture_sequence_link_get_type,
+	venture_sequence_tracking_event_get_type, NULL
 };
 static const gchar *const sequence_requires[] = { "crm", NULL };
-static const gchar *const sequence_reports[] = { "sequence_performance", "sequence_failures", NULL };
+static const gchar *const sequence_reports[] = { "sequence_performance", "sequence_failures", "sequence_engagement", NULL };
 static GType (*const autojournal_types[]) (void) = { venture_posting_profile_get_type, NULL };
 static const gchar *const autojournal_requires[] = { "ledger", NULL };
 static const gchar *const autojournal_reports[] = { "unposted", NULL };
@@ -686,7 +690,8 @@ static const gchar *const venture_module_suggests_accounting[] = {
 };
 static const gchar *const venture_module_requires_statements[] = { "ledger", "periods", NULL };
 static const gchar *const venture_module_reports_statements[] = {
-	"balance_sheet", "income_statement", "cash_flow", "general_ledger", "account_balances", "pnl_reconciliation", NULL
+	"balance_sheet", "income_statement", "cash_flow", "general_ledger", "account_balances", "pnl_reconciliation",
+	"year_end_pack", NULL
 };
 static const gchar *const cutover_requires[] = { "ledger", NULL };
 static const gchar *const setup_requires[] = { "ledger", "periods", NULL };
@@ -700,7 +705,7 @@ static GType (*const statements_types[]) (void) = {
 	venture_saved_report_get_type, venture_report_pack_get_type,
 	venture_accounting_dimension_get_type, NULL
 };
-static GType (*const backup_types[]) (void) = { venture_accounting_backup_get_type, NULL };
+static GType (*const backup_types[]) (void) = { venture_accounting_backup_get_type, venture_backup_schedule_get_type, venture_backup_run_get_type, NULL };
 static GType (*const venture_module_tax_filing_types[]) (void) = {
 	venture_tax_filing_get_type, venture_contractor_tax_form_get_type,
 	venture_contractor_tax_pack_get_type, NULL
@@ -756,12 +761,33 @@ static GType (*const headline_types[]) (void) = { venture_headline_setting_get_t
 static const gchar *const headline_requires[] = { "receivables", "leads", NULL };
 static const gchar *const headline_suggests[] = { "outreach", "recurring", "tickets", "banking", "payables", "billing", NULL };
 static const gchar *const headline_reports[] = { "cac", "customer_churn", "ltv", "ltv_cac", "customer_cohorts", NULL };
+static const gchar *const money_calendar_requires[] = { "receivables", "payables", NULL };
+static const gchar *const money_calendar_suggests[] = { "recurring", "dunning", "payroll", "tax_filing", NULL };
+static const gchar *const money_calendar_reports[] = { "money_calendar", NULL };
+static const gchar *const crm_import_requires[] = { "crm", "pipelines", "activities", "leads", NULL };
+static GType (*const crm_import_types[]) (void) = { venture_crm_import_get_type, venture_crm_import_row_get_type, NULL };
 static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };
 /* Escalation writes an activity, and a collection case on the same invoice
  * holds reminders back; the pay link needs only receivables, which is required. */
 static const gchar *const dunning_suggests[] = { "activities", "recurring", NULL };
 static GType (*const dunning_types[]) (void) = { venture_dunning_policy_get_type, venture_dunning_event_get_type, NULL };
 static const gchar *const dunning_reports[] = { "collections", "dunning_worklist", NULL };
+static GType (*const sales_tax_types[]) (void) = { venture_tax_jurisdiction_get_type, venture_tax_rule_get_type, NULL };
+static const gchar *const sales_tax_requires[] = { "receivables", NULL };
+static const gchar *const sales_tax_reports[] = { "sales_tax_return", NULL };
+static const gchar *const pnl_cuts_requires[] = { "receivables", "payables", NULL };
+static const gchar *const pnl_cuts_suggests[] = { "leads", "recurring", "banking", "headline", NULL };
+static const gchar *const pnl_cuts_reports[] = {
+	"revenue_by_customer", "spend_by_vendor", "recurring_costs", "cash_outlook", NULL
+};
+static const gchar *const customer_health_requires[] = { "headline", "activities", NULL };
+static const gchar *const customer_health_suggests[] = { "tickets", "dunning", "mail_sync", NULL };
+static const gchar *const customer_health_reports[] = { "customer_health", NULL };
+static const gchar *const calendar_requires[] = { "activities", "crm", "leads", NULL };
+static GType (*const calendar_types[]) (void) = { venture_calendar_account_get_type, venture_calendar_event_get_type, venture_booking_page_get_type, NULL };
+static const gchar *const dedupe_requires[] = { "crm", NULL };
+static const gchar *const dedupe_suggests[] = { "leads", "invoicing", "payables", NULL };
+static GType (*const dedupe_types[]) (void) = { venture_duplicate_candidate_get_type, NULL };
 
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
@@ -1068,6 +1094,43 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"headline", "Headline metrics",
 		"CAC, churn, LTV, LTV:CAC and cohort reports, and the headline home page.",
 		headline_requires, headline_suggests, headline_types, headline_reports, NULL, FALSE
+	},
+	{
+		"sales_tax", "Sales tax",
+		"Jurisdiction rates picked by customer address, frozen on invoice lines, and the sales tax return.",
+		sales_tax_requires, NULL, sales_tax_types, sales_tax_reports, NULL, FALSE
+	},
+	{
+		"pnl_cuts", "P&L cuts",
+		"Revenue by customer and source, spend by vendor and category, the "
+		"recurring-cost run-rate and the weekly cash outlook.",
+		pnl_cuts_requires, pnl_cuts_suggests, NULL, pnl_cuts_reports, NULL, FALSE
+	},
+	{
+		"customer_health", "Customer health",
+		"Per-customer health bands from touch, receivables and support, the "
+		"at-risk sweep and the churn card's at-risk count.",
+		customer_health_requires, customer_health_suggests, NULL, customer_health_reports, NULL, FALSE
+	},
+	{
+		"calendar", "Calendar sync",
+		"Two-way CalDAV sync of calls and meetings, and public scheduling links.",
+		calendar_requires, NULL, calendar_types, NULL, NULL, FALSE
+	},
+	{
+		"money_calendar", "Money calendar",
+		"Every dated money event on one grid: recurring, bills, invoices, dunning, payroll and tax, with daily and weekly nets.",
+		money_calendar_requires, money_calendar_suggests, NULL, money_calendar_reports, NULL, FALSE
+	},
+	{
+		"crm_import", "CRM migration",
+		"HubSpot, Zoho CRM and Salesforce exports into companies, contacts, deals, history and next actions.",
+		crm_import_requires, NULL, crm_import_types, NULL, NULL, FALSE
+	},
+	{
+		"dedupe", "Duplicates",
+		"Find and merge duplicate companies and contacts; a scan proposes, a person merges.",
+		dedupe_requires, dedupe_suggests, dedupe_types, NULL, NULL, FALSE
 	},
 	{
 		"docs", "Documentation",

@@ -233,6 +233,7 @@ venture --generate-c-config > ~/.config/venture/config.c
   launcher and panel entirely; =ui.chat_dock_expanded= starts the panel open)
 - *logging* — level, file, format
 - *modules* — which modules are on; see below and [[file:modules.org][Modules]]
+- *backup* — where scheduled backups go and how many are kept; see below
 
 Every setting is documented inline in the generated file.
 
@@ -293,6 +294,15 @@ The =mail= section configures =host=, =port=, =security= (=starttls=, =tls= or
 password. Empty username disables authentication. Disable the whole outbox
 with =modules.mail: false=. See [[file:mail.org][transactional mail]].
 
+** Scheduled backups
+
+The =backup= section has two keys. =directory= (=backups=) is where a
+=backup_schedule= that names no =destination= writes its files; a relative
+path is under the state directory. =retention= (=7=) is how many successful
+backups a schedule keeps when its own =retention= is zero. Both are
+defaults a schedule overrides per row; neither turns scheduling on -- a
+schedule is a record, and a sweep has to be called. See
+[[file:backup.org][scheduled backups]].
 ** The documentation site
 
 The =docs= section has one setting, =site_dir= (=VENTURE_DOCS_SITE_DIR=,

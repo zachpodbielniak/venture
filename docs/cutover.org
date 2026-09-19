@@ -188,6 +188,16 @@ A party is resolved, in order, to:
    website, address, tax exemption and =Payment terms (source): …= in its notes
    (companies have no terms field).
 
+The cutover never invents a party. A source id that reaches step 5 must
+name a =customers[]= / =vendors[]= entry with a =name=, because that entry is
+where the company's name and details come from; a row whose id is missing,
+empty, or names no such entry is refused with a rule code naming the row and
+the field -- =open-ar-customer=, =open-ap-vendor= or =credit-party= -- and,
+like every other row problem, the preview lists it on the row and import
+refuses before its first write. An id the payload does not list is still fine
+when it matches a company at step 1 or 2. (Issue #84: earlier versions
+created an "Imported customer" or "Imported vendor" for such rows.)
+
 More than one match at step 2 or 3 is a located error: give the companies
 distinct external IDs. A company used as a vendor is marked a supplier,
 which payables requires; preview warns when that changes an existing company.
@@ -199,7 +209,7 @@ cutover imports balances, not a contact list.
 | Field | |
 |-------+-|
 | =source_id= | required |
-| =customer_source_id= / =customer_name= | one required |
+| =customer_source_id= / =customer_name= | one required; an id must name a =customers[]= entry unless it already matches a company (rule =open-ar-customer=) |
 | =number= | required; invoice numbers are unique per organization |
 | =date= | required, before the cutoff; an undated invoice would be issued today |
 | =due_date= | optional; carried onto the invoice and its issue event for aging and dunning |
@@ -226,7 +236,7 @@ terms helper, so give =due_date=.
 | Field | |
 |-------+-|
 | =source_id=, =number=, =date= | required; =date= before the cutoff; bill numbers are unique per organization, not per vendor |
-| =vendor_source_id= / =vendor_name= | one required |
+| =vendor_source_id= / =vendor_name= | one required; an id must name a =vendors[]= entry unless it already matches a company (rule =open-ap-vendor=) |
 | =due_date=, =memo=, =currency= | optional |
 | =lines= | at least one (rule =open-ap-lines=): =description=, =amount= (net, positive), =tax= (frozen, nonnegative), =account_code= or =category= |
 | =paid= | paid before the cutoff; nonnegative and below the lines' total (rule =open-ap-balance=) |
@@ -243,7 +253,7 @@ as =1001=; preview names both rows and suggests a distinct number.
 | =source_id=, =date= (before the cutoff), =amount= (positive) | required |
 | =kind= | =customer= or =vendor=; omitted, a row with =vendor_source_id= is a vendor credit (rule =credit-identity=) |
 | =type= | =credit_note= (default) or =prepayment= |
-| party | =customer_source_id= / =customer_name= or =vendor_source_id= / =vendor_name= |
+| party | =customer_source_id= / =customer_name= or =vendor_source_id= / =vendor_name=; an id must name a =customers[]= / =vendors[]= entry unless it already matches a company (rule =credit-party=) |
 | =number= | stored as the credit's reference (default: the source id) |
 
 A credit note stays unapplied for later settlements. A prepayment -- a
@@ -387,7 +397,8 @@ Preview checks, besides every field rule above: duplicate =source_id=
 within a section (a copy-pasted id silently imported one row and reconciled
 against two); duplicate invoice or bill numbers and asset tags within the
 payload and against existing documents (a rolled-back batch's numbers are
-free, see [[Rollback]]); ambiguous party matches; missing account codes;
+free, see [[Rollback]]); ambiguous party matches and parties the payload
+cannot name (=open-ar-customer=, =open-ap-vendor=, =credit-party=); missing account codes;
 rows another live batch already imported (warning: this batch will skip
 them); the clearing account being usable; the credit cap (warning); and a
 predicted reconcile of the trial balance: what each control account will

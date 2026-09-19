@@ -556,3 +556,20 @@ venture_activity_service_calendar(VentureActivityService *self, gint64 organizat
 	g_string_append(calendar, "END:VCALENDAR\r\n");
 	return g_string_free(g_steal_pointer(&calendar), FALSE);
 }
+
+/* The same folding and escaping for any module that writes a calendar. */
+void
+venture_activity_calendar_append_line(GString *calendar, const gchar *name,
+	const gchar *value, gboolean escape)
+{
+	g_return_if_fail(calendar != NULL && name != NULL);
+	calendar_line(calendar, name, value, escape);
+}
+
+void
+venture_activity_calendar_append_date(GString *calendar, const gchar *name,
+	GDateTime *date)
+{
+	g_return_if_fail(calendar != NULL && name != NULL && date != NULL);
+	calendar_date(calendar, name, date);
+}

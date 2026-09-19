@@ -59,5 +59,34 @@ gboolean venture_sequence_service_transition(VentureSequenceService *self, gint6
  * Adds sequence cohort performance and failed delivery reports.
  */
 void venture_sequences_register_reports(VentureReportRegistry *registry);
+/**
+ * venture_sequence_service_record_open:
+ * @self: the service
+ * @token: the delivery's tracking token from the pixel URL
+ * @now: when the pixel was fetched
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): unknown token or persistence failure
+ *
+ * Records at most one open per delivery per UTC day and one outbound
+ * interaction on the contact's timeline. An unknown token records nothing.
+ * Returns: TRUE when the token is known and the open committed
+ */
+gboolean venture_sequence_service_record_open(VentureSequenceService *self, const gchar *token,
+	GDateTime *now, const VentureActor *actor, GError **error);
+/**
+ * venture_sequence_service_record_click:
+ * @self: the service
+ * @token: the delivery's tracking token from the wrapped link
+ * @position: link number within the message, from one
+ * @now: when the link was followed
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): unknown token or link, or persistence failure
+ *
+ * Records every click and its timeline interaction, then returns the
+ * original destination so the caller can redirect.
+ * Returns: (transfer full) (nullable): the original URL
+ */
+gchar *venture_sequence_service_record_click(VentureSequenceService *self, const gchar *token,
+	gint64 position, GDateTime *now, const VentureActor *actor, GError **error);
 G_END_DECLS
 #endif
