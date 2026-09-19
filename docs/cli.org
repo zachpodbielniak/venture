@@ -80,6 +80,7 @@ venturectl backup run SCHEDULE_ID        # write a scheduled backup now; admin
 venturectl backup verify RUN_ID          # restore it into an empty database and tie it out
 venturectl backup restore-drill [run_id=N] [organization_id=N] [name=...]  # the same, kept as a named drill
 venturectl sales-tax export period=2026-Q1 [jurisdiction=CODE]   # sales tax return CSV per jurisdiction
+venturectl customers health-sweep [as_of=DATE] [organization_id=N] [limit=N]  # one "check in" next action per red customer
 venturectl batch invoice|expense [--dry-run]
 venturectl inbox [--all]                 # what you have been told
 venturectl inbox read ID|all             # mark it read
@@ -301,6 +302,16 @@ venturectl update headline_setting 1 classic_home=true   # / back to the old das
 venturectl update expense 42 acquisition=true             # count it in CAC
 venturectl update expense 43 cost_of_revenue=true         # count it against gross margin
 venturectl update expense 44 campaign_id=3                # a campaign's recorded cost
+#+end_src
+
+Customer health is a report too, with =band=, =owner= and =sort= as
+options; the only verb is the sweep, which is a business action rather
+than a record write.
+
+#+begin_src sh
+venturectl report customer_health this_month band=red sort=-overdue_days
+venturectl customers health-sweep as_of=2026-06-01 limit=50   # {"created": N}
+venturectl update headline_setting 1 health_touch_days=45 health_overdue_days=30 health_open_tickets=5
 #+end_src
 
 =renew= without an ID sweeps all due subscriptions in the selected

@@ -265,6 +265,7 @@
 #include "leads/venture-lead-routing.h"
 #include "tax/venture-sales-tax-service.h"
 #include "report/venture-year-end-pack.h"
+#include "report/venture-customer-health.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

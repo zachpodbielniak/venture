@@ -2598,7 +2598,7 @@ venture_web_api_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
@@ -2664,6 +2664,8 @@ venture_web_ui_overview(
 
 static gchar *
 venture_web_render_headline_home(VentureWebServer *self, HtmxRequest *request);
+static void
+venture_web_customer_health_controls(HtmxRequest *request, VentureReport *report, GString *content);
 
 /*
  * GET / - the home page: a dashboard marked as home, if the viewer may
@@ -5776,7 +5778,7 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
@@ -5811,7 +5813,7 @@ venture_web_ui_report(
 
 	{
 		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
-		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", NULL };
+		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", NULL };
 		guint i;
 		for (i = 0; names[i] != NULL; i++)
 		{
@@ -5875,7 +5877,7 @@ venture_web_ui_report(
 				g_string_append_printf(content, "<input type=\"hidden\" name=\"organization_id\" value=\"%" G_GINT64_FORMAT "\">",
 					venture_json_object_get_int(report_options, "organization_id", 0));
 			{
-				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", NULL };
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", NULL };
 				guint i;
 				/* Preserve the question when changing only its cutoff. */
 				for (i = 0; names[i] != NULL; i++)
@@ -5893,6 +5895,7 @@ venture_web_ui_report(
 		}
 	}
 
+	venture_web_customer_health_controls(request, report, content);
 	rendered = venture_report_result_render(result, VENTURE_OUTPUT_FORMAT_HTML);
 	g_string_append(content, rendered);
 
@@ -9100,6 +9103,8 @@ venture_web_ui_detail(
 			"<button class=\"btn btn-primary\" type=\"submit\">"
 			"Comment</button></div></form></div></div>");
 	}
+
+	venture_customer_health_append_block(self->context, content, record);
 
 	/* What happened, last. The audit log has its own page; this is the
 	 * record's own story, with its conversation woven in. */
@@ -27829,6 +27834,7 @@ venture_web_api_ticket_draft(
 #include "group/venture-group-web.inc"
 #include "report/venture-headline-web.inc"
 #include "orgaccess/venture-accountant-web.inc"
+#include "report/venture-customer-health-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -28303,6 +28309,7 @@ venture_web_server_new(
 	htmx_router_post(router, "/ui/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
 	htmx_router_post(router, "/api/v1/sequences/run", venture_web_sequence_run, self);
 	htmx_router_get(router, "/api/v1/headline", venture_web_api_headline, self);
+	htmx_router_post(router, "/api/v1/customers/health/sweep", venture_web_api_customer_health_sweep, self);
 
 	htmx_router_get(router, "/api/v1/:type", venture_web_api_list, self);
 	htmx_router_post(router, "/api/v1/:type", venture_web_api_create, self);

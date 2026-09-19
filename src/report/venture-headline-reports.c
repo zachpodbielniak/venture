@@ -4448,3 +4448,67 @@ venture_headline_register_reports(VentureReportRegistry *registry)
 		"payback; n/a when either side is",
 		venture_report_ltv_cac)));
 }
+
+/* --- Read by customer health ---------------------------------------------- */
+
+const gchar *
+venture_headline_snapshot_get_currency(VentureHeadlineSnapshot *snapshot)
+{
+	g_return_val_if_fail(NULL != snapshot, NULL);
+
+	return snapshot->currency;
+}
+
+gboolean
+venture_headline_snapshot_customer_cash(
+	VentureHeadlineSnapshot	 *snapshot,
+	gint64			  company_id,
+	GDateTime		 *from,
+	GDateTime		 *until,
+	VentureMoney		**out_total,
+	GError			**error
+){
+	g_autoptr(VentureMoney) total = NULL;
+	GPtrArray *history;
+	guint i;
+
+	g_return_val_if_fail(NULL != snapshot, FALSE);
+	g_return_val_if_fail(NULL != out_total, FALSE);
+	g_return_val_if_fail(error == NULL || *error == NULL, FALSE);
+
+	*out_total = NULL;
+
+	if (!headline_load_cash(snapshot, error))
+		return FALSE;
+
+	history = g_hash_table_lookup(snapshot->cash, &company_id);
+
+	for (i = 0; (NULL != history) && (i < history->len); i++)
+	{
+		HeadlineCash *movement = g_ptr_array_index(history, i);
+		VentureMoney *sum;
+
+		if ((NULL != from) && (g_date_time_compare(movement->date, from) < 0))
+			continue;
+
+		if ((NULL != until) && (g_date_time_compare(movement->date, until) > 0))
+			continue;
+
+		if (NULL == total)
+			total = venture_money_new_zero(snapshot->currency);
+
+		/* Every movement is already in the book currency; the load left
+		 * the others out. */
+		sum = venture_money_add(total, movement->amount, error);
+
+		if (NULL == sum)
+			return FALSE;
+
+		venture_money_free(total);
+		total = sum;
+	}
+
+	*out_total = g_steal_pointer(&total);
+
+	return TRUE;
+}

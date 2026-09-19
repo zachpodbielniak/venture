@@ -42,6 +42,7 @@ about it.
 | =spend_by_vendor= | approved bills and expenses per vendor, or per category; acquisition split |
 | =recurring_costs= | running bill and expense schedules as a monthly run-rate |
 | =cash_outlook= | weekly cash in and out from open invoices and bills, from the bank balance |
+| =customer_health= | every customer banded green, amber or red, with why    |
 
 #+begin_src sh
 venturectl report                       # list them
@@ -659,3 +660,90 @@ The name is =cash_outlook= rather than =cash_forecast= because the
 =budgets= module already owns a =cash_forecast= --- the budget-driven one
 over ledger balances --- and registering a second report under the same
 name would replace it.
+* Customer health: the list behind the churn number
+
+Churn is a lagging number: by the time it moves, the customer has gone.
+The =customer_health= module asks the same question early, per company,
+so the answer is a list you can act on rather than a percentage you can
+only regret. It requires =headline= and =activities=; =tickets=,
+=dunning= and =mail_sync= make it better and are not required.
+
+** =customer_health=: who is about to leave
+
+One row per company of kind =customer=, worst first. Nothing is stored:
+every row is read from the records the other modules already keep, as of
+a moment --- the period's end, now if the period is still running, or an
+explicit =as_of= --- against the thresholds the organisation has *now*.
+A stored band would be wrong the morning after a threshold changed.
+
+| Column              | What it is                                                         |
+|---------------------+--------------------------------------------------------------------|
+| =owner=             | the username of the company's =owner_user_id=; blank when unowned  |
+| =band=              | =green=, =amber= or =red=                                          |
+| =last_touch=        | the latest interaction, completed activity or inbound mail (through the contact it was matched to), on or before the moment |
+| =days_since_touch=  | days since then; since the company was added, if there has never been one |
+| =open_deals=        | deals neither won nor lost                                         |
+| =overdue_invoices=  | issued, unsettled invoices past their due date; undated is not overdue |
+| =overdue_days=      | how far past due the oldest of them is                             |
+| =open_tickets=      | tickets neither done nor cancelled; zero with =tickets= off        |
+| =sla_breaches=      | of those, how many have missed a service level                     |
+| =dunning_step=      | the furthest reminder step reached on any invoice still open; a step on an invoice since paid is history, not health |
+| =revenue_12m=       | applied receipts less refunds in the twelve months before the moment, in the book currency, exactly as =ltv= counts them; another currency is left out, never converted |
+
+*The three reasons.* A company is *quiet* when =days_since_touch= reaches
+the touch threshold; *behind* when =overdue_days= reaches the overdue
+threshold; *struggling* when =open_tickets= reaches the ticket threshold
+or any open ticket has missed its service level. No reason is green, one
+is amber, two or three are red. Each reason is written out in words
+whether or not it counts, so a company page says where it stands on all
+three, not only the ones that tripped.
+
+*Thresholds* are three fields on the organisation's =headline_setting=
+row, zero meaning the default: =health_touch_days= (30),
+=health_overdue_days= (15) and =health_open_tickets= (3).
+
+#+begin_src sh
+venturectl report customer_health this_month
+venturectl report customer_health this_month band=red          # the at-risk list
+venturectl report customer_health this_month owner=alice sort=-overdue_days
+venturectl update headline_setting 1 health_touch_days=45 health_open_tickets=5
+#+end_src
+
+=band= keeps one band; =owner= keeps one account owner; =sort= names a
+column, with a leading minus for descending (=sort=-revenue_12m=). A band
+or column that does not exist is refused rather than ignored. The
+=red=, =amber=, =green= and =customers= metrics always count the whole
+organisation, filtered or not, so the churn card and a filtered page
+cannot disagree about how many are at risk. The report page carries a
+filter row for the three options.
+
+** The sweep: red becomes somebody's next action
+
+#+begin_src sh
+venturectl customers health-sweep [as_of=DATE] [organization_id=N] [limit=N]
+curl -X POST '.../api/v1/customers/health/sweep?organization_id=1&limit=50'
+#+end_src
+
+For each red company the sweep creates one planned =activity= ---
+=check in: <company>=, a high-priority follow-up for the account owner,
+due at =as_of=, related to the company, with the three reasons in its
+body. A company that already has a planned check-in is left alone, so
+running the sweep twice creates nothing the second time; once that
+check-in is done or cancelled, the next sweep may raise another if the
+company is still red. The sweep is bounded (=limit=, default 100, at most
+1000 red companies visited), synchronous --- there is no background
+thread --- and one transaction: a save refused part-way through rolls
+back every check-in the sweep made, so a rerun starts clean. It answers
+={"created": N}=. An unowned company still gets its
+check-in, with no owner, so it appears on the activity list rather than
+nowhere. The route needs the editor role and, like every whole-organisation
+action, a working membership (owner, admin, editor, finance or sales) in
+the organisation it names; it is refused when =customer_health= or
+=activities= is off.
+
+** Where it shows
+
+The churn card on the home page carries an *At risk* line --- the red
+count, as of the period's end, linking to the report filtered to red.
+A customer's own page shows its band and the three reasons under
+*Health*. See [[file:dashboards.org][Dashboards]].

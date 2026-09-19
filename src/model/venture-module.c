@@ -773,6 +773,9 @@ static const gchar *const pnl_cuts_suggests[] = { "leads", "recurring", "banking
 static const gchar *const pnl_cuts_reports[] = {
 	"revenue_by_customer", "spend_by_vendor", "recurring_costs", "cash_outlook", NULL
 };
+static const gchar *const customer_health_requires[] = { "headline", "activities", NULL };
+static const gchar *const customer_health_suggests[] = { "tickets", "dunning", "mail_sync", NULL };
+static const gchar *const customer_health_reports[] = { "customer_health", NULL };
 
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
@@ -1090,6 +1093,12 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"Revenue by customer and source, spend by vendor and category, the "
 		"recurring-cost run-rate and the weekly cash outlook.",
 		pnl_cuts_requires, pnl_cuts_suggests, NULL, pnl_cuts_reports, NULL, FALSE
+	},
+	{
+		"customer_health", "Customer health",
+		"Per-customer health bands from touch, receivables and support, the "
+		"at-risk sweep and the churn card's at-risk count.",
+		customer_health_requires, customer_health_suggests, NULL, customer_health_reports, NULL, FALSE
 	}
 };
 

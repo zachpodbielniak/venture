@@ -274,6 +274,7 @@ $(OUTDIR)/tests/test-recurring: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-dunning: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sales-tax: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-backup-schedule: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-customer-health: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery
