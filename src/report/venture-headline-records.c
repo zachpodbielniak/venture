@@ -16,6 +16,15 @@ static const VentureFieldDecl headline_setting_fields[] = {
 	VENTURE_FIELD("activity-days", "Activity churn days",
 		"Days without paid revenue before a customer counts as churned; zero means 90",
 		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("health-touch-days", "Health: days since touch",
+		"Days without an interaction, completed activity or inbound mail before a customer is quiet; zero means 30",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("health-overdue-days", "Health: overdue days",
+		"Days past due before an overdue invoice counts against a customer's health; zero means 15",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("health-open-tickets", "Health: open tickets",
+		"Open tickets at which the queue counts against a customer's health; zero means 3",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	/* The support rollup's two rates, whole units of the book currency.
 	 * Integers rather than money so a rate is one number to type; the
 	 * currency is the organisation's. */

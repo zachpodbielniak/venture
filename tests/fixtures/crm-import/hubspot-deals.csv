@@ -1,0 +1,4 @@
+Record ID,Deal Name,Amount,Currency,Deal Stage,Pipeline,Close Date,Deal owner,Associated Company IDs,Associated Contact IDs,Create Date
+301,Acme rollout,"12,500.00",USD,presentationscheduled,Sales Pipeline,2025-06-30,Jane Doe,101,201,2025-01-15 09:00
+302,Globex renewal,4000,USD,closedwon,Sales Pipeline,2025-03-31,Jane Doe,102,202,2025-02-05 10:00
+303,Initech pilot,900.50,EUR,closedlost,Sales Pipeline,2025-04-15,Sam Lee,103,203,2025-03-10 11:00

@@ -1125,6 +1125,8 @@ test_auth_pages_refuse_anonymous_requests(
 	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/settings/fields"),
 	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/settings/backups"),
+	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/budgets"),
 	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/equity"),
@@ -1194,6 +1196,7 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/mail_unmatched_senders/1/create_contact", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/mail_unmatched_senders/1/dismiss", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/mail_accounts/1/sync", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/calendar/sync", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/invoices/1/send", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/webhooks"),
@@ -1331,6 +1334,7 @@ test_auth_api_refuses_anonymous_requests(
 		"/api/v1/dunning_policy",
 		"/api/v1/dunning_event",
 		"/api/v1/reports/collections",
+		"/api/v1/duplicate_candidate",
 		NULL
 	};
 	gsize i;
@@ -1403,6 +1407,12 @@ test_auth_api_refuses_anonymous_requests(
 			"/api/v1/accounting_setups/1/complete",
 			"/setup/1/action"
 		};
+		static const gchar *const crm_import[] = {
+			"/api/v1/crm_imports/preview",
+			"/api/v1/crm_imports/1/import",
+			"/api/v1/crm_imports/1/activate",
+			"/api/v1/crm_imports/1/rollback"
+		};
 		for (i = 0; i < G_N_ELEMENTS(banking); i++)
 			g_assert_cmpuint(server_fixture_request(fixture, "POST", banking[i],
 				NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
@@ -1416,6 +1426,9 @@ test_auth_api_refuses_anonymous_requests(
 				NULL, NULL, NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 		for (i = 0; i < G_N_ELEMENTS(setup); i++)
 			g_assert_cmpuint(server_fixture_request(fixture, "POST", setup[i],
+				NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+		for (i = 0; i < G_N_ELEMENTS(crm_import); i++)
+			g_assert_cmpuint(server_fixture_request(fixture, "POST", crm_import[i],
 				NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	}
 
@@ -1433,15 +1446,15 @@ test_auth_api_refuses_anonymous_requests(
 			"/payroll/1/post", "/api/v1/payroll_run/1/post", "/purchase_order/1/approve",
 			"/api/v1/purchase_order/1/approve", "/sales_order/1/confirm", "/api/v1/sales_order/1/confirm",
 			"/api/v1/close/1/complete", "/api/v1/tax-filings/1/export", "/api/v1/contractor-tax/1/export",
-			"/api/v1/capture/1/convert"
+			"/api/v1/capture/1/convert", "/settings/backups"
 		};
 		static const gchar *const gets[] = {
 			"/api/v1/budget_reports", "/api/v1/group/reports", "/api/v1/close/1/pack",
-			"/api/v1/contractor-tax/1/export"
+			"/api/v1/contractor-tax/1/export", "/api/v1/sales-tax/export?period=2026-Q1"
 		};
 		static const gchar *const redirects[] = {
 			"/settings/fields", "/equity/post", "/payables/pay", "/claims/1/submit",
-			"/payroll/1/post", "/purchase_order/1/approve", "/sales_order/1/confirm", NULL
+			"/payroll/1/post", "/purchase_order/1/approve", "/sales_order/1/confirm", "/settings/backups", NULL
 		};
 		for (i = 0; i < G_N_ELEMENTS(posts); i++)
 		{
@@ -1600,6 +1613,10 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/leads/1/reassign", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/leads/1/convert", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/leads/1/reassign", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/leads/1/reroute", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/leads/1/rescore", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/leads/1/reroute", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/leads/1/rescore", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/journal/1/actions/post", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
@@ -1664,6 +1681,25 @@ test_auth_api_refuses_anonymous_requests(
 		==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/dunning_policy/0/actions/sweep", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/customers/health/sweep", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/reports/customer_health"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/customers/duplicates"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/customers/duplicates/scan", NULL, "kind=company", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/customers/duplicates/1/merge", NULL, "survivor=1", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/duplicate_candidate/0/actions/scan", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/duplicate_candidate/1/actions/merge", NULL, "{}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
 
 	/* The dashboard writes: making, changing and removing pages and
@@ -1748,6 +1784,16 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/sequence_enrollment/1/exit", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/sequences/run", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/ui/sequence_enrollment/1/pause", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	/* The accountant's Books page and the two year-end pack downloads. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/books"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/books/year-end-pack.zip?period=fy_2025"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/books/packs/1/year-end-pack.zip"), ==, SOUP_STATUS_UNAUTHORIZED);
+	/* Deal-line quote handoff needs an editor; the tracking endpoints are
+	 * public by design and answer 404 for an unknown token. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/deals/1/quote", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/deals/1/quote", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/t/o/unknown.gif"), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/t/c/unknown/1"), ==, SOUP_STATUS_NOT_FOUND);
 
 }
 
@@ -4383,6 +4429,100 @@ test_auth_equity_input(ServerFixture *fixture, gconstpointer data)
 	}
 }
 
+/*
+ * The customer health sweep reads a whole organisation's customers and
+ * writes a next action for each red one, so it is judged in the
+ * organisation it names: a global editor with no membership there is
+ * refused, a member is not, and naming an organisation the member is not
+ * in is refused too.
+ */
+static void
+test_auth_health_sweep_is_judged_in_its_organization(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *outsider = NULL;
+	g_autofree gchar *member = NULL;
+	g_autofree gchar *path = NULL;
+
+	(void)user_data;
+
+	path = g_strdup_printf("/api/v1/customers/health/sweep?organization_id=%" G_GINT64_FORMAT,
+		venture_context_get_default_organization_id(fixture->context));
+
+	server_fixture_create_user(fixture, "oscar", "o-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	outsider = server_fixture_login(fixture, "oscar", "o-long-password");
+	g_assert_nonnull(outsider);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, outsider,
+	                                        "{}", NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+
+	server_fixture_create_member(fixture, "mira", "m-long-password",
+	                             VENTURE_USER_ROLE_EDITOR, NULL);
+	member = server_fixture_login(fixture, "mira", "m-long-password");
+	g_assert_nonnull(member);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, member,
+	                                        "{}", NULL, NULL),
+	                 ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/customers/health/sweep?organization_id=999999", member,
+		"{}", NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+}
+
+/*
+ * A calendar_account names the CalDAV host and which environment variable
+ * holds the app password: owner-only, for the reasons a mail_account is.
+ * A calendar_event link is the sync's memory of both sides; nobody edits it.
+ */
+static void
+test_auth_calendar_account_is_owner_only(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor = NULL;
+	g_autofree gchar *owner = NULL;
+
+	(void)user_data;
+
+	server_fixture_create_member(fixture, "cal-editor", "e-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "cal-editor", "e-long-password");
+	g_assert_nonnull(editor);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+	                                        "/api/v1/calendar_account", editor,
+	                                        NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/calendar_account", editor,
+		"{\"url\":\"https://attacker.example/\",\"owner\":\"ben\",\"secret_env\":\"VENTURE_SMTP_PASSWORD\"}",
+		NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+
+	server_fixture_create_member(fixture, "cal-owner", "o-long-password",
+	                           VENTURE_USER_ROLE_OWNER, NULL);
+	owner = server_fixture_login(fixture, "cal-owner", "o-long-password");
+	g_assert_nonnull(owner);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+	                                        "/api/v1/calendar_account", owner,
+	                                        NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_OK);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/calendar_event", owner,
+		"{\"uid\":\"x\",\"uid_key\":\"1:x\"}", NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+
+	/* Booking pages are ordinary editor configuration. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+	                                        "/api/v1/booking_page",
+	                                        editor, NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_OK);
+}
+
 int
 main(
 	int	  argc,
@@ -4594,5 +4734,11 @@ main(
 	g_test_add("/orgaccess/journal-action-veto", ServerFixture, "action-veto", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
 	g_test_add("/orgaccess/journal-header-changed", ServerFixture, "header-changed", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
 	g_test_add("/orgaccess/public-capabilities-session", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_public_capabilities, server_fixture_tear_down);
+	g_test_add("/auth/health-sweep-is-judged-in-its-organization", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_health_sweep_is_judged_in_its_organization,
+	           server_fixture_tear_down);
+	g_test_add("/auth/calendar-account-is-owner-only", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_calendar_account_is_owner_only,
+	           server_fixture_tear_down);
 	return g_test_run();
 }

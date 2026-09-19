@@ -928,6 +928,7 @@ test_module_off(Fixture *f, gconstpointer unused)
 	g_autoptr(VentureEntity) b = bill(f, "OFF");
 	g_autoptr(GDateTime) date = venture_time_from_string("2026-01-01", NULL);
 	g_autoptr(GError) error = NULL;
+	venture_config_set_module_enabled(f->config, "money_calendar", FALSE);
 	venture_config_set_module_enabled(f->config, "payables", FALSE);
 	venture_config_set_module_enabled(f->config, "supplier_portal", FALSE);
 	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(), "vendor_bill"), ==, G_TYPE_INVALID);
@@ -936,6 +937,7 @@ test_module_off(Fixture *f, gconstpointer unused)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
 	venture_config_set_module_enabled(f->config, "payables", TRUE);
 	venture_config_set_module_enabled(f->config, "supplier_portal", TRUE);
+	venture_config_set_module_enabled(f->config, "money_calendar", TRUE);
 	status(f, b, "draft");
 }
 
@@ -990,6 +992,8 @@ test_disabled_migration(void)
 	venture_config_set_module_enabled(config, "supplier_portal", FALSE);
 	venture_config_set_module_enabled(config, "recurring", FALSE);
 	venture_config_set_module_enabled(config, "goods", FALSE);
+	venture_config_set_module_enabled(config, "pnl_cuts", FALSE);
+	venture_config_set_module_enabled(config, "money_calendar", FALSE);
 	g_assert_true(venture_module_registry_configure(modules, config, &error));
 	g_assert_no_error(error);
 	venture_module_registry_apply(modules, registry);

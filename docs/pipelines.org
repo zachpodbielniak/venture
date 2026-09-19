@@ -86,3 +86,54 @@ that running startup again creates no duplicate history.
 New deals require an active pipeline and satisfy the initial stage's required fields; a lost initial stage requires an active loss reason. Closed initial stages receive a closing timestamp. Historical backfill preserves prior state.
 
 With sequences enabled, a won-stage move also applies enrollment exits in the same transaction. A refused exit rolls back the deal transition and stage history; callers continue to use the stage service rather than writing the legacy stage field.
+
+* Deal lines
+
+A deal can carry the products and services it is expected to close on.
+=deal_line= is an ordinary field-table record: =deal_id=, optional
+=product_id=, =description=, whole-unit =quantity=, exact =unit_price=
+(=VentureMoney=), =discount_bp= as integer basis points (0-10000, so 1250
+is 12.5%) and =position=. Its form, JSON, list, CLI CRUD and assistant
+schema derive from the table, and a deal's page lists its lines beneath it.
+
+=VentureDealService= owns the arithmetic. A line's value is quantity times
+unit price less the discount, rounded once half to even through
+=VentureMoney=; overflow is refused. While a deal has at least one line its
+=value= is the sum of those lines, recomputed in the same transaction as
+every line save, delete, restore or purge. A generic write that changes
+=value= on such a deal is refused with an error naming =VentureDealService=;
+other deal fields stay editable. A deal without lines keeps a manual value,
+and removing the last line leaves the last derived amount in place and hands
+the field back to manual editing. Lines must share one currency: a line in
+another currency is refused and not persisted. Lines cannot move between
+deals, and a line's deal and product must be live records in the same
+organization. Three units at $19.99 with 1000 basis points off make $53.97.
+
+* Create quote from deal
+
+=venture_deal_service_create_quote()= copies the deal's lines into a draft
+quote in one transaction: number =DEAL-<id>=, the deal's company, contact
+and venture, the lines' currency, and one =quote_line= per deal line with
+=discount_percent= equal to =discount_bp / 100= and no tax. The quote's
+=deal_id= links it back, so the deal page lists its quotes and acceptance
+moves the deal to won as [[file:quotes.org][Commercial quotes]] describes.
+A deal line whose discount is not a whole percent (a multiple of 100 basis
+points) cannot be copied and is refused before anything is written. A deal
+with no lines is refused. Any failure after the quote header is written,
+such as a line naming a since-deleted product, rolls the whole handoff back.
+
+Running the action again never creates a second quote for the deal. It
+revises the deal's latest quote through =VentureQuoteService= (=revise=),
+which supersedes the previous revision and numbers the new one
+=DEAL-<id>-R<n>=, then replaces the cloned lines with the deal's current
+lines. An accepted quote is not revised; the refusal names the service.
+The action requires the =quotes= module.
+
+=POST /api/v1/deals/:id/quote= returns the new draft quote with status 201.
+The deal page's *Create quote from lines* button posts to =/deals/:id/quote=
+and redirects to the quote. =venturectl deal quote ID= calls the same route.
+
+=test-deal-lines= covers the record, derived and manual values, the refused
+generic value write, currency mismatch, invalid lines, the quote handoff,
+its rerun as a revision, refusals with rollback, and the REST, page and
+CLI surfaces.

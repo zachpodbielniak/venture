@@ -1692,8 +1692,10 @@ test_settings_migration(void)
 	g_autoptr(GError) error = NULL;
 	guint run;
 
-	/* Off: the table and index come from the migration alone. */
+	/* Off: the table and index come from the migration alone. Customer
+	 * health requires headline, so it goes off with it. */
 	venture_config_set_module_enabled(config, "headline", FALSE);
+	venture_config_set_module_enabled(config, "customer_health", FALSE);
 	db = venture_database_new(uri, &error);
 	g_assert_no_error(error);
 	context = venture_context_new(config, db);
@@ -2150,6 +2152,7 @@ test_home_page(ServerFixture *f, gconstpointer unused)
 
 	/* The module off hides the cards and the API; reports stay registered
 	 * until the mask is applied, and / falls through to the built-in. */
+	venture_config_set_module_enabled(f->config, "customer_health", FALSE);
 	venture_config_set_module_enabled(f->config, "headline", FALSE);
 	{
 		g_autofree gchar *off_home = NULL;
@@ -2164,6 +2167,7 @@ test_home_page(ServerFixture *f, gconstpointer unused)
 		g_assert_cmpuint(status, ==, SOUP_STATUS_NOT_FOUND);
 	}
 	venture_config_set_module_enabled(f->config, "headline", TRUE);
+	venture_config_set_module_enabled(f->config, "customer_health", TRUE);
 
 	g_clear_pointer(&body, g_free);
 	status = server_request(f, "GET", "/", NULL, &body);

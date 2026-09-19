@@ -68,6 +68,13 @@ Every record derives from =VentureEntity= and carries the same spine:
   flag applied on invoice and bill lines. Integer =tax-percent= remains for
   lines without a code. Company and invoice =tax-exempt= still freeze tax at
   zero.
+- *tax_jurisdiction* — one rate window of a sales or use tax jurisdiction:
+  =code=, =rate-scaled= (percent times 10000), and a half-open
+  [=effective-from=, =effective-to=) window. Windows of one code never
+  overlap; a rate change is a new row.
+- *tax_rule* — address codes (=state=, optional =county= and =city=) that
+  select a jurisdiction for a customer, while =active=. Both are owned by
+  =sales_tax=. See [[file:sales-tax.org][sales tax by jurisdiction]].
 - *tax_filing* — a jurisdiction return pack (draft through acknowledged) with
   versioned rule id and preserved JSON/CSV bytes; owned by =tax_filing=.
 - *contractor_tax_form* — vendor TIN, never generically exported.
