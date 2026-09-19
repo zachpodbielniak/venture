@@ -990,6 +990,73 @@ venture_query_append_placeholder(
 	*index += 1;
 }
 
+/*
+ * Comparing times stored as text.
+ *
+ * Times are stored as ISO 8601 as GLib writes it, which leaves out a
+ * fraction of zero: "2026-02-01T00:00:00Z", but "2026-02-01T00:00:00.500000Z"
+ * half a second later. Compared as text, '.' sorts before 'Z', so within any
+ * one second the whole second sorts *after* every fraction of it. A report
+ * for February asked for ">= 2026-02-01T00:00:00Z" and left out a sale half
+ * a second into February, and January's "< 2026-02-01T00:00:00Z" took it
+ * in. Every hand-built cutoff in every report had the same edge.
+ *
+ * Two repairs, applied here so every caller -- a period, an as-of date, a
+ * filter typed into the API -- gets them:
+ *
+ * - The operand is always written with all six fraction digits. That alone
+ *   makes ">=" and "<" right against both spellings: ".5Z" is after
+ *   ".000000Z" by its digit, and a bare "Z" is after it too.
+ * - ">", "<=" and BETWEEN also have to put the bare second before its
+ *   fractions, which only padding the column can do. Those are rare and
+ *   give up the index; ">=" and "<", which every period uses, keep it.
+ */
+static gboolean
+venture_query_is_time_range(const VentureQueryFilterEntry *entry)
+{
+	if (G_TYPE_DATE_TIME != entry->value_type)
+		return FALSE;
+
+	switch (entry->op)
+	{
+	case VENTURE_FILTER_OP_LT:
+	case VENTURE_FILTER_OP_LTE:
+	case VENTURE_FILTER_OP_GT:
+	case VENTURE_FILTER_OP_GTE:
+	case VENTURE_FILTER_OP_BETWEEN:
+		return TRUE;
+
+	default:
+		return FALSE;
+	}
+}
+
+/*
+ * A time operand with all six fraction digits, in UTC. Text that does not
+ * parse as a time is passed through for the database to compare as it is,
+ * which is what happened to every operand before.
+ */
+static OrmValue *
+venture_query_bind_time(const gchar *text)
+{
+	g_autoptr(GDateTime) when = NULL;
+	g_autoptr(GDateTime) utc = NULL;
+	g_autofree gchar *padded = NULL;
+
+	if (NULL == text)
+		return orm_value_new_null();
+
+	when = venture_time_from_string(text, NULL);
+
+	if (NULL == when)
+		return orm_value_new_string(text);
+
+	utc = g_date_time_to_utc(when);
+	padded = g_date_time_format(utc, "%Y-%m-%dT%H:%M:%S.%fZ");
+
+	return orm_value_new_string(padded);
+}
+
 static void
 venture_query_append_filter(
 	VentureQuery			*self,
@@ -1002,6 +1069,41 @@ venture_query_append_filter(
 	g_autofree gchar *quoted = NULL;
 
 	quoted = venture_schema_quote_identifier(entry->column);
+
+	if (venture_query_is_time_range(entry))
+	{
+		/* See venture_query_is_time_range() for why. A stored value of
+		 * exactly twenty characters is a whole second with its fraction
+		 * left out. */
+		if ((VENTURE_FILTER_OP_GTE == entry->op) ||
+		    (VENTURE_FILTER_OP_LT == entry->op))
+			g_string_append(sql, quoted);
+		else
+			g_string_append_printf(sql,
+				"(CASE WHEN LENGTH(%s) = 20 THEN "
+				"REPLACE(%s, 'Z', '.000000Z') ELSE %s END)",
+				quoted, quoted, quoted);
+
+		if (VENTURE_FILTER_OP_BETWEEN == entry->op)
+		{
+			g_string_append(sql, " BETWEEN ");
+			venture_query_append_placeholder(sql, dialect, index);
+			g_string_append(sql, " AND ");
+			venture_query_append_placeholder(sql, dialect, index);
+			*params = g_list_append(*params, venture_query_bind_time(
+				g_ptr_array_index(entry->values, 0)));
+			*params = g_list_append(*params, venture_query_bind_time(
+				g_ptr_array_index(entry->values, 1)));
+			return;
+		}
+
+		g_string_append_printf(sql, " %s ", venture_query_op_sql(entry->op));
+		venture_query_append_placeholder(sql, dialect, index);
+		*params = g_list_append(*params, venture_query_bind_time(
+			(entry->values->len > 0) ? g_ptr_array_index(entry->values, 0)
+			                         : NULL));
+		return;
+	}
 
 	switch (entry->op)
 	{
@@ -1318,7 +1420,16 @@ venture_query_to_sql(
 					g_string_append(sql, ", ");
 
 				quoted = venture_schema_quote_identifier(order->column);
-				g_string_append_printf(sql, "%s %s", quoted,
+
+				/* Blank values go last, said outright, because the
+				 * two backends disagree when it is left to them:
+				 * SQLite treats NULL as the smallest value and
+				 * PostgreSQL as the largest, so "newest first" on a
+				 * nullable date led with the undated rows on one
+				 * and ended with them on the other -- and under a
+				 * limit, showed different rows. Both accept the
+				 * clause (SQLite from 3.30). */
+				g_string_append_printf(sql, "%s %s NULLS LAST", quoted,
 					(VENTURE_SORT_DESCENDING == order->direction)
 						? "DESC" : "ASC");
 			}

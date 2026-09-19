@@ -1102,6 +1102,121 @@ test_database_query_date_range_is_half_open(
 	g_assert_cmpuint(results->len, ==, 1);
 }
 
+/*
+ * The first second of a period includes its fractions, and the first
+ * second of the next period does not.
+ *
+ * Stored times are text, and ISO 8601 as GLib writes it leaves out a zero
+ * fraction: the boundary is "...T00:00:00Z" and a sale half a second
+ * later is "...T00:00:00.5Z". '.' sorts before 'Z', so compared as text
+ * the later sale came first -- it fell out of the month it happened in
+ * and into the one before.
+ */
+static void
+test_database_query_date_range_counts_fractions(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureVenture) venture = NULL;
+	g_autoptr(VentureDateRange) february = NULL;
+	g_autoptr(VentureDateRange) january = NULL;
+	g_autoptr(VentureQuery) in_february = NULL;
+	g_autoptr(VentureQuery) in_january = NULL;
+	g_autoptr(GPtrArray) february_rows = NULL;
+	g_autoptr(GPtrArray) january_rows = NULL;
+	g_autoptr(GTimeZone) utc = NULL;
+	guint i;
+
+	(void)user_data;
+
+	venture = create_venture(fixture, "fractions");
+	utc = g_time_zone_new_utc();
+
+	/* Half a second into February, and exactly on the start of March. */
+	for (i = 0; i < 2; i++)
+	{
+		g_autoptr(VentureSale) sale = NULL;
+		g_autoptr(GDateTime) when = NULL;
+
+		when = (0 == i)
+			? g_date_time_new(utc, 2026, 2, 1, 0, 0, 0.5)
+			: g_date_time_new(utc, 2026, 3, 1, 0, 0, 0.25);
+
+		sale = venture_sale_new();
+		g_object_set(sale,
+		             "venture-id",
+		             venture_entity_get_id(VENTURE_ENTITY(venture)),
+		             "occurred-at", when,
+		             NULL);
+		g_assert_true(venture_database_save(fixture->database,
+		                                    VENTURE_ENTITY(sale), NULL, NULL));
+	}
+
+	february = venture_date_range_new_month(2026, 2, utc);
+	in_february = venture_query_new(VENTURE_TYPE_SALE);
+	g_assert_true(venture_query_set_date_range(in_february, "occurred-at",
+	                                           february, NULL));
+	february_rows = venture_database_find(fixture->database, in_february,
+	                                      NULL);
+
+	/* The one half a second in, and not the one a quarter second into
+	 * March. */
+	g_assert_cmpuint(february_rows->len, ==, 1);
+
+	january = venture_date_range_new_month(2026, 1, utc);
+	in_january = venture_query_new(VENTURE_TYPE_SALE);
+	g_assert_true(venture_query_set_date_range(in_january, "occurred-at",
+	                                           january, NULL));
+	january_rows = venture_database_find(fixture->database, in_january, NULL);
+	g_assert_cmpuint(january_rows->len, ==, 0);
+
+	/* And the two comparisons that put the whole second first. One more
+	 * sale exactly on the start of February: after it is only the one
+	 * half a second in; up to and including it is only itself. */
+	{
+		g_autoptr(VentureSale) exact = NULL;
+		g_autoptr(GDateTime) boundary = NULL;
+		g_autoptr(VentureQuery) after = NULL;
+		g_autoptr(VentureQuery) until = NULL;
+		g_autoptr(VentureQuery) between = NULL;
+		g_autoptr(GPtrArray) after_rows = NULL;
+		g_autoptr(GPtrArray) until_rows = NULL;
+		g_autoptr(GPtrArray) between_rows = NULL;
+		g_autoptr(GPtrArray) bounds = NULL;
+
+		boundary = g_date_time_new(utc, 2026, 2, 1, 0, 0, 0.0);
+		exact = venture_sale_new();
+		g_object_set(exact,
+		             "venture-id",
+		             venture_entity_get_id(VENTURE_ENTITY(venture)),
+		             "occurred-at", boundary, NULL);
+		g_assert_true(venture_database_save(fixture->database,
+		                                    VENTURE_ENTITY(exact), NULL, NULL));
+
+		after = venture_query_new(VENTURE_TYPE_SALE);
+		g_assert_true(venture_query_add_filter_string(after, "occurred-at",
+			VENTURE_FILTER_OP_GT, "2026-02-01T00:00:00Z", NULL));
+		after_rows = venture_database_find(fixture->database, after, NULL);
+		g_assert_cmpuint(after_rows->len, ==, 2);
+
+		until = venture_query_new(VENTURE_TYPE_SALE);
+		g_assert_true(venture_query_add_filter_string(until, "occurred-at",
+			VENTURE_FILTER_OP_LTE, "2026-02-01T00:00:00Z", NULL));
+		until_rows = venture_database_find(fixture->database, until, NULL);
+		g_assert_cmpuint(until_rows->len, ==, 1);
+
+		/* Inclusive at both ends: the whole second, and its half. */
+		bounds = g_ptr_array_new();
+		g_ptr_array_add(bounds, (gpointer)"2026-02-01T00:00:00Z");
+		g_ptr_array_add(bounds, (gpointer)"2026-02-01T00:00:00.5Z");
+		between = venture_query_new(VENTURE_TYPE_SALE);
+		g_assert_true(venture_query_add_filter(between, "occurred-at",
+			VENTURE_FILTER_OP_BETWEEN, bounds, NULL));
+		between_rows = venture_database_find(fixture->database, between, NULL);
+		g_assert_cmpuint(between_rows->len, ==, 2);
+	}
+}
+
 static void
 test_database_query_from_json(
 	Fixture		*fixture,
@@ -2068,6 +2183,8 @@ main(
 	    test_database_query_organization_scope);
 	ADD("/database/query-date-range-is-half-open",
 	    test_database_query_date_range_is_half_open);
+	ADD("/database/query-date-range-counts-fractions",
+	    test_database_query_date_range_counts_fractions);
 	ADD("/database/query-from-json", test_database_query_from_json);
 	ADD("/database/query-json-rejects-bad-operator",
 	    test_database_query_json_rejects_bad_operator);
