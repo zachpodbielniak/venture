@@ -1505,13 +1505,35 @@ seed_factory () {
         due_on="$(day 12)" \
         description="Inbox, service levels, sprints and the desk around a ticket."
 
+    # A forge and one repository, so builds and releases have somewhere to
+    # live: the default branch is what "main is red" and a release's
+    # readiness are judged by. Inactive, with an address that resolves
+    # nowhere -- nothing here ever calls it.
+    local forge
+    local repo
+    forge="$(make_record forge name="Harrow forge" kind=forgejo \
+        base_url="https://git.harrow.example" token=demo-token active=false)"
+    repo="$(make_record forge_repo name="harrow/studio" forge_id="${forge}" \
+        default_branch=main)"
+
+    # The release before, still on record as having run in production, so
+    # the environment's Roll back has somewhere to go back to.
+    local previous
+    previous="$(make_record release number=0.4.0 name="Record links" \
+        status=released released_at="$(day -40)" tag=v0.4.0)"
+    add deployment release_id="${previous}" environment_id="${production}" \
+        status=succeeded deployed_at="$(day -40)" deployed_by=owner
+
     release="$(make_record release number=0.5.0 name=Dashboards status=released \
         released_at="$(day -7)" tag=v0.5.0)"
-    add release number=0.6.0 name="The workdesk" status=in_progress
+    add release number=0.6.0 name="The workdesk" status=in_progress \
+        repo_id="${repo}"
 
     add build title="Release 0.5.0" status=succeeded trigger=webhook workflow=ci \
+        repo_id="${repo}" release_id="${release}" \
         number=214 ref=main started_at="$(day -7)" finished_at="$(day -7)"
     add build title="Nightly" status=failed trigger=rule workflow=nightly \
+        repo_id="${repo}" \
         number=215 ref=main started_at="$(day -1)" finished_at="$(day -1)" \
         log_excerpt="2 of 214 assertions failed in test-money"
 

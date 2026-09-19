@@ -2151,24 +2151,85 @@ venture_mcp_tool_factory(
 		return venture_json_to_string(node, TRUE);
 	}
 
-	if ((0 != g_strcmp0(action, "changelog")) &&
+	/* What needs somebody: a read, and of the whole factory, so no id. */
+	if (0 == g_strcmp0(action, "actions"))
+	{
+		node = venture_mcp_server_request(self, "GET",
+		                                  "/api/v1/factory/actions", NULL,
+		                                  error);
+
+		if (NULL == node)
+			return NULL;
+
+		return venture_json_to_string(node, TRUE);
+	}
+
+	if ((0 != g_strcmp0(action, "readiness")) &&
+	    (0 != g_strcmp0(action, "forecast")) &&
+	    (0 != g_strcmp0(action, "changelog")) &&
+	    (0 != g_strcmp0(action, "deploy")) &&
+	    (0 != g_strcmp0(action, "rollback")) &&
+	    (0 != g_strcmp0(action, "build_ticket")) &&
 	    (0 != g_strcmp0(action, "publish")))
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		            "\"%s\" is not a factory action. Use status, changelog "
-		            "or publish.", action);
+		            "\"%s\" is not a factory action. Use status, actions, "
+		            "readiness, forecast, changelog, deploy, rollback, "
+		            "build_ticket or publish.", action);
 		return NULL;
 	}
 
 	if (!venture_mcp_resolve_argument_id(arguments, &id, error))
 		return NULL;
 
+	/* The two that only read. */
+	if ((0 == g_strcmp0(action, "readiness")) ||
+	    (0 == g_strcmp0(action, "forecast")))
+	{
+		path = (0 == g_strcmp0(action, "readiness"))
+			? g_strdup_printf("/api/v1/releases/%" G_GINT64_FORMAT
+			                  "/readiness", id)
+			: g_strdup_printf("/api/v1/milestones/%" G_GINT64_FORMAT
+			                  "/forecast", id);
+		node = venture_mcp_server_request(self, "GET", path, NULL, error);
+
+		if (NULL == node)
+			return NULL;
+
+		return venture_json_to_string(node, TRUE);
+	}
+
+	/* The rest write, and each says what to do instead when it may not. */
 	if (0 == g_strcmp0(action, "changelog"))
 	{
 		if (!venture_mcp_require_apply_writes(self,
 			"Drafting a changelog onto the release",
 			"read the tickets with venture_list (release_id filter) and "
 			"set the changelog with venture_update, which stages", error))
+			return NULL;
+	}
+	else if (0 == g_strcmp0(action, "deploy"))
+	{
+		if (!venture_mcp_require_apply_writes(self,
+			"Recording a deployment",
+			"create the deployment with venture_create, which stages",
+			error))
+			return NULL;
+	}
+	else if (0 == g_strcmp0(action, "rollback"))
+	{
+		if (!venture_mcp_require_apply_writes(self,
+			"Rolling an environment back",
+			"ask the person you are working for to press Roll back on the "
+			"environment's page", error))
+			return NULL;
+	}
+	else if (0 == g_strcmp0(action, "build_ticket"))
+	{
+		if (!venture_mcp_require_apply_writes(self,
+			"Opening a ticket for a failed build",
+			"create the ticket with venture_create, which stages, and link "
+			"it from the build with venture_link", error))
 			return NULL;
 	}
 	else if (!venture_mcp_require_apply_writes(self,
@@ -2181,17 +2242,48 @@ venture_mcp_tool_factory(
 
 	builder = json_builder_new();
 	json_builder_begin_object(builder);
-	json_builder_set_member_name(builder,
-		(0 == g_strcmp0(action, "changelog")) ? "replace" : "prerelease");
-	json_builder_add_boolean_value(builder,
-		venture_json_object_get_bool(arguments,
-			(0 == g_strcmp0(action, "changelog")) ? "replace" : "prerelease",
-			FALSE));
+
+	if (0 == g_strcmp0(action, "changelog"))
+	{
+		json_builder_set_member_name(builder, "replace");
+		json_builder_add_boolean_value(builder,
+			venture_json_object_get_bool(arguments, "replace", FALSE));
+	}
+	else if (0 == g_strcmp0(action, "publish"))
+	{
+		json_builder_set_member_name(builder, "prerelease");
+		json_builder_add_boolean_value(builder,
+			venture_json_object_get_bool(arguments, "prerelease", FALSE));
+	}
+	else if (0 == g_strcmp0(action, "deploy"))
+	{
+		json_builder_set_member_name(builder, "environment_id");
+		json_builder_add_int_value(builder,
+			venture_json_object_get_int(arguments, "environment_id", 0));
+		json_builder_set_member_name(builder, "notes");
+		json_builder_add_string_value(builder,
+			venture_json_object_get_string(arguments, "notes", ""));
+	}
+	else if (0 == g_strcmp0(action, "rollback"))
+	{
+		json_builder_set_member_name(builder, "reason");
+		json_builder_add_string_value(builder,
+			venture_json_object_get_string(arguments, "reason", ""));
+	}
+
 	json_builder_end_object(builder);
 	body = json_builder_get_root(builder);
 
-	path = g_strdup_printf("/api/v1/releases/%" G_GINT64_FORMAT "/%s", id,
-	                       action);
+	if (0 == g_strcmp0(action, "rollback"))
+		path = g_strdup_printf("/api/v1/environments/%" G_GINT64_FORMAT
+		                       "/rollback", id);
+	else if (0 == g_strcmp0(action, "build_ticket"))
+		path = g_strdup_printf("/api/v1/builds/%" G_GINT64_FORMAT "/ticket",
+		                       id);
+	else
+		path = g_strdup_printf("/api/v1/releases/%" G_GINT64_FORMAT "/%s", id,
+		                       action);
+
 	node = venture_mcp_server_request(self, "POST", path, body, error);
 
 	if (NULL == node)

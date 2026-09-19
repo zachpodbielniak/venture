@@ -7277,6 +7277,69 @@ venture_web_scope_to_active_organization(
 	                                    tree->len);
 }
 
+/*
+ * The organization scope an API caller asked for with ?organization_id=.
+ *
+ * Absent is no scope, which is every organization the caller may see. But
+ * present and unusable is an error and not "everything": an agent that
+ * asked for one entity's factory and mistyped the id would otherwise be
+ * handed all of them and have no way to tell.
+ *
+ * Returns: %FALSE with @error set when the parameter cannot be used
+ */
+static gboolean
+venture_web_api_organization_scope(
+	VentureWebServer	 *self,
+	HtmxRequest		 *request,
+	GArray			**out_tree,
+	GError			**error
+){
+	const gchar *organization;
+	gchar *end = NULL;
+	gint64 id;
+
+	*out_tree = NULL;
+	organization = htmx_request_get_query_param(request, "organization_id");
+
+	if (venture_string_is_empty(organization))
+		return TRUE;
+
+	id = g_ascii_strtoll(organization, &end, 10);
+
+	if ((id <= 0) || (NULL == end) || ('\0' != *end))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "organization_id must be the id of an organization, "
+		            "not \"%s\"", organization);
+		return FALSE;
+	}
+
+	*out_tree = venture_web_organization_tree(self, id);
+
+	return TRUE;
+}
+
+/*
+ * The scope the browser has selected, as the tree the factory's describe
+ * functions take. %NULL is "all entities".
+ *
+ * Returns: (transfer full) (nullable): the selected entity and those beneath
+ */
+static GArray *
+venture_web_active_organization_tree(
+	VentureWebServer	*self,
+	HtmxRequest		*request
+){
+	gint64 active;
+
+	active = venture_web_active_organization(self, request);
+
+	if (0 == active)
+		return NULL;
+
+	return venture_web_organization_tree(self, active);
+}
+
 static HtmxResponse *
 venture_web_ui_switch_entity(
 	HtmxRequest	*request,
@@ -8594,6 +8657,27 @@ venture_web_append_subject_tickets(
  * out. Both are composed rather than stored, so neither can disagree with
  * the forge the repository belongs to.
  */
+/*
+ * Whether a stored address may be a link: http or https, and nothing else.
+ *
+ * Every one of these is text an editor can set -- a release's page, an
+ * issue's address, a forge's base URL that repository and branch links
+ * are built from -- and HTML escaping leaves "javascript:alert(1)" exactly
+ * as it was. Rendered as an href, it runs for whoever clicks it, which is
+ * usually an admin. So an address that is not a web address is shown as
+ * text, or not at all, and never as a link. The scheme is compared without
+ * regard to case, because browsers do the same.
+ */
+static gboolean
+venture_web_url_is_web(const gchar *url)
+{
+	if (venture_string_is_empty(url))
+		return FALSE;
+
+	return (0 == g_ascii_strncasecmp(url, "https://", 8)) ||
+	       (0 == g_ascii_strncasecmp(url, "http://", 7));
+}
+
 static void
 venture_web_append_repo_block(
 	VentureWebServer	*self,
@@ -8628,6 +8712,10 @@ venture_web_append_repo_block(
 	web_url = venture_forge_web_url(base_url, full_name, NULL);
 	clone_url = venture_forge_clone_url(repo_clone_url, clone_base, base_url,
 	                                    full_name);
+
+	/* Built from the forge's base URL, which is free text. */
+	if (!venture_web_url_is_web(web_url))
+		g_clear_pointer(&web_url, g_free);
 
 	if ((NULL == web_url) && (NULL == clone_url))
 		return;
@@ -8743,6 +8831,9 @@ venture_web_append_ticket_forge_block(
 
 		branch_url = venture_forge_web_url(forge_base_url, repo_name, branch);
 
+		if (!venture_web_url_is_web(branch_url))
+			g_clear_pointer(&branch_url, g_free);
+
 		/*
 		 * The branch links to the forge and copies as a checkout
 		 * command, because those are the two things anybody does with
@@ -8785,12 +8876,12 @@ venture_web_append_ticket_forge_block(
 	{
 		g_string_append(content, "<span class=\"muted\">not filed</span>");
 	}
-	else if (!venture_string_is_empty(issue_url))
+	else if (venture_web_url_is_web(issue_url))
 	{
 		g_string_append(content, "<a href=\"");
 		venture_html_escape_append(content, issue_url);
-		g_string_append_printf(content, "\">#%" G_GINT64_FORMAT "</a>",
-		                       issue_number);
+		g_string_append_printf(content, "\" rel=\"noopener noreferrer\">#%"
+		                       G_GINT64_FORMAT "</a>", issue_number);
 	}
 	else
 	{
@@ -9030,7 +9121,8 @@ static void
 venture_web_append_release_block(
 	VentureWebServer	*self,
 	GString			*content,
-	VentureEntity		*record
+	VentureEntity		*record,
+	const gchar		*changelog_notice
 );
 
 static void
@@ -9042,6 +9134,13 @@ venture_web_append_milestone_block(
 
 static void
 venture_web_append_environment_block(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+);
+
+static void
+venture_web_append_build_block(
 	VentureWebServer	*self,
 	GString			*content,
 	VentureEntity		*record
@@ -9242,13 +9341,17 @@ venture_web_ui_detail(
 	if (venture_web_module_enabled(self, "factory"))
 	{
 		if (VENTURE_TYPE_RELEASE == entity_type)
-			venture_web_append_release_block(self, content, record);
+			venture_web_append_release_block(self, content, record,
+				htmx_request_get_query_param(request, "changelog"));
 
 		if (VENTURE_TYPE_MILESTONE == entity_type)
 			venture_web_append_milestone_block(self, content, record);
 
 		if (VENTURE_TYPE_ENVIRONMENT == entity_type)
 			venture_web_append_environment_block(self, content, record);
+
+		if (VENTURE_TYPE_BUILD == entity_type)
+			venture_web_append_build_block(self, content, record);
 	}
 
 	/*
@@ -19093,6 +19196,28 @@ venture_web_ui_run_cancel(
 
 	run_id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
 
+	/* The work service cancels by id and asks nothing, so the asking is
+	 * done here: the run is loaded, which is where the caller's
+	 * organizations are applied, and must be one they may change. An id
+	 * alone would let an editor stop a run in an organization they have
+	 * never been let into. */
+	{
+		g_autoptr(VentureEntity) run = NULL;
+		VentureDatabase *database;
+
+		database = venture_context_get_database(self->context);
+		run = venture_database_get(database, VENTURE_TYPE_FORGE_RUN, run_id,
+		                           &error);
+
+		if (NULL == run)
+			return venture_web_error_response(error);
+
+		if (!venture_access_policy_check_write(
+			venture_database_get_access_policy(database), run, "write",
+			&error))
+			return venture_web_error_response(error);
+	}
+
 	work = venture_context_get_work_service(self->context);
 
 	if (NULL != work)
@@ -19811,10 +19936,15 @@ venture_web_forge_webhook(
 		event_name = soup_message_headers_get_one(headers, "X-Gitea-Event");
 
 	/*
-	 * The factory's two events, handed off whole: a CI run becomes a
-	 * build, a release cut on the forge becomes a release record.
+	 * The factory's events, handed off whole: a CI run becomes a build,
+	 * a release cut on the forge becomes a release record. A CI run comes
+	 * as Gitea's workflow_run, or as Forgejo's action_run_success and
+	 * action_run_failure -- Forgejo sends no workflow_run at all -- and
+	 * all three go to the one handler.
 	 */
 	if ((0 == g_strcmp0(event_name, "workflow_run")) ||
+	    g_str_has_prefix((NULL != event_name) ? event_name : "",
+	                     "action_run_") ||
 	    (0 == g_strcmp0(event_name, "release")))
 	{
 		parser = json_parser_new();
@@ -19823,7 +19953,7 @@ venture_web_forge_webhook(
 		    !json_parser_load_from_data(parser, data, (gssize)length, NULL))
 			return venture_web_forge_ack(SOUP_STATUS_BAD_REQUEST);
 
-		if (0 == g_strcmp0(event_name, "workflow_run"))
+		if (0 != g_strcmp0(event_name, "release"))
 			return venture_web_forge_webhook_workflow(self, forge, client,
 				headers, json_parser_get_root(parser));
 
@@ -20084,10 +20214,28 @@ venture_web_factory_actor(VentureActor *actor)
 static GDateTime *
 venture_web_factory_parse_time(const gchar *text)
 {
+	g_autoptr(GDateTime) when = NULL;
+
 	if (venture_string_is_empty(text))
 		return NULL;
 
-	return venture_time_from_string(text, NULL);
+	when = venture_time_from_string(text, NULL);
+
+	/* A forge written in Go sends its zero time -- year 1, or the epoch --
+	 * for "has not happened yet". Stored as given, a run cancelled while
+	 * queued would read as having taken decades. */
+	if ((NULL != when) && (g_date_time_get_year(when) < 2000))
+		return NULL;
+
+	return g_steal_pointer(&when);
+}
+
+static gboolean
+venture_web_factory_build_is_finished(VentureBuildStatus status)
+{
+	return (VENTURE_BUILD_STATUS_SUCCEEDED == status) ||
+	       (VENTURE_BUILD_STATUS_FAILED == status) ||
+	       (VENTURE_BUILD_STATUS_CANCELLED == status);
 }
 
 /*
@@ -20102,7 +20250,10 @@ venture_web_factory_build_status(
 	if ((0 == g_strcmp0(status, "completed")) ||
 	    (0 == g_strcmp0(action, "completed")))
 	{
-		if (0 == g_strcmp0(conclusion, "success"))
+		/* Neutral is the CI saying "nothing to object to": a workflow
+		 * whose jobs were all conditional and none applied. Not red. */
+		if ((0 == g_strcmp0(conclusion, "success")) ||
+		    (0 == g_strcmp0(conclusion, "neutral")))
 			return VENTURE_BUILD_STATUS_SUCCEEDED;
 
 		if ((0 == g_strcmp0(conclusion, "cancelled")) ||
@@ -20177,6 +20328,11 @@ venture_web_forge_webhook_workflow(
 	VentureBuildStatus status;
 	gint64 repo_id;
 
+	/* Zeroed first: a client that does not implement the parser returns
+	 * before it has touched the struct, and the clear below frees what
+	 * is in it. */
+	memset(&event, 0, sizeof event);
+
 	/* Builds are the factory's; without it the delivery is acknowledged
 	 * and dropped, like any event nobody subscribed to. */
 	if (!venture_web_module_enabled(self, "factory"))
@@ -20217,6 +20373,40 @@ venture_web_forge_webhook_workflow(
 		             "trigger", VENTURE_BUILD_TRIGGER_WEBHOOK,
 		             NULL);
 	}
+	else
+	{
+		g_autoptr(GDateTime) known_start = NULL;
+		VentureBuildStatus known;
+		gboolean rerun;
+
+		g_object_get(build, "status", &known, "started-at", &known_start,
+		             NULL);
+
+		/* Deliveries arrive in whatever order the network likes, and a
+		 * forge retries the ones it thinks were lost. A finished build
+		 * is not un-finished by an older "in progress" turning up late:
+		 * only a run that started again -- a later start than the one on
+		 * record -- takes it back to running. */
+		rerun = (NULL != started) && (NULL != known_start) &&
+		        (g_date_time_compare(started, known_start) > 0);
+
+		if (venture_web_factory_build_is_finished(known) &&
+		    !venture_web_factory_build_is_finished(status) && !rerun)
+		{
+			venture_forge_workflow_event_clear(&event);
+			return venture_web_forge_ack(SOUP_STATUS_NO_CONTENT);
+		}
+
+		/* Completed with no conclusion says nothing about how it went;
+		 * what is already known stands. */
+		if (venture_web_factory_build_is_finished(known) &&
+		    venture_web_factory_build_is_finished(status) &&
+		    venture_string_is_empty(event.conclusion))
+			status = known;
+
+		if (!venture_web_factory_build_is_finished(status))
+			g_object_set(build, "finished-at", NULL, NULL);
+	}
 
 	g_object_set(build,
 	             "title", event.title,
@@ -20234,10 +20424,7 @@ venture_web_forge_webhook_workflow(
 	/* Finished only once it has: a queued run's updated_at is when it
 	 * was queued, and a build that reads as finished before it started
 	 * is a lie in the lead-time report. */
-	if ((NULL != finished) &&
-	    ((VENTURE_BUILD_STATUS_SUCCEEDED == status) ||
-	     (VENTURE_BUILD_STATUS_FAILED == status) ||
-	     (VENTURE_BUILD_STATUS_CANCELLED == status)))
+	if ((NULL != finished) && venture_web_factory_build_is_finished(status))
 		g_object_set(build, "finished-at", finished, NULL);
 
 	venture_web_factory_actor(&actor);
@@ -20257,10 +20444,32 @@ venture_web_forge_webhook_workflow(
 }
 
 /*
+ * "v1.2.0" is version 1.2.0; "1.2.0" is too. Anything else is its own
+ * version string.
+ */
+static gchar *
+venture_web_factory_version_from_tag(const gchar *tag)
+{
+	if (venture_string_is_empty(tag))
+		return g_strdup("");
+
+	if ((('v' == tag[0]) || ('V' == tag[0])) && g_ascii_isdigit(tag[1]))
+		return g_strdup(tag + 1);
+
+	return g_strdup(tag);
+}
+
+/*
  * Finds the release a forge release already produced: by the forge's id
- * first, then by tag, so a release VENTURE published (which knows the id)
- * and one cut on the forge (which VENTURE first hears of by tag) both
- * resolve to one row.
+ * first, then by tag, then by version, so a release VENTURE published
+ * (which knows the id), one cut on the forge (which VENTURE first hears of
+ * by tag) and one planned here and then tagged there by hand (which has
+ * tickets marked against it and neither an id nor a tag) all resolve to
+ * one row.
+ *
+ * The version pass takes only a row the forge has not claimed: a release
+ * that already carries a different forge id is a different release that
+ * happens to share a number.
  *
  * Returns: (transfer full) (nullable): the release
  */
@@ -20271,17 +20480,21 @@ venture_web_factory_find_release(
 	gint64			 external_id,
 	const gchar		*tag
 ){
+	g_autofree gchar *number = NULL;
 	gint pass;
 
-	for (pass = 0; pass < 2; pass++)
+	number = venture_web_factory_version_from_tag(tag);
+
+	for (pass = 0; pass < 3; pass++)
 	{
 		g_autoptr(VentureQuery) query = NULL;
 		g_autoptr(GPtrArray) releases = NULL;
+		guint i;
 
 		if ((0 == pass) && (0 == external_id))
 			continue;
 
-		if ((1 == pass) && venture_string_is_empty(tag))
+		if ((0 != pass) && venture_string_is_empty(tag))
 			continue;
 
 		query = venture_query_new(VENTURE_TYPE_RELEASE);
@@ -20297,39 +20510,41 @@ venture_web_factory_find_release(
 			                                  external_id, NULL))
 				return NULL;
 		}
-		else
+		else if (!venture_query_add_filter_string(query,
+		                                          (1 == pass) ? "tag" : "number",
+		                                          VENTURE_FILTER_OP_EQ,
+		                                          (1 == pass) ? tag : number,
+		                                          NULL))
 		{
-			if (!venture_query_add_filter_string(query, "tag",
-			                                     VENTURE_FILTER_OP_EQ, tag,
-			                                     NULL))
-				return NULL;
+			return NULL;
 		}
 
-		venture_query_set_limit(query, 1);
+		venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+		venture_query_set_limit(query, 20);
 		releases = venture_database_find(
 			venture_context_get_database(self->context), query, NULL);
 
-		if ((NULL != releases) && (releases->len > 0))
-			return g_object_ref(g_ptr_array_index(releases, 0));
+		for (i = 0; (NULL != releases) && (i < releases->len); i++)
+		{
+			VentureEntity *candidate;
+			gint64 claimed = 0;
+
+			candidate = g_ptr_array_index(releases, i);
+			g_object_get(candidate, "external-id", &claimed, NULL);
+
+			/* By tag or by number, a row the forge already knows under
+			 * another id is not this release: a tag deleted and cut
+			 * again is a new release, and the late "deleted" for the
+			 * old one must not find the new. */
+			if ((0 != pass) && (0 != claimed) && (0 != external_id) &&
+			    (claimed != external_id))
+				continue;
+
+			return g_object_ref(candidate);
+		}
 	}
 
 	return NULL;
-}
-
-/*
- * "v1.2.0" is version 1.2.0; "1.2.0" is too. Anything else is its own
- * version string.
- */
-static gchar *
-venture_web_factory_version_from_tag(const gchar *tag)
-{
-	if (venture_string_is_empty(tag))
-		return g_strdup("");
-
-	if ((('v' == tag[0]) || ('V' == tag[0])) && g_ascii_isdigit(tag[1]))
-		return g_strdup(tag + 1);
-
-	return g_strdup(tag);
 }
 
 /*
@@ -20347,12 +20562,18 @@ venture_web_forge_webhook_release(
 	g_autoptr(VentureForgeRepo) repo = NULL;
 	g_autoptr(VentureEntity) release = NULL;
 	g_autoptr(GDateTime) published = NULL;
+	g_autoptr(GDateTime) released_before = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *existing_changelog = NULL;
 	VentureForgeReleaseEvent event;
 	VentureActor actor;
+	VentureReleaseStatus known = VENTURE_RELEASE_STATUS_PLANNED;
+	gboolean deleted;
 	gint64 repo_id;
 	gint64 product_id = 0;
+
+	/* Zeroed first, for the same reason as the workflow handler. */
+	memset(&event, 0, sizeof event);
 
 	if (!venture_web_module_enabled(self, "factory"))
 		return venture_web_forge_ack(SOUP_STATUS_NO_CONTENT);
@@ -20403,41 +20624,76 @@ venture_web_forge_webhook_release(
 		             NULL);
 	}
 
-	g_object_get(release, "changelog", &existing_changelog, NULL);
+	g_object_get(release, "changelog", &existing_changelog,
+	             "released-at", &released_before, "status", &known, NULL);
+	deleted = (0 == g_strcmp0(event.action, "deleted"));
 
-	g_object_set(release,
-	             "tag", event.tag,
-	             "name", event.name,
-	             "url", event.url,
-	             "external-id", event.release_id,
-	             NULL);
+	/* What the forge calls it, where it says anything. A deletion's
+	 * payload is mostly empty strings, and an empty string is not news:
+	 * writing it would blank the page a yanked release used to live at,
+	 * and with the URL gone Publish would be offered on it again. */
+	if (!deleted)
+	{
+		if (!venture_string_is_empty(event.tag))
+			g_object_set(release, "tag", event.tag, NULL);
+
+		if (!venture_string_is_empty(event.name))
+			g_object_set(release, "name", event.name, NULL);
+
+		if (!venture_string_is_empty(event.url))
+			g_object_set(release, "url", event.url, NULL);
+
+		if (0 != event.release_id)
+			g_object_set(release, "external-id", event.release_id, NULL);
+	}
 
 	/* The forge's notes fill an empty changelog and never overwrite one
 	 * somebody wrote here. */
-	if (venture_string_is_empty(existing_changelog) &&
+	if (!deleted && venture_string_is_empty(existing_changelog) &&
 	    !venture_string_is_empty(event.body))
 		g_object_set(release, "changelog", event.body, NULL);
 
-	if (0 == g_strcmp0(event.action, "deleted"))
+	if (deleted)
 	{
-		g_object_set(release, "status", VENTURE_RELEASE_STATUS_YANKED, NULL);
+		/* Withdrawn after it went out is yanked. A draft or a
+		 * prerelease deleted before it ever did goes back to being a
+		 * plan the forge knows nothing of, so it can be published
+		 * again. */
+		if (VENTURE_RELEASE_STATUS_RELEASED == known)
+			g_object_set(release, "status", VENTURE_RELEASE_STATUS_YANKED,
+			             NULL);
+		else if (VENTURE_RELEASE_STATUS_YANKED != known)
+			g_object_set(release, "url", NULL, "external-id", (gint64)0,
+			             NULL);
 	}
-	else if (event.draft)
+	else if (event.draft || event.prerelease)
 	{
-		g_object_set(release, "status", VENTURE_RELEASE_STATUS_IN_PROGRESS,
-		             NULL);
+		/* A draft is not out, and a release candidate is not the
+		 * release: neither counts as shipped in any report. A row
+		 * already released or yanked here is left as it is. */
+		if ((VENTURE_RELEASE_STATUS_PLANNED == known) ||
+		    (VENTURE_RELEASE_STATUS_IN_PROGRESS == known))
+			g_object_set(release, "status",
+			             VENTURE_RELEASE_STATUS_IN_PROGRESS, NULL);
 	}
-	else
+	else if ((VENTURE_RELEASE_STATUS_PLANNED == known) ||
+	         (VENTURE_RELEASE_STATUS_IN_PROGRESS == known) ||
+	         ((VENTURE_RELEASE_STATUS_YANKED == known) &&
+	          (0 == g_strcmp0(event.action, "published"))))
 	{
+		/* Going out happens once. An edit to the notes of a release
+		 * that is already out -- or that somebody yanked here -- moves
+		 * neither its status nor the moment it shipped, which is what
+		 * lead time is measured to. */
 		published = venture_web_factory_parse_time(event.published_at);
 
 		if (NULL == published)
 			published = g_date_time_new_now_utc();
 
-		g_object_set(release,
-		             "status", VENTURE_RELEASE_STATUS_RELEASED,
-		             "released-at", published,
-		             NULL);
+		g_object_set(release, "status", VENTURE_RELEASE_STATUS_RELEASED, NULL);
+
+		if (NULL == released_before)
+			g_object_set(release, "released-at", published, NULL);
 	}
 
 	venture_web_factory_actor(&actor);
@@ -20456,6 +20712,1086 @@ venture_web_forge_webhook_release(
 	return venture_web_forge_ack(SOUP_STATUS_ACCEPTED);
 }
 
+/* --- The factory's operations: readiness, deploying, the assistant -------- */
+
+/*
+ * Loads the record in the path for a factory action over the API, with
+ * the gates: the module is on, the caller holds @role, and the record is
+ * one they may see.
+ */
+static HtmxResponse *
+venture_web_api_factory_load(
+	VentureWebServer	 *self,
+	HtmxRequest		 *request,
+	GHashTable		 *params,
+	GType			  type,
+	VentureUserRole		  role,
+	VentureAuthPrincipal	**out_principal,
+	VentureEntity		**out_record
+){
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *gate;
+
+	gate = venture_web_require_module_api(self, "factory");
+
+	if (NULL != gate)
+		return gate;
+
+	gate = venture_web_api_require(self, request, role);
+
+	if (NULL != gate)
+		return gate;
+
+	principal = venture_auth_authenticate(self->auth, request);
+	record = venture_database_get(venture_context_get_database(self->context),
+	                              type,
+	                              g_ascii_strtoll(g_hash_table_lookup(params,
+	                                                                  "id"),
+	                                              NULL, 10),
+	                              &error);
+
+	if (NULL == record)
+		return venture_web_error_response(error);
+
+	if (NULL != out_principal)
+		*out_principal = g_steal_pointer(&principal);
+
+	*out_record = g_steal_pointer(&record);
+
+	return NULL;
+}
+
+/*
+ * The same for a page's button: a session rather than a token, and a
+ * redirect to the login page rather than a 401.
+ */
+static HtmxResponse *
+venture_web_ui_factory_load(
+	VentureWebServer	 *self,
+	HtmxRequest		 *request,
+	GHashTable		 *params,
+	GType			  type,
+	VentureAuthPrincipal	**out_principal,
+	VentureEntity		**out_record
+){
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *gate;
+
+	gate = venture_web_require_module_ui(self, request, "factory");
+
+	if (NULL != gate)
+		return gate;
+
+	gate = venture_web_ui_require_session(self, request);
+
+	if (NULL != gate)
+		return gate;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	                          &error))
+		return venture_web_error_response(error);
+
+	record = venture_database_get(venture_context_get_database(self->context),
+	                              type,
+	                              g_ascii_strtoll(g_hash_table_lookup(params,
+	                                                                  "id"),
+	                                              NULL, 10),
+	                              &error);
+
+	if (NULL == record)
+		return venture_web_error_response(error);
+
+	*out_principal = g_steal_pointer(&principal);
+	*out_record = g_steal_pointer(&record);
+
+	return NULL;
+}
+
+/*
+ * A string member of a JSON request body, or %NULL.
+ */
+static const gchar *
+venture_web_body_string(
+	JsonNode	*body,
+	const gchar	*member
+){
+	if ((NULL == body) || !JSON_NODE_HOLDS_OBJECT(body))
+		return NULL;
+
+	return venture_json_object_get_string(json_node_get_object(body), member,
+	                                      NULL);
+}
+
+/*
+ * {"member": "text"} as a response, for the assistant's drafts.
+ */
+static HtmxResponse *
+venture_web_json_text_response(
+	const gchar	*member,
+	const gchar	*text
+){
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, member);
+	json_builder_add_string_value(builder, text);
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * GET /api/v1/factory/actions - what needs somebody, most pressing first.
+ */
+static HtmxResponse *
+venture_web_api_factory_actions(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GArray) tree = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *gate;
+
+	(void)params;
+
+	gate = venture_web_require_module_api(self, "factory");
+
+	if (NULL != gate)
+		return gate;
+
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+
+	if (NULL != gate)
+		return gate;
+
+	if (!venture_web_api_organization_scope(self, request, &tree, &error))
+		return venture_web_error_response(error);
+
+	node = venture_factory_next_actions(self->context,
+		(NULL != tree) ? (const gint64 *)tree->data : NULL,
+		(NULL != tree) ? tree->len : 0, &error);
+
+	if (NULL == node)
+		return venture_web_error_response(error);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * GET /api/v1/factory/briefing - the same, and where things stand, as a
+ * few paragraphs. A model call: an editor's to make, like the desk's.
+ */
+static HtmxResponse *
+venture_web_api_factory_briefing(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(GArray) tree = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *text = NULL;
+	HtmxResponse *gate;
+
+	(void)params;
+
+	gate = venture_web_require_module_api(self, "factory");
+
+	if (NULL != gate)
+		return gate;
+
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+
+	if (NULL != gate)
+		return gate;
+
+	if (!venture_web_api_organization_scope(self, request, &tree, &error))
+		return venture_web_error_response(error);
+
+	text = venture_ai_factory_briefing(self->context,
+		(NULL != tree) ? (const gint64 *)tree->data : NULL,
+		(NULL != tree) ? tree->len : 0, &error);
+
+	if (NULL == text)
+		return venture_web_error_response(error);
+
+	return venture_web_json_text_response("briefing", text);
+}
+
+/*
+ * GET /api/v1/releases/:id/readiness - can it go out.
+ */
+static HtmxResponse *
+venture_web_api_release_readiness(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureEntity) release = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *gate;
+
+	gate = venture_web_api_factory_load(self, request, params,
+	                                    VENTURE_TYPE_RELEASE,
+	                                    VENTURE_USER_ROLE_VIEWER, NULL,
+	                                    &release);
+
+	if (NULL != gate)
+		return gate;
+
+	node = venture_factory_release_readiness(self->context, release, &error);
+
+	if (NULL == node)
+		return venture_web_error_response(error);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * POST /api/v1/releases/:id/deploy - record it arriving somewhere.
+ * {"environment_id": N, "notes": "..."}. Answers with the deployment.
+ */
+static HtmxResponse *
+venture_web_api_release_deploy(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) release = NULL;
+	g_autoptr(VentureEntity) deployment = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+	gint64 environment_id;
+
+	gate = venture_web_api_factory_load(self, request, params,
+	                                    VENTURE_TYPE_RELEASE,
+	                                    VENTURE_USER_ROLE_EDITOR, &principal,
+	                                    &release);
+
+	if (NULL != gate)
+		return gate;
+
+	body = htmx_request_get_json(request, NULL);
+	environment_id = ((NULL != body) && JSON_NODE_HOLDS_OBJECT(body))
+		? venture_json_object_get_int(json_node_get_object(body),
+		                              "environment_id", 0)
+		: 0;
+
+	venture_auth_to_actor(principal, &actor);
+	deployment = venture_factory_deploy_release(self->context, release,
+		environment_id, venture_web_body_string(body, "notes"), &actor, &error);
+
+	if (NULL == deployment)
+		return venture_web_error_response(error);
+
+	node = venture_serializable_to_json(VENTURE_SERIALIZABLE(deployment), FALSE);
+
+	return venture_web_json_response(node, 201);
+}
+
+/*
+ * POST /api/v1/releases/:id/notes - release notes for the people who use
+ * it, drafted by the assistant. {"audience": "..."} is optional. Nothing
+ * is written.
+ */
+static HtmxResponse *
+venture_web_api_release_notes(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureEntity) release = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *text = NULL;
+	HtmxResponse *gate;
+
+	gate = venture_web_api_factory_load(self, request, params,
+	                                    VENTURE_TYPE_RELEASE,
+	                                    VENTURE_USER_ROLE_EDITOR, NULL,
+	                                    &release);
+
+	if (NULL != gate)
+		return gate;
+
+	body = htmx_request_get_json(request, NULL);
+	text = venture_ai_factory_release_notes(self->context, release,
+		venture_web_body_string(body, "audience"), &error);
+
+	if (NULL == text)
+		return venture_web_error_response(error);
+
+	return venture_web_json_text_response("notes", text);
+}
+
+/*
+ * POST /api/v1/environments/:id/rollback - go back to what ran before.
+ * {"reason": "..."}. Answers with the new deployment.
+ */
+static HtmxResponse *
+venture_web_api_environment_rollback(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) environment = NULL;
+	g_autoptr(VentureEntity) deployment = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+
+	gate = venture_web_api_factory_load(self, request, params,
+	                                    VENTURE_TYPE_ENVIRONMENT,
+	                                    VENTURE_USER_ROLE_EDITOR, &principal,
+	                                    &environment);
+
+	if (NULL != gate)
+		return gate;
+
+	body = htmx_request_get_json(request, NULL);
+	venture_auth_to_actor(principal, &actor);
+	deployment = venture_factory_rollback_environment(self->context,
+		environment, venture_web_body_string(body, "reason"), &actor, &error);
+
+	if (NULL == deployment)
+		return venture_web_error_response(error);
+
+	node = venture_serializable_to_json(VENTURE_SERIALIZABLE(deployment), FALSE);
+
+	return venture_web_json_response(node, 201);
+}
+
+/*
+ * GET /api/v1/milestones/:id/forecast - when it lands at this pace.
+ */
+static HtmxResponse *
+venture_web_api_milestone_forecast(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureEntity) milestone = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *gate;
+
+	gate = venture_web_api_factory_load(self, request, params,
+	                                    VENTURE_TYPE_MILESTONE,
+	                                    VENTURE_USER_ROLE_VIEWER, NULL,
+	                                    &milestone);
+
+	if (NULL != gate)
+		return gate;
+
+	node = venture_factory_milestone_forecast(self->context, milestone, &error);
+
+	if (NULL == node)
+		return venture_web_error_response(error);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * POST /api/v1/incidents/:id/postmortem - a blameless postmortem drafted
+ * from the records. Nothing is written: the draft is for a person to read,
+ * correct and save.
+ */
+static HtmxResponse *
+venture_web_api_incident_postmortem(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureEntity) incident = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *text = NULL;
+	HtmxResponse *gate;
+
+	gate = venture_web_api_factory_load(self, request, params,
+	                                    VENTURE_TYPE_INCIDENT,
+	                                    VENTURE_USER_ROLE_EDITOR, NULL,
+	                                    &incident);
+
+	if (NULL != gate)
+		return gate;
+
+	text = venture_ai_factory_postmortem(self->context, incident, &error);
+
+	if (NULL == text)
+		return venture_web_error_response(error);
+
+	return venture_web_json_text_response("postmortem", text);
+}
+
+/*
+ * POST /api/v1/builds/:id/triage - what a build's log is complaining about.
+ */
+static HtmxResponse *
+venture_web_api_build_triage(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureEntity) build = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *gate;
+
+	gate = venture_web_api_factory_load(self, request, params,
+	                                    VENTURE_TYPE_BUILD,
+	                                    VENTURE_USER_ROLE_EDITOR, NULL, &build);
+
+	if (NULL != gate)
+		return gate;
+
+	node = venture_ai_factory_build_triage(self->context, build, &error);
+
+	if (NULL == node)
+		return venture_web_error_response(error);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * POST /api/v1/builds/:id/ticket - open the bug for a red build.
+ */
+static HtmxResponse *
+venture_web_api_build_ticket(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) build = NULL;
+	g_autoptr(VentureEntity) ticket = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+
+	gate = venture_web_api_factory_load(self, request, params,
+	                                    VENTURE_TYPE_BUILD,
+	                                    VENTURE_USER_ROLE_EDITOR, &principal,
+	                                    &build);
+
+	if (NULL != gate)
+		return gate;
+
+	venture_auth_to_actor(principal, &actor);
+	ticket = venture_factory_open_build_ticket(self->context, build, &actor,
+	                                           &error);
+
+	if (NULL == ticket)
+		return venture_web_error_response(error);
+
+	node = venture_serializable_to_json(VENTURE_SERIALIZABLE(ticket), FALSE);
+
+	return venture_web_json_response(node, 201);
+}
+
+/* --- ...and the same from the pages --------------------------------------- */
+
+/*
+ * POST /releases/:id/deploy - record the release arriving somewhere.
+ */
+static HtmxResponse *
+venture_web_ui_release_deploy(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) release = NULL;
+	g_autoptr(VentureEntity) deployment = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	const gchar *environment;
+	HtmxResponse *gate;
+	VentureActor actor;
+
+	gate = venture_web_ui_factory_load(self, request, params,
+	                                   VENTURE_TYPE_RELEASE, &principal,
+	                                   &release);
+
+	if (NULL != gate)
+		return gate;
+
+	environment = htmx_request_get_form_value(request, "environment_id");
+	venture_auth_to_actor(principal, &actor);
+	deployment = venture_factory_deploy_release(self->context, release,
+		(NULL != environment) ? g_ascii_strtoll(environment, NULL, 10) : 0,
+		htmx_request_get_form_value(request, "notes"), &actor, &error);
+
+	if (NULL == deployment)
+		return venture_web_error_response(error);
+
+	destination = g_strdup_printf("/e/release/%" G_GINT64_FORMAT,
+	                              venture_entity_get_id(release));
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * POST /environments/:id/rollback - go back to what ran before.
+ */
+static HtmxResponse *
+venture_web_ui_environment_rollback(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) environment = NULL;
+	g_autoptr(VentureEntity) deployment = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	HtmxResponse *gate;
+	VentureActor actor;
+
+	gate = venture_web_ui_factory_load(self, request, params,
+	                                   VENTURE_TYPE_ENVIRONMENT, &principal,
+	                                   &environment);
+
+	if (NULL != gate)
+		return gate;
+
+	venture_auth_to_actor(principal, &actor);
+	deployment = venture_factory_rollback_environment(self->context,
+		environment, htmx_request_get_form_value(request, "reason"), &actor,
+		&error);
+
+	if (NULL == deployment)
+		return venture_web_error_response(error);
+
+	destination = g_strdup_printf("/e/environment/%" G_GINT64_FORMAT,
+	                              venture_entity_get_id(environment));
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * POST /builds/:id/ticket - open the bug for a red build.
+ */
+static HtmxResponse *
+venture_web_ui_build_ticket(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) build = NULL;
+	g_autoptr(VentureEntity) ticket = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	HtmxResponse *gate;
+	VentureActor actor;
+
+	gate = venture_web_ui_factory_load(self, request, params,
+	                                   VENTURE_TYPE_BUILD, &principal, &build);
+
+	if (NULL != gate)
+		return gate;
+
+	venture_auth_to_actor(principal, &actor);
+	ticket = venture_factory_open_build_ticket(self->context, build, &actor,
+	                                           &error);
+
+	if (NULL == ticket)
+		return venture_web_error_response(error);
+
+	destination = g_strdup_printf("/e/ticket/%" G_GINT64_FORMAT,
+	                              venture_entity_get_id(ticket));
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * POST /factory/draft/:type/:id - save a draft the assistant wrote and a
+ * person has read: a release's changelog, or an incident's postmortem.
+ *
+ * The draft arrives in a textarea the person could edit, and is saved as
+ * theirs, by them, through the ordinary save -- so it is validated,
+ * audited and versioned like any other edit. The assistant never writes
+ * either field itself.
+ */
+static HtmxResponse *
+venture_web_ui_factory_draft_save(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	const gchar *type;
+	const gchar *text;
+	const gchar *property;
+	HtmxResponse *gate;
+	VentureActor actor;
+	GType gtype;
+
+	type = g_hash_table_lookup(params, "type");
+
+	if (0 == g_strcmp0(type, "release"))
+	{
+		gtype = VENTURE_TYPE_RELEASE;
+		property = "changelog";
+	}
+	else if (0 == g_strcmp0(type, "incident"))
+	{
+		gtype = VENTURE_TYPE_INCIDENT;
+		property = "postmortem";
+	}
+	else
+	{
+		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "There is no draft to save on a %s", type);
+		return venture_web_error_response(error);
+	}
+
+	gate = venture_web_ui_factory_load(self, request, params, gtype,
+	                                   &principal, &record);
+
+	if (NULL != gate)
+		return gate;
+
+	text = htmx_request_get_form_value(request, "text");
+
+	if (venture_string_is_empty(text))
+	{
+		g_set_error_literal(&error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "There is nothing in the draft to save");
+		return venture_web_error_response(error);
+	}
+
+	g_object_set(record, property, text, NULL);
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_database_save(venture_context_get_database(self->context),
+	                           record, &actor, &error))
+		return venture_web_error_response(error);
+
+	destination = g_strdup_printf("/e/%s/%" G_GINT64_FORMAT, type,
+	                              venture_entity_get_id(record));
+
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * The card an assistant's answer arrives in. With @save_type the text is
+ * in a box a person can correct, over a button that saves it to the
+ * record as their own edit; without, it is text to read and copy.
+ */
+static void
+venture_web_append_factory_assist_card(
+	GString		*content,
+	const gchar	*badge,
+	const gchar	*text,
+	const gchar	*error_message,
+	const gchar	*save_type,
+	gint64		 save_id,
+	const gchar	*save_label
+){
+	g_string_append(content, "<div class=\"assist-card\" id=\"assist\">");
+
+	if (NULL == text)
+	{
+		g_string_append(content, "<p class=\"negative\">");
+		venture_html_escape_append(content, error_message);
+		g_string_append(content, "</p></div>");
+		return;
+	}
+
+	g_string_append(content, "<div class=\"assist-head\"><span class=\"badge "
+	                         "accent\">");
+	venture_html_escape_append(content, badge);
+	g_string_append(content, "</span><button class=\"btn btn-sm\" "
+	                         "type=\"button\" data-assist-copy>Copy</button>"
+	                         "</div>");
+
+	if (NULL == save_type)
+	{
+		g_string_append(content, "<div class=\"assist-text\" "
+		                         "data-assist-body>");
+		venture_html_escape_append(content, text);
+		g_string_append(content, "</div></div>");
+		return;
+	}
+
+	g_string_append_printf(content,
+		"<form method=\"post\" action=\"/factory/draft/%s/%" G_GINT64_FORMAT
+		"\"><textarea class=\"assist-text\" name=\"text\" rows=\"18\" "
+		"data-assist-body>", save_type, save_id);
+	venture_html_escape_append(content, text);
+	g_string_append(content, "</textarea><div class=\"form-actions\">"
+	                         "<button class=\"btn btn-primary\" "
+	                         "type=\"submit\">");
+	venture_html_escape_append(content, save_label);
+	g_string_append(content, "</button> <span class=\"muted\">A draft. Read "
+	                         "it, correct it, then save it as yours."
+	                         "</span></div></form></div>");
+}
+
+/*
+ * GET /factory/assist/:type/:id - the fragment the assistant's buttons
+ * swap in: a briefing (type "factory", id 0), a release's notes, an
+ * incident's postmortem, a build's triage. Its own request, because a
+ * model call takes seconds and no page should wait for one to render.
+ */
+static HtmxResponse *
+venture_web_ui_factory_assist(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *text = NULL;
+	HtmxResponse *gate;
+	const gchar *type;
+	gint64 id;
+
+	gate = venture_web_require_module_ui(self, request, "factory");
+
+	if (NULL != gate)
+		return gate;
+
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+
+	if (NULL != gate)
+		return gate;
+
+	type = g_hash_table_lookup(params, "type");
+	id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	content = g_string_new(NULL);
+
+	if (0 == g_strcmp0(type, "factory"))
+	{
+		g_autoptr(GArray) tree = NULL;
+
+		tree = venture_web_active_organization_tree(self, request);
+		text = venture_ai_factory_briefing(self->context,
+			(NULL != tree) ? (const gint64 *)tree->data : NULL,
+			(NULL != tree) ? tree->len : 0, &error);
+		venture_web_append_factory_assist_card(content, "briefing", text,
+			(NULL != error) ? error->message : NULL, NULL, 0, NULL);
+
+		return venture_web_html_response(g_strdup(content->str), 200);
+	}
+
+	if (0 == g_strcmp0(type, "release"))
+	{
+		record = venture_database_get(
+			venture_context_get_database(self->context), VENTURE_TYPE_RELEASE,
+			id, &error);
+
+		if (NULL == record)
+			return venture_web_error_response(error);
+
+		text = venture_ai_factory_release_notes(self->context, record,
+			htmx_request_get_query_param(request, "audience"), &error);
+		venture_web_append_factory_assist_card(content, "release notes", text,
+			(NULL != error) ? error->message : NULL, "release", id,
+			"Save as the changelog");
+
+		return venture_web_html_response(g_strdup(content->str), 200);
+	}
+
+	if (0 == g_strcmp0(type, "incident"))
+	{
+		record = venture_database_get(
+			venture_context_get_database(self->context), VENTURE_TYPE_INCIDENT,
+			id, &error);
+
+		if (NULL == record)
+			return venture_web_error_response(error);
+
+		text = venture_ai_factory_postmortem(self->context, record, &error);
+		venture_web_append_factory_assist_card(content, "postmortem draft",
+			text, (NULL != error) ? error->message : NULL, "incident", id,
+			"Save as the postmortem");
+
+		return venture_web_html_response(g_strdup(content->str), 200);
+	}
+
+	if (0 == g_strcmp0(type, "build"))
+	{
+		g_autoptr(JsonNode) triage = NULL;
+
+		record = venture_database_get(
+			venture_context_get_database(self->context), VENTURE_TYPE_BUILD,
+			id, &error);
+
+		if (NULL == record)
+			return venture_web_error_response(error);
+
+		triage = venture_ai_factory_build_triage(self->context, record, &error);
+
+		if (NULL != triage)
+		{
+			JsonObject *object;
+
+			object = json_node_get_object(triage);
+			text = g_strdup_printf("%s\n\nCategory: %s (%s confidence)%s\n\n"
+			                       "Cause: %s\n\nTry: %s",
+				venture_json_object_get_string(object, "summary", ""),
+				venture_json_object_get_string(object, "category", "unknown"),
+				venture_json_object_get_string(object, "confidence", "low"),
+				venture_json_object_get_bool(object, "retry", FALSE)
+					? "\nA retry alone may pass." : "",
+				venture_json_object_get_string(object, "cause", ""),
+				venture_json_object_get_string(object, "suggestion", ""));
+		}
+
+		venture_web_append_factory_assist_card(content, "build triage", text,
+			(NULL != error) ? error->message : NULL, NULL, 0, NULL);
+
+		return venture_web_html_response(g_strdup(content->str), 200);
+	}
+
+	g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+	            "The assistant has nothing to say about a %s", type);
+
+	return venture_web_error_response(error);
+}
+
+/*
+ * The assistant's button for a record's page, and the slot its answer
+ * lands in. Left out altogether when there is no assistant to ask.
+ */
+static void
+venture_web_append_factory_assist_button(
+	VentureWebServer	*self,
+	GString			*content,
+	const gchar		*type,
+	gint64			 id,
+	const gchar		*label,
+	const gchar		*title
+){
+	if (!venture_ai_assist_available(self->context))
+		return;
+
+	g_string_append_printf(content,
+		"<div class=\"desk-form assist-actions\"><span "
+		"class=\"desk-clock-label\">Assistant</span><button class=\"btn "
+		"btn-sm\" hx-get=\"/factory/assist/%s/%" G_GINT64_FORMAT "\" "
+		"hx-target=\"#assist\" hx-swap=\"outerHTML\" "
+		"hx-indicator=\"#assist\" title=\"", type, id);
+	venture_html_escape_append(content, title);
+	g_string_append(content, "\">");
+	venture_html_escape_append(content, label);
+	g_string_append(content, "</button></div><div class=\"assist-slot\" "
+	                         "id=\"assist\"></div>");
+}
+
+/*
+ * Can it go out: the readiness checks, as a card on the release's page.
+ * Not shown once it has, because the question is answered.
+ */
+static void
+venture_web_append_release_readiness(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autoptr(JsonNode) readiness = NULL;
+	VentureReleaseStatus status;
+	JsonObject *object;
+	JsonArray *checks;
+	guint i;
+
+	g_object_get(record, "status", &status, NULL);
+
+	if (VENTURE_RELEASE_STATUS_RELEASED == status)
+		return;
+
+	readiness = venture_factory_release_readiness(self->context, record, NULL);
+
+	if (NULL == readiness)
+		return;
+
+	object = json_node_get_object(readiness);
+	checks = json_object_get_array_member(object, "checks");
+
+	g_string_append_printf(content,
+		"<div class=\"card\"><div class=\"card-head\"><h2>Ready to go out?"
+		"</h2><span class=\"badge %s\">%s &middot; %" G_GINT64_FORMAT
+		"/100</span></div><div class=\"card-body\"><ul "
+		"class=\"relation-list\">",
+		json_object_get_boolean_member(object, "ready") ? "positive"
+		                                                : "negative",
+		json_object_get_boolean_member(object, "ready") ? "ready"
+		                                                : "not yet",
+		json_object_get_int_member(object, "score"));
+
+	for (i = 0; i < json_array_get_length(checks); i++)
+	{
+		JsonObject *check;
+		const gchar *state;
+
+		check = json_array_get_object_element(checks, i);
+		state = venture_json_object_get_string(check, "state", "warn");
+
+		g_string_append_printf(content, "<li><span class=\"badge %s\">",
+			(0 == g_strcmp0(state, "pass")) ? "positive"
+			: (0 == g_strcmp0(state, "fail")) ? "negative" : "warning");
+		venture_html_escape_append(content, state);
+		g_string_append(content, "</span> <strong>");
+		venture_html_escape_append(content,
+			venture_json_object_get_string(check, "label", ""));
+		g_string_append(content, "</strong> <span class=\"muted\">");
+		venture_html_escape_append(content,
+			venture_json_object_get_string(check, "detail", ""));
+		g_string_append(content, "</span></li>");
+	}
+
+	g_string_append(content, "</ul><p class=\"muted\">Advice, not a gate: "
+	                         "nothing here stops a release going out.</p>"
+	                         "</div></div>");
+}
+
+/*
+ * Where it is running, and the form that records it arriving somewhere
+ * else.
+ */
+static void
+venture_web_append_release_deploy(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) environments = NULL;
+	VentureReleaseStatus status;
+	guint i;
+
+	g_object_get(record, "status", &status, NULL);
+
+	if (VENTURE_RELEASE_STATUS_YANKED == status)
+		return;
+
+	query = venture_query_new(VENTURE_TYPE_ENVIRONMENT);
+	venture_query_add_order(query, "name", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_set_limit(query, 100);
+	environments = venture_database_find(
+		venture_context_get_database(self->context), query, NULL);
+
+	if ((NULL == environments) || (0 == environments->len))
+		return;
+
+	g_string_append_printf(content,
+		"<div class=\"card\"><div class=\"card-head\"><h2>Deploy</h2></div>"
+		"<div class=\"card-body\"><form method=\"post\" "
+		"action=\"/releases/%" G_GINT64_FORMAT "/deploy\" class=\"inline\">"
+		"<select name=\"environment_id\" required>",
+		venture_entity_get_id(record));
+
+	for (i = 0; i < environments->len; i++)
+	{
+		g_autoptr(VentureEntity) current = NULL;
+		g_autofree gchar *name = NULL;
+		VentureEntity *environment;
+		gint64 running = 0;
+
+		environment = g_ptr_array_index(environments, i);
+		g_object_get(environment, "name", &name, NULL);
+		current = venture_factory_current_deployment(
+			venture_context_get_database(self->context),
+			venture_entity_get_id(environment));
+
+		if (NULL != current)
+			g_object_get(current, "release-id", &running, NULL);
+
+		g_string_append_printf(content, "<option value=\"%" G_GINT64_FORMAT
+		                       "\">", venture_entity_get_id(environment));
+		venture_html_escape_append(content, name);
+
+		if (running == venture_entity_get_id(record))
+			g_string_append(content, " (running this)");
+
+		g_string_append(content, "</option>");
+	}
+
+	g_string_append(content,
+		"</select> <input type=\"text\" name=\"notes\" "
+		"placeholder=\"Notes\"> <button class=\"btn btn-sm\" "
+		"type=\"submit\">Record deployment</button> <span class=\"muted\">"
+		"Records that it went live; it does not deploy anything.</span>"
+		"</form></div></div>");
+}
+
+/*
+ * A build's page: for a red one, the ticket that fixes it and what the
+ * log is complaining about.
+ */
+static void
+venture_web_append_build_block(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	VentureBuildStatus status;
+
+	g_object_get(record, "status", &status, NULL);
+
+	if (VENTURE_BUILD_STATUS_FAILED != status)
+		return;
+
+	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
+	                         "<h2>The fix</h2></div><div class=\"card-body\">");
+
+	if (venture_web_module_enabled(self, "tickets"))
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/builds/%" G_GINT64_FORMAT
+			"/ticket\"><button class=\"btn btn-primary\" type=\"submit\">"
+			"Open a fix ticket</button> <span class=\"muted\">A bug on the "
+			"build's repository, high priority when the default branch is "
+			"red. Refused if there is one already.</span></form>",
+			venture_entity_get_id(record));
+
+	venture_web_append_factory_assist_button(self, content, "build",
+		venture_entity_get_id(record), "Triage the failure",
+		"What the log is complaining about, and what to try first");
+
+	g_string_append(content, "</div></div>");
+}
+
 /*
  * A release's page: what it shipped, how it was built, where it went, and
  * the two actions the generated form cannot offer -- drafting the changelog
@@ -20465,7 +21801,8 @@ static void
 venture_web_append_release_block(
 	VentureWebServer	*self,
 	GString			*content,
-	VentureEntity		*record
+	VentureEntity		*record,
+	const gchar		*changelog_notice
 ){
 	g_autoptr(GPtrArray) tickets = NULL;
 	g_autofree gchar *changelog = NULL;
@@ -20482,6 +21819,9 @@ venture_web_append_release_block(
 
 	tickets = venture_factory_release_tickets(
 		venture_context_get_database(self->context), id);
+
+	venture_web_append_release_readiness(self, content, record);
+	venture_web_append_release_deploy(self, content, record);
 
 	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
 	                         "<h2>Shipped in this release</h2></div>"
@@ -20520,6 +21860,25 @@ venture_web_append_release_block(
 		g_string_append(content, "</ul>");
 	}
 
+	venture_web_append_factory_assist_button(self, content, "release", id,
+		"Write release notes",
+		"What this release means to the people who use it, for you to edit");
+
+	/* What the last press of Draft did. Without this, a draft that kept
+	 * the changelog somebody wrote came back to the same page looking
+	 * exactly as though the button did nothing. */
+	if (0 == g_strcmp0(changelog_notice, "kept"))
+	{
+		g_string_append(content, "<p class=\"muted\">");
+		venture_html_escape_append(content, VENTURE_FACTORY_CHANGELOG_KEPT);
+		g_string_append(content, "</p>");
+	}
+	else if (0 == g_strcmp0(changelog_notice, "drafted"))
+	{
+		g_string_append(content, "<p class=\"muted\">The changelog was "
+		                         "drafted from the tickets.</p>");
+	}
+
 	g_string_append_printf(content,
 		"<form method=\"post\" action=\"/releases/%" G_GINT64_FORMAT
 		"/changelog\" class=\"inline\">"
@@ -20542,11 +21901,13 @@ venture_web_append_release_block(
 			"<label class=\"muted\"> <input type=\"checkbox\" "
 			"name=\"prerelease\" value=\"1\"> pre-release</label></form>", id);
 	}
-	else if (!venture_string_is_empty(url))
+	else if (venture_web_url_is_web(url))
 	{
+		/* Only a web address is a link: see venture_web_url_is_web(). */
 		g_string_append(content, " <a class=\"btn btn-sm\" href=\"");
 		venture_html_escape_append(content, url);
-		g_string_append(content, "\">On the forge</a>");
+		g_string_append(content, "\" rel=\"noopener noreferrer\">On the "
+		                         "forge</a>");
 	}
 
 	g_string_append(content, "</div></div>");
@@ -20597,12 +21958,17 @@ venture_web_ui_release_changelog(
 	if (NULL == release)
 		return venture_web_error_response(error);
 
-	destination = g_strdup_printf("/e/release/%" G_GINT64_FORMAT, id);
-
 	if (!venture_factory_apply_changelog(self->context, release,
 		(0 == g_strcmp0(htmx_request_get_form_value(request, "replace"),
 		                "1"))))
+	{
+		destination = g_strdup_printf("/e/release/%" G_GINT64_FORMAT
+		                              "?changelog=kept", id);
 		return venture_web_redirect_to(destination);
+	}
+
+	destination = g_strdup_printf("/e/release/%" G_GINT64_FORMAT
+	                              "?changelog=drafted", id);
 
 	venture_auth_to_actor(principal, &actor);
 
@@ -20776,6 +22142,13 @@ venture_web_api_release_changelog(
 	json_builder_begin_object(builder);
 	json_builder_set_member_name(builder, "changed");
 	json_builder_add_boolean_value(builder, changed);
+	json_builder_set_member_name(builder, "reason");
+
+	if (changed)
+		json_builder_add_null_value(builder);
+	else
+		json_builder_add_string_value(builder, VENTURE_FACTORY_CHANGELOG_KEPT);
+
 	json_builder_set_member_name(builder, "release");
 	json_builder_add_value(builder,
 		venture_serializable_to_json(VENTURE_SERIALIZABLE(release), FALSE));
@@ -20843,7 +22216,6 @@ venture_web_api_factory(
 	g_autoptr(GArray) tree = NULL;
 	g_autoptr(GError) error = NULL;
 	HtmxResponse *gate;
-	const gchar *organization;
 
 	(void)params;
 
@@ -20857,11 +22229,8 @@ venture_web_api_factory(
 	if (NULL != gate)
 		return gate;
 
-	organization = htmx_request_get_query_param(request, "organization_id");
-
-	if (!venture_string_is_empty(organization))
-		tree = venture_web_organization_tree(self,
-			g_ascii_strtoll(organization, NULL, 10));
+	if (!venture_web_api_organization_scope(self, request, &tree, &error))
+		return venture_web_error_response(error);
 
 	node = venture_factory_describe(self->context,
 		(NULL != tree) ? (const gint64 *)tree->data : NULL,
@@ -20901,7 +22270,64 @@ venture_web_append_milestone_block(
 		"<div class=\"stat\"><span class=\"stat-value\">%d%%</span>"
 		"<span class=\"stat-label\">Complete</span></div>",
 		total, done, (total > 0) ? (gint)((done * 100) / total) : 0);
-	g_string_append(content, "</div></div></div>");
+	g_string_append(content, "</div>");
+
+	/* And when it lands at the pace it is going. */
+	{
+		g_autoptr(JsonNode) forecast = NULL;
+
+		forecast = venture_factory_milestone_forecast(self->context, record,
+		                                              NULL);
+
+		if (NULL != forecast)
+		{
+			JsonObject *object;
+			const gchar *state;
+			const gchar *projected;
+			const gchar *tone;
+
+			object = json_node_get_object(forecast);
+			state = venture_json_object_get_string(object, "state", "");
+			projected = venture_json_object_get_string(object, "projected_on",
+			                                           NULL);
+			tone = ((0 == g_strcmp0(state, "on_track")) ||
+			        (0 == g_strcmp0(state, "done"))) ? "positive"
+			     : ((0 == g_strcmp0(state, "overdue")) ||
+			        (0 == g_strcmp0(state, "at_risk")) ||
+			        (0 == g_strcmp0(state, "stalled"))) ? "negative" : "info";
+
+			g_string_append_printf(content,
+				"<p><span class=\"badge %s\">", tone);
+			venture_html_escape_append(content, state);
+			g_string_append_printf(content,
+				"</span> <span class=\"muted\">%" G_GINT64_FORMAT " closed in "
+				"the last %" G_GINT64_FORMAT " days, %.1f a week; %"
+				G_GINT64_FORMAT " left",
+				json_object_get_int_member(object, "closed_recently"),
+				json_object_get_int_member(object, "velocity_days"),
+				json_object_get_double_member(object, "per_week"),
+				json_object_get_int_member(object, "remaining"));
+
+			if (NULL != projected)
+			{
+				g_autofree gchar *day = NULL;
+
+				/* The date is enough; nobody plans to the second. */
+				day = g_strndup(projected, 10);
+				g_string_append(content, ", landing about ");
+				venture_html_escape_append(content, day);
+			}
+
+			if (json_object_get_int_member(object, "days_over") > 0)
+				g_string_append_printf(content, " (%" G_GINT64_FORMAT
+					" days past the due date)",
+					json_object_get_int_member(object, "days_over"));
+
+			g_string_append(content, ".</span></p>");
+		}
+	}
+
+	g_string_append(content, "</div></div>");
 }
 
 /*
@@ -20963,7 +22389,97 @@ venture_web_append_environment_block(
 			" <a class=\"btn btn-sm\" href=\"/e/deployment/%" G_GINT64_FORMAT
 			"\">Deployment</a></p>",
 			venture_entity_get_id(deployment));
+
+		/* Offered whenever something is running; refused, with the
+		 * reason, when there is nothing earlier to go back to. */
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/environments/%" G_GINT64_FORMAT
+			"/rollback\" class=\"inline\"><input type=\"text\" "
+			"name=\"reason\" placeholder=\"Why\"> <button class=\"btn "
+			"btn-sm btn-danger\" type=\"submit\">Roll back</button> <span "
+			"class=\"muted\">Marks this deployment rolled back and records "
+			"the release before it as live again.</span></form>",
+			venture_entity_get_id(record));
 	}
+
+	g_string_append(content, "</div></div>");
+}
+
+/*
+ * "What needs you", above everything else on the Factory page: the list
+ * venture_factory_next_actions() derives, each entry a link to the record
+ * it is about. With an assistant configured, a button reads it aloud.
+ */
+static void
+venture_web_append_factory_actions(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	GString			*content
+){
+	g_autoptr(JsonNode) actions = NULL;
+	g_autoptr(GArray) tree = NULL;
+	JsonArray *array;
+	guint i;
+
+	tree = venture_web_active_organization_tree(self, request);
+	actions = venture_factory_next_actions(self->context,
+		(NULL != tree) ? (const gint64 *)tree->data : NULL,
+		(NULL != tree) ? tree->len : 0, NULL);
+
+	if (NULL == actions)
+		return;
+
+	array = json_node_get_array(actions);
+
+	g_string_append_printf(content,
+		"<div class=\"card\"><div class=\"card-head\"><h2>What needs you"
+		"</h2><span class=\"badge %s\">%u</span></div>"
+		"<div class=\"card-body\">",
+		(json_array_get_length(array) > 0) ? "warning" : "positive",
+		json_array_get_length(array));
+
+	if (0 == json_array_get_length(array))
+	{
+		g_string_append(content, "<p class=\"muted\">Nothing. No incident "
+		                         "without a fix, no red default branch, no "
+		                         "milestone slipping, nothing waiting to go "
+		                         "out.</p>");
+	}
+	else
+	{
+		g_string_append(content, "<ul class=\"relation-list\">");
+
+		for (i = 0; i < json_array_get_length(array); i++)
+		{
+			JsonObject *action;
+			const gchar *priority;
+
+			action = json_array_get_object_element(array, i);
+			priority = venture_json_object_get_string(action, "priority",
+			                                          "normal");
+
+			g_string_append_printf(content, "<li><span class=\"badge %s\">",
+				(0 == g_strcmp0(priority, "urgent")) ? "negative"
+				: (0 == g_strcmp0(priority, "high")) ? "warning" : "info");
+			venture_html_escape_append(content, priority);
+			g_string_append(content, "</span> <a href=\"");
+			venture_html_escape_append(content,
+				venture_json_object_get_string(action, "href", "/factory"));
+			g_string_append(content, "\">");
+			venture_html_escape_append(content,
+				venture_json_object_get_string(action, "title", ""));
+			g_string_append(content, "</a> <span class=\"muted\">");
+			venture_html_escape_append(content,
+				venture_json_object_get_string(action, "detail", ""));
+			g_string_append(content, "</span></li>");
+		}
+
+		g_string_append(content, "</ul>");
+	}
+
+	venture_web_append_factory_assist_button(self, content, "factory", 0,
+		"Brief me", "Where the factory stands and what needs you, in a few "
+		"paragraphs");
 
 	g_string_append(content, "</div></div>");
 }
@@ -21293,7 +22809,10 @@ venture_web_ui_factory(
 		"<a class=\"btn\" href=\"/reports/lead_time\">Lead time</a> "
 		"<a class=\"btn\" href=\"/reports/releases\">Releases report</a> "
 		"<a class=\"btn btn-primary\" href=\"/e/release/new\">New release</a>"
-		"</div></div><div class=\"dash-grid\">");
+		"</div></div>");
+
+	venture_web_append_factory_actions(self, request, content);
+	g_string_append(content, "<div class=\"dash-grid\">");
 
 	{
 		g_autoptr(VentureQuery) query = NULL;
@@ -21359,6 +22878,9 @@ venture_web_ui_factory(
 		query = venture_query_new(VENTURE_TYPE_INCIDENT);
 		venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_NE,
 		                                "resolved", NULL);
+		/* Being written up is fixed; it is not on fire. */
+		venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_NE,
+		                                "postmortem", NULL);
 		venture_query_add_order(query, "started-at", VENTURE_SORT_DESCENDING,
 		                        NULL);
 		venture_query_set_limit(query, 10);
@@ -25961,7 +27483,6 @@ venture_web_append_incident_block(
 ){
 	gint64 ticket_id = 0;
 
-	(void)self;
 	g_object_get(record, "ticket-id", &ticket_id, NULL);
 
 	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
@@ -25988,6 +27509,10 @@ venture_web_append_incident_block(
 		g_string_append(content, "<p class=\"muted\">The tickets module is "
 		                         "off.</p>");
 	}
+
+	venture_web_append_factory_assist_button(self, content, "incident",
+		venture_entity_get_id(record), "Draft the postmortem",
+		"A blameless write-up from the records, for you to correct and save");
 
 	g_string_append(content, "</div></div>");
 }
@@ -26125,10 +27650,18 @@ venture_web_append_runs_table(
 
 	if (venture_json_object_get_int(totals, "live", 0) > 0)
 	{
-		g_string_append_printf(content,
-			" hx-get=\"/runs/table?state=%s\" hx-trigger=\"every %"
-			G_GINT64_FORMAT "s\" hx-swap=\"outerHTML\"",
-			venture_string_is_empty(state) ? "all" : state, interval);
+		g_autofree gchar *encoded = NULL;
+
+		/* The state came off the query string. It reaches here only
+		 * when it matched rows, which today means it was a real state,
+		 * but that is the filter's leniency to change and not this
+		 * attribute's to rely on. */
+		encoded = g_uri_escape_string(
+			venture_string_is_empty(state) ? "all" : state, NULL, FALSE);
+		g_string_append(content, " hx-get=\"/runs/table?state=");
+		venture_html_escape_append(content, encoded);
+		g_string_append_printf(content, "\" hx-trigger=\"every %"
+			G_GINT64_FORMAT "s\" hx-swap=\"outerHTML\"", interval);
 	}
 
 	g_string_append(content, ">");
@@ -26330,6 +27863,7 @@ venture_web_ui_runs(
 	VentureWebServer *self = user_data;
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
 	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GArray) tree = NULL;
 	g_autoptr(GString) content = NULL;
 	g_autoptr(GError) error = NULL;
 	HtmxResponse *redirect;
@@ -26361,8 +27895,11 @@ venture_web_ui_runs(
 	state = htmx_request_get_query_param(request, "state");
 	g_object_get(venture_context_get_config(self->context),
 	             "forge-poll-interval", &interval, NULL);
-	node = venture_factory_runs_describe(self->context, NULL, 0, state, 100,
-	                                     &error);
+	/* The entity the browser has selected, as on the Factory page. */
+	tree = venture_web_active_organization_tree(self, request);
+	node = venture_factory_runs_describe(self->context,
+		(NULL != tree) ? (const gint64 *)tree->data : NULL,
+		(NULL != tree) ? tree->len : 0, state, 100, &error);
 
 	if (NULL == node)
 		return venture_web_error_response(error);
@@ -26417,6 +27954,7 @@ venture_web_ui_runs_table(
 ){
 	VentureWebServer *self = user_data;
 	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GArray) tree = NULL;
 	g_autoptr(GString) content = NULL;
 	g_autoptr(GError) error = NULL;
 	HtmxResponse *denied;
@@ -26442,8 +27980,11 @@ venture_web_ui_runs_table(
 	state = htmx_request_get_query_param(request, "state");
 	g_object_get(venture_context_get_config(self->context),
 	             "forge-poll-interval", &interval, NULL);
-	node = venture_factory_runs_describe(self->context, NULL, 0, state, 100,
-	                                     &error);
+	/* The entity the browser has selected, as on the Factory page. */
+	tree = venture_web_active_organization_tree(self, request);
+	node = venture_factory_runs_describe(self->context,
+		(NULL != tree) ? (const gint64 *)tree->data : NULL,
+		(NULL != tree) ? tree->len : 0, state, 100, &error);
 
 	if (NULL == node)
 		return venture_web_error_response(error);
@@ -26469,7 +28010,6 @@ venture_web_api_runs(
 	g_autoptr(GArray) tree = NULL;
 	g_autoptr(GError) error = NULL;
 	HtmxResponse *gate;
-	const gchar *organization;
 	const gchar *limit;
 
 	(void)params;
@@ -26484,11 +28024,8 @@ venture_web_api_runs(
 	if (NULL != gate)
 		return gate;
 
-	organization = htmx_request_get_query_param(request, "organization_id");
-
-	if (!venture_string_is_empty(organization))
-		tree = venture_web_organization_tree(self,
-			g_ascii_strtoll(organization, NULL, 10));
+	if (!venture_web_api_organization_scope(self, request, &tree, &error))
+		return venture_web_error_response(error);
 
 	limit = htmx_request_get_query_param(request, "limit");
 	node = venture_factory_runs_describe(self->context,
@@ -28252,6 +29789,16 @@ venture_web_server_new(
 	                 venture_web_ui_relation_delete, self);
 	htmx_router_post(router, "/links", venture_web_ui_link_create, self);
 	htmx_router_get(router, "/factory", venture_web_ui_factory, self);
+	htmx_router_get(router, "/factory/assist/:type/:id",
+	                venture_web_ui_factory_assist, self);
+	htmx_router_post(router, "/factory/draft/:type/:id",
+	                 venture_web_ui_factory_draft_save, self);
+	htmx_router_post(router, "/releases/:id/deploy",
+	                 venture_web_ui_release_deploy, self);
+	htmx_router_post(router, "/environments/:id/rollback",
+	                 venture_web_ui_environment_rollback, self);
+	htmx_router_post(router, "/builds/:id/ticket", venture_web_ui_build_ticket,
+	                 self);
 	htmx_router_post(router, "/releases/:id/changelog",
 	                 venture_web_ui_release_changelog, self);
 	htmx_router_post(router, "/releases/:id/publish",
@@ -28373,6 +29920,26 @@ venture_web_server_new(
 	htmx_router_post(router, "/customers/duplicates/scan", venture_web_ui_duplicates_action, self);
 	htmx_router_post(router, "/customers/duplicates/:id/:action", venture_web_ui_duplicates_action, self);
 	htmx_router_get(router, "/api/v1/factory", venture_web_api_factory, self);
+	htmx_router_get(router, "/api/v1/factory/actions",
+	                venture_web_api_factory_actions, self);
+	htmx_router_get(router, "/api/v1/factory/briefing",
+	                venture_web_api_factory_briefing, self);
+	htmx_router_get(router, "/api/v1/releases/:id/readiness",
+	                venture_web_api_release_readiness, self);
+	htmx_router_post(router, "/api/v1/releases/:id/deploy",
+	                 venture_web_api_release_deploy, self);
+	htmx_router_post(router, "/api/v1/releases/:id/notes",
+	                 venture_web_api_release_notes, self);
+	htmx_router_post(router, "/api/v1/environments/:id/rollback",
+	                 venture_web_api_environment_rollback, self);
+	htmx_router_get(router, "/api/v1/milestones/:id/forecast",
+	                venture_web_api_milestone_forecast, self);
+	htmx_router_post(router, "/api/v1/incidents/:id/postmortem",
+	                 venture_web_api_incident_postmortem, self);
+	htmx_router_post(router, "/api/v1/builds/:id/triage",
+	                 venture_web_api_build_triage, self);
+	htmx_router_post(router, "/api/v1/builds/:id/ticket",
+	                 venture_web_api_build_ticket, self);
 	htmx_router_post(router, "/api/v1/post/backfill", venture_web_autojournal_backfill, self);
 	htmx_router_get(router, "/api/v1/inbox", venture_web_api_inbox, self);
 	htmx_router_post(router, "/api/v1/inbox/read", venture_web_api_inbox_read,

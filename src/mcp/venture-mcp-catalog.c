@@ -245,11 +245,21 @@ static const VentureMcpToolDef tool_defs[] = {
 		"The software factory. `action` status (the default) is the loop "
 		"at a glance: open milestones with progress, the newest releases, "
 		"the latest CI builds, each environment with the release it runs, "
-		"and open incidents. changelog drafts a release's changelog from "
-		"the tickets marked as fixed in it (replace: true overwrites one "
-		"somebody wrote); publish cuts the release on the git forge, "
-		"creating the tag, which cannot be undone from here. The two "
-		"writes need --apply-writes.",
+		"and open incidents. actions is what needs somebody, most pressing "
+		"first: incidents with no fix, a red default branch, milestones "
+		"slipping, releases ready to go or never deployed, budgets running "
+		"out -- each naming the record and the action that deals with it. "
+		"readiness says whether a release can go out, as checks that pass, "
+		"warn or fail; forecast says when a milestone lands at its current "
+		"pace. changelog drafts a release's changelog from the tickets "
+		"marked as fixed in it (replace: true overwrites one somebody "
+		"wrote); deploy records a release going live in an environment; "
+		"rollback marks an environment's current deployment rolled back "
+		"and records the release before it as live again; build_ticket "
+		"opens the bug for a failed build; publish cuts the release on the "
+		"git forge, creating the tag, which cannot be undone from here. "
+		"status, actions, readiness and forecast only read; the rest need "
+		"--apply-writes.",
 		TOOL_FLAG_NONE
 	}
 };
@@ -958,15 +968,28 @@ venture_mcp_catalog_add_tool_extras(
 	if (0 == g_strcmp0(tool_name, "venture_factory"))
 	{
 		static const gchar *const actions[] = {
-			"status", "changelog", "publish", NULL
+			"status", "actions", "readiness", "forecast", "changelog",
+			"deploy", "rollback", "build_ticket", "publish", NULL
 		};
 
 		venture_mcp_catalog_add_enum_property(builder, "action",
-			"status for the loop at a glance; changelog to draft a "
-			"release's changelog from its tickets; publish to cut a "
-			"release on the forge. Defaults to status.", actions);
+			"status for the loop at a glance; actions for what needs "
+			"somebody; readiness for whether a release can go out; "
+			"forecast for when a milestone lands; changelog to draft a "
+			"release's changelog from its tickets; deploy to record a "
+			"release going live; rollback to take an environment back; "
+			"build_ticket to open the bug for a failed build; publish to "
+			"cut a release on the forge. Defaults to status.", actions);
 		venture_mcp_catalog_add_integer_property(builder, "id",
-			"The release's numeric id, for changelog and publish.");
+			"The record's numeric id: a release for readiness, changelog, "
+			"deploy and publish; a milestone for forecast; an environment "
+			"for rollback; a build for build_ticket.");
+		venture_mcp_catalog_add_integer_property(builder, "environment_id",
+			"deploy only: the environment the release went live in.");
+		venture_mcp_catalog_add_string_property(builder, "notes",
+			"deploy only: anything worth saying about the deployment.");
+		venture_mcp_catalog_add_string_property(builder, "reason",
+			"rollback only: why, in a few words.");
 		venture_mcp_catalog_add_boolean_property(builder, "replace",
 			"changelog only: overwrite a changelog somebody already "
 			"wrote. Defaults to false.");

@@ -1722,19 +1722,138 @@ venture_ai_tool_factory(
 		return venture_ai_tool_result(g_steal_pointer(&node));
 	}
 
-	if ((0 != g_strcmp0(action, "changelog")) &&
+	/* What needs somebody: the whole factory, so no id. */
+	if (0 == g_strcmp0(action, "actions"))
+	{
+		g_autoptr(JsonNode) node = NULL;
+
+		node = venture_factory_next_actions(self->context, NULL, 0,
+		                                    &local_error);
+
+		if (NULL == node)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		return venture_ai_tool_result(g_steal_pointer(&node));
+	}
+
+	if ((0 != g_strcmp0(action, "readiness")) &&
+	    (0 != g_strcmp0(action, "forecast")) &&
+	    (0 != g_strcmp0(action, "changelog")) &&
+	    (0 != g_strcmp0(action, "deploy")) &&
+	    (0 != g_strcmp0(action, "rollback")) &&
+	    (0 != g_strcmp0(action, "build_ticket")) &&
 	    (0 != g_strcmp0(action, "publish")))
 		return venture_ai_tool_error("\"%s\" is not a factory action; use "
-		                             "status, changelog or publish", action);
+		                             "status, actions, readiness, forecast, "
+		                             "changelog, deploy, rollback, "
+		                             "build_ticket or publish", action);
+
+	id = venture_json_object_get_int(input, "id", 0);
+
+	if (0 == id)
+		return venture_ai_tool_error("An \"id\" is required: a release for "
+		                             "readiness, changelog, deploy and "
+		                             "publish; a milestone for forecast; an "
+		                             "environment for rollback; a build for "
+		                             "build_ticket");
+
+	/* The two that only read, which a read-only assistant may still do. */
+	if (0 == g_strcmp0(action, "forecast"))
+	{
+		g_autoptr(VentureEntity) milestone = NULL;
+		g_autoptr(JsonNode) node = NULL;
+
+		milestone = venture_database_get(
+			venture_context_get_database(self->context),
+			VENTURE_TYPE_MILESTONE, id, &local_error);
+
+		if (NULL == milestone)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		node = venture_factory_milestone_forecast(self->context, milestone,
+		                                          &local_error);
+
+		if (NULL == node)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		return venture_ai_tool_result(g_steal_pointer(&node));
+	}
+
+	if (0 == g_strcmp0(action, "readiness"))
+	{
+		g_autoptr(JsonNode) node = NULL;
+
+		release = venture_database_get(
+			venture_context_get_database(self->context), VENTURE_TYPE_RELEASE,
+			id, &local_error);
+
+		if (NULL == release)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		node = venture_factory_release_readiness(self->context, release,
+		                                         &local_error);
+
+		if (NULL == node)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		return venture_ai_tool_result(g_steal_pointer(&node));
+	}
 
 	if (VENTURE_AI_POLICY_READ_ONLY == self->policy)
 		return venture_ai_tool_error("The assistant is read-only on this "
 		                             "install");
 
-	id = venture_json_object_get_int(input, "id", 0);
+	/* Rolling back is two writes that must land together and a ticket
+	 * for a build is a ticket and a link, neither of which the
+	 * confirmation queue -- one record per card -- can hold. */
+	if ((0 == g_strcmp0(action, "rollback")) ||
+	    (0 == g_strcmp0(action, "build_ticket")))
+	{
+		g_autoptr(VentureEntity) subject = NULL;
+		g_autoptr(VentureEntity) made = NULL;
+		VentureActor actor;
+		gboolean rollback;
 
-	if (0 == id)
-		return venture_ai_tool_error("A release \"id\" is required");
+		rollback = (0 == g_strcmp0(action, "rollback"));
+
+		if (VENTURE_AI_POLICY_AUTONOMOUS != self->policy)
+			return venture_ai_tool_error("\"%s\" is several writes that "
+			                             "must land together, so it cannot "
+			                             "be staged for approval and is only "
+			                             "offered under the autonomous "
+			                             "policy. Ask the operator to press "
+			                             "the button on the %s's page.",
+			                             action,
+			                             rollback ? "environment" : "build");
+
+		subject = venture_database_get(
+			venture_context_get_database(self->context),
+			rollback ? VENTURE_TYPE_ENVIRONMENT : VENTURE_TYPE_BUILD, id,
+			&local_error);
+
+		if (NULL == subject)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		actor.kind = VENTURE_ACTOR_KIND_AI;
+		actor.name = (NULL != self->current_principal)
+			? self->current_principal->name : "ai";
+		actor.prompt = self->current_prompt;
+		actor.request_id = NULL;
+		actor.approved_by = NULL;
+
+		made = rollback
+			? venture_factory_rollback_environment(self->context, subject,
+				venture_json_object_get_string(input, "reason", NULL), &actor,
+				&local_error)
+			: venture_factory_open_build_ticket(self->context, subject,
+				&actor, &local_error);
+
+		if (NULL == made)
+			return venture_ai_tool_error("%s", local_error->message);
+
+		return venture_ai_tool_result(
+			venture_serializable_to_json(VENTURE_SERIALIZABLE(made), FALSE));
+	}
 
 	release = venture_database_get(venture_context_get_database(self->context),
 	                               VENTURE_TYPE_RELEASE, id, &local_error);
@@ -1752,10 +1871,27 @@ venture_ai_tool_factory(
 			venture_context_get_database(self->context), VENTURE_TYPE_RELEASE,
 			id, NULL);
 
+		/* Not an error: nothing went wrong, and a tool error reads to a
+		 * model as "try again". The same answer the API gives. */
 		if (!venture_factory_apply_changelog(self->context, release, replace))
-			return venture_ai_tool_error("Release %" G_GINT64_FORMAT " already "
-			                             "has a changelog; pass replace: "
-			                             "true to overwrite it", id);
+		{
+			g_autoptr(JsonBuilder) builder = NULL;
+
+			builder = json_builder_new();
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "changed");
+			json_builder_add_boolean_value(builder, FALSE);
+			json_builder_set_member_name(builder, "reason");
+			json_builder_add_string_value(builder,
+			                              VENTURE_FACTORY_CHANGELOG_KEPT
+			                              " Pass replace: true.");
+			json_builder_set_member_name(builder, "release");
+			json_builder_add_value(builder, venture_serializable_to_json(
+				VENTURE_SERIALIZABLE(release), FALSE));
+			json_builder_end_object(builder);
+
+			return venture_ai_tool_result(json_builder_get_root(builder));
+		}
 
 		if (VENTURE_AI_POLICY_AUTONOMOUS == self->policy)
 		{
@@ -1773,6 +1909,65 @@ venture_ai_tool_factory(
 
 		return venture_ai_stage_change(self, VENTURE_AUDIT_ACTION_UPDATE,
 		                               release, original);
+	}
+
+	/* A deployment is one record, so it stages like any other create. */
+	if (0 == g_strcmp0(action, "deploy"))
+	{
+		g_autoptr(VentureEntity) environment = NULL;
+		g_autoptr(VentureEntity) deployment = NULL;
+		g_autoptr(GDateTime) now = NULL;
+		VentureActor actor;
+		gint64 environment_id;
+
+		environment_id = venture_json_object_get_int(input, "environment_id",
+		                                             0);
+		actor.kind = VENTURE_ACTOR_KIND_AI;
+		actor.name = (NULL != self->current_principal)
+			? self->current_principal->name : "ai";
+		actor.prompt = self->current_prompt;
+		actor.request_id = NULL;
+		actor.approved_by = NULL;
+
+		if (VENTURE_AI_POLICY_AUTONOMOUS == self->policy)
+		{
+			deployment = venture_factory_deploy_release(self->context, release,
+				environment_id,
+				venture_json_object_get_string(input, "notes", NULL), &actor,
+				&local_error);
+
+			if (NULL == deployment)
+				return venture_ai_tool_error("%s", local_error->message);
+
+			return venture_ai_tool_result(venture_serializable_to_json(
+				VENTURE_SERIALIZABLE(deployment), FALSE));
+		}
+
+		environment = venture_database_get(
+			venture_context_get_database(self->context),
+			VENTURE_TYPE_ENVIRONMENT, environment_id, &local_error);
+
+		if (NULL == environment)
+			return venture_ai_tool_error("deploy needs the "
+			                             "\"environment_id\" of an "
+			                             "environment that exists");
+
+		now = venture_time_now();
+		deployment = VENTURE_ENTITY(venture_deployment_new());
+		venture_entity_set_organization_id(deployment,
+			venture_entity_get_organization_id(environment));
+		g_object_set(deployment,
+		             "release-id", id,
+		             "environment-id", environment_id,
+		             "status", VENTURE_DEPLOYMENT_STATUS_SUCCEEDED,
+		             "deployed-at", now,
+		             "deployed-by", actor.name,
+		             "notes", venture_json_object_get_string(input, "notes",
+		                                                     NULL),
+		             NULL);
+
+		return venture_ai_stage_change(self, VENTURE_AUDIT_ACTION_CREATE,
+		                               deployment, NULL);
 	}
 
 	if (VENTURE_AI_POLICY_AUTONOMOUS != self->policy)
@@ -2603,12 +2798,31 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"the open incidents. action \"changelog\" with a release id drafts "
 		"its changelog from the tickets marked as fixed in it (staged "
 		"unless the policy is autonomous; replace: true overwrites one "
-		"somebody wrote). action \"publish\" cuts the release on the git "
+		"somebody wrote). action \"actions\" is what needs somebody, most "
+		"pressing first, each entry naming the record and the action that "
+		"deals with it -- start here when asked what to do next. action "
+		"\"readiness\" with a release id says whether it can go out, as "
+		"checks that pass, warn or fail. action \"forecast\" with a "
+		"milestone id says when it lands at its current pace. action "
+		"\"deploy\" with a release id and an environment_id records the "
+		"release going live there (staged unless autonomous). actions "
+		"\"rollback\" with an environment id and \"build_ticket\" with a "
+		"failed build's id are several writes each, so only the autonomous "
+		"policy allows them. action \"publish\" cuts the release on the git "
 		"forge, which only the autonomous policy allows.");
 	ai_tool_add_parameter(factory, "action", "string",
-		"status, changelog or publish; defaults to status", FALSE);
+		"status, actions, readiness, forecast, changelog, deploy, rollback, "
+		"build_ticket or publish; defaults to status", FALSE);
 	ai_tool_add_parameter(factory, "id", "integer",
-		"The release's numeric id, for changelog and publish", FALSE);
+		"A release's id for readiness, changelog, deploy and publish; a "
+		"milestone's for forecast; an environment's for rollback; a "
+		"build's for build_ticket", FALSE);
+	ai_tool_add_parameter(factory, "environment_id", "integer",
+		"deploy: the environment the release went live in", FALSE);
+	ai_tool_add_parameter(factory, "notes", "string",
+		"deploy: anything worth saying about it", FALSE);
+	ai_tool_add_parameter(factory, "reason", "string",
+		"rollback: why, in a few words", FALSE);
 	ai_tool_add_parameter(factory, "replace", "boolean",
 		"changelog: overwrite an existing changelog", FALSE);
 	ai_tool_add_parameter(factory, "prerelease", "boolean",

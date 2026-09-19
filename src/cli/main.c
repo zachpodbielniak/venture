@@ -2004,7 +2004,62 @@ venture_cli_command_factory(
 	JsonArray *rows;
 	guint i;
 
-	(void)args;
+	/* What needs somebody, and the same read aloud. */
+	if ((0 == g_strcmp0(args[1], "actions")) ||
+	    (0 == g_strcmp0(args[1], "briefing")))
+	{
+		g_autofree gchar *path = NULL;
+
+		path = g_strdup_printf("/api/v1/factory/%s", args[1]);
+		node = venture_cli_request(cli, "GET", path, NULL, error);
+
+		if (NULL == node)
+			return -1;
+
+		if ((VENTURE_OUTPUT_FORMAT_TABLE != cli->format) ||
+		    (0 == g_strcmp0(args[1], "actions") && !JSON_NODE_HOLDS_ARRAY(node)) ||
+		    (0 == g_strcmp0(args[1], "briefing") && !JSON_NODE_HOLDS_OBJECT(node)))
+		{
+			venture_cli_output(cli, node);
+			return 0;
+		}
+
+		if (0 == g_strcmp0(args[1], "briefing"))
+		{
+			g_print("%s\n", venture_json_object_get_string(
+				json_node_get_object(node), "briefing", ""));
+			return 0;
+		}
+
+		rows = json_node_get_array(node);
+
+		if (0 == json_array_get_length(rows))
+			g_print("Nothing in the factory needs you.\n");
+
+		for (i = 0; i < json_array_get_length(rows); i++)
+		{
+			JsonObject *row;
+
+			row = json_array_get_object_element(rows, i);
+			g_print("%-7s %s\n        %s\n        %s #%" G_GINT64_FORMAT
+			        "  ->  %s\n",
+			        venture_json_object_get_string(row, "priority", ""),
+			        venture_json_object_get_string(row, "title", ""),
+			        venture_json_object_get_string(row, "detail", ""),
+			        venture_json_object_get_string(row, "record_type", ""),
+			        venture_json_object_get_int(row, "record_id", 0),
+			        venture_json_object_get_string(row, "action", ""));
+		}
+
+		return 0;
+	}
+
+	if (NULL != args[1])
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "usage: venturectl factory [actions|briefing]");
+		return -1;
+	}
 
 	node = venture_cli_request(cli, "GET", "/api/v1/factory", NULL, error);
 
@@ -2151,6 +2206,8 @@ static gint
 venture_cli_command_release(
 	VentureCli	 *cli,
 	gchar		**args,
+	gboolean	  replace,
+	gboolean	  prerelease,
 	GError		**error
 ){
 	g_autoptr(JsonBuilder) builder = NULL;
@@ -2159,25 +2216,135 @@ venture_cli_command_release(
 	g_autofree gchar *path = NULL;
 	const gchar *verb;
 	const gchar *flag;
+	gboolean changelog;
 	gboolean set;
 
 	verb = args[1];
+	changelog = (0 == g_strcmp0(verb, "changelog"));
 
-	if ((NULL == verb) || (NULL == args[2]) ||
-	    ((0 != g_strcmp0(verb, "changelog")) &&
-	     (0 != g_strcmp0(verb, "publish"))))
+	/* The three that are not the forge's business. */
+	if ((NULL != args[2]) && !replace && !prerelease &&
+	    ((0 == g_strcmp0(verb, "readiness")) ||
+	     (0 == g_strcmp0(verb, "deploy")) ||
+	     (0 == g_strcmp0(verb, "notes"))))
+	{
+		if (0 == g_strcmp0(verb, "readiness"))
+		{
+			JsonObject *object;
+			JsonArray *checks;
+			guint i;
+
+			path = g_strdup_printf("/api/v1/releases/%s/readiness", args[2]);
+			node = venture_cli_request(cli, "GET", path, NULL, error);
+
+			if (NULL == node)
+				return -1;
+
+			if ((VENTURE_OUTPUT_FORMAT_TABLE != cli->format) ||
+			    !JSON_NODE_HOLDS_OBJECT(node))
+			{
+				venture_cli_output(cli, node);
+				return 0;
+			}
+
+			object = json_node_get_object(node);
+			checks = json_object_get_array_member(object, "checks");
+			g_print("Release %s: %s (%" G_GINT64_FORMAT "/100)\n",
+			        venture_json_object_get_string(object, "number", ""),
+			        venture_json_object_get_bool(object, "ready", FALSE)
+			            ? "ready" : "not ready",
+			        venture_json_object_get_int(object, "score", 0));
+
+			for (i = 0; i < json_array_get_length(checks); i++)
+			{
+				JsonObject *check;
+
+				check = json_array_get_object_element(checks, i);
+				g_print("  %-4s %-11s %s\n",
+				        venture_json_object_get_string(check, "state", ""),
+				        venture_json_object_get_string(check, "label", ""),
+				        venture_json_object_get_string(check, "detail", ""));
+			}
+
+			return 0;
+		}
+
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+
+		if (0 == g_strcmp0(verb, "deploy"))
+		{
+			if ((NULL == args[3]) || (g_ascii_strtoll(args[3], NULL, 10) <= 0))
+			{
+				g_set_error_literal(error, VENTURE_ERROR,
+				                    VENTURE_ERROR_INVALID_ARGUMENT,
+				                    "usage: venturectl release deploy ID "
+				                    "ENVIRONMENT_ID [NOTES]");
+				return -1;
+			}
+
+			json_builder_set_member_name(builder, "environment_id");
+			json_builder_add_int_value(builder,
+			                           g_ascii_strtoll(args[3], NULL, 10));
+
+			if (NULL != args[4])
+			{
+				json_builder_set_member_name(builder, "notes");
+				json_builder_add_string_value(builder, args[4]);
+			}
+		}
+		else if (NULL != args[3])
+		{
+			json_builder_set_member_name(builder, "audience");
+			json_builder_add_string_value(builder, args[3]);
+		}
+
+		json_builder_end_object(builder);
+		body = json_builder_get_root(builder);
+		path = g_strdup_printf("/api/v1/releases/%s/%s", args[2], verb);
+		node = venture_cli_request(cli, "POST", path, body, error);
+
+		if (NULL == node)
+			return -1;
+
+		if ((0 == g_strcmp0(verb, "notes")) &&
+		    (VENTURE_OUTPUT_FORMAT_TABLE == cli->format) &&
+		    JSON_NODE_HOLDS_OBJECT(node))
+			g_print("%s\n", venture_json_object_get_string(
+				json_node_get_object(node), "notes", ""));
+		else
+			venture_cli_output(cli, node);
+
+		return 0;
+	}
+
+	/* Anything after the id is refused rather than ignored. Publishing
+	 * cannot be undone, and "--pre-release" quietly read as no flag at
+	 * all publishes a full release. */
+	if ((NULL == verb) || (NULL == args[2]) || (NULL != args[3]) ||
+	    (!changelog && (0 != g_strcmp0(verb, "publish"))))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 		                    "usage: venturectl release changelog ID "
 		                    "[--replace] | release publish ID "
-		                    "[--prerelease]");
+		                    "[--prerelease] | release readiness ID | "
+		                    "release deploy ID ENVIRONMENT_ID [NOTES] | "
+		                    "release notes ID [AUDIENCE]");
 		return -1;
 	}
 
-	flag = (0 == g_strcmp0(verb, "changelog")) ? "replace" : "prerelease";
-	set = (NULL != args[3]) &&
-	      ((0 == g_strcmp0(args[3], "--replace")) ||
-	       (0 == g_strcmp0(args[3], "--prerelease")));
+	/* Each flag belongs to one verb, and on the other it is a mistake
+	 * worth stopping for, not a synonym. */
+	if ((changelog && prerelease) || (!changelog && replace))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "--%s does not apply to release %s",
+		            changelog ? "prerelease" : "replace", verb);
+		return -1;
+	}
+
+	flag = changelog ? "replace" : "prerelease";
+	set = changelog ? replace : prerelease;
 
 	builder = json_builder_new();
 	json_builder_begin_object(builder);
@@ -2881,15 +3048,87 @@ venture_cli_command_incident(
 	g_autoptr(JsonNode) node = NULL;
 	g_autofree gchar *path = NULL;
 
-	if ((NULL == args[1]) || (0 != g_strcmp0(args[2], "ticket")))
+	if ((NULL == args[1]) ||
+	    ((0 != g_strcmp0(args[2], "ticket")) &&
+	     (0 != g_strcmp0(args[2], "postmortem"))))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		                    "usage: venturectl incident ID ticket");
+		                    "usage: venturectl incident ID ticket | "
+		                    "incident ID postmortem");
 		return -1;
 	}
 
-	path = g_strdup_printf("/api/v1/incidents/%s/ticket", args[1]);
+	path = g_strdup_printf("/api/v1/incidents/%s/%s", args[1], args[2]);
 	node = venture_cli_request(cli, "POST", path, NULL, error);
+
+	if (NULL == node)
+		return -1;
+
+	venture_cli_output(cli, node);
+
+	return 0;
+}
+
+/*
+ * venturectl environment ID rollback [REASON]
+ * venturectl milestone ID forecast
+ * venturectl build ID triage | build ID ticket
+ *
+ * The factory's verbs on a record that is not a release, in the shape
+ * `incident ID ticket` already has: the record, then what to do to it.
+ */
+static gint
+venture_cli_command_factory_record(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *path = NULL;
+	const gchar *noun;
+	const gchar *verb;
+	const gchar *method;
+
+	noun = args[0];
+	verb = (NULL != args[1]) ? args[2] : NULL;
+	method = "POST";
+
+	if ((0 == g_strcmp0(noun, "environment")) &&
+	    (0 == g_strcmp0(verb, "rollback")))
+	{
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "reason");
+		json_builder_add_string_value(builder,
+		                              (NULL != args[3]) ? args[3] : "");
+		json_builder_end_object(builder);
+		body = json_builder_get_root(builder);
+		path = g_strdup_printf("/api/v1/environments/%s/rollback", args[1]);
+	}
+	else if ((0 == g_strcmp0(noun, "milestone")) &&
+	         (0 == g_strcmp0(verb, "forecast")))
+	{
+		method = "GET";
+		path = g_strdup_printf("/api/v1/milestones/%s/forecast", args[1]);
+	}
+	else if ((0 == g_strcmp0(noun, "build")) &&
+	         ((0 == g_strcmp0(verb, "triage")) ||
+	          (0 == g_strcmp0(verb, "ticket"))))
+	{
+		path = g_strdup_printf("/api/v1/builds/%s/%s", args[1], verb);
+	}
+	else
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "usage: venturectl environment ID rollback "
+		                    "[REASON] | milestone ID forecast | build ID "
+		                    "triage | build ID ticket");
+		return -1;
+	}
+
+	node = venture_cli_request(cli, method, path, body, error);
 
 	if (NULL == node)
 		return -1;
@@ -3352,6 +3591,8 @@ main(
 	g_autofree gchar *reconciliation_matcher = NULL;
 	gint reconciliation_threshold = 80;
 	gboolean dry_run = FALSE;
+	gboolean release_replace = FALSE;
+	gboolean release_prerelease = FALSE;
 	gint result;
 
 	const GOptionEntry entries[] = {
@@ -3380,6 +3621,10 @@ main(
 		  "sequence run or billing: effective cutoff", "TIMESTAMP" },
 		{ G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_STRING_ARRAY, &args,
 		  NULL, NULL },
+		{ "replace", 0, 0, G_OPTION_ARG_NONE, &release_replace,
+		  "release changelog: replace a changelog that is already there", NULL },
+		{ "prerelease", 0, 0, G_OPTION_ARG_NONE, &release_prerelease,
+		  "release publish: publish as a pre-release", NULL },
 		{ "dry-run", 0, 0, G_OPTION_ARG_NONE, &dry_run,
 		  "post backfill or billing: validate without retaining writes", NULL },
 		/* One --from/--to pair serves every span-taking verb. Registering
@@ -3450,6 +3695,16 @@ main(
 		"  payroll import|disburse|reverse           imported pay runs\n"
 		"  accounting                               daily books next actions\n"
 		"  factory                      the software factory at a glance\n"
+		"  factory actions              what in it needs somebody, most pressing first\n"
+		"  factory briefing             the same and where things stand, as prose (AI)\n"
+		"  release readiness ID         can it go out: checks that pass, warn or fail\n"
+		"  release deploy ID ENV [NOTES] record the release going live in environment ENV\n"
+		"  release notes ID [AUDIENCE]  release notes for the people who use it (AI)\n"
+		"  environment ID rollback [REASON]  go back to the release that ran before\n"
+		"  milestone ID forecast        when it lands at the pace it is going\n"
+		"  build ID triage              what a failed build's log is complaining about (AI)\n"
+		"  build ID ticket              open the bug for a failed build\n"
+		"  incident ID postmortem       draft a blameless postmortem from the records (AI)\n"
 		"  lead convert ID              qualify first; deal=yes|no, company_id=ID\n"
 		"  lead reassign ID             owner=NAME or run assignment rules\n"
 		"  leads reroute|rescore ID     run routing rules / the scoring formula again\n"
@@ -3590,6 +3845,13 @@ main(
 		g_print("%s", help);
 
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
+	}
+
+	if ((release_replace || release_prerelease) &&
+	    (0 != g_strcmp0(args[0], "release")))
+	{
+		g_printerr("venturectl: --replace and --prerelease belong to the release command\n");
+		return 2;
 	}
 
 	if (dry_run && g_strcmp0(args[0], "billing") != 0 && g_strcmp0(args[0], "recurring") != 0 && g_strcmp0(args[0], "batch") != 0 && (g_strcmp0(args[0], "post") != 0 || g_strcmp0(args[1], "backfill") != 0))
@@ -3775,7 +4037,8 @@ main(
 	else if (0 == g_strcmp0(args[0], "deal"))
 		result = venture_cli_command_deal(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "release"))
-		result = venture_cli_command_release(&cli, args, &error);
+		result = venture_cli_command_release(&cli, args, release_replace,
+		                                     release_prerelease, &error);
 	else if (0 == g_strcmp0(args[0], "dashboards"))
 		result = venture_cli_command_dashboards(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dashboard"))
@@ -3804,6 +4067,10 @@ main(
 		result = venture_cli_command_bulk(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "incident"))
 		result = venture_cli_command_incident(&cli, args, &error);
+	else if ((0 == g_strcmp0(args[0], "environment")) ||
+	         (0 == g_strcmp0(args[0], "milestone")) ||
+	         (0 == g_strcmp0(args[0], "build")))
+		result = venture_cli_command_factory_record(&cli, args, &error);
 	else if ((0 == g_strcmp0(args[0], "webhooks")) ||
 	         (0 == g_strcmp0(args[0], "webhook")))
 		result = venture_cli_command_webhooks(&cli, args, &error);

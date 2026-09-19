@@ -4017,6 +4017,17 @@ table.data.runs code { font-size: 12px; }
 	padding: var(--space-3) var(--space-4);
 }
 
+/* A draft a person corrects before saving it: the same box, editable. */
+textarea.assist-text {
+	display: block;
+	width: 100%;
+	box-sizing: border-box;
+	min-height: 320px;
+	font-family: inherit;
+	color: inherit;
+	resize: vertical;
+}
+
 .assist-form {
 	display: flex;
 	flex-wrap: wrap;

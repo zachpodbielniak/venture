@@ -259,6 +259,188 @@ venture_factory_open_fix_ticket(
 	GError			**error
 );
 
+/**
+ * VENTURE_FACTORY_CHANGELOG_KEPT:
+ *
+ * What every surface says when drafting a changelog changed nothing because
+ * somebody already wrote one: the page, the API's `reason`, the assistant
+ * and the MCP tool. One sentence in one place, so an agent can match on it
+ * and a person reads the same thing wherever they asked.
+ */
+#define VENTURE_FACTORY_CHANGELOG_KEPT \
+	"The release already has a changelog, which was kept. Ask to replace " \
+	"it to overwrite it with a fresh draft."
+
+/**
+ * venture_factory_install:
+ * @context: the wiring
+ *
+ * Registers the factory's lifecycle rules on every writer: an incident
+ * starts when it is raised and is resolved when its status says so (and
+ * is not resolved before it started), a deployment that succeeded has a
+ * deployed time, a completed milestone a completed time, a released
+ * release a released time, and a finished build its times. The reports
+ * measure the loop from exactly these fields, so a status moved from a
+ * form, the API, the CLI or the assistant must move them too.
+ */
+void
+venture_factory_install(VentureContext *context);
+
+/**
+ * venture_factory_release_readiness:
+ * @context: the wiring
+ * @release: the release
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Whether a release can go out, as a list of checks: its tickets are done,
+ * nothing open is linked as blocking it, its latest build is green, no
+ * open incident names it, its milestone is complete, its changelog is
+ * written and it names a repository. Each check has a stable `key`, a
+ * `label`, a `state` of `pass`, `warn` or `fail`, and a sentence of
+ * `detail`. The object also carries `ready` (no check failed), the counts
+ * `passed`, `warnings` and `blockers`, and a `score` out of 100 in which a
+ * warning is half a pass.
+ *
+ * It advises and refuses nothing: publishing a release with a failing
+ * check is allowed, because the person doing it may know better.
+ *
+ * Returns: (transfer full) (nullable): a JSON object, or %NULL on error
+ */
+JsonNode *
+venture_factory_release_readiness(
+	VentureContext	 *context,
+	VentureEntity	 *release,
+	GError		**error
+);
+
+/**
+ * venture_factory_deploy_release:
+ * @context: the wiring
+ * @release: the release that went live
+ * @environment_id: where
+ * @notes: (nullable): anything worth saying about it
+ * @actor: (nullable): who did it, recorded as deployed-by
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Records a release arriving in an environment: a deployment that
+ * succeeded now, filed under the environment's organization, naming the
+ * release's own latest green build where it has one. A yanked release is
+ * refused. This records a deployment; it does not perform one.
+ *
+ * Returns: (transfer full) (nullable): the deployment
+ */
+VentureEntity *
+venture_factory_deploy_release(
+	VentureContext		 *context,
+	VentureEntity		 *release,
+	gint64			  environment_id,
+	const gchar		 *notes,
+	const VentureActor	 *actor,
+	GError			**error
+);
+
+/**
+ * venture_factory_rollback_environment:
+ * @context: the wiring
+ * @environment: the environment to take back
+ * @reason: (nullable): why, in a few words
+ * @actor: (nullable): who did it
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Records an environment going back to what it ran before: the current
+ * deployment is marked rolled back, and a new deployment of the release
+ * that was live before it is recorded in its place, in one transaction,
+ * with a `supersedes` link from the new to the old. Refused when nothing
+ * is running or no earlier release ever went live there.
+ *
+ * A rolled-back deployment counts as a change failure in the delivery
+ * report, which is the point of recording it this way.
+ *
+ * Returns: (transfer full) (nullable): the new deployment
+ */
+VentureEntity *
+venture_factory_rollback_environment(
+	VentureContext		 *context,
+	VentureEntity		 *environment,
+	const gchar		 *reason,
+	const VentureActor	 *actor,
+	GError			**error
+);
+
+/**
+ * venture_factory_milestone_forecast:
+ * @context: the wiring
+ * @milestone: the milestone
+ * @error: (out) (optional): return location for a #GError
+ *
+ * When a milestone will be finished at the pace it is going: the tickets
+ * done in the last 28 days give a rate per week, and the tickets left
+ * divided by it give a date. `state` is one of `done`, `cancelled`,
+ * `empty`, `overdue`, `stalled` (work left and none closed lately),
+ * `no_due_date`, `at_risk` (projected after the due date) or `on_track`.
+ * Cancelled tickets count neither as work left nor towards the pace.
+ *
+ * Returns: (transfer full) (nullable): a JSON object, or %NULL on error
+ */
+JsonNode *
+venture_factory_milestone_forecast(
+	VentureContext	 *context,
+	VentureEntity	 *milestone,
+	GError		**error
+);
+
+/**
+ * venture_factory_open_build_ticket:
+ * @context: the wiring
+ * @build: a failed build
+ * @actor: (nullable): who asked
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Opens the bug for a red build: titled after the workflow and branch,
+ * carrying the commit, the log's address and the excerpt, on the build's
+ * repository, high priority when the branch is the repository's default,
+ * and linked from the build as what it caused. A build that is not failed,
+ * or that already has such a ticket, is refused.
+ *
+ * Returns: (transfer full) (nullable): the ticket
+ */
+VentureEntity *
+venture_factory_open_build_ticket(
+	VentureContext		 *context,
+	VentureEntity		 *build,
+	const VentureActor	 *actor,
+	GError			**error
+);
+
+/**
+ * venture_factory_next_actions:
+ * @context: the wiring
+ * @organization_ids: (array length=n_organizations) (nullable): scope
+ * @n_organizations: how many
+ * @error: (out) (optional): return location for a #GError
+ *
+ * What in the factory needs somebody, most pressing first: incidents still
+ * happening with no fix ticket, serious ones resolved with no postmortem,
+ * a default branch whose latest build is red, milestones overdue or on
+ * course to be, releases with every ticket done that have not gone out,
+ * releases that went out and never reached production, deployments left
+ * pending for more than a day, and agent budgets running low or spent.
+ *
+ * Each entry has a `key`, a `priority` of `urgent`, `high` or `normal`, a
+ * `title`, a sentence of `detail`, the `record_type` and `record_id` to
+ * act on, its `href`, and the `action` that would deal with it. Derived
+ * from the records alone: no model is asked.
+ *
+ * Returns: (transfer full) (nullable): a JSON array, or %NULL on error
+ */
+JsonNode *
+venture_factory_next_actions(
+	VentureContext	 *context,
+	const gint64	 *organization_ids,
+	gsize		  n_organizations,
+	GError		**error
+);
+
 G_END_DECLS
 
 #endif /* VENTURE_FACTORY_H */

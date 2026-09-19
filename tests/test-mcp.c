@@ -896,8 +896,100 @@ test_dashboards_and_factory_tools(void)
 		g_assert_cmpstr(mock->last_path, ==, "/api/v1/factory");
 	}
 
+	/* So are what needs somebody, a release's readiness and a milestone's
+	 * forecast -- while recording a deployment and rolling one back are
+	 * writes, refused without sending and with what to do instead. */
+	{
+		g_autoptr(JsonNode) params = NULL;
+		g_autoptr(JsonNode) request = NULL;
+		g_autoptr(JsonNode) response = NULL;
+		const gchar *text;
+		gboolean is_error;
+		guint calls_before;
+
+		params = call_params("venture_factory", "action", "actions", NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		result_text(response, &is_error);
+		g_assert_false(is_error);
+		g_assert_cmpstr(mock->last_method, ==, "GET");
+		g_assert_cmpstr(mock->last_path, ==, "/api/v1/factory/actions");
+
+		g_clear_pointer(&request, json_node_unref);
+		g_clear_pointer(&response, json_node_unref);
+		params = call_params("venture_factory", "action", "readiness",
+		                     "id", "3", NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		result_text(response, &is_error);
+		g_assert_false(is_error);
+		g_assert_cmpstr(mock->last_method, ==, "GET");
+		g_assert_cmpstr(mock->last_path, ==, "/api/v1/releases/3/readiness");
+
+		g_clear_pointer(&request, json_node_unref);
+		g_clear_pointer(&response, json_node_unref);
+		params = call_params("venture_factory", "action", "forecast",
+		                     "id", "4", NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		result_text(response, &is_error);
+		g_assert_false(is_error);
+		g_assert_cmpstr(mock->last_path, ==, "/api/v1/milestones/4/forecast");
+
+		calls_before = mock->calls;
+		g_clear_pointer(&request, json_node_unref);
+		g_clear_pointer(&response, json_node_unref);
+		params = call_params("venture_factory", "action", "rollback",
+		                     "id", "2", NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		text = result_text(response, &is_error);
+		g_assert_true(is_error);
+		g_assert_nonnull(g_strstr_len(text, -1, "--apply-writes"));
+		g_assert_cmpuint(mock->calls, ==, calls_before);
+
+		g_clear_pointer(&request, json_node_unref);
+		g_clear_pointer(&response, json_node_unref);
+		params = call_params("venture_factory", "action", "deploy",
+		                     "id", "3", NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		text = result_text(response, &is_error);
+		g_assert_true(is_error);
+		g_assert_nonnull(g_strstr_len(text, -1, "venture_create"));
+		g_assert_cmpuint(mock->calls, ==, calls_before);
+	}
+
 	/* With writes applied, both go to their routes with their flag. */
 	venture_mcp_server_set_stage_writes(server, FALSE);
+
+	{
+		g_autoptr(JsonNode) params = NULL;
+		g_autoptr(JsonNode) request = NULL;
+		g_autoptr(JsonNode) response = NULL;
+		gboolean is_error;
+
+		params = call_params("venture_factory", "action", "rollback",
+		                     "id", "2", "reason", "exports corrupt", NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		result_text(response, &is_error);
+		g_assert_false(is_error);
+		g_assert_cmpstr(mock->last_method, ==, "POST");
+		g_assert_cmpstr(mock->last_path, ==,
+		                "/api/v1/environments/2/rollback");
+		g_assert_nonnull(g_strstr_len(mock->last_body, -1, "exports corrupt"));
+
+		g_clear_pointer(&request, json_node_unref);
+		g_clear_pointer(&response, json_node_unref);
+		params = call_params("venture_factory", "action", "build_ticket",
+		                     "id", "9", NULL);
+		request = rpc_request("tools/call", g_steal_pointer(&params));
+		response = venture_mcp_server_handle(server, request);
+		result_text(response, &is_error);
+		g_assert_false(is_error);
+		g_assert_cmpstr(mock->last_path, ==, "/api/v1/builds/9/ticket");
+	}
 
 	{
 		g_autoptr(JsonNode) params = NULL;

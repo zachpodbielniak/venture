@@ -3218,7 +3218,12 @@
 					return;
 				}
 
-				navigator.clipboard.writeText(body.textContent).then(function () {
+				/* A draft that can be edited lives in a textarea, whose
+				 * textContent is what it arrived as, not what it says
+				 * now. */
+				navigator.clipboard.writeText(
+					("value" in body) ? body.value : body.textContent
+				).then(function () {
 					toast("Copied", "positive");
 				}).catch(function () {
 					toast("Could not copy that", "negative");

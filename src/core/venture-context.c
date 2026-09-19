@@ -132,6 +132,10 @@ venture_context_new(
 	venture_sla_install(self);
 	venture_desk_install(self);
 
+	/* The factory's timestamps follow its statuses, so the reports that
+	 * measure the loop see every record whoever wrote it. */
+	venture_factory_install(self);
+
 	/* Who a new ticket goes to, and who outside hears that it changed.
 	 * Routing is a validator so it runs before the row is written;
 	 * webhooks listen to the audit trail, like the inbox. */

@@ -22,6 +22,24 @@
 
 #define FACTORY_SECRET "hook-secret-for-tests"
 
+/*
+ * A moment some days or hours from now. venture_time_now() is transfer
+ * full, so nesting it in g_date_time_add_*() leaks the instant.
+ */
+static GDateTime *
+time_from_now(
+	gint	days,
+	gint	hours
+){
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GDateTime) shifted = NULL;
+
+	now = venture_time_now();
+	shifted = g_date_time_add_days(now, days);
+
+	return g_date_time_add_hours(shifted, hours);
+}
+
 /* --- Parsing, with no server ---------------------------------------------- */
 
 /*
@@ -780,6 +798,19 @@ test_factory_changelog_is_drafted_from_tickets(
 	g_object_get(release, "changelog", &changelog, NULL);
 	g_assert_cmpstr(changelog, ==, "hand-written");
 
+	/* ...and says so, rather than coming back looking as though the
+	 * button did nothing. */
+	{
+		g_autofree gchar *kept_path = NULL;
+		g_autofree gchar *kept_page = NULL;
+
+		kept_path = g_strdup_printf("/e/release/%" G_GINT64_FORMAT
+		                            "?changelog=kept", release_id);
+		g_assert_cmpuint(server_request(fixture, "GET", kept_path, NULL,
+		                                &kept_page), ==, SOUP_STATUS_OK);
+		g_assert_nonnull(strstr(kept_page, "which was kept"));
+	}
+
 	/* ...unless asked. */
 	g_assert_cmpuint(server_request(fixture, "POST", path, "replace=1", NULL),
 	                 ==, SOUP_STATUS_FOUND);
@@ -810,6 +841,8 @@ test_factory_changelog_is_drafted_from_tickets(
 		node = venture_json_parse(body, NULL);
 		reply = json_node_get_object(node);
 		g_assert_false(json_object_get_boolean_member(reply, "changed"));
+		g_assert_cmpstr(json_object_get_string_member(reply, "reason"), ==,
+		                VENTURE_FACTORY_CHANGELOG_KEPT);
 
 		g_clear_pointer(&body, g_free);
 		g_clear_pointer(&node, json_node_unref);
@@ -819,6 +852,7 @@ test_factory_changelog_is_drafted_from_tickets(
 		node = venture_json_parse(body, NULL);
 		reply = json_node_get_object(node);
 		g_assert_true(json_object_get_boolean_member(reply, "changed"));
+		g_assert_true(json_object_get_null_member(reply, "reason"));
 		g_assert_nonnull(strstr(json_object_get_string_member(
 			json_object_get_object_member(reply, "release"), "changelog"),
 			"Crash on save"));
@@ -999,6 +1033,649 @@ test_factory_reports_measure_the_loop(
 	}
 }
 
+/* --- The webhook, when deliveries misbehave ------------------------------- */
+
+/*
+ * Forgejo sends no workflow_run. It sends action_run_success and
+ * action_run_failure once a run is done, with the run under "run" -- the
+ * shape of Forgejo's own ActionPayload and ActionRun structs -- and those
+ * become builds as well.
+ *
+ * What breaks if this regresses: on Forgejo, the forge this is mostly
+ * pointed at, no build ever arrives and every build figure reads zero.
+ */
+static void
+test_factory_forgejo_action_runs_become_builds(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	static const gchar *const failure =
+		"{\"action\":\"failure\","
+		" \"run\":{\"id\":501,\"title\":\"fix: flaky upload\","
+		"   \"repository\":{\"full_name\":\"zach/venture\"},"
+		"   \"workflow_id\":\"ci.yml\",\"index_in_repo\":42,"
+		"   \"trigger_user\":{\"login\":\"zach\"},"
+		"   \"prettyref\":\"main\",\"commit_sha\":\"0badc0de\","
+		"   \"event\":\"push\",\"status\":\"failure\","
+		"   \"started\":\"2026-09-05T08:00:00Z\","
+		"   \"stopped\":\"2026-09-05T08:06:30Z\","
+		"   \"html_url\":\"https://git.example.com/zach/venture/actions/runs/42\"},"
+		" \"prior_status\":\"running\"}";
+	static const gchar *const cancelled =
+		"{\"action\":\"failure\","
+		" \"run\":{\"id\":502,\"title\":\"chore: bump\","
+		"   \"repository\":{\"full_name\":\"zach/venture\"},"
+		"   \"workflow_id\":\"ci.yml\",\"index_in_repo\":43,"
+		"   \"prettyref\":\"feature/x\",\"commit_sha\":\"feedface\","
+		"   \"status\":\"cancelled\","
+		"   \"started\":\"0001-01-01T00:00:00Z\","
+		"   \"stopped\":\"2026-09-05T09:00:00Z\","
+		"   \"html_url\":\"https://git.example.com/zach/venture/actions/runs/43\"},"
+		" \"prior_status\":\"waiting\"}";
+	static const gchar *const success =
+		"{\"action\":\"success\","
+		" \"run\":{\"id\":501,\"title\":\"fix: flaky upload\","
+		"   \"repository\":{\"full_name\":\"zach/venture\"},"
+		"   \"workflow_id\":\"ci.yml\",\"index_in_repo\":42,"
+		"   \"prettyref\":\"main\",\"commit_sha\":\"0badc0de\","
+		"   \"status\":\"success\","
+		"   \"started\":\"2026-09-05T10:00:00Z\","
+		"   \"stopped\":\"2026-09-05T10:05:00Z\","
+		"   \"html_url\":\"https://git.example.com/zach/venture/actions/runs/42\"},"
+		" \"prior_status\":\"running\"}";
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureEntity) build = NULL;
+	g_autoptr(VentureEntity) stopped = NULL;
+	g_autoptr(GDateTime) started = NULL;
+	g_autoptr(GDateTime) finished = NULL;
+	g_autofree gchar *workflow = NULL;
+	g_autofree gchar *ref = NULL;
+	g_autofree gchar *commit = NULL;
+	VentureBuildStatus status;
+	gint64 number = 0;
+
+	(void)user_data;
+
+	g_assert_cmpuint(server_deliver_webhook(fixture, "action_run_failure",
+	                                        "f-1", failure), ==,
+	                 SOUP_STATUS_ACCEPTED);
+
+	query = venture_query_new(VENTURE_TYPE_BUILD);
+	venture_query_add_filter_string(query, "external-id", VENTURE_FILTER_OP_EQ,
+	                                "501", NULL);
+	build = venture_database_find_one(fixture->database, query, NULL);
+	g_assert_nonnull(build);
+	g_object_get(build, "status", &status, "workflow", &workflow, "ref", &ref,
+	             "commit", &commit, "number", &number,
+	             "finished-at", &finished, NULL);
+	g_assert_cmpint(status, ==, VENTURE_BUILD_STATUS_FAILED);
+	g_assert_cmpstr(workflow, ==, "ci.yml");
+	g_assert_cmpstr(ref, ==, "main");
+	g_assert_cmpstr(commit, ==, "0badc0de");
+	g_assert_cmpint(number, ==, 42);
+	g_assert_nonnull(finished);
+	g_assert_cmpint(g_date_time_get_minute(finished), ==, 6);
+	g_clear_object(&build);
+
+	/* Cancelled before it started: cancelled, and Go's zero time is no
+	 * start at all. */
+	g_assert_cmpuint(server_deliver_webhook(fixture, "action_run_failure",
+	                                        "f-2", cancelled), ==,
+	                 SOUP_STATUS_ACCEPTED);
+	g_clear_object(&query);
+	query = venture_query_new(VENTURE_TYPE_BUILD);
+	venture_query_add_filter_string(query, "external-id", VENTURE_FILTER_OP_EQ,
+	                                "502", NULL);
+	stopped = venture_database_find_one(fixture->database, query, NULL);
+	g_assert_nonnull(stopped);
+	g_object_get(stopped, "status", &status, "started-at", &started, NULL);
+	g_assert_cmpint(status, ==, VENTURE_BUILD_STATUS_CANCELLED);
+
+	/* The zero start is dropped rather than stored, and the lifecycle
+	 * rule gives a finished build a start -- never year 1. */
+	g_assert_nonnull(started);
+	g_assert_cmpint(g_date_time_get_year(started), >=, 2000);
+
+	/* Re-run and green: the same row, succeeded. */
+	g_assert_cmpuint(server_deliver_webhook(fixture, "action_run_success",
+	                                        "f-3", success), ==,
+	                 SOUP_STATUS_ACCEPTED);
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_BUILD), ==, 2);
+	g_clear_object(&query);
+	query = venture_query_new(VENTURE_TYPE_BUILD);
+	venture_query_add_filter_string(query, "external-id", VENTURE_FILTER_OP_EQ,
+	                                "501", NULL);
+	build = venture_database_find_one(fixture->database, query, NULL);
+	g_object_get(build, "status", &status, NULL);
+	g_assert_cmpint(status, ==, VENTURE_BUILD_STATUS_SUCCEEDED);
+}
+
+/*
+ * A workflow_run payload, for the tests that send several.
+ */
+static gchar *
+workflow_payload(
+	gint64		 run_id,
+	const gchar	*action,
+	const gchar	*status,
+	const gchar	*conclusion,
+	const gchar	*started_at,
+	const gchar	*completed_at
+){
+	return g_strdup_printf(
+		"{\"action\":\"%s\","
+		" \"workflow_run\":{\"id\":%" G_GINT64_FORMAT ",\"run_number\":3,"
+		"   \"display_title\":\"fix: a thing\",\"head_branch\":\"main\","
+		"   \"head_sha\":\"def456\",\"status\":\"%s\",\"conclusion\":\"%s\","
+		"   \"html_url\":\"https://git.example.com/zach/venture/actions/runs/1\","
+		"   \"started_at\":\"%s\",\"completed_at\":\"%s\"},"
+		" \"workflow\":{\"name\":\"CI\"},"
+		" \"repository\":{\"full_name\":\"zach/venture\"},"
+		" \"sender\":{\"login\":\"zach\"}}",
+		action, run_id, status, conclusion, started_at, completed_at);
+}
+
+/*
+ * The one build the fixture's repository has, fresh from the database.
+ */
+static VentureEntity *
+only_build(ServerFixture *fixture)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) builds = NULL;
+
+	query = venture_query_new(VENTURE_TYPE_BUILD);
+	builds = venture_database_find(fixture->database, query, NULL);
+	g_assert_cmpuint(builds->len, ==, 1);
+
+	return g_object_ref(g_ptr_array_index(builds, 0));
+}
+
+/*
+ * Deliveries arrive late, twice and out of order, and a finished build
+ * stays finished through all of it -- while a run that really did start
+ * again goes back to running.
+ *
+ * What breaks if this regresses: a red build flips back to "running"
+ * when the forge retries an old delivery, drops out of the failed counts,
+ * and keeps a finished time from a run that is apparently still going.
+ */
+static void
+test_factory_late_deliveries_do_not_unfinish_a_build(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *completed = NULL;
+	g_autofree gchar *late = NULL;
+	g_autofree gchar *rerun = NULL;
+	g_autofree gchar *neutral = NULL;
+	g_autoptr(VentureEntity) build = NULL;
+	g_autoptr(GDateTime) started = NULL;
+	g_autoptr(GDateTime) finished = NULL;
+	VentureBuildStatus status;
+
+	(void)user_data;
+
+	/* Gitea's shape: completed_at, and Go's zero time for "not yet". */
+	completed = workflow_payload(7001, "completed", "completed", "failure",
+	                             "2026-09-01T10:00:00Z", "2026-09-01T10:04:00Z");
+	late = workflow_payload(7001, "in_progress", "in_progress", "",
+	                        "2026-09-01T10:00:00Z", "0001-01-01T00:00:00Z");
+	rerun = workflow_payload(7001, "in_progress", "in_progress", "",
+	                         "2026-09-01T11:00:00Z", "0001-01-01T00:00:00Z");
+	neutral = workflow_payload(7001, "completed", "completed", "neutral",
+	                           "2026-09-01T11:00:00Z", "2026-09-01T11:02:00Z");
+
+	g_assert_cmpuint(server_deliver_webhook(fixture, "workflow_run", "w-1",
+	                                        completed), ==,
+	                 SOUP_STATUS_ACCEPTED);
+
+	build = only_build(fixture);
+	g_object_get(build, "status", &status, "finished-at", &finished, NULL);
+	g_assert_cmpint(status, ==, VENTURE_BUILD_STATUS_FAILED);
+	g_assert_nonnull(finished);
+	g_assert_cmpint(g_date_time_get_minute(finished), ==, 4);
+	g_clear_object(&build);
+	g_clear_pointer(&finished, g_date_time_unref);
+
+	/* The "in progress" for the same start, arriving after. Ignored. */
+	g_assert_cmpuint(server_deliver_webhook(fixture, "workflow_run", "w-2",
+	                                        late), ==,
+	                 SOUP_STATUS_NO_CONTENT);
+
+	build = only_build(fixture);
+	g_object_get(build, "status", &status, "finished-at", &finished, NULL);
+	g_assert_cmpint(status, ==, VENTURE_BUILD_STATUS_FAILED);
+	g_assert_nonnull(finished);
+	g_clear_object(&build);
+	g_clear_pointer(&finished, g_date_time_unref);
+
+	/* A later start is somebody pressing Re-run: running again, and no
+	 * longer finished. The zero completed_at is not a finish time. */
+	g_assert_cmpuint(server_deliver_webhook(fixture, "workflow_run", "w-3",
+	                                        rerun), ==,
+	                 SOUP_STATUS_ACCEPTED);
+
+	build = only_build(fixture);
+	g_object_get(build, "status", &status, "started-at", &started,
+	             "finished-at", &finished, NULL);
+	g_assert_cmpint(status, ==, VENTURE_BUILD_STATUS_RUNNING);
+	g_assert_null(finished);
+	g_assert_cmpint(g_date_time_get_hour(started), ==, 11);
+	g_clear_object(&build);
+
+	/* Neutral is not red. */
+	g_assert_cmpuint(server_deliver_webhook(fixture, "workflow_run", "w-4",
+	                                        neutral), ==,
+	                 SOUP_STATUS_ACCEPTED);
+
+	build = only_build(fixture);
+	g_object_get(build, "status", &status, NULL);
+	g_assert_cmpint(status, ==, VENTURE_BUILD_STATUS_SUCCEEDED);
+}
+
+static gchar *
+release_payload(
+	const gchar	*action,
+	gint64		 release_id,
+	const gchar	*tag,
+	gboolean	 prerelease,
+	const gchar	*url,
+	const gchar	*published_at
+){
+	return g_strdup_printf(
+		"{\"action\":\"%s\","
+		" \"release\":{\"id\":%" G_GINT64_FORMAT ",\"tag_name\":\"%s\","
+		"   \"name\":\"\",\"body\":\"- from the forge\",\"draft\":false,"
+		"   \"prerelease\":%s,\"html_url\":\"%s\",\"published_at\":%s%s%s},"
+		" \"repository\":{\"full_name\":\"zach/venture\"},"
+		" \"sender\":{\"login\":\"zach\"}}",
+		action, release_id, tag, prerelease ? "true" : "false", url,
+		(NULL != published_at) ? "\"" : "",
+		(NULL != published_at) ? published_at : "null",
+		(NULL != published_at) ? "\"" : "");
+}
+
+/*
+ * A release planned here and then tagged on the forge by hand is one
+ * release, not two; a release candidate is not a release; an edit to the
+ * notes of one yanked here does not put it back out; and the late
+ * "deleted" for a tag that was cut again does not yank its replacement.
+ *
+ * What breaks if this regresses: the tickets are marked against one
+ * "1.2.0" and the forge's release is another, with none.
+ */
+static void
+test_factory_forge_release_finds_the_row_it_means(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *published = NULL;
+	g_autofree gchar *candidate = NULL;
+	g_autofree gchar *edited = NULL;
+	g_autofree gchar *recut = NULL;
+	g_autofree gchar *deleted_old = NULL;
+	g_autoptr(VentureRelease) planned = NULL;
+	g_autoptr(VentureEntity) release = NULL;
+	g_autoptr(VentureEntity) rc = NULL;
+	g_autoptr(GDateTime) first_released = NULL;
+	g_autoptr(GDateTime) still_released = NULL;
+	g_autofree gchar *url = NULL;
+	g_autofree gchar *tag = NULL;
+	VentureReleaseStatus status;
+	gint64 planned_id;
+	gint64 external = 0;
+
+	(void)user_data;
+
+	/* Planned here: a version, the repository, tickets, and no tag. */
+	planned = venture_release_new();
+	g_object_set(planned, "number", "1.2.0", "repo-id", fixture->repo_id,
+	             "status", VENTURE_RELEASE_STATUS_IN_PROGRESS,
+	             "changelog", "Written here.", NULL);
+	file_under_default(fixture, planned);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(planned), NULL, NULL));
+	planned_id = venture_entity_get_id(VENTURE_ENTITY(planned));
+
+	published = release_payload("published", 55, "v1.2.0", FALSE,
+		"https://git.example.com/zach/venture/releases/tag/v1.2.0",
+		"2026-09-02T09:00:00Z");
+	g_assert_cmpuint(server_deliver_webhook(fixture, "release", "r-1",
+	                                        published), ==,
+	                 SOUP_STATUS_ACCEPTED);
+
+	/* The same row, now out, with the forge's id and tag -- and the
+	 * changelog somebody wrote here left alone. */
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_RELEASE), ==, 1);
+	release = venture_database_get(fixture->database, VENTURE_TYPE_RELEASE,
+	                               planned_id, NULL);
+	g_object_get(release, "status", &status, "external-id", &external,
+	             "tag", &tag, "released-at", &first_released, NULL);
+	g_assert_cmpint(status, ==, VENTURE_RELEASE_STATUS_RELEASED);
+	g_assert_cmpint(external, ==, 55);
+	g_assert_cmpstr(tag, ==, "v1.2.0");
+	g_assert_nonnull(first_released);
+
+	/* Yanked here, by hand; then somebody edits the notes on the forge. */
+	g_object_set(release, "status", VENTURE_RELEASE_STATUS_YANKED, NULL);
+	g_assert_true(venture_database_save(fixture->database, release, NULL,
+	                                    NULL));
+	g_clear_object(&release);
+
+	edited = release_payload("updated", 55, "v1.2.0", FALSE,
+		"https://git.example.com/zach/venture/releases/tag/v1.2.0", NULL);
+	g_assert_cmpuint(server_deliver_webhook(fixture, "release", "r-2", edited),
+	                 ==, SOUP_STATUS_ACCEPTED);
+
+	release = venture_database_get(fixture->database, VENTURE_TYPE_RELEASE,
+	                               planned_id, NULL);
+	g_object_get(release, "status", &status, "released-at", &still_released,
+	             NULL);
+	g_assert_cmpint(status, ==, VENTURE_RELEASE_STATUS_YANKED);
+	g_assert_true(g_date_time_equal(first_released, still_released));
+	g_clear_object(&release);
+
+	/* The tag is deleted and cut again: a new release with a new id. It
+	 * is not the yanked row, and the late "deleted" for the old id must
+	 * find the old row, not the new one. */
+	recut = release_payload("published", 99, "v1.2.0", FALSE,
+		"https://git.example.com/zach/venture/releases/tag/v1.2.0",
+		"2026-09-03T09:00:00Z");
+	g_assert_cmpuint(server_deliver_webhook(fixture, "release", "r-3", recut),
+	                 ==, SOUP_STATUS_ACCEPTED);
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_RELEASE), ==, 2);
+
+	deleted_old = release_payload("deleted", 55, "v1.2.0", FALSE, "", NULL);
+	g_assert_cmpuint(server_deliver_webhook(fixture, "release", "r-4",
+	                                        deleted_old), ==,
+	                 SOUP_STATUS_ACCEPTED);
+
+	{
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) rows = NULL;
+		guint i;
+
+		query = venture_query_new(VENTURE_TYPE_RELEASE);
+		rows = venture_database_find(fixture->database, query, NULL);
+
+		for (i = 0; i < rows->len; i++)
+		{
+			gint64 forge_id = 0;
+
+			g_clear_pointer(&url, g_free);
+			g_object_get(g_ptr_array_index(rows, i), "external-id", &forge_id,
+			             "status", &status, "url", &url, NULL);
+
+			if (99 == forge_id)
+				g_assert_cmpint(status, ==, VENTURE_RELEASE_STATUS_RELEASED);
+			else
+				g_assert_cmpint(status, ==, VENTURE_RELEASE_STATUS_YANKED);
+
+			/* A deletion's empty html_url blanks nothing: with the page
+			 * gone from the record, Publish would be offered on a yanked
+			 * release. */
+			g_assert_false(venture_string_is_empty(url));
+		}
+	}
+
+	/* A release candidate is on the forge and is not shipped. */
+	candidate = release_payload("published", 120, "v2.0.0-rc1", TRUE,
+		"https://git.example.com/zach/venture/releases/tag/v2.0.0-rc1",
+		"2026-09-04T09:00:00Z");
+	g_assert_cmpuint(server_deliver_webhook(fixture, "release", "r-5",
+	                                        candidate), ==,
+	                 SOUP_STATUS_ACCEPTED);
+
+	{
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GDateTime) rc_released = NULL;
+
+		query = venture_query_new(VENTURE_TYPE_RELEASE);
+		venture_query_add_filter_int(query, "external-id",
+		                             VENTURE_FILTER_OP_EQ, 120, NULL);
+		rc = venture_database_find_one(fixture->database, query, NULL);
+		g_assert_nonnull(rc);
+		g_object_get(rc, "status", &status, "released-at", &rc_released, NULL);
+		g_assert_cmpint(status, ==, VENTURE_RELEASE_STATUS_IN_PROGRESS);
+		g_assert_null(rc_released);
+	}
+}
+
+/* --- The operations, over HTTP -------------------------------------------- */
+
+/*
+ * What needs you, readiness, deploying and rolling back, from a page and
+ * from the API, and a scope that cannot be read is an error rather than
+ * everything.
+ */
+static void
+test_factory_operations_over_http(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEnvironment) environment = NULL;
+	g_autoptr(VentureIncident) incident = NULL;
+	g_autoptr(JsonNode) actions = NULL;
+	g_autoptr(JsonNode) readiness = NULL;
+	g_autoptr(VentureEntity) current = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *release_page = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *deploy_body = NULL;
+	gint64 environment_id;
+	gint64 first;
+	gint64 second;
+	gint64 running = 0;
+
+	(void)user_data;
+
+	environment = venture_environment_new();
+	g_object_set(environment, "name", "production",
+	             "kind", VENTURE_ENVIRONMENT_KIND_PRODUCTION, "active", TRUE,
+	             NULL);
+	file_under_default(fixture, environment);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(environment), NULL,
+	                                    NULL));
+	environment_id = venture_entity_get_id(VENTURE_ENTITY(environment));
+
+	incident = venture_incident_new();
+	g_object_set(incident, "title", "Checkout <b>down</b>",
+	             "severity", VENTURE_INCIDENT_SEVERITY_SEV1,
+	             "status", VENTURE_INCIDENT_STATUS_OPEN, NULL);
+	file_under_default(fixture, incident);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(incident), NULL, NULL));
+
+	first = create_release(fixture, "5.0.0", NULL);
+	second = create_release(fixture, "5.1.0", NULL);
+	create_ticket(fixture, "Unfinished", VENTURE_ISSUE_TYPE_BUG, second);
+
+	/* What needs you: as JSON, and at the top of the Factory page, with
+	 * the incident's title escaped. */
+	g_assert_cmpuint(server_request(fixture, "GET", "/api/v1/factory/actions",
+	                                NULL, &body), ==, SOUP_STATUS_OK);
+	actions = venture_json_parse(body, NULL);
+	g_assert_true(JSON_NODE_HOLDS_ARRAY(actions));
+	g_assert_cmpstr(json_object_get_string_member(
+		json_array_get_object_element(json_node_get_array(actions), 0),
+		"key"), ==, "incident_without_fix");
+	g_clear_pointer(&body, g_free);
+
+	g_assert_cmpuint(server_request(fixture, "GET", "/factory", NULL, &page),
+	                 ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "What needs you"));
+	g_assert_nonnull(strstr(page, "Checkout &lt;b&gt;down&lt;/b&gt;"));
+	g_assert_null(strstr(page, "Checkout <b>down</b>"));
+
+	/* An organization that cannot be read is an error, not "all of
+	 * them". */
+	g_assert_cmpuint(server_request(fixture, "GET",
+	                                "/api/v1/factory?organization_id=junk",
+	                                NULL, NULL), ==, SOUP_STATUS_BAD_REQUEST);
+	g_assert_cmpuint(server_request(fixture, "GET",
+	                                "/api/v1/factory/actions?organization_id=0",
+	                                NULL, NULL), ==, SOUP_STATUS_BAD_REQUEST);
+
+	/* Readiness: an open ticket is in the way, on the API and the page. */
+	path = g_strdup_printf("/api/v1/releases/%" G_GINT64_FORMAT "/readiness",
+	                       second);
+	g_assert_cmpuint(server_request(fixture, "GET", path, NULL, &body), ==,
+	                 SOUP_STATUS_OK);
+	readiness = venture_json_parse(body, NULL);
+	g_assert_false(json_object_get_boolean_member(
+		json_node_get_object(readiness), "ready"));
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&path, g_free);
+
+	path = g_strdup_printf("/e/release/%" G_GINT64_FORMAT, second);
+	g_assert_cmpuint(server_request(fixture, "GET", path, NULL, &release_page),
+	                 ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(release_page, "Ready to go out?"));
+	g_assert_nonnull(strstr(release_page, "Record deployment"));
+	g_clear_pointer(&path, g_free);
+
+	/* Deploy the first from its page and the second over the API. */
+	path = g_strdup_printf("/releases/%" G_GINT64_FORMAT "/deploy", first);
+	deploy_body = g_strdup_printf("environment_id=%" G_GINT64_FORMAT,
+	                              environment_id);
+	g_assert_cmpuint(server_request(fixture, "POST", path, deploy_body, NULL),
+	                 ==, SOUP_STATUS_FOUND);
+	g_clear_pointer(&path, g_free);
+	g_clear_pointer(&deploy_body, g_free);
+
+	/* Dated a day back, so which of the two is newer does not hang on
+	 * two timestamps a millisecond apart. */
+	{
+		g_autoptr(VentureEntity) deployment = NULL;
+		g_autoptr(GDateTime) yesterday = NULL;
+
+		deployment = venture_factory_current_deployment(fixture->database,
+		                                                environment_id);
+		g_assert_nonnull(deployment);
+		yesterday = time_from_now(-1, 0);
+		g_object_set(deployment, "deployed-at", yesterday, NULL);
+		g_assert_true(venture_database_save(fixture->database, deployment,
+		                                    NULL, NULL));
+	}
+
+	path = g_strdup_printf("/api/v1/releases/%" G_GINT64_FORMAT "/deploy",
+	                       second);
+	deploy_body = g_strdup_printf("{\"environment_id\":%" G_GINT64_FORMAT
+	                              ",\"notes\":\"friday\"}", environment_id);
+	g_assert_cmpuint(server_request_full(fixture, "POST", path,
+	                                     "application/json", deploy_body, NULL,
+	                                     NULL), ==, SOUP_STATUS_CREATED);
+	g_clear_pointer(&path, g_free);
+
+	/* No environment named is refused, not recorded against nothing. */
+	path = g_strdup_printf("/api/v1/releases/%" G_GINT64_FORMAT "/deploy",
+	                       second);
+	g_assert_cmpuint(server_request_full(fixture, "POST", path,
+	                                     "application/json", "{}", NULL, NULL),
+	                 !=, SOUP_STATUS_CREATED);
+	g_clear_pointer(&path, g_free);
+
+	current = venture_factory_current_deployment(fixture->database,
+	                                             environment_id);
+	g_object_get(current, "release-id", &running, NULL);
+	g_assert_cmpint(running, ==, second);
+	g_clear_object(&current);
+
+	/* And take it back. */
+	path = g_strdup_printf("/api/v1/environments/%" G_GINT64_FORMAT
+	                       "/rollback", environment_id);
+	g_assert_cmpuint(server_request_full(fixture, "POST", path,
+	                                     "application/json",
+	                                     "{\"reason\":\"it was friday\"}", NULL,
+	                                     NULL), ==, SOUP_STATUS_CREATED);
+
+	current = venture_factory_current_deployment(fixture->database,
+	                                             environment_id);
+	g_object_get(current, "release-id", &running, NULL);
+	g_assert_cmpint(running, ==, first);
+}
+
+/*
+ * With no assistant configured the pages offer no assistant, and asking
+ * the API for a draft says why rather than failing obscurely.
+ */
+static void
+test_factory_without_an_assistant(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *body = NULL;
+	gint64 release_id;
+
+	(void)user_data;
+
+	release_id = create_release(fixture, "6.0.0", NULL);
+	create_ticket(fixture, "A change", VENTURE_ISSUE_TYPE_STORY, release_id);
+
+	g_assert_cmpuint(server_request(fixture, "GET", "/factory", NULL, &page),
+	                 ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(page, "Brief me"));
+
+	path = g_strdup_printf("/api/v1/releases/%" G_GINT64_FORMAT "/notes",
+	                       release_id);
+	g_assert_cmpuint(server_request_full(fixture, "POST", path,
+	                                     "application/json", "{}", NULL, &body),
+	                 !=, SOUP_STATUS_OK);
+	g_assert_nonnull(body);
+}
+
+/*
+ * An address that is not a web address is never a link.
+ *
+ * What breaks if this regresses: an editor sets a release's URL, or the
+ * forge's base URL every repository and branch link is built from, to
+ * "javascript:..." and it runs for whoever clicks it -- usually an admin.
+ */
+static void
+test_factory_script_urls_are_not_links(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) release = NULL;
+	g_autoptr(VentureEntity) forge = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *release_page = NULL;
+	g_autofree gchar *repo_page = NULL;
+	gint64 release_id;
+
+	(void)user_data;
+
+	release_id = create_release(fixture, "7.0.0", NULL);
+	release = venture_database_get(fixture->database, VENTURE_TYPE_RELEASE,
+	                               release_id, NULL);
+	g_object_set(release, "url", "JavaScript:alert(document.cookie)", NULL);
+	g_assert_true(venture_database_save(fixture->database, release, NULL,
+	                                    NULL));
+
+	path = g_strdup_printf("/e/release/%" G_GINT64_FORMAT, release_id);
+	g_assert_cmpuint(server_request(fixture, "GET", path, NULL, &release_page),
+	                 ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(release_page, "href=\"JavaScript:"));
+	g_assert_null(strstr(release_page, "On the forge"));
+	g_clear_pointer(&path, g_free);
+
+	forge = venture_database_get(fixture->database, VENTURE_TYPE_FORGE,
+	                             fixture->forge_id, NULL);
+	g_object_set(forge, "base-url", "javascript:alert(1)//", NULL);
+	g_assert_true(venture_database_save(fixture->database, forge, NULL, NULL));
+
+	path = g_strdup_printf("/e/forge_repo/%" G_GINT64_FORMAT, fixture->repo_id);
+	g_assert_cmpuint(server_request(fixture, "GET", path, NULL, &repo_page),
+	                 ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(repo_page, "href=\"javascript:"));
+	g_assert_null(strstr(repo_page, "Open on the forge"));
+}
+
 /*
  * The factory page renders, and each of the factory's pages shows its
  * block.
@@ -1109,6 +1786,21 @@ test_factory_module_off_hides_everything(
 	g_assert_null(venture_report_registry_lookup(
 		venture_context_get_report_registry(fixture->context), "lead_time"));
 
+	/* The operations go with it: none of them is a way round the switch. */
+	g_assert_cmpuint(server_request(fixture, "GET", "/api/v1/factory/actions",
+	                                NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_request(fixture, "GET",
+	                                "/api/v1/releases/1/readiness", NULL, NULL),
+	                 ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_request_full(fixture, "POST",
+	                                     "/api/v1/environments/1/rollback",
+	                                     "application/json", "{}", NULL, NULL),
+	                 ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_request(fixture, "POST", "/builds/1/ticket", "",
+	                                NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_request(fixture, "GET", "/factory/assist/factory/0",
+	                                NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+
 	g_assert_cmpuint(server_deliver_webhook(fixture, "workflow_run", "d-9",
 	                                        requested), ==,
 	                 SOUP_STATUS_NO_CONTENT);
@@ -1119,6 +1811,117 @@ test_factory_module_off_hides_everything(
 	                 ==, SOUP_STATUS_OK);
 	g_assert_nonnull(venture_report_registry_lookup(
 		venture_context_get_report_registry(fixture->context), "lead_time"));
+}
+
+/* --- venturectl ----------------------------------------------------------- */
+
+typedef struct
+{
+	gboolean	 done;
+	gchar		*out;
+	gchar		*err;
+	GError		*error;
+} CliResult;
+
+static void
+cli_done(
+	GObject		*source,
+	GAsyncResult	*result,
+	gpointer	 user_data
+){
+	CliResult *outcome = user_data;
+
+	g_subprocess_communicate_utf8_finish(G_SUBPROCESS(source), result,
+	                                     &outcome->out, &outcome->err,
+	                                     &outcome->error);
+	outcome->done = TRUE;
+}
+
+/*
+ * Runs venturectl against a server that is not there, and returns what it
+ * said on stderr. Nothing here needs an answer: what is tested is what
+ * the command line is refused for before any request is made.
+ */
+static gchar *
+cli_stderr(const gchar *const *arguments)
+{
+	g_autoptr(GSubprocessLauncher) launcher = NULL;
+	g_autoptr(GSubprocess) child = NULL;
+	g_autoptr(GPtrArray) argv = NULL;
+	g_autoptr(GError) error = NULL;
+	CliResult result = { FALSE, NULL, NULL, NULL };
+	gsize i;
+
+	argv = g_ptr_array_new();
+	g_ptr_array_add(argv, (gpointer)"build/debug/venturectl");
+	g_ptr_array_add(argv, (gpointer)"--server");
+	g_ptr_array_add(argv, (gpointer)"http://127.0.0.1:1");
+
+	for (i = 0; NULL != arguments[i]; i++)
+		g_ptr_array_add(argv, (gpointer)arguments[i]);
+
+	g_ptr_array_add(argv, NULL);
+
+	launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+	                                     G_SUBPROCESS_FLAGS_STDERR_PIPE);
+	g_subprocess_launcher_unsetenv(launcher, "VENTURE_TOKEN");
+	child = g_subprocess_launcher_spawnv(launcher,
+		(const gchar *const *)argv->pdata, &error);
+	g_assert_no_error(error);
+	g_subprocess_communicate_utf8_async(child, NULL, NULL, cli_done, &result);
+
+	while (!result.done)
+		g_main_context_iteration(NULL, TRUE);
+
+	g_assert_no_error(result.error);
+	g_assert_false(g_subprocess_get_successful(child));
+	g_free(result.out);
+
+	return result.err;
+}
+
+/*
+ * The two flags the help has always promised are flags, and each belongs
+ * to its own verb.
+ *
+ * What breaks if this regresses: `release changelog 5 --replace` dies as
+ * an unknown option, as it did; or `release publish 5 --replace` quietly
+ * publishes, which cannot be undone.
+ */
+static void
+test_factory_cli_release_flags(void)
+{
+	static const gchar *const replace[] = {
+		"release", "changelog", "5", "--replace", NULL
+	};
+	static const gchar *const wrong_verb[] = {
+		"release", "publish", "5", "--replace", NULL
+	};
+	static const gchar *const typo[] = {
+		"release", "publish", "5", "prerelease", NULL
+	};
+	static const gchar *const elsewhere[] = {
+		"factory", "--prerelease", NULL
+	};
+	g_autofree gchar *accepted = NULL;
+	g_autofree gchar *refused = NULL;
+	g_autofree gchar *stray = NULL;
+	g_autofree gchar *misplaced = NULL;
+
+	/* Accepted: it gets as far as failing to reach the server. */
+	accepted = cli_stderr(replace);
+	g_assert_null(strstr(accepted, "Unknown option"));
+	g_assert_null(strstr(accepted, "usage:"));
+
+	refused = cli_stderr(wrong_verb);
+	g_assert_nonnull(strstr(refused, "--replace does not apply"));
+
+	/* A stray word after the id is not read as "no flag". */
+	stray = cli_stderr(typo);
+	g_assert_nonnull(strstr(stray, "usage:"));
+
+	misplaced = cli_stderr(elsewhere);
+	g_assert_nonnull(strstr(misplaced, "belong to the release command"));
 }
 
 int
@@ -1134,6 +1937,8 @@ main(
 	                test_factory_parses_a_workflow_run);
 	g_test_add_func("/factory/parses-a-release",
 	                test_factory_parses_a_release);
+	g_test_add_func("/factory/cli-release-flags",
+	                test_factory_cli_release_flags);
 
 #define ADD(path, func) \
 	g_test_add(path, ServerFixture, NULL, server_fixture_set_up, func, \
@@ -1147,6 +1952,17 @@ main(
 	    test_factory_changelog_is_drafted_from_tickets);
 	ADD("/factory/http/reports-measure-the-loop",
 	    test_factory_reports_measure_the_loop);
+	ADD("/factory/http/forgejo-action-runs-become-builds",
+	    test_factory_forgejo_action_runs_become_builds);
+	ADD("/factory/http/late-deliveries-do-not-unfinish-a-build",
+	    test_factory_late_deliveries_do_not_unfinish_a_build);
+	ADD("/factory/http/forge-release-finds-the-row-it-means",
+	    test_factory_forge_release_finds_the_row_it_means);
+	ADD("/factory/http/operations", test_factory_operations_over_http);
+	ADD("/factory/http/without-an-assistant",
+	    test_factory_without_an_assistant);
+	ADD("/factory/http/script-urls-are-not-links",
+	    test_factory_script_urls_are_not_links);
 	ADD("/factory/http/page-renders", test_factory_page_renders);
 	ADD("/factory/http/module-off-hides-everything",
 	    test_factory_module_off_hides_everything);

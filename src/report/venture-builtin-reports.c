@@ -1576,11 +1576,22 @@ venture_report_count_pointing_at(
 	                                  NULL))
 		return 0;
 
-	if ((NULL != status_field) &&
-	    !venture_query_add_filter_string(query, status_field,
-	                                     VENTURE_FILTER_OP_EQ, status_nick,
-	                                     NULL))
+	/* "!nick" counts everything but: the tickets a release shipped are
+	 * the ones marked against it that were not cancelled. */
+	if ((NULL != status_field) && ('!' == status_nick[0]))
+	{
+		if (!venture_query_add_filter_string(query, status_field,
+		                                     VENTURE_FILTER_OP_NE,
+		                                     status_nick + 1, NULL))
+			return 0;
+	}
+	else if ((NULL != status_field) &&
+	         !venture_query_add_filter_string(query, status_field,
+	                                          VENTURE_FILTER_OP_EQ,
+	                                          status_nick, NULL))
+	{
 		return 0;
+	}
 
 	return MAX(venture_database_count(venture_context_get_database(context),
 	                                  query, NULL), 0);
@@ -1602,6 +1613,8 @@ venture_report_releases(
 	g_autoptr(GPtrArray) releases = NULL;
 	gint64 shipped_total;
 	gint64 failed_total;
+	gint64 released_total;
+	gint64 yanked_total;
 	guint i;
 
 	query = venture_query_new(VENTURE_TYPE_RELEASE);
@@ -1609,6 +1622,13 @@ venture_report_releases(
 		venture_context_get_default_organization_id(context));
 
 	if (!venture_query_set_date_range(query, "released-at", period, error))
+		return NULL;
+
+	/* An unbounded period filters nothing, and a release that never went
+	 * out has no release date: without this, "all time" lists the plans
+	 * beside the releases and counts them as shipped. */
+	if (!venture_query_add_filter(query, "released-at",
+	                              VENTURE_FILTER_OP_NOT_NULL, NULL, error))
 		return NULL;
 
 	if (!venture_query_add_order(query, "released-at", VENTURE_SORT_DESCENDING,
@@ -1623,6 +1643,8 @@ venture_report_releases(
 	result = venture_report_result_new("Releases", period);
 	shipped_total = 0;
 	failed_total = 0;
+	released_total = 0;
+	yanked_total = 0;
 
 	venture_report_result_add_column(result, "version", "Version",
 	                                 VENTURE_REPORT_COLUMN_TEXT);
@@ -1667,7 +1689,8 @@ venture_report_releases(
 			? venture_time_to_date_string(released_at, NULL) : g_strdup("");
 
 		tickets = venture_report_count_pointing_at(context, VENTURE_TYPE_TICKET,
-		                                           "release-id", id, NULL, NULL);
+		                                           "release-id", id, "status",
+		                                           "!cancelled");
 		ok = venture_report_count_pointing_at(context, VENTURE_TYPE_BUILD,
 		                                      "release-id", id, "status",
 		                                      "succeeded");
@@ -1679,7 +1702,19 @@ venture_report_releases(
 		                                            "release-id", id, "status",
 		                                            "succeeded");
 
-		shipped_total += tickets;
+		/* Every release that went out in the period has its row, and a
+		 * yanked one says so. The headline counts what is still out: a
+		 * withdrawn release shipped nothing anybody is running. */
+		if (VENTURE_RELEASE_STATUS_RELEASED == status)
+		{
+			released_total++;
+			shipped_total += tickets;
+		}
+		else if (VENTURE_RELEASE_STATUS_YANKED == status)
+		{
+			yanked_total++;
+		}
+
 		failed_total += failed;
 
 		venture_report_result_begin_row(result);
@@ -1697,7 +1732,9 @@ venture_report_releases(
 	}
 
 	venture_report_result_add_metric(result,
-		venture_metric_new_count("releases", "Releases", (gint64)releases->len));
+		venture_metric_new_count("releases", "Releases", released_total));
+	venture_report_result_add_metric(result,
+		venture_metric_new_count("yanked", "Yanked", yanked_total));
 	venture_report_result_add_metric(result,
 		venture_metric_new_count("tickets", "Tickets shipped", shipped_total));
 	venture_report_result_add_metric(result,
@@ -1828,6 +1865,16 @@ venture_report_lead_time(
 
 			if (NULL == created)
 				continue;
+
+			/* Cancelled work did not ship, so it has no lead time. */
+			{
+				VentureTicketStatus ticket_status;
+
+				g_object_get(ticket, "status", &ticket_status, NULL);
+
+				if (VENTURE_TICKET_STATUS_CANCELLED == ticket_status)
+					continue;
+			}
 
 			days = (gdouble)g_date_time_difference(released_at, created)
 			       / (gdouble)G_TIME_SPAN_DAY;
@@ -1961,7 +2008,15 @@ venture_report_incidents(
 
 		hours = 0.0;
 
-		if ((NULL != started_at) && (NULL != resolved_at))
+		/* Open is what the status says, whatever the dates say: an
+		 * incident reopened still carries the time it was first
+		 * thought fixed, and it is not fixed. */
+		if ((VENTURE_INCIDENT_STATUS_OPEN == status) ||
+		    (VENTURE_INCIDENT_STATUS_MITIGATED == status))
+		{
+			open++;
+		}
+		else if ((NULL != started_at) && (NULL != resolved_at))
 		{
 			hours = (gdouble)g_date_time_difference(resolved_at, started_at)
 			        / (gdouble)G_TIME_SPAN_HOUR;
@@ -1971,11 +2026,6 @@ venture_report_incidents(
 
 			total_hours += hours;
 			resolved++;
-		}
-		else if ((VENTURE_INCIDENT_STATUS_OPEN == status) ||
-		         (VENTURE_INCIDENT_STATUS_MITIGATED == status))
-		{
-			open++;
 		}
 
 		started = (NULL != started_at)
@@ -2002,6 +2052,66 @@ venture_report_incidents(
 		                          (resolved > 0) ? total_hours / resolved : 0.0));
 
 	return g_steal_pointer(&result);
+}
+
+/*
+ * The repository a run's ticket names, or zero.
+ */
+static gint64
+venture_report_ticket_repo(
+	VentureContext	*context,
+	gint64		 ticket_id
+){
+	g_autoptr(VentureEntity) ticket = NULL;
+	gint64 repo_id = 0;
+
+	if (0 == ticket_id)
+		return 0;
+
+	ticket = venture_database_get(venture_context_get_database(context),
+	                              VENTURE_TYPE_TICKET, ticket_id, NULL);
+
+	if (NULL != ticket)
+		g_object_get(ticket, "repo-id", &repo_id, NULL);
+
+	return repo_id;
+}
+
+/*
+ * Whether a release had already gone live in an environment before a
+ * given moment -- which makes a deployment of it there a redeploy rather
+ * than the change arriving.
+ */
+static gboolean
+venture_report_deployed_before(
+	VentureContext	*context,
+	gint64		 environment_id,
+	gint64		 release_id,
+	GDateTime	*before
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autofree gchar *text = NULL;
+
+	query = venture_query_new(VENTURE_TYPE_DEPLOYMENT);
+	text = venture_time_to_string(before);
+
+	if (!venture_query_add_filter_int(query, "environment-id",
+	                                  VENTURE_FILTER_OP_EQ, environment_id,
+	                                  NULL) ||
+	    !venture_query_add_filter_int(query, "release-id",
+	                                  VENTURE_FILTER_OP_EQ, release_id, NULL) ||
+	    !venture_query_add_filter_string(query, "deployed-at",
+	                                     VENTURE_FILTER_OP_LT, text, NULL) ||
+	    !venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_NE,
+	                                     "pending", NULL) ||
+	    !venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_NE,
+	                                     "in_progress", NULL) ||
+	    !venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_NE,
+	                                     "failed", NULL))
+		return FALSE;
+
+	return venture_database_count(venture_context_get_database(context),
+	                              query, NULL) > 0;
 }
 
 /* ==========================================================================
@@ -2037,7 +2147,15 @@ venture_report_delivery(
 	g_autoptr(GHashTable) production = NULL;
 	g_autoptr(GPtrArray) costs = NULL;
 	g_autoptr(VentureMoney) cost_total = NULL;
-	gint64 days;
+	g_autoptr(VentureQuery) restored_query = NULL;
+	g_autoptr(GPtrArray) restored_incidents = NULL;
+	g_autoptr(GHashTable) prod_deployment_ids = NULL;
+	g_autoptr(GHashTable) failed_deployment_ids = NULL;
+	g_autoptr(GHashTable) pull_requests = NULL;
+	g_autoptr(GDateTime) first_prod_deploy = NULL;
+	g_autoptr(GDateTime) last_prod_deploy = NULL;
+	gdouble span_days;
+	guint cost_skipped;
 	guint prod_deploys;
 	guint failed_deploys;
 	guint failures;
@@ -2104,6 +2222,28 @@ venture_report_delivery(
 	if (NULL == incidents)
 		return NULL;
 
+	/* And the ones that ended in it, which is a different set: time to
+	 * restore belongs to the period the restore happened in. */
+	restored_query = venture_query_new(VENTURE_TYPE_INCIDENT);
+	venture_query_set_organization(restored_query,
+		venture_context_get_default_organization_id(context));
+
+	if (!venture_query_set_date_range(restored_query, "resolved-at", period,
+	                                  error) ||
+	    !venture_query_add_filter(restored_query, "resolved-at",
+	                              VENTURE_FILTER_OP_NOT_NULL, NULL, error))
+		return NULL;
+
+	restored_incidents = venture_report_fetch_all(context, restored_query,
+	                                              options, error);
+
+	if (NULL == restored_incidents)
+		return NULL;
+
+	prod_deployment_ids = g_hash_table_new(g_direct_hash, g_direct_equal);
+	failed_deployment_ids = g_hash_table_new(g_direct_hash, g_direct_equal);
+	cost_skipped = 0;
+
 	result = venture_report_result_new("Delivery", period);
 	lead_days = g_array_new(FALSE, FALSE, sizeof(gdouble));
 	prod_deploys = failed_deploys = failures = restored = 0;
@@ -2129,6 +2269,7 @@ venture_report_delivery(
 		VentureEntity *environment;
 		g_autofree gchar *name = NULL;
 		g_autoptr(GArray) env_lead = NULL;
+		g_autoptr(GHashTable) env_releases = NULL;
 		VentureEnvironmentKind kind;
 		gint64 env_id;
 		guint env_deploys;
@@ -2141,6 +2282,7 @@ venture_report_delivery(
 		env_id = venture_entity_get_id(environment);
 		g_object_get(environment, "name", &name, "kind", &kind, NULL);
 		env_lead = g_array_new(FALSE, FALSE, sizeof(gdouble));
+		env_releases = g_hash_table_new(g_direct_hash, g_direct_equal);
 		env_deploys = env_failed = env_incidents = 0;
 
 		for (j = 0; j < deployments->len; j++)
@@ -2165,14 +2307,48 @@ venture_report_delivery(
 				continue;
 			}
 
-			if (VENTURE_DEPLOYMENT_STATUS_SUCCEEDED != status)
+			/* A deployment that was rolled back did go live: it is a
+			 * deployment, and it is the clearest change failure there
+			 * is. Pending and in-progress ones have not happened. */
+			if ((VENTURE_DEPLOYMENT_STATUS_SUCCEEDED != status) &&
+			    (VENTURE_DEPLOYMENT_STATUS_ROLLED_BACK != status))
 				continue;
 
 			env_deploys++;
 
+			if (VENTURE_ENVIRONMENT_KIND_PRODUCTION == kind)
+			{
+				gpointer key;
+
+				key = GINT_TO_POINTER((gint)venture_entity_get_id(deployment));
+				g_hash_table_add(prod_deployment_ids, key);
+
+				if (VENTURE_DEPLOYMENT_STATUS_ROLLED_BACK == status)
+					g_hash_table_add(failed_deployment_ids, key);
+
+				if (NULL != deployed_at)
+				{
+					if (NULL == first_prod_deploy)
+						first_prod_deploy = g_date_time_ref(deployed_at);
+
+					g_clear_pointer(&last_prod_deploy, g_date_time_unref);
+					last_prod_deploy = g_date_time_ref(deployed_at);
+				}
+			}
+
 			/* Lead time for changes: from each ticket the release
-			 * carried being raised to this deployment landing. */
-			if ((0 != release_id) && (NULL != deployed_at))
+			 * carried being raised to the release first landing here.
+			 * First, because a change reaches an environment once: a
+			 * redeploy three weeks later is not the same tickets taking
+			 * three weeks longer, and a release that arrived last
+			 * quarter and was redeployed this month did not ship this
+			 * month. The deployments are in date order, so the first
+			 * one met in the period is the earliest in it. */
+			if ((0 != release_id) && (NULL != deployed_at) &&
+			    g_hash_table_add(env_releases,
+			                     GINT_TO_POINTER((gint)release_id)) &&
+			    !venture_report_deployed_before(context, env_id, release_id,
+			                                    deployed_at))
 			{
 				g_autoptr(GPtrArray) tickets = NULL;
 				guint k;
@@ -2183,12 +2359,20 @@ venture_report_delivery(
 				for (k = 0; (NULL != tickets) && (k < tickets->len); k++)
 				{
 					GDateTime *created;
+					VentureTicketStatus ticket_status;
 					gdouble lead;
 
 					created = venture_entity_get_created_at(
 						g_ptr_array_index(tickets, k));
 
 					if (NULL == created)
+						continue;
+
+					/* Cancelled work was not delivered. */
+					g_object_get(g_ptr_array_index(tickets, k), "status",
+					             &ticket_status, NULL);
+
+					if (VENTURE_TICKET_STATUS_CANCELLED == ticket_status)
 						continue;
 
 					lead = (gdouble)g_date_time_difference(deployed_at,
@@ -2246,50 +2430,135 @@ venture_report_delivery(
 		venture_report_result_set_number(result, "lead", median);
 	}
 
-	/* Change failure rate counts incidents that name a deployment into
-	 * production; time to restore is measured over every incident that
-	 * resolved in the period. */
+	/* Change failure rate: of the production deployments in the period,
+	 * how many failed -- were rolled back, or are named by an incident.
+	 * Counted as deployments, not as incidents, so the numerator is drawn
+	 * from the denominator and the rate cannot pass one: two incidents
+	 * blaming one deployment are one bad deployment. Which environment a
+	 * failure belongs to is the deployment's, not whatever the incident's
+	 * own optional environment field happens to say. */
 	for (i = 0; i < incidents->len; i++)
+	{
+		gint64 deployment_id = 0;
+		gpointer key;
+
+		g_object_get(g_ptr_array_index(incidents, i), "deployment-id",
+		             &deployment_id, NULL);
+		key = GINT_TO_POINTER((gint)deployment_id);
+
+		if ((0 != deployment_id) &&
+		    g_hash_table_contains(prod_deployment_ids, key))
+			g_hash_table_add(failed_deployment_ids, key);
+	}
+
+	failures = g_hash_table_size(failed_deployment_ids);
+
+	/* Time to restore: over the incidents that were resolved in the
+	 * period -- when it started is the wrong end to select on, since one
+	 * that began on the 30th and was fixed on the 2nd is this month's
+	 * restore -- and not the ones that happened somewhere that is not
+	 * production, because a long night on staging is not an outage. An
+	 * incident that names no environment at all is counted: most are
+	 * filed in a hurry, and leaving them out would empty the figure. */
+	for (i = 0; i < restored_incidents->len; i++)
 	{
 		VentureEntity *incident;
 		g_autoptr(GDateTime) started_at = NULL;
 		g_autoptr(GDateTime) resolved_at = NULL;
+		VentureIncidentStatus status;
 		gint64 deployment_id = 0;
 		gint64 environment_id = 0;
+		gdouble hours;
 
-		incident = g_ptr_array_index(incidents, i);
+		incident = g_ptr_array_index(restored_incidents, i);
 		g_object_get(incident, "deployment-id", &deployment_id,
-		             "environment-id", &environment_id,
+		             "environment-id", &environment_id, "status", &status,
 		             "started-at", &started_at, "resolved-at", &resolved_at,
 		             NULL);
 
-		if ((0 != deployment_id) &&
-		    g_hash_table_contains(production,
-		                          GINT_TO_POINTER((gint)environment_id)))
-			failures++;
+		if ((VENTURE_INCIDENT_STATUS_RESOLVED != status) &&
+		    (VENTURE_INCIDENT_STATUS_POSTMORTEM != status))
+			continue;
 
-		if ((NULL != started_at) && (NULL != resolved_at))
+		if ((NULL == started_at) || (NULL == resolved_at))
+			continue;
+
+		if ((0 == environment_id) && (0 != deployment_id))
 		{
-			gdouble hours;
+			g_autoptr(VentureEntity) deployment = NULL;
 
-			hours = (gdouble)g_date_time_difference(resolved_at, started_at)
-			        / (gdouble)G_TIME_SPAN_HOUR;
-			restore_hours += MAX(hours, 0.0);
-			restored++;
+			deployment = venture_database_get(
+				venture_context_get_database(context),
+				VENTURE_TYPE_DEPLOYMENT, deployment_id, NULL);
+
+			if (NULL != deployment)
+				g_object_get(deployment, "environment-id", &environment_id,
+				             NULL);
 		}
+
+		if ((0 != environment_id) &&
+		    !g_hash_table_contains(production,
+		                           GINT_TO_POINTER((gint)environment_id)))
+			continue;
+
+		hours = (gdouble)g_date_time_difference(resolved_at, started_at)
+		        / (gdouble)G_TIME_SPAN_HOUR;
+		restore_hours += MAX(hours, 0.0);
+		restored++;
 	}
 
-	days = venture_date_range_get_days(period);
+	/* Per week, over the days that have actually happened. A period that
+	 * runs into the future is measured to now, or three deployments in
+	 * the first three days of a month read as one every ten days. An
+	 * unbounded period has no length at all, and is measured from the
+	 * first production deployment to the last. */
+	{
+		g_autoptr(GDateTime) now = NULL;
+		GDateTime *period_start;
+		GDateTime *period_end;
 
-	if (days < 1)
-		days = 1;
+		now = venture_time_now();
+		period_start = (NULL != period) ? venture_date_range_get_start(period)
+		                                : NULL;
+		period_end = (NULL != period) ? venture_date_range_get_end(period)
+		                              : NULL;
+		span_days = 0.0;
+
+		if ((NULL != period_start) && (NULL != period_end))
+		{
+			GDateTime *until;
+
+			until = (g_date_time_compare(period_end, now) > 0) ? now
+			                                                   : period_end;
+			span_days = (gdouble)g_date_time_difference(until, period_start)
+			            / (gdouble)G_TIME_SPAN_DAY;
+
+			if (span_days < 1.0)
+				span_days = 1.0;
+		}
+		else if ((NULL != first_prod_deploy) && (NULL != last_prod_deploy))
+		{
+			GDateTime *from;
+			GDateTime *until;
+
+			from = (NULL != period_start) ? period_start : first_prod_deploy;
+			until = (NULL != period_end) ? period_end : last_prod_deploy;
+			span_days = (gdouble)g_date_time_difference(until, from)
+			            / (gdouble)G_TIME_SPAN_DAY;
+		}
+
+		/* With no period to measure against, less than a week of
+		 * history is a week: one deployment ever is not seven a week. */
+		if ((NULL == period_start) || (NULL == period_end))
+			span_days = MAX(span_days, 7.0);
+	}
 
 	venture_report_result_add_metric(result,
 		venture_metric_new_count("deployments", "Production deployments",
 		                         (gint64)prod_deploys));
 	venture_report_result_add_metric(result,
 		venture_metric_new_number("frequency", "Deployments per week",
-		                          ((gdouble)prod_deploys * 7.0) / (gdouble)days));
+		                          ((gdouble)prod_deploys * 7.0) / span_days));
 
 	if (lead_days->len > 0)
 	{
@@ -2338,7 +2607,10 @@ venture_report_delivery(
 		costs = g_ptr_array_new_with_free_func(
 			(GDestroyNotify)venture_money_free);
 		run_succeeded = run_failed = run_prs = 0;
+		cost_skipped = 0;
 		tokens = 0;
+		pull_requests = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+		                                      NULL);
 
 		for (i = 0; i < runs->len; i++)
 		{
@@ -2346,11 +2618,13 @@ venture_report_delivery(
 			VentureMoney *cost = NULL;
 			VentureForgeRunState state;
 			gint64 pr = 0;
+			gint64 ticket_id = 0;
 			gint64 in_tokens = 0;
 			gint64 out_tokens = 0;
 
 			run = g_ptr_array_index(runs, i);
 			g_object_get(run, "state", &state, "pull-request-number", &pr,
+			             "ticket-id", &ticket_id,
 			             "input-tokens", &in_tokens,
 			             "output-tokens", &out_tokens, "cost", &cost, NULL);
 
@@ -2360,8 +2634,21 @@ venture_report_delivery(
 			         (VENTURE_FORGE_RUN_STATE_INTERRUPTED == state))
 				run_failed++;
 
+			/* Pull requests, not runs that touched one: three follow-up
+			 * runs on one pull request drafted one pull request, and
+			 * counting three would divide its cost by three. A number
+			 * is unique within a repository, which a run reaches
+			 * through its ticket. */
 			if (pr > 0)
-				run_prs++;
+			{
+				g_autofree gchar *key = NULL;
+
+				key = g_strdup_printf("%" G_GINT64_FORMAT "#%" G_GINT64_FORMAT,
+					venture_report_ticket_repo(context, ticket_id), pr);
+
+				if (g_hash_table_add(pull_requests, g_steal_pointer(&key)))
+					run_prs++;
+			}
 
 			tokens += in_tokens + out_tokens;
 
@@ -2369,7 +2656,10 @@ venture_report_delivery(
 				g_ptr_array_add(costs, cost);
 		}
 
-		cost_total = venture_money_sum(costs, NULL, NULL);
+		/* One currency, the one most runs were priced in; a run priced
+		 * in another is left out and said to be, where adding it used
+		 * to make the whole figure vanish without a word. */
+		cost_total = venture_money_sum_dominant(costs, &cost_skipped);
 
 		venture_report_result_add_metric(result,
 			venture_metric_new_count("runs", "Coding runs", (gint64)runs->len));
@@ -2408,9 +2698,21 @@ venture_report_delivery(
 	}
 
 	if (0 == g_hash_table_size(production))
+	{
 		venture_report_result_set_note(result,
 			"No environment is marked production, so the four keys have "
 			"nothing to count. Set an environment's kind to production.");
+	}
+	else if (cost_skipped > 0)
+	{
+		g_autofree gchar *note = NULL;
+
+		note = g_strdup_printf("%u run(s) were priced in a currency other "
+		                       "than %s and are left out of the agent cost.",
+		                       cost_skipped,
+		                       venture_money_get_currency(cost_total));
+		venture_report_result_set_note(result, note);
+	}
 
 	return g_steal_pointer(&result);
 }

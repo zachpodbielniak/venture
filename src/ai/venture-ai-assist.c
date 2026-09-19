@@ -126,7 +126,7 @@ venture_ai_assist_transcript(
  * JSON inside a fenced code block with a sentence in front of it.
  * Rather than insisting, take the first balanced object.
  */
-static JsonNode *
+JsonNode *
 venture_ai_assist_parse(
 	const gchar	 *reply,
 	GError		**error

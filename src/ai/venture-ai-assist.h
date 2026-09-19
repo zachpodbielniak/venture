@@ -43,6 +43,24 @@ gboolean
 venture_ai_assist_available(VentureContext *context);
 
 /**
+ * venture_ai_assist_parse:
+ * @reply: what a model answered when asked for one JSON object
+ * @error: (out) (optional): return location for a #GError
+ *
+ * A model asked for JSON usually returns JSON, and sometimes returns JSON
+ * inside a fenced block with a sentence in front of it. Rather than
+ * insisting, this takes the first balanced object in the reply. Shared by
+ * every judgement that asks for a structured answer.
+ *
+ * Returns: (transfer full) (nullable): the object, or %NULL on error
+ */
+JsonNode *
+venture_ai_assist_parse(
+	const gchar	 *reply,
+	GError		**error
+);
+
+/**
  * venture_ai_assist_triage:
  * @context: the wiring
  * @ticket: the ticket
