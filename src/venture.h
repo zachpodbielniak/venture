@@ -260,6 +260,7 @@
 #include "reconciliation/venture-reconciliation-service.h"
 #include "report/venture-headline-home.h"
 #include "dunning/venture-dunning-service.h"
+#include "backup/venture-backup-schedule-service.h"
 #include "leads/venture-lead-routing.h"
 #include "tax/venture-sales-tax-service.h"
 

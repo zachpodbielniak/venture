@@ -3219,6 +3219,7 @@ venture_cli_command_mcp(
 #include "sequences/venture-sequence-cli.inc"
 #include "recurring/venture-recurring-cli.inc"
 #include "dunning/venture-dunning-cli.inc"
+#include "backup/venture-backup-cli.inc"
 #include "tax/venture-sales-tax-cli.inc"
 
 /* --- Entry point --------------------------------------------------------- */
@@ -3471,6 +3472,9 @@ main(
 		"  batch invoice|expense format=csv|json payload=... [post=false] [organization_id=N] [--dry-run]\n"
 		"  dunning sweep [as_of=DATE] [organization_id=N] [limit=N] [dry_run=true]\n"
 		"                               send due overdue reminders once; dry_run previews\n"
+		"  backup run SCHEDULE_ID       write a scheduled backup now\n"
+		"  backup verify RUN_ID         restore a backup into an empty database and tie it out\n"
+		"  backup restore-drill [run_id=N] [organization_id=N] [name=...]  the same, kept as a named drill\n"
 		"  sales-tax export period=PERIOD [jurisdiction=CODE]  sales tax return CSV per jurisdiction\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
@@ -3762,6 +3766,8 @@ main(
 		result = venture_cli_command_act(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dunning"))
 		result = venture_cli_command_dunning(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "backup"))
+		result = venture_cli_command_backup(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "leads"))
 		result = venture_cli_command_lead(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "sales-tax"))

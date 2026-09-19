@@ -367,3 +367,23 @@ written generically. Both reports are checked on values, and =venturectl
 leads reroute= / =rescore= run against the real binary over HTTP. The binary
 did not compile against master before the feature (=VENTURE_LEAD_ROUTING_ASSIGN_USER=
 undeclared), which is the red step for a feature made of new types.
+
+** =test-backup-schedule=
+
+A due schedule writes a version-4 snapshot whose size and SHA-256 match the
+file and is not dispatched twice on the same day; retention prunes the
+oldest successful run and keeps its record; a failed run (an unwritable
+destination) records its message and deletes nothing even past retention;
+an unparseable cron, an unknown scope and a negative retention are refused
+on save; a =backup_run= cannot be written or deleted generically. An
+installation schedule copies the whole database, credentials included, and
+verifies. Verification ties trial balance, ledger totals and document
+counts against a restore into an empty in-memory database, reports a
+mismatch once the live books move on, runs inside the sweep when the
+schedule says =verify=, and refuses a pruned run or a missing file. The
+drill keeps its report as a named run that retention never counts.
+Migration 000372 succeeds with the module off and leaves no backup tables;
+with it on, both tables exist and hold no invented runs. Over HTTP and the
+CLI: the Backups page shows runs and verdicts to any session,
+owners trigger run, verify and drill, editors and viewers get 403 from the
+page and the REST actions, and the module switch hides everything.

@@ -63,7 +63,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =statements= | ledger, periods | ledger balances query; balance sheet, income statement, cash flow, general ledger, account balances, P&L reconciliation | |
 | =cutover= | ledger | accounting_cutover, accounting_cutover_row | |
 | =setup= | ledger, periods | accounting_setup, accounting_control_map | |
-| =backup= | ledger | accounting_backup | |
+| =backup= | ledger | accounting_backup, backup_schedule, backup_run; =backup_schedule= run, =backup_run= verify and restore_drill actions | |
 | =activities= | crm | activity, activity_type; =worklist=, reminders, calendar export and =/worklist= | |
 | =leads= | crm | lead, lead_form, lead_assignment_rule, lead_routing_rule, lead_scoring_rule, lead_score_history; =lead_sources=, =lead_response_time=, =leads_recycled_due=, =lead_routing=, =lead_scoring=; capture, routing (round-robin needs orgaccess), scoring and conversion | |
 
