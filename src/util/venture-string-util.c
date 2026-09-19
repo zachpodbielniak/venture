@@ -584,3 +584,82 @@ venture_string_list_contains_ci(
 
 	return FALSE;
 }
+
+GPtrArray *
+venture_csv_parse(
+	const gchar	 *text,
+	GError		**error
+){
+	g_autoptr(GPtrArray) result = g_ptr_array_new_with_free_func((GDestroyNotify)g_strfreev);
+	g_autoptr(GPtrArray) row = g_ptr_array_new_with_free_func(g_free);
+	g_autoptr(GString) field = g_string_new(NULL);
+	gboolean quoted = FALSE;
+	gboolean closed = FALSE;
+	const gchar *p;
+
+	g_return_val_if_fail(NULL != text, NULL);
+
+	for (p = text; ; p++)
+	{
+		gchar c = *p;
+
+		if (quoted)
+		{
+			if ('\0' == c)
+			{
+				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				                    "unterminated CSV quote");
+				return NULL;
+			}
+			if (('"' == c) && ('"' == p[1]))
+			{
+				g_string_append_c(field, '"');
+				p++;
+			}
+			else if ('"' == c)
+			{
+				quoted = FALSE;
+				closed = TRUE;
+			}
+			else
+				g_string_append_c(field, c);
+			continue;
+		}
+		if (('"' == c) && (0 == field->len) && !closed)
+		{
+			quoted = TRUE;
+			continue;
+		}
+		if ((',' == c) || ('\r' == c) || ('\n' == c) || ('\0' == c))
+		{
+			g_ptr_array_add(row, g_strdup(field->str));
+			g_string_truncate(field, 0);
+			closed = FALSE;
+			if (',' != c)
+			{
+				/* A line holding one empty field is a blank line. */
+				if ((row->len > 1) || ('\0' != *(gchar *)g_ptr_array_index(row, 0)))
+				{
+					g_ptr_array_add(row, NULL);
+					g_ptr_array_add(result, g_ptr_array_free(g_steal_pointer(&row), FALSE));
+					row = g_ptr_array_new_with_free_func(g_free);
+				}
+				else
+					g_ptr_array_set_size(row, 0);
+				if (('\r' == c) && ('\n' == p[1]))
+					p++;
+			}
+			if ('\0' == c)
+				break;
+		}
+		else if (closed || ('"' == c))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			                    "malformed CSV field");
+			return NULL;
+		}
+		else
+			g_string_append_c(field, c);
+	}
+	return g_steal_pointer(&result);
+}

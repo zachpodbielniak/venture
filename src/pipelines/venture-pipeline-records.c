@@ -62,3 +62,14 @@ static const VentureFieldDecl reason_fields[] = {
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureLossReason, venture_loss_reason, reason_fields)
+
+static const VentureFieldDecl deal_line_fields[] = {
+	VENTURE_FIELD_REF("deal-id", "Deal", NULL, "deal", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("product-id", "Product", NULL, "product", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("description", "Description", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("quantity", "Quantity", "Whole units", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("unit-price", "Unit price", NULL),
+	VENTURE_FIELD("discount-bp", "Discount (basis points)", "Integer basis points, 0-10000; 1250 is 12.5%", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("position", "Position", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
+};
+VENTURE_DEFINE_ENTITY(VentureDealLine, venture_deal_line, deal_line_fields)

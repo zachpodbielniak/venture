@@ -10,6 +10,14 @@
 
 An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of small business ventures rather than one company.
 
+** Start here
+
+New to VENTURE? Two pages, in this order:
+
+- [[file:quickstart.org][Quickstart]] — zero to a running VENTURE with the demo organisation, an invoice, a bank statement and a closed period, in under fifteen minutes
+- [[file:docs-site.org][The documentation site]] — this documentation, rendered and served by every instance at =/docs=; =make docs-site=
+- [[file:../README.org][README]] — what VENTURE is, in one page
+
 ** Documents
 
 - [[file:orgaccess.org][Organization access]] — membership, organization roles and record ownership
@@ -52,7 +60,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:mail.org][Transactional mail]] — durable outbox, SMTP, templates, operator-resolved uncertainty, and inbound IMAP sync onto contact timelines and the capture inbox
 - [[file:sequences.org][Follow-up sequences]] — enrollment, scheduling, exits, delivery evidence and the mail adapter seam
 - [[file:testing.org][Testing]] — running the suite, and what it guarantees
-- [[file:leads.org][Leads]] — public capture, duplicate handling, assignment, qualification, conversion and recycling
+- [[file:leads.org][Leads]] — public capture, duplicate handling, assignment, routing rules, scoring, qualification, conversion and recycling
 - [[file:activities.org][Planned activities]] — tasks, calls, meetings, reminders and the daily rep worklist
 - [[file:actions.org][Record actions]] — shared business operations and approval
 
@@ -66,6 +74,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:close.org][Accountant close]] — workspace, subledger tie-outs, workpapers and signoff
 - [[file:tax-filing.org][Jurisdiction tax filing]] — adapter-prepared sales-tax return packs
 - [[file:contractor-tax.org][Contractor 1099-NEC]] — protected TINs and calendar-year packs from paid bills
+- [[file:sales-tax.org][Sales tax by jurisdiction]] — address-selected rates frozen on invoice lines and the return per jurisdiction
 - [[file:capture.org][Document capture]] — receipt and supplier-invoice inbox
 - [[file:claims.org][Employee reimbursements]] — mileage, receipts, submit, approve and pay
 - [[file:payroll.org][Payroll import]] — imported pay runs, liability disbursement and reconciliation
@@ -79,8 +88,9 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:portal.org][Customer portal]] — isolated invoices and pay
 - [[file:supplier-portal.org][Supplier portal]] — isolated bills, payment status and print
 - [[file:custom-fields.org][Custom fields]] — layouts and required values without writing C
-- [[file:backup.org][Accounting backup]] — export and restore an organization pack
+- [[file:backup.org][Accounting backup]] — export and restore an organization pack; scheduled, retained, verified backups and the restore drill
 - [[file:quotes.org][Commercial quotes]] — price lists, revisions, public acceptance and invoice handoff
+- [[file:docs-site.org][The documentation site]] — docs/*.org rendered to HTML, served at =/docs=, with link and index checks
 
 ** The shape of the thing in one page
 
@@ -110,4 +120,9 @@ Two binaries, both statically linked against every vendored dependency: =venture
 - [[file:dunning.org][Overdue reminders]] — per-organization reminder policies, escalation to the owner and collection effectiveness
 - [[file:pipelines.org][Sales pipelines]] — configurable stages, next actions, history, loss reasons and forecasts
 - [[file:autojournal.org][Automatic journals]] — configurable sale/expense legs, dated refunds and backfill
+- [[file:calendar.org][Calendar sync and scheduling links]] — two-way CalDAV sync of calls and meetings, and a public /book/<slug> a customer books from
+- [[file:money-calendar.org][The money calendar]] — recurring, bills, invoices, dunning, payroll and tax on one grid with daily and weekly nets, a subscribable feed and a CLI agenda
+- [[file:crm-import.org][CRM migration]] — HubSpot, Zoho CRM and Salesforce exports into companies, contacts, deals, history and next actions
+- [[file:dedupe.org][Duplicates]] — find and merge duplicate companies and contacts that already exist; a scan proposes, a person merges
+- [[file:security.org][Security: the second factor]] — TOTP enrolment with a QR code, verification at sign-in, recovery codes, and the require-MFA-for-admins organization setting
 - [[file:navigation.org][Navigation]] — the sidebar grouped by the five questions: money in, money out, growth, customers, support

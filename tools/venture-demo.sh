@@ -39,6 +39,10 @@ port="${PORT:-${DEFAULT_PORT}}"
 build_type="${BUILD_TYPE:-debug}"
 outdir=""
 state=""
+# Where the instance lives. build/demo unless --state or VENTURE_DEMO_STATE
+# says otherwise -- the test suite runs the quickstart against a private
+# directory so it can never stop or delete a demo somebody is looking at.
+state_override="${VENTURE_DEMO_STATE:-}"
 detach="false"
 action="start"
 
@@ -88,11 +92,13 @@ Options:
   -p, --port PORT     Listen on PORT (default 8749)
   -d, --detach        Seed it, print how to reach it, and leave it running
   -s, --stop          Stop a detached demo and remove its data
+      --state DIR     Keep the instance under DIR instead of build/demo
   -h, --help          This
       --license       Licence and copyright
 
 Environment:
   PORT                Same as --port
+  VENTURE_DEMO_STATE  Same as --state
   BUILD_TYPE          debug (default) or release -- which build tree to run
 
 Examples:
@@ -153,6 +159,11 @@ parse_arguments () {
                 action="stop"
                 shift
                 ;;
+            --state)
+                [[ $# -ge 2 ]] || die "--state needs a directory"
+                state_override="$2"
+                shift 2
+                ;;
             -h|--help)
                 usage
                 exit 0
@@ -181,7 +192,7 @@ parse_arguments () {
 
 resolve_paths () {
     outdir="${root}/build/${build_type}"
-    state="${root}/build/demo"
+    state="${state_override:-${root}/build/demo}"
     base_url="http://127.0.0.1:${port}"
 }
 
@@ -317,6 +328,7 @@ start_server () {
         VENTURE_SESSION_SECRET="venture-demo-secret" \
         VENTURE_FORGE_RUNS_ENABLED="true" \
         VENTURE_FORGE_WORKSPACE_ROOTS="${VENTURE_FORGE_WORKSPACE_ROOTS:-${state}/workspace,${root}}" \
+        VENTURE_DOCS_SITE_DIR="${VENTURE_DOCS_SITE_DIR:-${root}/build/docs-site}" \
         "${outdir}/venture" \
             --database "sqlite://${state}/venture.db" \
             --state-dir "${state}" \
@@ -385,6 +397,14 @@ mint_token () {
     [[ -n "${token}" ]] || die "the server did not return a token: ${body}"
 
     rm -f "${jar}"
+
+    # Kept, so the quickstart can pick it up with one line rather than
+    # minting a second one by hand. It is a full owner token to a throwaway
+    # instance, in a directory that is deleted on the next run.
+    (
+        umask 077
+        printf '%s\n' "${token}" > "${state}/token"
+    )
 }
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -1572,8 +1592,10 @@ except Exception:
     say "  Every record type ${base_url}/entities        ${DIM}(leads, quotes, bills, journals…)${OFF}"
     say ""
     say "${DIM}From the command line:"
-    say "  build/${build_type}/venturectl -s ${base_url} -t \$TOKEN list ticket"
-    say "The database is build/demo/venture.db and is rebuilt on every run.${OFF}"
+    say "  export VENTURE_SERVER=${base_url}"
+    say "  export VENTURE_TOKEN=\$(cat ${state}/token)"
+    say "  build/${build_type}/venturectl list ticket"
+    say "The database is ${state}/venture.db and is rebuilt on every run.${OFF}"
     say ""
 }
 

@@ -8,6 +8,18 @@ venture_cli_command_deal(VentureCli *cli, gchar **args, GError **error)
 	g_autofree gchar *path = NULL;
 	gchar *end;
 	gint64 deal_id, stage_id;
+	if (NULL != args[1] && 0 == g_strcmp0(args[1], "quote") && NULL != args[2] && NULL == args[3])
+	{
+		deal_id = g_ascii_strtoll(args[2], &end, 10);
+		if (deal_id <= 0 || '\0' != *end)
+			goto invalid;
+		path = g_strdup_printf("/api/v1/deals/%" G_GINT64_FORMAT "/quote", deal_id);
+		result = venture_cli_request(cli, "POST", path, NULL, error);
+		if (NULL == result)
+			return -1;
+		venture_cli_output(cli, result);
+		return 0;
+	}
 	if (NULL == args[1] || 0 != g_strcmp0(args[1], "move") || NULL == args[2] || NULL == args[3])
 		goto invalid;
 	deal_id = g_ascii_strtoll(args[2], &end, 10);
@@ -35,6 +47,6 @@ venture_cli_command_deal(VentureCli *cli, gchar **args, GError **error)
 	return 0;
 invalid:
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		"usage: venturectl deal move ID STAGE [NOTE]");
+		"usage: venturectl deal move ID STAGE [NOTE] | venturectl deal quote ID");
 	return -1;
 }

@@ -120,6 +120,25 @@ venture_headline_home_cards(
 	GError          **error
 );
 
+/**
+ * venture_headline_bank_cash:
+ * @context: the wiring
+ * @organization_id: the organisation, or 0 for every account
+ *
+ * Cash in the bank: the sum of every bank account's last statement balance,
+ * in the first account's currency, the figure the P&L card shows beside the
+ * booked profit. Text rather than money when the banking module is off
+ * (`n/a`) or no statement has been imported (`no statements`); accounts in
+ * another currency are left out and noted on the metric.
+ *
+ * Returns: (transfer full): the `cash` metric
+ */
+VentureMetric *
+venture_headline_bank_cash(
+	VentureContext	*context,
+	gint64		 organization_id
+);
+
 G_END_DECLS
 
 #endif /* VENTURE_HEADLINE_HOME_H */

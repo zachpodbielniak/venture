@@ -233,6 +233,7 @@ venture --generate-c-config > ~/.config/venture/config.c
   launcher and panel entirely; =ui.chat_dock_expanded= starts the panel open)
 - *logging* — level, file, format
 - *modules* — which modules are on; see below and [[file:modules.org][Modules]]
+- *backup* — where scheduled backups go and how many are kept; see below
 
 Every setting is documented inline in the generated file.
 
@@ -292,3 +293,23 @@ The =mail= section configures =host=, =port=, =security= (=starttls=, =tls= or
 =reply_to=. =password_env= is an environment variable name, never a literal
 password. Empty username disables authentication. Disable the whole outbox
 with =modules.mail: false=. See [[file:mail.org][transactional mail]].
+
+** Scheduled backups
+
+The =backup= section has two keys. =directory= (=backups=) is where a
+=backup_schedule= that names no =destination= writes its files; a relative
+path is under the state directory. =retention= (=7=) is how many successful
+backups a schedule keeps when its own =retention= is zero. Both are
+defaults a schedule overrides per row; neither turns scheduling on -- a
+schedule is a record, and a sweep has to be called. See
+[[file:backup.org][scheduled backups]].
+** The documentation site
+
+The =docs= section has one setting, =site_dir= (=VENTURE_DOCS_SITE_DIR=,
+=docs-site-dir= on the object): the directory whose top-level files
+=/docs= serves. It defaults to =$(VENTUREDATADIR)/docs-site=, where =make
+install= puts the rendered site; =make run=, =just start= and the demo
+point it at the tree's =build/docs-site=. Render the site with =make
+docs-site= or =venturectl docs build=; the server reads it and never
+writes it. =modules.docs: false= switches =/docs= off. See
+[[file:docs-site.org][The documentation site]].

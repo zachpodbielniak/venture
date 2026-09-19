@@ -104,6 +104,7 @@ static const VentureFieldDecl sequence_fields[] = {
 	VENTURE_FIELD("send-window-start", "Send window start", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("send-window-end", "Send window end", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("weekdays", "Weekdays", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("tracking", "Track opens and clicks", "Only takes effect when the organization allows tracking", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 };
 VENTURE_DEFINE_ENTITY(VentureSequence, venture_sequence, sequence_fields)
 static const VentureFieldDecl sequence_step_fields[] = {
@@ -146,6 +147,7 @@ static const VentureFieldDecl sequence_delivery_fields[] = {
 	VENTURE_FIELD_TEXT("error", "Error", NULL),
 	VENTURE_FIELD("external-message-id", "External message id", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("delivery-key", "Delivery key", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	VENTURE_FIELD("tracking-token", "Tracking token", "Per-delivery secret behind the open pixel and wrapped links", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SENSITIVE),
 };
 VENTURE_DEFINE_ENTITY(VentureSequenceDelivery, venture_sequence_delivery, sequence_delivery_fields)
 static const VentureFieldDecl suppression_fields[] = {
@@ -154,3 +156,36 @@ static const VentureFieldDecl suppression_fields[] = {
 	VENTURE_FIELD("at", "At", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 };
 VENTURE_DEFINE_ENTITY(VentureSuppression, venture_suppression, suppression_fields)
+GType
+venture_sequence_tracking_kind_get_type(void)
+{
+	static gsize type_id = 0;
+	if (g_once_init_enter(&type_id))
+	{
+		static const GEnumValue values[] = {
+			{ 0, "SEQUENCE_TRACKING_OPEN", "open" },
+			{ 1, "SEQUENCE_TRACKING_CLICK", "click" },
+			{ 0, NULL, NULL }
+		};
+		GType id = g_enum_register_static("VentureSequenceTrackingKind", values);
+		g_once_init_leave(&type_id, id);
+	}
+	return type_id;
+}
+static const VentureFieldDecl sequence_link_fields[] = {
+	VENTURE_FIELD_REF("delivery-id", "Delivery id", NULL, "sequence_delivery", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("position", "Position", "Link number within the message, from 1", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("url", "Url", "The original destination", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+};
+VENTURE_DEFINE_ENTITY(VentureSequenceLink, venture_sequence_link, sequence_link_fields)
+static const VentureFieldDecl sequence_tracking_event_fields[] = {
+	VENTURE_FIELD_REF("delivery-id", "Delivery id", NULL, "sequence_delivery", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("enrollment-id", "Enrollment id", NULL, "sequence_enrollment", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("step-id", "Step id", NULL, "sequence_step", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("contact-id", "Contact id", NULL, "contact", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_ENUM("kind", "Kind", NULL, venture_sequence_tracking_kind_get_type, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("link-position", "Link position", "Zero for an open", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("occurred-at", "Occurred at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("dedupe-key", "Dedupe key", "One open per delivery per UTC day", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+};
+VENTURE_DEFINE_ENTITY(VentureSequenceTrackingEvent, venture_sequence_tracking_event, sequence_tracking_event_fields)

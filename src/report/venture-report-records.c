@@ -20,7 +20,18 @@ static const VentureFieldDecl pack_fields[] = {
 	VENTURE_FIELD("last-run-at", "Last run", "When run_due last dispatched this pack",
 		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("last-output", "Last output", "JSON results from the last successful scheduled run",
-		VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE)
+		VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("recipients", "Recipients", "Comma-separated addresses the output is mailed to",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("deliver", "Deliver", "none, or email to mail each run's output through the outbox",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("last-delivered-at", "Last delivered", "When the last output was handed to the mail queue",
+		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("last-delivery-message-id", "Last Message-ID", "Message-ID of the queued mail",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("last-delivery-mail-id", "Last mail row", "The mail_message row the output was queued as",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("last-delivery-error", "Last delivery error", "Why the last delivery was refused; empty when it was queued")
 };
 VENTURE_DEFINE_ENTITY(VentureReportPack, venture_report_pack, pack_fields)
 static const VentureFieldDecl dimension_fields[] = {

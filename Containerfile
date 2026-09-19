@@ -112,6 +112,8 @@ COPY plugins/ plugins/
 COPY modules/ modules/
 COPY tests/ tests/
 COPY venture.pc.in ./
+COPY docs/ docs/
+COPY README.org ./
 
 RUN if [ "${BUILD_TYPE}" = "debug" ]; then export DEBUG=1; fi; \
     make DEBUG=${DEBUG} PREFIX=${PREFIX} all plugins

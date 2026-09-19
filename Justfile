@@ -52,7 +52,8 @@ force := "false"
 run_env := \
     "VENTURE_PLUGIN_PATH=" + outdir + "/plugins " + \
     "VENTURE_VENTURE_TYPE_PATH=" + justfile_directory() + "/data/venture-types " + \
-    "VENTURE_POD_MODULE_PATH=" + outdir + "/pod-modules:" + justfile_directory() + "/deps/podomation/build/" + build_type + "/modules"
+    "VENTURE_POD_MODULE_PATH=" + outdir + "/pod-modules:" + justfile_directory() + "/deps/podomation/build/" + build_type + "/modules " + \
+    "VENTURE_DOCS_SITE_DIR=" + justfile_directory() + "/build/docs-site"
 
 venture    := outdir + "/venture"
 venturectl := outdir + "/venturectl"

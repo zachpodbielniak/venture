@@ -147,6 +147,10 @@ SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wil
 SERVER_ONLY_SRCS += $(filter-out src/recurring/venture-recurring-records.c,$(wildcard src/recurring/*.c))
 CORE_SRCS += src/dunning/venture-dunning-records.c
 SERVER_ONLY_SRCS += $(filter-out src/dunning/venture-dunning-records.c,$(wildcard src/dunning/*.c))
+CORE_SRCS += src/tax/venture-sales-tax-records.c
+SERVER_ONLY_SRCS += src/tax/venture-sales-tax-service.c
+CORE_SRCS += src/dedupe/venture-dedupe-records.c
+SERVER_ONLY_SRCS += $(filter-out src/dedupe/venture-dedupe-records.c,$(wildcard src/dedupe/*.c))
 
 PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
 SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
@@ -158,11 +162,23 @@ SERVER_ONLY_SRCS += src/portal/venture-portal-service.c
 SERVER_ONLY_SRCS += src/portal/venture-supplier-portal-service.c
 SERVER_ONLY_SRCS += src/fields/venture-custom-fields-service.c
 SERVER_ONLY_SRCS += src/backup/venture-backup-service.c
+SERVER_ONLY_SRCS += src/backup/venture-backup-schedule-service.c
 SERVER_ONLY_SRCS += $(filter-out src/budgets/venture-budget-records.c,$(wildcard src/budgets/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/equity/venture-equity-records.c,$(wildcard src/equity/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/group/venture-group-records.c,$(wildcard src/group/*.c))
 CORE_SRCS += src/report/venture-headline-records.c
+CORE_SRCS += src/calendar/venture-calendar-records.c
+SERVER_ONLY_SRCS += $(filter-out src/calendar/venture-calendar-records.c,$(wildcard src/calendar/*.c))
 SERVER_ONLY_SRCS := $(filter-out src/report/venture-headline-records.c,$(SERVER_ONLY_SRCS))
+CORE_SRCS += src/leads/venture-lead-routing-records.c
+SERVER_ONLY_SRCS += src/leads/venture-lead-routing.c
+SERVER_ONLY_SRCS += $(wildcard src/money-calendar/*.c)
+CORE_SRCS += src/crm-import/venture-crm-import-records.c
+SERVER_ONLY_SRCS += src/crm-import/venture-crm-import-service.c
+# The documentation site generator is core: venturectl renders the site.
+CORE_SRCS += src/docs/venture-org-html.c src/docs/venture-docs-site.c
+CORE_SRCS += src/orgaccess/venture-mfa-records.c
+SERVER_ONLY_SRCS := $(filter-out src/orgaccess/venture-mfa-records.c,$(SERVER_ONLY_SRCS))
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
@@ -231,6 +247,10 @@ PUBLIC_HDRS += $(wildcard src/backup/*.h)
 PUBLIC_HDRS += $(wildcard src/budgets/*.h)
 PUBLIC_HDRS += $(wildcard src/equity/*.h)
 PUBLIC_HDRS += $(wildcard src/group/*.h)
+PUBLIC_HDRS += $(wildcard src/money-calendar/*.h)
+PUBLIC_HDRS += $(wildcard src/crm-import/*.h)
+PUBLIC_HDRS += $(wildcard src/dedupe/*.h)
+PUBLIC_HDRS += $(wildcard src/docs/*.h)
 
 # Private implementation fragments are included by their owning C source;
 # they are neither installable headers nor introspection declarations.
@@ -267,6 +287,17 @@ $(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sequences: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-recurring: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-dunning: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-sales-tax: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-backup-schedule: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-customer-health: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-money-calendar: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-deal-lines: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-sequence-tracking: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-dedupe: | $(OUTDIR)/venturectl
+# The docs test drives `venturectl docs build` and the quickstart against
+# a real server: both binaries, and the docs it renders are the real ones.
+$(OUTDIR)/tests/test-docs: | $(OUTDIR)/venturectl $(OUTDIR)/venture
+$(OUTDIR)/tests/test-mfa: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery
@@ -480,6 +511,7 @@ run: venture plugins pod-modules dep-podomation-modules
 	VENTURE_PLUGIN_PATH="$(abspath $(OUTDIR)/plugins)" \
 	VENTURE_VENTURE_TYPE_PATH="$(abspath data/venture-types)" \
 	VENTURE_POD_MODULE_PATH="$(abspath $(OUTDIR)/pod-modules):$(abspath $(PODOMATION_DIR)/build/$(BUILD_TYPE)/modules)" \
+	VENTURE_DOCS_SITE_DIR="$(abspath $(DOCS_SITE_DIR))" \
 	$(OUTDIR)/venture --database "sqlite://$(abspath $(BUILDDIR)/run)/venture.db" \
 	                  --state-dir "$(abspath $(BUILDDIR)/run)" $(RUNFLAGS)
 
@@ -554,6 +586,7 @@ help:
 	@echo "  demo              Throwaway instance seeded with example data"
 	@echo "  demo-stop         Stop a detached demo and delete its data"
 	@echo "  print-VAR         Print the value of any make variable"
+	@echo "  docs-site         Render docs/*.org and README.org to build/docs-site"
 	@echo ""
 	@echo "Agent skill:"
 	@echo "  install-skill     Symlink skills/venturectl into each agent's dir"
@@ -577,3 +610,34 @@ endif
 deps: $(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB)
 
 $(OUTDIR)/tests/test-mail-surfaces: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-lead-routing: | $(OUTDIR)/venturectl
+
+# ---------------------------------------------------------------------------
+# The documentation site
+# ---------------------------------------------------------------------------
+#
+# Rendered by venturectl rather than by a script, so an installed CLI can
+# do it too (`venturectl docs build`), and so the checks -- no broken
+# internal link, no document missing from docs/index.org -- are the same
+# code whichever way it is invoked. Org's own exporter is used when Emacs
+# is on PATH and the builtin renderer otherwise; the command says which.
+#
+# Not under $(OUTDIR): the site is the same whichever build type rendered
+# it, and `venture` looks for it at $(VENTUREDATADIR)/docs-site once
+# installed, or wherever VENTURE_DOCS_SITE_DIR points from the tree.
+DOCS_SITE_DIR := $(BUILDDIR)/docs-site
+DOCS_SOURCES := README.org $(wildcard docs/*.org)
+
+.PHONY: docs-site
+docs-site: $(OUTDIR)/venturectl $(DOCS_SOURCES)
+	@echo "  DOCS    $(DOCS_SITE_DIR)"
+	$(Q)$(OUTDIR)/venturectl docs build source=$(CURDIR) output=$(abspath $(DOCS_SITE_DIR)) $(if $(DOCS_RENDERER),renderer=$(DOCS_RENDERER))
+
+.PHONY: install-docs-site
+install-docs-site: docs-site
+	$(MKDIR_P) $(DESTDIR)$(VENTUREDATADIR)/docs-site
+	@for f in $(DOCS_SITE_DIR)/*; do \
+		if [ -f "$$f" ]; then $(INSTALL_DATA) "$$f" $(DESTDIR)$(VENTUREDATADIR)/docs-site/; fi \
+	done
+
+install: install-docs-site

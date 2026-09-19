@@ -829,7 +829,8 @@ test_web_navigation_links_all_resolve(
 		"/automations", "/plugins", "/kb", "/modules", "/factory",
 		"/dashboards", "/overview", "/sprints", "/runs", "/webhooks", "/federation", "/deals",
 		"/harness", "/assistant", "/accounting", "/payables", "/close", "/capture",
-		"/invoices/compose", "/quotes/compose", "/bankfeed", "/setup", "/purchasing", "/sales-orders", "/budgets", "/equity", "/group", "/claims", "/payroll", "/tax-filings", NULL
+		"/invoices/compose", "/quotes/compose", "/bankfeed", "/setup", "/purchasing", "/sales-orders", "/budgets", "/equity", "/group", "/claims", "/payroll", "/tax-filings",
+		"/money/calendar", "/customers/duplicates", NULL
 	};
 	const VentureWebNavLink *links;
 	gsize i;
