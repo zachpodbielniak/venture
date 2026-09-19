@@ -819,6 +819,78 @@ venture_money_sum(
 	return g_steal_pointer(&total);
 }
 
+VentureMoney *
+venture_money_sum_dominant(
+	GPtrArray	*amounts,
+	guint		*out_skipped
+){
+	g_autoptr(GHashTable) counts = NULL;
+	g_autoptr(GPtrArray) chosen = NULL;
+	const gchar *currency = NULL;
+	guint best = 0;
+	guint skipped = 0;
+	guint i;
+
+	if (NULL != out_skipped)
+		*out_skipped = 0;
+
+	if ((NULL == amounts) || (0 == amounts->len))
+		return venture_money_new_zero(venture_money_get_default_currency());
+
+	/* How many amounts each currency has. Walked in order, with a strict
+	 * comparison, so a tie stays with the first met -- unless the default
+	 * currency is among those tied, which is the one an operator would
+	 * expect the figure to be in. */
+	counts = g_hash_table_new(g_str_hash, g_str_equal);
+
+	for (i = 0; i < amounts->len; i++)
+	{
+		const gchar *code;
+		guint n;
+
+		code = venture_money_get_currency(g_ptr_array_index(amounts, i));
+		n = GPOINTER_TO_UINT(g_hash_table_lookup(counts, code)) + 1;
+		g_hash_table_insert(counts, (gpointer)code, GUINT_TO_POINTER(n));
+	}
+
+	for (i = 0; i < amounts->len; i++)
+	{
+		const gchar *code;
+		guint n;
+
+		code = venture_money_get_currency(g_ptr_array_index(amounts, i));
+		n = GPOINTER_TO_UINT(g_hash_table_lookup(counts, code));
+
+		if ((n > best) ||
+		    ((n == best) &&
+		     (0 == g_strcmp0(code, venture_money_get_default_currency()))))
+		{
+			best = n;
+			currency = code;
+		}
+	}
+
+	/* Borrowed, not copied: the array that owns them outlives this. */
+	chosen = g_ptr_array_new();
+
+	for (i = 0; i < amounts->len; i++)
+	{
+		VentureMoney *amount;
+
+		amount = g_ptr_array_index(amounts, i);
+
+		if (0 == g_strcmp0(venture_money_get_currency(amount), currency))
+			g_ptr_array_add(chosen, amount);
+		else
+			skipped++;
+	}
+
+	if (NULL != out_skipped)
+		*out_skipped = skipped;
+
+	return venture_money_sum(chosen, currency, NULL);
+}
+
 /* --- Comparison ---------------------------------------------------------- */
 
 gint

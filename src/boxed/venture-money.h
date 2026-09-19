@@ -365,6 +365,28 @@ venture_money_allocate_evenly(
 );
 
 /**
+ * venture_money_sum_dominant:
+ * @amounts: (element-type VentureMoney): amounts, possibly in several
+ *   currencies
+ * @out_skipped: (out) (optional): how many were left out
+ *
+ * Totals the amounts that are in the currency most of them are in, and
+ * counts the rest. For a figure that must survive one stray currency --
+ * what the coding runs cost, when one provider bills in euros -- where
+ * venture_money_sum() would refuse the lot and adding across currencies
+ * would need a rate nobody gave. A tie goes to the default currency when
+ * it is one of those tied, else to whichever was met first.
+ *
+ * Returns: (transfer full): the total; zero in the default currency when
+ *   @amounts is empty
+ */
+VentureMoney *
+venture_money_sum_dominant(
+	GPtrArray	*amounts,
+	guint		*out_skipped
+);
+
+/**
  * venture_money_sum:
  * @amounts: (element-type VentureMoney): the amounts to total
  * @fallback_currency: (nullable): the currency of the result when @amounts
