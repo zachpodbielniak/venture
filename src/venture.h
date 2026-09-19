@@ -284,6 +284,7 @@
 #include "crm-import/venture-crm-import-service.h"
 #include "dedupe/venture-dedupe-service.h"
 #include "report/venture-support-rollup.h"
+#include "report/venture-report-pack-delivery.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

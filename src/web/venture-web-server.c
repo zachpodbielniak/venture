@@ -27897,6 +27897,7 @@ venture_web_api_ticket_draft(
 #include "dedupe/venture-dedupe-web.inc"
 #include "report/venture-support-rollup-web.inc"
 #include "docs/venture-docs-web.inc"
+#include "report/venture-report-pack-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -28404,6 +28405,7 @@ venture_document_web_register(router, self);
 	htmx_router_post(router, "/api/v1/journals/post", venture_web_api_action, self);
 	venture_money_calendar_web_register(router, self);
 	venture_docs_web_register(router, self);
+	htmx_router_post(router, "/api/v1/report_pack/:id/deliver", venture_web_report_pack_deliver, self);
 
 	return g_steal_pointer(&self);
 }

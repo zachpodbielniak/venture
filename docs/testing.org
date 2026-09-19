@@ -532,3 +532,23 @@ throughout with the =docs= module off; =/= still redirects to sign in.
 Then =tests/docs-quickstart.sh= runs every named block of
 =docs/quickstart.org= against a throwaway SQLite instance on a private
 port and asserts each step, in order.
+** =test-report-delivery=
+
+A report pack's =deliver= and =recipients= rules on save (the default =none=,
+an unknown mode, an address without =@=, a double =@=, a trailing comma, a
+header-injecting newline, =email= with nobody to mail). A due pack set to
+=email= queues one message through the outbox with the recipients, a subject
+and body naming the pack and its period, the output JSON and a CSV per
+tabular report as retained attachments, and stamps the pack with the
+delivery time, Message-ID and outbox row; nothing is sent until the outbox
+sweep runs, and a second sweep neither re-runs nor re-mails. A refused
+enqueue, the mail module off and no transport configured each record the
+reason on the pack, leave the run and its output untouched, do not re-run
+the report, and let the sweep reach the next pack. The deliver action
+refuses a pack with no retained output and one set to =none=, and re-sends
+the retained output as a new message under a new key. The outbox's inline
+attachments (refused without a name, without data, with data that is not
+base64, and a document reference without attachment storage). The REST
+route refuses anonymous (401), viewer (403), staged and unknown-pack
+requests and answers an editor with the queued message (202); =report packs
+deliver ID= reaches it with an API token, and refuses a missing id.

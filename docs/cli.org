@@ -104,6 +104,7 @@ venturectl dashboard templates|kinds     # what create and widgets accept
 venturectl health                        # is the server up
 venturectl mcp [--apply-writes]          # serve the API to an agent over stdio
 venturectl support rollup --from D --to D [--sort C]  # support cost and tickets per customer
+venturectl report packs deliver ID       # re-send a pack's last retained output by email
 #+end_src
 
 * Examples

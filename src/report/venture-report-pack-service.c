@@ -14,7 +14,9 @@ validate_pack(VentureDatabase *database, VentureEntity *record, VentureEntity *p
 	(void)previous;
 	(void)data;
 	g_object_get(record, "schedule", &schedule, NULL);
-	return schedule == NULL || *schedule == '\0' || schedule_fields(schedule, fields, error);
+	if (schedule != NULL && *schedule != '\0' && !schedule_fields(schedule, fields, error))
+		return FALSE;
+	return venture_report_pack_delivery_validate(record, error);
 }
 
 struct _VentureReportPackService
@@ -348,6 +350,23 @@ venture_report_pack_service_run_due(VentureReportPackService *self, VentureConte
 		if (!venture_database_save(self->database, pack, actor, error))
 			return -1;
 		ran++;
+		/* The run is committed before any mail is queued, so a refused
+		 * delivery is recorded on the pack and never re-runs the report;
+		 * the sweep goes on to the next pack either way. */
+		{
+			g_autofree gchar *deliver = NULL;
+			g_object_get(pack, "deliver", &deliver, NULL);
+			if (g_strcmp0(deliver, "email") == 0)
+			{
+				g_autoptr(GError) delivery_error = NULL;
+				gboolean recorded = FALSE;
+				g_autoptr(VentureMailMessage) queued = venture_report_pack_service_deliver(self, context,
+					VENTURE_REPORT_PACK(pack), now, actor, &recorded, &delivery_error);
+				if (queued == NULL && !recorded)
+					g_warning("report pack %" G_GINT64_FORMAT " ran but its delivery could not be recorded: %s",
+						venture_entity_get_id(pack), delivery_error != NULL ? delivery_error->message : "unknown error");
+			}
+		}
 	}
 	return ran;
 }
