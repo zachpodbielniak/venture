@@ -866,6 +866,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_lead_routing_rule_get_type,
 		venture_lead_scoring_rule_get_type,
 		venture_lead_score_history_get_type,
+		venture_tax_jurisdiction_get_type,
+		venture_tax_rule_get_type,
 	};
 	gsize i;
 

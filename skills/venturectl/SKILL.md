@@ -109,6 +109,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `collections run [--as-of DATE] [organization_id=N]` | queue overdue invoice reminders through the outbox; a non-admin must name the organization |
 | `dunning sweep [as_of=DATE] [organization_id=N] [limit=N] [dry_run=true]` | templated reminder policies: one step per invoice per day, escalation to the owner; `dry_run=true` returns the plan and writes nothing |
 | `batch invoice\|expense format=csv\|json payload=... [post=false] [organization_id=N] [--dry-run]` | all-or-nothing CSV/JSON document create |
+| `sales-tax export period=PERIOD [jurisdiction=CODE]` | sales tax return CSV per jurisdiction: gross, exempt, taxable, collected, credited, net due |
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 
@@ -481,6 +482,11 @@ reads `churn` only when billing is in use, else `customer_churn` -- follow
 the card's `link` rather than guessing. `/api/v1/headline?format=csv` exports
 the cards; a viewer without the owner, admin or finance role gets them with
 `state` `restricted` and no figures.
+The P&L cuts are `revenue_by_customer` (`by=source` to group by lead
+source), `spend_by_vendor` (`by=category`), `recurring_costs` and
+`cash_outlook` (`weeks=N`, default 8). `cash_forecast` is the budgets
+module's ledger-driven forecast, a different report. The P&L card's
+`links` open the four with the card's period and scope.
 Read their notes: MRR is contracted revenue, not cash or recognized income;
 churn rates are in basis points. Proration adjustments are settled on the
 next renewal. Billing sends no mail and integrates no card provider.

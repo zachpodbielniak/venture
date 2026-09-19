@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-11]
-#+updated: [2026-09-12]
+#+updated: [2026-09-18]
 #+version: 0.6.0
 
 * Modules
@@ -82,6 +82,8 @@ Written bottom-up, because a module may only require what precedes it:
 | =group= | statements | intercompany_link, elimination; consolidated trial balance, income and balance sheet; =/group= | =group.enabled= (opt-in) |
 | =dunning= | receivables, mail | dunning_policy, dunning_event; =collections=, =dunning_worklist=; =dunning_policy= sweep and test_send actions, =dunning_event= retry; =venture->dunning_sweep= | activities, recurring |
 | =headline= | receivables, leads | headline_setting; =cac=, =customer_churn=, =ltv=, =ltv_cac=, =customer_cohorts=; the headline cards at =/= and =/api/v1/headline= | outreach, recurring, tickets, banking, payables, billing |
+| =sales_tax= | receivables | tax_jurisdiction, tax_rule; =sales_tax_return=; =sales-tax export= | |
+| =pnl_cuts= | receivables, payables | =revenue_by_customer=, =spend_by_vendor=, =recurring_costs=, =cash_outlook=; the links on the P&L card | leads, recurring, banking, headline |
 
 Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.
 

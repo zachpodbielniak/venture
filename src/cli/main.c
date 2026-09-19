@@ -1147,10 +1147,11 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "compare_to")) && (0 != g_strcmp0(parts[0], "account_id")) &&
 				 (0 != g_strcmp0(parts[0], "basis")) && (0 != g_strcmp0(parts[0], "dimension")) &&
 				 (0 != g_strcmp0(parts[0], "vendor_id")) && (0 != g_strcmp0(parts[0], "pipeline_id")) && (0 != g_strcmp0(parts[0], "owner")) &&
+				 (0 != g_strcmp0(parts[0], "days")) && (0 != g_strcmp0(parts[0], "by")) && (0 != g_strcmp0(parts[0], "weeks")) &&
 				 (0 != g_strcmp0(parts[0], "band_size"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, band_size");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -3218,6 +3219,7 @@ venture_cli_command_mcp(
 #include "sequences/venture-sequence-cli.inc"
 #include "recurring/venture-recurring-cli.inc"
 #include "dunning/venture-dunning-cli.inc"
+#include "tax/venture-sales-tax-cli.inc"
 
 /* --- Entry point --------------------------------------------------------- */
 
@@ -3372,7 +3374,7 @@ main(
 		"  forge set-token ID           set a forge's access token (stdin)\n"
 		"  forge set-secret ID          set or generate its webhook secret\n"
 		"  forge verify ID              record which account the token is\n"
-		"  report [NAME] [PERIOD]       run; options: as_of, organization_id, customer_id, currency, venture_id, group_by, vendor_id, pipeline_id, owner\n"
+		"  report [NAME] [PERIOD]       run; options: as_of, organization_id, customer_id, currency, venture_id, group_by, vendor_id, pipeline_id, owner, days, by, weeks\n"
 		"  kb search QUERY              search the knowledge bases by\n"
 		"                               meaning; --kb SLUG, --limit N\n"
 		"  kb sync KB_ID                bring a base into line with its\n"
@@ -3469,6 +3471,7 @@ main(
 		"  batch invoice|expense format=csv|json payload=... [post=false] [organization_id=N] [--dry-run]\n"
 		"  dunning sweep [as_of=DATE] [organization_id=N] [limit=N] [dry_run=true]\n"
 		"                               send due overdue reminders once; dry_run previews\n"
+		"  sales-tax export period=PERIOD [jurisdiction=CODE]  sales tax return CSV per jurisdiction\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
 		"\n"
@@ -3761,6 +3764,8 @@ main(
 		result = venture_cli_command_dunning(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "leads"))
 		result = venture_cli_command_lead(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "sales-tax"))
+		result = venture_cli_command_sales_tax(&cli, args, &error);
 	else
 	{
 		g_printerr("venturectl: \"%s\" is not a command. Try --help.\n",

@@ -2592,8 +2592,8 @@ venture_web_api_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "band_size", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -5770,8 +5770,8 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "band_size", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -27812,6 +27812,7 @@ venture_web_api_ticket_draft(
 #include "leads/venture-lead-web.inc"
 #include "close/venture-close-web.inc"
 #include "tax/venture-tax-web.inc"
+#include "tax/venture-sales-tax-web.inc"
 #include "capture/venture-capture-web.inc"
 #include "accounting/venture-accounting-web.inc"
 #include "bankfeed/venture-bankfeed-web.inc"
@@ -27979,6 +27980,7 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/contractor-tax/prepare", contractor_tax_api, self);
 	htmx_router_post(router, "/api/v1/contractor-tax/:id/:action", contractor_tax_api, self);
 	htmx_router_get(router, "/api/v1/contractor-tax/:id/export", contractor_tax_api, self);
+	htmx_router_get(router, "/api/v1/sales-tax/export", sales_tax_export_api, self);
 	htmx_router_get(router, "/capture", capture_ui, self);
 	htmx_router_post(router, "/api/v1/commerce/import", commerce_import, self);
 	htmx_router_post(router, "/api/v1/capture", capture_api, self);

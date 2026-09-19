@@ -113,6 +113,7 @@
 #include "recurring/venture-recurring-records.h"
 #include "dunning/venture-dunning-records.h"
 #include "leads/venture-lead-routing-records.h"
+#include "tax/venture-sales-tax-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -260,6 +261,7 @@
 #include "report/venture-headline-home.h"
 #include "dunning/venture-dunning-service.h"
 #include "leads/venture-lead-routing.h"
+#include "tax/venture-sales-tax-service.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 
