@@ -765,6 +765,11 @@ static const gchar *const dunning_reports[] = { "collections", "dunning_worklist
 static GType (*const sales_tax_types[]) (void) = { venture_tax_jurisdiction_get_type, venture_tax_rule_get_type, NULL };
 static const gchar *const sales_tax_requires[] = { "receivables", NULL };
 static const gchar *const sales_tax_reports[] = { "sales_tax_return", NULL };
+static const gchar *const pnl_cuts_requires[] = { "receivables", "payables", NULL };
+static const gchar *const pnl_cuts_suggests[] = { "leads", "recurring", "banking", "headline", NULL };
+static const gchar *const pnl_cuts_reports[] = {
+	"revenue_by_customer", "spend_by_vendor", "recurring_costs", "cash_outlook", NULL
+};
 
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
@@ -1076,6 +1081,12 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"sales_tax", "Sales tax",
 		"Jurisdiction rates picked by customer address, frozen on invoice lines, and the sales tax return.",
 		sales_tax_requires, NULL, sales_tax_types, sales_tax_reports, NULL, FALSE
+	},
+	{
+		"pnl_cuts", "P&L cuts",
+		"Revenue by customer and source, spend by vendor and category, the "
+		"recurring-cost run-rate and the weekly cash outlook.",
+		pnl_cuts_requires, pnl_cuts_suggests, NULL, pnl_cuts_reports, NULL, FALSE
 	}
 };
 

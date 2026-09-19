@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-12]
+#+updated: [2026-09-18]
 #+version: 0.6.0
 
 
@@ -296,6 +296,25 @@ Direct subscription state writes are refused. The assistant can stage
 =billing_request= through its generated create tool; all CLI billing
 actions also honor =--stage=. See [[file:billing.org][SaaS billing]] for prices,
 trial activation, proration, historical report definitions and limitations.
+
+* The cuts of the P&L
+
+No new verb: the four cuts run through =report=. =by= picks the grouping
+where a report offers one and =weeks= sets the cash outlook's horizon.
+
+#+begin_src sh
+venturectl report revenue_by_customer this_quarter
+venturectl report revenue_by_customer 2026-Q1 by=source
+venturectl report spend_by_vendor last_month
+venturectl report spend_by_vendor ytd by=category
+venturectl report recurring_costs
+venturectl report cash_outlook today weeks=12
+venturectl -f csv report cash_outlook this_month > outlook.csv
+#+end_src
+
+The same options pass through =GET /api/v1/reports/NAME?period=...&by=...&weeks=...=
+and the =/reports/NAME= page.
+
 * Transactional mail
 
 =venturectl mail send to=... subject=... body=...= enqueues; =--html FILE=
