@@ -230,6 +230,22 @@ venture_string_list_contains_ci(
 	const gchar		*needle
 );
 
+/**
+ * venture_csv_parse:
+ * @text: CSV text
+ * @error: (out) (optional): return location for an error
+ *
+ * Parses RFC 4180 CSV: quoted fields, embedded commas, doubled quotes,
+ * newlines inside quotes and both line endings. Blank lines are skipped.
+ * The inverse of venture_csv_escape().
+ *
+ * Returns: (transfer full) (element-type GStrv) (nullable): rows, each a
+ *   %NULL-terminated string vector, or %NULL when a quote is unterminated
+ *   or a quoted field is followed by text
+ */
+GPtrArray *
+venture_csv_parse(const gchar *text, GError **error);
+
 G_END_DECLS
 
 #endif /* VENTURE_STRING_UTIL_H */

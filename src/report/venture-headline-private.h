@@ -116,4 +116,34 @@ VentureReportResult *venture_headline_snapshot_ltv(VentureHeadlineSnapshot *snap
  */
 VentureReportResult *venture_headline_snapshot_ltv_cac(VentureHeadlineSnapshot *snapshot, VentureDateRange *period,
 	VentureReportResult *ltv, VentureReportResult *cac, GError **error);
+/**
+ * venture_headline_snapshot_get_currency:
+ * @snapshot: the snapshot
+ *
+ * Returns: (transfer none): the upper-case ISO 4217 code every headline
+ *   total is carried in: the organisation's book currency, or the process
+ *   default when it has none
+ */
+const gchar *venture_headline_snapshot_get_currency(VentureHeadlineSnapshot *snapshot);
+
+/**
+ * venture_headline_snapshot_customer_cash:
+ * @snapshot: the snapshot
+ * @company_id: the company
+ * @from: (nullable): the first instant that counts, inclusive
+ * @until: (nullable): the last instant that counts, inclusive
+ * @out_total: (out) (transfer full) (nullable): the sum, or %NULL when the
+ *   company paid nothing in the window
+ * @error: (out) (optional): a failed read
+ *
+ * One company's paid revenue between two instants, as every headline
+ * figure counts it: cash sales derived from applied receipts less those
+ * derived from refunds, in the book currency, foreign sales left out. This
+ * is what customer health's trailing year is read from, so the health
+ * report and the LTV report cannot disagree about what a customer paid.
+ *
+ * Returns: %TRUE when the question could be answered
+ */
+gboolean venture_headline_snapshot_customer_cash(VentureHeadlineSnapshot *snapshot, gint64 company_id,
+	GDateTime *from, GDateTime *until, VentureMoney **out_total, GError **error);
 #endif

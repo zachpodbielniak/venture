@@ -9,6 +9,8 @@ struct _VentureLeadService {
 	VentureEntity *writing;
 	GPtrArray *pending;
 	gboolean converting;
+	gboolean rerouting;
+	gboolean rescoring;
 };
 G_DEFINE_FINAL_TYPE(VentureLeadService, venture_lead_service, G_TYPE_OBJECT)
 
@@ -261,6 +263,67 @@ assign(VentureLeadService *self, VentureEntity *lead, GError **error)
 	return TRUE;
 }
 
+/* Routing rules first, then the older assignment rules. The verdict is
+ * returned for the timeline, which needs the lead's id, so it is written
+ * by the caller after the lead itself. */
+static gboolean
+route(VentureLeadService *self, VentureEntity *lead, gchar **subject, gchar **body, GError **error)
+{
+	g_autofree gchar *name = NULL;
+	g_autofree gchar *owner = NULL;
+	gboolean configured = FALSE;
+	*subject = NULL;
+	*body = NULL;
+	if (!venture_lead_routing_apply(self->database, lead, &name, &configured, error)) return FALSE;
+	if (name != NULL)
+	{
+		gint64 venture = 0;
+		owner = string_field(lead, "owner");
+		g_object_get(lead, "venture-id", &venture, NULL);
+		*subject = g_strdup("Lead routed");
+		*body = g_strdup_printf("Rule: %s; owner: %s; venture: %" G_GINT64_FORMAT, name, owner != NULL ? owner : "", venture);
+		return TRUE;
+	}
+	if (!assign(self, lead, error)) return FALSE;
+	owner = string_field(lead, "owner");
+	if (configured && venture_string_is_empty(owner))
+	{
+		*subject = g_strdup("No rule matched");
+		*body = g_strdup("Routing rules were evaluated in position order; the lead remains unassigned");
+	}
+	return TRUE;
+}
+
+typedef struct { gboolean changed; gboolean manual; gint64 previous; gchar *rule_ids; } ScoreChange;
+
+/* Score is the formula unless the operator typed one: a score that differs
+ * from the stored value without the manual mark takes the mark, and a marked
+ * score is left alone until the mark is cleared or the lead is rescored. */
+static gboolean
+score_lead(VentureLeadService *self, VentureEntity *entity, VentureEntity *previous, ScoreChange *change, GError **error)
+{
+	gint64 score = 0, total = 0;
+	gboolean manual = FALSE;
+	g_object_get(entity, "score", &score, "score-manual", &manual, NULL);
+	change->previous = 0;
+	change->rule_ids = NULL;
+	if (previous != NULL) g_object_get(previous, "score", &change->previous, NULL);
+	if (self->rescoring) manual = FALSE;
+	else if (!manual && score != change->previous && (previous != NULL || score != 0)) manual = TRUE;
+	g_object_set(entity, "score-manual", manual, NULL);
+	change->manual = manual;
+	if (manual)
+	{
+		change->changed = score != change->previous;
+		change->rule_ids = g_strdup("");
+		return TRUE;
+	}
+	if (!venture_lead_scoring_compute(self->database, entity, &total, &change->rule_ids, error)) return FALSE;
+	g_object_set(entity, "score", total, NULL);
+	change->changed = total != change->previous;
+	return TRUE;
+}
+
 static gboolean
 write_record(VentureLeadService *self, VentureEntity *entity, const VentureActor *actor, GError **error)
 {
@@ -287,16 +350,18 @@ history(VentureLeadService *self, VentureEntity *subject, const gchar *title,
 }
 
 static gboolean
-validate_state(VentureEntity *entity, VentureEntity *previous, GError **error)
+validate_state(VentureEntity *entity, VentureEntity *previous, gboolean rerouting, GError **error)
 {
 	VentureLeadStatus state, old = VENTURE_LEAD_NEW;
 	g_autofree gchar *reason = string_field(entity, "unqualified-reason");
 	g_autoptr(GDateTime) until = NULL;
-	gint64 company = 0, contact = 0, deal = 0;
+	gint64 company = 0, contact = 0, deal = 0, routed = 0, old_routed = 0;
 	g_object_get(entity, "status", &state, "recycle-until", &until,
 		"converted-company-id", &company, "converted-contact-id", &contact,
-		"converted-deal-id", &deal, NULL);
-	if (previous != NULL) g_object_get(previous, "status", &old, NULL);
+		"converted-deal-id", &deal, "routing-rule-id", &routed, NULL);
+	if (previous != NULL) g_object_get(previous, "status", &old, "routing-rule-id", &old_routed, NULL);
+	if (!rerouting && routed != old_routed)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "the routing reference is written only by routing");
 	if (state == VENTURE_LEAD_CONVERTED || old == VENTURE_LEAD_CONVERTED ||
 		company != 0 || contact != 0 || deal != 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "conversion fields are written only by the conversion action");
@@ -315,6 +380,9 @@ save_lead(VentureLeadService *self, VentureEntity *entity, const gchar *policy,
 	g_autoptr(VentureEntity) previous = NULL;
 	g_autoptr(GError) local_error = NULL;
 	g_autoptr(GDateTime) now = venture_time_now();
+	g_autofree gchar *routed_subject = NULL;
+	g_autofree gchar *routed_body = NULL;
+	ScoreChange score = { FALSE, FALSE, 0, NULL };
 	gboolean changed = FALSE;
 	guint i;
 	const gchar *fields[] = { "email", "phone", "website" };
@@ -336,7 +404,7 @@ save_lead(VentureLeadService *self, VentureEntity *entity, const gchar *policy,
 		g_object_get(previous, "status", &old, NULL);
 		changed = old != state || g_strcmp0(owner, old_owner) != 0;
 	}
-	if (!validate_state(entity, previous, error)) goto fail;
+	if (!validate_state(entity, previous, self->rerouting, error)) goto fail;
 	for (i = 0; i < G_N_ELEMENTS(fields); i++)
 	{
 		g_autofree gchar *raw = string_field(entity, fields[i]);
@@ -366,11 +434,23 @@ save_lead(VentureLeadService *self, VentureEntity *entity, const gchar *policy,
 			if (!venture_database_commit(self->database, error)) return NULL;
 			return g_steal_pointer(&duplicate);
 		}
-		if (venture_string_is_empty(owner) && !assign(self, entity, error)) goto fail;
+		if (venture_string_is_empty(owner) && !route(self, entity, &routed_subject, &routed_body, error)) goto fail;
 		g_object_set(entity, "first-seen-at", now, "last-activity-at", now, NULL);
 	}
 	if (changed) g_object_set(entity, "last-activity-at", now, NULL);
+	if (!score_lead(self, entity, previous, &score, error)) goto fail;
 	if (!write_record(self, entity, actor, error)) goto fail;
+	if (routed_subject != NULL && !history(self, entity, routed_subject, routed_body, actor, error)) goto fail;
+	if (score.changed)
+	{
+		g_autoptr(VentureEntity) row = VENTURE_ENTITY(venture_lead_score_history_new());
+		gint64 value = 0;
+		g_object_get(entity, "score", &value, NULL);
+		g_object_set(row, "organization-id", venture_entity_get_organization_id(entity),
+			"lead-id", venture_entity_get_id(entity), "previous-score", score.previous, "score", value,
+			"rule-ids", score.rule_ids, "manual", score.manual, "scored-at", now, NULL);
+		if (!write_record(self, row, actor, error)) goto fail;
+	}
 	if (changed)
 	{
 		VentureLeadStatus state;
@@ -383,9 +463,11 @@ save_lead(VentureLeadService *self, VentureEntity *entity, const gchar *policy,
 			owner != NULL ? owner : "", reason != NULL ? reason : "");
 		if (!history(self, entity, "Lead qualification or assignment", body, actor, error)) goto fail;
 	}
+	g_clear_pointer(&score.rule_ids, g_free);
 	if (!venture_database_commit(self->database, error)) return NULL;
 	return g_object_ref(entity);
 fail:
+	g_clear_pointer(&score.rule_ids, g_free);
 	venture_database_rollback(self->database);
 	return NULL;
 }
@@ -473,6 +555,10 @@ venture_lead_service_save_hook(VentureLeadService *self, VentureEntity *entity,
 	*handled = FALSE;
 	if (self->writing == entity) { self->writing = NULL; return TRUE; }
 	if (VENTURE_IS_LEAD_FORM(entity)) return validate_form(self, entity, error);
+	if (VENTURE_IS_LEAD_ROUTING_RULE(entity) || VENTURE_IS_LEAD_SCORING_RULE(entity))
+		return venture_lead_routing_validate_rule(self->database, entity, error);
+	if (VENTURE_IS_LEAD_SCORE_HISTORY(entity))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "score history is written only by the scoring formula");
 	if (VENTURE_IS_INTERACTION(entity))
 	{
 		gint64 lead_id = 0, company_id = 0, contact_id = 0, deal_id = 0;
@@ -729,6 +815,69 @@ fail:
 	return FALSE;
 }
 
+gboolean
+venture_lead_service_reroute(VentureLeadService *self, VentureEntity *lead,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) saved = NULL;
+	g_autofree gchar *subject = NULL;
+	g_autofree gchar *body = NULL;
+	VentureLeadStatus status;
+	if (!VENTURE_IS_LEAD(lead) || !venture_entity_is_persisted(lead))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "re-route a saved lead");
+	g_object_get(lead, "status", &status, NULL);
+	if (status == VENTURE_LEAD_CONVERTED) return refuse(error, VENTURE_ERROR_VALIDATION, "converted leads are read-only");
+	if (!venture_database_begin(self->database, error)) return FALSE;
+	self->rerouting = TRUE;
+	g_object_set(lead, "owner", "", "routing-rule-id", (gint64)0, NULL);
+	if (!route(self, lead, &subject, &body, error)) goto fail;
+	if (subject == NULL)
+	{
+		g_autofree gchar *owner = string_field(lead, "owner");
+		if (venture_string_is_empty(owner))
+		{
+			subject = g_strdup("No rule matched");
+			body = g_strdup("Re-route found no active routing rule for this lead; it remains unassigned");
+		}
+		else
+		{
+			subject = g_strdup("Lead routed");
+			body = g_strdup_printf("No routing rule matched; assignment rules placed the lead; owner: %s", owner);
+		}
+	}
+	saved = save_lead(self, lead, "reject", actor, error);
+	if (saved == NULL) goto fail;
+	if (!history(self, lead, subject, body, actor, error)) goto fail;
+	self->rerouting = FALSE;
+	return venture_database_commit(self->database, error);
+fail:
+	self->rerouting = FALSE;
+	venture_database_rollback(self->database);
+	return FALSE;
+}
+
+gboolean
+venture_lead_service_rescore(VentureLeadService *self, VentureEntity *lead,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) saved = NULL;
+	VentureLeadStatus status;
+	if (!VENTURE_IS_LEAD(lead) || !venture_entity_is_persisted(lead))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "rescore a saved lead");
+	g_object_get(lead, "status", &status, NULL);
+	if (status == VENTURE_LEAD_CONVERTED) return refuse(error, VENTURE_ERROR_VALIDATION, "converted leads are read-only");
+	if (!venture_database_begin(self->database, error)) return FALSE;
+	self->rescoring = TRUE;
+	saved = save_lead(self, lead, "reject", actor, error);
+	self->rescoring = FALSE;
+	if (saved == NULL)
+	{
+		venture_database_rollback(self->database);
+		return FALSE;
+	}
+	return venture_database_commit(self->database, error);
+}
+
 VentureConfirmation *
 venture_lead_service_stage_convert(VentureLeadService *self, VentureConfirmationStore *store,
 	VentureEntity *lead, JsonObject *options, const VentureActor *actor, GError **error)
@@ -773,4 +922,10 @@ gchar *
 venture_lead_normalize_email(const gchar *value)
 {
 	return normalize(value, 0);
+}
+
+gchar *
+venture_lead_normalize_website(const gchar *value)
+{
+	return normalize(value, 2);
 }

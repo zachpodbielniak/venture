@@ -283,12 +283,22 @@ headline_csv_row(
 }
 
 /* One line under a card's figure. A missing metric is "n/a" -- never "0",
- * which would claim a count that was never taken. */
+ * which would claim a count that was never taken. A line with a link is a
+ * number that is also a list: the page renders its value as the link. */
 typedef struct
 {
 	const gchar	*label;
 	VentureMetric	*metric;
+	const gchar	*link;
 } HeadlineLine;
+
+/* A further report a card offers beside its own: a label and the report
+ * name, linked with the same period and scope as the card. */
+typedef struct
+{
+	const gchar	*label;
+	const gchar	*report;
+} HeadlineCut;
 
 /*
  * Writes one card to all three renderings at once.
@@ -296,7 +306,9 @@ typedef struct
  * @error, when set, makes the card an error card: the figure is n/a, the
  * message is shown in its place and logged with g_warning, and the rest of
  * the page carries on. A restricted render writes the card with no figures
- * at all.
+ * at all. @cuts, when there are any, are further reports the card links to
+ * beside its own, carried in the JSON as `links` (label/href pairs) and
+ * rendered as buttons after the Report one.
  */
 static void
 headline_add_card(
@@ -310,6 +322,8 @@ headline_add_card(
 	gboolean		 higher_is_better,
 	const HeadlineLine	*lines,
 	gsize			 n_lines,
+	const HeadlineCut	*cuts,
+	gsize			 n_cuts,
 	const GError		*error
 ){
 	g_autofree gchar *link = NULL;
@@ -407,12 +421,27 @@ headline_add_card(
 			line = json_object_new();
 			json_object_set_string_member(line, "label", lines[i].label);
 			json_object_set_string_member(line, "value", line_value);
+
+			if (NULL != lines[i].link)
+				json_object_set_string_member(line, "link", lines[i].link);
+
 			json_array_add_object_element(json_lines, line);
 
 			g_string_append(render->html, "<li><span class=\"muted\">");
 			venture_html_escape_append(render->html, lines[i].label);
 			g_string_append(render->html, "</span> ");
-			venture_html_escape_append(render->html, line_value);
+
+			if (NULL != lines[i].link)
+			{
+				g_string_append(render->html, "<a href=\"");
+				venture_html_escape_append(render->html, lines[i].link);
+				g_string_append(render->html, "\">");
+				venture_html_escape_append(render->html, line_value);
+				g_string_append(render->html, "</a>");
+			}
+			else
+				venture_html_escape_append(render->html, line_value);
+
 			g_string_append(render->html, "</li>");
 			headline_csv_row(render->csv, key, lines[i].label, line_value,
 			                 "", state);
@@ -432,7 +461,36 @@ headline_add_card(
 	venture_html_escape_append(render->html, definition);
 	g_string_append(render->html, "</p><p><a class=\"btn\" href=\"");
 	venture_html_escape_append(render->html, link);
-	g_string_append(render->html, "\">Report</a></p></div>");
+	g_string_append(render->html, "\">Report</a>");
+
+	if (n_cuts > 0)
+	{
+		JsonArray *json_links;
+
+		json_links = json_array_new();
+
+		for (i = 0; i < n_cuts; i++)
+		{
+			g_autofree gchar *href = NULL;
+			JsonObject *json_link;
+
+			href = headline_link(render, cuts[i].report);
+			json_link = json_object_new();
+			json_object_set_string_member(json_link, "label", cuts[i].label);
+			json_object_set_string_member(json_link, "href", href);
+			json_array_add_object_element(json_links, json_link);
+
+			g_string_append(render->html, " <a class=\"btn headline-cut\" href=\"");
+			venture_html_escape_append(render->html, href);
+			g_string_append(render->html, "\">");
+			venture_html_escape_append(render->html, cuts[i].label);
+			g_string_append(render->html, "</a>");
+		}
+
+		json_object_set_array_member(card, "links", json_links);
+	}
+
+	g_string_append(render->html, "</p></div>");
 
 	json_object_set_array_member(card, "lines", json_lines);
 	json_array_add_object_element(render->cards, card);
@@ -443,26 +501,27 @@ headline_add_card(
  * the first account's currency. Beside the booked P&L because "what is
  * actually in the account" is the question the P&L does not answer.
  */
-static VentureMetric *
-headline_bank_cash(HeadlineRender *render)
-{
+VentureMetric *
+venture_headline_bank_cash(
+	VentureContext	*context,
+	gint64		 organization_id
+){
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) accounts = NULL;
 	g_autoptr(VentureMoney) total = NULL;
-	JsonObject *options;
 	VentureMetric *metric;
 	guint skipped;
 	guint i;
 
-	if (!venture_context_module_enabled(render->context, "banking"))
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+
+	if (!venture_context_module_enabled(context, "banking"))
 		return venture_metric_new_text("cash", "Bank cash", "n/a");
 
-	options = venture_headline_snapshot_get_options(render->snapshot);
 	query = venture_query_new(VENTURE_TYPE_BANK_ACCOUNT);
-	venture_query_set_organization(query,
-		venture_json_object_get_int(options, "organization_id", 0));
+	venture_query_set_organization(query, organization_id);
 	venture_query_set_limit(query, 0);
-	accounts = venture_database_find(venture_context_get_database(render->context),
+	accounts = venture_database_find(venture_context_get_database(context),
 	                                 query, NULL);
 
 	if (NULL == accounts)
@@ -508,6 +567,15 @@ headline_bank_cash(HeadlineRender *render)
 		venture_metric_set_note(metric, "some accounts are in another currency");
 
 	return metric;
+}
+
+static VentureMetric *
+headline_bank_cash(HeadlineRender *render)
+{
+	return venture_headline_bank_cash(render->context,
+		venture_json_object_get_int(
+			venture_headline_snapshot_get_options(render->snapshot),
+			"organization_id", 0));
 }
 
 /*
@@ -595,9 +663,18 @@ headline_support_queue(
 static void
 headline_card_pnl(HeadlineRender *render)
 {
+	/* The cuts of the P&L: the same figures by customer, by vendor, as a
+	 * run-rate and as a cash outlook, from the pnl_cuts module. */
+	static const HeadlineCut cuts[] = {
+		{ "By customer", "revenue_by_customer" },
+		{ "By vendor", "spend_by_vendor" },
+		{ "Recurring", "recurring_costs" },
+		{ "Cash outlook", "cash_outlook" }
+	};
 	g_auto(HeadlinePair) pnl = { NULL, NULL, NULL };
 	g_autoptr(VentureMetric) cash = NULL;
-	HeadlineLine lines[3];
+	HeadlineLine lines[3] = { { NULL, NULL, NULL } };
+	gsize n_cuts;
 
 	if (!render->restricted)
 	{
@@ -611,6 +688,8 @@ headline_card_pnl(HeadlineRender *render)
 	lines[1].metric = headline_metric(pnl.current, "expenses");
 	lines[2].label = "Bank cash";
 	lines[2].metric = cash;
+	n_cuts = venture_context_module_enabled(render->context, "pnl_cuts")
+		? G_N_ELEMENTS(cuts) : 0;
 
 	headline_add_card(render, "pnl", "Profit and loss", "pnl",
 		"Profit is net revenue (sales less refunds, platform fees and "
@@ -619,7 +698,7 @@ headline_card_pnl(HeadlineRender *render)
 		"balance.",
 		headline_metric(pnl.current, "profit"),
 		headline_metric(pnl.previous, "profit"), TRUE,
-		lines, G_N_ELEMENTS(lines), pnl.error);
+		lines, G_N_ELEMENTS(lines), cuts, n_cuts, pnl.error);
 }
 
 static void
@@ -628,7 +707,7 @@ headline_card_mrr(HeadlineRender *render)
 	g_auto(HeadlinePair) mrr = { NULL, NULL, NULL };
 	g_auto(HeadlinePair) churn = { NULL, NULL, NULL };
 	g_autoptr(VentureMetric) nrr = NULL;
-	HeadlineLine lines[3];
+	HeadlineLine lines[3] = { { NULL, NULL, NULL } };
 
 	if (!render->restricted)
 	{
@@ -658,7 +737,7 @@ headline_card_mrr(HeadlineRender *render)
 		"expansion included, over what they paid at its start.",
 		headline_metric(mrr.current, "mrr"),
 		headline_metric(mrr.previous, "mrr"), TRUE,
-		lines, G_N_ELEMENTS(lines),
+		lines, G_N_ELEMENTS(lines), NULL, 0,
 		(NULL != mrr.error) ? mrr.error : churn.error);
 }
 
@@ -669,7 +748,7 @@ headline_card_cac(
 	VentureReportResult	*cac_before,
 	const GError		*error
 ){
-	HeadlineLine lines[2];
+	HeadlineLine lines[2] = { { NULL, NULL, NULL } };
 
 	lines[0].label = "Spend";
 	lines[0].metric = headline_metric(cac, "spend");
@@ -682,7 +761,7 @@ headline_card_cac(
 		"divided by new customers: companies whose first cash receipt fell "
 		"in the period.",
 		headline_metric(cac, "cac"), headline_metric(cac_before, "cac"),
-		FALSE, lines, G_N_ELEMENTS(lines), error);
+		FALSE, lines, G_N_ELEMENTS(lines), NULL, 0, error);
 }
 
 /*
@@ -697,12 +776,15 @@ headline_card_churn(
 ){
 	g_autoptr(VentureReportResult) activity = NULL;
 	g_autoptr(VentureReportResult) activity_before = NULL;
+	g_autoptr(VentureReportResult) health = NULL;
 	g_autoptr(GError) error = NULL;
 	g_auto(HeadlinePair) subscriptions = { NULL, NULL, NULL };
 	g_autoptr(VentureMetric) logo = NULL;
 	g_autoptr(VentureMetric) logo_before = NULL;
 	g_autoptr(VentureMetric) revenue = NULL;
-	HeadlineLine lines[2];
+	g_autofree gchar *at_risk_link = NULL;
+	HeadlineLine lines[3] = { { NULL, NULL, NULL } };
+	gsize n_lines = 2;
 
 	if (!render->restricted)
 	{
@@ -712,6 +794,32 @@ headline_card_churn(
 		if ((NULL != activity) && (NULL != render->previous))
 			activity_before = venture_headline_snapshot_churn(render->snapshot,
 				render->previous, NULL);
+	}
+
+	/* Who is about to leave: the red count from the customer health
+	 * report, as of the period's end, linking to the report filtered to
+	 * red so the number is a list. Only with the customer_health module
+	 * on; the card is otherwise exactly as it was. A health report that
+	 * fails costs the line, not the card. */
+	if (!render->restricted &&
+	    venture_context_module_enabled(render->context, "customer_health"))
+	{
+		g_autoptr(GError) health_error = NULL;
+		g_autofree gchar *report_link = NULL;
+
+		health = headline_run(render, "customer_health", render->period,
+		                      &health_error);
+
+		if (NULL == health)
+			g_warning("Headline churn card could not count customers at "
+			          "risk: %s", health_error->message);
+
+		report_link = headline_link(render, "customer_health");
+		at_risk_link = g_strconcat(report_link, "&band=red", NULL);
+		lines[2].label = "At risk";
+		lines[2].metric = headline_metric(health, "red");
+		lines[2].link = at_risk_link;
+		n_lines = 3;
 	}
 
 	if (billing && !render->restricted && (NULL == error))
@@ -740,7 +848,7 @@ headline_card_churn(
 			"period opened and paying for none at its end, over those "
 			"paying at its start. Revenue churn: the MRR those companies "
 			"lost, contraction included, over their opening MRR.",
-			logo, logo_before, FALSE, lines, G_N_ELEMENTS(lines),
+			logo, logo_before, FALSE, lines, n_lines, NULL, 0,
 			(NULL != error) ? error : subscriptions.error);
 		return;
 	}
@@ -759,7 +867,7 @@ headline_card_churn(
 		"period; a pause is not churn.",
 		headline_metric(activity, "activity_churn"),
 		headline_metric(activity_before, "activity_churn"), FALSE,
-		lines, G_N_ELEMENTS(lines), error);
+		lines, n_lines, NULL, 0, error);
 }
 
 static void
@@ -769,7 +877,7 @@ headline_card_ltv_cac(
 	VentureReportResult	*ratio_before,
 	const GError		*error
 ){
-	HeadlineLine lines[4];
+	HeadlineLine lines[4] = { { NULL, NULL, NULL } };
 
 	lines[0].label = "Projected LTV";
 	lines[0].metric = headline_metric(ratio, "projected_ltv");
@@ -788,7 +896,7 @@ headline_card_ltv_cac(
 		"ARPA times gross margin, in months.",
 		headline_metric(ratio, "ltv_cac"),
 		headline_metric(ratio_before, "ltv_cac"), TRUE,
-		lines, G_N_ELEMENTS(lines), error);
+		lines, G_N_ELEMENTS(lines), NULL, 0, error);
 }
 
 static void
@@ -799,7 +907,7 @@ headline_card_support(HeadlineRender *render)
 	g_autoptr(VentureMetric) open_before = NULL;
 	g_autoptr(VentureMetric) breaches = NULL;
 	g_autoptr(GError) error = NULL;
-	HeadlineLine lines[2];
+	HeadlineLine lines[2] = { { NULL, NULL, NULL } };
 	gint64 open_count = 0;
 	gint64 breached_count = 0;
 	gint64 open_at_start = 0;
@@ -832,7 +940,7 @@ headline_card_support(HeadlineRender *render)
 		"Tickets open now and the ones among them past a service level, "
 		"and tickets raised in the period. The arrow compares the queue "
 		"now with the queue when the period began.",
-		open_now, open_before, FALSE, lines, G_N_ELEMENTS(lines), error);
+		open_now, open_before, FALSE, lines, G_N_ELEMENTS(lines), NULL, 0, error);
 }
 
 /* A range as the text that parses back to it: "all" when unbounded, else

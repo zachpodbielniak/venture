@@ -1,0 +1,4 @@
+Record ID,Task title,Task body,Due date,Task status,Task type,Assigned to,Associated Contact IDs,Associated Company IDs,Associated Deal IDs,Completion date
+501,Send proposal,Attach the phase one scope.,2025-07-01 09:00,NOT_STARTED,TODO,Jane Doe,201,101,301,
+502,Call Carol,,2025-04-20 09:00,COMPLETED,CALL,Sam Lee,203,103,303,2025-04-19 15:30
+503,Follow up with Bob,,2025-08-01 09:00,IN_PROGRESS,EMAIL,Jane Doe,202,102,,
