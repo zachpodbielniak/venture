@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-12]
+#+updated: [2026-09-18]
 #+version: 0.6.0
 
 
@@ -76,6 +76,11 @@ venturectl release publish ID            # cut it on the forge; --prerelease
 venturectl recurring run [--as-of DATE] [--dry-run] [organization_id=N]
 venturectl collections run [--as-of DATE] [organization_id=N]
 venturectl dunning sweep [as_of=DATE] [organization_id=N] [limit=N]  # templated overdue reminders, once per step
+venturectl backup run SCHEDULE_ID        # write a scheduled backup now; admin
+venturectl backup verify RUN_ID          # restore it into an empty database and tie it out
+venturectl backup restore-drill [run_id=N] [organization_id=N] [name=...]  # the same, kept as a named drill
+venturectl sales-tax export period=2026-Q1 [jurisdiction=CODE]   # sales tax return CSV per jurisdiction
+venturectl customers health-sweep [as_of=DATE] [organization_id=N] [limit=N]  # one "check in" next action per red customer
 venturectl batch invoice|expense [--dry-run]
 venturectl inbox [--all]                 # what you have been told
 venturectl inbox read ID|all             # mark it read
@@ -98,6 +103,8 @@ venturectl dashboard create TEMPLATE     # factory, reporting, work, overview
 venturectl dashboard templates|kinds     # what create and widgets accept
 venturectl health                        # is the server up
 venturectl mcp [--apply-writes]          # serve the API to an agent over stdio
+venturectl support rollup --from D --to D [--sort C]  # support cost and tickets per customer
+venturectl report packs deliver ID       # re-send a pack's last retained output by email
 #+end_src
 
 * Examples
@@ -125,6 +132,7 @@ venturectl dashboard export factory > factory.json
 * Periods
 
 Ledger reports accept =basis=cash= or =basis=accrual= and =dimension=VALUE= alongside the period; these options pass through to the same report implementation used by the web page.
+The leads =lead_scoring= report accepts =band_size=N= for the width of its score bands (default 25).
 
 Anywhere a period is accepted — a =report= argument, a =period== filter on a
 list — the full grammar is:
@@ -234,7 +242,18 @@ records. Lifecycle status and schedule history are service-owned. See
 * Organization access and journal posting
 
 The ordinary =list/get/create/update/delete/describe= commands also manage
-=organization_membership=, =team= and =team_membership=. Tokens constrain all
+=organization_membership=, =team= and =team_membership=. Inviting an outside
+accountant is the same two records — no new verb:
+
+#+begin_src sh
+venturectl create user username=cpa role=viewer password=...      # global owner
+venturectl create organization_membership user_id=7 organization_id=1 role=accountant active=true
+venturectl create organization_membership user_id=7 organization_id=2 role=accountant active=true
+#+end_src
+
+Signed in as that user, =venturectl= reads and exports the books of each
+client organisation and nothing else; a write is refused with a message
+naming the accountant role. See [[file:orgaccess.org][the role matrix]]. Tokens constrain all
 responses to their mint-time memberships intersected with current authority.
 Selecting =organization_id= only narrows that scope. Global owners keep the
 existing output formats and data authority.
@@ -244,6 +263,13 @@ editor receives a pending confirmation; finance and organization admin/owner
 can post directly. =venturectl --stage journal post ID= always proposes.
 A pending confirmation is not a posted journal. Generic =update journal=
 cannot advance state. See [[file:orgaccess.org][Organization access]].
+=venturectl user mfa reset USER= (an id or a username) is the owner-only
+break-glass path for a lost phone and lost recovery codes: it calls the
+=mfa_reset= action on =user=, turns the account's second factor off, spends
+its recovery codes and writes an =mfa_reset= audit row naming the token or
+person that ran it. The ordinary commands manage =mfa_policy=, the
+per-organization =require_mfa_for_admins= setting. See
+[[file:security.org][Security: the second factor]].
 * SaaS billing
 
 =billing= actions change =customer_subscription= through the billing service:
@@ -287,6 +313,16 @@ venturectl update expense 43 cost_of_revenue=true         # count it against gro
 venturectl update expense 44 campaign_id=3                # a campaign's recorded cost
 #+end_src
 
+Customer health is a report too, with =band=, =owner= and =sort= as
+options; the only verb is the sweep, which is a business action rather
+than a record write.
+
+#+begin_src sh
+venturectl report customer_health this_month band=red sort=-overdue_days
+venturectl customers health-sweep as_of=2026-06-01 limit=50   # {"created": N}
+venturectl update headline_setting 1 health_touch_days=45 health_overdue_days=30 health_open_tickets=5
+#+end_src
+
 =renew= without an ID sweeps all due subscriptions in the selected
 organization; =renew ID= renews one. =--as-of= sets the effective action
 or sweep date. =--dry-run= previews sweeps without writing anything.
@@ -295,6 +331,41 @@ Direct subscription state writes are refused. The assistant can stage
 =billing_request= through its generated create tool; all CLI billing
 actions also honor =--stage=. See [[file:billing.org][SaaS billing]] for prices,
 trial activation, proration, historical report definitions and limitations.
+
+* The cuts of the P&L
+
+No new verb: the four cuts run through =report=. =by= picks the grouping
+where a report offers one and =weeks= sets the cash outlook's horizon.
+
+#+begin_src sh
+venturectl report revenue_by_customer this_quarter
+venturectl report revenue_by_customer 2026-Q1 by=source
+venturectl report spend_by_vendor last_month
+venturectl report spend_by_vendor ytd by=category
+venturectl report recurring_costs
+venturectl report cash_outlook today weeks=12
+venturectl -f csv report cash_outlook this_month > outlook.csv
+#+end_src
+
+The same options pass through =GET /api/v1/reports/NAME?period=...&by=...&weeks=...=
+and the =/reports/NAME= page.
+
+* The money calendar
+
+=money calendar= prints the agenda of every dated money event between two
+inclusive days, through the =money_calendar= report:
+
+#+begin_src sh
+venturectl money calendar --from 2026-03-01 --to 2026-03-31
+venturectl money calendar --from 2026-03-01 --to 2026-03-31 --kind bill --as-of 2026-03-02
+venturectl -f json money calendar --from 2026-03-01 --to 2026-03-31
+#+end_src
+
+=--from= and =--to= are required. =--kind= keeps one of =recurring=,
+=bill=, =invoice=, =dunning=, =payroll= or =tax=; an unknown kind is
+refused. =--as-of= is the day overdue items are carried to. Each day prints
+with its ISO week and per-currency net, then one line per event. =-f json=
+prints the report unchanged. See [[file:money-calendar.org][the money calendar]].
 * Transactional mail
 
 =venturectl mail send to=... subject=... body=...= enqueues; =--html FILE=
@@ -318,6 +389,21 @@ creates are ordinary records: =venturectl list mail_inbound=, =venturectl
 list mail_unmatched_sender dismissed=false=. See [[file:mail.org][mail]],
 section Inbound.
 
+* Calendar sync
+
+=venturectl calendar sync [organization_id=N] [limit=N]= runs the bounded
+two-way CalDAV sweep over every active =calendar_account= in the
+organization and prints the accounts and changes processed with any
+per-account error. It requires an editor, refuses =--stage=, and never
+deletes: a removal on either side cancels the other. The accounts and
+scheduling links are ordinary records — =venturectl create calendar_account
+url=... owner=ben username=... secret_env=VENTURE_CALDAV_BEN
+calendar_path=/calendars/ben/default/ active=true= (owner-only) and
+=venturectl create booking_page slug=intro owner=ben duration_minutes=30
+timezone=America/Chicago availability='{"mon":"09:00-17:00"}' active=true=;
+=venturectl list calendar_event= shows what the sync linked. See
+[[file:calendar.org][calendar sync]].
+
 * Quote actions
 
 =venturectl quote send ID= freezes and queues a proposal.
@@ -334,7 +420,26 @@ approval. =venturectl lead reassign ID [owner=NAME]= assigns explicitly or
 runs matching rules again. Generic =create/update lead= supports capture and
 qualification; converted state and references belong to the service.
 Recycle with =status=recycled unqualified_reason=... recycle_until=YYYY-MM-DD=.
+
+=venturectl leads reroute ID= clears the owner and evaluates the routing
+rules again in position order, recording "Lead routed" or "No rule matched"
+on the timeline. =venturectl leads rescore ID= clears a manual score mark
+and applies the scoring formula. Both take no other arguments, refuse
+converted leads, do not accept =--stage=, and are also spelled =lead reroute=
+/ =lead rescore=. Rules themselves are ordinary records:
+=venturectl create lead_routing_rule ...= and
+=venturectl create lead_scoring_rule ...=.
+See [[file:leads.org][leads]] for capture forms, duplicate policies,
+routing, scoring and reports.
 See [[file:leads.org][leads]] for capture forms, duplicate policies and reports.
+
+=venturectl crm preview MANIFEST= reads a migration manifest, inlines the
+CSV files its =files= member names (relative to the manifest) and creates a
+=crm_import= batch in the preview state. =venturectl crm import MANIFEST=
+does the same and imports it; =crm import ID= imports a previewed batch,
+=crm activate ID= accepts it and =crm rollback ID= removes what the batch
+created. See [[file:crm-import.org][CRM migration]] for the manifest, the
+built-in HubSpot, Zoho CRM and Salesforce column maps and the refusals.
 * Planned activities
 
 =venturectl activity complete ID outcome=...= completes planned work through
@@ -375,6 +480,13 @@ See [[file:cutover.org][accounting cutover]].
 jurisdiction return pack. =contractor-tax prepare|review|approve|export=
 builds a 1099-NEC pack from paid bills. See [[file:tax-filing.org][tax
 filing]] and [[file:contractor-tax.org][contractor 1099]].
+
+=venturectl sales-tax export period=PERIOD [jurisdiction=CODE]
+[organization_id=N] [as_of=DATE]= writes the =sales_tax_return= report as
+the CSV a filer keeps: one quoted row per jurisdiction with gross, exempt
+and taxable sales, tax collected, tax credited and net due. =report
+sales_tax_return PERIOD= is the same figures through the generic report
+surface. See [[file:sales-tax.org][sales tax by jurisdiction]].
 * Banking actions
 
 =venturectl bank ACTION ID [JSON|@FILE]= calls the banking service over REST.
@@ -389,6 +501,13 @@ See [[file:banking.org][Banking]] for import mappings and action parameters.
 Fill its required fields and loss reason first with ordinary =update deal=.
 Generic updates cannot change =stage=, =stage_id= or =closed_at=.
 See [[file:pipelines.org][Sales pipelines]] for configuration and forecasting.
+
+=venturectl deal quote ID= copies the deal's =deal_line= records into a
+draft quote linked to the deal, or revises the deal's latest quote when one
+exists, through =VentureDealService=. It needs the =quotes= module and at
+least one line. Manage lines with ordinary =create= / =update= / =delete
+deal_line= after =describe deal_line=; the deal's =value= is derived from
+them while any exist and cannot be updated directly.
 * Follow-up sequences
 
 =sequence enroll ID contact_id=ID [field=value ...]= enrolls through the
@@ -408,6 +527,10 @@ Configure sequences and their steps with ordinary =create= / =update=
 commands after =describe sequence= and =describe sequence_step=. Sending
 hours and weekdays are interpreted in the sequence timezone. See
 [[file:sequences.org][follow-up sequences]] for checkpoints and the adapter contract.
+
+=report sequence_engagement [PERIOD]= lists sent, opened, clicked and reply
+counts and rates per step. Tracking is on only when =update organization ID
+sequence_tracking=true= and the sequence's =tracking= flag are both set.
 * Record actions
 
 =venturectl act TYPE ID ACTION [key=value ...]= discovers the action and
@@ -440,3 +563,71 @@ venturectl -f csv report general_ledger 2026-08 organization_id=1 currency=USD a
 The =statements= reports accept =compare_to= for a prior period, =as_of= for
 an accounting cutoff, and one =organization_id= and =currency=. General
 ledger optionally accepts =account_id=. See [[file:statements.org][financial statement definitions]].
+
+* The year-end pack
+
+The year-end pack is a report too, so the same verb runs it; =-f csv= gives
+the retained shape (one line per file line) and the zip comes from the web
+route:
+
+#+begin_src sh
+venturectl report year_end_pack fy_2025 organization_id=1 basis=accrual
+venturectl create saved_report name="FY2025 year end" report_name=year_end_pack period=fy_2025
+venturectl create report_pack name="Year end" schedule="0 8 1 1 *" saved_report_ids=3
+curl -H "Authorization: Bearer $TOKEN" -o year-end-pack.zip \
+  'https://venture.example/books/year-end-pack.zip?period=fy_2025'
+curl -H "Authorization: Bearer $TOKEN" -o retained.zip \
+  'https://venture.example/books/packs/5/year-end-pack.zip'
+#+end_src
+
+See [[file:reporting.org][the year-end pack]] for what is in it.
+
+* Backups
+
+#+begin_src sh
+venturectl create backup_schedule name=Nightly scope=organization schedule=daily retention=14 verify=true
+venturectl backup run 1                    # write it now; the run's size, sha256 and status come back
+venturectl backup verify 7                 # restore run 7 into an empty database; verification is tie or mismatch
+venturectl backup restore-drill name="Q3 drill"   # drill the latest backup and keep the report
+venturectl list backup_run status=succeeded
+#+end_src
+
+All three verbs are actions and need the =admin= role. =run= takes an
+optional =as_of=DATE=; =restore-drill= takes =run_id= (default: the latest
+succeeded backup of =organization_id=, or of the default organization). The
+sweep that runs due schedules is the =backups_run= automation handler. See
+[[file:backup.org][scheduled backups]].
+* Duplicates
+
+#+begin_src sh
+venturectl dedupe scan [kind=company|contact] [organization_id=N]
+venturectl dedupe merge ID survivor=N
+venturectl dedupe dismiss ID
+#+end_src
+
+=dedupe scan= proposes =duplicate_candidate= rows for one organization and
+merges nothing; its answer reports the number of open candidates as =score=.
+=dedupe merge= folds the other record of candidate =ID= into the survivor in
+one transaction; =--stage= proposes it for approval. =dedupe dismiss= closes
+a candidate as not a duplicate. =list duplicate_candidate status=open= reads
+the proposals. A non-admin must name the organization to scan; each verb is
+the =act= command on =duplicate_candidate= with typed arguments. See [[file:dedupe.org][duplicates]] for the matching rules and
+what a merge moves.
+* Documentation
+
+=venturectl docs build= renders =docs/*.org= and =README.org= to a static
+site; it is the one verb that needs no server, so an installed CLI can
+rebuild the site a hosted instance serves at =/docs=. =make docs-site=
+runs the same thing.
+
+#+begin_src sh
+venturectl docs build                                   # ./docs -> ./build/docs-site
+venturectl docs build source=/srv/venture/src output=/srv/venture/docs-site
+venturectl docs build renderer=builtin                  # without Emacs
+#+end_src
+
+=renderer= is =auto= (Emacs's exporter when =emacs= is on =PATH=, the
+builtin otherwise), =emacs= or =builtin=. A broken internal link or a
+document not linked from =docs/index.org= is refused with exit code 8
+and a message naming it; nothing is written. See
+[[file:docs-site.org][The documentation site]].

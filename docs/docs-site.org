@@ -1,0 +1,164 @@
+#+title: The documentation site
+#+description: docs/*.org rendered to a static site, served by every instance at /docs, with the checks that keep it whole
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-17]
+#+updated: [2026-09-18]
+#+version: 0.6.0
+
+* What it is
+
+The documentation is written in Org, one file per subject under =docs/=,
+with =docs/index.org= as the table of contents and =README.org= at the
+root. This page describes the site rendered from those files: a flat set
+of HTML pages, a left nav generated from the index, links rewritten to
+point within the site, a client-side search box, and two checks that fail
+the build rather than let the site go out with a hole in it.
+
+Every running VENTURE serves the site at =/docs=, read-only and without a
+session, so a hosted instance documents itself. Nothing is published
+anywhere else, and there is no toolchain to install: the generator is
+part of =venturectl=.
+
+* Rendering it
+
+#+begin_src sh
+make docs-site                       # build/docs-site/
+venturectl docs build                # the same, from an installed CLI
+venturectl docs build source=. output=/srv/venture/docs-site renderer=builtin
+#+end_src
+
+=make docs-site= renders every =docs/*.org= and =README.org= into
+=build/docs-site/=; =make install= renders it too and installs the result
+under =$(VENTUREDATADIR)/docs-site=, which is where a server looks by
+default. =venturectl docs build= is the same generator without make; it
+is the one =venturectl= verb that talks to no server, and it takes three
+optional =key=value= arguments:
+
+| Argument     | Default             | Meaning                                              |
+|--------------+---------------------+------------------------------------------------------|
+| =source=     | =.=                 | the checkout: the directory holding =docs/= and =README.org= |
+| =output=     | =SOURCE/build/docs-site= | where the site is written; created if absent   |
+| =renderer=   | =auto=              | =emacs=, =builtin=, or whichever is available        |
+
+It prints what it did: =Rendered 59 pages to build/docs-site with the
+emacs renderer=. Pass =DOCS_RENDERER=builtin= to =make docs-site= to force
+the renderer there.
+
+** Two renderers, one site
+
+Org's own exporter is the reference rendering, so when Emacs is on =PATH=
+the generator runs =emacs --batch= once over every document with =ox-html=
+and takes the bodies it produces. On a machine without Emacs (the
+container image, a bare server) the builtin renderer in
+=src/docs/venture-org-html.c= renders the subset the documentation uses:
+headings, paragraphs, bulleted and numbered lists with nesting, tables
+with a header rule, =src= and =example= blocks, quotes, horizontal rules,
+and the inline =verbatim=, =~code~=, =*bold*=, =/italic/= and links. The
+nav, the page shell, the link rewriting, the search index and the checks
+are the same code whichever renderer produced the body, and heading
+anchors are made identical (=id="the-heading-text"=) so a link with a
+heading search lands in the same place either way.
+
+Asking for =renderer=emacs= where there is none is refused
+(=VENTURE_ERROR_UNSUPPORTED=); =auto= falls back silently and says which
+it used.
+
+** What a page gets
+
+Each document becomes =SLUG.html=, the slug being the file name without
+=.org= in lower case: =docs/money.org= is =money.html=, =README.org= is
+=readme.html=. A page is the document's =#+title:= as its heading, its
+=#+description:= as a lede, the body, and the nav. Beside the pages go
+=venture-docs.css=, =venture-docs.js= and =search-index.json=.
+
+The nav comes from =docs/index.org=: every heading there opens a group
+and every list item whose text is a link to a document is an entry, in
+the order written, on every page, with the current page marked. Groups
+with no entries are not shown, which is why the index's prose costs
+nothing. Adding a document to the site is adding its line to the index.
+
+Search is the box at the top of the nav. It reads
+=search-index.json=, one entry per page with its title, description and
+text, and ranks matches in the browser as you type; nothing leaves the
+page and no service is called. Enter opens the first hit.
+
+* The checks
+
+The generator refuses to write anything when either of these holds, and
+a refused build leaves no site behind, so the server never serves a
+half-rendered one:
+
+- *A broken internal link.* Every =file:= link in every document
+  is resolved against the tree, relative to the linking document as Org
+  does it. A target that is not there, or that lies outside the checkout,
+  is =VENTURE_ERROR_DOCS_BROKEN_LINK=, and the message names the document
+  and the link. A link to a real file that is not a document (the
+  =Containerfile=, a plugin's source) is rendered as its name rather than
+  as a link into nowhere.
+- *A document not linked from the index.* A =docs/*.org= that
+  =docs/index.org= does not link, even one another document links, is
+  =VENTURE_ERROR_DOCS_UNLINKED=: nobody could find it in the nav. A
+  missing =docs/index.org= is =VENTURE_ERROR_NOT_FOUND=; there is no site
+  without one.
+
+Both fail =make docs-site= with exit code 8, and =make install= with it.
+=test-docs= proves each with a fixture tree.
+
+A =::*Heading= search on a file link becomes an anchor on the target page
+(=money.html#allocation=), and =::#custom-id= a custom one. Other search
+forms are dropped, not refused.
+
+* Serving it
+
+The =docs= module (on by default, requires only =core=) registers
+=/docs=, which redirects to =/docs/index.html=, and =/docs/:page=, which
+serves one file from the top level of the directory the =docs.site_dir=
+setting names. Only a name of the shape the generator writes is served
+(=[a-z0-9_-]+.html=, the stylesheet, the script, the search index); a
+path with a directory in it, an =.org= source or anything else is 404,
+and nothing is ever written. No session is needed, so the sign-in page
+can link to the documentation, and the rest of the server still asks for
+one.
+
+An instance whose site was never rendered answers =/docs/index.html=
+with a 404 page that says what to run and where it looked, rather than a
+bare error; switching the module off makes every =/docs= path a plain
+404.
+
+| Setting          | Environment              | Default                          |
+|------------------+--------------------------+----------------------------------|
+| =docs.site_dir=  | =VENTURE_DOCS_SITE_DIR=  | =$(VENTUREDATADIR)/docs-site=    |
+
+=make run=, =just start= and the demo script point it at the tree's
+=build/docs-site= so a development server serves what you just rendered.
+The container image renders the site at build time with the builtin
+renderer and installs it with the binaries.
+
+* The quickstart
+
+[[file:quickstart.org][The quickstart]] is the site's first page for a
+stranger: prerequisites, build, first run with the demo organisation, the
+five-card home, an invoice, a bank statement that pays it, a closed
+period, stop. Every shell block after the build is named (=#+name:
+qs-...=) and =tests/docs-quickstart.sh= extracts them in order, runs them
+in one shell against a throwaway SQLite instance on a private port and
+state directory, and asserts each step's result: the invoice is =sent=
+for 250.00 USD, the bank line is =matched= and the invoice =paid=, the
+period is =closed= with its stamp, the instance is gone afterwards. A
+block in the document the script does not assert fails the run, so the
+page cannot drift from what the suite proves. =test-docs= drives it under
+=make test=.
+
+* Testing
+
+=make DEBUG=1 test-one T=test-docs=. The binary renders a fixture tree
+with each renderer and checks the same shape from both; fails a build on
+a broken link, a link that escapes the tree, an orphaned document, an
+indirectly linked document and a missing index; renders the real
+=docs/= with the builtin renderer and checks every file became a page;
+drives =venturectl docs build= and its refusals; starts a server with
+=security-require-auth= on and reads =/docs= without a session, including
+the not-built page and the module switch; checks that =README.org= and
+=docs/index.org= point here; and runs the quickstart. The Emacs case
+skips, not fails, where Emacs is absent.

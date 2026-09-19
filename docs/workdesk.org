@@ -158,3 +158,32 @@ The writes that cannot wait in the confirmation queue — a macro is a comment p
 - *A derived write bumps the version.* The first-reply stamp and the logged-hours total are saves of the ticket, so a form or an object read before them is a version behind and its save is a conflict. A page reloads; code re-reads. The macro saves the ticket before its reply for exactly this reason.
 - *The sweep is lazy.* Nothing runs on a timer; the board and the inbox sweep when opened, bounded. An install that wants breaches marked overnight calls =POST /api/v1/sla/sweep= from a cron rule.
 - *An assignee is a username.* The inbox resolves it to a user; a name that is not a user is simply nobody to tell.
+
+* What support costs
+
+The =support= report says how the desk is doing; the =support_rollup=
+report says what it costs, per customer. One row per company for the
+tickets raised in the period: raised, closed, open now, service levels
+missed, median minutes to the first reply and to resolution, satisfaction,
+agent minutes and the cost. The cost is the worklogs' minutes at an hourly
+rate, or a flat rate per ticket that has no minutes, both set once on the
+organisation's =headline_setting=:
+
+#+begin_src sh
+venturectl update headline_setting 1 support_hourly_rate=60 support_ticket_rate=25
+venturectl support rollup --from 2026-08-01 --to 2026-08-31 --sort -tickets
+venturectl -f csv report support_rollup 2026-08 min_tickets=3 > support.csv
+#+end_src
+
+The same figure is the Support card's number on the home page and the
+"Support cost (this month)" line on every company's page, all three read
+through one function, so they cannot disagree. The line is shown to whoever
+may see the organisation's totals --- the same rule as the cards --- and
+links to the report narrowed to that company. =group_by=product= turns
+the rows into one per product, read from a custom field called =product=
+on the ticket. The columns, the rates, the rounding and every refusal are
+defined in [[file:reporting.org][Reporting]].
+
+Nothing is stored and no ticket is touched: the rollup reads the tickets
+and worklogs at the moment of asking, so a worklog corrected afterwards
+corrects the cost.

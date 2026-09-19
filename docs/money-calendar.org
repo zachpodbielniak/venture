@@ -1,0 +1,152 @@
+#+title: The money calendar
+#+description: Every dated money event on one grid, with a daily and weekly net per currency
+#+authors: Ben Doty
+#+categories: projects docs
+#+created: [2026-09-17]
+#+updated: [2026-09-17]
+#+version: 0.6.0
+
+* What it answers
+
+Money out and money in, by day. The =money_calendar= module puts every
+dated money event the other modules already know about on one grid:
+recurring schedules expanded forward, approved bills on their due date,
+issued invoices on theirs, the reminder steps a dunning policy will send,
+pay runs not yet disbursed and tax packs not yet submitted. Each day and
+each ISO week shows its net, per currency. Nothing here is a new record:
+the calendar reads, it never writes, and a date is changed on the record it
+belongs to, not by dragging it.
+
+The module requires =receivables= and =payables= and suggests =recurring=,
+=dunning=, =payroll= and =tax_filing=; a source whose module is off simply
+contributes nothing. Switching =money_calendar= off hides the report, the
+page, the feed and the CLI verb together.
+
+* Events
+
+An event is a #VentureMoneyCalendarEvent: a kind, a calendar day, a
+title, an amount as =VentureMoney=, a direction (=in= or =out=), the
+record it points at (=vendor_bill:12=), the counterparty and venture where
+the record has one, and two flags: =overdue= and whether it counts in the
+net.
+
+| Kind | Source | Day | Amount | Direction |
+|------+--------+-----+--------+-----------|
+| =recurring= | =recurring_schedule=, not paused, not a journal | each occurrence from the schedule's cycle index forward | the template: invoice or bill lines summed (quantity x unit price plus tax), an expense's amount | invoice in; bill and expense out |
+| =bill= | =vendor_bill= approved or partially paid | =due_date= | the open balance from =VenturePayablesService= | out |
+| =invoice= | =invoice= sent or partially paid | =due_at= | the open balance from =VentureSettlementService= | in |
+| =dunning= | each policy step not yet recorded as a =dunning_event= | =due_at= plus the step's offset | the invoice's open balance, shown but not counted | in |
+| =payroll= | =payroll_run= with status =imported= | =period_end= | net pay (until =net_disbursed=) and liabilities (until =tax_disbursed=), as two events | out |
+| =tax= | =tax_filing= draft or reviewed | =period_end= | the pack's =tax= | out |
+
+Recurring occurrences use the schedule's own IANA timezone, exactly as the
+recurring sweep does: the start is moved into that zone and months, weeks,
+days or years are added there, so a schedule anchored on the 31st lands on
+28 February and returns to 31 March, and a local 23:30 in Auckland stays
+on its day across the daylight-saving change instead of slipping to the
+next one in UTC arithmetic. An occurrence the sweep has already generated
+is not projected again; the document it produced appears in its own right.
+Journal schedules have no direction and are not money.
+
+Bills and invoices carry their *open balance*, so a partially paid invoice
+shows what is still owed. Drafts, paid, void and disputed documents, and
+invoices or customers switched out of dunning, are not on the calendar.
+An item past due and still open is *carried to today* and flagged
+=overdue=: the grid shows what must be paid, not what should have been. Its
+anchor day, the original due date, is kept, so the feed's UID does not
+change from one day to the next.
+
+Pay runs record no pay date and tax packs record no filing deadline; both
+use the end of the period they cover. That is an assumption, written here
+so nobody mistakes it for a fact about the jurisdiction.
+
+* Nets
+
+Every day and every ISO week (=2026-W03=, on the ISO week-numbering year)
+has one net per currency: money in less money out over the events that
+count. A day with a USD invoice and a EUR bill has a USD net and a EUR
+net, both shown, neither converted; the calendar never adds across
+currencies. Reminders show the invoice balance on the day the reminder
+goes out, but the invoice is already counted on its due date, so a
+reminder is never in a net.
+
+* The report
+
+=money_calendar= is an ordinary registry report. It takes the period, or
+=from= and =to= as an explicit inclusive span, and =as_of= for the day
+overdue items are carried to (default now). =kind= keeps one kind and
+refuses an unknown one; =customer_id= or =vendor_id= keep one
+counterparty; =venture_id= and =currency= narrow further. Rows carry
+=date=, =week=, =kind=, =title=, =counterparty=, =direction=, =amount=,
+=currency=, =status= (=due=, =overdue= or =reminder=), =record= and the
+=day_net= and =week_net= of that row's day and week. Metrics give the
+event count and, per currency, money in, money out and the net over the
+span.
+
+#+begin_src sh
+venturectl report money_calendar 2026-03
+venturectl report money_calendar 2026 from=2026-03-01 to=2026-03-31 kind=bill
+curl '.../api/v1/reports/money_calendar?period=this_month&as_of=2026-03-02&format=csv'
+#+end_src
+
+* The page
+
+=/money/calendar= renders month, week and agenda views server-side, like
+every other page: =view= is =month=, =week= or =agenda=, =period= any
+period expression (=2026-03=, =this_week=, =2026-03-02..2026-03-08=), and
+the filter form (=kind=, =company_id=, =venture_id=, =currency=) is
+hx-boosted so a change re-renders in place. Month and week are a grid of
+Monday-to-Sunday rows with each day's events and net, and the ISO week's
+net closing each row; the agenda lists days under their week with both
+nets. Every event links to its record at =/e/TYPE/ID=. There is no drag:
+a due date is a fact on a record.
+
+* The feed
+
+=GET /money/calendar.ics= returns the same events, filtered the same way,
+as all-day =VEVENT=s (=DTSTART;VALUE=DATE=, exclusive =DTEND= the next
+day) with stable UIDs of the form
+=money-KIND-TYPE-ID-ANCHOR@venture=, so a phone calendar can subscribe
+and an overdue bill carried forward updates in place rather than
+duplicating. The writer is the activities module's, so folding and
+escaping are the bytes =/api/v1/activities.ics= already produces. It is
+an export, not a synchronisation protocol, and it needs a viewer token
+like the rest of the API.
+
+* The CLI
+
+#+begin_src sh
+venturectl money calendar --from 2026-03-01 --to 2026-03-31
+venturectl money calendar --from 2026-03-01 --to 2026-03-31 --kind bill --as-of 2026-03-02
+venturectl -f json money calendar --from 2026-03-01 --to 2026-03-31
+#+end_src
+
+Prints the agenda: one heading per day with its week and net, one line
+per event with kind, direction, amount and title, overdue and reminder
+rows marked. =-f json= prints the report as the server sent it. =--from=
+and =--to= are both required; an unknown kind is refused by the server.
+
+* Extending
+
+Sources implement the =VentureMoneyCalendarSource= interface
+(=get_kind=, =get_module=, =expand=) and are held by a
+=VentureMoneyCalendarExpander=; the default expander holds the six built-in
+sources, and a plugin adds one with
+=venture_money_calendar_expander_add()=, replacing any source of the same
+kind. The report, the page, the feed and the CLI all read the expanded
+array, so a new source appears everywhere at once. The =cash_forecast=
+report of the =pnl= work reads the same records; once both have landed the
+two should share this one expander.
+
+* Verification
+
+=test-money-calendar= covers month-end and daylight-saving expansion in the
+schedule's timezone, paused, ended, generated and journal schedules,
+bills and invoices at their open balance, overdue carry with the anchor
+day kept, settled and draft exclusion, dunning steps against recorded
+events, payroll net and liabilities, tax packs by status, the report's
+rows and per-currency nets, from/to and kind options with the unknown-kind
+refusal, module-off refusals for a source and for the whole module, the
+feed's all-day events and stable UIDs, the three page views with filters
+and record links, the feed route's content type, and the CLI verb with
+its usage refusals.

@@ -1,0 +1,2 @@
+Id,Name,Amount,CurrencyIsoCode,StageName,CloseDate,OwnerId,AccountId,ContactId,CreatedDate
+006A,Arc reactor,150000,USD,Closed Won,2025-05-01,005X,001A,003A,2025-01-03T08:00:00.000Z

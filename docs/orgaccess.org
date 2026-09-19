@@ -69,6 +69,7 @@ owner, active team member, or a child of an assigned venture.
 | sales             | assigned             | assigned              | denied                             | read only             |
 | support           | assigned             | assigned              | denied                             | read only             |
 | viewer            | assigned             | propose creation only | denied; proposals need approval    | read only             |
+| accountant        | empty/404            | 404                   | read/export only; writes refused naming the role | empty/404 |
 | no membership     | empty/404            | 404                   | empty/404                          | empty/404             |
 
 Members can read their organization's row for the picker. Membership does
@@ -102,6 +103,46 @@ request principal retain their service authority; a new user-facing tool must
 enter a policy scope with its caller, as the built-in assistant tools do.
 
 Database audit, save, delete and transaction notifications invoke trusted service consumers independently of the triggering request's read scope, preserving notifications to other users and configured automation. Delayed webhook delivery and coding-progress callbacks likewise restore service authority before updating their records.
+
+* The accountant role
+
+An outside accountant is invited the way any user is: the global owner
+creates the =user= (global role =viewer=, so nothing outside an organisation
+opens to them) and an organisation owner or admin creates an
+=organization_membership= with role =accountant=, from the generated form,
+=POST /api/v1/organization_membership= or =venturectl create
+organization_membership=. A CPA with several clients holds one accountant
+membership per client organisation; the entity picker lists exactly those,
+switching narrows every read to the chosen client, and deactivating one
+membership removes that client alone. Tokens minted while the user was an
+accountant keep that snapshot: a later promotion cannot widen what the
+token can do. The global role check still runs first, as for every member:
+a global viewer's write over REST falls at "needs the editor role" before
+the membership is consulted, and promoting the accountant to global
+=editor= only changes which refusal they read — the membership then
+refuses the same write naming the accountant role, and CRM stays not
+found.
+
+The books, as this role sees them, are every record type owned by a module
+that requires =finance= — ledger accounts, journals and lines, invoices and
+receivables, bills and payables, bank accounts and statements, tax codes,
+filings and 1099 packs, fixed assets, saved reports and scheduled packs,
+fiscal years and periods — except payroll, plus the organisation row for
+the picker, =company= rows because aging and 1099 summaries name customers
+and vendors, and =document= rows attached to an expense. Reads and exports
+of those succeed; every =write= and =delete= is refused with a
+=VENTURE_ERROR_PERMISSION_DENIED= whose message names the accountant role,
+before any row is touched, and the role never proposes a change for
+approval. Everything else — leads, deals, activities, tickets, mail,
+sequences, contacts, sales, dashboards, saved views, webhooks, plugin
+settings, teams, memberships and other users — does not exist: reads and
+writes alike answer =VENTURE_ERROR_NOT_FOUND=, the same as for a stranger,
+so a 403 never confirms a record. The accountant's own =user= row stays
+readable for the account page and sign-out.
+
+On the web an accountant-only user lands on =/books= from =/= and the
+sidebar offers Books alone (see [[file:reporting.org][the year-end pack]]).
+=test-accountant= proves each of these rules, refusals included.
 
 * Proposals and posting
 
@@ -159,3 +200,16 @@ Internal derived work without an authenticated request principal or explicit use
 Consent snapshots run in the same serializable transaction as the protected command. Pending proposals expire after 24 hours, and a process restart or posting-rule registry replacement requires a fresh proposal. A final policy-revision check precedes consumption. Opaque exchange-policy callbacks are refused under second-actor rules; the supported exchange policy is the same organization's persisted rate table.
 
 The transaction binding, server-side enforcement, expiry and single-use consumption follow the principles in [[https://cheatsheetseries.owasp.org/cheatsheets/Transaction_Authorization_Cheat_Sheet.html][OWASP Transaction Authorization]]. Operators authorize the significant inputs by repeating the exact business command under their own account; approval records store the fingerprint rather than a second copy of sensitive input data.
+
+* Second factor
+
+The =mfa= module (requires =orgaccess=) adds TOTP enrolment, verification
+at sign-in, recovery codes and the organization setting
+=require_mfa_for_admins= on the =mfa_policy= record. While that setting is
+on, an organization owner or admin without an enabled second factor is
+redirected to =/account/mfa/enrol= from every browser path and refused with
+403 from every API path, by the same request middleware that applies the
+membership boundary. A global owner or admin is reached by any
+organization's requirement. =user_mfa= and =mfa_recovery_code= are personal
+records: =user_id= is their personal owner, and their secret and hash
+fields are sensitive. See [[file:security.org][Security: the second factor]].

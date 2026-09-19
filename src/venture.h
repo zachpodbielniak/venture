@@ -112,6 +112,12 @@
 #include "autojournal/venture-posting-profile.h"
 #include "recurring/venture-recurring-records.h"
 #include "dunning/venture-dunning-records.h"
+#include "leads/venture-lead-routing-records.h"
+#include "tax/venture-sales-tax-records.h"
+#include "calendar/venture-calendar-records.h"
+#include "crm-import/venture-crm-import-records.h"
+#include "dedupe/venture-dedupe-records.h"
+#include "orgaccess/venture-mfa-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -132,6 +138,13 @@
 
 #include "quotes/venture-quote-records.h"
 #include "goods/venture-goods-records.h"
+
+/*
+ * The documentation site generator is core: `venturectl docs build`
+ * renders it on a machine that need not build the server.
+ */
+#include "docs/venture-org-html.h"
+#include "docs/venture-docs-site.h"
 
 /* --- Server-only subsystems ---------------------------------------------- */
 
@@ -228,6 +241,7 @@
  * signatures, and before the web server, which uses both. */
 #include "web/venture-auth.h"
 #include "orgaccess/venture-access-policy.h"
+#include "orgaccess/venture-accountant-role.h"
 
 #include "ai/venture-ai-service.h"
 #include "ai/venture-ai-assist.h"
@@ -258,6 +272,23 @@
 #include "reconciliation/venture-reconciliation-service.h"
 #include "report/venture-headline-home.h"
 #include "dunning/venture-dunning-service.h"
+#include "backup/venture-backup-schedule-service.h"
+#include "leads/venture-lead-routing.h"
+#include "tax/venture-sales-tax-service.h"
+#include "report/venture-year-end-pack.h"
+#include "report/venture-customer-health.h"
+#include "calendar/venture-caldav-client.h"
+#include "calendar/venture-icalendar.h"
+#include "calendar/venture-calendar-sync-service.h"
+#include "calendar/venture-booking-service.h"
+#include "money-calendar/venture-money-calendar.h"
+#include "crm-import/venture-crm-import-service.h"
+#include "dedupe/venture-dedupe-service.h"
+#include "report/venture-support-rollup.h"
+#include "report/venture-report-pack-delivery.h"
+#include "orgaccess/venture-totp.h"
+#include "orgaccess/venture-qr-svg.h"
+#include "orgaccess/venture-mfa-service.h"
 #include "report/venture-cash-vs-booked.h"
 
 #endif /* VENTURE_SERVER_BUILD */

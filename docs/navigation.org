@@ -1,0 +1,37 @@
+#+title: Navigation
+#+description: The sidebar, grouped by the five questions an owner asks: money in, money out, growth, customers, support
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-18]
+#+updated: [2026-09-18]
+#+version: 0.6.0
+
+* What this is
+
+The sidebar is grouped by the question a page answers, not by the module that owns it. An owner opening VENTURE asks five things — what is coming in, what is going out, what is growing, who the customers are, who needs help — and the first five headings after the overview are those five, in that order. Everything else (the business itself, the books, the system) keeps the heading it always had, after them.
+
+This is grouping and labels only. Every page keeps its URL; nothing is moved or redirected; a module that is off hides its rows exactly as before; the role each page asks for is unchanged.
+
+* The section map
+
+| Heading   | Question              | Pages                                                                                                                                                                  |
+|-----------+-----------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Money in  | What is coming in?    | Sales, Invoices, New invoice, New quote, Payments, Allocations, Customer credits, Refunds, Collections, Subscriptions, Sales orders, Bank feeds                        |
+| Money out | What is going out?    | Expenses, Pay bills, Purchasing, Claims, Payroll, Recurring                                                                                                            |
+| Growth    | What is growing?      | Sales board, Deals, Campaigns, Newsletters, Posts                                                                                                                      |
+| Customers | Who are the customers? | Companies, Contacts, My day                                                                                                                                            |
+| Support   | Who needs help?       | Tickets, Sprints, Knowledge                                                                                                                                            |
+
+A page is listed under one question only. The headings that stay as they were, in the order they are drawn: Overview (Dashboard, Dashboards, Reports) before the five; then Business, Money (the chart of accounts, tax, journals and fiscal years), Thinking, Code, Factory, System, and Accounting (Books, Budgets, Owner equity, Group, Period close, Tax filings, Capture inbox). A heading the regrouping emptied — Relations, Activities, Sales pipelines, Invoicing, Quotes — is no longer drawn.
+
+Pages that have not yet been filed under a question are drawn under the heading their row in the link table carries, so a module added later is never hidden: it appears where it always would have until a row is appended to the section that answers its question.
+
+* How it is built
+
+The link table (=venture_web_navigation()=) is unchanged and stays in the order it was written — its URLs, labels, icons, module gates and the heading each row carries. The five questions are a second table over it, =venture_web_navigation_sections()=: each section is a heading and the paths it gathers, in the order they are drawn. Drawing the sidebar walks the link table once; a row a section has claimed is drawn under its question rather than in place, and the five questions are drawn together after the first heading.
+
+A section's heading follows the first of its rows actually shown, the same rule as before, so a question every one of whose modules is off leaves no heading over nothing. The command palette (Ctrl+K) and the assistant's page context read the link table directly and are unaffected.
+
+* Tests
+
+=test-plugin= asserts each section's membership, that every path a section gathers is a row in the link table, that no path is gathered twice, and that no row is orphaned — every row is either under a question or under a heading it inherits. =test-auth= renders the sidebar as an administrator and checks the headings appear in order after Overview, that a gathered page is drawn once and under its question, that the emptied headings are gone, and that switching a module off removes its row and leaves the question's heading in place. The anonymous-route test is untouched: it walks the same link table, so every page still answers a redirect to the sign-in page when nobody is signed in.

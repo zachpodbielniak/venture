@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-12]
+#+updated: [2026-09-18]
 #+version: 0.6.0
 
 * Testing
@@ -219,9 +219,20 @@ The confinement the in-process runner rests on. Paths inside the workspace resol
 
 That runs are off unless the operator turns them on, that starting one returns while it is still live rather than blocking the main loop, that a ticket with no rule refuses, and that a run left in flight by a previous process is reconciled to =interrupted= rather than resumed.
 
+** =test-customer-health=
+
+That the health band is a function of the thresholds and not a stored label (loosen them and a red company drops to amber); that a touch is any of an interaction, a completed activity or inbound mail through a contact, and that one dated after the reading does not count; that an invoice six days overdue is counted but is not a reason at a 15-day threshold; that the sweep creates one =check in: <company>= for the account owner, never a second while it is planned, another once it is cancelled, and stops at its limit; that the sweep is one transaction, so a refused save part-way through leaves no check-in behind; that the sweep refuses without an organisation, with =activities= off and with the module off; that the churn card gains an =At risk= line with a link only while the module is on; and that the REST route, the CLI verb, the report page filtered to red and the company page all reach the same reading. Every date is anchored on an explicit =as_of= so nothing drifts with the calendar. Written red before the module existed: each case failed on the missing report, the missing module or the missing line.
+
 ** =test-automation=
 
 That pod handlers run on the thread that dispatched them. podomation's default handler timeout selects an async dispatch path that runs a synchronous handler on a worker thread while the caller blocks in a nested main loop — and VENTURE's handler writes to the database and reads a cascade guard that is not atomic.
+
+** =test-pnl-cuts=
+
+The four cuts of the P&L, each written to fail before the report existed (the registry lookup returned nothing) and to pass by arithmetic checkable by hand. Revenue by customer: a receipt counts as paid and a refund comes off it, an issue event counts as issued and a credit note comes off it, a draft counts for nothing, a January customer has no February row, the converted lead's source is on the row and =by=source= folds the same figures by it; an unknown =by= is refused, and a euro customer keeps a euro row that the dollar totals note rather than add. Spend by vendor: approved bill lines and expenses sum per vendor with the acquisition share split out, a draft and a March bill count for nothing, =by=category= regroups the same money, an uncategorised expense lands in its own group and a euro bill is noted. Recurring costs: monthly, weekly, daily and yearly schedules scale to the month exactly, a cancelled, a paused and an ended schedule are excluded and counted, an invoice schedule is not a cost, a template with no amount is listed unpriced, ending a running schedule takes it out, and a schedule ending today is still a cost today because =end_at= is the inclusive last date. Cash outlook: eight weekly buckets from the period's start with overdue, later and undated rows, part-paid balances, drafts and paid documents counting for nothing, the running balance from the bank statement, =weeks= narrowing the horizon and refusing 0 or 200, no statement meaning no balance rather than zero, and --- in an install whose calendar is New York --- the self-built start being midnight UTC on the local date, so a bill due on the start day is week 1 and not overdue. The P&L card still shows bank cash and now carries the four links; the =pnl_cuts= switch hides the four reports and leaves =budgets='s =cash_forecast= alone.
+** =test-money-calendar=
+
+That the calendar shows what is due, not what was scheduled: month-end and daylight-saving expansion in the schedule's own timezone (a 23:30 Auckland occurrence stays on the 1st where UTC arithmetic would slip to the 2nd), paused, ended, generated and journal schedules left out, bills and invoices at their open balance with settled and draft ones absent, overdue items carried to today with the anchor day kept so the feed UID is stable, dunning steps against the events already recorded, payroll net and liabilities as two events, tax packs by status, and nets per currency that are never added across currencies. The negative cases: an unknown =kind=, a source whose module is off, the whole module off (report gone, events refused, page and feed 404), and the CLI verb without =--from= and =--to=. The test was written before the module existed and did not compile against the baseline.
 
 * Adding tests
 
@@ -311,7 +322,12 @@ located problems (JSON numbers, numeric strings, non-object rows, duplicate
 ids, cross-vendor bill numbers) and the strict money grammar refuses locale
 formats unless separators are declared. Trial balance ties and mismatches,
 per-currency and per-bank-account totals, prepayments and negative balances,
-party matching, and AR dates, paid amounts and totals. Receipts on the cutoff
+party matching, and AR dates, paid amounts and totals. An open AR, open AP or
+credit row whose party id is missing, empty, unknown to the payload's
+=customers[]= / =vendors[]= or names an entry without a name is refused
+(=open-ar-customer=, =open-ap-vendor=, =credit-party=) with no company or
+document written and the batch left in preview, and the preview row carries
+the same rule. Receipts on the cutoff
 day are not drift; a payment before the cutoff is, with row evidence kept in
 the appended report. Activation re-runs reconcile and closes periods through
 the cutoff. Rollback unwinds a migrated credit, a real payment and January
@@ -322,6 +338,243 @@ templates and CSV payloads, opening stock and its rollback, the module switch,
 and the page, preview, action,
 template and CSV routes (including the selected legal entity) are covered.
 
+** =test-sales-tax=
+
+Jurisdiction rate windows and address rules from field tables; overlapping
+windows for one code refused with the code named, adjacent windows allowed,
+bad rate, kind or window refused; issuance picks the jurisdiction from the
+customer's address codes and freezes jurisdiction, scaled rate and amount
+on the line while an exempt customer or product freezes the jurisdiction
+at zero; an explicit tax code overrides the rule; exact code matching and
+most-specific-rule precedence; a rule switched off levies nothing while
+the line falls back to its own percent; a rate change after issue leaves the line,
+the event and the return untouched while a later invoice takes the new
+window; =sales_tax_return= per jurisdiction ties to =tax_liability= to the
+cent across issued, exempt, coded, percent-only and voided invoices and
+credit notes; a migrated invoice stamped =opening-at= stays off the return,
+as it does off =tax_liability=, so a cutover's tax is not remitted twice;
+the 1099-shaped CSV export; the module off; and the export
+route and CLI verb over HTTP. Red before the module: the test does not
+compile against the base tree.
+
+** =test-lead-routing=
+
+Routing rules act in position order and the first match wins, an inactive
+rule never does; with routing configured and nothing matching the lead stays
+unassigned and its timeline says "No rule matched", while an organization
+without routing rules keeps the older assignment rules and stays quiet.
+Conditions read columns, references by name and custom attributes, and a
+rule that does not parse is refused when written. Round-robin rotates fairly
+over three team members with a persisted cursor, skips a member whose team or
+organization membership was deactivated, and refuses an empty rota. The score
+is the sum of matching rules with a history row naming them, an unrelated
+edit writes none, a hand-typed score is marked manual and left alone until
+cleared or rescored, and history rows and the routing reference cannot be
+written generically. Both reports are checked on values, and =venturectl
+leads reroute= / =rescore= run against the real binary over HTTP. The binary
+did not compile against master before the feature (=VENTURE_LEAD_ROUTING_ASSIGN_USER=
+undeclared), which is the red step for a feature made of new types.
+
+** =test-backup-schedule=
+
+A due schedule writes a version-4 snapshot whose size and SHA-256 match the
+file and is not dispatched twice on the same day; retention prunes the
+oldest successful run and keeps its record; a failed run (an unwritable
+destination) records its message and deletes nothing even past retention;
+an unparseable cron, an unknown scope and a negative retention are refused
+on save; a =backup_run= cannot be written or deleted generically. An
+installation schedule copies the whole database, credentials included, and
+verifies. Verification ties trial balance, ledger totals and document
+counts against a restore into an empty in-memory database, reports a
+mismatch once the live books move on, runs inside the sweep when the
+schedule says =verify=, and refuses a pruned run or a missing file. The
+drill keeps its report as a named run that retention never counts.
+Migration 000372 succeeds with the module off and leaves no backup tables;
+with it on, both tables exist and hold no invented runs. Over HTTP and the
+CLI: the Backups page shows runs and verdicts to any session,
+owners trigger run, verify and drill, editors and viewers get 403 from the
+page and the REST actions, and the module switch hides everything.
+** =test-accountant=
+
+The accountant membership reads and exports every finance-owned type but
+payroll, the organisation and company rows and expense-attached documents;
+every write and delete is refused naming the role before any row is
+touched, and no proposal is raised. Leads, deals, activities, tickets, mail,
+sequences, contacts, sales, payroll, teams, memberships, other users,
+webhooks and saved views answer not-found for reads and writes alike. A
+CPA's memberships in several organisations scope the picker and the books
+to exactly those; a token minted as an accountant cannot write after a
+promotion. =year_end_pack= yields every file and =index.txt=, names an
+omitted member when its module is off, rides the scheduled pack path into
+=last_output= and rebuilds its zip from those retained bytes. Over HTTP the
+owner invites through the existing user and membership routes; the
+accountant lands on =/books= with a Books-only sidebar, switches entity,
+downloads the zip, reads and exports the books, and receives 404 for CRM
+and 403 naming the role for a write.
+** =test-calendar= and =test-calendar-surfaces=
+
+Calendar sync against an in-memory CalDAV fake: a missing secret refused by
+name before any connection, the =VENTURE_CALDAV_*= prefix, dated calls and
+meetings pushed with the export's UUID-based UIDs, calendar events pulled
+into meetings and updated in place by UID, a rerun that fetches and writes
+nothing, cancellation on both sides instead of deletion, last-modified
+conflict resolution with the loser noted on the timeline, the iCalendar
+reader and writer, booking slots in the owner's zone with busy times and
+buffers, contact deduplication, double-booking refusal and the organization
+sweep. The surfaces binary drives =venturectl calendar sync= and the public
+=/book/<slug>= page over HTTP against a private server.
+** =test-crm-import=
+
+A HubSpot manifest previews, imports and activates with one =crm_import_row=
+per source id, and a rerun creates nothing twice; companies and contacts
+dedupe against existing records by normalised domain and email, a
+conflicting match is an exception that leaves the record untouched, and
+contact-to-company links resolve by source id; deals carry money with
+currency, the mapped stage, owner and close date; an unmapped stage, a lost
+stage without a loss reason, a missing currency, an =attachments= file and
+the "all entities" organization are refused before any write; notes, calls and completed tasks become dated
+interactions and open tasks planned activities; rollback on a database with
+pre-existing records removes exactly what the import created; the Zoho CRM
+and Salesforce built-in column maps and a manifest override are exercised;
+generic writes are refused; an unreadable date rolls the whole import back;
+a second vendor reusing the first vendor's id creates a new record rather
+than matching; migration 000390 records the table pair and succeeds with
+the module off; and the REST routes and =venturectl crm= verbs run over HTTP.
+** =test-deal-lines=
+
+Deal lines drive the deal value: three units at $19.99 less 1000 basis
+points make $53.97, editing and deleting a line recomputes in the same
+transaction, a generic write of =value= is refused by name while lines
+exist and allowed again once none remain, a second currency is refused and
+not persisted, invalid quantities, discounts, prices and references are
+refused, and a line cannot move between deals. The quote handoff copies the
+lines into =DEAL-<id>=, a rerun revises to =-R2= with the current lines and
+no duplicates, refusals (no lines, fractional percent, since-deleted
+product after the header is written) leave no quote behind, and the REST
+route, the deal page button and =venturectl deal quote= are exercised over
+HTTP. Written red first: the binary does not compile without =deal_line=,
+and removing the value refusal or the currency check turns the matching
+case red.
+
+** =test-sequence-tracking=
+
+Consent is off by default at the organization. With both switches on, a
+delivery gets a 64-character token, its links become =/t/c/<token>/<n>=
+with the originals retained and the pixel appended, and the token field is
+omitted from generic JSON. Either switch off leaves the body untouched. Opens count
+once per delivery per UTC day and land on the timeline as outbound
+outreach that never exits the enrollment; every click is recorded and
+resolves to its URL; unknown tokens and link numbers record nothing;
+generic writes and removals of links and events are refused; the per-step
+engagement report counts sent, opened, clicked and replies with whole
+percent rates; and the pixel, redirect, contact page, report route and
+module-off 404s are exercised over real HTTP.
+** =test-dedupe=
+
+Name similarity ignores case, punctuation and legal suffixes; each scan
+reason (email, phone, website, domain with name, name alone) proposes a pair
+with its documented score while unrelated rows do not; a rescan keeps the
+same rows and drops a pair that stopped matching; contacts are scanned apart
+from companies. A merge re-points contacts, interactions, deals, invoices,
+tickets, activities and bills through the field tables, unions the fields
+with the survivor winning, notes the loser's values on the timeline,
+soft-deletes the loser with =merged_into_id=, closes the candidate and writes
+one audit entry; an injected failure after the references moved leaves
+nothing changed. Merging across organizations, onto itself, or with issued
+documents in a currency the survivor lacks is refused, and the opposite case
+accepted; generic writes to candidates and =merged_into_id= are refused; the
+module switch hides and restores the scan. REST scan and merge, the page
+with a merge button each way, the CLI verbs, the =301= forwarding of a merged
+id over =/api/v1= and =/e=, and migration with the module disabled are
+covered against a private server.
+** =test-support-rollup=
+
+The support rollup's worked example --- two customers, an unfiled ticket
+and one from the month before --- checked figure by figure: raised, closed,
+open, breaches, median reply and resolve minutes, satisfaction, agent
+minutes and the cost per row and in total, with a July ticket's August
+minutes kept out of August. The rates and their defaults: =n/a= with no
+rate, the worklog =hourly_rate= when =support_hourly_rate= is zero, the
+integer rate overriding it, a foreign-currency rate left out and noted, a
+flat rate pricing only unlogged tickets, and a third of an hour rounding
+once to 20 minutes. Every option and every refusal: =sort= both ways and
+on the group column, an unknown column, an unknown option, =min_tickets=
+hiding rows without moving the totals and refusing a negative or a word,
+=company= narrowing to one customer and refusing text or zero, =group_by=
+refusing anything but company or product, and the standard organisation
+and venture scope. The product breakdown through a custom field, grouped
+and filtered. The one function: =venture_support_rollup_cost()= equals the
+report's total and the Support card's number, and a company's share.
+Over HTTP: a viewer with a session reads it, an option refusal is a
+refusal, the CSV export is the report's own rendering, no session is 401,
+and with the =tickets= module off the report is not registered and the
+route is 404; the company page shows this month's cost from the same
+function and the home page carries the organisation's; and =venturectl
+support rollup --from --to --sort= in JSON and CSV, with the missing-span,
+wrong-verb and bad-sort refusals.
+** =test-docs=
+
+The documentation site (issue #97). A fixture tree renders to the same
+shape with the builtin renderer and with Emacs (skipped where Emacs is
+absent), and the automatic choice reports which it used. A broken
+=file:= link, a link that escapes the checkout, a document the
+index does not link (directly or through another document) and a missing
+=docs/index.org= each refuse the build and leave no site behind. The real
+=docs/= renders with every file a page and the Start here group in the
+nav. =venturectl docs build= renders and reports; a broken link exits 8
+naming the link, a bad verb or renderer exits 2. A server with
+authentication required serves =/docs=, =/docs/index.html=, the
+stylesheet, script and search index without a session with their content
+types, refuses a directory, an =.org= source and an escape, answers a
+never-rendered site with the page that says what to run, and answers 404
+throughout with the =docs= module off; =/= still redirects to sign in.
+=README.org= and =docs/index.org= point at the site and the quickstart.
+Then =tests/docs-quickstart.sh= runs every named block of
+=docs/quickstart.org= against a throwaway SQLite instance on a private
+port and asserts each step, in order.
+** =test-report-delivery=
+
+A report pack's =deliver= and =recipients= rules on save (the default =none=,
+an unknown mode, an address without =@=, a double =@=, a trailing comma, a
+header-injecting newline, =email= with nobody to mail). A due pack set to
+=email= queues one message through the outbox with the recipients, a subject
+and body naming the pack and its period, the output JSON and a CSV per
+tabular report as retained attachments, and stamps the pack with the
+delivery time, Message-ID and outbox row; nothing is sent until the outbox
+sweep runs, and a second sweep neither re-runs nor re-mails. A refused
+enqueue, the mail module off and no transport configured each record the
+reason on the pack, leave the run and its output untouched, do not re-run
+the report, and let the sweep reach the next pack. The deliver action
+refuses a pack with no retained output and one set to =none=, and re-sends
+the retained output as a new message under a new key. The outbox's inline
+attachments (refused without a name, without data, with data that is not
+base64, and a document reference without attachment storage). The REST
+route refuses anonymous (401), viewer (403), staged and unknown-pack
+requests and answers an editor with the queued message (202); =report packs
+deliver ID= reaches it with an API token, and refuses a missing id.
+** =test-mfa=
+
+The second factor end to end: RFC 6238 appendix B vectors, base32, the QR
+matrix, enrolment with a pending-secret refresh and the key requirement,
+refusal of the password-only sign-in, drift and replay, the five-in-fifteen
+failure window, single-use recovery codes and regeneration, audit
+attribution and redaction, disable, the owner-only reset through the action
+registry and =venturectl=, the =require_mfa_for_admins= setting, and the HTTP
+gate, sign-in flow and REST/CSV/audit redaction. Every clock-dependent
+check uses =VentureMfaService:fixed-time=; the =000410= guard is proven to
+refuse a half-present schema. Needs =venturectl= built, like
+=test-auth=.
+** =test-plugin= and =test-auth=, on the five-question sidebar
+
+The sidebar is grouped by the question a page answers (=docs/navigation.org=).
+=test-plugin= holds the section map to its membership: the five headings in
+order, each path a section gathers, that every gathered path is a row in the
+link table and is gathered once, and that no row is orphaned by the regrouping.
+=test-auth= renders the sidebar and checks the headings are drawn in order
+after Overview, a gathered page is drawn once under its question, the emptied
+headings are gone, and a module switched off loses its row while the question
+keeps its heading. The anonymous-route sweep walks the unchanged link table,
+so every URL still redirects when nobody is signed in.
 ** =test-cash-vs-booked=
 
 The =cash_vs_booked= report over two months of invoices, a void, a credit
