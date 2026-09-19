@@ -32,5 +32,29 @@ VentureDeal *venture_deal_service_move_stage(VentureDealService *self, VentureDe
  * Returns: the default pipeline id, or zero on failure
  */
 gint64 venture_deal_service_ensure_default(VentureDealService *self, gint64 organization_id, GError **error);
+/**
+ * venture_deal_service_line_total:
+ * @line: a deal line
+ * @error: (out) (optional): invalid quantity, price or discount
+ *
+ * Quantity times unit price, less the discount in basis points, rounded
+ * once half to even. Money arithmetic refuses overflow.
+ * Returns: (transfer full) (nullable): the line's extended value
+ */
+VentureMoney *venture_deal_service_line_total(VentureDealLine *line, GError **error);
+/**
+ * venture_deal_service_create_quote:
+ * @self: the service
+ * @deal: persisted opportunity with at least one line
+ * @actor: (nullable): responsible user
+ * @error: (out) (optional): refusal
+ *
+ * Copies the deal's lines into a draft quote linked to the deal, in one
+ * transaction. A rerun revises the deal's latest quote through
+ * #VentureQuoteService instead of creating a second quote.
+ * Returns: (transfer full) (nullable): the new draft quote
+ */
+VentureQuote *venture_deal_service_create_quote(VentureDealService *self, VentureDeal *deal,
+	const VentureActor *actor, GError **error);
 G_END_DECLS
 #endif

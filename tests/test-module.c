@@ -176,7 +176,13 @@ test_module_dependency_conflict_is_refused(void)
 	venture_config_set_module_enabled(config, "goods", FALSE);
 	venture_config_set_module_enabled(config, "mail_sync", FALSE);
 	venture_config_set_module_enabled(config, "dunning", FALSE);
+	venture_config_set_module_enabled(config, "customer_health", FALSE);
 	venture_config_set_module_enabled(config, "headline", FALSE);
+	venture_config_set_module_enabled(config, "sales_tax", FALSE);
+	venture_config_set_module_enabled(config, "pnl_cuts", FALSE);
+	venture_config_set_module_enabled(config, "calendar", FALSE);
+	venture_config_set_module_enabled(config, "money_calendar", FALSE);
+	venture_config_set_module_enabled(config, "crm_import", FALSE);
 	venture_config_set_module_enabled(config, "dedupe", FALSE);
 	g_assert_true(venture_module_registry_configure(registry, config, &error));
 	g_assert_no_error(error);
@@ -627,7 +633,13 @@ fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "goods", FALSE);
 	venture_config_set_module_enabled(fixture->config, "mail_sync", FALSE);
 	venture_config_set_module_enabled(fixture->config, "dunning", FALSE);
+	venture_config_set_module_enabled(fixture->config, "customer_health", FALSE);
 	venture_config_set_module_enabled(fixture->config, "headline", FALSE);
+	venture_config_set_module_enabled(fixture->config, "sales_tax", FALSE);
+	venture_config_set_module_enabled(fixture->config, "pnl_cuts", FALSE);
+	venture_config_set_module_enabled(fixture->config, "calendar", FALSE);
+	venture_config_set_module_enabled(fixture->config, "money_calendar", FALSE);
+	venture_config_set_module_enabled(fixture->config, "crm_import", FALSE);
 	venture_config_set_module_enabled(fixture->config, "dedupe", FALSE);
 
 	fixture->database = venture_database_new("sqlite://:memory:", &error);
@@ -1020,7 +1032,13 @@ server_fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "goods", FALSE);
 	venture_config_set_module_enabled(fixture->config, "mail_sync", FALSE);
 	venture_config_set_module_enabled(fixture->config, "dunning", FALSE);
+	venture_config_set_module_enabled(fixture->config, "customer_health", FALSE);
 	venture_config_set_module_enabled(fixture->config, "headline", FALSE);
+	venture_config_set_module_enabled(fixture->config, "sales_tax", FALSE);
+	venture_config_set_module_enabled(fixture->config, "pnl_cuts", FALSE);
+	venture_config_set_module_enabled(fixture->config, "calendar", FALSE);
+	venture_config_set_module_enabled(fixture->config, "money_calendar", FALSE);
+	venture_config_set_module_enabled(fixture->config, "crm_import", FALSE);
 	venture_config_set_module_enabled(fixture->config, "dedupe", FALSE);
 	venture_config_set_module_enabled(fixture->config, "tickets", FALSE);
 	venture_config_set_module_enabled(fixture->config, "forge", FALSE);

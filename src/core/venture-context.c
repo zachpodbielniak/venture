@@ -165,6 +165,10 @@ venture_context_new(
 	 * must change the next reminder's pay link, not the one after a restart. */
 	g_object_bind_property(config, "server-base-url", venture_dunning_service_get(self->database), "base-url",
 		G_BINDING_SYNC_CREATE);
+	/* Scheduled backups read their destination and retention defaults here. */
+	venture_backup_schedule_service_set_config(venture_backup_schedule_service_get(self->database), config);
+	g_object_bind_property(config, "server-base-url", venture_sequence_service_get(self->database), "base-url",
+		G_BINDING_SYNC_CREATE);
 
 	/*
 	 * Modules, resolved against this configuration and applied to the

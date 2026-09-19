@@ -475,6 +475,11 @@ test_upgrade_restart(void)
 	guint run;
 	gint64 id;
 	venture_config_set_module_enabled(config, "activities", FALSE);
+	venture_config_set_module_enabled(config, "customer_health", FALSE);
+	venture_config_set_module_enabled(config, "calendar", FALSE); /* requires activities */
+	/* crm_import requires activities; a fresh context with a dependency
+	 * conflict warns, which is fatal under the suite. */
+	venture_config_set_module_enabled(config, "crm_import", FALSE);
 	db = venture_database_new(uri, &error);
 	g_assert_no_error(error);
 	context = venture_context_new(config, db);
@@ -495,7 +500,10 @@ test_upgrade_restart(void)
 		g_autoptr(OrmResult) result = NULL;
 		g_autofree gchar *name = NULL;
 		if (run == 1)
+		{
 			venture_config_set_module_enabled(config, "activities", TRUE);
+			venture_config_set_module_enabled(config, "calendar", TRUE);
+		}
 		db = venture_database_new(uri, &error);
 		context = venture_context_new(config, db);
 		g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));

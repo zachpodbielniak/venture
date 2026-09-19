@@ -27,6 +27,11 @@ GType venture_sequence_delivery_state_get_type(void) G_GNUC_CONST;
  * Returns: the suppression reason enumeration
  */
 GType venture_sequence_suppression_reason_get_type(void) G_GNUC_CONST;
+/**
+ * venture_sequence_tracking_kind_get_type:
+ * Returns: the open/click enumeration
+ */
+GType venture_sequence_tracking_kind_get_type(void) G_GNUC_CONST;
 #define VENTURE_TYPE_SEQUENCE (venture_sequence_get_type())
 VENTURE_DECLARE_ENTITY(VentureSequence, venture_sequence, SEQUENCE)
 #define VENTURE_TYPE_SEQUENCE_STEP (venture_sequence_step_get_type())
@@ -37,5 +42,17 @@ VENTURE_DECLARE_ENTITY(VentureSequenceEnrollment, venture_sequence_enrollment, S
 VENTURE_DECLARE_ENTITY(VentureSequenceDelivery, venture_sequence_delivery, SEQUENCE_DELIVERY)
 #define VENTURE_TYPE_SUPPRESSION (venture_suppression_get_type())
 VENTURE_DECLARE_ENTITY(VentureSuppression, venture_suppression, SUPPRESSION)
+#define VENTURE_TYPE_SEQUENCE_LINK (venture_sequence_link_get_type())
+VENTURE_DECLARE_ENTITY(VentureSequenceLink, venture_sequence_link, SEQUENCE_LINK)
+#define VENTURE_TYPE_SEQUENCE_TRACKING_EVENT (venture_sequence_tracking_event_get_type())
+VENTURE_DECLARE_ENTITY(VentureSequenceTrackingEvent, venture_sequence_tracking_event, SEQUENCE_TRACKING_EVENT)
+/**
+ * venture_sequence_link_new:
+ * Returns: (transfer full): an original destination behind a wrapped link
+ */
+/**
+ * venture_sequence_tracking_event_new:
+ * Returns: (transfer full): an open or click, writable only by VentureSequenceService
+ */
 G_END_DECLS
 #endif

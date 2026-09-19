@@ -112,6 +112,10 @@
 #include "autojournal/venture-posting-profile.h"
 #include "recurring/venture-recurring-records.h"
 #include "dunning/venture-dunning-records.h"
+#include "leads/venture-lead-routing-records.h"
+#include "tax/venture-sales-tax-records.h"
+#include "calendar/venture-calendar-records.h"
+#include "crm-import/venture-crm-import-records.h"
 #include "dedupe/venture-dedupe-records.h"
 
 
@@ -229,6 +233,7 @@
  * signatures, and before the web server, which uses both. */
 #include "web/venture-auth.h"
 #include "orgaccess/venture-access-policy.h"
+#include "orgaccess/venture-accountant-role.h"
 
 #include "ai/venture-ai-service.h"
 #include "ai/venture-ai-assist.h"
@@ -259,6 +264,17 @@
 #include "reconciliation/venture-reconciliation-service.h"
 #include "report/venture-headline-home.h"
 #include "dunning/venture-dunning-service.h"
+#include "backup/venture-backup-schedule-service.h"
+#include "leads/venture-lead-routing.h"
+#include "tax/venture-sales-tax-service.h"
+#include "report/venture-year-end-pack.h"
+#include "report/venture-customer-health.h"
+#include "calendar/venture-caldav-client.h"
+#include "calendar/venture-icalendar.h"
+#include "calendar/venture-calendar-sync-service.h"
+#include "calendar/venture-booking-service.h"
+#include "money-calendar/venture-money-calendar.h"
+#include "crm-import/venture-crm-import-service.h"
 #include "dedupe/venture-dedupe-service.h"
 
 #endif /* VENTURE_SERVER_BUILD */

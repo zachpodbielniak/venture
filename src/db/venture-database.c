@@ -1177,7 +1177,10 @@ check_subsystem_write(VentureDatabase *self, VentureEntity *entity, gboolean rem
 		venture_budget_check_write,
 		venture_equity_check_write,
 		venture_group_check_write,
-		venture_dunning_check_write
+		venture_dunning_check_write,
+		venture_sales_tax_check_write,
+		venture_backup_schedule_check_write,
+		venture_crm_import_check_write
 	};
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(guards); i++)
@@ -1840,6 +1843,11 @@ venture_database_delete(
 		return FALSE;
 	if (!venture_quotes_check_removal(self, entity, error))
 		return FALSE;
+	{
+		gboolean handled;
+		gboolean result = venture_pipelines_remove_hook(self, entity, 0, actor, &handled, error);
+		if (handled || !result) return result;
+	}
 
 	if (!venture_entity_is_persisted(entity))
 	{
@@ -1933,6 +1941,11 @@ venture_database_restore(
 		return FALSE;
 	if (!venture_quotes_check_removal(self, entity, error))
 		return FALSE;
+	{
+		gboolean handled;
+		gboolean result = venture_pipelines_remove_hook(self, entity, 1, actor, &handled, error);
+		if (handled || !result) return result;
+	}
 
 	if (!venture_entity_is_deleted(entity))
 		return TRUE;
@@ -2003,6 +2016,11 @@ venture_database_purge(
 		return FALSE;
 	if (!venture_quotes_check_removal(self, entity, error))
 		return FALSE;
+	{
+		gboolean handled;
+		gboolean result = venture_pipelines_remove_hook(self, entity, 2, actor, &handled, error);
+		if (handled || !result) return result;
+	}
 
 	if (!venture_entity_is_persisted(entity))
 		return TRUE;
@@ -2599,6 +2617,8 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_backup_actions_register(self);
 		venture_tax_filing_actions_register(self);
 		venture_dunning_actions_register(self);
+		venture_backup_schedule_actions_register(self);
+		venture_crm_import_actions_register(self);
 		venture_dedupe_actions_register(self);
 	}
 	return self->actions;

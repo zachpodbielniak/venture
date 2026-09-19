@@ -1,0 +1,5 @@
+Record ID,Activity type,Title,Body,Activity date,Activity assigned to,Associated Contact IDs,Associated Company IDs,Associated Deal IDs
+401,NOTE,Kickoff,"Met Alice, agreed on ""phase one"" scope.",2025-01-20 14:00,Jane Doe,201,101,301
+402,EMAIL,Re: renewal terms,Bob confirmed the renewal budget.,2025-02-10 08:15,Jane Doe,202,102,302
+403,CALL,Pilot debrief,Carol says the pilot is on hold.,2025-04-01 16:45,Sam Lee,203,,303
+404,MEETING,Quarterly review,,2025-05-01 10:00,Sam Lee,,103,

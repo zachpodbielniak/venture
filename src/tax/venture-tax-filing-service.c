@@ -414,6 +414,12 @@ csv_cell(const gchar *value)
 	return g_string_free(cell, FALSE);
 }
 
+gchar *
+venture_tax_filing_csv_cell(const gchar *value)
+{
+	return csv_cell(value);
+}
+
 static gchar *
 build_1099_csv(VentureEntity *form, VentureEntity *vendor, gint year, const VentureMoney *amount)
 {
