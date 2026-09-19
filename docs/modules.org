@@ -60,7 +60,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =ledger=     | finance         | journal, journal_line, exchange_rate; posting service, post/reverse/create-and-post actions, =trial_balance=           |                       |
 
 | =pipelines= | crm | pipeline, pipeline_stage, deal_stage_entry, loss_reason; stage_duration, funnel, forecast, loss_reasons, overdue_deals; /deals | |
-| =statements= | ledger, periods | ledger balances query; balance sheet, income statement, cash flow, general ledger, account balances, P&L reconciliation | |
+| =statements= | ledger, periods | ledger balances query; balance sheet, income statement, cash flow, general ledger, account balances, P&L reconciliation, year-end pack; =/books= | |
 | =cutover= | ledger | accounting_cutover, accounting_cutover_row | |
 | =setup= | ledger, periods | accounting_setup, accounting_control_map | |
 | =backup= | ledger | accounting_backup, backup_schedule, backup_run; =backup_schedule= run, =backup_run= verify and restore_drill actions | |

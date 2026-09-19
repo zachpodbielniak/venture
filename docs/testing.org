@@ -387,3 +387,20 @@ with it on, both tables exist and hold no invented runs. Over HTTP and the
 CLI: the Backups page shows runs and verdicts to any session,
 owners trigger run, verify and drill, editors and viewers get 403 from the
 page and the REST actions, and the module switch hides everything.
+** =test-accountant=
+
+The accountant membership reads and exports every finance-owned type but
+payroll, the organisation and company rows and expense-attached documents;
+every write and delete is refused naming the role before any row is
+touched, and no proposal is raised. Leads, deals, activities, tickets, mail,
+sequences, contacts, sales, payroll, teams, memberships, other users,
+webhooks and saved views answer not-found for reads and writes alike. A
+CPA's memberships in several organisations scope the picker and the books
+to exactly those; a token minted as an accountant cannot write after a
+promotion. =year_end_pack= yields every file and =index.txt=, names an
+omitted member when its module is off, rides the scheduled pack path into
+=last_output= and rebuilds its zip from those retained bytes. Over HTTP the
+owner invites through the existing user and membership routes; the
+accountant lands on =/books= with a Books-only sidebar, switches entity,
+downloads the zip, reads and exports the books, and receives 404 for CRM
+and 403 naming the role for a write.

@@ -15,6 +15,7 @@ venture_organization_role_get_type(void)
 			{ VENTURE_ORGANIZATION_ROLE_FINANCE, "VENTURE_ORGANIZATION_ROLE_FINANCE", "finance" },
 			{ VENTURE_ORGANIZATION_ROLE_SALES, "VENTURE_ORGANIZATION_ROLE_SALES", "sales" },
 			{ VENTURE_ORGANIZATION_ROLE_SUPPORT, "VENTURE_ORGANIZATION_ROLE_SUPPORT", "support" },
+			{ VENTURE_ORGANIZATION_ROLE_ACCOUNTANT, "VENTURE_ORGANIZATION_ROLE_ACCOUNTANT", "accountant" },
 			{ 0, NULL, NULL }
 		};
 		GType id = g_enum_register_static("VentureOrganizationRole", values);

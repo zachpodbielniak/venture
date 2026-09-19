@@ -160,7 +160,7 @@ in [[file:pipelines.org][Sales pipelines]].
 * Ledger financial statements
 
 The =statements= module adds =balance_sheet=, =income_statement=, =cash_flow=,
-=general_ledger=, =account_balances= and =pnl_reconciliation=. These read posted
+=general_ledger=, =account_balances=, =pnl_reconciliation= and =year_end_pack=. These read posted
 ledger evidence per exact legal entity and currency; they never choose a
 majority currency. All accept =as_of= and =compare_to=, and general ledger also
 accepts =account_id=. They use the normal report pages, CSV export and
@@ -192,6 +192,50 @@ generic record API or CLI. A failed run preserves the previous output and
 timestamp. No email delivery or historical output archive is implied.
 
 A report pack may reference only saved reports in its own organization. The runner validates this boundary before generating each result, including scheduled packs; foreign saved-report ids fail instead of copying another organization's report into the pack output.
+
+* The year-end pack
+
+=year_end_pack= is the report an outside accountant pulls once a year: for
+a fiscal year (=fy_2025=, or =fy= for the current one) it gathers, in
+reading order, the trial balance at year end, the profit and loss
+(=income_statement=), the balance sheet, the cash-flow statement, the
+receivables and payables aging at year end, the general ledger detail, the
+sales-tax return summary (=tax_liability=: frozen invoice and bill tax by
+code, the same grouping the US sales-tax adapter files), a 1099 pack summary
+(the =contractor_tax_pack= rows prepared for the calendar year the fiscal
+year ends in — vendor, form, status and total; the frozen CSV with the TIN
+is never copied) and the fixed-asset register with accumulated
+depreciation. =organization_id=, =basis=, =currency= and =dimension= pass
+through to every member so the statements agree with each other.
+
+It is one =VentureReportResult= whose rows are the lines of every file:
+=file=, =line=, =content=, followed by the lines of =index.txt=, which
+names each file, its title and row count, carries each member's own note
+(a currency exclusion, an empty ledger), and says in so many words when a
+member was *omitted* because its module is off — a pack is never silently
+incomplete. That shape is what lets the pack ride the scheduled-report
+path unchanged: a =saved_report= naming =year_end_pack= with period
+=fy_2025=, inside a =report_pack= with a schedule, is run by
+=venture_report_pack_service_run_due=, retained in
+=report_pack.last_output=, and readable back through the generic record API.
+
+The zip is rebuilt from those rows — =venture_year_end_pack_zip()= from a
+live result, =venture_year_end_pack_zip_from_output()= from a pack's
+retained JSON — so the file an accountant downloads a year later is exactly
+what ran, not the books as they stand now. On the web:
+
+- =GET /books= is the Books page: the pack form, the retained packs with a
+  download each, the statements and the other reports.
+- =GET /books/year-end-pack.zip?period=fy_2025&basis=accrual= generates the
+  pack for the selected entity under the caller's own read authority.
+- =GET /books/packs/:id/year-end-pack.zip= is the retained output of a
+  scheduled pack; a pack outside the caller's organisations is not found,
+  and a pack whose output holds no year-end result is refused rather than
+  answered with an empty archive.
+
+Without libarchive the report still runs and the zip routes answer
+=VENTURE_ERROR_UNSUPPORTED=. =test-accountant= covers the file list, the
+index, the module-off note, the scheduled round trip and the downloads.
 
 * The headline numbers
 

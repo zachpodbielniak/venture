@@ -1754,6 +1754,10 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/sequence_enrollment/1/exit", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/sequences/run", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/ui/sequence_enrollment/1/pause", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	/* The accountant's Books page and the two year-end pack downloads. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/books"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/books/year-end-pack.zip?period=fy_2025"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/books/packs/1/year-end-pack.zip"), ==, SOUP_STATUS_UNAUTHORIZED);
 
 }
 
