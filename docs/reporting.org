@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-17]
-#+version: 0.5.0
+#+updated: [2026-09-18]
+#+version: 0.6.0
 
 * Reporting
 
@@ -24,6 +24,7 @@ about it.
 | =inventory=  | quantity on hand and carrying value; reorder flags           |
 | =tax=        | expenses by category with deductible amounts                 |
 | =tax_liability= | frozen invoice and bill tax grouped by tax code            |
+| =sales_tax_return= | gross, exempt, taxable sales and net tax due per jurisdiction |
 | =campaigns=  | spend, attributed revenue, return                            |
 | =pipeline=   | open deals by stage, probability-weighted                    |
 | =monthly=    | revenue, expenses and profit month by month                  |
@@ -37,6 +38,11 @@ about it.
 | =ltv=        | realised and projected lifetime value; withheld below a minimum |
 | =ltv_cac=    | projected LTV over CAC, ARPA and CAC payback; =n/a= when a side is |
 | =customer_cohorts= | companies by month of first cash, share still paying in months 0-12 |
+| =revenue_by_customer= | paid and issued revenue per customer, or per lead source |
+| =spend_by_vendor= | approved bills and expenses per vendor, or per category; acquisition split |
+| =recurring_costs= | running bill and expense schedules as a monthly run-rate |
+| =cash_outlook= | weekly cash in and out from open invoices and bills, from the bank balance |
+| =customer_health= | every customer banded green, amber or red, with why    |
 
 #+begin_src sh
 venturectl report                       # list them
@@ -155,7 +161,7 @@ in [[file:pipelines.org][Sales pipelines]].
 * Ledger financial statements
 
 The =statements= module adds =balance_sheet=, =income_statement=, =cash_flow=,
-=general_ledger=, =account_balances= and =pnl_reconciliation=. These read posted
+=general_ledger=, =account_balances=, =pnl_reconciliation= and =year_end_pack=. These read posted
 ledger evidence per exact legal entity and currency; they never choose a
 majority currency. All accept =as_of= and =compare_to=, and general ledger also
 accepts =account_id=. They use the normal report pages, CSV export and
@@ -187,6 +193,50 @@ generic record API or CLI. A failed run preserves the previous output and
 timestamp. No email delivery or historical output archive is implied.
 
 A report pack may reference only saved reports in its own organization. The runner validates this boundary before generating each result, including scheduled packs; foreign saved-report ids fail instead of copying another organization's report into the pack output.
+
+* The year-end pack
+
+=year_end_pack= is the report an outside accountant pulls once a year: for
+a fiscal year (=fy_2025=, or =fy= for the current one) it gathers, in
+reading order, the trial balance at year end, the profit and loss
+(=income_statement=), the balance sheet, the cash-flow statement, the
+receivables and payables aging at year end, the general ledger detail, the
+sales-tax return summary (=tax_liability=: frozen invoice and bill tax by
+code, the same grouping the US sales-tax adapter files), a 1099 pack summary
+(the =contractor_tax_pack= rows prepared for the calendar year the fiscal
+year ends in — vendor, form, status and total; the frozen CSV with the TIN
+is never copied) and the fixed-asset register with accumulated
+depreciation. =organization_id=, =basis=, =currency= and =dimension= pass
+through to every member so the statements agree with each other.
+
+It is one =VentureReportResult= whose rows are the lines of every file:
+=file=, =line=, =content=, followed by the lines of =index.txt=, which
+names each file, its title and row count, carries each member's own note
+(a currency exclusion, an empty ledger), and says in so many words when a
+member was *omitted* because its module is off — a pack is never silently
+incomplete. That shape is what lets the pack ride the scheduled-report
+path unchanged: a =saved_report= naming =year_end_pack= with period
+=fy_2025=, inside a =report_pack= with a schedule, is run by
+=venture_report_pack_service_run_due=, retained in
+=report_pack.last_output=, and readable back through the generic record API.
+
+The zip is rebuilt from those rows — =venture_year_end_pack_zip()= from a
+live result, =venture_year_end_pack_zip_from_output()= from a pack's
+retained JSON — so the file an accountant downloads a year later is exactly
+what ran, not the books as they stand now. On the web:
+
+- =GET /books= is the Books page: the pack form, the retained packs with a
+  download each, the statements and the other reports.
+- =GET /books/year-end-pack.zip?period=fy_2025&basis=accrual= generates the
+  pack for the selected entity under the caller's own read authority.
+- =GET /books/packs/:id/year-end-pack.zip= is the retained output of a
+  scheduled pack; a pack outside the caller's organisations is not found,
+  and a pack whose output holds no year-end result is refused rather than
+  answered with an empty archive.
+
+Without libarchive the report still runs and the zip routes answer
+=VENTURE_ERROR_UNSUPPORTED=. =test-accountant= covers the file list, the
+index, the module-off note, the scheduled round trip and the downloads.
 
 * The headline numbers
 
@@ -471,3 +521,229 @@ they have done since. Months that have not started by then are blank, not
 zero. =month_1=, =month_3=, =month_6= and =month_12= pool every cohort that
 has reached that month: the companies still paying over the companies in
 those cohorts; =n/a= when no cohort has.
+
+* The cuts of the P&L
+
+The =pnl_cuts= module adds the four cuts Ben runs the business on, as
+ordinary registry reports: =revenue_by_customer=, =spend_by_vendor=,
+=recurring_costs= and =cash_outlook=. They serve the P&L question of
+issue #75 --- where the money comes from, where it goes, what it goes on
+every month, and what the bank will look like in a few weeks --- and they
+hang off the P&L card at =/= as its links. The module requires
+=receivables= and =payables=; with =leads= off sources come from the
+company's own field, with =recurring= off the run-rate is empty, with
+=banking= off the outlook has no opening balance. Each case says so in a
+note rather than showing a zero.
+
+The three rules of the headline reports hold here too: every total is a
+=VentureMoney= in the organisation's book currency, with rows in another
+currency kept on their own row in their own currency and counted in a note
+rather than converted; every ratio is an exact rational; and nothing is
+invented --- an undated bill is listed as undated, a schedule with no
+price in its template is listed unpriced.
+
+All four accept =organization_id=. =revenue_by_customer= and
+=spend_by_vendor= accept =by=; =cash_outlook= accepts =weeks=.
+
+** =revenue_by_customer=: where the money comes from
+
+Two figures per customer for the period, largest paid first.
+
+*Paid* is what the customer actually handed over in the period: receipts
+applied to their invoices (=payment_allocation= rows funded by a payment,
+not by a credit) less refunds dated in the period. A credit note applied
+to an invoice is not cash and does not count as paid.
+
+*Issued* is what was invoiced in the period: the amount frozen on each
+invoice's =issue= event dated in the period, less credit notes and
+write-offs dated in the period, which are what was issued and then given
+back or given up without cash moving. A voided invoice was never revenue
+and is left out whenever it was issued; a draft has not been issued yet.
+
+Each customer row shows its *source*: the =source= of the lead that
+converted into the company (the first converted lead, as =cac= counts it),
+else the company's own =source= field, else =(unattributed)=. =by=source=
+groups the same figures by that source instead, so the report answers
+"which channel pays" as readily as "who pays". The metrics are the paid
+and issued totals and the number of customers with any movement.
+
+*Refusals.* A =by= that is neither =customer= nor =source= is refused
+with the choices named; falling back silently would answer a different
+question. A customer who pays in two currencies gets two rows, one each.
+
+** =spend_by_vendor=: where the money goes
+
+Bills and expenses per vendor for the period, largest total first, with
+the *acquisition* share beside the rest so the spend that CAC divides is
+visible in the same table as the spend it does not.
+
+*Bills* are the lines of vendor bills dated in the period that are past
+draft and not void --- approved, part paid or paid --- valued as the
+payables module values them (quantity times unit price plus tax), and
+attributed to the bill's vendor company. *Expenses* are expenses dated in
+the period, attributed to their free-text =vendor=, or =(no vendor)=.
+
+Each row shows bills, expenses, the total, and that total split into
+*acquisition* (the =acquisition= flag on the expense or bill line) and
+*other*. =by=category= groups by the expense's or bill line's =category=
+instead, =(uncategorised)= when it has none. The metrics are the five
+totals.
+
+*Refusals.* A =by= that is neither =vendor= nor =category= is refused.
+With =payables= off only expenses are counted, and the note says so.
+
+** =recurring_costs=: what it costs every month
+
+Every running recurring schedule of kind =bill= or =expense=, priced from
+its template the way the recurring service would read it --- the template
+is loaded into an unsaved record of the document's own type, so an expense
+template's =amount= and a bill template's lines (quantity times unit
+price plus tax) are valued by the same code that would generate them ---
+and scaled to a month: monthly as is, weekly times 52/12, daily times
+365/12, yearly divided by 12, each one exact rational multiplication. The
+row shows the schedule, its document kind, the vendor (the bill template's
+company, or the expense template's vendor), the frequency, the amount per
+occurrence, the amount per month and the next due date (=next_run_at=).
+The metrics are the monthly run-rate, the annual run-rate (twelve times
+it), the number of schedules counted and the number excluded.
+
+*Excluded* are schedules that are cancelled (deleted), paused, or whose
+=end_at= day has gone by. =end_at= is the /inclusive/ last occurrence
+date, the way the recurring service reads it, so a schedule ending today
+is still a cost today. Invoice schedules are revenue and journal
+schedules are bookkeeping; neither is a cost and neither is counted or
+excluded.
+
+*Refusals.* A schedule whose template carries no price --- no =amount=,
+no lines, a line without a unit price, lines in two currencies --- is
+listed with no figure and counted in a note, never as zero. A schedule in
+another currency keeps its row and is left out of the totals, with the
+note saying so. With =recurring= off the run-rate is empty and says so.
+
+** =cash_outlook=: what the bank will look like
+
+The next =weeks= weeks (default 8, at most 104) of expected cash,
+starting where the period does: today for =today= or =this_week=, the
+first of the month for =2026-04=. All-time has no start, so the outlook
+builds its own the way every period boundary is built --- the configured
+calendar decides /which/ day it is, and the boundary itself is midnight
+UTC, because that is how a due date is stored. Built at local midnight it
+would sit hours after the due dates that share its day, and west of UTC
+everything due on the start day would read as overdue.
+
+*Cash out* is what is still owed on every approved or part-paid vendor
+bill, by its due date, valued by the payables service (issued less paid
+plus refunded). Drafts are not commitments; paid and void bills are
+history. *Cash in* is what is still owed on every sent or part-paid
+invoice, by its due date, valued by the settlement service.
+
+The rows are *Overdue* (due before the start), *Week 1* to *Week N* (seven
+days each, the *from* and *to* columns being the first and last day of
+the week in the organisation's timezone), *Later* (due after the horizon)
+and *Undated*. Each carries cash in, cash out and the net. The *opening*
+figure is cash in the bank --- the sum of every bank account's last
+statement balance, the same figure the P&L card shows --- and the
+*balance* column runs it forward through Overdue and the weeks; the
+*closing* metric is the balance after week N. The expected-in and
+expected-out metrics cover the same rows.
+
+*Refusals.* An undated invoice or bill is listed on the Undated row and
+counted in a note; nothing is assumed about when it will be paid and it is
+not in the projected balance. Later is shown but not projected either. No
+statement balance means no opening figure, no running balance and a
+closing of =n/a=, with the flows still shown; a bank balance in a
+different currency from the book is likewise not run forward. =weeks=
+below 1 or above 104 is refused. Amounts in another currency are counted
+and noted, never added.
+
+The name is =cash_outlook= rather than =cash_forecast= because the
+=budgets= module already owns a =cash_forecast= --- the budget-driven one
+over ledger balances --- and registering a second report under the same
+name would replace it.
+* Customer health: the list behind the churn number
+
+Churn is a lagging number: by the time it moves, the customer has gone.
+The =customer_health= module asks the same question early, per company,
+so the answer is a list you can act on rather than a percentage you can
+only regret. It requires =headline= and =activities=; =tickets=,
+=dunning= and =mail_sync= make it better and are not required.
+
+** =customer_health=: who is about to leave
+
+One row per company of kind =customer=, worst first. Nothing is stored:
+every row is read from the records the other modules already keep, as of
+a moment --- the period's end, now if the period is still running, or an
+explicit =as_of= --- against the thresholds the organisation has *now*.
+A stored band would be wrong the morning after a threshold changed.
+
+| Column              | What it is                                                         |
+|---------------------+--------------------------------------------------------------------|
+| =owner=             | the username of the company's =owner_user_id=; blank when unowned  |
+| =band=              | =green=, =amber= or =red=                                          |
+| =last_touch=        | the latest interaction, completed activity or inbound mail (through the contact it was matched to), on or before the moment |
+| =days_since_touch=  | days since then; since the company was added, if there has never been one |
+| =open_deals=        | deals neither won nor lost                                         |
+| =overdue_invoices=  | issued, unsettled invoices past their due date; undated is not overdue |
+| =overdue_days=      | how far past due the oldest of them is                             |
+| =open_tickets=      | tickets neither done nor cancelled; zero with =tickets= off        |
+| =sla_breaches=      | of those, how many have missed a service level                     |
+| =dunning_step=      | the furthest reminder step reached on any invoice still open; a step on an invoice since paid is history, not health |
+| =revenue_12m=       | applied receipts less refunds in the twelve months before the moment, in the book currency, exactly as =ltv= counts them; another currency is left out, never converted |
+
+*The three reasons.* A company is *quiet* when =days_since_touch= reaches
+the touch threshold; *behind* when =overdue_days= reaches the overdue
+threshold; *struggling* when =open_tickets= reaches the ticket threshold
+or any open ticket has missed its service level. No reason is green, one
+is amber, two or three are red. Each reason is written out in words
+whether or not it counts, so a company page says where it stands on all
+three, not only the ones that tripped.
+
+*Thresholds* are three fields on the organisation's =headline_setting=
+row, zero meaning the default: =health_touch_days= (30),
+=health_overdue_days= (15) and =health_open_tickets= (3).
+
+#+begin_src sh
+venturectl report customer_health this_month
+venturectl report customer_health this_month band=red          # the at-risk list
+venturectl report customer_health this_month owner=alice sort=-overdue_days
+venturectl update headline_setting 1 health_touch_days=45 health_open_tickets=5
+#+end_src
+
+=band= keeps one band; =owner= keeps one account owner; =sort= names a
+column, with a leading minus for descending (=sort=-revenue_12m=). A band
+or column that does not exist is refused rather than ignored. The
+=red=, =amber=, =green= and =customers= metrics always count the whole
+organisation, filtered or not, so the churn card and a filtered page
+cannot disagree about how many are at risk. The report page carries a
+filter row for the three options.
+
+** The sweep: red becomes somebody's next action
+
+#+begin_src sh
+venturectl customers health-sweep [as_of=DATE] [organization_id=N] [limit=N]
+curl -X POST '.../api/v1/customers/health/sweep?organization_id=1&limit=50'
+#+end_src
+
+For each red company the sweep creates one planned =activity= ---
+=check in: <company>=, a high-priority follow-up for the account owner,
+due at =as_of=, related to the company, with the three reasons in its
+body. A company that already has a planned check-in is left alone, so
+running the sweep twice creates nothing the second time; once that
+check-in is done or cancelled, the next sweep may raise another if the
+company is still red. The sweep is bounded (=limit=, default 100, at most
+1000 red companies visited), synchronous --- there is no background
+thread --- and one transaction: a save refused part-way through rolls
+back every check-in the sweep made, so a rerun starts clean. It answers
+={"created": N}=. An unowned company still gets its
+check-in, with no owner, so it appears on the activity list rather than
+nowhere. The route needs the editor role and, like every whole-organisation
+action, a working membership (owner, admin, editor, finance or sales) in
+the organisation it names; it is refused when =customer_health= or
+=activities= is off.
+
+** Where it shows
+
+The churn card on the home page carries an *At risk* line --- the red
+count, as of the period's end, linking to the report filtered to red.
+A customer's own page shows its band and the three reasons under
+*Health*. See [[file:dashboards.org][Dashboards]].

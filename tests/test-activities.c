@@ -475,6 +475,7 @@ test_upgrade_restart(void)
 	guint run;
 	gint64 id;
 	venture_config_set_module_enabled(config, "activities", FALSE);
+	venture_config_set_module_enabled(config, "customer_health", FALSE);
 	venture_config_set_module_enabled(config, "calendar", FALSE); /* requires activities */
 	db = venture_database_new(uri, &error);
 	g_assert_no_error(error);
