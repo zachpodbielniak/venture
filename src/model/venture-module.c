@@ -604,9 +604,11 @@ static GType (*const quotes_types[]) (void) = {
 
 static GType (*const venture_module_leads_types[]) (void) = {
 	venture_lead_get_type, venture_lead_form_get_type,
-	venture_lead_assignment_rule_get_type, NULL
+	venture_lead_assignment_rule_get_type,
+	venture_lead_routing_rule_get_type, venture_lead_scoring_rule_get_type,
+	venture_lead_score_history_get_type, NULL
 };
-static const gchar *const venture_module_reports_leads[] = { "lead_sources", "lead_response_time", "leads_recycled_due", NULL };
+static const gchar *const venture_module_reports_leads[] = { "lead_sources", "lead_response_time", "leads_recycled_due", "lead_routing", "lead_scoring", NULL };
 static const gchar *const venture_module_requires_leads[] = { "crm", NULL };
 static GType (*const venture_module_activities_types[]) (void) = {
 	venture_activity_get_type, venture_activity_type_get_type, NULL

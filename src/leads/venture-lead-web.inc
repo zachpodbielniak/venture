@@ -122,6 +122,19 @@ venture_web_lead_action(HtmxRequest *request, GHashTable *params, gpointer data)
 			return venture_web_error_response(error);
 		converted = g_object_ref(lead);
 	}
+	else if (g_strcmp0(action, "reroute") == 0 || g_strcmp0(action, "rescore") == 0)
+	{
+		gboolean stage = FALSE;
+		gboolean ok;
+		if (!venture_confirmation_parse_stage_flag(htmx_request_get_query_param(request, "stage"), &stage, &error))
+			return venture_web_error_response(error);
+		if (stage) return venture_web_lead_ack(501);
+		ok = g_strcmp0(action, "reroute") == 0 ?
+			venture_lead_service_reroute(service, lead, &actor, &error) :
+			venture_lead_service_rescore(service, lead, &actor, &error);
+		if (!ok) return venture_web_error_response(error);
+		converted = g_object_ref(lead);
+	}
 	else return venture_web_lead_ack(404);
 	if (ui)
 	{
@@ -140,4 +153,10 @@ venture_web_append_lead_actions(GString *html, VentureEntity *record)
 	if (status == VENTURE_LEAD_QUALIFIED)
 		g_string_append_printf(html, "<form method=\"post\" action=\"/leads/%" G_GINT64_FORMAT
 			"/convert\"><button class=\"btn\" type=\"submit\">Convert</button></form>", venture_entity_get_id(record));
+	if (status != VENTURE_LEAD_CONVERTED)
+		g_string_append_printf(html, "<form method=\"post\" action=\"/leads/%" G_GINT64_FORMAT
+			"/reroute\"><button class=\"btn\" type=\"submit\">Re-route</button></form>"
+			"<form method=\"post\" action=\"/leads/%" G_GINT64_FORMAT
+			"/rescore\"><button class=\"btn\" type=\"submit\">Rescore</button></form>",
+			venture_entity_get_id(record), venture_entity_get_id(record));
 }

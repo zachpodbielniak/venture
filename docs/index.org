@@ -52,7 +52,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:mail.org][Transactional mail]] — durable outbox, SMTP, templates, operator-resolved uncertainty, and inbound IMAP sync onto contact timelines and the capture inbox
 - [[file:sequences.org][Follow-up sequences]] — enrollment, scheduling, exits, delivery evidence and the mail adapter seam
 - [[file:testing.org][Testing]] — running the suite, and what it guarantees
-- [[file:leads.org][Leads]] — public capture, duplicate handling, assignment, qualification, conversion and recycling
+- [[file:leads.org][Leads]] — public capture, duplicate handling, assignment, routing rules, scoring, qualification, conversion and recycling
 - [[file:activities.org][Planned activities]] — tasks, calls, meetings, reminders and the daily rep worklist
 - [[file:actions.org][Record actions]] — shared business operations and approval
 

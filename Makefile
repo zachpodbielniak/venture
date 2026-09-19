@@ -165,6 +165,8 @@ SERVER_ONLY_SRCS += $(filter-out src/equity/venture-equity-records.c,$(wildcard 
 SERVER_ONLY_SRCS += $(filter-out src/group/venture-group-records.c,$(wildcard src/group/*.c))
 CORE_SRCS += src/report/venture-headline-records.c
 SERVER_ONLY_SRCS := $(filter-out src/report/venture-headline-records.c,$(SERVER_ONLY_SRCS))
+CORE_SRCS += src/leads/venture-lead-routing-records.c
+SERVER_ONLY_SRCS += src/leads/venture-lead-routing.c
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
@@ -580,3 +582,4 @@ endif
 deps: $(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB)
 
 $(OUTDIR)/tests/test-mail-surfaces: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-lead-routing: | $(OUTDIR)/venturectl

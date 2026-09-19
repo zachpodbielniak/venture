@@ -1147,10 +1147,11 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "compare_to")) && (0 != g_strcmp0(parts[0], "account_id")) &&
 				 (0 != g_strcmp0(parts[0], "basis")) && (0 != g_strcmp0(parts[0], "dimension")) &&
 				 (0 != g_strcmp0(parts[0], "vendor_id")) && (0 != g_strcmp0(parts[0], "pipeline_id")) && (0 != g_strcmp0(parts[0], "owner")) &&
-				 (0 != g_strcmp0(parts[0], "days")) && (0 != g_strcmp0(parts[0], "by")) && (0 != g_strcmp0(parts[0], "weeks"))))
+				 (0 != g_strcmp0(parts[0], "days")) && (0 != g_strcmp0(parts[0], "by")) && (0 != g_strcmp0(parts[0], "weeks")) &&
+				 (0 != g_strcmp0(parts[0], "band_size"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -3412,6 +3413,7 @@ main(
 		"  factory                      the software factory at a glance\n"
 		"  lead convert ID              qualify first; deal=yes|no, company_id=ID\n"
 		"  lead reassign ID             owner=NAME or run assignment rules\n"
+		"  leads reroute|rescore ID     run routing rules / the scoring formula again\n"
 		"  release changelog ID         draft a release's changelog from\n"
 		"                               its tickets; --replace overwrites\n"
 		"  invoice checkout ID          create a hosted Stripe payment URL\n"
@@ -3760,6 +3762,8 @@ main(
 		result = venture_cli_command_act(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dunning"))
 		result = venture_cli_command_dunning(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "leads"))
+		result = venture_cli_command_lead(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "sales-tax"))
 		result = venture_cli_command_sales_tax(&cli, args, &error);
 	else

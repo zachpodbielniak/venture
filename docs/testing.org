@@ -349,3 +349,21 @@ as it does off =tax_liability=, so a cutover's tax is not remitted twice;
 the 1099-shaped CSV export; the module off; and the export
 route and CLI verb over HTTP. Red before the module: the test does not
 compile against the base tree.
+
+** =test-lead-routing=
+
+Routing rules act in position order and the first match wins, an inactive
+rule never does; with routing configured and nothing matching the lead stays
+unassigned and its timeline says "No rule matched", while an organization
+without routing rules keeps the older assignment rules and stays quiet.
+Conditions read columns, references by name and custom attributes, and a
+rule that does not parse is refused when written. Round-robin rotates fairly
+over three team members with a persisted cursor, skips a member whose team or
+organization membership was deactivated, and refuses an empty rota. The score
+is the sum of matching rules with a history row naming them, an unrelated
+edit writes none, a hand-typed score is marked manual and left alone until
+cleared or rescored, and history rows and the routing reference cannot be
+written generically. Both reports are checked on values, and =venturectl
+leads reroute= / =rescore= run against the real binary over HTTP. The binary
+did not compile against master before the feature (=VENTURE_LEAD_ROUTING_ASSIGN_USER=
+undeclared), which is the red step for a feature made of new types.
