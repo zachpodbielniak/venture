@@ -97,6 +97,15 @@ gboolean venture_lead_service_apply_staged(VentureLeadService *self, VentureEnti
  */
 gchar *venture_lead_normalize_email(const gchar *value);
 /**
+ * venture_lead_normalize_phone:
+ * @value: (nullable): a number as typed
+ *
+ * The leads module's phone normalisation: digits only. Exposed so the
+ * dedupe module matches existing records the way capture does.
+ * Returns: (transfer full): the digits, possibly empty
+ */
+gchar *venture_lead_normalize_phone(const gchar *value);
+/**
  * venture_lead_service_reroute:
  * @self: the canonical service
  * @lead: saved, unconverted lead

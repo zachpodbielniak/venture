@@ -785,6 +785,9 @@ static const gchar *const customer_health_suggests[] = { "tickets", "dunning", "
 static const gchar *const customer_health_reports[] = { "customer_health", NULL };
 static const gchar *const calendar_requires[] = { "activities", "crm", "leads", NULL };
 static GType (*const calendar_types[]) (void) = { venture_calendar_account_get_type, venture_calendar_event_get_type, venture_booking_page_get_type, NULL };
+static const gchar *const dedupe_requires[] = { "crm", NULL };
+static const gchar *const dedupe_suggests[] = { "leads", "invoicing", "payables", NULL };
+static GType (*const dedupe_types[]) (void) = { venture_duplicate_candidate_get_type, NULL };
 
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
@@ -1123,6 +1126,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"crm_import", "CRM migration",
 		"HubSpot, Zoho CRM and Salesforce exports into companies, contacts, deals, history and next actions.",
 		crm_import_requires, NULL, crm_import_types, NULL, NULL, FALSE
+	},
+	{
+		"dedupe", "Duplicates",
+		"Find and merge duplicate companies and contacts; a scan proposes, a person merges.",
+		dedupe_requires, dedupe_suggests, dedupe_types, NULL, NULL, FALSE
 	}
 };
 

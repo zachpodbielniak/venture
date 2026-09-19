@@ -688,7 +688,9 @@ static const VentureFieldDecl venture_company_fields[] = {
 	VENTURE_FIELD("address-county", "County code", "Sales-tax address code matched exactly by tax rules",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("address-city", "City code", "Sales-tax address code matched exactly by tax rules",
-		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED)
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("merged-into-id", "Merged into", "Set by a dedupe merge on the record that was folded away; its old id forwards here",
+		"company", VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCompany, venture_company, venture_company_fields,
@@ -725,7 +727,9 @@ static const VentureFieldDecl venture_contact_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
 	VENTURE_FIELD_REF("owner-user-id", "Owner", "Responsible user", "user", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("merged-into-id", "Merged into", "Set by a dedupe merge on the record that was folded away; its old id forwards here",
+		"contact", VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureContact, venture_contact, venture_contact_fields,

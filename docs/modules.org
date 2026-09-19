@@ -91,6 +91,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =customer_health= | headline, activities | =customer_health=; =/api/v1/customers/health/sweep=; the churn card's at-risk line; health on a company page | tickets, dunning, mail_sync |
 | =calendar= | activities, crm, leads | calendar_account, calendar_event, booking_page; =calendar sync= sweep, =/book/<slug>= | |
 | =money_calendar= | receivables, payables | no records; =money_calendar=; =/money/calendar=, =/money/calendar.ics=, =money calendar= | recurring, dunning, payroll, tax_filing |
+| =dedupe= | crm | duplicate_candidate; =duplicate_candidate= scan, merge and dismiss actions; =/customers/duplicates= | leads, invoicing, payables |
 
 Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.
 

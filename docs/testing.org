@@ -469,3 +469,21 @@ generic writes and removals of links and events are refused; the per-step
 engagement report counts sent, opened, clicked and replies with whole
 percent rates; and the pixel, redirect, contact page, report route and
 module-off 404s are exercised over real HTTP.
+** =test-dedupe=
+
+Name similarity ignores case, punctuation and legal suffixes; each scan
+reason (email, phone, website, domain with name, name alone) proposes a pair
+with its documented score while unrelated rows do not; a rescan keeps the
+same rows and drops a pair that stopped matching; contacts are scanned apart
+from companies. A merge re-points contacts, interactions, deals, invoices,
+tickets, activities and bills through the field tables, unions the fields
+with the survivor winning, notes the loser's values on the timeline,
+soft-deletes the loser with =merged_into_id=, closes the candidate and writes
+one audit entry; an injected failure after the references moved leaves
+nothing changed. Merging across organizations, onto itself, or with issued
+documents in a currency the survivor lacks is refused, and the opposite case
+accepted; generic writes to candidates and =merged_into_id= are refused; the
+module switch hides and restores the scan. REST scan and merge, the page
+with a merge button each way, the CLI verbs, the =301= forwarding of a merged
+id over =/api/v1= and =/e=, and migration with the module disabled are
+covered against a private server.

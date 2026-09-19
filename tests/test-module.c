@@ -183,6 +183,7 @@ test_module_dependency_conflict_is_refused(void)
 	venture_config_set_module_enabled(config, "calendar", FALSE);
 	venture_config_set_module_enabled(config, "money_calendar", FALSE);
 	venture_config_set_module_enabled(config, "crm_import", FALSE);
+	venture_config_set_module_enabled(config, "dedupe", FALSE);
 	g_assert_true(venture_module_registry_configure(registry, config, &error));
 	g_assert_no_error(error);
 	g_assert_true(venture_module_registry_is_enabled(registry, "sales"));
@@ -639,6 +640,7 @@ fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "calendar", FALSE);
 	venture_config_set_module_enabled(fixture->config, "money_calendar", FALSE);
 	venture_config_set_module_enabled(fixture->config, "crm_import", FALSE);
+	venture_config_set_module_enabled(fixture->config, "dedupe", FALSE);
 
 	fixture->database = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
@@ -1037,6 +1039,7 @@ server_fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "calendar", FALSE);
 	venture_config_set_module_enabled(fixture->config, "money_calendar", FALSE);
 	venture_config_set_module_enabled(fixture->config, "crm_import", FALSE);
+	venture_config_set_module_enabled(fixture->config, "dedupe", FALSE);
 	venture_config_set_module_enabled(fixture->config, "tickets", FALSE);
 	venture_config_set_module_enabled(fixture->config, "forge", FALSE);
 	venture_config_set_module_enabled(fixture->config, "factory", FALSE);

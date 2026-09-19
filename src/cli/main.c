@@ -3226,6 +3226,7 @@ venture_cli_command_mcp(
 #include "report/venture-customer-health-cli.inc"
 #include "money-calendar/venture-money-calendar-cli.inc"
 #include "crm-import/venture-crm-import-cli.inc"
+#include "dedupe/venture-dedupe-cli.inc"
 
 /* --- Entry point --------------------------------------------------------- */
 
@@ -3492,6 +3493,9 @@ main(
 		"  sales-tax export period=PERIOD [jurisdiction=CODE]  sales tax return CSV per jurisdiction\n"
 		"  customers health-sweep [as_of=DATE] [organization_id=N] [limit=N]  one check-in per at-risk customer\n"
 		"  money calendar --from DATE --to DATE [--kind K] [--as-of DATE]  the agenda of dated money events\n"
+		"  dedupe scan [kind=company|contact] [organization_id=N]  propose duplicate pairs\n"
+		"  dedupe merge ID survivor=N   fold the other record of a candidate into the survivor; --stage\n"
+		"  dedupe dismiss ID            close a candidate as not a duplicate\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
 		"\n"
@@ -3610,10 +3614,11 @@ main(
 	    !(0 == g_strcmp0(args[0], "lead") && 0 == g_strcmp0(args[1], "convert")) &&
 	    (0 != g_strcmp0(args[0], "act")) &&
 	    (0 != g_strcmp0(args[0], "dunning")) &&
+	    (0 != g_strcmp0(args[0], "dedupe")) &&
 	    !((0 == g_strcmp0(args[0], "sequence")) && (0 == g_strcmp0(args[1], "enroll"))))
 	{
 		g_printerr("venturectl: --stage only means something to create, "
-		           "update, delete, act, dunning sweep, journal post, sequence enroll, lead convert and billing. \"%s\" would ignore it.\n", args[0]);
+		           "update, delete, act, dunning sweep, dedupe, journal post, sequence enroll, lead convert and billing. \"%s\" would ignore it.\n", args[0]);
 		g_free(cli.base_url);
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
@@ -3796,6 +3801,8 @@ main(
 		result = venture_cli_command_money(&cli, args, calendar_from, calendar_to, calendar_kind, sequence_as_of, &error);
 	else if (0 == g_strcmp0(args[0], "crm"))
 		result = venture_cli_command_crm(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "dedupe"))
+		result = venture_cli_command_dedupe(&cli, args, &error);
 	else
 	{
 		g_printerr("venturectl: \"%s\" is not a command. Try --help.\n",

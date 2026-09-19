@@ -1,0 +1,179 @@
+#+title: Duplicates
+#+description: Find and merge duplicate companies and contacts that already exist
+#+authors: Ben Doty
+#+categories: projects docs
+#+created: [2026-09-17]
+#+updated: [2026-09-17]
+#+version: 0.6.0
+
+* Dedupe
+
+The =dedupe= module requires =crm=. Capture-time matching in the leads
+module stops a new inquiry from becoming a second row; this module finds the
+second rows that are already there, so that CAC, churn and lifetime value
+count one row per customer. It owns one record, =duplicate_candidate=, whose
+table, REST resource, list, CLI commands and audit entries derive from its
+field table, plus a =merged_into_id= reference appended to =company= and
+=contact=. Switching the module off hides the candidates, the page and the
+actions; a record that was merged away stays merged and its old id keeps
+forwarding.
+
+| Field | Meaning |
+|-------+---------|
+| =kind= | =company= or =contact= |
+| =record_a=, =record_b= | The pair, lower id first |
+| =label_a=, =label_b= | Display names at scan time, for the list |
+| =score= | 0-100; 100 is an exact identifier match |
+| =reasons= | JSON array drawn from =email=, =phone=, =website=, =domain+name=, =name= |
+| =status= | =open=, =merged= or =dismissed= |
+| =pair_key= | =kind:a:b=, unique per organization, so a rescan updates rather than duplicates |
+| =survivor_id= | Set by the merge |
+| =scanned_at= | The last scan that confirmed the pair |
+
+Candidates are written only by =VentureDedupeService=: a generic create or
+update is refused naming the service, as is any write that changes a
+company's or contact's =merged_into_id=.
+
+* The scan proposes
+
+=VentureDedupeService.scan(organization, kind)= is the one implementation
+behind =POST /api/v1/duplicate_candidate/0/actions/scan=, =venturectl dedupe
+scan= and the page's two buttons. It compares every live record of the kind
+in one organization with every other and never crosses organizations. A
+pair matches when any of these hold:
+
+| Reason | Rule | Score |
+|--------+------+-------|
+| =email=, =phone=, =website= | Equal after the leads module's normalisation: lower case with the =+tag= removed; digits only; lower-case host without =www.=. Empty values never match | 100 |
+| =domain+name= | The same email domain and a name similarity of at least 50 | 80 |
+| =name= | A name similarity of at least 75 | similarity × 0.7 |
+
+The score is the highest reason. Name similarity is documented and has no
+external dependency: both names are lower-cased, every character that is not
+a letter or digit becomes a space, the words are split on whitespace, and the
+legal and filler words =inc=, =ltd=, =llc=, =co=, =corp=, =gmbh=, =plc=,
+=the=, =and=, =of= are dropped. The similarity is the number of distinct
+words the two lists share as a percentage of the longer list, so /Acme, Inc./
+and /ACME Inc/ score 100 and /Acme Widgets/ against /Acme Gadgets/ scores 50.
+
+The scan is one transaction and is idempotent: a pair that still matches
+keeps its row with a fresh score, reasons and =scanned_at=; an open pair the
+scan no longer confirms is soft-deleted, and restored if it matches again
+later; merged and dismissed pairs are left alone. The scan compares every
+pair, so its cost grows with the square of the kind's row count in the
+organization; it is synchronous and runs from an operator action, never a
+timer. Its answer is a summary shaped like a candidate whose =score= is the
+number of open candidates.
+
+* A person merges
+
+=VentureDedupeService.merge(candidate, survivor)= is behind
+=POST /api/v1/duplicate_candidate/:id/actions/merge= with =survivor=, the
+page's two "Keep #N" buttons and =venturectl dedupe merge ID survivor=N=.
+=survivor= must be one of the pair; the other is the loser. In one
+transaction the service:
+
+1. re-points every reference field the field tables declare against the
+   kind, in whatever module and whether or not that module is on, from the
+   loser to the survivor; a type whose table was never created because its
+   module has never been on is skipped rather than failing the merge. The list is not hand-written: it is every
+   =VENTURE_FIELD_REF= whose target is =company= or =contact=, so
+   interactions, activities, deals, quotes, invoices, bills, tickets, leads,
+   payments, credits, subscriptions and a plugin's records are all covered,
+   and an earlier loser's own =merged_into_id= now names the new survivor;
+2. fills each empty survivor field from the loser and keeps the survivor's
+   value on conflict; booleans and enums count as never empty, so a
+   difference there is a conflict;
+3. writes an interaction of kind =note= on the survivor's timeline: what was
+   taken, what the loser had that was not carried over, and which columns
+   were re-pointed with row counts;
+4. stamps the loser's =merged_into_id= and soft-deletes it;
+5. writes one audit entry with =source=dedupe= against the survivor whose
+   diff carries the same detail as JSON;
+6. marks the candidate =merged= with =survivor_id=, and soft-deletes every
+   other open candidate that named the loser.
+
+A failure anywhere rolls all of it back. The ledger is never touched.
+
+Re-pointing is one derived =UPDATE= per referencing column rather than a save
+per row, because payments, credits and allocations refuse every save once
+persisted and a merge that could not move a customer's payments would leave
+the per-customer numbers wrong for exactly the customers who paid. The
+moved rows keep their version and =updated_at=; the trail for them is the
+merge's audit entry and note. A stale copy of a moved row saved afterwards
+with the loser's id is refused by the ordinary reference check, because the
+loser is deleted. Rows that name their subject by type and id rather than by
+a reference field (=ticket_relation=, =record_link=, =kb_link=,
+=activity.related_id=) are not re-pointed.
+
+The service emits =merging= inside the transaction before the first write;
+a =G_SIGNAL_RUN_LAST= handler may return an owned =GError= to veto. =merged=
+is emitted after the outermost commit and dropped on rollback.
+
+** Forwarding
+
+A merged record's old id keeps working. =GET /api/v1/company/:loser= and
+=/e/company/:loser= answer =301= with =Location= at the survivor, and the
+same for contacts, so a link in an email or a bookmark does not break. The
+pointer is followed to a live record; a chain is collapsed at merge time.
+
+** Refusals
+
+- The two records belong to different organizations.
+- A record merged onto itself, or a survivor that is not one of the pair.
+- The loser has issued invoices or bills in a currency the survivor's own
+  issued documents do not use. "Issued" means an invoice past =draft= and not
+  =void=, or a bill past =draft= and not =void=. A survivor with no issued
+  documents accepts any currency.
+- Either record is deleted or unknown; a candidate that is not open.
+
+=dismiss= closes a candidate as not a duplicate; later scans leave the pair
+alone. It is available from the page, =POST
+/api/v1/duplicate_candidate/:id/actions/dismiss= and =venturectl dedupe
+dismiss ID=. Merge is stageable: =venturectl --stage dedupe merge= proposes
+it for approval like any other action; scan and dismiss are not.
+
+* Where it shows
+
+The Duplicates page under Relations, =/customers/duplicates=, lists the open
+candidates for the active organization by score with the two records side
+by side, one row per field either has, conflicts marked, a merge button each
+way and a dismissal. The merge note appears on the survivor's record page and
+timeline; the audit entry on the survivor's history.
+
+* Operator commands
+
+#+begin_src sh
+venturectl dedupe scan kind=company organization_id=1
+venturectl dedupe scan kind=contact
+venturectl list duplicate_candidate status=open
+venturectl dedupe merge 12 survivor=7
+venturectl --stage dedupe merge 12 survivor=7
+venturectl dedupe dismiss 13
+venturectl act duplicate_candidate 12 merge survivor=7
+#+end_src
+
+=kind= defaults to =company=; =organization_id= to the default organization.
+The scan is a type-level action and is judged in the organization it names
+(see [[file:orgaccess.org][organization access]]): a member who is not a
+global owner or administrator must pass =organization_id=, and the scan
+runs in that organization and no other. The CLI verbs are spelled through
+=venturectl act=, so =survivor= and =organization_id= are sent as integers.
+
+* Upgrades and verification
+
+Paired migration =000400_dedupe.sql= verifies, after additive metadata
+reconciliation, that the =merged_into_id= columns are present on both CRM
+tables and that the candidate table is present or, with the module disabled,
+absent. It preserves every existing row and infers nothing.
+
+=test-dedupe= covers the name similarity, each scan reason with its score,
+idempotent rescans and dropped pairs, contacts scanned apart from companies,
+a merge that re-points contacts, interactions, deals, invoices, tickets,
+activities and bills with the field union, the timeline note, the forwarding
+pointer, the closed candidate and the audit entry, rollback with nothing
+changed after an injected failure, the three refusals with the accepted
+opposite case, generic writes refused, the module switch, the REST and CLI
+surfaces, the 301 forwarding and the page against a private server, and
+migration with the module disabled. =test-auth= checks the page and the
+actions refuse anonymous callers.

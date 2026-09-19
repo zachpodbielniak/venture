@@ -116,6 +116,7 @@
 #include "tax/venture-sales-tax-records.h"
 #include "calendar/venture-calendar-records.h"
 #include "crm-import/venture-crm-import-records.h"
+#include "dedupe/venture-dedupe-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -274,6 +275,7 @@
 #include "calendar/venture-booking-service.h"
 #include "money-calendar/venture-money-calendar.h"
 #include "crm-import/venture-crm-import-service.h"
+#include "dedupe/venture-dedupe-service.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 
