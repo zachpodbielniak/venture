@@ -170,6 +170,7 @@ SERVER_ONLY_SRCS += $(filter-out src/calendar/venture-calendar-records.c,$(wildc
 SERVER_ONLY_SRCS := $(filter-out src/report/venture-headline-records.c,$(SERVER_ONLY_SRCS))
 CORE_SRCS += src/leads/venture-lead-routing-records.c
 SERVER_ONLY_SRCS += src/leads/venture-lead-routing.c
+SERVER_ONLY_SRCS += $(wildcard src/money-calendar/*.c)
 
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
@@ -238,6 +239,7 @@ PUBLIC_HDRS += $(wildcard src/backup/*.h)
 PUBLIC_HDRS += $(wildcard src/budgets/*.h)
 PUBLIC_HDRS += $(wildcard src/equity/*.h)
 PUBLIC_HDRS += $(wildcard src/group/*.h)
+PUBLIC_HDRS += $(wildcard src/money-calendar/*.h)
 
 # Private implementation fragments are included by their owning C source;
 # they are neither installable headers nor introspection declarations.
@@ -277,6 +279,7 @@ $(OUTDIR)/tests/test-dunning: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sales-tax: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-backup-schedule: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-customer-health: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-money-calendar: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery

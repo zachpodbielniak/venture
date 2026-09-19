@@ -2743,5 +2743,6 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 	venture_pnl_cuts_register_reports(self);
 	venture_year_end_pack_register_reports(self);
 	venture_customer_health_register_reports(self);
+	venture_money_calendar_register_reports(self);
 
 }

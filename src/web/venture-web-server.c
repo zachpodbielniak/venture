@@ -1477,6 +1477,7 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/deals", "Sales board", VENTURE_ICON("<path d=\"M4 4v16M12 4v16M20 4v16\"/>"), "Sales pipelines", "pipelines" },
 	{ "/invoices/compose", "New invoice", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h8M8 16h5\"/>"), "Invoicing", "invoicing" },
 	{ "/quotes/compose", "New quote", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), "Quotes", "quotes" },
+	{ "/money/calendar", "Money calendar", VENTURE_ICON("<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M3 10h18M8 3v4M16 3v4\"/>"), "Money", "money_calendar" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 
@@ -2614,7 +2615,7 @@ venture_web_api_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
@@ -27852,6 +27853,7 @@ venture_web_api_ticket_draft(
 #include "orgaccess/venture-accountant-web.inc"
 #include "report/venture-customer-health-web.inc"
 #include "calendar/venture-calendar-web.inc"
+#include "money-calendar/venture-money-calendar-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -28349,6 +28351,7 @@ venture_document_web_register(router, self);
 	venture_accountant_web_register(router, self);
 	htmx_router_post(router, "/api/v1/:type/:id/actions/:action", venture_web_api_action, self);
 	htmx_router_post(router, "/api/v1/journals/post", venture_web_api_action, self);
+	venture_money_calendar_web_register(router, self);
 
 	return g_steal_pointer(&self);
 }

@@ -99,4 +99,5 @@ void venture_activity_calendar_append_line(GString *calendar, const gchar *name,
 void venture_activity_calendar_append_date(GString *calendar, const gchar *name,
 	GDateTime *date);
 G_END_DECLS
+
 #endif

@@ -43,6 +43,7 @@ about it.
 | =recurring_costs= | running bill and expense schedules as a monthly run-rate |
 | =cash_outlook= | weekly cash in and out from open invoices and bills, from the bank balance |
 | =customer_health= | every customer banded green, amber or red, with why    |
+| =money_calendar= | every dated money event with daily and ISO-week nets per currency |
 
 #+begin_src sh
 venturectl report                       # list them
@@ -747,3 +748,13 @@ The churn card on the home page carries an *At risk* line --- the red
 count, as of the period's end, linking to the report filtered to red.
 A customer's own page shows its band and the three reasons under
 *Health*. See [[file:dashboards.org][Dashboards]].
+* The money calendar
+
+The =money_calendar= module adds =money_calendar=: every dated money event
+in the period (recurring schedules expanded forward, bills and invoices on
+their due dates with overdue ones carried to =as_of=, dunning steps,
+payroll runs, tax packs) with per-day and per-ISO-week nets per currency,
+never folded across them. It accepts =from= and =to= as an explicit span,
+=as_of=, =kind=, =customer_id= or =vendor_id=, =venture_id= and
+=currency=. The same events feed =/money/calendar= and
+=/money/calendar.ics=; see [[file:money-calendar.org][the money calendar]].

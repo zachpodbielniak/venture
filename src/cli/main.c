@@ -3224,6 +3224,7 @@ venture_cli_command_mcp(
 #include "backup/venture-backup-cli.inc"
 #include "tax/venture-sales-tax-cli.inc"
 #include "report/venture-customer-health-cli.inc"
+#include "money-calendar/venture-money-calendar-cli.inc"
 
 /* --- Entry point --------------------------------------------------------- */
 
@@ -3320,6 +3321,9 @@ main(
 	g_autofree gchar *mail_html = NULL;
 	g_autofree gchar *mail_limit = NULL;
 	g_autofree gchar *sequence_as_of = NULL;
+	g_autofree gchar *calendar_from = NULL;
+	g_autofree gchar *calendar_to = NULL;
+	g_autofree gchar *calendar_kind = NULL;
 	gboolean show_version = FALSE;
 	gboolean show_license = FALSE;
 	gboolean quiet = FALSE;
@@ -3358,6 +3362,9 @@ main(
 		  NULL, NULL },
 		{ "dry-run", 0, 0, G_OPTION_ARG_NONE, &dry_run,
 		  "post backfill or billing: validate without retaining writes", NULL },
+		{ "from", 0, 0, G_OPTION_ARG_STRING, &calendar_from, "money calendar: first day", "DATE" },
+		{ "to", 0, 0, G_OPTION_ARG_STRING, &calendar_to, "money calendar: last day (inclusive)", "DATE" },
+		{ "kind", 0, 0, G_OPTION_ARG_STRING, &calendar_kind, "money calendar: one kind only", "KIND" },
 		{ NULL }
 	};
 
@@ -3482,6 +3489,7 @@ main(
 		"  backup restore-drill [run_id=N] [organization_id=N] [name=...]  the same, kept as a named drill\n"
 		"  sales-tax export period=PERIOD [jurisdiction=CODE]  sales tax return CSV per jurisdiction\n"
 		"  customers health-sweep [as_of=DATE] [organization_id=N] [limit=N]  one check-in per at-risk customer\n"
+		"  money calendar --from DATE --to DATE [--kind K] [--as-of DATE]  the agenda of dated money events\n"
 		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
 		"\n"
@@ -3627,9 +3635,9 @@ main(
 		cli.format = (VentureOutputFormat)value;
 	}
 
-	if (sequence_as_of != NULL && g_strcmp0(args[0], "billing") != 0 && g_strcmp0(args[0], "recurring") != 0 && g_strcmp0(args[0], "collections") != 0 && (g_strcmp0(args[0], "sequence") != 0 || g_strcmp0(args[1], "run") != 0))
+	if (sequence_as_of != NULL && g_strcmp0(args[0], "billing") != 0 && g_strcmp0(args[0], "recurring") != 0 && g_strcmp0(args[0], "collections") != 0 && g_strcmp0(args[0], "money") != 0 && (g_strcmp0(args[0], "sequence") != 0 || g_strcmp0(args[1], "run") != 0))
 	{
-		g_printerr("venturectl: --as-of is only valid for sequence run, billing, recurring or collections\n");
+		g_printerr("venturectl: --as-of is only valid for sequence run, billing, recurring, collections or money calendar\n");
 		g_free(cli.base_url);
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
@@ -3782,6 +3790,8 @@ main(
 		result = venture_cli_command_sales_tax(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "customers"))
 		result = venture_cli_command_customers(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "money"))
+		result = venture_cli_command_money(&cli, args, calendar_from, calendar_to, calendar_kind, sequence_as_of, &error);
 	else
 	{
 		g_printerr("venturectl: \"%s\" is not a command. Try --help.\n",

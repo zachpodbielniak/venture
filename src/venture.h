@@ -271,6 +271,7 @@
 #include "calendar/venture-icalendar.h"
 #include "calendar/venture-calendar-sync-service.h"
 #include "calendar/venture-booking-service.h"
+#include "money-calendar/venture-money-calendar.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 
