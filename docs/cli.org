@@ -605,3 +605,21 @@ a candidate as not a duplicate. =list duplicate_candidate status=open= reads
 the proposals. A non-admin must name the organization to scan; each verb is
 the =act= command on =duplicate_candidate= with typed arguments. See [[file:dedupe.org][duplicates]] for the matching rules and
 what a merge moves.
+* Documentation
+
+=venturectl docs build= renders =docs/*.org= and =README.org= to a static
+site; it is the one verb that needs no server, so an installed CLI can
+rebuild the site a hosted instance serves at =/docs=. =make docs-site=
+runs the same thing.
+
+#+begin_src sh
+venturectl docs build                                   # ./docs -> ./build/docs-site
+venturectl docs build source=/srv/venture/src output=/srv/venture/docs-site
+venturectl docs build renderer=builtin                  # without Emacs
+#+end_src
+
+=renderer= is =auto= (Emacs's exporter when =emacs= is on =PATH=, the
+builtin otherwise), =emacs= or =builtin=. A broken internal link or a
+document not linked from =docs/index.org= is refused with exit code 8
+and a message naming it; nothing is written. See
+[[file:docs-site.org][The documentation site]].

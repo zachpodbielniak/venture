@@ -303,3 +303,13 @@ backups a schedule keeps when its own =retention= is zero. Both are
 defaults a schedule overrides per row; neither turns scheduling on -- a
 schedule is a record, and a sweep has to be called. See
 [[file:backup.org][scheduled backups]].
+** The documentation site
+
+The =docs= section has one setting, =site_dir= (=VENTURE_DOCS_SITE_DIR=,
+=docs-site-dir= on the object): the directory whose top-level files
+=/docs= serves. It defaults to =$(VENTUREDATADIR)/docs-site=, where =make
+install= puts the rendered site; =make run=, =just start= and the demo
+point it at the tree's =build/docs-site=. Render the site with =make
+docs-site= or =venturectl docs build=; the server reads it and never
+writes it. =modules.docs: false= switches =/docs= off. See
+[[file:docs-site.org][The documentation site]].

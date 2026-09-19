@@ -1131,6 +1131,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"dedupe", "Duplicates",
 		"Find and merge duplicate companies and contacts; a scan proposes, a person merges.",
 		dedupe_requires, dedupe_suggests, dedupe_types, NULL, NULL, FALSE
+	},
+	{
+		"docs", "Documentation",
+		"The rendered documentation site, served read-only at /docs.",
+		venture_module_requires_core, NULL, NULL, NULL, NULL, FALSE
 	}
 };
 

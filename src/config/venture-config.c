@@ -316,6 +316,13 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_STR("backup-directory", "backup", "directory", "backups", "Where scheduled backups are written when a schedule names no destination; relative to the state directory"),
 	VC_INT("backup-retention", "backup", "retention", 7, "Successful backups kept per schedule when the schedule says zero"),
 
+	/*
+	 * Where /docs reads the rendered documentation from. `make install`
+	 * puts the site here; a tree run sets VENTURE_DOCS_SITE_DIR to its
+	 * build/docs-site instead.
+	 */
+	VC_STR("docs-site-dir", "docs", "site_dir", VENTURE_DATADIR "/docs-site",
+	       "Directory holding the rendered documentation site served at /docs"),
 };
 
 #define VENTURE_CONFIG_N_SETTINGS G_N_ELEMENTS(venture_config_settings)

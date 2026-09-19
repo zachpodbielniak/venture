@@ -1794,6 +1794,18 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/deals/1/quote", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/t/o/unknown.gif"), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/t/c/unknown/1"), ==, SOUP_STATUS_NOT_FOUND);
+	/* The documentation site is public by design -- it is the shipped
+	 * shipped documentation, not this install's data -- so it answers
+	 * anonymously rather than redirecting. Pinned here so a route added
+	 * under /docs that is not public has to change this on purpose. The
+	 * page name is matched against a strict pattern, so a traversal is
+	 * not a valid name at all and never reaches the filesystem. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/docs/index.html"), ==, SOUP_STATUS_NOT_FOUND);
+	/* Neither spelling of a traversal reaches the handler: the encoded one
+	 * is refused as a bad request, and a literal dotted segment is resolved
+	 * away before routing and lands on the ordinary signed-out redirect. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/docs/%2e%2e%2fventure.db"), ==, SOUP_STATUS_BAD_REQUEST);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/docs/../venture.db"), ==, SOUP_STATUS_FOUND);
 
 }
 

@@ -138,6 +138,13 @@
 #include "quotes/venture-quote-records.h"
 #include "goods/venture-goods-records.h"
 
+/*
+ * The documentation site generator is core: `venturectl docs build`
+ * renders it on a machine that need not build the server.
+ */
+#include "docs/venture-org-html.h"
+#include "docs/venture-docs-site.h"
+
 /* --- Server-only subsystems ---------------------------------------------- */
 
 #ifdef VENTURE_SERVER_BUILD

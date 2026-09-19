@@ -10,6 +10,14 @@
 
 An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of small business ventures rather than one company.
 
+** Start here
+
+New to VENTURE? Two pages, in this order:
+
+- [[file:quickstart.org][Quickstart]] — zero to a running VENTURE with the demo organisation, an invoice, a bank statement and a closed period, in under fifteen minutes
+- [[file:docs-site.org][The documentation site]] — this documentation, rendered and served by every instance at =/docs=; =make docs-site=
+- [[file:../README.org][README]] — what VENTURE is, in one page
+
 ** Documents
 
 - [[file:orgaccess.org][Organization access]] — membership, organization roles and record ownership
@@ -82,6 +90,7 @@ An ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of 
 - [[file:custom-fields.org][Custom fields]] — layouts and required values without writing C
 - [[file:backup.org][Accounting backup]] — export and restore an organization pack; scheduled, retained, verified backups and the restore drill
 - [[file:quotes.org][Commercial quotes]] — price lists, revisions, public acceptance and invoice handoff
+- [[file:docs-site.org][The documentation site]] — docs/*.org rendered to HTML, served at =/docs=, with link and index checks
 
 ** The shape of the thing in one page
 

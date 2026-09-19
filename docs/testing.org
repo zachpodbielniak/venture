@@ -512,3 +512,23 @@ route is 404; the company page shows this month's cost from the same
 function and the home page carries the organisation's; and =venturectl
 support rollup --from --to --sort= in JSON and CSV, with the missing-span,
 wrong-verb and bad-sort refusals.
+** =test-docs=
+
+The documentation site (issue #97). A fixture tree renders to the same
+shape with the builtin renderer and with Emacs (skipped where Emacs is
+absent), and the automatic choice reports which it used. A broken
+=file:= link, a link that escapes the checkout, a document the
+index does not link (directly or through another document) and a missing
+=docs/index.org= each refuse the build and leave no site behind. The real
+=docs/= renders with every file a page and the Start here group in the
+nav. =venturectl docs build= renders and reports; a broken link exits 8
+naming the link, a bad verb or renderer exits 2. A server with
+authentication required serves =/docs=, =/docs/index.html=, the
+stylesheet, script and search index without a session with their content
+types, refuses a directory, an =.org= source and an escape, answers a
+never-rendered site with the page that says what to run, and answers 404
+throughout with the =docs= module off; =/= still redirects to sign in.
+=README.org= and =docs/index.org= point at the site and the quickstart.
+Then =tests/docs-quickstart.sh= runs every named block of
+=docs/quickstart.org= against a throwaway SQLite instance on a private
+port and asserts each step, in order.
