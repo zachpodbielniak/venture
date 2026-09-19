@@ -125,3 +125,4 @@ Two binaries, both statically linked against every vendored dependency: =venture
 - [[file:crm-import.org][CRM migration]] — HubSpot, Zoho CRM and Salesforce exports into companies, contacts, deals, history and next actions
 - [[file:dedupe.org][Duplicates]] — find and merge duplicate companies and contacts that already exist; a scan proposes, a person merges
 - [[file:security.org][Security: the second factor]] — TOTP enrolment with a QR code, verification at sign-in, recovery codes, and the require-MFA-for-admins organization setting
+- [[file:navigation.org][Navigation]] — the sidebar grouped by the five questions: money in, money out, growth, customers, support

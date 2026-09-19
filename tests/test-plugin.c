@@ -936,6 +936,152 @@ test_web_navigation_lists_accounting_types(
 	}
 }
 
+/*
+ * The sidebar is grouped by the five questions an owner asks -- what is
+ * coming in, what is going out, what is growing, who the customers are,
+ * who needs help -- not by the module that happens to own a page. The
+ * grouping is a second table over the first: the link table stays in
+ * place (its URLs, module gates and roles are untouched), and a section
+ * names the paths it gathers. Asserted on membership, so a page moved to
+ * the wrong question is a test failure and not a support call.
+ */
+static void
+test_web_navigation_groups_by_question(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	static const gchar *const money_in[] = {
+		"/e/sale", "/e/invoice", "/invoices/compose", "/quotes/compose",
+		"/e/payment", "/e/payment_allocation", "/e/customer_credit",
+		"/e/refund", "/e/collection_case", "/e/customer_subscription",
+		"/sales-orders", "/bankfeed", NULL
+	};
+	static const gchar *const money_out[] = {
+		"/e/expense", "/payables", "/purchasing", "/claims", "/payroll",
+		"/e/recurring_schedule", NULL
+	};
+	static const gchar *const growth[] = {
+		"/deals", "/e/deal", "/e/campaign", "/e/newsletter", "/e/post",
+		NULL
+	};
+	static const gchar *const customers[] = {
+		"/e/company", "/e/contact", "/worklist", NULL
+	};
+	static const gchar *const support[] = {
+		"/tickets", "/sprints", "/kb", NULL
+	};
+	static const struct {
+		const gchar *heading;
+		const gchar *const *paths;
+	} expected[] = {
+		{ "Money in", money_in },
+		{ "Money out", money_out },
+		{ "Growth", growth },
+		{ "Customers", customers },
+		{ "Support", support },
+	};
+	const VentureWebNavSection *sections;
+	const VentureWebNavLink *links;
+	gsize i;
+	gsize j;
+
+	(void)fixture;
+	(void)user_data;
+
+	sections = venture_web_navigation_sections();
+	g_assert_nonnull(sections);
+	links = venture_web_navigation();
+
+	/* The five, in the order they are asked, and nothing else. */
+	for (i = 0; i < G_N_ELEMENTS(expected); i++)
+	{
+		g_assert_cmpstr(sections[i].heading, ==, expected[i].heading);
+		g_assert_nonnull(sections[i].paths);
+
+		for (j = 0; NULL != expected[i].paths[j]; j++)
+			g_assert_cmpstr(sections[i].paths[j], ==,
+			                expected[i].paths[j]);
+
+		g_assert_null(sections[i].paths[j]);
+	}
+
+	g_assert_null(sections[i].heading);
+
+	/*
+	 * A section may only gather links that exist, and each once: a path
+	 * with no row behind it is a heading over nothing, and a path in two
+	 * sections is the same page shown twice.
+	 */
+	for (i = 0; NULL != sections[i].heading; i++)
+	{
+		for (j = 0; NULL != sections[i].paths[j]; j++)
+		{
+			const gchar *path;
+			gsize k;
+			gboolean found;
+			guint claims;
+
+			path = sections[i].paths[j];
+			found = FALSE;
+
+			for (k = 0; NULL != links[k].path; k++)
+			{
+				if (0 == g_strcmp0(links[k].path, path))
+					found = TRUE;
+			}
+
+			if (!found)
+				g_error("section %s gathers %s, which is not in "
+				        "the sidebar", sections[i].heading, path);
+
+			claims = 0;
+
+			for (k = 0; NULL != sections[k].heading; k++)
+			{
+				if (g_strv_contains(sections[k].paths, path))
+					claims++;
+			}
+
+			g_assert_cmpuint(claims, ==, 1);
+		}
+	}
+
+	/*
+	 * No link is orphaned by the regrouping: every row either belongs to
+	 * a question or still sits under the heading it inherits from the
+	 * table, so the count of rows drawn is the count of rows there are.
+	 */
+	{
+		const gchar *heading = NULL;
+		gsize drawn = 0;
+
+		for (i = 0; NULL != links[i].path; i++)
+		{
+			if (NULL != links[i].section)
+				heading = links[i].section;
+
+			for (j = 0; NULL != sections[j].heading; j++)
+			{
+				if (g_strv_contains(sections[j].paths, links[i].path))
+					break;
+			}
+
+			if (NULL != sections[j].heading)
+			{
+				drawn++;
+				continue;
+			}
+
+			if (NULL == heading)
+				g_error("%s is under no heading", links[i].path);
+
+			drawn++;
+		}
+
+		g_assert_cmpuint(drawn, ==, i);
+	}
+}
+
 /* ==========================================================================
  * Automation
  * ========================================================================== */
@@ -1653,6 +1799,8 @@ main(
 	    test_web_navigation_links_all_resolve);
 	ADD("/web/navigation-lists-accounting-types",
 	    test_web_navigation_lists_accounting_types);
+	ADD("/web/navigation-groups-by-question",
+	    test_web_navigation_groups_by_question);
 
 	ADD("/automation/disabled-is-not-a-failure",
 	    test_automation_disabled_is_not_a_failure);
