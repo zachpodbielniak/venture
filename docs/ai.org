@@ -224,7 +224,7 @@ properties.
 | =venture_report=      | read — any report                            |
 | =venture_links=       | read — every link touching a record          |
 | =venture_dashboard=   | read — a dashboard, every widget evaluated; or the list of them |
-| =venture_factory=     | read for status; changelog staged unless autonomous; publish only when autonomous |
+| =venture_factory=     | read for status, actions, readiness and forecast; changelog and deploy staged unless autonomous; rollback, build_ticket and publish only when autonomous |
 | =venture_inbox=       | read — the operator's own inbox; marking read is theirs to do |
 | =venture_runs=        | read — the coding runs with cost, and the agent budgets |
 | =venture_desk= (triage, summarise, draft) | read — judgements about a ticket's text, on the toolless path |
@@ -234,6 +234,8 @@ properties.
 | =venture_create=      | staged unless the policy is autonomous       |
 | =venture_update=      | staged unless the policy is autonomous       |
 | =venture_delete=      | always staged, whatever the policy           |
+
+Beside the tools, the factory has four pieces of writing the assistant does from a button rather than a conversation — release notes, a postmortem draft, a failed build's triage and the morning's briefing — built the way the desk's three judgements are: on the toolless path, with the records sent as data, and nothing written. See [[file:factory.org::*The assistant on the factory floor][The assistant on the factory floor]].
 
 Under =read_only= the mutating tools are not registered at all, rather than
 registered and refused. A model cannot misuse a capability it was never told

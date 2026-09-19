@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-11]
-#+updated: [2026-09-12]
+#+updated: [2026-09-19]
 #+version: 0.6.0
 
 * What this is
@@ -35,31 +35,116 @@ Tickets gained two fields: =milestone_id= (planned for) and =release_id= (fixed 
 
 A release's version is the field =number=, not =version=. Every record already has a =version=: the optimistic-concurrency counter that makes a stale edit a conflict rather than a silent overwrite. A field of the same name would install a string over it, and the second save of any release would fail as a conflict with itself. The field installer now refuses a name the entity spine owns, so this cannot recur.
 
+* The timestamps follow the statuses
+
+The reports measure the loop from its timestamps: time to restore from an incident's started and resolved, deployment frequency from deployed, lead time from released. A form, the API, the CLI and the assistant can all move a status without touching the matching date, and a record resolved with no resolved time is one every report silently leaves out. So the dates are derived on every writer, by save validators =venture_factory_install()= registers, the way a ticket's resolved time is:
+
+| Record       | Rule                                                                 |
+|--------------+----------------------------------------------------------------------|
+| =incident=   | Starts when it is raised unless a start is given. Resolved or in postmortem stamps =resolved_at=; reopened clears it. Resolved before it started is refused. |
+| =deployment= | Succeeded or rolled back with no =deployed_at= went live now.         |
+| =milestone=  | Completed stamps =completed_at=; reopened clears it.                  |
+| =release=    | Released with no =released_at= was released now.                      |
+| =build=      | Past queued has a start; finished has a finish. One typed by hand cannot finish before it started; the forge's clock is not argued with. |
+
+A date somebody gives is kept. Only an empty one is filled.
+
+An incident in =postmortem= is fixed and being written up. It is not "open": the Factory page, the status summary and the readiness check all leave it out of what is on fire.
+
 * The Factory page
 
 =/factory= is the loop at a glance: open milestones with their progress, the newest releases, the latest builds, each environment with the release it is running, and the incidents still open. Each list is the newest few with a link to the whole, because the page's job is "where does the factory stand", and the answer to that is short.
 
-A release's page lists the tickets it shipped, drafts the changelog, and publishes to the forge. A milestone's page shows its progress. An environment's page shows what it is running now.
+Above them is *What needs you* — see [[file:factory.org::*What needs you][below]].
+
+A release's page says whether it is ready to go out, records a deployment, lists the tickets it shipped, drafts the changelog, and publishes to the forge. A milestone's page shows its progress and when it lands at the pace it is going. An environment's page shows what it is running now and rolls it back. A failed build's page opens the ticket that fixes it. An incident's page opens its fix.
+
+Lists that sort on a date put the undated rows last, on both backends. SQLite and PostgreSQL disagree about where NULL sorts, so "newest releases" used to lead with the plans on one and end with them on the other; the query builder now says =NULLS LAST= outright.
+
+* What needs you
+
+The Factory page answers "where does the factory stand". =venture_factory_next_actions()= answers the question after it: "and what should I do about it". Every entry is something a person or an agent can act on now, names the record to act on, and is derived from the records alone — no model is asked, so it is the same list every time and costs nothing to draw.
+
+| Key                         | Priority        | When                                                                 |
+|-----------------------------+-----------------+----------------------------------------------------------------------|
+| =incident_without_fix=      | urgent or high  | An incident is open or mitigated and names no ticket. Urgent for sev1 and sev2. |
+| =default_branch_red=        | high            | The newest build of a repository's default branch failed, within two weeks. |
+| =milestone_overdue=         | high            | Past its due date with work left.                                    |
+| =budget_exhausted=          | high            | An agent budget is spent.                                            |
+| =postmortem_missing=        | normal          | A sev1 or sev2 resolved in the last thirty days with an empty postmortem. |
+| =milestone_at_risk=         | normal          | The forecast lands after the due date.                               |
+| =release_ready=             | normal          | Every ticket is done and no readiness check fails, and it has not gone out. |
+| =release_not_in_production= | normal          | Released in the last thirty days and never deployed to a production environment. |
+| =deployment_stuck=          | normal          | Pending or in progress for more than a day.                          |
+| =budget_warning=            | normal          | An agent budget is past its warning line.                            |
+
+Each entry carries =key=, =priority=, =title=, a sentence of =detail=, =record_type= and =record_id=, the =href= of the record's page, and the =action= that deals with it (=fix_ticket=, =build_ticket=, =publish=, =deploy=, =postmortem=, =replan=, =update=). An entry goes when the thing it is about is dealt with: open the fix and the incident leaves the list.
+
+* Ready to go out?
+
+=venture_factory_release_readiness()= answers "can this go out" once, the same way for the page, the API, the CLI and the assistant, as checks that each =pass=, =warn= or =fail=:
+
+| Check        | Fails when                                       | Warns when                              |
+|--------------+--------------------------------------------------+-----------------------------------------|
+| =tickets=    | a ticket fixed in it is not done                 | it carries no tickets                   |
+| =blockers=   | a ticket linked as blocking it, or that it depends on, is open |                           |
+| =build=      | its latest build failed                          | none is recorded, or one is still running |
+| =incidents=  | an open incident names it                        | a sev1 or sev2 is open elsewhere        |
+| =milestone=  |                                                  | its milestone has tickets left          |
+| =changelog=  |                                                  | it is empty                             |
+| =repository= |                                                  | it names none, so cannot be published   |
+| =status=     | it was yanked                                    |                                         |
+
+Cancelled tickets are not counted either way. The build is the release's own latest; with none, the newest build of the repository's *default branch* speaks for it — somebody's feature branch being red says nothing about whether this can go out.
+
+The answer also carries =ready= (no check failed), the counts =passed=, =warnings= and =blockers=, and a =score= out of 100 in which a warning is half a pass.
+
+It advises and refuses nothing. A release with a failing check can still be published, because the person pressing the button may know why the check is wrong.
+
+* Deploying and rolling back
+
+*Record deployment* on a release's page, =venture_factory_deploy_release()=, records the release arriving in an environment: a deployment that succeeded now, filed under the environment's organization, naming the release's own latest green build where it has one. A yanked release is refused. It records that a deployment happened; it does not perform one. Whatever does the deploying — a pipeline, a person — calls the API when it is done.
+
+*Roll back* on an environment's page, =venture_factory_rollback_environment()=, marks the current deployment =rolled_back= and records a new deployment of the release that was live before it, in one transaction, with a =supersedes= link from the new to the old. It is refused when nothing is running, and when no earlier release ever went live there. A rolled-back deployment counts as a change failure in the delivery report, which is the point of recording it this way rather than deleting the bad deployment.
+
+* When a milestone lands
+
+=venture_factory_milestone_forecast()=: the tickets done in the last 28 days give a rate per week, and the tickets left divided by it give a date. =state= is one of =done=, =cancelled=, =empty=, =overdue= (past due with work left, whatever the pace), =stalled= (work left and none closed lately), =no_due_date=, =at_risk= (projected after the due date) or =on_track=. Cancelled tickets count neither as work left nor towards the pace.
+
+It is arithmetic, not a prediction: four weeks is long enough to smooth over one quiet week and short enough to notice the team changed.
 
 * Builds from the CI
 
-Turn on the =workflow_run= event on the forge's webhook (Repository → Settings → Webhooks, the same hook the issues come through). Every run of a Forgejo Actions or Gitea Actions workflow then becomes a build:
+The two forges report CI differently, and both are read (Repository → Settings → Webhooks, the same hook the issues come through):
 
-- =requested= creates the build as queued;
-- =in_progress= marks it running;
-- =completed= marks it succeeded, failed or cancelled from the run's conclusion, and stamps when it finished.
+- *Gitea* sends =workflow_run=. Turn it on and every run becomes a build: =requested= creates the build as queued, =in_progress= marks it running, and =completed= marks it succeeded, failed or cancelled from the run's conclusion and stamps when it finished.
+- *Forgejo* sends no =workflow_run= at all. It sends =action_run_success= and =action_run_failure= — turn on both — once, when a run is done, with the run under =run= (Forgejo's =ActionRun=: =id=, =index_in_repo=, =title=, =workflow_id=, =prettyref=, =commit_sha=, =status=, =started=, =stopped=, =html_url=). The run's =status= is the conclusion, so a cancelled run arriving as a "failure" is recorded as cancelled. The workflow is named by its file, =ci.yml=, because that is what Forgejo calls it. There is no queued or running state to show, because Forgejo does not report one.
 
 The build is matched on the repository and the forge's own run id, so the three deliveries for one run land on one row, and a retried delivery updates rather than duplicates. The repository must be enrolled in VENTURE; a run for one that is not is acknowledged and ignored, like any event nobody subscribed to.
+
+Deliveries arrive late, twice and out of order, so a finished build stays finished: an =in_progress= that turns up after =completed= is acknowledged and ignored. Only a run that really started again — a later =started_at= than the one on record, which is somebody pressing Re-run — takes the build back to running, and clears its finish time. A =neutral= conclusion is green; =cancelled= and =skipped= are cancelled; anything else is red; and a =completed= with no conclusion at all leaves a finished build as it was.
+
+Both timestamp shapes are read: Gitea and Forgejo send =started_at= and =completed_at=, the GitHub shape =run_started_at= and only an =updated_at=. Go's zero time (year 1, or the epoch), which a forge sends for "has not happened yet", is treated as absent rather than stored — a run cancelled while queued would otherwise read as having taken decades.
+
+A failed build's page offers *Open a fix ticket*: a bug titled after the workflow and branch, carrying the commit, the log's address and the excerpt, on the build's repository, high priority when the branch is the repository's default, linked from the build as what it caused. A build gets one; a second is refused.
 
 A build is attributed to the automation actor with the forge named, so one the CI reported is distinguishable in the audit log from one a person typed.
 
 * Releases, both ways
 
-*Cut on the forge.* Turn on the =release= event. A release published there becomes a release record here: the version read from the tag (=v1.2.0= is =1.2.0=), the notes filling an empty changelog, the status released with the forge's publication time. A release deleted on the forge is yanked here. Matched on the forge's id first and the tag second, so a release VENTURE published (which knows the id) and one cut on the forge (which VENTURE first hears of by tag) resolve to one row.
+*Cut on the forge.* Turn on the =release= event. A release published there becomes a release record here: the version read from the tag (=v1.2.0= is =1.2.0=), the notes filling an empty changelog, the status released with the forge's publication time. A release deleted on the forge is yanked here.
+
+It is matched on the forge's id first, the tag second and the version third, so a release VENTURE published (which knows the id), one cut on the forge (which VENTURE first hears of by tag) and one planned here and then tagged there by hand (which has tickets marked against it and neither an id nor a tag) all resolve to one row. By tag or by version, a row the forge already knows under a /different/ id is not a match: a tag deleted and cut again is a new release, and the late =deleted= for the old one finds the old row and not its replacement.
+
+Going out happens once. An edit to the notes of a release that is already out — or that somebody yanked here — moves neither its status nor =released_at=, which is what lead time is measured to. A draft and a pre-release are both =in_progress=: a release candidate is on the forge and is not the release, and no report counts it as shipped. A deletion's payload is mostly empty strings, and an empty string is not news: it blanks nothing, so a yanked release keeps the page it used to live at and is not offered Publish again. A draft or pre-release deleted before it ever went out goes back to being a plan the forge knows nothing of.
 
 *Published from VENTURE.* Create the release, mark tickets as fixed in it, press *Draft changelog* — the tickets grouped by issue type, as Markdown, which is what a forge renders a release body as — and press *Publish to forge*. The tag is the record's, or =v= plus the version when none is set; the forge creates it on the default branch if it does not exist. The id and the page come back and are written to the record, so the release is recognised when its own webhook arrives a moment later.
 
+A draft that changed nothing — because somebody already wrote a changelog and did not ask to replace it — says so the same way everywhere: the page shows the sentence under the buttons instead of coming back looking as though nothing happened, the API answers =changed: false= with that sentence as =reason=, and the assistant's tool returns the same object rather than an error a model would read as "try again".
+
 Publish is offered once. A second publish would be a second release on the forge.
+
+Permission is asked before the forge is touched, not after: the save at the end asks the same question, but by then the tag is cut. A release with neither a version nor a tag, and one that was yanked, are refused for the same reason. And because the forge's own webhook can land while the publish is still waiting on the forge and save the row first, a conflict on the final save re-reads the row and writes the forge's id, tag and page onto what is there — the alternative is a release that is out on the forge, reads as unpublished here, and gets a 409 on the retry. Published as a pre-release, the record is =in_progress= and carries the page; it becomes =released= when the forge says the full release is out.
 
 A changelog somebody edited is kept. *Redraft* leaves it alone unless "replace what is there" is ticked, because the draft is a starting point, not the truth.
 
@@ -71,11 +156,13 @@ An incident names the environment it happened in, the release that was running a
 
 | Name         | Answers                                                                 |
 |--------------+-------------------------------------------------------------------------|
-| =releases=   | releases out in the period: tickets carried, builds green and red, deployments |
+| =releases=   | releases that went out in the period: tickets carried, builds green and red, deployments |
 | =lead_time=  | days from a ticket being raised to the release that carried it going out; per release, with the median |
 | =incidents=  | incidents started in the period, hours to resolve, the mean             |
 
 Lead time is measured to the release, not to "done". Done is a column on a board; released is a fact a customer can observe. A ticket finished in March and released in June took until June.
+
+Cancelled work did not ship: a cancelled ticket is in no changelog, has no lead time, and is not a ticket a release carried. A yanked release has its row in =releases= and says so, but the headline counts what is still out — =releases= and =tickets= leave it out, and =yanked= counts it. A release that never went out has no release date and is not listed, even for "all time". An incident is open when its status says so, whatever dates it carries.
 
 * Over the API, the CLI and the assistant
 
@@ -84,16 +171,52 @@ Every factory record is an ordinary type, so =/api/v1/milestone=, =release=, =bu
 | Question                        | API                                   | venturectl                       | assistant / MCP                       |
 |---------------------------------+---------------------------------------+----------------------------------+---------------------------------------|
 | where does the factory stand    | =GET /api/v1/factory=                 | =factory=                        | =venture_factory= (status)            |
+| what in it needs somebody       | =GET /api/v1/factory/actions=         | =factory actions=                | =venture_factory= action actions      |
+| can this release go out         | =GET /api/v1/releases/:id/readiness=  | =release readiness ID=           | =venture_factory= action readiness    |
+| when does this milestone land   | =GET /api/v1/milestones/:id/forecast= | =milestone ID forecast=          | =venture_factory= action forecast     |
 | draft a changelog from tickets  | =POST /api/v1/releases/:id/changelog= | =release changelog ID [--replace]= | =venture_factory= action changelog    |
+| record a deployment             | =POST /api/v1/releases/:id/deploy=    | =release deploy ID ENV [NOTES]=  | =venture_factory= action deploy       |
+| roll an environment back        | =POST /api/v1/environments/:id/rollback= | =environment ID rollback [REASON]= | =venture_factory= action rollback |
+| open the bug for a red build    | =POST /api/v1/builds/:id/ticket=      | =build ID ticket=                | =venture_factory= action build_ticket |
 | publish a release to the forge  | =POST /api/v1/releases/:id/publish=   | =release publish ID [--prerelease]= | =venture_factory= action publish    |
 
-All three call the same functions in =src/core/venture-factory.c= that the pages call, so a changelog an agent drafts is the changelog the button drafts. The status is the five questions the Factory page asks, as one JSON object. Drafting is an update to the release and follows the write policy — the in-process assistant stages it unless autonomous; =venturectl mcp= needs =--apply-writes=, or an agent sets the field itself with =venture_update=, which stages. Publishing creates a tag and a release on the forge, which no approval could undo, so it is offered to the assistant only under the autonomous policy and to =venturectl mcp= only with =--apply-writes=.
+=--replace= and =--prerelease= are real options, each belonging to its own verb: on the other verb, or on any other command, they are refused, and so is a stray word after the id. Publishing cannot be undone, and =--pre-release= quietly read as no flag at all would publish a full release.
+
+=?organization_id=N= scopes the status and the actions to that entity and those beneath it. Present and unusable — =junk=, =0= — it is a 400, not "everything": an agent that mistyped the id would otherwise be handed every organization and have no way to tell.
+
+The reads are open to a read-only assistant. Recording a deployment is one record, so the in-process assistant stages it like any create unless autonomous. Rolling back is two writes that must land together and a build's ticket is a ticket and a link, neither of which the confirmation queue — one record per card — can hold, so both are offered to the assistant only under the autonomous policy and to =venturectl mcp= only with =--apply-writes=; refused, each says what to do instead.
+
+All of them call the same functions in =src/core/venture-factory.c= that the pages call, so a changelog an agent drafts is the changelog the button drafts. The status is the five questions the Factory page asks, as one JSON object. Drafting is an update to the release and follows the write policy — the in-process assistant stages it unless autonomous; =venturectl mcp= needs =--apply-writes=, or an agent sets the field itself with =venture_update=, which stages. Publishing creates a tag and a release on the forge, which no approval could undo, so it is offered to the assistant only under the autonomous policy and to =venturectl mcp= only with =--apply-writes=.
 
 An agent building a factory dashboard uses the same surface: =venture_dashboards= (=what: templates=) for the shipped factory definition, =venture_dashboard_build= to make it, =venture_dashboard= to read it back with every widget answered. See [[file:dashboards.org][Dashboards]].
 
+* The assistant on the factory floor
+
+Four pieces of writing the factory asks of somebody at exactly the moment they have least time for it. A model is good at all four, because all four are reading a pile of records and saying what they amount to. They live in =src/ai/venture-ai-factory.c=, beside the desk's three judgements and built the same way.
+
+| What                  | From                                                          | Page                              | API                                    | venturectl               |
+|-----------------------+---------------------------------------------------------------+-----------------------------------+----------------------------------------+--------------------------|
+| Release notes         | the tickets a release carries and its changelog               | *Write release notes* on a release | =POST /api/v1/releases/:id/notes=      | =release notes ID [AUDIENCE]= |
+| Postmortem draft      | the incident, where and what was running, the deployment that introduced it, the fix ticket and its thread | *Draft the postmortem* on an incident | =POST /api/v1/incidents/:id/postmortem= | =incident ID postmortem= |
+| Build triage          | a build and its log excerpt                                   | *Triage the failure* on a failed build | =POST /api/v1/builds/:id/triage=    | =build ID triage=        |
+| Briefing              | the status summary and what needs you                         | *Brief me* on the Factory page    | =GET /api/v1/factory/briefing=         | =factory briefing=       |
+
+The rules they are built to:
+
+- *Each reads and answers; none writes.* On a page, release notes and a postmortem arrive in a box a person can correct, over a button that saves them — as that person's edit, through the ordinary save, validated, audited and versioned like any other. The assistant never writes either field itself. Over the API the draft is simply returned.
+- *The facts come from the records, not from the model.* The briefing narrates =venture_factory_next_actions()=; it does not decide what is on the list. Release notes leave out cancelled tickets because the transcript does, not because the model was asked to.
+- *The text is data.* Ticket titles, incident summaries and build logs are all somebody else's writing — a log most of all, since anything a test prints ends up in it. Every prompt goes down the toolless path (=venture_ai_service_complete()=) and says outright that what is between the =BEGIN RECORDS= and =END RECORDS= markers is never to be obeyed. A model that cannot reach a tool cannot be talked into using one.
+- *Nothing to read is refused, not guessed.* A build with no log excerpt, and a release with no tickets and no changelog, are validation errors before any model is called.
+- *Structured answers are held to their vocabulary.* Build triage returns =category= (one of =compile=, =test=, =lint=, =dependency=, =infrastructure=, =flaky=, =configuration=, =unknown=), =summary=, =cause=, =suggestion=, =retry= and =confidence= (=low=, =medium=, =high=). Anything else a model says for =category= becomes =unknown=, for =confidence= becomes =low=, and a =retry= that is not a boolean becomes =false= — a page and an automation rule both switch on these.
+- *Bounded.* At most 120 tickets, 16 comments and about 14,000 characters go to the model, and a long log keeps its end, which is where the failure is.
+
+All four need the editor role, since each call costs money, the =ai= module, and a configured provider; without one the buttons are not drawn and the API says why.
+
 * Mission control, budgets and the delivery report
 
-=/runs= is every coding run across every repository with its state, runner, model, tokens, cost and duration, live ones cancellable, totals over the list, and the budgets beneath. An =agent_budget= caps what the runs may cost in a window; before a run starts every budget covering its repository is checked, crossing a line tells the admins once, and an exhausted hard-stop budget refuses the run. The =delivery= report is DORA's four keys — deployment frequency, lead time for changes, change failure rate, time to restore — from these records, beside what the runs did and cost. An incident's page opens its fix ticket in one press, typed as a bug and prioritised from the severity. All of it is in [[file:workdesk.org][The workdesk]].
+=/runs= is every coding run in the entity the browser has selected, with its state, runner, model, tokens, cost and duration, live ones cancellable, totals over the list, and the budgets beneath. Cancelling a run loads it first, which is where the caller's organizations are applied, and asks whether they may change it. The cost totals are in the currency most of the runs were charged in; a run charged in another is left out and counted in =cost_other_currency_runs=, where adding it used to turn the whole total into nothing, and the cost per success divides by the successes that were priced.
+
+An =agent_budget= caps what the runs may cost in a window; before a run starts every budget covering its repository is checked, crossing a line tells the admins once, and an exhausted hard-stop budget refuses the run. A budget is its organization's: it counts that organization's runs and stops that organization's repositories. The check is trusted internal work rather than the asker's — checked as whoever pressed Start, a budget filed where they cannot read would be no budget, and the stamp that says "the admins have been told" one they might not be able to write. The =delivery= report is DORA's four keys — deployment frequency, lead time for changes, change failure rate, time to restore — from these records, beside what the runs did and cost. An incident's page opens its fix ticket in one press, typed as a bug and prioritised from the severity. All of it is in [[file:workdesk.org][The workdesk]].
 
 * Links
 

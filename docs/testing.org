@@ -21,7 +21,11 @@ podman run -d --rm --name pg -e POSTGRES_PASSWORD=t -e POSTGRES_USER=venture \
     -e POSTGRES_DB=venture -p 127.0.0.1:55432:5432 postgres:16-alpine
 VENTURE_TEST_DB=postgres://venture:t@127.0.0.1:55432/venture \
     ./build/debug/tests/test-database
+VENTURE_TEST_DB=postgres://venture:t@127.0.0.1:55432/venture \
+    ./build/debug/tests/test-factory-ops
 #+end_src
+
+=test-factory-ops= honours the same variable, which puts the factory's reports, orderings and lifecycle rules through PostgreSQL -- the place the two backends disagree about where NULL sorts and what =SUM()= returns.
 
 Each test drops and recreates the schema before it runs. An external database is one shared database for the whole run, and several tests create a venture with the slug "books" -- a UNIQUE column -- so without that reset the second one fails for a reason that has nothing to do with what it tests. Worth knowing what that hid: the PostgreSQL run used to stop at the ninth test, and the money-summation bug behind it went unnoticed because SQLite returns =SUM()= as an integer while PostgreSQL widens it to numeric.
 
@@ -66,6 +70,8 @@ Also that validation refuses a non-loopback bind address with authentication off
 ** =test-database=
 
 Round-tripping through both backends, optimistic concurrency detecting a lost update, soft deletion hiding but keeping, the audit trail recording the prompt behind an AI change, the ledger refusing an unbalanced transaction, and the schema gaining a column without a hand-written migration.
+
+That a period counts the fractions of its first second and none of the next period's, and that "after", "up to and including" and BETWEEN put a whole second before its fractions, although stored text sorts the other way.
 
 Two tests exist specifically to prove injection is impossible: a filter naming a field that does not exist is refused, and a hostile *value* is bound as a parameter and simply matches nothing — with the table still there afterwards.
 
@@ -194,6 +200,12 @@ That any two records of any types link, and that one row reads correctly from bo
 ** =test-factory=
 
 That a =workflow_run= delivery becomes a build when requested and updates the same build when completed, a retried delivery included, and that a bad signature plants nothing. That a release cut on the forge becomes a release here with its version read from the tag, and a deleted one is yanked on the same row. That the changelog is drafted from the tickets by issue type and never overwrites what somebody wrote unless asked. That the lead-time and incident reports measure what they claim. That with the module off every page, type and report is gone and the CI webhook is acknowledged and dropped -- and that flipping the switch on the live configuration is enough to bring it back.
+
+That deliveries arriving late, twice and out of order leave a finished build finished, that a later start takes it back to running with no finish time, that Go's zero time is not a finish time, and that neutral is green. That a release planned here and tagged on the forge by hand is one row and keeps the changelog written here; that an edit to the notes of a release yanked here does not put it back out or move when it shipped; that the late =deleted= for a tag cut again yanks the old row and not the new; that a deletion blanks no URL; and that a release candidate is not shipped. That what needs you, readiness, deploying and rolling back work from the page and the API, with an incident's title escaped on the Factory page, an unusable =organization_id= a 400, and a deployment with no environment refused. That with no assistant configured no assistant is offered and the API says why. That =--replace= and =--prerelease= are options, each refused on the other verb and on any other command, and a stray word after the id is a usage error rather than "no flag".
+
+** =test-factory-ops=
+
+What the factory works out from its records, with no server. That an incident's started and resolved follow its status -- stamped, cleared on reopening, refused when it would end before it began -- and that a deployment, a milestone and a release get their dates the same way, so the environment runs what was last deployed. That the changelog leaves out cancelled tickets. That readiness names each thing in the way -- an open ticket, a ticket linked as blocking, a red build, an open incident naming the release -- passes when they are dealt with, ignores cancelled tickets and an incident in postmortem, and scores a clean release 100. That rolling back marks the current deployment rolled back and restores the release before it, is refused with nothing running or nothing earlier, and that a yanked release deploys nowhere. That the forecast is the pace of the last four weeks, with cancelled tickets neither work left nor work done, =at_risk= when it lands after the due date and =overdue= past it. That a red build gets one ticket, high priority on the default branch, and a green one none. That what needs you is empty on an empty factory, leads with the urgent entry, names the default branch and not a feature branch, and loses an entry when its cause is dealt with. That one run priced in another currency does not blank the run totals. That the delivery report counts a rolled-back deployment as a deployment and a failure, two incidents on one deployment as one failure, a redeploy's tickets once, staging's incidents not at all, and "all time" as having a length; that the releases report counts what is still out; that the incidents report reads the status. And the assistant, against a provider that says what it is told to: that build triage sends the log as data under a system prompt that says not to obey it, is never offered a tool, and holds =category=, =confidence= and =retry= to their vocabulary; that release notes are written from what shipped and not from what was cancelled; that a postmortem reads the incident, the release and the fix ticket and writes nothing; that nothing to read is refused before any model is called; and that the briefing is sent the list the records produce.
 
 ** =test-dashboard=
 

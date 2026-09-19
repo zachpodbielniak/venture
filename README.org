@@ -154,7 +154,17 @@ run arrives through the webhook as a build), assembled into a release whose
 changelog is drafted from the tickets and published to the forge, deployed
 to an environment, and -- when something breaks there -- raised as an
 incident that points back at the release and deployment and forward at the
-ticket that fixes it. A lead-time report measures the loop end to end. See
+ticket that fixes it. A lead-time report measures the loop end to end.
+
+On top of the records it works things out: *what needs you* (an incident
+with nobody on the fix, a red default branch, a milestone slipping, a
+release ready to go or never deployed), whether a release is *ready to go
+out* as checks that pass, warn or fail, when a milestone *lands* at the pace
+it is going, and one press to record a deployment or *roll an environment
+back*. None of that asks a model. What does is writing: release notes from
+what shipped, a blameless postmortem draft from the records, what a red
+build's log is complaining about, and the morning's briefing -- each a draft
+a person reads, corrects and saves as their own. See
 [[file:docs/factory.org][the software factory]].
 
 *** Multiple entities, nested

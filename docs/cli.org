@@ -70,6 +70,16 @@ venturectl links TYPE ID                 # every link touching a record
 venturectl link TYPE ID TYPE ID [kind=K] # link two records; note=... too
 venturectl modules                       # which modules the server runs
 venturectl factory                       # the software factory at a glance
+venturectl factory actions               # what in it needs somebody, most pressing first
+venturectl factory briefing              # the same and where things stand, as prose (AI)
+venturectl release readiness ID          # can it go out: checks that pass, warn or fail
+venturectl release deploy ID ENV [NOTES] # record the release going live in environment ENV
+venturectl release notes ID [AUDIENCE]   # release notes for the people who use it (AI)
+venturectl environment ID rollback [WHY] # go back to the release that ran before
+venturectl milestone ID forecast         # when it lands at the pace it is going
+venturectl build ID triage               # what a failed build's log is complaining about (AI)
+venturectl build ID ticket               # open the bug for a failed build
+venturectl incident ID postmortem        # draft a blameless postmortem from the records (AI)
 venturectl release changelog ID          # draft its changelog; --replace
 venturectl invoice checkout ID           # hosted Stripe payment URL; editor role
 venturectl release publish ID            # cut it on the forge; --prerelease

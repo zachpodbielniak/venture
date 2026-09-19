@@ -72,6 +72,16 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `reconcile suggest TYPE ID [--matcher NAME] [--threshold N]` | rank matching book records; scores above the threshold (default 80) stage bank transaction action confirmations when banking is installed; never applies |
 | `modules` | which modules the server runs; `-f json` for types, reports and reasons |
 | `factory` | the software factory at a glance: milestones with progress, releases, builds, environments and what they run, open incidents |
+| `factory actions` | what in the factory needs somebody, most pressing first: incidents with no fix, a red default branch, milestones slipping, releases ready or never deployed, budgets running out. Each names the record and the action that deals with it. Start here when asked "what should I do next" |
+| `factory briefing` | the same and where things stand, as a few paragraphs from the assistant (needs the ai module) |
+| `release readiness ID` | can it go out: checks that pass, warn or fail, with `ready` and a `score`; advice, never a gate |
+| `release deploy ID ENVIRONMENT_ID [NOTES]` | record the release going live in an environment; records, does not deploy |
+| `release notes ID [AUDIENCE]` | release notes for the people who use it, drafted by the assistant; nothing is written |
+| `environment ID rollback [REASON]` | mark the current deployment rolled back and record the release before it as live again; refused when there is nothing to go back to |
+| `milestone ID forecast` | when it lands at the pace of the last 28 days: `on_track`, `at_risk`, `overdue`, `stalled`, ... |
+| `build ID ticket` | open the bug for a failed build; one per build |
+| `build ID triage` | what a failed build's log excerpt is complaining about: category, cause, suggestion, whether a retry alone may pass (AI) |
+| `incident ID postmortem` | draft a blameless postmortem from the records (AI); nothing is written |
 | `release changelog ID [--replace]` | draft a release's changelog from the tickets marked fixed in it |
 | `invoice checkout ID` | return a hosted Stripe Checkout URL for an eligible sent invoice; editor role, Stripe module required |
 | `compose invoice\|quote JSON` | create lines, tax and optionally send in one request |

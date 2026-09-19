@@ -108,7 +108,16 @@ An =agent_budget= caps what the runs may cost: a repository or every repository,
 
 * The delivery report
 
-The =delivery= report is DORA's four keys from the factory's own records — deployment frequency into production environments, median lead time from a ticket being raised to the deployment that carried it, change failure rate as incidents naming a production deployment over production deployments, mean time to restore — beside what the coding runs did and cost in the same period: runs, succeeded, failed, pull requests drafted, tokens, agent cost, cost per pull request. One row per environment. It needs an environment marked =production= to have anything to count.
+The =delivery= report is DORA's four keys from the factory's own records, beside what the coding runs did and cost in the same period: runs, succeeded, failed, pull requests drafted, tokens, agent cost, cost per pull request. One row per environment. It needs an environment marked =production= to have anything to count.
+
+What each key counts, exactly:
+
+- *Deployment frequency* is production deployments per week. A deployment is one that went live: =succeeded= or =rolled_back=; =failed= has its own column and =pending= has not happened. The weeks are the ones that have actually passed — a period running into the future is measured to now, and "all time", which has no length, from the first production deployment to the last (and never less than a week).
+- *Lead time for changes* is the median days from a ticket being raised to the release that carried it /first/ landing in the environment. A redeploy three weeks later is not the same tickets taking three weeks longer, and a release that arrived last quarter and was redeployed this month did not ship this month. Cancelled tickets have no lead time.
+- *Change failure rate* is, of the production deployments in the period, how many failed: were rolled back, or are named by an incident. It is counted in deployments, so the numerator is drawn from the denominator and the rate cannot pass one — two incidents blaming one deployment are one bad deployment. Which environment a failure belongs to is the deployment's, not the incident's own optional environment field.
+- *Time to restore* is the mean hours over incidents /resolved/ in the period — one that began on the 30th and was fixed on the 2nd is this month's restore — and whose status says resolved. An incident that happened somewhere other than production is left out: a long night on staging is not an outage. One that names no environment at all is counted, because most are filed in a hurry.
+
+Pull requests are counted once each, by repository and number: three follow-up runs on one pull request drafted one pull request. Agent cost is in the currency most runs were priced in; runs priced in another are left out and the report's note says how many.
 
 * The pages
 

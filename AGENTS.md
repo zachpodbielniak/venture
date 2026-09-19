@@ -408,7 +408,67 @@ than one that fails.
 - **Publishing cannot be staged.** It creates a tag on another system;
   the assistant offers it only under the autonomous policy and
   `venturectl mcp` only with `--apply-writes`. A changelog draft is an
-  ordinary update and stages like one.
+  ordinary update and stages like one. So is recording a deployment (one
+  record). Rolling back (two writes in one transaction) and a build's
+  ticket (a ticket and a link) cannot be held by the queue, so they follow
+  publish's rule.
+- **Publish asks permission before it touches the forge**
+  (`venture_access_policy_check_write()` at the top), and a conflict on the
+  final save re-reads the row and writes the forge's id, tag and page onto
+  it. The forge's own webhook can land while the blocking call is waiting
+  and save the row first; giving up there leaves a release that is out on
+  the forge and unpublished here.
+- **The factory's dates are derived, on every writer.**
+  `venture_factory_install()` registers save validators: an incident's
+  started/resolved, a deployment's deployed, a milestone's completed, a
+  release's released, a build's started/finished. The reports select on
+  exactly these fields, so a status moved without its date is a record no
+  report sees. A date given is kept; only an empty one is filled. Never
+  stamp these in a handler.
+- **`postmortem` is not open.** An incident being written up is fixed.
+  "Open" is `open` or `mitigated`; filter both `resolved` and `postmortem`
+  out, or use `venture_factory_incident_is_over()` inside the file.
+- **Cancelled tickets did not ship.** They are in no changelog, no lead
+  time, no "tickets shipped" and no readiness count.
+  `venture_factory_release_tickets()` returns them all (the release's page
+  lists them), so every consumer skips `CANCELLED` itself.
+- **What needs you, readiness and the forecast are arithmetic, not AI.**
+  `venture_factory_next_actions()`, `_release_readiness()` and
+  `_milestone_forecast()` are derived from the records so they are the same
+  every time and free to draw. The model narrates them
+  (`venture_ai_factory_briefing()`); it never decides what is on the list.
+- **`src/ai/venture-ai-factory.c` follows the desk's rules**: toolless path
+  only, the records between `BEGIN RECORDS`/`END RECORDS` with the sentence
+  that says they are data, bounded input, nothing to read refused before a
+  model is called, a structured answer held to its closed vocabulary
+  (`venture_ai_factory_restrict()`), and nothing written -- a draft reaches
+  a record only as a person's own save (`POST /factory/draft/:type/:id`).
+- **A finished build stays finished.** The workflow webhook ignores a
+  non-terminal delivery for a finished row unless its `started_at` is later
+  than the one on record (a re-run). Zero timestamps (year < 2000) are
+  absent, not stored.
+- **A forge release is matched by id, then tag, then version**, and by tag
+  or version never onto a row that already carries a different forge id.
+  Going out happens once: only a planned or in-progress row becomes
+  released, and `released-at` is never overwritten. A deletion's empty
+  strings blank nothing.
+- **Time comparisons are normalised in the query emitter.** Stored times
+  are text and GLib omits a zero fraction, so `...:00Z` sorts after
+  `...:00.5Z`. `venture_query_append_filter()` writes every `<`/`<=`/`>`/
+  `>=`/BETWEEN operand on a date-time field with six fraction digits, and
+  pads the column for `>`, `<=` and BETWEEN. Build cutoffs with
+  `venture_time_to_string()` as before; do not hand-roll a padding.
+- **Forgejo sends `action_run_success`/`action_run_failure`, not
+  `workflow_run`** (that is Gitea's). Both are routed to the one build
+  handler; `venture_forgejo_parse_action_run()` reads Forgejo's shape.
+- **Only a web address is a link.** Render any stored or derived URL
+  through `venture_web_url_is_web()` first.
+- **Orders put NULL last, said outright** (`NULLS LAST` in
+  `venture-query.c`). SQLite and PostgreSQL disagree by default, and under
+  a limit that is different rows, not just a different order.
+- **Sum run costs with `venture_money_sum_dominant()`.** `venture_money_sum()`
+  refuses mixed currencies and returns NULL, which silently blanked the
+  totals the day one run was priced in another currency.
 
 ## Dashboards
 
