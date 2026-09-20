@@ -105,7 +105,7 @@ verified without the corresponding execution evidence.
 | Organization integrations | Foundation and Stripe settings verified locally; other providers pending | Settings, secret redaction, account binding, rotation, revocation and A/B organization tests |
 | Subscription collection | Pending | Verified automatic settlement, failed collection, recovery and duplicate refusal; no provisioning |
 | Calls (#122) | Service scenarios verified on SQLite/PostgreSQL; integrated suite 107/107 passed at f01b4b3 | One historical event and optional follow-up, including replay and lead-only calls |
-| OCR (#123) | Fifteen lane scenarios verified on SQLite/PostgreSQL, including real OCR; combined validation pending | Bounded local extraction, provenance, retry/cancel and reviewed-correction preservation |
+| OCR (#123) | Fifteen lane scenarios verified on SQLite/PostgreSQL, including real OCR; combined DEBUG suite 111/111 passed at 602545a | Bounded local extraction, provenance, retry/cancel and reviewed-correction preservation |
 | ACH and links (#124) | Pending | Delayed settlement, returns, pending balance changes and account/environment isolation |
 | Marketing (#120) | Pending | Snapshotted audience, consent, suppression at delivery, restart and uncertainty |
 | Attribution (#121) | Pending | Consent-bound capture, Lightsite form contract, dedupe and reconciled attribution |
@@ -130,3 +130,14 @@ The combined Stripe-settings/project-delivery revision =ba1393e= passed its
 clean DEBUG build and all 108 test binaries. Later OCR, active-account index
 and CRM ownership repairs have individual lane evidence above; their next
 combined build/suite is recorded separately, never inferred from that result.
+
+* Combined verification checkpoint
+
+Revision =602545a= passed a clean dependency DEBUG build and all 111 test
+binaries. The run enabled the real Tesseract container wrapper and local
+Poppler SDK. It includes CRM ownership, OCR/attachment ownership and the
+active integration constraint. Log evidence lives with the implementation
+session as =venture-125-ocr-integrated-{clean,build,suite}.log=.
+The later version-checked resolver fix has its own passing SQLite and
+PostgreSQL regression, including a failing run with that check removed.
+Remaining rows above still require their own implementation and evidence.
