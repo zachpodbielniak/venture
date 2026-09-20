@@ -648,7 +648,7 @@ class Lifecycle(unittest.TestCase):
             entry = catalog.register(archive, manifest, "export", "Register for parent swap")
             replacement = directory.parent / (directory.name + ".swap")
             directory.rename(replacement)
-            directory.mkdir()
+            directory.mkdir(mode=0o700)
             with self.assertRaises(tool.Refused) as refused:
                 catalog.retire(entry["copy_id"], "Parent swapped")
             self.assertIn("parent", str(refused.exception).lower())

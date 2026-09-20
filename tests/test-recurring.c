@@ -666,7 +666,9 @@ test_batch_cli(Fixture *f, gconstpointer unused)
 static void
 test_omitted_date_approval(Fixture *f, gconstpointer unused)
 {
-	g_autoptr(GDateTime) now = venture_time_now();
+	/* The implicit sweep judges "due" on the business date, so the schedule
+	 * starts there too; a host in another zone must not move the start. */
+	g_autoptr(GDateTime) now = venture_settlement_service_today(venture_settlement_service_get(f->db));
 	g_autofree gchar *today = g_date_time_format(now, "%F");
 	g_autoptr(VentureEntity) schedule = monthly_invoice(f, today);
 	g_autoptr(VentureEntity) rule = record(f, "accounting_approval_rule");

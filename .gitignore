@@ -7,6 +7,8 @@
 *.so.*
 
 # Generated sources
+__pycache__/
+*.pyc
 /src/venture-version.h
 /compile_commands.json
 

@@ -707,7 +707,11 @@ static void test_work_credential_revocation(Fixture *fixture, gconstpointer data
 			g_object_get(live, "state", &state, NULL);
 			g_assert_cmpint(state, !=, VENTURE_FORGE_RUN_STATE_CANCELLED);
 		}
-		g_object_set(forge, "bot-username", "fixture-bot", "clone-base-url", "git@git-ssh.example.com", NULL);
+		g_object_set(forge, "bot-username", "fixture-bot", NULL);
+		g_assert_true(venture_database_save(fixture->database, forge, NULL, &error));
+		g_assert_true(venture_forge_credentials_check(activity_lease, &error));
+		g_assert_no_error(error);
+		g_object_set(forge, "clone-base-url", "git@git-ssh.example.com", NULL);
 		g_assert_true(venture_database_save(fixture->database, forge, NULL, &error));
 		g_assert_false(venture_forge_credentials_check(activity_lease, &error));
 		g_assert_nonnull(error); g_clear_error(&error);

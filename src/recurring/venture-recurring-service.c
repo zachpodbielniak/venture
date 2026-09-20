@@ -538,9 +538,22 @@ generate_one(VentureRecurringService *self, VentureEntity *schedule, GDateTime *
 	return TRUE;
 }
 
+/* The zone an implicit sweep reads its calendar date in: the business zone
+ * (locale.timezone) that check_date() judges generated dates against, so an
+ * occurrence dated the process zone's later day waits for the next sweep
+ * instead of being posted and refused as future-dated. An explicit as_of
+ * keeps each schedule's own zone, which is what its callers and tests mean. */
+static GTimeZone *
+sweep_zone(VentureRecurringService *self)
+{
+	g_autofree gchar *name = NULL;
+	g_object_get(venture_settlement_service_get(self->database), "timezone", &name, NULL);
+	return venture_time_get_timezone(name);
+}
+
 static gint
 run_schedule(VentureRecurringService *self, VentureEntity *schedule, GDateTime *as_of,
-	gboolean dry_run, const VentureActor *actor, GError **error)
+	GTimeZone *zone, gboolean dry_run, const VentureActor *actor, GError **error)
 {
 	g_autoptr(GDateTime) start = NULL;
 	g_autoptr(GDateTime) end = NULL;
@@ -556,7 +569,7 @@ run_schedule(VentureRecurringService *self, VentureEntity *schedule, GDateTime *
 	frequency = choice(schedule, "frequency");
 	if (start == NULL)
 		return refuse(error, "A schedule needs a start date") ? -1 : -1;
-	local_as_of = g_date_time_to_timezone(as_of, g_date_time_get_timezone(start));
+	local_as_of = g_date_time_to_timezone(as_of, zone ? zone : g_date_time_get_timezone(start));
 	if (end != NULL)
 	{
 		GDateTime *local_end = g_date_time_to_timezone(end, g_date_time_get_timezone(start));
@@ -679,6 +692,7 @@ venture_recurring_service_run(VentureRecurringService *self, gint64 organization
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(GDateTime) clock = NULL;
+	g_autoptr(GTimeZone) zone = NULL;
 	gboolean can_post = FALSE;
 	gint total = 0;
 	guint i;
@@ -687,11 +701,15 @@ venture_recurring_service_run(VentureRecurringService *self, gint64 organization
 		return refuse(error, "A recurring sweep is already running") ? -1 : -1;
 	if (organization_id <= 0)
 		return refuse(error, "An organization is required") ? -1 : -1;
-	/* An implicit sweep runs as of the business date (locale.timezone), so
-	 * an occurrence dated the process zone's later calendar day waits for
-	 * the next sweep instead of being posted and refused as future-dated. */
-	clock = as_of ? g_date_time_ref(as_of) : venture_settlement_service_today(venture_settlement_service_get(self->database));
-	as_of_text = as_of != NULL ? g_date_time_format_iso8601(clock) : g_date_time_format(clock, "%F");
+	clock = as_of ? g_date_time_ref(as_of) : venture_time_now();
+	if (as_of == NULL)
+		zone = sweep_zone(self);
+	if (as_of != NULL) as_of_text = g_date_time_format_iso8601(clock);
+	else
+	{
+		g_autoptr(GDateTime) business = g_date_time_to_timezone(clock, zone);
+		as_of_text = g_date_time_format(business, "%F");
+	}
 	query = venture_query_new(VENTURE_TYPE_RECURRING_SCHEDULE);
 	venture_query_set_organization(query, organization_id);
 	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
@@ -707,7 +725,7 @@ venture_recurring_service_run(VentureRecurringService *self, gint64 organization
 			g_autoptr(GDateTime) start = schedule_start(schedule);
 			if (start != NULL)
 			{
-				g_autoptr(GDateTime) local = g_date_time_to_timezone(clock, g_date_time_get_timezone(start));
+				g_autoptr(GDateTime) local = g_date_time_to_timezone(clock, zone);
 				g_autofree gchar *day = g_date_time_format(local, "%F");
 				/* UTC midnight and each schedule's local midnight invalidate
 				 * omitted-date consent without depending on retry seconds. */
@@ -738,7 +756,7 @@ venture_recurring_service_run(VentureRecurringService *self, gint64 organization
 	}
 	for (i = 0; i < rows->len; i++)
 	{
-		gint n = run_schedule(self, g_ptr_array_index(rows, i), clock, dry_run, actor, error);
+		gint n = run_schedule(self, g_ptr_array_index(rows, i), clock, zone, dry_run, actor, error);
 		if (n < 0)
 		{
 			if (!dry_run)

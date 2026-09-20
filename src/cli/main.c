@@ -1131,57 +1131,10 @@ venture_cli_command_forge(
 		return -1;
 	}
 
-	if ((0 != g_strcmp0(action, "set-token")) &&
-	    (0 != g_strcmp0(action, "set-secret")))
-	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		            "\"%s\" is not a forge action. Try settings "
-		            "or verify.", action);
-		return -1;
-	}
-
-	secret = venture_cli_read_secret(error);
-
-	if (NULL == secret)
-		return -1;
-
-	builder = json_builder_new();
-	json_builder_begin_object(builder);
-
-	if (0 == g_strcmp0(action, "set-token"))
-	{
-		if ('\0' == secret[0])
-		{
-			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-			                    "Nothing arrived on standard input. Pipe the "
-			                    "token in, or redirect a file.");
-			return -1;
-		}
-
-		json_builder_set_member_name(builder, "token");
-		json_builder_add_string_value(builder, secret);
-		path = g_strdup_printf("/api/v1/forge/%s/token", id);
-	}
-	else
-	{
-		/* An empty secret is meaningful here: it asks the server to
-		 * generate one, which it returns once. */
-		json_builder_set_member_name(builder, "secret");
-		json_builder_add_string_value(builder, secret);
-		path = g_strdup_printf("/api/v1/forge/%s/webhook-secret", id);
-	}
-
-	json_builder_end_object(builder);
-	body = json_builder_get_root(builder);
-
-	node = venture_cli_request(cli, "POST", path, body, error);
-
-	if (NULL == node)
-		return -1;
-
-	venture_cli_output(cli, node);
-
-	return 0;
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+	            "\"%s\" is not a forge action. Try settings "
+	            "or verify.", action);
+	return -1;
 }
 
 static gint venture_cli_command_report_packs(VentureCli *cli, gchar **args, GError **error);

@@ -29865,10 +29865,6 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/hooks/lightsite/:site/:connection", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_receive, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/organizations/:id/settings/attribution", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_attribution_settings, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/organizations/:id/settings/attribution", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_attribution_settings, self);
-	htmx_router_get(router, "/marketing/u/:token", venture_web_marketing_unsubscribe, self);
-	htmx_router_post(router, "/marketing/u/:token", venture_web_marketing_unsubscribe, self);
-	htmx_router_get(router, "/marketing/t/o/:token", venture_web_marketing_open, self);
-	htmx_router_get(router, "/marketing/t/c/:token/:n", venture_web_marketing_click, self);
 
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_list, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_create, self);
