@@ -192,3 +192,48 @@ Revision =e477111= passed all 115 DEBUG test binaries after a clean dependency
 build, including real native OCR, and warning-free GIR generation. The pinned
 Stripe client is =fbc66e52ddaa8e6294aaa5c48d36bf206c286105=.
 Hosted workspace integration follows this checkpoint and has a separate gate.
+
+* Original gap-list disposition
+
+This maps the original numbered items in issues 73 and 74 to the supported
+workflow, rather than treating a closed issue or registered record as proof of
+replacement readiness. “Existing” means present before this epic; “Epic” means
+implemented on this PR or a prepared integration lane. Execution checkpoints
+above and the acceptance ledger remain authoritative. Provider compatibility,
+operational qualification and the explicit limits below are not implied by a
+passing synthetic scenario.
+
+** Run-the-business list (issue 73)
+
+| Item | Disposition and supported boundary | Workflow and regression entry point |
+|------+------------------------------------+-------------------------------------|
+| 1 Bills cutover | Existing mapped opening AP, credits and assets; epic accounting reconciliation covers retained balances | [[file:cutover.org][Cutover]], =test-cutover= and =test-accounting-acceptance= |
+| 2 Sales tax | Existing explicit jurisdiction/rate windows and filing preparation. No automatic rate lookup, marketplace rules or purchase use-tax accrual | [[file:sales-tax.org][Sales tax]], =test-sales-tax= and =test-tax-filing= |
+| 3 Payroll | Deliberately provider/import based; native payroll tax remains deferred | [[file:payroll.org][Payroll]] |
+| 4 Inbound capture mail | Existing bounded IMAP/MIME capture; epic adds encrypted organization/private account ownership and revocation | [[file:mail.org][Mail]], [[file:connectors.org][Connectors]], =test-mail-sync= and =test-mail-surfaces= |
+| 5 Receipt OCR | Epic bounded local Tesseract/PDF extraction with reviewed drafts; no automatic posting | [[file:capture.org][Capture]], =test-ocr= |
+| 6 Billable hours | Existing approved project time/cost; epic frozen cost and delivery handoff. Running timer/richer timesheet UI remains deferred | [[file:projects.org][Projects]], [[file:project-delivery.org][Delivery]], =test-projects= |
+| 7 Dunning | Existing explicit policy/sweep and queued notices; epic automatic collection retains independent verified settlement | [[file:dunning.org][Dunning]], =test-dunning= and =test-stripe= |
+| 8 MFA/SSO | Existing TOTP; epic optional OIDC with explicit linking/local roles and local recovery | [[file:security.org][Security]], [[file:oidc.org][OIDC]], =test-mfa= and =test-oidc= |
+| 9 Mobile | Deliberately deferred; no native/PWA parity claim | Delivery contract above |
+| 10 Other payment rails | Epic Stripe ACH and invoice links; wire/check remain explicit manual receipts | [[file:stripe.org][Stripe]], =test-stripe= |
+| 11 Report delivery | Existing scheduled report packs; epic organization transport selection and preflight regression repair | [[file:reporting.org][Reports]], =test-report-delivery= |
+| 12 Accountant role | Existing organization-scoped accountant/read-only authority; epic retains that boundary through accounting acceptance | [[file:orgaccess.org][Organization access]], =test-orgaccess= |
+
+** CRM list (issue 74)
+
+| Item | Disposition and supported boundary | Workflow and regression entry point |
+|------+------------------------------------+-------------------------------------|
+| 1 Email sync | Existing IMAP import and SMTP timeline logging; epic private account isolation. No proprietary Gmail/Outlook API compatibility claim | [[file:mail.org][Mail]], [[file:connectors.org][Connectors]], =test-mail-sync= |
+| 2 Calendar | Existing shared CalDAV two-way sync and booking links; epic private read-only imports. No proprietary provider OAuth/calendar APIs | [[file:calendar.org][Calendar]], =test-calendar= and =test-calendar-surfaces= |
+| 3 Email tracking | Existing sequence open/click observations; epic marketing reuse. Observations do not prove human attention | [[file:sequences.org][Sequences]], =test-sequence-tracking= |
+| 4 Lead scoring | Existing deterministic rule/history service | [[file:leads.org][Leads]], =test-leads= |
+| 5 Web attribution | Epic consented site observations, form contract and reconciled first/last-touch reports; combined integration pending | [[file:attribution.org][Attribution]], =test-attribution= |
+| 6 Enrichment | Deliberately deferred pending provider/budget selection | Delivery contract above |
+| 7 Territories/quotas | Existing routing/round-robin; epic deterministic territories and frozen period/currency quota credit | [[file:sales-performance.org][Sales performance]], =test-lead-routing= and =test-sales-performance= |
+| 8 Deal products | Existing deal lines and quote handoff | [[file:pipelines.org][Pipelines]], =test-deal-lines= |
+| 9 Marketing | Epic consent-bound audience/send workflow; combined integration pending. Lightsite owns landing pages; its provisioning is excluded | [[file:marketing.org][Marketing]], =test-marketing= and =test-marketing-mail= |
+| 10 Mobile | Deliberately deferred | Delivery contract above |
+| 11 Duplicate merge | Existing candidate/review/merge UI and retained forwarding; epic carries consent/attribution through merges | [[file:dedupe.org][Dedupe]], =test-dedupe= |
+| 12 Migration importers | Existing mapped Salesforce/HubSpot/Zoho CSV manifests with source identities, preview and rollback; no vendor API or attachment import | [[file:crm-import.org][CRM import]], =test-crm-import= |
+| 13 Chat/calls | Epic structured call history and exactly-one optional follow-up; live chat/voice chatbot remains deferred | [[file:activities.org][Activities]], =test-activities= |
