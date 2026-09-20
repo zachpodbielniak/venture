@@ -290,6 +290,7 @@ venture_schema_append_index(
 	g_autofree gchar *index_name = NULL;
 	g_autofree gchar *target = NULL;
 	g_autofree gchar *partition_sql = NULL;
+	g_autofree gchar *condition_sql = NULL;
 
 	context = user_data;
 
@@ -298,27 +299,39 @@ venture_schema_append_index(
 		quoted_table = venture_schema_quote_identifier(context->table);
 		quoted_column = venture_schema_quote_identifier(column);
 		{
-			const gchar *partition = venture_entity_class_get_unique_partition(klass);
+			const gchar *partition = venture_entity_class_get_field_unique_partition(klass, pspec->name);
+			const gchar *condition = venture_entity_class_get_field_unique_condition(klass, pspec->name);
 			if (partition != NULL)
 			{
 				g_autofree gchar *partition_column = venture_entity_property_to_column(partition);
 				g_autofree gchar *quoted_partition = venture_schema_quote_identifier(partition_column);
 				partition_sql = g_strdup_printf("COALESCE(%s, 0), ", quoted_partition);
 				index_name = g_strdup_printf("uq_%s_organization_%s_%s", context->table, partition_column, column);
-				/* PostgreSQL truncates identifiers at 63 bytes. Preserve a
-				 * deterministic suffix so long plugin fields cannot collide. */
-				if (strlen(index_name) > 63)
-				{
-					g_autofree gchar *digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256, index_name, -1);
-					gchar *bounded = g_strdup_printf("%.46s_%.16s", index_name, digest);
-					g_free(index_name);
-					index_name = bounded;
-				}
 			}
 			else
 			{
 				partition_sql = g_strdup("");
 				index_name = g_strdup_printf("uq_%s_organization_%s", context->table, column);
+			}
+			condition_sql = g_strdup("");
+			if (condition != NULL)
+			{
+				g_autofree gchar *condition_column = venture_entity_property_to_column(condition);
+				g_autofree gchar *quoted_condition = venture_schema_quote_identifier(condition_column);
+				gchar *qualified = g_strdup_printf("%s_when_%s", index_name, condition_column);
+				g_free(index_name);
+				index_name = qualified;
+				g_free(condition_sql);
+				condition_sql = g_strdup_printf(" AND %s", quoted_condition);
+			}
+			/* PostgreSQL truncates at 63 bytes; keep a stable digest after
+			 * composing every part so plugin identifiers cannot collide. */
+			if (strlen(index_name) > 63)
+			{
+				g_autofree gchar *digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256, index_name, -1);
+				gchar *bounded = g_strdup_printf("%.46s_%.16s", index_name, digest);
+				g_free(index_name);
+				index_name = bounded;
 			}
 		}
 		/* Empty strings are unset identifiers. References are integers:
@@ -327,8 +340,8 @@ venture_schema_append_index(
 			? g_strdup_printf(" AND %s <> ''", quoted_column) : g_strdup("");
 		g_ptr_array_add(context->statements,
 			g_strdup_printf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s "
-				"(\"organization_id\", %s%s) WHERE %s IS NOT NULL%s",
-				index_name, quoted_table, partition_sql, quoted_column, quoted_column, target));
+				"(\"organization_id\", %s%s) WHERE %s IS NOT NULL%s%s",
+				index_name, quoted_table, partition_sql, quoted_column, quoted_column, target, condition_sql));
 		return;
 	}
 

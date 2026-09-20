@@ -2396,3 +2396,62 @@ venture_entity_class_get_unique_partition(VentureEntityClass *klass)
 	}
 	return NULL;
 }
+
+/* GParamSpec owns these interned names. Installing metadata once avoids
+ * instance state and preserves the field's scope in inherited declarations. */
+void
+venture_entity_class_set_field_unique_scope(VentureEntityClass *klass,
+	const gchar *property, const gchar *partition, const gchar *condition)
+{
+	GParamSpec *pspec;
+	GParamSpec *target;
+	GQuark marker = g_quark_from_static_string("venture-field-unique-scope");
+	g_return_if_fail(VENTURE_IS_ENTITY_CLASS(klass));
+	g_return_if_fail(property != NULL);
+	pspec = g_object_class_find_property(G_OBJECT_CLASS(klass), property);
+	g_return_if_fail(pspec != NULL);
+	g_return_if_fail(pspec->owner_type == G_TYPE_FROM_CLASS(klass));
+	g_return_if_fail((venture_entity_class_get_column_flags(klass, property) & VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION) != 0);
+	g_return_if_fail(g_param_spec_get_qdata(pspec, marker) == NULL);
+	if (partition != NULL)
+	{
+		target = g_object_class_find_property(G_OBJECT_CLASS(klass), partition);
+		g_return_if_fail(target != NULL && G_PARAM_SPEC_VALUE_TYPE(target) == G_TYPE_INT64);
+		g_return_if_fail((venture_entity_class_get_column_flags(klass, partition) & VENTURE_COLUMN_FLAG_TRANSIENT) == 0);
+	}
+	if (condition != NULL)
+	{
+		target = g_object_class_find_property(G_OBJECT_CLASS(klass), condition);
+		g_return_if_fail(target != NULL && G_PARAM_SPEC_VALUE_TYPE(target) == G_TYPE_BOOLEAN);
+		g_return_if_fail((venture_entity_class_get_column_flags(klass, condition) & VENTURE_COLUMN_FLAG_TRANSIENT) == 0);
+	}
+	g_param_spec_set_qdata(pspec, marker, GINT_TO_POINTER(1));
+	g_param_spec_set_qdata(pspec, g_quark_from_static_string("venture-field-unique-partition"),
+		partition != NULL ? (gpointer)g_intern_string(partition) : NULL);
+	g_param_spec_set_qdata(pspec, g_quark_from_static_string("venture-field-unique-condition"),
+		condition != NULL ? (gpointer)g_intern_string(condition) : NULL);
+}
+
+const gchar *
+venture_entity_class_get_field_unique_partition(VentureEntityClass *klass, const gchar *property)
+{
+	GParamSpec *pspec;
+	g_return_val_if_fail(VENTURE_IS_ENTITY_CLASS(klass), NULL);
+	g_return_val_if_fail(property != NULL, NULL);
+	pspec = g_object_class_find_property(G_OBJECT_CLASS(klass), property);
+	g_return_val_if_fail(pspec != NULL, NULL);
+	if (g_param_spec_get_qdata(pspec, g_quark_from_static_string("venture-field-unique-scope")))
+		return g_param_spec_get_qdata(pspec, g_quark_from_static_string("venture-field-unique-partition"));
+	return venture_entity_class_get_unique_partition(klass);
+}
+
+const gchar *
+venture_entity_class_get_field_unique_condition(VentureEntityClass *klass, const gchar *property)
+{
+	GParamSpec *pspec;
+	g_return_val_if_fail(VENTURE_IS_ENTITY_CLASS(klass), NULL);
+	g_return_val_if_fail(property != NULL, NULL);
+	pspec = g_object_class_find_property(G_OBJECT_CLASS(klass), property);
+	g_return_val_if_fail(pspec != NULL, NULL);
+	return g_param_spec_get_qdata(pspec, g_quark_from_static_string("venture-field-unique-condition"));
+}

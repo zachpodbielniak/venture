@@ -95,3 +95,34 @@ wrong keys after service restart, audit redaction and environment-key errors.
 The registration test fails on the pre-feature tree because the type is
 absent. These unit checks establish the storage contract, not end-to-end
 provider or hosted-tenant readiness.
+
+* Active identity and upgrades
+
+A database partial unique index enforces one enabled connection per
+organization and provider, including independent processes/connections.
+Disabled bindings retain their account identity and ciphertext for historical
+callbacks and may coexist with a replacement. The service still checks
+permissions, revisions and account identity; an index grants no authority.
+
+Migration =000510= checks the metadata-generated index. An existing database
+with ambiguous enabled bindings refuses upgrade and leaves its rows intact.
+Investigate the retained identities and disable the incorrect binding through
+the authorized service before retrying; never discard ciphertext or select
+an account by row order. A disabled module receives the same constraint when
+its tables are created later.
+
+Entity plugins can declare a field-specific uniqueness scope with
+=venture_entity_class_set_field_unique_scope()= after installing the field.
+The field must carry =UNIQUE_ORGANIZATION=. Its optional integer partition
+and boolean condition are persistent properties; NULL partition explicitly
+means organization-only, overriding a class partition. Other fields retain
+their existing scope. This permits, for example, one active reservation while
+historical external identities remain unique. Subclasses inherit metadata
+and cannot mutate the parent's declaration. Scope changes need an explicit
+migration and duplicate-data handling; they are not a dynamic settings API.
+
+=test-integrations= exercises direct SQL attempts to create/reactivate a
+second enabled account and refusal of an ambiguous historical upgrade,
+including preservation of enabled state and ciphertext. The regression
+initially accepted the duplicate, demonstrating why a process-local check
+was insufficient.

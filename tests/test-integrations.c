@@ -402,12 +402,76 @@ test_environment_key(Fixture *f, gconstpointer data)
 	g_test_trap_assert_passed();
 }
 
+/* A service-local lock cannot protect against another database connection.
+ * Bypass the service to prove the database itself enforces the invariant. */
+static void
+test_active_uniqueness(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureIntegrationConnection) a = connect_account(f, f->a, "secret-A");
+	g_autoptr(VentureIntegrationConnection) b = connect_account(f, f->b, "secret-B");
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *sql = NULL;
+	(void)data;
+	sql = g_strdup_printf("UPDATE integration_connections SET organization_id = %" G_GINT64_FORMAT
+		" WHERE id = %" G_GINT64_FORMAT, f->a, venture_entity_get_id(VENTURE_ENTITY(b)));
+	g_assert_false(venture_database_execute(f->db, sql, NULL, &error));
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	g_assert_true(venture_integration_service_disable(f->service, f->b,
+		venture_entity_get_id(VENTURE_ENTITY(b)), venture_entity_get_version(VENTURE_ENTITY(b)), NULL, &error));
+	g_assert_no_error(error);
+	/* Historical bindings may share the active provider's organization. */
+	g_assert_true(venture_database_execute(f->db, sql, NULL, &error));
+	g_assert_no_error(error);
+	g_clear_pointer(&sql, g_free);
+	sql = g_strdup_printf("UPDATE integration_connections SET enabled = TRUE WHERE id = %" G_GINT64_FORMAT,
+		venture_entity_get_id(VENTURE_ENTITY(b)));
+	g_assert_false(venture_database_execute(f->db, sql, NULL, &error));
+	g_assert_nonnull(error);
+}
+
+/* An upgrade must refuse ambiguous legacy accounts without selecting one,
+ * disabling either binding, or destroying the ciphertext needed for repair. */
+static void
+test_ambiguous_upgrade(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureIntegrationConnection) a = connect_account(f, f->a, "secret-A");
+	g_autoptr(VentureIntegrationConnection) b = connect_account(f, f->b, "secret-B");
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *sql = NULL;
+	g_autofree gchar *before = NULL;
+	g_autofree gchar *after = NULL;
+	gboolean enabled = FALSE;
+	(void)data;
+	g_object_get(b, "sealed-settings", &before, NULL);
+	g_assert_true(venture_database_execute(f->db,
+		"DROP INDEX uq_integration_connections_organization_provider_when_enabled", NULL, &error));
+	sql = g_strdup_printf("UPDATE integration_connections SET organization_id = %" G_GINT64_FORMAT
+		" WHERE id = %" G_GINT64_FORMAT, f->a, venture_entity_get_id(VENTURE_ENTITY(b)));
+	g_assert_true(venture_database_execute(f->db, sql, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	stored = venture_database_get(f->db, VENTURE_TYPE_INTEGRATION_CONNECTION,
+		venture_entity_get_id(VENTURE_ENTITY(b)), &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(stored);
+	g_object_get(stored, "enabled", &enabled, "sealed-settings", &after, NULL);
+	g_assert_true(enabled);
+	g_assert_cmpstr(before, ==, after);
+	g_assert_cmpint(venture_entity_get_organization_id(stored), ==, f->a);
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	venture_entity_registry_register_builtins(venture_entity_registry_get_default());
 	g_test_add_func("/integrations/registered", test_registered);
+	g_test_add("/integrations/active-uniqueness", Fixture, NULL, setup, test_active_uniqueness, teardown);
+	g_test_add("/integrations/ambiguous-upgrade", Fixture, NULL, setup, test_ambiguous_upgrade, teardown);
 	g_test_add("/integrations/isolation-rotation", Fixture, NULL, setup, test_isolation_rotation, teardown);
 	g_test_add("/integrations/disconnect-replacement", Fixture, NULL, setup, test_disconnect_replacement, teardown);
 	g_test_add("/integrations/refusals", Fixture, NULL, setup, test_refusals, teardown);
