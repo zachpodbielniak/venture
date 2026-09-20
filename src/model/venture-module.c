@@ -589,6 +589,13 @@ static GType (*const venture_module_mail_types[]) (void) = {
 	venture_mail_message_get_type, venture_mail_template_get_type, NULL
 };
 static const gchar *const venture_module_mail_sync_requires[] = { "mail", "crm", "leads", NULL };
+static const gchar *const marketing_requires[] = { "mail", "sequences", "leads", NULL };
+static GType (*const marketing_types[]) (void) = {
+	venture_marketing_list_get_type, venture_marketing_member_get_type,
+	venture_marketing_consent_get_type, venture_marketing_send_get_type,
+	venture_marketing_recipient_get_type, venture_marketing_event_get_type, NULL
+};
+static const gchar *const marketing_reports[] = { "marketing_performance", NULL };
 static const gchar *const venture_module_mail_sync_suggests[] = { "capture", NULL };
 static GType (*const venture_module_mail_sync_types[]) (void) = {
 	venture_mail_account_get_type, venture_mail_inbound_get_type, venture_mail_unmatched_sender_get_type, NULL
@@ -1024,6 +1031,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"sequences", "Follow-up sequences", "Durable timed follow-ups and suppression.",
 		sequence_requires, NULL, sequence_types, sequence_reports, NULL, FALSE
+	},
+	{
+		"marketing", "Marketing", "Approved audiences, consent and durable bulk mail.",
+		marketing_requires, NULL, marketing_types, marketing_reports, NULL, FALSE
 	},
 	{ "autojournal", "Automatic journals", "Configurable source accounting.",
 		autojournal_requires, NULL, autojournal_types, autojournal_reports, NULL, FALSE

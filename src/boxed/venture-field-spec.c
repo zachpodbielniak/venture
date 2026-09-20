@@ -213,6 +213,9 @@ venture_field_spec_new_from_json(
 	if (venture_field_spec_json_bool(object, "searchable", FALSE))
 		self->flags |= VENTURE_COLUMN_FLAG_SEARCHABLE;
 
+	if (venture_field_spec_json_bool(object, "retain_reference", FALSE))
+		self->flags |= VENTURE_COLUMN_FLAG_RETAIN_REFERENCE;
+
 	if (venture_field_spec_json_bool(object, "immutable", FALSE))
 		self->flags |= VENTURE_COLUMN_FLAG_IMMUTABLE;
 

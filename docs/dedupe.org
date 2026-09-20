@@ -73,7 +73,8 @@ page's two "Keep #N" buttons and =venturectl dedupe merge ID survivor=N=.
 =survivor= must be one of the pair; the other is the loser. In one
 transaction the service:
 
-1. re-points every reference field the field tables declare against the
+1. re-points every reference field, except fields declaring
+   =RETAIN_REFERENCE= to preserve original evidence, that the tables declare against the
    kind, in whatever module and whether or not that module is on, from the
    loser to the survivor; a type whose table was never created because its
    module has never been on is skipped rather than failing the merge. The list is not hand-written: it is every

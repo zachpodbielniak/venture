@@ -1840,6 +1840,10 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/deals/1/quote", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/t/o/unknown.gif"), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/t/c/unknown/1"), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/marketing/u/unknown"), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/marketing/t/o/unknown.gif"), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/marketing/t/c/unknown/1"), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/marketing_send/1/actions/approve", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	/* The documentation site is public by design -- it is the shipped
 	 * shipped documentation, not this install's data -- so it answers
 	 * anonymously rather than redirecting. Pinned here so a route added

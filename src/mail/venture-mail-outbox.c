@@ -14,7 +14,7 @@ struct _VentureMailOutbox {
 	guint max_attempts;
 };
 G_DEFINE_FINAL_TYPE(VentureMailOutbox, venture_mail_outbox, G_TYPE_OBJECT)
-enum { SIGNAL_BEFORE_SEND, N_SIGNALS };
+enum { SIGNAL_BEFORE_SEND, SIGNAL_BEFORE_CLAIM, SIGNAL_BEFORE_TRANSPORT, N_SIGNALS };
 static guint signals[N_SIGNALS];
 static gboolean refuse(GError **error, const gchar *message)
 {
@@ -106,6 +106,7 @@ static gboolean validate(VentureDatabase *db, VentureEntity *entity, VentureEnti
 	VentureMailOutbox *self = data;
 	g_autofree gchar *private_body = NULL;
 	g_autofree gchar *private_html = NULL;
+	g_autofree gchar *unsubscribe = NULL;
 	g_autofree gchar *state = NULL;
 	g_autofree gchar *id = NULL;
 	g_autofree gchar *key = NULL;
@@ -113,11 +114,20 @@ static gboolean validate(VentureDatabase *db, VentureEntity *entity, VentureEnti
 	gint64 connection_id = 0, connection_version = 0;
 	gboolean permitted = self->permit == entity;
 	self->permit = NULL;
+	/* Turning transport off must not prevent a recipient from withdrawing
+	 * an already queued message. Only the service's exact cancellation
+	 * permit crosses this gate; enqueue and retry still require mail. */
+	if (permitted && previous) {
+		g_object_get(entity, "state", &state, NULL);
+		if (!g_strcmp0(state, "cancelled")) return TRUE;
+		g_clear_pointer(&state, g_free);
+	}
 	if (!enabled(self, venture_entity_get_organization_id(entity), error)) return FALSE;
 	if (permitted) return TRUE;
 	if (previous) return refuse(error, "Stored messages are immutable; use retry for a deliberate resend");
-	g_object_get(entity, "private-text-body", &private_body, "private-html-body", &private_html, NULL);
-	if (((private_body && *private_body) || (private_html && *private_html)) && self->enqueue_permit != entity)
+	g_object_get(entity, "private-text-body", &private_body, "private-html-body", &private_html,
+		"private-unsubscribe-url", &unsubscribe, NULL);
+	if (((private_body && *private_body) || (private_html && *private_html) || (unsubscribe && *unsubscribe)) && self->enqueue_permit != entity)
 		return refuse(error, "Private delivery content requires the outbox enqueue service");
 	g_object_get(entity, "state", &state, "message-id", &id, "idempotency-key", &key, "attempts", &attempts, NULL);
 	g_object_get(entity, "connection-id", &connection_id, "connection-version", &connection_version, NULL);
@@ -207,6 +217,39 @@ static void venture_mail_outbox_class_init(VentureMailOutboxClass *klass)
 	 */
 	signals[SIGNAL_BEFORE_SEND] = g_signal_new("before-send", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0,
 		g_signal_accumulator_true_handled, NULL, NULL, G_TYPE_BOOLEAN, 2, VENTURE_TYPE_MAIL_MESSAGE, G_TYPE_POINTER);
+	/**
+	 * VentureMailOutbox::before-claim:
+	 * @self: the outbox
+	 * @message: due message before a delivery lease is acquired
+	 * @now: the delivery run's clock
+	 *
+	 * A synchronous main-thread scheduling gate. Returning %TRUE defers
+	 * this row without changing its state, identity or retry budget. A
+	 * paused campaign can resume the same queued message later. This does
+	 * not replace the final eligibility check in ::before-transport, and a
+	 * deferral never hides recovery of an already expired sending lease.
+	 * Handlers must not perform transport I/O or iterate a main context.
+	 *
+	 * Returns: %TRUE to defer this candidate
+	 */
+	signals[SIGNAL_BEFORE_CLAIM] = g_signal_new("before-claim", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0,
+		g_signal_accumulator_true_handled, NULL, NULL, G_TYPE_BOOLEAN, 2, VENTURE_TYPE_MAIL_MESSAGE, G_TYPE_DATE_TIME);
+	/**
+	 * VentureMailOutbox::before-transport:
+	 * @self: the outbox
+	 * @message: claimed message with its persisted transport binding
+	 * @error: (out): a #GError location the vetoing handler fills
+	 *
+	 * Final synchronous eligibility check after mutable ::before-send
+	 * handlers and provider preparation, immediately before submission.
+	 * Handlers must be read-only: no database writes, transport I/O or
+	 * main-context iteration. A veto cancels without spending retry budget.
+	 * The first veto stops emission.
+	 *
+	 * Returns: %TRUE to veto submission
+	 */
+	signals[SIGNAL_BEFORE_TRANSPORT] = g_signal_new("before-transport", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0,
+		g_signal_accumulator_true_handled, NULL, NULL, G_TYPE_BOOLEAN, 2, VENTURE_TYPE_MAIL_MESSAGE, G_TYPE_POINTER);
 }
 static void venture_mail_outbox_init(VentureMailOutbox *self) { }
 VentureMailOutbox *venture_mail_outbox_new(VentureDatabase *database, VentureMailer *mailer)
@@ -252,16 +295,21 @@ fail:
 	venture_database_rollback(self->database);
 	return NULL;
 }
-static VentureEntity *get_row(VentureMailOutbox *self, gint64 org, gint64 id, GError **error)
+static VentureEntity *get_retained_row(VentureMailOutbox *self, gint64 org, gint64 id, GError **error)
 {
 	VentureEntity *row;
-	if (!enabled(self, org, error)) return NULL;
+	if (org <= 0) { refuse(error, "An exact organization is required"); return NULL; }
 	row = venture_database_get(self->database, VENTURE_TYPE_MAIL_MESSAGE, id, error);
 	if (!row || venture_entity_is_deleted(row) || venture_entity_get_organization_id(row) != org) {
 		g_clear_object(&row);
 		if (!error || !*error) g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Mail message not found");
 	}
 	return row;
+}
+static VentureEntity *get_row(VentureMailOutbox *self, gint64 org, gint64 id, GError **error)
+{
+	if (!enabled(self, org, error)) return NULL;
+	return get_retained_row(self, org, id, error);
 }
 static gboolean due(VentureEntity *row, GDateTime *now)
 {
@@ -290,6 +338,17 @@ VentureMailMessage *venture_mail_outbox_claim(VentureMailOutbox *self, gint64 or
 fail:
 	venture_database_rollback(self->database);
 	return NULL;
+}
+static gboolean cancel_claim(VentureMailOutbox *self, VentureMailMessage *message,
+	const GError *reason, GError **error)
+{
+	gint64 attempts;
+	/* A policy decision precedes submission and spends no retry budget. */
+	g_object_get(message, "attempts", &attempts, NULL);
+	g_object_set(message, "state", "cancelled", "lease-until", NULL, "next-attempt-at", NULL,
+		"attempts", attempts > 0 ? attempts - 1 : (gint64)0,
+		"last-error", reason ? reason->message : "Cancelled before submission", NULL);
+	return save(self, VENTURE_ENTITY(message), NULL, error);
 }
 static gint deliver_selected(VentureMailOutbox *self, gint64 org, gint64 selected_id,
 	gint64 expected_connection, gint64 expected_version, guint limit, GDateTime *now,
@@ -331,6 +390,11 @@ static gint deliver_selected(VentureMailOutbox *self, gint64 org, gint64 selecte
 		}
 		if ((guint)count >= limit || !due(row, clock)) continue;
 		if (g_cancellable_set_error_if_cancelled(cancellable, error)) return -1;
+		{
+			gboolean deferred = FALSE;
+			g_signal_emit(self, signals[SIGNAL_BEFORE_CLAIM], 0, row, clock, &deferred);
+			if (deferred) continue;
+		}
 		claimed = venture_mail_outbox_claim(self, org, venture_entity_get_id(row), clock, &send_error);
 		if (!claimed) {
 			if (g_error_matches(send_error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT)) continue;
@@ -341,13 +405,7 @@ static gint deliver_selected(VentureMailOutbox *self, gint64 org, gint64 selecte
 			gboolean vetoed = FALSE;
 			g_signal_emit(self, signals[SIGNAL_BEFORE_SEND], 0, claimed, &send_error, &vetoed);
 			if (vetoed) {
-				/* A veto is a decision, not a transport outcome: undo the claim's
-				 * attempt increment so cancelled rows spend no retry budget. */
-				g_object_get(claimed, "attempts", &attempts, NULL);
-				g_object_set(claimed, "state", "cancelled", "lease-until", NULL, "next-attempt-at", NULL,
-					"attempts", attempts > 0 ? attempts - 1 : (gint64)0,
-					"last-error", send_error ? send_error->message : "Cancelled before submission", NULL);
-				if (!save(self, VENTURE_ENTITY(claimed), NULL, error)) return -1;
+				if (!cancel_claim(self, claimed, send_error, error)) return -1;
 				continue;
 			}
 		}
@@ -374,6 +432,14 @@ static gint deliver_selected(VentureMailOutbox *self, gint64 org, gint64 selecte
 					{
 						g_object_set(claimed, "connection-id", connection_id, "connection-version", version, NULL);
 						if (!save(self, VENTURE_ENTITY(claimed), NULL, error)) return -1;
+					}
+					{
+						gboolean vetoed = FALSE;
+						g_signal_emit(self, signals[SIGNAL_BEFORE_TRANSPORT], 0, claimed, &send_error, &vetoed);
+						if (vetoed) {
+							if (!cancel_claim(self, claimed, send_error, error)) return -1;
+							continue;
+						}
 					}
 					sent = venture_mailer_send(transport, claimed, cancellable, &send_error);
 				}
@@ -486,4 +552,27 @@ fail_user:
 gboolean venture_mail_check_removal(VentureEntity *entity, GError **error)
 {
 	return !VENTURE_IS_MAIL_MESSAGE(entity) || refuse(error, "Mail history and idempotency keys cannot be removed");
+}
+gboolean venture_mail_outbox_cancel(VentureMailOutbox *self, gint64 org, gint64 id,
+	const gchar *reason, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) row = NULL;
+	g_autofree gchar *state = NULL;
+	g_return_val_if_fail(VENTURE_IS_MAIL_OUTBOX(self), FALSE);
+	if (!reason || !*reason || strlen(reason) > 2048 || !g_utf8_validate(reason, -1, NULL))
+		return refuse(error, "Cancellation requires a bounded explanation");
+	if (!venture_database_begin(self->database, error)) return FALSE;
+	row = get_retained_row(self, org, id, error);
+	if (!row) goto fail;
+	g_object_get(row, "state", &state, NULL);
+	if (!g_strcmp0(state, "cancelled")) return venture_database_commit(self->database, error);
+	if (g_strcmp0(state, "queued") && g_strcmp0(state, "failed")) {
+		refuse(error, "Only known queued or failed messages can be cancelled"); goto fail;
+	}
+	g_object_set(row, "state", "cancelled", "next-attempt-at", NULL, "lease-until", NULL,
+		"last-error", reason, NULL);
+	if (!save(self, row, actor, error)) goto fail;
+	return venture_database_commit(self->database, error);
+fail:
+	venture_database_rollback(self->database); return FALSE;
 }

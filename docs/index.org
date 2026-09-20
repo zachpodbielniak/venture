@@ -20,6 +20,7 @@ New to VENTURE? Two pages, in this order:
 
 ** Documents
 
+- [[file:marketing.org][Marketing sends]] — frozen audiences, evidenced consent, bounded delivery and unsubscribe
 - [[file:orgaccess.org][Organization access]] — membership, organization roles and record ownership
 
 - [[file:architecture.org][Architecture]] — how the pieces fit, and why the design is shaped this way

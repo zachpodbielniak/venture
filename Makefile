@@ -147,6 +147,8 @@ CORE_SRCS += src/pipelines/venture-pipeline-records.c
 SERVER_ONLY_SRCS += $(filter-out src/pipelines/venture-pipeline-records.c,$(wildcard src/pipelines/*.c))
 CORE_SRCS += src/sequences/venture-sequence-records.c
 SERVER_ONLY_SRCS += $(filter-out src/sequences/venture-sequence-records.c,$(wildcard src/sequences/*.c))
+CORE_SRCS += src/marketing/venture-marketing-records.c
+SERVER_ONLY_SRCS += $(filter-out src/marketing/venture-marketing-records.c,$(wildcard src/marketing/*.c))
 CORE_SRCS += src/autojournal/venture-posting-profile.c
 CORE_SRCS += src/recurring/venture-recurring-records.c
 SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wildcard src/autojournal/*.c))
@@ -666,3 +668,5 @@ $(OUTDIR)/tests/test-cli-session: $(OUTDIR)/venturectl
 
 # This regression invokes the actual offline command dispatcher.
 $(OUTDIR)/tests/test-hosted-maintenance: | $(OUTDIR)/venture
+
+PUBLIC_HDRS += $(wildcard src/marketing/*.h)

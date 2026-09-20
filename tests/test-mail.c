@@ -243,6 +243,7 @@ static void test_smtp_uncertain_wire(void)
 	mailer = venture_smtp_mailer_new(config);
 	g_object_set(message, "to", "reader@example.test", "bcc", "private@example.test", "subject", "Test",
 		"text-body", "Hello", "html-body", "<p>Hello</p>",
+		"private-unsubscribe-url", "https://example.test/marketing/u/token",
 		"private-text-body", "https://example.test/portal/secret-token", "message-id", "stable@example.test", NULL);
 	thread = g_thread_new("local-smtp", smtp_server, &f);
 	g_assert_false(venture_mailer_send(VENTURE_MAILER(mailer), message, NULL, &error));
@@ -256,6 +257,8 @@ static void test_smtp_uncertain_wire(void)
 	g_assert_null(strstr(f.bodies[0], "Bcc:"));
 	g_assert_nonnull(strstr(f.bodies[0], "https://example.test/portal/secret-token"));
 	g_assert_null(strstr(f.bodies[0], "<p>Hello</p>"));
+	g_assert_nonnull(strstr(f.bodies[0], "List-Unsubscribe: <https://example.test/marketing/u/token>"));
+	g_assert_nonnull(strstr(f.bodies[1], "List-Unsubscribe-Post: List-Unsubscribe=One-Click"));
 	g_assert_cmpuint(f.recipients, ==, 4);
 	g_free(f.bodies[0]); g_free(f.bodies[1]); g_object_unref(f.listener);
 }

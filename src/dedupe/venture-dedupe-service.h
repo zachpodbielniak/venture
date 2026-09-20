@@ -70,8 +70,9 @@ VentureEntity *venture_dedupe_service_merge(VentureDedupeService *self, VentureE
  *
  * In one transaction: re-points every reference field the field tables
  * declare against @kind from the loser to the survivor, whatever module owns
- * it; fills each empty survivor field from the loser and keeps the survivor's
- * value on conflict, noting the loser's differing values as an interaction
+ * it, except references declaring %VENTURE_COLUMN_FLAG_RETAIN_REFERENCE;
+ * retained evidence keeps its original subject. Fills each empty survivor
+ * field from the loser and keeps the survivor's value on conflict, noting the loser's differing values as an interaction
  * on the survivor's timeline; stamps the loser =merged_into_id= and soft
  * deletes it; and writes one =dedupe= audit entry against the survivor that
  * lists what moved. A failure anywhere leaves nothing changed.

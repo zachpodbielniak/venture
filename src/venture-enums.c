@@ -867,6 +867,7 @@ static const GFlagsValue venture_column_flags_values[] = {
 	VE(VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME, "assigned_username"),
 	VE(VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER, "optional_personal_owner"),
 	VE(VENTURE_COLUMN_FLAG_HOST_RESOURCE, "host_resource"),
+	VE(VENTURE_COLUMN_FLAG_RETAIN_REFERENCE, "retain_reference"),
 	VE_END
 };
 

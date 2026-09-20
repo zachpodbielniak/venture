@@ -1,0 +1,588 @@
+#+title: Marketing — built-artifact demonstration
+
+These verbatim transcripts run the DEBUG-linked Venture test artifact with
+synthetic organizations and recipients. The HTTP case starts the actual
+Venture web server and invokes the built =venturectl= using a disposable
+operator API token; credentials and private links are not printed. The SMTP
+case uses a real local scripted relay to inspect the generated message wire.
+No external recipient is contacted. Reconnect means a closed and reopened
+application database, not a claim about physical power-loss recovery.
+
+Reproduce with =make DEBUG=1=, =make DEBUG=1 plugins= and
+=make DEBUG=1 build/debug/tests/test-marketing build/debug/tests/test-mail=,
+then run the commands printed below from the repository root. The same
+marketing suite supports per-fixture isolated PostgreSQL through
+=VENTURE_TEST_ACCOUNTING_POSTGRES_URI=. The documented management decisions
+and limitations are in [[file:marketing.org][Marketing sends]].
+
+
+* Frozen audience, personalization and exclusions
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/snapshot
+TAP version 14
+# random seed: R02S71eb325c15d67760c5fb5c44de1459e0
+# Start of marketing tests
+# Frozen preview: eligible=1, exclusions=2
+# Delivered frozen personalization after source rename: Hello Alice
+ok 1 /marketing/snapshot
+# slow test /marketing/snapshot executed in 1.05 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Static company address mapping
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/company-address
+TAP version 14
+# random seed: R02S010ff4976872c81dc2fd458c2bfee77e
+# Start of marketing tests
+ok 1 /marketing/company-address
+# slow test /marketing/company-address executed in 0.73 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Saved-search segment and refresh boundary
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/segment
+TAP version 14
+# random seed: R02S06cb7152948832e8e32ad776148d3675
+# Start of marketing tests
+ok 1 /marketing/segment
+# slow test /marketing/segment executed in 0.72 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Consent identity and immutable history
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/history
+TAP version 14
+# random seed: R02S80ae390e8cfab36982b646330994f962
+# Start of marketing tests
+ok 1 /marketing/history
+# slow test /marketing/history executed in 0.64 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Organization and editor boundaries
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/authority
+TAP version 14
+# random seed: R02S7d31cd726e4725e43f0df5aa324e568d
+# Start of marketing tests
+ok 1 /marketing/authority
+# slow test /marketing/authority executed in 0.78 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Authenticated built CLI and anonymous HTTP preference
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/http
+TAP version 14
+# random seed: R02S64bcc21a7b64d1747c99d5189000e24e
+# Start of marketing tests
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation gvfs (GDaemonVfs) for ‘gio-vfs’
+# Venture-MESSAGE: No session secret in the environment; sessions will not survive a restart. Set the variable named by security.session_secret_env to keep them.
+# Built CLI preview: {
+#   "type" : "marketing_send",
+#   "id" : 1,
+#   "uuid" : "acf80d78-ea48-41d1-8d99-30f2aa8a0414",
+#   "organization_id" : 1,
+#   "created_at" : "2026-09-20T06:55:39.353723Z",
+#   "updated_at" : "2026-09-20T06:55:40.900796Z",
+#   "deleted_at" : null,
+#   "version" : 2,
+#   "name" : "Autumn",
+#   "list_id" : 1,
+#   "subject" : "Hello {name}",
+#   "text_body" : "Read https://example.test/news",
+#   "html_body" : "<p>Hello {name}</p><a href=\"https://example.test/news\">News</a>",
+#   "tracking" : false,
+#   "interval_seconds" : 1,
+#   "state" : "preview",
+#   "previewed_at" : "2026-09-20T06:55:40.895322Z",
+#   "approved_at" : null,
+#   "approved_by" : null,
+#   "eligible_count" : 1,
+#   "excluded_count" : 0,
+#   "next_enqueue_at" : null,
+#   "next_delivery_at" : null,
+#   "last_mail_id" : 0,
+#   "public_base" : "http://127.0.0.1:42185",
+#   "display_name" : "Autumn"
+# }
+# Built CLI approve: {
+#   "type" : "marketing_send",
+#   "id" : 1,
+#   "uuid" : "acf80d78-ea48-41d1-8d99-30f2aa8a0414",
+#   "organization_id" : 1,
+#   "created_at" : "2026-09-20T06:55:39.353723Z",
+#   "updated_at" : "2026-09-20T06:55:41.679153Z",
+#   "deleted_at" : null,
+#   "version" : 3,
+#   "name" : "Autumn",
+#   "list_id" : 1,
+#   "subject" : "Hello {name}",
+#   "text_body" : "Read https://example.test/news",
+#   "html_body" : "<p>Hello {name}</p><a href=\"https://example.test/news\">News</a>",
+#   "tracking" : false,
+#   "interval_seconds" : 1,
+#   "state" : "approved",
+#   "previewed_at" : "2026-09-20T06:55:40.895322Z",
+#   "approved_at" : "2026-09-20T06:55:41.677347Z",
+#   "approved_by" : "token:Marketing demonstration",
+#   "eligible_count" : 1,
+#   "excluded_count" : 0,
+#   "next_enqueue_at" : null,
+#   "next_delivery_at" : null,
+#   "last_mail_id" : 0,
+#   "public_base" : "http://127.0.0.1:42185",
+#   "display_name" : "Autumn"
+# }
+# Built CLI bounded run: {
+#   "type" : "marketing_send",
+#   "id" : 1,
+#   "uuid" : "acf80d78-ea48-41d1-8d99-30f2aa8a0414",
+#   "organization_id" : 1,
+#   "created_at" : "2026-09-20T06:55:39.353723Z",
+#   "updated_at" : "2026-09-20T06:55:44.973975Z",
+#   "deleted_at" : null,
+#   "version" : 6,
+#   "name" : "Autumn",
+#   "list_id" : 1,
+#   "subject" : "Hello {name}",
+#   "text_body" : "Read https://example.test/news",
+#   "html_body" : "<p>Hello {name}</p><a href=\"https://example.test/news\">News</a>",
+#   "tracking" : false,
+#   "interval_seconds" : 1,
+#   "state" : "approved",
+#   "previewed_at" : "2026-09-20T06:55:40.895322Z",
+#   "approved_at" : "2026-09-20T06:55:41.677347Z",
+#   "approved_by" : "token:Marketing demonstration",
+#   "eligible_count" : 1,
+#   "excluded_count" : 0,
+#   "next_enqueue_at" : "2026-09-20T06:55:45.962735Z",
+#   "next_delivery_at" : null,
+#   "last_mail_id" : 1,
+#   "public_base" : "http://127.0.0.1:42185",
+#   "display_name" : "Autumn"
+# }
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation dconf (DConfSettingsBackend) for ‘gsettings-backend’
+# pxbackend-DEBUG: px_config_sysconfig_set_config_file: Could not read file /etc/sysconfig/proxy
+# pxbackend-DEBUG: Active config plugins:
+# pxbackend-DEBUG:  - config-env
+# pxbackend-DEBUG:  - config-xdp
+# pxbackend-DEBUG:  - config-kde
+# pxbackend-DEBUG:  - config-gnome
+# pxbackend-DEBUG:  - config-sysconfig
+# GLib-GIO-DEBUG: Failed to initialize portal (GNetworkMonitorPortal) for gio-network-monitor: Not using portals
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation networkmanager (GNetworkMonitorNM) for ‘gio-network-monitor’
+# pxbackend-DEBUG: px_manager_constructed: Up and running
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation libproxy (GLibproxyResolver) for ‘gio-proxy-resolver’
+# GLib-GIO-DEBUG: g_socket_client_connect_async: starting new g_socket_client_connect_async() with GTask 0x3db7b400 and GSocketClientAsyncConnectData 0x3db4f1a0
+# GLib-GIO-DEBUG: GSocketClient: Starting new address enumeration
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=http://127.0.0.1:42185 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# GLib-GIO-DEBUG: GSocketClient: Address enumeration succeeded
+# GLib-GIO-DEBUG: g_socket_client_enumerator_callback: starting connection attempt 0x7f88d0000f10 for GSocketClientAsyncConnectData 0x3db4f1a0
+# GLib-GIO-DEBUG: GSocketClient: Starting TCP connection attempt
+# GLib-GIO-DEBUG: GSocketClient: TCP connection successful
+# GLib-GIO-DEBUG: GSocketClient: Starting application layer connection
+# GLib-GIO-DEBUG: GSocketClient: Connection successful!
+# HTTP GET [private marketing capability] => 200
+# GLib-GIO-DEBUG: g_socket_client_connect_async: starting new g_socket_client_connect_async() with GTask 0x3db7b780 and GSocketClientAsyncConnectData 0x3db409a0
+# GLib-GIO-DEBUG: GSocketClient: Starting new address enumeration
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=http://127.0.0.1:42185 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# GLib-GIO-DEBUG: GSocketClient: Address enumeration succeeded
+# GLib-GIO-DEBUG: g_socket_client_enumerator_callback: starting connection attempt 0x7f88d4000f10 for GSocketClientAsyncConnectData 0x3db409a0
+# GLib-GIO-DEBUG: GSocketClient: Starting TCP connection attempt
+# GLib-GIO-DEBUG: GSocketClient: TCP connection successful
+# GLib-GIO-DEBUG: GSocketClient: Starting application layer connection
+# GLib-GIO-DEBUG: GSocketClient: Connection successful!
+# HTTP POST [private marketing capability] => 200
+# GLib-GIO-DEBUG: g_socket_client_connect_async: starting new g_socket_client_connect_async() with GTask 0x3db8ba30 and GSocketClientAsyncConnectData 0x3db7f1a0
+# GLib-GIO-DEBUG: GSocketClient: Starting new address enumeration
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=http://127.0.0.1:42185 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# GLib-GIO-DEBUG: GSocketClient: Address enumeration succeeded
+# GLib-GIO-DEBUG: g_socket_client_enumerator_callback: starting connection attempt 0x7f88d0000f10 for GSocketClientAsyncConnectData 0x3db7f1a0
+# GLib-GIO-DEBUG: GSocketClient: Starting TCP connection attempt
+# GLib-GIO-DEBUG: GSocketClient: TCP connection successful
+# GLib-GIO-DEBUG: GSocketClient: Starting application layer connection
+# GLib-GIO-DEBUG: GSocketClient: Connection successful!
+# HTTP POST [private marketing capability] => 200
+# GLib-GIO-DEBUG: g_socket_client_connect_async: starting new g_socket_client_connect_async() with GTask 0x3db7b400 and GSocketClientAsyncConnectData 0x3db7b390
+# GLib-GIO-DEBUG: GSocketClient: Starting new address enumeration
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=http://127.0.0.1:42185 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# GLib-GIO-DEBUG: GSocketClient: Address enumeration succeeded
+# GLib-GIO-DEBUG: g_socket_client_enumerator_callback: starting connection attempt 0x7f88d4000f10 for GSocketClientAsyncConnectData 0x3db7b390
+# GLib-GIO-DEBUG: GSocketClient: Starting TCP connection attempt
+# GLib-GIO-DEBUG: GSocketClient: TCP connection successful
+# GLib-GIO-DEBUG: GSocketClient: Starting application layer connection
+# GLib-GIO-DEBUG: GSocketClient: Connection successful!
+# HTTP POST [private marketing capability] => 404
+# HTTP GET [private marketing capability] => 404
+# GLib-GIO-DEBUG: g_socket_client_connect_async: starting new g_socket_client_connect_async() with GTask 0x3db7c9d0 and GSocketClientAsyncConnectData 0x3db80220
+# GLib-GIO-DEBUG: GSocketClient: Starting new address enumeration
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=http://127.0.0.1:42185 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# GLib-GIO-DEBUG: GSocketClient: Address enumeration succeeded
+# GLib-GIO-DEBUG: g_socket_client_enumerator_callback: starting connection attempt 0x7f88d0000f10 for GSocketClientAsyncConnectData 0x3db80220
+# GLib-GIO-DEBUG: GSocketClient: Starting TCP connection attempt
+# GLib-GIO-DEBUG: GSocketClient: TCP connection successful
+# GLib-GIO-DEBUG: GSocketClient: Starting application layer connection
+# GLib-GIO-DEBUG: GSocketClient: Connection successful!
+# HTTP POST /api/v1/marketing_send/1/actions/approve => 401
+ok 1 /marketing/http
+# slow test /marketing/http executed in 7.87 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Queued withdrawal and independent transactional mail
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/unsubscribe
+TAP version 14
+# random seed: R02S3d4dcecfd5f88080c42e48cc1aced7a4
+# Start of marketing tests
+ok 1 /marketing/unsubscribe
+# slow test /marketing/unsubscribe executed in 0.87 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Deleted subject withdrawal
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/unsubscribe-deleted-subject
+TAP version 14
+# random seed: R02S3e09b9d56e59bc0a87f364318f6b4031
+# Start of marketing tests
+ok 1 /marketing/unsubscribe-deleted-subject
+# slow test /marketing/unsubscribe-deleted-subject executed in 0.87 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Disabled module withdrawal
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/module
+TAP version 14
+# random seed: R02S76c1a7e136d8489afed6a19be318a431
+# Start of marketing tests
+ok 1 /marketing/module
+# slow test /marketing/module executed in 0.75 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Applicable sequence outreach exit
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/sequence-exit
+TAP version 14
+# random seed: R02Sf45ce17127d903d62cd9af1bc31007eb
+# Start of marketing tests
+# Sequence enrollment after marketing unsubscribe: status=3 (exited)
+ok 1 /marketing/sequence-exit
+# slow test /marketing/sequence-exit executed in 0.70 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Pause, resume and cancellation
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/pause
+TAP version 14
+# random seed: R02S84a8d029bc6a1cb2f172f62415fb98c1
+# Start of marketing tests
+ok 1 /marketing/pause
+# slow test /marketing/pause executed in 0.88 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Bounded actual-submission throttle
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/throttle
+TAP version 14
+# random seed: R02Sfcc56da8109c7bd7f16158145d9637ab
+# Start of marketing tests
+# Delayed first submission at +120s; second deferred at +121s and accepted at +180s; transport count=2
+ok 1 /marketing/throttle
+# slow test /marketing/throttle executed in 0.73 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Reconnect and deliberate uncertain retry
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/restart
+TAP version 14
+# random seed: R02S71064ee8a6d3adb05a45d51dbebb3d63
+# Start of marketing tests
+# After reconnect and expired lease: state=uncertain, transport submissions=0
+# Explicit retry retained mail identity 1 and submitted once
+ok 1 /marketing/restart
+# slow test /marketing/restart executed in 1.05 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Observed tracking and UTC deduplication
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/observations
+TAP version 14
+# random seed: R02S2e2c355fe316e9882eb1be64c4cf2c9e
+# Start of marketing tests
+# Two open clocks representing one instant retained 1 daily observation
+# Retained click destination: https://example.test/news
+ok 1 /marketing/observations
+# slow test /marketing/observations executed in 0.85 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Reviewed temporary and hard bounce evidence
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/feedback
+TAP version 14
+# random seed: R02S64e526ff47a7e0c0f99d4193e434c22e
+# Start of marketing tests
+# Temporary feedback retained without suppression; hard-bounce evidence retained once: events=2, suppressions=1
+ok 1 /marketing/feedback
+# slow test /marketing/feedback executed in 0.88 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Approval cohort and source outcome report
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/report
+TAP version 14
+# random seed: R02S047fbfdb09115ec0e45f7018598d285a
+# Start of marketing tests
+# Report: accepted=1, hard_bounced=1, uniquely_opened=0, pending=0
+# Approval period: exclusive end omits send; inclusive start includes send
+ok 1 /marketing/report
+# slow test /marketing/report executed in 1.15 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Pre-feature upgrade and late module enable
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/upgrade
+TAP version 14
+# random seed: R02S616daa6115624a8aafcc75f9d50e33a3
+# Start of marketing tests
+# Upgrade retained CRM source Alice and 1 suppression; inferred consent count=0
+ok 1 /marketing/upgrade
+# slow test /marketing/upgrade executed in 0.97 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Transactional migration invariant failure
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/migration-guard
+TAP version 14
+# random seed: R02S7ada573ba45d2594f999cedf6cae5a38
+# Start of marketing tests
+ok 1 /marketing/migration-guard
+# slow test /marketing/migration-guard executed in 0.65 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Actual SMTP one-click headers across uncertain retry
+
+#+begin_example
+$ build/debug/tests/test-mail -p /mail/smtp-uncertain-wire
+TAP version 14
+# random seed: R02S400874845b67bb043b9e20f4b89238f3
+# Start of mail tests
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation gvfs (GDaemonVfs) for ‘gio-vfs’
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation dconf (DConfSettingsBackend) for ‘gsettings-backend’
+# pxbackend-DEBUG: px_config_sysconfig_set_config_file: Could not read file /etc/sysconfig/proxy
+# pxbackend-DEBUG: Active config plugins:
+# pxbackend-DEBUG:  - config-env
+# pxbackend-DEBUG:  - config-xdp
+# pxbackend-DEBUG:  - config-kde
+# pxbackend-DEBUG:  - config-gnome
+# pxbackend-DEBUG:  - config-sysconfig
+# GLib-GIO-DEBUG: Failed to initialize portal (GNetworkMonitorPortal) for gio-network-monitor: Not using portals
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation networkmanager (GNetworkMonitorNM) for ‘gio-network-monitor’
+# pxbackend-DEBUG: px_manager_constructed: Up and running
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation libproxy (GLibproxyResolver) for ‘gio-proxy-resolver’
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=none://127.0.0.1:33255 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=none://127.0.0.1:33255 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+ok 1 /mail/smtp-uncertain-wire
+# End of mail tests
+1..1
+#+end_example
+
+* Static lead address mapping
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/lead-address
+TAP version 14
+# random seed: R02S69b1acbd26b17d980e589b67c8a40ae1
+# Start of marketing tests
+ok 1 /marketing/lead-address
+# slow test /marketing/lead-address executed in 0.73 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Withdrawal while mail is disabled
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/mail-disabled
+TAP version 14
+# random seed: R02S8de8dde70093014984d95ac66956d0c4
+# Start of marketing tests
+# Venture-DEBUG: Modules after a configuration change: Module "recurring" requires "mail", which is disabled. Enable mail, or disable recurring as well. Module "mail_sync" requires "mail", which is disabled. Enable mail, or disable mail_sync as well. Module "dunning" requires "mail", which is disabled. Enable mail, or disable dunning as well.
+ok 1 /marketing/mail-disabled
+# slow test /marketing/mail-disabled executed in 0.72 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Withdrawal while sequences are disabled
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/sequences-disabled
+TAP version 14
+# random seed: R02S98d792f0d57fd21db6c87ad6c1f06ea7
+# Start of marketing tests
+ok 1 /marketing/sequences-disabled
+# slow test /marketing/sequences-disabled executed in 0.76 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Retained suppression through generic writers
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/withdrawn-grant
+TAP version 14
+# random seed: R02S3deaeee7f55b672b2e836d46bea851ad
+# Start of marketing tests
+ok 1 /marketing/withdrawn-grant
+# slow test /marketing/withdrawn-grant executed in 0.79 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* CRM merge preserves original permission and approved subject
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/merge-history
+TAP version 14
+# random seed: R02S872ada7838820de91e077dfde26b9c43
+# Start of marketing tests
+# Merge moved ordinary interaction to survivor; consent, membership and approved recipient kept original source; queued submission cancelled
+ok 1 /marketing/merge-history
+# slow test /marketing/merge-history executed in 0.94 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Native and declarative retained-reference metadata
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/retained-metadata
+TAP version 14
+# random seed: R02S09f0b18dd99cd7724d204e67f8126efb
+# Start of marketing tests
+ok 1 /marketing/retained-metadata
+# End of marketing tests
+1..1
+#+end_example
+
+* PostgreSQL merge after backend repair
+
+This run used =VENTURE_TEST_ACCOUNTING_POSTGRES_URI= with a disposable,
+per-fixture isolated PostgreSQL schema. The initial full PostgreSQL run passed
+cases 1–30 and exposed a pre-existing SQLite-style placeholder in dedupe's raw
+reference queries. The repaired path uses =OrmInspector= and backend-correct
+bound parameters. The same merge and metadata cases were rerun after repair;
+ordinary references still move and retained evidence still names its source.
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/merge-history
+TAP version 14
+# random seed: R02S3b606d5d7bf853179a0bfdbffa9a2dab
+# Start of marketing tests
+# Merge moved ordinary interaction to survivor; consent, membership and approved recipient kept original source; queued submission cancelled
+ok 1 /marketing/merge-history
+# slow test /marketing/merge-history executed in 13.52 secs
+# End of marketing tests
+1..1
+#+end_example
+
+* Late eligibility withdrawal at the final transport boundary
+
+A later mutable outbox hook withdraws permission after the marketing scheduling
+hook accepted the row. The final read-only gate must still cancel before SMTP.
+The regression first submitted one message; the repaired DEBUG artifact submits
+none and restores the unused attempt budget.
+
+#+begin_example
+$ build/debug/tests/test-marketing -p /marketing/transport-recheck
+TAP version 14
+# random seed: R02Saab681a0b539d6a4f401d607ea61e06d
+# Start of marketing tests
+# Later before-send withdrawal: transport submissions=0, retained message cancelled, attempts=0
+ok 1 /marketing/transport-recheck
+# slow test /marketing/transport-recheck executed in 0.90 secs
+# End of marketing tests
+1..1
+#+end_example
+
+The same scenario passes against the schema-isolated PostgreSQL fixture.
+
+* Review and validation
+
+Local =skill-review= checked the demonstration before the final diff and
+repeated the review after repairs. Regressions reproduced and repaired an
+unrelated-session capability refusal, UTC daily tracking duplication,
+reentrant withdrawal immediately before transport, disabled-module withdrawal,
+reserved consent identity collision, dedupe rewriting approved subjects, and
+the PostgreSQL dedupe parameter error, and a withdrawal during a later mutable
+outbox hook. Existing immutable sequence suppression
+was reused and pinned rather than replaced with a second opt-out policy.
+
+The final DEBUG marketing harness runs 33 cases and its temporary-directory
+cleanup check. Related checks cover the two outbox scheduling/cancellation
+cases, 23 mail cases (including actual SMTP wire), 36 sequence cases, nine
+sequence-tracking cases, ten dedupe cases, 19 module cases, 94 authentication
+cases and nine migration cases. PostgreSQL checks use isolated schemas;
+the marketing cases passed across the full run and repaired targeted reruns,
+and migration checks include the PostgreSQL upgrade path. Server, CLI and
+GObject introspection build without warnings. No live SMTP provider or external
+recipient is needed for these tests.

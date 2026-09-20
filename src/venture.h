@@ -109,6 +109,7 @@
 #include "billing/venture-billing-records.h"
 #include "projects/venture-project-records.h"
 #include "mail/venture-mail-records.h"
+#include "marketing/venture-marketing-records.h"
 #include "mail/venture-mail-sync-records.h"
 
 #include "leads/venture-lead-records.h"
@@ -214,6 +215,7 @@
 #include "backup/venture-backup-service.h"
 #include "report/venture-report-pack-service.h"
 #include "sequences/venture-sequence-service.h"
+#include "marketing/venture-marketing-service.h"
 #include "periods/venture-period-report.h"
 
 /* The confirmation store comes first: the context owns one and names its

@@ -253,6 +253,7 @@ venture_database_init(VentureDatabase *self)
 	venture_bankfeed_install_validators(self);
 	venture_access_policy_install_privacy(self);
 	venture_connector_install(self);
+	venture_marketing_install(self);
 }
 
 VentureQuoteService *
@@ -1861,6 +1862,8 @@ venture_database_delete(
 		return FALSE;
 	if (!venture_assets_check_removal(self, entity, error))
 		return FALSE;
+	if (!venture_marketing_check_removal(entity, error))
+		return FALSE;
 	if (!venture_mail_check_removal(entity, error))
 		return FALSE;
 	if (!venture_quotes_check_removal(self, entity, error))
@@ -1959,6 +1962,8 @@ venture_database_restore(
 		return FALSE;
 	if (!venture_assets_check_removal(self, entity, error))
 		return FALSE;
+	if (!venture_marketing_check_removal(entity, error))
+		return FALSE;
 	if (!venture_mail_check_removal(entity, error))
 		return FALSE;
 	if (!venture_quotes_check_removal(self, entity, error))
@@ -2034,6 +2039,8 @@ venture_database_purge(
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_assets_check_removal(self, entity, error))
+		return FALSE;
+	if (!venture_marketing_check_removal(entity, error))
 		return FALSE;
 	if (!venture_mail_check_removal(entity, error))
 		return FALSE;
@@ -2650,6 +2657,7 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_activity_actions_register(self);
 		venture_stripe_actions_register(self);
 		venture_ai_provider_actions_register(self);
+		venture_marketing_actions_register(self);
 	}
 	return self->actions;
 }

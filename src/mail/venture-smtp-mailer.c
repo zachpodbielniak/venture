@@ -87,6 +87,7 @@ static gboolean smtp_send(VentureMailer *mailer, VentureMailMessage *message, GC
 	g_autoptr(GBytes) rendered = NULL, wire = NULL;
 	g_autofree gchar *path = NULL, *to = NULL, *cc = NULL, *bcc = NULL, *reply = NULL;
 	g_autofree gchar *subject = NULL, *text = NULL, *html = NULL, *id = NULL, *private_text = NULL, *private_html = NULL;
+	g_autofree gchar *unsubscribe = NULL;
 	MailReceipt *receipt = NULL;
 	GMimeStream *input = NULL, *output = NULL;
 	GMimeParser *parser = NULL;
@@ -113,7 +114,8 @@ static gboolean smtp_send(VentureMailer *mailer, VentureMailMessage *message, GC
 	if (!transport) goto out;
 	g_object_get(message, "to", &to, "cc", &cc, "bcc", &bcc, "reply-to", &reply,
 		"subject", &subject, "text-body", &text, "html-body", &html, "message-id", &id,
-		"private-text-body", &private_text, "private-html-body", &private_html, NULL);
+		"private-text-body", &private_text, "private-html-body", &private_html,
+		"private-unsubscribe-url", &unsubscribe, NULL);
 	/* Do not let a public HTML alternative hide the invitation link: a
 	 * private text body drops the public HTML, and a private HTML body, when
 	 * the sender rendered one, replaces it so an HTML-only link survives. */
@@ -170,6 +172,20 @@ static gboolean smtp_send(VentureMailer *mailer, VentureMailMessage *message, GC
 			g_set_error_literal(&local, MAIL_ERROR, MAIL_ERROR_MESSAGE, "Invalid Message-ID"); goto out;
 		}
 		g_mime_message_set_message_id(mime, id);
+	}
+	if (unsubscribe && *unsubscribe) {
+		g_autoptr(GUri) uri = g_uri_parse(unsubscribe, G_URI_FLAGS_NONE, NULL);
+		if (!uri || !g_uri_get_host(uri) || g_uri_get_userinfo(uri) || g_uri_get_fragment(uri) ||
+			strpbrk(unsubscribe, "\r\n\t <>\"")) {
+			g_set_error_literal(&local, MAIL_ERROR, MAIL_ERROR_MESSAGE, "Invalid unsubscribe endpoint"); goto out;
+		}
+		/* Local development can use the body link. RFC 8058 signaling needs
+		 * HTTPS and the operator's relay must DKIM-sign both headers. */
+		if (!g_strcmp0(g_uri_get_scheme(uri), "https")) {
+			g_autofree gchar *header = g_strdup_printf("<%s>", unsubscribe);
+			g_mime_object_set_header(GMIME_OBJECT(mime), "List-Unsubscribe", header, NULL);
+			g_mime_object_set_header(GMIME_OBJECT(mime), "List-Unsubscribe-Post", "List-Unsubscribe=One-Click", NULL);
+		}
 	}
 	output = g_mime_stream_mem_new();
 	options = g_mime_format_options_new();

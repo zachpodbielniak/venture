@@ -9254,6 +9254,7 @@ venture_web_append_incident_block(
 
 #include "assets/venture-assets-web.inc"
 #include "sequences/venture-sequence-web.inc"
+#include "marketing/venture-marketing-web.inc"
 
 static HtmxResponse *
 venture_web_ui_detail(
@@ -30064,6 +30065,38 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/deals/:id/quote", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deal_quote, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/t/o/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_open, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/t/c/:token/:n", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_click, self);
+	htmx_router_post(router, "/api/v1/reconciliation/suggest", venture_web_api_reconciliation_suggest, self);
+	htmx_router_post(router, "/invoices/:id/send", venture_web_mail_invoice_ui, self);
+	htmx_router_post(router, "/api/v1/mail/:action", venture_web_mail_action, self);
+	htmx_router_post(router, "/api/v1/mail_messages/:id/retry", venture_web_mail_action, self);
+	htmx_router_post(router, "/api/v1/mail/sync", venture_web_mail_sync, self);
+	htmx_router_post(router, "/api/v1/mail_unmatched_senders/:id/create_contact", venture_web_mail_unmatched_contact, self);
+	htmx_router_post(router, "/api/v1/mail_unmatched_senders/:id/dismiss", venture_web_mail_unmatched_dismiss, self);
+	htmx_router_post(router, "/api/v1/mail_accounts/:id/sync", venture_web_mail_account_sync, self);
+	htmx_router_post(router, "/mail_unmatched_senders/:id/create_contact", venture_web_mail_unmatched_contact_ui, self);
+	htmx_router_post(router, "/mail_unmatched_senders/:id/dismiss", venture_web_mail_unmatched_dismiss_ui, self);
+	htmx_router_post(router, "/mail_accounts/:id/sync", venture_web_mail_account_sync_ui, self);
+	htmx_router_post(router, "/api/v1/invoices/:id/send", venture_web_mail_invoice, self);
+	htmx_router_post(router, "/api/v1/deals/:id/move", venture_web_deal_move, self);
+	htmx_router_post(router, "/deals/:id/move", venture_web_deal_move_ui, self);
+	htmx_router_get(router, "/deals", venture_web_deals_board, self);
+	htmx_router_post(router, "/api/v1/sequence/:id/enroll", venture_web_sequence_enroll, self);
+	htmx_router_post(router, "/api/v1/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
+	htmx_router_post(router, "/ui/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
+	htmx_router_post(router, "/api/v1/sequences/run", venture_web_sequence_run, self);
+	htmx_router_get(router, "/api/v1/headline", venture_web_api_headline, self);
+	htmx_router_post(router, "/api/v1/customers/health/sweep", venture_web_api_customer_health_sweep, self);
+	htmx_router_post(router, "/api/v1/calendar/sync", venture_web_calendar_sync, self);
+	htmx_router_get(router, "/book/:slug", venture_web_booking_page, self);
+	htmx_router_post(router, "/book/:slug", venture_web_booking_page, self);
+	htmx_router_post(router, "/api/v1/deals/:id/quote", venture_web_deal_quote, self);
+	htmx_router_post(router, "/deals/:id/quote", venture_web_deal_quote, self);
+	htmx_router_get(router, "/t/o/:token", venture_web_sequence_open, self);
+	htmx_router_get(router, "/t/c/:token/:n", venture_web_sequence_click, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/marketing/u/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_marketing_unsubscribe, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/marketing/u/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_marketing_unsubscribe, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/marketing/t/o/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_marketing_open, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/marketing/t/c/:token/:n", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_marketing_click, self);
 
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_list, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_create, self);

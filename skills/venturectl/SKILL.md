@@ -1014,3 +1014,43 @@ before configuring their organization/team references. `report sales_attainment`
 shows captured booked sales, targets and current pipeline by recipient, currency
 and quota period. It is not posted accounting revenue. Assignment/credit rows are
 service evidence; correct the source deal instead of editing that history.
+## Marketing sends
+
+Use `describe marketing_list`, `describe marketing_member`, `describe
+marketing_send` and `describe marketing_recipient`. These are ordinary record
+commands; consent and delivery evidence are service-owned. An organization
+editor records explicit permission with `act contact ID consent_marketing
+source="Signed preference form" evidence="Requested marketing email"
+evidence_key=FORM_ID occurred_at=2026-09-20T10:00:00Z` (company and lead have
+the same action). Use the real evidence timestamp, never a fabricated one.
+
+Create a static list and member rows with exactly one `contact_id`,
+`company_id` or `lead_id`; a company means its own primary mailbox. Segments
+use `mode=segment target=contact filters='name=Alice'`, with ordinary typed
+filters and no organization/history/pagination override. Create a
+`marketing_send` referencing that list, then `act marketing_send ID preview`.
+Review `list marketing_recipient send_id=ID` and the frozen counts/content
+before `act marketing_send ID approve`. Preview is immutable; new copy,
+filters or recipients require a new draft. Existing CRM records never imply
+permission. Configure HTTPS `server.base_url` before preview.
+
+`act marketing_send ID run limit=100` examines a bounded audience, queues at
+most one due recipient and attempts that exact organization-bound outbox
+message. Repeat for progress; it does not start an unbounded job. The default
+interval is 60 seconds. `pause`, `resume` and `cancel` preserve identities;
+uncertain SMTP acceptance blocks progress until deliberately resolved through
+the existing outbox retry workflow. Retry may duplicate a delivery and is
+never automatic for uncertainty. `report marketing_performance` uses approval
+cohorts and current retained outcomes; acceptance is not inbox delivery, and
+observed opens/clicks are not proof of reading.
+
+`act marketing_consent ID withdraw` suppresses the address and stops applicable
+queued campaigns and sequences. Transactional messages remain independent.
+Recipient unsubscribe links are private capabilities sent only in mail; GET
+shows confirmation, POST performs an idempotent organization-scoped withdrawal.
+Do not request or expose private body/token fields. Record reviewed relay
+feedback with `act marketing_recipient ID feedback kind=hard_bounce
+source="Reviewed DSN 5.1.1" event_key=DSN_ID occurred_at=TIMESTAMP`;
+`temporary_bounce` does not suppress, `complaint` does. A new consent row cannot
+clear retained suppression. Tracking requires both organization
+`marketing_tracking=true` and send `tracking=true` before preview.

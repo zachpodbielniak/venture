@@ -1,0 +1,241 @@
+#+title: Marketing audiences, permission and delivery
+
+* Approval is a frozen audience
+
+The =marketing= module requires =mail=, =sequences= and =leads=. Its records
+use the ordinary forms, API, CLI, actions, related-record sections and audit:
+=marketing_list=, =marketing_member=, =marketing_consent=, =marketing_send=,
+=marketing_recipient= and =marketing_event=. The service is a policy boundary;
+mail transport remains the replaceable =VentureMailer= interface and the
+organization-owned SMTP adapter.
+
+Create a list, record explicit marketing permission, and create a draft send
+with its subject, text and optional HTML. The *Preview and freeze audience*
+action resolves that list once and retains every eligible recipient and
+exclusion, together with the rendered content. Review the counts and related
+recipient records before *Approve frozen send*. There is no implicit approval
+at preview or enqueue. A preview cannot be rerendered or edited: create another
+draft to incorporate changed filters, members, addresses or copy. Approval
+retains its actor and time. Neither an import nor an ordinary record write can
+manufacture consent, approval, delivery identities or tracking evidence.
+
+* Static lists and saved searches
+
+A static list has =marketing_member= rows, each naming exactly one contact,
+company or lead from the list's organization. Duplicate member identities are
+refused. A company means its own primary =email=, not every employee. A contact
+or lead means that record's =email=. Mixing those three kinds in one static
+list is supported. No implicit company-to-contact expansion occurs.
+
+A segment has =mode=segment=, a target record type, and URL-encoded saved
+search filters, for example =status=new&source=conference=. Fields and filter
+operators are the ordinary typed query implementation. Organization, history,
+ordering and pagination overrides are refused; results are always scoped to
+the list's organization and ordered by record ID. A preview refreshes the
+segment; an approved send never refreshes it. Narrow an audience larger than
+10,000 source records instead of accepting a silently truncated preview.
+
+Addresses are trimmed and ASCII case-folded, matching the existing sequence
+suppression rule. They must be single mailboxes, without display names,
+recipient lists or header characters. Provider-specific aliases such as dots
+or plus suffixes are not guessed to be equivalent. The first eligible source
+in stable membership/record order wins a duplicate address. Missing sources,
+invalid addresses, absent permission, suppression and duplicate addresses
+remain separate preview decisions. An earlier source without permission does
+not prevent another explicitly permitted source at the same address from
+being selected. Suppression applies to every source at that address.
+
+Templates reuse =VentureMailTemplate=: ={name}= and other readable fields of
+the selected source are available, underscores and dashes use the ordinary
+wire convention, and HTML substitutions are escaped. Sensitive fields are
+never template values. Unknown placeholders fail the whole preview
+transaction. Mixed record kinds should use fields all selected kinds share.
+Each body is limited to 64 KiB before and after rendering; the subject is
+single-line and at most 998 bytes. A tracked body may contain at most 1,000
+web destinations.
+
+* Permission is evidence, not a contact flag
+
+The contact, company and lead actions *Record marketing permission* require
+an actual nonfuture timestamp, a source, an evidence statement/reference and
+a replay identity. The retained evidence binds the source record, its current
+normalized address and the =marketing= purpose. Repeating the same identity
+and evidence returns the same record; reusing the identity for other evidence
+is refused. The =withdraw:= identity prefix is reserved for internal withdrawal
+evidence. This is an operator's record of permission, not a claim that
+Venture independently verified a signature or a legal basis.
+
+Ordinary contact creation, import, merge, conversion and address edits do not
+create permission. Marketing subject references declare =RETAIN_REFERENCE=:
+CRM merge preserves the original consent, approved recipient and static-list
+member source while ordinary CRM references follow the survivor. A queued
+recipient whose source was merged away is cancelled; add the survivor to a
+list and record its permission explicitly. A new address or a new CRM identity needs its own explicit
+permission. A queued recipient still binds the original evidence and address;
+it is cancelled if that source is removed or its address changes. Historical
+consent remains retained, including after the original CRM subject is removed.
+Withdrawal is another evidence record linked to the permission it withdraws,
+not an edit erasing what was previously recorded.
+
+Unsubscribe, hard bounce and complaint use the existing organization-scoped
+=suppression= record and sequence exit mechanism. Suppression is retained
+through ordinary imports, merges and address changes. New permission does
+not clear it. The initial preference policy is deliberately one organization-
+wide marketing stop, without automatic resubscription or topic-specific
+preferences. A necessary invoice, receipt, password notice or other
+transactional message is outside this marketing policy.
+
+* Execute, pause and recover
+
+*Execute bounded delivery* examines at most 100 eligible recipients, queues
+at most one due recipient, and attempts that exact outbox message through the
+configured organization's mail account. The public service's =run()= operation
+only enqueues; applications may deliver through =VentureMailOutbox= themselves.
+A missing organization SMTP binding is a visible outbox failure, never a
+fallback to installation-wide credentials.
+
+The interval is 1–86,400 seconds, with a 60-second default. Both enqueue and
+actual submission retain their next permitted time. There is at most one
+unresolved outbox identity per send. A repeat sweep, process restart or
+transport retry uses the same recipient key, outbox key and Message-ID.
+The final read-only =before-transport= hook rechecks the exact address, consent,
+suppression, approval and tracking permission after mutable hooks and provider
+preparation have completed. A withdrawal during either step cancels submission
+without spending the retry budget. The outbox's synchronous =before-claim=
+hook defers paused/throttled work without changing identity or spending retry
+budget. Module disable also defers pending marketing mail.
+
+*Pause* keeps the approved snapshot and queued work. *Resume* continues it.
+*Cancel* stops future recipients and cancels only known queued/failed mail;
+it cannot retract accepted messages or resolve an in-flight/uncertain attempt.
+The outbox's existing backoff handles known temporary failures. An uncertain
+SMTP outcome blocks further recipients for that send until an operator reviews
+and explicitly retries the retained outbox message. A retry may send a second
+copy if the relay accepted the first: this is not exactly-once SMTP delivery.
+Never turn uncertainty into an automatic fresh recipient or Message-ID.
+
+Scheduling is explicit: invoke the bounded action or call the service from an
+operator-controlled schedule. There is no marketing database worker thread.
+The recipient's =state= is campaign queue bookkeeping. Once =mail_id= is set,
+read that linked outbox message or =marketing_performance= for the authoritative
+SMTP outcome; an enqueued recipient does not itself prove delivery.
+The generic outbox can also be delivered independently; the same pause,
+throttle and permission hooks still apply.
+
+* Public preferences and one-click unsubscribe
+
+Preview requires =server.base_url= to be a public HTTPS origin; loopback HTTP
+is accepted only for development. The origin is frozen into the send. Each
+eligible recipient receives a separate 256-bit random unsubscribe capability.
+The lookup uses its SHA-256 hash; raw delivery links live only in sensitive
+recipient/outbox content and are omitted from generated record responses and
+audit diffs.
+
+=GET /marketing/u/<token>= displays a generic preference confirmation without
+changing anything or disclosing a contact/address. Syntax-valid unknown tokens
+receive that same page. =POST= to the same URL with form data
+=List-Unsubscribe=One-Click= performs idempotent withdrawal. The capability
+selects its retained organization/address; no login, cookie, caller-supplied
+organization or redirect is needed. A malformed/unknown capability changes
+nothing. POST bodies are bounded to 1 KiB. The confirmation and response have
+no-store and no-referrer headers.
+
+Withdrawal cancels pending marketing recipients and applicable sequence
+outreach, including previously queued mail. It does not claim to retract an
+already submitted message. The capability remains valid after the contact is
+deleted and after the marketing, mail or sequences module is disabled, so old mail can still
+honor its preference link. Replays preserve the original withdrawal time.
+
+HTTPS deliveries carry =List-Unsubscribe= and =List-Unsubscribe-Post= headers
+following [[https://www.rfc-editor.org/rfc/rfc8058][RFC 8058]]. The configured SMTP relay must DKIM-sign both headers before
+mail leaves the sender's domain; Venture does not own the relay's signing
+keys. Loopback development links appear in the body but do not advertise
+HTTPS one-click headers. Verify the relay's actual signed output before
+claiming mailbox-provider one-click support.
+
+* Bounce and complaint evidence
+
+Use a recipient's *Record delivery feedback* action with =hard_bounce=,
+=temporary_bounce= or =complaint=, an actual time, a source/explanation and an
+organization-scoped event identity. The recipient must have an actual outbox
+attempt and the evidence cannot predate approval. Replays retain one event;
+conflicting reuse of an identity is refused. Record the reviewed DSN/provider
+reference in the source. This is an implemented operator workflow and a typed
+service seam for a future authenticated provider consumer; no unauthenticated
+provider bounce webhook is installed.
+
+A hard bounce or complaint creates retained address suppression and stops
+pending outreach. A temporary bounce records evidence without suppression.
+An SMTP connection, credential or temporary relay error does not prove the
+recipient address is invalid. A permanent transport failure also is not
+automatically labelled a hard bounce. Only the specifically evidenced
+recipient acquires a hard-bounce observation; other messages at the same
+address are suppressed, not falsely counted as independently bounced.
+
+* Observations and report meaning
+
+Tracking is off unless both the send's =tracking= and the organization's
+=marketing_tracking= are enabled at preview. This is independent of the
+sequence switch and of anonymous website analytics. The existing sequence
+random-token, link wrapping and transparent-pixel helpers are reused with
+explicit marketing routes and retained marketing destinations. Plain-text
+URLs remain unwrapped; HTML links and the pixel carry the observations.
+The unsubscribe link is appended after wrapping and is never tracked.
+
+=GET /marketing/t/o/<token>.gif= records an open; =GET
+/marketing/t/c/<token>/<position>= records a click and redirects only to the
+frozen web destination. Unknown tokens or positions record nothing. First
+open/click times are retained per recipient, with at most one event per UTC
+day, kind and destination. No IP address or user agent is collected. Mail
+scanners, image proxies and bots can produce these requests: an observation
+is not proof a human read a message. Turning off organization tracking stops
+new observations and prevents queued tracked snapshots from being delivered;
+create a new untracked send rather than silently changing approved content.
+
+=marketing_performance= is an approval cohort: its period selects
+=approved_at=. Each send reports its approved eligible count, preview
+exclusions, SMTP-accepted count, pending/uncertain/failed/cancelled outcomes,
+hard-bounce evidence and uniquely observed opens/clicks/unsubscribes. Outcomes
+are retained through report execution, not a reconstruction of what was known
+at the period end. SMTP acceptance is not inbox delivery. Accepted mail can
+later bounce; those columns overlap. Observations on an uncertain submission
+do not silently resolve that outbox outcome. Reports remain source-traceable
+through send, recipient, mail, consent and event references.
+
+* Storage and verification
+
+Field metadata owns all new schema. Paired migration =000420_marketing.sql=
+checks organization-scoped membership, consent, recipient and event replay
+indexes without inventing permission for existing CRM rows. Disabled modules
+may have no tables; enabling marketing later creates the same empty metadata
+schema. Approved sends, recipients, consent and events cannot be deleted,
+restored or purged through generic writes. Withdrawal evidence always retains the original consent UUID. Its optional
+typed reference is populated while the marketing module is enabled; disabling
+a module must not prevent an existing recipient from withdrawing permission.
+Editable draft lists/members do not
+rewrite existing snapshots.
+
+=tests/test-marketing.c= and =tests/test-marketing-mail.c= exercise service
+and outbox contracts on SQLite and schema-isolated PostgreSQL. The suite also
+runs the real HTTP routes and built CLI, while =test-mail= checks SMTP wire
+headers. See [[file:marketing-demonstration.org][the built-artifact demonstration]] and
+[[file:testing.org][test coverage and reproduction]].
+
+* Extension boundaries
+
+=VentureMarketingService= owns consent, frozen sends and retained evidence.
+Ordinary records remain field declarations, including typed subject references,
+enums, indexes and sensitivity flags. New transports implement =VentureMailer=
+and its existing preparation/binding hooks; they do not replace the outbox or
+marketing eligibility decision. The synchronous =VentureMailOutbox::before-claim=
+signal can defer known queued work without consuming an attempt. Mutable
+=before-send= hooks run before provider preparation; =before-transport= is the
+final read-only veto boundary after account binding is persisted. Final handlers
+must not write records, perform transport I/O or iterate a main context. All
+hooks run synchronously on the main thread.
+
+CRM dedupe honors =VENTURE_COLUMN_FLAG_RETAIN_REFERENCE= from the same field
+metadata (including declarative =retain_reference: true=), so a future evidence
+record can preserve its original subject without another hardcoded type list.
+The flag does not grant write permission or replace immutable-save validators.
+Exports retain the original subject IDs; private capabilities remain excluded.

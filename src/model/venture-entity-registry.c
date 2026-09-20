@@ -888,6 +888,13 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_ai_usage_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_project_scope_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_project_deliverable_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_marketing_list_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_marketing_member_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_marketing_consent_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_marketing_send_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_marketing_recipient_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_marketing_event_get_type, VENTURE_DATA_CLASS_TENANT },
+
 	};
 	gsize i;
 
