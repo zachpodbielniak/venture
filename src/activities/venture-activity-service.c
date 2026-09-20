@@ -104,8 +104,8 @@ validate(VentureDatabase *db, VentureEntity *row, VentureEntity *previous, gpoin
 	gint status, old_status = 0, recurrence;
 	gboolean permitted = self->writing == row;
 	guint i;
-	const gchar *refs[] = { "contact-id", "company-id", "deal-id" };
-	const gchar *targets[] = { "contact", "company", "deal" };
+	const gchar *refs[] = { "contact-id", "company-id", "deal-id", "lead-id" };
+	const gchar *targets[] = { "contact", "company", "deal", "lead" };
 	/* Consume before any callback can borrow the authority. */
 	if (permitted)
 		self->writing = NULL;
@@ -124,6 +124,25 @@ validate(VentureDatabase *db, VentureEntity *row, VentureEntity *previous, gpoin
 			 json_object_has_member(changes, "reminded-at") || json_object_has_member(changes, "completed_at") ||
 			 json_object_has_member(changes, "reminded_at"))))
 			return refuse(error, VENTURE_ERROR_VALIDATION, "Use complete; completion and reminder stamps are service-owned");
+	}
+	if (!permitted)
+	{
+		guint count;
+		GParamSpec **properties = g_object_class_list_properties(G_OBJECT_GET_CLASS(row), &count);
+		gboolean changed = FALSE;
+		for (i = 0; i < count; i++)
+			if (g_str_has_prefix(properties[i]->name, "call-"))
+			{
+				GValue value = G_VALUE_INIT;
+				g_value_init(&value, G_PARAM_SPEC_VALUE_TYPE(properties[i]));
+				g_object_get_property(G_OBJECT(row), properties[i]->name, &value);
+				if (!g_param_value_defaults(properties[i], &value))
+					changed = TRUE;
+				g_value_unset(&value);
+			}
+		g_free(properties);
+		if (changed)
+			return refuse(error, VENTURE_ERROR_VALIDATION, "Call evidence is written only through log_call or completion");
 	}
 	if (ends != NULL && (starts == NULL || g_date_time_compare(ends, starts) <= 0))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Meeting end must follow its start");
@@ -211,9 +230,164 @@ next_date(GDateTime *date, gint recurrence)
 	return g_date_time_add_days(date, recurrence == VENTURE_ACTIVITY_RECURRENCE_WEEKLY ? 7 : 1);
 }
 
-VentureEntity *
-venture_activity_service_act(VentureActivityService *self, VentureEntity *activity,
-	const gchar *action, const gchar *value, const VentureActor *actor, GError **error)
+/* Metadata-derived inputs also define the normalized replay payload. */
+static gboolean
+call_prepare(VentureEntity *row, VentureEntity *subject, JsonObject *details,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(GPtrArray) fields = venture_activity_call_parameters();
+	g_autoptr(VentureAction) schema = g_object_new(VENTURE_TYPE_ACTION, "parameters", fields, NULL);
+	g_autoptr(JsonNode) input = json_node_new(JSON_NODE_OBJECT);
+	g_autoptr(GHashTable) params = NULL;
+	g_autoptr(JsonNode) normalized = NULL;
+	g_autoptr(JsonNode) identity = json_node_new(JSON_NODE_OBJECT);
+	g_autofree gchar *encoded = NULL, *digest = NULL, *source = NULL, *external = NULL, *key_input = NULL, *key = NULL;
+	g_autofree gchar *owner = NULL, *subject_text = NULL, *follow_owner = NULL, *follow_subject = NULL, *recording = NULL;
+	g_autoptr(GDateTime) occurred = NULL, due = NULL, reminder = NULL, now = venture_time_now();
+	JsonObject *canonical;
+	gint outcome;
+	guint i;
+	json_node_set_object(input, details);
+	params = venture_action_parameters_from_json(input, error);
+	if (params == NULL || !venture_action_validate_parameters(schema, params, error))
+		return FALSE;
+	for (i = 0; i < fields->len; i++)
+	{
+		VentureFieldSpec *spec = g_ptr_array_index(fields, i);
+		JsonNode *value = g_hash_table_lookup(params, spec->name);
+		g_autofree gchar *field = g_strdup(spec->name);
+		g_autofree gchar *text = NULL;
+		if (value == NULL || JSON_NODE_HOLDS_NULL(value))
+			continue;
+		g_strdelimit(field, "_", '-');
+		text = spec->kind == VENTURE_FIELD_KIND_INTEGER ? g_strdup_printf("%" G_GINT64_FORMAT, json_node_get_int(value)) : g_strdup(json_node_get_string(value));
+		if (!venture_entity_set_field_from_string(row, field, text, error))
+			return FALSE;
+	}
+	g_object_get(row, "owner", &owner, "subject", &subject_text, "call-occurred-at", &occurred,
+		"call-outcome", &outcome, "call-followup-due-at", &due, "call-followup-remind-at", &reminder,
+		"call-followup-owner", &follow_owner, "call-followup-subject", &follow_subject,
+		"call-external-source", &source, "call-external-id", &external, "call-recording-url", &recording, NULL);
+	if (occurred == NULL || g_date_time_compare(occurred, now) > 0 || outcome == VENTURE_CALL_OUTCOME_UNKNOWN)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "A logged call needs an actual occurrence and a structured result");
+	if (recording != NULL && *recording != '\0')
+	{
+		g_autoptr(GUri) uri = g_uri_parse(recording, G_URI_FLAGS_NONE, NULL);
+		if (uri == NULL || g_strcmp0(g_uri_get_scheme(uri), "https") != 0 ||
+			g_uri_get_host(uri) == NULL || g_uri_get_userinfo(uri) != NULL ||
+			g_uri_get_query(uri) != NULL || g_uri_get_fragment(uri) != NULL)
+			return refuse(error, VENTURE_ERROR_VALIDATION, "Recording must be a stable HTTPS URL without credentials, query or fragment");
+	}
+	if (venture_string_is_empty(owner))
+		g_object_set(row, "owner", actor != NULL && actor->name != NULL ? actor->name : "Unassigned", NULL);
+	if (due == NULL && (reminder != NULL || !venture_string_is_empty(follow_owner) || !venture_string_is_empty(follow_subject)))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Followup settings require a due time");
+	if (due != NULL)
+	{
+		if (g_date_time_compare(due, occurred) < 0 || (reminder != NULL &&
+			(g_date_time_compare(reminder, occurred) < 0 || g_date_time_compare(reminder, due) > 0)))
+			return refuse(error, VENTURE_ERROR_VALIDATION, "Followup due and reminder must follow the call; reminder cannot follow due");
+		if (venture_string_is_empty(follow_owner))
+		{
+			g_clear_pointer(&owner, g_free);
+			g_object_get(row, "owner", &owner, NULL);
+			g_object_set(row, "call-followup-owner", owner, NULL);
+		}
+		if (venture_string_is_empty(follow_subject))
+		{
+			g_autofree gchar *label = g_strconcat("Follow up: ", subject_text, NULL);
+			g_object_set(row, "call-followup-subject", label, NULL);
+		}
+		if (reminder == NULL)
+			g_object_set(row, "call-followup-remind-at", due, NULL);
+	}
+	if (venture_string_is_empty(source) != venture_string_is_empty(external))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "External source and identity must be supplied together");
+	normalized = venture_serializable_to_json(VENTURE_SERIALIZABLE(row), FALSE);
+	json_node_take_object(identity, json_object_new());
+	canonical = json_node_get_object(identity);
+	json_object_set_string_member(canonical, "subject_type", venture_entity_get_entity_name(subject));
+	json_object_set_int_member(canonical, "subject_id", venture_entity_get_id(subject));
+	for (i = 0; i < fields->len; i++)
+	{
+		VentureFieldSpec *spec = g_ptr_array_index(fields, i);
+		JsonNode *value;
+		if (g_str_equal(spec->name, "call_external_source") || g_str_equal(spec->name, "call_external_id"))
+			continue;
+		value = json_object_get_member(json_node_get_object(normalized), spec->name);
+		if (value != NULL)
+			json_object_set_member(canonical, spec->name, json_node_copy(value));
+	}
+	encoded = venture_json_to_string(identity, FALSE);
+	digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256, encoded, -1);
+	if (venture_string_is_empty(source))
+	{
+		g_free(source);
+		g_free(external);
+		source = g_strdup("manual-v1");
+		external = g_strdup(digest);
+	}
+	key_input = g_strdup_printf("%" G_GSIZE_FORMAT ":%s%s", strlen(source), source, external);
+	key = g_compute_checksum_for_string(G_CHECKSUM_SHA256, key_input, -1);
+	g_object_set(row, "call-request-hash", digest, "call-external-source", source,
+		"call-external-id", external, "call-external-key", key, NULL);
+	return TRUE;
+}
+
+static VentureEntity *
+call_replay(VentureActivityService *self, VentureEntity *proposed, gboolean *found, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACTIVITY);
+	g_autofree gchar *source = NULL, *external = NULL, *digest = NULL, *previous = NULL;
+	g_autoptr(VentureEntity) existing = NULL;
+	gint status;
+	*found = FALSE;
+	g_object_get(proposed, "call-external-source", &source, "call-external-id", &external,
+		"call-request-hash", &digest, NULL);
+	venture_query_set_organization(query, venture_entity_get_organization_id(proposed));
+	venture_query_set_include_deleted(query, TRUE);
+	if (!venture_query_add_filter_string(query, "call-external-source", VENTURE_FILTER_OP_EQ, source, error) ||
+		!venture_query_add_filter_string(query, "call-external-id", VENTURE_FILTER_OP_EQ, external, error))
+	{
+		*found = TRUE;
+		return NULL;
+	}
+	existing = venture_database_find_one(self->database, query, error);
+	if (existing == NULL)
+	{
+		*found = error != NULL && *error != NULL;
+		return NULL;
+	}
+	*found = TRUE;
+	g_object_get(existing, "call-request-hash", &previous, "status", &status, NULL);
+	if (venture_entity_is_deleted(existing) || status != VENTURE_ACTIVITY_STATUS_DONE || g_strcmp0(digest, previous) != 0)
+	{
+		refuse(error, VENTURE_ERROR_CONFLICT, "Call identity already belongs to different or removed history");
+		return NULL;
+	}
+	return g_steal_pointer(&existing);
+}
+
+static void
+call_clear_fields(VentureEntity *row)
+{
+	guint count, i;
+	GParamSpec **properties = g_object_class_list_properties(G_OBJECT_GET_CLASS(row), &count);
+	for (i = 0; i < count; i++)
+		if (g_str_has_prefix(properties[i]->name, "call-"))
+		{
+			GValue value = G_VALUE_INIT;
+			g_value_init(&value, G_PARAM_SPEC_VALUE_TYPE(properties[i]));
+			g_param_value_set_default(properties[i], &value);
+			g_object_set_property(G_OBJECT(row), properties[i]->name, &value);
+			g_value_unset(&value);
+		}
+	g_free(properties);
+}
+
+static VentureEntity *
+activity_act_full(VentureActivityService *self, VentureEntity *activity,
+	const gchar *action, const gchar *value, gboolean log_call, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) row = NULL;
 	g_autoptr(GDateTime) now = venture_time_now();
@@ -230,7 +404,24 @@ venture_activity_service_act(VentureActivityService *self, VentureEntity *activi
 	if (!venture_database_begin(self->database, error))
 		return NULL;
 	self->busy = TRUE;
-	row = venture_database_get(self->database, VENTURE_TYPE_ACTIVITY, venture_entity_get_id(activity), error);
+	if (log_call)
+	{
+		gboolean found;
+		row = call_replay(self, activity, &found, error);
+		if (found)
+		{
+			if (row == NULL)
+				venture_database_rollback(self->database);
+			else if (!venture_database_commit(self->database, error))
+				g_clear_object(&row);
+			self->busy = FALSE;
+			return g_steal_pointer(&row);
+		}
+	}
+	if (log_call && venture_entity_get_id(activity) == 0)
+		row = venture_entity_duplicate(activity);
+	else
+		row = venture_database_get(self->database, VENTURE_TYPE_ACTIVITY, venture_entity_get_id(activity), error);
 	if (row == NULL)
 	{
 		if (error == NULL || *error == NULL)
@@ -241,6 +432,17 @@ venture_activity_service_act(VentureActivityService *self, VentureEntity *activi
 	{
 		refuse(error, VENTURE_ERROR_CONFLICT, "Activity changed; reload before acting");
 		goto done;
+	}
+	if (log_call)
+	{
+		gint kind;
+		g_object_get(row, "kind", &kind, NULL);
+		if (kind != VENTURE_ACTIVITY_KIND_CALL)
+		{
+			refuse(error, VENTURE_ERROR_VALIDATION, "Log a call requires a call activity");
+			goto done;
+		}
+		venture_entity_copy_properties_from(row, activity, FALSE);
 	}
 	g_object_get(row, "status", &status, "recurrence", &recurrence, NULL);
 	if (status != VENTURE_ACTIVITY_STATUS_PLANNED || venture_entity_is_deleted(row))
@@ -296,26 +498,61 @@ venture_activity_service_act(VentureActivityService *self, VentureEntity *activi
 			goto done;
 		}
 	}
-	if (!write_record(self, row, actor, error))
-		goto done;
 	if (complete)
 	{
-		gint64 contact, company, deal;
+		gint64 contact, company, deal, lead;
 		gint kind;
 		g_autofree gchar *subject = NULL;
-		g_object_get(row, "contact-id", &contact, "company-id", &company, "deal-id", &deal,
-			"kind", &kind, "subject", &subject, NULL);
-		if (contact || company || deal)
+		g_autoptr(GDateTime) occurred = NULL;
+		gint direction;
+		g_object_get(row, "contact-id", &contact, "company-id", &company, "deal-id", &deal, "lead-id", &lead,
+			"kind", &kind, "subject", &subject, "call-occurred-at", &occurred, "call-direction", &direction, NULL);
+		if (kind == VENTURE_ACTIVITY_KIND_CALL && occurred == NULL)
+		{
+			occurred = g_date_time_ref(now);
+			g_object_set(row, "call-occurred-at", occurred, NULL);
+		}
+		/* A call without a CRM relation is still one historical event. */
+		if (log_call && !(contact || company || deal || lead))
+		{
+			refuse(error, VENTURE_ERROR_VALIDATION, "A logged call requires a lead, company, contact or deal");
+			goto done;
+		}
+		if (contact || company || deal || lead)
 		{
 			g_autoptr(VentureInteraction) interaction = venture_interaction_new();
 			const gchar *kind_name = kind == VENTURE_ACTIVITY_KIND_CALL ? "call" :
 				kind == VENTURE_ACTIVITY_KIND_MEETING ? "meeting" : kind == VENTURE_ACTIVITY_KIND_EMAIL ? "email" : "note";
 			venture_entity_set_organization_id(VENTURE_ENTITY(interaction), venture_entity_get_organization_id(row));
 			g_object_set(interaction, "contact-id", contact, "company-id", company, "deal-id", deal,
-				"subject", subject, "body", value, "occurred-at", now, "outbound", TRUE, NULL);
+				"lead-id", lead, "subject", subject, "body", value, "occurred-at", occurred ? occurred : now,
+				"outbound", kind != VENTURE_ACTIVITY_KIND_CALL || direction == VENTURE_CALL_DIRECTION_OUTBOUND, NULL);
 			if (!venture_entity_set_field_from_string(VENTURE_ENTITY(interaction), "kind", kind_name, error) ||
 				!venture_database_save(self->database, VENTURE_ENTITY(interaction), actor, error))
 				goto done;
+			if (kind == VENTURE_ACTIVITY_KIND_CALL)
+				g_object_set(row, "call-interaction-id", venture_entity_get_id(VENTURE_ENTITY(interaction)), NULL);
+		}
+		if (log_call)
+		{
+			g_autoptr(GDateTime) due = NULL;
+			g_object_get(row, "call-followup-due-at", &due, NULL);
+			if (due != NULL)
+			{
+				g_autoptr(VentureEntity) followup = venture_entity_duplicate(row);
+				g_autoptr(GDateTime) remind = NULL;
+				g_autofree gchar *owner = NULL, *label = NULL;
+				g_object_get(row, "call-followup-owner", &owner, "call-followup-subject", &label,
+					"call-followup-remind-at", &remind, NULL);
+				call_clear_fields(followup);
+				g_object_set(followup, "kind", VENTURE_ACTIVITY_KIND_FOLLOWUP, "status", VENTURE_ACTIVITY_STATUS_PLANNED,
+					"subject", label, "owner", owner, "due-at", due, "remind-at", remind,
+					"recurrence", VENTURE_ACTIVITY_RECURRENCE_NONE, "starts-at", NULL, "ends-at", NULL,
+					"completed-at", NULL, "outcome", NULL, "reminded-at", NULL, NULL);
+				if (!venture_database_save(self->database, followup, actor, error))
+					goto done;
+				g_object_set(row, "call-followup-id", venture_entity_get_id(followup), NULL);
+			}
 		}
 		if (recurrence != VENTURE_ACTIVITY_RECURRENCE_NONE)
 		{
@@ -329,6 +566,7 @@ venture_activity_service_act(VentureActivityService *self, VentureEntity *activi
 			g_object_get(row, "starts-at", &starts, "due-at", &due, NULL);
 			anchor = next_date(starts ? starts : due, recurrence);
 			advance = g_date_time_difference(anchor, starts ? starts : due);
+			call_clear_fields(next);
 			g_object_set(next, "status", VENTURE_ACTIVITY_STATUS_PLANNED, "completed-at", NULL,
 				"outcome", NULL, "reminded-at", NULL, NULL);
 			for (i = 0; i < G_N_ELEMENTS(dates); i++)
@@ -345,6 +583,8 @@ venture_activity_service_act(VentureActivityService *self, VentureEntity *activi
 				goto done;
 		}
 	}
+	if (!write_record(self, row, actor, error))
+		goto done;
 	ok = venture_database_commit(self->database, error);
 	self->busy = FALSE;
 	return ok ? g_steal_pointer(&row) : NULL;
@@ -352,6 +592,59 @@ done:
 	venture_database_rollback(self->database);
 	self->busy = FALSE;
 	return NULL;
+}
+
+VentureEntity *
+venture_activity_service_act(VentureActivityService *self, VentureEntity *activity,
+	const gchar *action, const gchar *value, const VentureActor *actor, GError **error)
+{
+	return activity_act_full(self, activity, action, value, FALSE, actor, error);
+}
+
+VentureEntity *
+venture_activity_service_log_call(VentureActivityService *self, VentureEntity *subject,
+	JsonObject *details, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) live = NULL, proposed = NULL;
+	g_autofree gchar *outcome = NULL;
+	g_return_val_if_fail(VENTURE_IS_ACTIVITY_SERVICE(self), NULL);
+	g_return_val_if_fail(VENTURE_IS_ENTITY(subject) && details != NULL, NULL);
+	if (self->database == NULL || self->busy ||
+		!(VENTURE_IS_ACTIVITY(subject) || VENTURE_IS_COMPANY(subject) || VENTURE_IS_CONTACT(subject) || VENTURE_IS_LEAD(subject)))
+	{
+		refuse(error, VENTURE_ERROR_CONFLICT, "Call subject or service is unavailable");
+		return NULL;
+	}
+	live = venture_database_get(self->database, G_OBJECT_TYPE(subject), venture_entity_get_id(subject), error);
+	if (live == NULL)
+		return NULL;
+	if (venture_entity_is_deleted(live) || venture_entity_get_organization_id(live) != venture_entity_get_organization_id(subject))
+	{
+		refuse(error, VENTURE_ERROR_NOT_FOUND, "Call subject is not available in this organization");
+		return NULL;
+	}
+	proposed = VENTURE_ENTITY(venture_activity_new());
+	if (VENTURE_IS_ACTIVITY(subject))
+	{
+		/* Only typed action inputs may change the saved plan. Keep the
+		 * caller version so a stale request still conflicts below. */
+		venture_entity_copy_properties_from(proposed, live, FALSE);
+		g_object_set(proposed, "version", venture_entity_get_version(subject), NULL);
+	}
+	else
+	{
+		venture_entity_set_organization_id(proposed, venture_entity_get_organization_id(live));
+		g_object_set(proposed, "kind", VENTURE_ACTIVITY_KIND_CALL,
+			"related-type", venture_entity_get_entity_name(live), "related-id", venture_entity_get_id(live), NULL);
+		/* Prepare the explicit relation before creating the historical row. */
+		if (VENTURE_IS_COMPANY(live)) g_object_set(proposed, "company-id", venture_entity_get_id(live), NULL);
+		if (VENTURE_IS_CONTACT(live)) g_object_set(proposed, "contact-id", venture_entity_get_id(live), NULL);
+		if (VENTURE_IS_LEAD(live)) g_object_set(proposed, "lead-id", venture_entity_get_id(live), NULL);
+	}
+	if (!call_prepare(proposed, subject, details, actor, error))
+		return NULL;
+	g_object_get(proposed, "outcome", &outcome, NULL);
+	return activity_act_full(self, proposed, "complete", outcome, TRUE, actor, error);
 }
 
 VentureEntity *

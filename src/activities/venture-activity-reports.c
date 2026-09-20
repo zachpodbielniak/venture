@@ -73,9 +73,96 @@ worklist(VentureContext *context, VentureDateRange *period, JsonObject *options,
 	return g_steal_pointer(&result);
 }
 
+typedef struct
+{
+	gint64 calls, inbound, outbound, seconds;
+	gint64 outcomes[5];
+} CallCounts;
+
+static VentureReportResult *
+calls(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
+{
+	static const gchar *const outcomes[] = { "unknown", "reached", "voicemail", "no_answer", "callback" };
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACTIVITY);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GHashTable) owners = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	g_autoptr(VentureReportResult) result = venture_report_result_new("Calls", period);
+	g_autoptr(GList) names = NULL;
+	GDateTime *start = period != NULL ? venture_date_range_get_start(period) : NULL;
+	GDateTime *end = period != NULL ? venture_date_range_get_end(period) : NULL;
+	GList *item;
+	gint64 organization = options != NULL ? venture_json_object_get_int(options, "organization_id", 0) : 0;
+	gint64 total = 0;
+	guint i;
+	if (organization == 0) organization = venture_context_get_default_organization_id(context);
+	venture_query_set_organization(query, organization);
+	venture_query_set_limit(query, 0);
+	if (!venture_query_add_filter_int(query, "kind", VENTURE_FILTER_OP_EQ, VENTURE_ACTIVITY_KIND_CALL, error) ||
+		!venture_query_add_filter_int(query, "status", VENTURE_FILTER_OP_EQ, VENTURE_ACTIVITY_STATUS_DONE, error))
+		return NULL;
+	rows = venture_database_find(venture_context_get_database(context), query, error);
+	if (rows == NULL) return NULL;
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(rows, i);
+		g_autoptr(GDateTime) occurred = NULL;
+		g_autofree gchar *owner = NULL;
+		gint direction, outcome;
+		gint64 duration;
+		CallCounts *counts;
+		g_object_get(row, "call-occurred-at", &occurred, "owner", &owner,
+			"call-direction", &direction, "call-outcome", &outcome, "call-duration", &duration, NULL);
+		/* Historical completed calls predate actual occurrence metadata. */
+		if (occurred == NULL) g_object_get(row, "completed-at", &occurred, NULL);
+		if (occurred == NULL || (start != NULL && g_date_time_compare(occurred, start) < 0) ||
+			(end != NULL && g_date_time_compare(occurred, end) >= 0)) continue;
+		if (venture_string_is_empty(owner))
+		{
+			g_free(owner);
+			owner = g_strdup("Unassigned");
+		}
+		counts = g_hash_table_lookup(owners, owner);
+		if (counts == NULL)
+		{
+			counts = g_new0(CallCounts, 1);
+			g_hash_table_insert(owners, g_strdup(owner), counts);
+		}
+		counts->calls++;
+		counts->seconds += duration;
+		if (direction == VENTURE_CALL_DIRECTION_INBOUND) counts->inbound++;
+		else counts->outbound++;
+		if (outcome >= 0 && outcome < (gint)G_N_ELEMENTS(outcomes)) counts->outcomes[outcome]++;
+		total++;
+	}
+	venture_report_result_add_column(result, "owner", "Owner at logging", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "calls", "Calls", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "inbound", "Inbound", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "outbound", "Outbound", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "seconds", "Duration in seconds", VENTURE_REPORT_COLUMN_NUMBER);
+	for (i = 0; i < G_N_ELEMENTS(outcomes); i++)
+		venture_report_result_add_column(result, outcomes[i], outcomes[i], VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_metric(result, venture_metric_new_count("calls", "Calls", total));
+	names = g_list_sort(g_hash_table_get_keys(owners), (GCompareFunc)g_strcmp0);
+	for (item = names; item != NULL; item = item->next)
+	{
+		CallCounts *counts = g_hash_table_lookup(owners, item->data);
+		venture_report_result_begin_row(result);
+		venture_report_result_set_text(result, "owner", item->data);
+		venture_report_result_set_number(result, "calls", counts->calls);
+		venture_report_result_set_number(result, "inbound", counts->inbound);
+		venture_report_result_set_number(result, "outbound", counts->outbound);
+		venture_report_result_set_number(result, "seconds", counts->seconds);
+		for (i = 0; i < G_N_ELEMENTS(outcomes); i++)
+			venture_report_result_set_number(result, outcomes[i], counts->outcomes[i]);
+	}
+	return g_steal_pointer(&result);
+}
+
 void
 venture_activity_register_reports(VentureReportRegistry *registry)
 {
 	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("worklist", "Worklist",
 		"Current UTC week, per owner: overdue, today, due this week and completed this week", worklist)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("calls", "Calls",
+		"One completed call per actual occurrence, grouped by owner; duration in seconds", calls)));
 }

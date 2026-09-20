@@ -2624,6 +2624,7 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_dedupe_actions_register(self);
 		venture_mfa_actions_register(self);
 		venture_projects_actions_register(self);
+		venture_activity_actions_register(self);
 	}
 	return self->actions;
 }

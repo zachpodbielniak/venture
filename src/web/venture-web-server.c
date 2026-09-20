@@ -26318,6 +26318,8 @@ venture_web_append_activity(
 				json_object_has_member(event, "hours")
 					? json_object_get_double_member(event, "hours") : 0.0);
 		}
+		else if (0 == g_strcmp0(kind, "call"))
+			g_string_append(content, "logged a call");
 		else if (0 == g_strcmp0(kind, "reminder"))
 		{
 			/* A dunning event's whole story fits its head line. */
@@ -26354,7 +26356,8 @@ venture_web_append_activity(
 		venture_html_escape_append(content, relative);
 		g_string_append(content, "</time></div>");
 
-		if ((0 == g_strcmp0(kind, "comment")) || (0 == g_strcmp0(kind, "worklog")))
+		if ((0 == g_strcmp0(kind, "comment")) || (0 == g_strcmp0(kind, "worklog")) ||
+		    (0 == g_strcmp0(kind, "call")))
 		{
 			const gchar *body;
 

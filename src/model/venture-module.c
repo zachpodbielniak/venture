@@ -614,7 +614,7 @@ static GType (*const venture_module_activities_types[]) (void) = {
 	venture_activity_get_type, venture_activity_type_get_type, NULL
 };
 static const gchar *const venture_module_activities_requires[] = { "crm", NULL };
-static const gchar *const venture_module_activities_reports[] = { "worklist", NULL };
+static const gchar *const venture_module_activities_reports[] = { "worklist", "calls", NULL };
 static GType (*const venture_module_payables_types[]) (void) = {
 	venture_vendor_bill_get_type, venture_vendor_bill_line_get_type,
 	venture_bill_payment_get_type, venture_bill_payment_allocation_get_type,

@@ -29,6 +29,44 @@ VentureActivityService *venture_database_get_activity_service(VentureDatabase *d
 VentureEntity *venture_activity_service_complete(VentureActivityService *self, VentureEntity *activity,
 	const gchar *outcome, const VentureActor *actor, GError **error);
 /**
+ * venture_activity_service_log_call:
+ * @self: the shared activity service
+ * @subject: a saved company, contact, lead or planned call activity
+ * @details: call inputs in wire spelling, as described by the log_call action
+ * @actor: (nullable): authenticated audit attribution
+ * @error: (out) (optional): validation, scope, stale request or replay conflict
+ *
+ * Completes one call through the ordinary completion transaction, records
+ * one interaction and optionally creates a followup. Exact external or
+ * content-derived request replays return their existing result. Input
+ * records stay unchanged. No recording URL is fetched.
+ * Returns: (transfer full) (nullable): the completed call activity
+ */
+VentureEntity *venture_activity_service_log_call(VentureActivityService *self,
+	VentureEntity *subject, JsonObject *details, const VentureActor *actor, GError **error);
+/**
+ * venture_activity_actions_register:
+ * @database: owning repository
+ *
+ * Registers metadata-derived log_call actions on CRM records and activities.
+ */
+void venture_activity_actions_register(VentureDatabase *database);
+/**
+ * venture_activity_call_timeline:
+ * @context: application services and module selection
+ * @target_type: company, contact, lead or deal
+ * @target_id: verified subject identity
+ * @limit: maximum number of call events
+ * @error: (out) (optional): scope or query failure
+ *
+ * Returns one summary for each completed call with retained interaction
+ * evidence. The subject and call records are checked through the repository.
+ * Recordings and transcripts are excluded from timeline excerpts.
+ * Returns: (transfer full) (nullable): a JSON array of historical call events
+ */
+JsonNode *venture_activity_call_timeline(VentureContext *context, const gchar *target_type,
+	gint64 target_id, guint limit, GError **error);
+/**
  * venture_activity_service_act:
  * @self: service
  * @activity: saved activity, with the expected version
