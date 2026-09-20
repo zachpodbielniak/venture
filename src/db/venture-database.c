@@ -13,6 +13,7 @@
 #include "activities/venture-activity-private.h"
 #include "pipelines/venture-pipelines-private.h"
 #include "report/venture-headline-private.h"
+#include "sales/venture-sales-private.h"
 
 #include <string.h>
 
@@ -1191,6 +1192,7 @@ check_subsystem_write(VentureDatabase *self, VentureEntity *entity, gboolean rem
 		venture_crm_import_check_write,
 		venture_integration_check_write,
 		venture_ai_provider_check_write,
+		venture_sales_check_write,
 		venture_projects_check_write,
 		venture_oidc_check_write
 	};
@@ -1199,6 +1201,14 @@ check_subsystem_write(VentureDatabase *self, VentureEntity *entity, gboolean rem
 		if (!guards[i](self, entity, removal, error))
 			return FALSE;
 	return TRUE;
+}
+
+static gboolean
+database_save_after_sales(VentureDatabase *self, VentureEntity *entity, const VentureActor *actor, GError **error)
+{
+	gboolean handled = FALSE;
+	gboolean ok = venture_sequences_save_hook(self, entity, actor, database_save_unwrapped, &handled, error);
+	return handled || !ok ? ok : database_save_unwrapped(self, entity, actor, error);
 }
 
 static gboolean
@@ -1303,12 +1313,12 @@ database_save_dispatch(
 		gboolean ok = venture_pipelines_save(self, entity, actor, &handled, error);
 		if (handled || !ok)
 			return ok;
-		ok = venture_sequences_save_hook(self, entity, actor, database_save_unwrapped, &handled, error);
+		ok = venture_sales_save_hook(self, entity, actor, database_save_after_sales, &handled, error);
 		if (handled || !ok)
 			return ok;
 	}
 
-	return database_save_unwrapped(self, entity, actor, error);
+	return database_save_after_sales(self, entity, actor, error);
 }
 
 /* Only hooks that can post need a whole-operation boundary here. Draft
@@ -1994,6 +2004,7 @@ venture_database_purge(
 	if (!venture_accounting_operation_guard_write(self, entity, actor, error))
 		return FALSE;
 	if (!venture_access_policy_check_write(venture_database_get_access_policy(self), entity, "delete", error)) return FALSE;
+	if (!venture_sales_check_purge(self, entity, error)) return FALSE;
 	if (!venture_pipelines_check_removal(entity, error))
 		return FALSE;
 

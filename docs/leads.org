@@ -301,3 +301,10 @@ remain linked, and a repeated stale conversion cannot create another customer
 or deal. Ownership is a responsibility label, not an access grant. Existing
 company/contact links retain their existing values. The executable
 [[file:crm-acceptance.org][capture-to-collection walkthrough]] checks these handoffs.
+
+* Territory ownership
+
+The optional [[file:sales-performance.org][sales performance module]] attaches a territory and
+team to existing routing rules and retains assignment history. It reuses the
+same ordering and persisted round-robin cursor. Qualified lead conversion
+carries the resolved representative, team and territory into the deal.

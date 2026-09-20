@@ -796,6 +796,10 @@ static GType (*const dedupe_types[]) (void) = { venture_duplicate_candidate_get_
 static GType (*const integration_types[]) (void) = { venture_integration_connection_get_type, NULL };
 static GType (*const oidc_types[]) (void) = { venture_oidc_identity_get_type, NULL };
 static const gchar *const oidc_requires[] = { "orgaccess", "mfa", "integrations", NULL };
+static const gchar *const sales_requires[] = { "orgaccess", "leads", "pipelines", NULL };
+static const gchar *const sales_reports[] = { "sales_attainment", NULL };
+static GType (*const sales_types[]) (void) = { venture_sales_territory_get_type, venture_sales_quota_get_type,
+	venture_sales_credit_get_type, venture_sales_assignment_get_type, NULL };
 static const gchar *const ai_provider_requires[] = { "orgaccess", "integrations", NULL };
 static GType (*const ai_provider_types[]) (void) = { venture_ai_configuration_get_type,
 	venture_ai_platform_offer_get_type, venture_ai_grant_get_type, venture_ai_usage_period_get_type, venture_ai_usage_get_type, NULL };
@@ -1171,6 +1175,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"ai_providers", "Organization AI", "Explicit provider ownership, platform grants and durable usage quotas.",
 		ai_provider_requires, NULL, ai_provider_types, NULL, NULL, FALSE
+	},
+	{
+		"sales_performance", "Territories and quotas", "Deterministic ownership, immutable booked credit and period attainment.",
+		sales_requires, NULL, sales_types, sales_reports, NULL, FALSE
 	}
 };
 

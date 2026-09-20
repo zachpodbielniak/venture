@@ -784,6 +784,7 @@ static const VentureFieldDecl venture_deal_fields[] = {
 	VENTURE_FIELD("source", "Source", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("territory-id", "Territory", "Current ownership; changes never recast past booked credit", "sales_territory", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("owner-user-id", "Owner", "Responsible user", "user", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE),

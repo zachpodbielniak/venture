@@ -245,6 +245,7 @@ active(VentureEntity *entity)
 static GPtrArray *
 rota(VentureDatabase *database, gint64 team, gint64 organization, GError **error)
 {
+	g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
 	g_autoptr(GPtrArray) members = NULL;
 	g_autoptr(GPtrArray) memberships = rows(database, VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, organization, "user-id", error);
 	g_autoptr(GPtrArray) pool = g_ptr_array_new_with_free_func(g_free);
@@ -328,6 +329,8 @@ venture_lead_routing_apply(VentureDatabase *database, VentureEntity *lead,
 		*configured = TRUE;
 		g_object_get(rule, "conditions", &conditions, NULL);
 		if (!venture_lead_conditions_match(database, lead, conditions, &matched, error)) return FALSE;
+		if (!matched) continue;
+		if (!venture_sales_routing_territory(database, rule, lead, &matched, error)) return FALSE;
 		if (!matched) continue;
 		if (!act(database, lead, rule, error)) return FALSE;
 		g_object_get(rule, "name", rule_name, NULL);

@@ -1,0 +1,70 @@
+Issue #125, section B: territories and quotas
+Date: 2026-09-20
+Artifact: build/debug/venture, built with DEBUG=1 and -Werror
+Fixture: fresh private SQLite state, synthetic users and business records,
+loopback-only server, authenticated browser session. No operational database,
+external provider, personal account or live credential was used.
+
+The Playwright browser drove the running server's ordinary authenticated REST
+API and visited its generic lead, assignment, quota-report and credit pages.
+The report visibly showed target USD 200.00, net booked USD 123.45, remaining
+USD 76.55 and 61.7% attainment. The final credit list visibly retained a
+USD 123.45 booking for demo-rep-first, a USD -123.45 cancellation for that
+representative, and a USD 123.45 booking for demo-rep-second.
+
+Verbatim harness stdout (only temporary recording/state paths omitted):
+
+Created synthetic team
+Created synthetic user
+Created synthetic organization_membership
+Created synthetic team_membership
+Created synthetic user
+Created synthetic organization_membership
+Created synthetic team_membership
+Created synthetic sales_territory
+Created synthetic lead_routing_rule
+Created synthetic lead
+Created synthetic lead
+Verified two website leads assigned in persisted rotation to distinct active representatives.
+Created synthetic sales_quota
+Created synthetic deal
+Verified won sale: USD target 200.00, actual 123.45, remaining 76.55.
+Verified reassignment preserved the original representative booking credit.
+Verified reopening appended a cancellation reversal and reduced original representative actual to USD 0.00.
+Verified later win credited the new representative; three immutable events remain.
+Demonstration used the built DEBUG server, ordinary authenticated REST writes, generic record pages and the generic report.
+
+Recording inspected before the final skill-review pass:
+page@30000f8fcec8db38f49a75149a71f2ff.webm
+Uploaded recording:
+https://git.podbielniak.com/attachments/a94afba5-f463-4024-9e51-3555c76c3e89
+The temporary fixture is not deployment state and is not part of the source
+distribution.
+
+Review and automated evidence:
+- The module-disabled cancellation test failed before the repair: one credit
+  remained instead of the expected original, reversal and later booking.
+- The foreign-owner test failed before the repair: assigning an existing user
+  without organization membership incorrectly succeeded when no team was set.
+- Member-scoped routing initially failed while saving the derived interaction;
+  the source is now checked before a temporary internal history-write scope.
+- Populated-upgrade coverage verifies no invented credit for old winners;
+  period tests position real retained credit at exact inclusive/exclusive UTC
+  boundaries. They do not change the production close clock.
+- The same sales fixture runs against SQLite and an explicitly supplied
+  disposable PostgreSQL URI, with one unique schema per test and cleanup.
+- Final DEBUG build and GIR/typelib generation passed with no warnings.
+  make DEBUG=1 test-one T=test-sales-performance passed all 12 cases.
+- All 12 sales cases also passed against disposable PostgreSQL. The credit,
+  module-history and upgrade cases were rerun after the final error-handling
+  repair, including refusal to edit a won value/currency.
+- Adjacent checks passed: lead-routing 15, leads 34, pipelines 12,
+  organization access 34, module 19, authentication 94, migrations 9.
+  The PostgreSQL migration case ran against the disposable fixture; the
+  default SQLite migration invocation explicitly skips that opt-in case.
+
+Contract limitations are deliberate and documented in sales-performance.org:
+booked sales are not ledger revenue or cash; historical winners have no invented
+backfill; overlapping quota windows are independent; forecast is current open
+pipeline; no currency conversion is attempted. This synthetic demonstration
+establishes the implemented workflow, not production cutover readiness.

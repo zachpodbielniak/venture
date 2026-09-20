@@ -605,6 +605,12 @@ test_crm_ai_scopes(void)
 	org = venture_context_get_default_organization_id(context);
 	g_assert_true(venture_database_save(db, user, NULL, &error));
 	g_assert_no_error(error);
+	/* Assign while the representative belongs to the organization, then
+	 * revoke membership before testing both CRM tool policies. */
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", venture_entity_get_id(user),
+		"organization-id", org, "role", VENTURE_ORGANIZATION_ROLE_EDITOR, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(db, member, NULL, &error));
+	g_assert_no_error(error);
 	g_ptr_array_add(rows, g_object_new(VENTURE_TYPE_LEAD, "organization-id", org, "name", "Private lead", "owner", username, "status", VENTURE_LEAD_QUALIFIED, NULL));
 	g_ptr_array_add(rows, g_object_new(VENTURE_TYPE_ACTIVITY, "organization-id", org, "subject", "Private activity", "owner", username, "due-at", due, NULL));
 	g_ptr_array_add(rows, g_object_new(VENTURE_TYPE_DEAL, "organization-id", org, "name", "Private deal", "owner", username, NULL));
@@ -613,6 +619,9 @@ test_crm_ai_scopes(void)
 		g_assert_true(venture_database_save(db, g_ptr_array_index(rows, i), NULL, &error));
 		g_assert_no_error(error);
 	}
+	g_object_set(member, "active", FALSE, NULL);
+	g_assert_true(venture_database_save(db, member, NULL, &error));
+	g_assert_no_error(error);
 	principal.authenticated = TRUE;
 	principal.user_id = venture_entity_get_id(user);
 	principal.token_id = 0;
@@ -625,8 +634,7 @@ test_crm_ai_scopes(void)
 			"ai-policy", mode % 2 ? VENTURE_AI_POLICY_AUTONOMOUS : VENTURE_AI_POLICY_CONFIRM_WRITES, NULL);
 		if (mode == 2)
 		{
-			member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", principal.user_id,
-				"organization-id", org, "role", VENTURE_ORGANIZATION_ROLE_VIEWER, "active", TRUE, NULL);
+			g_object_set(member, "role", VENTURE_ORGANIZATION_ROLE_VIEWER, "active", TRUE, NULL);
 			g_assert_true(venture_database_save(db, member, NULL, &error));
 			g_assert_no_error(error);
 		}

@@ -137,3 +137,12 @@ and redirects to the quote. =venturectl deal quote ID= calls the same route.
 generic value write, currency mismatch, invalid lines, the quote handoff,
 its rerun as a revision, refusals with rollback, and the REST, page and
 CLI surfaces.
+
+* Sales targets and historical credit
+
+The optional [[file:sales-performance.org][sales performance module]] places currency-separated
+representative/team quotas beside the current forecast. It captures won
+transitions and dated reversals atomically. Reassigning a won opportunity
+does not rewrite its original representative's credit; value corrections
+require reopening it first. Booked sales remain distinct from ledger revenue
+and cash.

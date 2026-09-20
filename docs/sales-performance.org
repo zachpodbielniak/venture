@@ -1,0 +1,153 @@
+#+title: Sales territories and quota attainment
+#+description: Deterministic ownership and immutable booked-sales credit
+
+* Enable and configure
+
+The =sales_performance= module requires =orgaccess=, =leads= and
+=pipelines=. Its four record types use the ordinary record editor, generic
+API, CLI, audit, reference pickers and related-record sections:
+
+| Record | Purpose |
+|--------+---------|
+| =sales_territory= | Active organization-owned territory and owning team |
+| =sales_quota= | One representative or team target for one currency and period |
+| =sales_assignment= | Immutable observed lead/deal ownership transition |
+| =sales_credit= | Immutable booking or cancellation reversal |
+
+Create an active team, its organization members and active team memberships
+first. Create a territory pointing to that team. On an existing
+=lead_routing_rule= choose the territory and the same team; existing rule
+conditions, actions and ordering remain the assignment engine. Inspect
+=venturectl describe sales_territory=, =venturectl describe sales_quota= and
+=venturectl describe lead_routing_rule= for current wire field names and
+reference targets. No external routing service is required.
+
+Territory names and descriptions describe the business partition. Matching
+conditions belong to routing rules, allowing several rules to use a
+territory without introducing a second condition language. Territories may
+overlap: the existing ascending rule =position=, then ID, determines which
+matching eligible rule wins. Round robin uses the existing durable cursor;
+only active users with active organization and team memberships participate.
+An inactive territory is skipped. A rule whose territory and team no longer
+agree fails clearly; update its team after moving a territory to a new team.
+Changing a territory does not reassign existing leads or deals.
+
+A lead's =owner_user_id=, =team_id= and =territory_id= accompany its existing
+=owner= username. Routing and explicit rerouting fill these fields together.
+Lead conversion carries them to the resulting deal. Quotas and credit snapshots
+also use the canonical =owner_user_id= field so the existing member/owner/team
+access policy applies; historical evidence remains immutable. Manual ownership changes
+validate same-organization references and active membership; contradictory
+username/user ID or team/territory combinations are refused. An existing
+unchanged assignment remains editable after a representative is deactivated.
+Legacy free-form usernames with no resolved account remain unassigned or
+unresolved for representative attainment; they do not receive guessed credit.
+
+* Targets and periods
+
+Set =metric= to =booked_revenue=, a positive exact-money =target=, and exactly
+one of =owner_user_id= or =team_id=. The target's currency is mandatory. Set
+=starts_at= to inclusive midnight UTC and =ends_at= to exclusive midnight UTC.
+For January, use 1 January through 1 February. These are calendar boundaries,
+not local-time instants. An end at or before the start is refused.
+
+Monthly and quarterly quotas may overlap as independent rows. An exact
+repeat of recipient, metric, currency and complete period is refused by a
+derived durable unique key. Renaming or changing the target on that same
+record is allowed. Do not add representative and team targets, or overlapping
+period targets, together: they are different views of the same business.
+Inactive representatives can retain targets and historical attainment.
+
+* Booking credit and corrections
+
+=booked_revenue= means the value captured when an observed deal becomes won.
+It is a sales metric, separate from posted ledger revenue, invoices, receipts,
+profitability and cash. The source deal's exact amount, currency and exponent,
+representative, team and territory are copied into immutable evidence in the
+same transaction as the transition. A missing value is an unvalued booking;
+no currency or zero amount is invented. Negative booking values are refused.
+
+Changing the current owner after a win creates assignment history but does
+not move the original booking credit. Reopening or losing a won deal appends
+a negative reversal at the cancellation time, credited to the original
+representative and team. Winning it again creates a new booking for the then
+current ownership. A later-period cancellation reduces that later period;
+it does not rewrite a closed earlier period. A reopened legacy winner with
+no captured booking creates no fabricated reversal.
+
+Reopen a won deal before changing its value or currency, or before deleting
+it. Derived credit and assignment records cannot be created, edited, deleted
+or purged through generic writes. A source with sales evidence cannot be
+purged; retain its history and archive it. A failed evidence write rolls back
+the source transition as well. Unique event identities prevent repeated
+writes of the same source revision from duplicating credit.
+
+* Read the report
+
+The generic =sales_attainment= report presents these columns together:
+
+| Column | Meaning |
+|--------+---------|
+| Target | Exact target for this recipient, currency and full quota period |
+| Actual | Signed captured bookings inside that full half-open period |
+| Remaining | Maximum of target minus actual and zero |
+| Attainment | Actual divided by target, displayed as a ratio |
+| Open weighted | Current open pipeline value weighted by its probability |
+| Committed | Current open value explicitly committed or at least 90% probable |
+| Bookings | Signed total booking/reversal count |
+| Unvalued bookings | Signed count without an amount or currency |
+
+The requested report period selects intersecting quota windows. A selected
+quota always reports its complete target window; requesting a partial month
+does not compare a partial actual against a full target silently. Forecast
+columns are the current open pipeline, following the existing forecast's
+semantics, rather than a historical snapshot or a promised close-date filter.
+Overlapping windows therefore repeat this current forecast independently.
+
+Credits within the requested period without a matching quota appear as
+=No quota=, grouped by recipient and currency. Targets and attainment are
+absent there. Unvalued and unresolved assignments are explicit. Currencies
+never combine or convert; representative and team rows remain separate.
+Money additions, subtractions and weighting use VentureMoney integer
+arithmetic. Only the display ratio uses a floating-point value.
+
+The =uncaptured_wins= metric counts current winners with no captured booking.
+On upgrade, existing winners are not backfilled: current ownership and value
+cannot establish the facts at the historical win. Describe or correct those
+records normally; only a later observed won transition creates new credit.
+
+* Lifecycle and extension points
+
+Disabling the module hides its records and report. Once its tables exist,
+source transitions continue recording evidence, including reversals, so a
+later enable does not resurrect cancelled attainment. An installation where
+the module has never created tables continues ordinary lead/deal work; later
+enabling it exposes historical winners as uncaptured. Migration 000580 checks
+the metadata-created schema without inventing historical evidence.
+
+The database save hook runs after the existing lead and pipeline authorization
+hooks and wraps their continuation in the same transaction. Service-only
+writes use an exact-object permit, and internal reads are limited to verified
+organization membership or historical source evidence. Reports use the caller's
+organization/access scope. Snapshot IDs deliberately are not live references:
+removing a representative cannot prevent reversal of their earlier credit.
+
+Extend supported metrics in the central quota validator, evidence producer
+and report together; unknown metrics currently fail instead of silently
+sharing booked revenue. Territory rules reuse the existing routing engine,
+provider-independent records and durable round-robin state. No per-record
+forms, routes, serialization or second routing implementation are added.
+
+* Verification
+
+=tests/test-sales-performance.c= exercises routing overlap and inactive
+eligibility; retained ownership and cancellation/rebooking credit; exact
+currency-separated targets and weighted forecast; duplicate and invalid
+quotas; exact period boundaries; transactional rollback; foreign references
+and forged evidence; member-scoped routing and reporting; module disable/re-enable; and a populated pre-feature
+upgrade without invented credit. The same fixture supports SQLite and an
+explicit =VENTURE_TEST_ACCOUNTING_POSTGRES_URI=, creating and removing its own
+unique PostgreSQL schema. Never point tests at an operational database.
+
+The built-server demonstration and final checked commands are retained in
+[[file:evidence/125-sales-performance-demo.txt][the demonstration transcript]].

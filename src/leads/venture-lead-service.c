@@ -340,12 +340,18 @@ history(VentureLeadService *self, VentureEntity *subject, const gchar *title,
 {
 	g_autoptr(VentureInteraction) event = venture_interaction_new();
 	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(VentureAccessScope) internal = NULL;
 	const gchar *reference;
 	reference = VENTURE_IS_LEAD(subject) ? "lead-id" :
 		(VENTURE_IS_CONTACT(subject) ? "contact-id" : "company-id");
 	g_object_set(event, "organization-id", venture_entity_get_organization_id(subject),
 		reference, venture_entity_get_id(subject), "subject", title, "body", body,
 		"occurred-at", now, NULL);
+	/* The history is derived from an authorized source transition. Its
+	 * interaction has no independent sales assignment of its own. */
+	if (!venture_access_policy_check_write(venture_database_get_access_policy(self->database), subject, "write", error))
+		return FALSE;
+	internal = venture_access_policy_enter(venture_database_get_access_policy(self->database), NULL);
 	return write_record(self, VENTURE_ENTITY(event), actor, error);
 }
 
@@ -767,14 +773,14 @@ venture_lead_service_convert(VentureLeadService *self, VentureEntity *lead,
 	}
 	if (make_deal)
 	{
-		gint64 venture = 0, campaign = 0;
+		gint64 venture = 0, campaign = 0, territory = 0, team = 0, owner_id = 0;
 		g_autofree gchar *source = string_field(current, "source");
 		g_autofree gchar *owner = string_field(current, "owner");
-		g_object_get(current, "venture-id", &venture, "campaign-id", &campaign, NULL);
+		g_object_get(current, "venture-id", &venture, "campaign-id", &campaign, "territory-id", &territory, "team-id", &team, "owner-user-id", &owner_id, NULL);
 		deal = VENTURE_ENTITY(venture_deal_new());
 		g_object_set(deal, "organization-id", venture_entity_get_organization_id(current), "name", name,
 			"company-id", company_id, "contact-id", venture_entity_get_id(contact), "venture-id", venture,
-			"source", source, "campaign-id", campaign, "owner", owner, NULL);
+			"source", source, "campaign-id", campaign, "owner", owner, "territory-id", territory, "team-id", team, "owner-user-id", owner_id, NULL);
 		if (!venture_database_save(self->database, deal, actor, error)) goto fail;
 	}
 	{
@@ -830,7 +836,7 @@ venture_lead_service_reroute(VentureLeadService *self, VentureEntity *lead,
 	if (status == VENTURE_LEAD_CONVERTED) return refuse(error, VENTURE_ERROR_VALIDATION, "converted leads are read-only");
 	if (!venture_database_begin(self->database, error)) return FALSE;
 	self->rerouting = TRUE;
-	g_object_set(lead, "owner", "", "routing-rule-id", (gint64)0, NULL);
+	g_object_set(lead, "owner", "", "owner-user-id", (gint64)0, "team-id", (gint64)0, "territory-id", (gint64)0, "routing-rule-id", (gint64)0, NULL);
 	if (!route(self, lead, &subject, &body, error)) goto fail;
 	if (subject == NULL)
 	{
