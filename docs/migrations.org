@@ -56,3 +56,21 @@ VENTURE_TEST_MIGRATION_POSTGRES_URI=postgres://user@127.0.0.1:5432/test_db make 
 The optional-module regressions cover absent/present/malformed guards on SQLite
 and PostgreSQL, preserve errors from present-table SQL, and enable Stripe after
 its absent-table migration on SQLite without rewriting recorded history.
+
+* Released-to-candidate artifact drill
+
+=tools/venture-upgrade-drill.py --baseline-binary /path/to/released/venture
+--candidate-binary /path/to/candidate/venture= starts isolated loopback-only
+servers and uses their real API to seed a customer, ledger accounts, a balanced
+posted journal and a forge/repository link. It stops the released binary, copies
+its complete private fixture, starts the candidate and compares every original
+column of retained business rows plus the exact migration-history prefix.
+Provider environment overrides are excluded. Successful and failed fixtures and
+server logs are retained under a fresh private temporary directory for inspection.
+The output records both binary digests; it is a SQLite upgrade check, not a hosted
+capacity test or a complete accounting replacement qualification.
+
+Build both artifacts at recorded revisions using their pinned dependencies. The
+baseline must be a released migration history (for this epic, =848a93d=), not an
+unreleased lane missing earlier-numbered child migrations. Run the final combined
+artifact again even if a preceding integration revision passed.
