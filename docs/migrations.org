@@ -74,3 +74,6 @@ Build both artifacts at recorded revisions using their pinned dependencies. The
 baseline must be a released migration history (for this epic, =848a93d=), not an
 unreleased lane missing earlier-numbered child migrations. Run the final combined
 artifact again even if a preceding integration revision passed.
+
+The collection integration's [[file:evidence/125-upgrade.txt][recorded upgrade checkpoint]]
+retains exact binary hashes and comparison counts. It is not final-head evidence.
