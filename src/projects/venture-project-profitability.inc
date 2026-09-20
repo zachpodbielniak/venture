@@ -307,6 +307,7 @@ project_margin_report(VentureContext *context, VentureDateRange *period, JsonObj
 		g_autofree gchar *name = NULL;
 		g_autofree gchar *id_text = g_strdup_printf("%" G_GINT64_FORMAT, project_id);
 		guint j, kind, unknown = 0, undated = 0;
+		gboolean delivery = project_bills_delivery(project);
 		if (billings == NULL) return NULL;
 		times = project_rows(db, VENTURE_TYPE_PROJECT_TIME, org, project_id, error);
 		if (times == NULL) return NULL;
@@ -371,7 +372,9 @@ project_margin_report(VentureContext *context, VentureDateRange *period, JsonObj
 				if (cost == NULL) unknown++;
 				else if (!project_add(&actual, cost, error)) return NULL;
 				key = g_strdup_printf("%s:%" G_GINT64_FORMAT, venture_entity_get_entity_name(row), venture_entity_get_id(row));
-				if (number(project, "quote-id") == 0 && (kind == 0 || flag(row, "billable")) && !g_hash_table_contains(billed_sources, key) &&
+				/* Labour on a delivery-billed project is cost evidence; bill refuses
+				 * it, so it must not sit in unbilled as revenue that never arrives. */
+				if (!delivery && (kind == 0 || flag(row, "billable")) && !g_hash_table_contains(billed_sources, key) &&
 					!project_add(&unbilled, amount, error)) return NULL;
 				project_source(sources, row);
 			}

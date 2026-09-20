@@ -1115,12 +1115,16 @@ delete import identities. Do not use credentials in CLI arguments.
 
 `tools/venture-tenantctl` (not `venturectl` or an HTTP action) provides
 `backup-list`, explicit authenticated `backup-enroll --archive FILE --key-file FILE`,
-`retention-plan --days 30`, `retention-execute --plan UUID`, and
-`retention-recover`. Each takes the tenant slug; writes require `--reason`.
+`retention-plan --days 30`, `retention-execute --plan UUID`,
+`retention-recover`, and `backup-retire --copy COPY-UUID`. Each takes the tenant
+slug; writes require `--reason`.
 Use `--root` before the command. Review the plan's exact registered copy IDs
 before execution. Holds block expiry; offboarding starts an additional retention
 period. A pending journal requires recovery, which records missing files and
-preserves survivors without another unlink. Never remove the catalog to bypass
+preserves survivors without another unlink. A retained file that has left its
+registered path (moved offsite) makes plan and execute refuse with exit 2 naming
+its copy id and path; `backup-retire` tombstones that entry as `retired` and
+refuses while the file is still present, so nothing live is retired by mistake. Never remove the catalog to bypass
 a refusal. Read `docs/backup-retention.org`, including the original-ledger
 transfer gap for restoration to a new host. No offsite or erasure claim follows
 from local archive deletion.

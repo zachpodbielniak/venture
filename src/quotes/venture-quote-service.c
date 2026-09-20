@@ -433,8 +433,9 @@ handoff(VentureQuoteService *self, VentureEntity *q, GDateTime *now, const Ventu
 	if (g_strcmp0(mode, "progress") == 0)
 		return TRUE;
 	/* The quote acceptance is an instant; the invoice is issued for a
-	 * calendar day so an ordinary same-day receipt is not backdated. */
-	issue_date = venture_time_from_string("today", error);
+	 * calendar day in the business zone so an ordinary same-day receipt
+	 * is not backdated. */
+	issue_date = venture_settlement_service_today(venture_settlement_service_get(self->database));
 	if (issue_date == NULL) return FALSE;
 	venture_entity_set_organization_id(invoice, org);
 	g_object_get(q, "number", &number, "terms", &terms, "valid-until", &due, NULL);

@@ -639,6 +639,96 @@ class Lifecycle(unittest.TestCase):
             self.assertTrue(archive.exists())
 
 
+    def test_missing_retained_archive_blocks_retention_until_retired(self):
+        # An offsite copy that left the host is a refusal naming the entry, not
+        # a traceback and not an empty plan; backup-retire records the departure.
+        directory, archive, manifest = self.catalog_fixture()
+        survivor = directory / "survivor.gpg"
+        tool.write_private(survivor, "second encrypted fixture")
+        with self.tenant.locked():
+            catalog = tool.BackupCatalog(self.tenant)
+            departed = catalog.register(archive, manifest, "export", "Fixture")
+            kept = catalog.register(survivor, {**manifest, "archive_id": str(uuid.uuid4()),
+                                               "encrypted_sha256": hashlib.sha256(survivor.read_bytes()).hexdigest()},
+                                    "upgrade", "Fixture")
+            reviewed = catalog.plan(30, "Reviewed while both were present")
+            archive.rename(directory / "moved-offsite.gpg")
+            for operation in (lambda: catalog.execute(reviewed["plan_id"], "Blocked execute"),
+                              lambda: catalog.plan(30, "Blocked plan")):
+                with self.assertRaises(tool.Refused) as refusal:
+                    operation()
+                self.assertIn(departed["copy_id"], str(refusal.exception))
+                self.assertIn(str(archive), str(refusal.exception))
+            self.assertEqual(catalog.data["plan"]["plan_id"], reviewed["plan_id"])
+            self.assertIsNone(catalog.data["journal"])
+        command = [str(SCRIPT), "--root", str(self.root)]
+        result = subprocess.run(command + ["retention-plan", "studio", "--reason", "Blocked from the CLI"],
+                                capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(departed["copy_id"].encode(), result.stderr)
+        self.assertIn(str(archive).encode(), result.stderr)
+        self.assertNotIn(b"Traceback", result.stderr)
+        result = subprocess.run(command + ["backup-retire", "studio", "--copy", departed["copy_id"], "--reason", ""],
+                                capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 2)
+        result = subprocess.run(command + ["backup-retire", "studio", "--copy", departed["copy_id"]],
+                                capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 2)
+        result = subprocess.run(command + ["backup-retire", "studio", "--copy", departed["copy_id"],
+                                           "--reason", "Copied to offsite media 2026-09"],
+                                capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        retired = json.loads(result.stdout)
+        self.assertEqual(retired["state"], "retired")
+        self.assertEqual(retired["retire_reason"], "Copied to offsite media 2026-09")
+        self.assertIsInstance(retired["retired_at"], int)
+        self.assertTrue((directory / "moved-offsite.gpg").exists())
+        self.assertTrue(survivor.exists())
+        with self.tenant.locked():
+            catalog = tool.BackupCatalog(self.tenant)
+            self.assertEqual(catalog.data["entries"][departed["copy_id"]]["state"], "retired")
+            with self.assertRaises(tool.Refused):
+                catalog.retire(departed["copy_id"], "Already retired")
+            plan = catalog.plan(30, "Proceeds past the tombstone")
+            self.assertEqual(plan["candidates"], [kept["copy_id"]])
+            catalog.execute(plan["plan_id"], "Expire the survivor only")
+            self.assertFalse(survivor.exists())
+            self.assertTrue((directory / "moved-offsite.gpg").exists())
+            # The departed archive is not retired from restore: only expiry tombstones do that.
+            catalog.check_restore(manifest, departed["sha256"])
+            (directory / "moved-offsite.gpg").rename(archive)
+            returned = catalog.register(archive, manifest, "replica", "Offsite copy came back")
+            self.assertNotEqual(returned["copy_id"], departed["copy_id"])
+            self.assertEqual(returned["state"], "retained")
+        events = [json.loads(line) for line in
+                  (self.tenant.control / "operations.jsonl").read_text().splitlines()]
+        retire_events = [event for event in events if event["operation"] == "backup-retire"]
+        self.assertEqual([event["outcome"] for event in retire_events], [departed["copy_id"]])
+        self.assertEqual(retire_events[0]["reason"], "Copied to offsite media 2026-09")
+
+    def test_backup_retire_refuses_present_file_and_stale_revision(self):
+        _, archive, manifest = self.catalog_fixture()
+        with self.tenant.locked():
+            catalog = tool.BackupCatalog(self.tenant)
+            entry = catalog.register(archive, manifest, "export", "Fixture")
+            with self.assertRaises(tool.Refused) as refusal:
+                catalog.retire(entry["copy_id"], "Nothing has moved")
+            self.assertIn("still present", str(refusal.exception))
+            self.assertIn(entry["copy_id"], str(refusal.exception))
+            self.assertTrue(archive.exists())
+            self.assertEqual(catalog.data["entries"][entry["copy_id"]]["state"], "retained")
+            with self.assertRaises(tool.Refused):
+                catalog.retire(str(uuid.uuid4()), "Unknown copy")
+            stale = tool.BackupCatalog(self.tenant)
+            catalog.plan(30, "Bumps the revision")
+            archive.unlink()
+            with self.assertRaises(tool.Refused):
+                stale.retire(entry["copy_id"], "Stale catalog must not publish")
+            self.assertEqual(tool.BackupCatalog(self.tenant).data["entries"][entry["copy_id"]]["state"], "retained")
+        events = [json.loads(line) for line in
+                  (self.tenant.control / "operations.jsonl").read_text().splitlines()]
+        self.assertFalse(any(event["operation"] == "backup-retire" for event in events))
+
     def test_backup_child_registration_survives_parent_manifest_save(self):
         # Upgrade writes its phase after the backup child initializes catalog
         # authority. A stale parent manifest must not erase that requirement.

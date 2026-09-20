@@ -328,7 +328,7 @@ delivery_fixed_price(VentureEntity *project, GError **error)
 	g_autofree gchar *kind = NULL;
 	g_object_get(project, "billing-kind", &kind, NULL);
 	if (number(project, "quote-id") > 0 && !g_strcmp0(kind, "fixed")) return TRUE;
-	return refuse(error, number(project, "quote-id") > 0 || !g_strcmp0(kind, "fixed") ?
+	return refuse(error, project_bills_delivery(project) ?
 		"fixed-price billing requires the project a quote handoff created, not a manually labelled billing model" :
 		"time-and-materials projects bill approved time; fixed amounts and change orders require a fixed-price quote project");
 }

@@ -647,7 +647,7 @@ PostgreSQL fixture; standalone file-upgrade coverage remains SQLite.
 optional PostgreSQL check through migration 000610. See [[file:activities.org][the call contract]].
 * Sales to delivery acceptance
 
-=test-project-delivery= has eleven SQLite and PostgreSQL scenarios covering
+=test-project-delivery= has twelve SQLite and PostgreSQL scenarios covering
 accepted-quote and won-deal handoff, replay conflicts, ordinary-ticket work,
 acceptance, project and quote invoicing, association of an existing invoice,
 additive scope, full-billing history, atomic rollback/retry, module boundaries,
@@ -762,8 +762,10 @@ See [[file:integration-key-maintenance.org][the maintenance contract]].
 real backup tool with a deterministic Podman transport fixture; encryption,
 archive parsing, private permissions, maintenance locking and filesystem
 publication use real local tools. Install =jq=, =gnupg2=, =tar=, =coreutils=,
-=diffutils= (for =cmp=), =gawk=, =findutils= and =util-linux= before running it;
-=test-tenant-lifecycle= additionally needs =python3=. Container builds include
+=diffutils= (for =cmp=), =gawk=, =findutils=, =util-linux= and =python3= before
+running it: the backup tool drives =venture-tenantctl= (a Python program) for
+catalog registration and refuses to start without =python3=, and
+=test-tenant-lifecycle= is itself a Python harness. Container builds include
 these test dependencies. The test refuses wrong ownership/workspace/image,
 live processes, unsafe archive entries, bad credentials and nonempty targets,
 and verifies successful content restoration and failure cleanup. It does
@@ -955,6 +957,7 @@ none required weakening source-event ordering.
 The executable regression =/hosted-maintenance/admission-before-database=
 sets each hosted dispatch bound to zero and verifies both refusal and the
 absence of the database file. It failed before validation moved ahead of
-database opening. The combined artifact passes both maintenance cases,
-19 transport cases and 15 tenant cases; the real HTTP/TLS demonstration
+database opening. The combined artifact passes both =test-hosted-maintenance= cases,
+the 19 =test-http-limits= transport cases, the one =test-caldav-http= case
+and the 15 =test-tenant= cases; the real HTTP/TLS demonstration
 also verifies each invalid setting before database creation.

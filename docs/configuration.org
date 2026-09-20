@@ -256,7 +256,12 @@ Every setting is documented inline in the generated file; sections that
 are off by default (=ocr=, =oidc=, =imap=, =calendar=, =connectors=,
 =hosted=, =docs= and the opt-in module switches) appear there commented
 out with their defaults, so uncommenting a key changes nothing until you
-edit its value. The allowlists (=mail.allowed_endpoints=,
+edit its value -- with one exception. =docs.site_dir= defaults to a
+directory under the build's install prefix, and the generated file shows
+the =/usr/local= value; on a build with another prefix (the container
+image installs under =/usr=) uncommenting it as written points =/docs= at
+a directory that does not exist there. Leave it commented unless the site
+really lives somewhere else. The allowlists (=mail.allowed_endpoints=,
 =imap.allowed_endpoints=, =calendar.allowed_origins= and
 =oidc.allowed_issuers=) are deny by default: empty denies every endpoint
 or issuer, so an organization-bound account cannot connect until its host

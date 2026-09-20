@@ -126,7 +126,10 @@ plaintext and require the operator's retention/rotation decision. Generic record
 writes cannot set or clear those legacy fields. Old =forge set-token= and
 =forge set-secret= endpoints authenticate then refuse with migration guidance;
 there is no implicit plaintext fallback. =forge verify= uses the encrypted
-binding, while =forge settings= is the complete setup/rotation workflow.
+binding and records the answer on the forge record as =bot-username= and
+=verified-at=; those are display stamps, so verifying while a coding run is
+live or a webhook is being applied does not revoke the credential lease behind
+them. =forge settings= is the complete setup/rotation workflow.
 
 Forge configuration and coding execution are host capabilities. Settings remain
 platform-owner/admin operations even though credentials belong to an organization.
@@ -214,7 +217,7 @@ Anything else you send is acknowledged and ignored rather than rejected, because
 
 VENTURE files an issue; the forge delivers a webhook for it; without care that becomes a second ticket for the issue VENTURE just created. Three guards:
 
-1. *The sender is VENTURE's own account.* This is why verifying the token matters. Exact, needs no stored state, and works in the window before the link row has the issue number written back.
+1. *The sender is VENTURE's own account.* The account is the login the forge answered with when the binding was configured, stored as the binding's verified =account-id= and read from there on every delivery; it is not the forge record's =bot-username=. Exact, needs no stored state on the ticket side, and works in the window before the link row has the issue number written back.
 2. *The delivery has already been applied.* A forge retries a delivery it thinks failed, and a retry that re-applied its payload would reopen a ticket somebody had just closed.
 3. *The edit changes nothing.* Compared before the write, not after — a save with an empty diff reports success without writing, so "did anything change" is not available as a signal afterwards.
 

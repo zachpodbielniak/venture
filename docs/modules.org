@@ -31,6 +31,8 @@ Written bottom-up, because a module may only require what precedes it:
 | =crm=        | core            | company, contact, interaction, deal; =pipeline=                   |                       |
 | =invoicing=  | finance, crm    | invoice, invoice_line                                            |                       |
 | =receivables= | finance, invoicing | payment, payment_allocation, customer_credit, refund, invoice_event; =receivables=, =customer_statement= | |
+| =orgaccess=  | core            | organization_membership, team, team_membership; record ownership | |
+| =integrations= | orgaccess | integration_connection; encrypted organization provider bindings, rotation and revocation; =/organizations/:id/settings/*= | |
 | =stripe= | receivables, integrations | stripe_price_link, stripe_customer_link, stripe_payment_link, stripe_checkout, stripe_event, stripe_authorization, processor_payout, processor_payout_item, processor_dispute, processor_exception | =stripe.enabled= (opt-in) |
 | =outreach=   | sales           | campaign, newsletter, subscriber, post; =campaigns=               |                       |
 | =ideas=      | core            | idea, research_note; =ideas=                                      |                       |
@@ -42,15 +44,13 @@ Written bottom-up, because a module may only require what precedes it:
 | =chat=       | ai              | chat_thread, chat_message, ai_skill                               |                       |
 | =automation= | core            | the podomation engine                                             | =automation.enabled=  |
 | =plugins=    | core            | plugins and declarative venture types                             | =plugins.enabled=     |
-| =forge=      | tickets         | forge, forge_repo, forge_rule, ticket_link, forge_run, agent_budget | =forge.enabled=     |
+| =forge=      | tickets, integrations | forge, forge_repo, forge_rule, ticket_link, forge_run, agent_session, agent_turn, agent_budget | =forge.enabled=     |
 | =factory=    | forge           | milestone, release, build, environment, deployment, incident; =releases=, =lead_time=, =incidents=, =delivery= | |
 | =dashboards= | core            | dashboard, dashboard_widget; the =/dashboards= pages and their API | |
 | =reconciliation= | ledger | matcher registry, deterministic and AI matchers, staged suggestions; suggests banking | |
 | =banking= | ledger | bank_account, bank_statement, bank_transaction, bank_match, reconciliation; =bank_reconciliation= | |
 | =bankfeed= | banking | bank_connection | =bankfeed.enabled= (opt-in) |
 | =commerce= | invoicing, receivables, integrations | commerce_import_link; organization-owned provider accounts and order import through invoice compose | =commerce.enabled= (opt-in) |
-| =orgaccess=  | core            | organization_membership, team, team_membership; record ownership | |
-| =integrations= | orgaccess | integration_connection; encrypted organization provider bindings, rotation and revocation; =/organizations/:id/settings/*= | |
 | =billing= | invoicing, receivables | plan, plan_price, customer_subscription, subscription_event, dunning_step, billing_notice, billing_request, customer_payment_method; =mrr=, =churn=, =subscriptions_due= | |
 | =projects= | invoicing, receivables | client_project, project_rate, project_time, project_cost, project_billing, project_scope, project_deliverable; =project_margin= | |
 | =mail= | core | mail_message, mail_template; durable outbox and SMTP actions | |

@@ -4779,6 +4779,57 @@ static void test_auth_commerce_settings(ServerFixture *fixture, gconstpointer un
 	g_assert_null(strstr(page, "synthetic-commerce-secret"));
 	g_assert_null(strstr(page, "rotated-commerce-secret"));
 }
+/* A transport that only counts. Cross-organization import must be refused
+ * before any connector is built, so the count is the evidence. */
+typedef struct { GObject parent; guint calls; } CountingTransport;
+typedef struct { GObjectClass parent; } CountingTransportClass;
+GType counting_transport_get_type(void);
+static void counting_transport_iface(VentureBankFeedTransportInterface *iface);
+G_DEFINE_TYPE_WITH_CODE(CountingTransport, counting_transport, G_TYPE_OBJECT,
+	G_IMPLEMENT_INTERFACE(VENTURE_TYPE_BANK_FEED_TRANSPORT, counting_transport_iface))
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(CountingTransport, g_object_unref)
+static gchar *
+counting_transport_get(VentureBankFeedTransport *transport, const gchar *url, const gchar *authorization, GError **error)
+{
+	(void)url; (void)authorization; (void)error;
+	((CountingTransport *)transport)->calls++;
+	return g_strdup("{\"orders\":[]}");
+}
+static void counting_transport_iface(VentureBankFeedTransportInterface *iface) { iface->get = counting_transport_get; }
+static void counting_transport_class_init(CountingTransportClass *klass) { (void)klass; }
+static void counting_transport_init(CountingTransport *self) { (void)self; }
+
+/* An editor who is a member of organization 1 names another organization in
+ * the import body. The access policy refuses it as not found, and nothing
+ * reaches the shop. */
+static void test_auth_commerce_import_cross_organization(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autofree gchar *editor = NULL, *body = NULL, *page = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("fixture-key-32-bytes-for-tests!!!", 32);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) other = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Other organization", "slug", "other", NULL);
+	g_autoptr(CountingTransport) transport = g_object_new(counting_transport_get_type(), NULL);
+	g_autoptr(VentureCommerceService) service = NULL;
+	guint status;
+	(void)unused;
+	g_object_set(fixture->config, "commerce-enabled", TRUE, NULL);
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(fixture->database), key, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_save(fixture->database, other, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_entity_get_id(other), !=, venture_context_get_default_organization_id(fixture->context));
+	service = venture_commerce_service_new(fixture->database, venture_context_get_default_organization_id(fixture->context),
+		VENTURE_BANK_FEED_TRANSPORT(transport), &error);
+	g_assert_no_error(error); g_assert_nonnull(service);
+	venture_context_set_commerce_service(fixture->context, service);
+	server_fixture_create_member(fixture, "commerce-importer", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "commerce-importer", "editor-long-password");
+	body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"connector\":\"shopify\"}", venture_entity_get_id(other));
+	status = server_fixture_request(fixture, "POST", "/api/v1/commerce/import", editor, body, &page, NULL);
+	g_assert_cmpuint(status, ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_nonnull(strstr(page, "not_found"));
+	g_assert_cmpuint(transport->calls, ==, 0);
+}
 static void test_auth_ai_settings(ServerFixture *fixture, gconstpointer unused)
 {
 	g_autofree gchar *editor = NULL, *owner = NULL, *page = NULL;
@@ -4931,6 +4982,7 @@ main(
 ){
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/auth/commerce-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_commerce_settings, server_fixture_tear_down);
+	g_test_add("/auth/commerce-import-cross-organization", ServerFixture, NULL, server_fixture_set_up, test_auth_commerce_import_cross_organization, server_fixture_tear_down);
 	g_test_add("/auth/ai-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_ai_settings, server_fixture_tear_down);
 	g_test_add("/auth/equity-input", ServerFixture, NULL, server_fixture_set_up, test_auth_equity_input, server_fixture_tear_down);
 

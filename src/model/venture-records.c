@@ -2409,7 +2409,7 @@ static const VentureFieldDecl venture_forge_fields[] = {
 	 * is why the detail page warns while it is empty.
 	 */
 	VENTURE_FIELD("bot-username", "Bot account",
-	              "The account the token belongs to; its own events are ignored",
+	              "The account the last verification saw; the webhook loop guard uses the binding's verified account",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("verified-at", "Last verified",
 	              "When the token last authenticated",

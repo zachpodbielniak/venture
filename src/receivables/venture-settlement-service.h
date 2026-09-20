@@ -19,6 +19,20 @@ G_DECLARE_FINAL_TYPE(VentureSettlementService, venture_settlement_service,
 VentureSettlementService *venture_settlement_service_get(VentureDatabase *database);
 
 /**
+ * venture_settlement_service_today:
+ * @self: the service
+ *
+ * Today's calendar date in the configured business zone (the service's
+ * =timezone= property, bound from =locale.timezone=), encoded as midnight
+ * UTC like a date-picker receipt. Every generated invoice date and the
+ * same-day receipt allowance read it here, so they agree with each other
+ * and with the operator's calendar rather than the process zone.
+ *
+ * Returns: (transfer full): midnight UTC on the business date
+ */
+GDateTime *venture_settlement_service_today(VentureSettlementService *self);
+
+/**
  * venture_settlement_service_get_state_machine:
  * @self: the service
  * Returns: (transfer none): its extensible, vetoable invoice lifecycle

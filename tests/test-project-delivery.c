@@ -164,7 +164,7 @@ test_quote_delivery(Fixture *f, gconstpointer data)
 }
 
 static void
-assert_profitability(Fixture *f, gint64 billed, gint64 unbilled)
+assert_profitability_row(Fixture *f, guint index, gint64 billed, gint64 unbilled)
 {
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureReportResult) report = venture_report_generate(
@@ -175,9 +175,15 @@ assert_profitability(Fixture *f, gint64 billed, gint64 unbilled)
 	g_assert_no_error(error);
 	g_assert_nonnull(report);
 	node = venture_report_result_to_json(report);
-	row = json_array_get_object_element(json_object_get_array_member(json_node_get_object(node), "rows"), 0);
+	row = json_array_get_object_element(json_object_get_array_member(json_node_get_object(node), "rows"), index);
 	g_assert_cmpint(json_object_get_int_member(json_object_get_object_member(row, "billed"), "amount"), ==, billed);
 	g_assert_cmpint(json_object_get_int_member(json_object_get_object_member(row, "unbilled"), "amount"), ==, unbilled);
+}
+
+static void
+assert_profitability(Fixture *f, gint64 billed, gint64 unbilled)
+{
+	assert_profitability_row(f, 0, billed, unbilled);
 }
 
 static void
@@ -532,6 +538,10 @@ test_billing_model(Fixture *f, gconstpointer data)
 	g_autoptr(VentureEntity) result = NULL;
 	g_autoptr(VentureEntity) manual = NULL;
 	g_autoptr(VentureEntity) quote = NULL;
+	g_autoptr(VentureEntity) rate = NULL;
+	g_autoptr(VentureEntity) time = NULL;
+	g_autoptr(VentureMoney) hourly = venture_money_new_for_currency(15000, "USD");
+	g_autoptr(VentureMoney) cost = venture_money_new_for_currency(10000, "USD");
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PROJECT_SCOPE);
 	g_autoptr(GDateTime) date = venture_time_now();
 	g_autoptr(GError) error = NULL;
@@ -598,6 +608,23 @@ test_billing_model(Fixture *f, gconstpointer data)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 	g_assert_nonnull(strstr(error->message, "quote handoff"));
 	g_clear_error(&error);
+	result = venture_project_service_bill(venture_project_service_get(f->db), venture_entity_get_id(manual), date, NULL, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "fixed-price projects bill accepted delivery"));
+	g_clear_error(&error);
+	/* Approved time on the manual fixed project is cost evidence that bill
+	 * refuses, so the report must not carry it as unbilled revenue. */
+	rate = g_object_new(venture_entity_registry_lookup(venture_entity_registry_get_default(), "project_rate"),
+		"organization-id", f->org, "project-id", venture_entity_get_id(manual), "role", "engineer",
+		"billing-rate", hourly, "cost-rate", cost, NULL);
+	save(f, rate);
+	time = g_object_new(VENTURE_TYPE_PROJECT_TIME, "organization-id", f->org,
+		"project-id", venture_entity_get_id(manual), "rate-id", venture_entity_get_id(rate),
+		"minutes", (gint64)60, "occurred-at", date, NULL);
+	g_assert_true(venture_project_service_approve_time(venture_project_service_get(f->db), time, NULL, &error));
+	g_assert_no_error(error);
+	assert_profitability_row(f, 1, 0, 0);
 	result = venture_project_service_bill(venture_project_service_get(f->db), venture_entity_get_id(manual), date, NULL, &error);
 	g_assert_null(result);
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);

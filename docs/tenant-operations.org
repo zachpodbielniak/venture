@@ -150,7 +150,9 @@ from the released baseline. Do not edit migration history to make a mismatch pas
 It retains the database, attachments, configuration and archives. =hold on|off=
 records an operator hold with a reason. Neither offboarding nor releasing a hold
 purges data. There is deliberately no implicit deletion on subscription changes.
-Explicit local backup expiry is described in [[file:backup-retention.org][backup retention]].
+Explicit local backup expiry is described in [[file:backup-retention.org][backup retention]],
+including =backup-retire=, the only way to record a retained archive that has left
+the host; until it is recorded, =retention-plan= and =retention-execute= refuse.
 Personal-data erasure and final media/key destruction require the separate governance workflow; a retained stopped workspace is not an erasure
 claim.
 

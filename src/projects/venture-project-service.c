@@ -89,6 +89,18 @@ flag(VentureEntity *record, const gchar *field)
 	return value;
 }
 
+/* One billing model per project. A quote-created project or one labelled
+ * fixed invoices accepted delivery, never its labour; bill_impl,
+ * delivery_fixed_price and the profitability report all read this so the
+ * refusal and the report's unbilled figure cannot drift apart. */
+static gboolean
+project_bills_delivery(VentureEntity *project)
+{
+	g_autofree gchar *kind = NULL;
+	g_object_get(project, "billing-kind", &kind, NULL);
+	return number(project, "quote-id") > 0 || g_strcmp0(kind, "fixed") == 0;
+}
+
 gboolean
 venture_project_service_save(VentureProjectService *self, VentureEntity *record, const VentureActor *actor, GError **error)
 {
@@ -156,7 +168,6 @@ venture_project_service_bill_impl(VentureProjectService *self, gint64 project_id
 	g_autoptr(VentureQuery) tq = NULL;
 	g_autoptr(VentureQuery) cq = NULL;
 	g_autofree gchar *currency = NULL;
-	g_autofree gchar *kind = NULL;
 	gint64 org, customer, billed = 0;
 	gboolean fixed;
 	guint i;
@@ -169,12 +180,11 @@ venture_project_service_bill_impl(VentureProjectService *self, gint64 project_id
 	project = venture_database_get(self->database, VENTURE_TYPE_CLIENT_PROJECT, project_id, error);
 	if (project == NULL) goto fail;
 	org = venture_entity_get_organization_id(project);
-	g_object_get(project, "customer-id", &customer, "currency", &currency, "billing-kind", &kind, NULL);
-	/* One billing model per project: a quote-created project, a project
-	 * labelled fixed, or one carrying an accepted quote agreement invoices
-	 * accepted delivery, never its labour as well. A deal handoff's scope
-	 * names a deal, not a quote, so time-and-materials billing stays open. */
-	if (number(project, "quote-id") == 0 && g_strcmp0(kind, "fixed") != 0)
+	g_object_get(project, "customer-id", &customer, "currency", &currency, NULL);
+	/* A project carrying an accepted quote agreement bills delivery too. A
+	 * deal handoff's scope names a deal, not a quote, so time-and-materials
+	 * billing stays open. */
+	if (!project_bills_delivery(project))
 	{
 		g_autoptr(VentureQuery) sq = venture_query_new(VENTURE_TYPE_PROJECT_SCOPE);
 		gint64 agreements;

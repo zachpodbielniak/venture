@@ -185,7 +185,11 @@ static void request_finished(SoupServer *server, SoupServerMessage *message, gpo
 	Connection *connection = g_hash_table_lookup(limits->connections, soup_server_message_get_socket(message));
 	(void)server;
 	if (!connection) return;
+	/* Soup has freed the message's I/O by now, so neither body is read or
+	 * written again. Dropping both keeps a keep-alive connection from
+	 * retaining its last response for as long as the peer stays idle. */
 	soup_message_body_truncate(soup_server_message_get_request_body(message));
+	soup_message_body_truncate(soup_server_message_get_response_body(message));
 	connection->headers = FALSE; connection->dispatching = FALSE;
 	deadline_reset(connection);
 }
@@ -290,4 +294,8 @@ void venture_http_limits_install(SoupServer *server, VentureConfig *config)
 	g_signal_connect(server, "request-started", G_CALLBACK(request_started), limits);
 	g_signal_connect(server, "request-read", G_CALLBACK(request_read), limits);
 	g_signal_connect(server, "request-finished", G_CALLBACK(request_finished), limits);
+	/* Soup emits request-aborted instead of request-finished for a 500 and
+	 * for interrupted I/O, and a 500 on HTTP/1.1 stays keep-alive. Without
+	 * this the idle deadline is never re-armed after an error response. */
+	g_signal_connect(server, "request-aborted", G_CALLBACK(request_finished), limits);
 }

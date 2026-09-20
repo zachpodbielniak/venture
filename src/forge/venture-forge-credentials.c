@@ -60,12 +60,21 @@ static void credentials_changed(VentureDatabase *database, VentureEntity *entity
 		i++;
 	}
 }
+/* Set by venture_forge_check_write() on the object about to be written when
+ * its diff carries nothing but verification stamps, and consumed here: the
+ * same object reaches the entity-saved emission. */
+#define FORGE_STAMP_ONLY "venture-forge-stamp-only"
 static void credentials_saved(VentureDatabase *database, VentureEntity *entity, gboolean created, gpointer data)
 {
 	(void)created;
 	/* Authority changes are checked before mutation, including the old
 	 * membership identity. Activity-only stamps deliberately do not revoke. */
 	if (VENTURE_IS_USER(entity) || VENTURE_IS_API_TOKEN(entity) || VENTURE_IS_ORGANIZATION_MEMBERSHIP(entity)) return;
+	if (VENTURE_IS_FORGE(entity) && g_object_get_data(G_OBJECT(entity), FORGE_STAMP_ONLY) != NULL)
+	{
+		g_object_set_data(G_OBJECT(entity), FORGE_STAMP_ONLY, NULL);
+		return;
+	}
 	credentials_changed(database, entity, data);
 }
 static void credentials_entries_free(gpointer data)
@@ -518,6 +527,20 @@ gboolean venture_forge_check_write(VentureDatabase *database, VentureEntity *ent
 		binding = venture_forge_settings_find(database, venture_entity_get_id(old), NULL);
 	if (binding && (g_strcmp0(base, old_base) || kind != old_kind))
 		return refuse(error, "Disconnect before changing the forge origin or kind");
+	/* Verify writes bot_username/verified_at and nothing else. Those are
+	 * display stamps, not authority: the webhook loop guard reads the
+	 * binding's verified account, so a stamp-only save must not cancel
+	 * live leases (a running coding job, a webhook being applied). Same
+	 * exception the user path makes for last_used_at/last_login_at. */
+	g_object_set_data(G_OBJECT(entity), FORGE_STAMP_ONLY, NULL);
+	if (old)
+	{
+		g_autoptr(JsonNode) diff = venture_entity_diff(old, entity);
+		json_object_remove_member(json_node_get_object(diff), "bot_username");
+		json_object_remove_member(json_node_get_object(diff), "verified_at");
+		if (json_object_get_size(json_node_get_object(diff)) == 0)
+			g_object_set_data(G_OBJECT(entity), FORGE_STAMP_ONLY, GINT_TO_POINTER(1));
+	}
 	return TRUE;
 }
 

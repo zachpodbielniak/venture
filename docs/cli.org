@@ -57,8 +57,7 @@ visible in the process list. Keep it in =~/.bashrc-secrets=.
 venturectl types [TYPE]                  # list types, or describe one
 venturectl describe TYPE                 # fields, references, enum choices
 venturectl restore TYPE ID               # undo a delete
-venturectl forge set-token ID            # access token, read from stdin
-venturectl forge set-secret ID           # webhook secret; empty input generates
+venturectl forge settings ID < body.json # encrypted credentials, JSON on stdin
 venturectl forge verify ID               # record which account the token is
 venturectl list TYPE [key=value ...]     # list records, filtered
 venturectl get TYPE ID                   # fetch one

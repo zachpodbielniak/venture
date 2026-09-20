@@ -18342,10 +18342,12 @@ venture_web_ui_forge_secret(
 /*
  * POST /forges/:id/verify - ask the forge who the token belongs to.
  *
- * The answer is stored as bot-username, and it is not cosmetic: it is the
- * webhook loop guard. An event whose sender is this account was caused by
- * VENTURE itself, and without the login there is no way to tell VENTURE's
- * own issue from one somebody else opened.
+ * The answer is stored as bot-username with a verified-at stamp so the
+ * forge page can show when the credential last answered. Both are display
+ * stamps: the webhook loop guard reads the account verified at configure
+ * time from the encrypted binding, not this field, and
+ * venture_forge_check_write() treats a save that changes nothing else as
+ * stamp-only so it does not revoke live credential leases.
  */
 static HtmxResponse *
 venture_web_ui_forge_verify(

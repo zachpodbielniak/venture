@@ -25,6 +25,13 @@ static HtmxResponse *write_handler(HtmxRequest *request, GHashTable *params, gpo
 	}
 	return htmx_response_new_with_content(body && g_bytes_get_size(body) == 3 && !memcmp(g_bytes_get_data(body, NULL), "abc", 3) ? "yes" : "bad");
 }
+static HtmxResponse *error_handler(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	HtmxResponse *response = htmx_response_new_with_content("broken");
+	(void)request; (void)params; (void)data;
+	htmx_response_set_status(response, 500);
+	return response;
+}
 static void tls_event(GSocketClient *client, GSocketClientEvent event, GSocketConnectable *connectable, GIOStream *connection, gpointer data)
 {
 	(void)client; (void)connectable;
@@ -105,6 +112,7 @@ static void setup(Fixture *f, gconstpointer data)
 	f->context = venture_context_new(f->config, f->database);
 	f->server = venture_web_server_new(f->context, &error); g_assert_no_error(error);
 	venture_web_server_add_classified_route(f->server, HTMX_METHOD_POST, "/fixture/write", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, write_handler, f);
+	venture_web_server_add_classified_route(f->server, HTMX_METHOD_GET, "/fixture/error", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, error_handler, f);
 	g_assert_true(venture_web_server_start(f->server, &error)); g_assert_no_error(error);
 }
 static void teardown(Fixture *f, gconstpointer data)
@@ -153,6 +161,16 @@ static void test_idle(Fixture *f, gconstpointer data)
 	g_autofree gchar *response = exchange(f, "GET /api/v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n");
 	(void)data;
 	g_assert_nonnull(strstr(response, " 200 ")); g_assert_cmpuint(f->writes, ==, 0);
+}
+static void test_idle_after_error(Fixture *f, gconstpointer data)
+{
+	/* Soup reports a 500 as request-aborted, not request-finished, and the
+	 * connection stays keep-alive. The idle deadline must still be re-armed:
+	 * the client reads until the server closes, and the exchange helper's
+	 * five-second client timeout fails the case if the server never does. */
+	g_autofree gchar *response = exchange(f, "GET /fixture/error HTTP/1.1\r\nHost: localhost\r\n\r\n");
+	(void)data;
+	g_assert_nonnull(strstr(response, " 500 ")); g_assert_cmpuint(f->writes, ==, 0);
 }
 
 static void pump(void)
@@ -348,6 +366,7 @@ int main(int argc, char **argv)
 	g_test_add("/http-limits/slow-body", Fixture, NULL, setup, test_slow_body, teardown);
 	g_test_add("/http-limits/slow-headers", Fixture, NULL, setup, test_slow_headers, teardown);
 	g_test_add("/http-limits/idle", Fixture, NULL, setup, test_idle, teardown);
+	g_test_add("/http-limits/idle-after-error", Fixture, NULL, setup, test_idle_after_error, teardown);
 	g_test_add_func("/http-limits/invalid-before-binding", test_invalid);
 	g_test_add("/http-limits/tls-ordinary", Fixture, GINT_TO_POINTER(1), setup, test_ordinary, teardown);
 	g_test_add("/http-limits/tls-declared", Fixture, GINT_TO_POINTER(1), setup, test_declared, teardown);

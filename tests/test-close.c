@@ -476,7 +476,7 @@ test_action_authority(Fixture *f, gconstpointer unused)
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureEntity) user = g_object_new(VENTURE_TYPE_USER,
 		"username", "close-finance", "role", VENTURE_USER_ROLE_EDITOR, "active", TRUE, NULL);
-	g_autoptr(VentureEntity) member = NULL, result = NULL;
+	g_autoptr(VentureEntity) member = NULL, workspace = NULL, result = NULL;
 	g_autoptr(VentureAccessScope) scope = NULL;
 	VentureAuthPrincipal principal;
 	VentureActor actor = actor_named("close-finance");
@@ -493,19 +493,25 @@ test_action_authority(Fixture *f, gconstpointer unused)
 	principal.authenticated = TRUE;
 	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
 	result = close_action(f, "fiscal_period", f->period, "open_close", "{}", &actor, principal.role, &error);
-	g_assert_null(result); g_assert_nonnull(error); g_clear_error(&error);
+	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED); g_clear_error(&error);
 	g_clear_object(&scope);
 	g_object_set(member, "role", VENTURE_ORGANIZATION_ROLE_FINANCE, NULL); save(f, member);
 	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
 	result = close_action(f, "fiscal_period", f->period, "open_close", "{\"currency\":\"not-a-currency\"}", &actor, principal.role, &error);
 	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION); g_clear_error(&error);
-	result = close_action(f, "fiscal_period", f->period, "open_close", "{}", &actor, principal.role, &error);
+	workspace = close_action(f, "fiscal_period", f->period, "open_close", "{}", &actor, principal.role, &error);
+	g_assert_no_error(error); g_assert_nonnull(workspace);
+	result = close_action(f, "close_workspace", venture_entity_get_id(workspace), "run_checks", "{}", &actor, principal.role, &error);
 	g_assert_no_error(error); g_assert_nonnull(result); g_clear_object(&result);
 	g_clear_object(&scope);
 	g_object_set(member, "active", FALSE, NULL); save(f, member);
 	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+	/* A second open on the same period is refused for every caller, so the
+	 * revocation is proven on an action that succeeded a moment ago. */
+	result = close_action(f, "close_workspace", venture_entity_get_id(workspace), "run_checks", "{}", &actor, principal.role, &error);
+	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED); g_clear_error(&error);
 	result = close_action(f, "fiscal_period", f->period, "open_close", "{}", &actor, principal.role, &error);
-	g_assert_null(result); g_assert_nonnull(error); g_clear_error(&error);
+	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED); g_clear_error(&error);
 }
 
 int

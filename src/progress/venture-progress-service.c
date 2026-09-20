@@ -280,9 +280,10 @@ venture_progress_service_invoice_impl(VentureProgressService *self, VentureQuote
 	if (!venture_database_save(self->database, VENTURE_ENTITY(line), actor, error))
 		goto fail;
 	now = venture_time_now();
-	/* Business dates match date-picker receipts; creation/billing retain
-	 * precise timestamps separately from the invoice's accounting date. */
-	issue_date = venture_time_from_string("today", error);
+	/* Business dates match date-picker receipts in the configured zone;
+	 * creation/billing retain precise timestamps separately from the
+	 * invoice's accounting date. */
+	issue_date = venture_settlement_service_today(venture_settlement_service_get(self->database));
 	if (issue_date == NULL)
 		goto fail;
 	if (!venture_settlement_service_transition(venture_settlement_service_get(self->database),

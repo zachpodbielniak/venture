@@ -17,6 +17,9 @@ struct _VentureSettlementService
 	gint64 receivable_account;
 	gint64 income_account;
 	gint64 tax_account;
+	/* The business zone every generated calendar date is read in; bound
+	 * from locale.timezone by the context, local when unbound. */
+	gchar *timezone;
 };
 
 /* Bind service-level account overrides as well as persisted policy to consent.
@@ -47,6 +50,7 @@ enum
 	PROP_RECEIVABLE_ACCOUNT,
 	PROP_INCOME_ACCOUNT,
 	PROP_TAX_ACCOUNT,
+	PROP_TIMEZONE,
 	N_PROPERTIES
 };
 
@@ -89,6 +93,7 @@ service_get_property(GObject *object, guint id, GValue *value, GParamSpec *spec)
 	case PROP_RECEIVABLE_ACCOUNT: g_value_set_int64(value, self->receivable_account); break;
 	case PROP_INCOME_ACCOUNT: g_value_set_int64(value, self->income_account); break;
 	case PROP_TAX_ACCOUNT: g_value_set_int64(value, self->tax_account); break;
+	case PROP_TIMEZONE: g_value_set_string(value, self->timezone); break;
 	default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
 	}
 }
@@ -110,6 +115,10 @@ service_set_property(GObject *object, guint id, const GValue *value, GParamSpec 
 	case PROP_RECEIVABLE_ACCOUNT: self->receivable_account = g_value_get_int64(value); break;
 	case PROP_INCOME_ACCOUNT: self->income_account = g_value_get_int64(value); break;
 	case PROP_TAX_ACCOUNT: self->tax_account = g_value_get_int64(value); break;
+	case PROP_TIMEZONE:
+		g_free(self->timezone);
+		self->timezone = g_value_dup_string(value);
+		break;
 	default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
 	}
 }
@@ -123,6 +132,7 @@ service_finalize(GObject *object)
 	if (self->database != NULL)
 		g_object_remove_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
 	g_clear_object(&self->machine);
+	g_clear_pointer(&self->timezone, g_free);
 	G_OBJECT_CLASS(venture_settlement_service_parent_class)->finalize(object);
 }
 
@@ -153,6 +163,9 @@ venture_settlement_service_class_init(VentureSettlementServiceClass *klass)
 	g_object_class_install_property(object_class, PROP_TAX_ACCOUNT,
 		g_param_spec_int64("tax-account-id", "Tax account", "Zero resolves code 2100 sales tax payable",
 			0, G_MAXINT64, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+	g_object_class_install_property(object_class, PROP_TIMEZONE,
+		g_param_spec_string("timezone", "Timezone", "IANA zone generated calendar dates are read in; empty means the process zone",
+			NULL, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 }
 
 static void
@@ -174,6 +187,16 @@ venture_settlement_service_get(VentureDatabase *database)
 		g_object_set_data_full(G_OBJECT(database), "venture-settlement-service", self, g_object_unref);
 	}
 	return self;
+}
+
+GDateTime *
+venture_settlement_service_today(VentureSettlementService *self)
+{
+	g_autoptr(GTimeZone) zone = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_SETTLEMENT_SERVICE(self), NULL);
+	zone = venture_time_get_timezone(self->timezone);
+	return venture_time_today(zone);
 }
 
 VentureInvoiceStateMachine *
@@ -351,23 +374,33 @@ check_customer(VentureSettlementService *self, VentureEntity *record, GError **e
 	return customer != NULL && same_owner(record, customer, error);
 }
 
+/* A date picker submits midnight UTC; a precise instant almost never is. */
 static gboolean
-check_date(GDateTime *date, GDateTime *earliest, GError **error)
+calendar_date(GDateTime *date)
+{
+	g_autoptr(GDateTime) utc = g_date_time_to_utc(date);
+	return g_date_time_get_hour(utc) == 0 && g_date_time_get_minute(utc) == 0 && g_date_time_get_seconds(utc) == 0.0;
+}
+
+static gboolean
+check_date(VentureSettlementService *self, GDateTime *date, GDateTime *earliest, GError **error)
 {
 	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GDateTime) today = NULL;
 
 	now = venture_time_now();
 	if (date == NULL || (earliest != NULL && g_date_time_compare(date, earliest) < 0))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "The date must not precede the source event");
-	if (g_date_time_compare(date, now) > 0)
-	{
-		g_autoptr(GDateTime) today = venture_time_from_string("today", NULL);
-		/* A calendar date is midnight UTC, even east of UTC where today's
-		 * encoded midnight is later than the current instant. This exception
-		 * is exactly today's date, never a future time or tomorrow's date. */
-		if (!venture_time_equal(date, today))
-			return refuse(error, VENTURE_ERROR_VALIDATION, "A financial event cannot be dated in the future");
-	}
+	/* A calendar date is midnight UTC on the business zone's date. East of
+	 * UTC today's encoded midnight is later than the current instant, so
+	 * exactly today's date is allowed; west of UTC tomorrow's encoded
+	 * midnight can already have passed as an instant, so a calendar date
+	 * after today is still refused. Never a future time or tomorrow's date. */
+	today = venture_settlement_service_today(self);
+	if (venture_time_equal(date, today))
+		return TRUE;
+	if (g_date_time_compare(date, now) > 0 || (calendar_date(date) && g_date_time_compare(date, today) > 0))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "A financial event cannot be dated in the future");
 	return TRUE;
 }
 
@@ -1138,7 +1171,7 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 		return FALSE;
 	if (issued != NULL)
 		g_object_get(issued, "date", &issue_date, "amount", &total, NULL);
-	if (!check_date(date, issue_date, error) ||
+	if (!check_date(self, date, issue_date, error) ||
 		!check_invoice_chronology(self, venture_entity_get_id(invoice), date, error) ||
 		/* A rollback undoes the migration whatever workflow state the
 		 * invoice reached since, so its void is checked as one from sent. */
@@ -1484,7 +1517,7 @@ perform_allocation(VentureSettlementService *self, VentureEntity *allocation,
 	g_object_get(allocation, "amount", &amount, "date", &date, NULL);
 	g_object_get(credit, "date", &source_date, NULL);
 	g_object_get(issued, "date", &issue_date, NULL);
-	if (!check_date(date, source_date, error) || !check_date(date, issue_date, error))
+	if (!check_date(self, date, source_date, error) || !check_date(self, date, issue_date, error))
 		return FALSE;
 	if (!check_invoice_chronology(self, venture_entity_get_id(invoice), date, error))
 		return FALSE;
@@ -1532,7 +1565,7 @@ perform_credit(VentureSettlementService *self, VentureEntity *credit,
 	g_object_get(credit, "amount", &amount, "date", &date, "kind", &kind, NULL);
 	if ((g_strcmp0(kind, "credit_note") != 0 && g_strcmp0(kind, "write_off") != 0) || get_id(credit, "payment-id") != 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Create a payment for a deposit or overpayment; only credit_note or write_off may be entered directly");
-	if (!check_amount(amount, error) || !check_date(date, NULL, error) || !check_customer(self, credit, error))
+	if (!check_amount(amount, error) || !check_date(self, date, NULL, error) || !check_customer(self, credit, error))
 		return FALSE;
 	g_object_set(credit, "remaining", amount, NULL);
 	if (g_strcmp0(kind, "write_off") == 0)
@@ -1624,7 +1657,7 @@ settle_foreign_payment(VentureSettlementService *self, VentureEntity *payment,
 	if (issued == NULL)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "The invoice has no issue event");
 	g_object_get(issued, "amount", &issued_total, "book-amount", &issued_book, "date", &issue_date, NULL);
-	if (!check_date(date, issue_date, error) ||
+	if (!check_date(self, date, issue_date, error) ||
 		!check_invoice_chronology(self, venture_entity_get_id(invoice), date, error))
 		return FALSE;
 	if (issued_book == NULL)
@@ -1733,7 +1766,7 @@ perform_payment(VentureSettlementService *self, VentureEntity *payment,
 	if (venture_entity_is_persisted(payment))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Payments are immutable; allocate unused funds or record a refund");
 	g_object_get(payment, "amount", &amount, "date", &date, "external-id", &external, NULL);
-	if (!check_amount(amount, error) || !check_date(date, NULL, error) || !check_customer(self, payment, error))
+	if (!check_amount(amount, error) || !check_date(self, date, NULL, error) || !check_customer(self, payment, error))
 		return FALSE;
 	if (external != NULL && *external != '\0')
 	{
@@ -1928,7 +1961,7 @@ perform_refund(VentureSettlementService *self, VentureEntity *refund,
 		return FALSE;
 	if (get_id(refund, "customer-id") != get_id(credit, "customer-id"))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "The refund must belong to the source customer");
-	if (!check_date(date, source_date, error) || !within(amount, available, error))
+	if (!check_date(self, date, source_date, error) || !within(amount, available, error))
 		return FALSE;
 	if (invoice != NULL && !check_invoice_chronology(self, venture_entity_get_id(invoice), date, error))
 		return FALSE;
@@ -2458,7 +2491,7 @@ perform_credit_opening(VentureSettlementService *self, VentureEntity *credit, GD
 	 * credit carrying tax would reduce this system's liability a second time. */
 	if (tax != NULL && !venture_money_is_zero(tax))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening credit note carries no tax of its own");
-	if (!check_amount(amount, error) || !check_date(date, NULL, error) || !check_customer(self, credit, error))
+	if (!check_amount(amount, error) || !check_date(self, date, NULL, error) || !check_customer(self, credit, error))
 		return FALSE;
 	if (g_date_time_compare(date, opening_at) >= 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening credit must be dated before its cutover instant");

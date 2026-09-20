@@ -175,6 +175,10 @@ venture_context_new(
 	venture_ai_provider_service_set_config(venture_ai_provider_service_get(self->database), config);
 	g_object_bind_property(config, "server-base-url", venture_sequence_service_get(self->database), "base-url",
 		G_BINDING_SYNC_CREATE);
+	/* Generated invoice dates and same-day receipts follow the business
+	 * calendar, not the zone the process runs in. */
+	g_object_bind_property(config, "locale-timezone", venture_settlement_service_get(self->database), "timezone",
+		G_BINDING_SYNC_CREATE);
 	venture_mfa_service_configure(venture_mfa_service_get(self->database), config);
 	venture_ocr_service_configure(venture_ocr_service_get(self->database), config);
 	venture_stripe_actions_set_context(self->database, self);

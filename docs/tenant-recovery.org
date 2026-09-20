@@ -81,8 +81,10 @@ and out-of-band =--key-file=. Use a random single printable ASCII line of
 at least 32 characters (for example, =openssl rand -hex 32= written to a
 private file); a long file padded after a short first line is refused. It never provisions Lightsite or contacts a
 business provider. Fedora dependencies are =bash=, =podman=, =jq=, =gnupg2=,
-=tar=, =coreutils=, =diffutils= (for =cmp=), =grep=, =gawk=, =findutils= and
-=util-linux=; the tool refuses to start when any of these is missing.
+=tar=, =coreutils=, =diffutils= (for =cmp=), =grep=, =gawk=, =findutils=,
+=util-linux= and =python3= (the tool delegates catalog registration and
+tombstone checks to =venture-tenantctl=); the tool refuses to start when any
+of these is missing.
 =ShellCheck= validates the scripts. PostgreSQL client programs execute inside the selected DB container.
 
 The operator-owned root and tenant directories must be mode 700, with

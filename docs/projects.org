@@ -36,7 +36,7 @@ links use ordinary =record_link= rows to the project and quote.
 |--------+---------|
 | =budget= | Current whole-project budget, not prorated to the report period |
 | =billed= | Frozen project billing allocations, dated by their invoice's issue time |
-| =unbilled= | Approved time and billable pass-through costs occurring in the period that had no billing allocation before the period end; on a quote-created fixed-price project, accepted =project_deliverable= slices dated by =accepted_at= not invoiced before the period end instead |
+| =unbilled= | On a time-and-materials project, approved time and billable pass-through costs occurring in the period that had no billing allocation before the period end. On a project that bills delivery (created by a quote handoff, or labelled =billing_kind=fixed=) that labour is cost evidence =bill= refuses and is never counted; a quote-created fixed-price project counts its accepted =project_deliverable= slices dated by =accepted_at= not invoiced before the period end instead |
 | =known_cost= | Frozen labour cost plus recorded pass-through costs with known amounts |
 | =actual_cost= | Known cost only when every included source has cost evidence; otherwise null |
 | =profit= | Billed revenue minus actual cost; null when actual cost is unknown |

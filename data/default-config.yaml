@@ -552,6 +552,12 @@ backup:
 #   http_concurrency: 8
 
 # The rendered documentation site served at /docs. The default is the
-# docs-site directory under the install prefix's data directory.
+# docs-site directory under the install prefix's data directory, so it
+# depends on the build: the value below is the /usr/local prefix's
+# default, and the container image (PREFIX=/usr) reads
+# /usr/share/venture/docs-site. Unlike every other commented key in this
+# file, uncommenting this one on a build with a different prefix changes
+# where /docs is read from. Leave it commented unless the site lives
+# somewhere else.
 # docs:
 #   site_dir: "/usr/local/share/venture/docs-site"

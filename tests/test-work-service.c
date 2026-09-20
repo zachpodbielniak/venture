@@ -684,6 +684,33 @@ static void test_work_credential_revocation(Fixture *fixture, gconstpointer data
 			g_object_set(mode == 2 ? user : mode == 3 ? member : token, "active", FALSE, NULL);
 			g_assert_true(venture_database_save(fixture->database, mode == 2 ? user : mode == 3 ? member : token, NULL, &error));
 		}
+	} else if (mode == 6) {
+		/* Verify saves the forge with only its stamps changed. Stamps are
+		 * not authority: the lease and the running job must survive. A
+		 * change to where the credential is presented must still revoke. */
+		g_autoptr(VentureEntity) forge = venture_database_get(fixture->database, VENTURE_TYPE_FORGE, forge_id, &error);
+		g_autoptr(GDateTime) now = venture_time_now();
+		g_assert_no_error(error); g_assert_nonnull(forge);
+		activity_lease = venture_forge_credentials_acquire(fixture->database, forge_id, &error);
+		g_assert_no_error(error); g_assert_nonnull(activity_lease);
+		g_object_set(forge, "verified-at", now, NULL);
+		g_assert_true(venture_database_save(fixture->database, forge, NULL, &error));
+		g_assert_no_error(error);
+		deadline = g_get_monotonic_time() + G_USEC_PER_SEC / 4;
+		while (g_get_monotonic_time() < deadline) g_main_context_iteration(NULL, FALSE);
+		g_assert_true(venture_forge_credentials_check(activity_lease, &error));
+		g_assert_no_error(error);
+		g_assert_cmpuint(venture_work_service_count_live(service), ==, 1);
+		{
+			g_autoptr(VentureEntity) live = venture_database_get(fixture->database, VENTURE_TYPE_FORGE_RUN, run_id, &error);
+			g_assert_no_error(error);
+			g_object_get(live, "state", &state, NULL);
+			g_assert_cmpint(state, !=, VENTURE_FORGE_RUN_STATE_CANCELLED);
+		}
+		g_object_set(forge, "bot-username", "fixture-bot", "clone-base-url", "git@git-ssh.example.com", NULL);
+		g_assert_true(venture_database_save(fixture->database, forge, NULL, &error));
+		g_assert_false(venture_forge_credentials_check(activity_lease, &error));
+		g_assert_nonnull(error); g_clear_error(&error);
 	} else if (mode == 1) venture_config_set_module_enabled(fixture->config, "forge", FALSE);
 	else g_assert_true(venture_forge_settings_disconnect(fixture->database, forge_id,
 		venture_entity_get_version(VENTURE_ENTITY(binding)), venture_entity_get_id(VENTURE_ENTITY(binding)), NULL, &error));
@@ -728,6 +755,7 @@ main(
 	g_test_add("/work/membership-revocation", Fixture, GINT_TO_POINTER(3), fixture_set_up, test_work_credential_revocation, fixture_tear_down);
 	g_test_add("/work/token-revocation", Fixture, GINT_TO_POINTER(4), fixture_set_up, test_work_credential_revocation, fixture_tear_down);
 	g_test_add("/work/membership-reassignment", Fixture, GINT_TO_POINTER(5), fixture_set_up, test_work_credential_revocation, fixture_tear_down);
+	g_test_add("/work/forge-verify-stamps-keep-lease", Fixture, GINT_TO_POINTER(6), fixture_set_up, test_work_credential_revocation, fixture_tear_down);
 	ADD("/work/disabled-by-default", test_work_disabled_by_default);
 	ADD("/work/does-not-block-the-main-loop",
 	    test_work_does_not_block_the_main_loop);

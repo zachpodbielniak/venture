@@ -1087,10 +1087,9 @@ venture_cli_command_forge(
 	if ((NULL == action) || (NULL == id))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		                    "Usage: venturectl forge settings|set-token|set-secret|"
-		                    "verify <id>\n"
-		                    "       set-token and set-secret read the value "
-		                    "from standard input");
+		                    "Usage: venturectl forge settings|verify <id>\n"
+		                    "       settings reads a JSON body from standard "
+		                    "input; set-token and set-secret are retired");
 		return -1;
 	}
 

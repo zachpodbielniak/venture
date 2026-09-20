@@ -83,9 +83,12 @@ excessive page sequences fail the complete batch. See the
 
 * Explicit legacy adoption
 
-Migration =000610= creates identity metadata without assigning old records to
-an account. Existing invoices and customer records retain their external IDs,
-amounts, versions and ledger evidence. Import refuses a colliding unbound
+The identity metadata (the =commerce_import_link= table and its columns) is
+created by schema reconciliation from the registered field table at startup,
+not by a migration; migration =000610= is a =SELECT 1= guard script that
+records the step on both backends and assigns no old record to an account.
+Existing invoices and customer records retain their external IDs, amounts,
+versions and ledger evidence. Import refuses a colliding unbound
 legacy invoice rather than silently treating it as a replay or claiming it
 for the current shop.
 

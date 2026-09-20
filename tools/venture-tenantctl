@@ -199,7 +199,7 @@ class BackupCatalog:
                 uuid_text(item["archive_id"])
                 require(item["copy_id"] == copy_id
                         and item["workspace_id"] == self.data["workspace_id"]
-                        and item["state"] in ("retained", "deleted")
+                        and item["state"] in ("retained", "retired", "deleted")
                         and re.fullmatch(r"[a-f0-9]{64}", item["sha256"]),
                         "Malformed backup catalog entry")
         else:
@@ -314,7 +314,9 @@ class BackupCatalog:
                 if entry["archive_id"] == archive_id:
                     require(entry["sha256"] == identity["sha256"],
                             "Copied archive UUID has different encrypted content")
-                if entry["path"] == identity["path"]:
+                # A retired path may be re-enrolled: the entry recorded a file
+                # that left, and the archive_id/sha check above still binds content.
+                if entry["path"] == identity["path"] and entry["state"] != "retired":
                     require(entry["state"] == "retained" and entry["archive_id"] == archive_id
                             and all(entry[key] == identity[key] for key in identity),
                             "Registered archive path was reused or replaced")
@@ -342,6 +344,47 @@ class BackupCatalog:
             require(all(entry[key] == identity[key] for key in identity),
                     "Registered archive file was replaced or changed")
 
+    @staticmethod
+    def missing_message(copy_id, entry):
+        return ("Registered archive copy %s is missing at %s; restore the file or record "
+                "its departure with backup-retire --copy %s" % (copy_id, entry["path"], copy_id))
+
+    @contextlib.contextmanager
+    def retained(self, copy_id, entry):
+        # A retained entry whose file is gone is neither an empty plan nor a
+        # traceback: retention fails closed until an operator retires the entry.
+        with contextlib.ExitStack() as stack:
+            try:
+                directory, descriptor, identity = stack.enter_context(
+                    self.opened(entry["path"], allow_missing=True))
+            except FileNotFoundError:
+                raise Refused(self.missing_message(copy_id, entry)) from None
+            require(descriptor is not None, self.missing_message(copy_id, entry))
+            self.validate_entry(entry, identity)
+            yield directory, descriptor, identity
+
+    def retire(self, copy_id, reason):
+        """Tombstone a retained entry whose file has already left this host."""
+        require(not self.data.get("journal"), "Recover the pending retention journal first")
+        entry = self.data["entries"].get(uuid_text(copy_id))
+        require(entry, "No registered archive copy " + copy_id)
+        require(entry["state"] == "retained",
+                "Archive copy %s is already %s" % (copy_id, entry["state"]))
+        self.refresh_registration()
+        present = True
+        try:
+            with self.opened(entry["path"], allow_missing=True) as (_, descriptor, _):
+                present = descriptor is not None
+        except FileNotFoundError:
+            present = False
+        # A live archive leaves only through a reviewed plan; retire never unlinks.
+        require(not present, "Archive copy %s is still present at %s; expire it with "
+                "retention-plan/retention-execute instead" % (copy_id, entry["path"]))
+        entry.update(state="retired", retired_at=int(time.time()), retire_reason=reason)
+        self.save()
+        self.tenant.event("backup-retire", reason, copy_id)
+        return entry
+
     def plan(self, days, reason, now=None):
         require(isinstance(days, int) and 1 <= days <= 36500, "Retention days must be 1–36500")
         require(not self.data.get("journal"), "Recover the pending retention journal first")
@@ -352,8 +395,8 @@ class BackupCatalog:
             if entry["state"] != "retained":
                 continue
             # A corrupt catalog/file cannot be treated as an empty successful plan.
-            with self.opened(entry["path"]) as (_, _, identity):
-                self.validate_entry(entry, identity)
+            with self.retained(copy_id, entry):
+                pass
             if not registration.get("hold", False) and self.expiry(entry, days, registration) <= now:
                 candidates.append(copy_id)
         plan = {"plan_id": str(uuid.uuid4()), "created_at": now, "days": days,
@@ -378,8 +421,8 @@ class BackupCatalog:
             entry = self.data["entries"][copy_id]
             require(entry["state"] == "retained" and self.expiry(entry, plan["days"], registration) <= now,
                     "Archive is no longer eligible under current offboarding/retention policy")
-            with self.opened(entry["path"]) as (_, _, identity):
-                self.validate_entry(entry, identity)
+            with self.retained(copy_id, entry):
+                pass
         self.tenant.event("retention-execute", reason, "begin:" + plan_id)
         self.data["journal"] = {"plan_id": plan_id, "reason": reason,
                                 "started_at": now, "pending": list(plan["candidates"])}
@@ -389,8 +432,7 @@ class BackupCatalog:
             registration = self.refresh_registration()
             require(not registration.get("hold", False), "Workspace is on hold")
             require(self.expiry(entry, plan["days"], registration) <= now, "Retention policy changed")
-            with self.opened(entry["path"]) as (directory, descriptor, identity):
-                self.validate_entry(entry, identity)
+            with self.retained(copy_id, entry) as (directory, descriptor, identity):
                 require(self.file_identity(os.stat(Path(entry["path"]).name, dir_fd=directory,
                                                     follow_symlinks=False)) == identity["file"],
                         "Archive name changed before deletion")
@@ -1429,6 +1471,7 @@ def parser():
         "upgrade",
         "backup-list",
         "backup-enroll",
+        "backup-retire",
         "retention-plan",
         "retention-execute",
         "retention-recover",
@@ -1438,6 +1481,7 @@ def parser():
         explanations = {
             "backup-list": "Read the private archive catalog and permanent tombstones",
             "backup-enroll": "Authenticate and explicitly enroll a local encrypted replica",
+            "backup-retire": "Tombstone a retained entry whose file already left; never unlinks",
             "retention-plan": "Persist a reviewable expiry plan; default retention is 30 days",
             "retention-execute": "Execute one exact unexpired plan under the tenant lock",
             "retention-recover": "Reconcile interrupted expiry without unlinking more files",
@@ -1459,6 +1503,8 @@ def parser():
             child.add_argument("--archive-manifest", required=True, type=Path)
         if name == "archive-register":
             child.add_argument("--kind", choices=("export", "upgrade", "replica"), required=True)
+        if name == "backup-retire":
+            child.add_argument("--copy", required=True, help="Catalog copy_id of the departed archive")
         if name == "retention-plan":
             child.add_argument("--days", type=int, default=30, help="Retention in days, 1–36500 (default: 30)")
         if name == "retention-execute":
@@ -1485,7 +1531,7 @@ def main():
     if args.operation == "init":
         initialize(args.root)
         return
-    catalog_operations = ("backup-list", "retention-plan", "retention-execute",
+    catalog_operations = ("backup-list", "backup-retire", "retention-plan", "retention-execute",
                           "retention-recover", "archive-register", "archive-check")
     if args.operation in ("archive-register", "archive-check"):
         require(os.environ.get("VENTURE_TENANT_MAINTENANCE_FD"),
@@ -1508,6 +1554,8 @@ def main():
                 catalog.execute(args.plan, args.reason)
             elif args.operation == "retention-recover":
                 catalog.recover(args.reason)
+            elif args.operation == "backup-retire":
+                print(json.dumps(catalog.retire(args.copy, args.reason), sort_keys=True))
             elif args.operation == "backup-enroll":
                 manifest = json.loads(tenant.archive("verify", args.archive, args.key_file))
                 print(json.dumps(catalog.register(args.archive, manifest, "replica", args.reason), sort_keys=True))

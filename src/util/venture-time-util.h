@@ -115,6 +115,21 @@ gchar *
 venture_time_to_relative_string(GDateTime *when);
 
 /**
+ * venture_time_today:
+ * @timezone: (nullable): the zone whose calendar date "today" means; %NULL
+ *   means the process-local zone
+ *
+ * The calendar date current in @timezone, encoded as midnight UTC on that
+ * date -- the same instant a date picker submits for it. A business date
+ * must be read in the configured zone, not the zone the process happens to
+ * run in, or an evening acceptance issues tomorrow's invoice.
+ *
+ * Returns: (transfer full): midnight UTC on today's date in @timezone
+ */
+GDateTime *
+venture_time_today(GTimeZone *timezone);
+
+/**
  * venture_time_get_timezone:
  * @name: (nullable): an IANA timezone name
  *

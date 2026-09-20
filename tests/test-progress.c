@@ -324,7 +324,7 @@ test_retainer_authority(Fixture *f, gconstpointer unused)
 	g_object_set(member, "active", FALSE, NULL); save(f, member);
 	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
 	result = retainer_action(f, "company", f->company, "collect_retainer", parameters, &error);
-	g_assert_null(result); g_assert_nonnull(error); g_clear_error(&error);
+	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED); g_clear_error(&error);
 	g_clear_object(&scope);
 	venture_config_set_module_enabled(f->config, "quotes", FALSE);
 	result = retainer_action(f, "company", f->company, "collect_retainer", parameters, &error);
@@ -333,14 +333,15 @@ test_retainer_authority(Fixture *f, gconstpointer unused)
 }
 
 /* A date picker submits midnight UTC. Generated invoice dates must have
- * that same calendar meaning while earlier and future payments stay refused. */
+ * that same calendar meaning, read in the configured business zone, while
+ * earlier and future payments stay refused. */
 static void
 test_invoice_calendar_receipt(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureEntity) quote = accepted_quote_mode(f, data ? "full" : "progress");
 	g_autoptr(VentureEntity) invoice = NULL;
 	g_autoptr(GError) error = NULL;
-	g_autoptr(GDateTime) today = venture_time_from_string("today", NULL);
+	g_autoptr(GDateTime) today = venture_time_today(venture_context_get_timezone(f->context));
 	g_autoptr(GDateTime) yesterday = g_date_time_add_days(today, -1);
 	g_autoptr(GDateTime) tomorrow = g_date_time_add_days(today, 1);
 	g_autoptr(GDateTime) issued = NULL;
@@ -373,6 +374,69 @@ test_invoice_calendar_receipt(Fixture *f, gconstpointer data)
 	g_assert_no_error(error); g_assert_nonnull(balance); g_assert_true(venture_money_is_zero(balance));
 }
 
+/* The business calendar is locale.timezone, not the zone the process runs
+ * in. Of UTC-12 and UTC+14 at most one shares the process-local date at any
+ * instant, so the other is a zone whose "today" provably differs from it. */
+static const gchar *
+zone_with_other_date(GDateTime *local_today)
+{
+	static const gchar *const zones[] = { "Etc/GMT+12", "Pacific/Kiritimati" };
+	gsize i;
+	for (i = 0; i < G_N_ELEMENTS(zones); i++)
+	{
+		g_autoptr(GTimeZone) zone = g_time_zone_new_identifier(zones[i]);
+		g_autoptr(GDateTime) today = NULL;
+		g_assert_nonnull(zone);
+		today = venture_time_today(zone);
+		if (!venture_time_equal(today, local_today)) return zones[i];
+	}
+	g_assert_not_reached();
+	return NULL;
+}
+
+static void
+test_invoice_calendar_zone(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GDateTime) local_today = venture_time_today(NULL);
+	const gchar *name = zone_with_other_date(local_today);
+	g_autoptr(GTimeZone) zone = g_time_zone_new_identifier(name);
+	g_autoptr(GDateTime) today = venture_time_today(zone);
+	g_autoptr(GDateTime) issued = NULL;
+	g_autoptr(GDateTime) service_today = NULL;
+	g_autoptr(VentureEntity) quote = NULL;
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	gint64 id = 0;
+	actor_init(&actor);
+	g_object_set(f->config, "locale-timezone", name, NULL);
+	service_today = venture_settlement_service_today(venture_settlement_service_get(f->db));
+	g_assert_true(venture_time_equal(service_today, today));
+	quote = accepted_quote_mode(f, data ? "full" : "progress");
+	if (data)
+	{
+		g_object_get(quote, "invoice-id", &id, NULL);
+		invoice = venture_database_get(f->db, VENTURE_TYPE_INVOICE, id, &error);
+	}
+	else
+		invoice = venture_progress_service_invoice(venture_progress_service_get(f->db), VENTURE_QUOTE(quote), 50, NULL, &actor, &error);
+	g_assert_no_error(error); g_assert_nonnull(invoice);
+	id = venture_entity_get_id(invoice);
+	g_object_get(invoice, "issued-at", &issued, NULL);
+	g_assert_cmpint(g_date_time_compare(issued, today), ==, 0);
+	g_assert_cmpint(g_date_time_compare(issued, local_today), !=, 0);
+	/* The process-local date is either before the issue date or a day the
+	 * business zone has not reached; a same-day receipt is on today's date
+	 * in the business zone, east of UTC included. */
+	g_assert_false(venture_settlement_service_settle_invoice(venture_settlement_service_get(f->db), id, local_today, &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION); g_clear_error(&error);
+	g_assert_true(venture_settlement_service_settle_invoice(venture_settlement_service_get(f->db), id, today, &actor, &error));
+	g_assert_no_error(error);
+	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db), id, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(balance); g_assert_true(venture_money_is_zero(balance));
+}
+
 int
 main(int argc, char **argv)
 {
@@ -381,6 +445,8 @@ main(int argc, char **argv)
 	g_test_add("/progress/retainer-authority", Fixture, NULL, setup, test_retainer_authority, teardown);
 	g_test_add("/progress/calendar-progress", Fixture, NULL, setup, test_invoice_calendar_receipt, teardown);
 	g_test_add("/progress/calendar-full", Fixture, GINT_TO_POINTER(1), setup, test_invoice_calendar_receipt, teardown);
+	g_test_add("/progress/calendar-zone-progress", Fixture, NULL, setup, test_invoice_calendar_zone, teardown);
+	g_test_add("/progress/calendar-zone-full", Fixture, GINT_TO_POINTER(1), setup, test_invoice_calendar_zone, teardown);
 	g_test_add("/progress/retainer-actions", Fixture, NULL, setup, test_retainer_actions, teardown);
 	g_test_add("/progress/retainer", Fixture, NULL, setup, test_retainer_then_release, teardown);
 	g_test_add("/progress/retention", Fixture, NULL, setup, test_retention_hold_and_release, teardown);
