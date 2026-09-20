@@ -31,6 +31,8 @@ typedef struct
 	gchar	*base_branch;
 	gchar	*branch;
 
+	AiProvider *configured_provider;
+	gchar *provider_failure;
 	gchar	*provider;
 	gchar	*model;
 	gchar	*system_prompt;
@@ -132,6 +134,7 @@ venture_work_job_free(VentureWorkJob *job)
 
 	g_free(job->base_branch);
 	g_free(job->branch);
+	g_clear_object(&job->configured_provider); g_free(job->provider_failure);
 	g_free(job->provider);
 	g_free(job->model);
 	g_free(job->system_prompt);
@@ -561,42 +564,15 @@ typedef struct
 	GCancellable		*cancellable;
 } RunData;
 
-/*
- * Builds the provider a run uses.
- *
- * Through ai-glib's factory rather than a switch of our own: it already
- * knows every provider name, including the CLI-backed claude-code, opencode
- * and grok-build, and it refuses a name it does not recognise instead of
- * quietly answering Claude. A run on the wrong model is worse than a run
- * that did not start.
- */
+/* Provider construction and credential resolution belong to the main
+ * thread. Workers receive the explicit bound adapter and plain input only. */
 static AiProvider *
-venture_work_provider(
-	const VentureWorkJob	 *job,
-	GError			**error
-){
-	GObject *object;
-
-	object = ai_provider_factory_new_from_string(job->provider, NULL, error);
-
-	if (NULL == object)
-		return NULL;
-
-	if (!venture_string_is_empty(job->model) && AI_IS_CLIENT(object))
-		ai_client_set_model(AI_CLIENT(object), job->model);
-
-	/*
-	 * The CLI runner's whole distinction: the subprocess is started in
-	 * the checkout, so its own file tools operate there without VENTURE
-	 * providing any.
-	 */
-	if (AI_IS_CLI_CLIENT(object))
-	{
-		ai_cli_client_set_working_directory(AI_CLI_CLIENT(object),
-		                                    job->workspace);
-	}
-
-	return AI_PROVIDER(object);
+venture_work_provider(const VentureWorkJob *job, GError **error)
+{
+	if (job->configured_provider) return g_object_ref(job->configured_provider);
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		job->provider_failure ? job->provider_failure : "Configure this organization's coding provider");
+	return NULL;
 }
 
 /*
@@ -1163,7 +1139,15 @@ venture_work_service_start_for_ticket(
 		venture_config_get_state_dir(venture_context_get_config(self->context)),
 		"forge", "work", job->branch, NULL);
 
-	job->provider = g_strdup("claude");
+	{
+		g_autoptr(GError) provider_error = NULL;
+		VentureDatabase *database = venture_context_get_database(self->context);
+		job->configured_provider = venture_ai_provider_service_create_provider(venture_ai_provider_service_get(database),
+			venture_entity_get_organization_id(ticket), "coding",
+			venture_access_policy_get_actor(venture_database_get_access_policy(database)), &provider_error);
+		if (!job->configured_provider) job->provider_failure = g_strdup(provider_error->message);
+	}
+	job->provider = g_strdup(job->configured_provider ? ai_provider_get_name(job->configured_provider) : "unconfigured");
 	job->model = NULL;
 	job->system_prompt = g_strdup(
 		"You are working in a git checkout. Make the smallest change that "
@@ -1232,6 +1216,8 @@ session_message_free(gpointer data)
 typedef struct
 {
 	VentureWorkService	*self;
+	AiProvider *configured_provider;
+	gchar *provider_failure;
 	gint64			 session_id;
 	gchar			*provider;
 	gchar			*model;
@@ -1253,6 +1239,7 @@ session_turn_free(gpointer data)
 
 	g_clear_object(&turn->self);
 	g_clear_object(&turn->cancellable);
+	g_clear_object(&turn->configured_provider); g_free(turn->provider_failure);
 	g_free(turn->provider);
 	g_free(turn->model);
 	g_free(turn->effort);
@@ -1462,15 +1449,14 @@ venture_work_session_run(gpointer user_data)
 	gulong handler = 0;
 	guint i;
 
-	object = ai_provider_factory_new_from_string(turn->provider, NULL, &error);
+	object = turn->configured_provider ? G_OBJECT(g_object_ref(turn->configured_provider)) : NULL;
 
 	if (NULL == object)
 	{
 		update = g_new0(SessionUpdate, 1);
 		update->session_id = turn->session_id;
 		update->finished = TRUE;
-		update->failure = g_strdup((NULL != error) ? error->message
-		                                           : "no such provider");
+		update->failure = g_strdup(turn->provider_failure ? turn->provider_failure : "Configure this organization's coding provider");
 		venture_work_session_post(turn->self, update);
 		return G_SOURCE_REMOVE;
 	}
@@ -1639,6 +1625,8 @@ venture_work_service_session_open(
 	GError				**error
 ){
 	g_autoptr(VentureAgentSession) session = NULL;
+	g_autoptr(VentureEntity) organization = NULL;
+	g_autoptr(VentureAccessScope) organization_scope = NULL;
 	g_autofree gchar *workspace = NULL;
 	g_autoptr(GDateTime) now = NULL;
 	VentureActor actor;
@@ -1655,6 +1643,10 @@ venture_work_service_session_open(
 		return 0;
 	}
 
+	organization = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_ORGANIZATION, spec->organization_id, error);
+	if (!organization || venture_entity_is_deleted(organization)) return 0;
+	organization_scope = venture_access_policy_enter_organization(venture_database_get_access_policy(venture_context_get_database(self->context)),
+		venture_access_policy_get_actor(venture_database_get_access_policy(venture_context_get_database(self->context))), spec->organization_id);
 	cloned = FALSE;
 
 	/*
@@ -1709,7 +1701,7 @@ venture_work_service_session_open(
 	             "last-activity-at", now,
 	             NULL);
 	venture_entity_set_organization_id(VENTURE_ENTITY(session),
-		venture_context_get_default_organization_id(self->context));
+		spec->organization_id);
 
 	actor.kind = VENTURE_ACTOR_KIND_SYSTEM;
 	actor.name = "harness";
@@ -1803,6 +1795,14 @@ venture_work_service_session_send(
 
 	turn = g_new0(SessionTurn, 1);
 	turn->self = g_object_ref(self);
+	{
+		g_autoptr(GError) provider_error = NULL;
+		VentureDatabase *database = venture_context_get_database(self->context);
+		turn->configured_provider = venture_ai_provider_service_create_provider(venture_ai_provider_service_get(database),
+			venture_entity_get_organization_id(session), "coding",
+			venture_access_policy_get_actor(venture_database_get_access_policy(database)), &provider_error);
+		if (!turn->configured_provider) turn->provider_failure = g_strdup(provider_error->message);
+	}
 	turn->session_id = session_id;
 	turn->cancellable = g_cancellable_new();
 	turn->history = g_ptr_array_new_with_free_func(session_message_free);
@@ -1835,6 +1835,8 @@ venture_work_service_session_send(
 		g_ptr_array_add(turn->history, message);
 	}
 
+	if (turn->configured_provider) g_object_set(session, "provider", ai_provider_get_name(turn->configured_provider),
+		"model", ai_provider_get_default_model(turn->configured_provider), NULL);
 	now = venture_time_now();
 	g_object_set(session, "state", VENTURE_AGENT_SESSION_STATE_WORKING,
 	             "last-activity-at", now, NULL);

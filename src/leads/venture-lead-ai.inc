@@ -4,7 +4,7 @@ venture_ai_tool_lead_convert(AiToolUse *tool_use, GCancellable *cancellable,
 	GError **error, gpointer data)
 {
 	VentureAiService *self = data;
-	g_autoptr(VentureAccessScope) scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	g_autoptr(VentureAccessScope) scope = venture_ai_service_enter_scope(self);
 	JsonObject *input = venture_ai_tool_input(tool_use);
 	g_autoptr(VentureEntity) lead = NULL;
 	g_autoptr(VentureEntity) converted = NULL;

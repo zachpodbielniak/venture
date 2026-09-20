@@ -118,32 +118,19 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_INT ("security-login-rate-limit", "security", "login_rate_limit", 10,
 	        "Sign-in attempts allowed per address per minute; 0 disables"),
 
-	/*
-	 * Knowledge bases.
-	 *
-	 * The default provider is a local ollama because embedding is the one
-	 * AI feature that runs against every document you own rather than the
-	 * occasional question: sending a whole handbook to a metered API to
-	 * find out it was already indexed is a bill nobody expected. It also
-	 * keeps the corpus on this machine, which is the point of some of
-	 * these bases. Set kb-embedding-provider to "openai" for any
-	 * OpenAI-compatible /v1/embeddings endpoint.
-	 */
+	/* Preserve legacy embedding settings for migration; explicit encrypted
+	 * organization bindings authorize every actual embedding request. */
 	VC_BOOL("kb-enabled", "kb", "enabled", TRUE,
 	        "Whether knowledge bases and retrieval are available"),
 	VC_STR ("kb-embedding-provider", "kb", "embedding_provider", "ollama",
-	        "ollama, or openai for any OpenAI-compatible endpoint"),
+	        "Legacy migration hint; configure the organization embedding binding"),
 	VC_STR ("kb-embedding-url", "kb", "embedding_url",
 	        "http://127.0.0.1:11434",
-	        "Base URL of the embedding service"),
+	        "Legacy embedding URL; not used for provider requests"),
 	VC_STR ("kb-embedding-model", "kb", "embedding_model",
-	        "nomic-embed-text:v1.5", "Model used to embed passages"),
-	/*
-	 * Named, not stored. Same indirection as the database password: a key
-	 * in the config file is a key in every backup of it.
-	 */
+	        "nomic-embed-text:v1.5", "Legacy embedding model; select it explicitly in organization settings"),
 	VC_STR ("kb-embedding-key-env", "kb", "embedding_key_env", "",
-	        "Environment variable holding the embedding API key, if needed"),
+	        "Legacy embedding key reference; ambient credentials are not used"),
 	/*
 	 * Chunk size is in characters rather than tokens because the tokeniser
 	 * is the model's and we do not have it. 1200 is roughly 300 tokens,
@@ -183,10 +170,13 @@ static const VentureConfigSetting venture_config_settings[] = {
 	        "fiscal_year_start_month", 1, "Month the fiscal year begins"),
 
 	VC_BOOL("ai-enabled", "ai", "enabled", TRUE, "Enable AI features"),
-	VC_STR ("ai-provider", "ai", "provider", "claude", "AI provider"),
-	VC_STR ("ai-model", "ai", "model", "claude-sonnet-5", "Model identifier"),
+	VC_STRV("ai-allowed-base-urls", "ai", "allowed_base_urls", "Exact platform-approved alternate provider base URLs; HTTPS unless explicit loopback testing is enabled"),
+	VC_BOOL("ai-allow-loopback", "ai", "allow_loopback", FALSE, "Permit literal HTTP loopback endpoints from the exact AI base URL allowlist for isolated tests"),
+	VC_INT ("ai-provider-deadline-seconds", "ai", "provider_deadline_seconds", 60, "Total provider deadline, 1 through 60 seconds, below the durable reservation lease"),
+	VC_STR ("ai-provider", "ai", "provider", "claude", "Legacy provider hint; configure each organization explicitly"),
+	VC_STR ("ai-model", "ai", "model", "claude-sonnet-5", "Legacy model hint; organization bindings choose the model"),
 	VC_STR ("ai-api-key-env", "ai", "api_key_env", "",
-	        "Environment variable holding the API key"),
+	        "Legacy key reference; ambient credentials are not used"),
 	VC_ENUM("ai-policy", "ai", "policy", venture_ai_policy_get_type,
 	        "How much authority AI tool calls have"),
 	VC_STRV("ai-auto-approve-tools", "ai", "auto_approve_tools",

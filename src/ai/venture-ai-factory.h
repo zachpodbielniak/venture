@@ -104,8 +104,8 @@ venture_ai_factory_build_triage(
 /**
  * venture_ai_factory_briefing:
  * @context: the wiring
- * @organization_ids: (array length=n_organizations) (nullable): scope
- * @n_organizations: how many
+ * @organization_ids: (array length=n_organizations): one explicit organization
+ * @n_organizations: must be one
  * @error: (out) (optional): return location for a #GError
  *
  * Where the factory stands and what needs somebody, as a few short

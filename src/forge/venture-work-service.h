@@ -123,15 +123,14 @@ venture_work_service_count_live(VentureWorkService *self);
 /**
  * VentureAgentSessionSpec:
  * @name: what the session is for
- * @provider: a provider name ai-glib's factory knows -- `claude-code`,
- *   `codex`, `cursor`, `opencode`, or an API provider
- * @model: (nullable): a model, or %NULL for the provider's own default
- * @effort: (nullable): how hard to think, for a CLI provider that takes
- *   a flag for it; ignored by the rest
+ * @provider: legacy request label, retained until the first turn; use "organization"
+ * @model: (nullable): legacy display hint; execution uses the organization's coding model
+ * @effort: (nullable): legacy display hint; executable providers are never inferred
  * @workspace: (nullable): an absolute path on this machine to work in,
  *   which must lie under one of `forge.workspace_roots`
  * @repo_id: a forge_repo to clone instead, or 0
  * @ticket_id: a ticket the session is about, or 0
+ * @organization_id: explicit data, workspace and coding-provider owner
  * @user_id: who opened it
  *
  * How a session is to be opened. Exactly one of @workspace and @repo_id
@@ -148,6 +147,7 @@ typedef struct
 	const gchar	*workspace;
 	gint64		 repo_id;
 	gint64		 ticket_id;
+	gint64		 organization_id;
 	gint64		 user_id;
 } VentureAgentSessionSpec;
 

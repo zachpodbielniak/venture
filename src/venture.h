@@ -95,6 +95,7 @@
 #include "model/venture-entity-registry.h"
 #include "model/venture-integration-connection.h"
 #include "oidc/venture-oidc-records.h"
+#include "ai/venture-ai-organization-records.h"
 #include "model/venture-module.h"
 #include "orgaccess/venture-access-records.h"
 #include "periods/venture-period-records.h"
@@ -253,6 +254,7 @@
 #include "orgaccess/venture-accountant-role.h"
 
 #include "ai/venture-ai-service.h"
+#include "ai/venture-ai-provider-service.h"
 #include "ai/venture-ai-assist.h"
 #include "ai/venture-ai-factory.h"
 #include "ai/venture-ai-skills.h"

@@ -183,6 +183,8 @@ CORE_SRCS += src/orgaccess/venture-mfa-records.c
 SERVER_ONLY_SRCS := $(filter-out src/orgaccess/venture-mfa-records.c,$(SERVER_ONLY_SRCS))
 
 CORE_SRCS += src/oidc/venture-oidc-records.c
+CORE_SRCS += src/ai/venture-ai-organization-records.c
+SERVER_ONLY_SRCS := $(filter-out src/ai/venture-ai-organization-records.c,$(SERVER_ONLY_SRCS))
 SERVER_ONLY_SRCS += $(filter-out src/oidc/venture-oidc-records.c,$(wildcard src/oidc/*.c))
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 

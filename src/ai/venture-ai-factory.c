@@ -231,7 +231,7 @@ venture_ai_factory_release_notes(
 		                                  : audience,
 		VENTURE_AI_FACTORY_UNTRUSTED);
 
-	return venture_ai_service_complete(service, prompt, records, error);
+	return venture_ai_service_complete_for_organization(service, venture_entity_get_organization_id(release), prompt, records, error);
 }
 
 /* --- Postmortem ------------------------------------------------------------ */
@@ -459,7 +459,7 @@ venture_ai_factory_postmortem(
 		"they establish. Write only the postmortem, with no preamble.\n\n",
 		VENTURE_AI_FACTORY_UNTRUSTED, NULL);
 
-	return venture_ai_service_complete(service, prompt, records, error);
+	return venture_ai_service_complete_for_organization(service, venture_entity_get_organization_id(incident), prompt, records, error);
 }
 
 /* --- Build triage ---------------------------------------------------------- */
@@ -584,7 +584,7 @@ venture_ai_factory_build_triage(
 		"place.\n\n",
 		VENTURE_AI_FACTORY_UNTRUSTED, NULL);
 
-	reply = venture_ai_service_complete(service, prompt, records, error);
+	reply = venture_ai_service_complete_for_organization(service, venture_entity_get_organization_id(build), prompt, records, error);
 
 	if (NULL == reply)
 		return NULL;
@@ -637,6 +637,10 @@ venture_ai_factory_briefing(
 	if (NULL == service)
 		return NULL;
 
+	if (!organization_ids || n_organizations != 1 || organization_ids[0] <= 0) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"Select exactly one organization for an AI briefing"); return NULL;
+	}
 	standing = venture_factory_describe(context, organization_ids,
 	                                    n_organizations, error);
 
@@ -670,5 +674,5 @@ venture_ai_factory_briefing(
 		"advice, no encouragement, nothing that is not there.\n\n",
 		VENTURE_AI_FACTORY_UNTRUSTED, NULL);
 
-	return venture_ai_service_complete(service, prompt, records, error);
+	return venture_ai_service_complete_for_organization(service, organization_ids[0], prompt, records, error);
 }

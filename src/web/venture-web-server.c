@@ -46,6 +46,7 @@ typedef struct
 typedef struct
 {
 	gint64			 thread_id;
+	gint64 organization_id;
 	gint64			 user_id;
 	gchar			*model_text;
 	GPtrArray		*history;
@@ -143,6 +144,7 @@ struct _VentureWebServer
 };
 
 G_DEFINE_FINAL_TYPE(VentureWebServer, venture_web_server, G_TYPE_OBJECT)
+#include "ai/venture-ai-organization-web.inc"
 
 static void venture_web_append_lead_actions(GString *html, VentureEntity *record);
 static void venture_web_mail_append_actions(VentureWebServer *self, GString *html, VentureEntity *record);
@@ -1970,8 +1972,8 @@ venture_web_page(
 			/* Saying why the assistant is inert beats a box that
 			 * silently does nothing when you type in it. */
 			g_string_append(html, "<div class=\"notice info\">"
-			                      "AI is not configured. Set a provider API "
-			                      "key and restart to enable it.</div>");
+			                      "AI is disabled. An administrator can enable the module "
+			                      "and configure each organization.</div>");
 		}
 
 		g_string_append(html, "</div>");
@@ -1988,8 +1990,9 @@ venture_web_page(
 
 		g_string_append(html,
 			"<form class=\"chat-input\" hx-post=\"/ui/chat\" "
-			"hx-target=\"#chat-log\" hx-swap=\"beforeend\">"
-			"<input type=\"hidden\" id=\"chat-thread\" name=\"thread\" "
+			"hx-target=\"#chat-log\" hx-swap=\"beforeend\">");
+		venture_web_ai_append_organization(self, html, "chat-organization", "New conversation organization");
+		g_string_append(html, "<input type=\"hidden\" id=\"chat-thread\" name=\"thread\" "
 			"value=\"\">"
 			"<input type=\"hidden\" id=\"chat-attach-ids\" "
 			"name=\"attachments\" value=\"\">"
@@ -3878,6 +3881,7 @@ venture_web_stripe_webhook(HtmxRequest *request, GHashTable *params, gpointer us
 	return response;
 }
 #include "stripe/venture-stripe-web.inc"
+#include "ai/venture-ai-settings-web.inc"
 #include "mail/venture-mail-settings-web.inc"
 #include "payables/venture-payables-web.inc"
 #include "claims/venture-claims-web.inc"
@@ -10575,6 +10579,8 @@ venture_web_ui_entities(
 			g_string_append_printf(content, "<a class=\"btn btn-sm\" href=\"/organizations/%" G_GINT64_FORMAT "/settings/stripe\">Stripe settings</a> ", id);
 		if (venture_context_module_enabled(self->context, "oidc"))
 			g_string_append_printf(content, "<a class=\"btn btn-sm\" href=\"/organizations/%" G_GINT64_FORMAT "/settings/oidc\">Sign-in settings</a> ", id);
+		if (venture_context_module_enabled(self->context, "ai_providers"))
+			g_string_append_printf(content, "<a class=\"btn btn-sm\" href=\"/organizations/%" G_GINT64_FORMAT "/settings/ai\">AI settings</a> ", id);
 
 		/*
 		 * Deleting names its own consequence. When the entity still
@@ -14549,68 +14555,15 @@ venture_web_ui_harness(
 	                         "<form method=\"post\" action=\"/harness\" "
 	                         "class=\"harness-open\">");
 
+	venture_web_ai_append_organization(self, content, "harness-organization", "Coding organization");
 	g_string_append(content, "<div class=\"form-row\">"
 	                         "<div class=\"field\"><label>"
 	                         "<span class=\"field-label\">Name</span>"
 	                         "<input type=\"text\" name=\"name\" "
 	                         "placeholder=\"What this is for\" required>"
 	                         "</label></div>"
-	                         "<div class=\"field\"><label>"
-	                         "<span class=\"field-label\">Provider</span>"
-	                         "<select name=\"provider\" data-provider-select>");
-
-	/*
-	 * Every provider ai-glib can build, in its own order, with the CLI
-	 * ones said so: which kind it is decides whether the session can
-	 * edit files with the agent's own tools or VENTURE's, and it is not
-	 * inferable from a name like "antigravity".
-	 */
-	{
-		const gchar *const *providers;
-		gsize p;
-
-		providers = venture_ai_providers();
-
-		for (p = 0; (NULL != providers) && (NULL != providers[p]); p++)
-		{
-			g_string_append(content, "<option value=\"");
-			venture_html_escape_append(content, providers[p]);
-			g_string_append(content, "\"");
-
-			if (0 == g_strcmp0(providers[p], "claude-code"))
-				g_string_append(content, " selected");
-
-			g_string_append(content, ">");
-			venture_html_escape_append(content, providers[p]);
-			g_string_append(content,
-				venture_ai_provider_is_cli(providers[p])
-					? " (CLI)" : " (API)");
-			g_string_append(content, "</option>");
-		}
-	}
-
-	/*
-	 * The model and the effort are filled in from /ui/models when a
-	 * provider is chosen, and again whenever it changes. Rendered empty
-	 * rather than pre-filled for the default provider so there is one
-	 * path that populates them rather than two that can disagree; with
-	 * scripting off both fall back to a text box, which still works
-	 * because the service takes a model by name.
-	 */
-	g_string_append(content, "</select></label></div>"
-	                         "<div class=\"field\" data-model-field><label>"
-	                         "<span class=\"field-label\">Model</span>"
-	                         "<input type=\"text\" name=\"model\" "
-	                         "data-model-input "
-	                         "placeholder=\"the provider's default\">"
-	                         "</label></div>"
-	                         "<div class=\"field\" data-effort-field hidden>"
-	                         "<label>"
-	                         "<span class=\"field-label\">Effort</span>"
-	                         "<input type=\"text\" name=\"effort\" "
-	                         "data-effort-input "
-	                         "placeholder=\"the provider's default\">"
-	                         "</label></div></div>");
+	                         "</div><input type=\"hidden\" name=\"provider\" value=\"organization\">"
+	                         "<p>The selected organization's coding provider and model are used. Configure them in its AI settings before sending a turn. Credentials are never loaded from the host environment.</p>");
 
 	g_string_append(content, "<div class=\"form-row\">"
 	                         "<div class=\"field\"><label>"
@@ -14938,6 +14891,8 @@ venture_web_ui_harness_open(
 	spec.effort = htmx_request_get_form_value(request, "effort");
 	spec.workspace = htmx_request_get_form_value(request, "workspace");
 	spec.user_id = principal->user_id;
+	spec.organization_id = venture_web_ai_organization(self, htmx_request_get_form_value(request, "organization_id"), &error);
+	if (!spec.organization_id) return venture_web_error_response(error);
 
 	{
 		const gchar *repo;
@@ -15570,6 +15525,10 @@ venture_web_ui_chat_upload(
 	g_autoptr(JsonNode) node = NULL;
 	HtmxUploadedFile *file;
 	VentureActor actor;
+	g_autoptr(GHashTable) form = NULL;
+	g_autoptr(VentureAccessScope) organization_scope = NULL;
+	g_autoptr(VentureChatThread) thread = NULL;
+	gint64 organization_id = 0;
 
 	self = user_data;
 	{
@@ -15590,7 +15549,7 @@ venture_web_ui_chat_upload(
 
 	files = htmx_uploaded_file_parse_multipart(
 		htmx_request_get_content_type(request),
-		htmx_request_get_body_bytes(request), NULL, &error);
+		htmx_request_get_body_bytes(request), &form, &error);
 
 	if ((NULL == files) || (0 == files->len))
 	{
@@ -15601,6 +15560,13 @@ venture_web_ui_chat_upload(
 		return venture_web_error_response(error);
 	}
 
+	if (form && !venture_string_is_empty(g_hash_table_lookup(form, "thread"))) {
+		thread = venture_web_chat_get_thread(self, principal, g_ascii_strtoll(g_hash_table_lookup(form, "thread"), NULL, 10), &error);
+		if (!thread) return venture_web_error_response(error);
+		organization_id = venture_entity_get_organization_id(VENTURE_ENTITY(thread));
+	} else organization_id = venture_web_ai_organization(self, form ? g_hash_table_lookup(form, "organization_id") : NULL, &error);
+	if (!organization_id) return venture_web_error_response(error);
+	organization_scope = venture_access_policy_enter_organization(venture_database_get_access_policy(venture_context_get_database(self->context)), principal, organization_id);
 	file = g_ptr_array_index(files, 0);
 
 	if (htmx_uploaded_file_get_size(file) > VENTURE_WEB_ATTACHMENT_MAX_BYTES)
@@ -15677,7 +15643,7 @@ venture_web_ui_chat_upload(
 		             "extracted-text", extracted,
 		             NULL);
 		venture_entity_set_organization_id(VENTURE_ENTITY(document),
-			venture_context_get_default_organization_id(self->context));
+			organization_id);
 
 		venture_auth_to_actor(principal, &actor);
 
@@ -16387,6 +16353,8 @@ venture_web_chat_stream_done(
 	g_autoptr(GString) html = NULL;
 	g_autofree gchar *answer = NULL;
 	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureAccessScope) organization_scope = venture_access_policy_enter_organization(
+		venture_database_get_access_policy(venture_context_get_database(stream->self->context)), stream->principal, stream->turn->organization_id);
 	VentureActor actor;
 
 	answer = venture_ai_service_answer_stream_finish(
@@ -16413,8 +16381,7 @@ venture_web_chat_stream_done(
 		             "role", VENTURE_CHAT_ROLE_ASSISTANT,
 		             "body", answer, NULL);
 		venture_entity_set_organization_id(VENTURE_ENTITY(stored),
-			venture_context_get_default_organization_id(
-				stream->self->context));
+			stream->turn->organization_id);
 
 		if (!venture_database_save(
 			venture_context_get_database(stream->self->context),
@@ -16463,7 +16430,9 @@ venture_web_ui_chat_stream(
 	g_autoptr(GError) error = NULL;
 	VentureWebChatTurn *turn;
 	VentureWebChatStream *stream;
-	VentureAiService *service;
+	g_autoptr(VentureAiService) service = NULL;
+	g_autoptr(VentureChatThread) thread = NULL;
+	g_autoptr(VentureAccessScope) organization_scope = NULL;
 	SoupServerMessage *message;
 
 	self = user_data;
@@ -16493,6 +16462,13 @@ venture_web_ui_chat_stream(
 		return venture_web_error_response(error);
 	}
 
+	thread = venture_web_chat_get_thread(self, principal, turn->thread_id, &error);
+	if (!thread || venture_entity_get_organization_id(VENTURE_ENTITY(thread)) != turn->organization_id) {
+		venture_web_chat_turn_free(turn);
+		if (!error) g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Conversation scope changed");
+		return venture_web_error_response(error);
+	}
+	organization_scope = venture_access_policy_enter_organization(venture_database_get_access_policy(venture_context_get_database(self->context)), principal, turn->organization_id);
 	message = htmx_request_get_message(request);
 
 	if (NULL == message)
@@ -16521,7 +16497,7 @@ venture_web_ui_chat_stream(
 	g_signal_connect(stream->connection, "closed",
 	                 G_CALLBACK(venture_web_chat_stream_closed), stream);
 
-	service = venture_context_get_ai_service(self->context);
+	if (venture_context_get_ai_service(self->context)) service = venture_ai_service_for_organization(venture_context_get_ai_service(self->context), turn->organization_id, &error);
 
 	/*
 	 * Reported down the stream rather than as a status: the connection
@@ -16573,6 +16549,9 @@ venture_web_ui_chat(
 	g_autoptr(GHashTable) staged_before = NULL;
 	g_autoptr(GDateTime) now = NULL;
 	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureAccessScope) organization_scope = NULL;
+	g_autoptr(VentureAiService) service = NULL;
+	gint64 organization_id = 0;
 	VentureActor actor;
 	const gchar *message;
 	const gchar *thread_param;
@@ -16642,6 +16621,8 @@ venture_web_ui_chat(
 	{
 		g_autofree gchar *title = NULL;
 
+		organization_id = venture_web_ai_organization(self, htmx_request_get_form_value(request, "organization_id"), &error);
+		if (!organization_id) return venture_web_error_response(error);
 		title = venture_truncate(message, 60);
 
 		thread = venture_chat_thread_new();
@@ -16649,7 +16630,7 @@ venture_web_ui_chat(
 		             "user-id", principal->user_id,
 		             "last-activity-at", now, NULL);
 		venture_entity_set_organization_id(VENTURE_ENTITY(thread),
-			venture_context_get_default_organization_id(self->context));
+			organization_id);
 
 		if (!venture_database_save(
 			venture_context_get_database(self->context),
@@ -16657,6 +16638,10 @@ venture_web_ui_chat(
 			return venture_web_error_response(error);
 	}
 
+	organization_id = venture_entity_get_organization_id(VENTURE_ENTITY(thread));
+	organization_scope = venture_access_policy_enter_organization(venture_database_get_access_policy(venture_context_get_database(self->context)), principal, organization_id);
+	service = venture_ai_service_for_organization(venture_context_get_ai_service(self->context), organization_id, &error);
+	if (!service) return venture_web_error_response(error);
 	thread_id = venture_entity_get_id(VENTURE_ENTITY(thread));
 
 	/*
@@ -16818,7 +16803,7 @@ venture_web_ui_chat(
 		             "role", VENTURE_CHAT_ROLE_USER,
 		             "body", stored_text->str, NULL);
 		venture_entity_set_organization_id(VENTURE_ENTITY(stored),
-			venture_context_get_default_organization_id(self->context));
+			organization_id);
 
 		if (!venture_database_save(
 			venture_context_get_database(self->context),
@@ -16842,7 +16827,7 @@ venture_web_ui_chat(
 		g_autofree gchar *token = NULL;
 
 		turn = g_new0(VentureWebChatTurn, 1);
-		turn->thread_id = thread_id;
+		turn->thread_id = thread_id; turn->organization_id = organization_id;
 		turn->user_id = principal->user_id;
 		turn->model_text = g_strdup(model_text->str);
 		turn->staged_before = g_hash_table_ref(staged_before);
@@ -16901,7 +16886,7 @@ venture_web_ui_chat(
 		g_autofree gchar *answer = NULL;
 
 		answer = venture_ai_service_answer_with_images(
-			venture_context_get_ai_service(self->context), history,
+			service, history,
 			model_text->str, images,
 			(const gchar *const *)image_types->pdata, principal,
 			&error);
@@ -16922,7 +16907,7 @@ venture_web_ui_chat(
 			             "role", VENTURE_CHAT_ROLE_ASSISTANT,
 			             "body", answer, NULL);
 			venture_entity_set_organization_id(VENTURE_ENTITY(stored),
-				venture_context_get_default_organization_id(self->context));
+				organization_id);
 
 			if (!venture_database_save(
 				venture_context_get_database(self->context),
@@ -29951,6 +29936,11 @@ venture_web_server_new(
 	                venture_web_ui_chat_thread_export, self);
 	htmx_router_post(router, "/ui/chat/thread/:id/delete",
 	                 venture_web_ui_chat_thread_delete, self);
+	htmx_router_get(router, "/organizations/:id/settings/ai", venture_web_ai_settings, self);
+	htmx_router_post(router, "/organizations/:id/settings/ai", venture_web_ai_settings, self);
+	htmx_router_get(router, "/settings/ai/platform", venture_web_ai_platform_settings, self);
+	htmx_router_post(router, "/settings/ai/platform", venture_web_ai_platform_settings, self);
+
 	htmx_router_post(router, "/ui/chat/upload", venture_web_ui_chat_upload,
 	                 self);
 	htmx_router_post(router, "/ui/chat/confirm/:id/approve",

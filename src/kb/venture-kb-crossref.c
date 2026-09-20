@@ -235,6 +235,7 @@ venture_kb_crossref_record(
 	VentureEntityRegistry *registry;
 	VentureConfig *config;
 	VentureDatabase *database;
+	g_autoptr(VentureAccessScope) organization_scope = NULL;
 	GType entity_type;
 	gint64 min_score = 60;
 	gint64 max_links = 5;
@@ -281,6 +282,8 @@ venture_kb_crossref_record(
 	}
 
 
+	organization_scope = venture_access_policy_enter_organization(venture_database_get_access_policy(database),
+		venture_access_policy_get_actor(venture_database_get_access_policy(database)), venture_entity_get_organization_id(record));
 	text = venture_kb_crossref_text_of(record);
 
 	/*

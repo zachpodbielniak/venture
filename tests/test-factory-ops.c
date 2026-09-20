@@ -1544,7 +1544,8 @@ test_ai_briefing_reads_the_actions(
 	g_clear_error(&error);
 
 	fixture_answer(fixture, "Checkout is down and nobody is on it.");
-	briefing = venture_ai_factory_briefing(fixture->context, NULL, 0, &error);
+	{ gint64 organization = venture_context_get_default_organization_id(fixture->context);
+		briefing = venture_ai_factory_briefing(fixture->context, &organization, 1, &error); }
 	g_assert_no_error(error);
 	g_assert_cmpstr(briefing, ==, "Checkout is down and nobody is on it.");
 	g_assert_nonnull(strstr(fixture->provider->prompt, "incident_without_fix"));

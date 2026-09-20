@@ -335,7 +335,7 @@ venture_ai_assist_triage(
 		"around are urgent.\n\n%s",
 		priorities, issue_types, VENTURE_ASSIST_UNTRUSTED);
 
-	reply = venture_ai_service_complete(service, prompt, transcript, error);
+	reply = venture_ai_service_complete_for_organization(service, venture_entity_get_organization_id(ticket), prompt, transcript, error);
 
 	if (NULL == reply)
 		return NULL;
@@ -468,7 +468,7 @@ venture_ai_assist_summarise(
 		"anything that is not in the text.\n\n"
 		VENTURE_ASSIST_UNTRUSTED, NULL);
 
-	return venture_ai_service_complete(service, prompt, transcript, error);
+	return venture_ai_service_complete_for_organization(service, venture_entity_get_organization_id(ticket), prompt, transcript, error);
 }
 
 gchar *
@@ -510,5 +510,5 @@ venture_ai_assist_draft_reply(
 		"preamble about what you are doing.\n\n%s",
 		aim, VENTURE_ASSIST_UNTRUSTED);
 
-	return venture_ai_service_complete(service, prompt, transcript, error);
+	return venture_ai_service_complete_for_organization(service, venture_entity_get_organization_id(ticket), prompt, transcript, error);
 }

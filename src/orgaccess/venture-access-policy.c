@@ -8,6 +8,7 @@ struct _VentureAccessPolicy
 	const VentureAuthPrincipal *actor;
 	guint decide_signal;
 	const gchar *read_action;
+	gint64 organization_id;
 };
 struct _VentureAccessScope
 {
@@ -16,6 +17,7 @@ struct _VentureAccessScope
 	const VentureAuthPrincipal *previous;
 	VentureAuthPrincipal *actor;
 	const gchar *previous_action;
+	gint64 previous_organization;
 };
 G_DEFINE_FINAL_TYPE(VentureAccessPolicy, venture_access_policy, G_TYPE_OBJECT)
 G_DEFINE_FINAL_TYPE(VentureAccessScope, venture_access_scope, G_TYPE_OBJECT)
@@ -95,6 +97,7 @@ scope_finalize(GObject *object)
 	VentureAccessScope *self = VENTURE_ACCESS_SCOPE(object);
 	self->policy->actor = self->previous;
 	self->policy->read_action = self->previous_action;
+	self->policy->organization_id = self->previous_organization;
 	g_clear_pointer(&self->actor, venture_auth_principal_free);
 	g_clear_object(&self->policy);
 	G_OBJECT_CLASS(venture_access_scope_parent_class)->finalize(object);
@@ -122,6 +125,10 @@ venture_access_policy_enter(VentureAccessPolicy *self, const VentureAuthPrincipa
 	scope->policy = g_object_ref(self);
 	scope->previous = self->actor;
 	scope->previous_action = self->read_action;
+	scope->previous_organization = self->organization_id;
+	/* An internal boundary starts independent work. Nested user scopes
+	 * retain restrictions instead of widening a paid organization's tools. */
+	if (!actor) self->organization_id = 0;
 	self->read_action = "read";
 	if (NULL != actor)
 	{
@@ -131,6 +138,20 @@ venture_access_policy_enter(VentureAccessPolicy *self, const VentureAuthPrincipa
 	}
 	self->actor = scope->actor;
 	return scope;
+}
+VentureAccessScope *
+venture_access_policy_enter_organization(VentureAccessPolicy *self,
+	const VentureAuthPrincipal *actor, gint64 organization_id)
+{
+	VentureAccessScope *scope = venture_access_policy_enter(self, actor);
+	self->organization_id = organization_id > 0 &&
+		(scope->previous_organization == 0 || scope->previous_organization == organization_id) ? organization_id : -1;
+	return scope;
+}
+gint64
+venture_access_policy_get_organization(VentureAccessPolicy *self)
+{
+	return self->organization_id;
 }
 const VentureAuthPrincipal *
 venture_access_policy_get_actor(VentureAccessPolicy *self)
@@ -425,6 +446,18 @@ venture_access_policy_can(VentureAccessPolicy *self, const VentureAuthPrincipal 
 		return refuse(error, TRUE);
 	if (!read && 0 != g_strcmp0(action, "write") && 0 != g_strcmp0(action, "delete"))
 		return refuse(error, FALSE);
+	org = VENTURE_IS_ORGANIZATION(entity) ? venture_entity_get_id(entity) : venture_entity_get_organization_id(entity);
+	if (self->organization_id != 0 && org != self->organization_id)
+		return refuse(error, TRUE);
+	if (g_type_get_qdata(G_OBJECT_TYPE(entity), g_quark_from_static_string("venture-access-platform")) && !administrator(actor))
+		return refuse(error, TRUE);
+	if (VENTURE_IS_INTEGRATION_CONNECTION(entity) && !administrator(actor)) {
+		g_autofree gchar *provider = NULL;
+		g_object_get(entity, "provider", &provider, NULL);
+		/* Platform offer credentials use a reserved, service-owned binding
+		 * identity. The billing organization's members do not own it. */
+		if (provider && g_str_has_prefix(provider, "platform-ai-")) return refuse(error, TRUE);
+	}
 	if (!administrator(actor))
 	{
 		/* Authentication and the account page need the caller's own row.
@@ -531,6 +564,11 @@ venture_access_policy_requires_approval(VentureAccessPolicy *self, const Venture
 	g_autoptr(VentureEntity) member = NULL;
 	g_autoptr(GError) veto = NULL;
 	gint role;
+	if (self->organization_id != 0 && venture_entity_get_organization_id(entity) != self->organization_id)
+	{
+		refuse(error, TRUE);
+		return FALSE;
+	}
 	if (administrator(actor))
 		return FALSE;
 	member = membership(self, actor, venture_entity_get_organization_id(entity));
@@ -581,7 +619,7 @@ venture_access_policy_find(VentureAccessPolicy *self, VentureQuery *query, GErro
 	for (i = 0; i < all->len; i++)
 	{
 		VentureEntity *entity = g_ptr_array_index(all, i);
-		if (!venture_access_policy_can(self, self->actor, self->read_action, entity, NULL))
+		if (!venture_access_policy_check_read(self, entity, NULL))
 			continue;
 		if (visible++ < offset)
 			continue;
@@ -596,7 +634,7 @@ venture_access_policy_check_write(VentureAccessPolicy *self, VentureEntity *enti
 {
 	g_autoptr(VentureEntity) previous = NULL;
 	g_autoptr(VentureAccessScope) internal = NULL;
-	if (NULL == self->actor)
+	if (NULL == self->actor && self->organization_id == 0)
 		return TRUE;
 	if (venture_entity_is_persisted(entity))
 	{
@@ -605,15 +643,19 @@ venture_access_policy_check_write(VentureAccessPolicy *self, VentureEntity *enti
 		g_clear_object(&internal);
 		if (NULL == previous)
 			return refuse(error, TRUE);
-		if (!venture_access_policy_can(self, self->actor, action, previous, error))
+		if (!(self->actor ? venture_access_policy_can(self, self->actor, action, previous, error) :
+			venture_access_policy_check_read(self, previous, error)))
 			return FALSE;
 	}
-	return venture_access_policy_can(self, self->actor, action, entity, error);
+	return self->actor ? venture_access_policy_can(self, self->actor, action, entity, error) :
+		venture_access_policy_check_read(self, entity, error);
 }
 
 gboolean
 venture_access_policy_check_read(VentureAccessPolicy *self, VentureEntity *entity, GError **error)
 {
+	gint64 org = VENTURE_IS_ORGANIZATION(entity) ? venture_entity_get_id(entity) : venture_entity_get_organization_id(entity);
+	if (self->organization_id != 0 && org != self->organization_id) return refuse(error, TRUE);
 	return NULL == self->actor || venture_access_policy_can(self, self->actor, self->read_action, entity, error);
 }
 gint64

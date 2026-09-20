@@ -5,7 +5,8 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * A thin wrapper over ai-glib's #AiEmbedder: which provider and which model
- * come from kb.* configuration, and the storage format is this file's own.
+ * come from an organization embedding binding, and the storage format is this
+ * file's own.
  *
  * The embedding provider is configured separately from the assistant's on
  * purpose. They answer different questions -- the assistant is whichever
@@ -43,20 +44,31 @@ G_DECLARE_FINAL_TYPE(VentureEmbedder, venture_embedder, VENTURE, EMBEDDER,
  * @config: the configuration to read the provider, URL and model from
  * @error: (out) (optional): return location for a #GError
  *
- * Builds an embedding client from kb.embedding_* configuration.
+ * This legacy configuration-only constructor now refuses ambient credentials.
+ * Select an explicit corpus owner with venture_embedder_new_for_organization().
+ * Existing kb.embedding_model values remain migration input, independent of
+ * chat configuration; operators must choose their organization explicitly.
  *
- * Fails rather than falling back when the provider name is not one it
- * knows: an install that quietly indexed with the wrong service would
- * produce a corpus whose vectors are all in the wrong space, and nothing
- * about the results would look broken -- just uniformly poor.
- *
- * Returns: (transfer full) (nullable): the client, or %NULL
+ * Returns: (transfer full) (nullable): always NULL with a migration error
  */
 VentureEmbedder *
 venture_embedder_new(
 	VentureConfig	 *config,
 	GError		**error
 );
+
+/**
+ * venture_embedder_new_for_organization:
+ * @context: application context
+ * @organization_id: explicit corpus owner
+ * @error: (out) (optional): missing binding or access refusal
+ *
+ * Resolves the independent encrypted embedding configuration. Chat model
+ * changes never alter this client's model, and ambient credentials are ignored.
+ * Returns: (transfer full) (nullable): a quota-accounted organization embedder
+ */
+VentureEmbedder *venture_embedder_new_for_organization(VentureContext *context,
+	gint64 organization_id, GError **error);
 
 /**
  * venture_embedder_get_provider:

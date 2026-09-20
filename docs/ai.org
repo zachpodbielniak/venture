@@ -14,20 +14,16 @@ deletion, same audit trail. What differs is authority.
 
 * Setup
 
-#+begin_src yaml
-ai:
-  enabled: true
-  provider: "claude"          # claude openai gemini grok ollama claude-code opencode
-  model: "claude-sonnet-5"
-  policy: "confirm_writes"    # read_only | confirm_writes | autonomous
-#+end_src
+Enable =ai.enabled=, then configure each organization's =chat= binding through
+[[file:ai-organizations.org][Organization AI settings]]. Select its HTTP provider and model and supply its
+write-only encrypted API key, or explicitly select a platform grant offered
+by a platform administrator. Chat, coding and embedding have separate bindings.
 
-The key comes from the provider's conventional environment variable
-(=ANTHROPIC_API_KEY=, =OPENAI_API_KEY=, ...) or from whichever variable
-=ai.api_key_env= names. It never lives in the configuration file.
-
-With no key the server still runs; the AI panel says AI is not configured
-rather than silently doing nothing.
+=ai.policy= still controls staged writes (=read_only=, =confirm_writes= or
+=autonomous=). Legacy =ai.provider=, =ai.model= and environment key settings
+are retained for configuration compatibility; they no longer authorize a
+provider call. Missing, disabled and revoked bindings fail without fallback.
+The server continues serving ordinary records when AI is unavailable.
 
 * The panel
 
@@ -91,7 +87,11 @@ Type =#= and the menu lists the knowledge bases you may read, by slug. The passa
 
 ** Replies arrive as they are written
 
-An answer is streamed. The panel shows an empty bubble the moment you send, and the model's prose fills it in a word at a time, with a caret at the end so a pause reads as thinking rather than as a hang. While the model is off calling a tool — reading a record, running a report — the bubble says which one instead of sitting silent, which is the difference between a slow answer and an interface that looks stuck.
+The panel opens an answer bubble as soon as the turn starts and receives
+progress through its event connection. Organization-scoped providers buffer
+the model reply until the binding and local authority have been revalidated;
+unvalidated partial provider text is never shown. Tool progress remains
+visible while the assistant works.
 
 It is two requests. The =POST= stores the question, works out what the model will be shown — the replayed history, the attachments, the page you are on — and parks it behind a one-shot token; a =GET= on =/ui/chat/stream/<token>= holds a connection open and answers it. The token is spent on use, expires after two minutes, and belongs to the person who asked: anyone else's is indistinguishable from one that never existed. Nothing about the conversation travels in the URL.
 

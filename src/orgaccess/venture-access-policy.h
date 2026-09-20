@@ -54,6 +54,27 @@ gboolean venture_access_policy_requires_approval(VentureAccessPolicy *self, cons
  */
 VentureAccessScope *venture_access_policy_enter(VentureAccessPolicy *self, const VentureAuthPrincipal *actor);
 /**
+ * venture_access_policy_enter_organization:
+ * @self: policy
+ * @actor: (nullable): copied principal; NULL is trusted internal work
+ * @organization_id: positive organization boundary
+ *
+ * Restricts user reads, writes and proposals to one organization, including
+ * global administrators. Nested user scopes retain the boundary; attempting
+ * to change an enclosing organization refuses all records. A trusted internal
+ * scope is independent, and restores its predecessor on release. This is a
+ * synchronous scope: callbacks must enter their own captured authority.
+ * Returns: (transfer full): scope, released in reverse entry order
+ */
+VentureAccessScope *venture_access_policy_enter_organization(VentureAccessPolicy *self,
+	const VentureAuthPrincipal *actor, gint64 organization_id);
+/**
+ * venture_access_policy_get_organization:
+ * @self: policy
+ * Returns: current positive organization, zero if unbound, or -1 if refused
+ */
+gint64 venture_access_policy_get_organization(VentureAccessPolicy *self);
+/**
  * venture_access_policy_get_actor:
  * @self: the policy
  *

@@ -55,12 +55,14 @@ fixture_set_up(
 	fixture->context = venture_context_new(fixture->config, fixture->database);
 
 	forge = venture_forge_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(forge), venture_context_get_default_organization_id(fixture->context));
 	g_object_set(forge, "name", "Home", "base-url",
 	             "https://git.example.com", "active", TRUE, NULL);
 	g_assert_true(venture_database_save(fixture->database,
 	                                    VENTURE_ENTITY(forge), NULL, NULL));
 
 	repo = venture_forge_repo_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(repo), venture_context_get_default_organization_id(fixture->context));
 	g_object_set(repo, "name", "zach/venture", "forge-id",
 	             venture_entity_get_id(VENTURE_ENTITY(forge)),
 	             "default-branch", "master", "active", TRUE, NULL);
@@ -69,6 +71,7 @@ fixture_set_up(
 	fixture->repo_id = venture_entity_get_id(VENTURE_ENTITY(repo));
 
 	rule = venture_forge_rule_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(rule), venture_context_get_default_organization_id(fixture->context));
 	g_object_set(rule, "name", "bugs", "repo-id", fixture->repo_id,
 	             "issue-type", VENTURE_ISSUE_TYPE_BUG, "enabled", TRUE,
 	             "runner", VENTURE_FORGE_RUNNER_AGENT, NULL);
@@ -76,6 +79,7 @@ fixture_set_up(
 	                                    VENTURE_ENTITY(rule), NULL, NULL));
 
 	ticket = venture_ticket_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(ticket), venture_context_get_default_organization_id(fixture->context));
 	g_object_set(ticket, "title", "It crashes on save", "issue-type",
 	             VENTURE_ISSUE_TYPE_BUG, "repo-id", fixture->repo_id, NULL);
 	g_assert_true(venture_database_save(fixture->database,
@@ -423,6 +427,7 @@ test_work_session_workspace_is_gated(
 	g_assert_cmpint(g_mkdir_with_parents(sibling, 0755), ==, 0);
 
 	memset(&spec, 0, sizeof(spec));
+	spec.organization_id = venture_context_get_default_organization_id(fixture->context);
 	spec.name = "Fix the checkout";
 	spec.provider = "claude-code";
 	spec.workspace = inside;
@@ -528,6 +533,7 @@ test_work_session_turns_are_recorded(
 	g_assert_no_error(error);
 
 	memset(&spec, 0, sizeof(spec));
+	spec.organization_id = venture_context_get_default_organization_id(fixture->context);
 	spec.name = "Planning";
 	spec.provider = "claude-code";
 	session_id = venture_work_service_session_open(service, &spec, &error);

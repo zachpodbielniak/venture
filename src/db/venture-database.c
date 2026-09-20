@@ -1189,6 +1189,7 @@ check_subsystem_write(VentureDatabase *self, VentureEntity *entity, gboolean rem
 		venture_backup_schedule_check_write,
 		venture_crm_import_check_write,
 		venture_integration_check_write,
+		venture_ai_provider_check_write,
 		venture_projects_check_write,
 		venture_oidc_check_write
 	};
@@ -1739,7 +1740,7 @@ venture_database_find(
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), NULL);
 	g_return_val_if_fail(VENTURE_IS_QUERY(query), NULL);
 
-	if (NULL != venture_access_policy_get_actor(venture_database_get_access_policy(self))) return venture_access_policy_find(self->access_policy, query, error);
+	if (NULL != venture_access_policy_get_actor(venture_database_get_access_policy(self)) || venture_access_policy_get_organization(self->access_policy) != 0) return venture_access_policy_find(self->access_policy, query, error);
 
 	sql = venture_query_to_sql(query, venture_database_dialect(self), FALSE,
 	                           &params);
@@ -1784,7 +1785,7 @@ venture_database_count(
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), -1);
 	g_return_val_if_fail(VENTURE_IS_QUERY(query), -1);
 
-	if (NULL != venture_access_policy_get_actor(venture_database_get_access_policy(self))) return venture_access_policy_count(self->access_policy, query, error);
+	if (NULL != venture_access_policy_get_actor(venture_database_get_access_policy(self)) || venture_access_policy_get_organization(self->access_policy) != 0) return venture_access_policy_count(self->access_policy, query, error);
 
 	sql = venture_query_to_sql(query, venture_database_dialect(self), TRUE,
 	                           &params);
@@ -2635,6 +2636,7 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_projects_actions_register(self);
 		venture_activity_actions_register(self);
 		venture_stripe_actions_register(self);
+		venture_ai_provider_actions_register(self);
 	}
 	return self->actions;
 }

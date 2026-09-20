@@ -887,6 +887,11 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_mfa_policy_get_type,
 		venture_integration_connection_get_type,
 		venture_oidc_identity_get_type,
+		venture_ai_configuration_get_type,
+		venture_ai_platform_offer_get_type,
+		venture_ai_grant_get_type,
+		venture_ai_usage_period_get_type,
+		venture_ai_usage_get_type,
 		venture_project_scope_get_type,
 		venture_project_deliverable_get_type,
 	};
