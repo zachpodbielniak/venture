@@ -228,3 +228,10 @@ source-save transaction boundary.
 
 See [[file:security.org][Security: the second factor]]. Switching it off returns
 sign-in to password only.
+
+* Organization integrations
+
+The =integrations= module depends on =orgaccess= and owns
+=integration_connection=. It supplies the shared credential boundary described
+in [[file:integrations.org][organization integration credentials]]; enabling
+it does not implicitly connect a provider or borrow installation credentials.

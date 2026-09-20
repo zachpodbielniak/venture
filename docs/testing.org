@@ -605,3 +605,11 @@ card's Booked vs received line equals the report's own metric and reads
 report=, =bucket=week= reaches the report, the JSON agrees between the two,
 the report page keeps the option in its links, and a bad bucket comes back
 422 from both.
+
+* Organization integration credentials
+
+=make DEBUG=1 test-one T=test-integrations= exercises organization/account
+binding, authenticated encryption and redaction, rotation, stale versions,
+disconnection, historical identity and generic-write/permission refusals.
+See [[file:integrations.org][the integration contract]] for what this foundation
+does and the provider-level acceptance work still pending.

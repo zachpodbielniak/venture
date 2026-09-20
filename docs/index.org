@@ -128,3 +128,5 @@ Two binaries, both statically linked against every vendored dependency: =venture
 - [[file:navigation.org][Navigation]] — the sidebar grouped by the five questions: money in, money out, growth, customers, support
 
 - [[file:post-parity.org][Post-parity delivery]] — issue 125 defaults, scope and acceptance evidence
+
+- [[file:integrations.org][Organization integration credentials]] — encrypted provider bindings, rotation and disconnect

@@ -92,6 +92,7 @@
 #include "receivables/venture-invoice-state-machine.h"
 #include "model/venture-venture-type.h"
 #include "model/venture-entity-registry.h"
+#include "model/venture-integration-connection.h"
 #include "model/venture-module.h"
 #include "orgaccess/venture-access-records.h"
 #include "periods/venture-period-records.h"
@@ -211,6 +212,7 @@
 #include "core/venture-confirmation-store.h"
 
 #include "core/venture-context.h"
+#include "core/venture-integration.h"
 #include "mail/venture-mail-consumers.h"
 #include "core/venture-federation.h"
 #include "ledger/venture-posting-rule.h"
