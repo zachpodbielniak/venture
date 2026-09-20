@@ -12,14 +12,134 @@ allocation that prevents double billing.
 
 #+begin_src sh
 venturectl create client_project customer_id=1 name=Website currency=USD billing_kind=time
-venturectl create project_rate project_id=1 role=engineer 'billing_rate=150 USD' 'cost_rate=80 USD'
+venturectl create project_rate project_id=1 role=engineer 'billing_rate=150 USD' 'cost_rate=80 USD' 'cost_rate=80 USD'
 #+end_src
 
 =venture_project_service_approve_time()= computes the billable amount from the
 hourly rate over exact minutes. =venture_project_service_bill()= issues one
 invoice through =VentureSettlementService= for every approved unbilled row.
 Generic writes cannot create =project_billing= rows. The =project_margin=
-report totals billed amounts by project.
+report separates budget, billed revenue, unbilled work, actual cost and
+management profit, with source evidence and explicit unknown costs.
 
 A second bill of the same time or cost is refused. Retainer and change-order
 links use ordinary =record_link= rows to the project and quote.
+
+* Profitability contract
+
+=project_margin= now reports management profitability with explicit columns:
+
+| Column | Meaning |
+|--------+---------|
+| =budget= | Current whole-project budget, not prorated to the report period |
+| =billed= | Frozen project billing allocations, dated by their invoice's issue time |
+| =unbilled= | Approved time and billable pass-through costs occurring in the period that had no billing allocation before the period end |
+| =known_cost= | Frozen labour cost plus recorded pass-through costs with known amounts |
+| =actual_cost= | Known cost only when every included source has cost evidence; otherwise null |
+| =profit= | Billed revenue minus actual cost; null when actual cost is unknown |
+| =unknown_cost= | Count of included sources whose actual cost is unknown |
+| =undated= | Count of otherwise relevant source rows excluded because their required date is absent |
+| =sources= | Exact =project_time:ID=, =project_cost:ID= and =project_billing:ID= evidence used in the row |
+
+Each project has its own currency. There is no portfolio total across
+currencies, no conversion and no use of doubles for money. Historical mixed
+currency evidence refuses the report instead of hiding a currency or
+inventing an exchange rate. New amounts must be nonnegative in the project's
+currency. A persisted project cannot change currency; create a separate
+project for a different currency. A historical project with no currency may
+be assigned one explicitly only when every retained source amount agrees;
+its amounts are never relabelled or converted. All project references must belong to its
+organization, and a time entry's rate must belong to that same project.
+Saved project records cannot be reassigned to another organization.
+
+With no period, the report includes all recorded source dates, including
+legacy undated rows. A period is half-open: start included, end excluded.
+Labour and pass-through costs use =occurred_at=; billed allocations use the
+invoice's =issued_at=. Undated evidence is excluded and counted when a period
+is supplied. A later invoice does not remove work from an earlier period's
+unbilled figure. Approval is assessed from retained current approval state;
+this is not a historical approval-status snapshot. Changing an unbilled cost
+changes the current management report. The budget is also current.
+
+Management profit is not statutory recognized revenue, cash received or an
+accrual matching calculation. In particular, work performed in January and
+billed in February appears as January cost and February billed revenue.
+Credits, refunds, taxes, write-offs and recognition schedules remain in the
+accounting reports; =billed= here measures the original project allocations,
+not net revenue after those adjustments. Unbilled work is shown separately
+and is never added to profit.
+
+A =project_cost.amount= is the operator-recorded actual pass-through cost,
+also used as its billable amount when =billable=true=. Nonbillable costs
+still reduce profit. An optional expense reference provides traceability;
+the service does not infer expense tax treatment, allocate one expense among
+projects or apply a markup. Enter the appropriate cost basis explicitly.
+
+* Approval and retained evidence
+
+Approval requires a positive minute count, an occurrence time, and a rate
+with explicit billing and labour-cost amounts. Zero cost is supported; an
+absent cost rate is not assumed to mean free labour. The shared approval
+service computes both amounts under the database lock with exact rational
+multiplication and half-to-even rounding, then stores =amount= and
+=actual_cost= on the approved time entry. Subsequent rate edits affect only
+later approvals. A failed approval leaves the caller's entry unchanged.
+
+Approved entries are immutable through every save path. Generic writes
+cannot assert approval or write frozen cost evidence; use the approval
+service. Approved time, billed source costs and all billing allocations
+cannot be deleted, restored or purged. Projects and rates referenced by
+source rows are also retained. This prevents deleting the
+allocation to invoice the same work twice. Draft time and unbilled costs
+remain editable. Approved-entry corrections require a separately designed
+correction workflow; direct rewriting of financial evidence is refused.
+
+The additive =000460_project_profitability= migration verifies the new
+nullable money columns and intentionally backfills nothing. Historical
+approved time lacks evidence of its historical cost rate: it remains
+unknown even if today's rate is populated. Its known-cost subtotal can be
+shown, but total actual cost and profit stay null. This is a management-data
+gap to investigate, never a zero-cost assumption.
+
+* Verification
+
+=test-projects= covers retained exact cost, rate changes, cross-project and
+currency refusal, generic approval refusal, delete/restore/purge guards,
+period-end unbilled work after later invoicing, source identities, historical
+schema upgrade with unknown cost, nonbillable costs, organization isolation,
+source sets larger than a page, generic actions, finance/sales/viewer access,
+stale staged approval, half-to-even rounding and overflow
+rollback, as well as the existing invoice and duplicate-billing tests.
+Run =make DEBUG=1 test-one T=test-projects=. The ordinary full suite and
+migration suite exercise fresh startup and optional module configurations.
+
+* Operator actions
+
+The generated project-time page offers *Approve time*. The project page
+provides *Invoice approved work* with an explicit invoice date. Both actions
+also use the common authenticated REST/action, CLI and assistant surfaces;
+organization access requires finance, organization administrator or owner
+authority, with at least editor-level global access. Viewer and sales-only
+members cannot approve or bill financial project records. Proposals may be
+staged and are rechecked at approval.
+
+#+begin_src sh
+venturectl describe project_time
+venturectl act project_time 7 approve
+venturectl act client_project 3 bill date=2026-01-12
+venturectl report project_margin --from 2026-01-01 --to 2026-01-31
+#+end_src
+
+The REST equivalents are =POST /api/v1/project_time/7/actions/approve= with
+={}=, and =POST /api/v1/client_project/3/actions/bill= with
+={"date":"2026-01-12"}=. These use the same service and authorization as the
+buttons. Bill creates and issues an invoice for all currently approved
+unbilled time and billable costs; an empty selection is refused. Time entry
+and rate records are created using their generated forms before approval.
+
+For backend parity, set =VENTURE_TEST_ACCOUNTING_POSTGRES_URI= to a disposable
+PostgreSQL database before running =test-projects=. Each fixture creates and
+removes its own schema; it never resets =public= or another fixture's data.
+Without that variable the suite uses SQLite in memory. These are correctness
+checks; a temporary-filesystem PostgreSQL fixture is not evidence of physical
+recovery targets or hosted capacity.

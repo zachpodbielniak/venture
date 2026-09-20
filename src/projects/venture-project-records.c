@@ -27,7 +27,8 @@ static const VentureFieldDecl time_fields[] = {
 	VENTURE_FIELD("minutes", "Minutes", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD("occurred-at", "When", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("approved", "Approved", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_MONEY("amount", "Billable amount", NULL)
+	VENTURE_FIELD_MONEY("amount", "Billable amount", NULL),
+	VENTURE_FIELD_MONEY("actual-cost", "Frozen labour cost", "Unknown for historical approvals without cost evidence")
 };
 VENTURE_DEFINE_ENTITY(VentureProjectTime, venture_project_time, time_fields)
 

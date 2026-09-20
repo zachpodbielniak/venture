@@ -1182,6 +1182,7 @@ check_subsystem_write(VentureDatabase *self, VentureEntity *entity, gboolean rem
 		venture_backup_schedule_check_write,
 		venture_crm_import_check_write,
 		venture_integration_check_write
+		venture_projects_check_write
 	};
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(guards); i++)
@@ -2622,6 +2623,7 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_crm_import_actions_register(self);
 		venture_dedupe_actions_register(self);
 		venture_mfa_actions_register(self);
+		venture_projects_actions_register(self);
 	}
 	return self->actions;
 }

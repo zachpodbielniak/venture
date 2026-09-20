@@ -7,8 +7,12 @@ struct _VentureProjectService
 	GObject parent_instance;
 	VentureDatabase *database;
 	VentureEntity *writing;
+	VentureEntity *approving;
 };
 G_DEFINE_FINAL_TYPE(VentureProjectService, venture_project_service, G_TYPE_OBJECT)
+
+static gboolean project_validate(VentureDatabase *database, VentureEntity *record,
+	VentureEntity *previous, gpointer user_data, GError **error);
 
 static gboolean
 refuse(GError **error, const gchar *message)
@@ -39,6 +43,7 @@ venture_project_service_get(VentureDatabase *database)
 	{
 		self = g_object_new(VENTURE_TYPE_PROJECT_SERVICE, NULL);
 		self->database = database;
+		venture_database_add_save_validator(database, VENTURE_TYPE_ENTITY, project_validate, self, NULL);
 		g_object_set_data_full(G_OBJECT(database), "venture-project-service", self, g_object_unref);
 	}
 	return self;
@@ -73,34 +78,44 @@ flag(VentureEntity *record, const gchar *field)
 gboolean
 venture_project_service_save(VentureProjectService *self, VentureEntity *record, const VentureActor *actor, GError **error)
 {
-	return write_owned(self, record, actor, error);
+	return venture_database_save(self->database, record, actor, error);
 }
 
 gboolean
 venture_project_service_approve_time(VentureProjectService *self, VentureEntity *time, const VentureActor *actor, GError **error)
 {
-	g_autoptr(VentureEntity) rate = NULL;
-	g_autoptr(VentureMoney) billing = NULL;
-	g_autoptr(VentureMoney) amount = NULL;
-	gint64 minutes, rate_id;
+	g_autoptr(VentureEntity) candidate = NULL;
+	g_autoptr(VentureEntity) previous = NULL;
+	gboolean ok = FALSE;
+	g_return_val_if_fail(VENTURE_IS_PROJECT_SERVICE(self), FALSE);
+	if (!G_TYPE_CHECK_INSTANCE_TYPE(time, VENTURE_TYPE_PROJECT_TIME))
+		return refuse(error, "approval requires a project time record");
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "client_project") == G_TYPE_INVALID)
 		return refuse(error, "projects module is disabled");
-	g_object_get(time, "minutes", &minutes, "rate-id", &rate_id, NULL);
-	if (minutes <= 0)
-		return refuse(error, "approved time needs positive minutes");
-	if (rate_id > 0)
+	/* Work on a detached proposal: validation/conflict must not leave the
+	 * caller holding an approval or version that never committed. */
+	candidate = g_object_new(VENTURE_TYPE_PROJECT_TIME, NULL);
+	venture_entity_copy_properties_from(candidate, time, FALSE);
+	g_object_set(candidate, "approved", TRUE, NULL);
+	if (!venture_database_begin(self->database, error)) return FALSE;
+	if (venture_entity_is_persisted(candidate))
 	{
-		rate = venture_database_get(self->database, VENTURE_TYPE_PROJECT_RATE, rate_id, error);
-		if (rate == NULL) return FALSE;
-		g_object_get(rate, "billing-rate", &billing, NULL);
-		if (billing == NULL)
-			return refuse(error, "the rate has no billing amount");
-		amount = venture_money_multiply_rational(billing, minutes, 60, error);
-		if (amount == NULL) return FALSE;
-		g_object_set(time, "amount", amount, NULL);
+		previous = venture_database_get(self->database, VENTURE_TYPE_PROJECT_TIME,
+			venture_entity_get_id(candidate), error);
+		if (previous == NULL) goto out;
 	}
-	g_object_set(time, "approved", TRUE, NULL);
-	return write_owned(self, time, actor, error);
+	self->approving = candidate;
+	/* Freeze before the save computes its audit diff. The validator repeats
+	 * the invariant inside the same transaction for every other writer. */
+	if (!project_validate(self->database, candidate, previous, self, error)) goto out;
+	if (!venture_database_save(self->database, candidate, actor, error)) goto out;
+	if (!venture_database_commit(self->database, error)) goto out;
+	venture_entity_copy_properties_from(time, candidate, FALSE);
+	ok = TRUE;
+out:
+	self->approving = NULL;
+	if (!ok) venture_database_rollback(self->database);
+	return ok;
 }
 
 static gboolean
@@ -293,72 +308,13 @@ venture_projects_save_hook(VentureDatabase *database, VentureEntity *record, con
 	return TRUE;
 }
 
-static VentureReportResult *
-project_margin_report(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
-{
-	VentureDatabase *db = venture_context_get_database(context);
-	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_CLIENT_PROJECT);
-	g_autoptr(GPtrArray) projects = NULL;
-	g_autoptr(VentureReportResult) result = venture_report_result_new("Project margin", period);
-	gint64 org = options != NULL ? venture_json_object_get_int(options, "organization_id", 0) : 0;
-	guint i;
-	(void)error;
-	if (org == 0) org = venture_context_get_default_organization_id(context);
-	venture_query_set_organization(query, org);
-	venture_query_set_limit(query, 0);
-	projects = venture_database_find(db, query, error);
-	if (projects == NULL) return NULL;
-	venture_report_result_add_column(result, "name", "Project", VENTURE_REPORT_COLUMN_TEXT);
-	venture_report_result_add_column(result, "billed", "Billed", VENTURE_REPORT_COLUMN_MONEY);
-	for (i = 0; i < projects->len; i++)
-	{
-		VentureEntity *project = g_ptr_array_index(projects, i);
-		g_autoptr(VentureQuery) bq = venture_query_new(VENTURE_TYPE_PROJECT_BILLING);
-		g_autoptr(GPtrArray) rows = NULL;
-		g_autoptr(VentureMoney) billed = NULL;
-		g_autofree gchar *name = NULL;
-		guint j;
-		venture_query_set_organization(bq, org);
-		if (!venture_query_add_filter_int(bq, "project-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(project), error))
-			return NULL;
-		rows = venture_database_find(db, bq, error);
-		if (rows == NULL) return NULL;
-		for (j = 0; j < rows->len; j++)
-		{
-			g_autoptr(VentureMoney) amount = NULL;
-			g_object_get(g_ptr_array_index(rows, j), "amount", &amount, NULL);
-			if (amount != NULL)
-			{
-				VentureMoney *next;
-				if (billed == NULL)
-					billed = venture_money_new_zero(venture_money_get_currency(amount));
-				next = venture_money_add(billed, amount, error);
-				if (next == NULL) return NULL;
-				venture_money_free(billed);
-				billed = next;
-			}
-		}
-		if (billed == NULL)
-		{
-			g_autoptr(VentureEntity) organization = venture_database_get(db, VENTURE_TYPE_ORGANIZATION, org, NULL);
-			g_autofree gchar *currency = NULL;
-			if (organization != NULL)
-				g_object_get(organization, "default-currency", &currency, NULL);
-			billed = venture_money_new_zero(currency != NULL && currency[0] != '\0' ? currency : "XXX");
-		}
-		g_object_get(project, "name", &name, NULL);
-		venture_report_result_begin_row(result);
-		venture_report_result_set_text(result, "name", name);
-		venture_report_result_set_money(result, "billed", billed);
-	}
-	return g_steal_pointer(&result);
-}
+#include "venture-project-profitability.inc"
 
 void
 venture_projects_register_reports(VentureReportRegistry *registry)
 {
 	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
-		"project_margin", "Project margin", "Billed time and costs by project.", project_margin_report)));
+		"project_margin", "Project margin", "Budget, billed revenue, approved unbilled work, frozen actual cost and management profit.", project_margin_report)));
 }
 
 /* Bind consent before this operation creates derived rows or enters nested

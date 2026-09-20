@@ -1820,6 +1820,13 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/docs/%2e%2e%2fventure.db"), ==, SOUP_STATUS_BAD_REQUEST);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/docs/../venture.db"), ==, SOUP_STATUS_FOUND);
 
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/project_time/1/actions/approve", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/client_project/1/actions/bill", NULL, "{\"date\":\"2026-01-12\"}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+
 }
 
 /*
