@@ -8,3 +8,27 @@ debit Cash and credit a configured liability, then release into income.
 Retention is held as a liability against AR and released the same way.
 
 Equal-percentage instalments receive distinct invoice numbers. Explicit progress amounts must use the contract currency, and failed currency arithmetic rolls back releases.
+
+* Customer retainers through the shared action forms
+
+A company's =Collect customer retainer= action records cash already received
+against an active liability account in the same organization. Supply an
+explicit currency with the amount. It does not charge a provider. The
+resulting =customer_retainer= offers =Release earned retainer= to recognize
+an earned portion as income; it neither issues nor settles an invoice.
+Both actions require organization finance, owner or administrator authority
+and the quotes module. The service owns the transaction and accounting
+consent, so these actions cannot be staged as a generic record change.
+
+#+begin_src sh
+venturectl act company 1 collect_retainer 'amount=250 USD' liability_account_id=12
+venturectl act customer_retainer 1 release 'amount=100 USD'
+venturectl act customer_retainer 1 release 'amount=150 USD'
+#+end_src
+
+Each explicit collection represents a separate cash receipt. Each release
+reduces the remaining liability; an over-release or a different currency is
+refused and leaves the journal and remaining balance unchanged. Do not
+record the same cash again as an ordinary invoice receipt. Linking the
+retainer to a project retains traceability, but invoice-billed project
+margin does not count this earned ledger income as a project invoice.

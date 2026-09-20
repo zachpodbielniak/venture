@@ -911,3 +911,15 @@ The added =/close/action-authority= case passes on both SQLite and
 PostgreSQL: organization editor membership is refused, promotion to finance
 enables opening, an invalid currency is refused, and membership revocation
 removes the authority immediately. This extends the close suite to 12 cases.
+
+* Retainer action accessibility (epic #125)
+
+The action-level regression failed because =company.collect_retainer= was
+absent. Its repaired path collects USD 250, releases USD 100 then USD 150,
+asserts cash USD 250 and zero remaining liability, and refuses another
+release, mixed currency and a non-liability account. The six-case SQLite
+suite also covers finance membership, immediate revocation, disabled quotes
+and generic-write refusal. The original five cases pass in a disposable
+PostgreSQL schema; the expanded six-case PostgreSQL run is recorded with
+its subsequent verification checkpoint. Actual authenticated server evidence
+is separate from these service/action tests.

@@ -1133,3 +1133,13 @@ service as the close convenience commands; `sign` requires
 account. These transactional actions cannot be staged. Organization finance,
 owner or administrator membership is required; signed/closed task evidence
 must be reopened before completion or waiver can change it.
+
+### Customer retainer actions
+
+`act company ID collect_retainer 'amount=250 USD' liability_account_id=N`
+records already-received cash against an active same-organization liability
+account. `act customer_retainer ID release 'amount=100 USD'` recognizes earned
+income and reduces the remaining liability. These finance-authorized actions
+cannot be staged. They do not charge a provider or settle an invoice. Never
+record the same cash again as an invoice receipt; a linked retainer remains
+separate from invoice-billed project margin.
