@@ -668,7 +668,7 @@ venture_database_begin_serializable(VentureDatabase *self, GError **error)
 	{
 		g_rec_mutex_unlock(&self->lock);
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
-			"Accounting approval must begin before the enclosing business transaction");
+			"A serializable operation must begin outside an enclosing business transaction");
 		return FALSE;
 	}
 	self->transaction = orm_connection_begin_transaction_with_isolation(self->connection,

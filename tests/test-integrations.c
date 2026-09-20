@@ -473,6 +473,162 @@ test_ambiguous_upgrade(Fixture *f, gconstpointer data)
 	g_assert_cmpint(venture_entity_get_organization_id(stored), ==, f->a);
 }
 
+/* A master-key change must cover inactive history as well as current accounts;
+ * otherwise an old payment's verified callback becomes unrecoverable. */
+static void
+test_master_key(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureIntegrationConnection) a = connect_account(f, f->a, "retained-A");
+	g_autoptr(VentureIntegrationConnection) b = connect_account(f, f->b, "retained-B");
+	g_autoptr(GBytes) old_key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(GBytes) new_key = g_bytes_new_static("abcdefghijklmnopqrstuvwxyz123456", 32);
+	g_autoptr(JsonNode) plain = NULL;
+	g_autoptr(VentureEntity) checked = NULL;
+	g_autofree gchar *before = NULL, *after = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 aid = venture_entity_get_id(VENTURE_ENTITY(a));
+	gint64 bid = venture_entity_get_id(VENTURE_ENTITY(b));
+	gint64 previous = venture_entity_get_version(VENTURE_ENTITY(a));
+	(void)data;
+	g_assert_true(venture_integration_service_disable(f->service, f->b, bid,
+		venture_entity_get_version(VENTURE_ENTITY(b)), NULL, &error));
+	g_object_get(a, "sealed-settings", &before, NULL);
+	g_assert_true(venture_integration_service_verify_key(f->service, &error));
+	g_assert_no_error(error);
+	checked = venture_database_get(f->db, VENTURE_TYPE_INTEGRATION_CONNECTION, aid, &error);
+	g_object_get(checked, "sealed-settings", &after, NULL);
+	g_assert_cmpstr(before, ==, after);
+	g_assert_cmpint(venture_entity_get_version(checked), ==, previous);
+	g_assert_true(venture_integration_service_rekey(f->service, new_key, NULL, &error));
+	g_assert_no_error(error);
+	plain = venture_integration_service_resolve(f->service, f->a, aid, FALSE, &error);
+	g_assert_no_error(error);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(plain), "secret_key"), ==, "retained-A");
+	g_clear_pointer(&plain, json_node_unref);
+	plain = venture_integration_service_resolve(f->service, f->b, bid, TRUE, &error);
+	g_assert_no_error(error);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(plain), "secret_key"), ==, "retained-B");
+	g_clear_pointer(&plain, json_node_unref);
+	plain = venture_integration_service_resolve_version(f->service, f->a, aid, previous, FALSE, &error);
+	g_assert_null(plain);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_clear_error(&error);
+	g_object_set_data(G_OBJECT(f->db), "venture-integration-service", NULL);
+	f->service = venture_integration_service_get(f->db);
+	g_assert_true(venture_integration_service_set_key(f->service, old_key, &error));
+	g_assert_false(venture_integration_service_verify_key(f->service, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_clear_error(&error);
+	plain = venture_integration_service_resolve(f->service, f->a, aid, FALSE, &error);
+	g_assert_null(plain);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_clear_error(&error);
+	g_object_set_data(G_OBJECT(f->db), "venture-integration-service", NULL);
+	f->service = venture_integration_service_get(f->db);
+	g_assert_true(venture_integration_service_set_key(f->service, new_key, &error));
+	g_assert_true(venture_integration_service_verify_key(f->service, &error));
+	g_assert_no_error(error);
+	plain = venture_integration_service_resolve(f->service, f->b, bid, TRUE, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(plain);
+}
+
+/* A bad later envelope must roll back earlier rewrites and retain the process
+ * key; the operator must not end up with a database split between two keys. */
+static void
+test_master_key_rollback(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureIntegrationConnection) a = connect_account(f, f->a, "good-A");
+	g_autoptr(VentureIntegrationConnection) b = connect_account(f, f->b, "bad-B");
+	g_autoptr(GBytes) new_key = g_bytes_new_static("abcdefghijklmnopqrstuvwxyz123456", 32);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) plain = NULL;
+	g_autoptr(VentureEntity) current = NULL;
+	g_autofree gchar *sql = NULL, *before = NULL, *after = NULL;
+	gint64 aid = venture_entity_get_id(VENTURE_ENTITY(a));
+	(void)data;
+	g_object_get(a, "sealed-settings", &before, NULL);
+	sql = g_strdup_printf("UPDATE integration_connections SET sealed_settings='broken' WHERE id=%" G_GINT64_FORMAT,
+		venture_entity_get_id(VENTURE_ENTITY(b)));
+	g_assert_true(venture_database_execute(f->db, sql, NULL, &error));
+	g_assert_false(venture_integration_service_verify_key(f->service, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_clear_error(&error);
+	g_assert_false(venture_integration_service_rekey(f->service, new_key, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_clear_error(&error);
+	current = venture_database_get(f->db, VENTURE_TYPE_INTEGRATION_CONNECTION, aid, &error);
+	g_assert_no_error(error);
+	g_object_get(current, "sealed-settings", &after, NULL);
+	g_assert_cmpstr(before, ==, after);
+	g_assert_cmpint(venture_entity_get_version(current), ==, venture_entity_get_version(VENTURE_ENTITY(a)));
+	plain = venture_integration_service_resolve(f->service, f->a, aid, FALSE, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(plain);
+}
+
+static void
+test_master_key_scope(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GBytes) new_key = g_bytes_new_static("abcdefghijklmnopqrstuvwxyz123456", 32);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	VentureAuthPrincipal principal;
+	(void)data;
+	principal.user_id = 0; principal.token_id = 0;
+	principal.role = VENTURE_USER_ROLE_OWNER;
+	principal.name = (gchar *)"owner"; principal.authenticated = TRUE;
+	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+	g_assert_false(venture_integration_service_rekey(f->service, new_key, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error); g_clear_object(&scope);
+	g_assert_true(venture_database_begin(f->db, &error));
+	g_assert_false(venture_integration_service_rekey(f->service, new_key, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	g_assert_true(venture_database_commit(f->db, &error));
+	g_assert_no_error(error);
+}
+
+/* Ciphertext processing is paged, but commit is whole-workspace. Private
+ * history must remain recoverable after its owner's membership is revoked. */
+static void
+test_master_key_pages(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GBytes) new_key = g_bytes_new_static("abcdefghijklmnopqrstuvwxyz123456", 32);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) user = g_object_new(VENTURE_TYPE_USER,
+		"organization-id", f->a, "username", "retired-key-owner", "active", TRUE, NULL);
+	g_autoptr(VentureEntity) member = NULL;
+	g_autoptr(VentureIntegrationConnection) last = NULL;
+	g_autoptr(JsonNode) values = settings("private-page-tail"), plain = NULL;
+	guint i;
+	(void)data;
+	g_assert_true(venture_database_save(f->db, user, NULL, &error));
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "organization-id", f->a,
+		"user-id", venture_entity_get_id(user), "role", VENTURE_ORGANIZATION_ROLE_EDITOR,
+		"active", TRUE, NULL);
+	g_assert_true(venture_database_save(f->db, member, NULL, &error));
+	for (i = 0; i < 129; i++)
+	{
+		g_autofree gchar *provider = g_strdup_printf("private%u", i);
+		g_clear_object(&last);
+		last = venture_integration_service_configure_for_owner(f->service, f->a, provider,
+			"retained", "test", values, 0, venture_entity_get_id(user), NULL, &error);
+		g_assert_no_error(error); g_assert_nonnull(last);
+	}
+	g_object_set(member, "active", FALSE, NULL);
+	g_assert_true(venture_database_save(f->db, member, NULL, &error));
+	g_object_set(user, "active", FALSE, NULL);
+	g_assert_true(venture_database_save(f->db, user, NULL, &error));
+	g_assert_true(venture_integration_service_rekey(f->service, new_key, NULL, &error));
+	g_assert_no_error(error);
+	plain = venture_integration_service_resolve(f->service, f->a,
+		venture_entity_get_id(VENTURE_ENTITY(last)), FALSE, &error);
+	g_assert_no_error(error);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(plain), "secret_key"), ==, "private-page-tail");
+}
+
 int
 main(int argc, char **argv)
 {
@@ -488,6 +644,10 @@ main(int argc, char **argv)
 	g_test_add("/integrations/service-restart", Fixture, NULL, setup, test_service_restart, teardown);
 	g_test_add("/integrations/organization-admin", Fixture, NULL, setup, test_organization_admin, teardown);
 	g_test_add("/integrations/bounds-audit-lifecycle", Fixture, NULL, setup, test_bounds_audit_lifecycle, teardown);
+	g_test_add("/integrations/master-key", Fixture, NULL, setup, test_master_key, teardown);
+	g_test_add("/integrations/master-key-rollback", Fixture, NULL, setup, test_master_key_rollback, teardown);
+	g_test_add("/integrations/master-key-pages", Fixture, NULL, setup, test_master_key_pages, teardown);
+	g_test_add("/integrations/master-key-scope", Fixture, NULL, setup, test_master_key_scope, teardown);
 	g_test_add("/integrations/environment-key", Fixture, NULL, setup, test_environment_key, teardown);
 	return g_test_run();
 }

@@ -949,3 +949,12 @@ For a lost create response, `act stripe_checkout ID reconcile_collection
 provider_invoice_id=in_...` validates original account and opaque correlation,
 then permits explicit cancellation or signed-event recovery. Never manufacture
 payment evidence with CRUD or treat a successful pay request as settled cash.
+## Offline integration master-key maintenance
+
+These are server-binary operator commands, not venturectl actions. Stop the workspace,
+then run `venture --config FILE --check-integration-key` with its current private
+environment key. Rotate with `venture --config FILE --rotate-integration-key PRIVATE_FILE`;
+the new file must be owned, mode 600/400, single-link canonical base64 for 32 bytes.
+Update the environment secret, check again, then restart. Retain old keys for old
+backups. A lost commit response requires checking both candidates separately while
+stopped; never blindly retry rotation. See `docs/integration-key-maintenance.org`.

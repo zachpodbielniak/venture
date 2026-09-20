@@ -220,6 +220,7 @@
 
 #include "core/venture-context.h"
 #include "core/venture-integration.h"
+#include "core/venture-process-lease.h"
 #include "core/venture-connector.h"
 #include "oidc/venture-oidc-service.h"
 #include "mail/venture-mail-consumers.h"

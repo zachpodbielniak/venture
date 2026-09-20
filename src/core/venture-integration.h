@@ -26,6 +26,42 @@ VentureIntegrationService *venture_integration_service_get(VentureDatabase *data
  */
 gboolean venture_integration_service_set_key(VentureIntegrationService *self, GBytes *key, GError **error);
 /**
+ * venture_integration_service_rekey:
+ * @self: service for a stopped workspace
+ * @key: new 32-byte platform key, retained securely by the operator
+ * @actor: (nullable): maintenance audit identity
+ * @error: (out) (optional): redacted failure
+ *
+ * Re-encrypts every retained binding, including disabled accounts, in one
+ * independent serializable transaction. Call only during offline maintenance,
+ * before provider, automation or web services start; never expose as an action.
+ * Authenticated request scopes and enclosing transactions are refused. The
+ * service adopts the new key only after a confirmed commit. Failure before
+ * commit rolls back all envelopes. A lost commit response is indeterminate;
+ * retain both external keys and verify the database before restarting. Record versions advance, so
+ * stale queued credential snapshots must be explicitly revalidated/retried.
+ * Retain both external key files until the new configuration has restarted
+ * successfully; this function does not alter the operator's key storage.
+ *
+ * Returns: whether all bindings were re-encrypted and committed
+ */
+gboolean venture_integration_service_rekey(VentureIntegrationService *self,
+	GBytes *key, const VentureActor *actor, GError **error);
+/**
+ * venture_integration_service_verify_key:
+ * @self: service for a stopped workspace
+ * @error: (out) (optional): redacted failure
+ *
+ * Authenticates every retained credential with the current key in one
+ * independent transaction without changing envelopes or record versions.
+ * Uses the same offline-only scope as venture_integration_service_rekey().
+ * An empty repository verifies vacuously; it cannot identify a previous key.
+ *
+ * Returns: whether every retained credential authenticated
+ */
+gboolean venture_integration_service_verify_key(VentureIntegrationService *self,
+	GError **error);
+/**
  * venture_integration_service_configure:
  * @self: service
  * @organization_id: verified business organization

@@ -20,6 +20,11 @@
 
 #include <glib-unix.h>
 #include <stdlib.h>
+#include <glib/gstdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#include <openssl/crypto.h>
 
 typedef struct
 {
@@ -101,6 +106,62 @@ venture_configure_logging(VentureConfig *config)
 	g_log_set_always_fatal(G_LOG_LEVEL_ERROR);
 }
 
+static void
+venture_key_material_free(gpointer data)
+{
+	OPENSSL_cleanse(data, 32);
+	g_free(data);
+}
+
+/* Read through one non-following descriptor: inspecting then reopening a key
+ * by its path could read a different file. Never include contents in errors. */
+static GBytes *
+venture_read_rotation_key(const gchar *path, GError **error)
+{
+	gchar buffer[46];
+	guchar *decoded = NULL;
+	gchar *canonical = NULL;
+	gsize used = 0, length = 0;
+	GStatBuf metadata;
+	GBytes *result = NULL;
+	gint fd = g_open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC, 0);
+	gboolean valid = fd >= 0;
+	if (valid)
+		valid = fstat(fd, &metadata) == 0 && S_ISREG(metadata.st_mode) &&
+			metadata.st_uid == geteuid() && metadata.st_nlink == 1 &&
+			((metadata.st_mode & 0777) == 0600 || (metadata.st_mode & 0777) == 0400) &&
+			(metadata.st_size == 44 || metadata.st_size == 45);
+	while (valid && used < sizeof(buffer))
+	{
+		ssize_t count = read(fd, buffer + used, sizeof(buffer) - used);
+		if (count < 0 && errno == EINTR) continue;
+		if (count < 0) { valid = FALSE; break; }
+		if (count == 0) break;
+		used += (gsize)count;
+	}
+	if (fd >= 0 && close(fd) != 0) valid = FALSE;
+	valid = valid && (used == 44 || (used == 45 && buffer[44] == '\n'));
+	if (valid)
+	{
+		buffer[44] = '\0';
+		decoded = g_base64_decode(buffer, &length);
+		canonical = g_base64_encode(decoded, length);
+		valid = length == 32 && !strcmp(buffer, canonical);
+	}
+	if (valid)
+	{
+		result = g_bytes_new_with_free_func(decoded, 32, venture_key_material_free, decoded);
+		decoded = NULL;
+	}
+	else
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			"New key must be a current-user, single-link regular file, mode 600/400, containing canonical base64 for 32 random bytes");
+	OPENSSL_cleanse(buffer, sizeof(buffer));
+	if (canonical) { OPENSSL_cleanse(canonical, strlen(canonical)); g_free(canonical); }
+	if (decoded) { OPENSSL_cleanse(decoded, length); g_free(decoded); }
+	return result;
+}
+
 int
 main(
 	int	  argc,
@@ -109,6 +170,7 @@ main(
 	g_autoptr(GOptionContext) options = NULL;
 	g_autoptr(VentureConfig) config = NULL;
 	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(VentureProcessLease) process_lease = NULL;
 	g_autoptr(VentureContext) context = NULL;
 	g_autoptr(VentureWebServer) server = NULL;
 	g_autoptr(VentureAiService) ai = NULL;
@@ -120,11 +182,14 @@ main(
 	g_autofree gchar *database_uri = NULL;
 	g_autofree gchar *state_dir = NULL;
 	g_autofree gchar *owner_password = NULL;
+	g_autofree gchar *rotation_key_file = NULL;
+	g_autoptr(GBytes) rotation_key = NULL;
 	gboolean show_version = FALSE;
 	gboolean show_license = FALSE;
 	gboolean generate_config = FALSE;
 	gboolean generate_c_config = FALSE;
 	gboolean migrate_only = FALSE;
+	gboolean check_integration_key = FALSE;
 	gboolean no_ai = FALSE;
 	gboolean no_plugins = FALSE;
 	gboolean no_automation = FALSE;
@@ -143,6 +208,10 @@ main(
 		  "Port to listen on", "PORT" },
 		{ "owner-password", 0, 0, G_OPTION_ARG_STRING, &owner_password,
 		  "Password for the owner account created on first run", "PASSWORD" },
+		{ "rotate-integration-key", 0, 0, G_OPTION_ARG_FILENAME, &rotation_key_file,
+		  "Offline only: re-encrypt retained integration credentials with private FILE", "FILE" },
+		{ "check-integration-key", 0, 0, G_OPTION_ARG_NONE, &check_integration_key,
+		  "Offline only: authenticate retained credentials without changing them", NULL },
 		{ "migrate", 0, 0, G_OPTION_ARG_NONE, &migrate_only,
 		  "Apply schema migrations and exit", NULL },
 		{ "no-ai", 0, 0, G_OPTION_ARG_NONE, &no_ai,
@@ -224,6 +293,26 @@ main(
 		return 0;
 	}
 
+	if (rotation_key_file != NULL || check_integration_key)
+	{
+		if (migrate_only || owner_password != NULL || list_modules ||
+			(rotation_key_file != NULL && check_integration_key))
+		{
+			g_printerr("Key rotation is a separate offline maintenance command\n");
+			return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
+		}
+		if (rotation_key_file != NULL)
+			rotation_key = venture_read_rotation_key(rotation_key_file, &error);
+		if (rotation_key_file != NULL && rotation_key == NULL)
+		{
+			g_printerr("Key rotation: %s\n", error->message);
+			return venture_error_to_exit_code(VENTURE_ERROR_CONFIG);
+		}
+		no_plugins = TRUE;
+		no_automation = TRUE;
+		no_ai = TRUE;
+	}
+
 	config = venture_config_load(config_path, &error);
 
 	if (NULL == config)
@@ -231,6 +320,10 @@ main(
 		g_printerr("Configuration: %s\n", error->message);
 		return venture_error_to_exit_code(VENTURE_ERROR_CONFIG);
 	}
+
+	/* Rotating an existing workspace is not an implicit schema upgrade. */
+	if (rotation_key != NULL || check_integration_key)
+		g_object_set(config, "database-auto-migrate", FALSE, NULL);
 
 	/* Command-line options are the last word, applied after every file and
 	 * environment variable. */
@@ -314,6 +407,13 @@ main(
 	{
 		g_printerr("Database: %s\n", error->message);
 		return venture_error_to_exit_code(VENTURE_ERROR_DATABASE);
+	}
+
+	process_lease = venture_process_lease_acquire(database, venture_config_get_state_dir(config), &error);
+	if (process_lease == NULL)
+	{
+		g_printerr("Workspace: %s\n", error->message);
+		return venture_error_to_exit_code(VENTURE_ERROR_CONFLICT);
 	}
 
 	context = venture_context_new(config, database);
@@ -412,6 +512,25 @@ main(
 				return venture_error_to_exit_code(VENTURE_ERROR_MIGRATION);
 			}
 		}
+	}
+
+	if (rotation_key != NULL || check_integration_key)
+	{
+		VentureActor actor;
+		venture_auth_to_actor(NULL, &actor);
+		actor.name = g_get_user_name();
+		if (!(check_integration_key
+			? venture_integration_service_verify_key(venture_integration_service_get(database), &error)
+			: venture_integration_service_rekey(venture_integration_service_get(database),
+				rotation_key, &actor, &error)))
+		{
+			g_printerr("Key rotation: %s\n", error->message);
+			return venture_error_to_exit_code(VENTURE_ERROR_CONFIG);
+		}
+		if (check_integration_key)
+			g_print("All retained integration credentials authenticated; no envelopes changed. An empty repository cannot identify a previous key.\n");
+		else g_print("Integration credentials re-encrypted. Set VENTURE_INTEGRATION_KEY from the new file before restarting. Retain the old key for older backups.\n");
+		return 0;
 	}
 
 	if (migrate_only)

@@ -151,3 +151,4 @@ screen's ordinary sync-and-import test.
 - [[file:ai-organizations.org][Organization AI providers]] — explicit private/platform sources, grants, quotas and usage attribution.
 
 - [[file:stripe-automatic-demonstration.org][Automatic collection demonstration]] — explicit customer authorization, recurring invoice attempts, settlement and recovery.
+- [[file:integration-key-maintenance.org][Integration master-key maintenance]] — offline rotation, verification and process exclusion

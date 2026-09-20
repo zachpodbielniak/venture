@@ -394,3 +394,87 @@ venture_integration_service_disable(VentureIntegrationService *self, gint64 orga
 	g_object_set(entity, "enabled", FALSE, NULL);
 	return save_owned(self, entity, actor, error);
 }
+
+static gboolean
+maintain_key(VentureIntegrationService *self, GBytes *key,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureIntegrationService) encoder = NULL;
+	gint64 last = 0;
+	gboolean more = TRUE;
+	g_return_val_if_fail(VENTURE_IS_INTEGRATION_SERVICE(self), FALSE);
+	if (!self->database)
+		return refuse(error, VENTURE_ERROR_FAILED, "Integration repository is no longer available");
+	if (venture_access_policy_get_actor(venture_database_get_access_policy(self->database)))
+		return refuse(error, VENTURE_ERROR_PERMISSION_DENIED, "Master-key maintenance requires an offline platform scope");
+	if (!ensure_key(self, error)) return FALSE;
+	if (key != NULL)
+	{
+		encoder = g_object_new(VENTURE_TYPE_INTEGRATION_SERVICE, NULL);
+		if (!venture_integration_service_set_key(encoder, key, error)) return FALSE;
+	}
+	if (key != NULL && g_bytes_equal(self->key, key))
+		return refuse(error, VENTURE_ERROR_CONFLICT, "The new integration key must differ from the current key");
+	/* A nested commit could be rolled back after the process adopted its new
+	 * key. This existing outer-only primitive rules that state out. */
+	if (!venture_database_begin_serializable(self->database, error)) return FALSE;
+	while (more)
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INTEGRATION_CONNECTION);
+		g_autoptr(GPtrArray) rows = NULL;
+		guint i;
+		venture_query_set_limit(query, 128);
+		venture_query_set_include_deleted(query, TRUE);
+		if (!venture_query_add_filter_int(query, "id", VENTURE_FILTER_OP_GT, last, error) ||
+			!venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error)) goto fail;
+		rows = venture_database_find(self->database, query, error);
+		if (!rows) goto fail;
+		more = rows->len == 128;
+		for (i = 0; i < rows->len; i++)
+		{
+			VentureEntity *entity = g_ptr_array_index(rows, i);
+			g_autoptr(JsonNode) plain = NULL;
+			g_autofree gchar *sealed = NULL;
+			gint64 revision = 0;
+			g_object_get(entity, "credential-revision", &revision, NULL);
+			if (key != NULL && revision == G_MAXINT64)
+			{
+				refuse(error, VENTURE_ERROR_CONFLICT, "Integration revision limit reached");
+				goto fail;
+			}
+			plain = unseal(self, entity, error);
+			if (!plain) goto fail;
+			last = venture_entity_get_id(entity);
+			if (key == NULL) continue;
+			sealed = seal(encoder, entity, plain, error);
+			if (!sealed) goto fail;
+			g_object_set(entity, "sealed-settings", sealed, "credential-revision", revision + 1, NULL);
+			if (!save_owned(self, entity, actor, error)) goto fail;
+		}
+	}
+	if (!venture_database_commit(self->database, error)) return FALSE;
+	if (encoder != NULL)
+	{
+		g_clear_pointer(&self->key, g_bytes_unref);
+		self->key = g_steal_pointer(&encoder->key);
+	}
+	return TRUE;
+fail:
+	venture_database_rollback(self->database);
+	return FALSE;
+}
+
+gboolean
+venture_integration_service_rekey(VentureIntegrationService *self, GBytes *key,
+	const VentureActor *actor, GError **error)
+{
+	if (key == NULL)
+		return refuse(error, VENTURE_ERROR_CONFIG, "A new integration key is required");
+	return maintain_key(self, key, actor, error);
+}
+
+gboolean
+venture_integration_service_verify_key(VentureIntegrationService *self, GError **error)
+{
+	return maintain_key(self, NULL, NULL, error);
+}
