@@ -18309,41 +18309,6 @@ venture_web_ui_forge_token(
 	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER, &error)) return venture_web_error_response(error);
 	g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "Use forge settings to configure both encrypted credentials and their exact binding; legacy plaintext setters are disabled");
 	return venture_web_error_response(error);
-
-	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER,
-	                          &error))
-		return venture_web_error_response(error);
-
-	forge = venture_web_forge_load(self, params, &error);
-
-	if (NULL == forge)
-		return venture_web_redirect_to("/e/forge");
-
-	token = htmx_request_get_form_value(request, "token");
-
-	/*
-	 * An empty box leaves the existing token alone. Clearing a
-	 * credential is a deliberate act with its own control, because a
-	 * blank field submitted by accident must not silently disconnect a
-	 * forge and turn every later call into an authentication failure
-	 * nobody can explain.
-	 */
-	if (!venture_string_is_empty(token))
-	{
-		now = g_date_time_new_now_utc();
-		g_object_set(forge, "token", token, "token-set-at", now, NULL);
-
-		venture_auth_to_actor(principal, &actor);
-
-		if (!venture_database_save(venture_context_get_database(self->context),
-		                           VENTURE_ENTITY(forge), &actor, &error))
-			return venture_web_error_response(error);
-	}
-
-	destination = g_strdup_printf("/e/forge/%" G_GINT64_FORMAT,
-	                              venture_entity_get_id(VENTURE_ENTITY(forge)));
-
-	return venture_web_redirect_to(destination);
 }
 
 /* Retained authenticated legacy endpoint: use encrypted settings. */
@@ -18363,39 +18328,6 @@ venture_web_ui_forge_secret(
 	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER, &error)) return venture_web_error_response(error);
 	g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "Use forge settings to configure both encrypted credentials and their exact binding; legacy plaintext setters are disabled");
 	return venture_web_error_response(error);
-
-	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER,
-	                          &error))
-		return venture_web_error_response(error);
-
-	forge = venture_web_forge_load(self, params, &error);
-
-	if (NULL == forge)
-		return venture_web_redirect_to("/e/forge");
-
-	secret = htmx_request_get_form_value(request, "secret");
-
-	if (venture_string_is_empty(secret))
-	{
-		generated = venture_generate_token(32);
-		secret = generated;
-	}
-
-	now = g_date_time_new_now_utc();
-	g_object_set(forge, "webhook-secret", secret,
-	             "webhook-secret-set-at", now, NULL);
-
-	venture_auth_to_actor(principal, &actor);
-
-	if (!venture_database_save(venture_context_get_database(self->context),
-	                           VENTURE_ENTITY(forge), &actor, &error))
-		return venture_web_error_response(error);
-
-	destination = g_strdup_printf("/e/forge/%" G_GINT64_FORMAT "?secret=%s",
-	                              venture_entity_get_id(VENTURE_ENTITY(forge)),
-	                              secret);
-
-	return venture_web_redirect_to(destination);
 }
 
 /*

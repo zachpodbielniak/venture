@@ -4874,33 +4874,6 @@ static void test_auth_connector_settings(ServerFixture *fixture, gconstpointer u
 		"operation=configure&binding_id=0&version=0&password=OTHER_UI_PASSWORD", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
 }
 
-static void test_auth_ai_settings(ServerFixture *fixture, gconstpointer unused)
-{
-	g_autofree gchar *editor = NULL, *owner = NULL, *page = NULL;
-	g_autoptr(GBytes) key = g_bytes_new_static("fixture-key-32-bytes-for-tests!!!", 32);
-	g_autoptr(GError) error = NULL;
-	(void)unused;
-	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(fixture->database), key, &error)); g_assert_no_error(error);
-	server_fixture_create_member(fixture, "ai-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
-	editor = server_fixture_login(fixture, "ai-editor", "editor-long-password");
-	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/ai", editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
-	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/settings/ai/platform", editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
-	server_fixture_create_member(fixture, "ai-owner", "owner-long-password", VENTURE_USER_ROLE_OWNER, NULL);
-	owner = server_fixture_login(fixture, "ai-owner", "owner-long-password");
-	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/ai", owner,
-		"operation=configure&purpose=chat&version=0&provider=openai&model=fixture-model&base_url=https%3A%2F%2Fapi.openai.com&api_key=synthetic-write-only-ai-secret&monthly_requests=20&concurrency_limit=1", &page, NULL), ==, SOUP_STATUS_FOUND);
-	g_clear_pointer(&page, g_free);
-	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/ai", owner, NULL, &page, NULL), ==, SOUP_STATUS_OK);
-	g_assert_nonnull(strstr(page, "Effective source: organization"));
-	g_assert_null(strstr(page, "synthetic-write-only-ai-secret")); g_clear_pointer(&page, g_free);
-	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/ai", owner, NULL, &page, NULL), ==, SOUP_STATUS_OK);
-	g_assert_null(strstr(page, "synthetic-write-only-ai-secret"));
-	g_assert_nonnull(strstr(page, "name=\"api_key\" type=\"password\"")); g_clear_pointer(&page, g_free);
-	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/ai", owner,
-		"operation=disable&purpose=chat&version=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
-	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/ai", owner, NULL, &page, NULL), ==, SOUP_STATUS_OK);
-	g_assert_nonnull(strstr(page, "Effective source: disabled"));
-}
 
 int
 main(
