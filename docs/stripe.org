@@ -1,29 +1,49 @@
 #+title: Stripe payments
 #+description: Hosted Checkout for issued invoices and verified settlement
 
-* Configure the endpoint
+* Configure an organization account
 
-Stripe is opt-in. Set =stripe.enabled: true= in Venture's configuration.
-The module requires =receivables= and fails startup if its deployment
-configuration is incomplete. One endpoint serves the default organization;
-a Stripe session belonging to another organization cannot settle here.
+Stripe is opt-in: set =stripe.enabled: true=. It requires =receivables=,
+=integrations= and its organization-access prerequisite. The module table
+places Stripe after these dependencies so the bottom-up registry stays acyclic.
+An unconfigured organization does not prevent startup; its Checkout operation
+fails closed until an organization owner/admin connects it.
 
-The service builds an immutable StripeClient YAML configuration from these
-environment variables. No credential is stored in the repository or exposed
-through the settings API:
+Set the installation encryption key as documented in [[file:integrations.org][Organization integrations]].
+Open Stripe settings from the organization record, or visit
+=/organizations/<id>/settings/stripe= as that organization's owner/admin.
+Supply all seven fields: =secret_key=, =publishable_key=, =webhook_secret=,
+=api_version=, =success_url=, =cancel_url= and =environment= (=test= or =live=).
+Return URLs require HTTPS without embedded credentials. Account verification
+calls Stripe's authenticated =GET /v1/account= before saving. The account ID
+comes from Stripe; keys must match the selected environment. Connect accounts
+and restricted API keys are outside this adapter's current contract.
 
-| Variable | Meaning |
-|----------+---------|
-| =VENTURE_STRIPE_SECRET_KEY= | Server API credential |
-| =VENTURE_STRIPE_PUBLISHABLE_KEY= | Public credential required by StripeClient |
-| =VENTURE_STRIPE_WEBHOOK_SECRET= | This endpoint's signing secret |
-| =VENTURE_STRIPE_API_VERSION= | Explicit Stripe API version |
-| =VENTURE_STRIPE_SUCCESS_URL= | HTTPS destination after Checkout |
-| =VENTURE_STRIPE_CANCEL_URL= | HTTPS destination when the customer cancels |
+The page shows only account identity, environment and the exact webhook path.
+Every credential input starts blank, including after a failed submission.
+Settings are encrypted with authenticated organization/account/environment
+binding; generic records, CLI, AI tools and audit never return clear credentials.
+Test connection verifies current credentials still identify the bound account.
+Connect or rotate requires all values and the displayed connection identity
+and optimistic version. Stale forms cannot change a replacement connection.
+A same-account rotation takes effect on the next operation, including cached
+services. The previous webhook secret stops working immediately: coordinate
+rotation with Stripe's endpoint configuration; no overlap window is implied.
 
-Supply credentials through the deployment's environment or secret manager,
-then restart. Do not put them in source-controlled YAML. Success and cancel
-redirects are navigation only; neither records a receipt.
+Disconnect retains the historical binding and its encrypted credentials for
+outstanding signed callbacks. A different account or environment requires
+disconnect followed by connect. New invoices select the current connection;
+old pending Checkouts remain with their original account. A pending Checkout
+from any earlier account, including an unbound legacy row, refuses creation
+of another payment link until reconciled. Disconnecting never moves payment
+evidence or settles an invoice. Return-page navigation never records cash.
+
+Production reads no =VENTURE_STRIPE_*= credential fallback, including the
+default organization. The legacy environment constructor exists only when an
+explicit offline transport is injected in a C test. Existing installation
+credentials must be deliberately connected to each intended organization.
+The legacy =/webhooks/stripe= endpoint is unavailable in production; configure
+the connection-specific path shown on the settings page.
 
 * Dashboard and catalog setup
 
@@ -40,9 +60,9 @@ qualifies for Checkout when a =stripe_price_link= exists for that product.
 =billing collect= records an operator-confirmed receipt through an authorized =manual= customer payment method and recovers =past_due=. Processor mandates alone cannot record cash. Do not rewrite issued invoice evidence to
 pass eligibility.
 
-1. Configure an HTTPS webhook endpoint at =/webhooks/stripe= for
+1. Configure the HTTPS webhook endpoint at =/webhooks/stripe/<connection-id>= for
    =checkout.session.completed=. Select the same explicit API version used
-   by the deployment, and inject its signing secret into the environment.
+   in that organization’s settings, and save its signing secret there.
 2. Issue the Venture invoice through the normal settlement lifecycle.
    Use *Pay with Stripe* on its page, or =venturectl invoice checkout ID=.
 
@@ -135,3 +155,28 @@ Both Price validation and signed webhook settlement use Stripe's charge currency
 Only =POST /webhooks/stripe= uses independent signature authority; an incidental local browser session does not restrict or widen that capability. Signature, payload size and module guards still apply. Neighboring paths and other methods retain local authentication and organization policy.
 
 A lost chargeback requires an open dispute. Repeating the loss action is refused, including partial disputes, so the same dispute cannot reverse a second portion of its receipt.
+
+* Historical identity and upgrades
+
+Migration =000500_stripe_account_bindings= verifies the metadata upgrade.
+Customer mappings, price mappings, Checkouts, events, payouts and disputes
+reference the immutable integration connection. Identifiers are unique within
+=(organization, connection, identifier)=, so equal provider IDs in different
+accounts or environments do not collide. Payment external references and
+provider idempotency keys include the connection UUID. Payout and dispute
+operations refuse receipts recorded under another connection, including an
+earlier connection belonging to the same organization. Generic writers cannot
+rewrite customer mappings or payment evidence; catalog references are checked
+at save for the same organization and immutable binding.
+
+Old rows remain connection zero/NULL (one legacy partition); no migration
+infers their historical account from today's credentials. The shared scoped
+uniqueness migrator removes obsolete global/organization-only indexes while
+preserving other schema objects and rows. It refuses duplicates transactionally.
+Signed callbacks require the exact retained connection, matching event
+=livemode=, and a matching =account= when present. An unknown event is durably
+ignored only after these checks. Replacement accounts cannot claim old sessions.
+
+This adapter covers hosted invoice Checkout and verified receipts. It does not
+provision Lightsite, ACH mandates, automatic subscription charges, Stripe
+Connect delegation or account discovery across arbitrary credentials.

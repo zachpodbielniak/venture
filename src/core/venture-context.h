@@ -359,7 +359,7 @@ venture_context_get_plugin_manager(VentureContext *self);
 /**
  * venture_context_get_stripe_service:
  * @self: context
- * Returns: (transfer none) (nullable): the active provider; NULL when switched off
+ * Returns: (transfer none) (nullable): explicitly injected provider; NULL in production or when switched off
  */
 VentureStripeService *venture_context_get_stripe_service(VentureContext *self);
 /**
@@ -367,14 +367,14 @@ VentureStripeService *venture_context_get_stripe_service(VentureContext *self);
  * @self: context
  * @service: (nullable): configured provider
  *
- * Attaches the provider after configuration and schema startup.
+ * Attaches an explicit test provider. Production resolves an organization binding per operation.
  */
 void venture_context_set_stripe_service(VentureContext *self, VentureStripeService *service);
 /**
  * venture_context_start_stripe:
  * @self: context
  * @error: (out) (optional): module start error
- * Returns: TRUE when disabled or successfully started from deployment environment
+ * Returns: TRUE; organization credentials are resolved lazily, never from deployment defaults
  */
 gboolean venture_context_start_stripe(VentureContext *self, GError **error);
 /**

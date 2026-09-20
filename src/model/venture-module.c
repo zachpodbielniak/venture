@@ -530,7 +530,7 @@ static GType (*const venture_module_stripe_types[]) (void) = {
 	venture_processor_payout_get_type, venture_processor_payout_item_get_type,
 	venture_processor_dispute_get_type, venture_processor_exception_get_type, NULL
 };
-static const gchar *const venture_module_requires_stripe[] = { "receivables", NULL };
+static const gchar *const venture_module_requires_stripe[] = { "receivables", "integrations", NULL };
 
 static GType (*const venture_module_ledger_types[]) (void) = {
 	venture_journal_get_type, venture_journal_line_get_type,
@@ -846,11 +846,6 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		FALSE
 	},
 	{
-		"stripe", "Stripe", "Hosted Checkout and verified payment settlement.",
-		venture_module_requires_stripe, NULL, venture_module_stripe_types,
-		NULL, "stripe-enabled", FALSE
-	},
-	{
 		"outreach", "Outreach",
 		"Campaigns, newsletters, subscribers and posts, with revenue "
 		"attributed back to the campaign that earned it.",
@@ -1150,6 +1145,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"integrations", "Organization integrations",
 		"Organization-owned provider accounts and protected credential rotation.",
 		mfa_requires, NULL, integration_types, NULL, NULL, FALSE
+	},
+	{
+		"stripe", "Stripe", "Hosted Checkout and verified payment settlement.",
+		venture_module_requires_stripe, NULL, venture_module_stripe_types,
+		NULL, "stripe-enabled", FALSE
 	}
 };
 

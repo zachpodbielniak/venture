@@ -662,6 +662,10 @@ typedef struct {
 static const ProtocolCase protocol_cases[] = {
 	{ "/orgaccess/stripe-webhook-scope", HTMX_METHOD_POST, "/webhooks/stripe", TRUE },
 	{ "/orgaccess/private-stripe-webhook-get", HTMX_METHOD_GET, "/webhooks/stripe", FALSE },
+	{ "/orgaccess/stripe-bound-webhook-scope", HTMX_METHOD_POST, "/webhooks/stripe/17", TRUE },
+	{ "/orgaccess/private-stripe-bound-get", HTMX_METHOD_GET, "/webhooks/stripe/17", FALSE },
+	{ "/orgaccess/private-stripe-bound-suffix", HTMX_METHOD_POST, "/webhooks/stripe/17/extra", FALSE },
+	{ "/orgaccess/private-stripe-bound-nonnumeric", HTMX_METHOD_POST, "/webhooks/stripe/not-an-id", FALSE },
 	{ "/orgaccess/nested-protocol-scope", HTMX_METHOD_POST, "/hooks/forge/1", TRUE },
 	{ "/orgaccess/public-capture-scope", HTMX_METHOD_POST, "/f/token", TRUE },
 	{ "/orgaccess/public-quote-get", HTMX_METHOD_GET, "/q/token", TRUE },

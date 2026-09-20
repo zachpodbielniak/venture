@@ -565,12 +565,9 @@ venture_context_set_stripe_service(VentureContext *self, VentureStripeService *s
 gboolean
 venture_context_start_stripe(VentureContext *self, GError **error)
 {
-	g_autoptr(VentureStripeService) provider = NULL;
-	if (!venture_context_module_enabled(self, "stripe")) return TRUE;
-	provider = venture_stripe_service_new(self->database,
-		venture_context_get_default_organization_id(self), NULL, error);
-	if (!provider) return FALSE;
-	venture_context_set_stripe_service(self, provider);
+	/* Each verified invoice selects its own organization binding at use time. */
+	(void)self;
+	(void)error;
 	return TRUE;
 }
 

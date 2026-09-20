@@ -1227,6 +1227,11 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
 		"/tickets/1/assist?what=triage"), ==, SOUP_STATUS_UNAUTHORIZED);
 
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+		"/organizations/1/settings/stripe"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/organizations/1/settings/stripe", NULL, "operation=disconnect", NULL, NULL), ==, SOUP_STATUS_FOUND);
+
 	/* Payment actions authenticate before exposing module configuration. */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/invoices/1/checkout", NULL, "", NULL, NULL),

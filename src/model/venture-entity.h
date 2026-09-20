@@ -99,6 +99,23 @@ struct _VentureEntityClass
 	gpointer padding[8];
 };
 
+/**
+ * venture_entity_class_set_unique_partition:
+ * @klass: entity class with installed fields
+ * @property: persistent integer property partitioning organization uniqueness
+ *
+ * Extends UNIQUE_ORGANIZATION identifiers to (organization, partition, value).
+ * NULL and zero share the legacy unbound partition. Declare once in class_init;
+ * partition values must be checked by the owning subsystem's save validator.
+ */
+void venture_entity_class_set_unique_partition(VentureEntityClass *klass, const gchar *property);
+/**
+ * venture_entity_class_get_unique_partition:
+ * @klass: entity class
+ * Returns: (nullable): borrowed partition property, or NULL for organization scope
+ */
+const gchar *venture_entity_class_get_unique_partition(VentureEntityClass *klass);
+
 /* --- Identity ------------------------------------------------------------ */
 
 /**

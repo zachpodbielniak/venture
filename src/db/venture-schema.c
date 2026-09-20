@@ -289,6 +289,7 @@ venture_schema_append_index(
 	g_autofree gchar *quoted_column = NULL;
 	g_autofree gchar *index_name = NULL;
 	g_autofree gchar *target = NULL;
+	g_autofree gchar *partition_sql = NULL;
 
 	context = user_data;
 
@@ -296,15 +297,38 @@ venture_schema_append_index(
 	{
 		quoted_table = venture_schema_quote_identifier(context->table);
 		quoted_column = venture_schema_quote_identifier(column);
-		index_name = g_strdup_printf("uq_%s_organization_%s", context->table, column);
+		{
+			const gchar *partition = venture_entity_class_get_unique_partition(klass);
+			if (partition != NULL)
+			{
+				g_autofree gchar *partition_column = venture_entity_property_to_column(partition);
+				g_autofree gchar *quoted_partition = venture_schema_quote_identifier(partition_column);
+				partition_sql = g_strdup_printf("COALESCE(%s, 0), ", quoted_partition);
+				index_name = g_strdup_printf("uq_%s_organization_%s_%s", context->table, partition_column, column);
+				/* PostgreSQL truncates identifiers at 63 bytes. Preserve a
+				 * deterministic suffix so long plugin fields cannot collide. */
+				if (strlen(index_name) > 63)
+				{
+					g_autofree gchar *digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256, index_name, -1);
+					gchar *bounded = g_strdup_printf("%.46s_%.16s", index_name, digest);
+					g_free(index_name);
+					index_name = bounded;
+				}
+			}
+			else
+			{
+				partition_sql = g_strdup("");
+				index_name = g_strdup_printf("uq_%s_organization_%s", context->table, column);
+			}
+		}
 		/* Empty strings are unset identifiers. References are integers:
 		 * comparing them to an empty string is invalid on PostgreSQL. */
 		target = G_PARAM_SPEC_VALUE_TYPE(pspec) == G_TYPE_STRING
 			? g_strdup_printf(" AND %s <> ''", quoted_column) : g_strdup("");
 		g_ptr_array_add(context->statements,
 			g_strdup_printf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s "
-				"(\"organization_id\", %s) WHERE %s IS NOT NULL%s",
-				index_name, quoted_table, quoted_column, quoted_column, target));
+				"(\"organization_id\", %s%s) WHERE %s IS NOT NULL%s",
+				index_name, quoted_table, partition_sql, quoted_column, quoted_column, target));
 		return;
 	}
 

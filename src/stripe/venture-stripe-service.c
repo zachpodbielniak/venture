@@ -11,6 +11,11 @@ struct _VentureStripeService
 	StripeClient *client;
 	StripeTransport *transport;
 	gint64 organization_id;
+	gint64 connection_id;
+	gint64 connection_version;
+	gchar *account_id;
+	gchar *environment;
+	gchar *connection_uuid;
 	gchar *yaml;
 	gchar *success_url;
 	gchar *cancel_url;
@@ -129,6 +134,9 @@ finalize(GObject *object)
 	g_clear_object(&self->client);
 	g_clear_object(&self->transport);
 	g_clear_object(&self->database);
+	g_free(self->account_id);
+	g_free(self->environment);
+	g_free(self->connection_uuid);
 	g_free(self->yaml);
 	g_free(self->success_url);
 	g_free(self->cancel_url);
@@ -189,6 +197,8 @@ audit_event(StripeClient *client, const gchar *name, JsonObject *payload, gpoint
 	venture_database_save(self->database, VENTURE_ENTITY(entry), NULL, NULL);
 }
 
+#include "venture-stripe-settings.inc"
+
 VentureStripeService *
 venture_stripe_service_new(VentureDatabase *database, gint64 organization_id,
 	StripeTransport *transport, GError **error)
@@ -198,6 +208,8 @@ venture_stripe_service_new(VentureDatabase *database, gint64 organization_id,
 	g_autoptr(VentureStripeService) self = NULL;
 	guint i;
 
+	if (transport == NULL)
+		return venture_stripe_service_for_organization(database, organization_id, NULL, error);
 	for (i = 0; i < G_N_ELEMENTS(names); i++)
 	{
 		values[i] = g_getenv(names[i]);
@@ -235,6 +247,11 @@ find_rows(VentureStripeService *self, GType type, const gchar *field,
 {
 	g_autoptr(VentureQuery) query = venture_query_new(type);
 	venture_query_set_limit(query, 0);
+	{
+		g_autoptr(VentureEntityClass) klass = g_type_class_ref(type);
+		if (g_object_class_find_property(G_OBJECT_CLASS(klass), "connection-id") &&
+			!venture_query_add_filter_int(query, "connection-id", VENTURE_FILTER_OP_EQ, self->connection_id, error)) return NULL;
+	}
 	if (!venture_query_add_filter_int(query, "organization-id", VENTURE_FILTER_OP_EQ, self->organization_id, error) ||
 	    !venture_query_add_filter_string(query, field, VENTURE_FILTER_OP_EQ, value, error)) return NULL;
 	return venture_database_find(self->database, query, error);
@@ -265,6 +282,29 @@ owned_get(VentureStripeService *self, GType type, gint64 id, GError **error)
 		refuse(error, "Stripe record must belong to the endpoint organization");
 		return NULL;
 	}
+	if (entity && g_object_class_find_property(G_OBJECT_GET_CLASS(entity), "connection-id"))
+	{
+		gint64 connection = 0;
+		g_object_get(entity, "connection-id", &connection, NULL);
+		if (connection != self->connection_id)
+		{
+			g_object_unref(entity);
+			refuse(error, "Stripe record belongs to another account binding");
+			return NULL;
+		}
+	}
+	if (entity && type == VENTURE_TYPE_PAYMENT && self->connection_uuid)
+	{
+		g_autofree gchar *identity = NULL;
+		g_autofree gchar *prefix = g_strdup_printf("stripe:%s:", self->connection_uuid);
+		g_object_get(entity, "external-id", &identity, NULL);
+		if (!identity || !g_str_has_prefix(identity, prefix))
+		{
+			g_object_unref(entity);
+			refuse(error, "Stripe receipt belongs to another account binding");
+			return NULL;
+		}
+	}
 	return entity;
 }
 
@@ -279,6 +319,7 @@ eligible(VentureStripeService *self, gint64 invoice_id, VentureEntity **invoice_
 
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "stripe_checkout") == G_TYPE_INVALID)
 		return refuse(error, "Stripe module is disabled (stripe.enabled)");
+	if (!stripe_refresh(self, FALSE, error)) return FALSE;
 	invoice = owned_get(self, VENTURE_TYPE_INVOICE, invoice_id, error);
 	if (!invoice) return FALSE;
 	g_object_get(invoice, "status", &status, NULL);
@@ -362,6 +403,29 @@ venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 	/* A remote customer/session cannot be undone by rolling back the local
 	 * transaction. Check the invoice write policy before contacting Stripe. */
 	if (!venture_access_policy_check_write(venture_database_get_access_policy(self->database), invoice, "write", error)) goto fail;
+	/* Replacing credentials must never create a second payment link while an
+	 * earlier account (including legacy unbound rows) can still collect. */
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_STRIPE_CHECKOUT);
+		g_autoptr(GPtrArray) prior = NULL;
+		guint i;
+		venture_query_set_limit(query, 0);
+		if (!venture_query_add_filter_int(query, "organization-id", VENTURE_FILTER_OP_EQ, self->organization_id, error) ||
+			!venture_query_add_filter_int(query, "invoice-id", VENTURE_FILTER_OP_EQ, invoice_id, error)) goto fail;
+		prior = venture_database_find(self->database, query, error);
+		if (!prior) goto fail;
+		for (i = 0; i < prior->len; i++)
+		{
+			gint64 binding;
+			g_autofree gchar *status = NULL;
+			g_object_get(g_ptr_array_index(prior, i), "connection-id", &binding, "status", &status, NULL);
+			if (binding != self->connection_id && !g_strcmp0(status, "open"))
+			{
+				refuse(error, "A pending Checkout belongs to an earlier Stripe account; reconcile it before creating another");
+				goto fail;
+			}
+		}
+	}
 	sessions = find_id(self, venture_stripe_checkout_get_type(), "invoice-id", invoice_id, error);
 	if (!sessions) goto fail;
 	if (sessions->len)
@@ -392,13 +456,14 @@ venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 		request->metadata_key = g_strdup(company_id ? "venture_company_uuid" : "venture_contact_uuid");
 		request->metadata_value = g_strdup(venture_entity_get_uuid(customer));
 		g_free(request->idempotency_key);
-		request->idempotency_key = g_strdup_printf("venture-customer-%s", venture_entity_get_uuid(customer));
+		request->idempotency_key = g_strdup_printf("venture-customer-%s-%s",
+			self->connection_uuid ? self->connection_uuid : "fixture", venture_entity_get_uuid(customer));
 		resource = stripe_client_execute(self->client, request, NULL, error);
 		if (!resource) goto fail;
 		customer_id = g_strdup(stripe_resource_get_string(resource, "id"));
-		g_object_set(link, party_field, party_id, "stripe-customer-id", customer_id, NULL);
+		g_object_set(link, party_field, party_id, "stripe-customer-id", customer_id, "connection-id", self->connection_id, NULL);
 		venture_entity_set_organization_id(VENTURE_ENTITY(link), self->organization_id);
-		if (!venture_database_save(self->database, VENTURE_ENTITY(link), actor, error)) goto fail;
+		if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(link), actor, error)) goto fail;
 		g_clear_pointer(&request, stripe_request_free);
 		g_clear_pointer(&resource, stripe_resource_free);
 	}
@@ -420,13 +485,13 @@ venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 	request->success_url = g_strdup(self->success_url);
 	request->cancel_url = g_strdup(self->cancel_url);
 	g_free(request->idempotency_key);
-	request->idempotency_key = g_strdup_printf("venture-invoice-%s-%" G_GINT64_FORMAT,
-		venture_entity_get_uuid(invoice), venture_entity_get_version(invoice));
+	request->idempotency_key = g_strdup_printf("venture-invoice-%s-%s-%" G_GINT64_FORMAT,
+		self->connection_uuid ? self->connection_uuid : "fixture", venture_entity_get_uuid(invoice), venture_entity_get_version(invoice));
 	resource = stripe_client_execute(self->client, request, NULL, error);
 	if (!resource) goto fail;
 	checkout = venture_stripe_checkout_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(checkout), self->organization_id);
-	g_object_set(checkout, "invoice-id", invoice_id, "session-id", stripe_resource_get_string(resource, "id"),
+	g_object_set(checkout, "connection-id", self->connection_id, "invoice-id", invoice_id, "session-id", stripe_resource_get_string(resource, "id"),
 		"url", stripe_resource_get_string(resource, "url"), "status", "open", "expected", expected, NULL);
 	if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(checkout), actor, error)) goto fail;
 	if (!venture_database_commit(self->database, error)) goto fail;
@@ -476,6 +541,7 @@ venture_stripe_service_handle_webhook(VentureStripeService *self, GBytes *raw,
 
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "stripe_checkout") == G_TYPE_INVALID)
 		return refuse(error, "Stripe module is disabled (stripe.enabled)");
+	if (!stripe_refresh(self, TRUE, error)) return FALSE;
 	if (!venture_database_begin(self->database, error)) return FALSE;
 	/* Durable event IDs replace the library's per-client replay cache. Each
 	 * delivery is authenticated afresh, including identical signed retries. */
@@ -493,6 +559,19 @@ venture_stripe_service_handle_webhook(VentureStripeService *self, GBytes *raw,
 		/* Rejection evidence contains no raw body or signature. */
 		venture_database_commit(self->database, NULL);
 		return FALSE;
+	}
+	if (self->connection_id > 0)
+	{
+		JsonNode *live = json_object_get_member(event, "livemode");
+		const gchar *account = string_member(event, "account");
+		if (!live || json_node_get_value_type(live) != G_TYPE_BOOLEAN ||
+			json_node_get_boolean(live) != !g_strcmp0(self->environment, "live") ||
+			(json_object_has_member(event, "account") && !account) ||
+			(account && g_strcmp0(account, self->account_id)))
+		{
+			refuse(error, "Stripe event account or environment does not match its binding");
+			goto fail;
+		}
 	}
 	event_id = string_member(event, "id");
 	type = string_member(event, "type");
@@ -513,7 +592,7 @@ venture_stripe_service_handle_webhook(VentureStripeService *self, GBytes *raw,
 	record = venture_stripe_event_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(record), self->organization_id);
 	payload = g_strndup(g_bytes_get_data(raw, NULL), g_bytes_get_size(raw));
-	g_object_set(record, "event-id", event_id, "type", type, "received-at", now,
+	g_object_set(record, "connection-id", self->connection_id, "event-id", event_id, "type", type, "received-at", now,
 		"payload", payload, "result", "ignored", NULL);
 	if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(record), NULL, error)) goto fail;
 	if (g_strcmp0(type, "checkout.session.completed")) goto done;
@@ -549,8 +628,12 @@ venture_stripe_service_handle_webhook(VentureStripeService *self, GBytes *raw,
 	g_object_get(invoice, "company-id", &company_id, NULL);
 	payment = venture_payment_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(payment), self->organization_id);
-	g_object_set(payment, "customer-id", company_id, "invoice-id", invoice_id,
-		"amount", expected, "date", now, "method", "stripe", "reference", intent, "external-id", intent, NULL);
+	{
+		g_autofree gchar *identity = self->connection_uuid ?
+			g_strdup_printf("stripe:%s:%s", self->connection_uuid, intent) : g_strdup(intent);
+		g_object_set(payment, "customer-id", company_id, "invoice-id", invoice_id,
+			"amount", expected, "date", now, "method", "stripe", "reference", intent, "external-id", identity, NULL);
+	}
 	if (!venture_settlement_service_apply_payment(venture_settlement_service_get(self->database), payment, NULL, NULL, error)) goto fail;
 	g_object_set(checkout, "status", "complete", "payment-id", venture_entity_get_id(VENTURE_ENTITY(payment)), NULL);
 	if (!venture_stripe_save_owned(self->database, checkout, NULL, error)) goto fail;
@@ -627,7 +710,7 @@ venture_stripe_service_record_payout(VentureStripeService *self, const gchar *pr
 	if (!venture_database_begin(self->database, error)) return NULL;
 	payout = venture_processor_payout_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(payout), self->organization_id);
-	g_object_set(payout, "provider-id", provider_id, "date", date, "gross", gross, "fees", fees,
+	g_object_set(payout, "connection-id", self->connection_id, "provider-id", provider_id, "date", date, "gross", gross, "fees", fees,
 		"amount", net, "bank-account-id", cash_account_id, "status", "paid", NULL);
 	if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(payout), actor, error)) goto fail;
 	if (fees != NULL && !venture_money_is_zero(fees) && cash_account_id > 0)
@@ -706,7 +789,7 @@ venture_stripe_service_open_dispute(VentureStripeService *self, const gchar *pro
 	}
 	dispute = venture_processor_dispute_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(dispute), self->organization_id);
-	g_object_set(dispute, "provider-id", provider_id, "payment-id", payment_id, "invoice-id", invoice_id,
+	g_object_set(dispute, "connection-id", self->connection_id, "provider-id", provider_id, "payment-id", payment_id, "invoice-id", invoice_id,
 		"opened-at", date, "amount", amount, "status", "open", NULL);
 	if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(dispute), actor, error)) goto fail;
 	if (!venture_database_commit(self->database, error)) goto fail;

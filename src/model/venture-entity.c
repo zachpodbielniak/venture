@@ -2366,3 +2366,33 @@ venture_entity_equal(
 
 	return (0 == json_object_get_size(json_node_get_object(differences)));
 }
+
+void
+venture_entity_class_set_unique_partition(VentureEntityClass *klass, const gchar *property)
+{
+	GParamSpec *pspec;
+	GQuark quark = g_quark_from_static_string("venture-unique-partition");
+	g_return_if_fail(VENTURE_IS_ENTITY_CLASS(klass));
+	g_return_if_fail(property != NULL);
+	pspec = g_object_class_find_property(G_OBJECT_CLASS(klass), property);
+	g_return_if_fail(pspec != NULL && G_PARAM_SPEC_VALUE_TYPE(pspec) == G_TYPE_INT64);
+	g_return_if_fail((venture_entity_class_get_column_flags(klass, property) &
+		VENTURE_COLUMN_FLAG_TRANSIENT) == 0);
+	g_return_if_fail(g_type_get_qdata(G_TYPE_FROM_CLASS(klass), quark) == NULL);
+	g_type_set_qdata(G_TYPE_FROM_CLASS(klass), quark, (gpointer)g_intern_string(property));
+}
+
+const gchar *
+venture_entity_class_get_unique_partition(VentureEntityClass *klass)
+{
+	GType type;
+	GQuark quark = g_quark_from_static_string("venture-unique-partition");
+	g_return_val_if_fail(VENTURE_IS_ENTITY_CLASS(klass), NULL);
+	for (type = G_TYPE_FROM_CLASS(klass); g_type_is_a(type, VENTURE_TYPE_ENTITY);
+		type = g_type_parent(type))
+	{
+		const gchar *property = g_type_get_qdata(type, quark);
+		if (property != NULL) return property;
+	}
+	return NULL;
+}

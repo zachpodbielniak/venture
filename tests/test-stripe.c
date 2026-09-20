@@ -4,6 +4,7 @@
 #include <string.h>
 #include <libsoup/soup.h>
 #include "venture-test-util.h"
+#include "venture-test-accounting.h"
 
 typedef struct
 {
@@ -34,7 +35,7 @@ set_up(Fixture *f, gconstpointer data)
 
 	f->config = venture_config_new();
 	g_object_set(f->config, "stripe-enabled", TRUE, NULL);
-	f->database = venture_database_new("sqlite://:memory:", &error);
+	f->database = venture_test_accounting_database(&error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->database,
 		venture_entity_registry_get_default(), &error));
@@ -59,6 +60,7 @@ static void
 tear_down(Fixture *f, gconstpointer data)
 {
 	g_clear_object(&f->context);
+	venture_test_accounting_database_cleanup(f->database);
 	g_clear_object(&f->database);
 	g_clear_object(&f->config);
 }
@@ -150,6 +152,7 @@ http_done(GObject *source, GAsyncResult *result, gpointer data)
 }
 
 static gchar *signature(const gchar *body);
+static gchar *binding_signature(const gchar *body, const gchar *secret);
 
 static guint
 http_request(VentureWebServer *server, const gchar *method, const gchar *path,
@@ -166,9 +169,9 @@ http_request(VentureWebServer *server, const gchar *method, const gchar *path,
 	url = g_strconcat(venture_web_server_get_base_url(server), path, NULL);
 	message = soup_message_new(method, url);
 	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
-	if (body && !g_strcmp0(path, "/webhooks/stripe"))
+	if (body && (!g_strcmp0(path, "/webhooks/stripe") || g_str_has_prefix(path, "/webhooks/stripe/")))
 	{
-		g_autofree gchar *sig = !g_strcmp0(body, "{}") ? g_strdup("t=0,v1=invalid") : signature(body);
+		g_autofree gchar *sig = !g_strcmp0(body, "{}") ? g_strdup("t=0,v1=invalid") : (!g_strcmp0(path, "/webhooks/stripe") ? signature(body) : binding_signature(body, "whsec_original"));
 		soup_message_headers_append(soup_message_get_request_headers(message), "Stripe-Signature", sig);
 	}
 
@@ -273,6 +276,15 @@ test_records(void)
 			venture_entity_registry_get_default(), names[i]), !=, G_TYPE_INVALID);
 }
 
+/* Provider identity must include the historical account binding, not just
+ * a globally unique remote identifier. */
+static void
+test_account_binding_metadata(void)
+{
+	g_autoptr(VentureStripeCheckout) checkout = venture_stripe_checkout_new();
+	g_assert_nonnull(g_object_class_find_property(G_OBJECT_GET_CLASS(checkout), "connection-id"));
+}
+
 static void
 test_missing_key(void)
 {
@@ -283,14 +295,16 @@ test_missing_key(void)
 	g_unsetenv("VENTURE_STRIPE_SECRET_KEY");
 	db = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
 	service = venture_stripe_service_new(db, 1, NULL, &error);
 	g_assert_null(service);
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
-	g_assert_nonnull(strstr(error->message, "VENTURE_STRIPE_SECRET_KEY"));
+	g_assert_nonnull(error);
 	g_setenv("VENTURE_STRIPE_SECRET_KEY", "offline", TRUE);
 }
 
-typedef struct { GObject parent; guint calls; guint customers; guint checkouts; gchar *key; const gchar *price_json; gint64 price_amount; } FakeTransport;
+typedef struct { GObject parent; guint calls; guint customers; guint checkouts; gchar *key; const gchar *account_id; const gchar *price_json; gint64 price_amount; } FakeTransport;
 typedef struct { GObjectClass parent; } FakeTransportClass;
 GType fake_transport_get_type(void);
 static void fake_iface(StripeTransportInterface *iface);
@@ -303,6 +317,12 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	FakeTransport *self = (FakeTransport *)transport;
 	(void)cancellable; (void)error;
 	self->calls++;
+	if (g_str_has_suffix(request->url, "/account"))
+	{
+		g_autofree gchar *body = g_strdup_printf("{\"id\":\"%s\",\"object\":\"account\"}", self->account_id ? self->account_id : "acct_offline");
+		g_assert_cmpstr(request->method, ==, "GET");
+		return stripe_response_new(200, body, NULL, NULL);
+	}
 	if (g_str_has_suffix(request->url, "/prices/price_offline"))
 	{
 		g_autofree gchar *body = NULL;
@@ -480,7 +500,7 @@ test_flow(Fixture *f, gconstpointer data)
 	checkout = venture_stripe_service_checkout(service, venture_entity_get_id(invoice), NULL, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(checkout);
-	key = g_strdup_printf("venture-invoice-%s-%" G_GINT64_FORMAT, venture_entity_get_uuid(invoice), venture_entity_get_version(invoice));
+	key = g_strdup_printf("venture-invoice-fixture-%s-%" G_GINT64_FORMAT, venture_entity_get_uuid(invoice), venture_entity_get_version(invoice));
 	g_assert_cmpstr(((FakeTransport *)transport)->key, ==, key);
 	if (!g_strcmp0(mode, "customer-reuse"))
 	{
@@ -668,7 +688,7 @@ test_price_migration_rollback(Fixture *f, gconstpointer unused)
 {
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *sql = g_strdup_printf(
-		"DROP INDEX uq_stripe_price_links_organization_product_id;"
+		"DROP INDEX uq_stripe_price_links_organization_connection_id_product_id;"
 		"INSERT INTO stripe_price_links (uuid, organization_id, product_id, stripe_price_id) VALUES ('legacy-price-a', %" G_GINT64_FORMAT ", %" G_GINT64_FORMAT ", 'price_a'), ('legacy-price-b', %" G_GINT64_FORMAT ", %" G_GINT64_FORMAT ", 'price_b')",
 		f->organization_id, f->product_id, f->organization_id, f->product_id);
 	g_autoptr(OrmResult) rows = NULL;
@@ -760,7 +780,7 @@ test_dependency_pin(void)
 		const gchar *head[] = { "git", "-C", "deps/stripe-glib", "rev-parse", "HEAD", NULL };
 		g_assert_true(g_spawn_sync(NULL, (gchar **)head, NULL, G_SPAWN_SEARCH_PATH,
 			NULL, NULL, &out, NULL, &status, &error));
-		g_assert_cmpstr(g_strstrip(out), ==, "e32797673f0e7780dede9ed23260a673d2936b7f");
+		g_assert_cmpstr(g_strstrip(out), ==, "c435c99c75750eef62889487ce71c307775de4f8");
 	}
 }
 
@@ -771,15 +791,14 @@ test_module_start(Fixture *f, gconstpointer data)
 	g_autoptr(VentureModuleRegistry) modules = venture_module_registry_new();
 	(void)data;
 	g_unsetenv("VENTURE_STRIPE_SECRET_KEY");
-	g_assert_false(venture_context_start_stripe(f->context, &error));
-	g_assert_nonnull(strstr(error->message, "VENTURE_STRIPE_SECRET_KEY"));
+	g_assert_true(venture_context_start_stripe(f->context, &error));
+	g_assert_no_error(error);
 	g_clear_error(&error);
 	g_setenv("VENTURE_STRIPE_SECRET_KEY", "offline", TRUE);
 	g_assert_true(venture_context_start_stripe(f->context, &error));
 	g_assert_no_error(error);
-	g_assert_nonnull(venture_context_get_stripe_service(f->context));
+	g_assert_null(venture_context_get_stripe_service(f->context));
 	g_assert_cmpuint(g_type_from_name("StripeBundledYamlParser"), ==, G_TYPE_INVALID);
-	g_assert_cmpuint(g_type_from_name("YamlParser"), !=, G_TYPE_INVALID);
 	venture_module_registry_register_builtins(modules);
 	venture_config_set_module_enabled(f->config, "receivables", FALSE);
 	g_assert_false(venture_module_registry_configure(modules, f->config, &error));
@@ -941,6 +960,8 @@ test_payout_dispute_chargeback(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(rows(f, "processor_exception")->len, ==, 0);
 }
 
+#include "test-stripe-settings.inc"
+
 int
 main(int argc, char **argv)
 {
@@ -984,5 +1005,12 @@ main(int argc, char **argv)
 	environment();
 	g_test_add("/stripe/price-migration-rollback", Fixture, NULL, set_up, test_price_migration_rollback, tear_down);
 	g_test_add("/stripe/payout-dispute-chargeback", Fixture, NULL, set_up, test_payout_dispute_chargeback, tear_down);
+	g_test_add_func("/stripe/account-binding-metadata", test_account_binding_metadata);
+	g_test_add("/stripe/binding-organizations", Fixture, NULL, set_up, test_binding_organizations, tear_down);
+	g_test_add("/stripe/binding-settings-ui", Fixture, "settings-ui", set_up, test_binding, tear_down);
+	g_test_add("/stripe/binding-migration", Fixture, NULL, set_up, test_binding_migration, tear_down);
+	g_test_add("/stripe/binding-rotation", Fixture, "rotation", set_up, test_binding, tear_down);
+	g_test_add("/stripe/binding-replacement", Fixture, "replacement", set_up, test_binding, tear_down);
+	g_test_add("/stripe/binding-authorization", Fixture, "authorization", set_up, test_binding, tear_down);
 	return g_test_run();
 }

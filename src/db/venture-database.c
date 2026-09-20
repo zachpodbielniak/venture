@@ -20,7 +20,8 @@ static gboolean
 stripe_owned(VentureEntity *entity)
 {
 	GType type = G_OBJECT_TYPE(entity);
-	return type == venture_stripe_checkout_get_type() ||
+	return type == venture_stripe_customer_link_get_type() ||
+		type == venture_stripe_checkout_get_type() ||
 		type == venture_stripe_event_get_type() ||
 		type == venture_processor_payout_get_type() ||
 		type == venture_processor_payout_item_get_type() ||
@@ -244,6 +245,7 @@ venture_database_init(VentureDatabase *self)
 	self->activities = venture_activity_service_new(self);
 	venture_headline_install_validators(self);
 	venture_mail_sync_install_validators(self);
+	venture_stripe_install_validators(self);
 }
 
 VentureQuoteService *

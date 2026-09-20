@@ -3810,6 +3810,8 @@ venture_web_stripe_checkout(HtmxRequest *request, GHashTable *params, gpointer u
 {
 	VentureWebServer *self = user_data;
 	VentureStripeService *service;
+	g_autoptr(VentureStripeService) configured = NULL;
+	g_autoptr(VentureEntity) invoice = NULL;
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
 	g_autoptr(VentureStripeCheckout) checkout = NULL;
 	g_autoptr(GError) error = NULL;
@@ -3825,13 +3827,17 @@ venture_web_stripe_checkout(HtmxRequest *request, GHashTable *params, gpointer u
 	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, &error)) return venture_web_error_response(error);
 	gate = venture_web_require_module_api(self, "stripe");
 	if (gate) return gate;
+	id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	invoice = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_INVOICE, id, &error);
+	if (!invoice) return venture_web_error_response(error);
 	service = venture_context_get_stripe_service(self->context);
 	if (!service)
 	{
-		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "Stripe module has not started");
-		return venture_web_error_response(error);
+		configured = venture_stripe_service_for_organization(venture_context_get_database(self->context),
+			venture_entity_get_organization_id(invoice), NULL, &error);
+		service = configured;
 	}
-	id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	if (!service) return venture_web_error_response(error);
 	venture_auth_to_actor(principal, &actor);
 	checkout = venture_stripe_service_checkout(service, id, &actor, &error);
 	if (!checkout) return venture_web_error_response(error);
@@ -3854,11 +3860,23 @@ venture_web_stripe_webhook(HtmxRequest *request, GHashTable *params, gpointer us
 	VentureWebServer *self = user_data;
 	VentureStripeService *service = venture_context_get_stripe_service(self->context);
 	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureStripeService) configured = NULL;
+	g_autoptr(VentureEntity) connection = NULL;
+	const gchar *binding = g_hash_table_lookup(params, "connection_id");
 	HtmxResponse *response = htmx_response_new();
 	GBytes *body = htmx_request_get_body_bytes(request);
 	SoupMessageHeaders *headers = soup_server_message_get_request_headers(htmx_request_get_message(request));
 	const gchar *signature = soup_message_headers_get_one(headers, "Stripe-Signature");
-	(void)params;
+	if (!venture_context_module_enabled(self->context, "stripe")) service = NULL;
+	else if (binding)
+	{
+		connection = venture_database_get(venture_context_get_database(self->context),
+			VENTURE_TYPE_INTEGRATION_CONNECTION, g_ascii_strtoll(binding, NULL, 10), NULL);
+		if (connection)
+			configured = venture_stripe_service_for_connection(venture_context_get_database(self->context),
+				venture_entity_get_organization_id(connection), venture_entity_get_id(connection), TRUE, NULL, NULL);
+		service = configured;
+	}
 	if (!service || !body)
 		htmx_response_set_status(response, service ? 400 : 503);
 	else if (!venture_stripe_service_handle_webhook(service, body, signature, &error))
@@ -3867,6 +3885,7 @@ venture_web_stripe_webhook(HtmxRequest *request, GHashTable *params, gpointer us
 		htmx_response_set_status(response, 200);
 	return response;
 }
+#include "stripe/venture-stripe-web.inc"
 #include "payables/venture-payables-web.inc"
 #include "claims/venture-claims-web.inc"
 #include "payroll/venture-payroll-web.inc"
@@ -9061,6 +9080,13 @@ venture_web_append_invoice_block(
 	g_string_append(content, "<div class=\"card-body invoice-actions\">");
 	{
 		VentureStripeService *stripe = venture_context_get_stripe_service(self->context);
+		g_autoptr(VentureStripeService) configured = NULL;
+		if (!stripe && venture_context_module_enabled(self->context, "stripe"))
+		{
+			configured = venture_stripe_service_for_organization(venture_context_get_database(self->context),
+				venture_entity_get_organization_id(record), NULL, NULL);
+			stripe = configured;
+		}
 		if (stripe && venture_stripe_service_can_checkout(stripe, id, NULL))
 			g_string_append_printf(content, "<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT "/checkout\"><button class=\"btn btn-primary\" type=\"submit\">Pay with Stripe</button></form>", id);
 	}
@@ -9293,6 +9319,7 @@ venture_web_ui_detail(
 		g_string_append(content, "</code><p><a class=\"btn\" href=\"/e/federation_grant/new\">Create sharing grant</a> <a href=\"/federation\">Federation workspace</a></p></section>");
 	}
 
+	venture_stripe_web_settings_link(self, content, record, principal);
 	venture_billing_web_buttons(self, content, record, principal);
 	venture_web_append_record_actions(self, content, record, principal);
 	venture_web_append_related(self, content, record);
@@ -10528,6 +10555,9 @@ venture_web_ui_entities(
 				"<button class=\"btn btn-sm\" type=\"submit\">Make default"
 				"</button></form> ", id);
 		}
+
+		if (venture_context_module_enabled(self->context, "stripe"))
+			g_string_append_printf(content, "<a class=\"btn btn-sm\" href=\"/organizations/%" G_GINT64_FORMAT "/settings/stripe\">Stripe settings</a> ", id);
 
 		/*
 		 * Deleting names its own consequence. When the entity still
@@ -29728,6 +29758,9 @@ venture_web_server_new(
 	htmx_router_post(router, "/invoices/:id/checkout", venture_web_stripe_checkout, self);
 	htmx_router_post(router, "/api/v1/invoices/:id/checkout", venture_web_stripe_checkout, self);
 	htmx_router_post(router, "/webhooks/stripe", venture_web_stripe_webhook, self);
+	htmx_router_post(router, "/webhooks/stripe/:connection_id", venture_web_stripe_webhook, self);
+	htmx_router_get(router, "/organizations/:id/settings/stripe", venture_web_stripe_settings, self);
+	htmx_router_post(router, "/organizations/:id/settings/stripe", venture_web_stripe_settings, self);
 	htmx_router_post(router, "/invoices/:id/status",
 	                 venture_web_ui_invoice_status, self);
 	htmx_router_post(router, "/api/v1/vendor_bill/:id/:action", venture_web_payables_action, self);

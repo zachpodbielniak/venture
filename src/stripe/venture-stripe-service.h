@@ -12,15 +12,68 @@ G_DECLARE_FINAL_TYPE(VentureStripeService, venture_stripe_service, VENTURE, STRI
  * @database: storage
  * @organization_id: the legal entity for this endpoint
  * @transport: (nullable): transport override for offline tests
- * @error: (out) (optional): configuration error, naming the missing variable
+ * @error: (out) (optional): configuration error
  *
  * C-only transport injection: StripeTransport is an opaque provider fixture
  * interface with no introspection metadata. The returned service remains a
  * normal GObject with introspectable operations.
- * Returns: (transfer full) (nullable): a started provider, configured from environment
+ * Returns: (transfer full) (nullable): an organization-bound provider; environment credentials only with explicit transport injection
  */
 #ifndef __GI_SCANNER__
 VentureStripeService *venture_stripe_service_new(VentureDatabase *database, gint64 organization_id, StripeTransport *transport, GError **error);
+#endif
+/**
+ * venture_stripe_service_for_organization: (skip)
+ * @database: storage
+ * @organization_id: verified explicit organization
+ * @transport: (nullable): offline transport injection
+ * @error: (out) (optional): configuration failure
+ * Returns: (transfer full) (nullable): provider for the active encrypted binding
+ */
+#ifndef __GI_SCANNER__
+VentureStripeService *venture_stripe_service_for_organization(VentureDatabase *database,
+	gint64 organization_id, StripeTransport *transport, GError **error);
+/**
+ * venture_stripe_service_for_connection: (skip)
+ * @database: storage
+ * @organization_id: expected binding owner
+ * @connection_id: exact historical binding
+ * @allow_disabled: allow verified callbacks against a disconnected binding
+ * @transport: (nullable): offline transport injection
+ * @error: (out) (optional): configuration failure
+ * Returns: (transfer full) (nullable): provider retaining the historical account identity
+ */
+VentureStripeService *venture_stripe_service_for_connection(VentureDatabase *database,
+	gint64 organization_id, gint64 connection_id, gboolean allow_disabled,
+	StripeTransport *transport, GError **error);
+/**
+ * venture_stripe_settings_configure: (skip)
+ * @database: storage
+ * @organization_id: explicit organization administered by the caller
+ * @settings: write-only credential and return URL object
+ * @expected_version: zero to connect or current version to rotate
+ * @expected_connection_id: zero to connect or the exact connection being rotated
+ * @transport: (nullable): offline transport injection
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): redacted refusal
+ *
+ * Verifies the provider account before sealing settings. Account/environment
+ * replacement requires disconnecting the old binding first.
+ * Returns: (transfer full) (nullable): public connection metadata
+ */
+VentureIntegrationConnection *venture_stripe_settings_configure(VentureDatabase *database,
+	gint64 organization_id, JsonNode *settings, gint64 expected_version,
+	gint64 expected_connection_id, StripeTransport *transport, const VentureActor *actor, GError **error);
+/**
+ * venture_stripe_settings_test: (skip)
+ * @database: storage
+ * @organization_id: explicit organization administered by the caller
+ * @transport: (nullable): offline transport injection
+ * @error: (out) (optional): redacted refusal
+ * Returns: whether current credentials still identify the bound account
+ */
+gboolean venture_stripe_settings_test(VentureDatabase *database, gint64 organization_id,
+	StripeTransport *transport, GError **error);
 #endif
 /**
  * venture_stripe_service_can_checkout:

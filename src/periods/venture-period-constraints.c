@@ -322,6 +322,21 @@ venture_period_constraints_migrate(OrmConnection *connection,
 	ok = (ORM_DIALECT_SQLITE == dialect)
 		? sqlite_migrate(connection, table, columns, &local_error)
 		: postgres_migrate(connection, table, columns, &local_error);
+	/* Generated organization-only indexes predate connection partitions.
+	 * Drop only their reserved names; unrelated plugin indexes survive. */
+	if (ok && venture_entity_class_get_unique_partition(VENTURE_ENTITY_GET_CLASS(prototype)))
+	{
+		GHashTableIter iter;
+		gpointer column;
+		g_hash_table_iter_init(&iter, columns);
+		while (ok && g_hash_table_iter_next(&iter, &column, NULL))
+		{
+			g_autofree gchar *name = g_strdup_printf("uq_%s_organization_%s", table, (gchar *)column);
+			g_autofree gchar *quoted = venture_schema_quote_identifier(name);
+			g_autofree gchar *sql = g_strdup_printf("DROP INDEX IF EXISTS %s", quoted);
+			ok = orm_connection_execute(connection, sql, &local_error);
+		}
+	}
 	indexes = venture_schema_get_create_index_sql(entity_type, dialect);
 	for (i = 0; ok && (NULL != indexes[i]); i++)
 		ok = orm_connection_execute(connection, indexes[i], &local_error);

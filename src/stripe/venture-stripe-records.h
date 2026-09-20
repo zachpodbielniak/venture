@@ -2,6 +2,10 @@
 #ifndef VENTURE_STRIPE_RECORDS_H
 #define VENTURE_STRIPE_RECORDS_H
 G_BEGIN_DECLS
+#define VENTURE_TYPE_STRIPE_EVENT (venture_stripe_event_get_type())
+#define VENTURE_TYPE_STRIPE_CHECKOUT (venture_stripe_checkout_get_type())
+#define VENTURE_TYPE_STRIPE_CUSTOMER_LINK (venture_stripe_customer_link_get_type())
+#define VENTURE_TYPE_STRIPE_PRICE_LINK (venture_stripe_price_link_get_type())
 VENTURE_DECLARE_ENTITY(VentureStripePriceLink, venture_stripe_price_link, STRIPE_PRICE_LINK)
 VENTURE_DECLARE_ENTITY(VentureStripeCustomerLink, venture_stripe_customer_link, STRIPE_CUSTOMER_LINK)
 VENTURE_DECLARE_ENTITY(VentureStripeCheckout, venture_stripe_checkout, STRIPE_CHECKOUT)
@@ -14,5 +18,12 @@ VENTURE_DECLARE_ENTITY(VentureProcessorPayoutItem, venture_processor_payout_item
 VENTURE_DECLARE_ENTITY(VentureProcessorDispute, venture_processor_dispute, PROCESSOR_DISPUTE)
 #define VENTURE_TYPE_PROCESSOR_EXCEPTION (venture_processor_exception_get_type())
 VENTURE_DECLARE_ENTITY(VentureProcessorException, venture_processor_exception, PROCESSOR_EXCEPTION)
+/**
+ * venture_stripe_install_validators:
+ * @database: repository
+ *
+ * Installs account immutability and organization reference checks for every writer.
+ */
+void venture_stripe_install_validators(VentureDatabase *database);
 G_END_DECLS
 #endif
