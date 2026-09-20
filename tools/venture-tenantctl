@@ -5,6 +5,7 @@
 import argparse
 import base64
 import contextlib
+import datetime
 import fcntl
 import hashlib
 import json
@@ -174,14 +175,268 @@ def run(
     return result.returncode if return_status else result.stdout
 
 
+class BackupCatalog:
+    """Private metadata for authenticated encrypted files, under the tenant flock.
+
+    Tombstones live outside application snapshots. This is a local retention
+    ledger, not an offsite inventory or evidence of physical-media erasure.
+    """
+
+    def __init__(self, tenant):
+        self.tenant = tenant
+        require(getattr(tenant, "maintenance_fd", None) is not None,
+                "Backup catalog requires the tenant maintenance lock")
+        self.path = tenant.control / "backup-catalog.json"
+        if os.path.lexists(self.path):
+            self.data = json.loads(read_private(self.path, 16 * 1024 * 1024))
+            require(self.data.get("schema") == 1
+                    and self.data.get("workspace_id") == tenant.manifest["workspace_id"]
+                    and isinstance(self.data.get("revision"), int)
+                    and isinstance(self.data.get("entries"), dict),
+                    "Backup catalog identity or schema mismatch")
+            for copy_id, item in self.data["entries"].items():
+                uuid_text(copy_id)
+                uuid_text(item["archive_id"])
+                require(item["copy_id"] == copy_id
+                        and item["workspace_id"] == self.data["workspace_id"]
+                        and item["state"] in ("retained", "deleted")
+                        and re.fullmatch(r"[a-f0-9]{64}", item["sha256"]),
+                        "Malformed backup catalog entry")
+        else:
+            require(not tenant.manifest.get("backup_catalog_required", False),
+                    "Registered backup catalog is missing; recover the original ledger before archive use")
+            self.data = {"schema": 1, "workspace_id": tenant.manifest["workspace_id"],
+                         "revision": 0, "entries": {}, "plan": None, "journal": None}
+
+    def save(self):
+        if os.path.lexists(self.path):
+            persisted = json.loads(read_private(self.path, 16 * 1024 * 1024))
+            require(persisted.get("revision") == self.data["revision"]
+                    and persisted.get("workspace_id") == self.data["workspace_id"],
+                    "Backup catalog changed; reload before publication")
+        else:
+            require(self.data["revision"] == 0, "Backup catalog disappeared before publication")
+        self.data["revision"] += 1
+        content = json.dumps(self.data, sort_keys=True) + "\n"
+        require(len(content.encode()) <= 16 * 1024 * 1024,
+                "Backup catalog reached its bounded capacity; retain evidence and review")
+        write_private(self.path, content)
+        registration = self.refresh_registration()
+        if not registration.get("backup_catalog_required", False):
+            registration["backup_catalog_required"] = True
+            self.tenant.save()
+
+    def refresh_registration(self):
+        current = read_json(self.tenant.directory / "manifest.json")
+        require(current["workspace_id"] == self.data["workspace_id"]
+                and current["tenant_id"] == self.tenant.slug
+                and current["host_id"] == self.tenant.platform.host["host_id"],
+                "Workspace registration changed")
+        self.tenant.manifest = current
+        return current
+
+    @staticmethod
+    def file_identity(info):
+        return {"device": info.st_dev, "inode": info.st_ino, "size": info.st_size,
+                "mtime_ns": info.st_mtime_ns, "ctime_ns": info.st_ctime_ns}
+
+    @contextlib.contextmanager
+    def opened(self, path, allow_missing=False):
+        # Walk every parent without following symlinks, then use that exact
+        # directory descriptor for the final comparison and unlink.
+        path = Path(os.path.abspath(path))
+        require(not path.is_relative_to(self.tenant.platform.root),
+                "Recovery archives must be outside the platform registration/data root")
+        directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+        descriptor = None
+        try:
+            for part in path.parent.parts[1:]:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=directory)
+                os.close(directory)
+                directory = child
+            parent = os.fstat(directory)
+            require(parent.st_uid == os.geteuid() and stat.S_IMODE(parent.st_mode) == 0o700,
+                    "Archive parent must be an owned mode-700 directory")
+            parent_id = {"device": parent.st_dev, "inode": parent.st_ino}
+            try:
+                descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                     dir_fd=directory)
+            except FileNotFoundError:
+                if not allow_missing:
+                    raise
+                yield directory, None, {"parent": parent_id, "path": str(path)}
+                return
+            info = os.fstat(descriptor)
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
+                    and info.st_nlink == 1 and stat.S_IMODE(info.st_mode) in (0o600, 0o400),
+                    "Archive must be an owned private single-link regular file")
+            digest = hashlib.sha256()
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+            require(self.file_identity(info) == self.file_identity(os.fstat(descriptor)),
+                    "Archive changed while hashing")
+            yield directory, descriptor, {"parent": parent_id, "path": str(path),
+                                         "file": self.file_identity(info), "sha256": digest.hexdigest()}
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            os.close(directory)
+
+    def check_restore(self, manifest, digest):
+        require(manifest["workspace_id"] == self.data["workspace_id"],
+                "Archive workspace identity differs from registration")
+        retired = {entry["archive_id"] for entry in self.data["entries"].values()
+                   if entry["state"] == "deleted"}
+        retired_digests = {entry["sha256"] for entry in self.data["entries"].values()
+                           if entry["state"] == "deleted"}
+        require(not self.data.get("journal"), "Unresolved retention journal blocks archive use")
+        require(manifest.get("archive_id") not in retired and digest not in retired_digests,
+                "Archive is retired by this workspace's retention ledger")
+
+    def register(self, path, manifest, kind, reason):
+        require(not self.data.get("journal"), "Recover the pending retention journal first")
+        require(kind in ("export", "upgrade", "replica"), "Unknown archive source")
+        require(manifest.get("tenant_id") == self.tenant.slug, "Archive tenant differs")
+        archive_id = uuid_text(manifest.get("archive_id", ""))
+        created = int(datetime.datetime.strptime(manifest["created_at"], "%Y-%m-%dT%H:%M:%SZ")
+                      .replace(tzinfo=datetime.timezone.utc).timestamp())
+        now = int(time.time())
+        require(0 < created <= now + 300, "Invalid authenticated archive creation time")
+        with self.opened(path) as (_, _, identity):
+            require(manifest.get("encrypted_sha256") == identity["sha256"],
+                    "Archive bytes differ from the authenticated verification snapshot")
+            self.check_restore(manifest, identity["sha256"])
+            for entry in self.data["entries"].values():
+                if entry["archive_id"] == archive_id:
+                    require(entry["sha256"] == identity["sha256"],
+                            "Copied archive UUID has different encrypted content")
+                if entry["path"] == identity["path"]:
+                    require(entry["state"] == "retained" and entry["archive_id"] == archive_id
+                            and all(entry[key] == identity[key] for key in identity),
+                            "Registered archive path was reused or replaced")
+                    return entry
+            copy_id = str(uuid.uuid4())
+            entry = {**identity, "copy_id": copy_id, "archive_id": archive_id,
+                     "workspace_id": self.data["workspace_id"], "created_at": created,
+                     "registered_at": now, "kind": kind, "state": "retained", "reason": reason}
+            self.data["entries"][copy_id] = entry
+            self.save()
+            self.tenant.event("backup-register", reason, copy_id)
+            return entry
+
+    def expiry(self, entry, days, registration):
+        basis = entry["created_at"]
+        if registration.get("phase") == "offboarded":
+            require(isinstance(registration.get("offboarded_at"), int),
+                    "Offboarded registration has no retention clock")
+            basis = max(basis, registration["offboarded_at"])
+        return basis + days * 86400
+
+    def validate_entry(self, entry, identity, missing=False):
+        require(identity["parent"] == entry["parent"], "Archive parent directory was replaced")
+        if not missing:
+            require(all(entry[key] == identity[key] for key in identity),
+                    "Registered archive file was replaced or changed")
+
+    def plan(self, days, reason, now=None):
+        require(isinstance(days, int) and 1 <= days <= 36500, "Retention days must be 1–36500")
+        require(not self.data.get("journal"), "Recover the pending retention journal first")
+        now = int(time.time()) if now is None else now
+        registration = self.refresh_registration()
+        candidates = []
+        for copy_id, entry in sorted(self.data["entries"].items()):
+            if entry["state"] != "retained":
+                continue
+            # A corrupt catalog/file cannot be treated as an empty successful plan.
+            with self.opened(entry["path"]) as (_, _, identity):
+                self.validate_entry(entry, identity)
+            if not registration.get("hold", False) and self.expiry(entry, days, registration) <= now:
+                candidates.append(copy_id)
+        plan = {"plan_id": str(uuid.uuid4()), "created_at": now, "days": days,
+                "hold": registration.get("hold", False), "candidates": candidates,
+                "revision": self.data["revision"] + 1, "reason": reason}
+        self.data["plan"] = plan
+        self.save()
+        self.tenant.event("retention-plan", reason, plan["plan_id"])
+        return plan
+
+    def execute(self, plan_id, reason, now=None):
+        require(not self.data.get("journal"), "Recover the pending retention journal first")
+        plan = self.data.get("plan")
+        require(plan and plan["plan_id"] == plan_id and plan["revision"] == self.data["revision"],
+                "Retention plan is absent or stale; create and review a new plan")
+        now = int(time.time()) if now is None else now
+        require(plan["created_at"] <= now <= plan["created_at"] + 86400,
+                "Retention plan expired or clock moved backwards")
+        registration = self.refresh_registration()
+        require(not registration.get("hold", False), "Workspace is on hold")
+        for copy_id in plan["candidates"]:
+            entry = self.data["entries"][copy_id]
+            require(entry["state"] == "retained" and self.expiry(entry, plan["days"], registration) <= now,
+                    "Archive is no longer eligible under current offboarding/retention policy")
+            with self.opened(entry["path"]) as (_, _, identity):
+                self.validate_entry(entry, identity)
+        self.tenant.event("retention-execute", reason, "begin:" + plan_id)
+        self.data["journal"] = {"plan_id": plan_id, "reason": reason,
+                                "started_at": now, "pending": list(plan["candidates"])}
+        self.save()
+        for copy_id in list(plan["candidates"]):
+            entry = self.data["entries"][copy_id]
+            registration = self.refresh_registration()
+            require(not registration.get("hold", False), "Workspace is on hold")
+            require(self.expiry(entry, plan["days"], registration) <= now, "Retention policy changed")
+            with self.opened(entry["path"]) as (directory, descriptor, identity):
+                self.validate_entry(entry, identity)
+                require(self.file_identity(os.stat(Path(entry["path"]).name, dir_fd=directory,
+                                                    follow_symlinks=False)) == identity["file"],
+                        "Archive name changed before deletion")
+                # Same-operator writers must honor maintenance.lock; an operator
+                # with arbitrary filesystem write access is outside this boundary.
+                os.unlink(Path(entry["path"]).name, dir_fd=directory)
+                os.fsync(directory)
+                require(os.fstat(descriptor).st_nlink == 0, "Archive gained an unregistered hard link")
+            entry.update(state="deleted", deleted_at=int(time.time()), deletion_outcome="unlinked")
+            self.data["journal"]["pending"].remove(copy_id)
+            self.save()
+        self.data["journal"] = None
+        self.data["plan"] = None
+        self.save()
+        self.tenant.event("retention-execute", reason, "complete:" + plan_id)
+
+    def recover(self, reason):
+        journal = self.data.get("journal")
+        require(journal, "No retention journal is pending")
+        registration = self.refresh_registration()
+        # Recovery does not unlink another file, including when a hold appeared
+        # after an interrupted deletion. It records facts and preserves survivors.
+        for copy_id in list(journal["pending"]):
+            entry = self.data["entries"][copy_id]
+            with self.opened(entry["path"], allow_missing=True) as (_, descriptor, identity):
+                self.validate_entry(entry, identity, descriptor is None)
+                if descriptor is None:
+                    entry.update(state="deleted", deleted_at=int(time.time()),
+                                 deletion_outcome="missing-after-durable-intent")
+            journal["pending"].remove(copy_id)
+            self.save()
+        self.data["journal"] = None
+        self.data["plan"] = None
+        self.save()
+        self.tenant.event("retention-recover", reason,
+                          "reconciled-without-unlink:hold=" + str(bool(registration.get("hold", False))))
+
+
 class Platform:
-    def __init__(self, root):
+    def __init__(self, root, check_runtime=True):
         self.root = private(root, True).resolve()
         self.host = read_json(self.root / "host.json")
         require(self.host.get("schema") == 1, "Unsupported host registration")
         uuid_text(self.host["host_id"])
         require(
-            run(
+            not check_runtime or run(
                 ["podman", "info", "--format", "{{.Host.Security.Rootless}}"],
                 timeout=30,
             ).strip()
@@ -275,11 +530,18 @@ class Tenant:
         private(self.directory, True)
         private(self.control, True)
         path = self.control / "maintenance.lock"
-        fd = os.open(
-            path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600
-        )
+        inherited = os.environ.get("VENTURE_TENANT_MAINTENANCE_FD")
+        if inherited is not None:
+            require(inherited.isdigit() and 3 <= int(inherited) <= 1023,
+                    "Invalid inherited maintenance descriptor")
+            fd = os.dup(int(inherited))
+        else:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
         try:
             info = os.fstat(fd)
+            selected = private(path).stat()
+            require((info.st_dev, info.st_ino) == (selected.st_dev, selected.st_ino),
+                    "Inherited maintenance descriptor names another file")
             require(
                 stat.S_ISREG(info.st_mode)
                 and info.st_uid == os.geteuid()
@@ -810,14 +1072,17 @@ class Tenant:
         marker.unlink()
         self.event("recover-maintenance", reason, "stopped-inspect-outcome")
 
-    def archive(self, operation, archive, key_file):
-        self.container("application", False)
-        self.container("database", True)
+    def archive(self, operation, archive, key_file, kind="export"):
+        require(kind in ("export", "upgrade"), "Unknown backup origin")
+        if operation != "verify":
+            self.container("application", False)
+            self.container("database", True)
         environment = {
             **os.environ,
             "VENTURE_TENANT_MAINTENANCE_FD": str(self.maintenance_fd),
+            "VENTURE_TENANT_ARCHIVE_KIND": kind,
         }
-        return run(
+        result = run(
             [
                 str(Path(__file__).resolve().with_name("venture-tenant-backup")),
                 "--root",
@@ -833,6 +1098,15 @@ class Tenant:
             pass_fds=(self.maintenance_fd,),
             environment=environment,
         )
+        # The authenticated backup child may initialize catalog authority in
+        # this registration. An upgrade's next phase save must retain it.
+        current = read_json(self.directory / "manifest.json")
+        require(current["workspace_id"] == self.manifest["workspace_id"]
+                and current["tenant_id"] == self.slug
+                and current["host_id"] == self.platform.host["host_id"],
+                "Backup changed workspace registration identity")
+        self.manifest = current
+        return result
 
     def upgrade(self, image, archive, key_file, reason):
         require(
@@ -847,7 +1121,7 @@ class Tenant:
         self.identity_status()
         self.event("upgrade", reason, "begin")
         self.probe_image(target)
-        self.archive("create", archive, key_file)
+        self.archive("create", archive, key_file, kind="upgrade")
         self.manifest["phase"] = "upgrading"
         self.manifest["previous_image"] = self.manifest["app_image"]
         self.manifest["upgrade_archive"] = str(archive.resolve())
@@ -1153,17 +1427,42 @@ def parser():
         "export",
         "restore",
         "upgrade",
+        "backup-list",
+        "backup-enroll",
+        "retention-plan",
+        "retention-execute",
+        "retention-recover",
+        "archive-register",
+        "archive-check",
     ):
-        child = sub.add_parser(name)
+        explanations = {
+            "backup-list": "Read the private archive catalog and permanent tombstones",
+            "backup-enroll": "Authenticate and explicitly enroll a local encrypted replica",
+            "retention-plan": "Persist a reviewable expiry plan; default retention is 30 days",
+            "retention-execute": "Execute one exact unexpired plan under the tenant lock",
+            "retention-recover": "Reconcile interrupted expiry without unlinking more files",
+            "archive-register": "Internal authenticated backup helper; inherited lock required",
+            "archive-check": "Internal restore tombstone check; inherited lock required",
+        }
+        child = sub.add_parser(name, help=explanations.get(name))
         child.add_argument("tenant")
-        if name != "status":
+        if name not in ("status", "backup-list", "archive-check"):
             child.add_argument("--reason", required=True)
         if name == "recover-admin":
             child.add_argument("--username", required=True)
             child.add_argument("--password-file", required=True, type=Path)
-        if name in ("export", "restore", "upgrade"):
+        if name in ("export", "restore", "upgrade", "backup-enroll"):
             child.add_argument("--archive", required=True, type=Path)
             child.add_argument("--key-file", required=True, type=Path)
+        if name in ("archive-register", "archive-check"):
+            child.add_argument("--archive", required=True, type=Path)
+            child.add_argument("--archive-manifest", required=True, type=Path)
+        if name == "archive-register":
+            child.add_argument("--kind", choices=("export", "upgrade", "replica"), required=True)
+        if name == "retention-plan":
+            child.add_argument("--days", type=int, default=30, help="Retention in days, 1–36500 (default: 30)")
+        if name == "retention-execute":
+            child.add_argument("--plan", required=True)
         if name == "upgrade":
             child.add_argument("--image", required=True)
         if name == "state":
@@ -1186,7 +1485,12 @@ def main():
     if args.operation == "init":
         initialize(args.root)
         return
-    platform = Platform(args.root)
+    catalog_operations = ("backup-list", "retention-plan", "retention-execute",
+                          "retention-recover", "archive-register", "archive-check")
+    if args.operation in ("archive-register", "archive-check"):
+        require(os.environ.get("VENTURE_TENANT_MAINTENANCE_FD"),
+                "Archive helper requires the inherited backup maintenance lock")
+    platform = Platform(args.root, check_runtime=args.operation not in catalog_operations)
     if args.operation == "provision":
         provision(platform, args)
         return
@@ -1194,7 +1498,29 @@ def main():
     with tenant.locked(
         allow_abandoned=args.operation in ("status", "recover-maintenance")
     ):
-        if args.operation == "status":
+        if args.operation in catalog_operations or args.operation == "backup-enroll":
+            catalog = BackupCatalog(tenant)
+            if args.operation == "backup-list":
+                print(json.dumps(catalog.data, sort_keys=True))
+            elif args.operation == "retention-plan":
+                print(json.dumps(catalog.plan(args.days, args.reason), sort_keys=True))
+            elif args.operation == "retention-execute":
+                catalog.execute(args.plan, args.reason)
+            elif args.operation == "retention-recover":
+                catalog.recover(args.reason)
+            elif args.operation == "backup-enroll":
+                manifest = json.loads(tenant.archive("verify", args.archive, args.key_file))
+                print(json.dumps(catalog.register(args.archive, manifest, "replica", args.reason), sort_keys=True))
+            else:
+                manifest = read_json(args.archive_manifest)
+                if args.operation == "archive-register":
+                    catalog.register(args.archive, manifest, args.kind, args.reason)
+                else:
+                    with catalog.opened(args.archive) as (_, _, identity):
+                        require(manifest.get("encrypted_sha256") == identity["sha256"],
+                                "Archive changed after authentication")
+                        catalog.check_restore(manifest, identity["sha256"])
+        elif args.operation == "status":
             app = tenant.container("application")
             tenant.container("database")
             result = {

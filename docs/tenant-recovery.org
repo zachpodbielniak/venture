@@ -21,7 +21,9 @@ container starts during maintenance. A neighboring tenant stays online.
 
 An archive contains a PostgreSQL custom-format dump, the tenant's complete
 state and configuration, the pinned application image and PostgreSQL major
-version, creation time, source tenant identity, and SHA-256 integrity evidence.
+version, creation time, source tenant identity, authenticated archive UUID, and
+SHA-256 integrity evidence. New exports register in the [[file:backup-retention.org][local retention catalog]];
+verification and restore refuse tombstones known to the current control catalog.
 A separately held encryption key protects the complete archive; the key is
 never included inside it, in command arguments, or diagnostic output.
 Configuration includes encrypted-provider master keys and session identity,

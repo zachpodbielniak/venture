@@ -9,7 +9,7 @@ usage () {
 Usage: venture-tenant-backup --root DIR --tenant ID --key-file FILE COMMAND ARCHIVE
 
 Commands:
-  create   Encrypt the stopped tenant's database, application config and state.
+  create   Encrypt and catalog the stopped tenant database, config and state.
   verify   Authenticate an archive and print its non-secret manifest.
   restore  Restore into the same tenant identity on an empty, stopped target.
 
@@ -26,6 +26,10 @@ jq, GnuPG, GNU tar/coreutils and util-linux flock. The application must stay
 stopped under the tenant maintenance lock. Restore never starts it. Runtime
 routing and database transport credentials belong to the destination's
 control directory; archived application configuration cannot replace them.
+
+Archives require an owned mode-700 parent outside the platform root. New
+archives carry authenticated UUIDs and are registered in the private catalog.
+Verification/restore refuses UUIDs retired in the current control catalog.
 
 Stdout: the published archive path or verified manifest. Diagnostics: stderr.
 Exit: 0 success; 2 invalid input/unsafe state; other nonzero operational failure.
@@ -74,7 +78,7 @@ operation=$1 archive=$2
 case $operation in create|verify|restore) ;; *) fail 'Unknown recovery command';; esac
 [[ $tenant =~ ^[a-z][a-z0-9-]{0,47}$ ]] || fail 'Tenant ID must be 1–48 lowercase letters, digits or hyphens'
 [[ -n $root && -n $key_file && -n $archive ]] || fail 'Root, tenant, key file and archive are required'
-for dependency in podman jq gpg tar sha256sum stat realpath mktemp flock timeout date find sort cmp awk grep sync dirname
+for dependency in podman jq gpg tar sha256sum stat realpath mktemp flock timeout date find sort cmp awk grep sync dirname python3
 do
 	command -v "$dependency" >/dev/null || fail "Missing dependency: $dependency"
 done
@@ -90,6 +94,11 @@ private_dir () {
 }
 private_dir "$root"
 root=$(realpath -e -- "$root")
+archive=$(realpath -ms -- "$archive")
+archive_parent=$(dirname -- "$archive")
+private_dir "$archive_parent"
+[[ $archive_parent == "$(realpath -e -- "$archive_parent")" && $archive != "$root/"* ]] || fail 'Archive parent must be outside platform data and contain no symlink components'
+
 private_file "$root/host.json"
 private_file "$key_file"
 [[ $(stat -c %s -- "$key_file") -ge 32 && $(stat -c %s -- "$key_file") -le 4096 ]] || fail 'Recovery passphrase file must contain 32–4096 bytes'
@@ -116,6 +125,7 @@ then
 	flock -n "$inherited_fd" || fail 'Tenant maintenance is already in progress'
 else
 	exec 9>"$tenant_dir/control/maintenance.lock"
+	export VENTURE_TENANT_MAINTENANCE_FD=9
 	flock -n 9 || fail 'Tenant maintenance is already in progress'
 fi
 [[ ! -e $tenant_dir/control/maintenance-container && ! -L $tenant_dir/control/maintenance-container ]] || fail 'Unfinished platform maintenance must be recovered before a snapshot or restore'
@@ -136,6 +146,7 @@ jq -e --arg tenant "$tenant" --arg host "$host_id" '
  (.db_role | type == "string" and test("^[a-z][a-z0-9_]{0,62}$")) and
  (.postgres_major | type == "number" and . >= 15 and . <= 99)
 ' "$tenant_dir/manifest.json" >/dev/null || fail 'Invalid tenant registration'
+catalog_tool=$(dirname -- "$(realpath -e -- "${BASH_SOURCE[0]}")")/venture-tenantctl
 workspace_id=$(jq -r .workspace_id "$tenant_dir/manifest.json")
 app=$(jq -r .app_container "$tenant_dir/manifest.json")
 db=$(jq -r .db_container "$tenant_dir/manifest.json")
@@ -202,10 +213,14 @@ check_tar () {
 	done < "$work/types"
 }
 extract_archive () {
-	[[ -f $archive && ! -L $archive ]] || fail 'Archive must be a regular file'
+	private_file "$archive"
+	[[ $(stat -c %h -- "$archive") == 1 ]] || fail 'Archive must not be hard linked'
+	archive_hash=$(sha256sum -- "$archive"); archive_hash=${archive_hash%% *}
 	# Never extract a partial decryption: authentication must finish first.
 	timeout --signal=TERM --kill-after=10s 900 gpg --batch --no-tty --pinentry-mode loopback --no-symkey-cache --passphrase-fd 3 --status-fd 4 \
 		--output "$work/archive.tar" --decrypt "$archive" 3<"$key_file" 4>"$work/decrypt.status" 2>"$work/decrypt.log" || fail 'Archive authentication failed'
+	verified_hash=$(sha256sum -- "$archive"); verified_hash=${verified_hash%% *}
+	[[ $archive_hash == "$verified_hash" ]] || fail 'Archive changed during authentication'
 	grep -Fxq '[GNUPG:] GOODMDC' "$work/decrypt.status" || fail 'Archive must carry verified integrity protection'
 	check_tar "$work/archive.tar"
 	printf '%s\n' config.tar database.dump manifest.json state.tar | sort > "$work/expected"
@@ -233,6 +248,8 @@ extract_archive () {
 	done
 	check_tar "$work/payload/state.tar"
 	check_tar "$work/payload/config.tar"
+	jq --arg digest "$archive_hash" '. + {encrypted_sha256:$digest}' "$work/payload/manifest.json" > "$work/verified-manifest.json"
+	"$catalog_tool" --root "$root" archive-check "$tenant" --archive "$archive" --archive-manifest "$work/verified-manifest.json"
 }
 case $operation in
 	create)
@@ -245,9 +262,9 @@ case $operation in
 		tar -cf "$work/state.tar" -C "$tenant_dir/state" .
 		tar -cf "$work/config.tar" -C "$tenant_dir/config" .
 		database_hash=$(sha256sum "$work/database.dump"); state_hash=$(sha256sum "$work/state.tar"); config_hash=$(sha256sum "$work/config.tar")
-		jq -n --arg tenant "$tenant" --arg workspace "$workspace_id" --arg image "$app_image" --argjson major "$postgres_major" --arg created "$(date -u +%FT%TZ)" \
+		jq -n --arg tenant "$tenant" --arg workspace "$workspace_id" --arg image "$app_image" --argjson major "$postgres_major" --arg created "$(date -u +%FT%TZ)" --arg archive_id "$(python3 -c 'import uuid; print(uuid.uuid4())')" \
 			--arg database "${database_hash%% *}" --arg state "${state_hash%% *}" --arg config "${config_hash%% *}" \
-			'{schema:1,tenant_id:$tenant,workspace_id:$workspace,app_image:$image,postgres_major:$major,created_at:$created,database_sha256:$database,state_sha256:$state,config_sha256:$config}' > "$work/manifest.json"
+			'{schema:1,archive_id:$archive_id,tenant_id:$tenant,workspace_id:$workspace,app_image:$image,postgres_major:$major,created_at:$created,database_sha256:$database,state_sha256:$state,config_sha256:$config}' > "$work/manifest.json"
 		pending=$(mktemp -- "${archive}.partial.XXXXXX")
 		tar -cf - -C "$work" manifest.json database.dump state.tar config.tar | \
 			timeout --signal=TERM --kill-after=10s 900 gpg --batch --yes --no-tty --pinentry-mode loopback --no-symkey-cache --passphrase-fd 3 \
@@ -255,14 +272,18 @@ case $operation in
 		# A no-clobber hard link publishes only a complete encrypted inode,
 		# refusing a concurrent creator instead of overwriting their backup.
 		sync -- "$pending"
+		archive_hash=$(sha256sum -- "$pending"); archive_hash=${archive_hash%% *}
 		ln -- "$pending" "$archive"
 		rm -- "$pending"; pending=''
 		sync -- "$(dirname -- "$archive")"
+		jq --arg digest "$archive_hash" '. + {encrypted_sha256:$digest}' "$work/manifest.json" > "$work/registered-manifest.json"
+		"$catalog_tool" --root "$root" archive-register "$tenant" --archive "$archive" --archive-manifest "$work/registered-manifest.json" \
+			--kind "${VENTURE_TENANT_ARCHIVE_KIND:-export}" --reason 'Authenticated encrypted archive publication'
 		printf '%s\n' "$archive"
 		;;
 	verify)
 		extract_archive
-		cat "$work/payload/manifest.json"
+		cat "$work/verified-manifest.json"
 		;;
 	restore)
 		check_target

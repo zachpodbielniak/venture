@@ -56,7 +56,7 @@ the actual operating environment, not a source-code claim.
 | Audit | Application privilege/business events; hash-linked private platform operation log with explicit reason | Separately administered append-only sink, delivery failure alert, retention/restore policy and tamper investigation drill |
 | TLS and encrypted storage | Backend pinned to configured HTTPS authority and loopback proxy mapping; provider transports use documented boundaries | Actual certificate/proxy configuration, disk/volume encryption, key custody and restore evidence. Loopback and rootless containers do not encrypt storage. |
 | Residency and processors | Separate local roots and explicit configured integrations make placement enumerable | Record actual primary/replica/attachment/log/backup locations and each authorized processor. No residency claim before inventory and enforcement are verified. |
-| Offboarding and holds | Offboard stops/suspends and retains data; operator hold is recorded; no implicit subscription deletion | Durable retention scheduler, offsite hold propagation, authorized erasure/anonymization and final media/key destruction evidence |
+| Offboarding and holds | Offboard stops/suspends and retains data; operator hold is recorded; no implicit subscription deletion | Local archive catalog/explicit expiry now documented in backup retention; scheduler, offsite hold propagation, authorized erasure/anonymization and final media/key destruction evidence remain |
 | Recovery targets | Selected RPO 15 minutes/RTO four hours; daily operational backup retention target 30 days | WAL/PITR capture/restore, offsite schedule, alerting and measured worst-case drill. Daily snapshots alone cannot meet a 15-minute RPO. |
 | Limits and fairness | Per-workspace process/database resource defaults; bounded subsystem work and durable identities where documented | API/storage/job admission limits, heavy-neighbor fairness and restart/overload qualification |
 | Capacity | Explicit 100/1,000/3,000 profiles and latency/error targets in delivery contract | Actual measured hardware, occupancy, active users, storage and rates. No extrapolation from a two-workspace drill. |
@@ -80,8 +80,10 @@ The 30-day operational backup target does not override a hold or a separate
 financial-evidence policy. A deletion ledger must survive backup restoration so
 later recovery cannot republish previously erased payloads. Credential quarantine
 protects authority; it is not a substitute for replaying that deletion ledger.
-Do not enable automated archive expiry until authenticated catalog identity,
-holds, offsite copies and failure reporting are enforced together.
+The [[file:backup-retention.org][local archive catalog]] now enforces authenticated identity, explicit
+plan/execute, holds and crash reconciliation for registered local files. Do not
+claim automated or offsite expiry until scheduling, remote copies and failure
+reporting are qualified together.
 
 * Operator evidence packet
 

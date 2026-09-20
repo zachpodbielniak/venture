@@ -25,6 +25,7 @@ cat > "$fixture/bin/podman" <<'STUB'
 #!/bin/bash
 set -euo pipefail
 case $1 in
+	info) printf 'true\n' ;;
 	inspect)
 		case ${2: -1} in 1) cat "$RECOVERY_FIXTURE/app.json";; 2) cat "$RECOVERY_FIXTURE/db.json";; *) exit 93;; esac ;;
 	exec)
@@ -91,6 +92,9 @@ jq '.[0].Image |= sub("^sha256:"; "")' "$fixture/app.good" > "$fixture/app.json"
 "$tool" "${args[@]}" create "$fixture/complete.gpg" > "$fixture/create.log"
 [[ -s $fixture/complete.gpg ]]
 [[ $(stat -c %a "$fixture/complete.gpg") == 600 ]]
+jq -e '[.entries[] | select(.kind == "export" and .state == "retained")] | length == 1' "$fixture/host/studio/control/backup-catalog.json" >/dev/null
+VENTURE_TENANT_ARCHIVE_KIND=upgrade "$tool" "${args[@]}" create "$fixture/upgrade.gpg" > "$fixture/upgrade.log"
+jq -e '[.entries[] | select(.kind == "upgrade" and .state == "retained")] | length == 1' "$fixture/host/studio/control/backup-catalog.json" >/dev/null
 "$tool" "${args[@]}" verify "$fixture/complete.gpg" > "$fixture/verified.json"
 jq -e '.tenant_id == "studio" and .postgres_major == 18' "$fixture/verified.json" >/dev/null
 # Authenticated archives still require structural validation. A credential
@@ -172,3 +176,31 @@ expect_failure "$tool" "${args[@]}" restore "$fixture/complete.gpg"
 [[ -s $fixture/neighbor ]]
 [[ -z $(find "$fixture/host/studio/control" -maxdepth 1 -name 'recovery.*' -print -quit) ]]
 printf 'Tenant recovery tool: ownership, stopped-state, encryption, atomic publication, destination refusal and restore fixtures passed.\n'
+
+# Catalog uses real authenticated GnuPG bytes; expiry touches registered copies only.
+catalog_tool=$project/tools/venture-tenantctl
+tar -xf "$fixture/outer.tar" -C "$fixture/payload"
+archive_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
+jq --arg id "$archive_id" '.archive_id=$id | .created_at="2020-01-01T00:00:00Z"' "$fixture/payload/manifest.json" > "$fixture/old-manifest.json"
+mv "$fixture/old-manifest.json" "$fixture/payload/manifest.json"
+tar -cf "$fixture/old.tar" -C "$fixture/payload" manifest.json database.dump state.tar config.tar
+gpg "${gpg_args[@]}" --symmetric --force-mdc --cipher-algo AES256 --output "$fixture/old.gpg" "$fixture/old.tar" 3<"$fixture/key" 2>"$fixture/gpg.log"
+cp "$fixture/old.gpg" "$fixture/replica.gpg"
+cp "$fixture/old.gpg" "$fixture/unregistered.gpg"
+"$catalog_tool" --root "$fixture/host" backup-enroll studio --archive "$fixture/old.gpg" --key-file "$fixture/key" --reason 'Authenticated synthetic original' > "$fixture/enrolled.json"
+"$catalog_tool" --root "$fixture/host" backup-enroll studio --archive "$fixture/replica.gpg" --key-file "$fixture/key" --reason 'Explicit synthetic local replica' > "$fixture/replica.json"
+"$catalog_tool" --root "$fixture/host" retention-plan studio --reason 'Review synthetic expiry' > "$fixture/plan.json"
+jq -e '.days == 30 and (.candidates | length) == 2' "$fixture/plan.json" >/dev/null
+"$catalog_tool" --root "$fixture/host" hold studio on --reason 'Synthetic hold'
+plan=$(jq -r .plan_id "$fixture/plan.json")
+expect_failure "$catalog_tool" --root "$fixture/host" retention-execute studio --plan "$plan" --reason 'Hold must override'
+[[ -f $fixture/old.gpg && -f $fixture/replica.gpg ]]
+"$catalog_tool" --root "$fixture/host" hold studio off --reason 'Release synthetic hold'
+"$catalog_tool" --root "$fixture/host" retention-execute studio --plan "$plan" --reason 'Expire reviewed synthetic copies'
+[[ ! -e $fixture/old.gpg && ! -e $fixture/replica.gpg && -f $fixture/unregistered.gpg && -f $fixture/complete.gpg ]]
+"$catalog_tool" --root "$fixture/host" backup-list studio > "$fixture/catalog.json"
+jq -e '[.entries[] | select(.state == "deleted")] | length == 2' "$fixture/catalog.json" >/dev/null
+expect_failure "$tool" "${args[@]}" verify "$fixture/unregistered.gpg"
+grep -q 'retired by this workspace' "$fixture/refusal.log"
+expect_failure "$catalog_tool" --root "$fixture/host" backup-enroll studio --archive "$fixture/unregistered.gpg" --key-file "$fixture/key" --reason 'Tombstone must refuse re-enrollment'
+printf 'Backup retention: authenticated UUID enrollment, 30-day plan, hold refusal, explicit local replica expiry, permanent tombstones and unregistered-file preservation passed.\n'

@@ -1,0 +1,56 @@
+#+title: Local backup retention executable demonstration
+
+* Scope and artifacts
+
+The shipped operator scripts ran on owned synthetic archives using real GnuPG
+AES-256 encryption/authentication. Rootless Podman was queried only for its
+read-only platform preflight. No container, volume, network, database or actual
+user backup was created, contacted or deleted. This is filesystem/crypto/CLI
+qualification, separate from the physical PostgreSQL recovery drill.
+
+The driver is =docs/evidence/backup-retention-demonstration.py=. Run it from a
+checkout with Python 3, rootless Podman, GnuPG and the backup utility's normal
+shell dependencies. It invokes the actual scripts, records their SHA-256
+identities, and retains a private synthetic evidence directory. Do not publish
+that directory or its generated passphrase; the transcript below contains no
+secret material.
+
+#+begin_src sh
+python3 docs/evidence/backup-retention-demonstration.py
+#+end_src
+
+* Verbatim successful output
+
+#+begin_example
+Operator SHA256: b1043b586466c2a1a2725ed558e31e4f9b98a9ba18102c7f252a27d178f7f18d
+Backup SHA256: 5d4a8e0d85c82601922788a0f20f0e5d8e4c4bf491100063579b0ce1b8b7d42e
+PASS two authenticated local copies have distinct catalog IDs and one matching workspace/archive UUID
+PASS default 30-day plan names exactly the two enrolled copies and deletes nothing
+PASS a subsequently applied hold refuses execution and preserves both copies
+PASS explicit execution deletes only enrolled copies, persists two tombstones and leaves the unregistered file
+PASS authenticated unregistered copy of the retired archive is refused by the original workspace ledger
+PASS no container/database/volume/network was created; all archive contents and deletion targets were owned synthetic fixtures
+Evidence directory: /tmp/venture-125-retention-demo-f_dv__hh
+#+end_example
+
+* Regression qualification
+
+The lifecycle GTest wrapper runs the Python behavioral cases, including crash
+after unlink/before catalog publication, refusal to unlink without durable
+intent, preserved survivors under a newly applied hold, rejected replacement
+parents/files, explicit replica IDs/digests, stale plans, offboarding's extra
+retention period and real competing-process flock refusal. The recovery GTest
+wrapper runs real GnuPG and tar fixtures, including export/upgrade registration
+and an authenticated retired-copy refusal. Container responses in that fixture
+are synthetic; the executable demonstration above uses only real read-only
+platform preflight and synthetic payloads.
+
+The first catalog test failed before implementation because no archive catalog
+existed. Review then reproduced an authenticated-byte handoff regression: removing
+the encrypted digest snapshot check made the dedicated enrollment test fail.
+The repaired result passes all 28 operator cases. A second red-before/green-after regression ensures
+the parent upgrade process preserves the catalog requirement initialized by its
+backup child instead of overwriting it with a stale registration. Repairs and final review consider filesystem partial failure rather
+than claiming an unlink batch is transactional. The preserved catalog is local
+retirement authority; a new recovery host without the original catalog does not
+know those tombstones. No offsite or personal-data erasure claim is made.

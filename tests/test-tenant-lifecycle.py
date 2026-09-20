@@ -8,6 +8,7 @@ import io
 import importlib.machinery
 import importlib.util
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -414,6 +415,244 @@ class Lifecycle(unittest.TestCase):
         with self.assertRaises(tool.Refused):
             tool.initialize(initialized)
         self.assertEqual(len(self.calls), 1)
+
+
+    def test_backup_catalog_retention(self):
+        # A plan never authorizes deleting a different inode or an unregistered file.
+        archive_dir = self.root.parent / (self.root.name + "-archives")
+        archive_dir.mkdir(mode=0o700)
+        archive = archive_dir / "snapshot.gpg"
+        tool.write_private(archive, "synthetic encrypted fixture")
+        tool.write_private(archive_dir / "unregistered.gpg", "must remain")
+        manifest = {"workspace_id": self.manifest["workspace_id"], "tenant_id": "studio",
+                    "archive_id": str(uuid.uuid4()), "created_at": "2020-01-01T00:00:00Z",
+                    "encrypted_sha256": hashlib.sha256(archive.read_bytes()).hexdigest()}
+        with self.tenant.locked():
+            catalog = tool.BackupCatalog(self.tenant)
+            entry = catalog.register(archive, manifest, "export", "Synthetic fixture")
+            plan = catalog.plan(30, "Review expiry")
+            self.assertEqual(plan["candidates"], [entry["copy_id"]])
+            self.assertTrue(archive.exists())
+            catalog.execute(plan["plan_id"], "Expire reviewed fixture")
+            self.assertFalse(archive.exists())
+            self.assertTrue((archive_dir / "unregistered.gpg").exists())
+            with self.assertRaises(tool.Refused):
+                catalog.check_restore(manifest, entry["sha256"])
+            self.assertEqual(catalog.data["entries"][entry["copy_id"]]["state"], "deleted")
+
+    def test_backup_catalog_hold_and_replacement(self):
+        archive_dir = self.root.parent / (self.root.name + "-archives")
+        archive_dir.mkdir(mode=0o700)
+        archive = archive_dir / "snapshot.gpg"
+        tool.write_private(archive, "synthetic encrypted fixture")
+        manifest = {"workspace_id": self.manifest["workspace_id"], "tenant_id": "studio",
+                    "archive_id": str(uuid.uuid4()), "created_at": "2020-01-01T00:00:00Z",
+                    "encrypted_sha256": hashlib.sha256(archive.read_bytes()).hexdigest()}
+        with self.tenant.locked():
+            catalog = tool.BackupCatalog(self.tenant)
+            catalog.register(archive, manifest, "export", "Synthetic fixture")
+            plan = catalog.plan(30, "Review expiry")
+            self.tenant.manifest["hold"] = True
+            self.tenant.save()
+            with self.assertRaises(tool.Refused):
+                catalog.execute(plan["plan_id"], "Held fixture")
+            self.tenant.manifest["hold"] = False
+            self.tenant.save()
+            tool.write_private(archive, "replaced unrelated inode")
+            with self.assertRaises(tool.Refused):
+                catalog.execute(plan["plan_id"], "Replaced fixture")
+            self.assertEqual(archive.read_text(), "replaced unrelated inode")
+
+
+    def catalog_fixture(self):
+        directory = self.root.parent / (self.root.name + "-archives")
+        directory.mkdir(mode=0o700)
+        archive = directory / "snapshot.gpg"
+        tool.write_private(archive, "synthetic encrypted fixture")
+        manifest = {"workspace_id": self.manifest["workspace_id"], "tenant_id": "studio",
+                    "archive_id": str(uuid.uuid4()), "created_at": "2020-01-01T00:00:00Z",
+                    "encrypted_sha256": hashlib.sha256(archive.read_bytes()).hexdigest()}
+        return directory, archive, manifest
+
+    def test_retention_crash_recovery_preserves_survivors(self):
+        directory, archive, manifest = self.catalog_fixture()
+        survivor = directory / "survivor.gpg"
+        tool.write_private(survivor, "second encrypted fixture")
+        with self.tenant.locked():
+            catalog = tool.BackupCatalog(self.tenant)
+            first = catalog.register(archive, manifest, "export", "Fixture")
+            catalog.register(survivor, {**manifest, "archive_id": str(uuid.uuid4()), "encrypted_sha256": hashlib.sha256(survivor.read_bytes()).hexdigest()}, "upgrade", "Fixture")
+            plan = catalog.plan(30, "Fixture plan")
+            # Force the first candidate to be the archive whose crash is simulated.
+            catalog.data["plan"]["candidates"].sort(key=lambda value: value != first["copy_id"])
+            catalog.save()
+            catalog.data["plan"]["revision"] = catalog.data["revision"]
+            tool.write_private(catalog.path, json.dumps(catalog.data))
+            unlink = tool.os.unlink
+            def interrupted(path, **kwargs):
+                unlink(path, **kwargs)
+                raise OSError("Simulated crash after unlink before catalog publication")
+            with mock.patch.object(tool.os, "unlink", side_effect=interrupted):
+                with self.assertRaises(OSError):
+                    catalog.execute(plan["plan_id"], "Fixture expiry")
+            restarted = tool.BackupCatalog(self.tenant)
+            self.assertIsNotNone(restarted.data["journal"])
+            with self.assertRaises(tool.Refused):
+                restarted.plan(30, "Must recover first")
+            self.tenant.manifest["hold"] = True
+            self.tenant.save()
+            restarted.recover("Reconcile interruption under hold")
+            self.assertFalse(archive.exists())
+            self.assertTrue(survivor.exists())
+            self.assertIsNone(tool.BackupCatalog(self.tenant).data["journal"])
+            self.assertEqual(restarted.data["entries"][first["copy_id"]]["deletion_outcome"],
+                             "missing-after-durable-intent")
+
+    def test_retention_parent_replacement_and_links(self):
+        directory, archive, manifest = self.catalog_fixture()
+        with self.tenant.locked():
+            catalog = tool.BackupCatalog(self.tenant)
+            catalog.register(archive, manifest, "export", "Fixture")
+            plan = catalog.plan(30, "Fixture plan")
+            old = directory.with_name(directory.name + "-retained")
+            directory.rename(old)
+            directory.mkdir(mode=0o700)
+            tool.write_private(archive, "synthetic encrypted fixture")
+            with self.assertRaises(tool.Refused):
+                catalog.execute(plan["plan_id"], "Refuse replaced parent")
+            archive.unlink()
+            archive.symlink_to(old / archive.name)
+            with self.assertRaises(OSError):
+                catalog.plan(30, "Refuse symlink")
+            archive.unlink()
+            os.link(old / archive.name, archive)
+            with self.assertRaises(tool.Refused):
+                catalog.plan(30, "Refuse hard link")
+            self.assertTrue((old / archive.name).exists())
+
+    def test_retention_replica_identity_and_stale_plan(self):
+        directory, archive, manifest = self.catalog_fixture()
+        with self.tenant.locked():
+            catalog = tool.BackupCatalog(self.tenant)
+            first = catalog.register(archive, manifest, "export", "Fixture")
+            plan = catalog.plan(30, "Fixture plan")
+            replica = directory / "replica.gpg"
+            tool.write_private(replica, archive.read_bytes())
+            second = catalog.register(replica, manifest, "replica", "Explicit local replica")
+            self.assertNotEqual(first["copy_id"], second["copy_id"])
+            self.assertEqual(first["archive_id"], second["archive_id"])
+            with self.assertRaises(tool.Refused):
+                catalog.execute(plan["plan_id"], "Stale plan")
+            altered = directory / "altered.gpg"
+            tool.write_private(altered, "different encrypted bytes")
+            with self.assertRaises(tool.Refused):
+                catalog.register(altered, manifest, "replica", "UUID content mismatch")
+            with self.assertRaises(tool.Refused):
+                catalog.register(altered, {**manifest, "workspace_id": str(uuid.uuid4())}, "replica", "Wrong workspace")
+            with self.assertRaises((tool.Refused, ValueError)):
+                catalog.register(altered, {**manifest, "archive_id": ""}, "replica", "Legacy needs re-export")
+            current = catalog.plan(30, "Review both copies")
+            catalog.execute(current["plan_id"], "Expire explicitly registered copies")
+            self.assertFalse(archive.exists())
+            self.assertFalse(replica.exists())
+            self.assertTrue(altered.exists())
+            with self.assertRaises(tool.Refused):
+                catalog.register(altered, manifest, "replica", "Retired archive cannot re-enter")
+
+    def test_retention_offboarding_hold_and_clock(self):
+        _, archive, manifest = self.catalog_fixture()
+        with self.tenant.locked():
+            catalog = tool.BackupCatalog(self.tenant)
+            catalog.register(archive, manifest, "export", "Fixture")
+            plan = catalog.plan(30, "Fixture plan", now=1700000000)
+            with self.assertRaises(tool.Refused):
+                catalog.execute(plan["plan_id"], "Clock rollback", now=1699999999)
+            self.tenant.manifest.update(phase="offboarded", offboarded_at=1700000000)
+            self.tenant.save()
+            with self.assertRaises(tool.Refused):
+                catalog.execute(plan["plan_id"], "New offboard retention", now=1700000001)
+            self.assertEqual(catalog.plan(30, "Wait offboarding period", now=1700000001)["candidates"], [])
+            self.tenant.manifest["hold"] = True
+            self.tenant.save()
+            self.assertEqual(catalog.plan(30, "Held indefinitely", now=1800000000)["candidates"], [])
+            self.assertTrue(archive.exists())
+
+    def test_retention_lock_and_corrupt_catalog(self):
+        with self.tenant.locked():
+            result = subprocess.run([str(SCRIPT), "--root", str(self.root), "retention-plan", "studio", "--reason", "Competing operation"],
+                                    capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn(b"already in progress", result.stderr)
+            tool.write_private(self.tenant.control / "backup-catalog.json", "not json")
+            with self.assertRaises(ValueError):
+                tool.BackupCatalog(self.tenant)
+
+    def test_retention_recovery_refuses_uncertain_replacement(self):
+        _, archive, manifest = self.catalog_fixture()
+        with self.tenant.locked():
+            catalog = tool.BackupCatalog(self.tenant)
+            catalog.register(archive, manifest, "export", "Fixture")
+            plan = catalog.plan(30, "Fixture plan")
+            with mock.patch.object(tool.os, "unlink", side_effect=OSError("Simulated filesystem refusal")):
+                with self.assertRaises(OSError):
+                    catalog.execute(plan["plan_id"], "Fixture expiry")
+            tool.write_private(archive, "replacement must never be deleted")
+            restarted = tool.BackupCatalog(self.tenant)
+            with self.assertRaises(tool.Refused):
+                restarted.recover("Uncertain replacement")
+            self.assertIsNotNone(tool.BackupCatalog(self.tenant).data["journal"])
+            self.assertEqual(archive.read_text(), "replacement must never be deleted")
+
+
+    def test_retention_requires_durable_intent_before_unlink(self):
+        _, archive, manifest = self.catalog_fixture()
+        with self.tenant.locked():
+            catalog = tool.BackupCatalog(self.tenant)
+            catalog.register(archive, manifest, "export", "Fixture")
+            plan = catalog.plan(30, "Fixture plan")
+            with mock.patch.object(catalog, "save", side_effect=OSError("Catalog publication failed")):
+                with self.assertRaises(OSError):
+                    catalog.execute(plan["plan_id"], "Must journal first")
+            self.assertTrue(archive.exists())
+            self.assertIsNone(tool.BackupCatalog(self.tenant).data["journal"])
+
+
+    def test_enrollment_binds_authenticated_encrypted_bytes(self):
+        _, archive, manifest = self.catalog_fixture()
+        with self.tenant.locked():
+            catalog = tool.BackupCatalog(self.tenant)
+            with self.assertRaises(tool.Refused):
+                catalog.register(archive, {**manifest, "encrypted_sha256": "0" * 64}, "replica", "Stale verification snapshot")
+            self.assertEqual(catalog.data["entries"], {})
+            self.assertTrue(archive.exists())
+
+
+    def test_registered_catalog_cannot_disappear_silently(self):
+        _, archive, manifest = self.catalog_fixture()
+        with self.tenant.locked():
+            catalog = tool.BackupCatalog(self.tenant)
+            catalog.register(archive, manifest, "export", "Fixture")
+            self.assertTrue(tool.read_json(self.tenant.directory / "manifest.json")["backup_catalog_required"])
+            catalog.path.unlink()
+            with self.assertRaises(tool.Refused):
+                tool.BackupCatalog(self.tenant)
+            self.assertTrue(archive.exists())
+
+
+    def test_backup_child_registration_survives_parent_manifest_save(self):
+        # Upgrade writes its phase after the backup child initializes catalog
+        # authority. A stale parent manifest must not erase that requirement.
+        with self.tenant.locked():
+            def backup_child(*args, **kwargs):
+                current = tool.read_json(self.tenant.directory / "manifest.json")
+                current["backup_catalog_required"] = True
+                tool.write_private(self.tenant.directory / "manifest.json", json.dumps(current))
+                return b"{}"
+            with mock.patch.object(tool, "run", side_effect=backup_child):
+                self.tenant.archive("verify", self.root / "fixture.gpg", self.root / "fixture-key")
+            self.tenant.manifest["phase"] = "upgrading"
+            self.tenant.save()
+            self.assertTrue(tool.read_json(self.tenant.directory / "manifest.json").get("backup_catalog_required"))
 
 
 unittest.main()

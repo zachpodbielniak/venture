@@ -156,6 +156,7 @@ screen's ordinary sync-and-import test.
 
 - [[file:stripe-automatic-demonstration.org][Automatic collection demonstration]] — explicit customer authorization, recurring invoice attempts, settlement and recovery.
 - [[file:integration-key-maintenance.org][Integration master-key maintenance]] — offline rotation, verification and process exclusion
+- [[file:backup-retention.org][Local backup retention]] — authenticated archive catalog, explicit expiry plans, holds and crash reconciliation.
 - [[file:tenant-recovery.org][Tenant recovery]] — encrypted whole-workspace archives, stopped-state restoration and independent neighbor checks.
 
 - [[file:tenant-operations.org][Hosted platform operations]] — isolated provisioning, maintenance, restore and retained offboarding.
