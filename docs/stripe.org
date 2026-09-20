@@ -1,182 +1,230 @@
 #+title: Stripe payments
-#+description: Hosted Checkout for issued invoices and verified settlement
+#+description: Organization-bound hosted card and ACH payments with durable settlement evidence
 
-* Configure an organization account
+* Enable and connect an organization
 
-Stripe is opt-in: set =stripe.enabled: true=. It requires =receivables=,
-=integrations= and its organization-access prerequisite. The module table
-places Stripe after these dependencies so the bottom-up registry stays acyclic.
-An unconfigured organization does not prevent startup; its Checkout operation
-fails closed until an organization owner/admin connects it.
+Stripe is opt-in: =stripe.enabled: true=. Its module follows =receivables=,
+=integrations= and organization access in the dependency table. An unconfigured
+organization does not prevent startup; its payment operations refuse until an
+organization owner/admin connects its own account.
 
-Set the installation encryption key as documented in [[file:integrations.org][Organization integrations]].
-Open Stripe settings from the organization record, or visit
-=/organizations/<id>/settings/stripe= as that organization's owner/admin.
-Supply all seven fields: =secret_key=, =publishable_key=, =webhook_secret=,
-=api_version=, =success_url=, =cancel_url= and =environment= (=test= or =live=).
-Return URLs require HTTPS without embedded credentials. Account verification
-calls Stripe's authenticated =GET /v1/account= before saving. The account ID
-comes from Stripe; keys must match the selected environment. Connect accounts
-and restricted API keys are outside this adapter's current contract.
+Configure the installation encryption key as described in
+[[file:integrations.org][Organization integrations]]. Open Stripe settings from the organization record
+or =/organizations/<id>/settings/stripe=. Supply =secret_key=,
+=publishable_key=, =webhook_secret=, =api_version=, =success_url=,
+=cancel_url= and =environment= (=test= or =live=). Return URLs require HTTPS
+without credentials. The adapter verifies the account through authenticated
+=GET /v1/account= before encrypting settings. Stripe Connect delegation and
+restricted-key account discovery are outside this adapter's contract.
 
-The page shows only account identity, environment and the exact webhook path.
-Every credential input starts blank, including after a failed submission.
-Settings are encrypted with authenticated organization/account/environment
-binding; generic records, CLI, AI tools and audit never return clear credentials.
-Test connection verifies current credentials still identify the bound account.
-Connect or rotate requires all values and the displayed connection identity
-and optimistic version. Stale forms cannot change a replacement connection.
-A same-account rotation takes effect on the next operation, including cached
-services. The previous webhook secret stops working immediately: coordinate
-rotation with Stripe's endpoint configuration; no overlap window is implied.
+The settings page supports connect, test, same-account rotation and disconnect.
+Credential inputs are always blank and write-only, including after failure.
+The page shows account/environment identity and its exact webhook endpoint.
+Updates bind the displayed connection ID and optimistic version. Decryption
+checks that same version so concurrent rotation cannot label newer credentials
+with an older configuration identity. Cached clients reload on rotation.
+Webhook-secret rotation has no overlap window: coordinate the endpoint secret
+with Stripe. Disconnect retains historical encrypted credentials for callbacks.
+Changing account or environment requires disconnect followed by connect.
 
-Disconnect retains the historical binding and its encrypted credentials for
-outstanding signed callbacks. A different account or environment requires
-disconnect followed by connect. New invoices select the current connection;
-old pending Checkouts remain with their original account. A pending Checkout
-from any earlier account, including an unbound legacy row, refuses creation
-of another payment link until reconciled. Disconnecting never moves payment
-evidence or settles an invoice. Return-page navigation never records cash.
+Production never falls back to installation =VENTURE_STRIPE_*= credentials.
+The legacy environment constructor works only with explicit C transport
+injection in offline tests. Configure each organization deliberately. The
+unbound =/webhooks/stripe= route exists only for that fixture constructor;
+production uses =/webhooks/stripe/<connection-id>=.
 
-Production reads no =VENTURE_STRIPE_*= credential fallback, including the
-default organization. The legacy environment constructor exists only when an
-explicit offline transport is injected in a C test. Existing installation
-credentials must be deliberately connected to each intended organization.
-The legacy =/webhooks/stripe= endpoint is unavailable in production; configure
-the connection-specific path shown on the settings page.
+* Hosted card and ACH authorization
 
-* Dashboard and catalog setup
+Enable the ACH checkbox when connecting or rotating to offer card plus
+=us_bank_account= on eligible sessions. Its default is card only; repeat the
+choice when rotating. ACH requires USD and at least 50 cents. Stripe determines
+merchant eligibility and performs bank verification, including instant linking
+or microdeposits, and mandate acceptance in hosted Checkout. Venture never
+accepts bank account details or treats mandate acceptance as cash.
 
-Checkout refuses deleted invoices and customers before creating provider objects, including historical references that remain on an issued invoice.
+Issue an invoice through the ordinary receivables lifecycle. A nondeleted sent
+or partially paid invoice with a positive exact open balance can use Checkout.
+The bill-to company and invoice lines must exist. The remaining balance is sent
+as =price_data= using integer Stripe charge units. A =stripe_price_link= is
+optional catalog evidence and does not override the invoice's amount.
+Use *Pay with Stripe* on the invoice page, =venturectl invoice checkout ID=,
+or create a shareable invoice payment link as described below. Navigating to a
+success URL never records cash.
 
-Ordinary sent invoices with a positive open balance qualify. Checkout
-charges that remaining amount with Stripe =price_data= (currency, unit
-amount in Stripe charge units, and a product name). A =stripe_price_link=
-is optional catalog evidence; it is not required to open a session, and
-it cannot replace the invoice remaining. Subscription catalog mapping
-and payment-driven recovery are not implemented.
-Billing invoice lines copy =plan_price.product_id=, so a subscription invoice
-qualifies for Checkout when a =stripe_price_link= exists for that product.
-=billing collect= records an operator-confirmed receipt through an authorized =manual= customer payment method and recovers =past_due=. Processor mandates alone cannot record cash. Do not rewrite issued invoice evidence to
-pass eligibility.
+In Stripe's dashboard configure the connection-specific HTTPS endpoint with
+the same explicit API version as the saved settings. Subscribe to:
 
-1. Configure the HTTPS webhook endpoint at =/webhooks/stripe/<connection-id>= for
-   =checkout.session.completed=. Select the same explicit API version used
-   in that organization’s settings, and save its signing secret there.
-2. Issue the Venture invoice through the normal settlement lifecycle.
-   Use *Pay with Stripe* on its page, or =venturectl invoice checkout ID=.
+- =checkout.session.completed=
+- =checkout.session.async_payment_succeeded=
+- =checkout.session.async_payment_failed=
+- =checkout.session.expired=
+- =charge.dispute.created=, =charge.dispute.updated= and =charge.dispute.closed=
 
-A stored expired session may be replaced. The existing receivables
-lifecycle requires a bill-to company. Unexpected webhook totals are
-recorded as mismatches.
+ACH settlement is delayed; an unpaid completed Checkout is =processing= and
+leaves the invoice outstanding. A later verified successful event creates the
+receipt. A failed bank payment releases the attempt for a new authorization.
+Later returns can occur even after apparent settlement, so retain the dispute
+subscriptions. See Stripe's [[https://docs.stripe.com/payments/ach-direct-debit][ACH Direct Debit guide]] and
+[[https://docs.stripe.com/payments/existing-customers?platform=web&ui=stripe-hosted][delayed Checkout event guide]].
 
-* What is stored
+* Durable attempts and payment evidence
 
-| Record | Purpose |
-|--------+---------|
-| =stripe_price_link= | Organization's product-to-price mapping |
-| =stripe_customer_link= | Company or contact's Stripe customer identifier |
-| =stripe_checkout= | Invoice, globally unique session ID, URL, status, expected exact money and settled payment |
-| =stripe_event= | Globally unique event ID, type, receipt/processing times, sensitive verified payload and result |
+| Record | Retained contract |
+|--------+-------------------|
+| =stripe_customer_link= | Organization, immutable connection and company/contact customer mapping |
+| =stripe_price_link= | Organization/account product catalog reference |
+| =stripe_checkout= | Invoice, reserved exact money, account, fixed return URLs/ACH choice/deadline, provider identity and settlement reference |
+| =stripe_event= | Account-scoped event identity, sensitive verified payload, receipt/processing dates and processing result |
+| =stripe_payment_link= | Invoice revision/account/expiry capability with token digest and Checkout reference |
+| =processor_exception= | Account, verified event and affected invoice/attempt requiring reconciliation |
+| =processor_dispute= | Original receipt, disputed money and final refund or won outcome |
+| =processor_payout= / =processor_payout_item= | Gross receipts, processor fees and net bank deposit grouping |
 
-Customer creation sends the Venture company UUID as supported customer
-metadata. The service reuses an existing customer link. Customer creation
-has a stable UUID-derived idempotency key; Checkout's key uses the invoice
-UUID and version. Repeating Checkout returns its existing stored row.
+A transaction reserves =initiated= before the first external request. One
+active attempt per organization/invoice is enforced by a database unique index,
+including across account replacement. No provider call is held inside a local
+transaction. A lost HTTP response retains the reservation and a =creation_uncertain=
+processor exception; recovering its provider identity resolves that exception.
+Retrying uses its
+UUID-derived idempotency key, original amount, return URLs, ACH selection and
+absolute deadline; it never creates another logical debit by guessing that an
+uncertain request failed. Customer creation uses a separate account/company
+UUID key. Requests older than the safe retry window, changed balances and
+insufficient remaining provider lifetime require reconciliation.
 
-Checkout sends no metadata: the pinned library does not support it for that
-operation. The stored session ID maps back to the invoice. An authenticated
-event naming an unknown session is stored with result =ignored= and changes
-no payment. This endpoint never accepts an invoice ID from webhook metadata.
+The local attempt UUID is sent as =client_reference_id=. A verified callback
+can therefore identify its own account's reservation before the create response
+is stored. Amount and currency must match before association. Persisting the
+later response cannot reopen an already settled or processing attempt. The
+provider deadline is fixed, normally 23 hours, and never extended by retry.
+Stripe requires creation deadlines 30 minutes through 24 hours in the future;
+see [[https://docs.stripe.com/api/checkout/sessions/create][Checkout session creation]].
 
-* Verification and settlement
+| Attempt state | Meaning |
+|---------------+---------|
+| =initiated= | Durable reservation; provider response may be uncertain |
+| =open= | Hosted authorization can still be completed |
+| =processing= | Bank authorization completed, settlement unverified |
+| =complete= | Verified receipt applied through receivables |
+| =failed= / =expired= | Provider confirmed terminal failure/expiry |
+| =exception= | Reserved for unresolved provider/local reconciliation |
 
-=VentureStripeService= is the provider boundary. Generic writes cannot create
-or edit Checkout or event evidence, and cannot delete, restore or purge it.
-The service sends requests synchronously through =StripeClient= and forwards
-its detailed, redacted =event::stripe.*= observations into the audit log.
+Every webhook is signature-checked over its exact bytes before parsing business
+objects. The connection must match the verified organization/account/environment;
+=livemode= is mandatory for configured bindings, and a supplied =account= must
+match. Incidental browser credentials do not widen or restrict webhook authority.
+Unknown event types are durably ignored. Unknown Checkout identities are retained
+as =unknown= with a processor exception, so later association and operator retry
+can recover them. Reusing an event ID with different evidence is refused.
 
-Every delivery is signature-verified over the original bytes. A fresh verifier
-uses the same immutable configuration for each delivery; durable event IDs
-provide replay protection so an identical valid retry can receive HTTP 200.
-An invalid signature receives 400 and leaves a redacted rejection audit. A duplicate event changes no rows, including
-audits. Unknown authenticated event types are recorded and ignored.
+Verified event evidence commits before financial processing. A failed posting
+rolls back receipt, allocations, ledger and Checkout changes together, while the
+authenticated payload and processor exception remain available. An identical
+provider retry or the event's *Retry verified event* action replays that evidence.
+A processed duplicate changes no rows. Provider payment identities are also
+unique within the organization/account, independent of event identity.
 
-A completion must report paid status, a payment-intent identifier, and an
-amount and currency equal to the expected VentureMoney. Comparison uses the
-Stripe's charge units and checked rescaling; overflow is a mismatch,
-not equality. There is no universal two-decimal assumption.
-Mismatches are recorded, refused, and need operator reconciliation.
+Only a paid session with an exact amount/currency and payment-intent identity
+creates a receipt, through =venture_settlement_service_apply_payment()=.
+The external payment identity contains the connection UUID and provider payment
+ID. Charge-unit conversion preserves currency exponents and checks overflow.
+The effective accounting date comes from verified event creation time, or the
+immutable receipt time when absent; retries cannot substitute today's date.
+Fiscal-period rules remain in force. Verified unattended callbacks retain the
+existing trusted-service policy; a human replay is subject to separation of
+duties and must obtain its own whole-operation approval.
 
-The event, receipt, allocations, postings and completed Checkout row share
-one database transaction. The receipt is applied through
-=venture_settlement_service_apply_payment()= with method =stripe= and the
-payment-intent ID as both reference and external ID. Settlement invokes the
-existing fiscal-period and journal guards. Failure rolls everything back;
-Stripe can retry the delivery. No invoice status or journal is written by
-provider code. A second event for an already settled session cannot create
-another payment.
+Partial/manual cash received while an attempt is pending does not launch a
+second Checkout. If the later provider amount no longer equals the open balance,
+settlement produces an exception without guessing allocations. An authorized
+finance operator can replay the original event with =accept_balance_change=true=
+to apply the original amount and retain any excess as customer credit, subject
+to the same accounting approval/period guards. Amount, currency, payment identity,
+account and date cannot be overridden. Contradictory late success while another
+attempt can still collect remains blocked for reconciliation.
 
-* Boundaries and verification
+* Shareable invoice links
 
-=processor_payout= records a payout batch's gross, fees and net bank amount.
-Fees post to platform fees (6000), never income. =processor_payout_item= names
-the receipts in the batch so a grouped deposit can be matched without
-double-posting cash. =processor_dispute= holds AR by moving the invoice to the
-built-in =disputed= workflow state. A lost dispute reverses the receipt through
-=VentureSettlementService= as a refund. =processor_exception= is the retry
-queue for mismatches, closed periods and out-of-order events.
+An invoice's *Create payment link* action creates a Venture-owned resolver,
+not a permanent provider URL. Set trusted =server.base_url= to the installation's
+HTTPS origin. The result shows its URL once for copying or emailing; API/CLI
+action results return the same transient =url=. Ordinary records never store or
+return the bearer URL. The default expiry is seven days; explicit expiry must
+be one hour through thirty days from creation.
 
-There are no Billing Portal, Stripe Invoice creation,
-Connect accounts or generic provider interface. A future provider should own
-its transport and verified external-event mapping, then call the same
-settlement service. A future provider interface would sit in front of
-=VentureStripeService='s Checkout and webhook actions. SaaS billing must create
-and issue its Venture invoice first, then call this service; it must not set
-financial invoice state itself.
+The public =/pay/<opaque-capability>= path binds a cryptographically random
+256-bit secret to a record UUID. Only SHA256 of the complete capability is
+stored, compared in constant time. The record fixes organization, account,
+invoice ID and revision, expiry and revocation state. GET reveals only the
+outstanding amount and payment continuation. POST accepts the capability's
+invoice only, irrespective of submitted invoice selectors. Responses disable
+caching and referrer forwarding. Missing, tampered, expired, revoked, paid,
+deleted or changed-invoice capabilities return the same unavailable page.
 
-There is no automatic expiration/replacement workflow for stored Checkout
-sessions in this version. Once a session expires at Stripe, an operator must
-reconcile it before requesting a replacement; repeating the action preserves
-the original session and idempotency identity.
+Continuing creates or reuses one Checkout whose provider deadline cannot outlive
+the link. A bank payment already processing remains pending and creates no new
+collection. Existing sessions with unknown or longer lifetime cannot be borrowed
+by a shorter-lived link. The link records the reservation before external I/O,
+so a lost response cannot detach the pending debit from its revocation history.
 
-=test-stripe= uses a fake =StripeTransport= and locally signed webhook bytes;
-no network requests to Stripe and no stripe-mock are involved. It exercises
-eligibility, exact amounts, session linkage, duplicate delivery, rollback,
-immutable evidence, configuration and HTTP/CLI/web actions. The full suite
-runs with =GSETTINGS_BACKEND=memory make DEBUG=1 -j8 test=.
+*Revoke payment link* disables the resolver immediately and requests expiration
+of an open provider session. A transport failure retains the blocked attempt and
+can be retried; local revocation does not claim provider expiration. Processing
+bank payments cannot be cancelled here and their signed callbacks still settle
+against the historical account. Replacement first revokes previous applicable
+links. An uncertain attempt or a historical account still able to collect must
+be reconciled before replacement. Revocation cannot rewrite or delete payment
+evidence.
 
-Checkout enforces invoice write authority, including organization roles and policy-plugin vetoes, before any customer or session request reaches Stripe.
+* Returns, disputes and settlement boundaries
 
-A product link identifies a remote Price, not its value. Before creating a customer or Checkout session, Venture retrieves the Price and requires an active one-time per-unit integer amount with no quantity transformation. Its amount times the integral quantity must exactly equal the invoice's open balance in the same currency. Recurring, tiered and fractional-minor-unit prices are refused. Discounts, taxes and partial payments are not reconstructed in Checkout; any difference from the linked Price is refused before external writes.
+A verified dispute names its original account-bound payment identity and exact
+currency. An open dispute uses the existing =disputed= invoice workflow. A lost
+outcome creates one chargeback refund through existing refund/posting guards;
+repeated or stale deliveries cannot refund a second portion. A won outcome
+rederives invoice status and paid date from retained allocation/issue evidence,
+without manufacturing cash or changing ledger entries. Conflicting terminal
+outcomes or unknown receipts become processor exceptions.
 
-Both Price validation and signed webhook settlement use Stripe's charge currency units: the documented zero-decimal currencies (including MGA) use exponent zero, while ISK and UGX retain Stripe's two-decimal API representation and must be multiples of 100. See [[https://docs.stripe.com/currencies][Stripe supported currency rules]]. Checked integer arithmetic reconciles these units with an invoice's stored exponent; overflow is refusal, never equality.
+Payouts record gross, fees and net independently; processor fees post to platform
+fees (6000), never revenue. Payout items group receipts for bank matching without
+posting cash twice. Generic record writers cannot forge, reassign, delete,
+restore or purge service-owned processor evidence. Same-organization reference
+validation applies to all writers, including staged approvals.
 
-Only =POST /webhooks/stripe= uses independent signature authority; an incidental local browser session does not restrict or widen that capability. Signature, payload size and module guards still apply. Neighboring paths and other methods retain local authentication and organization policy.
+Automatic recurring collection and payment-method/mandate recovery are a separate
+billing integration; hosted invoice ACH alone does not implement them. The
+existing =billing collect= operation remains an operator-confirmed receipt for
+an authorized manual payment method. Lightsite provisioning is excluded.
 
-A lost chargeback requires an open dispute. Repeating the loss action is refused, including partial disputes, so the same dispute cannot reverse a second portion of its receipt.
+* Upgrades and verification
 
-* Historical identity and upgrades
+Provider IDs are unique within =(organization, connection, identifier)= rather
+than globally. Migration =000500_stripe_account_bindings= preserves historical
+zero/NULL bindings instead of inferring accounts from current credentials.
+Scoped-index reconciliation preserves rows and unrelated indexes and refuses
+ambiguous duplicates transactionally. Migration =000450_stripe_delayed_settlement=
+backfills pending states into the active-attempt backstop; two legacy pending
+attempts refuse the upgrade without choosing a winner. Its explicit optional-table
+guard supports installations where Stripe was disabled. Enabling the module
+later creates empty metadata-derived tables.
 
-Migration =000500_stripe_account_bindings= verifies the metadata upgrade.
-Customer mappings, price mappings, Checkouts, events, payouts and disputes
-reference the immutable integration connection. Identifiers are unique within
-=(organization, connection, identifier)=, so equal provider IDs in different
-accounts or environments do not collide. Payment external references and
-provider idempotency keys include the connection UUID. Payout and dispute
-operations refuse receipts recorded under another connection, including an
-earlier connection belonging to the same organization. Generic writers cannot
-rewrite customer mappings or payment evidence; catalog references are checked
-at save for the same organization and immutable binding.
+The canonical pinned stripe-glib includes hosted ACH selection, fixed expiry,
+opaque correlation and own-account verification. Its DEBUG unit and official
+self-managed stripe-mock tests exercise API shape; mocks cannot demonstrate a
+live bank's settlement timing or mandate eligibility. Venture's offline signed
+fixtures exercise delayed success/failure, restart and lost-response retry,
+early callbacks, duplicate/out-of-order evidence, posting rollback, manual-payment
+conflicts, explicit finance approval, closed-period refusal, returns and hosted
+capability lifecycle. Database integration cases also run on isolated PostgreSQL
+schemas; those disposable fixtures establish logical transactions, not physical
+storage or disaster-recovery performance.
 
-Old rows remain connection zero/NULL (one legacy partition); no migration
-infers their historical account from today's credentials. The shared scoped
-uniqueness migrator removes obsolete global/organization-only indexes while
-preserving other schema objects and rows. It refuses duplicates transactionally.
-Signed callbacks require the exact retained connection, matching event
-=livemode=, and a matching =account= when present. An unknown event is durably
-ignored only after these checks. Replacement accounts cannot claim old sessions.
-
-This adapter covers hosted invoice Checkout and verified receipts. It does not
-provision Lightsite, ACH mandates, automatic subscription charges, Stripe
-Connect delegation or account discovery across arbitrary credentials.
+Test-first regressions reproduced absent persisted deadlines, early callbacks
+not settling their durable reservation, lost one-time action output, and missing
+operational exceptions after an uncertain create response. Repairs passed the
+same cases. Review also exercised real organization-finance action authorization,
+legacy deleted invoices, payment identity reuse across invoices, JSON/HTML result
+secrecy and pending-link revocation. DEBUG builds and introspection complete
+without warnings; final fixture groups leave their private temporary directories
+empty. No live merchant credentials or bank accounts are used by these tests.

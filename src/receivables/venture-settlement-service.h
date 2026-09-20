@@ -202,5 +202,19 @@ gboolean venture_settlement_service_correct_tax_allocation(VentureSettlementServ
  */
 gboolean venture_settlement_service_write_off(VentureSettlementService *self,
 	gint64 invoice_id, GDateTime *date, const VentureActor *actor, GError **error);
+/**
+ * venture_settlement_service_refresh_invoice:
+ * @self: canonical settlement service
+ * @invoice_id: issued invoice whose financial status must be derived again
+ * @actor: (nullable): audit and accounting approval identity
+ * @error: (out) (optional): authorization or evidence refusal
+ *
+ * Restores status after a nonfinancial workflow such as a won dispute. The
+ * paid date comes from immutable allocations (or the issue of a zero invoice),
+ * never a caller-supplied clock. Writes no receipt, allocation or journal.
+ * Returns: TRUE when financial status matches retained accounting evidence
+ */
+gboolean venture_settlement_service_refresh_invoice(VentureSettlementService *self,
+	gint64 invoice_id, const VentureActor *actor, GError **error);
 G_END_DECLS
 #endif

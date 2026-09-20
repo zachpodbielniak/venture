@@ -1464,7 +1464,9 @@ test_auth_api_refuses_anonymous_requests(
 			"/payroll/1/post", "/api/v1/payroll_run/1/post", "/purchase_order/1/approve",
 			"/api/v1/purchase_order/1/approve", "/sales_order/1/confirm", "/api/v1/sales_order/1/confirm",
 			"/api/v1/close/1/complete", "/api/v1/tax-filings/1/export", "/api/v1/contractor-tax/1/export",
-			"/api/v1/capture/1/convert", "/settings/backups"
+			"/api/v1/capture/1/convert", "/settings/backups",
+			"/api/v1/invoice/1/actions/payment_link", "/api/v1/stripe_payment_link/1/actions/revoke",
+			"/api/v1/stripe_event/1/actions/retry"
 		};
 		static const gchar *const gets[] = {
 			"/api/v1/budget_reports", "/api/v1/group/reports", "/api/v1/close/1/pack",

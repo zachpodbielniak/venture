@@ -175,6 +175,7 @@ venture_context_new(
 		G_BINDING_SYNC_CREATE);
 	venture_mfa_service_configure(venture_mfa_service_get(self->database), config);
 	venture_ocr_service_configure(venture_ocr_service_get(self->database), config);
+	venture_stripe_actions_set_context(self->database, self);
 
 	/*
 	 * Modules, resolved against this configuration and applied to the

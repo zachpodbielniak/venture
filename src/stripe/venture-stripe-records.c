@@ -35,15 +35,21 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureStripeCustomerLink, venture_stripe_custom
 
 static const VentureFieldDecl checkout_fields[] = {
 	VENTURE_FIELD_REF("connection-id", "Integration connection", "Immutable provider account and environment; zero means legacy unbound", "integration_connection", VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_REF("invoice-id", "Invoice", NULL, "invoice", VENTURE_COLUMN_FLAG_NOT_NULL),
-	VENTURE_FIELD("session-id", "Session", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
-	VENTURE_FIELD("status", "Status", "open, complete or expired; owned by VentureStripeService", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL),
-	VENTURE_FIELD("url", "Checkout URL", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("invoice-id", "Invoice", NULL, "invoice", VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	VENTURE_FIELD("session-id", "Session", "Empty until the durable attempt receives its provider identity", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	VENTURE_FIELD("status", "Status", "initiated, open, processing, complete, failed, expired or exception; service owned", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("url", "Checkout URL", "Empty while creation is uncertain", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("active", "Active attempt", "Blocks concurrent collection across accounts", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("success-url", "Reserved success URL", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("cancel-url", "Reserved cancellation URL", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("ach-enabled", "Reserved ACH choice", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("expires-at", "Provider deadline", "Fixed before provider creation; unknown for legacy attempts", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("expected", "Expected payment", NULL),
 	VENTURE_FIELD_REF("payment-id", "Payment", NULL, "payment", VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureStripeCheckout, venture_stripe_checkout, checkout_fields,
-	venture_entity_class_set_unique_partition(VENTURE_ENTITY_CLASS(klass), "connection-id");)
+	venture_entity_class_set_unique_partition(VENTURE_ENTITY_CLASS(klass), "connection-id");
+	venture_entity_class_set_field_unique_scope(VENTURE_ENTITY_CLASS(klass), "invoice-id", NULL, "active");)
 
 static const VentureFieldDecl event_fields[] = {
 	VENTURE_FIELD_REF("connection-id", "Integration connection", "Immutable provider account and environment; zero means legacy unbound", "integration_connection", VENTURE_COLUMN_FLAG_INDEXED),
@@ -92,6 +98,10 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureProcessorDispute, venture_processor_dispu
 	venture_entity_class_set_unique_partition(VENTURE_ENTITY_CLASS(klass), "connection-id");)
 
 static const VentureFieldDecl exception_fields[] = {
+	VENTURE_FIELD_REF("connection-id", "Integration connection", "Immutable Stripe account binding", "integration_connection", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("event-id", "Verified event", NULL, "stripe_event", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("invoice-id", "Invoice", NULL, "invoice", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("checkout-id", "Checkout attempt", NULL, "stripe_checkout", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("kind", "Kind", "mismatch, closed_period, out_of_order or failed_refund", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD("provider-id", "Provider event", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("reason", "Reason", NULL),
@@ -99,3 +109,16 @@ static const VentureFieldDecl exception_fields[] = {
 	VENTURE_FIELD("occurred-at", "Occurred", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureProcessorException, venture_processor_exception, exception_fields)
+
+static const VentureFieldDecl payment_link_fields[] = {
+	VENTURE_FIELD_REF("connection-id", "Integration connection", "Immutable account and environment", "integration_connection", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("invoice-id", "Invoice", NULL, "invoice", VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	VENTURE_FIELD("invoice-version", "Invoice version", "Capability binds the exact invoice revision", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("token-hash", "Capability digest", "SHA256; bearer token is never persisted", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE | VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("expires-at", "Expiry", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("enabled", "Enabled", "Revocation keeps payment evidence and history", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("checkout-id", "Checkout", NULL, "stripe_checkout", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("url", "Copy payment link", "Shown only by the creating action; never persisted", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_TRANSIENT)
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureStripePaymentLink, venture_stripe_payment_link, payment_link_fields,
+	venture_entity_class_set_field_unique_scope(VENTURE_ENTITY_CLASS(klass), "invoice-id", NULL, "enabled");)

@@ -660,6 +660,9 @@ typedef struct {
 	gboolean protocol;
 } ProtocolCase;
 static const ProtocolCase protocol_cases[] = {
+	{ "/orgaccess/payment-link-get-scope", HTMX_METHOD_GET, "/pay/11111111-1111-4111-8111-111111111111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", TRUE },
+	{ "/orgaccess/payment-link-post-scope", HTMX_METHOD_POST, "/pay/11111111-1111-4111-8111-111111111111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", TRUE },
+	{ "/orgaccess/payment-link-bad-token", HTMX_METHOD_POST, "/pay/arbitrary", FALSE },
 	{ "/orgaccess/stripe-webhook-scope", HTMX_METHOD_POST, "/webhooks/stripe", TRUE },
 	{ "/orgaccess/private-stripe-webhook-get", HTMX_METHOD_GET, "/webhooks/stripe", FALSE },
 	{ "/orgaccess/stripe-bound-webhook-scope", HTMX_METHOD_POST, "/webhooks/stripe/17", TRUE },

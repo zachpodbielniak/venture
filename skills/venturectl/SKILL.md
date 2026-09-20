@@ -853,3 +853,23 @@ organization_id=N limit=25 after_id=N` freezes a bounded batch, advanced by
 text=...`; `--stage` keeps the document version so newer corrections conflict.
 Extraction is not accounting approval. See `docs/ocr.org` for dependencies,
 limits and failure diagnostics.
+### Share a Stripe invoice link and reconcile a payment
+
+With the organization's Stripe connection configured and `server.base_url` set
+to the trusted HTTPS origin, `act invoice ID payment_link` returns a one-time
+`url`. Copy it from that result: ordinary `get stripe_payment_link ID` omits the
+bearer URL. The default expiry is seven days; `expires_at=...` accepts a datetime
+from one hour through thirty days ahead. The capability binds that invoice
+revision, organization, account and expiry.
+
+`act stripe_payment_link ID revoke` disables the resolver and expires an open
+provider session. Processing ACH remains pending; revoking a link cannot cancel
+an already initiated bank debit. An uncertain provider response keeps the
+attempt blocked until reconciled, so do not create another payment by guessing.
+
+`act stripe_event ID retry` replays only retained verified evidence after a local
+posting failure. For a manual/partial payment received while ACH was pending,
+`act stripe_event ID retry accept_balance_change=true` explicitly permits the
+original provider amount to allocate with excess as customer credit. Organization
+finance authorization, period guards and second-actor accounting approval apply.
+The action cannot alter the event's amount, currency, account or effective date.

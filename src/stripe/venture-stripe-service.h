@@ -102,6 +102,91 @@ VentureStripeCheckout *venture_stripe_service_checkout(VentureStripeService *sel
  */
 gboolean venture_stripe_service_handle_webhook(VentureStripeService *self, GBytes *raw, const gchar *signature, GError **error);
 /**
+ * venture_stripe_service_retry_event:
+ * @self: historically bound provider
+ * @event_id: immutable previously verified event record
+ * @accept_balance_change: explicitly accept allocating the original amount with any excess as customer credit
+ * @actor: (nullable): finance operator attribution
+ * @error: (out) (optional): authorization or accounting refusal
+ *
+ * Replays only retained authenticated evidence. Never changes its amount,
+ * currency, account, settlement date or payment identity. Accounting period
+ * and separation-of-duties rules apply to the operator's execution.
+ * Returns: TRUE if settled or already handled
+ */
+gboolean venture_stripe_service_retry_event(VentureStripeService *self, gint64 event_id,
+	gboolean accept_balance_change, const VentureActor *actor, GError **error);
+/**
+ * venture_stripe_service_create_payment_link:
+ * @self: active organization provider
+ * @invoice_id: issued invoice
+ * @base_url: trusted installation HTTPS origin
+ * @expires: (nullable): expiry, default seven days and maximum thirty days
+ * @actor: (nullable): finance operator attribution
+ * @error: (out) (optional): refusal
+ *
+ * Replaces prior links after revoking their provider sessions. The bearer URL
+ * is returned once in the transient url property; only its digest is stored.
+ * Returns: (transfer full) (nullable): bound payment capability
+ */
+VentureStripePaymentLink *venture_stripe_service_create_payment_link(VentureStripeService *self,
+	gint64 invoice_id, const gchar *base_url, GDateTime *expires, const VentureActor *actor, GError **error);
+/**
+ * venture_stripe_service_resolve_payment_link:
+ * @database: repository
+ * @token: complete opaque path capability
+ * @now: (nullable): lookup clock, defaults to current UTC time
+ * @error: (out) (optional): unavailable capability
+ *
+ * Checks digest in constant time, expiry, account, organization, invoice
+ * revision and outstanding status. Does not contact Stripe or settle cash.
+ * Returns: (transfer full) (nullable): verified capability metadata
+ */
+VentureStripePaymentLink *venture_stripe_service_resolve_payment_link(VentureDatabase *database,
+	const gchar *token, GDateTime *now, GError **error);
+/**
+ * venture_stripe_service_pay_link:
+ * @self: active provider for the verified link organization
+ * @token: opaque payment capability
+ * @now: (nullable): current lookup clock
+ * @error: (out) (optional): refusal
+ *
+ * Creates or reuses one durable Checkout; the provider deadline cannot outlive
+ * this link. Processing bank payments remain pending without a new collection.
+ * Returns: (transfer full) (nullable): provider Checkout metadata
+ */
+VentureStripeCheckout *venture_stripe_service_pay_link(VentureStripeService *self,
+	const gchar *token, GDateTime *now, GError **error);
+/**
+ * venture_stripe_service_revoke_payment_link:
+ * @self: provider retaining the link's exact historical binding
+ * @link_id: owned link to revoke
+ * @actor: (nullable): finance operator attribution
+ * @error: (out) (optional): provider expiry or authorization refusal
+ *
+ * Revokes locally before expiring an open remote session. A transport failure
+ * retains the blocked attempt and can be retried. Already processing bank
+ * payments cannot be cancelled here; their authenticated callbacks still run.
+ * Returns: TRUE when revocation and any necessary expiry completed
+ */
+gboolean venture_stripe_service_revoke_payment_link(VentureStripeService *self,
+	gint64 link_id, const VentureActor *actor, GError **error);
+/**
+ * venture_stripe_actions_register:
+ * @database: repository owning generic actions
+ *
+ * Registers finance-checked payment link creation, revocation and event replay.
+ */
+void venture_stripe_actions_register(VentureDatabase *database);
+/**
+ * venture_stripe_actions_set_context:
+ * @database: repository
+ * @context: installation configuration owner, weakly retained
+ *
+ * Supplies the trusted installation origin and explicit offline test service.
+ */
+void venture_stripe_actions_set_context(VentureDatabase *database, VentureContext *context);
+/**
  * venture_stripe_save_owned: (skip)
  * @database: storage
  * @entity: service-owned evidence

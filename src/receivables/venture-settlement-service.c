@@ -844,6 +844,46 @@ derive_invoice(VentureSettlementService *self, VentureEntity *invoice, GDateTime
 	return write_record(self, invoice, actor, error);
 }
 
+gboolean
+venture_settlement_service_refresh_invoice(VentureSettlementService *self,
+	gint64 invoice_id, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, invoice_id, error);
+	g_autoptr(VentureEntity) issued = NULL;
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(GPtrArray) allocations = NULL;
+	g_autoptr(GDateTime) effective = NULL;
+	gboolean ok;
+	guint i;
+	if (!invoice) return FALSE;
+	operation = accounting_operation(self, "receivables.refresh_invoice", invoice, NULL, NULL,
+		venture_entity_get_organization_id(invoice), actor, error);
+	if (!operation) return FALSE;
+	if (!begin_operation(self, "invoice", error)) return FALSE;
+	issued = issue_event(self, invoice_id, NULL, error);
+	if (!issued)
+	{
+		if (!error || !*error) refuse(error, VENTURE_ERROR_VALIDATION, "Only an issued invoice has financial status to restore");
+		return finish_operation(self, FALSE, error);
+	}
+	g_object_get(issued, "date", &effective, NULL);
+	allocations = find_rows(self, VENTURE_TYPE_PAYMENT_ALLOCATION, "invoice-id", invoice_id, NULL, error);
+	if (!allocations) return finish_operation(self, FALSE, error);
+	for (i = 0; i < allocations->len; i++)
+	{
+		g_autoptr(GDateTime) date = NULL;
+		g_object_get(g_ptr_array_index(allocations, i), "date", &date, NULL);
+		if (date && (!effective || g_date_time_compare(date, effective) > 0))
+		{
+			g_clear_pointer(&effective, g_date_time_unref);
+			effective = g_date_time_ref(date);
+		}
+	}
+	ok = derive_invoice(self, invoice, effective, actor, error);
+	ok = finish_operation(self, ok, error);
+	return ok && venture_accounting_operation_finish(operation, error);
+}
+
 static gboolean
 invoice_parts(VentureSettlementService *self, VentureEntity *invoice, GDateTime *date,
 	VentureMoney **total, VentureMoney **net, VentureMoney **tax, VentureMoney **discount,

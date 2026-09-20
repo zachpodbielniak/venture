@@ -2,6 +2,8 @@
 #ifndef VENTURE_STRIPE_RECORDS_H
 #define VENTURE_STRIPE_RECORDS_H
 G_BEGIN_DECLS
+#define VENTURE_TYPE_STRIPE_PAYMENT_LINK (venture_stripe_payment_link_get_type())
+VENTURE_DECLARE_ENTITY(VentureStripePaymentLink, venture_stripe_payment_link, STRIPE_PAYMENT_LINK)
 #define VENTURE_TYPE_STRIPE_EVENT (venture_stripe_event_get_type())
 #define VENTURE_TYPE_STRIPE_CHECKOUT (venture_stripe_checkout_get_type())
 #define VENTURE_TYPE_STRIPE_CUSTOMER_LINK (venture_stripe_customer_link_get_type())

@@ -592,6 +592,16 @@ public_capability_request(HtmxRequest *request)
 	const gchar *path = htmx_request_get_path(request);
 	HtmxMethod method = htmx_request_get_method(request);
 	const gchar *suffix;
+	if (g_str_has_prefix(path, "/pay/"))
+	{
+		gchar uuid[37];
+		guint i;
+		if (strlen(path + 5) != 101 || path[41] != '.') return FALSE;
+		memcpy(uuid, path + 5, 36); uuid[36] = '\0';
+		if (!g_uuid_string_is_valid(uuid)) return FALSE;
+		for (i = 42; i < 106; i++) if (!g_ascii_isxdigit(path[i])) return FALSE;
+		return method == HTMX_METHOD_GET || method == HTMX_METHOD_POST;
+	}
 	if (!g_strcmp0(path, "/webhooks/stripe")) return method == HTMX_METHOD_POST;
 	if (g_str_has_prefix(path, "/webhooks/stripe/"))
 	{

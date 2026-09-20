@@ -29760,6 +29760,8 @@ venture_web_server_new(
 	                 venture_web_ui_plugins_config, self);
 	htmx_router_post(router, "/invoices/:id/checkout", venture_web_stripe_checkout, self);
 	htmx_router_post(router, "/api/v1/invoices/:id/checkout", venture_web_stripe_checkout, self);
+	htmx_router_get(router, "/pay/:token", venture_web_stripe_payment_link, self);
+	htmx_router_post(router, "/pay/:token", venture_web_stripe_payment_link, self);
 	htmx_router_post(router, "/webhooks/stripe", venture_web_stripe_webhook, self);
 	htmx_router_post(router, "/webhooks/stripe/:connection_id", venture_web_stripe_webhook, self);
 	htmx_router_get(router, "/organizations/:id/settings/stripe", venture_web_stripe_settings, self);

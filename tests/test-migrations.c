@@ -167,6 +167,76 @@ test_nested_refused(void)
 	g_assert_no_error(error);
 }
 
+/* Optional module migrations cannot create tables outside the type registry,
+ * but a missing table must not hide malformed guards or SQL failures. */
+static void
+check_optional_table(VentureDatabase *database)
+{
+	OrmConnection *connection = venture_database_get_connection(database);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(OrmResult) result = NULL;
+	const gchar *sql = "-- requires-table: optional_migration_fixture\nUPDATE optional_migration_fixture SET value = 2";
+	g_assert_true(venture_migrations_execute_sql(connection, sql, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_migrations_execute_sql(connection,
+		"-- requires-table: bad-name\nSELECT 1", &error));
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	g_assert_true(venture_database_execute(database,
+		"CREATE TABLE optional_migration_fixture (value BIGINT); INSERT INTO optional_migration_fixture VALUES (1)", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_migrations_execute_sql(connection, sql, &error));
+	g_assert_no_error(error);
+	result = venture_database_query_raw(database, "SELECT value FROM optional_migration_fixture", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_result_next(result));
+	g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 2);
+	g_clear_object(&result);
+	g_assert_false(venture_migrations_execute_sql(connection,
+		"-- requires-table: optional_migration_fixture\nUPDATE absent_migration_fixture SET value = 4", &error));
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	g_assert_true(venture_database_execute(database, "DROP TABLE optional_migration_fixture", NULL, &error));
+	g_assert_no_error(error);
+}
+
+static void
+test_optional_table(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureDatabase) database = venture_database_new("sqlite://:memory:", &error);
+	g_assert_no_error(error);
+	check_optional_table(database);
+}
+
+/* A disabled module's absent table has no historical rows to backfill. Its
+ * applied guarded version must remain valid when the module is enabled later. */
+static void
+test_optional_module(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureDatabase) database = venture_database_new("sqlite://:memory:", &error);
+	g_autoptr(OrmInspector) inspector = NULL;
+	g_autoptr(OrmResult) result = NULL;
+	VentureEntityRegistry *registry = venture_entity_registry_get_default();
+	g_assert_no_error(error);
+	venture_entity_registry_set_type_module(registry, "stripe_checkout", "stripe", FALSE);
+	g_assert_true(venture_database_migrate(database, registry, &error));
+	g_assert_no_error(error);
+	inspector = orm_inspector_new(venture_database_get_connection(database), &error);
+	g_assert_no_error(error);
+	g_assert_false(orm_inspector_has_table(inspector, "stripe_checkouts", NULL, &error));
+	g_assert_no_error(error);
+	venture_entity_registry_set_type_module(registry, "stripe_checkout", "stripe", TRUE);
+	g_assert_true(venture_database_migrate(database, registry, &error));
+	g_assert_no_error(error);
+	g_assert_true(orm_inspector_has_table(inspector, "stripe_checkouts", NULL, &error));
+	g_assert_no_error(error);
+	result = venture_database_query_raw(database, "SELECT CAST(COUNT(*) AS BIGINT) FROM stripe_checkouts", NULL, &error);
+	g_assert_no_error(error); g_assert_true(orm_result_next(result));
+	g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 0);
+}
+
 /* Opt-in PostgreSQL coverage uses a unique schema and never changes an
  * existing application's tables, even when the server is shared. */
 static void
@@ -196,6 +266,7 @@ test_postgresql(void)
 	g_assert_no_error(error);
 	g_assert_true(venture_database_execute(database, setup, NULL, &error));
 	g_assert_no_error(error);
+	check_optional_table(database);
 	/* Startup reconciles generated tables before applying data migrations.
 	 * Access backfills need the users/organizations/token schema present. */
 	g_assert_true(venture_schema_create_all(venture_database_get_connection(database),
@@ -279,6 +350,8 @@ main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/migrations/generator", test_generator);
+	g_test_add_func("/migrations/optional-table", test_optional_table);
+	g_test_add_func("/migrations/optional-module", test_optional_module);
 	g_test_add_func("/migrations/postgresql", test_postgresql);
 	g_test_add_func("/migrations/upgrade-restart", test_upgrade_restart);
 	g_test_add_data_func("/migrations/checksum", "UPDATE schema_migrations SET checksum = 'changed'", test_history_refusal);

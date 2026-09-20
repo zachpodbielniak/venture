@@ -44,6 +44,14 @@ settings_load(VentureStripeService *self, JsonNode *settings, GError **error)
 	if (!settings || !JSON_NODE_HOLDS_OBJECT(settings))
 		return refuse(error, "Stripe settings must be an object");
 	object = json_node_get_object(settings);
+	if (json_object_has_member(object, "ach_enabled"))
+	{
+		JsonNode *node = json_object_get_member(object, "ach_enabled");
+		if (!JSON_NODE_HOLDS_VALUE(node) || json_node_get_value_type(node) != G_TYPE_BOOLEAN)
+			return refuse(error, "ACH selection must be a boolean");
+		self->ach_enabled = json_node_get_boolean(node);
+	}
+	else self->ach_enabled = FALSE;
 	for (i = 0; i < G_N_ELEMENTS(names); i++)
 	{
 		values[i] = settings_string(object, names[i]);
@@ -116,8 +124,8 @@ stripe_refresh(VentureStripeService *self, gboolean allow_disabled, GError **err
 	if (g_strcmp0(provider, "stripe") || venture_entity_get_organization_id(connection) != self->organization_id ||
 		(self->account_id && g_strcmp0(account, self->account_id)))
 		return refuse(error, "Stripe connection identity does not match this endpoint");
-	settings = venture_integration_service_resolve(venture_integration_service_get(self->database),
-		self->organization_id, self->connection_id, allow_disabled, error);
+	settings = venture_integration_service_resolve_version(venture_integration_service_get(self->database),
+		self->organization_id, self->connection_id, venture_entity_get_version(connection), allow_disabled, error);
 	if (!settings) return FALSE;
 	if (g_strcmp0(settings_string(json_node_get_object(settings), "environment"), environment))
 		return refuse(error, "Stripe settings do not match the connection environment");
