@@ -60,7 +60,7 @@ the same explicit API version as the saved settings. Subscribe to:
 - =checkout.session.expired=
 - =charge.dispute.created=, =charge.dispute.updated= and =charge.dispute.closed=
 
-ACH settlement is delayed; an unpaid completed Checkout is =processing= and
+For hosted invoice Checkout, ACH settlement is delayed; an unpaid completed session is =processing= and
 leaves the invoice outstanding. A later verified successful event creates the
 receipt. A failed bank payment releases the attempt for a new authorization.
 Later returns can occur even after apparent settlement, so retain the dispute
@@ -71,6 +71,7 @@ subscriptions. See Stripe's [[https://docs.stripe.com/payments/ach-direct-debit]
 
 | Record | Retained contract |
 |--------+-------------------|
+| =stripe_authorization= | Subscription terms, exact cap, hosted Setup/mandate proof, enabled state and next collection check |
 | =stripe_customer_link= | Organization, immutable connection and company/contact customer mapping |
 | =stripe_price_link= | Organization/account product catalog reference |
 | =stripe_checkout= | Invoice, reserved exact money, account, fixed return URLs/ACH choice/deadline, provider identity and settlement reference |
@@ -192,10 +193,116 @@ posting cash twice. Generic record writers cannot forge, reassign, delete,
 restore or purge service-owned processor evidence. Same-organization reference
 validation applies to all writers, including staged approvals.
 
-Automatic recurring collection and payment-method/mandate recovery are a separate
-billing integration; hosted invoice ACH alone does not implement them. The
-existing =billing collect= operation remains an operator-confirmed receipt for
-an authorized manual payment method. Lightsite provisioning is excluded.
+* Reusable authorization and recurring collection
+
+Automatic collection requires both =stripe= and =billing=, an enabled
+organization-owned connection, and Stripe API version =2024-06-20= on both the
+connection and its webhook endpoint. This explicit version exposes the invoice's
+PaymentIntent evidence consumed here; newer API schemas are refused rather than
+interpreted as equivalent. Existing hosted invoice payments have no additional
+billing-module requirement.
+
+A =stripe_authorization= reserves one subscription's customer, price revision,
+seat count, exact currency and per-invoice maximum. Hosted Setup presents that
+wording and collects reusable card or, when enabled, USD bank permission. An
+operator-entered payment-method ID never activates permission. Verification checks the explicit test/live environment on the session,
+[[https://docs.stripe.com/api/setup_intents/object][SetupIntent]] and
+[[https://docs.stripe.com/api/payment_methods/object][PaymentMethod]], then reads
+the retained session from its original account and requires successful off-session
+Setup, the same customer and payment method, and an active multi-use mandate for
+bank debit. The retained projection omits expanded client secrets. Credential
+rotation within one account can verify old evidence; account replacement cannot
+borrow it. A different commercial price or seat count requires fresh customer consent.
+Billing makes referenced commercial price fields immutable; retiring that price
+from the new-sales catalog does not revoke existing permission. Its captured
+GObject version remains historical provenance.
+Revocation disables future collection while preserving settlement evidence.
+
+The collection service consumes invoices already produced by Venture's billing
+lifecycle. It creates one Stripe draft invoice with =auto_advance=false= and
+=pending_invoice_items_behavior=exclude=, adds one exact money line, finalizes,
+verifies the unchanged total/customer/method, then explicitly requests off-session
+payment. This lifecycle retains recoverable draft identities and cancellation
+operations while keeping Venture responsible for periods, proration and ordinary
+invoices. It avoids a second Stripe subscription schedule and requires no
+standalone raw-card or PaymentIntent creation API.
+
+Each =stripe_checkout= records its =channel=, immutable billing source,
+authorization, provider invoice and creation phase. Hosted and automatic paths
+share the invoice-wide active-attempt constraint. A provider response to a payment
+request is never a receipt: signed =invoice.payment_succeeded= or =invoice.paid=
+plus authenticated exact invoice/PaymentIntent evidence passes through the same
+receivables and accounting guards as hosted Checkout. =invoice.payment_failed=
+retains the active reservation and an actionable processor exception. The
+subscription moves from active to =past_due= only after verified failure. Verified
+cash recovers =past_due= only when every retained billing invoice is settled;
+explicitly paused and cancelled subscriptions keep those choices.
+
+Retry scheduling waits one day and permits three attempts per invoice and
+customer authorization. Each retry confirms the old invoice is void with no
+received money before reserving a fresh provider invoice. Processing or paid
+payments cannot be cancelled by guess. Draft cancellation uses authenticated
+deletion and retains evidence; lost delete responses can be reconciled as absence
+only after the local deletion intent was durable. Customer-action-required and
+exhausted attempts require operator recovery. Manual cancellation stops automatic
+collection for that authorization until the customer gives fresh permission.
+
+=billing collect= remains an operator-confirmed receipt for an authorized manual
+method. Stored =customer_payment_method= rows do not authorize Stripe charges.
+Subscription state is observable billing state, not an independent entitlement
+engine. No internal entitlement consumer or Lightsite provisioning is implemented.
+
+** Operator workflow and automatic scheduling
+
+1. Configure the organization's verified Stripe connection and enable the billing
+   and Stripe modules. For automatic collection use API and webhook version
+   =2024-06-20=. In addition to the hosted events above, subscribe to
+   =setup_intent.succeeded=, =setup_intent.setup_failed=,
+   =payment_method.detached=, =mandate.updated=, =invoice.payment_succeeded=,
+   =invoice.paid= and =invoice.payment_failed=.
+2. Start the ordinary subscription. On its record use *Authorize recurring payment*
+   and enter a maximum including currency, for example =100 USD=. Copy the
+   returned hosted authorization link once and give it to the customer. Credential
+   and payment-method fields are never form inputs. The Setup completion callback
+   activates permission; *Verify hosted authorization* also recovers a missed
+   callback by reading the retained provider session.
+3. The running server examines one due authorization every five seconds on its
+   main context. Each claimed permission gets a durable next-check time at least
+   one minute later. A check advances at most one due period through the existing
+   billing renewal service and requests at most one collection, choosing the oldest
+   unsettled billing invoice first. Permissions are
+   ordered by their next check and ID, so a failed connection does not monopolize
+   the queue. Connection failures wait five minutes and leave a fixed redacted
+   outcome on the permission. Module or connection disablement takes effect on
+   subsequent checks; no worker thread touches the database.
+4. Inspect the permission's collection outcome and related attempts. *Collect
+   authorized invoice* performs the same service action immediately. The
+   type-level *Check due recurring collections* action requires an explicit
+   organization and accepts =now= and a limit from 1 to 100, default 10. Its clock
+   controls scheduling, never the date on a cash receipt. Existing accounting
+   guards still refuse future-dated financial events. Existing CLI renewal
+   sweeps remain available; the stable billing-period identity prevents duplicate
+   invoices when an operator also runs one.
+5. After verified failure, inspect the processor exception and attempt's
+   =next_attempt_at=. *Retry due collection* uses the same delay and three-attempt
+   ceiling as the timer. Authentication-required or exhausted cases need customer
+   recovery: first use *Cancel automatic collection* to confirm no money can still
+   arrive, then revoke the old recurring permission and request fresh hosted Setup.
+   Processing payments remain reserved until Stripe supplies a terminal outcome.
+6. For an uncertain create response, find the invoice carrying that attempt UUID
+   in Stripe's metadata and use *Reconcile provider identity*. An invoice ID by
+   itself grants no authority: the service verifies account, customer, method,
+   currency and opaque correlation. Then cancel it with fresh provider evidence,
+   or redeliver/retry its signed settlement event. Beyond the 23-hour idempotency
+   recovery window the service never blindly repeats a create or pay operation.
+   Reconciliation alone never posts cash or silently restarts an old payment.
+
+A setup failure can be retried on its original hosted page until its deadline;
+otherwise revoke it and create fresh permission. A detached method or inactive
+mandate disables permission. A successful payment received after a local posting
+failure retains its minimal authenticated proof, so replay can complete after
+accounting approval without relying on a later mutable provider snapshot.
+Collection does not automatically send email or grant application entitlements.
 
 * Upgrades and verification
 
@@ -209,8 +316,10 @@ attempts refuse the upgrade without choosing a winner. Its explicit optional-tab
 guard supports installations where Stripe was disabled. Enabling the module
 later creates empty metadata-derived tables.
 
-The canonical pinned stripe-glib includes hosted ACH selection, fixed expiry,
-opaque correlation and own-account verification. Its DEBUG unit and official
+Migration =000520_stripe_automatic_collection= marks historical attempts as
+hosted and introduces no inferred recurring permission. The canonical pinned
+stripe-glib includes hosted ACH/Setup selection, fixed expiry, opaque correlation,
+own-account verification and controlled invoice create/item/finalize/pay/void/delete. Its DEBUG unit and official
 self-managed stripe-mock tests exercise API shape; mocks cannot demonstrate a
 live bank's settlement timing or mandate eligibility. Venture's offline signed
 fixtures exercise delayed success/failure, restart and lost-response retry,
@@ -228,3 +337,6 @@ legacy deleted invoices, payment identity reuse across invoices, JSON/HTML resul
 secrecy and pending-link revocation. DEBUG builds and introspection complete
 without warnings; final fixture groups leave their private temporary directories
 empty. No live merchant credentials or bank accounts are used by these tests.
+
+The repeatable built-artifact operator transcripts are in
+[[file:stripe-automatic-demonstration.org][the automatic-collection demonstration]].

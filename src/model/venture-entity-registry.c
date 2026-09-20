@@ -706,6 +706,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_stripe_price_link_get_type,
 		venture_stripe_customer_link_get_type,
 		venture_stripe_payment_link_get_type,
+		venture_stripe_authorization_get_type,
 		venture_stripe_checkout_get_type,
 		venture_stripe_event_get_type,
 		venture_processor_payout_get_type,

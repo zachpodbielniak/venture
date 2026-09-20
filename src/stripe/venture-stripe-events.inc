@@ -11,8 +11,6 @@ stripe_process_verified(VentureStripeService *self, JsonObject *event, GBytes *r
 	g_autoptr(VentureStripeEvent) record = NULL;
 	g_autoptr(VentureMoney) expected = NULL;
 	g_autoptr(VentureMoney) received = NULL;
-	g_autoptr(VentureEntity) invoice = NULL;
-	g_autoptr(VenturePayment) payment = NULL;
 	g_autoptr(GDateTime) now = venture_time_now();
 	g_autoptr(GDateTime) settled_at = NULL;
 	g_autofree gchar *payload = NULL;
@@ -20,8 +18,11 @@ stripe_process_verified(VentureStripeService *self, JsonObject *event, GBytes *r
 	JsonObject *object;
 	JsonNode *amount_node;
 	VentureEntity *checkout;
-	gint64 invoice_id = 0, company_id, record_id = 0, checkout_id = 0;
+	gint64 invoice_id = 0, record_id = 0, checkout_id = 0;
 	gboolean mismatch = FALSE;
+	gboolean authorization_event = stripe_authorization_event_kind(event);
+	gboolean invoice_event = stripe_invoice_event_kind(event);
+	g_autoptr(GError) authorization_error = NULL;
 
 	if (!(venture_database_has_transaction(self->database) ? venture_database_begin(self->database, error) :
 		venture_database_begin_serializable(self->database, error))) return FALSE;
@@ -66,10 +67,30 @@ stripe_process_verified(VentureStripeService *self, JsonObject *event, GBytes *r
 resume:
 	if (!venture_database_commit(self->database, error)) goto fail;
 	record_id = venture_entity_get_id(VENTURE_ENTITY(record));
+	if (authorization_event)
+	{
+		if (!stripe_authorization_event(self, event, actor, &authorization_error) && !authorization_error)
+			refuse(&authorization_error, "Authorization event could not be applied");
+	}
+	if (invoice_event)
+	{
+		if (!stripe_prepare_invoice_evidence(self, record, event, &authorization_error) && !authorization_error)
+			refuse(&authorization_error, "Invoice evidence could not be verified");
+	}
 	/* Retain verified input before accounting; nested posting rollback must
 	 * not erase the evidence needed to recover after repair or restart. */
 	if (!(venture_database_has_transaction(self->database) ? venture_database_begin(self->database, error) :
 		venture_database_begin_serializable(self->database, error))) return FALSE;
+	if (authorization_error)
+	{
+		g_propagate_error(error, g_steal_pointer(&authorization_error)); goto fail;
+	}
+	if (authorization_event)
+	{
+		g_object_set(record, "result", "processed", NULL);
+		if (!stripe_event_exception(self, record, "recovered", "Verified authorization event applied", 0, 0, TRUE, error)) goto fail;
+		goto done;
+	}
 	{
 		JsonNode *created = json_object_get_member(event, "created");
 		g_object_get(record, "received-at", &settled_at, NULL);
@@ -86,6 +107,20 @@ resume:
 		}
 	}
 	g_object_set(record, "result", "ignored", NULL);
+	if (invoice_event)
+	{
+		if (!stripe_invoice_event_apply(self, record, settled_at, accept_balance_change, actor, &invoice_id, &checkout_id, error)) goto fail;
+		{
+			g_autofree gchar *outcome = NULL;
+			g_object_get(record, "result", &outcome, NULL);
+			if (g_strcmp0(outcome, "failed"))
+			{
+				g_object_set(record, "result", "processed", NULL);
+				if (!stripe_event_exception(self, record, "recovered", "Verified invoice outcome applied", invoice_id, checkout_id, TRUE, error)) goto fail;
+			}
+		}
+		goto done;
+	}
 	if (!g_strcmp0(type, "charge.dispute.created") || !g_strcmp0(type, "charge.dispute.updated") ||
 		!g_strcmp0(type, "charge.dispute.closed"))
 	{
@@ -197,52 +232,7 @@ resume:
 		g_object_get(checkout, "payment-id", &payment_id, NULL);
 		if (payment_id) goto done;
 	}
-	{
-		g_autoptr(VentureQuery) active = venture_query_new(VENTURE_TYPE_STRIPE_CHECKOUT);
-		g_autoptr(GPtrArray) others = NULL;
-		guint i;
-		venture_query_set_limit(active, 0);
-		venture_query_set_organization(active, self->organization_id);
-		if (!venture_query_add_filter_int(active, "invoice-id", VENTURE_FILTER_OP_EQ, invoice_id, error)) goto fail;
-		others = venture_database_find(self->database, active, error);
-		if (!others) goto fail;
-		for (i = 0; i < others->len; i++)
-		{
-			VentureEntity *other = g_ptr_array_index(others, i);
-			g_autofree gchar *state = NULL;
-			g_object_get(other, "status", &state, NULL);
-			if (venture_entity_get_id(other) != checkout_id && checkout_pending(state))
-			{
-				refuse(error, "Another attempt can still collect this invoice; reconcile the contradictory payment evidence first");
-				goto fail;
-			}
-		}
-	}
-	invoice = owned_get(self, VENTURE_TYPE_INVOICE, invoice_id, error);
-	if (!invoice) goto fail;
-	{
-		g_autoptr(VentureMoney) balance = venture_settlement_service_invoice_balance(
-			venture_settlement_service_get(self->database), invoice_id, NULL, error);
-		if (!balance) goto fail;
-		if (!accept_balance_change && !money_equal(balance, expected))
-		{
-			refuse(error, "Invoice balance changed while payment was pending; reconcile the verified payment before allocating it");
-			goto fail;
-		}
-	}
-	g_object_get(invoice, "company-id", &company_id, NULL);
-	payment = venture_payment_new();
-	venture_entity_set_organization_id(VENTURE_ENTITY(payment), self->organization_id);
-	{
-		g_autofree gchar *identity = self->connection_uuid ?
-			g_strdup_printf("stripe:%s:%s", self->connection_uuid, intent) : g_strdup(intent);
-		g_object_set(payment, "customer-id", company_id, "invoice-id", invoice_id,
-			"amount", expected, "date", settled_at, "method", "stripe", "reference", intent, "external-id", identity, NULL);
-	}
-	if (!venture_settlement_service_apply_payment(venture_settlement_service_get(self->database), payment, NULL, actor, error)) goto fail;
-	g_object_set(checkout, "status", "complete", "active", FALSE, "payment-id", venture_entity_get_id(VENTURE_ENTITY(payment)), NULL);
-	if (!venture_stripe_save_owned(self->database, checkout, NULL, error) ||
-		!stripe_checkout_exception(self, checkout, TRUE, error)) goto fail;
+	if (!stripe_settle_checkout(self, checkout, expected, intent, settled_at, accept_balance_change, actor, error)) goto fail;
 	g_object_set(record, "result", "processed", NULL);
 	if (!stripe_event_exception(self, record, "recovered", "Verified settlement applied after retry", invoice_id, checkout_id, TRUE, error)) goto fail;
 done:
@@ -346,6 +336,12 @@ venture_stripe_service_retry_event(VentureStripeService *self, gint64 event_id,
 	if (!JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser)))
 		return refuse(error, "Stored verified event is malformed");
 	raw = g_bytes_new(payload, strlen(payload));
+	if (stripe_authorization_event_kind(json_node_get_object(json_parser_get_root(parser))))
+		return stripe_process_verified(self, json_node_get_object(json_parser_get_root(parser)),
+			raw, NULL, FALSE, actor, error);
+	if (stripe_invoice_event_kind(json_node_get_object(json_parser_get_root(parser))) &&
+		!stripe_prepare_invoice_evidence(self, VENTURE_STRIPE_EVENT(record),
+			json_node_get_object(json_parser_get_root(parser)), error)) return FALSE;
 	operation = venture_accounting_operation_begin(self->database, "stripe.retry_event",
 		record, NULL, g_variant_new("(b)", accept_balance_change), self->organization_id, actor, error);
 	if (!operation) return FALSE;

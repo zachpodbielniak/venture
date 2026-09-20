@@ -30230,6 +30230,7 @@ venture_web_server_start(
 			self->base_url = g_uri_to_string((GUri *)uris->data);
 			g_slist_free_full(uris, (GDestroyNotify)g_uri_unref);
 			venture_federation_sync_start(self->context);
+			venture_stripe_collection_start(self->context);
 			return TRUE;
 		}
 	}
@@ -30244,6 +30245,7 @@ venture_web_server_start(
 	}
 
 	venture_federation_sync_start(self->context);
+	venture_stripe_collection_start(self->context);
 	return TRUE;
 }
 
@@ -30253,6 +30255,7 @@ venture_web_server_stop(VentureWebServer *self)
 	g_return_if_fail(VENTURE_IS_WEB_SERVER(self));
 
 	venture_federation_sync_stop(self->context);
+	venture_stripe_collection_stop(self->context);
 	soup_server_disconnect(htmx_server_get_soup_server(self->server));
 	htmx_server_stop(self->server);
 }

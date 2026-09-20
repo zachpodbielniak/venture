@@ -149,13 +149,16 @@ and cancel also call the subscription lifecycle service. Steps run by day
 offset, then ID; escalation continues after a dunning pause until cancellation.
 A late sweep catches up all eligible steps in that order. =resume= clears
 the failure episode. =recover= moves
-=past_due= back to active. The operator or a future collection adapter
+=past_due= back to active. The operator or the verified Stripe collection adapter
 reports failure and recovery; an unpaid invoice alone does not fabricate a
 failed provider attempt.
 
 The mail lane must wire the =billing_notice= adapter to =VentureMailer=.
-This module imports no mail header and sends no mail. It integrates no
-payment provider and stores no card data.
+This module imports no mail header and sends no mail. The optional
+[[file:stripe.org][Stripe adapter]] consumes its immutable invoice events, obtains hosted reusable
+customer permission and reports verified payment failure/recovery through this
+lifecycle. Neither module stores raw card data. A manual payment-method row alone
+does not authorize a Stripe charge; hosted Setup evidence is required.
 
 * Surfaces and approval
 

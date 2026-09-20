@@ -47,8 +47,6 @@ stripe_checkout_create(VentureStripeService *self, gint64 invoice_id, GDateTime 
 	const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) invoice = NULL;
-	g_autoptr(VentureEntity) customer = NULL;
-	g_autoptr(GPtrArray) links = NULL;
 	g_autoptr(GPtrArray) sessions = NULL;
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(VentureMoney) expected = NULL;
@@ -60,10 +58,9 @@ stripe_checkout_create(VentureStripeService *self, gint64 invoice_id, GDateTime 
 	g_autofree gchar *customer_id = NULL;
 	g_autofree gchar *success_url = NULL;
 	g_autofree gchar *cancel_url = NULL;
-	gint64 company_id, contact_id, party_id, checkout_id;
+	gint64 company_id, contact_id, checkout_id;
 	gboolean transaction = FALSE;
 	gboolean ach = FALSE;
-	const gchar *party_field;
 	guint i;
 
 	/* No remote effect may be nested in another writer's rollback scope. */
@@ -100,6 +97,15 @@ stripe_checkout_create(VentureStripeService *self, gint64 invoice_id, GDateTime 
 		g_autofree gchar *state = NULL;
 		g_object_get(prior, "connection-id", &binding, "status", &state, NULL);
 		if (!checkout_pending(state)) continue;
+		{
+			g_autofree gchar *channel = NULL;
+			g_object_get(prior, "channel", &channel, NULL);
+			if (!g_strcmp0(channel, "automatic"))
+			{
+				refuse(error, "Automatic collection is pending; reconcile it before creating hosted Checkout"); goto fail;
+			}
+		}
+
 		if (binding != self->connection_id)
 		{
 			refuse(error, "A pending Checkout belongs to an earlier Stripe account; reconcile it before creating another");
@@ -138,7 +144,7 @@ stripe_checkout_create(VentureStripeService *self, gint64 invoice_id, GDateTime 
 		ach = self->ach_enabled && !g_strcmp0(venture_money_get_currency(expected), "USD") && amount >= 50;
 		checkout = venture_stripe_checkout_new();
 		venture_entity_set_organization_id(VENTURE_ENTITY(checkout), self->organization_id);
-		g_object_set(checkout, "connection-id", self->connection_id, "invoice-id", invoice_id,
+		g_object_set(checkout, "connection-id", self->connection_id, "invoice-id", invoice_id, "channel", "hosted",
 			"session-id", "", "url", "", "status", "initiated", "active", TRUE,
 			"expected", expected, "success-url", self->success_url,
 			"cancel-url", self->cancel_url, "ach-enabled", ach, "expires-at", expires, NULL);
@@ -171,32 +177,8 @@ stripe_checkout_create(VentureStripeService *self, gint64 invoice_id, GDateTime 
 	transaction = FALSE;
 	g_object_get(checkout, "success-url", &success_url, "cancel-url", &cancel_url, "ach-enabled", &ach, NULL);
 	g_object_get(invoice, "company-id", &company_id, "contact-id", &contact_id, NULL);
-	party_id = company_id ? company_id : contact_id;
-	party_field = company_id ? "company-id" : "contact-id";
-	customer = owned_get(self, company_id ? VENTURE_TYPE_COMPANY : VENTURE_TYPE_CONTACT, party_id, error);
-	if (!customer) goto fail;
-	links = find_id(self, VENTURE_TYPE_STRIPE_CUSTOMER_LINK, party_field, party_id, error);
-	if (!links) goto fail;
-	if (links->len) g_object_get(g_ptr_array_index(links, 0), "stripe-customer-id", &customer_id, NULL);
-	else
-	{
-		g_autoptr(VentureStripeCustomerLink) link = venture_stripe_customer_link_new();
-		request = stripe_request_new(STRIPE_CUSTOMER_CREATE);
-		request->name = venture_entity_get_display_name(customer);
-		request->metadata_key = g_strdup(company_id ? "venture_company_uuid" : "venture_contact_uuid");
-		request->metadata_value = g_strdup(venture_entity_get_uuid(customer));
-		g_free(request->idempotency_key);
-		request->idempotency_key = g_strdup_printf("venture-customer-%s-%s",
-			self->connection_uuid ? self->connection_uuid : "fixture", venture_entity_get_uuid(customer));
-		resource = stripe_client_execute(self->client, request, NULL, error);
-		if (!resource) goto fail;
-		customer_id = g_strdup(stripe_resource_get_string(resource, "id"));
-		g_object_set(link, party_field, party_id, "stripe-customer-id", customer_id, "connection-id", self->connection_id, NULL);
-		venture_entity_set_organization_id(VENTURE_ENTITY(link), self->organization_id);
-		if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(link), actor, error)) goto fail;
-		g_clear_pointer(&request, stripe_request_free);
-		g_clear_pointer(&resource, stripe_resource_free);
-	}
+	customer_id = stripe_customer(self, company_id, contact_id, actor, error);
+	if (!customer_id) goto fail;
 	request = stripe_request_new(STRIPE_CHECKOUT_CREATE);
 	request->customer = g_steal_pointer(&customer_id);
 	{

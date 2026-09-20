@@ -1,0 +1,242 @@
+#+title: Automatic collection — built-artifact demonstration
+#+description: Reproducible operator transcripts for issue 125
+
+These verbatim transcripts run the DEBUG-linked Venture test artifact. The
+operator action uses a real loopback Venture HTTP server and the built
+=venturectl=; provider responses come from a stateful offline StripeTransport.
+The fixtures use synthetic organizations, customers and money. They demonstrate
+application behavior and retained accounting evidence, not live-bank timing or
+physical recovery performance. The pinned stripe-glib revision is
+=fbc66e52ddaa8e6294aaa5c48d36bf206c286105=.
+
+Reproduce with =make DEBUG=1=, =make DEBUG=1 plugins= and
+=make DEBUG=1 build/debug/tests/test-stripe=, then run the commands below.
+The full Stripe suite also covers the existing hosted ACH, return, closed-period,
+separation-of-duties, account-isolation and currency cases. PostgreSQL checks use
+schema-isolated disposable databases with fsync enabled.
+
+* action
+
+#+begin_example
+$ build/debug/tests/test-stripe -p /stripe/automatic-action
+TAP version 14
+# random seed: R02S36f56db2337ab04deae8329ef45ccf33
+# Start of stripe tests
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation gvfs (GDaemonVfs) for ‘gio-vfs’
+# Venture-MESSAGE: No session secret in the environment; sessions will not survive a restart. Set the variable named by security.session_secret_env to keep them.
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation dconf (DConfSettingsBackend) for ‘gsettings-backend’
+# pxbackend-DEBUG: px_config_sysconfig_set_config_file: Could not read file /etc/sysconfig/proxy
+# pxbackend-DEBUG: Active config plugins:
+# pxbackend-DEBUG:  - config-env
+# pxbackend-DEBUG:  - config-xdp
+# pxbackend-DEBUG:  - config-kde
+# pxbackend-DEBUG:  - config-gnome
+# pxbackend-DEBUG:  - config-sysconfig
+# GLib-GIO-DEBUG: Failed to initialize portal (GNetworkMonitorPortal) for gio-network-monitor: Not using portals
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation networkmanager (GNetworkMonitorNM) for ‘gio-network-monitor’
+# pxbackend-DEBUG: px_manager_constructed: Up and running
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation libproxy (GLibproxyResolver) for ‘gio-proxy-resolver’
+# GLib-GIO-DEBUG: g_socket_client_connect_async: starting new g_socket_client_connect_async() with GTask 0x3bd39d60 and GSocketClientAsyncConnectData 0x3bd046f0
+# GLib-GIO-DEBUG: GSocketClient: Starting new address enumeration
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=http://127.0.0.1:45419 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# GLib-GIO-DEBUG: GSocketClient: Address enumeration succeeded
+# GLib-GIO-DEBUG: g_socket_client_enumerator_callback: starting connection attempt 0x7f3e30000e40 for GSocketClientAsyncConnectData 0x3bd046f0
+# GLib-GIO-DEBUG: GSocketClient: Starting TCP connection attempt
+# GLib-GIO-DEBUG: GSocketClient: TCP connection successful
+# GLib-GIO-DEBUG: GSocketClient: Starting application layer connection
+# GLib-GIO-DEBUG: GSocketClient: Connection successful!
+# venturectl describe stripe_authorization: exposes limit and next_check_at using generated wire names
+# POST /api/v1/customer_subscription/1/actions/authorize_payment -> 200; generic HTML returns copy-once hosted Setup URL; persisted authorization rows=1
+# Hosted permission verified: status=active; retained minimal proof excludes client secrets
+ok 1 /stripe/automatic-action
+# slow test /stripe/automatic-action executed in 0.87 secs
+# End of stripe tests
+1..1
+#+end_example
+
+* bank-permission
+
+#+begin_example
+$ build/debug/tests/test-stripe -p /stripe/automatic-bank-permission
+TAP version 14
+# random seed: R02Sdb811b5b2b28b8cd83560236732f650a
+# Start of stripe tests
+# Hosted permission verified: status=active; retained minimal proof excludes client secrets
+ok 1 /stripe/automatic-bank-permission
+# slow test /stripe/automatic-bank-permission executed in 0.77 secs
+# End of stripe tests
+1..1
+#+end_example
+
+* scheduler
+
+#+begin_example
+$ build/debug/tests/test-stripe -p /stripe/automatic-scheduler
+TAP version 14
+# random seed: R02Sa6f0390959d5a93b535d2a0355602b26
+# Start of stripe tests
+# Hosted permission verified: status=active; retained minimal proof excludes client secrets
+# Main-context timer with billing disabled: provider payment requests=0
+# Billing enabled live: provider payment requests=1; stopping timer
+ok 1 /stripe/automatic-scheduler
+# slow test /stripe/automatic-scheduler executed in 11.54 secs
+# End of stripe tests
+1..1
+#+end_example
+
+* sweep
+
+#+begin_example
+$ build/debug/tests/test-stripe -p /stripe/automatic-sweep
+TAP version 14
+# random seed: R02See32fcd6222ac936c478934be4248c89
+# Start of stripe tests
+# Hosted permission verified: status=active; retained minimal proof excludes client secrets
+# Due renewal reused billing lifecycle: invoices=2; collected oldest invoice=1
+ok 1 /stripe/automatic-sweep
+# slow test /stripe/automatic-sweep executed in 0.81 secs
+# End of stripe tests
+1..1
+#+end_example
+
+* retry
+
+#+begin_example
+$ build/debug/tests/test-stripe -p /stripe/automatic-retry
+TAP version 14
+# random seed: R02Sd5263437b4b62920662d0bee93e7078c
+# Start of stripe tests
+# Hosted permission verified: status=active; retained minimal proof excludes client secrets
+# Reserved collection: channel=automatic, status=processing; pay request has not posted a receipt
+# Retry after recorded delay: old invoice voided, replacement=in_auto_2, attempt=2
+# Fourth automatic attempt refused; actual provider payment requests=3
+ok 1 /stripe/automatic-retry
+# slow test /stripe/automatic-retry executed in 1.04 secs
+# End of stripe tests
+1..1
+#+end_example
+
+* failure-recovery
+
+#+begin_example
+$ build/debug/tests/test-stripe -p /stripe/automatic-failure-recovery
+TAP version 14
+# random seed: R02S4881762e5ec3b6b40aa7bc14a1bd9b33
+# Start of stripe tests
+# Hosted permission verified: status=active; retained minimal proof excludes client secrets
+# Reserved collection: channel=automatic, status=processing; pay request has not posted a receipt
+# Verified settlement: payment rows=1, subscription status=1 (active=1, paused=3)
+ok 1 /stripe/automatic-failure-recovery
+# slow test /stripe/automatic-failure-recovery executed in 0.81 secs
+# End of stripe tests
+1..1
+#+end_example
+
+* paused-recovery
+
+#+begin_example
+$ build/debug/tests/test-stripe -p /stripe/automatic-paused-recovery
+TAP version 14
+# random seed: R02S268d5b8b9cc8d9430841fc9ca7826031
+# Start of stripe tests
+# Hosted permission verified: status=active; retained minimal proof excludes client secrets
+# Reserved collection: channel=automatic, status=processing; pay request has not posted a receipt
+# Verified settlement: payment rows=1, subscription status=3 (active=1, paused=3)
+ok 1 /stripe/automatic-paused-recovery
+# slow test /stripe/automatic-paused-recovery executed in 1.03 secs
+# End of stripe tests
+1..1
+#+end_example
+
+* manual-conflict
+
+#+begin_example
+$ build/debug/tests/test-stripe -p /stripe/automatic-manual-conflict
+TAP version 14
+# random seed: R02S70cdd5a84f59584824ce01ee0d734619
+# Start of stripe tests
+# Hosted permission verified: status=active; retained minimal proof excludes client secrets
+# Reserved collection: channel=automatic, status=processing; pay request has not posted a receipt
+# Verified provider payment after partial manual receipt: reconciliation required; retained payment rows=1
+ok 1 /stripe/automatic-manual-conflict
+# slow test /stripe/automatic-manual-conflict executed in 0.98 secs
+# End of stripe tests
+1..1
+#+end_example
+
+* manual-recovery
+
+#+begin_example
+$ build/debug/tests/test-stripe -p /stripe/automatic-manual-recovery
+TAP version 14
+# random seed: R02S5b14f3899c5a97f42f90cbabee2f00c7
+# Start of stripe tests
+# Hosted permission verified: status=active; retained minimal proof excludes client secrets
+# Reserved collection: channel=automatic, status=processing; pay request has not posted a receipt
+# Manual full receipt plus authenticated provider void: subscription status=1 (active); no replacement collection
+ok 1 /stripe/automatic-manual-recovery
+# slow test /stripe/automatic-manual-recovery executed in 1.06 secs
+# End of stripe tests
+1..1
+#+end_example
+
+* reconcile
+
+#+begin_example
+$ build/debug/tests/test-stripe -p /stripe/automatic-reconcile
+TAP version 14
+# random seed: R02Sedd922f4f9d75a5f6aae2b0674999c12
+# Start of stripe tests
+# Hosted permission verified: status=active; retained minimal proof excludes client secrets
+# Lost create response: wrong correlation refused; original invoice=in_auto linked and confirmed deleted=1
+ok 1 /stripe/automatic-reconcile
+# slow test /stripe/automatic-reconcile executed in 0.79 secs
+# End of stripe tests
+1..1
+#+end_example
+
+* environment
+
+#+begin_example
+$ build/debug/tests/test-stripe -p /stripe/automatic-environment
+TAP version 14
+# random seed: R02Se1e867b879b6e7cb3315ff4c6e3363bf
+# Start of stripe tests
+# Hosted permission verified: status=active; retained minimal proof excludes client secrets
+ok 1 /stripe/automatic-environment
+# slow test /stripe/automatic-environment executed in 0.88 secs
+# End of stripe tests
+1..1
+#+end_example
+
+* catalog-retirement
+
+#+begin_example
+$ build/debug/tests/test-stripe -p /stripe/automatic-catalog-retirement
+TAP version 14
+# random seed: R02S5702a03ea6fcde8cc727a0869a5b8337
+# Start of stripe tests
+# Hosted permission verified: status=active; retained minimal proof excludes client secrets
+ok 1 /stripe/automatic-catalog-retirement
+# slow test /stripe/automatic-catalog-retirement executed in 0.86 secs
+# End of stripe tests
+1..1
+#+end_example
+
+* pay-restart
+
+#+begin_example
+$ build/debug/tests/test-stripe -p /stripe/automatic-pay-restart
+TAP version 14
+# random seed: R02S9d6c5148c10933e7c8b3a97829447547
+# Start of stripe tests
+# Hosted permission verified: status=active; retained minimal proof excludes client secrets
+# Truncated pay response retained paying phase; reconstructed client reused durable key; provider payment requests=1
+# Reserved collection: channel=automatic, status=processing; pay request has not posted a receipt
+# Verified settlement: payment rows=1, subscription status=1 (active=1, paused=3)
+ok 1 /stripe/automatic-pay-restart
+# slow test /stripe/automatic-pay-restart executed in 1.16 secs
+# End of stripe tests
+1..1
+#+end_example

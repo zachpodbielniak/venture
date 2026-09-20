@@ -17,6 +17,7 @@ struct _VentureStripeService
 	gchar *environment;
 	gchar *connection_uuid;
 	gchar *yaml;
+	gchar *api_version;
 	gchar *success_url;
 	gchar *cancel_url;
 	gboolean ach_enabled;
@@ -139,6 +140,7 @@ finalize(GObject *object)
 	g_free(self->environment);
 	g_free(self->connection_uuid);
 	g_free(self->yaml);
+	g_free(self->api_version);
 	g_free(self->success_url);
 	g_free(self->cancel_url);
 	G_OBJECT_CLASS(venture_stripe_service_parent_class)->finalize(object);
@@ -383,6 +385,7 @@ check_price(VentureStripeService *self, VentureEntity *price, guint quantity,
 	return TRUE;
 }
 
+#include "venture-stripe-customers.inc"
 #include "venture-stripe-checkout.inc"
 #include "venture-stripe-links.inc"
 
@@ -424,6 +427,13 @@ stripe_event_exception(VentureStripeService *self, VentureStripeEvent *event,
 	return venture_stripe_save_owned(self->database, exception, NULL, error);
 }
 
+#include "venture-stripe-authorization.inc"
+#include "venture-stripe-billing.inc"
+#include "venture-stripe-collection.inc"
+#include "venture-stripe-recovery.inc"
+#include "venture-stripe-runner.inc"
+#include "venture-stripe-settlement.inc"
+#include "venture-stripe-invoice-events.inc"
 #include "venture-stripe-events.inc"
 
 static gint64

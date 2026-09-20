@@ -305,12 +305,14 @@ test_missing_key(void)
 	g_setenv("VENTURE_STRIPE_SECRET_KEY", "offline", TRUE);
 }
 
-typedef struct { GObject parent; guint calls; guint customers; guint checkouts; gchar *key; const gchar *account_id; const gchar *price_json; gint64 price_amount; gboolean checkout_drop; gboolean checkout_ach; VentureDatabase *reservation_database; VentureStripeService *early_service; gchar *deadline; } FakeTransport;
+typedef struct { GObject parent; guint calls; guint customers; guint checkouts; gchar *key; const gchar *account_id; const gchar *price_json; gint64 price_amount; gboolean checkout_drop; gboolean checkout_ach; VentureDatabase *reservation_database; VentureStripeService *early_service; gchar *deadline; gchar *setup_reference; gchar *setup_consent; const gchar *setup_customer; GHashTable *invoices, *invoice_keys;
+	gboolean hide_invoice_response, hide_pay_response, setup_bank, bad_mandate, setup_live; gchar *last_invoice_id; guint invoice_count, payment_calls; } FakeTransport;
 typedef struct { GObjectClass parent; } FakeTransportClass;
 GType fake_transport_get_type(void);
 static void fake_iface(StripeTransportInterface *iface);
 G_DEFINE_TYPE_WITH_CODE(FakeTransport, fake_transport, G_TYPE_OBJECT,
 	G_IMPLEMENT_INTERFACE(STRIPE_TYPE_TRANSPORT, fake_iface))
+#include "test-stripe-provider.inc"
 static StripeResponse *
 fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	GCancellable *cancellable, GError **error)
@@ -333,11 +335,32 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	}
 	if (g_str_has_suffix(request->url, "/expire"))
 		return stripe_response_new(200, "{\"id\":\"cs_offline\",\"status\":\"expired\"}", NULL, NULL);
+	if (strstr(request->url, "/invoices") || g_str_has_suffix(request->url, "/invoiceitems"))
+		return fake_invoice_send(self, request);
 	if (g_str_has_suffix(request->url, "/customers"))
 	{
 		self->customers++;
 		g_assert_nonnull(strstr(request->body, "venture_company_uuid"));
 		return stripe_response_new(200, "{\"id\":\"cus_offline\",\"object\":\"customer\"}", NULL, NULL);
+	}
+	if (strstr(request->url, "/checkout/sessions/cs_setup?"))
+	{
+		g_autofree gchar *body = g_strdup_printf("{\"id\":\"cs_setup\",\"mode\":\"setup\",\"status\":\"complete\",\"customer\":\"%s\",\"client_reference_id\":\"%s\",\"livemode\":false,\"expires_at\":%s,\"custom_text\":{\"submit\":{\"message\":\"%s\"}},\"setup_intent\":{\"id\":\"seti_offline\",\"livemode\":%s,\"status\":\"succeeded\",\"usage\":\"off_session\",\"customer\":\"cus_offline\",\"payment_method\":{\"id\":\"pm_offline\",\"livemode\":false,\"customer\":\"cus_offline\",\"type\":\"%s\"},\"mandate\":%s}}", self->setup_customer ? self->setup_customer : "cus_offline", self->setup_reference, self->deadline, self->setup_consent, self->setup_live ? "true" : "false", self->setup_bank ? "us_bank_account" : "card", self->setup_bank ? (self->bad_mandate ? "{\"id\":\"mandate_offline\",\"status\":\"inactive\",\"type\":\"multi_use\",\"payment_method\":\"pm_offline\"}" : "{\"id\":\"mandate_offline\",\"status\":\"active\",\"type\":\"multi_use\",\"payment_method\":\"pm_offline\"}") : "null");
+		g_assert_cmpstr(request->method, ==, "GET");
+		g_assert_nonnull(strstr(request->url, "setup_intent.payment_method"));
+		return stripe_response_new(200, body, NULL, NULL);
+	}
+	if (strstr(request->body, "mode=setup"))
+	{
+		g_autoptr(GHashTable) form = soup_form_decode(request->body);
+		g_free(self->setup_reference); self->setup_reference = g_strdup(g_hash_table_lookup(form, "client_reference_id"));
+		g_free(self->setup_consent); self->setup_consent = g_strdup(g_hash_table_lookup(form, "custom_text[submit][message]"));
+		g_free(self->deadline); self->deadline = g_strdup(g_hash_table_lookup(form, "expires_at"));
+		g_assert_cmpstr(request->api_version, ==, "2024-06-20");
+		g_assert_nonnull(strstr(request->body, "custom_text%5Bsubmit%5D%5Bmessage%5D="));
+		g_assert_nonnull(strstr(request->body, "customer=cus_offline"));
+		g_assert_null(strstr(request->body, "line_items"));
+		return stripe_response_new(200, "{\"id\":\"cs_setup\",\"object\":\"checkout.session\",\"url\":\"https://checkout.stripe.com/setup\"}", NULL, NULL);
 	}
 	g_assert_true(strstr(request->body, "price_offline") || strstr(request->body, "price_data"));
 	g_assert_null(strstr(request->body, "metadata"));
@@ -375,6 +398,11 @@ static void fake_finalize(GObject *object)
 {
 	g_free(((FakeTransport *)object)->key);
 	g_free(((FakeTransport *)object)->deadline);
+	g_free(((FakeTransport *)object)->setup_reference);
+	g_free(((FakeTransport *)object)->setup_consent);
+	g_free(((FakeTransport *)object)->last_invoice_id);
+	g_clear_pointer(&((FakeTransport *)object)->invoices, g_hash_table_unref);
+	g_clear_pointer(&((FakeTransport *)object)->invoice_keys, g_hash_table_unref);
 	G_OBJECT_CLASS(fake_transport_parent_class)->finalize(object);
 }
 static void fake_transport_class_init(FakeTransportClass *klass) { G_OBJECT_CLASS(klass)->finalize = fake_finalize; }
@@ -814,7 +842,7 @@ test_dependency_pin(void)
 		const gchar *head[] = { "git", "-C", "deps/stripe-glib", "rev-parse", "HEAD", NULL };
 		g_assert_true(g_spawn_sync(NULL, (gchar **)head, NULL, G_SPAWN_SEARCH_PATH,
 			NULL, NULL, &out, NULL, &status, &error));
-		g_assert_cmpstr(g_strstrip(out), ==, "61c04ddc4418d4860deaf73f8fa069bef5e0ff58");
+		g_assert_cmpstr(g_strstrip(out), ==, "fbc66e52ddaa8e6294aaa5c48d36bf206c286105");
 	}
 }
 
@@ -997,6 +1025,7 @@ test_payout_dispute_chargeback(Fixture *f, gconstpointer data)
 #include "test-stripe-settings.inc"
 #include "test-stripe-ach.inc"
 #include "test-stripe-links.inc"
+#include "test-stripe-automatic.inc"
 
 int
 main(int argc, char **argv)
@@ -1032,6 +1061,26 @@ main(int argc, char **argv)
 	g_test_add_func("/stripe/no-keys", test_no_keys);
 	g_test_add_func("/stripe/customer-link-owner", test_customer_link_owner);
 	g_test_add_func("/stripe/dependency-pin", test_dependency_pin);
+	g_test_add("/stripe/automatic-authorization", Fixture, NULL, set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-authorization-callback", Fixture, "callback", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-collection", Fixture, "collection", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-settlement", Fixture, "settlement", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-failure-recovery", Fixture, "failure-recovery", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-paused-recovery", Fixture, "paused-recovery", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-pay-restart", Fixture, "pay-retry", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-catalog-retirement", Fixture, "catalog", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-environment", Fixture, "environment", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-manual-conflict", Fixture, "manual-conflict", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-manual-recovery", Fixture, "manual-recovery", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-bank-permission", Fixture, "bank", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-finance", Fixture, "finance", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-scheduler", Fixture, "scheduler", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-action", Fixture, "action", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-reconcile", Fixture, "reconcile", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-sweep", Fixture, "sweep", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-expiry-collision", Fixture, "expiry-collision", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-retry", Fixture, "retry", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-cancel", Fixture, "cancel", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/price-uniqueness", Fixture, NULL, set_up, test_price_uniqueness, tear_down);
 	g_test_add("/stripe/module-start", Fixture, NULL, set_up, test_module_start, tear_down);
 

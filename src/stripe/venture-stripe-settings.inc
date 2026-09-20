@@ -78,6 +78,8 @@ settings_load(VentureStripeService *self, JsonNode *settings, GError **error)
 	g_set_object(&self->client, client);
 	g_free(self->yaml);
 	self->yaml = g_steal_pointer(&yaml);
+	g_free(self->api_version);
+	self->api_version = g_strdup(values[3]);
 	g_free(self->success_url);
 	self->success_url = g_strdup(values[4]);
 	g_free(self->cancel_url);

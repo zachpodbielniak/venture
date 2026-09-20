@@ -501,7 +501,11 @@ module's ledger-driven forecast, a different report. The P&L card's
 `links` open the four with the card's period and scope.
 Read their notes: MRR is contracted revenue, not cash or recognized income;
 churn rates are in basis points. Proration adjustments are settled on the
-next renewal. Billing sends no mail and integrates no card provider.
+next renewal. The optional Stripe adapter collects billing invoices only after
+verified hosted reusable customer authorization; provider-confirmed cash and
+failures use the existing billing recovery lifecycle. A manual payment-method
+record does not authorize a Stripe charge. Billing notices remain delivery
+intents for the mail adapter.
 ## Transactional mail
 
 `mail send to=... subject=... body=...` queues mail; `--html FILE` supplies
@@ -919,3 +923,29 @@ No missing or failing private connection falls back to platform AI. Read
 `docs/ai-organizations.org` before configuring provider actions; generic record
 writes cannot manufacture grants or overwrite service-owned usage evidence.
 Platform credentials remain operator-only even in their billing organization.
+
+### Authorize and operate recurring Stripe collection
+
+Use `describe stripe_authorization` and the subscription's actions to inspect the
+current contract. `act customer_subscription ID authorize_payment limit='100 USD'`
+returns a copy-once hosted Setup URL. The connection and webhook must explicitly
+use Stripe API `2024-06-20`. Customer completion plus verified Setup/mandate evidence
+activates permission; `act stripe_authorization ID verify` recovers a missed
+callback. `act stripe_authorization ID revoke_authorization` stops future charges
+without discarding settlement evidence. Changing terms requires fresh permission.
+
+The running server advances bounded due renewals/collections only for enabled,
+verified permissions. `act stripe_authorization 0 collect_due organization_id=N
+limit=10` is the explicit bounded sweep; optional `now=...` controls scheduling,
+never settlement dates. `act invoice ID collect` runs the same collection service.
+A pending attempt blocks hosted and automatic alternatives across all accounts.
+
+`act stripe_checkout ID retry_collection` waits the recorded day and stops after
+three attempts. Each retry confirms the old provider invoice is cancelled before
+creating a new identity. `act stripe_checkout ID cancel_collection` requires
+zero-receipt void/delete proof; processing payments cannot be cancelled by guess.
+Manual cancellation stops collection until the customer gives fresh permission.
+For a lost create response, `act stripe_checkout ID reconcile_collection
+provider_invoice_id=in_...` validates original account and opaque correlation,
+then permits explicit cancellation or signed-event recovery. Never manufacture
+payment evidence with CRUD or treat a successful pay request as settled cash.
