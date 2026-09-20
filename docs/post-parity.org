@@ -123,7 +123,9 @@ The existing child reservations remain =000420= (marketing), =000430=
 after checking the ledger are =000460= (project profitability), =000470=
 (organization integrations), =000480= (project delivery), =000490= (call history),
 =000500= (Stripe account bindings), =000510= (active integration uniqueness),
-and =000520= (automatic collection), =000530= (OIDC). Applied
+and =000520= (automatic collection), =000530= (OIDC), =000540= (mail account binding), =000550= (bank-feed identity),
+=000560= (organization AI), =000570= (private connectors), =000580=
+(territories/quotas), and =000590= (tenant boundary/lifecycle). Applied
 migrations remain append-only and paired for both backends.
 
 The combined Stripe-settings/project-delivery revision =ba1393e= passed its
@@ -141,3 +143,28 @@ session as =venture-125-ocr-integrated-{clean,build,suite}.log=.
 The later version-checked resolver fix has its own passing SQLite and
 PostgreSQL regression, including a failing run with that check removed.
 Remaining rows above still require their own implementation and evidence.
+
+* Organization provider and private-import checkpoint
+
+Revision =97637d2= passed all 112 DEBUG test binaries. This includes
+organization SMTP, account-bound bank-feed settings and the report-delivery
+transport preflight repair. A prior run's only remaining failure was the
+real OCR wrapper's container startup exceeding its unchanged deadline;
+the rerun used the same real Tesseract 5.5.3 executable provisioned locally.
+It did not skip OCR or relax an assertion.
+
+The private connector lane =1da0c1d= passed all 113 DEBUG test binaries,
+DEBUG build and warning-free GIR. It is integrated as =a246ad5=: its source,
+tests, migrations, dependency pins and build rules are byte-identical to
+that tested lane. The sole additional file is the already-verified SMTP
+relay transcript. Five connector and fifteen calendar cases pass on isolated
+PostgreSQL; IMAP's new completion-time revocation also passes there. Removing
+the completion guards makes both mail and calendar import after disconnect,
+and the regressions fail. Restoring a removed private calendar UID and
+upgrading populated shared credential rows are covered explicitly.
+
+Private ownership, same-organization webhook selection, retired environment
+credential refusal and settings health are documented in
+[[file:connectors.org][mailbox/calendar connectors]]. This is provider/import correctness evidence,
+not hosted-tenant isolation or recovery qualification. The full epic remains
+WIP while its other lanes and operational acceptance remain outstanding.
