@@ -28,12 +28,17 @@ venture_process_lease_finalize(GObject *object)
 	if (self->database)
 	{
 		g_autoptr(GRecMutexLocker) lock = venture_database_lock_scope(self->database);
-		if (g_object_get_data(G_OBJECT(self->database), LEASE_DATA) == self)
-			g_object_set_data(G_OBJECT(self->database), LEASE_DATA, NULL);
+		gboolean reusable = TRUE;
 		if (self->postgres_locked)
 		{
 			g_autoptr(OrmResult) released = venture_database_query_raw(self->database, LEASE_RELEASE_SQL, NULL, NULL);
+			/* An aborted transaction refuses the unlock statement. Forgetting
+			 * that failure would let this connection recursively acquire a
+			 * second session lock and silently leak its first one. */
+			reusable = released != NULL;
 		}
+		if (g_object_get_data(G_OBJECT(self->database), LEASE_DATA) == self)
+			g_object_set_data(G_OBJECT(self->database), LEASE_DATA, reusable ? NULL : GINT_TO_POINTER(1));
 	}
 	if (self->database_fd >= 0) close(self->database_fd);
 	if (self->state_fd >= 0) close(self->state_fd);

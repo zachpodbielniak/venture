@@ -115,6 +115,23 @@ test_backend(gconstpointer data)
 	g_assert_cmpint(g_unlink(link), ==, 0);
 	g_assert_cmpint(mkfifo(link, 0600), ==, 0);
 	g_assert_false(probe(uri, a));
+	if (postgres)
+	{
+		g_autoptr(OrmResult) failed = NULL;
+		lease = venture_process_lease_acquire(database, b, &error);
+		g_assert_no_error(error); g_assert_nonnull(lease);
+		g_assert_true(venture_database_begin(database, &error));
+		failed = venture_database_query_raw(database, "SELECT 1 / 0", NULL, &error);
+		g_assert_null(failed); g_assert_nonnull(error); g_clear_error(&error);
+		g_clear_object(&lease);
+		venture_database_rollback(database);
+		/* Closing the connection is the only verified release after an
+		 * unlock failure; a reused session must not recurse its lock count. */
+		lease = venture_process_lease_acquire(database, b, &error);
+		g_assert_null(lease); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+		g_clear_error(&error); g_clear_object(&database);
+		g_assert_true(probe(uri, b));
+	}
 	g_clear_object(&neighbor); g_clear_object(&database);
 	venture_test_remove_tree(root);
 }

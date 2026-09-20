@@ -52,7 +52,9 @@ or maintenance. An owned, mode-600 state lock coordinates the same state path.
 SQLite also locks the actual database inode, and PostgreSQL takes a session
 advisory lock scoped to that database. Thus a second state directory does not
 allow another application to operate on the same database. Process termination,
-including a crash, releases the operating-system/database leases.
+including a crash, releases the operating-system/database leases. If PostgreSQL
+cannot confirm an unlock (for example, a caller left an aborted transaction),
+that repository connection cannot acquire another lease; close it before retrying.
 
 This coordinates cooperating Venture versions, not arbitrary SQL clients or old
 binaries that do not implement the lease. Stop those writers explicitly. Operator
