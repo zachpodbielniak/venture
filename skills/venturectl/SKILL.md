@@ -837,3 +837,19 @@ replaying accepted billing returns its invoice. Fixed-price projects invoice
 accepted slices through progress billing; their approved labour is cost
 evidence, not a second time-and-materials charge. Full-billed quotes already
 have an invoice. Generic writes cannot replace or remove delivery evidence.
+
+## Attachments and local OCR
+
+Document file paths are service-owned. Generic create/import/update cannot
+assign or replace `document.path` or move a filed attachment to another
+organization. Use the existing upload or mail-filing workflow; valid legacy
+originals remain readable, but conflicting ownership and symlinks are refused.
+
+With OCR explicitly enabled, `act document ID ocr_extract language=eng`
+queues bounded work. `act ocr_job ID step` processes one page; `retry` and
+`cancel` retain provenance. `act capture_item 0 ocr_extract_all
+organization_id=N limit=25 after_id=N` freezes a bounded batch, advanced by
+`act ocr_batch ID step`. Review with `act document ID ocr_review job_id=N
+text=...`; `--stage` keeps the document version so newer corrections conflict.
+Extraction is not accounting approval. See `docs/ocr.org` for dependencies,
+limits and failure diagnostics.

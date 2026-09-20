@@ -136,3 +136,4 @@ Two binaries, both statically linked against every vendored dependency: =venture
 - [[file:project-delivery.org][Sales to delivery]] — retained scope, tickets, acceptance and invoicing
 
 - [[file:crm-acceptance.org][CRM to collection acceptance]]: capture, identity, owner and sales-to-delivery tie-outs.
+- [[file:ocr.org][Local OCR and capture review]]: bounded extraction, provenance and attachment ownership.

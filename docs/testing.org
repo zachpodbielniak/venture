@@ -658,3 +658,15 @@ conversion, ordinary activities and transactional mail, quote acceptance,
 project delivery and partial invoicing through payment. Its log transport
 sends no real mail. The scenario checks source identities and exact minor-unit
 balances; see [[file:crm-acceptance.org][the reproducible walkthrough and limits]].
+
+* OCR and attachment ownership
+
+The OCR lane passed fifteen cases on SQLite and isolated PostgreSQL,
+including real Tesseract 5.5.3 and a mixed native/scanned PDF. Five independent
+attachment tests cover service-owned paths, organization boundaries, legacy
+aliases, nested directories, size bounds, symlinks and FIFOs. Capture (6),
+mail (23), mail sync (38), documents (5), authorization (92), modules (19),
+configuration (32) and migrations (7) passed their relevant lane checks.
+Engine-independent tests still run without optional OCR libraries; real OCR
+requires the explicit test executable described in [[file:ocr.org][the OCR guide]].
+The combined epic revision is validated separately in the acceptance ledger.

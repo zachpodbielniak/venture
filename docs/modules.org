@@ -238,3 +238,10 @@ The =integrations= module depends on =orgaccess= and owns
 =integration_connection=. It supplies the shared credential boundary described
 in [[file:integrations.org][organization integration credentials]]; enabling
 it does not implicitly connect a provider or borrow installation credentials.
+
+* Local OCR
+
+=ocr= depends on =capture= and owns =ocr_job= and =ocr_batch=. It is off by
+default through =ocr.enabled=false=. Enabling it requires the local engine
+and build dependencies documented in [[file:ocr.org][OCR]]. Its shared actions
+appear on document/capture pages and the capture list; it never posts books.

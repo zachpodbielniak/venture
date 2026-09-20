@@ -100,12 +100,12 @@ verified without the corresponding execution evidence.
 | Area | State | Required evidence |
 |------+-------+-------------------|
 | Accounting loop | Synthetic scenarios verified on SQLite/PostgreSQL | Synthetic opening/import through settlement, reconciliation, close/correction and restored tie-outs, SQLite and PostgreSQL |
-| CRM and project handoff | Eleven delivery scenarios verified on SQLite/PostgreSQL; complete CRM loop pending | Quote/deal through scope, work, acceptance, invoice and receipt; replay and changed-scope cases |
+| CRM and project handoff | Capture-to-payment and eleven delivery scenarios verified on SQLite/PostgreSQL; deployment acceptance pending | Quote/deal through scope, work, acceptance, invoice and receipt; replay and changed-scope cases |
 | Project financials | Frozen-cost and delivery report/action scenarios verified | Exact budget, cost, unbilled, billed and profit with unknown historical costs and source rows |
 | Organization integrations | Foundation and Stripe settings verified locally; other providers pending | Settings, secret redaction, account binding, rotation, revocation and A/B organization tests |
 | Subscription collection | Pending | Verified automatic settlement, failed collection, recovery and duplicate refusal; no provisioning |
 | Calls (#122) | Service scenarios verified on SQLite/PostgreSQL; integrated suite 107/107 passed at f01b4b3 | One historical event and optional follow-up, including replay and lead-only calls |
-| OCR (#123) | Pending | Bounded local extraction, provenance, retry/cancel and reviewed-correction preservation |
+| OCR (#123) | Fifteen lane scenarios verified on SQLite/PostgreSQL, including real OCR; combined validation pending | Bounded local extraction, provenance, retry/cancel and reviewed-correction preservation |
 | ACH and links (#124) | Pending | Delayed settlement, returns, pending balance changes and account/environment isolation |
 | Marketing (#120) | Pending | Snapshotted audience, consent, suppression at delivery, restart and uncertainty |
 | Attribution (#121) | Pending | Consent-bound capture, Lightsite form contract, dedupe and reconciled attribution |
@@ -123,5 +123,10 @@ The existing child reservations remain =000420= (marketing), =000430=
 after checking the ledger are =000460= (project profitability), =000470=
 (organization integrations), =000480= (project delivery), =000490= (call history),
 =000500= (Stripe account bindings), =000510= (active integration uniqueness),
-and =000520= (automatic collection). Applied
+and =000520= (automatic collection), =000530= (OIDC). Applied
 migrations remain append-only and paired for both backends.
+
+The combined Stripe-settings/project-delivery revision =ba1393e= passed its
+clean DEBUG build and all 108 test binaries. Later OCR, active-account index
+and CRM ownership repairs have individual lane evidence above; their next
+combined build/suite is recorded separately, never inferred from that result.
