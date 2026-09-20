@@ -650,3 +650,11 @@ additive scope, full-billing history, atomic rollback/retry, module boundaries,
 revoked membership and stale staged decisions. The related project, progress,
 module and migration suites exercise their existing contracts too. See
 [[file:project-delivery.org][the operator workflow and financial date semantics]].
+
+* CRM to collection
+
+=test-crm-acceptance= crosses capture/deduplication, ownership-preserving lead
+conversion, ordinary activities and transactional mail, quote acceptance,
+project delivery and partial invoicing through payment. Its log transport
+sends no real mail. The scenario checks source identities and exact minor-unit
+balances; see [[file:crm-acceptance.org][the reproducible walkthrough and limits]].

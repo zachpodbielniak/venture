@@ -1,0 +1,61 @@
+#+title: CRM to collection acceptance
+#+description: Reproducible sales identity and project handoff checks
+
+* Operator walkthrough
+
+1. Enable Leads, CRM, Pipelines, Activities, Mail, Quotes, Projects and the
+   invoicing/receivables dependencies. Set a lead assignment rule and a public
+   lead form with duplicate policy =merge=.
+2. Capture an inquiry twice using the same normalized email. Inspect one
+   lead, its capture history and assigned owner. Qualify it and select its
+   campaign. Public submissions cannot choose organization or owner.
+3. Plan the qualification follow-up, then convert the lead with a deal.
+   Inspect its retained company/contact/deal links. A newly created deal
+   inherits the lead's owner, source and campaign; linking existing company
+   or contact records does not rewrite those records' history. Conversion
+   does not grant membership or a role to the owner label.
+4. Respond through the ordinary transactional mail outbox, with a stable
+   idempotency key. Sending the same queued identity again does not enqueue
+   another message. Uncertain transport delivery still requires the existing
+   explicit operator workflow; no exactly-once SMTP guarantee is implied.
+5. Add priced deal lines and create the linked quote. Select progress billing,
+   send it and record acceptance through the existing quote action.
+6. Start the client project from the accepted quote. Plan a priced delivery,
+   complete its ordinary ticket, record acceptance and invoice the slice.
+   The project points to the same customer, deal and accepted agreement.
+7. Collect the invoice through the settlement service. Verify the remaining
+   invoice balance is zero and replaying delivery billing returns its existing
+   invoice. Further contractual work remains available for later slices.
+
+See [[file:leads.org][leads]], [[file:project-delivery.org][delivery]], and
+[[file:accounting-acceptance.org][accounting reconciliation]] for the individual
+contracts. Import adapters have their own preview/match/rollback tests; this
+scenario starts at form capture and does not claim to qualify every importer.
+
+* Executable evidence
+
+=test-crm-acceptance= uses synthetic names and an in-memory log mail transport:
+no external messages are sent. Two capture submissions normalize to one lead.
+Conversion produces one company, one contact and one deal, retaining the
+planned activity and history; replaying a stale conversion is refused. One
+mail identity is delivered to the test transport once. A 1,000 USD agreement
+produces a 400 USD accepted milestone invoice, whose balance falls from
+40,000 minor units to zero on collection. Billing replay leaves exactly one
+invoice and one payment. These are source-record assertions, not snapshots
+of a page or a row count standing in for money.
+
+The first complete handoff check failed because the newly converted deal's
+owner was NULL instead of the assigned rep. Conversion now copies ownership
+from its reloaded lead inside the same transaction.
+
+#+begin_src sh
+make DEBUG=1 test-one T=test-crm-acceptance
+VENTURE_TEST_ACCOUNTING_POSTGRES_URI=postgres://USER:PASSWORD@HOST/DISPOSABLE_DB \
+  make DEBUG=1 test-one T=test-crm-acceptance
+#+end_src
+
+The PostgreSQL helper creates and removes a unique schema. Use a disposable
+database and never a production connection. This proves the scripted core
+workflow; marketing consent, anonymous attribution, real mail delivery,
+provider settlement and deployment parallel-use acceptance have separate
+evidence requirements.

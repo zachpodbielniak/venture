@@ -769,11 +769,12 @@ venture_lead_service_convert(VentureLeadService *self, VentureEntity *lead,
 	{
 		gint64 venture = 0, campaign = 0;
 		g_autofree gchar *source = string_field(current, "source");
+		g_autofree gchar *owner = string_field(current, "owner");
 		g_object_get(current, "venture-id", &venture, "campaign-id", &campaign, NULL);
 		deal = VENTURE_ENTITY(venture_deal_new());
 		g_object_set(deal, "organization-id", venture_entity_get_organization_id(current), "name", name,
 			"company-id", company_id, "contact-id", venture_entity_get_id(contact), "venture-id", venture,
-			"source", source, "campaign-id", campaign, NULL);
+			"source", source, "campaign-id", campaign, "owner", owner, NULL);
 		if (!venture_database_save(self->database, deal, actor, error)) goto fail;
 	}
 	{

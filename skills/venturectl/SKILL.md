@@ -560,6 +560,8 @@ Use `describe lead` before capture or qualification. `lead convert ID
 [deal=yes|no] [company_id=ID] [contact_id=ID]` requires a qualified lead and
 creates or links CRM records atomically. `--stage` proposes conversion for
 approval. Never set `status=converted` or conversion ids with generic updates.
+A new deal retains the lead's assigned owner, source and campaign. Existing
+linked company/contact records retain their values; ownership grants no role.
 `lead reassign ID [owner=NAME]` assigns explicitly or reruns the matching
 rules; staged reassignment is refused. Recycle with `update lead ID
 status=recycled unqualified_reason=... recycle_until=YYYY-MM-DD`.

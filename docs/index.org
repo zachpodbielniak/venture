@@ -134,3 +134,5 @@ Two binaries, both statically linked against every vendored dependency: =venture
 - [[file:accounting-acceptance.org][Accounting acceptance]] — synthetic opening balances through reconciliation, close/correction and restore
 
 - [[file:project-delivery.org][Sales to delivery]] — retained scope, tickets, acceptance and invoicing
+
+- [[file:crm-acceptance.org][CRM to collection acceptance]]: capture, identity, owner and sales-to-delivery tie-outs.
