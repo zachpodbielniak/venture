@@ -732,12 +732,18 @@ test_omitted_date_future_instant(Fixture *f, gconstpointer unused)
 	now = g_date_time_new_now(zone);
 	later = g_date_time_add_hours(now, 1);
 	/* Stay on today's business day so the day gate alone could never have
-	 * excused the old code: in the last hour, use the day's final second. */
+	 * excused the old code: in the last hour, use the day's final second --
+	 * unless that second has already arrived, when only "still ahead of
+	 * now" matters and the next hour serves. */
 	if (g_date_time_get_day_of_month(later) != g_date_time_get_day_of_month(now))
 	{
-		g_date_time_unref(later);
-		later = g_date_time_new(zone, g_date_time_get_year(now), g_date_time_get_month(now),
+		g_autoptr(GDateTime) last = g_date_time_new(zone, g_date_time_get_year(now), g_date_time_get_month(now),
 			g_date_time_get_day_of_month(now), 23, 59, 59.0);
+		if (g_date_time_compare(last, now) > 0)
+		{
+			g_date_time_unref(later);
+			later = g_steal_pointer(&last);
+		}
 	}
 	schedule = instant_schedule(f, later);
 	g_assert_cmpint(venture_recurring_service_run(venture_recurring_service_get(f->db),
