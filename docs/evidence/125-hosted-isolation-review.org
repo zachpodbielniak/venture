@@ -1,0 +1,147 @@
+#+title: Hosted isolation component review — issue 125
+
+* Scope and method
+
+This is a component source review and focused regression exercise, not the
+whole-PR final review, an independent external security assessment, or a
+production launch certification. The starting prepared tree was =5b71190=.
+Integration-only compile repairs =f471936=, =b831190=, =66a114e= and =1c734a3= were applied
+as prerequisites. The review used =skill-review= and read the hosted workspace,
+private connector and HTTP admission demonstrations before tracing the code.
+
+The reviewer previously implemented the Stripe, forge and HTTP receive-limit
+lanes; inspection of those components is not independent assurance. The
+physical workspace boundary remains a separate process, database/role, state
+and key domain. This review does not establish a sandbox for native plugins or
+replace deployment network, storage, backup and operator controls.
+
+* Confirmed findings and repairs
+
+** Retained federation peers bypassed hosted background authority
+
+The reconnect timer could read retained platform-classified peers without an
+interactive principal and invoke the outbound federation client. That client
+checked module/peer configuration but never checked hosted resource authority
+before contacting its peer. During an unrelated explicit maintenance scope, a
+nested timer could also inherit the operator's authority and push a pending
+remote edit while the workspace was suspended.
+
+The canonical request now checks the peer's declared resource class before
+network discovery and repeats the check after both network waits. Explicit
+local operator maintenance can still invoke the service. The reconnect timer
+never runs in hosted mode, even inside maintenance; standalone ticks also wait
+for unrelated caller/transaction scopes to unwind.
+
+=/federation/hosted-outbound= uses two real signed HTTPS fixtures. It prepares a
+pending standalone replica, reopens its database as a hosted workspace, checks
+ordinary refusal, suspends the workspace, checks that a timer cannot push while
+an operator scope pumps the main loop, and then performs the explicit operator
+sync successfully. The original request returned business data and failed the
+refusal assertion. A separate mutant retaining only the request fix still
+failed: the timer changed the remote business name during maintenance.
+
+** CalDAV redirects escaped the approved destination
+
+Connector settings require an exact operator-approved CalDAV origin, but the
+underlying Soup transport followed redirects. The real HTTP regression received
+a neighbor listener's response after an allowed listener redirected it. The
+transport now refuses redirects before sending another request. Operators must
+configure the final origin/path; same-origin redirects are also refused.
+
+=/caldav-http/redirect-authority= uses two independent listeners with counters.
+The ordinary event remains readable; a redirect fails and the neighbor receives
+zero requests. The original transport returned the neighbor response and failed
+the assertion. The test uses explicit low-level HTTP fixture injection;
+production connector settings still require HTTPS.
+
+* Boundaries traced
+
+- HTTP routes: explicit metadata precedes handler dispatch; unknown/platform
+  routes fail closed. Only build health and the installation-independent
+  attribution script use reference classification. Host and Origin validation
+  remain independent of tenant selectors; the explicit attribution exception
+  delegates Origin validation to its configured-site capability handler.
+- Nested requests: a fresh request clears ambient maintenance/support state.
+  Response completion rechecks durable principal/lifecycle state after nested
+  loops. Interactive tenant administration excludes API tokens; ordinary saves
+  cannot mutate hosted control records or identity authority.
+- Support: grants retain organization, private-data, read/write, expiry and
+  emergency constraints. Each use rereads the grant; reports, actions and
+  external providers remain unavailable through support authority.
+- CLI/MCP and AI: the remote clients use authenticated HTTP. MCP cannot use the
+  interactive session-file path. AI starts with an empty executor, re-enters the
+  selected organization's scope for tools, and rechecks provider/user/token
+  state across asynchronous work. No generic raw-SQL tool was found.
+- Repository/audit: ordinary record reads/writes consult authority and audit
+  rows inherit the target's privacy. Raw SQL remains trusted in-process code,
+  not an SQL tenancy rewriter. Physical database separation is essential.
+- Files/exports: attachments reload their authorized document, verify its
+  organization, use root containment and =openat(O_NOFOLLOW)= for each component,
+  and require a bounded regular file. Accounting snapshots use scoped queries
+  and restricted reference closure. Full-installation backup settings remain
+  platform-only. Existing physical backup/neighbor-restore evidence was read,
+  not rerun by this component review.
+- Provider destinations: AI requires a built-in or exact operator-approved base
+  URL; its pinned dependency blocks cross-origin redirects. SMTP and IMAP require
+  exact operator-approved endpoints and transport security. CalDAV repeats its
+  origin allowlist during lease resolution; the missing transport redirect
+  check is repaired above. Commerce accepts a canonical single-label
+  =myshopify.com= hostname and uses the redirect-disabled bank HTTP transport.
+  Forge settings remain platform-only in hosted mode.
+
+* Limits
+
+This was not exhaustive endpoint fuzzing, a production egress-firewall test,
+real-provider interoperability qualification, a new physical restore drill, or
+a full reexecution of issue 125's acceptance matrix. Operator allowlists must
+name destinations the operator trusts; physical process isolation alone does
+not constrain network egress. See =docs/hosted-controls.org= for deployment and
+independent review requirements that remain separate from these repairs.
+
+* Verification record
+
+Normal DEBUG builds, using =PKG_CONFIG_PATH=/tmp/venture-125-ocr-sdk=, compiled
+and linked the current source through the project Makefile. The focused
+regressions did not require a private archive substitution for their final
+verification. GIR scanner/compiler completed without warnings; the changed org
+files parsed with Emacs Org, and =git diff --check= passed.
+
+The initial red reproductions used the earlier =8df9713= DEBUG shared library
+while unrelated integration syntax/link repairs were pending. The three
+reviewed federation/CalDAV implementation files were byte-identical between
+that build and the prepared review base. A diagnostic link with the repaired
+request but original scheduler separately reproduced ambient-maintenance
+inheritance. Those diagnostic binaries are not claimed as exact-head builds.
+The final normal project build then passed both regressions.
+
+#+begin_example
+Original CalDAV:
+  test_redirect: 'redirected' should be NULL                 [exit 134]
+Original federation:
+  test_hosted_outbound: 'answer' should be NULL              [exit 134]
+Request-only federation repair / original scheduler:
+  expected "Shared business", got "Operator reviewed edit"  [exit 134]
+Normal DEBUG project build:
+  /caldav-http/redirect-authority                            PASS
+  /federation/hosted-outbound                                PASS
+  test-federation                                            35/35 PASS
+  test-calendar (SQLite)                                     15/15 PASS
+  test-connectors (SQLite)                                   5/5 PASS
+#+end_example
+
+The CalDAV fixture's two listeners use a private helper thread containing no
+repository access. The federation fixture uses separate file-backed SQLite
+databases and real loopback HTTPS with its test CA and Ed25519 identities.
+Neither contacts production services or uses production credentials.
+
+The calendar (15/15) and connector (5/5) binaries also passed with
+=VENTURE_TEST_ACCOUNTING_POSTGRES_URI= selecting the schema-isolated PostgreSQL
+fixture on port 55436. That disposable fixture keeps fsync enabled on tmpfs;
+these runs establish backend behavior, not physical crash recovery or storage
+capacity. Cases intentionally exercising a legacy SQLite upgrade retain that
+explicit backend. No test used the public-schema reset variable.
+
+A second =skill-review= pass checked the final repairs, authority rechecks,
+fixture cleanup/timeout bounds, documentation and the normal-build integration.
+No additional confirmed defect was identified in this bounded pass. The broader
+qualification limits above still apply.

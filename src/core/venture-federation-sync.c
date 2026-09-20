@@ -540,7 +540,14 @@ sync_tick(gpointer data)
 	g_autoptr(GError) error = NULL;
 	gint64 last = (gint64)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(context), "federation-sync-last"));
 	VentureActor actor;
-	if (!venture_context_module_enabled(context, "federation")) return G_SOURCE_CONTINUE;
+	/* Timers are never explicit operator work, even when a nested loop is
+	 * driven inside a maintenance scope. Standalone reconnect must also
+	 * wait until unrelated caller and transaction scopes have unwound. */
+	if (!venture_context_module_enabled(context, "federation") ||
+	    venture_tenant_service_is_enabled(venture_tenant_service_get(venture_context_get_database(context))) ||
+	    venture_database_has_transaction(venture_context_get_database(context)) ||
+	    venture_access_policy_get_actor(venture_database_get_access_policy(venture_context_get_database(context))))
+		return G_SOURCE_CONTINUE;
 	venture_query_add_filter_int(query, "id", VENTURE_FILTER_OP_GT, last, NULL);
 	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
 	venture_query_set_limit(query, 1);
