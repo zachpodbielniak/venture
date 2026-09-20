@@ -132,7 +132,7 @@ void venture_dunning_register_reports(VentureReportRegistry *registry);
 
 /**
  * VentureDunningTimelineAdd:
- * @events: the timeline under construction
+ * @events: (element-type gpointer): opaque timeline entries owned by the caller
  * @when: (nullable): when the event happened
  * @node: (transfer full): the event as JSON
  *
@@ -141,18 +141,22 @@ void venture_dunning_register_reports(VentureReportRegistry *registry);
 typedef void (*VentureDunningTimelineAdd)(GPtrArray *events, GDateTime *when, JsonNode *node);
 
 /**
- * venture_dunning_append_timeline:
+ * venture_dunning_append_timeline: (skip)
  * @context: the wiring
  * @target_type: the record type whose timeline is being built
  * @target_id: the record
  * @limit: at most this many events
- * @add: how to add one event
- * @events: the timeline under construction
+ * @add: (scope call): how to add one event
+ * @events: (element-type gpointer): opaque timeline entries owned by the caller
  *
  * Adds each reminder for an invoice, or for every invoice of a contact or
  * company, as a =reminder= timeline event, and for an invoice a synthetic
  * "next reminder" entry computed from its policy, which writes nothing.
  * Other types get nothing.
+ *
+ * This C-only adapter passes the caller's opaque timeline entry storage
+ * through to @add. Language bindings should consume the public desk JSON
+ * timeline rather than attempt to marshal its private entry structures.
  */
 void venture_dunning_append_timeline(VentureContext *context, const gchar *target_type,
 	gint64 target_id, guint limit, VentureDunningTimelineAdd add, GPtrArray *events);

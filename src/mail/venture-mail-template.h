@@ -10,12 +10,5 @@
  * Returns: (transfer full) (nullable): unsaved message with rendered bodies
  */
 VentureMailMessage *venture_mail_template_render(VentureMailTemplate *self, VentureEntity *record, GError **error);
-/**
- * venture_mail_template_render_values:
- * @self: organization template
- * @values: placeholder values keyed by field name
- * @error: (out) (optional): missing placeholder
- * Returns: (transfer full) (nullable): unsaved message with rendered bodies
- */
 VentureMailMessage *venture_mail_template_render_values(VentureMailTemplate *self, JsonObject *values, GError **error);
 #endif
