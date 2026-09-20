@@ -323,8 +323,9 @@ test_retainer_authority(Fixture *f, gconstpointer unused)
 	g_clear_object(&scope);
 	g_object_set(member, "active", FALSE, NULL); save(f, member);
 	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+	/* A revoked membership hides the company: the hidden refusal. */
 	result = retainer_action(f, "company", f->company, "collect_retainer", parameters, &error);
-	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED); g_clear_error(&error);
+	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
 	g_clear_object(&scope);
 	venture_config_set_module_enabled(f->config, "quotes", FALSE);
 	result = retainer_action(f, "company", f->company, "collect_retainer", parameters, &error);

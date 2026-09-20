@@ -492,8 +492,10 @@ test_action_authority(Fixture *f, gconstpointer unused)
 	principal.role = VENTURE_USER_ROLE_EDITOR;
 	principal.authenticated = TRUE;
 	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+	/* The policy hides a financial record from a member without the finance
+	 * role: the refusal is the hidden kind, not a permission message. */
 	result = close_action(f, "fiscal_period", f->period, "open_close", "{}", &actor, principal.role, &error);
-	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED); g_clear_error(&error);
+	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
 	g_clear_object(&scope);
 	g_object_set(member, "role", VENTURE_ORGANIZATION_ROLE_FINANCE, NULL); save(f, member);
 	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
@@ -507,11 +509,13 @@ test_action_authority(Fixture *f, gconstpointer unused)
 	g_object_set(member, "active", FALSE, NULL); save(f, member);
 	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
 	/* A second open on the same period is refused for every caller, so the
-	 * revocation is proven on an action that succeeded a moment ago. */
+	 * revocation is proven on an action that succeeded a moment ago. A
+	 * revoked membership hides the organization's records (NOT_FOUND), which
+	 * ALREADY_EXISTS or VALIDATION could never satisfy. */
 	result = close_action(f, "close_workspace", venture_entity_get_id(workspace), "run_checks", "{}", &actor, principal.role, &error);
-	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED); g_clear_error(&error);
+	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
 	result = close_action(f, "fiscal_period", f->period, "open_close", "{}", &actor, principal.role, &error);
-	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED); g_clear_error(&error);
+	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
 }
 
 int

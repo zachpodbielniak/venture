@@ -78,8 +78,9 @@ at the registered path (a live archive leaves only through a reviewed plan),
 refuses an unknown or already retired/deleted copy, refuses while a journal
 is pending, refuses when the registered parent directory is missing or has
 been replaced (an unmounted or swapped archive directory is not a departed
-file: remount it, or recreate the parent owned by the operator account with
-mode 700, and rerun), and publishes under the same catalog revision guard and tenant
+file: the parent is identified by device and inode, so remount the original
+directory and rerun; a recreated directory reads as replaced and is refused),
+and publishes under the same catalog revision guard and tenant
 lock as every other write, with a =backup-retire= entry in the operator audit
 stream. A retired entry is skipped by later plans. Unlike an expiry tombstone
 it does not retire the archive UUID or digest from restore: the offsite copy
