@@ -387,6 +387,52 @@ test_no_transport(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(rows->len, ==, 0);
 }
 
+/* Preparation validates the report's organization without submitting mail.
+ * Both a selector and its already prepared SMTP client are valid transports. */
+static void test_organization_transport(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = venture_context_new(config, f->db);
+	g_autoptr(VentureOrganizationMailer) selector = venture_organization_mailer_new(f->db, config);
+	g_autoptr(VentureIntegrationConnection) binding = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(JsonObject) values = json_object_new();
+	g_autoptr(VentureEntity) pack = make_pack(f, "Organization pack", "email", "ceo@example.test");
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(GDateTime) as_of = g_date_time_new_from_iso8601("2026-08-02T09:00:00Z", NULL), delivered = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	gint64 selected = -1;
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->db), key, &error));
+	g_object_set(config, "mail-allowed-endpoints", "smtp.example.invalid:587", NULL);
+	json_object_set_string_member(values, "host", "smtp.example.invalid");
+	json_object_set_string_member(values, "from", "reports@example.test");
+	json_object_set_string_member(values, "username", "organization");
+	json_object_set_string_member(values, "password", "synthetic-report-password");
+	binding = venture_organization_mailer_configure(selector, f->org, values, 0, 0, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(binding);
+	if (GPOINTER_TO_INT(data))
+	{
+		g_autoptr(VentureMailMessage) probe = venture_mail_message_new();
+		g_autoptr(VentureMailer) prepared = NULL;
+		venture_entity_set_organization_id(VENTURE_ENTITY(probe), f->org);
+		prepared = venture_mailer_prepare(VENTURE_MAILER(selector), probe, &error);
+		g_assert_no_error(error);
+		venture_context_set_mailer(context, prepared);
+	}
+	g_assert_cmpint(venture_report_pack_service_run_due(venture_report_pack_service_get(f->db), context, f->org, as_of, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	stored = reload(f, pack);
+	g_object_get(stored, "last-delivered-at", &delivered, NULL);
+	g_assert_nonnull(delivered);
+	rows = pack_messages(f);
+	g_assert_cmpuint(rows->len, ==, 1);
+	g_assert_cmpint(venture_entity_get_organization_id(g_ptr_array_index(rows, 0)), ==, f->org);
+	g_object_get(g_ptr_array_index(rows, 0), "connection-id", &selected, NULL);
+	g_assert_cmpint(selected, ==, 0);
+}
+
 /* DONE WHEN 5: the deliver action re-sends the last retained output, and
  * refuses when there is none or the pack is not set to email. */
 static void
@@ -754,5 +800,7 @@ main(int argc, char **argv)
 	g_test_add("/report-delivery/deliver-resends", Fixture, NULL, setup, test_deliver_resends, teardown);
 	g_test_add("/report-delivery/inline-attachments", Fixture, NULL, setup, test_inline_attachments, teardown);
 	g_test_add("/report-delivery/surfaces", WebFixture, NULL, web_setup, test_surfaces, web_teardown);
+	g_test_add("/report-delivery/organization-transport", Fixture, GINT_TO_POINTER(0), setup, test_organization_transport, teardown);
+	g_test_add("/report-delivery/prepared-transport", Fixture, GINT_TO_POINTER(1), setup, test_organization_transport, teardown);
 	return g_test_run();
 }
