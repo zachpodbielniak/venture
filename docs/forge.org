@@ -324,6 +324,14 @@ Provider clients resolve their organization, forge origin/kind, account and bind
 version on the main thread. They retain immutable credential snapshots with a
 thread-safe cancellable. Main-thread changes to the binding, forge or organization
 revoke the snapshot, conservatively even if a surrounding transaction rolls back.
+An authenticated operation also snapshots its initiating user/token identity.
+Changes or removal of that user's identity, token or organization membership
+revoke its in-flight credential capability before another worker git operation;
+a running subprocess receives cancellation. Membership reassignment checks both
+old and new subjects. Login and token activity timestamps alone do not revoke.
+Other edits conservatively require starting a new operation, including edits
+that later roll back. This protects clone/push as well as the separate AI
+provider's request checks; it does not undo an external operation already accepted.
 A worker never reads the database. New run records retain the exact connection
 ID and credential version; historical runs remain explicitly unknown (zero),
 without invented credential backfills. Callbacks and publishing revalidate retained

@@ -17,6 +17,7 @@
 
 #include "venture-test-util.h"
 #include "venture-test-forge.h"
+#include "venture-test-accounting.h"
 
 typedef struct
 {
@@ -48,7 +49,7 @@ fixture_set_up(
 	g_object_set(fixture->config, "state-dir", fixture->state_dir, NULL);
 	g_object_set(fixture->config, "forge-runs-enabled", TRUE, "forge-git-path", "/bin/false", NULL);
 
-	fixture->database = venture_database_new("sqlite://:memory:", &error);
+	fixture->database = venture_test_accounting_database(&error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(fixture->database,
 		venture_entity_registry_get_default(), &error));
@@ -99,6 +100,7 @@ fixture_tear_down(
 	(void)user_data;
 
 	g_clear_object(&fixture->context);
+	venture_test_accounting_database_cleanup(fixture->database);
 	g_clear_object(&fixture->database);
 	g_clear_object(&fixture->config);
 
@@ -602,8 +604,13 @@ test_work_session_turns_are_recorded(
 static void test_work_credential_revocation(Fixture *fixture, gconstpointer data)
 {
 	g_autoptr(VentureWorkService) service = NULL;
-	g_autoptr(VentureEntity) repo = NULL, run = NULL;
+	g_autoptr(VentureEntity) repo = NULL, run = NULL, user = NULL, member = NULL, token = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	VentureAuthPrincipal principal;
+	gint mode = GPOINTER_TO_INT(data);
+	gchar principal_name[] = "coding-editor";
 	g_autoptr(VentureIntegrationConnection) binding = NULL;
+	g_autoptr(VentureForgeCredentials) activity_lease = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *script = NULL, *marker = NULL, *quoted = NULL, *body = NULL;
 	gint64 forge_id, run_id, deadline;
@@ -629,8 +636,22 @@ static void test_work_credential_revocation(Fixture *fixture, gconstpointer data
 	g_object_set(fixture->config, "forge-git-path", script, NULL);
 	service = venture_work_service_new(fixture->context, &error);
 	g_assert_no_error(error);
+	if (mode >= 2) {
+		user = g_object_new(VENTURE_TYPE_USER, "username", "coding-editor", "active", TRUE, "role", VENTURE_USER_ROLE_EDITOR, NULL);
+		g_assert_true(venture_database_save(fixture->database, user, NULL, &error));
+		member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", venture_entity_get_id(user),
+			"organization-id", venture_context_get_default_organization_id(fixture->context), "active", TRUE, "role", VENTURE_ORGANIZATION_ROLE_EDITOR, NULL);
+		g_assert_true(venture_database_save(fixture->database, member, NULL, &error));
+		token = g_object_new(VENTURE_TYPE_API_TOKEN, "name", "Coding fixture", "user-id", venture_entity_get_id(user), "active", TRUE, "role", VENTURE_USER_ROLE_EDITOR, NULL);
+		g_assert_true(venture_database_save(fixture->database, token, NULL, &error));
+		g_assert_no_error(error);
+		principal.user_id = venture_entity_get_id(user); principal.token_id = mode == 4 ? venture_entity_get_id(token) : 0;
+		principal.name = principal_name; principal.role = VENTURE_USER_ROLE_EDITOR; principal.authenticated = TRUE;
+		scope = venture_access_policy_enter(venture_database_get_access_policy(fixture->database), &principal);
+	}
 	run_id = venture_work_service_start_for_ticket(service, fixture->ticket_id, "fixture", &error);
 	g_assert_no_error(error); g_assert_cmpint(run_id, >, 0);
+	g_clear_object(&scope);
 	deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
 	while (!g_file_test(marker, G_FILE_TEST_EXISTS) && g_get_monotonic_time() < deadline)
 		g_main_context_iteration(NULL, FALSE);
@@ -639,12 +660,36 @@ static void test_work_credential_revocation(Fixture *fixture, gconstpointer data
 	g_object_get(repo, "forge-id", &forge_id, NULL);
 	binding = venture_forge_settings_find(fixture->database, forge_id, &error);
 	g_assert_no_error(error); g_assert_nonnull(binding);
-	if (data != NULL) venture_config_set_module_enabled(fixture->config, "forge", FALSE);
+	if (mode >= 2) {
+		g_autoptr(GDateTime) now = venture_time_now();
+		scope = venture_access_policy_enter(venture_database_get_access_policy(fixture->database), &principal);
+		activity_lease = venture_forge_credentials_acquire(fixture->database, forge_id, &error);
+		g_assert_no_error(error); g_assert_nonnull(activity_lease);
+		g_clear_object(&scope);
+		/* Activity stamps cannot cancel an otherwise-authorized job. */
+		g_object_set(user, "last-login-at", now, NULL);
+		g_assert_true(venture_database_save(fixture->database, user, NULL, &error));
+		g_object_set(token, "last-used-at", now, NULL);
+		g_assert_true(venture_database_save(fixture->database, token, NULL, &error));
+		g_assert_true(venture_forge_credentials_check(activity_lease, &error));
+		g_assert_no_error(error);
+		g_assert_cmpuint(venture_work_service_count_live(service), ==, 1);
+		if (mode == 5) {
+			g_autoptr(VentureEntity) other = g_object_new(VENTURE_TYPE_USER, "username", "another-editor", "active", TRUE, NULL);
+			g_assert_true(venture_database_save(fixture->database, other, NULL, &error));
+			g_assert_true(venture_forge_credentials_check(activity_lease, &error));
+			g_object_set(member, "user-id", venture_entity_get_id(other), NULL);
+			g_assert_true(venture_database_save(fixture->database, member, NULL, &error));
+		} else {
+			g_object_set(mode == 2 ? user : mode == 3 ? member : token, "active", FALSE, NULL);
+			g_assert_true(venture_database_save(fixture->database, mode == 2 ? user : mode == 3 ? member : token, NULL, &error));
+		}
+	} else if (mode == 1) venture_config_set_module_enabled(fixture->config, "forge", FALSE);
 	else g_assert_true(venture_forge_settings_disconnect(fixture->database, forge_id,
 		venture_entity_get_version(VENTURE_ENTITY(binding)), venture_entity_get_id(VENTURE_ENTITY(binding)), NULL, &error));
 	g_assert_no_error(error);
 	settle_runs(service);
-	if (data != NULL) venture_config_set_module_enabled(fixture->config, "forge", TRUE);
+	if (mode == 1) venture_config_set_module_enabled(fixture->config, "forge", TRUE);
 	run = venture_database_get(fixture->database, VENTURE_TYPE_FORGE_RUN, run_id, &error);
 	g_assert_no_error(error);
 	g_object_get(run, "state", &state, NULL);
@@ -679,6 +724,10 @@ main(
 
 	ADD("/work/credential-revocation", test_work_credential_revocation);
 	g_test_add("/work/module-revocation", Fixture, GINT_TO_POINTER(1), fixture_set_up, test_work_credential_revocation, fixture_tear_down);
+	g_test_add("/work/user-revocation", Fixture, GINT_TO_POINTER(2), fixture_set_up, test_work_credential_revocation, fixture_tear_down);
+	g_test_add("/work/membership-revocation", Fixture, GINT_TO_POINTER(3), fixture_set_up, test_work_credential_revocation, fixture_tear_down);
+	g_test_add("/work/token-revocation", Fixture, GINT_TO_POINTER(4), fixture_set_up, test_work_credential_revocation, fixture_tear_down);
+	g_test_add("/work/membership-reassignment", Fixture, GINT_TO_POINTER(5), fixture_set_up, test_work_credential_revocation, fixture_tear_down);
 	ADD("/work/disabled-by-default", test_work_disabled_by_default);
 	ADD("/work/does-not-block-the-main-loop",
 	    test_work_does_not_block_the_main_loop);

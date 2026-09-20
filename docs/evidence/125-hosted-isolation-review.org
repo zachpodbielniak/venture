@@ -145,3 +145,49 @@ A second =skill-review= pass checked the final repairs, authority rechecks,
 fixture cleanup/timeout bounds, documentation and the normal-build integration.
 No additional confirmed defect was identified in this bounded pass. The broader
 qualification limits above still apply.
+
+* Coding-run initiating authority follow-up
+
+The scoped AI provider checks its captured principal before model requests, but
+coding-run preparation clones before that check and can push after a completed
+model response. The forge credential capability previously watched only forge,
+binding and organization changes. It did not claim a durable grant independent
+of the initiating user; explicit user/membership/token revocation therefore had
+to invalidate the git capability too. Hosted coding remains PLATFORM-denied;
+this repair also protects authorized standalone coding operations.
+
+The actual DEBUG worker test starts a private synthetic git executable. It
+checks the expected HTTPS askpass authority, refuses a neighboring authority,
+writes a readiness marker and waits in a subprocess. Disabling the initiating
+user then failed the bounded drain against the original implementation:
+
+#+begin_example
+/work/user-revocation
+assertion failed (venture_work_service_count_live(service) == 0): (1 == 0)
+exit status 134
+#+end_example
+
+The repaired immutable capability captures initiating user/token IDs. The
+main-thread generic write guard compares the existing metadata-derived diff;
+login and token activity stamps alone preserve the capability. Other identity,
+token and scoped membership edits/removals revoke it before mutation, including
+the old subject when a membership is reassigned. Cancellation reaches the
+in-flight subprocess without a worker database call. Refused writes and rollback
+remain conservatively revoked, as with the existing provider snapshots.
+
+Regression coverage includes user disable, membership disable, token disable,
+membership reassignment, direct capability survival after activity stamps, and
+an unrelated new user. Each actual run drains within the existing five-second
+bound and records cancellation. Existing module/provider revocation and worker
+completion cases remain covered. No network provider is contacted; this is a
+subprocess/credential-boundary demonstration, not production deployment proof.
+
+Verification: normal DEBUG server build and GIR completed without warnings;
+all 13 work-service cases and all 40 forge cases passed on SQLite. The four new
+revocation/reassignment cases also passed using the schema-isolated PostgreSQL
+fixture (fsync enabled). The work fixture now explicitly drops only its owned
+PostgreSQL schema after draining its workers. Org parsing and diff checks passed.
+The skill-review pass traced the pre-write access checks, old/new membership
+identity, activity-only diffs, cancellation and main-thread completion; no
+worker database access was added. This follow-up concerns explicit authority
+record changes, not a new timer for an otherwise-unchanged token expiry.

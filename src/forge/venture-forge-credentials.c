@@ -8,6 +8,7 @@ struct _VentureForgeCredentials
 	GCancellable *cancellable;
 	gint64 forge_id, forge_version, organization_id, organization_version;
 	gint64 connection_id, connection_version;
+	gint64 user_id, token_id;
 	gchar *base_url, *token, *secret, *account;
 };
 G_DEFINE_FINAL_TYPE(VentureForgeCredentials, venture_forge_credentials, G_TYPE_OBJECT)
@@ -45,17 +46,28 @@ static void credentials_changed(VentureDatabase *database, VentureEntity *entity
 	for (i = 0; i < entries->len;)
 	{
 		g_autoptr(VentureForgeCredentials) lease = g_weak_ref_get(g_ptr_array_index(entries, i));
-		gint64 id = venture_entity_get_id(entity);
+		gint64 id = venture_entity_get_id(entity), member_user = 0;
+		if (VENTURE_IS_ORGANIZATION_MEMBERSHIP(entity)) g_object_get(entity, "user-id", &member_user, NULL);
 		if (lease == NULL) { g_ptr_array_remove_index_fast(entries, i); continue; }
 		if ((VENTURE_IS_FORGE(entity) && id == lease->forge_id) ||
 			(VENTURE_IS_INTEGRATION_CONNECTION(entity) && id == lease->connection_id) ||
-			(VENTURE_IS_ORGANIZATION(entity) && id == lease->organization_id))
+			(VENTURE_IS_ORGANIZATION(entity) && id == lease->organization_id) ||
+			(VENTURE_IS_USER(entity) && lease->user_id > 0 && id == lease->user_id) ||
+			(VENTURE_IS_API_TOKEN(entity) && lease->token_id > 0 && id == lease->token_id) ||
+			(VENTURE_IS_ORGANIZATION_MEMBERSHIP(entity) && lease->user_id > 0 && member_user == lease->user_id &&
+			 venture_entity_get_organization_id(entity) == lease->organization_id))
 			g_cancellable_cancel(lease->cancellable);
 		i++;
 	}
 }
 static void credentials_saved(VentureDatabase *database, VentureEntity *entity, gboolean created, gpointer data)
-{ (void)created; credentials_changed(database, entity, data); }
+{
+	(void)created;
+	/* Authority changes are checked before mutation, including the old
+	 * membership identity. Activity-only stamps deliberately do not revoke. */
+	if (VENTURE_IS_USER(entity) || VENTURE_IS_API_TOKEN(entity) || VENTURE_IS_ORGANIZATION_MEMBERSHIP(entity)) return;
+	credentials_changed(database, entity, data);
+}
 static void credentials_entries_free(gpointer data)
 {
 	GPtrArray *entries = data;
@@ -135,6 +147,10 @@ VentureForgeCredentials *venture_forge_credentials_acquire(VentureDatabase *data
 		venture_json_object_get_int(object, "kind", -1) != (gint64)kind)
 	{ refuse(error, "Forge origin changed; disconnect and explicitly configure the new origin"); return NULL; }
 	self = g_object_new(VENTURE_TYPE_FORGE_CREDENTIALS, NULL);
+	{
+		const VentureAuthPrincipal *principal = venture_access_policy_get_actor(venture_database_get_access_policy(database));
+		if (principal) { self->user_id = principal->user_id; self->token_id = principal->token_id; }
+	}
 	self->forge_id = forge_id; self->forge_version = venture_entity_get_version(forge);
 	self->organization_id = venture_entity_get_organization_id(forge);
 	self->organization_version = venture_entity_get_version(organization);
@@ -436,6 +452,28 @@ gboolean venture_forge_check_write(VentureDatabase *database, VentureEntity *ent
 	g_autofree gchar *base = NULL, *old_base = NULL;
 	VentureForgeKind kind, old_kind;
 	gboolean importing;
+	if (VENTURE_IS_USER(entity) || VENTURE_IS_API_TOKEN(entity) || VENTURE_IS_ORGANIZATION_MEMBERSHIP(entity))
+	{
+		GPtrArray *entries = g_object_get_data(G_OBJECT(database), "venture-forge-credentials");
+		g_autoptr(VentureAccessScope) internal = NULL;
+		g_autoptr(JsonNode) diff = NULL;
+		if (!entries || entries->len == 0) return TRUE;
+		if (!removal && venture_entity_get_id(entity) > 0) {
+			internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
+			old = venture_database_get(database, G_OBJECT_TYPE(entity), venture_entity_get_id(entity), error);
+			if (!old) return FALSE;
+			diff = venture_entity_diff(old, entity);
+			json_object_remove_member(json_node_get_object(diff), "last_used_at");
+			json_object_remove_member(json_node_get_object(diff), "last_login_at");
+			if (json_object_get_size(json_node_get_object(diff)) == 0) return TRUE;
+		}
+		/* Reassignment removes the old member's authority even when the
+		 * proposed row now names somebody else. Refused writes/rollback also
+		 * revoke conservatively; workers never read these rows themselves. */
+		if (old) credentials_changed(database, old, entries);
+		credentials_changed(database, entity, entries);
+		return TRUE;
+	}
 	if (VENTURE_IS_FORGE_RUN(entity))
 	{
 		gint64 connection = 0, version = 0, previous_connection = 0, previous_version = 0;
