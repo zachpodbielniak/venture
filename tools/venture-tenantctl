@@ -373,10 +373,14 @@ class BackupCatalog:
         self.refresh_registration()
         present = True
         try:
-            with self.opened(entry["path"], allow_missing=True) as (_, descriptor, _):
+            with self.opened(entry["path"], allow_missing=True) as (_, descriptor, identity):
+                # A replaced parent directory is not a departed archive: the
+                # file may be intact under the directory that was swapped out.
+                self.validate_entry(entry, identity, descriptor is None)
                 present = descriptor is not None
         except FileNotFoundError:
-            present = False
+            raise Refused("Archive parent directory for copy %s is missing at %s; restore it "
+                          "before retiring the entry" % (copy_id, entry["path"])) from None
         # A live archive leaves only through a reviewed plan; retire never unlinks.
         require(not present, "Archive copy %s is still present at %s; expire it with "
                 "retention-plan/retention-execute instead" % (copy_id, entry["path"]))

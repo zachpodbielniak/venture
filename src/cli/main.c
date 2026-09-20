@@ -1119,6 +1119,18 @@ venture_cli_command_forge(
 		return 0;
 	}
 
+	if ((0 == g_strcmp0(action, "set-token")) ||
+	    (0 == g_strcmp0(action, "set-secret")))
+	{
+		/* Retired: credentials live in the organization-scoped binding.
+		 * Refuse before reading standard input so no secret is read
+		 * only to be sent to an endpoint that no longer accepts it. */
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "\"%s\" is retired. Use forge settings <id> with a "
+		            "JSON body on standard input.", action);
+		return -1;
+	}
+
 	if ((0 != g_strcmp0(action, "set-token")) &&
 	    (0 != g_strcmp0(action, "set-secret")))
 	{

@@ -38,8 +38,10 @@ margin does not count this earned ledger income as a project invoice.
 Generated progress invoices and full invoices handed off from accepted
 quotes use today's calendar date in the configured business zone
 (=locale.timezone=, read through =venture_settlement_service_today()=),
-encoded as midnight UTC like date-picker input. The zone the server process
-runs in plays no part: an evening acceptance in New York on a UTC host is
+encoded as midnight UTC like date-picker input. The default zone is
+=America/New_York=; a deployment elsewhere sets =locale.timezone= before
+relying on generated dates. The zone the server process runs in plays no
+part: an evening acceptance in New York on a UTC host is
 still issued for the New York date. Quote acceptance, record creation, audit
 and progress-billing activity retain their precise timestamps. A same-day
 manual receipt is therefore valid; a previous-day receipt remains forbidden.

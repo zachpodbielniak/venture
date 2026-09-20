@@ -958,6 +958,6 @@ The executable regression =/hosted-maintenance/admission-before-database=
 sets each hosted dispatch bound to zero and verifies both refusal and the
 absence of the database file. It failed before validation moved ahead of
 database opening. The combined artifact passes both =test-hosted-maintenance= cases,
-the 19 =test-http-limits= transport cases, the one =test-caldav-http= case
+the 20 =test-http-limits= transport cases, the one =test-caldav-http= case
 and the 15 =test-tenant= cases; the real HTTP/TLS demonstration
 also verifies each invalid setting before database creation.

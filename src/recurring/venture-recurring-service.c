@@ -687,7 +687,10 @@ venture_recurring_service_run(VentureRecurringService *self, gint64 organization
 		return refuse(error, "A recurring sweep is already running") ? -1 : -1;
 	if (organization_id <= 0)
 		return refuse(error, "An organization is required") ? -1 : -1;
-	clock = as_of ? g_date_time_ref(as_of) : venture_time_now();
+	/* An implicit sweep runs as of the business date (locale.timezone), so
+	 * an occurrence dated the process zone's later calendar day waits for
+	 * the next sweep instead of being posted and refused as future-dated. */
+	clock = as_of ? g_date_time_ref(as_of) : venture_settlement_service_today(venture_settlement_service_get(self->database));
 	as_of_text = as_of != NULL ? g_date_time_format_iso8601(clock) : g_date_time_format(clock, "%F");
 	query = venture_query_new(VENTURE_TYPE_RECURRING_SCHEDULE);
 	venture_query_set_organization(query, organization_id);

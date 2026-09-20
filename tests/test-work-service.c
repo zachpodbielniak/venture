@@ -660,7 +660,7 @@ static void test_work_credential_revocation(Fixture *fixture, gconstpointer data
 	g_object_get(repo, "forge-id", &forge_id, NULL);
 	binding = venture_forge_settings_find(fixture->database, forge_id, &error);
 	g_assert_no_error(error); g_assert_nonnull(binding);
-	if (mode >= 2) {
+	if (mode >= 2 && mode != 6) {
 		g_autoptr(GDateTime) now = venture_time_now();
 		scope = venture_access_policy_enter(venture_database_get_access_policy(fixture->database), &principal);
 		activity_lease = venture_forge_credentials_acquire(fixture->database, forge_id, &error);

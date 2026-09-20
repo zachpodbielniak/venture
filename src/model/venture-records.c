@@ -2402,11 +2402,10 @@ static const VentureFieldDecl venture_forge_fields[] = {
 	VENTURE_FIELD("webhook-secret-set-at", "Secret set", NULL,
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	/*
-	 * The login the access token belongs to, fetched from the forge
-	 * rather than typed. This is the webhook loop guard: an event whose
-	 * sender is this account was caused by VENTURE itself. Until it is
-	 * set, VENTURE cannot tell its own writes from anybody else's, which
-	 * is why the detail page warns while it is empty.
+	 * The login the last verification saw, fetched from the forge rather
+	 * than typed. A display stamp: the webhook loop guard reads the
+	 * account the binding verified at configure time, and a save that
+	 * changes only this and verified-at does not revoke credential leases.
 	 */
 	VENTURE_FIELD("bot-username", "Bot account",
 	              "The account the last verification saw; the webhook loop guard uses the binding's verified account",

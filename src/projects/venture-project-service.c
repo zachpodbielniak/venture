@@ -92,7 +92,9 @@ flag(VentureEntity *record, const gchar *field)
 /* One billing model per project. A quote-created project or one labelled
  * fixed invoices accepted delivery, never its labour; bill_impl,
  * delivery_fixed_price and the profitability report all read this so the
- * refusal and the report's unbilled figure cannot drift apart. */
+ * refusal and the report's unbilled figure agree. bill_impl additionally
+ * refuses a project carrying a quote-bearing scope row, a defensive branch
+ * both scope creators already make unreachable by setting quote-id. */
 static gboolean
 project_bills_delivery(VentureEntity *project)
 {

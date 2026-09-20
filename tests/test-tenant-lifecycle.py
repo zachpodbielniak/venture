@@ -639,6 +639,24 @@ class Lifecycle(unittest.TestCase):
             self.assertTrue(archive.exists())
 
 
+    def test_backup_retire_refuses_replaced_parent(self):
+        # A swapped archive directory reads as "everything departed"; retire
+        # must not tombstone entries whose files may be intact elsewhere.
+        directory, archive, manifest = self.catalog_fixture()
+        with self.tenant.locked():
+            catalog = tool.BackupCatalog(self.tenant)
+            entry = catalog.register(archive, manifest, "export", "Register for parent swap")
+            replacement = directory.parent / (directory.name + ".swap")
+            directory.rename(replacement)
+            directory.mkdir()
+            with self.assertRaises(tool.Refused) as refused:
+                catalog.retire(entry["copy_id"], "Parent swapped")
+            self.assertIn("parent", str(refused.exception).lower())
+            self.assertEqual(catalog.data["entries"][entry["copy_id"]]["state"], "retained")
+            directory.rmdir()
+            replacement.rename(directory)
+            self.assertTrue(archive.exists())
+
     def test_missing_retained_archive_blocks_retention_until_retired(self):
         # An offsite copy that left the host is a refusal naming the entry, not
         # a traceback and not an empty plan; backup-retire records the departure.

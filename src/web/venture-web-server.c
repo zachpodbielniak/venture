@@ -3981,8 +3981,9 @@ venture_web_ui_invoice_status(
 
 	to = htmx_request_get_form_value(request, "to");
 
-	/* Implicit accounting dates remain stable across a two-actor retry. */
-	now = venture_time_from_string("today", NULL);
+	/* Implicit accounting dates remain stable across a two-actor retry and
+	 * are read in the business zone, like every other generated date. */
+	now = venture_settlement_service_today(venture_settlement_service_get(venture_context_get_database(self->context)));
 	venture_auth_to_actor(principal, &actor);
 
 	if (g_strcmp0(to, "paid") == 0)
