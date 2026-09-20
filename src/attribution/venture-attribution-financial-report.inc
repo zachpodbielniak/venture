@@ -1,6 +1,22 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* A calendar midnight carries a day, not an assertion that this financial
+ * event happened before a same-day conversion. Retained creation evidence
+ * must also put the event after acquisition; old rows cannot gain attribution
+ * merely because their calendar date happens to match a later conversion. */
+static gboolean financial_calendar_binding(VentureEntity *event, GDateTime *bound, GDateTime *date)
+{
+	g_autoptr(GDateTime) calendar = NULL, acquired = NULL;
+	GDateTime *recorded = venture_entity_get_created_at(event);
+	if (!bound || !date || !recorded || g_date_time_compare(recorded, bound) < 0) return FALSE;
+	calendar = g_date_time_to_utc(date); acquired = g_date_time_to_utc(bound);
+	return g_date_time_get_hour(calendar) == 0 && g_date_time_get_minute(calendar) == 0 &&
+		g_date_time_get_second(calendar) == 0 && g_date_time_get_microsecond(calendar) == 0 &&
+		g_date_time_get_year(calendar) == g_date_time_get_year(acquired) &&
+		g_date_time_get_month(calendar) == g_date_time_get_month(acquired) &&
+		g_date_time_get_day_of_month(calendar) == g_date_time_get_day_of_month(acquired);
+}
 static AttributionSource *financial_source(AttributionReport *report, gint64 invoice_id, gint64 company_id,
-	gint64 deal_id, GDateTime *date)
+	gint64 deal_id, GDateTime *date, VentureEntity *event)
 {
 	VentureEntity *binding = NULL, *company = array_row(report->companies, company_id);
 	g_autoptr(GDateTime) bound = NULL;
@@ -18,7 +34,7 @@ static AttributionSource *financial_source(AttributionReport *report, gint64 inv
 	else binding = g_hash_table_lookup(report->company_bindings, &company_id);
 	if (binding && (gpointer)binding != AMBIGUOUS_BINDING) {
 		g_object_get(binding, "bound-at", &bound, NULL);
-		if (!bound || !date || g_date_time_compare(bound, date) > 0)
+		if ((!bound || !date || g_date_time_compare(bound, date) > 0) && !financial_calendar_binding(event, bound, date))
 			return report_source(report, NULL, NULL, "Acquisition was not bound when this financial event occurred");
 	}
 	return report_source(report, binding, company, deal_id ? "Explicit quote/deal has no retained acquisition; current CRM source only" : NULL);
@@ -43,7 +59,7 @@ static gboolean report_financial(AttributionReport *report, GError **error)
 		gint stage;
 		g_object_get(deal, "stage", &stage, "closed-at", &date, "value", &amount, NULL);
 		if (stage != VENTURE_DEAL_STAGE_WON || !report_within(report, date)) continue;
-		source = financial_source(report, 0, report_number(deal, "company-id"), venture_entity_get_id(deal), date);
+		source = financial_source(report, 0, report_number(deal, "company-id"), venture_entity_get_id(deal), date, deal);
 		if (!report_fact(report, "won_deal_value", deal, source, amount, "Current won deal value at closed-at; management pipeline measure, not booked revenue", error)) return FALSE;
 	}
 	events = report_rows(report, VENTURE_TYPE_INVOICE_EVENT, TRUE, error); if (!events) return FALSE;
@@ -60,7 +76,7 @@ static gboolean report_financial(AttributionReport *report, GError **error)
 			if (!negative) return FALSE;
 			venture_money_free(amount); amount = negative;
 		}
-		source = financial_source(report, report_number(event, "invoice-id"), report_number(event, "customer-id"), 0, date);
+		source = financial_source(report, report_number(event, "invoice-id"), report_number(event, "customer-id"), 0, date, event);
 		if (!report_fact(report, amount ? "invoiced_net" : "invoiced_net_unknown", event, source, amount,
 			"Frozen invoice issue/void event date; net after discount, excluding tax and shipping; missing legacy evidence is unknown", error)) return FALSE;
 	}
@@ -103,7 +119,7 @@ static gboolean report_financial(AttributionReport *report, GError **error)
 			}
 		}
 		if (!report_within(report, date)) continue;
-		source = financial_source(report, invoice_id, company_id, 0, date);
+		source = financial_source(report, invoice_id, company_id, 0, date, sale);
 		if (!report_fact(report, refund ? "cash_refunds" : "cash_receipts", sale, source, amount,
 			"Settlement-derived sale occurrence date; applied receipts or negative refund adjustment; one sale counted once", error)) return FALSE;
 	}
@@ -115,7 +131,7 @@ static gboolean report_financial(AttributionReport *report, GError **error)
 		g_autoptr(AttributionSource) source = NULL;
 		g_object_get(sale, "occurred-at", &date, NULL);
 		if (!report_within(report, date)) continue;
-		source = financial_source(report, 0, company, 0, date);
+		source = financial_source(report, 0, company, 0, date, sale);
 		if (!report_fact(report, "customers", sale, source, NULL,
 			"Company's first positive applied cash in book currency; same denominator and period as CAC", error)) return FALSE;
 	}

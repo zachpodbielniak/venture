@@ -726,6 +726,70 @@ static void assert_report_money(JsonNode *node, const gchar *measure, const gcha
 	g_assert_nonnull(row); money = venture_money_from_json(json_object_get_member(row, "amount"), "USD", &error);
 	g_assert_no_error(error); g_assert_nonnull(money); g_assert_cmpint(venture_money_get_amount(money), ==, expected);
 }
+static void calendar_financial_event(Fixture *f, VentureEntity *company, const gchar *number,
+	GDateTime *date, const gchar *net, const gchar *cash)
+{
+	g_autoptr(VentureEntity) invoice = g_object_new(VENTURE_TYPE_INVOICE, "organization-id", (gint64)1,
+		"company-id", venture_entity_get_id(company), "number", number, "issued-at", date, "due-at", date, NULL);
+	g_autoptr(VentureEntity) line = NULL, payment = NULL;
+	g_autoptr(GError) error = NULL;
+	persist(f, invoice);
+	line = g_object_new(VENTURE_TYPE_INVOICE_LINE, "organization-id", (gint64)1,
+		"invoice-id", venture_entity_get_id(invoice), "description", "Date-bound attribution", "quantity", 1.0, NULL);
+	money_field(line, "unit-price", net); persist(f, line);
+	g_assert_true(venture_settlement_service_transition(venture_settlement_service_get(f->db), VENTURE_INVOICE(invoice), "sent", date, NULL, &error));
+	g_assert_no_error(error);
+	payment = g_object_new(VENTURE_TYPE_PAYMENT, "organization-id", (gint64)1,
+		"customer-id", venture_entity_get_id(company), "invoice-id", venture_entity_get_id(invoice), "date", date, "method", "verified-bank-receipt", NULL);
+	money_field(payment, "amount", cash); persist(f, payment);
+}
+/* Calendar midnight is not evidence that a same-day invoice preceded capture.
+ * Its immutable event creation orders that case; genuine earlier evidence and
+ * precise timestamps must still refuse retroactive acquisition attribution. */
+static void test_financial_calendar_dates(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = venture_context_new(config, f->db);
+	g_autoptr(VentureEntity) company = g_object_new(VENTURE_TYPE_COMPANY, "organization-id", (gint64)1, "name", "Existing financial customer", NULL);
+	g_autoptr(GDateTime) day = g_date_time_new_utc(g_date_time_get_year(f->now), g_date_time_get_month(f->now), g_date_time_get_day_of_month(f->now), 0, 0, 0);
+	g_autoptr(GDateTime) yesterday = g_date_time_add_days(day, -1), later = NULL;
+	g_autofree gchar *token = grant(f);
+	g_autoptr(JsonObject) fields = page(), payload = submission("calendar-date-capture", token), options = json_object_new();
+	g_autoptr(VentureAttributionTouch) touch = NULL;
+	g_autoptr(VentureAttributionSubmission) captured = NULL;
+	g_autoptr(VentureEntity) lead = NULL, converted = NULL;
+	g_autoptr(VentureDateRange) period = venture_date_range_new(NULL, NULL);
+	g_autoptr(VentureReportResult) report = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 lead_id;
+	VentureReport *definition = venture_report_registry_lookup(venture_context_get_report_registry(context), "attribution");
+	(void)data;
+	persist(f, company);
+	calendar_financial_event(f, company, "DATE-BEFORE", day, "30 USD", "10 USD");
+	touch = venture_attribution_service_observe(f->service, venture_entity_get_uuid(f->site), "https://site.example.test", token, "calendar-touch", fields, f->now, &error);
+	g_assert_no_error(error);
+	captured = venture_attribution_service_capture(f->service, venture_entity_get_uuid(f->site), "https://site.example.test", payload, f->now, &error);
+	g_assert_no_error(error);
+	g_object_get(captured, "lead-id", &lead_id, NULL);
+	lead = venture_database_get(f->db, VENTURE_TYPE_LEAD, lead_id, &error); g_assert_no_error(error);
+	g_object_set(lead, "status", VENTURE_LEAD_QUALIFIED, NULL); persist(f, lead);
+	json_object_set_int_member(options, "company_id", venture_entity_get_id(company)); json_object_set_boolean_member(options, "deal", TRUE);
+	converted = venture_lead_service_convert(venture_database_get_lead_service(f->db), lead, options, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(converted);
+	calendar_financial_event(f, company, "DATE-AFTER", day, "200 USD", "75 USD");
+	calendar_financial_event(f, company, "DATE-YESTERDAY", yesterday, "40 USD", "20 USD");
+	calendar_financial_event(f, company, "PRECISE-BEFORE", f->now, "50 USD", "25 USD");
+	later = venture_time_now();
+	calendar_financial_event(f, company, "PRECISE-AFTER", later, "60 USD", "30 USD");
+	report = venture_report_generate(definition, context, period, NULL, &error); g_assert_no_error(error);
+	result = venture_report_result_to_json(report);
+	assert_report_money(result, "invoiced_net", "newsletter", 26000);
+	assert_report_money(result, "cash_receipts", "newsletter", 10500);
+	assert_report_money(result, "invoiced_net", "unknown", 12000);
+	assert_report_money(result, "cash_receipts", "unknown", 5500);
+}
+
 /* The accounting source's identity, not the number of tracking touches, owns each amount. */
 static void test_financial_journey(Fixture *f, gconstpointer data)
 {
@@ -993,6 +1057,7 @@ int main(int argc, char **argv)
 	g_test_add_func("/attribution/script", test_script);
 	g_test_add("/attribution/report-options", Fixture, NULL, setup, test_report_options, teardown);
 	g_test_add("/attribution/report-models", Fixture, NULL, setup, test_report_models, teardown);
+	g_test_add("/attribution/financial-calendar-dates", Fixture, NULL, setup, test_financial_calendar_dates, teardown);
 	g_test_add("/attribution/financial-journey", Fixture, NULL, setup, test_financial_journey, teardown);
 	g_test_add("/attribution/restart", Fixture, restart_mode, setup, test_restart, teardown);
 	g_test_add("/attribution/independent-permissions", Fixture, NULL, setup, test_independent_permissions, teardown);
