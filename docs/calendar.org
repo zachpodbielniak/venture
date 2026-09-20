@@ -37,8 +37,10 @@ account for another source so old event links are never reused. Rotation,
 disconnection, selection changes and membership revocation invalidate an
 in-flight import before its downloaded results are saved.
 
-The current transport uses HTTP Basic authentication over HTTPS. Provider
-OAuth and proprietary calendar APIs are not implemented. Provider support
+The current transport uses HTTP Basic authentication over HTTPS. Redirects are
+refused, including same-origin redirects; configure the final calendar origin
+and collection path. A server response cannot select another destination or
+forward the saved credential. Provider OAuth and proprietary calendar APIs are not implemented. Provider support
 must be verified against the selected service's actual authentication policy.
 
 * The sync

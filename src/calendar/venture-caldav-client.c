@@ -302,6 +302,9 @@ static GBytes *soup_request(VentureSoupCalDavClient *self, const gchar *method, 
 	url = g_strconcat(self->base, href, NULL);
 	message = soup_message_new(method, url);
 	if (!message) { g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "The CalDAV URL is not valid"); return NULL; }
+	/* An allowed calendar cannot delegate network authority or credentials
+	 * to a redirect target outside the operator-approved origin. */
+	soup_message_add_flags(message, SOUP_MESSAGE_NO_REDIRECT);
 	headers = soup_message_get_request_headers(message);
 	soup_message_headers_append(headers, "Authorization", self->authorization);
 	if (depth) soup_message_headers_append(headers, "Depth", depth);
