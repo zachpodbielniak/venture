@@ -6,8 +6,10 @@ would: a real loopback HTTP server with a private config and state directory,
 the first-run owner, two organizations, three authenticated accounts, and the
 ordinary =/api/v1= and web routes. No Stripe account, bank account or live key
 is involved. Every outbound destination the server could reach is pinned to a
-local sink, which recorded the single attempt the server made and refused it,
-so the transcript below contains proof that nothing left the machine.
+local sink, which recorded the single attempt the server made and refused it;
+the transcript shows that attempt and its refusal (a proxy-environment sink
+cannot rule out a route that ignores the proxy, so this is evidence of the
+server's behaviour, not a network-level guarantee).
 
 * What is demonstrated
 
@@ -46,8 +48,8 @@ mandate/payment-method failures, using existing refund/dispute/accounting
 guards. Test closed-period and separation-of-duties behavior.":
 
 - Section I: a settled receipt is applied, the month is closed, and a return
-  dated inside the closed month is refused ("Period 'FY2026 P01' is closed for
-  organization 1") with zero refund rows written. With a =pay= approval rule
+  dated inside the closed month is refused (the driver asserts the closed-period
+  message; the transcript records the status and the zero refund rows). With a =pay= approval rule
   in force, the proposer's own return is refused and a pending approval is
   recorded; a distinct authenticated account repeating the exact command
   applies exactly one 30.00 USD refund and the invoice reopens as
@@ -63,7 +65,8 @@ invoice selector or sensitive data through the public link.":
 - Section G: the hosted link is a Venture-owned action that refuses without
   this organization's verified account, and writes no link record.
 - Section H: the public resolver =/pay/<capability>= answers a well-formed but
-  unknown 101-character capability with one "Payment link is unavailable" page,
+  unknown 101-character capability with one generic unavailable page (message
+  asserted by the driver),
   =Cache-Control: no-store=, =Referrer-Policy: no-referrer=, and no invoice
   number or customer name; a POST carrying =invoice_id= cannot select an
   invoice, and the invoice's state is unchanged afterwards.
