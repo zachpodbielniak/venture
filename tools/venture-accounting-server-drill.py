@@ -30,12 +30,14 @@ class Client:
         self.cookies = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPCookieProcessor(self.cookies), RefuseRedirect())
 
-    def request(self, path, values=None, method=None, form=False, expected=None, text=False):
-        body = None if values is None else (urllib.parse.urlencode(values).encode() if form else json.dumps(values).encode())
+    def request(self, path, values=None, method=None, form=False, expected=None, text=False, headers=None):
+        body = values if isinstance(values, bytes) else (None if values is None else (urllib.parse.urlencode(values).encode() if form else json.dumps(values).encode()))
         request = urllib.request.Request(self.origin + path, body, method=method)
         if body is not None:
             request.add_header("Content-Type", "application/x-www-form-urlencoded" if form else "application/json")
             request.add_header("Origin", self.origin)
+        for name, value in (headers or {}).items():
+            request.add_header(name, value)
         try:
             response = self.opener.open(request, timeout=20)
         except urllib.error.HTTPError as error:
@@ -73,8 +75,9 @@ class Client:
 
 
 class Server:
-    def __init__(self, binary, directory):
+    def __init__(self, binary, directory, environment=None):
         self.binary, self.directory = binary, directory
+        self.environment = dict(environment or {})
         self.directory.mkdir(mode=0o700)
         self.password = None
         self.process = None
@@ -93,6 +96,7 @@ class Server:
         environment = {key: value for key, value in os.environ.items() if not key.startswith("VENTURE_")}
         environment.update(VENTURE_SESSION_SECRET=self.secret, XDG_CONFIG_HOME=str(self.directory / "config-home"),
                            XDG_DATA_HOME=str(self.directory / "data-home"))
+        environment.update(self.environment)
         self.log = (self.directory / "server.log").open("ab")
         self.process = subprocess.Popen([str(self.binary), "--config", str(config), "--state-dir", str(self.directory / "state"),
                                          "--no-ai", "--no-plugins", "--no-automation"],

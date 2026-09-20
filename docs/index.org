@@ -173,3 +173,5 @@ screen's ordinary sync-and-import test.
 - [[file:sales-performance.org][Sales territories and quotas]] — assignment, scoped owner authority, targets and actual performance.
 
 - [[file:forge-vault-demonstration.org][Forge credential demonstration]] — real server/CLI settings, callback revocation and worker cancellation.
+
+- [[file:evidence/125-attribution-server.org][Authenticated attribution server walkthrough]] — ordinary invoice dates, partial cash, independent withdrawal and exact signed restart replay

@@ -337,3 +337,13 @@ checks. Read-only and suspended workspaces refuse public intake.
 =/attribution/http-hosted= exercises a distinct portfolio origin, wrong site
 origin, forged neighboring Host, ordinary API refusal, suspended/read-only
 intake and explicit reactivation using a real server.
+
+* Authenticated server walkthrough
+
+Run =tools/venture-attribution-server-drill.py --binary build/debug/venture=
+against a DEBUG build for a private synthetic journey through exact-Origin
+consent, signed capture, CRM conversion, ordinary date-only invoicing, partial
+receipt, independent email withdrawal and exact replay after server restart.
+The [[file:evidence/125-attribution-server.org][recorded transcript]] explains expected amounts, source identities, cleanup
+and the boundaries of this demonstration. It sends no mail and invokes no
+external provider or Lightsite provisioning.

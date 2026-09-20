@@ -1,0 +1,124 @@
+#+title: Issue 125 — authenticated attribution and marketing walkthrough
+
+* Scope and reproduction
+
+This is a synthetic, local SQLite walkthrough of the actual DEBUG server,
+using authenticated owner routes for configuration and CRM/accounting work and
+separate anonymous clients for site capabilities and signed capture. It sends
+no mail and contacts no provider or Lightsite installation. It neither provisions
+Lightsite nor certifies hosted networking or a production deployment.
+
+From the repository root:
+
+#+begin_src sh
+PKG_CONFIG_PATH=/tmp/venture-125-ocr-sdk make DEBUG=1 venture
+PYTHONDONTWRITEBYTECODE=1 python3 tools/venture-attribution-server-drill.py --binary build/debug/venture
+#+end_src
+
+The SDK path above belongs to this verification environment; another developer
+uses their installed build dependencies. The driver requires Python 3's standard
+library. It creates an owned private directory (umask 077), synthetic credentials
+and integration key, two server lifetimes, and a fresh SQLite database. It binds
+loopback on an available port. Successful cleanup removes only its own directory;
+failure preserves that directory and server log as private diagnostic evidence.
+Credentials, visitor capabilities and HMAC values are never printed. The binary
+fingerprint is checked before and after. Running with Python -O refuses before
+fixture creation because acceptance assertions must remain enabled.
+
+* Demonstration
+
+Verbatim output from the final run on the prepared integration sources plus the
+calendar-ordering repair (2026-09-20):
+
+#+begin_example
+Artifact SHA256: 4c5ff40a6342bd1f0c9ee49f4f4181f5b7d73bf01b4397897015a8be228935f6
+Private fixture: /tmp/venture-attribution-server-drill-p_4ula79
+PASS exact Origin rejects neighbor without a visitor; analytics grant creates no email permission; one scoped touch retained
+PASS signed submission1 -> lead1 -> company1/deal1 -> invoice1/payment1; both models show won50000 invoiced20000 cash7500 cents, not declared campaign revenue99900
+PASS explicit email choice created consent1; analytics withdrawal preserved email evidence; separate email withdrawal created suppression and retained financial attribution
+PASS exact original timestamp/body/HMAC retry after restart retained every business, submission and consent ID; no re-consent or duplicate receipt
+PASS unchanged artifact SHA256: 4c5ff40a6342bd1f0c9ee49f4f4181f5b7d73bf01b4397897015a8be228935f6
+PASS owned private fixture removed; no external provider or Lightsite provisioning was invoked
+#+end_example
+
+The site is configured for exactly https://synthetic-site.example.test. A forged
+neighbor Origin receives 404 without creating a visitor. A correct analytics
+grant creates no email permission. The signed submission uses the configured
+64-hex-character write-only HMAC secret as its ASCII key and signs the exact
+original timestamp, newline and body bytes. An incorrect signature receives 403
+without creating either a lead or submission. No external HTTP call is needed.
+
+The accepted submission binds the recorded touch to a canonical lead. Its normal
+conversion produces the company and deal; the ordinary pipeline move marks the
+500 USD deal won. Generic invoice and receipt routes issue 200 USD and allocate
+75 USD using ordinary date-only values. Both first/last attribution reports must
+show independently expected 50000/20000/7500 minor units and the exact retained
+invoice-event and settlement-sale IDs. A declared campaign revenue of 999 USD
+cannot substitute for those financial facts. Direct campaign and CAC metric
+values must match their attribution reconciliation fields; CAC has one customer,
+zero customer-count difference, and receivables retain 125 USD outstanding.
+
+A separate explicit email choice creates marketing consent. Withdrawing analytics
+leaves the complete email evidence unchanged. Withdrawing email separately creates
+a suppression while preserving the acquisition/financial evidence. After a real
+server stop/restart, retrying the exact original timestamp/body/signature retains
+all business and submission IDs and the complete withdrawn consent/suppression
+rows; it neither re-consents the address nor duplicates the receipt.
+
+* Date defect and repair evidence
+
+The initial ordinary-date walkthrough failed: a same-day invoice stored at UTC
+midnight appeared older than its afternoon acquisition binding and was attributed
+to unknown. The focused regression failed against the original implementation:
+
+#+begin_example
+/attribution/financial-calendar-dates
+assertion failed (venture_money_get_amount(money) == expected): (6000 == 26000)
+exit status 134
+#+end_example
+
+The repaired rule uses retained event/sale creation evidence only for exact UTC
+midnight calendar dates on the acquisition day in the current configured report
+timezone. Controlled Los Angeles and Tokyo boundary cases also verify that
+UTC date differences cannot reject a legitimate acquisition or accept a
+preexisting same-day row. It does not invent an intraday
+transaction timestamp. The regression expects attributed invoices 26000 and cash
+10500 cents, versus unknown invoices 12000 and cash 5500 cents. It covers a
+same-day row already retained before conversion, an earlier calendar day, a
+precise timestamp before conversion, and a precise timestamp after conversion.
+Earlier evidence remains unknown; period dates and ledger dates do not change.
+See [[file:../attribution.org][the attribution contract]].
+
+* Verification
+
+Before the timezone follow-up, the DEBUG attribution GTest binary passed all 35 cases on SQLite through
+=make DEBUG=1 test-one T=test-attribution= and all 35 on the disposable
+schema-isolated PostgreSQL backend through
+=VENTURE_TEST_ACCOUNTING_POSTGRES_URI=<fixture-uri> build/debug/tests/test-attribution=.
+The timezone follow-up repeated all 35 SQLite cases and the expanded calendar
+regression on PostgreSQL, followed by the exact-artifact walkthrough above.
+The fixture uses local PostgreSQL with fsync enabled; this is logical backend
+verification, not evidence of physical recovery or production capacity.
+=make DEBUG=1 gir= completed without warnings. Both Python files parsed, both
+Org documents parsed, and =git diff --check= passed. All 16 documentation
+cases passed, including the actual quickstart; the real documentation renderer
+was rerun after the final append-only navigation link.
+
+* Review and limits
+
+The skill-review pass read the real demonstration, traced calendar ordering and
+all report call sites, and reviewed ownership, documentation and assertions. It
+strengthened replay verification from identity counts to complete retained email
+evidence and reran the walkthrough successfully. Python -O returned status 1
+with “Run without Python -O: acceptance assertions are mandatory”. The existing
+accounting opening/import/restart/restore walkthrough also passed with the shared
+HTTP helper extensions, including 142 unique record identities and 173 remapped
+references. These extensions preserve existing callers' defaults.
+
+This walkthrough uses one synthetic touch, so first and last intentionally agree;
+the separate attribution model tests cover differing touches. PostgreSQL coverage
+is through schema-isolated GTests, not this SQLite server driver. Actual outbound
+email delivery, provider callbacks, browser JavaScript execution and hosted
+cross-origin routing are outside this demonstration. The ordinary DEBUG test
+suite supplies additional subsystem regressions; this evidence does not replace
+the combined PR verification or final review.
