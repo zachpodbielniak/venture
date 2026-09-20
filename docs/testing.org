@@ -941,3 +941,8 @@ launched in =Pacific/Kiritimati=. The four authenticated project scenarios
 pass without the former precise-receipt diagnostic workaround. Retainer
 finance authority, revocation and module-off cases also passed in the
 expanded six-case PostgreSQL run before these two calendar cases were added.
+
+The same calendar-date artifact also passes all 61 receivables cases,
+19 quote cases and three independent accounting-acceptance cases. These
+include chronology, rollback, allocations and restored financial tie-outs;
+none required weakening source-event ordering.
