@@ -78,7 +78,14 @@ venture_web_action_transient_result(VentureEntity *result, JsonObject *json, GSt
 		g_object_get_property(G_OBJECT(result), property->name, &value);
 		node = venture_json_node_from_value(&value);
 		if (!node || JSON_NODE_HOLDS_NULL(node)) continue;
-		text = G_VALUE_HOLDS_STRING(&value) ? g_value_dup_string(&value) : venture_json_to_string(node, FALSE);
+		if (G_VALUE_HOLDS_STRING(&value))
+		{
+			/* Transient plugin results follow the same URI credential rule as
+			 * stored fields, on both the wire and the rendered page. */
+			text = venture_string_redact_uri(g_value_get_string(&value));
+			json_node_set_string(node, text);
+		}
+		else text = venture_json_to_string(node, FALSE);
 		if (!text || !*text) continue;
 		member = venture_entity_property_to_column(property->name);
 		json_object_set_member(json, member, json_node_copy(node));

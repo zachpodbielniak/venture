@@ -144,6 +144,30 @@ test_rest(Fixture *fixture, gconstpointer data)
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(request(fixture, "POST", "/api/v1/organization/1/actions/missing", "application/json", "{}", &body), ==, 404);
 }
+/* Plugin actions can return transient URLs too; their passwords must never
+ * reach either the JSON response or the HTML result page. */
+static VentureEntity *
+transient_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params,
+	const VentureActor *actor, GError **error)
+{
+	return g_object_new(VENTURE_TYPE_STRIPE_PAYMENT_LINK,
+		"organization-id", venture_entity_get_organization_id(entity),
+		"url", "https://reader:secret-transient-password@example.test/result", NULL);
+}
+static void
+test_transient_redaction(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION,
+		"type-name", "organization", "name", "transient_result", "label", "Result", "description", "Return a transient result", NULL);
+	g_autofree gchar *body = NULL;
+	const gchar *mime = GPOINTER_TO_INT(data) ? "application/x-www-form-urlencoded" : "application/json";
+	g_assert_true(venture_action_registry_register(venture_database_get_action_registry(fixture->database),
+		action, allowed, transient_invoke, NULL, NULL, NULL));
+	g_assert_cmpuint(request(fixture, "POST", "/api/v1/organization/1/actions/transient_result",
+		mime, GPOINTER_TO_INT(data) ? "" : "{}", &body), ==, 200);
+	g_assert_nonnull(strstr(body, "example.test/result"));
+	g_assert_null(strstr(body, "secret-transient-password"));
+}
 static void
 test_schema(Fixture *fixture, gconstpointer data)
 {
@@ -274,5 +298,7 @@ main(int argc, char **argv)
 	g_test_add("/action-surfaces/confirmation", Fixture, NULL, fixture_set_up, test_confirmation, fixture_tear_down);
 	g_test_add("/action-surfaces/cli", Fixture, NULL, fixture_set_up, test_cli, fixture_tear_down);
 	g_test_add("/action-surfaces/assistant", Fixture, NULL, fixture_set_up, test_assistant, fixture_tear_down);
+	g_test_add("/action-surfaces/transient-json-redaction", Fixture, GINT_TO_POINTER(0), fixture_set_up, test_transient_redaction, fixture_tear_down);
+	g_test_add("/action-surfaces/transient-html-redaction", Fixture, GINT_TO_POINTER(1), fixture_set_up, test_transient_redaction, fixture_tear_down);
 	return g_test_run();
 }
