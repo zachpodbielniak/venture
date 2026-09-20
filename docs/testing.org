@@ -623,3 +623,12 @@ correction; and a successful retry after an injected posting rollback.
 All three scenarios pass SQLite and schema-isolated PostgreSQL. See
 [[file:accounting-acceptance.org][the exact expected balances and commands]].
 This is synthetic executable evidence, not a completed deployment exercise.
+
+* Project profitability and actions
+
+=test-projects= verifies frozen labour cost, unknown historical evidence,
+currency and organization integrity, immutable billed evidence, period-based
+management financials, source identities, rounding/overflow, and the generic
+approve/bill actions with finance access and stale-proposal checks. The nine
+cases pass SQLite and schema-isolated PostgreSQL; migration and anonymous-route
+coverage run separately. See [[file:projects.org][the profitability contract]].

@@ -101,7 +101,7 @@ verified without the corresponding execution evidence.
 |------+-------+-------------------|
 | Accounting loop | Synthetic scenarios verified on SQLite/PostgreSQL | Synthetic opening/import through settlement, reconciliation, close/correction and restored tie-outs, SQLite and PostgreSQL |
 | CRM and project handoff | Pending | Quote/deal through scope, work, acceptance, invoice and receipt; replay and changed-scope cases |
-| Project financials | In progress | Exact budget, cost, unbilled, billed and profit with unknown historical costs and source rows |
+| Project financials | Frozen-cost/report/action scenarios verified; delivery workflow pending | Exact budget, cost, unbilled, billed and profit with unknown historical costs and source rows |
 | Organization integrations | Pending | Settings, secret redaction, account binding, rotation, revocation and A/B organization tests |
 | Subscription collection | Pending | Verified automatic settlement, failed collection, recovery and duplicate refusal; no provisioning |
 | Calls (#122) | Pending | One historical event and optional follow-up, including replay and lead-only calls |

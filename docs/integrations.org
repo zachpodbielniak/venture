@@ -89,7 +89,9 @@ selected organization and refuse ambiguous assignment.
 =test-integrations= checks registered metadata, two organizations with the
 same provider account ID, encryption/redaction, credential-only rotation,
 stale versions, disabled/new account separation, retained historical
-credentials, generic write/deletion refusal and unauthorized configuration.
+credentials, generic write/deletion refusal and unauthorized configuration. It also checks real organization-admin
+authority and revocation, 64 KiB limits, truncated/transplanted ciphertext,
+wrong keys after service restart, audit redaction and environment-key errors.
 The registration test fails on the pre-feature tree because the type is
 absent. These unit checks establish the storage contract, not end-to-end
 provider or hosted-tenant readiness.

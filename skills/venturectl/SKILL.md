@@ -799,3 +799,19 @@ answers 301 to the survivor. Refused across organizations, onto itself, or
 when the loser has issued invoices/bills in a currency the survivor's issued
 documents do not use. `dedupe dismiss ID` closes a proposal. Arguments are
 `key=value`; `--stage dedupe merge` proposes the merge for approval.
+
+## Project approval and profitability
+
+Read `describe project_time` and `describe client_project` before entering work.
+Use `act project_time ID approve` to freeze the billable amount and actual
+labour cost from that project's rate, then `act client_project ID bill
+date=YYYY-MM-DD` to invoice approved unbilled time and billable costs. These
+are generic actions, available for staging under the ordinary policy. Finance
+or organization administration is required. Generic edits cannot approve
+time, rewrite frozen evidence or remove billing allocations.
+
+`report project_margin --from YYYY-MM-DD --to YYYY-MM-DD` distinguishes
+budget, billed allocations, approved unbilled work and recorded actual cost;
+unknown historical cost suppresses total cost/profit rather than assuming zero.
+This is management profitability, not cash received or net statutory revenue
+after credits/refunds. Check the report's source IDs and period basis.

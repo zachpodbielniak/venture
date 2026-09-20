@@ -262,6 +262,146 @@ test_service_restart(Fixture *f, gconstpointer data)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
 }
 
+
+/* Organization administration grants neither neighboring credentials nor
+ * permission after the membership that authorized a settings page is revoked. */
+static void
+test_organization_admin(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureUser) user = venture_user_new();
+	g_autoptr(VentureOrganizationMembership) member = venture_organization_membership_new();
+	g_autoptr(VentureIntegrationConnection) own = NULL, other = NULL;
+	g_autoptr(JsonNode) node = settings("org-admin-secret");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	VentureAccessPolicy *policy = venture_database_get_access_policy(f->db);
+	VentureAuthPrincipal principal;
+	gint64 id, version;
+	(void)data;
+	g_object_set(user, "username", "integration-admin", "active", TRUE, "role", VENTURE_USER_ROLE_EDITOR, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(user), NULL, &error));
+	g_assert_no_error(error);
+	venture_entity_set_organization_id(VENTURE_ENTITY(member), f->a);
+	g_object_set(member, "user-id", venture_entity_get_id(VENTURE_ENTITY(user)), "active", TRUE,
+		"role", VENTURE_ORGANIZATION_ROLE_ADMIN, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(member), NULL, &error));
+	g_assert_no_error(error);
+	principal.user_id = venture_entity_get_id(VENTURE_ENTITY(user));
+	principal.token_id = 0;
+	principal.role = VENTURE_USER_ROLE_EDITOR;
+	principal.name = (gchar *)"integration-admin";
+	principal.authenticated = TRUE;
+	scope = venture_access_policy_enter(policy, &principal);
+	own = venture_integration_service_configure(f->service, f->a, "stripe", "acct_admin", "test", node, 0, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(own);
+	other = venture_integration_service_configure(f->service, f->b, "stripe", "acct_admin", "test", node, 0, NULL, &error);
+	g_assert_null(other);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	g_clear_object(&scope);
+	g_object_set(member, "active", FALSE, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(member), NULL, &error));
+	g_assert_no_error(error);
+	id = venture_entity_get_id(VENTURE_ENTITY(own));
+	version = venture_entity_get_version(VENTURE_ENTITY(own));
+	scope = venture_access_policy_enter(policy, &principal);
+	g_assert_false(venture_integration_service_disable(f->service, f->a, id, version, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+}
+
+
+/* A 64 KiB credential object is accepted; one byte more is refused without
+ * rotating the saved version or leaking the rejected object in diagnostics. */
+static void
+test_bounds_audit_lifecycle(Fixture *f, gconstpointer data)
+{
+	g_autoptr(JsonNode) empty = settings(""), node = NULL, resolved = NULL;
+	g_autofree gchar *encoded = venture_json_to_string(empty, FALSE), *value = NULL, *sql = NULL;
+	g_autoptr(VentureIntegrationConnection) row = NULL, rejected = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_AUDIT_ENTRY);
+	g_autoptr(GPtrArray) audits = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 id, version;
+	guint i;
+	(void)data;
+	value = g_strnfill(65536 - strlen(encoded), 'x');
+	node = settings(value);
+	row = venture_integration_service_configure(f->service, f->a, "stripe", "acct_bound", "test", node, 0, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(row);
+	id = venture_entity_get_id(VENTURE_ENTITY(row));
+	version = venture_entity_get_version(VENTURE_ENTITY(row));
+	g_clear_pointer(&node, json_node_unref);
+	g_clear_pointer(&value, g_free);
+	value = g_strnfill(65537 - strlen(encoded), 'x');
+	node = settings(value);
+	rejected = venture_integration_service_configure(f->service, f->a, "stripe", "acct_bound", "test", node, version, NULL, &error);
+	g_assert_null(rejected);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_null(strstr(error->message, "xxxx"));
+	g_clear_error(&error);
+	g_assert_false(venture_database_restore(f->db, VENTURE_ENTITY(row), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	g_assert_false(venture_database_purge(f->db, VENTURE_ENTITY(row), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	venture_query_set_limit(query, 0);
+	audits = venture_database_find(f->db, query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(audits->len, >, 0);
+	for (i = 0; i < audits->len; i++)
+	{
+		g_autofree gchar *diff = NULL;
+		g_object_get(g_ptr_array_index(audits, i), "diff", &diff, NULL);
+		if (diff)
+		{
+			g_assert_null(strstr(diff, "xxxx"));
+			g_assert_null(strstr(diff, "sealed_settings"));
+			g_assert_null(strstr(diff, "sealed-settings"));
+		}
+	}
+	sql = g_strdup_printf("UPDATE integration_connections SET sealed_settings = 'v1:AA==' WHERE id = %" G_GINT64_FORMAT, id);
+	g_assert_true(venture_database_execute(f->db, sql, NULL, &error));
+	resolved = venture_integration_service_resolve(f->service, f->a, id, FALSE, &error);
+	g_assert_null(resolved);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+}
+
+/* Only the child changes the environment; the suite never borrows a live key. */
+static void
+test_environment_key(Fixture *f, gconstpointer data)
+{
+	(void)data;
+	if (g_test_subprocess())
+	{
+		g_autoptr(JsonNode) node = settings("environment-fixture");
+		g_autoptr(VentureIntegrationConnection) row = NULL;
+		g_autoptr(GError) error = NULL;
+		g_autofree gchar *valid = g_base64_encode((const guchar *)"01234567890123456789012345678901", 32);
+		g_object_set_data(G_OBJECT(f->db), "venture-integration-service", NULL);
+		f->service = venture_integration_service_get(f->db);
+		g_setenv("VENTURE_INTEGRATION_KEY", "", TRUE);
+		row = venture_integration_service_configure(f->service, f->a, "stripe", "acct_key", "test", node, 0, NULL, &error);
+		g_assert_null(row);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+		g_clear_error(&error);
+		g_setenv("VENTURE_INTEGRATION_KEY", "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", TRUE);
+		row = venture_integration_service_configure(f->service, f->a, "stripe", "acct_key", "test", node, 0, NULL, &error);
+		g_assert_null(row);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+		g_clear_error(&error);
+		g_setenv("VENTURE_INTEGRATION_KEY", valid, TRUE);
+		row = venture_integration_service_configure(f->service, f->a, "stripe", "acct_key", "test", node, 0, NULL, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(row);
+		return;
+	}
+	g_test_trap_subprocess(NULL, 120 * G_USEC_PER_SEC, G_TEST_SUBPROCESS_DEFAULT);
+	g_test_trap_assert_passed();
+}
+
 int
 main(int argc, char **argv)
 {
@@ -273,5 +413,8 @@ main(int argc, char **argv)
 	g_test_add("/integrations/refusals", Fixture, NULL, setup, test_refusals, teardown);
 	g_test_add("/integrations/ciphertext-binding", Fixture, NULL, setup, test_ciphertext_binding, teardown);
 	g_test_add("/integrations/service-restart", Fixture, NULL, setup, test_service_restart, teardown);
+	g_test_add("/integrations/organization-admin", Fixture, NULL, setup, test_organization_admin, teardown);
+	g_test_add("/integrations/bounds-audit-lifecycle", Fixture, NULL, setup, test_bounds_audit_lifecycle, teardown);
+	g_test_add("/integrations/environment-key", Fixture, NULL, setup, test_environment_key, teardown);
 	return g_test_run();
 }
