@@ -1232,6 +1232,9 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/organizations/1/settings/stripe", NULL, "operation=disconnect", NULL, NULL), ==, SOUP_STATUS_FOUND);
 
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/mail"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/mail", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
+
 	/* Payment actions authenticate before exposing module configuration. */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/invoices/1/checkout", NULL, "", NULL, NULL),
@@ -4658,6 +4661,19 @@ test_auth_sidebar_asks_the_five_questions(
 	venture_config_set_module_enabled(fixture->config, "quotes", TRUE);
 }
 
+static void test_auth_mail_settings_administration(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autofree gchar *editor = NULL, *owner = NULL;
+	(void)unused;
+	server_fixture_create_member(fixture, "mail-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "mail-editor", "editor-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/mail", editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/mail", editor,
+		"operation=disconnect&connection_id=1&version=1", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	server_fixture_create_member(fixture, "mail-owner", "owner-long-password", VENTURE_USER_ROLE_OWNER, NULL);
+	owner = server_fixture_login(fixture, "mail-owner", "owner-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/mail", owner, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+}
 int
 main(
 	int	  argc,
@@ -4876,5 +4892,6 @@ main(
 	           server_fixture_set_up, test_auth_calendar_account_is_owner_only,
 	           server_fixture_tear_down);
 	g_test_add("/auth/sidebar-asks-the-five-questions", ServerFixture, NULL, server_fixture_set_up, test_auth_sidebar_asks_the_five_questions, server_fixture_tear_down);
+	g_test_add("/auth/mail-settings-administration", ServerFixture, NULL, server_fixture_set_up, test_auth_mail_settings_administration, server_fixture_tear_down);
 	return g_test_run();
 }

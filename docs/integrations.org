@@ -77,12 +77,13 @@ before calling the service, and must never expose =resolve()= as an API/tool.
 Sensitive configuration is applied directly after authorization, not queued
 as a generic record diff whose sensitive fields would be omitted.
 
-This increment supplies the shared storage/authorization boundary. Provider
-settings pages, remote connection testing, Stripe routing, other adapters,
-platform AI grants/quotas and automatic collection remain acceptance work in
-[[file:post-parity.org][the epic ledger]]. Existing installation credentials
-are not silently migrated: a provider migration must require an explicitly
-selected organization and refuse ambiguous assignment.
+Provider adapters build on this shared storage/authorization boundary.
+Organization SMTP settings, rotation, relay testing and account-bound outbox
+recovery are described in [[file:mail.org][mail delivery]]. Stripe settings and
+account routing are described in [[file:stripe.org][Stripe settlement]]. See
+[[file:post-parity.org][the epic ledger]] for the remaining adapters and
+acceptance work. Installation credentials are never silently migrated:
+configure an explicitly selected organization and refuse ambiguous assignment.
 
 * Verification
 

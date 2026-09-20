@@ -3889,6 +3889,7 @@ venture_web_stripe_webhook(HtmxRequest *request, GHashTable *params, gpointer us
 	return response;
 }
 #include "stripe/venture-stripe-web.inc"
+#include "mail/venture-mail-settings-web.inc"
 #include "payables/venture-payables-web.inc"
 #include "claims/venture-claims-web.inc"
 #include "payroll/venture-payroll-web.inc"
@@ -9337,6 +9338,7 @@ venture_web_ui_detail(
 	}
 
 	venture_stripe_web_settings_link(self, content, record, principal);
+	venture_mail_web_settings_link(self, content, record, principal);
 	venture_billing_web_buttons(self, content, record, principal);
 	venture_web_append_record_actions(self, content, record, principal);
 	venture_web_append_related(self, content, record);
@@ -29766,6 +29768,8 @@ venture_web_server_new(
 	htmx_router_post(router, "/webhooks/stripe/:connection_id", venture_web_stripe_webhook, self);
 	htmx_router_get(router, "/organizations/:id/settings/stripe", venture_web_stripe_settings, self);
 	htmx_router_post(router, "/organizations/:id/settings/stripe", venture_web_stripe_settings, self);
+	htmx_router_get(router, "/organizations/:id/settings/mail", venture_web_mail_settings, self);
+	htmx_router_post(router, "/organizations/:id/settings/mail", venture_web_mail_settings, self);
 	htmx_router_post(router, "/invoices/:id/status",
 	                 venture_web_ui_invoice_status, self);
 	htmx_router_post(router, "/api/v1/vendor_bill/:id/:action", venture_web_payables_action, self);

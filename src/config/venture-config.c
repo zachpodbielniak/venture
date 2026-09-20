@@ -308,6 +308,8 @@ static const VentureConfigSetting venture_config_settings[] = {
 
 	/* Not part of the YAML document: set from --state-dir or derived. */
 	VC_STR ("state-dir", NULL, NULL, "", "Directory holding runtime state"),
+	VC_STR("mail-allowed-endpoints", "mail", "allowed_endpoints", "", "Operator-allowed organization SMTP host:port pairs, comma-separated; empty denies all"),
+	VC_STR("mail-tls-ca-file", "mail", "tls_ca_file", "", "Operator-owned SMTP CA bundle; empty uses system trust"),
 	VC_STR("mail-host", "mail", "host", "", "SMTP relay host"),
 	VC_INT("mail-port", "mail", "port", 587, "SMTP relay port"),
 	VC_STR("mail-security", "mail", "security", "starttls", "starttls, tls or none"),

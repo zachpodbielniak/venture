@@ -670,3 +670,11 @@ configuration (32) and migrations (7) passed their relevant lane checks.
 Engine-independent tests still run without optional OCR libraries; real OCR
 requires the explicit test executable described in [[file:ocr.org][the OCR guide]].
 The combined epic revision is validated separately in the acceptance ledger.
+* Organization SMTP routing
+
+=test-mail-routing= verifies main-thread credential selection, account-bound
+retry and persistence-before-submission. Its database cases support
+=VENTURE_TEST_ACCOUNTING_POSTGRES_URI=. =make DEBUG=1 test-mail-relay= adds
+an authenticated STARTTLS Mailpit fixture with two accounts and independent
+relay-message assertions. See [[file:mail.org][Transactional mail]] for prerequisites,
+cleanup and the distinction between acceptance and inbox delivery.

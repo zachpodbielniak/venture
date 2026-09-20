@@ -53,7 +53,8 @@ static void http_done(GObject *source, GAsyncResult *result, gpointer data)
 	r->bytes = soup_session_send_and_read_finish(SOUP_SESSION(source), result, &r->error);
 	r->done = TRUE;
 }
-static guint request(Fixture *f, const gchar *method, const gchar *path, const gchar *body, gchar **out)
+static guint request_full(Fixture *f, const gchar *method, const gchar *path, const gchar *body,
+	const gchar *content_type, gchar **out)
 {
 	g_autoptr(SoupSession) session = soup_session_new_with_options("timeout", 15, NULL);
 	g_autofree gchar *url = g_strconcat(venture_web_server_get_base_url(f->server), path, NULL);
@@ -63,7 +64,7 @@ static guint request(Fixture *f, const gchar *method, const gchar *path, const g
 	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
 	if (body) {
 		g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
-		soup_message_set_request_body_from_bytes(message, "application/json", bytes);
+		soup_message_set_request_body_from_bytes(message, content_type, bytes);
 	}
 	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, http_done, &result);
 	while (!result.done) g_main_context_iteration(NULL, TRUE);
@@ -71,6 +72,10 @@ static guint request(Fixture *f, const gchar *method, const gchar *path, const g
 	if (out) *out = g_strndup(g_bytes_get_data(result.bytes, NULL), g_bytes_get_size(result.bytes));
 	g_bytes_unref(result.bytes);
 	return soup_message_get_status(message);
+}
+static guint request(Fixture *f, const gchar *method, const gchar *path, const gchar *body, gchar **out)
+{
+	return request_full(f, method, path, body, "application/json", out);
 }
 static void cli_done(GObject *source, GAsyncResult *result, gpointer data)
 {
@@ -236,6 +241,44 @@ static void test_inbound_actions(Fixture *f, gconstpointer unused)
 	g_assert_nonnull(strstr(synced, "\"accounts\""));
 }
 
+static void test_organization_settings(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(VentureIntegrationConnection) connection = NULL;
+	g_autofree gchar *path = NULL, *page = NULL, *form = NULL;
+	gint64 org = venture_context_get_default_organization_id(f->context);
+	(void)unused;
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->db), key, &error));
+	g_object_set(f->config, "mail-allowed-endpoints", "smtp.example.invalid:587", NULL);
+	path = g_strdup_printf("/organizations/%" G_GINT64_FORMAT "/settings/mail", org);
+	g_assert_cmpuint(request(f, "GET", path, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "Organization mail is unconfigured"));
+	g_assert_nonnull(strstr(page, "name=\"password\" type=\"password\""));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(request_full(f, "POST", path,
+		"operation=configure&version=0&connection_id=0&host=smtp.example.invalid&from=billing%40example.invalid&username=tenant-account&password=unique-fixture-secret",
+		"application/x-www-form-urlencoded", &page), ==, 200);
+	g_assert_nonnull(strstr(page, "SMTP settings saved"));
+	g_assert_null(strstr(page, "unique-fixture-secret"));
+	g_assert_null(strstr(page, "tenant-account"));
+	g_assert_nonnull(strstr(page, "name=\"password\" type=\"password\" autocomplete=\"new-password\" value=\"\""));
+	connection = venture_integration_service_find(venture_integration_service_get(f->db), org, "smtp", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(connection);
+	g_clear_pointer(&page, g_free);
+	/* A stale creation form cannot replace even this same account. */
+	g_assert_cmpuint(request_full(f, "POST", path,
+		"operation=configure&version=0&connection_id=0&host=smtp.example.invalid&from=billing%40example.invalid&username=tenant-account&password=stale-fixture-secret",
+		"application/x-www-form-urlencoded", &page), ==, 400);
+	g_assert_null(strstr(page, "stale-fixture-secret"));
+	g_clear_pointer(&page, g_free);
+	form = g_strdup_printf("operation=disconnect&connection_id=%" G_GINT64_FORMAT "&version=%" G_GINT64_FORMAT,
+		venture_entity_get_id(VENTURE_ENTITY(connection)), venture_entity_get_version(VENTURE_ENTITY(connection)));
+	g_assert_cmpuint(request_full(f, "POST", path, form, "application/x-www-form-urlencoded", &page), ==, 200);
+	g_assert_nonnull(strstr(page, "Disconnected"));
+	g_assert_nonnull(strstr(page, "Organization mail is unconfigured"));
+}
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
@@ -244,5 +287,6 @@ int main(int argc, char **argv)
 	g_test_add("/mail-surfaces/automation-sweep", Fixture, NULL, setup, test_automation_sweep, teardown);
 	g_test_add("/mail-surfaces/smtp-policy", Fixture, NULL, setup, test_smtp_policy, teardown);
 	g_test_add("/mail-surfaces/inbound-actions", Fixture, NULL, setup, test_inbound_actions, teardown);
+	g_test_add("/mail-surfaces/organization-settings", Fixture, NULL, setup, test_organization_settings, teardown);
 	return g_test_run();
 }

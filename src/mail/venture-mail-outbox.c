@@ -110,6 +110,7 @@ static gboolean validate(VentureDatabase *db, VentureEntity *entity, VentureEnti
 	g_autofree gchar *id = NULL;
 	g_autofree gchar *key = NULL;
 	gint64 attempts;
+	gint64 connection_id = 0, connection_version = 0;
 	gboolean permitted = self->permit == entity;
 	self->permit = NULL;
 	if (!enabled(self, venture_entity_get_organization_id(entity), error)) return FALSE;
@@ -119,7 +120,8 @@ static gboolean validate(VentureDatabase *db, VentureEntity *entity, VentureEnti
 	if (((private_body && *private_body) || (private_html && *private_html)) && self->enqueue_permit != entity)
 		return refuse(error, "Private delivery content requires the outbox enqueue service");
 	g_object_get(entity, "state", &state, "message-id", &id, "idempotency-key", &key, "attempts", &attempts, NULL);
-	if ((state && *state && strcmp(state, "queued")) || (id && *id) || attempts)
+	g_object_get(entity, "connection-id", &connection_id, "connection-version", &connection_version, NULL);
+	if ((state && *state && strcmp(state, "queued")) || (id && *id) || attempts || connection_id || connection_version)
 		return refuse(error, "Delivery state is managed by the outbox");
 	if (!snapshot_attachments(self, entity, error)) return FALSE;
 	if (!key || !*key) { g_free(key); key = g_uuid_string_random(); }
@@ -289,7 +291,9 @@ fail:
 	venture_database_rollback(self->database);
 	return NULL;
 }
-gint venture_mail_outbox_deliver_due(VentureMailOutbox *self, gint64 org, guint limit, GDateTime *now, GCancellable *cancellable, GError **error)
+static gint deliver_selected(VentureMailOutbox *self, gint64 org, gint64 selected_id,
+	gint64 expected_connection, gint64 expected_version, guint limit, GDateTime *now,
+	GCancellable *cancellable, GError **error)
 {
 	g_autoptr(GDateTime) clock = now ? g_date_time_ref(now) : g_date_time_new_now_utc();
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
@@ -300,6 +304,8 @@ gint venture_mail_outbox_deliver_due(VentureMailOutbox *self, gint64 org, guint 
 	if (!self->mailer) { refuse(error, "No mail transport configured"); return -1; }
 	if (venture_database_has_transaction(self->database)) { refuse(error, "Delivery requires a committed database"); return -1; }
 	venture_query_set_organization(query, org);
+	if (selected_id > 0)
+		venture_query_add_filter_int(query, "id", VENTURE_FILTER_OP_EQ, selected_id, NULL);
 	{
 		g_autoptr(GPtrArray) states = g_ptr_array_new_with_free_func(g_free);
 		g_ptr_array_add(states, g_strdup("queued")); g_ptr_array_add(states, g_strdup("failed")); g_ptr_array_add(states, g_strdup("sending"));
@@ -345,7 +351,42 @@ gint venture_mail_outbox_deliver_due(VentureMailOutbox *self, gint64 org, guint 
 				continue;
 			}
 		}
-		sent = venture_mailer_send(self->mailer, claimed, cancellable, &send_error);
+		{
+			g_autoptr(VentureMailer) transport = venture_mailer_prepare(self->mailer, claimed, &send_error);
+			gint64 connection_id = 0, version = 0, previous_id = 0;
+			sent = FALSE;
+			if (transport != NULL)
+			{
+				venture_mailer_get_binding(transport, &connection_id, &version);
+				g_object_get(claimed, "connection-id", &previous_id, NULL);
+				if (connection_id < 0 || version < 0 || (connection_id == 0) != (version == 0) ||
+					(previous_id != 0 && previous_id != connection_id) ||
+					(expected_connection != 0 && (connection_id != expected_connection || version != expected_version)))
+				{
+					g_set_error_literal(&send_error, VENTURE_ERROR, VENTURE_ERROR_MAIL_PERMANENT,
+						"Mail transport does not match the retained account binding");
+				}
+				else
+				{
+					/* Commit the exact account before external I/O. A crash keeps
+					 * the sending lease and cannot turn a retry into account switching. */
+					if (connection_id != 0)
+					{
+						g_object_set(claimed, "connection-id", connection_id, "connection-version", version, NULL);
+						if (!save(self, VENTURE_ENTITY(claimed), NULL, error)) return -1;
+					}
+					sent = venture_mailer_send(transport, claimed, cancellable, &send_error);
+				}
+			}
+			else
+			{
+				/* Configuration refusal precedes submission, so acceptance is
+				 * known to be absent. Require an operator retry after repair. */
+				g_autofree gchar *reason = g_strdup(send_error != NULL ? send_error->message : "Organization mail is unavailable");
+				g_clear_error(&send_error);
+				g_set_error_literal(&send_error, VENTURE_ERROR, VENTURE_ERROR_MAIL_PERMANENT, reason);
+			}
+		}
 		g_object_get(claimed, "attempts", &attempts, NULL);
 		if (sent) g_object_set(claimed, "state", "sent", "sent-at", clock, "last-error", NULL, NULL);
 		else {
@@ -373,6 +414,22 @@ gint venture_mail_outbox_deliver_due(VentureMailOutbox *self, gint64 org, guint 
 		}
 	}
 	return count;
+}
+gint venture_mail_outbox_deliver_due(VentureMailOutbox *self, gint64 org, guint limit,
+	GDateTime *now, GCancellable *cancellable, GError **error)
+{
+	return deliver_selected(self, org, 0, 0, 0, limit, now, cancellable, error);
+}
+gint venture_mail_outbox_deliver_one(VentureMailOutbox *self, gint64 org, gint64 id,
+	gint64 expected_connection, gint64 expected_version, GCancellable *cancellable, GError **error)
+{
+	if (id <= 0 || expected_connection < 0 || expected_version < 0 ||
+		(expected_connection == 0) != (expected_version == 0))
+	{
+		refuse(error, "A message and consistent connection identity/version are required");
+		return -1;
+	}
+	return deliver_selected(self, org, id, expected_connection, expected_version, 1, NULL, cancellable, error);
 }
 gboolean venture_mail_outbox_retry(VentureMailOutbox *self, gint64 org, gint64 id, const VentureActor *actor, GError **error)
 {

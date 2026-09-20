@@ -175,6 +175,7 @@
 #include "mail/venture-mailer.h"
 #include "mail/venture-mailer-registry.h"
 #include "mail/venture-smtp-mailer.h"
+#include "mail/venture-organization-mailer.h"
 #include "mail/venture-mail-outbox.h"
 #include "mail/venture-mail-template.h"
 #include "mail/venture-imap-client.h"

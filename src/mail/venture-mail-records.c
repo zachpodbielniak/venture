@@ -20,6 +20,7 @@ static const VentureFieldDecl message_fields[] = {
 	DATE("next-attempt-at", "Next attempt"), DATE("lease-until", "Lease expires"),
 	VENTURE_FIELD_TEXT("last-error", "Last error", NULL),
 	STR("message-id", "Message-ID"), DATE("sent-at", "Sent at"),
+	INT("connection-id", "Delivery account"), INT("connection-version", "Delivery configuration version"),
 	VENTURE_FIELD("idempotency-key", "Idempotency key", "Unique within the organization, including retained rows", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION)
 };
 VENTURE_DEFINE_ENTITY(VentureMailMessage, venture_mail_message, message_fields)

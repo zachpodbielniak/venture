@@ -873,3 +873,17 @@ posting failure. For a manual/partial payment received while ACH was pending,
 original provider amount to allocate with excess as customer credit. Organization
 finance authorization, period guards and second-actor accounting approval apply.
 The action cannot alter the event's amount, currency, account or effective date.
+### Organization SMTP accounts
+
+Outbound `mail test`, `mail send` and `mail deliver` use the explicit business
+organization's SMTP binding. Missing configuration never falls back to
+installation credentials. An organization owner/admin configures it at
+`/organizations/ID/settings/mail`; the operator must first permit the relay
+in `mail.allowed_endpoints`. Password inputs are write-only.
+
+A delivery retains `connection_id` and `connection_version` before SMTP.
+Retry can use rotated credentials for the same connection, but replacing an
+account does not move old attempts to it. Inspect `last_error` on a `dead`
+row and make a deliberate retry/new-message decision. Uncertain acceptance
+still must never be retried automatically. The settings page's test sends
+only its selected test message and shows retained delivery evidence.

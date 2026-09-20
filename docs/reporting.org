@@ -323,7 +323,7 @@ The pack records the hand-over. =last_delivered_at=, =last_delivery_message_id=
 =venturectl mail retry=) are set when the message was queued;
 =last_delivery_error= holds the reason when it was not, and the other three
 are cleared. The run is never marked failed by its delivery: a refused send
---- the mail module off, no transport configured (=mail.host= empty), a
+--- the mail module off, no organization SMTP binding configured, a
 policy plugin refusing the enqueue, no output retained yet --- leaves
 =last_run_at= and =last_output= as the run wrote them, so the report is not
 run again for it, and the sweep goes on to the next pack. The hand-over and

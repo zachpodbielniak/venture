@@ -619,7 +619,7 @@ VentureMailer *venture_context_get_mailer(VentureContext *self)
 {
 	if (!venture_context_module_enabled(self, "mail")) return NULL;
 	if (!venture_mailer_registry_lookup(self->mailers, "smtp")) {
-		g_autoptr(VentureSmtpMailer) smtp = venture_smtp_mailer_new(self->config);
+		g_autoptr(VentureOrganizationMailer) smtp = venture_organization_mailer_new(self->database, self->config);
 		venture_mailer_registry_add(self->mailers, "smtp", VENTURE_MAILER(smtp));
 	}
 	return venture_mailer_registry_lookup(self->mailers, "smtp");

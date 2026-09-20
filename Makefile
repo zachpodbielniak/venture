@@ -643,3 +643,8 @@ install-docs-site: docs-site
 	done
 
 install: install-docs-site
+
+.PHONY: test-mail-relay
+test-mail-relay: $(OUTDIR)/tests/test-mail-routing
+	@test "$(BUILD_TYPE)" = debug || { echo 'Use make DEBUG=1 test-mail-relay' >&2; exit 1; }
+	@tools/venture-test-smtp-relay.sh "$(OUTDIR)/tests/test-mail-routing"

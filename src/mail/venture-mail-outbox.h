@@ -68,5 +68,24 @@ gboolean venture_mail_outbox_retry(VentureMailOutbox *self, gint64 organization_
  * Returns: whether removal is allowed; mail identities must remain retained
  */
 gboolean venture_mail_check_removal(VentureEntity *entity, GError **error);
+/**
+ * venture_mail_outbox_deliver_one:
+ * @self: outbox
+ * @org: verified organization
+ * @id: exact persisted message
+ * @expected_connection: required provider connection, or zero for ordinary delivery
+ * @expected_version: required configuration version, or zero with an unbound expectation
+ * @cancellable: (nullable): cancellation
+ * @error: (out) (optional): persistence or validation refusal
+ *
+ * Uses the ordinary claim, veto, binding, send and outcome lifecycle for
+ * only this message. A connection test can require its selected settings;
+ * mismatches persist a known pre-submission refusal and submit nothing.
+ * Transport results remain on the message, including failure/uncertainty.
+ *
+ * Returns: one when attempted, zero when not due, or minus one on repository failure
+ */
+gint venture_mail_outbox_deliver_one(VentureMailOutbox *self, gint64 org, gint64 id,
+	gint64 expected_connection, gint64 expected_version, GCancellable *cancellable, GError **error);
 G_END_DECLS
 #endif
