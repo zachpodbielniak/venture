@@ -104,7 +104,7 @@ verified without the corresponding execution evidence.
 | Project financials | Frozen-cost/report/action scenarios verified; delivery workflow pending | Exact budget, cost, unbilled, billed and profit with unknown historical costs and source rows |
 | Organization integrations | Pending | Settings, secret redaction, account binding, rotation, revocation and A/B organization tests |
 | Subscription collection | Pending | Verified automatic settlement, failed collection, recovery and duplicate refusal; no provisioning |
-| Calls (#122) | Pending | One historical event and optional follow-up, including replay and lead-only calls |
+| Calls (#122) | Service scenarios verified on SQLite/PostgreSQL; integrated suite running | One historical event and optional follow-up, including replay and lead-only calls |
 | OCR (#123) | Pending | Bounded local extraction, provenance, retry/cancel and reviewed-correction preservation |
 | ACH and links (#124) | Pending | Delayed settlement, returns, pending balance changes and account/environment isolation |
 | Marketing (#120) | Pending | Snapshotted audience, consent, suppression at delivery, restart and uncertainty |

@@ -815,3 +815,14 @@ budget, billed allocations, approved unbilled work and recorded actual cost;
 unknown historical cost suppresses total cost/profit rather than assuming zero.
 This is management profitability, not cash received or net statutory revenue
 after credits/refunds. Check the report's source IDs and period basis.
+
+## Structured calls
+
+Use the generated `log_call` action on `company`, `contact`, `lead`, or a
+planned call `activity`; inspect `describe TYPE` for the typed parameters.
+Actual occurrence, direction, duration and structured outcome belong to the
+historical call. Free-text outcome remains narrative. An optional followup
+is created in the same transaction. A verified CRM relation is required.
+External source/ID pairs provide replay identity for adapters; changed
+payloads conflict rather than adding duplicate history. `report calls` counts
+historical calls once; `activity_churn` remains the existing financial metric.

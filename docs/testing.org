@@ -632,3 +632,12 @@ management financials, source identities, rounding/overflow, and the generic
 approve/bill actions with finance access and stale-proposal checks. The nine
 cases pass SQLite and schema-isolated PostgreSQL; migration and anonymous-route
 coverage run separately. See [[file:projects.org][the profitability contract]].
+
+* Structured calls
+
+=test-activities= has 36 cases, including atomic call history/followup,
+lead-only timeline, replay/conflict, staged and stale completion, bounded
+inputs and escaped transcripts. All pass on SQLite and the isolated
+PostgreSQL fixture; standalone file-upgrade coverage remains SQLite.
+=test-desk= passes 16 cases and =test-migrations= passes seven including its
+optional PostgreSQL check through migration 490. See [[file:activities.org][the call contract]].
