@@ -128,3 +128,54 @@ M2 replacement readiness, independent accounting review, PostgreSQL coverage
 unless separately run, or hosted tenant recovery. Those decisions require a
 recorded deployment exercise, source-to-destination reconciliations and
 resolution of any remaining workflow or infrastructure gaps.
+
+* Authenticated built-server walkthrough
+
+=tools/venture-accounting-server-drill.py= runs these opening and trading
+scenarios through real authenticated HTTP routes and metadata actions,
+using a supplied DEBUG =venture= binary. It provisions separate private
+SQLite source/destination servers, creates the reviewer through the normal
+user form, and never edits their databases directly. Run from the checkout:
+
+#+begin_src sh
+python3 tools/venture-accounting-server-drill.py --binary build/debug/venture
+#+end_src
+
+Use =--scenario opening= or =--scenario trading= for a bounded rerun. The
+binary's checkout supplies its migrations; rebuild that DEBUG artifact
+before qualifying a changed source tree. The driver refuses Python =-O=,
+which would remove its acceptance assertions. It requires only Python's
+standard library and the built server, not customer data or provider keys.
+
+Both servers require authentication; anonymous business reads must return
+401. Session credentials are generated privately and omitted from stdout.
+Each process binds a dynamically selected loopback port, has independent
+state/config/data paths, refuses redirects in its HTTP client, and disables
+AI, plugins and automation. There is no ambient VENTURE configuration or
+proxy fallback. Startup, request and shutdown waits are bounded. Private
+fixture directories are retained for investigation; their =server.log=
+contains the generated bootstrap password and must not be published.
+
+The independently specified cents above are checked before export and after
+restore. In trading, the ordinary posting path already allocates exactly
+500 cents tax; this walkthrough does not invoke the service-only dated tax
+repair helper. Checklist completion, signing, close and reopen use typed
+actions. One person cannot sign both roles. A refused closed-date receipt
+must neither change balances nor leave a payment record. A correction must
+preserve profit and require fresh signatures.
+
+The v4 accounting pack is restored to an empty legal organization on a
+second authenticated server. Its identity manifest must be bijective; every
+archived historical field and metadata/polymorphic reference is compared.
+Only primary identities, organization placement and derived display names
+are removed from comparison. Journal posting keys, bank external keys and
+ledger journal UUIDs are explicitly remapped and checked. All rows of the
+income statement, balance sheet and account-balance report must agree.
+Source restart preserves reports; destination restart preserves the entire
+re-exported historical record set as well as reports.
+
+See [[file:evidence/accounting-server-demonstration.org][the exact artifact transcript]]. This is a controlled synthetic M1
+server walkthrough, not independent accountant authorization, browser UI
+usability evidence, PostgreSQL deployment qualification, hosted isolation,
+or full M2 acceptance. The v4 financial pack is not a full-tenant backup:
+authentication, attachments and provider configuration remain outside it.
