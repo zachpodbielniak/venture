@@ -247,8 +247,10 @@ for financial attribution; otherwise an unambiguous customer acquisition is
 used. Nothing captured or bound later can explain an earlier financial event.
 
 Financial events with precise timestamps retain strict acquisition ordering.
-An exact UTC midnight follows VENTURE's calendar-date convention: a same-day
-acquisition may apply only when the retained financial event/sale was created
+An exact UTC midnight follows VENTURE's calendar-date convention. The current
+configured report timezone supplies the acquisition's calendar day; this is an
+explicit inference frame, not a claim about the process-local =today= parser.
+A same-day acquisition may apply only when the retained financial event/sale was created
 at or after the binding. This uses recorded evidence to interpret a day-only
 value; it does not claim an intraday transaction time. An event already retained
 before conversion, an earlier calendar day, or a precise timestamp preceding

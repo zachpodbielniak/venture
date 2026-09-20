@@ -743,6 +743,35 @@ static void calendar_financial_event(Fixture *f, VentureEntity *company, const g
 		"customer-id", venture_entity_get_id(company), "invoice-id", venture_entity_get_id(invoice), "date", date, "method", "verified-bank-receipt", NULL);
 	money_field(payment, "amount", cash); persist(f, payment);
 }
+/* Controlled retained rows exercise both sides of UTC without a fake clock. */
+static void calendar_timezone_report(Fixture *f, VentureConfig *config, VentureContext *context,
+	VentureReport *definition, VentureDateRange *period, const gchar *zone,
+	const gchar *bound, const gchar *day, const gchar *previous, const gchar *before, const gchar *after)
+{
+	g_autofree gchar *sql = g_strdup_printf(
+		"UPDATE attribution_bindings SET bound_at='%s'; "
+		"UPDATE invoice_events SET date=CASE "
+		"WHEN invoice_id=(SELECT id FROM invoices WHERE number='DATE-YESTERDAY') THEN '%s' "
+		"WHEN invoice_id=(SELECT id FROM invoices WHERE number='PRECISE-BEFORE') THEN '%s' "
+		"WHEN invoice_id=(SELECT id FROM invoices WHERE number='PRECISE-AFTER') THEN '%s' ELSE '%s' END, "
+		"created_at=CASE WHEN invoice_id=(SELECT id FROM invoices WHERE number='DATE-BEFORE') THEN '%s' ELSE '%s' END; "
+		"UPDATE sales SET occurred_at=(SELECT date FROM invoice_events WHERE invoice_id="
+		"(SELECT invoice_id FROM payment_allocations WHERE sale_id=sales.id)), "
+		"created_at=(SELECT created_at FROM invoice_events WHERE invoice_id="
+		"(SELECT invoice_id FROM payment_allocations WHERE sale_id=sales.id));",
+		bound, previous, before, after, day, before, after);
+	g_autoptr(VentureReportResult) report = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	g_autoptr(GError) error = NULL;
+	g_object_set(config, "locale-timezone", zone, NULL);
+	g_assert_true(venture_database_execute(f->db, sql, NULL, &error)); g_assert_no_error(error);
+	report = venture_report_generate(definition, context, period, NULL, &error); g_assert_no_error(error);
+	result = venture_report_result_to_json(report);
+	assert_report_money(result, "invoiced_net", "newsletter", 26000);
+	assert_report_money(result, "cash_receipts", "newsletter", 10500);
+	assert_report_money(result, "invoiced_net", "unknown", 12000);
+	assert_report_money(result, "cash_receipts", "unknown", 5500);
+}
 /* Calendar midnight is not evidence that a same-day invoice preceded capture.
  * Its immutable event creation orders that case; genuine earlier evidence and
  * precise timestamps must still refuse retroactive acquisition attribution. */
@@ -765,6 +794,7 @@ static void test_financial_calendar_dates(Fixture *f, gconstpointer data)
 	gint64 lead_id;
 	VentureReport *definition = venture_report_registry_lookup(venture_context_get_report_registry(context), "attribution");
 	(void)data;
+	g_object_set(config, "locale-timezone", "UTC", NULL);
 	persist(f, company);
 	calendar_financial_event(f, company, "DATE-BEFORE", day, "30 USD", "10 USD");
 	touch = venture_attribution_service_observe(f->service, venture_entity_get_uuid(f->site), "https://site.example.test", token, "calendar-touch", fields, f->now, &error);
@@ -788,6 +818,10 @@ static void test_financial_calendar_dates(Fixture *f, gconstpointer data)
 	assert_report_money(result, "cash_receipts", "newsletter", 10500);
 	assert_report_money(result, "invoiced_net", "unknown", 12000);
 	assert_report_money(result, "cash_receipts", "unknown", 5500);
+	calendar_timezone_report(f, config, context, definition, period, "America/Los_Angeles",
+		"2020-03-02T00:30:00Z", "2020-03-01T00:00:00Z", "2020-02-29T00:00:00Z", "2020-03-01T23:30:00Z", "2020-03-02T01:30:00Z");
+	calendar_timezone_report(f, config, context, definition, period, "Asia/Tokyo",
+		"2020-03-01T23:30:00Z", "2020-03-02T00:00:00Z", "2020-03-01T00:00:00Z", "2020-03-01T22:30:00Z", "2020-03-02T00:30:00Z");
 }
 
 /* The accounting source's identity, not the number of tracking touches, owns each amount. */

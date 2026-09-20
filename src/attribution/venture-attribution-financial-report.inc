@@ -1,19 +1,26 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
-/* A calendar midnight carries a day, not an assertion that this financial
- * event happened before a same-day conversion. Retained creation evidence
- * must also put the event after acquisition; old rows cannot gain attribution
- * merely because their calendar date happens to match a later conversion. */
-static gboolean financial_calendar_binding(VentureEntity *event, GDateTime *bound, GDateTime *date)
+/* A calendar midnight carries a day, not an intraday timestamp. Interpret
+ * acquisition in the report's configured calendar, and require retained
+ * creation evidence on the same day even east of UTC, where midnight sorts
+ * after the binding and a plain timestamp comparison would accept old rows. */
+static gboolean financial_bound_at_event(AttributionReport *report, VentureEntity *event,
+	GDateTime *bound, GDateTime *date)
 {
-	g_autoptr(GDateTime) calendar = NULL, acquired = NULL;
+	g_autoptr(GDateTime) calendar = NULL, acquired = NULL, acquired_day = NULL;
+	g_autoptr(GTimeZone) zone = NULL;
 	GDateTime *recorded = venture_entity_get_created_at(event);
-	if (!bound || !date || !recorded || g_date_time_compare(recorded, bound) < 0) return FALSE;
-	calendar = g_date_time_to_utc(date); acquired = g_date_time_to_utc(bound);
-	return g_date_time_get_hour(calendar) == 0 && g_date_time_get_minute(calendar) == 0 &&
-		g_date_time_get_second(calendar) == 0 && g_date_time_get_microsecond(calendar) == 0 &&
-		g_date_time_get_year(calendar) == g_date_time_get_year(acquired) &&
-		g_date_time_get_month(calendar) == g_date_time_get_month(acquired) &&
-		g_date_time_get_day_of_month(calendar) == g_date_time_get_day_of_month(acquired);
+	gint comparison;
+	if (!bound || !date) return FALSE;
+	calendar = g_date_time_to_utc(date);
+	if (g_date_time_get_hour(calendar) || g_date_time_get_minute(calendar) ||
+		g_date_time_get_second(calendar) || g_date_time_get_microsecond(calendar))
+		return g_date_time_compare(bound, date) <= 0;
+	zone = venture_config_get_timezone(venture_context_get_config(report->context));
+	acquired = g_date_time_to_timezone(bound, zone);
+	acquired_day = g_date_time_new_utc(g_date_time_get_year(acquired),
+		g_date_time_get_month(acquired), g_date_time_get_day_of_month(acquired), 0, 0, 0);
+	comparison = g_date_time_compare(calendar, acquired_day);
+	return comparison > 0 || (comparison == 0 && recorded && g_date_time_compare(recorded, bound) >= 0);
 }
 static AttributionSource *financial_source(AttributionReport *report, gint64 invoice_id, gint64 company_id,
 	gint64 deal_id, GDateTime *date, VentureEntity *event)
@@ -34,7 +41,7 @@ static AttributionSource *financial_source(AttributionReport *report, gint64 inv
 	else binding = g_hash_table_lookup(report->company_bindings, &company_id);
 	if (binding && (gpointer)binding != AMBIGUOUS_BINDING) {
 		g_object_get(binding, "bound-at", &bound, NULL);
-		if ((!bound || !date || g_date_time_compare(bound, date) > 0) && !financial_calendar_binding(event, bound, date))
+		if (!financial_bound_at_event(report, event, bound, date))
 			return report_source(report, NULL, NULL, "Acquisition was not bound when this financial event occurred");
 	}
 	return report_source(report, binding, company, deal_id ? "Explicit quote/deal has no retained acquisition; current CRM source only" : NULL);
