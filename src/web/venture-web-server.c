@@ -11,6 +11,7 @@
  */
 
 #include "venture.h"
+#include "venture-http-limits-private.h"
 #include "quotes/venture-document-print-style.h"
 #include "statements/venture-statements-private.h"
 
@@ -29459,6 +29460,9 @@ venture_web_server_new(
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 
+	if (!venture_http_limits_validate(venture_context_get_config(context), error))
+		return NULL;
+
 	if (!venture_tenant_service_configure(venture_tenant_service_get(venture_context_get_database(context)),
 	        venture_context_get_config(context), error))
 		return NULL;
@@ -29497,6 +29501,7 @@ venture_web_server_new(
 	htmx_config_set_port(config, (guint16)port);
 
 	self->server = htmx_server_new_with_config(config);
+	venture_http_limits_install(htmx_server_get_soup_server(self->server), venture_context_get_config(context));
 	self->classified_routes = htmx_router_new();
 	router = htmx_server_get_router(self->server);
 

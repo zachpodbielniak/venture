@@ -1143,3 +1143,17 @@ income and reduces the remaining liability. These finance-authorized actions
 cannot be staged. They do not charge a provider or settle an invoice. Never
 record the same cash again as an invoice receipt; a linked retainer remains
 separate from invoice-billed project margin.
+
+
+### HTTP transport refusal
+
+Every server route, including generic record writes, receives the same early body
+and connection limits. HTTP 413 means the body exceeded `server.max_request_size_mb`;
+503 may mean the aggregate receive budget is full. A parsed incomplete request
+can receive 408; an incomplete TLS/header or saturated connection can close
+without an HTTP response. Rejected partial bodies never enter record handlers.
+Do not blindly retry a write whose response was lost after dispatch: read its
+retained identity first. Configure `server.max_buffered_request_mb`,
+`server.max_connections` and `server.request_timeout` with the platform budget,
+then restart. The timeout bounds reception/idle connections, not synchronous
+business execution. See `docs/configuration.org` for gateway responsibilities.

@@ -313,3 +313,62 @@ point it at the tree's =build/docs-site=. Render the site with =make
 docs-site= or =venturectl docs build=; the server reads it and never
 writes it. =modules.docs: false= switches =/docs= off. See
 [[file:docs-site.org][The documentation site]].
+
+* HTTP receive and connection limits
+
+These startup settings apply to every route before application dispatch, including
+new plugin routes, generic record writes and anonymous endpoints. They do not
+change health authentication or the hosted Host/origin/lifecycle checks for
+accepted requests. Changes require a restart; runtime configuration notifications
+do not alter the transport budget of existing connections.
+
+| Server setting | Default | Accepted range and meaning |
+| =max_request_size_mb= | 32 | 1..1024 MiB per received body |
+| =max_buffered_request_mb= | 64 | At least one maximum body, up to 4096 MiB within the platform address space; aggregate bodies awaiting dispatch |
+| =max_connections= | 128 | 1..4096 accepted connections on this workspace listener |
+| =request_timeout= | 60 | 1..3600 seconds; absolute receive deadline and keep-alive idle deadline |
+
+Invalid limits fail before the server executable opens its database or creates a
+workspace binding. Embedded server construction validates before initializing its
+workspace as well. The receive clock starts when a connection is accepted,
+including a stalled TLS handshake, and again when a keep-alive request begins.
+Receiving a byte does not reset that deadline. An idle connection gets a fresh
+idle deadline after its response finishes.
+
+A declared oversized length is refused early; malformed negative lengths receive HTTP 400. Chunked and ordinary bodies share
+the same count of actual received bytes; Content-Length is not a substitute for
+that count. VENTURE disables libsoup's automatic accumulation, retains checked
+chunks only, and restores the completed body for its ordinary metadata-driven
+handlers. Body overflow returns HTTP 413. Aggregate receive-budget exhaustion
+returns HTTP 503 with Retry-After; partial bodies never reach a handler. Credits
+are released on dispatch, disconnect, abort or timeout. A parsed slow request
+receives HTTP 408. Error writes and TLS close-notify share a further one-second
+bound. Rejected connections close and cannot be reused for pipelined writes.
+
+Before a complete header or TLS handshake exists, or when connection slots are
+full, the transport closes without promising an HTTP response. TCP resets are
+possible when a rejected peer continues sending unread data. Normal HTTPS errors
+are written through the retained TLS stream, never as plaintext on a TLS socket.
+The supported upstream protocol is HTTP/1; experimental =SOUP_SERVER_HTTP2=
+causes startup refusal. Terminate HTTP/2 at the gateway.
+
+The aggregate budget covers bodies waiting to enter application dispatch. It is
+not a total process-memory ceiling: libsoup headers/framing, body flattening,
+active handlers, response buffers and provider work consume additional memory.
+The inspected libsoup 3.6.6 implementation also bounds a received HTTP/1 header block at
+100 KiB. The connection cap includes idle connections and incomplete handshakes;
+it is independent for each workspace server. Use the platform memory/CPU limits
+and lower budgets when sizing a workspace.
+
+The receive deadline does not preempt a synchronous handler, cancel committed
+business work, bound an SSE response lifetime, or replace provider-specific
+timeouts. A blocked main context can delay timer delivery. Keep gateway limits
+for total connections, TLS/HTTP parsing, rate/fairness, request and response time,
+and process supervision; keep the application's separate dispatch admission
+control and bounded service operations. No gateway performance or hostile-load
+capacity claim follows from these transport regression tests.
+
+Implementation uses the public libsoup [[https://libsoup.gnome.org/libsoup-3.0/signal.Server.request-started.html][request-started]] and
+[[https://libsoup.gnome.org/libsoup-3.0/signal.ServerMessage.got-chunk.html][got-chunk]] signals, preserving the one application router.
+See [[file:http-limits-demonstration.org][the built-server demonstration]] for observable rejection,
+ordinary writes, TLS, timeout and neighboring-listener behavior.

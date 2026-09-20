@@ -17,6 +17,7 @@
  */
 
 #include "venture.h"
+#include "web/venture-http-limits-private.h"
 
 #include <glib-unix.h>
 #include <stdlib.h>
@@ -423,7 +424,7 @@ main(
 			                                  FALSE);
 	}
 
-	if (!venture_config_validate(config, &error))
+	if (!venture_config_validate(config, &error) || !venture_http_limits_validate(config, &error))
 	{
 		g_printerr("Configuration: %s\n", error->message);
 		return venture_error_to_exit_code(VENTURE_ERROR_CONFIG);

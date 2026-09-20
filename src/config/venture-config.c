@@ -89,7 +89,11 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_INT ("server-max-request-size-mb", "server", "max_request_size_mb", 32,
 	        "Largest request body accepted, in megabytes"),
 	VC_INT ("server-request-timeout", "server", "request_timeout", 60,
-	        "Seconds a request may run"),
+	        "Absolute seconds to receive a request, or keep an idle connection"),
+	VC_INT ("server-max-connections", "server", "max_connections", 128,
+	        "Maximum accepted HTTP connections per workspace process"),
+	VC_INT ("server-max-buffered-request-mb", "server", "max_buffered_request_mb", 64,
+	        "Aggregate body bytes awaiting request dispatch, in MiB"),
 
 	VC_STR ("database-uri", "database", "uri", "sqlite://venture.db",
 	        "Connection URI"),

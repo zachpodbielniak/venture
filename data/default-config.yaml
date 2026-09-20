@@ -34,12 +34,18 @@ server:
   tls_certificate: ""
   tls_private_key: ""
 
-  # Requests larger than this are rejected outright, which bounds the memory
-  # a single upload can consume.
+  # Early body limit in MiB, counted from received chunks, including chunked uploads.
   max_request_size_mb: 32
 
-  # Seconds a request may run before it is abandoned.
+  # Absolute receive deadline (including headers/TLS) and keep-alive idle time.
+  # Does not preempt synchronous application handlers. Restart to change limits.
   request_timeout: 60
+
+  # Per-listener accepted connections, including idle and TLS handshakes.
+  max_connections: 128
+
+  # Aggregate body bytes awaiting dispatch; must cover one maximum body.
+  max_buffered_request_mb: 64
 
 database:
   # sqlite:///absolute/path.db, sqlite://relative/path.db, sqlite://:memory:

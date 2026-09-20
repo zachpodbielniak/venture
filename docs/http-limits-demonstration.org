@@ -1,0 +1,71 @@
+#+title: Early HTTP limits — built-server demonstration
+
+This transcript runs the actual DEBUG =venture= executable in three disposable
+local workspaces: two independent HTTP listeners and one verified TLS listener.
+Authentication is disabled only in these isolated transport fixtures. No live
+workspace, provider or external service is contacted. The committed GTest suite
+separately exercises new routes, generic record writes, TLS, deadlines, abort
+accounting and invalid configuration before durable binding. These are functional
+bounds, not throughput, adversarial-load or gateway qualification measurements.
+
+The fixture sets a 1 MiB per-body/aggregate budget, two connections and a two-second
+receive/idle timeout. The TLS client trusts only the committed localhost fixture
+certificate; certificate verification is never disabled. See
+[[file:configuration.org][the configuration contract]] for limits and gateway responsibilities.
+
+* Recorded execution
+
+#+begin_example
+Ordinary generic organization create => 201
+HTTP declared oversized body without payload => 413
+TLS with verified fixture CA declared oversized body without payload => 413
+Chunked overflow without Content-Length => 413
+Malformed negative Content-Length => 400
+Incomplete body, absolute receive deadline => 408
+A: two idle connections occupy both slots => 503
+B remains independently available while A slots are full => 200
+Aggregate receive budget, individually valid body sizes => 503
+A admission recovered after abort releases body/connection budget => 200
+Raw TCP stalled before TLS ClientHello => closed within configured receive bound
+Verified TLS remains available after stalled handshake => 200
+Rejected generic writes changed organization count => 0
+Invalid size fails before opening the database => Configuration: HTTP limits require max_request_size_mb=1..1024, request_timeout=1..3600, max_connections=1..4096 and max_buffered_request_mb=max_request_size_mb..4096
+#+end_example
+
+* Reproduction and focused verification
+
+Run =make DEBUG=1 venture venturectl=, then
+=python3 docs/evidence/http-limits-demonstration.py= from the repository root.
+The driver deletes its disposable workspaces on success and retains failure
+logs if any assertion fails. The fixture certificate contains only localhost
+identities and no production credential.
+
+The final DEBUG transport suite passed all 19 cases, including ordinary chunk
+ordering, declared/chunked overflow, TLS rejection, stalled headers/body/handshake,
+idle cleanup, connection saturation with an independent neighbor, generic record
+mutation refusal, aggregate credit release on abort/timeout/dispatch, nested main
+loops, active server destruction, malformed length, invalid/overflowing startup
+limits before workspace binding, and a private GLib main context. A complete
+rerun under a private TMPDIR passed the litter check and removed its directory.
+
+Related checks passed: configuration 32, hosted tenant 11, federation 34 and
+authentication 96. The hosted HTTP and verified federation HTTPS cases were also
+rerun after the context repair. DEBUG binaries and GIR/typelib build without
+warnings. These are focused integration checks; the combined epic suite remains
+the parent PR's gate.
+
+The original oversized-length regression failed by waiting for the client
+socket timeout. TLS testing exposed missing close-notify on rejection, then a
+stalled pre-ClientHello read that required socket shutdown before close. The
+private-context regression failed with its deadline attached to the global
+context; it passed after retaining the listener's context and explicitly using
+it for timer sources and asynchronous write/close completion. A concurrency
+fixture was corrected to allow either partial socket to reach the shared ceiling
+first while still requiring a real HTTP 503 and no handler mutation.
+
+Local skill-review opened this transcript, checked the implementation and
+configuration/documentation contract, repaired those gaps, and repeated the
+focused checks. No unresolved defect was identified in this bounded transport
+lane. Standalone and hosted servers share these receive limits; gateway policy,
+HTTP/2 termination, synchronous-handler admission and production load sizing
+remain separate responsibilities.
