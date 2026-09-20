@@ -311,4 +311,10 @@ qualification requirements; these HTTP controls do not establish them.
 
 =tests/test-tenant.c= exercises exhausted bursts, refused-host non-consumption,
 health availability, nested-handler rejection and slot release, and invalid
-configuration against a real loopback server.
+configuration against a real loopback server. Invalid admission settings are
+refused before a fresh database acquires its durable workspace binding.
+
+The [[file:evidence/http-admission.txt][built-artifact transcript]] and
+[[file:evidence/http-admission-demonstration.py][reusable two-process driver]] demonstrate
+429/backoff, independent neighbor admission and continued health availability.
+They are deliberately narrower than a heavy-neighbor capacity qualification.
