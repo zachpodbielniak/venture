@@ -769,3 +769,18 @@ permissions/locks and controlled container responses. =test-tenant-recovery= als
 checks inherited maintenance-descriptor identity. These cases are separate from
 physical restore, deployment security and capacity qualification. See
 [[file:tenant-operations.org][the lifecycle runbook]].
+
+* Sales and hosted integration regressions
+
+=test-sales-performance= covers organization/team routing, immutable booking
+credit and reversals, exact currency-separated quotas, retained evidence while
+disabled, and upgrades without invented historical credit.
+
+=test-hosted-maintenance= invokes the built server with bounded subprocesses.
+It checks that the process lease precedes offline lifecycle/key commands, hosted
+maintenance needs an explicit reason, command combinations are refused, and a
+suspended workspace remains suspended after rotation. The old key then fails
+verification and the new key succeeds. =test-stripe='s
+=/stripe/automatic-tenant-lifecycle= checks background collection refusal in
+read-only and suspended states, unchanged scheduling rows, and explicit resumption.
+These integration cases supplement the independent service and process-lease tests.

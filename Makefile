@@ -663,3 +663,6 @@ test-mail-relay: $(OUTDIR)/tests/test-mail-routing
 
 # Session transport tests execute the independently linked generic CLI.
 $(OUTDIR)/tests/test-cli-session: $(OUTDIR)/venturectl
+
+# This regression invokes the actual offline command dispatcher.
+$(OUTDIR)/tests/test-hosted-maintenance: | $(OUTDIR)/venture

@@ -1007,3 +1007,10 @@ For hosted offline integration-key checks or rotation, supply `--tenant-reason`
 to the server command. The workspace must be stopped; maintenance acquires its
 process lease before any hosted operation, does not migrate or start providers,
 and cannot be combined with other tenant operation flags.
+
+Sales territories and quotas use the generic record commands. Read
+`describe sales_territory`, `describe sales_quota` and `describe lead_routing_rule`
+before configuring their organization/team references. `report sales_attainment`
+shows captured booked sales, targets and current pipeline by recipient, currency
+and quota period. It is not posted accounting revenue. Assignment/credit rows are
+service evidence; correct the source deal instead of editing that history.
