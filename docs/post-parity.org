@@ -176,3 +176,12 @@ Revision =dd64d91= passed the DEBUG build, warning-free GIR generation and all
 The prior run caught a missing OIDC documentation index entry; it was corrected
 before this complete green rerun. Organization AI integration follows this
 verified baseline; its combined gate is pending.
+
+* Organization AI integrated verification
+
+Revision =b98dc64= passed all 115 DEBUG test binaries, the DEBUG build and
+warning-free GIR generation with real native OCR enabled. The first suite
+identified two reconciliation fixtures without a migrated organization schema;
+the repair provisions that schema without relaxing provider ownership checks.
+Automatic collection is integrated next; its clean dependency build and combined
+suite are separate gates and are not covered by this checkpoint.
