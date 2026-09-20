@@ -159,8 +159,6 @@ screen's ordinary sync-and-import test.
 - [[file:hosted-controls.org][Hosted control inventory and evidence matrix]] — implemented boundaries, evidence limits and launch gates.
 - [[file:hosted-workspaces.org][Hosted workspace authority]] — immutable identity, scoped administration/support and restored-credential quarantine.
 
-- [[file:ai-organizations.org][Organization AI policy]] — explicit provider bindings, separate embeddings, grants and durable quotas.
 
-- [[file:oidc.org][Optional OIDC identity linking]] — verified providers, explicit local identity links and retained local MFA.
 
 - [[file:sales-performance.org][Sales territories and quotas]] — assignment, scoped owner authority, targets and actual performance.

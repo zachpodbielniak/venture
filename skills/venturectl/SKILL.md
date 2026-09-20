@@ -1002,3 +1002,8 @@ for private password/key files, immutable workspace identity, maintenance locks,
 restore quarantine, explicit administrator recovery and the distinction between
 offboarding and erasure. Success exits 0; refusals and failures exit 2. Status
 and provisioning return JSON; empty restore targets have no persisted-state result.
+
+For hosted offline integration-key checks or rotation, supply `--tenant-reason`
+to the server command. The workspace must be stopped; maintenance acquires its
+process lease before any hosted operation, does not migrate or start providers,
+and cannot be combined with other tenant operation flags.

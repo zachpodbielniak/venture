@@ -1123,5 +1123,7 @@ main(int argc, char **argv)
 	g_test_add("/stripe/binding-rotation", Fixture, "rotation", set_up, test_binding, tear_down);
 	g_test_add("/stripe/binding-replacement", Fixture, "replacement", set_up, test_binding, tear_down);
 	g_test_add("/stripe/binding-authorization", Fixture, "authorization", set_up, test_binding, tear_down);
+	g_test_add("/stripe/automatic-tenant-lifecycle", Fixture, "tenant-lifecycle", set_up, test_automatic_authorization, tear_down);
+
 	return g_test_run();
 }

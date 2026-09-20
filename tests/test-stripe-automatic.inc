@@ -171,6 +171,52 @@ test_automatic_authorization(Fixture *f, gconstpointer data)
 			g_assert_true(venture_stripe_service_verify_authorization(service, venture_entity_get_id(stored), NULL, &error));
 			g_assert_no_error(error);
 		}
+		if (data && !g_strcmp0(data, "tenant-lifecycle"))
+		{
+			VentureTenantService *tenant = venture_tenant_service_get(f->database);
+			const gchar *states[] = { "read_only", "suspended" };
+			g_autoptr(GDateTime) now = venture_time_now();
+			guint i;
+			g_object_set(f->config, "hosted-enabled", TRUE,
+				"hosted-workspace-id", "681123dc-a427-4e32-906d-679980293075",
+				"hosted-origin", "https://collection.example.test", NULL);
+			g_assert_true(venture_tenant_service_configure(tenant, f->config, &error));
+			g_assert_true(venture_tenant_service_initialize(tenant, &error));
+			g_assert_no_error(error);
+			venture_context_set_stripe_service(f->context, service);
+			venture_stripe_collection_start(f->context);
+			for (i = 0; i < G_N_ELEMENTS(states); i++)
+			{
+				gint64 deadline;
+				g_assert_true(venture_tenant_service_set_state_operator(tenant, states[i], "Pause collections", &error));
+				g_assert_no_error(error);
+				g_assert_cmpint(venture_stripe_service_collect_due(service, now, 1, NULL, &error), ==, -1);
+				g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+				g_clear_error(&error);
+				/* A background tick must also leave scheduling rows untouched;
+				 * otherwise a suspended tenant accrues retry bookkeeping. */
+				deadline = g_get_monotonic_time() + 6 * G_TIME_SPAN_SECOND;
+				while (g_get_monotonic_time() < deadline)
+				{
+					while (g_main_context_iteration(NULL, FALSE)) { }
+					g_usleep(10000);
+				}
+				g_assert_cmpuint(((FakeTransport *)transport)->payment_calls, ==, 0);
+			}
+			venture_stripe_collection_stop(f->context);
+			g_assert_true(venture_tenant_service_set_state_operator(tenant, "active", "Resume authorized collection", &error));
+			g_assert_no_error(error);
+			{
+				g_autoptr(VentureEntity) unchanged = venture_database_get(f->database,
+					VENTURE_TYPE_STRIPE_AUTHORIZATION, venture_entity_get_id(stored), &error);
+				g_assert_no_error(error); g_assert_nonnull(unchanged);
+				g_assert_cmpint(venture_entity_get_version(unchanged), ==, venture_entity_get_version(stored));
+			}
+			g_assert_cmpint(venture_stripe_service_collect_due(service, now, 1, NULL, &error), ==, 1);
+			g_assert_no_error(error);
+			g_assert_cmpuint(((FakeTransport *)transport)->payment_calls, ==, 1);
+			return;
+		}
 		if (data && !g_strcmp0(data, "finance"))
 		{
 			g_autoptr(VentureUser) user = venture_user_new();

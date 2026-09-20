@@ -96,3 +96,15 @@ PASS: server restarts with retained business settings and no credential echo
 PASS: permissive key file refused before database maintenance
 PASS: FIFO key path refuses promptly without waiting for a writer
 #+end_example
+
+* Hosted workspaces
+
+The same process lease excludes all hosted offline operations, including
+bootstrap, lifecycle changes and restored-credential quarantine. Key verification
+and rotation run before context/provider construction and never apply migrations.
+Hosted key maintenance additionally requires =--tenant-reason= and records a
+durable maintenance begin/completion (or abandonment on failure). It remains
+available while suspended. Other tenant operation flags cannot be combined with
+either key command. Keep the old and new external keys until verification and
+restart succeed; a completion-audit failure after re-encryption does not undo the
+committed envelopes.
