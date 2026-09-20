@@ -4685,6 +4685,10 @@ static void test_auth_bankfeed_settings(ServerFixture *fixture, gconstpointer un
 	g_autoptr(VentureBankConnection) connection = venture_bank_connection_new();
 	g_autofree gchar *path = NULL, *editor = NULL, *owner = NULL, *page = NULL;
 	g_object_set(fixture->config, "bankfeed-enabled", TRUE, NULL);
+	/* The preceding fixture may have masked this optional module before
+	 * setup migrated the repository. Enabling it must create its tables. */
+	g_assert_true(venture_database_migrate(fixture->database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
 	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(fixture->database), key, &error));
 	g_object_set(ledger, "organization-id", (gint64)1, "code", "UI-CASH", "name", "Settings cash",
 		"kind", VENTURE_ACCOUNT_KIND_ASSET, "active", TRUE, NULL);
