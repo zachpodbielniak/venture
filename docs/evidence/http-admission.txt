@@ -17,3 +17,11 @@ Private evidence: /tmp/venture-admission-demo-pfqo5tmm
 
 The driver retained private SQLite/config/log evidence and stopped both owned
 processes. No external service or existing workspace was contacted.
+
+Verification: all 15 tenant cases passed on SQLite and on a disposable PostgreSQL
+schema. Removing rate admission makes the burst test fail (200 instead of 429);
+removing only the concurrency guard makes the nested test fail the same way.
+Restoring the old startup order makes the fresh-database regression fail because
+it finds one workspace binding instead of zero. Each guard was restored, the
+fresh-database case passed again, and the rebuilt server retained the exact SHA256
+above. No warning level, assertion or limit was relaxed.
