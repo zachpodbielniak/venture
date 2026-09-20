@@ -4,6 +4,7 @@
 Requires Playwright Chromium. Retains private evidence for review. Synthetic
 credentials are submitted through password fields/stdin and never printed.
 """
+import argparse
 import base64
 import hashlib
 import json
@@ -19,6 +20,12 @@ import urllib.request
 from playwright.sync_api import sync_playwright
 
 root = pathlib.Path(__file__).resolve().parents[2]
+parser = argparse.ArgumentParser(description="Commerce account demonstration")
+parser.add_argument("--binary", type=pathlib.Path, default=root / "build/debug/venture",
+                    help="DEBUG venture executable to demonstrate; venturectl is taken from the same directory")
+options = parser.parse_args()
+binary = options.binary.resolve(strict=True)
+controller = (binary.parent / "venturectl").resolve(strict=True)
 state = pathlib.Path(tempfile.mkdtemp(prefix="venture-125-commerce-demo-"))
 state.chmod(0o700)
 with socket.socket() as listener:
@@ -37,14 +44,14 @@ env["VENTURE_COMMERCE_SHOPIFY_SHOP"] = "ignored.myshopify.com"
 password = secrets.token_urlsafe(24)
 token = secrets.token_urlsafe(32)
 rotated = secrets.token_urlsafe(32)
-args = [str(root / "build/debug/venture"), "--config", str(config), "--database", "sqlite://" + str(state / "venture.db"), "--state-dir", str(state), "--port", str(port), "--no-ai", "--no-plugins", "--no-automation"]
+args = [str(binary), "--config", str(config), "--database", "sqlite://" + str(state / "venture.db"), "--state-dir", str(state), "--port", str(port), "--no-ai", "--no-plugins", "--no-automation"]
 
 def command(extra, credential=None):
     result = subprocess.run(args + extra, input=credential, capture_output=True, text=True, env=env, cwd=root, timeout=120)
     if result.returncode:
         raise RuntimeError(result.stderr)
 
-print("Artifact SHA256: " + hashlib.sha256((root / "build/debug/venture").read_bytes()).hexdigest(), flush=True)
+print("Artifact SHA256: " + hashlib.sha256(binary.read_bytes()).hexdigest(), flush=True)
 command(["--migrate"])
 command(["--tenant-admin", "administrator", "--tenant-password-file", "-", "--tenant-reason", "Synthetic commerce demonstration"], password + "\n")
 log = open(state / "server.log", "w")
@@ -132,7 +139,7 @@ try:
         cookie = next(item for item in context.cookies() if item["name"] == "venture_session")
         session.write_text(json.dumps({"origin": base, "cookie": cookie["name"] + "=" + cookie["value"]}))
         session.chmod(0o600)
-        cli = [str(root / "build/debug/venturectl"), "--server", base, "--session-file", str(session)]
+        cli = [str(controller), "--server", base, "--session-file", str(session)]
         described = subprocess.run(cli + ["describe", "integration_connection"], capture_output=True, text=True, env=env, cwd=root, timeout=20)
         assert described.returncode == 0 and "account_id" in described.stdout, described.stderr
         schema = payload(context.request.get(base + "/api/v1/schema/integration_connection"))

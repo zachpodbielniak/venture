@@ -67,3 +67,53 @@ provider identity verification are covered by injected responses. Final epic
 integration and released-master upgrade qualification belong to the parent
 PR's combined gate; an unpublished lane snapshot is not a release upgrade
 fixture.
+
+* Re-recorded against PR head
+
+The transcript above came from the =f3cc7f0= commerce lane, which is not an
+ancestor of this branch head and declared its own integration pending. Parent
+acceptance reran the same driver against the head artifact.
+
+- Head commit: =7b2160b= (=/home/fai/venture-wt/epic-post-parity-5=)
+- Binary SHA-256: =13815d4d925e8df1c5d7cf751fd659e154223ca2e3d500591780c62c5be63f8d=
+- Exit status: 0
+
+The driver previously hardcoded =build/debug/venture= inside its own checkout,
+so it could not be pointed at an already-built artifact in another worktree.
+It now takes an optional =--binary= and reads =venturectl= from that binary's
+directory; the default is unchanged, so the original command above still
+works. Nothing about the demonstrated flow, its assertions or its refusals was
+altered. Run with a private =TMPDIR= under =/tmp= (removed afterwards) and
+=nice -n 19= because a full suite was running in the build worktree:
+
+#+begin_src sh
+python3 docs/evidence/commerce-accounts-demonstration.py --binary /home/fai/venture-wt/epic-post-parity-5/build/debug/venture
+#+end_src
+
+Verbatim stdout:
+
+#+begin_example
+Artifact SHA256: 13815d4d925e8df1c5d7cf751fd659e154223ca2e3d500591780c62c5be63f8d
+PASS tenant administrator opens commerce settings; ambient Shopify credentials do not configure an account
+PASS explicit organization account configured; credential is absent from returned HTML
+PASS rotation increments the binding revision; a stale settings form is refused
+PASS generated adoption action records invoice and customer identity; retained invoice revision is unchanged
+PASS disconnect refuses import despite ambient credentials and preserves historical identity
+PASS tenant administrator remains excluded from platform settings
+PASS venturectl describes account fields; API schema offers adoption; explicitly scoped CLI import refuses the disconnected account
+PASS demonstration completed without contacting Shopify; provider test/import semantics are covered by injected transport tests
+Evidence directory: /tmp/demo-commerce-tRxv/venture-125-commerce-demo-qospf3c6
+#+end_example
+
+Every PASS line is identical to the lane run, so the commerce account
+surfaces -- settings page, connect/rotate with revision checks, the generated
+adoption action, disconnect, the platform-settings exclusion and the CLI
+paths -- are present and behave the same on the head artifact. =make= was not
+run; the already-built head artifact was used as-is. Playwright's Python
+package was installed into a throwaway virtualenv for this rerun and drove the
+already-cached Chromium; that is a harness detail, not a change to the
+product. The evidence directory named above, with its video and screenshots,
+was removed after the run under the shared run rules, so this transcript is
+the retained evidence for the head. Every limit stated above still applies:
+synthetic workspace, no Shopify contacted, no live credential acceptance and
+no production accounting readiness.

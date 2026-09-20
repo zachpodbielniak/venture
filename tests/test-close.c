@@ -497,6 +497,16 @@ test_action_authority(Fixture *f, gconstpointer unused)
 	result = close_action(f, "fiscal_period", f->period, "open_close", "{}", &actor, principal.role, &error);
 	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
 	g_clear_object(&scope);
+	/* An accountant may read the period, so the policy admits the request
+	 * and the action's own finance gate, which runs before the policy's
+	 * write check, is what refuses it: its message is the proof, because
+	 * the policy would refuse an accountant's write with the same code. */
+	g_object_set(member, "role", VENTURE_ORGANIZATION_ROLE_ACCOUNTANT, NULL); save(f, member);
+	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+	result = close_action(f, "fiscal_period", f->period, "open_close", "{}", &actor, principal.role, &error);
+	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_assert_cmpstr(error->message, ==, "Organization finance authorization is required"); g_clear_error(&error);
+	g_clear_object(&scope);
 	g_object_set(member, "role", VENTURE_ORGANIZATION_ROLE_FINANCE, NULL); save(f, member);
 	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
 	result = close_action(f, "fiscal_period", f->period, "open_close", "{\"currency\":\"not-a-currency\"}", &actor, principal.role, &error);

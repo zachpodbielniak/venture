@@ -131,7 +131,10 @@ static gboolean attachment_owner(VentureDocumentService *self, VentureEntity *do
 	g_autofree gchar *pattern = g_strdup_printf("%%%s%%", basename);
 	/* The basename superset already contains the canonical path itself, so
 	 * one query covers both the rows the filing service wrote and legacy
-	 * rows stored before canonicalisation. */
+	 * rows stored before canonicalisation. Known limit: a basename holding
+	 * a backslash is not matched by PostgreSQL's LIKE (its default escape
+	 * character); the filing writers canonicalise names so no filed row
+	 * carries one, and the query layer offers no ESCAPE clause. */
 	return attachment_owner_conflict(self, document, path, new_claim, VENTURE_FILTER_OP_LIKE, pattern, error);
 }
 static gboolean document_path_validate(VentureDatabase *database, VentureEntity *row, VentureEntity *previous,
