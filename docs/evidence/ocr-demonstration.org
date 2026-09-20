@@ -1,0 +1,381 @@
+#+title: Local OCR and capture review — demonstration (#123)
+#+description: A verbatim run of docs/evidence/ocr-demonstration.py against the built DEBUG artifact
+
+* What this is
+
+A transcript of =docs/evidence/ocr-demonstration.py= driving a real
+=build/debug/venture= over HTTP, exactly as an operator would: a private
+config, a private state directory, a free port taken from the OS, the
+first-run owner login, and the ordinary =/api/v1= record, capture and
+generated-action routes.
+
+The engine is a fake =tesseract= — a shell script under the scratch root that
+answers =--version= with a stable version string, records its real argument
+vector, fails on demand and otherwise prints fixed text. This is the same
+technique =tests/test-ocr.c= uses. The PNG and PDF fixtures are generated with
+python =cairo=, which is how =tests/test-ocr.c= generates them with the C cairo
+API; the driver refuses to run if python =cairo= is not importable rather than
+substituting a different fixture. There are no checked-in OCR fixture files in
+=tests/=, so nothing was reused from there.
+
+The server the run used was linked against Poppler and GdkPixbuf
+(=ldd build/debug/venture= shows =libpoppler-glib.so.8= and
+=libgdk_pixbuf-2.0.so.0=), so the raster/PDF dependency chain is present and
+the PDF page is really rasterised; the documented refusal for a build without
+them is not the path taken here.
+
+* Command
+
+#+begin_src sh
+ROOT=$(mktemp -d /tmp/demo-ocr-XXXX)
+nice -n 19 python3 docs/evidence/ocr-demonstration.py \
+  /home/fai/venture-wt/epic-post-parity-5/build/debug/venture "$ROOT"
+rm -rf "$ROOT"
+#+end_src
+
+Run on 2026-09-20. Exit code 0; 60 checks passed, none failed. The scratch
+root was removed afterwards, so the paths in the transcript no longer exist.
+
+* DONE WHEN items covered
+
+Quoting =#123 — Local OCR and capture review= from issue #125.
+
+| # | DONE WHEN (quoted) | Shown by |
+|---+--------------------+----------|
+| 1 | "Support images, scanned PDFs and mixed text/scanned PDFs with a documented rasterization/extraction dependency chain and language configuration. Avoid duplicate extraction of existing text layers." | Steps 4 and 7: a PNG extracted end to end; a two-page PDF whose page 1 has a text layer and whose page 2 is a scan — page 1 never invokes the engine (the argv file stays absent), page 2 does, and =Native invoice 100= appears exactly once. =ocr.language= is configured in the YAML and =language=eng= is passed per action and lands in the argv as =-l eng=. |
+| 2 | "Bound file size, page count, raster dimensions, process time and batch size. Execute subprocesses with argv, isolate temporary artifacts and clean them on success, error and cancellation." | Step 11 (partial): 20 MiB + 1 byte, 51 pages and 4097×1 are each refused with a named error; =limit=26= is refused; the shell-looking language =eng; touch …= is refused and nothing ran. The argv file shows the real argument vector (=<tmp>/page.png stdout -l eng=), proving argv execution and a private temporary directory per call. The 30 s process deadline and temporary-artifact cleanup are *not* re-proved here — see LIMITATIONS. |
+| 3 | "Provide per-document pending/running/succeeded/failed state, progress, useful errors, retry/cancel and resumable batches. One bad document must not lose the rest of the batch." | Steps 4, 7, 8, 9, 10: =pending= → =running= (PDF, =completed_pages=1= of 2) → =succeeded=; =failed= with =Tesseract failed; check the selected language data and attachment format=; stepping a failed job is refused with HTTP 409; =retry= and =cancel=; a three-document batch in which the middle document fails (=Attachment is missing or is a symbolic link=) while the other two still get their text, =failed=1 cursor=3 total=3=; and a batch cancelled mid-run that resumes from its durable cursor. |
+| 4 | "Preserve original attachments and extraction provenance (source hash, engine/version, language and extraction time). Repeated extraction should skip unchanged inputs unless explicitly forced; never silently overwrite reviewed corrections." | Steps 4, 5, 6: every job carries =source_hash= (asserted equal to the SHA-256 of the uploaded fixture), =engine="fixture OCR 1"=, =language="eng"= and =extracted_at=; re-running =ocr_extract= on an unchanged source returns the *same job id*; =force=true= makes a new job; after =ocr_review=, a later forced extraction leaves the document text as the correction and parks its own output on the new job. The original's hash is identical across all three jobs for that document, so the attachment was never rewritten. |
+| 5 | "Keep extraction separate from accounting approval. Show extracted text for review and use the existing capture/AI/conversion path; OCR must not independently post books." | Steps 1, 6, 12: with OCR off, capture ingest and the capture → expense conversion still work (expense id=1, two ledger entries). After all OCR work — 12 jobs, 2 batches, 9 documents — the financial row counts are unchanged at ={"expense": 1, "ledger_entry": 2}=. Extracted text lands on the document's =extracted_text= for review, and =ocr_review= is the only thing that replaces it. |
+| 6 | "Resolve optional-engine behavior explicitly: ordinary capture and vision continue with OCR disabled; explicitly enabling OCR without its required binaries produces a clear configuration error. No silent claim that OCR succeeded through vision fallback." | Steps 1, 2, 3: with OCR off, uploads, native (non-OCR) text extraction, capture ingest and conversion all work, =ocr_extract= is refused with =module: The OCR module is disabled=, and =/api/v1/ocr_job= answers 404 naming =modules.ocr.enabled=. With =ocr.enabled: true= and a nonexistent executable the server *exits 1* with =Configuration: OCR enabled but Tesseract is not installed or executable= and nothing is listening. Nothing ever reports OCR success without the engine. |
+| 7 | "Use bounded work compatible with the main-loop/database ownership rules; do not introduce a database-writing worker thread. Document operational limits for large inboxes." | *Not demonstrated here.* This is a structural property of =src/ocr/venture-ocr-service.c= (one page per =step=, committed on the calling thread) and is documented in =docs/ocr.org= §"Limits and operation". The transcript is consistent with it — every unit of work is one explicit HTTP request advancing one page or one batch row — but a transcript cannot prove the absence of a worker thread. |
+
+One behaviour the driver found that is not in the issue text: filing a capture
+row while OCR is enabled queues a pending extraction job for its document
+(=venture_capture_service_ingest_for_organization=, =src/capture/venture-capture-service.c:131=).
+The transcript shows the three pending jobs appearing at ingest, and shows that
+when the batch later finds the middle document's original gone, that earlier
+pending job is retained and a *new* failed job records the missing original.
+
+* Transcript (verbatim)
+
+#+begin_example
+Artifact: /home/fai/venture-wt/epic-post-parity-5/build/debug/venture
+Artifact SHA-256: 13815d4d925e8df1c5d7cf751fd659e154223ca2e3d500591780c62c5be63f8d
+Scratch root: /tmp/demo-ocr-eeMY
+python cairo: 1.28.0
+Fake engine script: /tmp/demo-ocr-eeMY/fake-tesseract
+"#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'fixture OCR 1\\n'; exit 0; fi\nprintf '%s\\n' \"$@\" > /tmp/demo-ocr-eeMY/engine-argv\nif [ -f /tmp/demo-ocr-eeMY/engine-should-fail ]; then printf 'fixture engine refused\\n' >&2; exit 3; fi\nprintf 'SYNTHETIC RECEIPT TOTAL 12.50 USD\\n'\n"
+
+--- 1. OCR disabled (default): ordinary capture and native document extraction continue
+    config: "server:\n  bind_address: 127.0.0.1\n  port: 34409\nsecurity:\n  require_auth: true\ndatabase:\n  uri: \"sqlite:///tmp/demo-ocr-eeMY/workspace.db\"\nmodules:\n  finance:\n    enabled: true\n  capture:\n    enabled: true\n"
+    GET /api/v1/health -> HTTP 200 on http://127.0.0.1:34409
+    POST /login username=owner password=<synthetic, not printed>
+    HTTP 302
+    POST /ui/chat/upload multipart filename=receipt.png type=image/png bytes=583
+    HTTP 201 {"id": 1, "name": "receipt.png", "size": 583, "text_chars": 0, "is_image": true}
+    OK   uploaded original is stored as an ordinary document (id=1, mime=image/png, extracted_text=null)
+    POST /ui/chat/upload multipart filename=supplier-note.txt type=text/plain bytes=50
+    HTTP 201 {"id": 2, "name": "supplier-note.txt", "size": 50, "text_chars": 50, "is_image": false}
+    OK   native (non-OCR) document text extraction still runs: "Supplier note: native text layer, no OCR involved\n"
+    POST /api/v1/capture {"kind": "receipt", "title": "Ordinary capture with OCR off", "source": "upload", "document_id": 1, "vendor": "Synthetic vendor", "amount": "12.50 USD"}
+    HTTP 201
+    OK   capture inbox ingest works with OCR off (capture_item id=1 status=inbox)
+    POST /api/v1/capture/1/convert {"as": "expense"}
+    HTTP 201
+    OK   the ordinary capture -> expense conversion path is untouched (expense id=1 amount={"amount": 1250, "currency": "USD", "exponent": 2, "formatted": "12.50 USD"})
+
+--- 2. OCR disabled: ocr_extract reports a configuration error, and OCR records are hidden
+    POST /api/v1/document/1/actions/ocr_extract {"language": "eng"}
+    HTTP 422
+    message: "module: The OCR module is disabled"
+    OK   refused with HTTP 422 (expected one of (400, 409, 422))
+    OK   ocr_extract names the disabled module rather than succeeding through some other path
+    GET /api/v1/ocr_job?organization_id=1
+    HTTP 404
+    message: "The record type \"ocr_job\" belongs to the ocr module, which is disabled (modules.ocr.enabled)"
+    OK   ocr_job records are hidden and the answer names the switch to turn on
+    financial row counts after ordinary capture: {"expense": 1, "ledger_entry": 2}
+
+--- 3. OCR explicitly enabled without its binary: a clear configuration error, no silent success
+    config: "server:\n  bind_address: 127.0.0.1\n  port: 51889\nsecurity:\n  require_auth: true\ndatabase:\n  uri: \"sqlite:///tmp/demo-ocr-eeMY/workspace.db\"\nmodules:\n  finance:\n    enabled: true\n  capture:\n    enabled: true\nocr:\n  enabled: true\n  executable: /nonexistent/venture-demo-tesseract\n  language: eng\n"
+    exit code: 1
+    log: Configuration: OCR enabled but Tesseract is not installed or executable
+    OK   the server refuses to start rather than running with a broken OCR configuration
+    OK   the refusal names the missing binary
+    OK   nothing is listening on the refused server's port
+
+--- 4. OCR enabled with the fake engine: extraction with provenance on an image
+    config: "server:\n  bind_address: 127.0.0.1\n  port: 54111\nsecurity:\n  require_auth: true\ndatabase:\n  uri: \"sqlite:///tmp/demo-ocr-eeMY/workspace.db\"\nmodules:\n  finance:\n    enabled: true\n  capture:\n    enabled: true\nocr:\n  enabled: true\n  executable: \"/tmp/demo-ocr-eeMY/fake-tesseract\"\n  language: eng\n"
+    GET /api/v1/health -> HTTP 200 on http://127.0.0.1:54111
+    POST /login username=owner password=<synthetic, not printed>
+    HTTP 302
+    POST /api/v1/document/1/actions/ocr_extract {"language": "eng"}
+    HTTP 200
+    job id=1 state=pending pages=1 completed_pages=0 attempts=0 language="eng" engine="fixture OCR 1 " source_hash="47824e6bc997514db3e5105952a636ef7de6580bf4e5a5751a366a8fa1be00fd" extracted_at=null reviewed=False error=null
+    job text: null
+    OK   queued job starts pending with a known page count
+    OK   provenance: source hash is a SHA-256 of the original bytes
+    OK   provenance: the stored hash equals SHA-256 of the fixture we uploaded
+    OK   provenance: engine/version recorded from the engine itself
+    OK   provenance: language recorded
+    POST /api/v1/ocr_job/1/actions/step {}
+    HTTP 200
+    job id=1 state=succeeded pages=1 completed_pages=1 attempts=1 language="eng" engine="fixture OCR 1 " source_hash="47824e6bc997514db3e5105952a636ef7de6580bf4e5a5751a366a8fa1be00fd" extracted_at="2026-09-20T18:02:40.943034Z" reviewed=False error=null
+    job text: "SYNTHETIC RECEIPT TOTAL 12.50 USD\n"
+    OK   one page completed; state succeeded
+    OK   provenance: extraction time recorded
+    OK   the fake engine's deterministic text was captured
+    engine argv: "/tmp/venture-ocr-WL2HW3/page.png\nstdout\n-l\neng\n"
+    OK   the engine was executed with an argument vector, not a shell string
+    document extracted_text: "SYNTHETIC RECEIPT TOTAL 12.50 USD\n"
+    OK   extracted text lands on the document for review
+
+--- 5. Repeated extraction skips an unchanged input unless it is forced
+    POST /api/v1/document/1/actions/ocr_extract {"language": "eng"}
+    HTTP 200
+    job id=1 state=succeeded pages=1 completed_pages=1 attempts=1 language="eng" engine="fixture OCR 1 " source_hash="47824e6bc997514db3e5105952a636ef7de6580bf4e5a5751a366a8fa1be00fd" extracted_at="2026-09-20T18:02:40.943034Z" reviewed=False error=null
+    job text: "SYNTHETIC RECEIPT TOTAL 12.50 USD\n"
+    OK   unchanged source and language reuse the existing successful job (no re-run)
+    POST /api/v1/document/1/actions/ocr_extract {"language": "eng", "force": true}
+    HTTP 200
+    job id=2 state=pending pages=1 completed_pages=0 attempts=0 language="eng" engine="fixture OCR 1 " source_hash="47824e6bc997514db3e5105952a636ef7de6580bf4e5a5751a366a8fa1be00fd" extracted_at=null reviewed=False error=null
+    job text: null
+    OK   force=true creates new output instead of reusing it
+    POST /api/v1/ocr_job/2/actions/step {}
+    HTTP 200
+    job id=2 state=succeeded pages=1 completed_pages=1 attempts=1 language="eng" engine="fixture OCR 1 " source_hash="47824e6bc997514db3e5105952a636ef7de6580bf4e5a5751a366a8fa1be00fd" extracted_at="2026-09-20T18:02:41.026656Z" reviewed=False error=null
+    job text: "SYNTHETIC RECEIPT TOTAL 12.50 USD\n"
+    OK   the forced job completes
+
+--- 6. A reviewed correction is never silently overwritten
+    POST /api/v1/document/1/actions/ocr_review {"job_id": 2, "text": "Reviewed receipt total 12.60 USD"}
+    HTTP 200
+    job id=2 state=succeeded pages=1 completed_pages=1 attempts=1 language="eng" engine="fixture OCR 1 " source_hash="47824e6bc997514db3e5105952a636ef7de6580bf4e5a5751a366a8fa1be00fd" extracted_at="2026-09-20T18:02:41.026656Z" reviewed=True error=null
+    job text: "SYNTHETIC RECEIPT TOTAL 12.50 USD\n"
+    OK   the job is marked explicitly reviewed
+    document extracted_text: "Reviewed receipt total 12.60 USD"
+    OK   the correction is on the document
+    POST /api/v1/document/1/actions/ocr_extract {"language": "eng", "force": true}
+    HTTP 200
+    job id=3 state=pending pages=1 completed_pages=0 attempts=0 language="eng" engine="fixture OCR 1 " source_hash="47824e6bc997514db3e5105952a636ef7de6580bf4e5a5751a366a8fa1be00fd" extracted_at=null reviewed=False error=null
+    job text: null
+    POST /api/v1/ocr_job/3/actions/step {}
+    HTTP 200
+    job id=3 state=succeeded pages=1 completed_pages=1 attempts=1 language="eng" engine="fixture OCR 1 " source_hash="47824e6bc997514db3e5105952a636ef7de6580bf4e5a5751a366a8fa1be00fd" extracted_at="2026-09-20T18:02:41.097228Z" reviewed=False error=null
+    job text: "SYNTHETIC RECEIPT TOTAL 12.50 USD\n"
+    document extracted_text: "Reviewed receipt total 12.60 USD"
+    OK   a later forced extraction does not overwrite the reviewed correction
+    OK   the new output is retained on its job, waiting for explicit review
+
+--- 7. A mixed PDF: the existing text layer is used as-is, the scanned page is rasterised
+    POST /ui/chat/upload multipart filename=mixed.pdf type=application/pdf bytes=4136
+    HTTP 201 {"id": 3, "name": "mixed.pdf", "size": 4136, "text_chars": 18, "is_image": false}
+    POST /api/v1/document/3/actions/ocr_extract {"language": "eng"}
+    HTTP 200
+    job id=4 state=pending pages=2 completed_pages=0 attempts=0 language="eng" engine="fixture OCR 1 " source_hash="360aed709b06f69f9bcfa6e215eaeb746b5bd2ccafb0a0082a338abb41f78f4d" extracted_at=null reviewed=False error=null
+    job text: null
+    OK   both PDF pages are counted before any work is done
+    POST /api/v1/ocr_job/4/actions/step {}
+    HTTP 200
+    job id=4 state=running pages=2 completed_pages=1 attempts=1 language="eng" engine="fixture OCR 1 " source_hash="360aed709b06f69f9bcfa6e215eaeb746b5bd2ccafb0a0082a338abb41f78f4d" extracted_at=null reviewed=False error=null
+    job text: "Native invoice 100"
+    OK   progress: page 1 of 2 committed, job still running
+    OK   page 1 has a text layer, so the OCR engine was never executed for it (no duplicate extraction)
+    OK   page 1 contributed its native text layer
+    POST /api/v1/ocr_job/4/actions/step {}
+    HTTP 200
+    job id=4 state=succeeded pages=2 completed_pages=2 attempts=2 language="eng" engine="fixture OCR 1 " source_hash="360aed709b06f69f9bcfa6e215eaeb746b5bd2ccafb0a0082a338abb41f78f4d" extracted_at="2026-09-20T18:02:41.207353Z" reviewed=False error=null
+    job text: "Native invoice 100\n\nSYNTHETIC RECEIPT TOTAL 12.50 USD\n"
+    OK   page 2 completes the job
+    OK   the scanned page 2 was rasterised and sent to the engine
+    engine argv: "/tmp/venture-ocr-QKN2V3/page.png\nstdout\n-l\neng\n"
+    OK   the document text carries the native page and the OCR'd page
+    OK   the native text layer is not appended twice
+
+--- 8. Per-document failure, retry and cancel
+    POST /ui/chat/upload multipart filename=retry.png type=image/png bytes=547
+    HTTP 201 {"id": 4, "name": "retry.png", "size": 547, "text_chars": 0, "is_image": true}
+    POST /api/v1/document/4/actions/ocr_extract {"language": "eng"}
+    HTTP 200
+    job id=5 state=pending pages=1 completed_pages=0 attempts=0 language="eng" engine="fixture OCR 1 " source_hash="c71d0cc6dd521fb5ef094a4259fc89afa3bbca8875e6f15d1c18c44914b4e9ab" extracted_at=null reviewed=False error=null
+    job text: null
+    OK   queued pending
+    POST /api/v1/ocr_job/5/actions/step {}
+    HTTP 200
+    job id=5 state=failed pages=1 completed_pages=0 attempts=1 language="eng" engine="fixture OCR 1 " source_hash="c71d0cc6dd521fb5ef094a4259fc89afa3bbca8875e6f15d1c18c44914b4e9ab" extracted_at=null reviewed=False error="Tesseract failed; check the selected language data and attachment format"
+    job text: null
+    OK   an engine failure is persisted as a failed job with a useful error
+    POST /api/v1/ocr_job/5/actions/step {}
+    HTTP 409
+    message: "Retry a failed or cancelled job before stepping it"
+    OK   refused with HTTP 409 (expected one of (400, 409, 422))
+    OK   a failed job must be retried explicitly before it steps again
+    POST /api/v1/ocr_job/5/actions/retry {}
+    HTTP 200
+    job id=5 state=pending pages=1 completed_pages=0 attempts=1 language="eng" engine="fixture OCR 1 " source_hash="c71d0cc6dd521fb5ef094a4259fc89afa3bbca8875e6f15d1c18c44914b4e9ab" extracted_at=null reviewed=False error=null
+    job text: null
+    OK   retry returns the job to pending and clears the error
+    POST /api/v1/ocr_job/5/actions/cancel {}
+    HTTP 200
+    job id=5 state=cancelled pages=1 completed_pages=0 attempts=1 language="eng" engine="fixture OCR 1 " source_hash="c71d0cc6dd521fb5ef094a4259fc89afa3bbca8875e6f15d1c18c44914b4e9ab" extracted_at=null reviewed=False error=null
+    job text: null
+    OK   cancel takes effect between page steps
+    POST /api/v1/ocr_job/5/actions/retry {}
+    HTTP 200
+    job id=5 state=pending pages=1 completed_pages=0 attempts=1 language="eng" engine="fixture OCR 1 " source_hash="c71d0cc6dd521fb5ef094a4259fc89afa3bbca8875e6f15d1c18c44914b4e9ab" extracted_at=null reviewed=False error=null
+    job text: null
+    POST /api/v1/ocr_job/5/actions/step {}
+    HTTP 200
+    job id=5 state=succeeded pages=1 completed_pages=1 attempts=2 language="eng" engine="fixture OCR 1 " source_hash="c71d0cc6dd521fb5ef094a4259fc89afa3bbca8875e6f15d1c18c44914b4e9ab" extracted_at="2026-09-20T18:02:41.363471Z" reviewed=False error=null
+    job text: "SYNTHETIC RECEIPT TOTAL 12.50 USD\n"
+    OK   after the engine recovers, the retried job succeeds
+
+--- 9. A batch where one bad document fails without losing the rest
+    POST /ui/chat/upload multipart filename=batch-good-1.png type=image/png bytes=562
+    HTTP 201 {"id": 5, "name": "batch-good-1.png", "size": 562, "text_chars": 0, "is_image": true}
+    POST /ui/chat/upload multipart filename=batch-bad.png type=image/png bytes=574
+    HTTP 201 {"id": 6, "name": "batch-bad.png", "size": 574, "text_chars": 0, "is_image": true}
+    POST /ui/chat/upload multipart filename=batch-good-2.png type=image/png bytes=643
+    HTTP 201 {"id": 7, "name": "batch-good-2.png", "size": 643, "text_chars": 0, "is_image": true}
+    POST /api/v1/capture {"kind": "receipt", "title": "Batch good one", "source": "upload", "document_id": 5, "amount": "1.00 USD"}
+    HTTP 201
+    capture_item id=2 title="Batch good one" status=inbox
+    POST /api/v1/capture {"kind": "receipt", "title": "Batch bad", "source": "upload", "document_id": 6, "amount": "1.00 USD"}
+    HTTP 201
+    capture_item id=3 title="Batch bad" status=inbox
+    POST /api/v1/capture {"kind": "receipt", "title": "Batch good two", "source": "upload", "document_id": 7, "amount": "1.00 USD"}
+    HTTP 201
+    capture_item id=4 title="Batch good two" status=inbox
+    job id=8 state=pending pages=1 completed_pages=0 attempts=0 language="eng" engine="fixture OCR 1 " source_hash="041d4d042bcdf7cac8e4e3a45a16bf17131631bdd7f0436939ac90b25bc9f2e2" extracted_at=null reviewed=False error=null
+    job id=7 state=pending pages=1 completed_pages=0 attempts=0 language="eng" engine="fixture OCR 1 " source_hash="e54fa5c1c73c53b0db2440c15dc46eef187c4db0c29e5394fe6d47559a45ed94" extracted_at=null reviewed=False error=null
+    job id=6 state=pending pages=1 completed_pages=0 attempts=0 language="eng" engine="fixture OCR 1 " source_hash="998e2f3dc869985adc98f0d7f4007cbb7572184688cea4390f5a50f6de5a37a8" extracted_at=null reviewed=False error=null
+    OK   filing a capture row queues a pending extraction job per document
+    removed the middle document's original: /tmp/demo-ocr-eeMY/state/attachments/f9bb15b77c7e55dd_batch-bad.png
+    POST /api/v1/capture_item/0/actions/ocr_extract_all {"organization_id": 1, "after_id": 1, "limit": 25}
+    HTTP 200
+    batch id=1 state=pending cursor=0 total=3 failed=0 current_job_id=0 capture_ids=[2,3,4] error=null
+    OK   the inbox selection is frozen at 3 rows
+    POST /api/v1/ocr_batch/1/actions/step {}
+    HTTP 200
+    batch id=1 state=running cursor=1 total=3 failed=0 current_job_id=0 capture_ids=[2,3,4] error=null
+    POST /api/v1/ocr_batch/1/actions/step {}
+    HTTP 200
+    batch id=1 state=running cursor=2 total=3 failed=1 current_job_id=0 capture_ids=[2,3,4] error="VentureDocumentService: Attachment is missing or is a symbolic link"
+    POST /api/v1/ocr_batch/1/actions/step {}
+    HTTP 200
+    batch id=1 state=succeeded cursor=3 total=3 failed=1 current_job_id=0 capture_ids=[2,3,4] error="VentureDocumentService: Attachment is missing or is a symbolic link"
+    OK   the batch completed: 3 documents attempted, exactly 1 failed
+    first document extracted_text: "SYNTHETIC RECEIPT TOTAL 12.50 USD\n"
+    OK   the first document still got its text; the bad one did not lose it
+    third document extracted_text: "SYNTHETIC RECEIPT TOTAL 12.50 USD\n"
+    OK   the third document still got its text; the bad one did not lose it
+    job id=7 state=pending pages=1 completed_pages=0 attempts=0 language="eng" engine="fixture OCR 1 " source_hash="e54fa5c1c73c53b0db2440c15dc46eef187c4db0c29e5394fe6d47559a45ed94" extracted_at=null reviewed=False error=null
+    job id=9 state=failed pages=0 completed_pages=0 attempts=0 language="eng" engine="fixture OCR 1 " source_hash="" extracted_at=null reviewed=False error="VentureDocumentService: Attachment is missing or is a symbolic link"
+    OK   the bad document keeps its own failed job carrying its own error
+    OK   the pending job filing already queued for it is retained, not rewritten
+
+--- 10. A batch can be cancelled and resumed
+    POST /api/v1/capture_item/0/actions/ocr_extract_all {"organization_id": 1, "after_id": 1, "limit": 25}
+    HTTP 200
+    batch id=2 state=pending cursor=0 total=3 failed=0 current_job_id=0 capture_ids=[2,3,4] error=null
+    POST /api/v1/ocr_batch/2/actions/step {}
+    HTTP 200
+    batch id=2 state=running cursor=1 total=3 failed=0 current_job_id=0 capture_ids=[2,3,4] error=null
+    POST /api/v1/ocr_batch/2/actions/cancel {}
+    HTTP 200
+    batch id=2 state=cancelled cursor=1 total=3 failed=0 current_job_id=0 capture_ids=[2,3,4] error=null
+    OK   the batch is cancelled mid-run
+    POST /api/v1/ocr_batch/2/actions/step {}
+    HTTP 200
+    batch id=2 state=running cursor=2 total=3 failed=1 current_job_id=0 capture_ids=[2,3,4] error="VentureDocumentService: Attachment is missing or is a symbolic link"
+    POST /api/v1/ocr_batch/2/actions/step {}
+    HTTP 200
+    batch id=2 state=succeeded cursor=3 total=3 failed=1 current_job_id=0 capture_ids=[2,3,4] error="VentureDocumentService: Attachment is missing or is a symbolic link"
+    OK   stepping a cancelled batch resumes it from its durable cursor
+
+--- 11. Bounds are refused with useful errors
+    POST /ui/chat/upload multipart filename=bounds.png type=image/png bytes=733
+    HTTP 201 {"id": 8, "name": "bounds.png", "size": 733, "text_chars": 0, "is_image": true}
+    replaced the original with a 4097x1 PNG (raster bound is 4096 per dimension)
+    POST /api/v1/document/8/actions/ocr_extract {"language": "eng"}
+    HTTP 200
+    job id=10 state=failed pages=0 completed_pages=0 attempts=0 language="eng" engine="fixture OCR 1 " source_hash="ba49ff4d0a9e369bf7de613ae565e2dedd62908f0ed477f1ba53da11ca0171a2" extracted_at=null reviewed=False error="Image dimensions exceed the OCR raster bound"
+    job text: null
+    OK   the oversized raster is refused with a named bound
+    replaced the original with 20 MiB + 1 byte (file bound is 20 MiB)
+    POST /api/v1/document/8/actions/ocr_extract {"language": "eng"}
+    HTTP 200
+    job id=11 state=failed pages=0 completed_pages=0 attempts=0 language="eng" engine="fixture OCR 1 " source_hash="" extracted_at=null reviewed=False error="VentureDocumentService: Attachment is not a regular file within the allowed size"
+    job text: null
+    OK   the oversized original is refused with a named bound
+    POST /ui/chat/upload multipart filename=pages.pdf type=application/pdf bytes=953
+    HTTP 201 {"id": 9, "name": "pages.pdf", "size": 953, "text_chars": 0, "is_image": false}
+    replaced the original with a 51-page PDF (page bound is 50)
+    POST /api/v1/document/9/actions/ocr_extract {"language": "eng"}
+    HTTP 200
+    job id=12 state=failed pages=0 completed_pages=0 attempts=0 language="eng" engine="fixture OCR 1 " source_hash="d98159b4b4e16cc75e8ff0352561d0a708aa1eb8793d2caa1286efbbc98158a7" extracted_at=null reviewed=False error="OCR supports bounded PNG, JPEG, WebP and PDF documents (at most 50 pages)"
+    job text: null
+    OK   the over-long PDF is refused with a named bound
+    POST /api/v1/document/1/actions/ocr_extract {"language": "eng; touch /tmp/venture-ocr-should-not-exist"}
+    HTTP 422
+    message: "Language: is not in the expected format"
+    OK   refused with HTTP 422 (expected one of (400, 409, 422))
+    OK   a shell-looking language is refused and nothing was executed
+    POST /api/v1/capture_item/0/actions/ocr_extract_all {"organization_id": 1, "limit": 26}
+    HTTP 422
+    message: "Documents: must be at most 25"
+    OK   refused with HTTP 422 (expected one of (400, 409, 422))
+    OK   a batch larger than the documented 25-row bound is refused
+
+--- 12. OCR posts no books
+    financial row counts after all OCR work: {"expense": 1, "ledger_entry": 2}
+    OK   no expense and no ledger entry was created by any OCR action
+    ocr_job states observed across 12 durable jobs: ["failed", "pending", "succeeded"]
+    OK   per-document job state is a durable record, including failures
+
+LIMITATIONS:
+  No real Tesseract, no language pack and no real scanned receipt: the engine is a shell
+    script that answers --version and prints fixed text, exactly as tests/test-ocr.c does.
+    Recognition quality is therefore not demonstrated; only the contract around the engine is.
+    (tests/test-ocr.c's /ocr/real-engine case covers a real binary when one is provisioned.)
+  All documents, capture rows and money are synthetic, in one organization, on SQLite, with a
+    single owner; no PostgreSQL, no multi-tenant isolation and no concurrency are exercised.
+  The vision/AI fallback path is not exercised: this shows that ordinary capture and native
+    document text extraction continue with OCR off and that ocr_extract refuses, not that an
+    AI provider answered. No provider is configured and no network call is made.
+  The file-size, page-count and raster bounds are triggered by rewriting the stored original
+    on disk, which is how tests/test-ocr.c triggers them; the upload route has its own limit.
+  Restart resumability, the 30 s process deadline, active cancellation of a running engine,
+    temporary-artifact cleanup and staged-approval staleness are covered by tests/test-ocr.c
+    and are not re-proved here.
+
+All checks passed.
+#+end_example
+
+* Limitations
+
+Repeated from the transcript, which prints them itself:
+
+- No real Tesseract, no language pack and no real scanned receipt. The engine
+  is a shell script that answers =--version= and prints fixed text, exactly as
+  =tests/test-ocr.c= does. Recognition quality is therefore not demonstrated;
+  only the contract around the engine is. =tests/test-ocr.c='s =/ocr/real-engine=
+  case covers a real binary when =VENTURE_TEST_OCR_TESSERACT= is provisioned.
+- All documents, capture rows and money are synthetic, in one organization, on
+  SQLite, with a single owner. No PostgreSQL, no multi-tenant isolation and no
+  concurrency are exercised.
+- The vision/AI fallback path is not exercised. This shows that ordinary
+  capture and native document text extraction continue with OCR off and that
+  =ocr_extract= refuses — not that an AI provider answered. No provider is
+  configured and no network call is made.
+- The file-size, page-count and raster bounds are triggered by rewriting the
+  stored original on disk, which is how =tests/test-ocr.c= triggers them; the
+  upload route has its own, smaller limit.
+- Restart resumability, the 30 s process deadline, active cancellation of a
+  running engine, temporary-artifact cleanup and staged-approval staleness are
+  covered by =tests/test-ocr.c= and are not re-proved here.
+- The build used was linked with Poppler and GdkPixbuf, so the documented
+  refusal for a server built without them (=OCR requires a server built with
+  Poppler and GdkPixbuf=) is not exercised; =tests/test-ocr.c='s
+  =/ocr/missing-engine= case covers it.

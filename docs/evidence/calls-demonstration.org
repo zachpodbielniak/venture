@@ -1,0 +1,305 @@
+#+title: Call logging and follow-up demonstration (#122)
+
+* Built artifact and scope
+
+This is a synthetic application demonstration of issue #125's =#122 — Call
+logging and follow-up= checklist, run against an already-built DEBUG =venture=
+binary. It builds nothing. The driver starts that artifact on an OS-chosen
+loopback port with its own private YAML config, state directory and throwaway
+SQLite database, bootstraps the first-run owner, and drives the documented
+=log_call= surfaces — the REST record-action route, the generated =/e/= pages
+and =venturectl act= — exactly as an operator would. No provider, telephony
+connection, webhook or recording download exists or was contacted, and no
+recording address was fetched.
+
+Artifact: =/home/fai/venture-wt/epic-post-parity-5/build/debug/venture=
+SHA-256: =13815d4d925e8df1c5d7cf751fd659e154223ca2e3d500591780c62c5be63f8d=
+
+#+begin_src sh
+ROOT=$(mktemp -d /tmp/demo-calls-XXXX)
+python3 docs/evidence/calls-demonstration.py \
+  /home/fai/venture-wt/epic-post-parity-5/build/debug/venture "$ROOT"
+rm -rf "$ROOT"
+#+end_src
+
+The run below exited =0=. The scratch root was removed afterwards. The
+generated first-run owner password is never printed.
+
+* DONE WHEN items covered
+
+Each line quotes the issue wording and names the transcript steps that show it.
+
+- "One service action logs/completes the call, writes its timeline history and
+  optionally schedules a follow-up in one transaction." — steps [03], [04],
+  [06]. One =POST .../actions/log_call= produced the completed call activity,
+  its linked =interaction=, and one planned =followup=; a request refused for a
+  negative duration left =activities=0 calls=0 followups=0 interactions=0=.
+- "Cover inbound/outbound calls, actual occurrence time, nonnegative duration,
+  outcome, owner and company/contact/lead relations. Resolve how the new
+  structured call outcome coexists with the existing free-text activity
+  outcome." — steps [03], [04], [06], [08]. Outbound on a company, inbound
+  completing a planned call on a contact, inbound on a lead; =call_occurred_at=
+  is kept distinct from =due_at= and =completed_at=; =call_duration=-1= is
+  refused with "Call duration: must be at least 0"; every call carries both the
+  structured =call_outcome= and the free-text =outcome=.
+- "Define follow-up owner, due time and reminder. A repeat request or future
+  voice-provider replay must not create duplicate call history or follow-ups;
+  define an external identity seam without implementing telephony." — steps
+  [04], [05], [06], [07]. The follow-up is =kind=followup status=planned= with
+  its own owner, =due_at= and a =remind_at= defaulted to due. Repeating the
+  request with no external pair reused the derived =manual-v1= identity and
+  returned the same activity, interaction and follow-up with no new rows;
+  repeating it under the explicit =fixture-voice-v1 / prov-call-8821= pair did
+  the same; reusing that provider identity with different content was refused
+  =409 conflict=.
+- "Enforce organization and record access on recordings/transcripts; redact
+  credential-bearing URLs, render transcript text safely and define retention.
+  No automatic fetching of arbitrary recording URLs." — steps [09] and [10],
+  partially. Userinfo, query-string and fragment recording addresses were each
+  refused =422 validation= with "Recording URL: is not in the expected format",
+  a message that repeats no part of the submitted credential; a stable HTTPS
+  address was accepted; the supplied transcript renders escaped on
+  =/e/activity/5=; the company timeline summary carries the title and narrative
+  outcome only, with no recording address and no transcript. Organization and
+  cross-record access enforcement and retention are *not* shown here — see
+  LIMITATIONS.
+- "Include lead-only calls in history; calls and activity_churn reports must
+  count one event, with documented period and owner semantics." — steps [08],
+  [11], [12]. The lead-only call was logged through =venturectl act lead 1
+  log_call= with =contact_id=0 company_id=0=, and appears once in
+  =GET /api/v1/activity/lead/1=. The =calls= report over =period=2026-09=
+  reports =calls: 4= from 4 call activities, 4 linked interactions and 1
+  follow-up — not 9 — grouped by the owner frozen at logging, and =calls: 0=
+  for August, so the period comes from the actual occurrence. =activity_churn=
+  is unmoved, and the four calls created no payment, allocation, refund or
+  invoice row.
+
+* Verbatim demonstration transcript
+
+#+begin_example
+  Artifact: /home/fai/venture-wt/epic-post-parity-5/build/debug/venture
+  Artifact SHA-256: 13815d4d925e8df1c5d7cf751fd659e154223ca2e3d500591780c62c5be63f8d
+
+  [01] Bootstrap: the first-run owner password is printed once into the private server log
+       GET /api/v1/company?organization_id=1
+         -> HTTP 401
+         -> unauthenticated record access is refused before login
+       POST /login {"username": "owner", "password": "<private, never printed>"}
+         -> HTTP 302
+         -> session cookie issued for owner
+
+  [02] Create the CRM subjects: a company, its contact and a separate lead
+       POST /api/v1/company {"name": "Northwind Freight", "organization_id": 1}
+         -> HTTP 201
+       POST /api/v1/contact {"company_id": 1, "email": "priya.raman@example.invalid", "name": "Priya Raman", "organization_id": 1}
+         -> HTTP 201
+       POST /api/v1/lead {"company_name": "Halden Logistics", "email": "enquiry@example.invalid", "name": "Website enquiry", "organization_id": 1}
+         -> HTTP 201
+         -> company id=1 contact id=1 lead id=1
+         -> baseline customer_churn activity_churn = 'n/a'
+         -> rows before any call: activities=0 calls=0 followups=0 interactions=0
+
+  [03] A negative duration is refused, and the refused request writes nothing
+       POST /api/v1/company/1/actions/log_call {"call_direction": "outbound", "call_duration": -1, "call_followup_due_at": "2026-09-25T15:00:00Z", "call_followup_owner": "owner", "call_occurred_at": "2026-09-03T14:05:00Z", "call_outcome": "reached", "outcome": "Agreed to send a revised estimate before the renewal date.", "owner": "owner", "subject": "Renewal discovery call"}
+         -> HTTP 422
+         -> error='validation' message='Call duration: must be at least 0'
+         -> rows unchanged: activities=0 calls=0 followups=0 interactions=0
+
+  [04] Outbound call on a company: one action writes the completed call, its timeline history and one planned follow-up
+       POST /api/v1/company/1/actions/log_call {"call_direction": "outbound", "call_duration": 900, "call_followup_due_at": "2026-09-25T15:00:00Z", "call_followup_owner": "owner", "call_occurred_at": "2026-09-03T14:05:00Z", "call_outcome": "reached", "outcome": "Agreed to send a revised estimate before the renewal date.", "owner": "owner", "subject": "Renewal discovery call"}
+         -> HTTP 200
+         id = 2
+         kind = 'call'
+         status = 'done'
+         owner = 'owner'
+         company_id = 1
+         call_direction = 'outbound'
+         call_duration = 900
+         call_occurred_at = '2026-09-03T14:05:00Z'
+         call_outcome = 'reached'
+         outcome = 'Agreed to send a revised estimate before the renewal date.'
+         completed_at = '2026-09-20T18:01:30.389920Z'
+         call_external_source = 'manual-v1'
+         call_external_id = '0586080d17a13cde00a79b9dff0c21e5aaf905b1864ca20241d13ff5a5b837dd'
+         call_interaction_id = 1
+         call_followup_id = 1
+         -> call_external_key / call_request_hash are SENSITIVE and absent from the API record
+       GET /api/v1/interaction/1
+         -> HTTP 200
+         interaction kind='call' outbound=True company_id=1 occurred_at='2026-09-03T14:05:00Z' subject='Renewal discovery call'
+       GET /api/v1/activity/1
+         -> HTTP 200
+         followup kind='followup' status='planned' owner='owner' due_at='2026-09-25T15:00:00Z' remind_at='2026-09-25T15:00:00Z' subject='Follow up: Renewal discovery call'
+         -> rows now: activities=2 calls=1 followups=1 interactions=1
+
+  [05] Replay: the identical request derives the same manual-v1 identity and creates no second call, interaction or follow-up
+       POST /api/v1/company/1/actions/log_call {"call_direction": "outbound", "call_duration": 900, "call_followup_due_at": "2026-09-25T15:00:00Z", "call_followup_owner": "owner", "call_occurred_at": "2026-09-03T14:05:00Z", "call_outcome": "reached", "outcome": "Agreed to send a revised estimate before the renewal date.", "owner": "owner", "subject": "Renewal discovery call"}
+         -> HTTP 200
+         -> returned activity id=2 (original 2), call_interaction_id=1, call_followup_id=1
+         -> rows unchanged: activities=2 calls=1 followups=1 interactions=1
+
+  [06] Inbound call completing a planned call activity on a contact, under an explicit external identity
+       POST /api/v1/activity {"company_id": 1, "contact_id": 1, "due_at": "2026-09-08T09:00:00Z", "kind": "call", "organization_id": 1, "owner": "owner", "subject": "Planned check-in"}
+         -> HTTP 201
+         planned activity id=3 status='planned' kind='call' owner='owner'
+       POST /api/v1/activity/3/actions/log_call {"call_direction": "inbound", "call_duration": 480, "call_external_id": "prov-call-8821", "call_external_source": "fixture-voice-v1", "call_occurred_at": "2026-09-08T09:30:00Z", "call_outcome": "voicemail", "outcome": "Left a voicemail confirming the escalation was received.", "subject": "Inbound support escalation"}
+         -> HTTP 200
+         id = 3
+         status = 'done'
+         owner = 'owner'
+         contact_id = 1
+         call_direction = 'inbound'
+         call_duration = 480
+         call_occurred_at = '2026-09-08T09:30:00Z'
+         call_outcome = 'voicemail'
+         due_at = '2026-09-08T09:00:00Z'
+         completed_at = '2026-09-20T18:01:30.437490Z'
+         call_external_source = 'fixture-voice-v1'
+         call_external_id = 'prov-call-8821'
+         call_interaction_id = 2
+         call_followup_id = 0
+       GET /api/v1/interaction/2
+         -> HTTP 200
+         interaction kind='call' outbound=False contact_id=1 occurred_at='2026-09-08T09:30:00Z'
+         -> rows now: activities=3 calls=2 followups=1 interactions=2
+       POST /api/v1/activity/3/actions/log_call {"call_direction": "inbound", "call_duration": 480, "call_external_id": "prov-call-8821", "call_external_source": "fixture-voice-v1", "call_occurred_at": "2026-09-08T09:30:00Z", "call_outcome": "voicemail", "outcome": "Left a voicemail confirming the escalation was received.", "subject": "Inbound support escalation"}
+         -> HTTP 200
+         -> provider replay returned activity id=3 (original 3), interaction 2
+         -> rows unchanged: activities=3 calls=2 followups=1 interactions=2
+
+  [07] Reusing that provider identity with different content is refused as a conflict
+       POST /api/v1/activity/3/actions/log_call {"call_direction": "inbound", "call_duration": 30, "call_external_id": "prov-call-8821", "call_external_source": "fixture-voice-v1", "call_occurred_at": "2026-09-08T09:30:00Z", "call_outcome": "voicemail", "outcome": "Rewritten history", "subject": "Inbound support escalation"}
+         -> HTTP 409
+         -> error='conflict' message='VentureActivityService: Call identity already belongs to different or removed history'
+         -> rows unchanged: activities=3 calls=2 followups=1 interactions=2
+
+  [08] Lead-only call through venturectl, with no invented contact
+       $ venturectl --server http://127.0.0.1:53317 --session-file <private> act lead 1 log_call subject=Inbound enquiry from the website owner=dana.reyes call_direction=inbound call_duration=300 call_outcome=callback call_occurred_at=2026-09-10T11:00:00Z outcome=Asked to be called back on Friday.
+         -> exit 0
+         id = 4
+         owner = 'dana.reyes'
+         lead_id = 1
+         contact_id = 0
+         company_id = 0
+         call_direction = 'inbound'
+         call_outcome = 'callback'
+         call_external_source = 'manual-v1'
+         call_interaction_id = 3
+       GET /api/v1/activity/lead/1
+         -> HTTP 200
+         lead timeline event: {"action": "create", "actor": "owner", "actor_kind": "user", "approved_by": null, "changes": null, "id": 64, "kind": "change", "when": "2026-09-20T18:01:30.370394Z", "when_relative": "just now"}
+         lead timeline event: {"activity_id": 4, "actor": "dana.reyes", "body": "Inbound enquiry from the website: Asked to be called back on Friday.", "id": 3, "kind": "call", "when": "2026-09-10T11:00:00Z"}
+         -> rows now: activities=4 calls=3 followups=1 interactions=3
+
+  [09] Recording addresses: credential-bearing URLs are refused and the refusal repeats no submitted credential
+         submitted call_recording_url = 'https://svc:s3cr3t-do-not-log@recordings.example.invalid/calls/8821'
+       POST /api/v1/company/1/actions/log_call {"call_direction": "outbound", "call_duration": 60, "call_occurred_at": "2026-09-12T16:20:00Z", "call_outcome": "reached", "call_recording_url": "https://svc:s3cr3t-do-not-log@recordings.example.invalid/calls/8821", "call_transcript": "<script>alert('untrusted')</script> Caller asked for the annual price.", "outcome": "Quoted the annual price and recorded the caller's transcript.", "owner": "owner", "subject": "Pricing callback"}
+         -> HTTP 422
+         -> error='validation' message='Recording URL: is not in the expected format'
+         -> the refusal body contains no part of the submitted credential
+         submitted call_recording_url = 'https://recordings.example.invalid/calls/8821?token=s3cr3t-do-not-log'
+       POST /api/v1/company/1/actions/log_call {"call_direction": "outbound", "call_duration": 60, "call_occurred_at": "2026-09-12T16:20:00Z", "call_outcome": "reached", "call_recording_url": "https://recordings.example.invalid/calls/8821?token=s3cr3t-do-not-log", "call_transcript": "<script>alert('untrusted')</script> Caller asked for the annual price.", "outcome": "Quoted the annual price and recorded the caller's transcript.", "owner": "owner", "subject": "Pricing callback"}
+         -> HTTP 422
+         -> error='validation' message='Recording URL: is not in the expected format'
+         -> the refusal body contains no part of the submitted credential
+         submitted call_recording_url = 'https://recordings.example.invalid/calls/8821#s3cr3t-do-not-log'
+       POST /api/v1/company/1/actions/log_call {"call_direction": "outbound", "call_duration": 60, "call_occurred_at": "2026-09-12T16:20:00Z", "call_outcome": "reached", "call_recording_url": "https://recordings.example.invalid/calls/8821#s3cr3t-do-not-log", "call_transcript": "<script>alert('untrusted')</script> Caller asked for the annual price.", "outcome": "Quoted the annual price and recorded the caller's transcript.", "owner": "owner", "subject": "Pricing callback"}
+         -> HTTP 422
+         -> error='validation' message='Recording URL: is not in the expected format'
+         -> the refusal body contains no part of the submitted credential
+         -> rows unchanged: activities=4 calls=3 followups=1 interactions=3
+
+  [10] A stable HTTPS recording address and a supplied transcript are stored, and the transcript is escaped where it is rendered
+       POST /api/v1/company/1/actions/log_call {"call_direction": "outbound", "call_duration": 60, "call_occurred_at": "2026-09-12T16:20:00Z", "call_outcome": "reached", "call_recording_url": "https://recordings.example.invalid/calls/8821", "call_transcript": "<script>alert('untrusted')</script> Caller asked for the annual price.", "outcome": "Quoted the annual price and recorded the caller's transcript.", "owner": "owner", "subject": "Pricing callback"}
+         -> HTTP 200
+         call_recording_url = 'https://recordings.example.invalid/calls/8821'
+         call_transcript = "<script>alert('untrusted')</script> Caller asked for the annual price."
+       GET /e/activity/5
+         -> HTTP 200
+         -> /e/activity/5 renders the transcript escaped, not as markup
+         page excerpt: ...dings.example.invalid/calls/8821</dd><dt>Transcript</dt><dd>&lt;script&gt;alert(&#39;untrusted&#39;)&lt;/script&gt; Caller asked for the annual price.</dd><dt>Call source</dt><dd>manual-v1</...
+       GET /api/v1/activity/company/1
+         -> HTTP 200
+         -> the company timeline summaries carry the title and narrative outcome only: no recording address and no transcript
+         company timeline event: {"activity_id": 5, "actor": "owner", "body": "Pricing callback: Quoted the annual price and recorded the caller's transcript.", "id": 4, "kind": "call", "when": "2026-09-12T16:20:00Z"}
+         company timeline event: {"activity_id": 3, "actor": "owner", "body": "Inbound support escalation: Left a voicemail confirming the escalation was received.", "id": 2, "kind": "call", "when": "2026-09-08T09:30:00Z"}
+         company timeline event: {"activity_id": 2, "actor": "owner", "body": "Renewal discovery call: Agreed to send a revised estimate before the renewal date.", "id": 1, "kind": "call", "when": "2026-09-03T14:05:00Z"}
+
+  [11] The calls report counts each call once, by the owner frozen at logging, over the actual occurrence period
+         rows in the organization: activities=5 calls=4 followups=1 interactions=4
+       GET /api/v1/reports/calls?period=2026-09&organization_id=1
+         -> HTTP 200
+         report title: Calls
+         metrics: [{"calls": 4}]
+         row: {"callback": 1.0, "calls": 1.0, "inbound": 1.0, "no_answer": 0.0, "outbound": 0.0, "owner": "dana.reyes", "reached": 0.0, "seconds": 300.0, "unknown": 0.0, "voicemail": 0.0}
+         row: {"callback": 0.0, "calls": 3.0, "inbound": 1.0, "no_answer": 0.0, "outbound": 2.0, "owner": "owner", "reached": 2.0, "seconds": 1440.0, "unknown": 0.0, "voicemail": 1.0}
+         -> 4 call activities, 4 linked interactions and 1 follow-up produce 4 counted calls, not 9
+       GET /api/v1/reports/calls?period=2026-08&organization_id=1
+         -> HTTP 200
+         August period metrics: [{"calls": 0}]
+         -> the period is taken from the actual occurrence, inclusive start, exclusive end
+
+  [12] The activity_churn headline is a cash-receipt churn metric and logging calls does not move it
+         activity_churn before the calls: 'n/a' (value 'n/a')
+         activity_churn after  the calls: 'n/a' (value 'n/a')
+         payment rows in the organization after four logged calls: 0
+         payment_allocation rows in the organization after four logged calls: 0
+         refund rows in the organization after four logged calls: 0
+         invoice rows in the organization after four logged calls: 0
+         -> logging a call created no cash receipt, so the accounting definition of activity_churn is untouched
+         -> this fixture has no paying customer, so activity_churn has no denominator and reads n/a on both sides; the calls report is the call-activity evidence
+
+  [13] Call evidence is service-owned: generic CRUD cannot manufacture or rewrite it
+       PATCH /api/v1/activity/2 {"call_duration": 5, "organization_id": 1, "version": 1}
+         -> HTTP 422
+         -> error='validation' message='VentureActivityService: Use complete; completion and reminder stamps are service-owned'
+       POST /api/v1/activity {"call_direction": "inbound", "call_duration": 10, "call_occurred_at": "2026-09-02T10:00:00Z", "call_outcome": "reached", "kind": "call", "organization_id": 1, "status": "done", "subject": "Manufactured"}
+         -> HTTP 422
+         -> error='validation' message='VentureActivityService: Use complete; completion and reminder stamps are service-owned'
+         -> rows unchanged: activities=5 calls=4 followups=1 interactions=4
+
+  ALL EXPECTATIONS MET
+
+  LIMITATIONS: this demonstration proves only what the transcript above shows.
+    - No telephony, voice provider, webhook or recording download exists or was
+      contacted; the external identity seam is exercised with a synthetic
+      "fixture-voice-v1" namespace, and no recording address was ever fetched.
+    - All companies, contacts, leads, calls, transcripts and credentials are
+      synthetic and were created inside a private throwaway SQLite database that
+      is deleted with the scratch root.
+    - One organization, one signed-in owner. Cross-organization isolation,
+      read-only role refusal, staged confirmation/approval and the reminder sweep
+      are covered by test-activities, not by this transcript.
+    - SQLite only. PostgreSQL and migration 000490 are covered by the suite when
+      VENTURE_TEST_ACCOUNTING_POSTGRES_URI / VENTURE_TEST_MIGRATION_POSTGRES_URI
+      are set; neither ran here.
+    - activity_churn read n/a both before and after, because this fixture has no
+      paying customer and therefore no customer-months denominator. What is shown
+      is that four logged calls created no payment, allocation, refund or invoice
+      row, so the cash-receipt definition of the metric is untouched. The
+      arithmetic of activity_churn on a populated ledger is demonstrated by the
+      headline reports, not here.
+    - Transaction atomicity is shown from the outside only: refused requests left
+      no activity, interaction or follow-up rows. The internal rollback after a
+      partial write is covered by test-activities' call-followup-rollback case.
+
+#+end_example
+
+* What this does not prove
+
+The LIMITATIONS block above is part of the run's own output. In addition:
+
+- Only the owner role in a single organization was exercised. Read-only role
+  refusal, cross-organization isolation of recordings and transcripts, and the
+  staged =?stage=1= confirmation and stale-approval path are covered by
+  =test-activities=, not by this transcript.
+- Retention is a documented policy in [[file:../activities.org][activities]] ("no automatic expiry";
+  soft deletion hides but retains); nothing here exercises a retention sweep,
+  because none is claimed to exist.
+- The reminder sweep that delivers the follow-up's =remind_at= notification was
+  not run; only the stamped reminder time is shown.
+- Atomicity is observed from the outside: refused requests left no rows. The
+  internal rollback after a partial write is =test-activities='s
+  =call-followup-rollback= case.
+- SQLite only, one process, one run. PostgreSQL and migration =000490= are
+  covered by the suite when the PostgreSQL URIs are set; neither ran here.

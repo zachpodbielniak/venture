@@ -81,7 +81,10 @@ venturectl act ocr_batch 1 step
 venturectl act ocr_job 2 retry
 #+end_src
 
-Extraction queues a job; =step= advances one page. =ocr_extract_all= freezes
+Extraction queues a job; =step= advances one page. Filing a capture row
+with a document while OCR is enabled also queues a pending job for it, so a
+later batch that finds the original gone records its own failed job beside
+the retained pending one. =ocr_extract_all= freezes
 up to 25 inbox row identities in ascending order. Continue a batch until
 its state is =succeeded=, then use its last capture identity as =after_id=
 for the next page of the inbox. Failed documents increase =failed= and

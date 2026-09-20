@@ -913,9 +913,11 @@ claim of hosted capacity. The authenticated deployment walkthrough also
 uses the built server and independent preparer/reviewer sessions.
 
 The added =/close/action-authority= case passes on both SQLite and
-PostgreSQL: organization editor membership is refused, promotion to finance
-enables opening, an invalid currency is refused, and membership revocation
-removes the authority immediately. This extends the close suite to 12 cases.
+PostgreSQL: an organization editor is hidden from the period (not found), an
+accountant may read it but the action's own finance gate refuses with its
+message, promotion to finance enables opening, an invalid currency is
+refused, and membership revocation hides the workspace and period again.
+This extends the close suite to 12 cases.
 
 * Retainer action accessibility (epic #125)
 

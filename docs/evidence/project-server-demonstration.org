@@ -102,6 +102,9 @@ it is not a claim of automated browser JavaScript interaction.
 
 * Re-recorded against PR head
 
+Head commit at recording: =7b2160b= (later commits on the branch are tests,
+comments and evidence documents only; the server source is the same).
+
 The transcript above was recorded on a retainer-lane artifact whose feature
 commit is not an ancestor of this branch head, and it says so. Parent
 acceptance reran the same driver, unmodified and with the same ordinary

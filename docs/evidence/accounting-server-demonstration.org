@@ -76,6 +76,9 @@ bijection, historical reference/key remapping and restart comparisons.
 
 * Re-recorded against PR head
 
+Head commit at recording: =7b2160b= (later commits on the branch are tests,
+comments and evidence documents only; the server source is the same).
+
 The section above is component evidence recorded on the =f0bf0ab= lane
 artifact, which is not an ancestor of this branch head. Parent acceptance
 therefore reran the same driver, unmodified, against the head artifact.
