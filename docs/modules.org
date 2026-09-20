@@ -254,3 +254,10 @@ turning the credential module off does not hide imported history or remove
 booking records. The settings routes check both modules. Generic record
 metadata supplies optional private ownership; it is not a separate module or
 a second visibility registry. See [[file:connectors.org][mailbox and calendar connectors]].
+
+* Organization OIDC sign-in
+
+The =oidc= module requires =orgaccess=, =mfa= and =integrations=. Provider
+sign-in also requires the independent =oidc.enabled= switch and an explicit
+issuer allowlist; both default to refusing provider sign-in. Local users,
+permissions, MFA and recovery remain authoritative. See [[file:oidc.org][the sign-in guide]].

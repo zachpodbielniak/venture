@@ -901,3 +901,12 @@ statement evidence. This is a real sync, not a dry run. The existing
 `VENTURE_BANKFEED_TELLER_KEY` is ignored; an administrator must configure an
 explicit connection. A saved connection's provider, account and organization
 cannot be reassigned. Create a new connection for a different identity.
+
+## Organization sign-in
+
+OIDC configuration and explicit identity linking use the web settings described
+in `docs/oidc.org`; existing local passwords, roles and MFA remain authoritative.
+Do not create identity/provider records through generic CRUD or infer a local
+user from the provider's email. Credential inputs are write-only, and a rotated
+or disabled provider invalidates its old sessions. API tokens keep their existing
+local authorization behavior; provider sign-in does not mint global authority.

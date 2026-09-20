@@ -717,3 +717,12 @@ operator allowlist refusal instead of resolving old environment labels.
 hooks and a private event selects none. These provider fixtures make no live
 mailbox or calendar service claim; the separate browser recording is in
 [[file:evidence/125-connectors-demo.org][the connector demonstration]].
+
+* Organization OpenID Connect
+
+=test-oidc= verifies signed-token handling, PKCE/state/nonce, explicit local
+linking, organization scope, replay refusal, provider/user/membership revocation,
+local-MFA continuation and bounded network failure. Its lane passed 22 SQLite
+and isolated PostgreSQL cases and a real Keycloak 26.7.3 browser exercise;
+[[file:oidc.org][OIDC documentation]] records the operator procedure and evidence limitations.
+The combined epic build also checks anonymous route protection and local login.
