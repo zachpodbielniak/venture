@@ -137,3 +137,9 @@ Two binaries, both statically linked against every vendored dependency: =venture
 
 - [[file:crm-acceptance.org][CRM to collection acceptance]]: capture, identity, owner and sales-to-delivery tie-outs.
 - [[file:ocr.org][Local OCR and capture review]]: bounded extraction, provenance and attachment ownership.
+
+* Organization bank-feed setup
+
+[[file:bankfeed.org][Bank feeds]] documents encrypted per-account setup, explicit Teller
+sandbox/mutual-TLS configuration, rotation and revocation, and the settings
+screen's ordinary sync-and-import test.

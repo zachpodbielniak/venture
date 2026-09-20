@@ -248,6 +248,7 @@ venture_database_init(VentureDatabase *self)
 	venture_mail_sync_install_validators(self);
 	venture_stripe_install_validators(self);
 	venture_document_install_validators(self);
+	venture_bankfeed_install_validators(self);
 }
 
 VentureQuoteService *

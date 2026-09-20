@@ -211,7 +211,7 @@ venture_bank_feed_registry_list(VentureBankFeedRegistry *self)
 	return result;
 }
 
-typedef struct { GObject parent_instance; SoupSession *session; } SoupBankFeedTransport;
+typedef struct { GObject parent_instance; SoupSession *session; GTlsCertificate *certificate; } SoupBankFeedTransport;
 GType soup_bank_feed_transport_get_type(void);
 typedef struct { GObjectClass parent_class; } SoupBankFeedTransportClass;
 static void soup_transport_iface(VentureBankFeedTransportInterface *iface);
@@ -310,6 +310,7 @@ soup_transport_get_async(VentureBankFeedTransport *transport, const gchar *url, 
 		return;
 	}
 	soup_message_set_flags(message, soup_message_get_flags(message) | SOUP_MESSAGE_NO_REDIRECT);
+	if (self->certificate != NULL) soup_message_set_tls_client_certificate(message, self->certificate);
 	soup_apply_auth(message, authorization);
 	g_task_set_task_data(task, g_object_ref(message), g_object_unref);
 	soup_session_send_and_read_async(self->session, message, G_PRIORITY_DEFAULT, cancellable, soup_got, task);
@@ -323,6 +324,7 @@ static void
 soup_bank_feed_transport_finalize(GObject *object)
 {
 	g_clear_object(&((SoupBankFeedTransport *)object)->session);
+	g_clear_object(&((SoupBankFeedTransport *)object)->certificate);
 	G_OBJECT_CLASS(soup_bank_feed_transport_parent_class)->finalize(object);
 }
 static void
@@ -367,7 +369,11 @@ teller_parse_body(const gchar *body, const gchar *currency, GError **error)
 	JsonArray *array;
 	GPtrArray *items;
 	guint i;
-	if (!json_parser_load_from_data(parser, body, -1, error)) return NULL;
+	if (!json_parser_load_from_data(parser, body, -1, NULL))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Teller returned invalid JSON");
+		return NULL;
+	}
 	root = json_parser_get_root(parser);
 	if (root == NULL || !JSON_NODE_HOLDS_ARRAY(root))
 	{
@@ -463,8 +469,77 @@ teller_fetch_async(VentureBankFeed *feed, const gchar *account_id, GDateTime *fr
 		teller_body_ready, g_steal_pointer(&task));
 }
 
+static const gchar *teller_setting_names[] = { "access_token", "environment", "certificate", "private_key" };
+static JsonNode *teller_schema(VentureBankFeed *feed)
+{
+	static const gchar *labels[] = { "Access token", "Environment (sandbox, development, production)", "Client certificate PEM", "Private key PEM" };
+	JsonNode *node = json_node_new(JSON_NODE_OBJECT);
+	JsonObject *root = json_object_new(), *properties = json_object_new();
+	guint i;
+	json_node_take_object(node, root);
+	json_object_set_string_member(root, "type", "object");
+	json_object_set_boolean_member(root, "additionalProperties", FALSE);
+	json_object_set_object_member(root, "properties", properties);
+	for (i = 0; i < G_N_ELEMENTS(teller_setting_names); i++)
+	{
+		JsonObject *field = json_object_new();
+		json_object_set_string_member(field, "type", "string");
+		json_object_set_string_member(field, "title", labels[i]);
+		json_object_set_boolean_member(field, "x-sensitive", i != 1);
+		json_object_set_boolean_member(field, "x-multiline", i >= 2);
+		if (i == 1) json_object_set_string_member(field, "default", "production");
+		json_object_set_object_member(properties, teller_setting_names[i], field);
+	}
+	return node;
+}
+static VentureBankFeed *teller_prepare(VentureBankFeed *feed, JsonObject *settings, GError **error)
+{
+	VentureTellerFeed *self = VENTURE_TELLER_FEED(feed);
+	g_autoptr(GTlsCertificate) certificate = NULL;
+	g_autoptr(VentureBankFeedTransport) transport = NULL;
+	g_autofree gchar *pem = NULL;
+	const gchar *token, *environment, *cert, *key, *name;
+	JsonObjectIter iterator;
+	JsonNode *value;
+	guint i;
+	json_object_iter_init(&iterator, settings);
+	while (json_object_iter_next(&iterator, &name, &value))
+	{
+		gboolean valid = FALSE;
+		for (i = 0; i < G_N_ELEMENTS(teller_setting_names); i++)
+			if (!g_strcmp0(name, teller_setting_names[i])) valid = json_node_get_value_type(value) == G_TYPE_STRING;
+		if (!valid) goto invalid;
+	}
+	token = venture_json_object_get_string(settings, "access_token", "");
+	environment = venture_json_object_get_string(settings, "environment", "production");
+	cert = venture_json_object_get_string(settings, "certificate", "");
+	key = venture_json_object_get_string(settings, "private_key", "");
+	if (!*token || strlen(token) > 4096 || (g_strcmp0(environment, "sandbox") &&
+		g_strcmp0(environment, "development") && g_strcmp0(environment, "production"))) goto invalid;
+	for (i = 0; token[i]; i++) if (g_ascii_iscntrl(token[i]) || token[i] == ':') goto invalid;
+	if (*cert || *key || g_strcmp0(environment, "sandbox"))
+	{
+		if (!*cert || !*key || strlen(cert) + strlen(key) > 49152) goto invalid;
+		pem = g_strconcat(cert, "\n", key, NULL);
+		certificate = g_tls_certificate_new_from_pem(pem, -1, NULL);
+		if (certificate == NULL) goto invalid;
+	}
+	if (G_TYPE_CHECK_INSTANCE_TYPE(self->transport, soup_bank_feed_transport_get_type()))
+	{
+		transport = venture_bank_feed_transport_new_http();
+		g_set_object(&((SoupBankFeedTransport *)transport)->certificate, certificate);
+	}
+	else transport = g_object_ref(self->transport);
+	return venture_teller_feed_new(token, transport);
+invalid:
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		"Teller requires a valid access token and environment; development and production require certificate and private-key PEM");
+	return NULL;
+}
 static void teller_iface(VentureBankFeedInterface *iface)
 {
+	iface->prepare = teller_prepare;
+	iface->dup_schema = teller_schema;
 	iface->get_name = teller_name;
 	iface->fetch = teller_fetch;
 	iface->fetch_async = teller_fetch_async;
@@ -524,16 +599,13 @@ venture_bankfeed_service_new(VentureDatabase *database, gint64 organization_id,
 	VentureBankFeedTransport *transport, GError **error)
 {
 	g_autoptr(VentureBankFeedService) self = NULL;
-	const gchar *key;
 	(void)error;
 	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
 	self = g_object_new(VENTURE_TYPE_BANKFEED_SERVICE, NULL);
 	self->database = g_object_ref(database);
 	self->organization_id = organization_id;
 	self->registry = venture_bank_feed_registry_new();
-	key = g_getenv("VENTURE_BANKFEED_TELLER_KEY");
-	if (key != NULL && *key != '\0')
-		venture_bank_feed_registry_add(self->registry, venture_teller_feed_new(key, transport));
+	venture_bank_feed_registry_add(self->registry, venture_teller_feed_new(NULL, transport));
 	return g_steal_pointer(&self);
 }
 
@@ -542,6 +614,119 @@ venture_bankfeed_service_get_registry(VentureBankFeedService *self)
 {
 	g_return_val_if_fail(VENTURE_IS_BANKFEED_SERVICE(self), NULL);
 	return self->registry;
+}
+
+/* The stable local UUID partitions multiple enrollments within one business.
+ * Provider identity is evidence; it never selects the organization. */
+static gchar *bankfeed_binding_key(VentureEntity *connection)
+{
+	return g_strconcat("bankfeed-", venture_entity_get_uuid(connection), NULL);
+}
+static gchar *bankfeed_account_identity(VentureEntity *connection)
+{
+	g_autofree gchar *provider = NULL, *account = NULL, *identity = NULL;
+	gint64 bank;
+	g_object_get(connection, "provider", &provider, "provider-account-id", &account, "bank-account-id", &bank, NULL);
+	identity = g_strdup_printf("%" G_GSIZE_FORMAT ":%s%" G_GSIZE_FORMAT ":%s:%" G_GINT64_FORMAT,
+		strlen(provider), provider, strlen(account), account, bank);
+	return g_compute_checksum_for_string(G_CHECKSUM_SHA256, identity, -1);
+}
+JsonNode *venture_bankfeed_service_settings_schema(VentureBankFeedService *self,
+	const gchar *provider, GError **error)
+{
+	VentureBankFeed *feed;
+	g_return_val_if_fail(VENTURE_IS_BANKFEED_SERVICE(self), NULL);
+	feed = venture_bank_feed_registry_lookup(self->registry, provider);
+	if (feed == NULL || VENTURE_BANK_FEED_GET_IFACE(feed)->dup_schema == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED, "Provider does not offer organization settings");
+		return NULL;
+	}
+	return venture_bank_feed_dup_schema(feed);
+}
+JsonNode *venture_bank_feed_dup_schema(VentureBankFeed *self)
+{
+	g_return_val_if_fail(VENTURE_IS_BANK_FEED(self), NULL);
+	return VENTURE_BANK_FEED_GET_IFACE(self)->dup_schema != NULL ? VENTURE_BANK_FEED_GET_IFACE(self)->dup_schema(self) : NULL;
+}
+VentureBankFeed *venture_bank_feed_prepare(VentureBankFeed *factory, JsonObject *settings, GError **error)
+{
+	g_autoptr(VentureBankFeed) client = NULL;
+	g_return_val_if_fail(VENTURE_IS_BANK_FEED(factory), NULL);
+	g_return_val_if_fail(settings != NULL, NULL);
+	client = VENTURE_BANK_FEED_GET_IFACE(factory)->prepare != NULL
+		? VENTURE_BANK_FEED_GET_IFACE(factory)->prepare(factory, settings, error) : g_object_ref(factory);
+	if (client == NULL)
+	{
+		if (error == NULL || *error == NULL)
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "Bank feed provider could not prepare its client");
+		return NULL;
+	}
+	if (!VENTURE_IS_BANK_FEED(client) || g_strcmp0(venture_bank_feed_get_name(client), venture_bank_feed_get_name(factory)))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "Bank feed factory returned a different provider");
+		return NULL;
+	}
+	return g_steal_pointer(&client);
+}
+VentureIntegrationConnection *venture_bankfeed_service_configure(VentureBankFeedService *self,
+	gint64 connection_id, JsonObject *settings, gint64 expected_binding,
+	gint64 expected_version, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) connection = NULL;
+	g_autoptr(VentureIntegrationConnection) active = NULL, result = NULL;
+	g_autoptr(VentureBankFeed) checked = NULL;
+	g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
+	g_autoptr(GError) lookup_error = NULL;
+	g_autofree gchar *key = NULL, *identity = NULL, *provider = NULL;
+	VentureIntegrationService *integrations;
+	VentureBankFeed *feed;
+	gint64 org;
+	g_return_val_if_fail(VENTURE_IS_BANKFEED_SERVICE(self), NULL);
+	g_return_val_if_fail(settings != NULL, NULL);
+	if (!venture_database_begin(self->database, error)) return NULL;
+	connection = venture_database_get(self->database, VENTURE_TYPE_BANK_CONNECTION, connection_id, error);
+	if (connection == NULL) goto fail;
+	if (venture_entity_is_deleted(connection))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Bank connection is unavailable");
+		goto fail;
+	}
+	org = venture_entity_get_organization_id(connection);
+	g_object_get(connection, "provider", &provider, NULL);
+	feed = venture_bank_feed_registry_lookup(self->registry, provider);
+	if (feed == NULL || VENTURE_BANK_FEED_GET_IFACE(feed)->prepare == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED, "Provider does not offer organization settings");
+		goto fail;
+	}
+	checked = venture_bank_feed_prepare(feed, settings, error);
+	if (checked == NULL) goto fail;
+	integrations = venture_integration_service_get(self->database);
+	key = bankfeed_binding_key(connection);
+	identity = bankfeed_account_identity(connection);
+	active = venture_integration_service_find(integrations, org, key, &lookup_error);
+	if (lookup_error != NULL && !g_error_matches(lookup_error, VENTURE_ERROR, VENTURE_ERROR_CONFIG))
+	{
+		g_propagate_error(error, g_steal_pointer(&lookup_error));
+		goto fail;
+	}
+	if (expected_binding != (active ? venture_entity_get_id(VENTURE_ENTITY(active)) : 0) ||
+		expected_version != (active ? venture_entity_get_version(VENTURE_ENTITY(active)) : 0))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "Bank feed binding changed; reload settings");
+		goto fail;
+	}
+	json_node_set_object(node, settings);
+	result = venture_integration_service_configure(integrations, org, key, identity,
+		!g_strcmp0(venture_json_object_get_string(settings, "environment", "production"), "sandbox") ? "test" : "live",
+		node, expected_version, actor, error);
+	if (result == NULL) goto fail;
+	if (!venture_database_commit(self->database, error)) return NULL;
+	return g_steal_pointer(&result);
+fail:
+	venture_database_rollback(self->database);
+	return NULL;
 }
 
 static gint
@@ -597,6 +782,8 @@ typedef struct
 	GDateTime *now;
 	VentureEntity *connection;
 	VentureBankFeed *feed;
+	gint64 binding_id;
+	gint64 binding_version;
 	gboolean has_actor;
 	VentureActor actor;
 	gchar *actor_name;
@@ -655,6 +842,17 @@ bankfeed_import_items(VentureBankFeedService *self, BankfeedSyncJob *job, GPtrAr
 	before = count_filter(self->database, VENTURE_TYPE_BANK_TRANSACTION, job->organization_id, "bank-account-id", job->bank_id, error);
 	if (before < 0) return -1;
 	if (!venture_database_begin(self->database, error)) return -1;
+	if (job->binding_id != 0)
+	{
+		g_autoptr(JsonNode) current = venture_integration_service_resolve_version(
+			venture_integration_service_get(self->database), job->organization_id,
+			job->binding_id, job->binding_version, FALSE, error);
+		if (current == NULL)
+		{
+			venture_database_rollback(self->database);
+			return -1;
+		}
+	}
 	result = venture_bank_match_service_execute(venture_database_get_bank_match_service(self->database),
 		"feed", job->bank_id, args, actor, error);
 	if (result == NULL)
@@ -701,6 +899,12 @@ bankfeed_sync_prepare(VentureBankFeedService *self, gint64 connection_id,
 		bankfeed_sync_job_free(job);
 		return NULL;
 	}
+	if (venture_entity_is_deleted(job->connection))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Bank connection is unavailable");
+		bankfeed_sync_job_free(job);
+		return NULL;
+	}
 	job->organization_id = venture_entity_get_organization_id(job->connection);
 	if (job->organization_id <= 0)
 	{
@@ -717,16 +921,39 @@ bankfeed_sync_prepare(VentureBankFeedService *self, gint64 connection_id,
 		bankfeed_sync_job_free(job);
 		return NULL;
 	}
-	job->feed = g_object_ref(feed);
+	if (VENTURE_BANK_FEED_GET_IFACE(feed)->prepare != NULL)
+	{
+		g_autofree gchar *key = bankfeed_binding_key(job->connection);
+		g_autofree gchar *identity = bankfeed_account_identity(job->connection), *bound_identity = NULL;
+		g_autoptr(VentureIntegrationConnection) binding = NULL;
+		g_autoptr(JsonNode) settings = NULL;
+		VentureIntegrationService *integrations = venture_integration_service_get(self->database);
+		binding = venture_integration_service_find(integrations, job->organization_id, key, error);
+		if (binding == NULL) { bankfeed_sync_job_free(job); return NULL; }
+		g_object_get(binding, "account-id", &bound_identity, NULL);
+		if (g_strcmp0(identity, bound_identity))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "Bank feed account identity changed; link a new bank connection");
+			bankfeed_sync_job_free(job);
+			return NULL;
+		}
+		job->binding_id = venture_entity_get_id(VENTURE_ENTITY(binding));
+		job->binding_version = venture_entity_get_version(VENTURE_ENTITY(binding));
+		settings = venture_integration_service_resolve_version(integrations, job->organization_id,
+			job->binding_id, job->binding_version, FALSE, error);
+		if (settings != NULL) job->feed = venture_bank_feed_prepare(feed, json_node_get_object(settings), error);
+		if (job->feed == NULL) { bankfeed_sync_job_free(job); return NULL; }
+	}
+	else job->feed = g_object_ref(feed);
 	bank = venture_database_get(self->database, VENTURE_TYPE_BANK_ACCOUNT, job->bank_id, error);
 	if (bank == NULL)
 	{
 		bankfeed_sync_job_free(job);
 		return NULL;
 	}
-	if (venture_entity_get_organization_id(bank) != job->organization_id)
+	if (venture_entity_is_deleted(bank) || venture_entity_get_organization_id(bank) != job->organization_id)
 	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Bank account belongs to another organization");
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Bank account is deleted or belongs to another organization");
 		bankfeed_sync_job_free(job);
 		return NULL;
 	}
@@ -825,4 +1052,46 @@ venture_bankfeed_service_sync_due(VentureBankFeedService *self, gint64 organizat
 		total += imported;
 	}
 	return total;
+}
+
+static gboolean bank_connection_validate(VentureDatabase *database, VentureEntity *entity,
+	VentureEntity *previous, gpointer user_data, GError **error)
+{
+	static const gchar *identity[] = { "provider", "provider-account-id", "bank-account-id", "organization-id" };
+	g_autoptr(VentureEntity) bank = NULL;
+	gint64 bank_id;
+	guint i;
+	if (previous != NULL)
+		for (i = 0; i < G_N_ELEMENTS(identity); i++)
+		{
+			GParamSpec *property = g_object_class_find_property(G_OBJECT_GET_CLASS(entity), identity[i]);
+			g_auto(GValue) current = G_VALUE_INIT, original = G_VALUE_INIT;
+			g_value_init(&current, property->value_type);
+			g_value_init(&original, property->value_type);
+			g_object_get_property(G_OBJECT(entity), identity[i], &current);
+			g_object_get_property(G_OBJECT(previous), identity[i], &original);
+			if (g_param_values_cmp(property, &current, &original) != 0)
+			{
+				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+					"A saved bank connection keeps its account identity; create a new connection for a different account");
+				return FALSE;
+			}
+		}
+	/* Reference validity is enforced by the repository only when changed;
+	 * unchanged historical references must remain editable after deletion. */
+	if (previous != NULL) return TRUE;
+	g_object_get(entity, "bank-account-id", &bank_id, NULL);
+	bank = venture_database_get(database, VENTURE_TYPE_BANK_ACCOUNT, bank_id, error);
+	if (bank == NULL) return FALSE;
+	if (venture_entity_is_deleted(bank) || venture_entity_get_organization_id(bank) != venture_entity_get_organization_id(entity))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Bank account belongs to another organization or is unavailable");
+		return FALSE;
+	}
+	return TRUE;
+}
+void venture_bankfeed_install_validators(VentureDatabase *database)
+{
+	g_return_if_fail(VENTURE_IS_DATABASE(database));
+	venture_database_add_save_validator(database, VENTURE_TYPE_BANK_CONNECTION, bank_connection_validate, NULL, NULL);
 }

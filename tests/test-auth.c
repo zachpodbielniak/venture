@@ -1234,6 +1234,8 @@ test_auth_pages_refuse_anonymous_requests(
 
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/mail"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/mail", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/bankfeed/1/settings"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/bankfeed/1/settings", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
 
 	/* Payment actions authenticate before exposing module configuration. */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
@@ -4674,6 +4676,47 @@ static void test_auth_mail_settings_administration(ServerFixture *fixture, gcons
 	owner = server_fixture_login(fixture, "mail-owner", "owner-long-password");
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/mail", owner, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
 }
+static void test_auth_bankfeed_settings(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(VentureBankAccount) bank = venture_bank_account_new();
+	g_autoptr(VentureAccount) ledger = venture_account_new();
+	g_autoptr(VentureBankConnection) connection = venture_bank_connection_new();
+	g_autofree gchar *path = NULL, *editor = NULL, *owner = NULL, *page = NULL;
+	g_object_set(fixture->config, "bankfeed-enabled", TRUE, NULL);
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(fixture->database), key, &error));
+	g_object_set(ledger, "organization-id", (gint64)1, "code", "UI-CASH", "name", "Settings cash",
+		"kind", VENTURE_ACCOUNT_KIND_ASSET, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(ledger), NULL, &error));
+	g_object_set(bank, "organization-id", (gint64)1, "name", "Settings bank", "currency", "USD",
+		"account-id", venture_entity_get_id(VENTURE_ENTITY(ledger)), NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(bank), NULL, &error));
+	g_object_set(connection, "organization-id", (gint64)1, "name", "Settings feed", "provider", "teller",
+		"provider-account-id", "acc_settings", "bank-account-id", venture_entity_get_id(VENTURE_ENTITY(bank)), NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(connection), NULL, &error));
+	g_assert_no_error(error);
+	path = g_strdup_printf("/bankfeed/%" G_GINT64_FORMAT "/settings", venture_entity_get_id(VENTURE_ENTITY(connection)));
+	server_fixture_create_member(fixture, "feed-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "feed-editor", "editor-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, editor, "operation=configure", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	server_fixture_create_member(fixture, "feed-owner", "owner-long-password", VENTURE_USER_ROLE_OWNER, NULL);
+	owner = server_fixture_login(fixture, "feed-owner", "owner-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, owner, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "<textarea"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, owner,
+		"operation=configure&binding_id=0&version=0&environment=sandbox&access_token=write-only-ui-token", &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(page, "write-only-ui-token"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, owner, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(page, "write-only-ui-token"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, owner,
+		"operation=configure&binding_id=0&version=0&environment=sandbox&access_token=stale-secret", &page, NULL), ==, SOUP_STATUS_BAD_REQUEST);
+	g_assert_null(strstr(page, "stale-secret"));
+}
 int
 main(
 	int	  argc,
@@ -4893,5 +4936,6 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/sidebar-asks-the-five-questions", ServerFixture, NULL, server_fixture_set_up, test_auth_sidebar_asks_the_five_questions, server_fixture_tear_down);
 	g_test_add("/auth/mail-settings-administration", ServerFixture, NULL, server_fixture_set_up, test_auth_mail_settings_administration, server_fixture_tear_down);
+	g_test_add("/auth/bankfeed-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_bankfeed_settings, server_fixture_tear_down);
 	return g_test_run();
 }

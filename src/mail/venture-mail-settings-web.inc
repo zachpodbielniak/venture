@@ -43,6 +43,13 @@ static void venture_integration_web_fields(GString *content, JsonNode *schema)
 		gboolean integer = !g_strcmp0(venture_json_object_get_string(field, "type", ""), "integer");
 		g_string_append(content, "<label>");
 		venture_html_escape_append(content, venture_json_object_get_string(field, "title", name));
+		if (venture_json_object_get_bool(field, "x-multiline", FALSE))
+		{
+			g_string_append(content, "<textarea autocomplete=\"off\" spellcheck=\"false\" name=\"");
+			venture_html_escape_append(content, name);
+			g_string_append(content, "\"></textarea></label>");
+			continue;
+		}
 		g_string_append(content, "<input name=\"");
 		venture_html_escape_append(content, name);
 		g_string_append_printf(content, "\" type=\"%s\" autocomplete=\"%s\" value=\"",

@@ -1,0 +1,20 @@
+#+title: Bank-feed settings demonstration
+
+The 16.56-second [[https://git.podbielniak.com/attachments/a1505b11-ce13-4949-bfa2-1d744cee5fb4][recording attached to PR 130]] runs the DEBUG Venture
+server and Chromium against a new, synthetic SQLite installation. It shows
+unconfigured account settings, explicit sandbox credentials, blank credentials
+on reload, rotation and disconnect. No live Teller request was made; this
+is configuration evidence, not production enrollment or mutual-TLS evidence.
+
+The built artifact is the bank-feed change committed with this evidence.
+The synthetic ledger, bank and enrollment were created through ordinary
+HTTP APIs before the settings walkthrough. The server used a new random
+integration encryption key, a private temporary state directory and a
+loopback port; AI, plugins and automation were disabled. The server was
+stopped after recording. No real credentials or business data appear.
+
+Recording SHA-256: =a878cf2e97fff56c200bbc3b09f121ccab1d28bc3fdb6b6ca10fef93678ff0f6=.
+The recording and a six-frame contact sheet were inspected: the captions
+above describe the visible states. Secret inputs are masked and all reloads
+are blank. PostgreSQL and adversarial scope/revocation checks are separate
+GTests documented in [[file:../testing.org][testing]].

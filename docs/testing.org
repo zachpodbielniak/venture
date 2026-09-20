@@ -678,3 +678,22 @@ retry and persistence-before-submission. Its database cases support
 an authenticated STARTTLS Mailpit fixture with two accounts and independent
 relay-message assertions. See [[file:mail.org][Transactional mail]] for prerequisites,
 cleanup and the distinction between acceptance and inbox delivery.
+
+* Organization bank-feed credentials
+
+=test-bankfeed= now runs seventeen cases on SQLite and isolated PostgreSQL
+(=VENTURE_TEST_ACCOUNTING_POSTGRES_URI=). Account-scoped encrypted settings
+replace ambient Teller credentials. The suite covers equal provider account
+identifiers in two organizations, rotation, disconnect, immutable import
+identity, legacy-key migration with the module enabled and disabled, and
+revocation while a response is outstanding. A deleted bank is refused before
+any provider request; its regression test fails without the deleted-row guard. Removing the completion-time
+credential check makes =/bankfeed/inflight-revocation= fail because the
+revoked run succeeds; restoring it refuses the import. The settings route
+has anonymous/editor refusal and write-only/stale-form checks in =test-auth=.
+
+Provider transport fixtures are synthetic: these checks do not demonstrate
+a live Teller enrollment or production mutual TLS. Production/development
+configuration requires a valid certificate/private-key pair; sandbox is an
+explicit selection. The ordinary DEBUG build and generated GIR also cover
+the owned settings-schema and immutable-client extension points.

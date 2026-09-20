@@ -9,7 +9,7 @@ static const VentureFieldDecl bank_connection_fields[] = {
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD_REF("bank-account-id", "Bank account", "Statement evidence this feed writes",
 		"bank_account", VENTURE_COLUMN_FLAG_NOT_NULL),
-	VENTURE_FIELD("connection-key", "Connection key", "Derived provider:account identity",
+	VENTURE_FIELD("connection-key", "Connection key", "Derived organization:provider:account identity",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE),
 	VENTURE_FIELD("status", "Status", "linked or error",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
@@ -26,13 +26,14 @@ connection_before_save(VentureEntity *entity, GError **error)
 
 	g_object_get(entity, "provider", &provider, "provider-account-id", &account,
 		"bank-account-id", &bank_id, "status", &status, NULL);
-	if (venture_string_is_empty(provider) || venture_string_is_empty(account) || bank_id <= 0)
+	if (venture_string_is_empty(provider) || !g_regex_match_simple("^[a-z][a-z0-9_-]*$", provider, 0, 0) ||
+		venture_string_is_empty(account) || bank_id <= 0 || venture_entity_get_organization_id(entity) <= 0)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 			"A bank connection requires provider, provider account and bank account");
 		return FALSE;
 	}
-	key = g_strdup_printf("%s:%s", provider, account);
+	key = g_strdup_printf("%" G_GINT64_FORMAT ":%s:%s", venture_entity_get_organization_id(entity), provider, account);
 	g_object_set(entity, "connection-key", key, NULL);
 	if (venture_string_is_empty(status))
 		g_object_set(entity, "status", "linked", NULL);

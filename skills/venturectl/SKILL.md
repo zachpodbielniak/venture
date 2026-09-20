@@ -887,3 +887,14 @@ account does not move old attempts to it. Inspect `last_error` on a `dead`
 row and make a deliberate retry/new-message decision. Uncertain acceptance
 still must never be retried automatically. The settings page's test sends
 only its selected test message and shows retained delivery evidence.
+
+### Organization bank feeds
+
+Bank-feed credentials belong to the selected `bank_connection` organization.
+Open its Settings link on `/bankfeed` to configure or rotate the write-only
+provider settings, then use **Sync and test** to import the last 30 days of
+statement evidence. This is a real sync, not a dry run. The existing
+`bankfeed sync ID` command uses the same current binding and import service.
+`VENTURE_BANKFEED_TELLER_KEY` is ignored; an administrator must configure an
+explicit connection. A saved connection's provider, account and organization
+cannot be reassigned. Create a new connection for a different identity.
