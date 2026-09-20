@@ -213,7 +213,8 @@ $(OUTDIR)/venture-default-config.h: data/default-config.yaml data/default-config
 ASSET_FILES := data/static/venture-classic.css \
                data/static/venture-industrial.css \
                data/static/venture-hx.js \
-               data/static/venture.js
+               data/static/venture.js \
+               data/static/attribution.js
 
 $(OUTDIR)/venture-assets.h: $(ASSET_FILES) | $(OUTDIR)
 	@echo "  GEN     $@"

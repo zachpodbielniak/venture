@@ -580,7 +580,8 @@ venture_lead_service_save_hook(VentureLeadService *self, VentureEntity *entity,
 }
 
 gboolean
-venture_lead_service_capture(VentureLeadService *self, const gchar *token, JsonObject *fields, gchar **redirect_url, GError **error)
+venture_lead_service_capture_result(VentureLeadService *self, const gchar *token, JsonObject *fields,
+	const gchar *source, gint64 campaign_id, VentureEntity **captured, gchar **redirect_url, GError **error)
 {
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) forms = NULL;
@@ -595,7 +596,11 @@ venture_lead_service_capture(VentureLeadService *self, const gchar *token, JsonO
 	gint64 venture = 0;
 	guint i;
 	const gchar *inputs[] = { "name", "company_name", "email", "phone", "website", "source", "notes" };
+	if (captured != NULL) *captured = NULL;
 	if (redirect_url != NULL) *redirect_url = NULL;
+	if (campaign_id < 0 || (source != NULL && (!*source || strlen(source) > 254 ||
+		!g_utf8_validate(source, -1, NULL) || strpbrk(source, "\r\n"))))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "verified attribution requires a bounded source and nonnegative campaign identity");
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "lead_form") == G_TYPE_INVALID)
 		return refuse(error, VENTURE_ERROR_NOT_FOUND, "capture form unavailable");
 	if (!venture_database_begin(self->database, error)) return FALSE;
@@ -635,14 +640,31 @@ venture_lead_service_capture(VentureLeadService *self, const gchar *token, JsonO
 		g_strdelimit(property, "_", '-');
 		g_object_set(lead, property, json_node_get_string(node), NULL);
 	}
+	if (campaign_id > 0) {
+		g_autoptr(VentureEntity) campaign = venture_database_get(self->database, VENTURE_TYPE_CAMPAIGN, campaign_id, error);
+		if (!campaign) goto fail;
+		if (venture_entity_is_deleted(campaign) || venture_entity_get_organization_id(campaign) != venture_entity_get_organization_id(form)) {
+			refuse(error, VENTURE_ERROR_VALIDATION, "capture campaign belongs to another organization or is unavailable"); goto fail;
+		}
+		g_object_set(lead, "campaign-id", campaign_id, NULL);
+	}
+	if (source != NULL) g_object_set(lead, "source", source, NULL);
 	saved = save_lead(self, lead, policy != NULL ? policy : "merge", NULL, error);
 	if (saved == NULL) goto fail;
 	if (!venture_database_commit(self->database, error)) return FALSE;
 	if (redirect_url != NULL) *redirect_url = string_field(form, "redirect-url");
+	if (captured != NULL) *captured = g_steal_pointer(&saved);
 	return TRUE;
 fail:
 	venture_database_rollback(self->database);
 	return FALSE;
+}
+
+gboolean
+venture_lead_service_capture(VentureLeadService *self, const gchar *token,
+	JsonObject *fields, gchar **redirect_url, GError **error)
+{
+	return venture_lead_service_capture_result(self, token, fields, NULL, 0, NULL, redirect_url, error);
 }
 
 static VentureEntity *

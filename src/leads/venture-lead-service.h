@@ -36,6 +36,26 @@ gboolean venture_lead_service_save_hook(VentureLeadService *self, VentureEntity 
  */
 gboolean venture_lead_service_capture(VentureLeadService *self, const gchar *token, JsonObject *fields, gchar **redirect_url, GError **error);
 /**
+ * venture_lead_service_capture_result:
+ * @self: canonical capture service
+ * @token: configured form capability; determines the organization
+ * @fields: untrusted mapped form strings
+ * @source: (nullable): verified adapter source overriding submitted source
+ * @campaign_id: verified campaign in the form organization, or zero
+ * @captured: (out) (optional) (nullable) (transfer full): created or matched subject
+ * @redirect_url: (out) (optional) (nullable) (transfer full): configured redirect
+ * @error: (out) (optional): capture or tenant-binding refusal
+ *
+ * Shares validation, duplicate matching, routing and transaction handling with
+ * ordinary capture. Trusted adapters may attach verified attribution. A bot
+ * honeypot succeeds with no subject; it never creates a second capture path.
+ *
+ * Returns: whether capture committed, including a discarded honeypot
+ */
+gboolean venture_lead_service_capture_result(VentureLeadService *self, const gchar *token,
+	JsonObject *fields, const gchar *source, gint64 campaign_id, VentureEntity **captured,
+	gchar **redirect_url, GError **error);
+/**
  * venture_lead_service_convert:
  * @self: the canonical service
  * @lead: saved lead, carrying the expected version

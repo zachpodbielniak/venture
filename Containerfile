@@ -40,6 +40,7 @@ FROM registry.fedoraproject.org/fedora:${FEDORA_VERSION} AS builder
 # though nothing ever uses it again.
 RUN dnf install -y --setopt=install_weak_deps=False \
         gcc \
+        nodejs \
         make \
         git \
         pkgconf-pkg-config \

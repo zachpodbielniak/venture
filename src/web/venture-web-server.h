@@ -147,11 +147,14 @@ venture_web_navigation_sections(void);
  * @VENTURE_HOSTED_ROUTE_NONE: ordinary lifecycle enforcement
  * @VENTURE_HOSTED_ROUTE_CONTROL: identity or workspace-administration route
  * @VENTURE_HOSTED_ROUTE_SUPPORT: audited generic repository route safe for scoped support
+ * @VENTURE_HOSTED_ROUTE_CAPABILITY_ORIGIN: tenant intake whose handler validates
+ *   an exact configured external Origin and capability without ambient sessions
  */
 typedef enum {
 	VENTURE_HOSTED_ROUTE_NONE = 0,
 	VENTURE_HOSTED_ROUTE_CONTROL = 1 << 0,
-	VENTURE_HOSTED_ROUTE_SUPPORT = 1 << 1
+	VENTURE_HOSTED_ROUTE_SUPPORT = 1 << 1,
+	VENTURE_HOSTED_ROUTE_CAPABILITY_ORIGIN = 1 << 2
 } VentureHostedRouteFlags;
 
 /**
@@ -167,6 +170,9 @@ typedef enum {
  * Registers execution and classification together. Hosted mode refuses direct
  * unclassified router additions. Control bypasses lifecycle blocking, never
  * host verification or the handler's authentication and permission checks.
+ * Capability-origin routes remain subject to pinned Host and lifecycle checks;
+ * only their Origin comparison is delegated to their mandatory configured-site
+ * validator. This flag is tenant-only and cannot combine with control/support.
  */
 void venture_web_server_add_classified_route(VentureWebServer *self, HtmxMethod method,
 	const gchar *pattern, VentureDataClass classification, VentureHostedRouteFlags flags,

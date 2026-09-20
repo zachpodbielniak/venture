@@ -838,6 +838,10 @@ static void test_retained_metadata(void)
 	g_assert_no_error(error); g_assert_nonnull(field);
 	copy = venture_field_spec_copy(field);
 	g_assert_true((venture_field_spec_get_flags(copy) & VENTURE_COLUMN_FLAG_RETAIN_REFERENCE) != 0);
+	/* Retaining acquisition history must not mark its subject as a host path
+	 * or a private-owner declaration when feature flags are combined. */
+	g_assert_cmpuint(venture_field_spec_get_flags(copy) &
+		(VENTURE_COLUMN_FLAG_HOST_RESOURCE | VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER), ==, 0);
 	for (i = 0; i < fields->len; i++) {
 		VentureFieldSpec *candidate = g_ptr_array_index(fields, i);
 		if (!g_strcmp0(venture_field_spec_get_name(candidate), "contact-id")) {

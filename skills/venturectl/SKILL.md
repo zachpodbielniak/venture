@@ -1054,3 +1054,34 @@ source="Reviewed DSN 5.1.1" event_key=DSN_ID occurred_at=TIMESTAMP`;
 `temporary_bounce` does not suppress, `complaint` does. A new consent row cannot
 clear retained suppression. Tracking requires both organization
 `marketing_tracking=true` and send `tracking=true` before preview.
+
+## First-party source attribution
+
+`describe attribution_site` exposes the organization-owned site configuration;
+only organization owners/admins may change it.
+Set its exact HTTPS `origin`, verified `external_tenant_id`/`external_site_id`,
+`lead_form_id`, `consent_policy`, and `active=true`; `campaign_map` maps bounded
+UTM labels to same-organization campaign IDs. Lookback/retention default to
+30 days. A changed site configuration requires fresh analytics permission.
+Use the organization Lightsite form settings page to pair/rotate/disconnect
+write-only signing credentials, then name that `connection_id` on the site.
+Do not put secrets in generic records or CLI arguments. Site identities cannot
+be deleted: deactivate them so existing withdrawal capabilities remain usable.
+
+`report attribution 2026-09 organization_id=1 model=first` groups source
+records by source/campaign, measure and currency. `model=last` selects last-touch;
+`details=true` lists exact contributing record identities. Read `period_basis`
+and `evidence`: new leads, conversions, first applied-cash customers, won deal
+value, issued net and applied cash have different dates/denominators. Imported
+`cac_*` and `campaigns_*` metrics are the existing reports under the same scope,
+not extra attributed revenue. Currency buckets are never added together.
+Legacy/current CRM source is explicitly labelled; no touch or consent is inferred.
+`venture_id` and `as_of` are refused because partial reconstruction would mislead.
+
+Owners/admins run `act attribution_visitor 0 retention_sweep organization_id=1
+limit=100` to redact expired private observations and forget expired capability
+hashes. Analytics withdrawal is independent of marketing permission: it stops
+tracking and removes visitor linkage, while coarse business acquisition and
+separate email-choice evidence remain. Generic CRUD cannot manufacture or remove
+that evidence. See `docs/attribution.org` for the versioned signed Lightsite
+contract and browser consent methods. No Lightsite provisioning is performed.

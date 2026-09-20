@@ -2807,7 +2807,7 @@ venture_web_api_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", "bucket", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", "bucket", "model", "details", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
@@ -6023,7 +6023,7 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", "bucket", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", "bucket", "model", "details", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
@@ -6058,7 +6058,7 @@ venture_web_ui_report(
 
 	{
 		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
-		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", NULL };
+		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", NULL };
 		guint i;
 		for (i = 0; names[i] != NULL; i++)
 		{
@@ -6122,7 +6122,7 @@ venture_web_ui_report(
 				g_string_append_printf(content, "<input type=\"hidden\" name=\"organization_id\" value=\"%" G_GINT64_FORMAT "\">",
 					venture_json_object_get_int(report_options, "organization_id", 0));
 			{
-				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", NULL };
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", NULL };
 				guint i;
 				/* Preserve the question when changing only its cutoff. */
 				for (i = 0; names[i] != NULL; i++)
@@ -9255,6 +9255,8 @@ venture_web_append_incident_block(
 #include "assets/venture-assets-web.inc"
 #include "sequences/venture-sequence-web.inc"
 #include "marketing/venture-marketing-web.inc"
+#include "attribution/venture-attribution-web.inc"
+#include "attribution/venture-attribution-settings-web.inc"
 
 static HtmxResponse *
 venture_web_ui_detail(
@@ -9372,6 +9374,7 @@ venture_web_ui_detail(
 			principal, venture_entity_get_id(record), oidc_roles, G_N_ELEMENTS(oidc_roles)))
 			g_string_append_printf(content, "<p><a class=\"btn\" href=\"/organizations/%" G_GINT64_FORMAT "/settings/oidc\">Sign-in settings</a></p>", venture_entity_get_id(record));
 	}
+	venture_attribution_web_settings_link(self, content, record, principal);
 	venture_billing_web_buttons(self, content, record, principal);
 	venture_web_append_record_actions(self, content, record, principal);
 	venture_web_append_related(self, content, record);
@@ -30097,6 +30100,15 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/marketing/u/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_marketing_unsubscribe, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/marketing/t/o/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_marketing_open, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/marketing/t/c/:token/:n", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_marketing_click, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/attribution.js", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_attribution_script, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/attribution/:site/:operation", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_CAPABILITY_ORIGIN, venture_web_attribution_ingest, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/hooks/lightsite/:site/:connection", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_receive, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/organizations/:id/settings/attribution", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_attribution_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/organizations/:id/settings/attribution", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_attribution_settings, self);
+	htmx_router_get(router, "/marketing/u/:token", venture_web_marketing_unsubscribe, self);
+	htmx_router_post(router, "/marketing/u/:token", venture_web_marketing_unsubscribe, self);
+	htmx_router_get(router, "/marketing/t/o/:token", venture_web_marketing_open, self);
+	htmx_router_get(router, "/marketing/t/c/:token/:n", venture_web_marketing_click, self);
 
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_list, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_create, self);

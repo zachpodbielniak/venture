@@ -589,6 +589,13 @@ static GType (*const venture_module_mail_types[]) (void) = {
 	venture_mail_message_get_type, venture_mail_template_get_type, NULL
 };
 static const gchar *const venture_module_mail_sync_requires[] = { "mail", "crm", "leads", NULL };
+static const gchar *const attribution_requires[] = { "leads", "integrations", NULL };
+static GType (*const attribution_types[]) (void) = {
+	venture_attribution_site_get_type, venture_attribution_visitor_get_type,
+	venture_attribution_touch_get_type, venture_attribution_submission_get_type,
+	venture_attribution_binding_get_type, NULL
+};
+static const gchar *const attribution_reports[] = { "attribution", NULL };
 static const gchar *const marketing_requires[] = { "mail", "sequences", "leads", NULL };
 static GType (*const marketing_types[]) (void) = {
 	venture_marketing_list_get_type, venture_marketing_member_get_type,
@@ -1178,6 +1185,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"integrations", "Organization integrations",
 		"Organization-owned provider accounts and protected credential rotation.",
 		mfa_requires, NULL, integration_types, NULL, NULL, FALSE
+	},
+	{
+		"attribution", "Attribution", "Consent-bound first-party analytics and verified form capture.",
+		attribution_requires, NULL, attribution_types, attribution_reports, NULL, FALSE
 	},
 	{
 		"stripe", "Stripe", "Hosted Checkout and verified payment settlement.",

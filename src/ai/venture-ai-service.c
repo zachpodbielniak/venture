@@ -2735,6 +2735,8 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(report, "customer_id", "integer", "Customer for a statement", FALSE);
 	ai_tool_add_parameter(report, "vendor_id", "integer", "Supplier for a vendor statement", FALSE);
 	ai_tool_add_parameter(report, "currency", "string", "Book currency to report", FALSE);
+	ai_tool_add_parameter(report, "model", "string", "Attribution model: first or last", FALSE);
+	ai_tool_add_parameter(report, "details", "boolean", "List attribution source records instead of grouped rows", FALSE);
 	ai_tool_add_parameter(report, "as_of", "string",
 		"Historical cutoff as an ISO date or timestamp; include rows deleted after it", FALSE);
 	ai_tool_add_parameter(report, "organization_id", "integer",

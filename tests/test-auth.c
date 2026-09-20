@@ -1250,6 +1250,8 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/auth/oidc/callback"), ==, SOUP_STATUS_UNAUTHORIZED);
 
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/mail"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/attribution"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/attribution", NULL, "operation=disconnect", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/mail", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/bankfeed/1/settings"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/connectors/mail_account/1/settings"), ==, SOUP_STATUS_FOUND);

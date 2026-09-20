@@ -534,19 +534,19 @@ endif
 # Fedora / RHEL / CentOS (dnf). These are the package names to layer into
 # an immutable image (Immutablue / Hyacinth Macaw) rather than dnf-install
 # on the host.
-FEDORA_DEPS := gcc make pkgconf-pkg-config \
+FEDORA_DEPS := gcc make nodejs pkgconf-pkg-config \
                glib2-devel libyaml-devel json-glib-devel libsoup3-devel \
                libxml2-devel sqlite-devel libpq-devel readline-devel openssl-devel \
                gobject-introspection-devel poppler-glib-devel \
                libarchive-devel
 
-DEBIAN_DEPS := gcc make pkg-config \
+DEBIAN_DEPS := gcc make nodejs pkg-config \
                libglib2.0-dev libyaml-dev libjson-glib-dev libsoup-3.0-dev \
                libxml2-dev libsqlite3-dev libpq-dev libreadline-dev \
                gobject-introspection libgirepository1.0-dev \
                libpoppler-glib-dev libarchive-dev
 
-ARCH_DEPS := gcc make pkgconf \
+ARCH_DEPS := gcc make nodejs pkgconf \
              glib2 libyaml json-glib libsoup3 libxml2 sqlite postgresql-libs \
              readline gobject-introspection poppler-glib libarchive
 

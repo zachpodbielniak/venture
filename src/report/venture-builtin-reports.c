@@ -3033,6 +3033,7 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 	venture_sales_reports_register(self);
 	venture_sequences_register_reports(self);
 	venture_marketing_register_reports(self);
+	venture_attribution_register_reports(self);
 	venture_autojournal_register_reports(self);
 	venture_statements_register_reports(self);
 	venture_budgets_register_reports(self);

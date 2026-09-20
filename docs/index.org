@@ -22,6 +22,8 @@ New to VENTURE? Two pages, in this order:
 
 - [[file:marketing.org][Marketing sends]] — frozen audiences, evidenced consent, bounded delivery and unsubscribe
 - [[file:marketing-demonstration.org][Marketing demonstration]] — frozen audiences, permission, transport, retry and upgrade transcripts
+- [[file:attribution.org][First-party attribution]] — consented site observations, signed Lightsite capture and source-linked financial measures
+- [[file:attribution-demonstration.org][Attribution demonstration]] — built CLI/server, consent, signed intake, conversion and financial transcripts
 - [[file:orgaccess.org][Organization access]] — membership, organization roles and record ownership
 
 - [[file:architecture.org][Architecture]] — how the pieces fit, and why the design is shaped this way

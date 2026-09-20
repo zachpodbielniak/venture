@@ -174,6 +174,7 @@ test_module_dependency_conflict_is_refused(void)
 	venture_config_set_module_enabled(config, "supplier_portal", FALSE);
 	venture_config_set_module_enabled(config, "pipelines", FALSE);
 	venture_config_set_module_enabled(config, "marketing", FALSE);
+	venture_config_set_module_enabled(config, "attribution", FALSE);
 	venture_config_set_module_enabled(config, "sequences", FALSE);
 	venture_config_set_module_enabled(config, "projects", FALSE);
 	venture_config_set_module_enabled(config, "recurring", FALSE);
@@ -633,6 +634,7 @@ fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "supplier_portal", FALSE);
 	venture_config_set_module_enabled(fixture->config, "pipelines", FALSE);
 	venture_config_set_module_enabled(fixture->config, "marketing", FALSE);
+	venture_config_set_module_enabled(fixture->config, "attribution", FALSE);
 	venture_config_set_module_enabled(fixture->config, "sequences", FALSE);
 	venture_config_set_module_enabled(fixture->config, "projects", FALSE);
 	venture_config_set_module_enabled(fixture->config, "recurring", FALSE);
@@ -1034,6 +1036,7 @@ server_fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "supplier_portal", FALSE);
 	venture_config_set_module_enabled(fixture->config, "pipelines", FALSE);
 	venture_config_set_module_enabled(fixture->config, "marketing", FALSE);
+	venture_config_set_module_enabled(fixture->config, "attribution", FALSE);
 	venture_config_set_module_enabled(fixture->config, "sequences", FALSE);
 	venture_config_set_module_enabled(fixture->config, "projects", FALSE);
 	venture_config_set_module_enabled(fixture->config, "recurring", FALSE);

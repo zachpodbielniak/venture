@@ -894,6 +894,12 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_marketing_send_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_marketing_recipient_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_marketing_event_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_attribution_site_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_attribution_visitor_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_attribution_touch_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_attribution_submission_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_attribution_binding_get_type, VENTURE_DATA_CLASS_TENANT },
+
 
 	};
 	gsize i;

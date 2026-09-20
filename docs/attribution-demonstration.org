@@ -1,0 +1,755 @@
+#+title: Attribution — built-artifact demonstration
+
+These are verbatim transcripts from the DEBUG-linked Venture test artifact,
+using synthetic organizations, site visitors and invoices. The transport cases
+start the actual Venture web server; the report surface case also executes the
+built =venturectl= and prints its JSON. Its disposable loopback instance disables
+authentication only for transport verification. The separate authority case
+uses real organization membership, and the full =test-auth= suite verifies the
+settings routes refuse anonymous callers. No external visitor, customer,
+Lightsite deployment or model provider is contacted.
+
+Reproduce with =make DEBUG=1= and
+=make DEBUG=1 build/debug/tests/test-attribution=, then run the exact commands
+below from the repository root. The Node browser harness uses built-in modules
+and deterministic network/storage fixtures; missing Node fails, never skips.
+PostgreSQL runs use independent schemas through
+=VENTURE_TEST_ACCOUNTING_POSTGRES_URI=. Reconnect closes/reopens the application
+database; it does not simulate physical power loss. Provider intake uses the
+versioned signed contract, not a claim that a remote forwarder was deployed.
+The scope and integration instructions are in [[file:attribution.org][First-party attribution]].
+
+The sections correspond to the lane's seven acceptance items: configured
+ownership; explicit analytics consent; bounded durable ingestion; verified form
+intake; canonical CRM history; defined financial measures; and usable built
+surfaces. Upgrade verification is included separately.
+
+* Configured ownership and immutable history
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/site-boundaries
+TAP version 14
+# random seed: R02S355ef8dda72dcf22d4449ed45b8ac473
+# Start of attribution tests
+# Cross-organization form/campaign references and inconsistent retention refused; SQL cannot duplicate a visitor capability hash
+ok 1 /attribution/site-boundaries
+# slow test /attribution/site-boundaries executed in 0.81 secs
+# End of attribution tests
+1..1
+#+end_example
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/configuration-authority
+TAP version 14
+# random seed: R02S93cfda454ae1c7d3d51108c95fb9601a
+# Start of attribution tests
+# Organization editor cannot change analytics policy or signing settings; own organization admin succeeds and another organization is refused
+ok 1 /attribution/configuration-authority
+# slow test /attribution/configuration-authority executed in 0.89 secs
+# End of attribution tests
+1..1
+#+end_example
+
+* Consent, private history and browser behavior
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/consent
+TAP version 14
+# random seed: R02Sc3402616e3988ba2f4a356c526969954
+# Start of attribution tests
+# Explicit anonymous analytics consent creates one visitor; email permission remains absent; page/referrer query strings discarded
+ok 1 /attribution/consent
+# slow test /attribution/consent executed in 0.94 secs
+# End of attribution tests
+1..1
+#+end_example
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/script
+TAP version 14
+# random seed: R02S7a4bffbc263027d6624ff277e7bdc54a
+# Start of attribution tests
+# Attribution script: no pre-consent storage/tracking; independent form/email choice; stable replay; offline withdrawal stops tracking
+#
+ok 1 /attribution/script
+# End of attribution tests
+1..1
+#+end_example
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/private-history
+TAP version 14
+# random seed: R02S5da95617ab0e678257680cfb1a7ef591
+# Start of attribution tests
+# Withdrawal audit records redacted changes only; visitor linkage, replay keys and referrer origins never appear in ordinary exports
+ok 1 /attribution/private-history
+# slow test /attribution/private-history executed in 0.86 secs
+# End of attribution tests
+1..1
+#+end_example
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/lookback
+TAP version 14
+# random seed: R02S76a2999c8a1df4fe9cf3759788944de8
+# Start of attribution tests
+# Two-day-old touch excluded from one-day lookback; later direct visit receives a new session and freezes its own source
+ok 1 /attribution/lookback
+# slow test /attribution/lookback executed in 0.89 secs
+# End of attribution tests
+1..1
+#+end_example
+
+* Bounded ingestion, durable replay and withdrawal
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/rate-limit
+TAP version 14
+# random seed: R02Sfe688df7ce0d8847637e32b0d52bc01b
+# Start of attribution tests
+ok 1 /attribution/rate-limit
+# slow test /attribution/rate-limit executed in 1.44 secs
+# End of attribution tests
+1..1
+#+end_example
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/form-capture
+TAP version 14
+# random seed: R02Sda792570f3d7a663a4997f970385cf49
+# Start of attribution tests
+# Consented form retained newsletter source; exact retry returned one submission/lead and created no email consent
+ok 1 /attribution/form-capture
+# slow test /attribution/form-capture executed in 0.75 secs
+# End of attribution tests
+1..1
+#+end_example
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/restart
+TAP version 14
+# random seed: R02S1f3f572ccdf095335a43df81cec01f9a
+# Start of attribution tests
+# Closed/reopened application database: exact form retry keeps one submission/lead; withdrawn visitor cannot create new attributed evidence
+ok 1 /attribution/restart
+# slow test /attribution/restart executed in 1.13 secs
+# End of attribution tests
+1..1
+#+end_example
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/expiration
+TAP version 14
+# random seed: R02Sb85e3aa71a4c3799a3ceaddec476860a
+# Start of attribution tests
+ok 1 /attribution/expiration
+# slow test /attribution/expiration executed in 0.68 secs
+# End of attribution tests
+1..1
+#+end_example
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/nested-withdrawal
+TAP version 14
+# random seed: R02S21ff6b36fc45a15597cc8dbefe0e0a2d
+# Start of attribution tests
+# Reentrant signal withdrawal reports BUSY without mutation; standalone retry commits redaction and future observations are refused
+ok 1 /attribution/nested-withdrawal
+# slow test /attribution/nested-withdrawal executed in 0.83 secs
+# End of attribution tests
+1..1
+#+end_example
+
+* Verified Lightsite intake and independent email permission
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/signed-capture
+TAP version 14
+# random seed: R02S64ea3eab7f85fd5dad15807d3b2ca9e8
+# Start of attribution tests
+ok 1 /attribution/signed-capture
+# slow test /attribution/signed-capture executed in 0.79 secs
+# End of attribution tests
+1..1
+#+end_example
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/signed-boundaries
+TAP version 14
+# random seed: R02S4a176a5c745899407c6e14e71497495f
+# Start of attribution tests
+ok 1 /attribution/signed-boundaries
+# slow test /attribution/signed-boundaries executed in 0.77 secs
+# End of attribution tests
+1..1
+#+end_example
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/independent-permissions
+TAP version 14
+# random seed: R02Sa63413651e513b5afef91994bffdde5f
+# Start of attribution tests
+ok 1 /attribution/independent-permissions
+# slow test /attribution/independent-permissions executed in 0.82 secs
+# End of attribution tests
+1..1
+#+end_example
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/capture-address-recheck
+TAP version 14
+# random seed: R02S88de72172ff36407fb7f88dda14597ef
+# Start of attribution tests
+ok 1 /attribution/capture-address-recheck
+# slow test /attribution/capture-address-recheck executed in 0.86 secs
+# End of attribution tests
+1..1
+#+end_example
+
+* Repeated inquiries and canonical conversion
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/repeated-evidence
+TAP version 14
+# random seed: R02S8a3c0c7b61aeecd449e8f64fe7b3f1e4
+# Start of attribution tests
+# Repeated inquiry: first model retains untracked form evidence; last model uses independently consented newsletter observation
+ok 1 /attribution/repeated-evidence
+# slow test /attribution/repeated-evidence executed in 0.97 secs
+# End of attribution tests
+1..1
+#+end_example
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/conversion-binding
+TAP version 14
+# random seed: R02S83405569c88de3ebb2a765766d367519
+# Start of attribution tests
+# Canonical conversion linked retained acquisition to one company/contact/deal inside the existing transaction
+ok 1 /attribution/conversion-binding
+# slow test /attribution/conversion-binding executed in 1.00 secs
+# End of attribution tests
+1..1
+#+end_example
+
+* Source-linked financial journey and model selection
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/financial-journey
+TAP version 14
+# random seed: R02S769728e048708f68624d6cb81d1243b5
+# Start of attribution tests
+# Signed site capture -> canonical conversion -> USD500 won deal -> USD200 issued net -> delayed USD75+125 cash -> USD25 refund; period boundary excludes pending cash; merge preserves original source and EUR90 remains a separate invoice bucket
+ok 1 /attribution/financial-journey
+# slow test /attribution/financial-journey executed in 1.31 secs
+# End of attribution tests
+1..1
+#+end_example
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/report-models
+TAP version 14
+# random seed: R02S2b3da5d3ecb7428509d741834c1ab29f
+# Start of attribution tests
+ok 1 /attribution/report-models
+# slow test /attribution/report-models executed in 1.15 secs
+# End of attribution tests
+1..1
+#+end_example
+
+* Actual built CLI, JSON, CSV and web settings
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/report-surfaces
+TAP version 14
+# random seed: R02S8f19d85e6c9625e96c31b485a3f9bc61
+# Start of attribution tests
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation gvfs (GDaemonVfs) for ‘gio-vfs’
+# Venture-MESSAGE: No session secret in the environment; sessions will not survive a restart. Set the variable named by security.session_secret_env to keep them.
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation dconf (DConfSettingsBackend) for ‘gsettings-backend’
+# pxbackend-DEBUG: px_config_sysconfig_set_config_file: Could not read file /etc/sysconfig/proxy
+# pxbackend-DEBUG: Active config plugins:
+# pxbackend-DEBUG:  - config-env
+# pxbackend-DEBUG:  - config-xdp
+# pxbackend-DEBUG:  - config-kde
+# pxbackend-DEBUG:  - config-gnome
+# pxbackend-DEBUG:  - config-sysconfig
+# GLib-GIO-DEBUG: Failed to initialize portal (GNetworkMonitorPortal) for gio-network-monitor: Not using portals
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation networkmanager (GNetworkMonitorNM) for ‘gio-network-monitor’
+# pxbackend-DEBUG: px_manager_constructed: Up and running
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation libproxy (GLibproxyResolver) for ‘gio-proxy-resolver’
+# GLib-GIO-DEBUG: g_socket_client_connect_async: starting new g_socket_client_connect_async() with GTask 0x1724da30 and GSocketClientAsyncConnectData 0x17242550
+# GLib-GIO-DEBUG: GSocketClient: Starting new address enumeration
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=http://127.0.0.1:41111 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# GLib-GIO-DEBUG: GSocketClient: Address enumeration succeeded
+# GLib-GIO-DEBUG: g_socket_client_enumerator_callback: starting connection attempt 0x1724f850 for GSocketClientAsyncConnectData 0x17242550
+# GLib-GIO-DEBUG: GSocketClient: Starting TCP connection attempt
+# GLib-GIO-DEBUG: GSocketClient: TCP connection successful
+# GLib-GIO-DEBUG: GSocketClient: Starting application layer connection
+# GLib-GIO-DEBUG: GSocketClient: Connection successful!
+# Built CLI report JSON: {
+#   "title" : "First-party source attribution",
+#   "period" : {
+#     "start" : null,
+#     "end" : null,
+#     "label" : "All time"
+#   },
+#   "metrics" : [
+#     {
+#       "key" : "observed_visitors",
+#       "label" : "Observed consenting visitors",
+#       "kind" : "count",
+#       "value" : 1,
+#       "formatted" : "1",
+#       "higher_is_better" : true
+#     },
+#     {
+#       "key" : "submitting_observed_visitors",
+#       "label" : "Observed visitors submitting in period",
+#       "kind" : "count",
+#       "value" : 1,
+#       "formatted" : "1",
+#       "higher_is_better" : true
+#     },
+#     {
+#       "key" : "visitor_submission_rate",
+#       "label" : "Observed visitor to form rate",
+#       "kind" : "ratio",
+#       "value" : 1.0,
+#       "formatted" : "100.0%",
+#       "higher_is_better" : true
+#     },
+#     {
+#       "key" : "captured_leads",
+#       "label" : "Captured lead cohort",
+#       "kind" : "count",
+#       "value" : 1,
+#       "formatted" : "1",
+#       "higher_is_better" : true
+#     },
+#     {
+#       "key" : "captured_leads_converted",
+#       "label" : "Captured cohort converted by period end",
+#       "kind" : "count",
+#       "value" : 0,
+#       "formatted" : "0",
+#       "higher_is_better" : true
+#     },
+#     {
+#       "key" : "captured_lead_conversion_rate",
+#       "label" : "Captured lead conversion rate",
+#       "kind" : "ratio",
+#       "value" : 0.0,
+#       "formatted" : "0.0%",
+#       "higher_is_better" : true
+#     },
+#     {
+#       "key" : "cac_spend",
+#       "label" : "cac report: Acquisition spend",
+#       "kind" : "money",
+#       "value" : {
+#         "amount" : 0,
+#         "currency" : "USD",
+#         "exponent" : 2,
+#         "formatted" : "0.00 USD"
+#       },
+#       "formatted" : "$0.00",
+#       "higher_is_better" : true,
+#       "note" : "Exact existing CAC report, same organization/period: first applied book-currency cash customers and dated acquisition spend"
+#     },
+#     {
+#       "key" : "cac_campaign_spend",
+#       "label" : "cac report: Campaign spend",
+#       "kind" : "money",
+#       "value" : {
+#         "amount" : 0,
+#         "currency" : "USD",
+#         "exponent" : 2,
+#         "formatted" : "0.00 USD"
+#       },
+#       "formatted" : "$0.00",
+#       "higher_is_better" : true,
+#       "note" : "Exact existing CAC report, same organization/period: first applied book-currency cash customers and dated acquisition spend"
+#     },
+#     {
+#       "key" : "cac_expense_spend",
+#       "label" : "cac report: Other flagged spend",
+#       "kind" : "money",
+#       "value" : {
+#         "amount" : 0,
+#         "currency" : "USD",
+#         "exponent" : 2,
+#         "formatted" : "0.00 USD"
+#       },
+#       "formatted" : "$0.00",
+#       "higher_is_better" : true,
+#       "note" : "Exact existing CAC report, same organization/period: first applied book-currency cash customers and dated acquisition spend"
+#     },
+#     {
+#       "key" : "cac_new_customers",
+#       "label" : "cac report: New customers",
+#       "kind" : "count",
+#       "value" : 0,
+#       "formatted" : "0",
+#       "higher_is_better" : true,
+#       "note" : "Exact existing CAC report, same organization/period: first applied book-currency cash customers and dated acquisition spend"
+#     },
+#     {
+#       "key" : "cac_customer_difference",
+#       "label" : "Attribution customers minus CAC customers",
+#       "kind" : "count",
+#       "value" : 0,
+#       "formatted" : "0",
+#       "higher_is_better" : true
+#     },
+#     {
+#       "key" : "cac_cac",
+#       "label" : "cac report: CAC",
+#       "kind" : "text",
+#       "value" : "n/a",
+#       "formatted" : "n/a",
+#       "higher_is_better" : true,
+#       "note" : "Exact existing CAC report, same organization/period: first applied book-currency cash customers and dated acquisition spend"
+#     },
+#     {
+#       "key" : "campaigns_spend",
+#       "label" : "campaigns report: Total spend",
+#       "kind" : "money",
+#       "value" : {
+#         "amount" : 0,
+#         "currency" : "USD",
+#         "exponent" : 2,
+#         "formatted" : "0.00 USD"
+#       },
+#       "formatted" : "$0.00",
+#       "higher_is_better" : true,
+#       "note" : "Exact existing campaigns report, same organization/period: campaign-start cohort and declared totals; not issued or collected revenue"
+#     },
+#     {
+#       "key" : "campaigns_revenue",
+#       "label" : "campaigns report: Attributed revenue",
+#       "kind" : "money",
+#       "value" : {
+#         "amount" : 0,
+#         "currency" : "USD",
+#         "exponent" : 2,
+#         "formatted" : "0.00 USD"
+#       },
+#       "formatted" : "$0.00",
+#       "higher_is_better" : true,
+#       "note" : "Exact existing campaigns report, same organization/period: campaign-start cohort and declared totals; not issued or collected revenue"
+#     }
+#   ],
+#   "columns" : [
+#     {
+#       "key" : "model",
+#       "label" : "model",
+#       "kind" : "text"
+#     },
+#     {
+#       "key" : "measure",
+#       "label" : "measure",
+#       "kind" : "text"
+#     },
+#     {
+#       "key" : "source",
+#       "label" : "source",
+#       "kind" : "text"
+#     },
+#     {
+#       "key" : "currency",
+#       "label" : "currency",
+#       "kind" : "text"
+#     },
+#     {
+#       "key" : "source_records",
+#       "label" : "source_records",
+#       "kind" : "text"
+#     },
+#     {
+#       "key" : "period_basis",
+#       "label" : "period_basis",
+#       "kind" : "text"
+#     },
+#     {
+#       "key" : "evidence",
+#       "label" : "evidence",
+#       "kind" : "text"
+#     },
+#     {
+#       "key" : "campaign_id",
+#       "label" : "Campaign ID",
+#       "kind" : "number"
+#     },
+#     {
+#       "key" : "count",
+#       "label" : "Distinct source records",
+#       "kind" : "number"
+#     },
+#     {
+#       "key" : "amount",
+#       "label" : "Amount in stated currency",
+#       "kind" : "money"
+#     }
+#   ],
+#   "rows" : [
+#     {
+#       "model" : "last",
+#       "model_formatted" : "last",
+#       "measure" : "visitors",
+#       "measure_formatted" : "visitors",
+#       "source" : "partner",
+#       "source_formatted" : "partner",
+#       "currency" : "",
+#       "currency_formatted" : "",
+#       "source_records" : "attribution_touch:2",
+#       "source_records_formatted" : "attribution_touch:2",
+#       "period_basis" : "First/last retained observation in the period per visitor; redacted linkage excluded",
+#       "period_basis_formatted" : "First/last retained observation in the period per visitor; redacted linkage excluded",
+#       "evidence" : "Consented visitor with a retained observation in this period; visitor is not proof of a unique person",
+#       "evidence_formatted" : "Consented visitor with a retained observation in this period; visitor is not proof of a unique person",
+#       "campaign_id" : 0.0,
+#       "campaign_id_formatted" : "0",
+#       "count" : 1.0,
+#       "count_formatted" : "1",
+#       "amount" : null,
+#       "amount_formatted" : ""
+#     },
+#     {
+#       "model" : "last",
+#       "model_formatted" : "last",
+#       "measure" : "submissions",
+#       "measure_formatted" : "submissions",
+#       "source" : "partner",
+#       "source_formatted" : "partner",
+#       "currency" : "",
+#       "currency_formatted" : "",
+#       "source_records" : "attribution_submission:1",
+#       "source_records_formatted" : "attribution_submission:1",
+#       "period_basis" : "Accepted form receipt time; exact retries counted once",
+#       "period_basis_formatted" : "Accepted form receipt time; exact retries counted once",
+#       "evidence" : "Consented observations within the frozen lookback",
+#       "evidence_formatted" : "Consented observations within the frozen lookback",
+#       "campaign_id" : 0.0,
+#       "campaign_id_formatted" : "0",
+#       "count" : 1.0,
+#       "count_formatted" : "1",
+#       "amount" : null,
+#       "amount_formatted" : ""
+#     },
+#     {
+#       "model" : "last",
+#       "model_formatted" : "last",
+#       "measure" : "leads",
+#       "measure_formatted" : "leads",
+#       "source" : "partner",
+#       "source_formatted" : "partner",
+#       "currency" : "",
+#       "currency_formatted" : "",
+#       "source_records" : "lead:1",
+#       "source_records_formatted" : "lead:1",
+#       "period_basis" : "Lead creation time; repeated submissions do not create another lead",
+#       "period_basis_formatted" : "Lead creation time; repeated submissions do not create another lead",
+#       "evidence" : "Consented observations within the frozen lookback",
+#       "evidence_formatted" : "Consented observations within the frozen lookback",
+#       "campaign_id" : 0.0,
+#       "campaign_id_formatted" : "0",
+#       "count" : 1.0,
+#       "count_formatted" : "1",
+#       "amount" : null,
+#       "amount_formatted" : ""
+#     }
+#   ],
+#   "note" : "One selected model, one source record per measure. Counts have separate denominators and dates: visitors are observed consenting capabilities; submissions are accepted forms; leads are new CRM rows; converted_leads have retained conversion evidence; customers are first positive applied cash in book currency (CAC basis). Won deal value is current CRM value dated at close; invoiced_net is frozen issued net less voids; cash_receipts and cash_refunds are settlement-derived sales, excluding unapplied money and noncash credits. Currency buckets are never added across currencies. Retained business snapshots survive analytics withdrawal; old CRM source is declared provenance, not proof of consent or a historical touch. details=true lists individual source records. Disabled financial/report modules contribute no rows."
+# }
+#
+# GLib-GIO-DEBUG: g_socket_client_connect_async: starting new g_socket_client_connect_async() with GTask 0x172c6e90 and GSocketClientAsyncConnectData 0x172c6e20
+# GLib-GIO-DEBUG: GSocketClient: Starting new address enumeration
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=http://127.0.0.1:41111 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# GLib-GIO-DEBUG: GSocketClient: Address enumeration succeeded
+# GLib-GIO-DEBUG: g_socket_client_enumerator_callback: starting connection attempt 0x7f2194001270 for GSocketClientAsyncConnectData 0x172c6e20
+# GLib-GIO-DEBUG: GSocketClient: Starting TCP connection attempt
+# GLib-GIO-DEBUG: GSocketClient: TCP connection successful
+# GLib-GIO-DEBUG: GSocketClient: Starting application layer connection
+# GLib-GIO-DEBUG: GSocketClient: Connection successful!
+# GLib-GIO-DEBUG: g_socket_client_connect_async: starting new g_socket_client_connect_async() with GTask 0x1726bc30 and GSocketClientAsyncConnectData 0x172cf660
+# GLib-GIO-DEBUG: GSocketClient: Starting new address enumeration
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=http://127.0.0.1:41111 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# GLib-GIO-DEBUG: GSocketClient: Address enumeration succeeded
+# GLib-GIO-DEBUG: g_socket_client_enumerator_callback: starting connection attempt 0x7f2194000de0 for GSocketClientAsyncConnectData 0x172cf660
+# GLib-GIO-DEBUG: GSocketClient: Starting TCP connection attempt
+# GLib-GIO-DEBUG: GSocketClient: TCP connection successful
+# GLib-GIO-DEBUG: GSocketClient: Starting application layer connection
+# GLib-GIO-DEBUG: GSocketClient: Connection successful!
+# Built venturectl report attribution all model=last details=true organization_id=1 agrees with JSON, CSV and preserved page links; settings reject another provider's disconnect identity
+ok 1 /attribution/report-surfaces
+# slow test /attribution/report-surfaces executed in 1.10 secs
+# End of attribution tests
+1..1
+#+end_example
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/http
+TAP version 14
+# random seed: R02S4d7584b884db6b4d46734d59b0fe1828
+# Start of attribution tests
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation gvfs (GDaemonVfs) for ‘gio-vfs’
+# Venture-MESSAGE: No session secret in the environment; sessions will not survive a restart. Set the variable named by security.session_secret_env to keep them.
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation dconf (DConfSettingsBackend) for ‘gsettings-backend’
+# pxbackend-DEBUG: px_config_sysconfig_set_config_file: Could not read file /etc/sysconfig/proxy
+# pxbackend-DEBUG: Active config plugins:
+# pxbackend-DEBUG:  - config-env
+# pxbackend-DEBUG:  - config-xdp
+# pxbackend-DEBUG:  - config-kde
+# pxbackend-DEBUG:  - config-gnome
+# pxbackend-DEBUG:  - config-sysconfig
+# GLib-GIO-DEBUG: Failed to initialize portal (GNetworkMonitorPortal) for gio-network-monitor: Not using portals
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation networkmanager (GNetworkMonitorNM) for ‘gio-network-monitor’
+# pxbackend-DEBUG: px_manager_constructed: Up and running
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation libproxy (GLibproxyResolver) for ‘gio-proxy-resolver’
+# GLib-GIO-DEBUG: g_socket_client_connect_async: starting new g_socket_client_connect_async() with GTask 0x8ee53f0 and GSocketClientAsyncConnectData 0x8eb5d50
+# GLib-GIO-DEBUG: GSocketClient: Starting new address enumeration
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=http://127.0.0.1:41699 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# GLib-GIO-DEBUG: GSocketClient: Address enumeration succeeded
+# GLib-GIO-DEBUG: g_socket_client_enumerator_callback: starting connection attempt 0x7f751c000e40 for GSocketClientAsyncConnectData 0x8eb5d50
+# GLib-GIO-DEBUG: GSocketClient: Starting TCP connection attempt
+# GLib-GIO-DEBUG: GSocketClient: TCP connection successful
+# GLib-GIO-DEBUG: GSocketClient: Starting application layer connection
+# GLib-GIO-DEBUG: GSocketClient: Connection successful!
+# GLib-GIO-DEBUG: g_socket_client_connect_async: starting new g_socket_client_connect_async() with GTask 0x8ee5770 and GSocketClientAsyncConnectData 0x8ec33c0
+# GLib-GIO-DEBUG: GSocketClient: Starting new address enumeration
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=http://127.0.0.1:41699 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# GLib-GIO-DEBUG: GSocketClient: Address enumeration succeeded
+# GLib-GIO-DEBUG: g_socket_client_enumerator_callback: starting connection attempt 0x7f751c000c10 for GSocketClientAsyncConnectData 0x8ec33c0
+# GLib-GIO-DEBUG: GSocketClient: Starting TCP connection attempt
+# GLib-GIO-DEBUG: GSocketClient: TCP connection successful
+# GLib-GIO-DEBUG: GSocketClient: Starting application layer connection
+# GLib-GIO-DEBUG: GSocketClient: Connection successful!
+# GLib-GIO-DEBUG: g_socket_client_connect_async: starting new g_socket_client_connect_async() with GTask 0x8eeaf50 and GSocketClientAsyncConnectData 0x8eaa2a0
+# GLib-GIO-DEBUG: GSocketClient: Starting new address enumeration
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=http://127.0.0.1:41699 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# GLib-GIO-DEBUG: GSocketClient: Address enumeration succeeded
+# GLib-GIO-DEBUG: g_socket_client_enumerator_callback: starting connection attempt 0x7f751c0012d0 for GSocketClientAsyncConnectData 0x8eaa2a0
+# GLib-GIO-DEBUG: GSocketClient: Starting TCP connection attempt
+# GLib-GIO-DEBUG: GSocketClient: TCP connection successful
+# GLib-GIO-DEBUG: GSocketClient: Starting application layer connection
+# GLib-GIO-DEBUG: GSocketClient: Connection successful!
+# GLib-GIO-DEBUG: g_socket_client_connect_async: starting new g_socket_client_connect_async() with GTask 0x8eeb010 and GSocketClientAsyncConnectData 0x8ec13b0
+# GLib-GIO-DEBUG: GSocketClient: Starting new address enumeration
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=http://127.0.0.1:41699 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# GLib-GIO-DEBUG: GSocketClient: Address enumeration succeeded
+# GLib-GIO-DEBUG: g_socket_client_enumerator_callback: starting connection attempt 0x7f751c0013d0 for GSocketClientAsyncConnectData 0x8ec13b0
+# GLib-GIO-DEBUG: GSocketClient: Starting TCP connection attempt
+# GLib-GIO-DEBUG: GSocketClient: TCP connection successful
+# GLib-GIO-DEBUG: GSocketClient: Starting application layer connection
+# GLib-GIO-DEBUG: GSocketClient: Connection successful!
+# GLib-GIO-DEBUG: g_socket_client_connect_async: starting new g_socket_client_connect_async() with GTask 0x8ef0310 and GSocketClientAsyncConnectData 0x8eeabd0
+# GLib-GIO-DEBUG: GSocketClient: Starting new address enumeration
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=http://127.0.0.1:41699 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# GLib-GIO-DEBUG: GSocketClient: Address enumeration succeeded
+# GLib-GIO-DEBUG: g_socket_client_enumerator_callback: starting connection attempt 0x7f751c000c10 for GSocketClientAsyncConnectData 0x8eeabd0
+# GLib-GIO-DEBUG: GSocketClient: Starting TCP connection attempt
+# GLib-GIO-DEBUG: GSocketClient: TCP connection successful
+# GLib-GIO-DEBUG: GSocketClient: Starting application layer connection
+# GLib-GIO-DEBUG: GSocketClient: Connection successful!
+# GLib-GIO-DEBUG: g_socket_client_connect_async: starting new g_socket_client_connect_async() with GTask 0x8ec57f0 and GSocketClientAsyncConnectData 0x8eebcb0
+# GLib-GIO-DEBUG: GSocketClient: Starting new address enumeration
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=http://127.0.0.1:41699 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# GLib-GIO-DEBUG: GSocketClient: Address enumeration succeeded
+# GLib-GIO-DEBUG: g_socket_client_enumerator_callback: starting connection attempt 0x7f751c0012d0 for GSocketClientAsyncConnectData 0x8eebcb0
+# GLib-GIO-DEBUG: GSocketClient: Starting TCP connection attempt
+# GLib-GIO-DEBUG: GSocketClient: TCP connection successful
+# GLib-GIO-DEBUG: GSocketClient: Starting application layer connection
+# GLib-GIO-DEBUG: GSocketClient: Connection successful!
+# GLib-GIO-DEBUG: g_socket_client_connect_async: starting new g_socket_client_connect_async() with GTask 0x8ef4a70 and GSocketClientAsyncConnectData 0x8eeebb0
+# GLib-GIO-DEBUG: GSocketClient: Starting new address enumeration
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=http://127.0.0.1:41699 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# GLib-GIO-DEBUG: GSocketClient: Address enumeration succeeded
+# GLib-GIO-DEBUG: g_socket_client_enumerator_callback: starting connection attempt 0x7f751c001430 for GSocketClientAsyncConnectData 0x8eeebb0
+# GLib-GIO-DEBUG: GSocketClient: Starting TCP connection attempt
+# GLib-GIO-DEBUG: GSocketClient: TCP connection successful
+# GLib-GIO-DEBUG: GSocketClient: Starting application layer connection
+# GLib-GIO-DEBUG: GSocketClient: Connection successful!
+ok 1 /attribution/http
+# slow test /attribution/http executed in 0.80 secs
+# End of attribution tests
+1..1
+#+end_example
+
+* Disabled-module upgrade and transactional schema invariants
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/upgrade
+TAP version 14
+# random seed: R02S16fd18c61584e497f759633d972e3d9e
+# Start of attribution tests
+ok 1 /attribution/upgrade
+# slow test /attribution/upgrade executed in 1.26 secs
+# End of attribution tests
+1..1
+#+end_example
+
+#+begin_example
+$ build/debug/tests/test-attribution -p /attribution/migration-guard
+TAP version 14
+# random seed: R02S9282dae2d52a23598a3ead6e9b6c1e46
+# Start of attribution tests
+ok 1 /attribution/migration-guard
+# slow test /attribution/migration-guard executed in 0.99 secs
+# End of attribution tests
+1..1
+#+end_example
+
+* Review and validation
+
+The local =skill-review= pass read these demonstrations before the final diff,
+then checked the complete attribution implementation and its shared integration
+changes. The review covered organization and account ownership, immutable
+acquisition evidence, private-field serialization/audit behavior, transactional
+revocation, canonical CRM/settlement reuse, exact money arithmetic, source and
+period semantics, public API ownership annotations, schema registration,
+operator documentation and actual test-runner prerequisites.
+
+Regression-driven repairs include wrong-mailbox permission after dedupe or
+synchronous automation, mixed tracked/untracked repeated-inquiry labels,
+private visitor links retained in audit/export output, reentrant withdrawal
+reporting a merely nested commit, stale browser consent responses, and expired
+withdrawal capabilities blocking new explicit consent. Report options now
+survive CLI/API/UI/assistant transport; invalid option types are refused.
+Settings disconnect verifies the current Lightsite provider identity before
+calling the shared integration service. The documentation renderer also caught
+and repaired the earlier marketing demonstration's missing navigation link.
+A second review of the repaired paths found no remaining local blocker.
+
+The provider boundary remains explicit: no Lightsite installation was modified,
+deployed or provisioned. The signed intake tests verify Venture's contract with
+synthetic paired credentials. Production pairing still needs its documented
+signed submission smoke test. The parent epic's combined build, hosted-route
+classification/cross-origin integration checks and final PR review are separate
+from this feature-lane review.
+
+| Validation | Observed result |
+| Final DEBUG server and standalone CLI build | Passed with zero warnings |
+| Final GIR and typelib | Passed; MarketingService/AttributionService and their public functions are present |
+| Final attribution suite, SQLite | 33 passed; private-TMPDIR litter check passed |
+| Final attribution suite, isolated PostgreSQL | 33 passed, including logical reconnect, populated CRM merge and upgrade |
+| Final migration suite with PostgreSQL enabled | 9 passed, no PostgreSQL skip |
+| Related regressions during the lane | Marketing 33, leads 34, approvals 12, dedupe 10, canonical accounting JSON 1 passed |
+| Route/module regressions during the lane | Full auth 94 and module 19 passed |
+| Built-artifact transcripts above | 23 successful executions |
+| Documentation site | All 91 pages rendered with the Emacs renderer |
+
+The disposable PostgreSQL fixture used a tmpfs data directory with fsync enabled.
+These checks establish logical transaction/reconnect and backend behavior, not
+physical durability, capacity or recovery performance. The full integrated epic
+suite is run by the parent workflow after cherry-picking this feature commit.

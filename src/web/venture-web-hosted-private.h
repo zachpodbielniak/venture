@@ -21,13 +21,15 @@ venture_web_server_add_classified_route(VentureWebServer *self, HtmxMethod metho
 {
 	g_return_if_fail(VENTURE_IS_WEB_SERVER(self));
 	g_return_if_fail(classification > VENTURE_DATA_CLASS_UNKNOWN && classification <= VENTURE_DATA_CLASS_TENANT_ADMIN);
+	g_return_if_fail((flags & VENTURE_HOSTED_ROUTE_CAPABILITY_ORIGIN) == 0 ||
+		(classification == VENTURE_DATA_CLASS_TENANT && flags == VENTURE_HOSTED_ROUTE_CAPABILITY_ORIGIN));
 	htmx_router_add_route(htmx_server_get_router(self->server), method, pattern, callback, user_data);
 	htmx_router_add_route(self->classified_routes, method, pattern, venture_web_classification_response,
 		GUINT_TO_POINTER((guint)classification | ((guint)flags << 8)));
 }
 
 static gboolean
-venture_web_host_matches(VentureTenantService *service, HtmxRequest *request)
+venture_web_host_matches(VentureTenantService *service, HtmxRequest *request, gboolean check_origin)
 {
 	SoupServerMessage *message = htmx_request_get_message(request);
 	SoupMessageHeaders *headers;
@@ -49,7 +51,7 @@ venture_web_host_matches(VentureTenantService *service, HtmxRequest *request)
 	if (presented_port < 0) presented_port = g_str_equal(g_uri_get_scheme(expected), "https") ? 443 : 80;
 	if (g_ascii_strcasecmp(g_uri_get_host(expected), g_uri_get_host(presented)) != 0 || expected_port != presented_port) return FALSE;
 	origin = soup_message_headers_get_one(headers, "Origin");
-	return !origin || g_strcmp0(origin, venture_tenant_service_get_origin(service)) == 0;
+	return !check_origin || !origin || g_strcmp0(origin, venture_tenant_service_get_origin(service)) == 0;
 }
 
 static HtmxResponse *
@@ -109,7 +111,7 @@ venture_web_hosted_preflight(VentureWebServer *self, HtmxContext *http, VentureT
 		return TRUE;
 	}
 	if (classification == VENTURE_DATA_CLASS_UNKNOWN || classification == VENTURE_DATA_CLASS_PLATFORM ||
-	    !venture_web_host_matches(service, request)) goto deny;
+	    !venture_web_host_matches(service, request, (flags & VENTURE_HOSTED_ROUTE_CAPABILITY_ORIGIN) == 0)) goto deny;
 	actor = venture_auth_authenticate(self->auth, request);
 	g_object_set_data(G_OBJECT(request), "venture-hosted-authenticated", actor->authenticated ? GINT_TO_POINTER(1) : NULL);
 	if (classification == VENTURE_DATA_CLASS_TENANT_ADMIN && actor->authenticated &&

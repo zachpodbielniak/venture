@@ -147,6 +147,8 @@ CORE_SRCS += src/pipelines/venture-pipeline-records.c
 SERVER_ONLY_SRCS += $(filter-out src/pipelines/venture-pipeline-records.c,$(wildcard src/pipelines/*.c))
 CORE_SRCS += src/sequences/venture-sequence-records.c
 SERVER_ONLY_SRCS += $(filter-out src/sequences/venture-sequence-records.c,$(wildcard src/sequences/*.c))
+CORE_SRCS += src/attribution/venture-attribution-records.c
+SERVER_ONLY_SRCS += $(filter-out src/attribution/venture-attribution-records.c,$(wildcard src/attribution/*.c))
 CORE_SRCS += src/marketing/venture-marketing-records.c
 SERVER_ONLY_SRCS += $(filter-out src/marketing/venture-marketing-records.c,$(wildcard src/marketing/*.c))
 CORE_SRCS += src/autojournal/venture-posting-profile.c
@@ -248,6 +250,8 @@ PUBLIC_HDRS += $(wildcard src/commerce/*.h)
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/pipelines/*.h))
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/sales/*.h))
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/sequences/*.h))
+PUBLIC_HDRS += $(wildcard src/marketing/*.h)
+PUBLIC_HDRS += $(wildcard src/attribution/*.h)
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/statements/*.h))
 PUBLIC_HDRS += $(wildcard src/cutover/*.h)
 PUBLIC_HDRS += $(wildcard src/setup/*.h)
@@ -627,6 +631,7 @@ deps: $(OIDC_GLIB_LIB)
 
 $(OUTDIR)/tests/test-mail-surfaces: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-lead-routing: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-attribution $(OUTDIR)/tests/test-marketing: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # The documentation site
@@ -668,5 +673,3 @@ $(OUTDIR)/tests/test-cli-session: $(OUTDIR)/venturectl
 
 # This regression invokes the actual offline command dispatcher.
 $(OUTDIR)/tests/test-hosted-maintenance: | $(OUTDIR)/venture
-
-PUBLIC_HDRS += $(wildcard src/marketing/*.h)

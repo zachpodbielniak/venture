@@ -1,0 +1,329 @@
+#+title: First-party source attribution
+
+* Scope and ownership
+
+The =attribution= module connects consented first-party observations to the
+existing lead capture, routing, deduplication, conversion and accounting
+services. It requires =leads= and =integrations=. Financial and comparison
+reports contribute only while their owning modules are enabled. There is no
+third-party analytics service, raw IP/user-agent retention, probabilistic
+identity matching, installation credential fallback or Lightsite provisioning.
+
+Five metadata-owned records appear through the usual describe/list/form/API
+surfaces: =attribution_site=, =attribution_visitor=, =attribution_touch=,
+=attribution_submission= and =attribution_binding=. Generic writes cannot invent
+consent, observations or acquisition evidence. References must belong to the
+same organization. A site's original origin and external tenant/site identities
+are immutable. Deactivate a site with =active=false= instead of deleting its
+identity: withdrawal still needs to resolve previously issued capabilities.
+
+Organization owners/admins configure a site with its exact organization, HTTPS origin, external tenant/site
+identities, active =lead_form_id= and =consent_policy=. Loopback HTTP is allowed
+for development. =campaign_map= is a JSON object mapping bounded UTM campaign
+labels to same-organization campaign IDs. Unknown labels retain their source
+text but cannot invent a campaign. Default lookback and anonymous retention are
+30 days; each accepts 1–365 days and retention cannot be shorter than lookback.
+Any site configuration version change requires a new analytics grant.
+
+* Browser consent and capture
+
+Serve the script from this Venture installation:
+
+#+begin_src html
+<script src="https://venture.example.test/attribution.js"
+        data-site="CONFIGURED-SITE-UUID"></script>
+#+end_src
+
+Loading it performs no storage reads/writes and sends no analytics requests.
+The site's consent manager must call the explicit methods after the person's
+choice; the script supplies no implicit consent banner or checked checkbox:
+
+#+begin_src javascript
+await VentureAttribution.grant('analytics-v1');
+await VentureAttribution.page(crypto.randomUUID());
+// Preserve this exact in-memory object when retrying a failed form request.
+const submission = VentureAttribution.createSubmission({
+  name: 'Reader', email: 'reader@example.test', message: 'Please contact me'
+});
+await VentureAttribution.submit(submission);
+await VentureAttribution.withdraw();
+#+end_src
+
+=grant(policy)= accepts only the site's current analytics policy. Only then may
+the browser store the random visitor capability and expiration in localStorage.
+A capability is fixed to the site/configuration and expires after its original
+retention window; visiting does not silently extend it. If browser storage is
+unavailable, the consent exists only in memory. =page(eventId)= records one page
+with an explicit stable replay identity; it does nothing before permission.
+The caller decides which navigation events to observe and retries with the
+same identity. Sessions renew after 30 minutes without an accepted observation.
+A visitor is a consenting browser capability, not proof of a unique person.
+
+The script sends simple =text/plain;charset=UTF-8= JSON POSTs with credentials
+omitted and no referrer. Every browser endpoint checks the exact configured
+Origin and returns CORS permission only for it. It does not use cookies or a
+body-supplied organization. No preflight support is needed for this protocol.
+An HTTP client can forge Origin: origin checking binds the site's contract; it
+is not a claim that anonymous public inquiry content is authenticated identity.
+
+Form submission is available without analytics permission. The browser helper
+never stores inquiry fields or email choices. =createSubmission= creates the
+stable submission identity and freezes any current visitor capability. Keep
+that exact envelope in memory through retries. A changed body under the same
+identity is a conflict. If permission expired before an initial acceptance,
+ask the person to submit a fresh envelope without analytics; do not silently
+rewrite the payload of an uncertain delivery.
+
+Analytics permission does not grant email permission. Optional marketing
+permission is a separate explicit object passed to =createSubmission=:
+
+#+begin_src javascript
+const emailChoice = {
+  granted: true, policy: 'email-v1',
+  statement: 'I request this organization\'s email news',
+  occurred_at: new Date().toISOString()
+};
+#+end_src
+
+The policy and statement must exactly match =marketing_policy= and
+=marketing_statement= approved on the site. A declined choice is just
+={granted:false}=; omitting the object records =not_requested=. The service
+uses existing marketing consent evidence and never clears suppression. A
+phone/website duplicate that resolves to another mailbox retains the inquiry
+but records =address_mismatch= without granting that address permission.
+Synchronous capture automation is followed by a fresh subject read for the
+same reason. Outcomes also include =recorded=, =suppressed= and
+=module_unavailable=. A disabled marketing module cannot prevent a necessary
+inquiry or manufacture a consent record.
+
+* Retention and withdrawal
+
+=withdraw()= stops browser tracking immediately, including while an earlier
+consent response is in flight. Consent operations are serialized so an older
+response cannot overwrite a newer choice. If withdrawal cannot reach the
+server, storage retains only the pending revocation capability and the method
+rejects; retry it on reconnection. A pending revocation must complete before a
+new grant. Do not claim the server erased data while the browser was offline.
+
+Server withdrawal refuses new observations and removes visitor linkage from
+observations/submissions, private path/referrer/session data, and observation
+replay digests. The digest of the withdrawal capability remains until its
+original expiration so withdrawal retries work. Organization owners/admins run
+=act attribution_visitor 0 retention_sweep organization_id=1 limit=100= to redact
+expired observations and forget expired capability hashes. Sweeps are bounded
+and explicit; operators should schedule them for their retention policy.
+Disabling the module or site does not prevent withdrawal. If retention has
+already forgotten a capability, the browser treats its 404 withdrawal response
+as completed; network/server failures remain pending and keep tracking stopped.
+Withdrawal owns its transaction. If invoked reentrantly while another write is
+active, it returns BUSY before mutation (HTTP 429 with =Retry-After: 60=); retry
+independently after the write finishes. A nested commit must never be reported
+as durable revocation that an outer rollback can undo. The normal public HTTP
+withdrawal route has no enclosing generic transaction.
+
+Coarse source/campaign snapshots already attached to business inquiries,
+conversion bindings, accounting records and independent email-permission
+proof remain for those separate purposes. This is separation of retained
+business evidence, not a claim of complete anonymization or legal erasure.
+Raw capabilities, visitor references, observation replay identities, referrer
+origins and credential ciphertext never serialize through ordinary record
+fields. Audit diffs for private linkage contain redacted change markers rather
+than the previous identifiers or navigation details. Exported acquisition references keep their original subjects
+through CRM merges instead of silently transferring consent.
+
+* Public protocol and limits
+
+=POST /attribution/:site/:operation= accepts these closed JSON objects:
+
+| Operation | Envelope |
+| grant | ={"policy":"analytics-v1"}= |
+| observe | ={"token":"...","event_id":"stable-id","fields":{...}}= |
+| capture | version-one submission below; tenant/site/origin may be omitted for browser calls |
+| withdraw | ={"token":"..."}= |
+
+Bodies are at most 32 KiB and cannot contain embedded NUL. Observations accept
+only page, referrer, utm_source, utm_medium and utm_campaign. Page URLs must
+belong to the site; only their path is retained, never query/fragment.
+Referrers retain only their HTTP(S) origin. Explicit UTM source wins, otherwise
+an external referrer host supplies the source, otherwise =direct=. Campaign
+labels are mapped by site configuration. Stable identifiers and UTM tokens are
+at most 128 safe ASCII characters. No email/name/IP-based visitor joining occurs.
+
+Grants: 60/minute and 10,000/rolling day per site. Observations: 60/minute per
+visitor, 600/minute per site and 1,000 over a visitor's lifetime. Accepted forms:
+60/minute and 10,000/rolling day per site, at most 1,000 per visitor. Counters
+are persisted; exact replay does not consume another identity. Limits use the
+trusted receipt clock, not caller timestamps. The selected single-process
+installation serializes check/write transactions; this is not a distributed
+edge rate limiter. Rate refusal is HTTP 429 with =Retry-After: 60=. Nonempty
+honeypots return an accepted response without creating business evidence.
+
+* Lightsite pairing and signed intake
+
+Organization owners/admins use =/organizations/:id/settings/attribution= to
+connect, rotate or disconnect =lightsite_capture= credentials. Settings contain
+=tenant_id=, =environment= (=test= or =live=), and =signing_secret=, a random
+64-character hexadecimal string (for example generated by =openssl rand -hex 32=).
+The HMAC key is the UTF-8 text of that string, not the decoded 32 bytes. Inputs
+remain blank/write-only; the core integration service encrypts the complete
+settings under the installation key. Pair the same secret with a trusted
+Lightsite event forwarder. This is manual cryptographic pairing, not a remote
+account-discovery or deployed-forwarder verification claim.
+
+A site must explicitly name =connection_id= for signed delivery. The connection
+belongs to the same organization, provider and external tenant. Account or
+environment replacement requires disconnect; rotation retains the same binding
+identity and uses its current version. Historical submissions retain the exact
+connection/version used. A disabled or replaced binding cannot accept a new
+callback through the replacement account.
+
+=POST /hooks/lightsite/:site/:connection= requires =X-Venture-Timestamp= (decimal
+Unix seconds within five minutes of receipt) and =X-Venture-Signature=
+(lowercase hexadecimal HMAC-SHA256). Sign exactly =timestamp + "\\n" + body=,
+where the separator is one newline byte. Verification uses the original bytes
+and a constant-time digest comparison, before JSON parsing. Version and
+identity are checked on the same encrypted settings read; synchronous rotation
+or disconnect during capture rolls the delivery back.
+
+#+begin_src json
+{
+  "version": 1,
+  "submission_id": "original-lightsite-submission-uuid",
+  "tenant_id": "verified-lightsite-tenant",
+  "site_id": "verified-lightsite-site",
+  "origin": "https://site.example.test",
+  "fields": {"name":"Reader","email":"reader@example.test","message":"Inquiry"}
+}
+#+end_src
+
+Optional =visitor_token= requires separately valid anonymous analytics
+permission; optional =marketing= follows the independent choice contract above.
+Name/email are required, message maps to existing lead notes; company_name,
+phone and website use existing capture matching/routing. The closed envelope
+refuses arbitrary organization, owner, CRM source or campaign overrides.
+Receipt time controls attribution; only the email-choice occurrence may be
+supplied, and it cannot be later than receipt. The original submission ID is
+scoped to the site and connection UUID: collisions in different accounts are
+independent. Exact replay has no CRM/consent/history side effect; changed content
+is HTTP 409. Bad signatures are 403; malformed evidence is 400; unknown sites
+are 404. Accepted public responses contain no CRM record or private visitor
+history. Disconnect/configuration refusals should be reviewed instead of retried
+indefinitely; transport failures and 429 may retry the same identity/body.
+
+Read-only inspection of Lightsite's =form-submit-routes.c= confirmed its
+=/api/v1/forms/submit= verifies the embed token's site identity and allowed
+origin, stores a submission UUID, and emits =form.submission.received= with
+verified tenant/site/form context and name/email/message. A forwarder must use
+that verified context and original UUID, not body-selected organization values.
+No Venture forwarder was present in the inspected checkout. This change supplies
+the Venture-side signed contract and executable fixtures; it does not edit,
+deploy or provision a Lightsite installation. A live paired deployment must
+perform a signed submission smoke test before claiming production connectivity.
+
+* Attribution report
+
+=report attribution 2026-09 organization_id=1 model=first= selects one
+model; =model=last= selects the other. =details=true= returns each contributing
+source record instead of grouped rows. The same report is available through
+the report UI/API/assistant. Bookmark
+=/reports/attribution?period=this_month&organization_id=1&model=last&details=true=
+for the last-touch detail view; period buttons and CSV export preserve those
+options. The assistant tool declares =model= and boolean =details=. Campaign IDs are exact same-organization joins to
+=campaign= records; source references name the underlying records for review.
+Groups are separated by measure, source, campaign, currency/exponent and evidence
+category, so declared CRM provenance cannot silently become consented history.
+
+At capture, first/last observations are selected within the site's lookback,
+ordered by trusted receipt time then identity. The submission freezes both
+source/campaign choices, per-model evidence labels and lookback days. An open
+lead binding retains first and last lookbacks separately, so later consent or
+a policy change cannot relabel the first inquiry as tracked. Without an eligible observation the
+source is =form:SITE-UUID= with an explicit reason; there is no inferred touch.
+Repeated forms for a still-open lead preserve the original first touch and
+advance its last touch. Canonical conversion binds the lead/company/contact/deal
+inside its existing transaction. Converted acquisition evidence is not rewritten
+by subsequent submissions. Explicit quote-to-invoice/deal links take precedence
+for financial attribution; otherwise an unambiguous customer acquisition is
+used. Nothing captured or bound later can explain an earlier financial event.
+
+| Measure | Count, amount and period date |
+| visitors | Distinct consenting capabilities with retained observations in the period, attributed to their first/last observation in that period; redacted linkage is excluded |
+| submissions | Accepted submission identities by receipt time; exact retry is one |
+| leads | CRM leads by creation time, including separately labelled declared/unknown provenance |
+| converted_leads | Retained acquisition bindings by canonical conversion time |
+| customers | Each company's first positive applied receipt in organization book currency; same denominator as CAC |
+| won_deal_value | Current value of won deals by closed time; a management pipeline measure, not revenue recognition |
+| invoiced_net | Frozen issue net minus void net at each immutable invoice-event date; excludes tax and shipping |
+| invoiced_net_unknown | Historical events without frozen net evidence; no total inferred from a mutable invoice |
+| cash_receipts | Settlement-derived positive sales at their occurrence dates |
+| cash_refunds | Settlement-derived negative refund adjustments at their occurrence dates |
+
+The cash measures reuse the settlement service's sale identities and gross
+amounts. Partial receipts count their applied amounts once; unapplied deposits,
+overpayments, credit notes and write-offs create no guessed cash revenue. A
+refund of applied cash reduces cash in the refund period. Refunding unused
+money does not reduce a sale that never existed. Rolled-back/deleted sales are
+excluded. Currency buckets stay separate and exact integer money operations
+refuse overflow; no model estimates FX or multiplies invoice amounts by the
+number of submissions, touches or allocations. A missing amount remains
+unknown, rather than zero.
+
+Retained original company/contact/lead references survive dedupe. Reports follow
+same-organization merge survivors for lookup; multiple possible acquisition
+bindings are explicitly =unknown= with an ambiguity reason unless an exact
+quote/deal resolves them. Current CRM provenance without retained evidence is
+labelled as such for either model; it is not historical anonymous consent.
+
+The report also calls the existing =cac= and =campaigns= reports with exactly
+the same organization and period, exposing their metrics with those prefixes.
+CAC's first-book-currency-cash customer cohort differs from a lead-conversion
+cohort. Its dated/pro-rated acquisition spend differs from =campaigns=' campaign
+start cohort, declared spend/revenue and manual conversions. The imported
+metrics are comparisons, not additional attribution revenue; do not add them
+to the money rows. The source-linked cash and issued-net measures do not replace
+the accounting reports or statutory revenue recognition. =venture_id= and
+=as_of= reconstruction are explicitly refused rather than partly applied.
+
+* Development and verification
+
+=make DEBUG=1 test-one T=test-attribution= exercises the service, signature,
+consent, HTTP and financial journey. It also invokes
+=node tests/attribution-script.cjs=, a dependency-free browser-boundary harness.
+Node.js is a development/test dependency, included in the builder packages; the
+normal runtime image needs no Node for attribution. Missing Node fails this
+check rather than skipping privacy behavior. PostgreSQL uses the existing
+schema-isolated =VENTURE_TEST_ACCOUNTING_POSTGRES_URI= fixture, never a public
+schema reset. =make DEBUG=1 gir= includes both marketing and attribution public
+headers; a successful scanner run alone is not enough without checking their
+symbols are present.
+
+* Conversion ratios and reconciliation
+
+The two conversion ratios state their denominators. =visitor_submission_rate=
+is distinct observed consenting visitors who also submitted in the period,
+divided by all observed consenting visitors in that period. Repeated forms do
+not increase its numerator. Visitors without retained linkage are excluded from
+both parts. =captured_lead_conversion_rate= is retained acquisition bindings
+first captured in the period that converted before the exclusive period end
+(or report execution for an unbounded period), divided by that captured lead
+cohort. It is not all new CRM leads divided by all customers. Empty denominators
+are =n/a=, not zero. =cac_customer_difference= exposes any difference between
+attribution's first-applied-cash count and the existing CAC denominator under
+the same scope; a nonzero difference requires evidence review.
+
+See [[file:attribution-demonstration.org][the built-artifact demonstration]] for reproducible consent,
+Lightsite intake, CRM conversion, financial and transport transcripts.
+
+* Hosted public intake
+
+The analytics endpoint uses an explicit capability-origin route declaration.
+Hosted preflight still checks the immutable workspace Host and lifecycle; its
+Origin comparison is delegated only on this endpoint to the exact origin stored
+on the selected site. This permits a portfolio site to post to a different
+Venture origin without granting ambient session or organization authority.
+Settings, ordinary APIs and signed server callbacks retain their usual origin
+checks. Read-only and suspended workspaces refuse public intake.
+
+=/attribution/http-hosted= exercises a distinct portfolio origin, wrong site
+origin, forged neighboring Host, ordinary API refusal, suspended/read-only
+intake and explicit reactivation using a real server.

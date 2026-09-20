@@ -829,3 +829,65 @@ fresh per-fixture PostgreSQL schemas; the reconnect case reuses only its own
 schema. No fixture resets =public=. The opt-in test database is disposable;
 these checks cover logical reconnect and transaction behavior, not physical
 recovery performance. See [[file:marketing-demonstration.org][the built-artifact transcripts]].
+
+* First-party attribution and signed Lightsite intake (#121 / #125)
+
+The attribution fixture reuses canonical lead capture/conversion and settlement,
+with schema-isolated SQLite/PostgreSQL helpers. It tests separate anonymous and
+email permissions, exact source/campaign binding, stable event/submission replay,
+withdrawal and expiration, site/visitor quotas, retained conversion evidence,
+signed current account configuration, frozen first/last source selection, and
+separate won-value/issued-net/applied-cash/refund measures. Financial events use
+actual monotonically later receipt instants: no future-dated financial event is
+allowed merely to make a fixture convenient.
+
+The Node.js browser harness is invoked by =test-attribution= and is therefore a
+required development-test dependency, included in the builder and =list-deps=
+packages. It uses only Node built-ins and no network. It proves no storage or
+tracking before explicit consent, forms without analytics, no implied email
+permission, stable in-memory retries, offline withdrawal stopping new tracking,
+and serialized consent responses. The ordinary runtime image does not gain
+Node for this feature.
+
+Regression evidence includes generic forged evidence being accepted before the
+save guard, immutable site identity changing before its guard, site deletion
+breaking withdrawal, capture matching another mailbox incorrectly granting email
+permission, and synchronous automation changing that mailbox between matching
+and consent. Browser tests also reproduced an older consent response erasing the
+newer grant's stored policy. Each was observed red and repaired. Report registration
+and explicit conversion-rate expectations were tested red before implementation.
+The end-to-end campaign fixture exposed the JSON-field storage contract: metadata
+JSON is serialized string storage, so mapping validation/lookup must parse it,
+not cast its property pointer to =JsonNode=.
+
+The canonical JSON extraction has a byte-for-byte accounting fingerprint
+compatibility test; removing object-key sorting failed the regression, then the
+restored implementation passed. Marketing and attribution headers are explicitly
+included in =PUBLIC_HDRS=; inspect their function declarations in the generated
+GIR as well as requiring a warning-free scanner, rather than mistaking an omitted
+public API for a clean annotation check.
+
+Final review regressions also cover a repeated untracked inquiry followed by a
+consented observation: first/last source evidence and lookback remain separate.
+Private visitor references, replay keys and referrer origins are excluded from
+ordinary serialization and audit diffs contain only redacted change markers.
+The browser treats a retention-forgotten capability's 404 withdrawal as complete,
+while offline failures remain pending and cannot resume tracking. These failures
+were reproduced before the respective repairs.
+
+The report transport fixture invokes the built =venturectl= and verifies matching
+JSON/CSV source rows plus model/details preservation in page links. Its isolated
+loopback server disables authentication solely for option-transport testing;
+=test-auth= separately exercises the protected settings routes. The authority
+fixture exercises real organization membership for site/configuration changes
+and the type-level retention action. The financial journey includes canonical
+CRM merge, retained original references and separate EUR/USD buckets. Logical
+reconnect preserves exact submission replay and refused withdrawn capabilities.
+See [[file:attribution-demonstration.org][the built-artifact transcripts]].
+
+A reentrant =entity-saved= regression reproduces withdrawal during observation.
+The standalone withdrawal contract refuses BUSY before any nested mutation;
+a follow-up call after the observation commits redacts its linkage and refuses
+future tracking. The real public HTTP withdrawal path remains a successful
+standalone transaction. This avoids an outer rollback undoing an already
+reported privacy decision.
