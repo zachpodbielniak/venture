@@ -710,6 +710,21 @@ test_rollback_exact(Fixture *f, gconstpointer data)
 		g_assert_nonnull(kept_company);
 		g_assert_false(venture_entity_is_deleted(kept_company));
 	}
+	/* A removed imported win must not remain credited toward quota. Retain
+	 * both immutable booking and reversal, with exactly zero net value. */
+	{
+		g_autoptr(GPtrArray) credits = live(f, VENTURE_TYPE_SALES_CREDIT);
+		gint64 net = 0;
+		g_assert_cmpuint(credits->len, ==, 2);
+		for (i = 0; i < credits->len; i++)
+		{
+			g_autoptr(VentureMoney) amount = NULL;
+			g_object_get(g_ptr_array_index(credits, i), "value", &amount, NULL);
+			g_assert_nonnull(amount);
+			net += venture_money_get_amount(amount);
+		}
+		g_assert_cmpint(net, ==, 0);
+	}
 	rows = live(f, VENTURE_TYPE_CRM_IMPORT_ROW);
 	g_assert_cmpuint(rows->len, ==, 17);
 	for (i = 0; i < rows->len; i++)

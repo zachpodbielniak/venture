@@ -192,3 +192,14 @@ unmapped-stage and other manifest refusals, history and tasks, exact
 rollback on a database with pre-existing records, the three vendor maps
 with an override, the generic-write refusal, transactional atomicity,
 and the REST and CLI surfaces.
+
+* Rollback and credited wins
+
+Before removing an imported won deal, rollback moves it through the existing
+pipeline transition service to an open stage in the same organization and
+pipeline. This retains an immutable reversal of its sales booking; quota
+reports therefore do not keep credit for a removed import. The transition,
+reversal and removals share the rollback transaction. If that pipeline has
+no available open stage, rollback refuses without partially removing rows;
+restore an open stage and retry. Existing matched customer/deal rows are
+still preserved, and activated batches still cannot be rolled back.

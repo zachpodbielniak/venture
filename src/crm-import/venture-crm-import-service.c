@@ -1454,6 +1454,36 @@ record_gtype(const gchar *type)
 	return G_TYPE_INVALID;
 }
 
+/* Removing an imported win must reverse its immutable sales credit through
+ * the same stage transition as an operator, inside the rollback transaction. */
+static VentureEntity *
+rollback_reopen_deal(VentureCrmImportService *self, VentureEntity *record,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureEntity) stage = NULL;
+	gint64 pipeline_id = 0;
+	gint legacy_stage = 0;
+	g_object_get(record, "stage", &legacy_stage, "pipeline-id", &pipeline_id, NULL);
+	if (legacy_stage != VENTURE_DEAL_STAGE_WON)
+		return g_object_ref(record);
+	query = venture_query_new(VENTURE_TYPE_PIPELINE_STAGE);
+	venture_query_set_organization(query, venture_entity_get_organization_id(record));
+	if (!venture_query_add_filter_int(query, "pipeline-id", VENTURE_FILTER_OP_EQ, pipeline_id, error) ||
+		!venture_query_add_filter_int(query, "kind", VENTURE_FILTER_OP_EQ, 0, error))
+		return NULL;
+	stage = venture_database_find_one(self->database, query, error);
+	if (stage == NULL)
+	{
+		if (error == NULL || *error == NULL)
+			refuse(error, "the imported won deal needs an open pipeline stage before rollback");
+		return NULL;
+	}
+	return VENTURE_ENTITY(venture_deal_service_move_stage(
+		venture_database_get_deal_service(self->database), VENTURE_DEAL(record),
+		venture_entity_get_id(stage), "CRM import rollback", actor, error));
+}
+
 static gboolean
 rollback_impl(VentureCrmImportService *self, VentureCrmImport *batch, const VentureActor *actor, GError **error)
 {
@@ -1487,6 +1517,13 @@ rollback_impl(VentureCrmImportService *self, VentureCrmImport *batch, const Vent
 			record = venture_database_get(self->database, record_gtype(type), record_id, error);
 			if (record == NULL)
 				goto fail;
+			if (VENTURE_IS_DEAL(record) && !venture_entity_is_deleted(record))
+			{
+				g_autoptr(VentureEntity) reopened = rollback_reopen_deal(self, record, actor, error);
+				if (reopened == NULL)
+					goto fail;
+				g_set_object(&record, reopened);
+			}
 			if (!venture_entity_is_deleted(record) && !venture_database_delete(self->database, record, actor, error))
 				goto fail;
 		}

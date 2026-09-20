@@ -784,3 +784,11 @@ verification and the new key succeeds. =test-stripe='s
 =/stripe/automatic-tenant-lifecycle= checks background collection refusal in
 read-only and suspended states, unchanged scheduling rows, and explicit resumption.
 These integration cases supplement the independent service and process-lease tests.
+
+* Hosted integration: CRM rollback and sales credit
+
+The 122-binary integration run exposed =/crm-import/rollback-exact=: the
+sales ledger correctly refused deleting a won deal. CRM rollback now uses
+the canonical stage transition before removal. The regression asserts the
+retained booking plus reversal net to zero, alongside exact retained CRM
+rows and repeat rollback. All 13 CRM import cases pass after this repair.
