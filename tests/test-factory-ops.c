@@ -208,7 +208,7 @@ fixture_set_up(
 	forge = venture_forge_new();
 	g_object_set(forge, "name", "Example forge",
 	             "kind", VENTURE_FORGE_KIND_FORGEJO,
-	             "base-url", "https://git.example.com", "token", "tok",
+	             "base-url", "https://git.example.com", "organization-id", (gint64)1,
 	             "active", TRUE, NULL);
 	g_assert_true(venture_database_save(fixture->database,
 	                                    VENTURE_ENTITY(forge), NULL, &error));

@@ -1592,7 +1592,13 @@ test_auth_api_refuses_anonymous_requests(
 	 * reached from the forge page.
 	 */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/forges/1/settings", NULL, "token=x", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/forges/1/token", NULL, "token=x", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/forges/1/settings", NULL, "token=x", NULL, NULL),
 		==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/forges/1/secret", NULL, "secret=x", NULL, NULL),
@@ -1816,6 +1822,9 @@ test_auth_api_refuses_anonymous_requests(
 	 */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/forge/1/token", NULL, "{\"token\":\"x\"}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/forge/1/settings", NULL, "{\"token\":\"x\"}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/forge/1/webhook-secret", NULL, "{}", NULL, NULL),
@@ -2715,6 +2724,15 @@ test_auth_forge_records_are_owner_only(
 	                 ==, SOUP_STATUS_FORBIDDEN);
 
 	/* The credential routes are owner-only even for a logged-in editor. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/forges/1/settings",
+	                                        editor, NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/forges/1/settings",
+	                                        editor, "operation=disconnect", NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/forge/1/settings",
+	                                        editor, "{}", NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/forges/1/token",
 	                                        editor, "token=stolen", NULL, NULL),
 	                 ==, SOUP_STATUS_FORBIDDEN);

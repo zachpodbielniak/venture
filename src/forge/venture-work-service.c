@@ -12,11 +12,14 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <signal.h>
+#include <unistd.h>
 
 /*
  * One unit of work, handed to the agent thread.
  *
- * Everything here is a copy. Nothing in this struct is a #VentureEntity or a
+ * Inputs are copies, plus an immutable revocable credential snapshot.
+ * Nothing in this struct is a #VentureEntity or a
  * pointer into one, because the agent thread must not touch the object graph
  * the main thread owns -- see the header for why that is stronger than a
  * data race.
@@ -43,6 +46,7 @@ typedef struct
 	 * through /proc, and never the URL, which git writes into
 	 * .git/config where it outlives the run. */
 	gchar	*token;
+	VentureForgeCredentials *credentials;
 
 	gchar	*git_path;
 	gchar	*git_author_name;
@@ -75,6 +79,7 @@ typedef struct
 	gint64			 output_tokens;
 	gint64			 turns;
 	gboolean		 finished;
+	VentureForgeCredentials *credentials;
 } VentureWorkUpdate;
 
 enum
@@ -123,6 +128,7 @@ venture_work_job_free(VentureWorkJob *job)
 	if (NULL == job)
 		return;
 
+	g_clear_object(&job->credentials);
 	g_free(job->workspace);
 	g_free(job->clone_url);
 
@@ -143,6 +149,7 @@ venture_work_job_free(VentureWorkJob *job)
 	g_free(job->git_author_name);
 	g_free(job->git_author_email);
 	g_free(job->runner_command);
+	if (job->askpass) g_unlink(job->askpass);
 	g_free(job->askpass);
 	g_free(job);
 }
@@ -153,6 +160,7 @@ venture_work_update_free(VentureWorkUpdate *update)
 	if (NULL == update)
 		return;
 
+	g_clear_object(&update->credentials);
 	g_free(update->branch);
 	g_free(update->summary);
 	g_free(update->failure_reason);
@@ -194,6 +202,14 @@ venture_work_service_apply(gpointer user_data)
 
 	if (NULL == run)
 		return G_SOURCE_REMOVE;
+
+	if (update->finished && update->credentials && !venture_forge_credentials_revalidate(update->credentials,
+		venture_context_get_database(self->context), &error))
+	{
+		update->has_state = TRUE; update->state = VENTURE_FORGE_RUN_STATE_CANCELLED;
+		g_free(update->failure_reason); update->failure_reason = g_strdup(error->message);
+		g_clear_error(&error);
+	}
 
 	if (update->has_state)
 		g_object_set(run, "state", update->state, NULL);
@@ -239,9 +255,6 @@ venture_work_service_apply(gpointer user_data)
 		now = g_date_time_new_now_utc();
 		g_object_set(run, "finished-at", now, NULL);
 
-		g_mutex_lock(&self->lock);
-		g_hash_table_remove(self->live, GINT_TO_POINTER(update->run_id));
-		g_mutex_unlock(&self->lock);
 	}
 
 	actor.kind = VENTURE_ACTOR_KIND_AUTOMATION;
@@ -316,6 +329,9 @@ venture_work_update_new(
  * word-split -- which turns a branch called `--upload-pack=…` into an option
  * git obeys. An argv array has no such reading.
  */
+static void venture_work_git_child_setup(gpointer data)
+{ (void)data; if (setpgid(0, 0) != 0) _exit(126); }
+
 static gboolean
 venture_work_git(
 	const VentureWorkJob	 *job,
@@ -329,9 +345,20 @@ venture_work_git(
 	g_autoptr(GPtrArray) argv = NULL;
 	g_autofree gchar *output = NULL;
 	gsize i;
+	gboolean network = !g_strcmp0(args[0], "clone") || !g_strcmp0(args[0], "push");
+	if (!venture_forge_credentials_check(job->credentials, error)) return FALSE;
 
 	argv = g_ptr_array_new();
 	g_ptr_array_add(argv, job->git_path);
+	g_ptr_array_add(argv, (gpointer)"-c"); g_ptr_array_add(argv, (gpointer)"credential.helper=");
+	g_ptr_array_add(argv, (gpointer)"-c"); g_ptr_array_add(argv, (gpointer)"http.followRedirects=false");
+	g_ptr_array_add(argv, (gpointer)"-c"); g_ptr_array_add(argv, (gpointer)"http.sslVerify=true");
+	g_ptr_array_add(argv, (gpointer)"-c"); g_ptr_array_add(argv, (gpointer)"http.extraHeader=");
+	g_ptr_array_add(argv, (gpointer)"-c"); g_ptr_array_add(argv, (gpointer)"submodule.recurse=false");
+	g_ptr_array_add(argv, (gpointer)"-c"); g_ptr_array_add(argv, (gpointer)"core.hooksPath=/dev/null");
+	g_ptr_array_add(argv, (gpointer)"-c"); g_ptr_array_add(argv, (gpointer)"protocol.allow=never");
+	g_ptr_array_add(argv, (gpointer)"-c"); g_ptr_array_add(argv, (gpointer)"protocol.https.allow=always");
+	g_ptr_array_add(argv, (gpointer)"-c"); g_ptr_array_add(argv, (gpointer)"protocol.ssh.allow=always");
 
 	for (i = 0; NULL != args[i]; i++)
 		g_ptr_array_add(argv, (gpointer)args[i]);
@@ -341,6 +368,17 @@ venture_work_git(
 	launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
 	                                     G_SUBPROCESS_FLAGS_STDERR_MERGE);
 
+	g_subprocess_launcher_set_child_setup(launcher, venture_work_git_child_setup, NULL, NULL);
+	g_subprocess_launcher_unsetenv(launcher, "GIT_CONFIG_COUNT");
+	g_subprocess_launcher_unsetenv(launcher, "GIT_CONFIG_PARAMETERS");
+	g_subprocess_launcher_unsetenv(launcher, "VENTURE_FORGE_TOKEN");
+	g_subprocess_launcher_setenv(launcher, "GIT_TRACE", "0", TRUE);
+	g_subprocess_launcher_setenv(launcher, "GIT_TRACE_CURL", "0", TRUE);
+	g_subprocess_launcher_setenv(launcher, "GIT_CURL_VERBOSE", "0", TRUE);
+	g_subprocess_launcher_setenv(launcher, "GIT_TRACE_PACKET", "0", TRUE);
+	g_subprocess_launcher_setenv(launcher, "GIT_TRACE2", "0", TRUE);
+	g_subprocess_launcher_setenv(launcher, "GIT_TRACE2_EVENT", "0", TRUE);
+	g_subprocess_launcher_setenv(launcher, "GIT_TRACE2_PERF", "0", TRUE);
 	if (NULL != cwd)
 		g_subprocess_launcher_set_cwd(launcher, cwd);
 
@@ -363,9 +401,13 @@ venture_work_git(
 	 * Over SSH none of this applies -- the key agent answers -- and the
 	 * helper is simply never called.
 	 */
-	if (!venture_string_is_empty(job->askpass) &&
+	if (network && !venture_string_is_empty(job->askpass) &&
 	    !venture_string_is_empty(job->token))
 	{
+		g_autoptr(GUri) approved = g_uri_parse(venture_forge_credentials_get_base_url(job->credentials), G_URI_FLAGS_NONE, NULL);
+		g_autofree gchar *host = strchr(g_uri_get_host(approved), ':') ? g_strdup_printf("[%s]", g_uri_get_host(approved)) : g_strdup(g_uri_get_host(approved));
+		g_autofree gchar *authority = g_uri_get_port(approved) == -1 ? g_strdup(host) : g_strdup_printf("%s:%d", host, g_uri_get_port(approved));
+		g_subprocess_launcher_setenv(launcher, "VENTURE_FORGE_AUTHORITY", authority, TRUE);
 		g_subprocess_launcher_setenv(launcher, "GIT_ASKPASS", job->askpass,
 		                             TRUE);
 		g_subprocess_launcher_setenv(launcher, "VENTURE_FORGE_TOKEN",
@@ -396,9 +438,14 @@ venture_work_git(
 	if (NULL == process)
 		return FALSE;
 
-	if (!g_subprocess_communicate_utf8(process, NULL, NULL, &output, NULL,
-	                                   error))
+	if (!g_subprocess_communicate_utf8(process, NULL, venture_forge_credentials_get_cancellable(job->credentials), &output, NULL, error))
+	{
+		const gchar *pid = g_subprocess_get_identifier(process);
+		if (pid) (void)kill(-(pid_t)g_ascii_strtoll(pid, NULL, 10), SIGKILL);
+		g_subprocess_force_exit(process); g_subprocess_wait(process, NULL, NULL);
 		return FALSE;
+	}
+	if (!venture_forge_credentials_check(job->credentials, error)) return FALSE;
 
 	if (NULL != out_output)
 		*out_output = g_strdup((NULL != output) ? output : "");
@@ -407,7 +454,7 @@ venture_work_git(
 	{
 		g_autofree gchar *safe = NULL;
 
-		safe = venture_string_redact_uri((NULL != output) ? output : "");
+		safe = network ? g_strdup("credential-bound transport failed") : venture_string_redact_uri((NULL != output) ? output : "");
 
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_FAILED,
 		            "git %s failed: %s", args[0], safe);
@@ -453,13 +500,16 @@ venture_work_prepare(
 		g_autoptr(GError) local_error = NULL;
 		static const gchar *const helper =
 			"#!/bin/sh\n"
-			"printf '%s\\n' \"$VENTURE_FORGE_TOKEN\"\n";
+			"case \"$1\" in\n"
+			"  \"Username for 'https://${VENTURE_FORGE_AUTHORITY}'\"*) printf '%s\\n' oauth2 ;;\n"
+			"  \"Password for 'https://oauth2@${VENTURE_FORGE_AUTHORITY}'\"*) printf '%s\\n' \"$VENTURE_FORGE_TOKEN\" ;;\n"
+			"  *) exit 1 ;;\n"
+			"esac\n";
 
 		g_clear_pointer(&job->askpass, g_free);
-		job->askpass = g_build_filename(job->workspace, ".venture-askpass",
-		                                NULL);
+		job->askpass = g_strconcat(job->workspace, ".askpass", NULL);
 
-		if (!g_file_set_contents(job->askpass, helper, -1, &local_error))
+		if (!g_file_set_contents_full(job->askpass, helper, -1, G_FILE_SET_CONTENTS_CONSISTENT, 0700, &local_error))
 		{
 			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_FAILED,
 			            "Cannot write the credential helper: %s",
@@ -467,7 +517,6 @@ venture_work_prepare(
 			return FALSE;
 		}
 
-		g_chmod(job->askpass, 0700);
 	}
 
 	clone_args[n++] = "clone";
@@ -608,6 +657,7 @@ venture_work_run(gpointer user_data)
 		                                 VENTURE_FORGE_RUN_STATE_FAILED);
 		update->failure_reason = g_strdup(error->message);
 		update->finished = TRUE;
+		update->credentials = g_object_ref(job->credentials);
 		venture_work_service_post(self, update);
 		venture_work_remove_tree(job->workspace, workspace_root);
 		return G_SOURCE_REMOVE;
@@ -630,6 +680,7 @@ venture_work_run(gpointer user_data)
 		                                 VENTURE_FORGE_RUN_STATE_FAILED);
 		update->failure_reason = g_strdup(error->message);
 		update->finished = TRUE;
+		update->credentials = g_object_ref(job->credentials);
 		venture_work_service_post(self, update);
 		venture_work_remove_tree(job->workspace, workspace_root);
 		return G_SOURCE_REMOVE;
@@ -662,6 +713,7 @@ venture_work_run(gpointer user_data)
 		update = venture_work_update_new(job->run_id,
 		                                 VENTURE_FORGE_RUN_STATE_CANCELLED);
 		update->finished = TRUE;
+		update->credentials = g_object_ref(job->credentials);
 		venture_work_service_post(self, update);
 		venture_work_remove_tree(job->workspace, workspace_root);
 		return G_SOURCE_REMOVE;
@@ -674,6 +726,7 @@ venture_work_run(gpointer user_data)
 		update->failure_reason = g_strdup((NULL != error) ? error->message
 		                                                  : "the run failed");
 		update->finished = TRUE;
+		update->credentials = g_object_ref(job->credentials);
 		venture_work_service_post(self, update);
 		return G_SOURCE_REMOVE;
 	}
@@ -687,8 +740,8 @@ venture_work_run(gpointer user_data)
 			"status", "--porcelain", NULL
 		};
 
-		if (venture_work_git(job, job->workspace, status_args, &status, NULL) &&
-		    !venture_string_is_empty(status))
+		if (!venture_work_git(job, job->workspace, status_args, &status, &error)) goto git_failed;
+		if (!venture_string_is_empty(status))
 		{
 			g_autofree gchar *subject = NULL;
 			const gchar *add_args[] = { "add", "-A", NULL };
@@ -697,14 +750,14 @@ venture_work_run(gpointer user_data)
 			subject = g_strdup_printf("%.72s", reply);
 			g_strdelimit(subject, "\n\r", ' ');
 
-			venture_work_git(job, job->workspace, add_args, NULL, NULL);
+			if (!venture_work_git(job, job->workspace, add_args, NULL, &error)) goto git_failed;
 
 			commit_args[0] = "commit";
 			commit_args[1] = "-m";
 			commit_args[2] = subject;
 			commit_args[3] = NULL;
 
-			venture_work_git(job, job->workspace, commit_args, NULL, NULL);
+			if (!venture_work_git(job, job->workspace, commit_args, NULL, &error)) goto git_failed;
 
 			if (VENTURE_FORGE_RUN_OUTCOME_PUSH_BRANCH == job->outcome ||
 			    VENTURE_FORGE_RUN_OUTCOME_DRAFT_PR == job->outcome)
@@ -713,7 +766,7 @@ venture_work_run(gpointer user_data)
 					"push", "-u", "origin", job->branch, NULL
 				};
 
-				venture_work_git(job, job->workspace, push_args, NULL, NULL);
+				if (!venture_work_git(job, job->workspace, push_args, NULL, &error)) goto git_failed;
 			}
 		}
 	}
@@ -722,6 +775,7 @@ venture_work_run(gpointer user_data)
 	                                 VENTURE_FORGE_RUN_STATE_SUCCEEDED);
 	update->summary = g_strdup(reply);
 	update->finished = TRUE;
+	update->credentials = g_object_ref(job->credentials);
 	venture_work_service_post(self, update);
 
 	/* The tree is kept when the run failed and removed when it did not:
@@ -730,17 +784,53 @@ venture_work_run(gpointer user_data)
 	venture_work_remove_tree(job->workspace, workspace_root);
 
 	return G_SOURCE_REMOVE;
+git_failed:
+	update = venture_work_update_new(job->run_id, VENTURE_FORGE_RUN_STATE_FAILED);
+	update->failure_reason = g_strdup(error ? error->message : "git operation failed");
+	update->finished = TRUE;
+	update->credentials = g_object_ref(job->credentials);
+	venture_work_service_post(self, update);
+
+	return G_SOURCE_REMOVE;
 }
 
+typedef struct
+{
+	VentureWorkService *self;
+	gint64 run_id;
+} RunCompletion;
+
+static gboolean venture_work_run_completed(gpointer user_data)
+{
+	RunCompletion *completion = user_data;
+	g_mutex_lock(&completion->self->lock);
+	g_hash_table_remove(completion->self->live, GINT_TO_POINTER(completion->run_id));
+	g_mutex_unlock(&completion->self->lock);
+	return G_SOURCE_REMOVE;
+}
+static void venture_work_run_completion_free(gpointer user_data)
+{
+	RunCompletion *completion = user_data;
+	g_object_unref(completion->self);
+	g_free(completion);
+}
 static void
 venture_work_run_free(gpointer user_data)
 {
 	RunData *data = user_data;
-
-	g_clear_object(&data->self);
+	RunCompletion *completion = g_new0(RunCompletion, 1);
+	g_autoptr(GSource) source = g_idle_source_new();
+	completion->self = data->self;
+	completion->run_id = data->job->run_id;
 	g_clear_object(&data->cancellable);
 	venture_work_job_free(data->job);
 	g_free(data);
+	/* A terminal update can reach the main thread before worker cleanup.
+	 * Keep the run live until cleanup has finished, and release the worker's
+	 * service reference only on the main context: finalization joins it. */
+	g_source_set_priority(source, G_PRIORITY_DEFAULT);
+	g_source_set_callback(source, venture_work_run_completed, completion, venture_work_run_completion_free);
+	g_source_attach(source, NULL);
 }
 
 /* --- The thread ---------------------------------------------------------- */
@@ -886,6 +976,18 @@ venture_work_service_init(VentureWorkService *self)
 	self->max_concurrent = 1;
 }
 
+static void venture_work_modules_changed(VentureModuleRegistry *modules, gpointer data)
+{
+	VentureWorkService *self = data;
+	GHashTableIter iter;
+	gpointer value;
+	if (venture_module_registry_is_enabled(modules, "forge") && venture_module_registry_is_enabled(modules, "integrations")) return;
+	g_mutex_lock(&self->lock);
+	g_hash_table_iter_init(&iter, self->live);
+	while (g_hash_table_iter_next(&iter, NULL, &value)) g_cancellable_cancel(value);
+	g_mutex_unlock(&self->lock);
+}
+
 VentureWorkService *
 venture_work_service_new(
 	VentureContext	 *context,
@@ -917,6 +1019,7 @@ venture_work_service_new(
 
 	self = g_object_new(VENTURE_TYPE_WORK_SERVICE, NULL);
 	self->context = g_object_ref(context);
+	g_signal_connect_object(venture_context_get_modules(context), "changed", G_CALLBACK(venture_work_modules_changed), self, 0);
 	self->max_concurrent = (concurrency > 0) ? (guint)concurrency : 1;
 
 	/* Before the thread exists, so nothing races with it. */
@@ -989,7 +1092,8 @@ venture_work_service_start_for_ticket(
 	g_autofree gchar *repo_clone_url = NULL;
 	g_autofree gchar *forge_clone_base = NULL;
 	g_autofree gchar *forge_base_url = NULL;
-	g_autofree gchar *forge_token = NULL;
+	g_autofree gchar *resolved_clone = NULL;
+	g_autoptr(VentureForgeCredentials) credentials = NULL;
 	g_autoptr(VentureEntity) forge = NULL;
 	g_autofree gchar *rule_prompt = NULL;
 	g_autofree gchar *state_dir_setting = NULL;
@@ -1068,7 +1172,14 @@ venture_work_service_start_for_ticket(
 		return 0;
 
 	g_object_get(forge, "clone-base-url", &forge_clone_base,
-	             "base-url", &forge_base_url, "token", &forge_token, NULL);
+	             "base-url", &forge_base_url, NULL);
+	credentials = venture_forge_credentials_acquire(venture_context_get_database(self->context), forge_id, error);
+	if (!credentials) return 0;
+	if (venture_entity_get_organization_id(ticket) != venture_entity_get_organization_id(repo) ||
+		venture_entity_get_organization_id(repo) != venture_entity_get_organization_id(forge))
+	{ g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "Run sources must belong to one organization"); return 0; }
+	resolved_clone = venture_forge_clone_url(repo_clone_url, forge_clone_base, forge_base_url, repo_name);
+	if (!venture_forge_credentials_check_clone(credentials, resolved_clone, error)) return 0;
 
 	now = g_date_time_new_now_utc();
 
@@ -1076,6 +1187,8 @@ venture_work_service_start_for_ticket(
 	venture_entity_set_organization_id(VENTURE_ENTITY(run),
 		venture_entity_get_organization_id(ticket));
 	g_object_set(run,
+	             "connection-id", venture_forge_credentials_get_connection_id(credentials),
+	             "credential-version", venture_forge_credentials_get_connection_version(credentials),
 	             "ticket-id", ticket_id,
 	             "rule-id", venture_entity_get_id(VENTURE_ENTITY(rule)),
 	             "state", VENTURE_FORGE_RUN_STATE_QUEUED,
@@ -1095,6 +1208,7 @@ venture_work_service_start_for_ticket(
 		return 0;
 
 	job = g_new0(VentureWorkJob, 1);
+	job->credentials = g_steal_pointer(&credentials);
 	job->run_id = venture_entity_get_id(VENTURE_ENTITY(run));
 	job->ticket_id = ticket_id;
 	job->runner = runner;
@@ -1118,8 +1232,7 @@ venture_work_service_start_for_ticket(
 	 * on another. Composed from the repository's own URL if it has one,
 	 * then the forge's clone base, then the API base.
 	 */
-	job->clone_url = venture_forge_clone_url(repo_clone_url, forge_clone_base,
-	                                         forge_base_url, repo_name);
+	job->clone_url = g_steal_pointer(&resolved_clone);
 
 	if (NULL == job->clone_url)
 	{
@@ -1133,8 +1246,8 @@ venture_work_service_start_for_ticket(
 
 	/* Only for an HTTPS clone: over SSH the key agent answers and the
 	 * helper is never called. */
-	if (NULL != strstr(job->clone_url, "://"))
-		job->token = g_strdup(forge_token);
+	if (!g_ascii_strncasecmp(job->clone_url, "https://", 8))
+		job->token = g_strdup(venture_forge_credentials_get_token(job->credentials));
 	job->workspace = g_build_filename(
 		venture_config_get_state_dir(venture_context_get_config(self->context)),
 		"forge", "work", job->branch, NULL);
@@ -1162,7 +1275,7 @@ venture_work_service_start_for_ticket(
 	data = g_new0(RunData, 1);
 	data->self = g_object_ref(self);
 	data->job = job;
-	data->cancellable = g_cancellable_new();
+	data->cancellable = g_object_ref(venture_forge_credentials_get_cancellable(job->credentials));
 
 	g_mutex_lock(&self->lock);
 	g_hash_table_insert(self->live, GINT_TO_POINTER(job->run_id),

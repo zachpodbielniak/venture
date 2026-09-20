@@ -3922,6 +3922,7 @@ venture_web_stripe_webhook(HtmxRequest *request, GHashTable *params, gpointer us
 #include "stripe/venture-stripe-web.inc"
 #include "ai/venture-ai-settings-web.inc"
 #include "mail/venture-mail-settings-web.inc"
+#include "forge/venture-forge-settings-web.inc"
 #include "payables/venture-payables-web.inc"
 #include "claims/venture-claims-web.inc"
 #include "payroll/venture-payroll-web.inc"
@@ -7973,75 +7974,10 @@ venture_web_append_forge_block(
 	GString			*content,
 	VentureEntity		*record
 ){
-	g_autofree gchar *token = NULL;
-	g_autofree gchar *secret = NULL;
-	g_autofree gchar *bot = NULL;
-	g_autoptr(GDateTime) token_at = NULL;
-	g_autoptr(GDateTime) secret_at = NULL;
-	gint64 id;
+	gint64 id = venture_entity_get_id(record);
+	(void)self;
+	g_string_append_printf(content, "<p><a class=\"btn\" href=\"/forges/%" G_GINT64_FORMAT "/settings\">Organization forge credentials</a></p>", id);
 
-	id = venture_entity_get_id(record);
-
-	g_object_get(record,
-	             "token", &token,
-	             "token-set-at", &token_at,
-	             "webhook-secret", &secret,
-	             "webhook-secret-set-at", &secret_at,
-	             "bot-username", &bot,
-	             NULL);
-
-	g_string_append(content, "<div class=\"card\"><div class=\"card-head\">"
-	                         "<h2>Credentials</h2></div><div class=\"card-body\">");
-
-	/*
-	 * Until the bot account is known, VENTURE cannot tell an issue it
-	 * filed itself from one somebody else opened -- that comparison is
-	 * the webhook loop guard. Worth saying on the page rather than
-	 * leaving as a subtly missing field.
-	 */
-	if (venture_string_is_empty(bot))
-	{
-		g_string_append(content,
-			"<p class=\"notice\">Not verified yet. Until this forge's "
-			"account is known, events caused by VENTURE itself cannot be "
-			"told apart from anybody else's.</p>");
-	}
-
-	g_string_append_printf(content,
-		"<form method=\"post\" action=\"/forges/%" G_GINT64_FORMAT
-		"/token\"><label>Access token</label>"
-		"<input type=\"password\" name=\"token\" autocomplete=\"off\" "
-		"placeholder=\"%s\">"
-		"<button class=\"btn btn-primary\" type=\"submit\">Set token</button>"
-		"</form>", id,
-		venture_string_is_empty(token) ? "not set"
-		                              : "set -- leave blank to keep it");
-
-	g_string_append_printf(content,
-		"<form method=\"post\" action=\"/forges/%" G_GINT64_FORMAT
-		"/secret\"><label>Webhook secret</label>"
-		"<input type=\"password\" name=\"secret\" autocomplete=\"off\" "
-		"placeholder=\"%s\">"
-		"<button class=\"btn\" type=\"submit\">Set or generate</button>"
-		"</form>", id,
-		venture_string_is_empty(secret) ? "not set -- leave blank to generate"
-		                                : "set -- leave blank to regenerate");
-
-	g_string_append_printf(content,
-		"<form method=\"post\" action=\"/forges/%" G_GINT64_FORMAT
-		"/verify\"><button class=\"btn\" type=\"submit\">"
-		"Verify the token</button></form>", id);
-
-	/* The address to paste into the forge's webhook settings. Built from
-	 * the configured base URL where there is one, and from what this
-	 * server knows about itself otherwise. */
-	g_string_append(content, "<p class=\"help\">Webhook URL: <code>");
-	venture_html_escape_append(content,
-		venture_string_is_empty(self->base_url) ? "" : self->base_url);
-	g_string_append_printf(content, "/hooks/forge/%" G_GINT64_FORMAT
-	                                "</code></p>", id);
-
-	g_string_append(content, "</div></div>");
 }
 
 /*
@@ -18317,14 +18253,7 @@ venture_web_api_reject(
 
 /* --- Forge integration ---------------------------------------------------- */
 
-/*
- * Builds the client for a forge record.
- *
- * The token is read here and nowhere else. Everything above this point deals
- * in forge ids; everything below deals in requests that already carry the
- * credential, so there is no layer holding a token it does not immediately
- * use.
- */
+/* Resolve an immutable, revocable organization credential snapshot. */
 static VentureForgeClient *
 venture_web_forge_client(
 	VentureWebServer	 *self,
@@ -18336,7 +18265,8 @@ venture_web_forge_client(
 	g_object_get(venture_context_get_config(self->context),
 	             "forge-request-timeout", &timeout, NULL);
 
-	return venture_forge_client_for_forge(forge, (gint)timeout, error);
+	return venture_forge_client_for_database(venture_context_get_database(self->context),
+		venture_entity_get_id(VENTURE_ENTITY(forge)), (gint)timeout, error);
 }
 
 static VentureForge *
@@ -18361,18 +18291,7 @@ venture_web_forge_load(
 	return VENTURE_FORGE(g_steal_pointer(&record));
 }
 
-/*
- * POST /forges/:id/token - set the access token.
- *
- * A route of its own for the same reason a password has one: the field is
- * sensitive, so the generated form omits it and the generated save ignores
- * it. A value typed into a box that does not exist cannot be saved. This is
- * the box.
- *
- * Owner-only, and that is not caution. An editor who could set the token
- * could also change base-url, and the pair of those is "send this
- * credential to a host I control".
- */
+/* Retained authenticated legacy endpoint: plaintext setters fail closed. */
 static HtmxResponse *
 venture_web_ui_forge_token(
 	HtmxRequest	*request,
@@ -18381,29 +18300,14 @@ venture_web_ui_forge_token(
 ){
 	VentureWebServer *self = user_data;
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
-	g_autoptr(VentureForge) forge = NULL;
-	g_autoptr(GDateTime) now = NULL;
 	g_autoptr(GError) error = NULL;
-	g_autofree gchar *destination = NULL;
-	HtmxResponse *redirect;
-	VentureActor actor;
-	const gchar *token;
-
-	{
-		HtmxResponse *gate;
-
-		gate = venture_web_require_module_ui(self, request, "forge");
-
-		if (NULL != gate)
-			return gate;
-	}
-
-	redirect = venture_web_ui_require_session(self, request);
-
-	if (NULL != redirect)
-		return redirect;
-
+	HtmxResponse *gate = venture_web_ui_require_session(self, request);
+	(void)params;
+	if (gate) return gate;
 	principal = venture_auth_authenticate(self->auth, request);
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER, &error)) return venture_web_error_response(error);
+	g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "Use forge settings to configure both encrypted credentials and their exact binding; legacy plaintext setters are disabled");
+	return venture_web_error_response(error);
 
 	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER,
 	                          &error))
@@ -18441,14 +18345,7 @@ venture_web_ui_forge_token(
 	return venture_web_redirect_to(destination);
 }
 
-/*
- * POST /forges/:id/secret - set or generate the webhook secret.
- *
- * Generating rather than typing is offered first because this secret is
- * never remembered by a person: it is pasted into the forge once and then
- * only ever compared. A generated one comes from the same source as an API
- * token, which is the system CSPRNG rather than anything guessable.
- */
+/* Retained authenticated legacy endpoint: use encrypted settings. */
 static HtmxResponse *
 venture_web_ui_forge_secret(
 	HtmxRequest	*request,
@@ -18457,30 +18354,14 @@ venture_web_ui_forge_secret(
 ){
 	VentureWebServer *self = user_data;
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
-	g_autoptr(VentureForge) forge = NULL;
-	g_autoptr(GDateTime) now = NULL;
 	g_autoptr(GError) error = NULL;
-	g_autofree gchar *generated = NULL;
-	g_autofree gchar *destination = NULL;
-	HtmxResponse *redirect;
-	VentureActor actor;
-	const gchar *secret;
-
-	{
-		HtmxResponse *gate;
-
-		gate = venture_web_require_module_ui(self, request, "forge");
-
-		if (NULL != gate)
-			return gate;
-	}
-
-	redirect = venture_web_ui_require_session(self, request);
-
-	if (NULL != redirect)
-		return redirect;
-
+	HtmxResponse *gate = venture_web_ui_require_session(self, request);
+	(void)params;
+	if (gate) return gate;
 	principal = venture_auth_authenticate(self->auth, request);
+	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER, &error)) return venture_web_error_response(error);
+	g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "Use forge settings to configure both encrypted credentials and their exact binding; legacy plaintext setters are disabled");
+	return venture_web_error_response(error);
 
 	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER,
 	                          &error))
@@ -18572,6 +18453,7 @@ venture_web_ui_forge_verify(
 		return venture_web_error_response(error);
 
 	login = venture_forge_client_whoami(client, &error);
+	if (login && !venture_forge_credentials_revalidate(venture_forge_client_get_credentials(client), venture_context_get_database(self->context), &error)) return venture_web_error_response(error);
 
 	if (NULL == login)
 		return venture_web_error_response(error);
@@ -19495,45 +19377,40 @@ venture_web_api_forge_for_credential(
 	return VENTURE_FORGE(g_steal_pointer(&record));
 }
 
-/* Reads a single string member out of a JSON request body. */
-static gchar *
-venture_web_api_body_string(
-	HtmxRequest	*request,
-	const gchar	*member
-){
-	g_autoptr(JsonParser) parser = NULL;
+/* Shared adapter settings, with the same closed schema as the browser. */
+static HtmxResponse *venture_web_api_forge_settings(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureForge) forge = NULL;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(JsonParser) parser = json_parser_new();
+	g_autoptr(JsonNode) result = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *denied = NULL;
 	GBytes *body;
-	gconstpointer data;
 	gsize length = 0;
-	JsonNode *root;
-
+	const gchar *bytes;
+	VentureActor actor;
+	forge = venture_web_api_forge_for_credential(self, request, params, &denied, &error);
+	if (denied) return denied;
+	if (!forge) return venture_web_error_response(error);
 	body = htmx_request_get_body_bytes(request);
-
-	if (NULL == body)
-		return NULL;
-
-	data = g_bytes_get_data(body, &length);
-
-	if ((NULL == data) || (0 == length))
-		return NULL;
-
-	parser = json_parser_new();
-
-	if (!json_parser_load_from_data(parser, data, (gssize)length, NULL))
-		return NULL;
-
-	root = json_parser_get_root(parser);
-
-	if ((NULL == root) || (JSON_NODE_OBJECT != json_node_get_node_type(root)))
-		return NULL;
-
-	return g_strdup(venture_json_object_get_string(json_node_get_object(root),
-	                                               member, NULL));
+	bytes = body ? g_bytes_get_data(body, &length) : NULL;
+	if (!bytes || !length || length > 32768 || memchr(bytes, 0, length) ||
+		!json_parser_load_from_data(parser, bytes, (gssize)length, &error))
+	{
+		g_clear_error(&error);
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Supply a valid settings object below 32 KiB");
+		return venture_web_error_response(error);
+	}
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+	result = venture_forge_settings_apply(venture_context_get_database(self->context), venture_entity_get_id(VENTURE_ENTITY(forge)), json_parser_get_root(parser), &actor, &error);
+	if (!result) return venture_web_error_response(error);
+	return venture_web_json_response(g_steal_pointer(&result), 200);
 }
 
-/*
- * POST /api/v1/forge/:id/token - set the access token from a script.
- */
+/* Retained authenticated legacy endpoint: plaintext setters fail closed. */
 static HtmxResponse *
 venture_web_api_forge_token(
 	HtmxRequest	*request,
@@ -19542,83 +19419,17 @@ venture_web_api_forge_token(
 ){
 	VentureWebServer *self = user_data;
 	g_autoptr(VentureForge) forge = NULL;
-	g_autoptr(VentureAuthPrincipal) principal = NULL;
-	g_autoptr(GDateTime) now = NULL;
 	g_autoptr(GError) error = NULL;
-	g_autofree gchar *token = NULL;
-	g_autoptr(JsonBuilder) builder = NULL;
-	g_autoptr(JsonNode) node = NULL;
 	HtmxResponse *denied = NULL;
-	VentureActor actor;
+	forge = venture_web_api_forge_for_credential(self, request, params, &denied, &error);
+	if (denied) return denied;
+	if (!forge) return venture_web_error_response(error);
+	g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "Use forge settings to configure both encrypted credentials and their exact binding; legacy plaintext setters are disabled");
+	return venture_web_error_response(error);
 
-	forge = venture_web_api_forge_for_credential(self, request, params,
-	                                             &denied, &error);
-
-	if (NULL != denied)
-		return denied;
-
-	if (NULL == forge)
-		return venture_web_error_response(error);
-
-	token = venture_web_api_body_string(request, "token");
-
-	/*
-	 * An empty token is refused rather than treated as "leave it alone".
-	 * The UI form has that behaviour because a blank box is usually a
-	 * mistake; a script that sent an empty string meant to send
-	 * something and its variable was unset, and silently succeeding
-	 * there leaves a forge that will fail every later call for reasons
-	 * nobody can trace back to here.
-	 */
-	if (venture_string_is_empty(token))
-	{
-		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-		                    "A \"token\" is required and may not be empty");
-		return venture_web_error_response(error);
-	}
-
-	now = g_date_time_new_now_utc();
-	g_object_set(forge, "token", token, "token-set-at", now, NULL);
-
-	{
-		HtmxResponse *gate;
-
-		gate = venture_web_require_module_api(self, "forge");
-
-		if (NULL != gate)
-			return gate;
-	}
-
-	principal = venture_auth_authenticate(self->auth, request);
-	venture_auth_to_actor(principal, &actor);
-
-	if (!venture_database_save(venture_context_get_database(self->context),
-	                           VENTURE_ENTITY(forge), &actor, &error))
-		return venture_web_error_response(error);
-
-	/* The value is never echoed, only the fact and the time. */
-	builder = json_builder_new();
-	json_builder_begin_object(builder);
-	json_builder_set_member_name(builder, "forge_id");
-	json_builder_add_int_value(builder,
-	                           venture_entity_get_id(VENTURE_ENTITY(forge)));
-	json_builder_set_member_name(builder, "token_set");
-	json_builder_add_boolean_value(builder, TRUE);
-	json_builder_end_object(builder);
-	node = json_builder_get_root(builder);
-
-	return venture_web_json_response(g_steal_pointer(&node), 200);
 }
 
-/*
- * POST /api/v1/forge/:id/webhook-secret - set or generate it.
- *
- * An absent or empty secret generates one and returns it. This is the only
- * response in VENTURE that carries a credential, and it does so for the same
- * reason minting an API token does: the value has to reach the operator
- * once, to be pasted into the forge, and it is never recoverable
- * afterwards.
- */
+/* Retained authenticated legacy endpoint: use encrypted settings. */
 static HtmxResponse *
 venture_web_api_forge_secret(
 	HtmxRequest	*request,
@@ -19627,76 +19438,14 @@ venture_web_api_forge_secret(
 ){
 	VentureWebServer *self = user_data;
 	g_autoptr(VentureForge) forge = NULL;
-	g_autoptr(VentureAuthPrincipal) principal = NULL;
-	g_autoptr(GDateTime) now = NULL;
 	g_autoptr(GError) error = NULL;
-	g_autofree gchar *secret = NULL;
-	g_autofree gchar *generated = NULL;
-	g_autoptr(JsonBuilder) builder = NULL;
-	g_autoptr(JsonNode) node = NULL;
 	HtmxResponse *denied = NULL;
-	VentureActor actor;
-	gboolean was_generated = FALSE;
+	forge = venture_web_api_forge_for_credential(self, request, params, &denied, &error);
+	if (denied) return denied;
+	if (!forge) return venture_web_error_response(error);
+	g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "Use forge settings to configure both encrypted credentials and their exact binding; legacy plaintext setters are disabled");
+	return venture_web_error_response(error);
 
-	forge = venture_web_api_forge_for_credential(self, request, params,
-	                                             &denied, &error);
-
-	if (NULL != denied)
-		return denied;
-
-	if (NULL == forge)
-		return venture_web_error_response(error);
-
-	secret = venture_web_api_body_string(request, "secret");
-
-	if (venture_string_is_empty(secret))
-	{
-		generated = venture_generate_token(32);
-		g_clear_pointer(&secret, g_free);
-		secret = g_strdup(generated);
-		was_generated = TRUE;
-	}
-
-	now = g_date_time_new_now_utc();
-	g_object_set(forge, "webhook-secret", secret,
-	             "webhook-secret-set-at", now, NULL);
-
-	{
-		HtmxResponse *gate;
-
-		gate = venture_web_require_module_api(self, "forge");
-
-		if (NULL != gate)
-			return gate;
-	}
-
-	principal = venture_auth_authenticate(self->auth, request);
-	venture_auth_to_actor(principal, &actor);
-
-	if (!venture_database_save(venture_context_get_database(self->context),
-	                           VENTURE_ENTITY(forge), &actor, &error))
-		return venture_web_error_response(error);
-
-	builder = json_builder_new();
-	json_builder_begin_object(builder);
-	json_builder_set_member_name(builder, "forge_id");
-	json_builder_add_int_value(builder,
-	                           venture_entity_get_id(VENTURE_ENTITY(forge)));
-	json_builder_set_member_name(builder, "secret_set");
-	json_builder_add_boolean_value(builder, TRUE);
-
-	/* Returned only when VENTURE chose it, and only this once. A secret
-	 * the caller supplied is one they already have. */
-	if (was_generated)
-	{
-		json_builder_set_member_name(builder, "secret");
-		json_builder_add_string_value(builder, secret);
-	}
-
-	json_builder_end_object(builder);
-	node = json_builder_get_root(builder);
-
-	return venture_web_json_response(g_steal_pointer(&node), 200);
 }
 
 /*
@@ -19735,6 +19484,7 @@ venture_web_api_forge_verify(
 		return venture_web_error_response(error);
 
 	login = venture_forge_client_whoami(client, &error);
+	if (login && !venture_forge_credentials_revalidate(venture_forge_client_get_credentials(client), venture_context_get_database(self->context), &error)) return venture_web_error_response(error);
 
 	if (NULL == login)
 		return venture_web_error_response(error);
@@ -19894,7 +19644,7 @@ venture_web_forge_webhook_release(
 );
 
 static HtmxResponse *
-venture_web_forge_webhook(
+venture_web_forge_webhook_apply(
 	HtmxRequest	*request,
 	GHashTable	*params,
 	gpointer	 user_data
@@ -19952,7 +19702,7 @@ venture_web_forge_webhook(
 	if (NULL == forge)
 		return venture_web_forge_ack(SOUP_STATUS_UNAUTHORIZED);
 
-	g_object_get(forge, "webhook-secret", &secret, "bot-username", &bot, NULL);
+	/* The bound client supplies the verified webhook secret and account. */
 
 	headers = soup_server_message_get_request_headers(
 		htmx_request_get_message(request));
@@ -19986,6 +19736,8 @@ venture_web_forge_webhook(
 
 	if (NULL == client)
 		return venture_web_forge_ack(SOUP_STATUS_UNAUTHORIZED);
+
+	bot = g_strdup(venture_forge_credentials_get_account(venture_forge_client_get_credentials(client)));
 
 	/* Everything below this line has been proved to come from the forge. */
 	if (!venture_forge_client_verify_webhook(client, headers, body, secret,
@@ -20256,6 +20008,27 @@ venture_web_forge_webhook(
 
 	/* Accepted, not completed. */
 	return venture_web_forge_ack(SOUP_STATUS_ACCEPTED);
+}
+
+static HtmxResponse *venture_web_forge_webhook(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+	VentureWebServer *self = user_data;
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureForgeCredentials) lease = NULL;
+	g_autoptr(HtmxResponse) response = NULL;
+	gint64 id;
+	HtmxResponse *gate = venture_web_require_module_api(self, "forge");
+	if (gate) return gate;
+	if (!g_ascii_string_to_signed(g_hash_table_lookup(params, "id"), 10, 1, G_MAXINT64, &id, NULL)) return venture_web_forge_ack(401);
+	lease = venture_forge_credentials_acquire(database, id, NULL);
+	if (!lease) return venture_web_forge_ack(401);
+	if (!venture_database_begin(database, NULL)) return venture_web_forge_ack(503);
+	response = venture_web_forge_webhook_apply(request, params, user_data);
+	if (htmx_response_get_status(response) >= 400) { venture_database_rollback(database); return g_steal_pointer(&response); }
+	if (!venture_forge_credentials_revalidate(lease, database, NULL))
+	{ venture_database_rollback(database); return venture_web_forge_ack(409); }
+	if (!venture_database_commit(database, NULL)) return venture_web_forge_ack(503);
+	return g_steal_pointer(&response);
 }
 
 /* --- The software factory ------------------------------------------------- */
@@ -29876,6 +29649,14 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/forges/:id/token", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_forge_token, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/forges/:id/secret", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_forge_secret, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/forges/:id/verify", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_forge_verify, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/forges/:id/settings", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_forge_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/forges/:id/settings", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_forge_settings, self);
+	htmx_router_post(router, "/forges/:id/token", venture_web_ui_forge_token,
+	                 self);
+	htmx_router_post(router, "/forges/:id/secret", venture_web_ui_forge_secret,
+	                 self);
+	htmx_router_post(router, "/forges/:id/verify", venture_web_ui_forge_verify,
+	                 self);
 
 	/*
 	 * Inbound from a forge. The only route here that does not require a
@@ -30053,6 +29834,13 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/forge/:id/token", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_forge_token, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/forge/:id/webhook-secret", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_forge_secret, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/forge/:id/verify", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_forge_verify, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/forge/:id/settings", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_forge_settings, self);
+	htmx_router_post(router, "/api/v1/forge/:id/token",
+	                 venture_web_api_forge_token, self);
+	htmx_router_post(router, "/api/v1/forge/:id/webhook-secret",
+	                 venture_web_api_forge_secret, self);
+	htmx_router_post(router, "/api/v1/forge/:id/verify",
+	                 venture_web_api_forge_verify, self);
 
 	/* Before the generic record routes, so "restore" is not read as an
 	 * id. */

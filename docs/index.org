@@ -167,3 +167,5 @@ screen's ordinary sync-and-import test.
 
 
 - [[file:sales-performance.org][Sales territories and quotas]] — assignment, scoped owner authority, targets and actual performance.
+
+- [[file:forge-vault-demonstration.org][Forge credential demonstration]] — real server/CLI settings, callback revocation and worker cancellation.

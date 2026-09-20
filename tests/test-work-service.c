@@ -13,8 +13,10 @@
 #include <venture.h>
 
 #include <glib.h>
+#include <glib/gstdio.h>
 
 #include "venture-test-util.h"
+#include "venture-test-forge.h"
 
 typedef struct
 {
@@ -44,7 +46,7 @@ fixture_set_up(
 
 	fixture->config = venture_config_new();
 	g_object_set(fixture->config, "state-dir", fixture->state_dir, NULL);
-	g_object_set(fixture->config, "forge-runs-enabled", TRUE, NULL);
+	g_object_set(fixture->config, "forge-runs-enabled", TRUE, "forge-git-path", "/bin/false", NULL);
 
 	fixture->database = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
@@ -60,6 +62,8 @@ fixture_set_up(
 	             "https://git.example.com", "active", TRUE, NULL);
 	g_assert_true(venture_database_save(fixture->database,
 	                                    VENTURE_ENTITY(forge), NULL, NULL));
+
+	venture_test_forge_bind(fixture->database, VENTURE_ENTITY(forge), "fixture-token", "fixture-secret-01234567890123456789");
 
 	repo = venture_forge_repo_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(repo), venture_context_get_default_organization_id(fixture->context));
@@ -593,6 +597,71 @@ test_work_session_turns_are_recorded(
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
 }
 
+/* The credential helper rejects another authority, and disconnect terminates
+ * the owned process group without waiting for its child sleep to finish. */
+static void test_work_credential_revocation(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(VentureWorkService) service = NULL;
+	g_autoptr(VentureEntity) repo = NULL, run = NULL;
+	g_autoptr(VentureIntegrationConnection) binding = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *script = NULL, *marker = NULL, *quoted = NULL, *body = NULL;
+	gint64 forge_id, run_id, deadline;
+	VentureForgeRunState state;
+	(void)data;
+	script = g_build_filename(fixture->state_dir, "fixture-git", NULL);
+	marker = g_build_filename(fixture->state_dir, "credential-boundary-passed", NULL);
+	quoted = g_shell_quote(marker);
+	body = g_strdup_printf("#!/bin/sh\n"
+		"while [ \"$1\" = -c ]; do shift 2; done\n"
+		"[ \"$1\" = clone ] || exit 1\n"
+		"for destination in \"$@\"; do :; done\n"
+		"[ ! -e \"$destination/.venture-askpass\" ] || exit 7\n"
+		"[ \"$VENTURE_FORGE_TOKEN\" = fixture-token ] || exit 2\n"
+		"[ \"$(\"$GIT_ASKPASS\" \"Username for 'https://git.example.com': \")\" = oauth2 ] || exit 3\n"
+		"[ \"$(\"$GIT_ASKPASS\" \"Password for 'https://oauth2@git.example.com': \")\" = fixture-token ] || exit 4\n"
+		"if \"$GIT_ASKPASS\" \"Password for 'https://oauth2@neighbor.example.com': \"; then exit 5; fi\n"
+		"if \"$GIT_ASKPASS\" \"Password for 'https://oauth2@git.example.com.evil': \"; then exit 6; fi\n"
+		"printf 'passed\\n' > %s\n"
+		"sleep 30\n", quoted);
+	g_assert_true(g_file_set_contents(script, body, -1, &error));
+	g_assert_cmpint(g_chmod(script, 0700), ==, 0);
+	g_object_set(fixture->config, "forge-git-path", script, NULL);
+	service = venture_work_service_new(fixture->context, &error);
+	g_assert_no_error(error);
+	run_id = venture_work_service_start_for_ticket(service, fixture->ticket_id, "fixture", &error);
+	g_assert_no_error(error); g_assert_cmpint(run_id, >, 0);
+	deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
+	while (!g_file_test(marker, G_FILE_TEST_EXISTS) && g_get_monotonic_time() < deadline)
+		g_main_context_iteration(NULL, FALSE);
+	g_assert_true(g_file_test(marker, G_FILE_TEST_EXISTS));
+	repo = venture_database_get(fixture->database, VENTURE_TYPE_FORGE_REPO, fixture->repo_id, &error);
+	g_object_get(repo, "forge-id", &forge_id, NULL);
+	binding = venture_forge_settings_find(fixture->database, forge_id, &error);
+	g_assert_no_error(error); g_assert_nonnull(binding);
+	if (data != NULL) venture_config_set_module_enabled(fixture->config, "forge", FALSE);
+	else g_assert_true(venture_forge_settings_disconnect(fixture->database, forge_id,
+		venture_entity_get_version(VENTURE_ENTITY(binding)), venture_entity_get_id(VENTURE_ENTITY(binding)), NULL, &error));
+	g_assert_no_error(error);
+	settle_runs(service);
+	if (data != NULL) venture_config_set_module_enabled(fixture->config, "forge", TRUE);
+	run = venture_database_get(fixture->database, VENTURE_TYPE_FORGE_RUN, run_id, &error);
+	g_assert_no_error(error);
+	g_object_get(run, "state", &state, NULL);
+	g_assert_cmpint(state, ==, VENTURE_FORGE_RUN_STATE_CANCELLED);
+	{
+		gint64 connection_id, credential_version;
+		g_object_get(run, "connection-id", &connection_id, "credential-version", &credential_version, NULL);
+		g_assert_cmpint(connection_id, ==, venture_entity_get_id(VENTURE_ENTITY(binding)));
+		g_assert_cmpint(credential_version, ==, venture_entity_get_version(VENTURE_ENTITY(binding)));
+	}
+	g_object_set(run, "credential-version", (gint64)999, NULL);
+	g_assert_false(venture_database_save(fixture->database, run, NULL, &error));
+	g_assert_nonnull(error); g_clear_error(&error);
+	g_assert_false(venture_database_purge(fixture->database, run, NULL, &error));
+	g_assert_nonnull(error); g_clear_error(&error);
+}
+
 int
 main(
 	int	  argc,
@@ -608,6 +677,8 @@ main(
 	ADD("/work/session-turns-are-recorded",
 	    test_work_session_turns_are_recorded);
 
+	ADD("/work/credential-revocation", test_work_credential_revocation);
+	g_test_add("/work/module-revocation", Fixture, GINT_TO_POINTER(1), fixture_set_up, test_work_credential_revocation, fixture_tear_down);
 	ADD("/work/disabled-by-default", test_work_disabled_by_default);
 	ADD("/work/does-not-block-the-main-loop",
 	    test_work_does_not_block_the_main_loop);

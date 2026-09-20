@@ -1019,8 +1019,7 @@ venture_cli_command_restore(
  * shell's history file; a secret that has been in either is a secret that
  * has to be rotated. Standard input goes to this process and nowhere else.
  *
- *   printf '%s' "$TOKEN" | venturectl forge set-token 1
- *   venturectl forge set-token 1 < token.txt
+ *   venturectl forge settings 1 < protected-settings.json
  *
  * A trailing newline is stripped, because every way of producing one of
  * these adds it and no forge token ends in whitespace.
@@ -1035,7 +1034,14 @@ venture_cli_read_secret(GError **error)
 	buffer = g_string_new(NULL);
 
 	while (0 < (got = fread(chunk, 1, sizeof(chunk), stdin)))
+	{
+		if (buffer->len + got > 32768)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Credential settings input exceeds 32 KiB");
+			return NULL;
+		}
 		g_string_append_len(buffer, chunk, (gssize)got);
+	}
 
 	if (ferror(stdin))
 	{
@@ -1053,7 +1059,7 @@ venture_cli_read_secret(GError **error)
 }
 
 /*
- * venturectl forge set-token|set-secret|verify ID
+ * venturectl forge settings|verify ID (legacy setters refuse)
  *
  * The one command group that is not generic over record types, and it earns
  * the exception: a credential is not a field with a flag on it. Each kind
@@ -1081,11 +1087,24 @@ venture_cli_command_forge(
 	if ((NULL == action) || (NULL == id))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		                    "Usage: venturectl forge set-token|set-secret|"
+		                    "Usage: venturectl forge settings|set-token|set-secret|"
 		                    "verify <id>\n"
 		                    "       set-token and set-secret read the value "
 		                    "from standard input");
 		return -1;
+	}
+
+	if (0 == g_strcmp0(action, "settings"))
+	{
+		secret = venture_cli_read_secret(error);
+		if (!secret) return -1;
+		body = venture_json_parse(secret, error);
+		if (!body) return -1;
+		path = g_strdup_printf("/api/v1/forge/%s/settings", id);
+		node = venture_cli_request(cli, "POST", path, body, error);
+		if (!node) return -1;
+		venture_cli_output(cli, node);
+		return 0;
 	}
 
 	if (0 == g_strcmp0(action, "verify"))
@@ -1105,7 +1124,7 @@ venture_cli_command_forge(
 	    (0 != g_strcmp0(action, "set-secret")))
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		            "\"%s\" is not a forge action. Try set-token, set-secret "
+		            "\"%s\" is not a forge action. Try settings "
 		            "or verify.", action);
 		return -1;
 	}
@@ -3727,8 +3746,8 @@ main(
 		"  update TYPE ID field=value   change a record\n"
 		"  delete TYPE ID               delete a record (recoverable)\n"
 		"  restore TYPE ID              bring a deleted record back\n"
-		"  forge set-token ID           set a forge's access token (stdin)\n"
-		"  forge set-secret ID          set or generate its webhook secret\n"
+		"  forge settings ID            encrypted settings operation (JSON stdin)\n"
+		"  forge set-token|set-secret    retired; use encrypted settings\n"
 		"  forge verify ID              record which account the token is\n"
 		"  report [NAME] [PERIOD]       run; options: as_of, organization_id, customer_id, currency, venture_id, group_by, vendor_id, pipeline_id, owner, days, by, weeks, band, sort, bucket\n"
 		"  kb search QUERY              search the knowledge bases by\n"
@@ -3867,7 +3886,7 @@ main(
 		"  venturectl update venture 3 status=paused\n"
 		"  venturectl report pnl this_quarter\n"
 		"  venturectl -f csv report receivables > aging.csv\n"
-		"  printf '%s' \"$FORGE_TOKEN\" | venturectl forge set-token 1\n"
+		"  venturectl forge settings 1 < protected-settings.json\n"
 		"  venturectl -f json list sale | jq '.records[].gross.formatted'\n"
 		"  VENTURE_TOKEN=... venturectl mcp        # stdio MCP server\n"
 		"\n"

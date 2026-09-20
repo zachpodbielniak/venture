@@ -270,7 +270,13 @@ venture_factory_publish_release(
 
 	g_object_get(venture_context_get_config(context),
 	             "forge-request-timeout", &timeout, NULL);
-	client = venture_forge_client_for_forge(VENTURE_FORGE(forge), (gint)timeout,
+	if (venture_entity_get_organization_id(release) != venture_entity_get_organization_id(repo) ||
+		venture_entity_get_organization_id(repo) != venture_entity_get_organization_id(forge))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "Release, repository and forge must belong to one organization");
+		return FALSE;
+	}
+	client = venture_forge_client_for_database(database, forge_id, (gint)timeout,
 	                                        error);
 
 	if (NULL == client)
@@ -290,6 +296,8 @@ venture_factory_publish_release(
 	                                         changelog, FALSE, prerelease,
 	                                         &external_id, &url, error))
 		return FALSE;
+
+	if (!venture_forge_credentials_revalidate(venture_forge_client_get_credentials(client), database, error)) return FALSE;
 
 	now = g_date_time_new_now_utc();
 

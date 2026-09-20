@@ -2635,6 +2635,8 @@ VENTURE_DEFINE_ENTITY(VentureTicketLink, venture_ticket_link,
  * rewrite after the fact.
  */
 static const VentureFieldDecl venture_forge_run_fields[] = {
+	VENTURE_FIELD_REF("connection-id", "Credential binding", "Exact account selected at start; zero on legacy runs", "integration_connection", VENTURE_COLUMN_FLAG_IMMUTABLE),
+	VENTURE_FIELD("credential-version", "Credential version", "Exact configuration selected at start; zero means unknown legacy evidence", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_IMMUTABLE),
 	VENTURE_FIELD_REF("ticket-id", "Ticket", NULL, "ticket",
 	                  VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD_REF("link-id", "Link", NULL, "ticket_link",

@@ -12,6 +12,7 @@
  */
 
 #include <venture.h>
+#include "venture-test-forge.h"
 
 #include <glib.h>
 #include <libsoup/soup.h>
@@ -427,11 +428,10 @@ server_fixture_set_up(
 	/* A forge with a secret, and one enrolled repository. */
 	forge = venture_forge_new();
 	g_object_set(forge,
+	             "organization-id", (gint64)1,
 	             "name", "Example forge",
 	             "kind", VENTURE_FORGE_KIND_FORGEJO,
 	             "base-url", "https://git.example.com",
-	             "token", "tok",
-	             "webhook-secret", FACTORY_SECRET,
 	             "bot-username", "venture-bot",
 	             "active", TRUE,
 	             NULL);
@@ -440,22 +440,12 @@ server_fixture_set_up(
 	g_assert_no_error(error);
 	fixture->forge_id = venture_entity_get_id(VENTURE_ENTITY(forge));
 
-	/* The secret is a sensitive field, which keeps it out of every
-	 * response; it must still round-trip through the database, or no
-	 * webhook could ever verify. */
-	{
-		g_autoptr(VentureEntity) again = NULL;
-		g_autofree gchar *stored = NULL;
-
-		again = venture_database_get(fixture->database, VENTURE_TYPE_FORGE,
-		                             fixture->forge_id, NULL);
-		g_object_get(again, "webhook-secret", &stored, NULL);
-		g_assert_cmpstr(stored, ==, FACTORY_SECRET);
-	}
+	venture_test_forge_bind(fixture->database, VENTURE_ENTITY(forge), "tok", FACTORY_SECRET);
 
 	repo = venture_forge_repo_new();
 	g_object_set(repo,
 	             "name", "zach/venture",
+	             "organization-id", (gint64)1,
 	             "forge-id", fixture->forge_id,
 	             "default-branch", "main",
 	             "accept-issues", TRUE,
@@ -1666,6 +1656,12 @@ test_factory_script_urls_are_not_links(
 
 	forge = venture_database_get(fixture->database, VENTURE_TYPE_FORGE,
 	                             fixture->forge_id, NULL);
+	{
+		g_autoptr(VentureIntegrationConnection) binding = venture_forge_settings_find(fixture->database, fixture->forge_id, NULL);
+		g_assert_nonnull(binding);
+		g_assert_true(venture_forge_settings_disconnect(fixture->database, fixture->forge_id,
+			venture_entity_get_version(VENTURE_ENTITY(binding)), venture_entity_get_id(VENTURE_ENTITY(binding)), NULL, NULL));
+	}
 	g_object_set(forge, "base-url", "javascript:alert(1)//", NULL);
 	g_assert_true(venture_database_save(fixture->database, forge, NULL, NULL));
 

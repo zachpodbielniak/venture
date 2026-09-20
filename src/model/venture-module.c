@@ -479,8 +479,8 @@ static const gchar *const venture_module_requires_sales[] = { "sales", NULL };
 static const gchar *const venture_module_requires_invoicing[] = {
 	"finance", "crm", "ledger", NULL
 };
-static const gchar *const venture_module_requires_tickets[] = { "tickets", NULL };
 static const gchar *const venture_module_requires_ai[] = { "ai", NULL };
+static const gchar *const forge_requires[] = { "tickets", "integrations", NULL };
 static const gchar *const venture_module_requires_forge[] = { "forge", NULL };
 
 static const gchar *const venture_module_suggests_crm[] = { "crm", NULL };
@@ -946,10 +946,20 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		FALSE
 	},
 	{
+		"orgaccess", "Organization access", "Membership, organization roles and team ownership.",
+		venture_module_requires_core, NULL,
+		venture_module_orgaccess_types, NULL, NULL, FALSE
+	},
+	{
+		"integrations", "Organization integrations",
+		"Organization-owned provider accounts and protected credential rotation.",
+		mfa_requires, NULL, integration_types, NULL, NULL, FALSE
+	},
+	{
 		"forge", "Git forges",
 		"Repositories, issues, branches, pull requests, and AI coding runs "
 		"against a Forgejo or Gitea instance.",
-		venture_module_requires_tickets, venture_module_suggests_forge,
+		forge_requires, venture_module_suggests_forge,
 		venture_module_forge_types, NULL, "forge-enabled", FALSE
 	},
 	{
@@ -989,11 +999,7 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"projects", "Client projects", "Approved time and billable costs invoiced through settlement.",
 		projects_requires, NULL, projects_types, projects_reports, NULL, FALSE
 	},
-	{
-		"orgaccess", "Organization access", "Membership, organization roles and team ownership.",
-		venture_module_requires_core, NULL,
-		venture_module_orgaccess_types, NULL, NULL, FALSE
-	},
+
 	{
 		"mail", "Transactional mail", "Durable outbound messages and templates.",
 		venture_module_requires_core, NULL, venture_module_mail_types, NULL, NULL, FALSE
@@ -1178,11 +1184,7 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"TOTP enrolment, verification at sign-in, recovery codes and the require-MFA organization setting.",
 		mfa_requires, NULL, mfa_types, NULL, NULL, FALSE
 	},
-	{
-		"integrations", "Organization integrations",
-		"Organization-owned provider accounts and protected credential rotation.",
-		mfa_requires, NULL, integration_types, NULL, NULL, FALSE
-	},
+
 	{
 		"attribution", "Attribution", "Consent-bound first-party analytics and verified form capture.",
 		attribution_requires, NULL, attribution_types, attribution_reports, NULL, FALSE

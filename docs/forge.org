@@ -16,7 +16,7 @@ Forgejo is the forge that is implemented. Gitea works through the same client, b
 
 | Record        | What it is                                                              |
 |---------------+-------------------------------------------------------------------------|
-| =forge=       | one server you have an account on: its URL, its access token, its webhook secret |
+| =forge=       | an organization-owned server identity; encrypted credentials live in its integration binding |
 | =forge_repo=  | one repository on that server, as =owner/repo=                           |
 | =forge_rule=  | what may happen automatically, per repository and per issue type         |
 | =forge_run=   | one attempt by a runner at one ticket: what it did, what it cost, why it stopped |
@@ -77,23 +77,61 @@ A ticket with a branch gets the same treatment: the branch name links to it on t
 
 A repository can also carry its own *Clone URL*, used exactly as given. That is for the one repository that does not follow its forge's pattern — a mirror, or a path a proxy rewrites — so that discovering it later does not mean a second forge record differing in one field.
 
-Then, on the forge's own page:
+On the forge's page, open *Organization forge credentials*. The settings
+form derives its fields from the adapter schema and always leaves credential
+inputs blank. Configure the installation's integration master key first; see
+[[file:integrations.org][integration credentials]] and
+[[file:integration-key-maintenance.org][offline key maintenance]]. Select an explicit organization
+when creating the forge; organization zero cannot carry provider credentials.
 
-Or from a script, which is the same routes underneath:
+Connect supplies an access token and a webhook secret of at least 32 bytes.
+VENTURE asks the selected Forgejo/Gitea API which account the token identifies,
+then encrypts both credentials under this organization's per-forge binding.
+The API URL must use HTTPS; HTTP is accepted only on literal loopback for fixtures.
+The secret must also be installed in that forge's webhook settings. VENTURE never
+reads installation environment variables as a forge credential fallback.
 
-#+begin_src bash
-printf '%s' "$FORGE_TOKEN" | venturectl forge set-token 1
-venturectl forge verify 1
-printf '' | venturectl -f json forge set-secret 1 | jq -r '.secret'
+The same operation contract is available through JSON on stdin:
+
+#+begin_src sh
+venturectl forge settings 1 < protected-forge-settings.json
 #+end_src
 
-The value is read from standard input and there is no flag to put it in argv: a command line is visible to every process through =/proc= and lands in shell history. Both routes are owner-only, like the pages they mirror.
+The protected input file contains an operation, the exact connection ID and
+version last returned, and the settings object. For a first connection:
 
-1. *Set token.* The token box is not on the ordinary edit form and never will be: a sensitive field is not rendered with its value and not applied by the generated save, which is the whole meaning of the flag. This is its own control for that reason. Leaving the box empty keeps the existing token rather than clearing it — an accidentally blank field must not silently disconnect a forge.
-2. *Verify the token.* This asks the forge which account the token belongs to and stores the answer. It is not cosmetic: that login is the webhook loop guard. Until it is set, VENTURE cannot tell an issue it filed itself from one somebody else opened, and the page says so.
-3. *Set or generate the webhook secret*, if you want inbound events. Leave the box blank and VENTURE generates one from the system CSPRNG, which is better than one you invented.
+#+begin_src json
+{"operation":"configure","connection_id":0,"version":0,"settings":{"token":"SUPPLY_PRIVATELY","webhook_secret":"SUPPLY_AT_LEAST_32_RANDOM_BYTES_PRIVATELY"}}
+#+end_src
 
-The forge record is owner-only, and so is every one of those three controls. That is not caution: an editor who could change the base URL could point this install's token at a host they control, and the audit entry would show nothing but a URL changing.
+The response contains only forge ID, connection ID, version and connected state.
+Never put secrets in command arguments. Rotate by sending both credentials again
+with the current connection ID and version. Rotation preserves the verified
+account and API origin; changing either requires *Disconnect* followed by a new
+connection. A stale form naming an old connection cannot rotate its replacement.
+*Test account* performs an authenticated read with the exact displayed binding.
+*Disconnect* disables it and revokes active credential snapshots. Retained
+ciphertext remains part of the encrypted backup/key-retention contract.
+
+For test/disconnect, send the same connection identity without a settings object:
+
+#+begin_src json
+{"operation":"test","connection_id":12,"version":1}
+#+end_src
+
+*Import legacy credentials* is explicit: it verifies the old token, creates the
+encrypted binding and clears both plaintext fields in one independent audited
+transaction. Any failure rolls back both parts. Existing backups may still carry
+plaintext and require the operator's retention/rotation decision. Generic record
+writes cannot set or clear those legacy fields. Old =forge set-token= and
+=forge set-secret= endpoints authenticate then refuse with migration guidance;
+there is no implicit plaintext fallback. =forge verify= uses the encrypted
+binding, while =forge settings= is the complete setup/rotation workflow.
+
+Forge configuration and coding execution are host capabilities. Settings remain
+platform-owner/admin operations even though credentials belong to an organization.
+Organization membership alone does not authorize arbitrary network origins or a
+coding runner. Hosted integration must classify these routes as PLATFORM.
 
 ** Add a repository
 
@@ -154,7 +192,7 @@ The =cli= runner spawns a coding CLI in the checkout. It can do both because it 
 
 * The webhook
 
-=POST /hooks/forge/<id>= is the only route in VENTURE that does not require a session. It authenticates by verifying an HMAC-SHA256 over the request body against the forge's webhook secret.
+=POST /hooks/forge/<id>= intentionally does not require a session. It authenticates by verifying an HMAC-SHA256 over the request body against the exact active encrypted binding's webhook secret.
 
 Three things about it are deliberate:
 
@@ -207,7 +245,7 @@ venturectl create forge_repo name=zach/venture forge_id=1 default_branch=master 
     branch_prefix=venture/ push_issues=true active=true
 #+end_src
 
-The token still has to be set through the forge's page: it is a sensitive field and the REST API will not accept it.
+Connect encrypted credentials through the forge settings page or =venturectl forge settings=. Generic record CRUD never accepts secrets.
 
 ** 2. Bugs worked automatically
 
@@ -263,14 +301,14 @@ A coding agent is a separate thing from the chat assistant, on a separate execut
 
 * Troubleshooting
 
-- *"That forge rejected this install's access token"* — the token is wrong, expired, or was revoked. Set it again on the forge page.
+- *"That forge rejected this install's access token"* — the token is wrong, expired, or was revoked. Rotate both credentials in the forge settings page.
 - *"The access token is not allowed to …"* — the token exists but lacks a scope. Check =write:issue= for filing and commenting, =write:repository= for branches.
 - *A webhook does nothing.* Check the secret matches, that the repository has =Accept issues from upstream= on, and that the repository's name in VENTURE matches =owner/repo= exactly. Forgejo's own delivery log shows the response VENTURE gave.
-- *A webhook creates nothing and the delivery shows 401.* The forge has no webhook secret set. That is a refusal, not a misconfiguration to work around.
+- *A webhook creates nothing and the delivery shows 401.* The exact active binding is missing, inactive, revoked or signed with a different secret. Configure or rotate explicitly; plaintext is never a fallback.
 - *Tickets appear but not on the board.* The repository has no Venture set, so its tickets landed in the default organisation. Set it and move them.
 - *"Coding runs are turned off in settings"* — =forge.runs_enabled= is false, which is the default.
 - *A run fails immediately with a git error* — =git= is missing from the runtime image, or the clone URL is not reachable from the server. Check the clone base: cloning from the API host is the usual mistake, and it fails minutes into a run rather than when you saved the forge.
-- *An SSH clone hangs or is refused* — the server needs a key the forge accepts, and =GIT_TERMINAL_PROMPT= is off so git fails rather than waiting for a passphrase. In a container that means mounting a key and a =known_hosts=. An HTTPS clone base avoids all of it: the access token is used, passed to git through an askpass helper so it never reaches the command line or =.git/config=.
+- *An SSH clone hangs or is refused* — the server needs a key the forge accepts, and =GIT_TERMINAL_PROMPT= is off so git fails rather than waiting for a passphrase. In a container that means mounting a key and a =known_hosts=. An HTTPS clone base on the approved forge authority uses the bound access token, passed to git through an askpass helper so it never reaches the command line or =.git/config=.
 - *A CLI run refuses to start* — the command is not in =forge.cli_allowed_commands=, or the binary is not in the image. See [[file:containers.org][Containers]].
 - *A run says =interrupted=* — the server stopped while it was going. Nothing is resumed automatically, because nobody observed how far it got. Start a new one when you have looked at the branch.
 
@@ -279,3 +317,40 @@ A coding agent is a separate thing from the chat assistant, on a separate execut
 A coding run takes minutes. Everything else in VENTURE takes milliseconds on one main loop, so runs get the only background thread in the program — with its own main context, and a rule that it never touches the database. Progress crosses back as plain data and is written to the run record on the main thread.
 
 Forge API calls are *not* on that thread: they happen inside the request that asked for them, bounded by =forge.request_timeout=. That is the same shape as the AI chat route and the invoice actions, and it is why the timeout is worth keeping short.
+
+* Credential lifetime, cloning and uncertain outcomes
+
+Provider clients resolve their organization, forge origin/kind, account and binding
+version on the main thread. They retain immutable credential snapshots with a
+thread-safe cancellable. Main-thread changes to the binding, forge or organization
+revoke the snapshot, conservatively even if a surrounding transaction rolls back.
+A worker never reads the database. New run records retain the exact connection
+ID and credential version; historical runs remain explicitly unknown (zero),
+without invented credential backfills. Callbacks and publishing revalidate retained
+versions on the main thread before applying results; webhook record application
+runs inside a transaction and rolls back if its credential identity changed.
+Disconnect/rotation do not make an already transmitted remote effect disappear;
+an interrupted external outcome requires reconciliation rather than blind retry.
+
+HTTPS cloning may send credentials only to the configured forge authority. Other
+clone hosts require explicit SSH/key-agent transport, which receives no token.
+The owned git launcher refuses redirects and recursive submodules, disables
+credential helpers and repository hooks, and limits askpass answers to the
+approved HTTPS authority. Tokens are present only in the environment of an owned
+network git operation, never its arguments, remote URL or checkout files.
+Cancellation terminates that git process group. The runner is still a trusted
+host capability: these controls do not sandbox an arbitrary coding CLI or isolate
+same-user processes from each other's memory/environment.
+
+Low-level =venture_forgejo_client_new()= retains explicit-token construction for
+transport fixtures and trusted adapters. The old record-only
+=venture_forge_client_for_forge()= always refuses. Application callers must use
+=venture_forge_client_for_database()= and retain its credential identity through
+completion. This follows the installation's single-process workspace lease;
+external SQL writes are maintenance, not a live credential-control channel.
+
+The credential helper is created beside the checkout, never inside it: git
+refuses to clone into a nonempty directory. It is removed after every run,
+including failed runs whose checkout is retained. Worker completion is applied
+on the main context only after cleanup, so the final service release cannot
+join its own worker or race fixture/workspace teardown.

@@ -281,6 +281,7 @@
 #include "kb/venture-kb-ingest.h"
 #include "kb/venture-kb-crossref.h"
 #include "forge/venture-forge-client.h"
+#include "forge/venture-forge-credentials.h"
 #include "forge/venture-forgejo-client.h"
 #include "forge/venture-forge-rules.h"
 #include "forge/venture-work-tools.h"

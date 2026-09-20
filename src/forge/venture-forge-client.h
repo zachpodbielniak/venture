@@ -478,15 +478,10 @@ venture_forge_client_create_release(
  * @timeout_seconds: how long a single call may take
  * @error: (out) (optional): return location for a #GError
  *
- * Builds the client that speaks to @forge.
- *
- * The access token is read off the record here and nowhere else. It is a
- * sensitive field, so it is absent from every serialisation -- a caller that
- * tried to pass it around would find it had nothing to pass.
- *
- * Returns %VENTURE_ERROR_NOT_SUPPORTED for a forge kind this build cannot
- * speak. That is a better answer than a 404 from a GitHub URL addressed as
- * though it were a Forgejo one.
+ * Compatibility entry point that always refuses with %VENTURE_ERROR_CONFIG.
+ * A record alone cannot prove encrypted organization credential ownership.
+ * Use venture_forge_client_for_database(); explicit-token transport fixtures
+ * may construct venture_forgejo_client_new() directly.
  *
  * Returns: (transfer full) (nullable): a client, or %NULL
  */

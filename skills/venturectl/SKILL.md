@@ -97,8 +97,8 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `update TYPE ID field=value ...` | change a record |
 | `delete TYPE ID` | soft delete — the row stays, stamped |
 | `restore TYPE ID` | clear that stamp |
-| `forge set-token ID` | set a forge's access token, read from stdin |
-| `forge set-secret ID` | set or generate its webhook secret |
+| `forge settings ID` | encrypted configure/test/disconnect/import operation, JSON from stdin |
+| `forge set-token ID` / `forge set-secret ID` | retired; refuse with encrypted-settings guidance |
 | `forge verify ID` | record which account the token belongs to |
 | `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID] [basis=cash\|accrual] [dimension=VALUE] [band_size=N]` | list reports, or run one with an optional historical cutoff, legal entity, accounting basis, dimension and score-band width |
 | `links TYPE ID` | every link touching a record, read from it |
@@ -277,29 +277,26 @@ is no generic "write this sensitive field" command: a password must be
 hashed, a forge token must not be, and one command for both would be a way
 to get one of them wrong.
 
-For a forge, use the `forge` subcommand — the one part of `venturectl` that
-is not generic over types, and the exception earns itself:
+For a forge, use the encrypted settings adapter. The request is JSON on stdin,
+never secrets in argv:
 
 ```bash
-printf '%s' "$FORGE_TOKEN" | venturectl forge set-token 1
-venturectl forge set-token 1 < token.txt
-
-printf '' | venturectl forge set-secret 1    # generates one, returns it once
-printf '%s' "$SECRET" | venturectl forge set-secret 1
-
-venturectl forge verify 1                    # records the bot account
+venturectl forge settings 1 < protected-settings.json
 ```
 
-**The value comes from standard input, and there is no flag to put it in
-argv.** A command line is visible to every process on the host through
-`/proc` and lands in shell history; a secret that has been in either has to
-be rotated. An empty token is refused rather than treated as "leave it
-alone" — a script that sent an empty string meant to send something and its
-variable was unset.
+Create input: `{"operation":"configure","connection_id":0,"version":0,"settings":{"token":"SUPPLY_PRIVATELY","webhook_secret":"SUPPLY_32_OR_MORE_RANDOM_BYTES_PRIVATELY"}}`.
+The response contains only connection metadata. Rotation repeats `configure` with
+both credentials and the exact current `connection_id` and `version`. Operations
+`test` and `disconnect` take that same identity without settings. `import` with
+both identity numbers zero explicitly verifies, encrypts and transactionally clears
+legacy plaintext; old backups may still contain it. Failed import changes nothing.
 
-`forge verify` is not optional if you want webhooks: it records which
-account the token belongs to, and that is the loop guard. Without it VENTURE
-cannot tell an issue it filed itself from one somebody else opened.
+The forge must name an explicit organization. Account/origin changes require
+disconnect first. Settings remain platform-owner/admin capability; organization
+membership does not authorize arbitrary forge origins or host execution.
+`forge set-token` and `forge set-secret` are retired and refuse. `forge verify`
+uses the encrypted binding; configure already verifies its account. See
+[forge documentation](../../docs/forge.org) for worker revocation and clone limits.
 
 A user's password still has no CLI path and is set on the account page.
 Setting a hash directly is what hashing exists to prevent.
@@ -373,20 +370,15 @@ are owner-only. A 403 here means the token's role, not a bug.
 
 ```bash
 # 1. The server, and where git lives — often a different host
-venturectl create forge name="Home" kind=forgejo \
+venturectl create forge name="Home" kind=forgejo organization_id=1 \
     base_url=https://git.example.com \
     clone_base_url=git@git-ssh.example.com \
     active=true
 
-# 2. The credentials, from a script
+# 2. Both credentials in an encrypted organization binding (JSON stdin)
 FORGE=$(venturectl -f json list forge name__eq=Home | jq -r '.records[0].id')
-printf '%s' "$FORGE_TOKEN" | venturectl forge set-token "$FORGE"
-venturectl forge verify "$FORGE"
-
-# Generate a webhook secret and keep it — it is shown once, and you paste
-# it into the forge's webhook settings.
-SECRET=$(printf '' | venturectl -f json forge set-secret "$FORGE" \
-         | jq -r '.secret')
+venturectl forge settings "$FORGE" < protected-forge-settings.json
+# Keep the separately generated webhook secret privately and install it on the forge.
 
 # 3. A repository
 venturectl create forge_repo name=owner/project forge_id="$FORGE" \

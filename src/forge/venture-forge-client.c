@@ -94,6 +94,7 @@ venture_forge_release_event_clear(VentureForgeReleaseEvent *event)
                                                                               \
 	g_return_val_if_fail(VENTURE_IS_FORGE_CLIENT(self), fail);            \
                                                                               \
+	if (!venture_forge_client_check_credentials(self, error)) return fail; \
 	iface = VENTURE_FORGE_CLIENT_GET_IFACE(self);                         \
                                                                               \
 	if (NULL == iface->method)                                            \
@@ -230,7 +231,8 @@ venture_forge_client_verify_webhook(
 ){
 	VENTURE_FORGE_DISPATCH(verify_webhook, FALSE)
 
-	return iface->verify_webhook(self, headers, body, secret, error);
+	return iface->verify_webhook(self, headers, body,
+		venture_forge_client_get_credentials(self) ? venture_forge_credentials_get_webhook_secret(venture_forge_client_get_credentials(self)) : secret, error);
 }
 
 gboolean
@@ -303,44 +305,9 @@ venture_forge_client_for_forge(
 	gint		  timeout_seconds,
 	GError		**error
 ){
-	g_autofree gchar *base_url = NULL;
-	g_autofree gchar *token = NULL;
-	VentureForgeKind kind = VENTURE_FORGE_KIND_FORGEJO;
-	VentureForgejoClient *client;
-
 	g_return_val_if_fail(VENTURE_IS_FORGE(forge), NULL);
-
-	g_object_get(forge,
-	             "kind", &kind,
-	             "base-url", &base_url,
-	             "token", &token,
-	             NULL);
-
-	switch (kind)
-	{
-	case VENTURE_FORGE_KIND_FORGEJO:
-	case VENTURE_FORGE_KIND_GITEA:
-		client = venture_forgejo_client_new(base_url, token,
-		                                    timeout_seconds, error);
-
-		if (NULL != client)
-			return VENTURE_FORGE_CLIENT(client);
-
-		return NULL;
-
-	default:
-		break;
-	}
-
-	/*
-	 * Refused rather than attempted. GitHub and GitLab are declared so
-	 * the form can express what an operator actually has, but aiming a
-	 * Forgejo-shaped request at a GitHub URL produces a 404 that reads
-	 * as a missing repository rather than as a missing implementation.
-	 */
-	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED,
-	            "VENTURE cannot talk to %s yet; only Forgejo and Gitea",
-	            venture_enum_to_nick(VENTURE_TYPE_FORGE_KIND, kind));
-
+	(void)timeout_seconds;
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		"Use venture_forge_client_for_database with an explicitly configured encrypted binding");
 	return NULL;
 }
