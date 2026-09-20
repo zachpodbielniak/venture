@@ -190,3 +190,32 @@ venture_web_hosted_finish(VentureWebServer *self, HtmxContext *http)
 	htmx_context_set_response(http, refused);
 	return FALSE;
 }
+
+/* Admission follows authority verification, before dispatch can mutate business
+ * data. Static reference resources remain available for health probes/recovery.
+ * This bounds nested dispatch; it does not turn synchronous work into a worker. */
+static gboolean
+venture_web_hosted_admit(VentureWebServer *self, HtmxContext *http, gboolean *admitted)
+{
+	HtmxRequest *request = htmx_context_get_request(http);
+	HtmxResponse *response;
+	g_autofree gchar *retry = NULL;
+	*admitted = FALSE;
+	if (!self->workspace_limiter ||
+	    venture_data_class_for_resource(G_OBJECT(request)) == VENTURE_DATA_CLASS_REFERENCE)
+		return TRUE;
+	if (self->workspace_http_active < self->workspace_http_concurrency &&
+	    htmx_rate_limiter_allow(self->workspace_limiter, "workspace")) {
+		self->workspace_http_active++;
+		*admitted = TRUE;
+		return TRUE;
+	}
+	response = htmx_response_new_with_content("Workspace request limit reached; retry later.\n");
+	htmx_response_set_status(response, 429);
+	htmx_response_set_content_type(response, "text/plain; charset=utf-8");
+	htmx_response_add_header(response, "Cache-Control", "no-store");
+	retry = g_strdup_printf("%u", self->workspace_http_retry_after);
+	htmx_response_add_header(response, "Retry-After", retry);
+	htmx_context_set_response(http, response);
+	return FALSE;
+}

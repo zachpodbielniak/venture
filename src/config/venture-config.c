@@ -105,6 +105,12 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_BOOL("hosted-enabled", "hosted", "enabled", FALSE, "Pin this database to one hosted workspace"),
 	VC_STR("hosted-workspace-id", "hosted", "workspace_id", "", "Immutable hosted workspace UUID"),
 	VC_STR("hosted-origin", "hosted", "origin", "", "Immutable public HTTPS tenant origin"),
+	VC_INT("hosted-http-requests-per-minute", "hosted", "http_requests_per_minute", 600,
+	       "Workspace dynamic HTTP requests per minute, 1 through 1000000"),
+	VC_INT("hosted-http-burst", "hosted", "http_burst", 120,
+	       "Workspace dynamic HTTP burst capacity, 1 through 1000000"),
+	VC_INT("hosted-http-concurrency", "hosted", "http_concurrency", 8,
+	       "Maximum nested dynamic HTTP handlers, 1 through 256"),
 
 	VC_BOOL("security-require-auth", "security", "require_auth", TRUE,
 	        "Require authentication for every request"),

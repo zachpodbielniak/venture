@@ -428,6 +428,10 @@ tenant_http(SoupSession *session, guint port, const gchar *method, const gchar *
 		g_assert_no_error(outcome.error);
 		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(json), "records")), ==, 1);
 	}
+	if (soup_message_get_status(message) == 429 && g_str_equal(path, "/fixture/admission")) {
+		g_assert_cmpstr(soup_message_headers_get_one(soup_message_get_response_headers(message), "Cache-Control"), ==, "no-store");
+		g_assert_cmpstr(soup_message_headers_get_one(soup_message_get_response_headers(message), "Retry-After"), ==, "60");
+	}
 	if (out_cookie) *out_cookie = g_strdup(soup_message_headers_get_one(soup_message_get_response_headers(message), "Set-Cookie"));
 	g_clear_pointer(&outcome.body, g_bytes_unref);
 	return soup_message_get_status(message);
@@ -535,6 +539,89 @@ test_tenant_http(TenantFixture *f, gconstpointer data)
 	g_clear_object(&server); g_clear_object(&context);
 	venture_test_remove_tree(state_dir);
 }
+typedef struct {
+	SoupSession *session;
+	guint port;
+	guint writes;
+	gboolean nested;
+} AdmissionFixture;
+
+static HtmxResponse *
+tenant_admission_callback(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	AdmissionFixture *fixture = data;
+	(void)request; (void)params;
+	fixture->writes++;
+	if (fixture->nested) {
+		fixture->nested = FALSE;
+		g_assert_cmpuint(tenant_http(fixture->session, fixture->port, "POST", "/fixture/admission",
+			"tenant.example.test", NULL, "", NULL), ==, 429);
+	}
+	return htmx_response_new_with_content("admitted");
+}
+
+/* Rejected work must not dispatch, exhaust a neighbor's bucket or consume a
+ * concurrency slot forever. A nested request models a provider's main loop. */
+static void
+test_tenant_http_admission(TenantFixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(SoupSession) session = soup_session_new();
+	g_autofree gchar *state_dir = g_dir_make_tmp("venture-admission-XXXXXX", &error);
+	AdmissionFixture fixture;
+	gboolean nested = GPOINTER_TO_INT(data) != 0;
+	g_assert_no_error(error);
+	fixture.session = session; fixture.port = 44000 + (getpid() % 10000);
+	fixture.writes = 0; fixture.nested = nested;
+	g_object_set(session, "timeout", 5, NULL);
+	g_object_set(f->config, "state-dir", state_dir, "server-bind-address", "127.0.0.1",
+		"server-port", (gint64)fixture.port, "hosted-http-requests-per-minute", (gint64)1,
+		"hosted-http-burst", (gint64)2, "hosted-http-concurrency", (gint64)1, NULL);
+	context = venture_context_new(f->config, f->database);
+	server = venture_web_server_new(context, &error); g_assert_no_error(error); g_assert_nonnull(server);
+	venture_web_server_add_classified_route(server, HTMX_METHOD_POST, "/fixture/admission",
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, tenant_admission_callback, &fixture);
+	g_assert_true(venture_web_server_start(server, &error)); g_assert_no_error(error);
+	/* Host refusal happens before admission and cannot spend its two tokens. */
+	g_assert_cmpuint(tenant_http(session, fixture.port, "POST", "/fixture/admission", "neighbor.example.test", NULL, "", NULL), ==, 403);
+	g_assert_cmpuint(tenant_http(session, fixture.port, "POST", "/fixture/admission", "tenant.example.test", NULL, "", NULL), ==, 200);
+	g_assert_cmpuint(fixture.writes, ==, 1);
+	g_assert_cmpuint(tenant_http(session, fixture.port, "POST", "/fixture/admission", "tenant.example.test", NULL, "", NULL), ==, 200);
+	g_assert_cmpuint(fixture.writes, ==, 2);
+	g_assert_cmpuint(tenant_http(session, fixture.port, "POST", "/fixture/admission", "tenant.example.test", NULL, "", NULL), ==, 429);
+	g_assert_cmpuint(fixture.writes, ==, 2);
+	g_assert_cmpuint(tenant_http(session, fixture.port, "GET", "/api/v1/health", "tenant.example.test", NULL, NULL, NULL), ==, 200);
+	venture_web_server_stop(server); g_clear_object(&server); g_clear_object(&context);
+	venture_test_remove_tree(state_dir);
+}
+
+static void
+test_tenant_http_invalid_limits(TenantFixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autofree gchar *state_dir = g_dir_make_tmp("venture-admission-invalid-XXXXXX", &error);
+	const gchar *properties[] = { "hosted-http-requests-per-minute", "hosted-http-burst", "hosted-http-concurrency" };
+	guint i;
+	(void)data;
+	g_assert_no_error(error);
+	g_object_set(f->config, "state-dir", state_dir, NULL);
+	context = venture_context_new(f->config, f->database);
+	for (i = 0; i < G_N_ELEMENTS(properties); i++) {
+		gint64 previous;
+		g_object_get(f->config, properties[i], &previous, NULL);
+		g_object_set(f->config, properties[i], (gint64)0, NULL);
+		server = venture_web_server_new(context, &error);
+		g_assert_null(server); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+		g_clear_error(&error);
+		g_object_set(f->config, properties[i], previous, NULL);
+	}
+	g_clear_object(&context); venture_test_remove_tree(state_dir);
+}
+
 static gboolean
 tenant_fail_identity(VentureDatabase *database, VentureEntity *entity, VentureEntity *previous,
 	gpointer data, GError **error)
@@ -692,6 +779,9 @@ main(int argc, char **argv)
 	g_test_add("/tenant/actions", TenantFixture, NULL, tenant_setup, test_tenant_actions, tenant_teardown);
 	g_test_add("/tenant/host-authority", TenantFixture, NULL, tenant_setup, test_tenant_host_authority, tenant_teardown);
 	g_test_add("/tenant/http", TenantFixture, NULL, tenant_setup, test_tenant_http, tenant_teardown);
+	g_test_add("/tenant/http-admission", TenantFixture, NULL, tenant_setup, test_tenant_http_admission, tenant_teardown);
+	g_test_add("/tenant/http-nested-admission", TenantFixture, GINT_TO_POINTER(1), tenant_setup, test_tenant_http_admission, tenant_teardown);
+	g_test_add("/tenant/http-invalid-limits", TenantFixture, NULL, tenant_setup, test_tenant_http_invalid_limits, tenant_teardown);
 	g_test_add("/tenant/restore-quarantine", TenantFixture, NULL, tenant_setup, test_tenant_restore_quarantine, tenant_teardown);
 	g_test_add("/tenant/member-recovery", TenantFixture, NULL, tenant_setup, test_tenant_member_recovery, tenant_teardown);
 	g_test_add("/tenant/restore-without-oidc", TenantFixture, NULL, tenant_setup, test_tenant_restore_without_oidc, tenant_teardown);

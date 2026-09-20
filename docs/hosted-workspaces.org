@@ -279,3 +279,36 @@ See [[file:evidence/hosted-workspaces-demonstration.org][the built-artifact demo
 verbatim transcript, reproducible browser driver and tested boundaries. The
 recording shows administrator pages before and after the scripted operations;
 the transcript establishes the separately exercised invitation/recovery forms.
+
+* HTTP admission and backpressure
+
+Hosted dynamic routes share one request budget per application process/workspace;
+request parameters, IP addresses and organization IDs cannot select another
+bucket. The default is 600 admitted requests per minute, a burst of 120, and at
+most eight active nested handlers. Set =hosted.http_requests_per_minute= and
+=hosted.http_burst= to integers from 1 through 1,000,000, and
+=hosted.http_concurrency= from 1 through 256. Invalid values refuse server
+construction. Values are read at startup; changing them requires a restart.
+Self-hosted mode retains its existing per-feature limits.
+
+Admission happens after the hosted authority/lifecycle checks and before the
+route callback. Exhaustion returns HTTP 429, =Cache-Control: no-store= and a
+conservative whole-second =Retry-After=. A client waits and retries using its
+existing idempotency identity; rejection did not invoke the callback. A full
+concurrency budget does not consume an additional rate token. Classified static
+reference routes, including public build health, bypass the budget so a busy
+workspace does not falsely fail health checks. Dynamic control/login requests
+share the budget; offline audited maintenance remains available during overload.
+
+The concurrency bound matters when a synchronous provider drives a nested main
+loop: another request can enter before the first handler returns. Slots release
+on every normal dispatch return, including an error response. It does not add
+worker threads or make blocking operations asynchronous. A restarted process has
+a fresh burst; this is admission control, not a durable billing/job quota. Public
+connection/body limits still require the platform gateway. Storage and queued-job
+budgets, fair heavy-neighbor benchmarks and operational alerting remain separate
+qualification requirements; these HTTP controls do not establish them.
+
+=tests/test-tenant.c= exercises exhausted bursts, refused-host non-consumption,
+health availability, nested-handler rejection and slot release, and invalid
+configuration against a real loopback server.

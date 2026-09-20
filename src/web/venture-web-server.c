@@ -142,6 +142,12 @@ struct _VentureWebServer
 	GHashTable	*chat_turns;
 	HtmxRateLimiter *quote_limiter;
 	HtmxRateLimiter *lead_limiter;
+	/* One bucket belongs to the pinned workspace, never a caller-supplied ID.
+	 * Nested provider main loops can reenter this server on the same thread. */
+	HtmxRateLimiter *workspace_limiter;
+	guint workspace_http_active;
+	guint workspace_http_concurrency;
+	guint workspace_http_retry_after;
 };
 
 G_DEFINE_FINAL_TYPE(VentureWebServer, venture_web_server, G_TYPE_OBJECT)
@@ -174,6 +180,7 @@ venture_web_server_finalize(GObject *object)
 	g_clear_pointer(&self->reveals, g_hash_table_unref);
 	g_clear_pointer(&self->chat_turns, g_hash_table_unref);
 	g_clear_object(&self->lead_limiter);
+	g_clear_object(&self->workspace_limiter);
 
 	G_OBJECT_CLASS(venture_web_server_parent_class)->finalize(object);
 }
@@ -3323,12 +3330,15 @@ venture_web_not_found_middleware(
 	VentureWebServer *self;
 	HtmxRequest *request;
 	const gchar *path;
+	gboolean admitted;
 
 	self = user_data;
 
 	boundary = venture_access_policy_enter(venture_database_get_access_policy(venture_context_get_database(self->context)), NULL);
 	if (!venture_web_hosted_preflight(self, context, &support_scope)) return;
+	if (!venture_web_hosted_admit(self, context, &admitted)) return;
 	venture_orgaccess_web_dispatch(self->auth, self->context, context, next, next_data);
+	if (admitted) self->workspace_http_active--;
 	if (!venture_web_hosted_finish(self, context)) return;
 
 	if (NULL != htmx_context_get_response(context))
@@ -29672,7 +29682,7 @@ venture_web_server_new(
 	g_autoptr(HtmxConfig) config = NULL;
 	HtmxRouter *router;
 	g_autofree gchar *bind_address = NULL;
-	gint64 port;
+	gint64 port, rate, burst, concurrency;
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 
@@ -29684,6 +29694,21 @@ venture_web_server_new(
 	self = g_object_new(VENTURE_TYPE_WEB_SERVER, NULL);
 	self->context = g_object_ref(context);
 	self->auth = venture_auth_new(context);
+	if (venture_tenant_service_is_enabled(venture_tenant_service_get(venture_context_get_database(context)))) {
+		g_object_get(venture_context_get_config(context),
+			"hosted-http-requests-per-minute", &rate, "hosted-http-burst", &burst,
+			"hosted-http-concurrency", &concurrency, NULL);
+		if (rate < 1 || rate > 1000000 || burst < 1 || burst > 1000000 ||
+		    concurrency < 1 || concurrency > 256) {
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+				"Hosted HTTP rate/burst must be 1..1000000 and concurrency 1..256");
+			return NULL;
+		}
+		self->workspace_limiter = htmx_rate_limiter_new((guint)burst, rate / 60.0);
+		self->workspace_http_concurrency = (guint)concurrency;
+		self->workspace_http_retry_after = (guint)MAX((60 + rate - 1) / rate, 1);
+	}
+
 
 	g_object_get(venture_context_get_config(context),
 	             "server-bind-address", &bind_address,
