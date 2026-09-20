@@ -63,8 +63,8 @@ class Client:
         query = urllib.parse.urlencode({"organization_id": org, "limit": 10000, **filters})
         return self.request("/api/v1/" + name + "?" + query)["records"]
 
-    def action(self, name, identity, action, **values):
-        return self.request(f"/api/v1/{name}/{identity}/actions/{action}", values)
+    def action(self, type_name, identity, action, **values):
+        return self.request(f"/api/v1/{type_name}/{identity}/actions/{action}", values)
 
     def report(self, name, org=1):
         return self.request(f"/api/v1/reports/{name}?period=2026-01&organization_id={org}&currency=USD")
@@ -335,7 +335,8 @@ def main():
     binary = args.binary.resolve(strict=True)
     root = Path(tempfile.mkdtemp(prefix="venture-accounting-server-drill-"))
     os.umask(0o077)
-    print("Artifact SHA256: " + hashlib.sha256(binary.read_bytes()).hexdigest(), flush=True)
+    fingerprint = hashlib.sha256(binary.read_bytes()).hexdigest()
+    print("Artifact SHA256: " + fingerprint, flush=True)
     print("Evidence directory: " + str(root), flush=True)
     for name in ("opening", "trading"):
         if args.scenario not in ("all", name):
@@ -356,6 +357,7 @@ def main():
             destination = Server(binary, root / (name + "-restore"))
             try:
                 roundtrip(client, destination, expected)
+                assert hashlib.sha256(binary.read_bytes()).hexdigest() == fingerprint, "Artifact changed during walkthrough"
             finally:
                 destination.stop()
         finally:

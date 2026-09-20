@@ -139,6 +139,7 @@ Two binaries, both statically linked against every vendored dependency: =venture
 - [[file:evidence/accounting-server-demonstration.org][Authenticated accounting server demonstration]] — exact synthetic opening, close and recovery transcript
 
 - [[file:project-delivery.org][Sales to delivery]] — retained scope, tickets, acceptance and invoicing
+- [[file:evidence/project-server-demonstration.org][Authenticated project server demonstration]] — billing modes, profit sources and retained recovery evidence
 
 - [[file:crm-acceptance.org][CRM to collection acceptance]]: capture, identity, owner and sales-to-delivery tie-outs.
 - [[file:ocr.org][Local OCR and capture review]]: bounded extraction, provenance and attachment ownership.

@@ -115,3 +115,67 @@ Run =make DEBUG=1 test-one T=test-project-delivery=. Optional
 =VENTURE_TEST_ACCOUNTING_POSTGRES_URI= selects a disposable schema per fixture
 using the shared accounting helper. Synthetic correctness tests do not prove
 deployment replacement readiness or hosted capacity.
+
+* Authenticated server acceptance
+
+=tools/venture-project-server-drill.py= provisions private authenticated
+SQLite fixtures and exercises CRM conversion, stage transitions, project
+handoff, ordinary tickets, acceptance, billing and receipts through public
+HTTP routes/actions. It takes a built DEBUG server from its source checkout:
+
+#+begin_src sh
+python3 tools/venture-project-server-drill.py --binary build/debug/venture
+#+end_src
+
+=--scenario time|fixed|full|retainer= selects a bounded case. The default is
+all four. The driver reuses the [[file:accounting-acceptance.org][accounting server runner]] for private
+credentials, loopback-only HTTP, environment isolation and bounded process
+cleanup; retain both scripts together. Use a stable artifact, not a path
+being relinked. The script reports its SHA-256 and refuses success if that
+artifact changes during execution. Private fixture logs contain bootstrap
+passwords and must not be published.
+
+These independently stated results use USD integer cents:
+
+| Mode | Billed | Actual management cost | Management profit |
+|------+--------+------------------------+-------------------|
+| Time/materials, two invoices | 40000 | 23500 | 16500 |
+| Fixed 400 + 600 plus accepted change 200 | 120000 | 10500 | 109500 |
+| Fixed full quote billed at acceptance | 100000 | 10500 | 89500 |
+
+Time/materials uses 90 + 60 minutes at 150/hour, frozen labour cost at
+80/hour, a billable 25 cost and a nonbillable 10 cost. Rate edits after
+approval cannot rewrite those amounts. Fixed scenarios record one hour of
+labour at cost 80 and a 25 pass-through cost without billing either again.
+The changed contract increases budget from 1000 to 1200 exactly once.
+
+The driver checks every report source identity belongs to the project,
+allocation amounts sum exactly to billed revenue, allocations point to the
+correct invoices and underlying time/cost/scope/progress evidence, partial
+receipts produce partial-paid status and all final invoices are paid.
+Collected cash equals billed allocations, AR is zero and the balance sheet
+ties. Project cost evidence is management data; it does not itself create
+statutory expense postings, so this report's profit is deliberately not
+asserted equal to the statutory income statement.
+
+A separate retainer scenario records 250 received, explicitly links the
+retainer to its project, then earns 100 and 150. Cash remains 250; liability
+moves 250 → 150 → 0; ledger revenue moves 0 → 100 → 250. Over-release is
+refused. This existing service is an earned-retainer liability workflow,
+not an invoice-credit allocation. It creates no invoice, receipt record or
+=project_billing= allocation, and the invoice-based project margin remains
+zero. The explicit link provides traceability without silently redefining
+that report. Provider collection and applying advances against invoices are
+not demonstrated by this scenario.
+
+The default uses ordinary date-only receipt inputs and requires earlier-day
+receipts to be refused without leaving records. =--precise-receipts= is a
+diagnostic option that supplies full UTC timestamps; it is not evidence that
+the ordinary date picker works. See [[file:evidence/project-server-demonstration.org][the component transcript and its known
+same-day receipt gap]]. Restart comparisons cover management reports,
+account balances and retained project/source/invoice/payment records.
+
+This controlled synthetic standalone check does not prove customer portal
+editing, production/provider connectivity, PostgreSQL deployment, hosted
+isolation or M2 replacement readiness. It must be rerun against the final
+integrated DEBUG artifact, without diagnostic workarounds.
