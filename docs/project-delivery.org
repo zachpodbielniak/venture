@@ -159,7 +159,11 @@ statutory expense postings, so this report's profit is deliberately not
 asserted equal to the statutory income statement.
 
 A separate retainer scenario records 250 received, explicitly links the
-retainer to its project, then earns 100 and 150. Cash remains 250; liability
+retainer to its project through the existing Links panel, then earns 100 and
+150. On the project page choose =customer_retainer= as the target type, use
+the searchable record picker and submit *Link*. The driver exercises the
+same authenticated picker endpoint and =POST /links= form, checks the rendered
+relationship and retains it through restart. Cash remains 250; liability
 moves 250 → 150 → 0; ledger revenue moves 0 → 100 → 250. Over-release is
 refused. This existing service is an earned-retainer liability workflow,
 not an invoice-credit allocation. It creates no invoice, receipt record or
@@ -171,8 +175,7 @@ not demonstrated by this scenario.
 The default uses ordinary date-only receipt inputs and requires earlier-day
 receipts to be refused without leaving records. =--precise-receipts= is a
 diagnostic option that supplies full UTC timestamps; it is not evidence that
-the ordinary date picker works. See [[file:evidence/project-server-demonstration.org][the component transcript and its known
-same-day receipt gap]]. Restart comparisons cover management reports,
+the ordinary date picker works. See [[file:evidence/project-server-demonstration.org][the ordinary-date component transcript and same-day receipt regression]]. Restart comparisons cover management reports,
 account balances and retained project/source/invoice/payment records.
 
 This controlled synthetic standalone check does not prove customer portal

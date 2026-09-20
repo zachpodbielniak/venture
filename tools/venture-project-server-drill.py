@@ -191,9 +191,16 @@ def retainer(client):
     liability = next(row for row in client.rows("account") if row["code"] == "2200")
     held = client.action("company", customer, "collect_retainer", amount="250 USD", liability_account_id=liability["id"])
     assert cents(held["remaining"]) == 25000
-    link = client.create("record_link", source_type="client_project", source_id=project["id"], target_type="customer_retainer",
-                         target_id=held["id"], kind="references", note="Explicit earned-retainer agreement link")
-    assert link["target_id"] == held["id"]
+    page = client.request(f"/e/client_project/{project['id']}", text=True)
+    assert 'action="/links"' in page and 'data-record-pick' in page and 'value="customer_retainer"' in page
+    choices = client.request("/ui/records/search?type=customer_retainer&q=")
+    assert any(int(item["id"]) == held["id"] for item in choices["items"])
+    client.request("/links", {"source_type": "client_project", "source_id": project["id"], "target_type": "customer_retainer",
+                   "target_id": held["id"], "kind": "references", "note": "Explicit earned-retainer agreement link"},
+                   form=True, expected=(302, 303))
+    links = client.rows("record_link")
+    assert len(links) == 1 and links[0]["source_id"] == project["id"] and links[0]["target_id"] == held["id"]
+    assert f'/e/customer_retainer/{held["id"]}' in client.request(f"/e/client_project/{project['id']}", text=True)
     accounting_controls(client, 25000, 0, 0, 25000)
     released = client.action("customer_retainer", held["id"], "release", amount="100 USD")
     assert cents(released["remaining"]) == 15000
@@ -206,7 +213,7 @@ def retainer(client):
     accounting_controls(client, 25000, 0, 25000, 0)
     assert not client.rows("invoice") and not client.rows("payment")
     margin(client, project, {"billed": 0, "unbilled": 0, "actual_cost": 0, "profit": 0})
-    print("PASS linked retainer cash25000 -> liability25000 -> releases10000+15000 revenue25000 cents; over-release refused; no invoice/receipt or project billed allocation invented", flush=True)
+    print("PASS existing authenticated link form/picker; retainer cash25000 -> liability25000 -> releases10000+15000 revenue25000 cents; over-release refused; no invoice/receipt or project billed allocation invented", flush=True)
 
 
 def main():

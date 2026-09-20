@@ -1,38 +1,38 @@
 #+title: Authenticated CRM and project server demonstration
-#+description: Synthetic billing-mode evidence with an explicit unresolved date-only receipt gap
+#+description: Synthetic billing modes, ordinary receipt dates and retained financial evidence
 
 * Artifact and limits
 
 Executed 20 September 2026 on the DEBUG artifact containing typed retainer
-collect/release actions. Its exact SHA-256 is below. The executable was copied
-to a stable local path before execution. This transcript demonstrates HTTP
-workflows with authentication enabled and synthetic local data only; it is
-not a browser recording, final integrated PR-head qualification, hosted
-isolation, production authorization or M2 acceptance.
+collect/release actions and the repaired generated-invoice business dates.
+Its exact SHA-256 is below. The executable was copied to a stable local path
+before execution. This transcript demonstrates authenticated HTTP workflows
+with synthetic local data only; it is not a browser recording, final
+integrated PR-head qualification, hosted isolation, production authorization
+or M2 acceptance.
 
 The independently specified source amounts and report contract are in
 [[file:../project-delivery.org][Project delivery]]. All four scenarios use separate private SQLite servers,
-ordinary first-run owner sessions, no external providers, and no direct SQL.
+ordinary first-run owner sessions, no external providers and no direct SQL.
 The lead is qualified, converted and moved to won through its transition
 route. A repeated conversion is refused; handoff, ticket acceptance,
 progress billing and scope changes use registered application actions.
 
-* Verbatim successful diagnostic stdout
+* Verbatim ordinary-date stdout
 
 Command (exit 0):
 
 #+begin_src sh
-python3 tools/venture-project-server-drill.py --binary build/debug/venture-project-qualified --precise-receipts
+python3 tools/venture-project-server-drill.py --binary build/debug/venture-project-date-qualified
 #+end_src
 
-The timestamp option is significant: the ordinary date-only receipt path
-still fails on this artifact, as shown below. No private server logs or
+No =--precise-receipts= workaround was used. No private server logs or
 bootstrap passwords are attached.
 
 #+begin_example
-Artifact SHA256: b61773271731ccabfc9c43dc74a25087d1fa47fa6336aea9d7d326ec892ff4b3
-Evidence directory: /tmp/venture-project-server-drill-r486hgvv
-Receipt mode: precise UTC timestamps (diagnostic workaround)
+Artifact SHA256: 823a528362bd22c5434cee133ff8c3596139580a98112fae53ddb6b19e9a6ee2
+Evidence directory: /tmp/venture-project-server-drill-kn_k8zf1
+Receipt mode: ordinary date-only
 PASS CRM conversion/won deal -> owned scope/ticket/acceptance -> two T&M invoices; billed40000 cost23500 profit16500 cents; frozen cost, duplicate refusal and source links
 PASS collected cash equals invoices and project billed allocations; AR zero and balance sheet ties
 PASS project profitability, account balances and retained source records survive authenticated server restart
@@ -42,16 +42,17 @@ PASS project profitability, account balances and retained source records survive
 PASS full fixed quote invoice retained at handoff; no duplicate labor billing; billed100000 cost10500 profit89500 cents
 PASS collected cash equals invoices and project billed allocations; AR zero and balance sheet ties
 PASS project profitability, account balances and retained source records survive authenticated server restart
-PASS linked retainer cash25000 -> liability25000 -> releases10000+15000 revenue25000 cents; over-release refused; no invoice/receipt or project billed allocation invented
+PASS existing authenticated link form/picker; retainer cash25000 -> liability25000 -> releases10000+15000 revenue25000 cents; over-release refused; no invoice/receipt or project billed allocation invented
 PASS project profitability, account balances and retained source records survive authenticated server restart
 #+end_example
 
-* Unresolved ordinary receipt boundary
+* Same-day receipt regression: refused before, accepted after
 
-Without =--precise-receipts=, the same artifact and final script fail in the
-fixed-progress scenario (exit 1). A generated invoice stores an issue instant
-later than midnight; a receipt entered using that same calendar date is
-refused by the strict source-event chronology guard:
+On the preceding artifact
+=b61773271731ccabfc9c43dc74a25087d1fa47fa6336aea9d7d326ec892ff4b3=,
+the same default driver failed in fixed progress (exit 1). A generated invoice
+stored an issue instant later than midnight; its ordinary same-calendar-day
+receipt was refused:
 
 #+begin_example
 AssertionError: /api/v1/payment: HTTP 422: {
@@ -61,13 +62,13 @@ AssertionError: /api/v1/payment: HTTP 422: {
 }
 #+end_example
 
-This is a concrete daily-workflow blocker, reported to the root integration
-lane for repair. The diagnostic success above must not be treated as resolving
-it. The driver's default keeps ordinary date-only inputs; final qualification
-must pass without the workaround. Every receipt attempt additionally verifies
-that a prior-calendar-day payment is refused and leaves no payment record.
+The demonstrated artifact repairs generated invoice business dates. All four
+modes now pass with ordinary date-only inputs. Every receipt additionally
+verifies that an earlier-calendar-day payment is refused and leaves no
+payment record. Precise timestamps were used only to diagnose the original
+defect; they are not needed by the successful transcript above.
 
-* Regression and review evidence
+* Retainer surface and review evidence
 
 The pre-action artifact
 =01358a56143b25136b51482eee1fdb9511ac7107945bcc9cc0f2aa84772b711c=
@@ -89,5 +90,12 @@ statutory expense entries. Review checked these distinctions, exact source
 identities, partial payments, duplicate/cap/over-release refusals, private
 process lifetime and complete retained-record restart comparisons. The shared
 accounting driver also passed all opening/trading/close/restore scenarios on
-this artifact after its helper was extended to accept a =name= action
-parameter and detect replacement of the binary during a run.
+the preceding retainer artifact after its helper was extended to accept a
+=name= action parameter and detect replacement of the binary during a run.
+
+The retainer association uses the existing authenticated project page's
+Links panel, not generic record-link CRUD. The driver fetches the real page,
+checks the target-type/search-picker wiring, queries that picker's endpoint,
+submits the actual =POST /links= form and verifies the rendered link and
+retained relationship. This exercises the form and its search data endpoint;
+it is not a claim of automated browser JavaScript interaction.

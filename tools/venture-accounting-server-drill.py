@@ -30,7 +30,7 @@ class Client:
         self.cookies = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPCookieProcessor(self.cookies), RefuseRedirect())
 
-    def request(self, path, values=None, method=None, form=False, expected=None):
+    def request(self, path, values=None, method=None, form=False, expected=None, text=False):
         body = None if values is None else (urllib.parse.urlencode(values).encode() if form else json.dumps(values).encode())
         request = urllib.request.Request(self.origin + path, body, method=method)
         if body is not None:
@@ -49,6 +49,8 @@ class Client:
             assert 200 <= status < 300, f"{path}: HTTP {status}: {content[:1200].decode(errors='replace')}"
         if status in (302, 303):
             return None
+        if text:
+            return content.decode("utf-8")
         result = json.loads(content) if content else None
         return result.get("data", result) if isinstance(result, dict) else result
 
