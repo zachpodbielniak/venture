@@ -126,3 +126,12 @@ second enabled account and refusal of an ambiguous historical upgrade,
 including preservation of enabled state and ciphertext. The regression
 initially accepted the duplicate, demonstrating why a process-local check
 was insufficient.
+
+* Versioned adapter snapshots
+
+An adapter that records a configuration version or caches clients by version
+uses =venture_integration_service_resolve_version()=. The version check and
+decryption use the same row snapshot; a rotation between selection and
+resolution returns a redacted conflict. Resolve again rather than labelling
+new credentials with the earlier version. The unversioned resolver remains
+available for consumers that do not retain a configuration identity.

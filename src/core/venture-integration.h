@@ -72,6 +72,25 @@ VentureIntegrationConnection *venture_integration_service_find(VentureIntegratio
 JsonNode *venture_integration_service_resolve(VentureIntegrationService *self,
 	gint64 organization_id, gint64 connection_id, gboolean allow_disabled, GError **error);
 /**
+ * venture_integration_service_resolve_version:
+ * @self: service
+ * @organization_id: verified organization
+ * @connection_id: exact account binding
+ * @expected_version: positive version of the selected configuration
+ * @allow_disabled: whether a verified historical callback may use a disabled binding
+ * @error: (out) (optional): redacted refusal, including concurrent rotation
+ *
+ * Checks version and decrypts the same row snapshot. Use this when recording
+ * configuration versions or creating version-keyed clients so a concurrent
+ * rotation cannot attach new credentials to an old configuration identity.
+ * Clear settings are a trusted adapter boundary, never presentation data.
+ *
+ * Returns: (transfer full) (nullable): credential object for exactly this version
+ */
+JsonNode *venture_integration_service_resolve_version(VentureIntegrationService *self,
+	gint64 organization_id, gint64 connection_id, gint64 expected_version,
+	gboolean allow_disabled, GError **error);
+/**
  * venture_integration_service_disable:
  * @self: service
  * @organization_id: verified organization

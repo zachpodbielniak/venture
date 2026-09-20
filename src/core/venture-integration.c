@@ -324,9 +324,9 @@ fail:
 	return NULL;
 }
 
-JsonNode *
-venture_integration_service_resolve(VentureIntegrationService *self, gint64 organization_id,
-	gint64 connection_id, gboolean allow_disabled, GError **error)
+static JsonNode *
+resolve_snapshot(VentureIntegrationService *self, gint64 organization_id,
+	gint64 connection_id, gint64 expected_version, gboolean allow_disabled, GError **error)
 {
 	g_autoptr(VentureEntity) entity = NULL;
 	gboolean enabled = FALSE;
@@ -340,10 +340,26 @@ venture_integration_service_resolve(VentureIntegrationService *self, gint64 orga
 	if (!entity) return NULL;
 	if (venture_entity_get_organization_id(entity) != organization_id || venture_entity_is_deleted(entity))
 	{ refuse(error, VENTURE_ERROR_NOT_FOUND, "Integration connection is unavailable"); return NULL; }
+	if (expected_version != 0 && venture_entity_get_version(entity) != expected_version)
+	{ refuse(error, VENTURE_ERROR_CONFLICT, "Integration configuration changed; resolve it again"); return NULL; }
 	g_object_get(entity, "enabled", &enabled, NULL);
 	if (!enabled && !allow_disabled)
 	{ refuse(error, VENTURE_ERROR_CONFIG, "Organization integration is disabled"); return NULL; }
 	return unseal(self, entity, error);
+}
+
+JsonNode *venture_integration_service_resolve(VentureIntegrationService *self, gint64 organization_id,
+	gint64 connection_id, gboolean allow_disabled, GError **error)
+{
+	return resolve_snapshot(self, organization_id, connection_id, 0, allow_disabled, error);
+}
+
+JsonNode *venture_integration_service_resolve_version(VentureIntegrationService *self, gint64 organization_id,
+	gint64 connection_id, gint64 expected_version, gboolean allow_disabled, GError **error)
+{
+	if (expected_version <= 0)
+	{ refuse(error, VENTURE_ERROR_VALIDATION, "An explicit positive configuration version is required"); return NULL; }
+	return resolve_snapshot(self, organization_id, connection_id, expected_version, allow_disabled, error);
 }
 
 gboolean

@@ -107,6 +107,15 @@ test_isolation_rotation(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_nonnull(rotated);
 	g_assert_cmpint(venture_entity_get_version(VENTURE_ENTITY(rotated)), >, version);
+	plain = venture_integration_service_resolve_version(f->service, f->a, id, version, FALSE, &error);
+	g_assert_null(plain);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_clear_error(&error);
+	plain = venture_integration_service_resolve_version(f->service, f->a, id,
+		venture_entity_get_version(VENTURE_ENTITY(rotated)), FALSE, &error);
+	g_assert_no_error(error);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(plain), "secret_key"), ==, "secret-A2");
+	g_clear_pointer(&plain, json_node_unref);
 	plain = venture_integration_service_resolve(f->service, f->a, id, FALSE, &error);
 	g_assert_no_error(error);
 	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(plain), "secret_key"), ==, "secret-A2");
