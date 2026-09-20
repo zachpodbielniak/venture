@@ -29687,28 +29687,28 @@ venture_web_server_new(
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 
 	if (!venture_tenant_service_configure(venture_tenant_service_get(venture_context_get_database(context)),
-	        venture_context_get_config(context), error) ||
-	    !venture_tenant_service_initialize(venture_tenant_service_get(venture_context_get_database(context)), error))
+	        venture_context_get_config(context), error))
 		return NULL;
-
+	g_object_get(venture_context_get_config(context),
+		"hosted-http-requests-per-minute", &rate, "hosted-http-burst", &burst,
+		"hosted-http-concurrency", &concurrency, NULL);
+	if (venture_tenant_service_is_enabled(venture_tenant_service_get(venture_context_get_database(context))) &&
+	    (rate < 1 || rate > 1000000 || burst < 1 || burst > 1000000 || concurrency < 1 || concurrency > 256)) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			"Hosted HTTP rate/burst must be 1..1000000 and concurrency 1..256");
+		return NULL;
+	}
+	/* Refuse invalid limits before initialization durably binds a fresh DB. */
+	if (!venture_tenant_service_initialize(venture_tenant_service_get(venture_context_get_database(context)), error))
+		return NULL;
 	self = g_object_new(VENTURE_TYPE_WEB_SERVER, NULL);
 	self->context = g_object_ref(context);
 	self->auth = venture_auth_new(context);
 	if (venture_tenant_service_is_enabled(venture_tenant_service_get(venture_context_get_database(context)))) {
-		g_object_get(venture_context_get_config(context),
-			"hosted-http-requests-per-minute", &rate, "hosted-http-burst", &burst,
-			"hosted-http-concurrency", &concurrency, NULL);
-		if (rate < 1 || rate > 1000000 || burst < 1 || burst > 1000000 ||
-		    concurrency < 1 || concurrency > 256) {
-			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
-				"Hosted HTTP rate/burst must be 1..1000000 and concurrency 1..256");
-			return NULL;
-		}
 		self->workspace_limiter = htmx_rate_limiter_new((guint)burst, rate / 60.0);
 		self->workspace_http_concurrency = (guint)concurrency;
 		self->workspace_http_retry_after = (guint)MAX((60 + rate - 1) / rate, 1);
 	}
-
 
 	g_object_get(venture_context_get_config(context),
 	             "server-bind-address", &bind_address,

@@ -617,9 +617,40 @@ test_tenant_http_invalid_limits(TenantFixture *f, gconstpointer data)
 		server = venture_web_server_new(context, &error);
 		g_assert_null(server); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
 		g_clear_error(&error);
+		g_object_set(f->config, properties[i], G_MAXINT64, NULL);
+		server = venture_web_server_new(context, &error);
+		g_assert_null(server); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+		g_clear_error(&error);
 		g_object_set(f->config, properties[i], previous, NULL);
 	}
 	g_clear_object(&context); venture_test_remove_tree(state_dir);
+}
+
+static void
+test_tenant_http_invalid_fresh(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureDatabase) database = venture_test_accounting_database(&error);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_TENANT_WORKSPACE);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autofree gchar *state_dir = NULL;
+	g_assert_no_error(error);
+	state_dir = g_dir_make_tmp("venture-admission-fresh-XXXXXX", &error); g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error)); g_assert_no_error(error);
+	g_object_set(config, "state-dir", state_dir, "hosted-enabled", TRUE,
+		"hosted-workspace-id", "b94b25be-7878-48c9-b941-98ca5d0d00d7", "hosted-origin", "https://fresh.example.test",
+		"hosted-http-burst", (gint64)0, NULL);
+	context = venture_context_new(config, database);
+	server = venture_web_server_new(context, &error);
+	g_assert_null(server); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG); g_clear_error(&error);
+	/* A typo must not irreversibly bind a fresh workspace before refusal. */
+	rows = venture_database_find(database, query, &error); g_assert_no_error(error);
+	g_assert_nonnull(rows); g_assert_cmpuint(rows->len, ==, 0);
+	g_clear_object(&context); venture_test_accounting_database_cleanup(database); g_clear_object(&database);
+	venture_test_remove_tree(state_dir);
 }
 
 static gboolean
@@ -782,6 +813,7 @@ main(int argc, char **argv)
 	g_test_add("/tenant/http-admission", TenantFixture, NULL, tenant_setup, test_tenant_http_admission, tenant_teardown);
 	g_test_add("/tenant/http-nested-admission", TenantFixture, GINT_TO_POINTER(1), tenant_setup, test_tenant_http_admission, tenant_teardown);
 	g_test_add("/tenant/http-invalid-limits", TenantFixture, NULL, tenant_setup, test_tenant_http_invalid_limits, tenant_teardown);
+	g_test_add_func("/tenant/http-invalid-fresh", test_tenant_http_invalid_fresh);
 	g_test_add("/tenant/restore-quarantine", TenantFixture, NULL, tenant_setup, test_tenant_restore_quarantine, tenant_teardown);
 	g_test_add("/tenant/member-recovery", TenantFixture, NULL, tenant_setup, test_tenant_member_recovery, tenant_teardown);
 	g_test_add("/tenant/restore-without-oidc", TenantFixture, NULL, tenant_setup, test_tenant_restore_without_oidc, tenant_teardown);
