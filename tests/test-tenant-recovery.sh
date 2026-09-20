@@ -122,7 +122,16 @@ done
 exec 8>"$fixture/host/studio/control/maintenance.lock"
 flock -n 8
 expect_failure "$tool" "${args[@]}" verify "$fixture/complete.gpg"
+# Lifecycle operations keep this exact lock while delegating the snapshot.
+VENTURE_TENANT_MAINTENANCE_FD=8 "$tool" "${args[@]}" verify "$fixture/complete.gpg" > "$fixture/inherited-manifest.json"
+expect_failure "$tool" "${args[@]}" verify "$fixture/complete.gpg"
+exec 7<"$fixture/key"
+expect_failure env VENTURE_TENANT_MAINTENANCE_FD=7 "$tool" "${args[@]}" verify "$fixture/complete.gpg"
+exec 7>&-
 exec 8>&-
+printf '%s\n' "unfinished-maintenance" > "$fixture/host/studio/control/maintenance-container"
+expect_failure "$tool" "${args[@]}" verify "$fixture/complete.gpg"
+rm "$fixture/host/studio/control/maintenance-container"
 cp "$fixture/complete.gpg" "$fixture/tampered.gpg"
 printf X | dd of="$fixture/tampered.gpg" bs=1 seek=80 conv=notrunc status=none
 expect_failure "$tool" "${args[@]}" verify "$fixture/tampered.gpg"

@@ -761,3 +761,11 @@ these test dependencies. The test refuses wrong ownership/workspace/image,
 live processes, unsafe archive entries, bad credentials and nonempty targets,
 and verifies successful content restoration and failure cleanup. It does
 not substitute for a physical PostgreSQL recovery drill.
+
+* Hosted lifecycle boundaries
+
+=test-tenant-lifecycle= checks the local operator boundary with real filesystem
+permissions/locks and controlled container responses. =test-tenant-recovery= also
+checks inherited maintenance-descriptor identity. These cases are separate from
+physical restore, deployment security and capacity qualification. See
+[[file:tenant-operations.org][the lifecycle runbook]].

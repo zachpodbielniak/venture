@@ -108,8 +108,17 @@ then
 	private_file "$tenant_dir/control/maintenance.lock"
 	[[ $(stat -c %h -- "$tenant_dir/control/maintenance.lock") == 1 ]] || fail 'Maintenance lock must not be hard linked'
 fi
-exec 9>"$tenant_dir/control/maintenance.lock"
-flock -n 9 || fail 'Tenant maintenance is already in progress'
+if [[ -n ${VENTURE_TENANT_MAINTENANCE_FD:-} ]]
+then
+	inherited_fd=$VENTURE_TENANT_MAINTENANCE_FD
+	[[ $inherited_fd =~ ^[0-9]+$ && $inherited_fd -ge 3 && $inherited_fd -le 1023 ]] || fail 'Invalid inherited maintenance descriptor'
+	[[ -e /proc/self/fd/$inherited_fd && $(stat -Lc '%d:%i' -- "/proc/self/fd/$inherited_fd") == "$(stat -c '%d:%i' -- "$tenant_dir/control/maintenance.lock")" ]] || fail 'Inherited maintenance descriptor names another file'
+	flock -n "$inherited_fd" || fail 'Tenant maintenance is already in progress'
+else
+	exec 9>"$tenant_dir/control/maintenance.lock"
+	flock -n 9 || fail 'Tenant maintenance is already in progress'
+fi
+[[ ! -e $tenant_dir/control/maintenance-container && ! -L $tenant_dir/control/maintenance-container ]] || fail 'Unfinished platform maintenance must be recovered before a snapshot or restore'
 work=$(mktemp -d "$tenant_dir/control/recovery.XXXXXX")
 trap cleanup EXIT
 trap 'exit 130' INT

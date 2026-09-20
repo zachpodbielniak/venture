@@ -958,3 +958,13 @@ the new file must be owned, mode 600/400, single-link canonical base64 for 32 by
 Update the environment secret, check again, then restart. Retain old keys for old
 backups. A lost commit response requires checking both candidates separately while
 stopped; never blindly retry rotation. See `docs/integration-key-maintenance.org`.
+## Platform workspace lifecycle
+
+`tools/venture-tenantctl` is a local trusted-operator tool, not a venturectl or AI
+action. It provisions isolated stopped workspaces and supports status, stop/start,
+offline state changes, encrypted export/restore, bounded maintenance upgrades and
+retained offboarding. It never provisions Lightsite. Read `docs/tenant-operations.org`
+for private password/key files, immutable workspace identity, maintenance locks,
+restore quarantine, explicit administrator recovery and the distinction between
+offboarding and erasure. Success exits 0; refusals and failures exit 2. Status
+and provisioning return JSON; empty restore targets have no persisted-state result.

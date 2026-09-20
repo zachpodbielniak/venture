@@ -1,0 +1,204 @@
+#+title: Hosted workspace platform operations
+
+* Boundary and prerequisites
+
+=tools/venture-tenantctl= is a local platform-operator utility. It has no HTTP
+endpoint and is not installed as an assistant tool. It requires rootless Podman,
+Python 3.9 or later, locally available immutable application/PostgreSQL 18 images,
+and a private operator root. Business organizations remain inside one workspace;
+customer company rows do not create tenants. No command provisions Lightsite.
+
+Successful commands exit 0; refused operations, invalid input and failed external
+commands exit 2 with a redacted diagnostic on stderr. =status= and =provision=
+return JSON on stdout. An empty restore target reports its registration without
+starting an application or inventing persisted workspace state.
+
+Each workspace receives a separate Podman network, physical PostgreSQL volume,
+unprivileged application database role, private state/configuration directories,
+random integration/session secrets, and an immutable UUID. The application listens
+only on a selected host loopback port. Configure an authenticated operational host,
+encrypted disks and a TLS reverse proxy routing the registered HTTPS origin to that
+port. Preserve the configured origin authority in the backend =Host= header;
+forwarded headers do not grant tenant authority. This tool does not install a certificate, firewall, DNS record, remote backup
+store or disk encryption. A loopback mapping is not an HTTPS deployment by itself.
+
+The application is pinned by image ID. Its root filesystem is read-only, all Linux
+capabilities are dropped, privilege elevation is disabled, and its process count is
+limited to 128. Default application limits are one CPU and 512 MiB, with a 128 MiB
+temporary filesystem; PostgreSQL receives one CPU and 384 MiB, 30 connections and
+32 MiB shared buffers. These are conservative fixture defaults, not measured
+production capacity. The application runs as container UID 0 under rootless Podman,
+which maps to the unprivileged host operator, not host root.
+
+* Provision and start
+
+#+begin_src sh
+tools/venture-tenantctl --root /srv/venture init
+tools/venture-tenantctl --root /srv/venture provision studio \
+  --origin https://studio.example --port 18747 \
+  --image localhost/venture:verified --postgres-image docker.io/library/postgres:18.4 \
+  --password-file /private/studio-initial-password --reason 'Approved workspace creation'
+tools/venture-tenantctl --root /srv/venture start studio --reason 'Verified proxy and onboarding'
+tools/venture-tenantctl --root /srv/venture status studio
+#+end_src
+
+The root must not exist for =init=. Existing tenant slugs are never adopted or
+overwritten. =provision= resolves local images to immutable IDs, preflights their hosted
+maintenance interface without network or business mounts, creates the
+unprivileged role/database, migrates the schema and creates =workspace-admin=
+(or =--admin USERNAME=) through the application's audited bootstrap command.
+Passwords are supplied through a current-user, single-link mode-600/400 file,
+never a command argument. The private temporary bootstrap copy is removed after
+successful account creation. A failed provision preserves its labeled resources,
+registration and private diagnostics for operator investigation; it does not claim
+readiness or destructively retry creation. No server starts automatically.
+
+Registration rejects duplicate workspace UUIDs and public origins on the same host
+under a host registration lock. Global DNS/routing uniqueness across separate
+operator roots remains an infrastructure responsibility. Every operation verifies
+full container IDs, ownership labels, image identity, network and state/config or
+database-volume mounts. Ordinary operators must not bypass these checks with
+manual container starts during a maintenance window.
+
+=--binary= selects the application's absolute path inside the image when it differs
+from =/usr/bin/venture=. The tool disables arbitrary plugins. Tenant administrators
+cannot select images, filesystem paths or database credentials.
+
+* Maintenance and state
+
+#+begin_src sh
+tools/venture-tenantctl --root /srv/venture stop studio --reason 'Planned maintenance'
+tools/venture-tenantctl --root /srv/venture state studio read_only --reason 'Reconciliation window'
+tools/venture-tenantctl --root /srv/venture start studio --reason 'Read-only service resumed'
+#+end_src
+
+State values are =active=, =read_only= and =suspended=. A state change requires a
+stopped application and runs the server's offline tenant-maintenance command.
+The persisted workspace UUID/origin is checked before activation. A restart
+recreates the stopped application container so rotated/restored environment files
+are consumed, then waits up to two minutes for health. A health failure remains a
+failure; it does not certify the workspace ready. Health probes alone do not prove
+business workflow correctness.
+
+The tenant's =control/maintenance.lock= is held through lifecycle changes and
+snapshot operations. A delegated backup inherits that exact locked descriptor,
+verifies its inode and acquires the same flock; a caller cannot name another file
+to bypass exclusion. Database migrations/maintenance run in a separate bounded
+container and its exact created ID is removed even after a command failure.
+The server's database/state process lease additionally excludes a competing
+cooperating application process. A process killed before cleanup leaves a
+maintenance-container marker: subsequent lifecycle and backup operations refuse it.
+Use =recover-maintenance= with a reason to verify and remove that exact owned
+container (or confirm it is already gone). This does not declare the interrupted
+database operation successful or restore a failed upgrade's readiness; inspect
+its outcome before continuing. A marker naming a neighbor's container is refused.
+
+* Export, restore and upgrade
+
+#+begin_src sh
+tools/venture-tenantctl --root /srv/venture export studio \
+  --archive /backups/studio.gpg --key-file /private/backup-key --reason 'Verified recovery snapshot'
+tools/venture-tenantctl --root /srv/recovery provision studio --empty \
+  --workspace-id ORIGINAL-WORKSPACE-UUID --origin https://studio.example --port 18747 \
+  --image localhost/venture:verified --postgres-image docker.io/library/postgres:18.4 \
+  --reason 'Prepare empty recovery target'
+tools/venture-tenantctl --root /srv/recovery restore studio \
+  --archive /backups/studio.gpg --key-file /private/backup-key --reason 'Approved restore'
+#+end_src
+
+Export requires a stopped application and includes the complete database, state,
+attachments and private application configuration. The encrypted archive is a
+platform recovery/portability artifact, not a redacted document for a tenant user.
+Its key stays separate. Read [[file:tenant-recovery.org][the recovery contract]] for cryptographic,
+identity and empty-destination checks. Destination database transport credentials
+remain local. An empty target cannot start until restore completes, its persisted
+identity is verified, and the operator executes =activate-restored= with a reason.
+That command rotates the session secret and invokes offline restore quarantine:
+all restored login/token/invitation/support authority is disabled and the workspace
+is suspended. The integration encryption key is preserved. An old snapshot must
+not resurrect an account or token revoked after it was taken.
+
+Use =recover-admin --username NAME --password-file PRIVATE_FILE --reason REASON=
+to recover one administrator explicitly. A =recovery-review= workspace may start
+only while suspended, providing the retained administrative control surfaces.
+Review restored memberships, OIDC links and integrations, re-enable appropriate
+users, and reissue credentials deliberately. Only an explicit =state active= (or
+=read_only=) after administrator recovery clears this review phase. An interrupted
+quarantine remains =quarantining= and cannot start; retry the activation operation
+after inspecting its failure. Perform financial/reference reconciliation before
+reopening business access. Do not run both the
+original and restored workspace as independent live copies of one identity.
+
+An =upgrade= takes =--image=, =--archive=, =--key-file= and =--reason=. It requires
+a stopped, qualified workspace, creates an authenticated pre-upgrade snapshot while
+holding the same lock, and runs the new image's migrations offline. Only verified
+identity preservation produces a ready-but-stopped replacement. A failure records
+=upgrade-failed= and never starts an old binary against a possibly changed schema.
+Recovery is an explicit restore to a new empty target with the original image;
+there is no promise that a database migration is reversible. This is a bounded
+maintenance strategy, not a rolling or zero-downtime upgrade mechanism.
+
+* Offboarding, holds and evidence
+
+=offboard= stops the workspace, persists suspension and prevents normal start.
+It retains the database, attachments, configuration and archives. =hold on|off=
+records an operator hold with a reason. Neither offboarding nor releasing a hold
+purges data. There is deliberately no implicit deletion on subscription changes.
+Retention expiry, personal-data erasure and final media/key destruction require
+the separate governance workflow; a retained stopped workspace is not an erasure
+claim.
+
+=control/operations.jsonl= records workspace UUID, operator UID, time, operation,
+reason and outcome in a hash-linked local chain. Reasons must not contain secrets
+or personal payloads. This detects accidental alteration; it cannot prevent the
+same host operator from rewriting the entire chain. Forward evidence to separately
+controlled append-only storage for tamper protection and retention. Application
+privileged-maintenance events remain in the tenant database as well.
+
+* Verification status
+
+=tests/test-tenant-lifecycle.c= runs Python behavioral fixtures with real private
+files and advisory locks, replacing container execution. The cases cover foreign
+tenant IDs, wrong mounts/images/networks, private manifest/lock requirements,
+idempotent stop and audit events, duplicate registration, identity mismatch,
+maintenance cleanup, failed-upgrade refusal, restore quarantine, administrator
+recovery gates and FIFO password refusal. =test-tenant-recovery= exercises the
+inherited lock using real GnuPG and archives.
+
+A real rootless Podman/PostgreSQL 18.4 check provisioned two empty targets with
+distinct workspace UUIDs, networks and physical database volumes, verified both
+application roles lack privileged database capabilities, and refused activation
+of both unrestored targets. The synthetic containers/volumes/networks were removed
+after the check. The built hosted snapshot also passed administrator bootstrap/status, suspension/
+reactivation, healthy start/stop and encrypted export, followed by independent
+restore, container replacement through a synthetic no-schema-change upgrade, and
+retained offboarding. Restore-quarantine hardening was added after that walkthrough
+and requires its own new artifact demonstration. Full combined-revision and
+neighbor availability qualification remain pending. Do not read
+these implementation tests as hosted-launch approval.
+
+* Repeatable physical lifecycle drill
+
+Run only with locally built, qualified DEBUG images supporting the hosted
+maintenance interface. The driver creates new private roots and physical database
+volumes; it accepts no existing workspace path. It keeps its private archives and
+credentials for investigation and removes only its registered, label-verified
+containers, networks and volumes.
+
+#+begin_src sh
+python3 tools/venture-tenant-lifecycle-drill.py \
+  --image localhost/venture:qualified-debug \
+  --upgrade-image localhost/venture:qualified-candidate \
+  --application-revision VERIFIED-SOURCE-REVISION
+#+end_src
+
+The candidate must have a distinct immutable image ID. A candidate whose only
+change is an image label proves container replacement and migration orchestration,
+not compatibility with a new schema. Record that limitation with its transcript.
+The drill checks initial bootstrap/start/export, independent physical restore,
+suspended credential quarantine, preserved integration key, rotated session key,
+refused premature activation, fresh administrator recovery, suspended startup,
+explicit reactivation, backed-up upgrade and retained offboarding. HTTP credential
+revocation and mandatory-MFA recovery are separately asserted by the hosted service
+tests. This drill does not substitute for financial tie-outs, TLS qualification,
+neighbor latency measurements or the final combined-revision gate.
