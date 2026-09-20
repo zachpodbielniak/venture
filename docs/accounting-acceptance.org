@@ -1,0 +1,129 @@
+#+title: Synthetic accounting acceptance scenarios
+#+description: Reproducible opening, trading, close and recovery evidence
+
+* Scope
+
+=test-accounting-acceptance= composes the existing cutover, settlement,
+payables, banking, reporting, close and backup services. All companies,
+amounts and provider-independent bank rows are synthetic. The scenarios
+exercise the same repository and services used by the application; they do
+not simulate a deployment, browser onboarding, external bank feed or an
+accountant's independent approval.
+
+The opening-import and trading scenarios have separate empty databases.
+Together they cover brought-forward books and a current trading period;
+they are not evidence that one customer migration has been reconciled.
+Currency arithmetic in this pack is USD integer cents. The wider cutover,
+settlement and statement suites cover foreign currency and credit/refund
+cases; their existence does not imply those cases were exercised in this
+pack.
+
+* Opening import and settlement
+
+=/accounting-acceptance/opening-import= supplies a structured synthetic
+QuickBooks-format opening payload to =VentureCutoverService=. The format
+selection exercises the existing importer, without contacting QuickBooks.
+The 1 January 2026 opening balances are independently specified:
+
+| Control | Debit | Credit |
+|---------+-------+--------|
+| Cash | 500.00 | |
+| Accounts receivable | 105.00 | |
+| Accounts payable | | 50.00 |
+| Opening equity | | 555.00 |
+
+The outstanding invoice includes 100.00 net and 5.00 historical tax. Import
+must bring forward its 105.00 receivable without recognizing that old sale
+or its tax again in January. The test checks income, sales-tax control and
+opening clearing are zero, asks the cutover service to reconcile, and
+checks its trial-balance evidence. Repeating the payload must leave one
+invoice and one bill.
+
+A 105.00 receipt on 5 January and a 50.00 vendor payment on 6 January settle
+those imported documents through their ordinary services. Cash becomes
+555.00, AR and AP become zero, January profit remains zero, and the balance
+sheet difference is zero. Historical export and restore must preserve
+those statements and every archived public field and relationship after
+identity remapping.
+
+* Trading, bank reconciliation, close and correction
+
+=/accounting-acceptance/full-cycle= generates the fiscal calendar and
+records an invoice for 100.00 plus 5.00 tax on 10 January, a partial 40.00
+receipt on 20 January, a 50.00 vendor bill on 12 January, and its 50.00
+payment on 22 January. It also calls the existing dated tax-allocation
+correction service. Correctly allocated tax must not be posted twice.
+
+The bank CSV contains the two actual cash movements, with durable
+synthetic external identities. Closing a statement while those rows are
+unmatched must fail. The operator then explicitly matches each row to its
+existing receipt/payment; this does not depend on heuristic automatic
+matching. Reconciliation must report a zero difference.
+
+| January result | USD |
+|----------------+-----|
+| Revenue | 100.00 |
+| Expenses | 50.00 |
+| Profit | 50.00 |
+| Cash | -10.00 |
+| Outstanding receivable | 65.00 |
+| Outstanding payable | 0.00 |
+| Total assets | 55.00 |
+| Sales-tax liability | 5.00 |
+| Balance-sheet difference | 0.00 |
+
+Negative cash is an intentional synthetic opening assumption: this trading
+fixture begins with zero cash and is independent of the funded opening
+fixture. It is not silently filled with an unexplained opening balance.
+
+The close service checks the subledger tie-out, completes its checklist,
+records distinct preparer and reviewer signatures, and closes January.
+The close pack contains the trial balance. A backdated receipt is refused
+at the actual posting boundary.
+
+An owner then reopens the period. An explicit balanced journal reclassifies
+5.00 from account 6900 to 6400, preserving the original bill, payment and
+net profit. A fresh check alone must not reuse the previous signatures:
+completion is refused until both preparer and reviewer sign again. The
+corrected period is closed and exported. Restore preserves both the
+historical evidence and the corrected statements; the source organization's
+cash and receivable remain unchanged.
+
+* Failure and retry
+
+=/accounting-acceptance/rollback-retry= injects a failure at the customer
+credit save while collecting a 40.00 invoice. The failed transaction must
+leave no receipt and no additional journal. After removing the injected
+failure, a freshly constructed retry creates exactly one receipt and the
+three linked receipt/credit/allocation journals. AR becomes zero and cash
+becomes 40.00. Reusing the failed mutable record is intentionally avoided.
+
+* Running the evidence
+
+#+begin_src sh
+make DEBUG=1
+make DEBUG=1 test-one T=test-accounting-acceptance
+#+end_src
+
+To run the same scenarios against a dedicated PostgreSQL test database,
+set =VENTURE_TEST_ACCOUNTING_POSTGRES_URI= to its connection URI before
+running the test command. The common accounting fixture creates a unique
+schema per scenario and drops it after a successful run. A failed run
+retains its schema as evidence. Use a disposable test database and a role
+allowed to create schemas; do not use production or personal-data stores.
+Keep credentials outside shell history and published logs.
+
+The archive helper compares complete public field values after ID/UUID
+remapping, exact record counts, ledger balances and invoice/bill balances.
+This is the existing version 4 accounting archive, not a tenant or complete
+installation backup: attachments, credentials and other excluded resources
+remain outside its contract. See [[file:backup.org][historical accounting recovery]].
+
+* Readiness evidence still required
+
+Passing this pack demonstrates these executable scenarios on the backend
+actually used. It does not establish M1 controlled parallel-use readiness,
+M2 replacement readiness, independent accounting review, PostgreSQL coverage
+unless separately run, or hosted tenant recovery. Those decisions require a
+recorded deployment exercise, source-to-destination reconciliations and
+resolution of any remaining workflow or infrastructure gaps.
