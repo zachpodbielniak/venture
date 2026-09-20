@@ -79,13 +79,14 @@ fixture. It is not silently filled with an unexplained opening balance.
 The close service checks the subledger tie-out, completes its checklist,
 records distinct preparer and reviewer signatures, and closes January.
 The close pack contains the trial balance. A backdated receipt is refused
-at the actual posting boundary.
+with =VENTURE_ERROR_CONFLICT= at the actual posting boundary.
 
 An owner then reopens the period. An explicit balanced journal reclassifies
 5.00 from account 6900 to 6400, preserving the original bill, payment and
 net profit. A fresh check alone must not reuse the previous signatures:
-completion is refused until both preparer and reviewer sign again. The
-corrected period is closed and exported. Restore preserves both the
+completion returns =VENTURE_ERROR_VALIDATION= until both preparer and
+reviewer sign again. The corrected period is closed and exported. Restore
+preserves both the
 historical evidence and the corrected statements; the source organization's
 cash and receivable remain unchanged.
 

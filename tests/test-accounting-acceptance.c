@@ -242,7 +242,7 @@ finish_cycle(Fixture *f, const VentureActor *actor)
 	money(VENTURE_ENTITY(forbidden), "date", "2026-01-30");
 	money(VENTURE_ENTITY(forbidden), "amount", "1 USD");
 	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(forbidden), actor, &error));
-	g_assert_nonnull(error);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
 	g_clear_error(&error);
 	/* A controller corrects expense classification by an explicit balanced
 	 * journal after reopening, preserving the original bill and its payment. */
@@ -279,7 +279,7 @@ finish_cycle(Fixture *f, const VentureActor *actor)
 	g_assert_true(venture_close_service_run_checks(venture_close_service_get(f->db), workspace, actor, &error));
 	g_assert_no_error(error);
 	g_assert_false(venture_close_service_complete(venture_close_service_get(f->db), workspace, actor, &error));
-	g_assert_nonnull(error);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 	g_clear_error(&error);
 	g_assert_true(venture_close_service_sign(venture_close_service_get(f->db), workspace, "preparer", actor, &error));
 	g_assert_true(venture_close_service_sign(venture_close_service_get(f->db), workspace, "reviewer", &reviewing, &error));
