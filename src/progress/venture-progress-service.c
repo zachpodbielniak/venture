@@ -289,6 +289,9 @@ venture_progress_service_invoice_impl(VentureProgressService *self, VentureQuote
 		"percent", percent, "amount", slice, "billed-at", now, NULL);
 	if (!save_owned(self, VENTURE_ENTITY(billing), actor, error))
 		goto fail;
+	if (!venture_project_service_record_progress(venture_project_service_get(self->database),
+		VENTURE_ENTITY(billing), actor, error))
+		goto fail;
 	if (!venture_database_commit(self->database, error))
 		goto fail;
 	return VENTURE_ENTITY(g_steal_pointer(&invoice));

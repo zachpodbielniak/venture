@@ -3,6 +3,9 @@
 
 * Projects
 
+For accepted sales scope, ticket planning, acceptance and change orders, use
+the [[file:project-delivery.org][sales-to-delivery workflow]].
+
 The =projects= module requires =invoicing= and =receivables=. A
 =client_project= is a contract for a customer and optional venture. Staff
 =project_rate= rows hold billing and cost rates. Approved =project_time=
@@ -12,7 +15,7 @@ allocation that prevents double billing.
 
 #+begin_src sh
 venturectl create client_project customer_id=1 name=Website currency=USD billing_kind=time
-venturectl create project_rate project_id=1 role=engineer 'billing_rate=150 USD' 'cost_rate=80 USD' 'cost_rate=80 USD'
+venturectl create project_rate project_id=1 role=engineer 'billing_rate=150 USD' 'cost_rate=80 USD'
 #+end_src
 
 =venture_project_service_approve_time()= computes the billable amount from the

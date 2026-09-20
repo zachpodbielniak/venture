@@ -132,3 +132,5 @@ Two binaries, both statically linked against every vendored dependency: =venture
 - [[file:integrations.org][Organization integration credentials]] — encrypted provider bindings, rotation and disconnect
 
 - [[file:accounting-acceptance.org][Accounting acceptance]] — synthetic opening balances through reconciliation, close/correction and restore
+
+- [[file:project-delivery.org][Sales to delivery]] — retained scope, tickets, acceptance and invoicing

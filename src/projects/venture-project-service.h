@@ -92,5 +92,21 @@ gboolean venture_projects_check_write(VentureDatabase *database, VentureEntity *
  * CLI and staged assistant surfaces. Called once by registry initialization.
  */
 void venture_projects_actions_register(VentureDatabase *database);
+/**
+ * venture_project_service_record_progress:
+ * @self: project service for the same database
+ * @billing: persisted progress_billing identity, reloaded before use
+ * @actor: (nullable): audit attribution
+ * @error: (out) (optional): allocation failure
+ *
+ * Associates a progress invoice with its retained project scope, when one
+ * exists. Idempotent by the persisted progress billing identity. The progress
+ * service calls this before its transaction commits; handoff also uses it to
+ * associate previously issued progress invoices without issuing another one.
+ *
+ * Returns: TRUE on success, including a quote with no project scope
+ */
+gboolean venture_project_service_record_progress(VentureProjectService *self,
+	VentureEntity *billing, const VentureActor *actor, GError **error);
 G_END_DECLS
 #endif

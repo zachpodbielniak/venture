@@ -1831,6 +1831,18 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/client_project/1/actions/bill", NULL, "{\"date\":\"2026-01-12\"}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
+	/* Delivery actions use the same authenticated metadata-driven route. */
+	{
+		const gchar *paths[] = {
+			"/api/v1/quote/1/actions/handoff", "/api/v1/deal/1/actions/handoff",
+			"/api/v1/client_project/1/actions/plan_work", "/api/v1/client_project/1/actions/manage",
+			"/api/v1/client_project/1/actions/change_scope", "/api/v1/project_deliverable/1/actions/accept",
+			"/api/v1/project_deliverable/1/actions/bill", "/api/v1/project_deliverable/1/actions/link_invoice"
+		};
+		for (i = 0; i < G_N_ELEMENTS(paths); i++)
+			g_assert_cmpuint(server_fixture_request(fixture, "POST", paths[i], NULL, "{}", NULL, NULL),
+				==, SOUP_STATUS_UNAUTHORIZED);
+	}
 
 }
 

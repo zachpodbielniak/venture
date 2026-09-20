@@ -186,6 +186,7 @@ venture_projects_check_write(VentureDatabase *database, VentureEntity *record, g
 	g_autoptr(VentureEntity) previous = NULL;
 	VentureProjectService *self;
 	gboolean billed;
+	if (!delivery_check(venture_project_service_get(database), record, removal, error)) return FALSE;
 	if (!removal || !project_type(record)) return TRUE;
 	if (G_TYPE_CHECK_INSTANCE_TYPE(record, VENTURE_TYPE_PROJECT_BILLING))
 		return refuse(error, "project billing evidence is retained");
@@ -294,6 +295,7 @@ project_margin_report(VentureContext *context, VentureDateRange *period, JsonObj
 		g_autoptr(GPtrArray) billings = project_rows(db, VENTURE_TYPE_PROJECT_BILLING, org, project_id, error);
 		g_autoptr(GPtrArray) times = NULL;
 		g_autoptr(GPtrArray) costs = NULL;
+		g_autoptr(GPtrArray) deliveries = NULL;
 		g_autoptr(GHashTable) billed_sources = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 		g_autoptr(GString) sources = g_string_new(NULL);
 		g_autoptr(VentureMoney) billed = NULL;
@@ -310,6 +312,8 @@ project_margin_report(VentureContext *context, VentureDateRange *period, JsonObj
 		if (times == NULL) return NULL;
 		costs = project_rows(db, VENTURE_TYPE_PROJECT_COST, org, project_id, error);
 		if (costs == NULL) return NULL;
+		deliveries = project_rows(db, VENTURE_TYPE_PROJECT_DELIVERABLE, org, project_id, error);
+		if (deliveries == NULL) return NULL;
 		g_object_get(project, "currency", &currency, "name", &name, "budget", &budget, NULL);
 		if (currency == NULL || currency[0] == '\0')
 		{
@@ -367,10 +371,31 @@ project_margin_report(VentureContext *context, VentureDateRange *period, JsonObj
 				if (cost == NULL) unknown++;
 				else if (!project_add(&actual, cost, error)) return NULL;
 				key = g_strdup_printf("%s:%" G_GINT64_FORMAT, venture_entity_get_entity_name(row), venture_entity_get_id(row));
-				if ((kind == 0 || flag(row, "billable")) && !g_hash_table_contains(billed_sources, key) &&
+				if (number(project, "quote-id") == 0 && (kind == 0 || flag(row, "billable")) && !g_hash_table_contains(billed_sources, key) &&
 					!project_add(&unbilled, amount, error)) return NULL;
 				project_source(sources, row);
 			}
+		}
+		for (j = 0; j < deliveries->len; j++)
+		{
+			VentureEntity *row = g_ptr_array_index(deliveries, j);
+			g_autoptr(GDateTime) accepted = NULL;
+			g_autoptr(VentureMoney) amount = NULL;
+			g_autofree gchar *scope_key = g_strdup_printf("project_scope:%" G_GINT64_FORMAT, number(row, "scope-id"));
+			gboolean invoiced = g_hash_table_contains(billed_sources, scope_key);
+			g_object_get(row, "accepted-at", &accepted, "amount", &amount, NULL);
+			if (accepted == NULL || !project_in_period(row, "accepted-at", period)) continue;
+			if (number(row, "invoice-id") > 0)
+			{
+				g_autoptr(VentureEntity) invoice = venture_database_get(db, VENTURE_TYPE_INVOICE, number(row, "invoice-id"), error);
+				g_autoptr(GDateTime) issued = NULL;
+				if (invoice == NULL) return NULL;
+				g_object_get(invoice, "issued-at", &issued, NULL);
+				invoiced = period == NULL || (issued != NULL && (venture_date_range_get_end(period) == NULL ||
+					g_date_time_compare(issued, venture_date_range_get_end(period)) < 0));
+			}
+			if (!invoiced && !project_add(&unbilled, amount, error)) return NULL;
+			project_source(sources, row);
 		}
 		if (unknown == 0)
 		{
@@ -438,6 +463,7 @@ venture_projects_actions_register(VentureDatabase *database)
 		{ "client_project", "bill", "Invoice approved work", "Issue an invoice for approved unbilled time and billable costs", project_bill_invoke, TRUE }
 	};
 	guint i;
+	delivery_register(self);
 	for (i = 0; i < G_N_ELEMENTS(actions); i++)
 	{
 		g_autoptr(GError) error = NULL;

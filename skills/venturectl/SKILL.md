@@ -826,3 +826,12 @@ is created in the same transaction. A verified CRM relation is required.
 External source/ID pairs provide replay identity for adapters; changed
 payloads conflict rather than adding duplicate history. `report calls` counts
 historical calls once; `activity_churn` remains the existing financial metric.
+Sales handoff uses `act quote ID handoff` or `act deal ID handoff` with name,
+owner and scope. `client_project` actions `plan_work`, `change_scope` and
+`manage` retain agreement and delivery decisions. `project_deliverable`
+actions `accept` and `bill` require finished work and retained acceptance.
+Inspect the generated schemas first. Request keys deduplicate planned work;
+replaying accepted billing returns its invoice. Fixed-price projects invoice
+accepted slices through progress billing; their approved labour is cost
+evidence, not a second time-and-materials charge. Full-billed quotes already
+have an invoice. Generic writes cannot replace or remove delivery evidence.

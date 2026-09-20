@@ -564,7 +564,8 @@ static const gchar *const projects_reports[] = { "project_margin", NULL };
 static GType (*const projects_types[]) (void) = {
 	venture_client_project_get_type, venture_project_rate_get_type,
 	venture_project_time_get_type, venture_project_cost_get_type,
-	venture_project_billing_get_type, NULL
+	venture_project_billing_get_type, venture_project_scope_get_type,
+	venture_project_deliverable_get_type, NULL
 };
 static const gchar *const billing_reports[] = { "mrr", "churn", "subscriptions_due", NULL };
 static GType (*const billing_types[]) (void) = {

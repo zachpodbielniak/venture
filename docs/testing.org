@@ -641,3 +641,12 @@ inputs and escaped transcripts. All pass on SQLite and the isolated
 PostgreSQL fixture; standalone file-upgrade coverage remains SQLite.
 =test-desk= passes 16 cases and =test-migrations= passes seven including its
 optional PostgreSQL check through migration 490. See [[file:activities.org][the call contract]].
+* Sales to delivery acceptance
+
+=test-project-delivery= has eleven SQLite and PostgreSQL scenarios covering
+accepted-quote and won-deal handoff, replay conflicts, ordinary-ticket work,
+acceptance, project and quote invoicing, association of an existing invoice,
+additive scope, full-billing history, atomic rollback/retry, module boundaries,
+revoked membership and stale staged decisions. The related project, progress,
+module and migration suites exercise their existing contracts too. See
+[[file:project-delivery.org][the operator workflow and financial date semantics]].

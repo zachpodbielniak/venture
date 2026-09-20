@@ -8,11 +8,15 @@ struct _VentureProjectService
 	VentureDatabase *database;
 	VentureEntity *writing;
 	VentureEntity *approving;
+	VentureEntity *delivery_writing;
 };
 G_DEFINE_FINAL_TYPE(VentureProjectService, venture_project_service, G_TYPE_OBJECT)
 
 static gboolean project_validate(VentureDatabase *database, VentureEntity *record,
 	VentureEntity *previous, gpointer user_data, GError **error);
+static gboolean delivery_check(VentureProjectService *self, VentureEntity *record,
+	gboolean removal, GError **error);
+static void delivery_register(VentureProjectService *self);
 
 static gboolean
 refuse(GError **error, const gchar *message)
@@ -22,9 +26,18 @@ refuse(GError **error, const gchar *message)
 }
 
 static void
+project_finalize(GObject *object)
+{
+	VentureProjectService *self = VENTURE_PROJECT_SERVICE(object);
+	if (self->database != NULL)
+		g_object_remove_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
+	G_OBJECT_CLASS(venture_project_service_parent_class)->finalize(object);
+}
+
+static void
 venture_project_service_class_init(VentureProjectServiceClass *klass)
 {
-	(void)klass;
+	G_OBJECT_CLASS(klass)->finalize = project_finalize;
 }
 
 static void
@@ -43,6 +56,7 @@ venture_project_service_get(VentureDatabase *database)
 	{
 		self = g_object_new(VENTURE_TYPE_PROJECT_SERVICE, NULL);
 		self->database = database;
+		g_object_add_weak_pointer(G_OBJECT(database), (gpointer *)&self->database);
 		venture_database_add_save_validator(database, VENTURE_TYPE_ENTITY, project_validate, self, NULL);
 		g_object_set_data_full(G_OBJECT(database), "venture-project-service", self, g_object_unref);
 	}
@@ -78,6 +92,8 @@ flag(VentureEntity *record, const gchar *field)
 gboolean
 venture_project_service_save(VentureProjectService *self, VentureEntity *record, const VentureActor *actor, GError **error)
 {
+	g_return_val_if_fail(VENTURE_IS_PROJECT_SERVICE(self), FALSE);
+	if (self->database == NULL) return refuse(error, "database is unavailable");
 	return venture_database_save(self->database, record, actor, error);
 }
 
@@ -88,6 +104,7 @@ venture_project_service_approve_time(VentureProjectService *self, VentureEntity 
 	g_autoptr(VentureEntity) previous = NULL;
 	gboolean ok = FALSE;
 	g_return_val_if_fail(VENTURE_IS_PROJECT_SERVICE(self), FALSE);
+	if (self->database == NULL) return refuse(error, "database is unavailable");
 	if (!G_TYPE_CHECK_INSTANCE_TYPE(time, VENTURE_TYPE_PROJECT_TIME))
 		return refuse(error, "approval requires a project time record");
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "client_project") == G_TYPE_INVALID)
@@ -149,6 +166,11 @@ venture_project_service_bill_impl(VentureProjectService *self, gint64 project_id
 	if (!venture_database_begin(self->database, error)) return NULL;
 	project = venture_database_get(self->database, VENTURE_TYPE_CLIENT_PROJECT, project_id, error);
 	if (project == NULL) goto fail;
+	if (number(project, "quote-id") > 0)
+	{
+		refuse(error, "fixed-price projects bill accepted delivery; their time and costs are cost evidence only");
+		goto fail;
+	}
 	org = venture_entity_get_organization_id(project);
 	g_object_get(project, "customer-id", &customer, "currency", &currency, NULL);
 	tq = venture_query_new(VENTURE_TYPE_PROJECT_TIME);
@@ -309,6 +331,7 @@ venture_projects_save_hook(VentureDatabase *database, VentureEntity *record, con
 }
 
 #include "venture-project-profitability.inc"
+#include "venture-project-delivery.inc"
 
 void
 venture_projects_register_reports(VentureReportRegistry *registry)
