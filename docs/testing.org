@@ -940,7 +940,7 @@ future”: today's date encoding can be ahead of the UTC clock. Settlement
 now makes an exception for exactly today's calendar date while retaining
 strict source chronology and refusing future instants/tomorrow.
 
-All eight progress/retainer tests pass on SQLite and PostgreSQL. Both
+All ten progress/retainer tests pass on SQLite and PostgreSQL. Both
 calendar cases (progress and full quote handoff) also pass when separately
 launched in =Pacific/Kiritimati=. The four authenticated project scenarios
 pass without the former precise-receipt diagnostic workaround. Retainer

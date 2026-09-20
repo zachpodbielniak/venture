@@ -91,9 +91,7 @@ venture_document_service_get(VentureDatabase *database)
 }
 
 /* One bounded candidate set: the rows whose stored path could be @path
- * once canonicalised. The exact match is the indexed fast path for every
- * row the filing service wrote; the LIKE superset on the basename catches
- * legacy rows stored before canonicalisation, the same way the mail sync
+ * once canonicalised, narrowed by basename the same way the mail sync
  * narrows by address before comparing normalised forms. Loading the whole
  * table here made every filed message and every attachment read grow with
  * the corpus. */
@@ -131,8 +129,10 @@ static gboolean attachment_owner(VentureDocumentService *self, VentureEntity *do
 {
 	g_autofree gchar *basename = g_path_get_basename(path);
 	g_autofree gchar *pattern = g_strdup_printf("%%%s%%", basename);
-	return attachment_owner_conflict(self, document, path, new_claim, VENTURE_FILTER_OP_EQ, path, error)
-		&& attachment_owner_conflict(self, document, path, new_claim, VENTURE_FILTER_OP_LIKE, pattern, error);
+	/* The basename superset already contains the canonical path itself, so
+	 * one query covers both the rows the filing service wrote and legacy
+	 * rows stored before canonicalisation. */
+	return attachment_owner_conflict(self, document, path, new_claim, VENTURE_FILTER_OP_LIKE, pattern, error);
 }
 static gboolean document_path_validate(VentureDatabase *database, VentureEntity *row, VentureEntity *previous,
 	gpointer data, GError **error)

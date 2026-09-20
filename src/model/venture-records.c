@@ -2734,10 +2734,8 @@ static const VentureFieldDecl venture_document_fields[] = {
 	VENTURE_FIELD("kind", "Kind",
 	              "Receipt, contract, licence, artwork, manuscript",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
-	/* Indexed because attachment ownership is resolved by exact path on
-	 * every filed message and every attachment read. */
 	VENTURE_FIELD("path", "Path", "Where it lives on disk",
-	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("url", "URL", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("mime-type", "Type", NULL, VENTURE_FIELD_KIND_STRING,

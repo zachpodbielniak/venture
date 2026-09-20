@@ -589,7 +589,7 @@ run_schedule(VentureRecurringService *self, VentureEntity *schedule, GDateTime *
 	frequency = choice(schedule, "frequency");
 	if (start == NULL)
 		return refuse(error, "A schedule needs a start date") ? -1 : -1;
-	local_as_of = g_date_time_to_timezone(as_of, zone ? zone : g_date_time_get_timezone(start));
+	local_as_of = g_date_time_to_timezone(as_of, g_date_time_get_timezone(start));
 	if (end != NULL)
 	{
 		GDateTime *local_end = g_date_time_to_timezone(end, g_date_time_get_timezone(start));
