@@ -225,6 +225,7 @@ venture_progress_service_invoice_impl(VentureProgressService *self, VentureQuote
 	g_autoptr(VentureInvoiceLine) line = NULL;
 	g_autoptr(VentureProgressBilling) billing = NULL;
 	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GDateTime) issue_date = NULL;
 	g_autofree gchar *number = NULL;
 	g_autofree gchar *quote_number = NULL;
 	gint64 org, company;
@@ -279,8 +280,13 @@ venture_progress_service_invoice_impl(VentureProgressService *self, VentureQuote
 	if (!venture_database_save(self->database, VENTURE_ENTITY(line), actor, error))
 		goto fail;
 	now = venture_time_now();
+	/* Business dates match date-picker receipts; creation/billing retain
+	 * precise timestamps separately from the invoice's accounting date. */
+	issue_date = venture_time_from_string("today", error);
+	if (issue_date == NULL)
+		goto fail;
 	if (!venture_settlement_service_transition(venture_settlement_service_get(self->database),
-		invoice, "sent", now, actor, error))
+		invoice, "sent", issue_date, actor, error))
 		goto fail;
 	billing = venture_progress_billing_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(billing), org);

@@ -923,3 +923,21 @@ and generic-write refusal. The original five cases pass in a disposable
 PostgreSQL schema; the expanded six-case PostgreSQL run is recorded with
 its subsequent verification checkpoint. Actual authenticated server evidence
 is separate from these service/action tests.
+
+* Generated invoice calendar dates (epic #125)
+
+The authenticated project walkthrough first refused an ordinary same-day
+receipt because a generated progress invoice was issued at a precise
+instant. The regression =/progress/calendar-progress= failed on the issue
+date comparison before normalization. Normalization alone then failed under
+=TZ=Pacific/Kiritimati= with “A financial event cannot be dated in the
+future”: today's date encoding can be ahead of the UTC clock. Settlement
+now makes an exception for exactly today's calendar date while retaining
+strict source chronology and refusing future instants/tomorrow.
+
+All eight progress/retainer tests pass on SQLite and PostgreSQL. Both
+calendar cases (progress and full quote handoff) also pass when separately
+launched in =Pacific/Kiritimati=. The four authenticated project scenarios
+pass without the former precise-receipt diagnostic workaround. Retainer
+finance authority, revocation and module-off cases also passed in the
+expanded six-case PostgreSQL run before these two calendar cases were added.

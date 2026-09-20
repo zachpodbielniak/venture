@@ -426,17 +426,22 @@ handoff(VentureQuoteService *self, VentureEntity *q, GDateTime *now, const Ventu
 	g_autofree gchar *invoice_number = NULL;
 	g_autofree gchar *terms = NULL;
 	g_autoptr(GDateTime) due = NULL;
+	g_autoptr(GDateTime) issue_date = NULL;
 	gint64 org = venture_entity_get_organization_id(q);
 	guint i;
 	g_object_get(q, "billing-mode", &mode, NULL);
 	if (g_strcmp0(mode, "progress") == 0)
 		return TRUE;
+	/* The quote acceptance is an instant; the invoice is issued for a
+	 * calendar day so an ordinary same-day receipt is not backdated. */
+	issue_date = venture_time_from_string("today", error);
+	if (issue_date == NULL) return FALSE;
 	venture_entity_set_organization_id(invoice, org);
 	g_object_get(q, "number", &number, "terms", &terms, "valid-until", &due, NULL);
 	invoice_number = g_strdup_printf("QUOTE-%s", number);
 	g_object_set(invoice, "number", invoice_number, "company-id", integer(q, "company-id"),
 		"contact-id", integer(q, "contact-id"), "venture-id", integer(q, "venture-id"),
-		"issued-at", now, "terms", terms, NULL);
+		"issued-at", issue_date, "terms", terms, NULL);
 	if (!venture_database_save(self->database, invoice, actor, error)) return FALSE;
 	lines = find(self, VENTURE_TYPE_QUOTE_LINE, org, "quote-id", venture_entity_get_id(q), error);
 	if (lines == NULL) return FALSE;
@@ -455,7 +460,7 @@ handoff(VentureQuoteService *self, VentureEntity *q, GDateTime *now, const Ventu
 		if (!venture_database_save(self->database, r, actor, error)) return FALSE;
 	}
 	if (!venture_settlement_service_transition(venture_settlement_service_get(self->database),
-		VENTURE_INVOICE(invoice), "sent", now, actor, error)) return FALSE;
+		VENTURE_INVOICE(invoice), "sent", issue_date, actor, error)) return FALSE;
 	if (integer(q, "deal-id") != 0)
 	{
 		g_autoptr(VentureEntity) deal = get(self, VENTURE_TYPE_DEAL, org, integer(q, "deal-id"), error);

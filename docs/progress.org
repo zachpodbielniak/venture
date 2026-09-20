@@ -32,3 +32,14 @@ refused and leaves the journal and remaining balance unchanged. Do not
 record the same cash again as an ordinary invoice receipt. Linking the
 retainer to a project retains traceability, but invoice-billed project
 margin does not count this earned ledger income as a project invoice.
+
+* Invoice dates and same-day receipts
+
+Generated progress invoices and full invoices handed off from accepted
+quotes use today's calendar date, encoded as midnight UTC like date-picker
+input. Quote acceptance, record creation, audit and progress-billing activity
+retain their precise timestamps. A same-day manual receipt is therefore
+valid; a previous-day receipt remains forbidden. Explicit future timestamps
+and tomorrow's date are refused. In a timezone east of UTC, today's calendar
+date is still allowed when its encoded UTC midnight is later than the
+current instant. Existing historical issue timestamps are not rewritten.

@@ -79,7 +79,7 @@ teardown(Fixture *f, gconstpointer data)
 }
 
 static VentureEntity *
-accepted_quote(Fixture *f)
+accepted_quote_mode(Fixture *f, const gchar *mode)
 {
 	g_autoptr(VentureEntity) quote = VENTURE_ENTITY(venture_quote_new());
 	g_autoptr(VentureEntity) line = VENTURE_ENTITY(venture_quote_line_new());
@@ -89,7 +89,7 @@ accepted_quote(Fixture *f)
 	actor_init(&actor);
 	venture_entity_set_organization_id(quote, f->org);
 	g_object_set(quote, "number", "Q-1", "company-id", f->company, "currency", "USD",
-		"billing-mode", "progress", NULL);
+		"billing-mode", mode, NULL);
 	save(f, quote);
 	venture_entity_set_organization_id(line, f->org);
 	g_object_set(line, "quote-id", venture_entity_get_id(quote), "description", "Contract",
@@ -118,6 +118,12 @@ accepted_quote(Fixture *f)
 		action, "manual", NULL, &actor, &error));
 	g_assert_no_error(error);
 	return venture_database_get(f->db, VENTURE_TYPE_QUOTE, venture_entity_get_id(quote), NULL);
+}
+
+static VentureEntity *
+accepted_quote(Fixture *f)
+{
+	return accepted_quote_mode(f, "progress");
 }
 
 static void
@@ -326,12 +332,55 @@ test_retainer_authority(Fixture *f, gconstpointer unused)
 	venture_config_set_module_enabled(f->config, "quotes", TRUE);
 }
 
+/* A date picker submits midnight UTC. Generated invoice dates must have
+ * that same calendar meaning while earlier and future payments stay refused. */
+static void
+test_invoice_calendar_receipt(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) quote = accepted_quote_mode(f, data ? "full" : "progress");
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) today = venture_time_from_string("today", NULL);
+	g_autoptr(GDateTime) yesterday = g_date_time_add_days(today, -1);
+	g_autoptr(GDateTime) tomorrow = g_date_time_add_days(today, 1);
+	g_autoptr(GDateTime) issued = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GDateTime) future = g_date_time_add_hours(now, 1);
+	g_autoptr(VentureMoney) balance = NULL;
+	VentureActor actor;
+	gint64 id = 0;
+	actor_init(&actor);
+	if (data)
+	{
+		g_object_get(quote, "invoice-id", &id, NULL);
+		invoice = venture_database_get(f->db, VENTURE_TYPE_INVOICE, id, &error);
+	}
+	else
+		invoice = venture_progress_service_invoice(venture_progress_service_get(f->db), VENTURE_QUOTE(quote), 50, NULL, &actor, &error);
+	g_assert_no_error(error); g_assert_nonnull(invoice);
+	id = venture_entity_get_id(invoice);
+	g_object_get(invoice, "issued-at", &issued, NULL);
+	g_assert_cmpint(g_date_time_compare(issued, today), ==, 0);
+	g_assert_false(venture_settlement_service_settle_invoice(venture_settlement_service_get(f->db), id, yesterday, &actor, &error));
+	g_assert_nonnull(error); g_clear_error(&error);
+	g_assert_false(venture_settlement_service_settle_invoice(venture_settlement_service_get(f->db), id, tomorrow, &actor, &error));
+	g_assert_nonnull(error); g_clear_error(&error);
+	g_assert_false(venture_settlement_service_settle_invoice(venture_settlement_service_get(f->db), id, future, &actor, &error));
+	g_assert_nonnull(error); g_clear_error(&error);
+	g_assert_true(venture_settlement_service_settle_invoice(venture_settlement_service_get(f->db), id, today, &actor, &error));
+	g_assert_no_error(error);
+	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db), id, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(balance); g_assert_true(venture_money_is_zero(balance));
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/progress/invoice-remaining", Fixture, NULL, setup, test_progress_invoice_remaining, teardown);
 	g_test_add("/progress/retainer-authority", Fixture, NULL, setup, test_retainer_authority, teardown);
+	g_test_add("/progress/calendar-progress", Fixture, NULL, setup, test_invoice_calendar_receipt, teardown);
+	g_test_add("/progress/calendar-full", Fixture, GINT_TO_POINTER(1), setup, test_invoice_calendar_receipt, teardown);
 	g_test_add("/progress/retainer-actions", Fixture, NULL, setup, test_retainer_actions, teardown);
 	g_test_add("/progress/retainer", Fixture, NULL, setup, test_retainer_then_release, teardown);
 	g_test_add("/progress/retention", Fixture, NULL, setup, test_retention_hold_and_release, teardown);

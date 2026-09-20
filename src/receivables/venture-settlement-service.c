@@ -360,7 +360,14 @@ check_date(GDateTime *date, GDateTime *earliest, GError **error)
 	if (date == NULL || (earliest != NULL && g_date_time_compare(date, earliest) < 0))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "The date must not precede the source event");
 	if (g_date_time_compare(date, now) > 0)
-		return refuse(error, VENTURE_ERROR_VALIDATION, "A financial event cannot be dated in the future");
+	{
+		g_autoptr(GDateTime) today = venture_time_from_string("today", NULL);
+		/* A calendar date is midnight UTC, even east of UTC where today's
+		 * encoded midnight is later than the current instant. This exception
+		 * is exactly today's date, never a future time or tomorrow's date. */
+		if (!venture_time_equal(date, today))
+			return refuse(error, VENTURE_ERROR_VALIDATION, "A financial event cannot be dated in the future");
+	}
 	return TRUE;
 }
 
