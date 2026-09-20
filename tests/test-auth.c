@@ -4700,6 +4700,74 @@ static void test_auth_mail_settings_administration(ServerFixture *fixture, gcons
 	owner = server_fixture_login(fixture, "mail-owner", "owner-long-password");
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/mail", owner, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
 }
+static void test_auth_commerce_settings(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autofree gchar *editor = NULL, *owner = NULL, *page = NULL, *form = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("fixture-key-32-bytes-for-tests!!!", 32);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureIntegrationConnection) binding = NULL;
+	gint64 id, version;
+	(void)unused;
+	g_object_set(fixture->config, "commerce-enabled", TRUE, NULL);
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(fixture->database), key, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/commerce"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/commerce", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	server_fixture_create_member(fixture, "commerce-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "commerce-editor", "editor-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/commerce", editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	server_fixture_create_member(fixture, "commerce-owner", "owner-long-password", VENTURE_USER_ROLE_OWNER, NULL);
+	owner = server_fixture_login(fixture, "commerce-owner", "owner-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/commerce", owner,
+		"operation=configure&connection_id=0&version=0&shop=fixture.myshopify.com&access_token=synthetic-commerce-secret", &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "fixture.myshopify.com"));
+	g_assert_null(strstr(page, "synthetic-commerce-secret"));
+	g_clear_pointer(&page, g_free);
+	binding = venture_integration_service_find(venture_integration_service_get(fixture->database), 1, "commerce.shopify", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(binding);
+	id = venture_entity_get_id(VENTURE_ENTITY(binding)); version = venture_entity_get_version(VENTURE_ENTITY(binding));
+	form = g_strdup_printf("operation=configure&connection_id=%" G_GINT64_FORMAT "&version=%" G_GINT64_FORMAT "&shop=fixture.myshopify.com&access_token=rotated-commerce-secret", id, version);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/commerce", owner, form, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(page, "rotated-commerce-secret"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/commerce", owner, form, NULL, NULL), ==, SOUP_STATUS_BAD_REQUEST);
+	g_clear_pointer(&form, g_free);
+	form = g_strdup_printf("operation=disconnect&connection_id=%" G_GINT64_FORMAT "&version=%" G_GINT64_FORMAT, id, version + 1);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/commerce", owner, form, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "No Shopify account"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/commerce", owner, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(page, "synthetic-commerce-secret"));
+	g_assert_null(strstr(page, "rotated-commerce-secret"));
+}
+static void test_auth_ai_settings(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autofree gchar *editor = NULL, *owner = NULL, *page = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("fixture-key-32-bytes-for-tests!!!", 32);
+	g_autoptr(GError) error = NULL;
+	(void)unused;
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(fixture->database), key, &error)); g_assert_no_error(error);
+	server_fixture_create_member(fixture, "ai-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "ai-editor", "editor-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/ai", editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/settings/ai/platform", editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	server_fixture_create_member(fixture, "ai-owner", "owner-long-password", VENTURE_USER_ROLE_OWNER, NULL);
+	owner = server_fixture_login(fixture, "ai-owner", "owner-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/ai", owner,
+		"operation=configure&purpose=chat&version=0&provider=openai&model=fixture-model&base_url=https%3A%2F%2Fapi.openai.com&api_key=synthetic-write-only-ai-secret&monthly_requests=20&concurrency_limit=1", &page, NULL), ==, SOUP_STATUS_FOUND);
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/ai", owner, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "Effective source: organization"));
+	g_assert_null(strstr(page, "synthetic-write-only-ai-secret")); g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/ai", owner, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(page, "synthetic-write-only-ai-secret"));
+	g_assert_nonnull(strstr(page, "name=\"api_key\" type=\"password\"")); g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/ai", owner,
+		"operation=disable&purpose=chat&version=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/ai", owner, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "Effective source: disabled"));
+}
 static void test_auth_bankfeed_settings(ServerFixture *fixture, gconstpointer unused)
 {
 	g_autoptr(GError) error = NULL;
@@ -4822,6 +4890,7 @@ main(
 	char	**argv
 ){
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/auth/commerce-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_commerce_settings, server_fixture_tear_down);
 	g_test_add("/auth/ai-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_ai_settings, server_fixture_tear_down);
 	g_test_add("/auth/equity-input", ServerFixture, NULL, server_fixture_set_up, test_auth_equity_input, server_fixture_tear_down);
 

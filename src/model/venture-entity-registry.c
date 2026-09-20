@@ -880,6 +880,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_sales_territory_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_sales_quota_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_sales_credit_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_commerce_import_link_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_sales_assignment_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_ai_configuration_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_ai_platform_offer_get_type, VENTURE_DATA_CLASS_PLATFORM },

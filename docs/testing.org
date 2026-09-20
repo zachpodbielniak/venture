@@ -88,10 +88,14 @@ with no network, and a rolled-back batch on a bad line.
 
 ** =test-commerce=
 
-Fake Shopify-like connector imports an order as a sent invoice (and a sale
-when paid) through document compose and settlement. A second import of the
-same external id writes nothing. Missing =VENTURE_COMMERCE_SHOPIFY_TOKEN=
-refuses to start. A later invalid order rolls the batch back.
+Stateless connector factories and explicit organization vault accounts import
+orders through document compose and settlement. Coverage includes account-scoped
+replay, two organizations/shops with equal remote IDs, legacy adoption without
+rewriting invoices, exact totals and rollback, malformed provider shapes,
+rotation/disconnect/module disable during fetch, and main-thread vault checks
+for asynchronous plugin transports. Ambient Shopify credentials are ignored;
+missing organization configuration refuses import, not startup. PostgreSQL uses
+the isolated =VENTURE_TEST_ACCOUNTING_POSTGRES_URI= fixture.
 
 ** =test-banking=
 

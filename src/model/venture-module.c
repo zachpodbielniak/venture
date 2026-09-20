@@ -649,7 +649,8 @@ static const gchar *const banking_reports[] = { "bank_reconciliation", NULL };
 static const gchar *const banking_requires[] = { "ledger", NULL };
 static const gchar *const bankfeed_requires[] = { "banking", NULL };
 static GType (*const bankfeed_types[]) (void) = { venture_bank_connection_get_type, NULL };
-static const gchar *const commerce_requires[] = { "invoicing", "receivables", NULL };
+static const gchar *const commerce_requires[] = { "invoicing", "receivables", "integrations", NULL };
+static GType (*const commerce_types[])(void) = { venture_commerce_import_link_get_type, NULL };
 
 static GType (*const banking_types[]) (void) = {
 	venture_bank_account_get_type, venture_bank_statement_get_type,
@@ -1027,10 +1028,6 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		bankfeed_requires, NULL, bankfeed_types, NULL, "bankfeed-enabled", FALSE
 	},
 	{
-		"commerce", "Commerce connectors", "Import orders as invoices through document compose.",
-		commerce_requires, NULL, NULL, NULL, "commerce-enabled", FALSE
-	},
-	{
 		"pipelines", "Sales pipelines", "Configurable stages, history and forecasts.",
 		venture_module_requires_crm, NULL, venture_module_pipelines_types,
 		venture_module_reports_pipelines, NULL, FALSE
@@ -1189,6 +1186,8 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"attribution", "Attribution", "Consent-bound first-party analytics and verified form capture.",
 		attribution_requires, NULL, attribution_types, attribution_reports, NULL, FALSE
+		"commerce", "Commerce connectors", "Import orders as invoices through document compose.",
+		commerce_requires, NULL, commerce_types, NULL, "commerce-enabled", FALSE
 	},
 	{
 		"stripe", "Stripe", "Hosted Checkout and verified payment settlement.",

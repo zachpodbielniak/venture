@@ -1,0 +1,69 @@
+#+title: Commerce account demonstration
+
+* Scope and reproduction
+
+This demonstration runs the built DEBUG server and CLI against a new private
+hosted SQLite workspace. Chromium submits synthetic credentials and uses a
+tenant administrator whose global role remains EDITOR. No Shopify account is
+contacted and no production data is used. The recording visibly shows account
+connect/rotation, the generated legacy adoption form, retained identity rows
+and disconnect. Scripted API/CLI assertions below additionally verify the
+invisible authorization, stale-version and unchanged-invoice checks.
+
+Run from a DEBUG checkout with Playwright and Chromium installed:
+
+#+begin_src sh
+make DEBUG=1 all
+python3 docs/evidence/commerce-accounts-demonstration.py
+#+end_src
+
+The driver retains a mode-0700 temporary directory for review. Its session and
+synthetic bootstrap material are private files; do not publish that directory.
+Only the recording, screenshots and sanitized transcript are evidence.
+
+* Verbatim sanitized output
+
+The following is the complete successful output from the final built artifact.
+No credentials, cookies or provider tokens occur in this transcript.
+
+#+begin_example
+Artifact SHA256: 01358a56143b25136b51482eee1fdb9511ac7107945bcc9cc0f2aa84772b711c
+PASS tenant administrator opens commerce settings; ambient Shopify credentials do not configure an account
+PASS explicit organization account configured; credential is absent from returned HTML
+PASS rotation increments the binding revision; a stale settings form is refused
+PASS generated adoption action records invoice and customer identity; retained invoice revision is unchanged
+PASS disconnect refuses import despite ambient credentials and preserves historical identity
+PASS tenant administrator remains excluded from platform settings
+PASS venturectl describes account fields; API schema offers adoption; explicitly scoped CLI import refuses the disconnected account
+PASS demonstration completed without contacting Shopify; provider test/import semantics are covered by injected transport tests
+Evidence directory: /tmp/venture-125-commerce-demo-41nfy62j
+#+end_example
+
+* Behavioral qualification
+
+The commerce suite uses injected transports for provider behavior: separate
+organizations and shops with identical remote IDs, reconnect replay, rotation
+and disconnect during a fetch, live module revocation, asynchronous plugin
+transport on the originating context, malformed provider batches, retained
+legacy adoption and transaction rollback. It also preserves the existing
+currency, pagination, unsupported-adjustment and invoice-total guards.
+
+The settings HTTP regression checks anonymous/editor refusal, write-only
+credentials and stale rotation. The existing real HTTP redirect regression
+checks that a response cannot redirect authorization to a different host.
+The PostgreSQL run uses a new disposable schema, never the user's database.
+
+Review reproduced and repaired three specific regressions before accepting
+this result: ambient credentials configuring an account, an adopted legacy
+external ID blocking a different shop's order, and the default asynchronous
+transport fallback entering vault checks on a worker. A malformed null order
+was also reproduced as an incorrectly successful empty batch and repaired to
+fail the complete import. The final review found no outstanding defect in
+this bounded change.
+
+This proves the synthetic application/account boundary, not live Shopify
+credential acceptance or production accounting readiness. Test connection and
+provider identity verification are covered by injected responses. Final epic
+integration and released-master upgrade qualification belong to the parent
+PR's combined gate; an unpublished lane snapshot is not a release upgrade
+fixture.

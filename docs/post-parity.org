@@ -126,6 +126,8 @@ after checking the ledger are =000460= (project profitability), =000470=
 and =000520= (automatic collection), =000530= (OIDC), =000540= (mail account binding), =000550= (bank-feed identity),
 =000560= (organization AI), =000570= (private connectors), =000580=
 (territories/quotas), and =000590= (tenant boundary/lifecycle). Applied
+and =000520= (automatic collection), =000530= (OIDC),
+=000610= (commerce account identity; no inferred legacy ownership). Applied
 migrations remain append-only and paired for both backends.
 
 The combined Stripe-settings/project-delivery revision =ba1393e= passed its

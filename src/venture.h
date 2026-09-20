@@ -155,6 +155,8 @@
 #include "docs/venture-org-html.h"
 #include "docs/venture-docs-site.h"
 
+#include "commerce/venture-commerce-records.h"
+
 /* --- Server-only subsystems ---------------------------------------------- */
 
 #ifdef VENTURE_SERVER_BUILD

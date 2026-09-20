@@ -1085,3 +1085,31 @@ tracking and removes visitor linkage, while coarse business acquisition and
 separate email-choice evidence remain. Generic CRUD cannot manufacture or remove
 that evidence. See `docs/attribution.org` for the versioned signed Lightsite
 contract and browser consent methods. No Lightsite provisioning is performed.
+### Commerce account ownership
+
+`commerce import '{"organization_id":1,"connector":"shopify"}'` uses that
+organization's explicitly configured account. Without `organization_id`, the
+API uses the browser organization cookie or the installation default.
+An organization owner/admin connects, tests, rotates or disconnects Shopify at
+`/organizations/ID/settings/commerce`. Credentials are write-only vault values;
+`VENTURE_COMMERCE_SHOPIFY_TOKEN` and `VENTURE_COMMERCE_SHOPIFY_SHOP` are ignored.
+The shop must be a canonical `your-shop.myshopify.com` hostname. Configuration
+is local; Test connection is the explicit provider request. Disconnect keeps
+historical imports but blocks further use. Rotation during a fetch refuses
+that response before import.
+
+`commerce_import_link` is immutable identity evidence. Its account namespace
+prevents equal provider order/customer IDs from colliding across shops or
+organizations; reconnecting the same account recognizes previous imports.
+A legacy invoice needs explicit account adoption, never automatic ownership:
+
+```sh
+venturectl describe integration_connection
+venturectl act integration_connection 7 adopt_commerce_invoice invoice_id=42 'reason=Reviewed original shop order evidence'
+venturectl list commerce_import_link
+```
+
+The action requires organization integration administration, pins the selected
+active binding and leaves historical invoice/settlement amounts unchanged.
+Use the account record linked from settings. Generic edits cannot rewrite or
+delete import identities. Do not use credentials in CLI arguments.

@@ -226,7 +226,7 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_BOOL("bankfeed-enabled", "bankfeed", "enabled", FALSE,
 	        "Enable pluggable bank feeds; requires VENTURE_BANKFEED_TELLER_KEY"),
 	VC_BOOL("commerce-enabled", "commerce", "enabled", FALSE,
-	        "Enable commerce connectors; requires VENTURE_COMMERCE_SHOPIFY_TOKEN"),
+	        "Enable commerce connectors with explicit organization account settings"),
 	VC_BOOL("group-enabled", "group", "enabled", FALSE,
 	        "Enable intercompany links, eliminations and consolidated statements"),
 

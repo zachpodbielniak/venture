@@ -3794,7 +3794,7 @@ main(
 		"  bank ACTION ID [JSON|@FILE] banking action; import map inbox bulk transfer\n"
 		"                               preview enable reverse; bank match AUTO ID\n"
 		"  bankfeed sync ID [JSON]      sync a linked bank feed connection\n"
-		"  commerce import [JSON]       import connector orders as invoices\n"
+		"  commerce import [JSON]       import orders; JSON organization_id selects the account\n"
 		"  deal move ID STAGE [NOTE]     move a deal through its pipeline\n"
 		"  deal quote ID                create or revise a quote from the deal's lines\n"
 		"  release publish ID           cut it on the forge; --prerelease\n"

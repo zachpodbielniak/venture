@@ -1,48 +1,165 @@
 #+title: Commerce connectors
-#+description: Import marketplace orders as invoices through document compose and settlement
+#+description: Organization-owned shop accounts, exact invoice imports and explicit legacy adoption
 
-* Commerce connectors
+* Connect an organization account
 
-The =commerce= module is opt-in and requires =invoicing= and
-=receivables=. Set =commerce.enabled: true=. Startup requires
-=VENTURE_COMMERCE_SHOPIFY_TOKEN= (and optionally
-=VENTURE_COMMERCE_SHOPIFY_SHOP=). Enabling without the token fails
-configure/start and names the variable.
+The opt-in =commerce= module requires =invoicing=, =receivables= and
+=integrations=. Set =commerce.enabled: true=. Enabling the module does not
+contact a provider or require a token at startup. The operator supplies the
+normal =VENTURE_INTEGRATION_KEY= vault key; retain that key with backups.
 
-=VentureCommerceConnector= is a GInterface with a registry. A
-Shopify-like connector turns orders into invoices through
-=VentureDocumentService= compose and, when the order is paid, through
-=VentureSettlementService=. There is no second ledger. The order id is
-stored as =invoice.external-id= and is unique within the organization, so
-a repeated import is a no-op. Line prices use the order currency
-(never a silent USD default). Cancelled, voided and refunded orders
-are skipped. The Shopify customer is matched or created as a company.
+An organization owner or administrator opens
+=/organizations/ID/settings/commerce=, also linked from Organizations.
+Connect or rotate accepts the complete canonical =your-shop.myshopify.com=
+hostname and a write-only access token. Credentials are encrypted under the
+organization's =commerce.shopify= binding and never returned in the settings
+page, generic record, audit diff or CLI. Tokens and account selection are
+never read from =VENTURE_COMMERCE_SHOPIFY_TOKEN= or
+=VENTURE_COMMERCE_SHOPIFY_SHOP=; remove those obsolete environment settings.
 
-Tests register a fake connector and never open a network connection.
+Configuration validates and stores credentials locally. The separate Test
+connection button fetches shop identity and requires Shopify to identify the
+configured hostname; it imports nothing. An actual Shopify app must have
+order access. The REST adapter pins API version =2025-10=. This feature's
+synthetic acceptance checks do not establish that a production app has those
+permissions or that a live Shopify account was tested.
+
+Rotation requires the displayed binding ID and version. Disconnect retains
+historical identity but immediately refuses further fetches. Changing shops
+requires disconnect followed by a new connection and a new identity namespace.
+If two configured hostnames represent the same historical business account,
+reconcile those imports explicitly before importing under the new hostname.
+An old settings form cannot
+rotate a newly connected row, even when its initial version is the same.
+Hostnames reject paths, ports, user information, unrelated domains and
+noncanonical labels. Requests use fixed HTTPS paths under the selected shop;
+HTTP redirects are refused. Every page and the import completion revalidate
+the exact binding version. A rotation or disconnect during a fetch discards
+that response before importing any of it.
+
+* Import and historical identity
+
+=VentureDocumentService= composes invoices and =VentureSettlementService=
+records paid orders; there is no second ledger. Imports are atomic, including
+new customers and identity evidence. Line prices preserve the explicit order
+currency. Cancelled, voided and refunded orders are skipped.
+
+=commerce_import_link= retains the organization, provider, immutable account,
+environment, original remote identity and local invoice or customer. Its
+unique identity includes all those account dimensions, not a credential
+version or connection row ID. Two organizations or shops may import the same
+remote order/customer IDs without sharing customers or invoices. Email is not
+an account identity. Reconnecting the same account recognizes its retained
+imports. Replayed orders do not rewrite historical invoices or resurrect
+removed records; provider changes to previously imported orders require an
+explicit accounting correction workflow. Identity links are service-owned,
+immutable evidence, unavailable to generic create/update/delete/restore.
+
+The web importer uses the active organization; automation uses its explicit
+organization argument. Both use the same import transaction and account
+resolver. No configured account means refusal, including when ambient
+credentials exist.
 
 #+begin_src sh
-venturectl commerce import
+venturectl commerce import '{"organization_id":1,"connector":"shopify"}'
+venturectl describe commerce_import_link
+venturectl list commerce_import_link
 #+end_src
 
-Automation:
+Pass a positive integer =organization_id= in the JSON body for explicit CLI
+selection. Without it, the API uses the browser organization cookie or the
+installation default. Organization permissions still apply. Automation selects
+it explicitly:
 
 #+begin_src text
 pod shop_hour = cron->new("15 * * * *");
 shop_hour->on_schedule => venture->commerce_import("1", "shopify");
 #+end_src
 
-The REST adapter requests complete ISO timestamps for both ends of the import
-window and pages using =since_id= with at most 250 orders per response. It
-refuses a non-progressing or over-limit pagination sequence before importing
-anything. Authentication stays on URLs built from the configured shop; HTTP
-redirects are refused. See the [[https://shopify.dev/docs/api/admin-rest/2025-10/resources/order][Shopify Order API]]
-for the supported window and cursor parameters. The adapter currently pins
-REST version =2025-10= and requires an existing app with order access.
+The adapter requests complete ISO timestamp bounds and pages with =since_id=,
+at most 250 orders per response and 1000 pages. Malformed order/line identities, noninteger quantities, and nonprogressing or
+excessive page sequences fail the complete batch. See the
+[[https://shopify.dev/docs/api/admin-rest/2025-10/resources/order][Shopify Order API]].
 
-The web importer uses the active organization; automation uses its explicit
-organization argument. Both share the live connector registry, including
-plugins, and use the same import transaction.
+* Explicit legacy adoption
 
-* Exact import boundary
+Migration =000610= creates identity metadata without assigning old records to
+an account. Existing invoices and customer records retain their external IDs,
+amounts, versions and ledger evidence. Import refuses a colliding unbound
+legacy invoice rather than silently treating it as a replay or claiming it
+for the current shop.
 
-Orders with taxes, discounts, tips, shipping lines, refunds or partial payments are refused before importing the batch because this adapter does not yet map those components to accounting entries. When the provider supplies =total_price=, the composed invoice must equal that total before any receipt is recorded; a mismatch rolls back the entire import, including newly created customers. Resolve unsupported orders through an explicit document and settlement workflow.
+Review the original shop's evidence, connect that account, and open its
+=integration_connection= record from the settings page. Use *Adopt legacy
+commerce invoice*, choose the retained invoice using the scoped reference
+picker, and supply a reason. This atomically associates the invoice and, when
+it carries a matching legacy provider customer identity, its customer. It
+never changes the invoice, settlement or customer. Another account cannot
+claim the same local record. Repeating the same adoption is harmless. A
+conflicting remote or local identity is refused for explicit reconciliation.
+
+The same metadata action is available to the CLI:
+
+#+begin_src sh
+venturectl describe integration_connection
+venturectl act integration_connection 7 adopt_commerce_invoice invoice_id=42 'reason=Reviewed original shop order evidence'
+#+end_src
+
+Adoption requires organization integration administration and is an immediate,
+audited service transaction, not a staged financial rewrite. Back up and
+review retained imports before reconnecting a migrated installation. An
+unreleased development database with a different migration history is not an
+upgrade compatibility fixture for the final release.
+
+* Connector extension contract
+
+=VentureCommerceConnectorFactory= is a GInterface. A factory exposes a stable
+provider name and constructs a fresh =VentureCommerceConnector= for one
+immutable account and decrypted settings snapshot. Register it with
+=venture_commerce_connector_registry_add_factory()=. Configure that provider
+under =commerce.PROVIDER= through the protected integration adapter boundary.
+Factories must not retain credentials or share credential-bearing clients;
+the service shares only stateless factories across organizations.
+
+The supplied =VentureBankFeedTransport= checks the binding before and after
+network I/O. Clients must use it for provider requests and pin their own
+allowed origin/paths; a plugin is trusted executable code, not a sandbox.
+Fetching and database checks remain on the database-owning main thread.
+The guard implements asynchronous transport explicitly: byte I/O may use the
+underlying transport worker, while preflight and completion checks retain the
+captured principal and organization on the originating main context.
+Normalized results contain a stable =external_id= and either an explicitly
+selected same-organization =company_id= or =customer_external_id=. They must
+preserve currency and supported payment semantics. The service copies results
+before adding local fields so retained plugin results do not change.
+
+The old live-client =add()=, =lookup()= and =list()= API remains available for
+source compatibility and inspection. Imports require factory registration and
+an explicit vault binding; legacy credential-bearing clients are refused
+with a migration error. =remove()= removes the matching factory and legacy
+entry. An in-progress operation holds its own factory/client references.
+
+* Exact accounting boundary
+
+Orders with taxes, discounts, tips, shipping lines, refunds or partial
+payments are refused before importing the batch because this adapter does not
+yet map those components to accounting entries. When supplied, =total_price=
+must exactly equal the composed invoice before any receipt is recorded. A
+mismatch rolls back the whole import, including customers and identity links.
+Resolve unsupported orders through explicit document and settlement workflows.
+Accounting consent includes the organization/provider/account/environment identity,
+exact binding ID and revision, and normalized provider results. Changing a
+binding requires a fresh accounting proposal when approval is required.
+
+* Verification
+
+=tests/test-commerce.c= exercises synthetic account isolation, same remote IDs,
+reconnect replay, in-flight rotation/disconnect, explicit legacy adoption,
+immutable identity evidence, factory imports and the existing exact accounting
+refusals. Its PostgreSQL mode uses =VENTURE_TEST_ACCOUNTING_POSTGRES_URI= and a
+private disposable schema; never aim it at a personal or production database.
+=tests/test-auth.c= exercises the actual settings HTTP route, anonymous/editor
+refusal, write-only credentials, stale rotation and disconnect.
+
+See the [[file:evidence/commerce-accounts-demonstration.org][built server and CLI demonstration]]
+for the exact artifact, reproducible driver, sanitized transcript and limits.

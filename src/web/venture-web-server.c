@@ -10612,6 +10612,8 @@ venture_web_ui_entities(
 				"</button></form> ", id);
 		}
 
+		if (venture_context_module_enabled(self->context, "commerce"))
+			g_string_append_printf(content, "<a class=\"btn btn-sm\" href=\"/organizations/%" G_GINT64_FORMAT "/settings/commerce\">Commerce settings</a> ", id);
 		if (venture_context_module_enabled(self->context, "stripe"))
 			g_string_append_printf(content, "<a class=\"btn btn-sm\" href=\"/organizations/%" G_GINT64_FORMAT "/settings/stripe\">Stripe settings</a> ", id);
 		if (venture_context_module_enabled(self->context, "oidc"))
@@ -29802,6 +29804,8 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/contractor-tax/:id/export", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, contractor_tax_api, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/sales-tax/export", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, sales_tax_export_api, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/capture", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, capture_ui, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/organizations/:id/settings/commerce", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, commerce_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/organizations/:id/settings/commerce", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, commerce_settings, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/commerce/import", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, commerce_import, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/capture", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, capture_api, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/capture/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, capture_api, self);

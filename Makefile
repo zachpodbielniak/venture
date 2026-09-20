@@ -111,7 +111,8 @@ SERVER_ONLY_SRCS := \
 
 SERVER_ONLY_SRCS += src/banking/venture-bank-match-service.c
 SERVER_ONLY_SRCS += $(filter-out src/bankfeed/venture-bankfeed-records.c,$(wildcard src/bankfeed/*.c))
-SERVER_ONLY_SRCS += $(wildcard src/commerce/*.c)
+CORE_SRCS += src/commerce/venture-commerce-records.c
+SERVER_ONLY_SRCS += $(filter-out src/commerce/venture-commerce-records.c,$(wildcard src/commerce/*.c))
 
 SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard src/periods/*.c))
 
