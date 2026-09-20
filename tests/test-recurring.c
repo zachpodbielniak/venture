@@ -702,6 +702,63 @@ test_omitted_date_approval(Fixture *f, gconstpointer unused)
 	g_assert_cmpint(count(f, "accounting_approval"), ==, 1);
 }
 
+/* A schedule whose start is a precise instant in the business zone, saved as a
+ * GDateTime so it keeps its time of day. */
+static VentureEntity *
+instant_schedule(Fixture *f, GDateTime *start)
+{
+	g_autofree gchar *stamp = g_date_time_format_iso8601(start);
+	VentureEntity *schedule = monthly_invoice(f, stamp);
+	g_object_set(schedule, "timezone", "America/New_York", "start-at", start, NULL);
+	save(f, schedule);
+	return schedule;
+}
+
+/* An implicit sweep judges due-ness on the business-zone calendar day, so an
+ * occurrence whose instant is still in the future must wait for a later sweep:
+ * generating it would have settlement refuse it as future-dated and fail every
+ * other schedule in the organization with it. The date-picker start on the
+ * business date stays accepted — test_omitted_date_approval covers that. */
+static void
+test_omitted_date_future_instant(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GTimeZone) zone = g_time_zone_new_identifier("America/New_York");
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GDateTime) later = NULL;
+	g_autoptr(VentureEntity) schedule = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)unused;
+	g_assert_nonnull(zone);
+	now = g_date_time_new_now(zone);
+	later = g_date_time_add_hours(now, 1);
+	schedule = instant_schedule(f, later);
+	g_assert_cmpint(venture_recurring_service_run(venture_recurring_service_get(f->db),
+		f->org, NULL, FALSE, NULL, &error), ==, 0);
+	g_assert_no_error(error);
+	g_assert_cmpint(count(f, "invoice"), ==, 0);
+	g_assert_cmpint(count(f, "recurring_occurrence"), ==, 0);
+}
+
+/* The same schedule started an hour ago is due and issues once. */
+static void
+test_omitted_date_past_instant(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GTimeZone) zone = g_time_zone_new_identifier("America/New_York");
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GDateTime) earlier = NULL;
+	g_autoptr(VentureEntity) schedule = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)unused;
+	g_assert_nonnull(zone);
+	now = g_date_time_new_now(zone);
+	earlier = g_date_time_add_hours(now, -1);
+	schedule = instant_schedule(f, earlier);
+	g_assert_cmpint(venture_recurring_service_run(venture_recurring_service_get(f->db),
+		f->org, NULL, FALSE, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	g_assert_cmpint(count(f, "invoice"), ==, 1);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -728,5 +785,7 @@ main(int argc, char **argv)
 	g_test_add("/batch/invalid-csv", Fixture, NULL, setup, test_batch_invalid_csv, teardown);
 	g_test_add("/batch/cli", Fixture, NULL, setup, test_batch_cli, teardown);
 	g_test_add("/recurring/omitted-date-approval", Fixture, NULL, setup, test_omitted_date_approval, teardown);
+	g_test_add("/recurring/omitted-date-future-instant", Fixture, NULL, setup, test_omitted_date_future_instant, teardown);
+	g_test_add("/recurring/omitted-date-past-instant", Fixture, NULL, setup, test_omitted_date_past_instant, teardown);
 	return g_test_run();
 }

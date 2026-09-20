@@ -130,6 +130,14 @@ day_compare(GDateTime *a, GDateTime *b)
 	return g_strcmp0(left, right);
 }
 
+/* A date picker submits midnight UTC; a precise instant almost never is. */
+static gboolean
+calendar_date(GDateTime *date)
+{
+	g_autoptr(GDateTime) utc = g_date_time_to_utc(date);
+	return g_date_time_get_hour(utc) == 0 && g_date_time_get_minute(utc) == 0 && g_date_time_get_seconds(utc) == 0.0;
+}
+
 static GDateTime *
 schedule_start(VentureEntity *schedule)
 {
@@ -584,6 +592,12 @@ run_schedule(VentureRecurringService *self, VentureEntity *schedule, GDateTime *
 		g_autoptr(VentureEntity) existing = NULL;
 		if (at == NULL || day_compare(at, local_as_of) > 0)
 			break;
+		/* An implicit sweep is judged on the business-zone day, so an occurrence
+		 * dated a precise instant still in the future waits for a later sweep;
+		 * settlement refuses a future instant and would fail the whole sweep.
+		 * A date picker's midnight UTC on today's date stays accepted. */
+		if (zone != NULL && !calendar_date(at) && g_date_time_compare(at, as_of) > 0)
+			break;
 		if (end != NULL && day_compare(at, end) > 0)
 			break;
 		stamp = day_text(at);
@@ -727,8 +741,9 @@ venture_recurring_service_run(VentureRecurringService *self, gint64 organization
 			{
 				g_autoptr(GDateTime) local = g_date_time_to_timezone(clock, zone);
 				g_autofree gchar *day = g_date_time_format(local, "%F");
-				/* UTC midnight and each schedule's local midnight invalidate
-				 * omitted-date consent without depending on retry seconds. */
+				/* One business-zone (locale.timezone) calendar day, the same
+				 * day for every schedule, invalidates omitted-date consent
+				 * without depending on retry seconds. */
 				g_string_append_printf(effective_days, "%" G_GINT64_FORMAT ":%s;",
 					venture_entity_get_id(schedule), day);
 			}

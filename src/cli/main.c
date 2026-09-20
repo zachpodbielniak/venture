@@ -1074,7 +1074,6 @@ venture_cli_command_forge(
 	GError		**error
 ){
 	g_autoptr(JsonNode) node = NULL;
-	g_autoptr(JsonBuilder) builder = NULL;
 	g_autoptr(JsonNode) body = NULL;
 	g_autofree gchar *secret = NULL;
 	g_autofree gchar *path = NULL;
