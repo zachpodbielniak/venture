@@ -147,3 +147,5 @@ screen's ordinary sync-and-import test.
 - [[file:connectors.org][Organization and private IMAP/CalDAV connectors]] — explicit encrypted settings, delegation and import privacy.
 
 - [[file:oidc.org][Organization OpenID Connect sign-in]] — explicit local identity linking, verified provider sign-in, revocation and local recovery.
+
+- [[file:ai-organizations.org][Organization AI providers]] — explicit private/platform sources, grants, quotas and usage attribution.

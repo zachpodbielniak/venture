@@ -261,3 +261,10 @@ The =oidc= module requires =orgaccess=, =mfa= and =integrations=. Provider
 sign-in also requires the independent =oidc.enabled= switch and an explicit
 issuer allowlist; both default to refusing provider sign-in. Local users,
 permissions, MFA and recovery remain authoritative. See [[file:oidc.org][the sign-in guide]].
+
+* Organization AI providers
+
+AI provider selection is explicit per organization and purpose; disabling AI
+prevents runtime use without deleting historical grants or usage. Platform offers
+are platform administration, not tenant-owned credentials. See
+[[file:ai-organizations.org][provider settings, grants and limits]].

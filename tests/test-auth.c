@@ -4775,6 +4775,8 @@ static void test_auth_connector_settings(ServerFixture *fixture, gconstpointer u
 	g_assert_null(strstr(page, "STALE_UI_PASSWORD"));
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, bob,
 		"operation=configure&binding_id=0&version=0&password=OTHER_UI_PASSWORD", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+}
+
 static void test_auth_ai_settings(ServerFixture *fixture, gconstpointer unused)
 {
 	g_autofree gchar *editor = NULL, *owner = NULL, *page = NULL;

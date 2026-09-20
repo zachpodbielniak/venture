@@ -910,3 +910,12 @@ Do not create identity/provider records through generic CRUD or infer a local
 user from the provider's email. Credential inputs are write-only, and a rotated
 or disabled provider invalidates its old sessions. API tokens keep their existing
 local authorization behavior; provider sign-in does not mint global authority.
+
+## Organization AI provider settings
+
+Use the organization AI settings page to choose disabled, organization-owned or
+explicitly granted platform service separately for chat, coding and embeddings.
+No missing or failing private connection falls back to platform AI. Read
+`docs/ai-organizations.org` before configuring provider actions; generic record
+writes cannot manufacture grants or overwrite service-owned usage evidence.
+Platform credentials remain operator-only even in their billing organization.
