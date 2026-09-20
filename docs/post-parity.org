@@ -99,7 +99,7 @@ verified without the corresponding execution evidence.
 
 | Area | State | Required evidence |
 |------+-------+-------------------|
-| Accounting loop | In progress | Synthetic opening/import through settlement, reconciliation, close/correction and restored tie-outs, SQLite and PostgreSQL |
+| Accounting loop | Synthetic scenarios verified on SQLite/PostgreSQL | Synthetic opening/import through settlement, reconciliation, close/correction and restored tie-outs, SQLite and PostgreSQL |
 | CRM and project handoff | Pending | Quote/deal through scope, work, acceptance, invoice and receipt; replay and changed-scope cases |
 | Project financials | In progress | Exact budget, cost, unbilled, billed and profit with unknown historical costs and source rows |
 | Organization integrations | Pending | Settings, secret redaction, account binding, rotation, revocation and A/B organization tests |
@@ -121,5 +121,5 @@ verified without the corresponding execution evidence.
 The existing child reservations remain =000420= (marketing), =000430=
 (attribution), =000440= (OCR), and =000450= (ACH). New reservations made
 after checking the ledger are =000460= (project profitability), =000470=
-(organization integrations), and =000480= (project delivery). Applied
+(organization integrations), =000480= (project delivery), and =000490= (call history). Applied
 migrations remain append-only and paired for both backends.

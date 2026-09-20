@@ -613,3 +613,13 @@ binding, authenticated encryption and redaction, rotation, stale versions,
 disconnection, historical identity and generic-write/permission refusals.
 See [[file:integrations.org][the integration contract]] for what this foundation
 does and the provider-level acceptance work still pending.
+
+* Accounting replacement acceptance
+
+=test-accounting-acceptance= now proves opening cash/AR/AP import and replay,
+settlement and archive tie-outs; trading through explicit bank matches,
+reconciliation, financial statements, signed close, refusal, reopening and
+correction; and a successful retry after an injected posting rollback.
+All three scenarios pass SQLite and schema-isolated PostgreSQL. See
+[[file:accounting-acceptance.org][the exact expected balances and commands]].
+This is synthetic executable evidence, not a completed deployment exercise.

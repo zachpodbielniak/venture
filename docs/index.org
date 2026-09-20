@@ -130,3 +130,5 @@ Two binaries, both statically linked against every vendored dependency: =venture
 - [[file:post-parity.org][Post-parity delivery]] — issue 125 defaults, scope and acceptance evidence
 
 - [[file:integrations.org][Organization integration credentials]] — encrypted provider bindings, rotation and disconnect
+
+- [[file:accounting-acceptance.org][Accounting acceptance]] — synthetic opening balances through reconciliation, close/correction and restore
