@@ -95,7 +95,7 @@ private_file "$key_file"
 [[ $(stat -c %s -- "$key_file") -ge 32 && $(stat -c %s -- "$key_file") -le 4096 ]] || fail 'Recovery passphrase file must contain 32–4096 bytes'
 # GnuPG consumes one line from its passphrase descriptor. Validate that
 # actual line, not merely a file size padded after an early newline.
-LC_ALL=C awk 'NR != 1 || length($0) < 32 || length($0) > 4096 || /[^ -~]/ { exit 1 } END { if (NR != 1) exit 1 }' "$key_file" || fail 'Recovery key must be one printable ASCII line of at least 32 characters' 
+LC_ALL=C awk 'NR != 1 || length($0) < 32 || length($0) > 4096 || /[^ -~]/ { exit 1 } END { if (NR != 1) exit 1 }' "$key_file" || fail 'Recovery key must be one printable ASCII line of at least 32 characters'
 tenant_dir=$root/$tenant
 private_dir "$tenant_dir"
 private_file "$tenant_dir/manifest.json"
@@ -157,7 +157,7 @@ check_container () {
 		jq -e --arg state "$tenant_dir/state" --arg config "$tenant_dir/config" '
 		 any(.[0].Mounts[]; .Source == $state and .Destination == "/var/lib/venture" and .RW == true) and
 		 any(.[0].Mounts[]; .Source == $config and .Destination == "/etc/venture" and .RW == false)
-		' "$work/inspect.json" >/dev/null || fail 'Application state/config mounts differ from registration' 
+		' "$work/inspect.json" >/dev/null || fail 'Application state/config mounts differ from registration'
 	fi
 }
 pg () {
@@ -171,7 +171,7 @@ check_target () {
 	actual=$(printf 'SHOW server_version_num;\n' | pg)
 	[[ $actual =~ ^[0-9]+$ && $((10#$actual / 10000)) == "$postgres_major" ]] || fail 'PostgreSQL major version differs from registration'
 	actual=$(printf "SELECT count(*) FROM pg_roles WHERE rolname = '%s' AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls;\n" "$db_role" | pg)
-	[[ $actual == 1 ]] || fail 'Application database role must be unprivileged' 
+	[[ $actual == 1 ]] || fail 'Application database role must be unprivileged'
 }
 # Only regular files and directories are portable tenant state. Sockets,
 # symlinks, devices and newline-bearing paths would weaken extraction checks.

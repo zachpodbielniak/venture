@@ -718,7 +718,6 @@ main(
 		}
 	}
 
-
 	if (!venture_tenant_service_configure(venture_tenant_service_get(database), config, &error) ||
 	    !venture_tenant_service_initialize(venture_tenant_service_get(database), &error))
 	{
