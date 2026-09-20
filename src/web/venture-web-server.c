@@ -5663,8 +5663,17 @@ venture_web_ui_list(
 			"<a class=\"btn btn-primary\" href=\"/e/%s/new\">New</a>", type_name);
 	g_string_append(content, "</div></div>");
 
-	venture_entity_set_organization_id(prototype, venture_web_active_organization(self, request));
-	venture_web_append_record_actions(self, content, prototype, principal);
+	/* The registry prototype is one process-wide object per type; a
+	 * request's active organization must not linger on it for the next
+	 * reader, so the actions block gets a request-local sample. */
+	{
+		g_autoptr(VentureEntity) sample = NULL;
+
+		sample = g_object_new(entity_type, NULL);
+		venture_entity_set_organization_id(sample,
+			venture_web_active_organization(self, request));
+		venture_web_append_record_actions(self, content, sample, principal);
+	}
 
 	/* Bulk edits, for an editor. The bar stays hidden until a row is
 	 * ticked; the tick column is only rendered when the bar is. */
@@ -19656,11 +19665,11 @@ venture_web_forge_webhook_apply(
 		data = NULL;
 
 	/*
-	 * The size cap is enforced here rather than assumed.
-	 * server.max_request_size_mb is declared in the configuration but
-	 * nothing in this tree reads it, so treating it as already applied
-	 * would leave this route -- the one an unauthenticated caller can
-	 * reach -- with no bound at all.
+	 * The size cap is enforced here as well as at the transport.
+	 * venture-http-limits.c applies server.max_request_size_mb to every
+	 * request body before any route runs; this check stays so that the
+	 * route an unauthenticated caller can reach keeps its bound even if
+	 * the server is embedded without that listener.
 	 */
 	if (length > (gsize)(max_bytes * 1024 * 1024))
 		return venture_web_forge_ack(SOUP_STATUS_REQUEST_ENTITY_TOO_LARGE);

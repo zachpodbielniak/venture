@@ -317,6 +317,22 @@ delivery_active(VentureEntity *project, GError **error)
 	return TRUE;
 }
 
+/* A project has one billing model. Priced deliverables and change orders
+ * are invoiced against an accepted quote, so they belong only to a project
+ * the quote handoff created: a time-and-materials project (deal handoff)
+ * bills approved time instead, and a manually created project with a
+ * free-text "fixed" kind has no quote for a progress invoice to draw on. */
+static gboolean
+delivery_fixed_price(VentureEntity *project, GError **error)
+{
+	g_autofree gchar *kind = NULL;
+	g_object_get(project, "billing-kind", &kind, NULL);
+	if (number(project, "quote-id") > 0 && !g_strcmp0(kind, "fixed")) return TRUE;
+	return refuse(error, number(project, "quote-id") > 0 || !g_strcmp0(kind, "fixed") ?
+		"fixed-price billing requires the project a quote handoff created, not a manually labelled billing model" :
+		"time-and-materials projects bill approved time; fixed amounts and change orders require a fixed-price quote project");
+}
+
 static VentureEntity *
 delivery_plan(VentureAction *action, VentureEntity *project, GHashTable *params,
 	const VentureActor *actor, GError **error)
@@ -353,6 +369,7 @@ delivery_plan(VentureAction *action, VentureEntity *project, GHashTable *params,
 	g_object_get(project, "currency", &currency, "owner", &owner, NULL);
 	if (amount_text != NULL)
 	{
+		if (!delivery_fixed_price(project, error)) return NULL;
 		amount = venture_money_from_string(amount_text, currency, error);
 		if (amount == NULL) return NULL;
 		if (venture_money_is_negative(amount) || g_strcmp0(venture_money_get_currency(amount), currency))
@@ -563,7 +580,7 @@ delivery_change(VentureAction *action, VentureEntity *project, GHashTable *param
 	if (error != NULL && *error != NULL) return NULL;
 	if (!delivery_active(project, error)) return NULL;
 	g_object_get(project, "currency", &currency, "owner", &owner, "budget", &budget, "billing-kind", &kind, NULL);
-	if (g_strcmp0(kind, "fixed")) return refuse(error, "fixed-price change orders require a fixed-price project"), NULL;
+	if (!delivery_fixed_price(project, error)) return NULL;
 	quote = delivery_ref(self, VENTURE_TYPE_QUOTE, delivery_id(params, "quote_id"), org, error);
 	if (quote == NULL) return NULL;
 	g_object_get(quote, "status", &status, "total", &amount, NULL);

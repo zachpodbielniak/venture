@@ -39,7 +39,11 @@ also use the canonical =owner_user_id= field so the existing member/owner/team
 access policy applies; historical evidence remains immutable. Manual ownership changes
 validate same-organization references and active membership; contradictory
 username/user ID or team/territory combinations are refused. An existing
-unchanged assignment remains editable after a representative is deactivated.
+unchanged assignment remains editable after a representative is deactivated:
+the deal still moves to a won stage and the booking is credited to that
+representative, and converting a lead carries a routed territory or owner
+onto the deal even after either has since been deactivated. Only choosing a
+different assignment is judged against current activity.
 Legacy free-form usernames with no resolved account remain unassigned or
 unresolved for representative attainment; they do not receive guessed credit.
 

@@ -106,6 +106,48 @@ static void test_nested(Fixture *f, gconstpointer unused)
 	bytes = venture_document_service_read_attachment(venture_document_service_get(f->database), document, f->root, 100, &error);
 	g_assert_null(bytes); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 }
+/* Ownership is resolved from a bounded candidate set, not the whole table:
+ * the exact canonical path, plus rows sharing the basename so a legacy row
+ * stored before canonicalisation still blocks the read. A same-named file in
+ * another directory, or another organization's unrelated file, is neither. */
+static void test_bounded_lookup(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) document = filed(f), sibling = NULL, foreign = NULL;
+	g_autoptr(VentureEntity) alias = g_object_new(VENTURE_TYPE_DOCUMENT, "organization-id", (gint64)2, "title", "Uncanonical alias", NULL);
+	g_autoptr(GBytes) bytes = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *nested = g_build_filename(f->root, "old", NULL);
+	g_autofree gchar *same_name = g_build_filename(nested, "receipt.txt", NULL);
+	g_autofree gchar *other_name = g_build_filename(f->root, "other.txt", NULL);
+	g_autofree gchar *uncanonical = g_build_filename(f->root, ".", "receipt.txt", NULL);
+	g_autofree gchar *sql = NULL;
+	(void)unused;
+	g_assert_cmpint(g_mkdir(nested, 0700), ==, 0);
+	g_assert_true(g_file_set_contents(same_name, "Older receipt", -1, NULL));
+	g_assert_true(g_file_set_contents(other_name, "Foreign receipt", -1, NULL));
+	/* Same basename, different directory: a distinct original, not a claim on f->path. */
+	sibling = g_object_new(VENTURE_TYPE_DOCUMENT, "organization-id", (gint64)1, "title", "Sibling", "path", same_name, NULL);
+	g_assert_true(venture_document_service_save_attachment(venture_document_service_get(f->database), sibling, f->root, NULL, &error)); g_assert_no_error(error);
+	/* Another organization's unrelated file does not block either read. */
+	foreign = g_object_new(VENTURE_TYPE_DOCUMENT, "organization-id", (gint64)2, "title", "Foreign", "path", other_name, NULL);
+	g_assert_true(venture_document_service_save_attachment(venture_document_service_get(f->database), foreign, f->root, NULL, &error)); g_assert_no_error(error);
+	bytes = venture_document_service_read_attachment(venture_document_service_get(f->database), document, f->root, 100, &error);
+	g_assert_no_error(error); g_assert_cmpmem(g_bytes_get_data(bytes, NULL), g_bytes_get_size(bytes), "Original receipt", strlen("Original receipt"));
+	g_clear_pointer(&bytes, g_bytes_unref);
+	bytes = venture_document_service_read_attachment(venture_document_service_get(f->database), sibling, f->root, 100, &error);
+	g_assert_no_error(error); g_assert_cmpmem(g_bytes_get_data(bytes, NULL), g_bytes_get_size(bytes), "Older receipt", strlen("Older receipt"));
+	g_clear_pointer(&bytes, g_bytes_unref);
+	/* A legacy row in another organization whose stored path only canonicalises
+	 * to f->path is not an exact match, yet must still refuse the read. */
+	g_assert_cmpstr(uncanonical, !=, f->path);
+	g_assert_true(venture_database_save(f->database, alias, NULL, &error)); g_assert_no_error(error);
+	sql = g_strdup_printf("UPDATE documents SET path='%s' WHERE id=%" G_GINT64_FORMAT, uncanonical, venture_entity_get_id(alias));
+	g_assert_true(venture_database_execute(f->database, sql, NULL, &error)); g_assert_no_error(error);
+	bytes = venture_document_service_read_attachment(venture_document_service_get(f->database), document, f->root, 100, &error);
+	g_assert_null(bytes); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION); g_clear_error(&error);
+	bytes = venture_document_service_read_attachment(venture_document_service_get(f->database), sibling, f->root, 100, &error);
+	g_assert_no_error(error); g_assert_nonnull(bytes);
+}
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
@@ -114,5 +156,6 @@ int main(int argc, char **argv)
 	g_test_add("/attachments/legacy-alias", Fixture, NULL, setup, test_legacy_alias, teardown);
 	g_test_add("/attachments/symlink-size", Fixture, NULL, setup, test_symlink_and_size, teardown);
 	g_test_add("/attachments/nested", Fixture, NULL, setup, test_nested, teardown);
+	g_test_add("/attachments/bounded-lookup", Fixture, NULL, setup, test_bounded_lookup, teardown);
 	return g_test_run();
 }

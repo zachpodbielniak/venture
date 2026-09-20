@@ -4213,6 +4213,26 @@ test_orgaccess_export_signal(ServerFixture *fixture, gconstpointer user_data)
 	g_assert_null(strstr(body, "PrivateBoundaryMarker"));
 }
 
+/* The list page renders type-level actions for the active organization.
+ * The registry prototype is shared by every request and every other
+ * reader of a type's specs, so the organization must not be written to it. */
+static void
+test_orgaccess_list_leaves_prototype_untouched(ServerFixture *fixture, gconstpointer user_data)
+{
+	VentureEntity *prototype;
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *body = NULL;
+
+	prototype = venture_entity_registry_get_prototype(
+		venture_context_get_entity_registry(fixture->context), "company");
+	g_assert_nonnull(prototype);
+	g_assert_cmpint(venture_entity_get_organization_id(prototype), ==, 0);
+	server_fixture_create_user(fixture, "list-owner", "password", VENTURE_USER_ROLE_OWNER, NULL);
+	cookie = server_fixture_login(fixture, "list-owner", "password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/e/company", cookie, NULL, &body, NULL), ==, 200);
+	g_assert_cmpint(venture_entity_get_organization_id(prototype), ==, 0);
+}
+
 static void
 orgaccess_cli_wait(GObject *source, GAsyncResult *result, gpointer data)
 {
@@ -4786,6 +4806,35 @@ static void test_auth_ai_settings(ServerFixture *fixture, gconstpointer unused)
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/ai", owner, NULL, &page, NULL), ==, SOUP_STATUS_OK);
 	g_assert_nonnull(strstr(page, "Effective source: disabled"));
 }
+/* An organization editor -- a member holding the EDITOR organization role,
+ * not the FINANCE one the generic member helper grants -- is refused every
+ * AI and mail settings page on both the read and the write, with the role
+ * status rather than a redirect, since the session itself is valid. */
+static void test_auth_settings_organization_editor(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) member = NULL;
+	g_autofree gchar *editor = NULL;
+	gint64 id;
+	(void)unused;
+	server_fixture_create_user(fixture, "org-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, &id);
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", id,
+		"organization-id", venture_context_get_default_organization_id(fixture->context),
+		"role", VENTURE_ORGANIZATION_ROLE_EDITOR, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, member, NULL, NULL));
+	editor = server_fixture_login(fixture, "org-editor", "editor-long-password");
+	g_assert_nonnull(editor);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/ai", editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/ai", editor,
+		"operation=configure&purpose=chat&version=0&provider=openai&model=fixture-model&base_url=https%3A%2F%2Fapi.openai.com&api_key=editor-refused-ai-secret&monthly_requests=20&concurrency_limit=1", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/ai", editor,
+		"operation=disable&purpose=chat&version=0", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/settings/ai/platform", editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/settings/ai/platform", editor,
+		"operation=offer&purpose=chat&billing_organization_id=1&title=Editor%20offer&provider=openai&model=fixture-model&base_url=https%3A%2F%2Fapi.openai.com&api_key=editor-refused-platform-secret&version=0", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/mail", editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/mail", editor,
+		"operation=configure&version=0&connection_id=0&host=smtp.example.invalid&from=billing%40example.invalid&username=editor&password=editor-refused-mail-secret", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+}
 static void test_auth_bankfeed_settings(ServerFixture *fixture, gconstpointer unused)
 {
 	g_autoptr(GError) error = NULL;
@@ -5098,5 +5147,7 @@ main(
 	g_test_add("/auth/mail-settings-administration", ServerFixture, NULL, server_fixture_set_up, test_auth_mail_settings_administration, server_fixture_tear_down);
 	g_test_add("/auth/connector-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_connector_settings, server_fixture_tear_down);
 	g_test_add("/auth/bankfeed-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_bankfeed_settings, server_fixture_tear_down);
+	g_test_add("/auth/settings-organization-editor", ServerFixture, NULL, server_fixture_set_up, test_auth_settings_organization_editor, server_fixture_tear_down);
+	g_test_add("/auth/list-leaves-prototype-untouched", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_list_leaves_prototype_untouched, server_fixture_tear_down);
 	return g_test_run();
 }

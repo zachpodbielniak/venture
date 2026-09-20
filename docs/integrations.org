@@ -40,10 +40,13 @@ is cleared when released.
 Restore requires both the database and its original encryption key. Keep the
 key backup separately encrypted and access-controlled. Changing this master
 key without re-encrypting the stored data is refused in a running process;
-a restart with a different key cannot decrypt it. An in-place master-key
-re-encryption operation is not implemented yet. Credential rotation for the
-same provider account is supported and does not require changing the master
-key.
+a restart with a different key cannot decrypt it. To move stored credentials
+to a new master key, run the offline re-encryption described in
+[[file:integration-key-maintenance.org][Integration key maintenance]]:
+=--check-integration-key= proves which key opens the stored rows and
+=--rotate-integration-key= rewrites them under the new one. Credential
+rotation for the same provider account is supported and does not require
+changing the master key.
 
 * Rotation and disconnect
 

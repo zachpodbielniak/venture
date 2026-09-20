@@ -133,22 +133,35 @@ gboolean venture_sales_routing_territory(VentureDatabase *db, VentureEntity *rul
 		!venture_sales_routing_validate(db, rule, error)) return FALSE;
 	g_object_set(lead, "territory-id", id, "team-id", number(territory, "team-id"), NULL); return TRUE;
 }
+/* A converted deal copies its lead's assignment rather than choosing one.
+ * Judging that copy as a new assignment would refuse the conversion once the
+ * routed territory or representative has been deactivated, which the docs
+ * promise never reassigns existing work. The lead is the baseline instead. */
+static VentureEntity *inherited(VentureDatabase *db, VentureEntity *entity)
+{
+	VentureEntity *lead;
+	if (!VENTURE_IS_DEAL(entity)) return NULL;
+	lead = venture_lead_service_converting_source(venture_database_get_lead_service(db));
+	if (!lead || venture_entity_get_organization_id(lead) != venture_entity_get_organization_id(entity)) return NULL;
+	return lead;
+}
 static gboolean ownership(VentureDatabase *db, VentureEntity *entity, VentureEntity *previous, GError **error)
 {
-	g_autofree gchar *owner = string(entity, "owner"), *old_owner = string(previous, "owner");
+	VentureEntity *basis = previous ? previous : inherited(db, entity);
+	g_autofree gchar *owner = string(entity, "owner"), *old_owner = string(basis, "owner");
 	g_autoptr(VentureEntity) territory = NULL, team = NULL, user = NULL;
 	gint64 org = venture_entity_get_organization_id(entity), territory_id = number(entity, "territory-id"),
 		team_id = number(entity, "team-id"), user_id = number(entity, "owner-user-id");
 	gboolean owner_changed = g_strcmp0(owner, old_owner) != 0;
-	gboolean id_changed = user_id != number(previous, "owner-user-id");
-	gboolean changed = !previous || owner_changed || id_changed || team_id != number(previous, "team-id") || territory_id != number(previous, "territory-id");
+	gboolean id_changed = user_id != number(basis, "owner-user-id");
+	gboolean changed = !basis || owner_changed || id_changed || team_id != number(basis, "team-id") || territory_id != number(basis, "territory-id");
 	if (!changed) return TRUE;
 	if (territory_id > 0) {
 		territory = reference(db, VENTURE_TYPE_SALES_TERRITORY, territory_id, org, error); if (!territory) return FALSE;
 		if (!active(territory)) return fail(error, "new assignments need an active territory");
 		/* Choosing a territory fills its team; an explicitly different team
 		 * is refused instead of producing inconsistent owning references. */
-		if (team_id == 0 || (previous && team_id == number(previous, "team-id") && territory_id != number(previous, "territory-id"))) {
+		if (team_id == 0 || (basis && team_id == number(basis, "team-id") && territory_id != number(basis, "territory-id"))) {
 			team_id = number(territory, "team-id"); g_object_set(entity, "team-id", team_id, NULL);
 		}
 		if (team_id != number(territory, "team-id")) return fail(error, "assignment team does not own this territory");
@@ -246,10 +259,9 @@ static gboolean credit(VentureSalesService *self, VentureEntity *deal, VentureEn
 		g_autofree gchar *owner = string(deal, "owner"), *team_name = NULL, *territory_name = NULL;
 		g_autoptr(VentureEntity) team = NULL, territory = NULL;
 		gint64 org = venture_entity_get_organization_id(deal);
-		if (number(deal, "owner-user-id") > 0) {
-			g_autoptr(VentureEntity) credited_rep = rep(self->database, org, number(deal, "owner-user-id"), NULL, number(deal, "team-id"), TRUE, TRUE, error);
-			if (!credited_rep) return FALSE;
-		}
+		/* The booking is credited to whoever the deal names at the win. An
+		 * assignment ownership() accepted is not re-judged here: a rep or
+		 * membership deactivated since keeps the attainment it earned. */
 		if (number(deal, "team-id") > 0) { team = reference(self->database, VENTURE_TYPE_TEAM, number(deal, "team-id"), org, error); if (!team) return FALSE; }
 		if (number(deal, "territory-id") > 0) { territory = reference(self->database, VENTURE_TYPE_SALES_TERRITORY, number(deal, "territory-id"), org, error); if (!territory) return FALSE; }
 		team_name = string(team, "name"); territory_name = string(territory, "name");
@@ -286,7 +298,13 @@ gboolean venture_sales_check_write(VentureDatabase *db, VentureEntity *entity, g
 		if (!tracking_ready(db, &ready, error)) return FALSE;
 		if (!ready) return TRUE;
 		stored = venture_database_get(db, VENTURE_TYPE_DEAL, venture_entity_get_id(entity), error);
-		if (!stored) return FALSE;
+		if (!stored) {
+			if (error && !*error) g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "VentureSalesService: deal %" G_GINT64_FORMAT " does not exist", venture_entity_get_id(entity));
+			return FALSE;
+		}
+		/* Restoring or purging a row deleted before this module tracked wins
+		 * cancels no credit; a deleted deal cannot be moved off WON first. */
+		if (venture_entity_is_deleted(stored)) return TRUE;
 		if (number(stored, "stage") == VENTURE_DEAL_STAGE_WON) return fail(error, "move a won deal to an open or lost stage before cancellation/removal");
 	}
 	return TRUE;

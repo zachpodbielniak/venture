@@ -67,6 +67,18 @@ gboolean venture_lead_service_capture_result(VentureLeadService *self, const gch
 VentureEntity *venture_lead_service_convert(VentureLeadService *self, VentureEntity *lead,
 	JsonObject *options, const VentureActor *actor, GError **error);
 /**
+ * venture_lead_service_converting_source:
+ * @self: the canonical service
+ *
+ * The deal a conversion creates copies the lead's owner, team and territory.
+ * A save hook validating that deal needs to know those fields were inherited
+ * rather than chosen, because an inherited assignment may name a
+ * representative or territory deactivated since routing.
+ *
+ * Returns: (transfer none) (nullable): the lead being converted right now
+ */
+VentureEntity *venture_lead_service_converting_source(VentureLeadService *self);
+/**
  * venture_lead_service_reassign:
  * @self: the canonical service
  * @lead: saved lead

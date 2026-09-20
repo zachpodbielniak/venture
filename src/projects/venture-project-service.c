@@ -156,7 +156,9 @@ venture_project_service_bill_impl(VentureProjectService *self, gint64 project_id
 	g_autoptr(VentureQuery) tq = NULL;
 	g_autoptr(VentureQuery) cq = NULL;
 	g_autofree gchar *currency = NULL;
+	g_autofree gchar *kind = NULL;
 	gint64 org, customer, billed = 0;
+	gboolean fixed;
 	guint i;
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "client_project") == G_TYPE_INVALID)
 	{
@@ -166,13 +168,29 @@ venture_project_service_bill_impl(VentureProjectService *self, gint64 project_id
 	if (!venture_database_begin(self->database, error)) return NULL;
 	project = venture_database_get(self->database, VENTURE_TYPE_CLIENT_PROJECT, project_id, error);
 	if (project == NULL) goto fail;
-	if (number(project, "quote-id") > 0)
+	org = venture_entity_get_organization_id(project);
+	g_object_get(project, "customer-id", &customer, "currency", &currency, "billing-kind", &kind, NULL);
+	/* One billing model per project: a quote-created project, a project
+	 * labelled fixed, or one carrying an accepted quote agreement invoices
+	 * accepted delivery, never its labour as well. A deal handoff's scope
+	 * names a deal, not a quote, so time-and-materials billing stays open. */
+	if (number(project, "quote-id") == 0 && g_strcmp0(kind, "fixed") != 0)
+	{
+		g_autoptr(VentureQuery) sq = venture_query_new(VENTURE_TYPE_PROJECT_SCOPE);
+		gint64 agreements;
+		venture_query_set_organization(sq, org);
+		if (!venture_query_add_filter_int(sq, "project-id", VENTURE_FILTER_OP_EQ, project_id, error) ||
+			!venture_query_add_filter_int(sq, "quote-id", VENTURE_FILTER_OP_GT, 0, error)) goto fail;
+		agreements = venture_database_count(self->database, sq, error);
+		if (agreements < 0) goto fail;
+		fixed = agreements > 0;
+	}
+	else fixed = TRUE;
+	if (fixed)
 	{
 		refuse(error, "fixed-price projects bill accepted delivery; their time and costs are cost evidence only");
 		goto fail;
 	}
-	org = venture_entity_get_organization_id(project);
-	g_object_get(project, "customer-id", &customer, "currency", &currency, NULL);
 	tq = venture_query_new(VENTURE_TYPE_PROJECT_TIME);
 	venture_query_set_organization(tq, org);
 	venture_query_set_limit(tq, 0);

@@ -80,6 +80,7 @@ int main(int argc, char **argv)
 	g_test_add("/ai-organizations/tool-scope", AiFixture, NULL, ai_fixture_setup, test_ai_tool_scope, ai_fixture_teardown);
 	g_test_add("/ai-organizations/reservation-observer", AiFixture, NULL, ai_fixture_setup, test_ai_reservation_observer, ai_fixture_teardown);
 	g_test_add("/ai-organizations/service-scope", AiFixture, NULL, ai_fixture_setup, test_ai_service_scope, ai_fixture_teardown);
+	g_test_add("/ai-organizations/member-role-refused", AiFixture, NULL, ai_fixture_setup, test_ai_member_role_refused, ai_fixture_teardown);
 	g_test_add("/ai-organizations/restart", AiFixture, NULL, ai_fixture_setup, test_ai_restart, ai_fixture_teardown);
 	return g_test_run();
 }

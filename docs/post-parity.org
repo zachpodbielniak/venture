@@ -102,17 +102,17 @@ verified without the corresponding execution evidence.
 | Accounting loop | Synthetic scenarios verified on SQLite/PostgreSQL | Synthetic opening/import through settlement, reconciliation, close/correction and restored tie-outs, SQLite and PostgreSQL |
 | CRM and project handoff | Capture-to-payment and eleven delivery scenarios verified on SQLite/PostgreSQL; deployment acceptance pending | Quote/deal through scope, work, acceptance, invoice and receipt; replay and changed-scope cases |
 | Project financials | Frozen-cost and delivery report/action scenarios verified | Exact budget, cost, unbilled, billed and profit with unknown historical costs and source rows |
-| Organization integrations | Foundation and Stripe settings verified locally; other providers pending | Settings, secret redaction, account binding, rotation, revocation and A/B organization tests |
-| Subscription collection | Pending | Verified automatic settlement, failed collection, recovery and duplicate refusal; no provisioning |
+| Organization integrations | Stripe, SMTP, bank-feed, private mailbox/calendar and organization AI settings verified on SQLite/PostgreSQL (=docs/evidence/125-mail-demo.txt=, =125-bankfeed-demo.org=, =125-connectors-demo.org=, =125-ai-organizations-demo.txt=); combined suite 115/115 at =b98dc64=; forge vault and commerce accounts have lane demonstrations only (=docs/forge-vault-demonstration.org=, =docs/evidence/commerce-accounts-demonstration.org=) | Settings, secret redaction, account binding, rotation, revocation and A/B organization tests |
+| Subscription collection | Controlled-provider settlement, failed collection, paused/manual recovery and duplicate refusal verified on SQLite/PostgreSQL (=docs/stripe-automatic-demonstration.org=); combined DEBUG suite 115/115 passed at =e477111= | Verified automatic settlement, failed collection, recovery and duplicate refusal; no provisioning |
 | Calls (#122) | Service scenarios verified on SQLite/PostgreSQL; integrated suite 107/107 passed at f01b4b3 | One historical event and optional follow-up, including replay and lead-only calls |
 | OCR (#123) | Fifteen lane scenarios verified on SQLite/PostgreSQL, including real OCR; combined DEBUG suite 111/111 passed at 602545a | Bounded local extraction, provenance, retry/cancel and reviewed-correction preservation |
-| ACH and links (#124) | Pending | Delayed settlement, returns, pending balance changes and account/environment isolation |
-| Marketing (#120) | Pending | Snapshotted audience, consent, suppression at delivery, restart and uncertainty |
-| Attribution (#121) | Pending | Consent-bound capture, Lightsite form contract, dedupe and reconciled attribution |
-| OIDC | Pending | Verified identity, explicit linking, local roles and recovery |
-| Territories/quotas | Pending | Deterministic routing, frozen credit, periods and currency-separated attainment |
-| Tenant lifecycle and isolation | Pending | Provision/suspend/export/restore/offboard, independent roots and adversarial A/B tests |
-| Governance and recovery | Pending | Data/control inventory, retention/holds, backup/restore and audit evidence |
+| ACH and links (#124) | Delayed settlement, return/balance conflict, posting retry, separation of duties and account/environment isolation verified on SQLite/PostgreSQL (=test-stripe=); carried through combined suites 112/112 at =97637d2= to 115/115 at =e477111= | Delayed settlement, returns, pending balance changes and account/environment isolation |
+| Marketing (#120) | Thirty-three lane scenarios verified on SQLite/PostgreSQL (=docs/marketing-demonstration.org=) and the authenticated built-server walkthrough in =docs/evidence/125-attribution-server.org=; combined integration gate pending | Snapshotted audience, consent, suppression at delivery, restart and uncertainty |
+| Attribution (#121) | Thirty-five lane scenarios verified on SQLite/PostgreSQL and the authenticated built-server walkthrough in =docs/evidence/125-attribution-server.org=; combined integration gate pending | Consent-bound capture, Lightsite form contract, dedupe and reconciled attribution |
+| OIDC | Twenty-two cases including the real Keycloak browser flow verified on SQLite/PostgreSQL (=docs/evidence/125-oidc-demo.txt=); combined DEBUG suite 114/114 passed at =dd64d91= | Verified identity, explicit linking, local roles and recovery |
+| Territories/quotas | Twelve scenarios verified on SQLite/PostgreSQL with the built-server browser demonstration in =docs/evidence/125-sales-performance-demo.txt=; combined integration gate pending | Deterministic routing, frozen credit, periods and currency-separated attainment |
+| Tenant lifecycle and isolation | Physical provision/export/restore-quarantine/upgrade/offboard drill passed (=docs/evidence/125-tenant-lifecycle.txt=); fifteen tenant and eleven hosted-service cases verified on SQLite/PostgreSQL; component review in =docs/evidence/125-hosted-isolation-review.org=; final combined adversarial A/B deployment and independent isolation review pending | Provision/suspend/export/restore/offboard, independent roots and adversarial A/B tests |
+| Governance and recovery | Control inventory in [[file:hosted-controls.org][hosted controls]]; neighbor-preserving physical PostgreSQL backup/restore drill passed (=docs/evidence/125-tenant-recovery.txt=); local archive catalog, holds and explicit retention verified, 28 operator cases (=docs/evidence/backup-retention-demonstration.org=); authorized erasure/anonymization workflow, offsite retention and separately administered audit sink pending | Data/control inventory, retention/holds, backup/restore and audit evidence |
 | Capacity and operations | Pending | Measured profiles, fairness, limits, restart/failover and deployment runbook |
 | Final review | Pending | Repeated skill-review repair, exact-head DEBUG and live PostgreSQL checks |
 
@@ -125,9 +125,9 @@ after checking the ledger are =000460= (project profitability), =000470=
 =000500= (Stripe account bindings), =000510= (active integration uniqueness),
 and =000520= (automatic collection), =000530= (OIDC), =000540= (mail account binding), =000550= (bank-feed identity),
 =000560= (organization AI), =000570= (private connectors), =000580=
-(territories/quotas), and =000590= (tenant boundary/lifecycle). Applied
-and =000520= (automatic collection), =000530= (OIDC),
-=000610= (commerce account identity; no inferred legacy ownership). Applied
+(territories/quotas), =000590= (tenant boundary/lifecycle) and =000610=
+(commerce account identity; no inferred legacy ownership). =000600= remains
+reserved for organization forge account migration and is not applied. Applied
 migrations remain append-only and paired for both backends.
 
 The combined Stripe-settings/project-delivery revision =ba1393e= passed its

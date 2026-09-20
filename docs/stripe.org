@@ -25,7 +25,13 @@ checks that same version so concurrent rotation cannot label newer credentials
 with an older configuration identity. Cached clients reload on rotation.
 Webhook-secret rotation has no overlap window: coordinate the endpoint secret
 with Stripe. Disconnect retains historical encrypted credentials for callbacks.
-Changing account or environment requires disconnect followed by connect.
+Changing account or environment requires disconnect followed by connect. After
+reconnecting, keep the previous connection's webhook endpoint registered in
+Stripe until every pending hosted Checkout bound to that connection has
+completed or expired: callbacks for those attempts are only accepted on the
+endpoint of the connection that created them, and a completion delivered to
+the new endpoint is recorded as =unknown= with an =out_of_order= exception
+while the old attempt stays pending.
 
 Production never falls back to installation =VENTURE_STRIPE_*= credentials.
 The legacy environment constructor works only with explicit C transport
@@ -279,7 +285,12 @@ engine. No internal entitlement consumer or Lightsite provisioning is implemente
    authorized invoice* performs the same service action immediately. The
    type-level *Check due recurring collections* action requires an explicit
    organization and accepts =now= and a limit from 1 to 100, default 10. Its clock
-   controls scheduling, never the date on a cash receipt. Existing accounting
+   controls scheduling, never the date on a cash receipt. =now= is accepted as
+   given on both *Check due recurring collections* and *Retry due collection*:
+   a future value makes periods ending before it due for renewal and treats a
+   recorded retry wait as elapsed, so a saved payment method can be charged
+   ahead of the period end. Leave it unset outside deliberate catch-up or
+   testing. Existing accounting
    guards still refuse future-dated financial events. Existing CLI renewal
    sweeps remain available; the stable billing-period identity prevents duplicate
    invoices when an operator also runs one.

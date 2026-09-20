@@ -535,6 +535,20 @@ test_tenant_http(TenantFixture *f, gconstpointer data)
 		g_assert_cmpuint(tenant_http(session, port, "POST", "/account/mfa/confirm", "tenant.example.test", cookie, form, NULL), ==, 200);
 	}
 	g_assert_cmpuint(tenant_http(session, port, "GET", "/e/tenant_membership", "tenant.example.test", cookie, NULL, NULL), ==, 200);
+	/* The same authority must reach a business write once the workspace is
+	 * back in service: the approval decision used to demand an
+	 * organization_membership row and answered 404 for a business record. */
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_CONTACT);
+		g_autoptr(GPtrArray) contacts = NULL;
+		g_autofree gchar *form = g_strdup_printf("name=Unrowed%%20organization%%20contact&organization_id=%" G_GINT64_FORMAT, f->organization_id);
+		g_assert_true(venture_tenant_service_set_state_operator(f->service, "active", "Reviewed after HTTP restore", &error)); g_assert_no_error(error);
+		g_assert_cmpuint(tenant_http(session, port, "POST", "/e/contact", "tenant.example.test", cookie, form, NULL), ==, 302);
+		venture_query_add_filter_string(query, "name", VENTURE_FILTER_OP_EQ, "Unrowed organization contact", NULL);
+		contacts = venture_database_find(f->database, query, &error); g_assert_no_error(error);
+		g_assert_cmpuint(contacts->len, ==, 1);
+		g_assert_cmpint(venture_entity_get_organization_id(g_ptr_array_index(contacts, 0)), ==, f->organization_id);
+	}
 	venture_web_server_stop(server);
 	g_clear_object(&server); g_clear_object(&context);
 	venture_test_remove_tree(state_dir);

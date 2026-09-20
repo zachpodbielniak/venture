@@ -104,6 +104,10 @@ security:
   # Reject more than this many failed logins from one address per minute.
   login_rate_limit: 10
 
+  # Environment variable holding the key that encrypts stored second-factor
+  # secrets; falls back to session_secret_env when unset.
+  mfa_key_env: "VENTURE_MFA_KEY"
+
 locale:
   # The currency assumed when an amount does not name one.
   default_currency: "USD"
@@ -127,7 +131,22 @@ ai:
 
   # Environment variable holding the API key. Left empty, the provider's own
   # conventional variable is used (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...).
+  # provider, model and api_key_env are legacy hints; each organization
+  # binds its own provider explicitly in its settings.
   api_key_env: ""
+
+  # Exact platform-approved alternate provider base URLs; HTTPS unless
+  # explicit loopback testing is enabled. Empty means only the built-in
+  # provider endpoints are reachable.
+  allowed_base_urls: []
+
+  # Permit literal HTTP loopback endpoints from the exact AI base URL
+  # allowlist for isolated tests. Never turn this on in production.
+  allow_loopback: false
+
+  # Total provider deadline, 1 through 60 seconds, below the durable
+  # reservation lease.
+  provider_deadline_seconds: 60
 
   # How much authority tool calls have:
   #   read_only       query and report, never mutate
@@ -149,6 +168,9 @@ ai:
 
   # Seconds a staged mutation waits for a decision before expiring.
   confirmation_ttl: 3600
+
+  # Most staged changes that may wait at once; further staging is refused.
+  confirmation_limit: 200
 
   max_tokens: 4096
 
@@ -399,6 +421,11 @@ federation:
 
 # Transactional SMTP. The password is resolved only from this variable NAME.
 mail:
+  # Operator-allowed organization SMTP host:port pairs, comma-separated.
+  # Deny by default: empty denies every organization-bound SMTP account.
+  allowed_endpoints: ""
+  # Operator-owned SMTP CA bundle; empty uses system trust.
+  tls_ca_file: ""
   host: ""
   port: 587
   security: starttls                 # starttls | tls | none
@@ -407,3 +434,124 @@ mail:
   from_address: ""
   from_name: Venture
   reply_to: ""
+
+# Knowledge bases: documents the assistant can read, indexed by meaning.
+# The embedding_* keys are legacy migration hints only; organization
+# settings bind the embedding provider, URL, model and key explicitly, and
+# ambient credentials are never used.
+kb:
+  # Whether knowledge bases and retrieval are available (also: modules.kb).
+  enabled: true
+  embedding_provider: "ollama"
+  embedding_url: "http://127.0.0.1:11434"
+  embedding_model: "nomic-embed-text:v1.5"
+  embedding_key_env: ""
+
+  # Target passage length in characters, and how many characters each
+  # passage repeats from the previous one.
+  chunk_chars: 1200
+  chunk_overlap: 200
+
+  # Passages returned by a search, and given to the assistant.
+  search_limit: 8
+
+  # Cosine similarity, as a percentage, below which a cross-reference is not
+  # recorded, and the most cross-references recorded for one record.
+  crossref_min_score: 60
+  crossref_max_links: 5
+
+  # Largest file accepted by an import, in MiB, and the most files taken
+  # from a single uploaded archive.
+  max_upload_mb: 64
+  max_archive_entries: 2000
+
+# Scheduled backups. See docs/backup.org.
+backup:
+  # Where scheduled backups are written when a schedule names no
+  # destination; relative to the state directory.
+  directory: "backups"
+
+  # Successful backups kept per schedule when the schedule says zero.
+  retention: 7
+
+# Opt-in module switches. Each is off by default and means the same as the
+# matching entry under modules: above; both have to be true for the module
+# to be on. Uncomment to enable.
+#
+# Hosted Stripe payments; requires deployment credentials. See docs/stripe.org.
+# stripe:
+#   enabled: false
+#
+# Imported payroll runs; native tax calculation is out of scope.
+# payroll:
+#   enabled: false
+#
+# Pluggable bank feeds; each organization binds its own provider
+# credentials in settings. See docs/bankfeed.org.
+# bankfeed:
+#   enabled: false
+#
+# Commerce connectors with explicit organization account settings.
+# commerce:
+#   enabled: false
+#
+# Intercompany links, eliminations and consolidated statements.
+# group:
+#   enabled: false
+
+# Bounded local OCR for captured receipts and PDFs. Off by default; enabling
+# it requires the local engine described in docs/ocr.org.
+# ocr:
+#   # Enable bounded local OCR explicitly.
+#   enabled: false
+#   # Local OCR executable, chosen by the operator.
+#   executable: "tesseract"
+#   # Installed OCR languages joined with +.
+#   language: "eng"
+
+# Organization OpenID Connect sign-in. Off by default; see docs/oidc.org.
+# oidc:
+#   # Enable explicitly linked organization OpenID Connect sign-in.
+#   enabled: false
+#   # Permit HTTP loopback issuers only for isolated test deployments.
+#   allow_loopback: false
+#   # Exact platform-approved issuer URLs. Deny by default: empty refuses
+#   # all providers, so every issuer must be listed here.
+#   allowed_issuers: []
+
+# Operator allowlists for private mailbox and calendar connectors. Both are
+# deny by default: an empty value denies every endpoint, so an organization
+# or member-bound IMAP or CalDAV account cannot sync until its host is
+# listed here. See docs/connectors.org.
+# imap:
+#   # Operator-allowed IMAP host:port pairs, comma-separated; empty denies all.
+#   allowed_endpoints: ""
+# calendar:
+#   # Operator-allowed CalDAV HTTPS origins, comma-separated; empty denies all.
+#   allowed_origins: ""
+# connectors:
+#   # Allow explicitly configured loopback IMAP fixtures without TLS; never
+#   # permits remote plaintext.
+#   allow_plaintext_loopback: false
+
+# Hosted workspace binding. Written by the platform operator tooling for a
+# tenant process (see docs/hosted-workspaces.org); a self-hosted install
+# leaves this alone.
+# hosted:
+#   # Pin this database to one hosted workspace.
+#   enabled: false
+#   # Immutable hosted workspace UUID.
+#   workspace_id: ""
+#   # Immutable public HTTPS tenant origin.
+#   origin: ""
+#   # Workspace dynamic HTTP requests per minute, 1 through 1000000.
+#   http_requests_per_minute: 600
+#   # Workspace dynamic HTTP burst capacity, 1 through 1000000.
+#   http_burst: 120
+#   # Maximum nested dynamic HTTP handlers, 1 through 256.
+#   http_concurrency: 8
+
+# The rendered documentation site served at /docs. The default is the
+# docs-site directory under the install prefix's data directory.
+# docs:
+#   site_dir: "/usr/local/share/venture/docs-site"

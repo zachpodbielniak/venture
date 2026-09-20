@@ -433,6 +433,95 @@ static void test_sales_scoped(SalesFixture *f, gconstpointer data)
 	g_assert_nonnull(venture_access_policy_get_actor(venture_database_get_access_policy(f->db)));
 	g_test_message("A sales member routed through verified private user identities while the report excluded another organization's booking and retained caller authority");
 }
+/* The docs promise an inactive representative keeps historical attainment
+ * and an unchanged assignment stays editable. Re-judging the deal's owner at
+ * the win refused the stage move outright, and the only way past it was to
+ * reassign the deal, crediting the booking to someone who did not sell it. */
+static void test_sales_inactive_win(SalesFixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) team = sales_record(f, "team", "Sales"), first = NULL, territory = NULL;
+	g_autoptr(VentureEntity) deal = sales_record(f, "deal", "Sold before leaving");
+	g_autoptr(VentureMoney) value = venture_money_new_for_currency(7500, "USD");
+	g_autoptr(GPtrArray) memberships = NULL, credits = NULL;
+	guint i;
+	(void)data;
+	sales_save(f, team); first = sales_user(f, "rep-first", venture_entity_get_id(team));
+	territory = sales_territory(f, "Territory", venture_entity_get_id(team));
+	g_object_set(deal, "owner", "rep-first", "territory-id", venture_entity_get_id(territory), "value", value, NULL); sales_save(f, deal);
+	memberships = sales_rows(f, "team_membership");
+	for (i = 0; i < memberships->len; i++) {
+		VentureEntity *row = g_ptr_array_index(memberships, i);
+		if (sales_int(row, "user-id") == venture_entity_get_id(first)) { g_object_set(row, "active", FALSE, NULL); sales_save(f, row); }
+	}
+	g_object_set(first, "active", FALSE, NULL); sales_save(f, first);
+	sales_move(f, &deal, 1);
+	credits = sales_rows(f, "sales_credit"); g_assert_cmpuint(credits->len, ==, 1);
+	g_assert_cmpint(sales_int(g_ptr_array_index(credits, 0), "owner-user-id"), ==, venture_entity_get_id(first));
+	g_assert_cmpint(sales_int(g_ptr_array_index(credits, 0), "team-id"), ==, venture_entity_get_id(team));
+	g_assert_cmpint(sales_int(deal, "owner-user-id"), ==, venture_entity_get_id(first));
+	g_test_message("A win after the representative's membership and account were deactivated credited the booking to that representative unchanged");
+}
+/* Deactivating a territory does not reassign the leads already routed into
+ * it, so converting one must carry that territory onto the deal instead of
+ * treating the inherited assignment as a fresh choice and refusing it. */
+static void test_sales_inactive_conversion(SalesFixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) team = sales_record(f, "team", "Sales"), first = NULL, territory = NULL, rule = NULL;
+	g_autoptr(VentureEntity) lead = sales_record(f, "lead", "Routed before closure"), converted = NULL, deal = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	sales_save(f, team); first = sales_user(f, "rep-first", venture_entity_get_id(team));
+	territory = sales_territory(f, "Closing territory", venture_entity_get_id(team));
+	rule = sales_rule(f, "Website routing", venture_entity_get_id(territory), venture_entity_get_id(team), 10);
+	g_object_set(lead, "source", "website", NULL); sales_save(f, lead);
+	g_assert_cmpint(sales_int(lead, "territory-id"), ==, venture_entity_get_id(territory));
+	g_assert_cmpint(sales_int(lead, "owner-user-id"), ==, venture_entity_get_id(first));
+	g_object_set(territory, "active", FALSE, NULL); sales_save(f, territory);
+	g_object_set(first, "active", FALSE, NULL); sales_save(f, first);
+	g_object_set(lead, "status", VENTURE_LEAD_QUALIFIED, NULL); sales_save(f, lead);
+	converted = venture_lead_service_convert(venture_database_get_lead_service(f->db), lead, NULL, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(converted);
+	deal = venture_database_get(f->db, VENTURE_TYPE_DEAL, sales_int(converted, "converted-deal-id"), &error);
+	g_assert_no_error(error); g_assert_nonnull(deal);
+	g_assert_cmpint(sales_int(deal, "territory-id"), ==, venture_entity_get_id(territory));
+	g_assert_cmpint(sales_int(deal, "team-id"), ==, venture_entity_get_id(team));
+	g_assert_cmpint(sales_int(deal, "owner-user-id"), ==, venture_entity_get_id(first));
+	/* Choosing a different, inactive territory on the deal is still a new assignment. */
+	{
+		g_autoptr(VentureEntity) closed = sales_territory(f, "Another closed territory", venture_entity_get_id(team));
+		g_object_set(closed, "active", FALSE, NULL); sales_save(f, closed);
+		g_object_set(deal, "territory-id", venture_entity_get_id(closed), NULL);
+		g_assert_false(venture_database_save(f->db, deal, NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	}
+	g_test_message("Conversion retained the deactivated territory and representative routed onto the lead while an explicitly chosen inactive territory was still refused");
+}
+/* A deal deleted while won before the module tracked bookings has no
+ * credit to cancel, and a deleted row cannot be moved off WON first; the
+ * removal guard must let restore and purge through rather than strand it. */
+static void test_sales_restore_deleted_winner(SalesFixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) deal = sales_record(f, "deal", "Deleted historical winner"), stored = NULL;
+	g_autoptr(VentureMoney) value = venture_money_new_for_currency(1000, "USD");
+	g_autoptr(GPtrArray) credits = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	venture_config_set_module_enabled(f->config, "sales_performance", FALSE);
+	g_assert_true(venture_database_execute(f->db, "DROP TABLE sales_credits; DROP TABLE sales_assignments; DROP TABLE sales_quotas; DROP TABLE sales_territories", NULL, &error));
+	g_assert_no_error(error);
+	g_object_set(deal, "value", value, "stage", VENTURE_DEAL_STAGE_WON, NULL); sales_save(f, deal);
+	g_assert_true(venture_database_delete(f->db, deal, NULL, &error)); g_assert_no_error(error);
+	venture_config_set_module_enabled(f->config, "sales_performance", TRUE);
+	{ gboolean migrated = venture_database_migrate(f->db, venture_entity_registry_get_default(), &error); g_assert_no_error(error); g_assert_true(migrated); }
+	g_assert_true(venture_database_restore(f->db, deal, NULL, &error)); g_assert_no_error(error);
+	stored = venture_database_get(f->db, VENTURE_TYPE_DEAL, venture_entity_get_id(deal), &error);
+	g_assert_no_error(error); g_assert_nonnull(stored); g_assert_false(venture_entity_is_deleted(stored));
+	g_assert_cmpint(sales_int(stored, "stage"), ==, VENTURE_DEAL_STAGE_WON);
+	credits = sales_rows(f, "sales_credit"); g_assert_cmpuint(credits->len, ==, 0);
+	/* Once live again the winner is guarded like any other. */
+	g_assert_false(venture_database_delete(f->db, stored, NULL, &error)); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_test_message("A won deal deleted before sales tracking existed was restored without inventing credit and is guarded again once live");
+}
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
@@ -448,5 +537,8 @@ int main(int argc, char **argv)
 	g_test_add("/sales-performance/upgrade", SalesFixture, NULL, sales_setup, test_sales_upgrade, sales_teardown);
 	g_test_add("/sales-performance/foreign-owner", SalesFixture, NULL, sales_setup, test_sales_foreign_owner, sales_teardown);
 	g_test_add("/sales-performance/scoped", SalesFixture, NULL, sales_setup, test_sales_scoped, sales_teardown);
+	g_test_add("/sales-performance/inactive-win", SalesFixture, NULL, sales_setup, test_sales_inactive_win, sales_teardown);
+	g_test_add("/sales-performance/inactive-conversion", SalesFixture, NULL, sales_setup, test_sales_inactive_conversion, sales_teardown);
+	g_test_add("/sales-performance/restore-deleted-winner", SalesFixture, NULL, sales_setup, test_sales_restore_deleted_winner, sales_teardown);
 	return g_test_run();
 }

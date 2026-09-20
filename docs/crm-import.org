@@ -56,7 +56,10 @@ result and closes the door on rollback.
   maps to a lost stage, because the deal service requires one.
 - =currency= supplies deals whose export has no currency column.
 - =owner_map= turns source owner names or ids into VENTURE usernames for
-  deal and activity owners. Unmapped owners are kept as typed.
+  deal and activity owners. Unmapped owners are kept as typed. A source
+  owner label that happens to equal a VENTURE username whose account is not
+  an active member of the importing organization fails that row rather than
+  assigning it; map such labels through =owner_map= to the intended member.
 - =columns= overrides the built-in column map per object; =notes= applies
   to =emails=, =calls= and =meetings= unless they carry their own entry.
 

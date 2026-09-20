@@ -385,6 +385,44 @@ static void test_ai_platform_credential_owner(AiFixture *f, gconstpointer data)
 	resolved = venture_integration_service_resolve_version(venture_integration_service_get(f->database), f->second, connection_id, version, FALSE, &error);
 	g_assert_no_error(error); g_assert_nonnull(resolved);
 }
+/* An organization editor is a member, not its administrator: every settings
+ * write, the platform offer and grant, and the paid test request must refuse
+ * with the role error before any provider traffic. Dropping the actor from
+ * the same scope is what makes the identical calls succeed. */
+static void test_ai_member_role_refused(AiFixture *f, gconstpointer data)
+{
+	g_autoptr(JsonNode) settings = ai_fixture_settings(f, "editor-fixture-key");
+	g_autoptr(VentureEntity) user = g_object_new(VENTURE_TYPE_USER, "username", "first-editor", "active", TRUE, "role", VENTURE_USER_ROLE_EDITOR, NULL), membership = NULL;
+	g_autoptr(VentureAiConfiguration) configuration = NULL, selected = NULL, allowed = NULL;
+	g_autoptr(VentureAiPlatformOffer) offer = NULL;
+	g_autoptr(VentureAiGrant) grant = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *editor_name = g_strdup("first-editor");
+	VentureAuthPrincipal principal;
+	(void)data;
+	g_assert_true(venture_database_save(f->database, user, NULL, &error)); g_assert_no_error(error);
+	membership = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", venture_entity_get_id(user), "organization-id", f->first,
+		"role", VENTURE_ORGANIZATION_ROLE_EDITOR, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(f->database, membership, NULL, &error)); g_assert_no_error(error);
+	principal.user_id = venture_entity_get_id(user); principal.token_id = 0; principal.authenticated = TRUE;
+	principal.name = editor_name; principal.role = VENTURE_USER_ROLE_EDITOR;
+	scope = venture_access_policy_enter_organization(venture_database_get_access_policy(f->database), &principal, f->first);
+	configuration = venture_ai_provider_service_configure(f->service, f->first, "chat", settings, 10, 1, 0, NULL, &error);
+	g_assert_null(configuration); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED); g_clear_error(&error);
+	selected = venture_ai_provider_service_select(f->service, f->first, "chat", 0, 0, NULL, &error);
+	g_assert_null(selected); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED); g_clear_error(&error);
+	g_assert_false(venture_ai_provider_service_test(f->service, f->first, "chat", &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED); g_clear_error(&error);
+	offer = venture_ai_provider_service_offer(f->service, f->first, "chat", "Editor offer", settings, 0, 0, NULL, &error);
+	g_assert_null(offer); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED); g_clear_error(&error);
+	grant = venture_ai_provider_service_grant(f->service, f->first, 1, TRUE, 10, 1, 0, NULL, &error);
+	g_assert_null(grant); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED); g_clear_error(&error);
+	g_assert_cmpuint(f->requests, ==, 0);
+	g_clear_object(&scope);
+	allowed = venture_ai_provider_service_configure(f->service, f->first, "chat", settings, 10, 1, 0, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(allowed);
+}
 static void test_ai_deadline(AiFixture *f, gconstpointer data)
 {
 	g_autoptr(VentureAiConfiguration) config = ai_fixture_configure(f, f->first, "first-fixture-key", 10, 1, 0);

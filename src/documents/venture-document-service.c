@@ -90,15 +90,21 @@ venture_document_service_get(VentureDatabase *database)
 	return self;
 }
 
-/* Path ownership is checked below the web layer, including staged/imported
- * writes. Historical paths remain editable as metadata, but never reassignable. */
-static gboolean attachment_owner(VentureDocumentService *self, VentureEntity *document, const gchar *path,
-	gboolean new_claim, GError **error)
+/* One bounded candidate set: the rows whose stored path could be @path
+ * once canonicalised. The exact match is the indexed fast path for every
+ * row the filing service wrote; the LIKE superset on the basename catches
+ * legacy rows stored before canonicalisation, the same way the mail sync
+ * narrows by address before comparing normalised forms. Loading the whole
+ * table here made every filed message and every attachment read grow with
+ * the corpus. */
+static gboolean attachment_owner_conflict(VentureDocumentService *self, VentureEntity *document, const gchar *path,
+	gboolean new_claim, VentureFilterOp op, const gchar *value, GError **error)
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_DOCUMENT);
 	g_autoptr(GPtrArray) rows = NULL;
 	guint i;
 	venture_query_set_limit(query, 0); venture_query_set_include_deleted(query, TRUE);
+	if (!venture_query_add_filter_string(query, "path", op, value, error)) return FALSE;
 	{
 		/* Compare identities across organizations without exposing any of
 		 * their metadata or granting that scope to the actual file reader. */
@@ -117,6 +123,16 @@ static gboolean attachment_owner(VentureDocumentService *self, VentureEntity *do
 			return refuse(error, "Attachment path already belongs to another document; file a new original");
 	}
 	return TRUE;
+}
+/* Path ownership is checked below the web layer, including staged/imported
+ * writes. Historical paths remain editable as metadata, but never reassignable. */
+static gboolean attachment_owner(VentureDocumentService *self, VentureEntity *document, const gchar *path,
+	gboolean new_claim, GError **error)
+{
+	g_autofree gchar *basename = g_path_get_basename(path);
+	g_autofree gchar *pattern = g_strdup_printf("%%%s%%", basename);
+	return attachment_owner_conflict(self, document, path, new_claim, VENTURE_FILTER_OP_EQ, path, error)
+		&& attachment_owner_conflict(self, document, path, new_claim, VENTURE_FILTER_OP_LIKE, pattern, error);
 }
 static gboolean document_path_validate(VentureDatabase *database, VentureEntity *row, VentureEntity *previous,
 	gpointer data, GError **error)

@@ -24,9 +24,12 @@ venture --config /private/venture.yaml --tenant-admin administrator \
   --tenant-password-file - --tenant-reason 'Initial workspace bootstrap'
 #+end_src
 
-Supply the password on stdin. A named file must be an owner-only regular file,
-owned by the invoking account; symlinks are refused. The password is bounded
-and never accepted in a tenant-admin argv argument. Existing usernames fail
+Supply the password on stdin. A named file must be a regular file owned by
+the invoking account with no group or other permission bits (mode 600 or
+400) and exactly one hard link; symlinks, FIFOs and devices are refused, and
+the checks run on the opened descriptor so a swap after the check cannot
+substitute another file. The password is bounded and never accepted in a
+tenant-admin argv argument. Existing usernames fail
 unless =--tenant-recover= is also supplied. Recovery explicitly resets that
 identity and revokes its previous sessions and API tokens. Explicit recovery also
 resets its old MFA enrollment and spends retained recovery codes with audit. A

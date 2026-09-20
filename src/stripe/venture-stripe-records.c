@@ -68,7 +68,7 @@ static const VentureFieldDecl event_fields[] = {
 	VENTURE_FIELD("processed-at", "Processed", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("payload", "Verified payload", NULL, VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_SENSITIVE),
 	VENTURE_FIELD("provider-evidence", "Verified provider evidence", "Minimal authenticated invoice-payment projection", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_SENSITIVE),
-	VENTURE_FIELD("result", "Result", "processed, ignored or mismatch", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("result", "Result", "pending, processing, processed, ignored, mismatch, unknown, failed or exception", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureStripeEvent, venture_stripe_event, event_fields,
 	venture_entity_class_set_unique_partition(VENTURE_ENTITY_CLASS(klass), "connection-id");)
@@ -112,7 +112,7 @@ static const VentureFieldDecl exception_fields[] = {
 	VENTURE_FIELD_REF("event-id", "Verified event", NULL, "stripe_event", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("invoice-id", "Invoice", NULL, "invoice", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("checkout-id", "Checkout attempt", NULL, "stripe_checkout", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("kind", "Kind", "mismatch, closed_period, out_of_order or failed_refund", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("kind", "Kind", "mismatch, out_of_order, recovered, payment_failed, settlement_blocked or creation_uncertain", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD("provider-id", "Provider event", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("reason", "Reason", NULL),
 	VENTURE_FIELD("resolved", "Resolved", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),

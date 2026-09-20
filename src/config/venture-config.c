@@ -234,7 +234,7 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_BOOL("payroll-enabled", "payroll", "enabled", FALSE,
 	        "Enable imported payroll runs; native tax calculation is out of scope"),
 	VC_BOOL("bankfeed-enabled", "bankfeed", "enabled", FALSE,
-	        "Enable pluggable bank feeds; requires VENTURE_BANKFEED_TELLER_KEY"),
+	        "Enable pluggable bank feeds; each organization binds its own provider credentials in settings"),
 	VC_BOOL("commerce-enabled", "commerce", "enabled", FALSE,
 	        "Enable commerce connectors with explicit organization account settings"),
 	VC_BOOL("group-enabled", "group", "enabled", FALSE,

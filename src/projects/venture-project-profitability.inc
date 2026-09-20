@@ -394,7 +394,9 @@ project_margin_report(VentureContext *context, VentureDateRange *period, JsonObj
 				invoiced = period == NULL || (issued != NULL && (venture_date_range_get_end(period) == NULL ||
 					g_date_time_compare(issued, venture_date_range_get_end(period)) < 0));
 			}
-			if (!invoiced && !project_add(&unbilled, amount, error)) return NULL;
+			/* Only a quote-created project invoices its accepted slices; a
+			 * time-and-materials project's unbilled work is its approved time. */
+			if (number(project, "quote-id") > 0 && !invoiced && !project_add(&unbilled, amount, error)) return NULL;
 			project_source(sources, row);
 		}
 		if (unknown == 0)

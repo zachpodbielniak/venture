@@ -9,6 +9,9 @@ struct _VentureLeadService {
 	VentureEntity *writing;
 	GPtrArray *pending;
 	gboolean converting;
+	/* Borrowed for the duration of one conversion: the lead whose assignment
+	 * the new deal inherits, so the sales hook can tell a copy from a choice. */
+	VentureEntity *source;
 	gboolean rerouting;
 	gboolean rescoring;
 };
@@ -772,6 +775,7 @@ venture_lead_service_convert(VentureLeadService *self, VentureEntity *lead,
 	{
 		refuse(error, VENTURE_ERROR_VALIDATION, "qualify the lead before conversion"); goto fail;
 	}
+	self->source = current;
 	{
 		g_autoptr(VentureEntity) snapshot = VENTURE_ENTITY(venture_lead_new());
 		g_autoptr(GError) veto = NULL;
@@ -815,6 +819,7 @@ venture_lead_service_convert(VentureLeadService *self, VentureEntity *lead,
 	if (!write_record(self, current, actor, error) ||
 		!history(self, current, "Lead converted", "Company and contact linked; attribution retained", actor, error)) goto fail;
 	g_ptr_array_add(self->pending, g_object_ref(current));
+	self->source = NULL;
 	if (!venture_database_commit(self->database, error))
 	{
 		self->converting = FALSE;
@@ -824,8 +829,16 @@ venture_lead_service_convert(VentureLeadService *self, VentureEntity *lead,
 	return g_steal_pointer(&current);
 fail:
 	venture_database_rollback(self->database);
+	self->source = NULL;
 	self->converting = FALSE;
 	return NULL;
+}
+
+VentureEntity *
+venture_lead_service_converting_source(VentureLeadService *self)
+{
+	g_return_val_if_fail(VENTURE_IS_LEAD_SERVICE(self), NULL);
+	return self->source;
 }
 
 gboolean

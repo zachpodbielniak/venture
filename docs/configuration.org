@@ -233,9 +233,34 @@ venture --generate-c-config > ~/.config/venture/config.c
   launcher and panel entirely; =ui.chat_dock_expanded= starts the panel open)
 - *logging* — level, file, format
 - *modules* — which modules are on; see below and [[file:modules.org][Modules]]
+- *federation* — opt-in object sharing; see [[file:federation.org][Federation]]
+- *mail* — the transactional SMTP relay and the operator allowlist for
+  organization-bound SMTP accounts; see below
+- *kb* — knowledge base chunking, search and import limits; the
+  =embedding_*= keys are legacy hints, organizations bind providers
+  explicitly
 - *backup* — where scheduled backups go and how many are kept; see below
+- *stripe*, *payroll*, *bankfeed*, *commerce*, *group* — one =enabled=
+  switch each, off by default, equivalent to the =modules= entry
+- *ocr* — the local OCR engine; see [[file:ocr.org][OCR]]
+- *oidc* — organization sign-in, its issuer allowlist and loopback
+  exception; see [[file:oidc.org][OIDC]]
+- *imap*, *calendar*, *connectors* — operator allowlists for private
+  mailbox and calendar connectors, deny by default; see
+  [[file:connectors.org][Connectors]]
+- *hosted* — the workspace binding and HTTP admission limits a hosted
+  tenant process runs with; see [[file:hosted-workspaces.org][Hosted workspaces]]
+- *docs* — where the rendered documentation site is read from; see below
 
-Every setting is documented inline in the generated file.
+Every setting is documented inline in the generated file; sections that
+are off by default (=ocr=, =oidc=, =imap=, =calendar=, =connectors=,
+=hosted=, =docs= and the opt-in module switches) appear there commented
+out with their defaults, so uncommenting a key changes nothing until you
+edit its value. The allowlists (=mail.allowed_endpoints=,
+=imap.allowed_endpoints=, =calendar.allowed_origins= and
+=oidc.allowed_issuers=) are deny by default: empty denies every endpoint
+or issuer, so an organization-bound account cannot connect until its host
+is listed.
 
 ** Modules
 
@@ -292,7 +317,10 @@ The =mail= section configures =host=, =port=, =security= (=starttls=, =tls= or
 =none=), =username=, =password_env=, =from_address=, =from_name= and
 =reply_to=. =password_env= is an environment variable name, never a literal
 password. Empty username disables authentication. Disable the whole outbox
-with =modules.mail: false=. See [[file:mail.org][transactional mail]].
+with =modules.mail: false=. Organization-bound SMTP accounts additionally
+need their =host:port= listed in =allowed_endpoints= (empty denies all) and
+may trust an operator-owned CA bundle through =tls_ca_file= (empty uses
+system trust). See [[file:mail.org][transactional mail]].
 
 ** Scheduled backups
 

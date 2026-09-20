@@ -7,10 +7,13 @@
 static gchar *server_path;
 
 /* Run the actual entry point: library lease tests cannot prove that every
- * early-return administration command acquires its lease before writing. */
+ * early-return administration command acquires its lease before writing.
+ * `state_dir` goes on the command line because venture_config_to_yaml()
+ * does not emit state-dir: without it the child would lease the developer's
+ * ~/.local/share/venture instead of the fixture root. */
 static gboolean
-run_server(const gchar *config, const gchar *key, const gchar *const *options,
-	const gchar *expected)
+run_server(const gchar *state_dir, const gchar *config, const gchar *key,
+	const gchar *const *options, const gchar *expected)
 {
 	g_autoptr(GSubprocessLauncher) launcher = g_subprocess_launcher_new(
 		G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
@@ -24,6 +27,8 @@ run_server(const gchar *config, const gchar *key, const gchar *const *options,
 	g_ptr_array_add(argv, server_path);
 	g_ptr_array_add(argv, (gpointer)"--config");
 	g_ptr_array_add(argv, (gpointer)config);
+	g_ptr_array_add(argv, (gpointer)"--state-dir");
+	g_ptr_array_add(argv, (gpointer)state_dir);
 	for (i = 0; options[i]; i++) g_ptr_array_add(argv, (gpointer)options[i]);
 	g_ptr_array_add(argv, NULL);
 	g_subprocess_launcher_setenv(launcher, "VENTURE_INTEGRATION_KEY", key, TRUE);
@@ -89,21 +94,21 @@ test_hosted_key_maintenance(void)
 	g_assert_no_error(error);
 	lease = venture_process_lease_acquire(database, root, &error);
 	g_assert_no_error(error); g_assert_nonnull(lease);
-	g_assert_false(run_server(config_path, old_key, suspend, "Workspace:"));
-	g_assert_false(run_server(config_path, old_key, check, "Workspace:"));
+	g_assert_false(run_server(root, config_path, old_key, suspend, "Workspace:"));
+	g_assert_false(run_server(root, config_path, old_key, check, "Workspace:"));
 	g_clear_object(&lease);
 	/* Offline maintenance follows shutdown, including the old connection. */
 	g_clear_object(&binding);
 	g_clear_object(&database);
-	g_assert_false(run_server(config_path, old_key, mixed, "separate offline maintenance"));
-	g_assert_false(run_server(config_path, old_key, no_reason, "Key maintenance:"));
-	g_assert_true(run_server(config_path, old_key, suspend, "suspended"));
-	g_assert_true(run_server(config_path, old_key, check, "All retained integration credentials authenticated"));
+	g_assert_false(run_server(root, config_path, old_key, mixed, "separate offline maintenance"));
+	g_assert_false(run_server(root, config_path, old_key, no_reason, "Key maintenance:"));
+	g_assert_true(run_server(root, config_path, old_key, suspend, "suspended"));
+	g_assert_true(run_server(root, config_path, old_key, check, "All retained integration credentials authenticated"));
 	rotate[0] = "--rotate-integration-key"; rotate[1] = key_path;
 	rotate[2] = "--tenant-reason"; rotate[3] = "Rotate suspended fixture"; rotate[4] = NULL;
-	g_assert_true(run_server(config_path, old_key, rotate, "Integration credentials re-encrypted"));
-	g_assert_false(run_server(config_path, old_key, check, "Key rotation:"));
-	g_assert_true(run_server(config_path, new_key, check, "All retained integration credentials authenticated"));
+	g_assert_true(run_server(root, config_path, old_key, rotate, "Integration credentials re-encrypted"));
+	g_assert_false(run_server(root, config_path, old_key, check, "Key rotation:"));
+	g_assert_true(run_server(root, config_path, new_key, check, "All retained integration credentials authenticated"));
 	/* Rotation must not resume the workspace or silently change its authority. */
 	database = venture_database_new(uri, &error);
 	g_assert_no_error(error);
@@ -142,7 +147,7 @@ test_admission_before_database(void)
 		g_object_set(config, properties[i], (gint64)0, NULL);
 		yaml = venture_config_to_yaml(config, TRUE);
 		g_assert_true(g_file_set_contents(config_path, yaml, -1, NULL));
-		g_assert_false(run_server(config_path, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", options, "Hosted HTTP rate/burst"));
+		g_assert_false(run_server(root, config_path, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", options, "Hosted HTTP rate/burst"));
 		g_assert_false(g_file_test(database_path, G_FILE_TEST_EXISTS));
 		g_object_set(config, properties[i], original, NULL);
 	}

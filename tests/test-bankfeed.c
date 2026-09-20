@@ -810,7 +810,6 @@ test_transport_redirect(void)
 int
 main(int argc, char **argv)
 {
-	g_setenv("VENTURE_BANKFEED_TELLER_KEY", "test-token", TRUE);
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/bankfeed/records", test_records);
 	g_test_add_func("/bankfeed/missing-key", test_missing_key);

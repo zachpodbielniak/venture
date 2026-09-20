@@ -82,7 +82,7 @@ The arithmetic against known data, not merely that reports run. Also that an unr
 ** =test-bankfeed=
 
 Fake feed import through the bank match seam, idempotent sync of the same
-window, missing =VENTURE_BANKFEED_TELLER_KEY=, injected Teller transport
+window, service start with no installation credential, injected Teller transport
 with no network, and a rolled-back batch on a bad line.
 
 
@@ -643,8 +643,8 @@ coverage run separately. See [[file:projects.org][the profitability contract]].
 lead-only timeline, replay/conflict, staged and stale completion, bounded
 inputs and escaped transcripts. All pass on SQLite and the isolated
 PostgreSQL fixture; standalone file-upgrade coverage remains SQLite.
-=test-desk= passes 16 cases and =test-migrations= passes seven including its
-optional PostgreSQL check through migration 490. See [[file:activities.org][the call contract]].
+=test-desk= passes 16 cases and =test-migrations= passes nine including its
+optional PostgreSQL check through migration 000610. See [[file:activities.org][the call contract]].
 * Sales to delivery acceptance
 
 =test-project-delivery= has eleven SQLite and PostgreSQL scenarios covering
@@ -668,9 +668,11 @@ balances; see [[file:crm-acceptance.org][the reproducible walkthrough and limits
 The OCR lane passed fifteen cases on SQLite and isolated PostgreSQL,
 including real Tesseract 5.5.3 and a mixed native/scanned PDF. Five independent
 attachment tests cover service-owned paths, organization boundaries, legacy
-aliases, nested directories, size bounds, symlinks and FIFOs. Capture (6),
-mail (23), mail sync (38), documents (5), authorization (92), modules (19),
-configuration (32) and migrations (7) passed their relevant lane checks.
+aliases, nested directories, size bounds, symlinks and FIFOs. At that lane
+revision capture (6), mail (23), mail sync (38), documents (5), authorization
+(92), modules (19), configuration (32) and migrations (7) passed their relevant
+lane checks; the migration suite has since grown to nine cases through
+migration 000610.
 Engine-independent tests still run without optional OCR libraries; real OCR
 requires the explicit test executable described in [[file:ocr.org][the OCR guide]].
 The combined epic revision is validated separately in the acceptance ledger.
@@ -760,7 +762,8 @@ See [[file:integration-key-maintenance.org][the maintenance contract]].
 real backup tool with a deterministic Podman transport fixture; encryption,
 archive parsing, private permissions, maintenance locking and filesystem
 publication use real local tools. Install =jq=, =gnupg2=, =tar=, =coreutils=,
-=gawk=, =findutils= and =util-linux= before running it. Container builds include
+=diffutils= (for =cmp=), =gawk=, =findutils= and =util-linux= before running it;
+=test-tenant-lifecycle= additionally needs =python3=. Container builds include
 these test dependencies. The test refuses wrong ownership/workspace/image,
 live processes, unsafe archive entries, bad credentials and nonempty targets,
 and verifies successful content restoration and failure cleanup. It does

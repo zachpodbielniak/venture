@@ -169,6 +169,19 @@ venture_access_policy_is_administrator(const VentureAuthPrincipal *actor)
 {
 	return administrator(actor);
 }
+/* An interactive hosted workspace administrator. By design an EDITOR with an
+ * organization ADMIN membership only in the organizations that existed at
+ * bootstrap; workspace authority must also cover later-created ones, so
+ * every site that shortcuts on administrator() for the platform roles has
+ * to ask this too. API tokens never inherit it. */
+static gboolean
+tenant_administrator(VentureAccessPolicy *self, const VentureAuthPrincipal *actor)
+{
+	return NULL != actor && actor->authenticated && actor->token_id == 0 &&
+		actor->role == VENTURE_USER_ROLE_EDITOR &&
+		venture_tenant_service_is_enabled(venture_tenant_service_get(self->database)) &&
+		venture_tenant_service_is_member(venture_tenant_service_get(self->database), actor->user_id, TRUE);
+}
 static gint
 token_role(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, gint64 org)
 {
@@ -231,9 +244,7 @@ venture_access_policy_has_organization_role(VentureAccessPolicy *self, const Ven
 	gsize i;
 	if (venture_tenant_service_is_enabled(venture_tenant_service_get(self->database)) &&
 	    !venture_tenant_service_check_principal(venture_tenant_service_get(self->database), actor, NULL)) return FALSE;
-	if (venture_tenant_service_is_enabled(venture_tenant_service_get(self->database)) && actor &&
-	    actor->token_id == 0 && actor->role == VENTURE_USER_ROLE_EDITOR && organization_id > 0 &&
-	    venture_tenant_service_is_member(venture_tenant_service_get(self->database), actor->user_id, TRUE)) {
+	if (organization_id > 0 && tenant_administrator(self, actor)) {
 		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(self, NULL);
 		g_autoptr(VentureEntity) organization = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, organization_id, NULL);
 		return organization != NULL && !venture_entity_is_deleted(organization);
@@ -585,9 +596,7 @@ venture_access_policy_can(VentureAccessPolicy *self, const VentureAuthPrincipal 
 			}
 			return refuse(error, read);
 		}
-		if (venture_tenant_service_is_enabled(venture_tenant_service_get(self->database)) &&
-		    actor->token_id == 0 && actor->role == VENTURE_USER_ROLE_EDITOR &&
-		    venture_tenant_service_is_member(venture_tenant_service_get(self->database), actor->user_id, TRUE)) goto allowed;
+		if (tenant_administrator(self, actor)) goto allowed;
 		org = VENTURE_IS_ORGANIZATION(entity) ? venture_entity_get_id(entity) : venture_entity_get_organization_id(entity);
 		if (org <= 0)
 			return refuse(error, TRUE);
@@ -635,7 +644,9 @@ venture_access_policy_requires_approval(VentureAccessPolicy *self, const Venture
 		refuse(error, TRUE);
 		return FALSE;
 	}
-	if (administrator(actor))
+	/* Workspace authority is not proposed for approval, and does not need a
+	 * membership row in a later-created organization to write there. */
+	if (administrator(actor) || tenant_administrator(self, actor))
 		return FALSE;
 	member = membership(self, actor, venture_entity_get_organization_id(entity));
 	if (NULL == member)

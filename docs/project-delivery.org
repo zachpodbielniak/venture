@@ -47,9 +47,14 @@ so the allocation and invoice remain one transaction.
 Approved time/cost remain actual-cost evidence on fixed-price projects; the
 time-and-materials billing action refuses them to prevent charging both the
 contract and its labour. Time projects use existing rates/time approval and
-*Invoice approved work*. Each project has one billing model; fixed change
-orders require a fixed project. Retainer/retention accounting remains in the
-existing progress service, with explicit links. Receipts, credits, bank
+*Invoice approved work*. Each project has one billing model: a priced
+delivery, a change order and *Invoice delivery* require the fixed-price
+project a quote handoff created, and a project created through the generic
+form with =billing_kind=fixed= has no quote to invoice against, so those
+actions refuse it and so does *Invoice approved work*. A time-and-materials
+project plans unpriced deliveries only; a priced one is refused rather than
+left as unbillable revenue in the profitability report. Retainer/retention
+accounting remains in the existing progress service, with explicit links. Receipts, credits, bank
 reconciliation and period close retain their existing services and controls.
 
 * Changes and completion

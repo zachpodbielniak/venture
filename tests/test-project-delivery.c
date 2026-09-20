@@ -514,6 +514,96 @@ test_permissions(Fixture *f, gconstpointer data)
 	g_assert_nonnull(error);
 }
 
+/* One billing model per project. A deal handoff bills approved time, so a
+ * priced deliverable on it could never be invoiced (there is no quote for
+ * the progress service) and would inflate =unbilled= forever; a manually
+ * labelled "fixed" project has no quote either, so a change order or a
+ * time-and-materials invoice on it would charge both contract and labour. */
+static void
+test_billing_model(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureMoney) value = venture_money_new_for_currency(100000, "USD");
+	g_autoptr(VentureEntity) deal = g_object_new(VENTURE_TYPE_DEAL, "organization-id", f->org,
+		"name", "Hourly engagement", "company-id", f->company, "stage", VENTURE_DEAL_STAGE_WON, "value", value, NULL);
+	g_autoptr(VentureEntity) project = NULL;
+	g_autoptr(VentureEntity) scope = NULL;
+	g_autoptr(VentureEntity) deliverable = NULL;
+	g_autoptr(VentureEntity) ticket = NULL;
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(VentureEntity) manual = NULL;
+	g_autoptr(VentureEntity) quote = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PROJECT_SCOPE);
+	g_autoptr(GDateTime) date = venture_time_now();
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *params = NULL;
+	g_autofree gchar *sql = NULL;
+	gint64 ticket_id = 0;
+	(void)data;
+	save(f, deal);
+	f->deal = venture_entity_get_id(deal);
+	project = perform(f, deal, "handoff", "{\"name\":\"Hourly\",\"owner\":\"biller\",\"scope\":\"Ongoing work\"}", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(project);
+	venture_query_set_organization(query, f->org);
+	venture_query_add_filter_int(query, "project-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(project), NULL);
+	scope = venture_database_find_one(f->db, query, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(scope);
+	params = g_strdup_printf("{\"key\":\"design\",\"title\":\"Design\",\"scope_id\":%" G_GINT64_FORMAT ",\"amount\":\"400 USD\",\"due\":\"2026-10-01\"}", venture_entity_get_id(scope));
+	deliverable = perform(f, project, "plan_work", params, &error);
+	g_assert_null(deliverable);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "time-and-materials"));
+	g_clear_error(&error);
+	g_clear_pointer(&params, g_free);
+	/* Unpriced planning stays available: the ticket tracks the work and
+	 * approved time bills it. */
+	params = g_strdup_printf("{\"key\":\"design\",\"title\":\"Design\",\"scope_id\":%" G_GINT64_FORMAT ",\"due\":\"2026-10-01\"}", venture_entity_get_id(scope));
+	deliverable = perform(f, project, "plan_work", params, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(deliverable);
+	g_object_get(deliverable, "ticket-id", &ticket_id, NULL);
+	ticket = venture_database_get(f->db, VENTURE_TYPE_TICKET, ticket_id, &error);
+	g_assert_no_error(error);
+	g_object_set(ticket, "status", VENTURE_TICKET_STATUS_DONE, NULL);
+	save(f, ticket);
+	result = perform(f, deliverable, "accept", "{\"evidence\":\"Approved\"}", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_clear_object(&result);
+	/* A slice priced before the gate existed is retained evidence, but it is
+	 * not receivable revenue on a time-and-materials project. */
+	sql = g_strdup_printf("UPDATE %s SET amount_amount = 40000, amount_currency = 'USD', amount_exponent = 2 WHERE id = %" G_GINT64_FORMAT,
+		venture_entity_get_table_name(deliverable), venture_entity_get_id(deliverable));
+	g_assert_true(venture_database_execute(f->db, sql, NULL, &error));
+	g_assert_no_error(error);
+	assert_profitability(f, 0, 0);
+	/* Time-and-materials billing itself is still open on the deal project;
+	 * only the absence of approved work stops it here. */
+	result = venture_project_service_bill(venture_project_service_get(f->db), venture_entity_get_id(project), date, NULL, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "no approved unbilled time or costs"));
+	g_clear_error(&error);
+	f->deal = 0;
+	quote = accepted_quote(f, "Q-manual-change");
+	manual = g_object_new(VENTURE_TYPE_CLIENT_PROJECT, "organization-id", f->org, "name", "Hand-made fixed",
+		"owner", "biller", "customer-id", f->company, "currency", "USD", "budget", value,
+		"billing-kind", "fixed", "delivery-status", VENTURE_PROJECT_DELIVERY_ACTIVE, NULL);
+	save(f, manual);
+	g_clear_pointer(&params, g_free);
+	params = g_strdup_printf("{\"quote_id\":%" G_GINT64_FORMAT ",\"scope\":\"Add reporting\"}", venture_entity_get_id(quote));
+	result = perform(f, manual, "change_scope", params, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "quote handoff"));
+	g_clear_error(&error);
+	result = venture_project_service_bill(venture_project_service_get(f->db), venture_entity_get_id(manual), date, NULL, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "fixed-price projects bill accepted delivery"));
+}
+
 int
 main(int argc, char **argv)
 {
@@ -530,5 +620,6 @@ main(int argc, char **argv)
 	g_test_add("/project-delivery/permissions", Fixture, NULL, setup, test_permissions, teardown);
 	g_test_add("/project-delivery/deal-identity", Fixture, NULL, setup, test_deal_identity, teardown);
 	g_test_add("/project-delivery/staged-decision", Fixture, NULL, setup, test_staged_decision, teardown);
+	g_test_add("/project-delivery/billing-model", Fixture, NULL, setup, test_billing_model, teardown);
 	return g_test_run();
 }
