@@ -1120,3 +1120,16 @@ preserves survivors without another unlink. Never remove the catalog to bypass
 a refusal. Read `docs/backup-retention.org`, including the original-ledger
 transfer gap for restoration to a new host. No offsite or erasure claim follows
 from local archive deletion.
+
+### Close checklist actions
+
+`act fiscal_period ID open_close [currency=USD]` opens the checked workspace.
+Use `list close_task workspace_id=ID`, then `act close_task ID complete
+'notes=Finding'` or `waive 'notes=Reason'` for each task. Explain retained
+differences with `act close_discrepancy ID explain 'explanation=Evidence'`.
+`act close_workspace ID run_checks|sign|complete|reopen` calls the same
+service as the close convenience commands; `sign` requires
+`role=preparer|reviewer`. Review must come from a different authenticated
+account. These transactional actions cannot be staged. Organization finance,
+owner or administrator membership is required; signed/closed task evidence
+must be reopened before completion or waiver can change it.

@@ -2,6 +2,7 @@
 #include <venture.h>
 #include <string.h>
 #include "venture-test-util.h"
+#include "venture-test-accounting.h"
 
 typedef struct
 {
@@ -41,7 +42,7 @@ setup(Fixture *f, gconstpointer unused)
 	g_autoptr(VentureEntity) period = NULL;
 	g_autoptr(VentureUser) owner = venture_user_new();
 	f->config = venture_config_new();
-	f->db = venture_database_new("sqlite://:memory:", &error);
+	f->db = venture_test_accounting_database(&error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
@@ -64,6 +65,7 @@ static void
 teardown(Fixture *f, gconstpointer unused)
 {
 	g_clear_object(&f->context);
+	venture_test_accounting_database_cleanup(f->db);
 	g_clear_object(&f->db);
 	g_clear_object(&f->config);
 }
@@ -407,12 +409,72 @@ test_direct_period_close_still_runs_checks(Fixture *f, gconstpointer unused)
 	g_assert_no_error(error);
 }
 
+static VentureEntity *
+close_action(Fixture *f, const gchar *type, gint64 id, const gchar *name,
+	const gchar *json, const VentureActor *actor, VentureUserRole role, GError **error)
+{
+	g_autoptr(JsonNode) node = venture_json_parse(json, error);
+	g_autoptr(GHashTable) parameters = node ? venture_action_parameters_from_json(node, error) : NULL;
+	return parameters ? venture_action_registry_perform(venture_database_get_action_registry(f->db),
+		type, id, name, parameters, actor, role, error) : NULL;
+}
+
+/* The generated page/API must be able to complete the same checklist as an
+ * internal caller. Generic writes deliberately refuse these transitions. */
+static void
+test_generated_actions(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) workspace = NULL, result = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_CLOSE_TASK);
+	g_autoptr(GPtrArray) tasks = NULL;
+	g_autoptr(VentureUser) reviewer = venture_user_new();
+	VentureActor owner = actor_named("owner"), reviewing = actor_named("reviewer");
+	VentureAction *action = venture_action_registry_lookup(venture_database_get_action_registry(f->db), "close_task", "complete");
+	gboolean stageable = TRUE;
+	guint i;
+	g_assert_nonnull(action);
+	g_object_get(action, "stageable", &stageable, NULL); g_assert_false(stageable);
+	workspace = close_action(f, "fiscal_period", f->period, "open_close", "{\"currency\":\"USD\"}", &owner, VENTURE_USER_ROLE_EDITOR, &error);
+	g_assert_no_error(error); g_assert_nonnull(workspace);
+	venture_query_set_organization(query, f->org);
+	tasks = venture_database_find(f->db, query, &error); g_assert_no_error(error);
+	g_assert_cmpuint(tasks->len, ==, 18);
+	result = close_action(f, "close_task", venture_entity_get_id(g_ptr_array_index(tasks, 0)), "complete",
+		"{\"notes\":\"Reviewed empty synthetic books\"}", &owner, VENTURE_USER_ROLE_VIEWER, &error);
+	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED); g_clear_error(&error);
+	for (i = 0; i < tasks->len; i++) {
+		result = close_action(f, "close_task", venture_entity_get_id(g_ptr_array_index(tasks, i)), "complete",
+			"{\"notes\":\"Reviewed empty synthetic books\"}", &owner, VENTURE_USER_ROLE_EDITOR, &error);
+		g_assert_no_error(error); g_assert_nonnull(result); g_clear_object(&result);
+	}
+	result = close_action(f, "close_workspace", venture_entity_get_id(workspace), "run_checks", "{}", &owner, VENTURE_USER_ROLE_EDITOR, &error);
+	g_assert_no_error(error); g_assert_nonnull(result); g_clear_object(&result);
+	result = close_action(f, "close_workspace", venture_entity_get_id(workspace), "sign", "{\"role\":\"preparer\"}", &owner, VENTURE_USER_ROLE_EDITOR, &error);
+	g_assert_no_error(error); g_assert_nonnull(result); g_clear_object(&result);
+	result = close_action(f, "close_workspace", venture_entity_get_id(workspace), "sign", "{\"role\":\"reviewer\"}", &owner, VENTURE_USER_ROLE_EDITOR, &error);
+	g_assert_null(result); g_assert_nonnull(error); g_clear_error(&error);
+	g_object_set(reviewer, "username", "reviewer", "role", VENTURE_USER_ROLE_OWNER, "active", TRUE, NULL); save(f, VENTURE_ENTITY(reviewer));
+	result = close_action(f, "close_workspace", venture_entity_get_id(workspace), "sign", "{\"role\":\"reviewer\"}", &reviewing, VENTURE_USER_ROLE_EDITOR, &error);
+	g_assert_no_error(error); g_assert_nonnull(result); g_clear_object(&result);
+	result = close_action(f, "close_workspace", venture_entity_get_id(workspace), "complete", "{}", &owner, VENTURE_USER_ROLE_EDITOR, &error);
+	g_assert_no_error(error); g_assert_nonnull(result); g_clear_object(&result);
+	result = close_action(f, "close_task", venture_entity_get_id(g_ptr_array_index(tasks, 0)), "waive",
+		"{\"notes\":\"Must not change closed evidence\"}", &owner, VENTURE_USER_ROLE_EDITOR, &error);
+	g_assert_null(result); g_assert_nonnull(error); g_clear_error(&error);
+	venture_config_set_module_enabled(f->config, "close", FALSE);
+	result = close_action(f, "fiscal_period", f->period, "open_close", "{\"currency\":\"USD\"}", &owner, VENTURE_USER_ROLE_EDITOR, &error);
+	g_assert_null(result); g_assert_nonnull(error); g_clear_error(&error);
+	venture_config_set_module_enabled(f->config, "close", TRUE);
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	venture_entity_registry_register_builtins(venture_entity_registry_get_default());
 	g_test_add_func("/close/records", test_records);
+	g_test_add("/close/generated-actions", Fixture, NULL, setup, test_generated_actions, teardown);
 	g_test_add("/close/open", Fixture, NULL, setup, test_open_and_checklist, teardown);
 	g_test_add("/close/empty-tie-out", Fixture, NULL, setup, test_empty_books_tie_out, teardown);
 	g_test_add("/close/signoff-complete", Fixture, NULL, setup, test_signoff_and_complete, teardown);

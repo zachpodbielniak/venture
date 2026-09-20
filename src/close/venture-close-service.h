@@ -156,5 +156,14 @@ gboolean venture_close_save_hook(VentureDatabase *database, VentureEntity *recor
  */
 void venture_close_register_reports(VentureReportRegistry *registry);
 
+/**
+ * venture_close_actions_register:
+ * @database: repository owning the action registry
+ *
+ * Registers metadata-driven finance actions backed by the close service.
+ * Each operation owns its transaction and cannot be staged.
+ */
+void venture_close_actions_register(VentureDatabase *database);
+
 G_END_DECLS
 #endif

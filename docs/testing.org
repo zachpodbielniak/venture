@@ -895,3 +895,14 @@ a follow-up call after the observation commits redacts its linkage and refuses
 future tracking. The real public HTTP withdrawal path remains a successful
 standalone transaction. This avoids an outer rollback undoing an already
 reported privacy decision.
+
+* Close action accessibility (epic #125)
+
+The generated-action regression first failed because =close_task.complete=
+was absent from the shared action registry. It now drives opening, all
+18 checklist tasks, checks, preparer/reviewer separation and completion
+through typed actions. It refuses viewer completion, post-completion task
+changes and opening when the close module is disabled. All 11 close tests
+pass on SQLite and a disposable PostgreSQL schema; neither result is a
+claim of hosted capacity. The authenticated deployment walkthrough also
+uses the built server and independent preparer/reviewer sessions.
