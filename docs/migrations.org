@@ -118,9 +118,10 @@ remove only those exact recorded databases after inspecting them. Never reset
 =public= or drop a shared database to rerun the check. Local SQLite fixture
 files remain private evidence on both success and failure.
 
-Run =python3 tests/test-upgrade-drill.py= for five isolated ownership/credential
-regressions without a database connection. These Python checks are explicit
-operator-tool tests, not automatically part of the C GTest wildcard. The
+Run =make DEBUG=1 test-one T=test-upgrade-drill= for five isolated
+ownership/credential regressions without a database connection. Its GTest
+wrapper runs the Python checks in the ordinary =make DEBUG=1 test= suite;
+=python3 tests/test-upgrade-drill.py= remains a direct diagnostic entry point. The
 [[file:evidence/postgres-upgrade-demonstration.org][PostgreSQL artifact transcript]] records the actual populated 46→62 migration
 checkpoint. It does not qualify a later combined head or unreleased lane
 histories that are not a prefix of that head.
