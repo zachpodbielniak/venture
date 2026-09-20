@@ -245,11 +245,24 @@ static void limits_stop(gpointer data)
 }
 gboolean venture_http_limits_validate(VentureConfig *config, GError **error)
 {
-	gint64 size, timeout, connections, buffered;
+	gint64 size, timeout, connections, buffered, rate, burst, concurrency;
+	gboolean hosted;
 	if (g_getenv("SOUP_SERVER_HTTP2") != NULL)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
 			"Experimental SOUP_SERVER_HTTP2 is unsupported; terminate HTTP/2 at the gateway and use HTTP/1 upstream");
+		return FALSE;
+	}
+	/* Main validates before opening the database, and embedders before
+	 * tenant initialization. Keep dispatch and receive bounds in this one
+	 * validation path rather than relying on a late listener constructor. */
+	g_object_get(config, "hosted-enabled", &hosted,
+		"hosted-http-requests-per-minute", &rate, "hosted-http-burst", &burst,
+		"hosted-http-concurrency", &concurrency, NULL);
+	if (hosted && (rate < 1 || rate > 1000000 || burst < 1 || burst > 1000000 || concurrency < 1 || concurrency > 256))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			"Hosted HTTP rate/burst must be 1..1000000 and concurrency 1..256");
 		return FALSE;
 	}
 	g_object_get(config, "server-max-request-size-mb", &size, "server-request-timeout", &timeout,

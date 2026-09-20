@@ -946,3 +946,12 @@ The same calendar-date artifact also passes all 61 receivables cases,
 19 quote cases and three independent accounting-acceptance cases. These
 include chronology, rollback, allocations and restored financial tie-outs;
 none required weakening source-event ordering.
+
+* Hosted HTTP startup ordering (epic #125)
+
+The executable regression =/hosted-maintenance/admission-before-database=
+sets each hosted dispatch bound to zero and verifies both refusal and the
+absence of the database file. It failed before validation moved ahead of
+database opening. The combined artifact passes both maintenance cases,
+19 transport cases and 15 tenant cases; the real HTTP/TLS demonstration
+also verifies each invalid setting before database creation.

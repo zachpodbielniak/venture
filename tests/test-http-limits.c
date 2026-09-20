@@ -303,7 +303,10 @@ static void test_invalid(void)
 	static const struct { const gchar *property; gint64 value; } invalid[] = {
 		{ "server-max-request-size-mb", 0 }, { "server-request-timeout", 0 },
 		{ "server-max-connections", 0 }, { "server-max-buffered-request-mb", 1 },
-		{ "server-max-buffered-request-mb", G_MAXINT64 }
+		{ "server-max-buffered-request-mb", G_MAXINT64 },
+		{ "hosted-http-requests-per-minute", 0 }, { "hosted-http-requests-per-minute", 1000001 },
+		{ "hosted-http-burst", 0 }, { "hosted-http-burst", 1000001 },
+		{ "hosted-http-concurrency", 0 }, { "hosted-http-concurrency", 257 }
 	};
 	guint i;
 	g_assert_no_error(error);

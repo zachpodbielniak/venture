@@ -29401,12 +29401,6 @@ venture_web_server_new(
 	g_object_get(venture_context_get_config(context),
 		"hosted-http-requests-per-minute", &rate, "hosted-http-burst", &burst,
 		"hosted-http-concurrency", &concurrency, NULL);
-	if (venture_tenant_service_is_enabled(venture_tenant_service_get(venture_context_get_database(context))) &&
-	    (rate < 1 || rate > 1000000 || burst < 1 || burst > 1000000 || concurrency < 1 || concurrency > 256)) {
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
-			"Hosted HTTP rate/burst must be 1..1000000 and concurrency 1..256");
-		return NULL;
-	}
 	/* Refuse invalid limits before initialization durably binds a fresh DB. */
 	if (!venture_tenant_service_initialize(venture_tenant_service_get(venture_context_get_database(context)), error))
 		return NULL;

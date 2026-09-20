@@ -117,6 +117,38 @@ test_hosted_key_maintenance(void)
 	venture_test_remove_tree(root);
 }
 
+/* A constructor check alone is too late: the executable can bind/migrate
+ * a new workspace before constructing its listener. Refusal must precede DB IO. */
+static void
+test_admission_before_database(void)
+{
+	static const gchar *const properties[] = { "hosted-http-requests-per-minute", "hosted-http-burst", "hosted-http-concurrency" };
+	static const gchar *const options[] = { "--no-ai", "--no-plugins", "--no-automation", NULL };
+	g_autofree gchar *root = g_dir_make_tmp("venture-http-startup-XXXXXX", NULL);
+	g_autofree gchar *database_path = g_build_filename(root, "must-not-exist.db", NULL);
+	g_autofree gchar *uri = g_strconcat("sqlite://", database_path, NULL);
+	g_autofree gchar *config_path = g_build_filename(root, "config.yaml", NULL);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	guint i;
+	g_assert_nonnull(root);
+	g_object_set(config, "database-uri", uri, "state-dir", root, "hosted-enabled", TRUE,
+		"hosted-workspace-id", "0381d47a-cbf7-43a5-89e8-f540cae344da",
+		"hosted-origin", "https://startup.example.test", NULL);
+	for (i = 0; i < G_N_ELEMENTS(properties); i++)
+	{
+		g_autofree gchar *yaml = NULL;
+		gint64 original;
+		g_object_get(config, properties[i], &original, NULL);
+		g_object_set(config, properties[i], (gint64)0, NULL);
+		yaml = venture_config_to_yaml(config, TRUE);
+		g_assert_true(g_file_set_contents(config_path, yaml, -1, NULL));
+		g_assert_false(run_server(config_path, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", options, "Hosted HTTP rate/burst"));
+		g_assert_false(g_file_test(database_path, G_FILE_TEST_EXISTS));
+		g_object_set(config, properties[i], original, NULL);
+	}
+	venture_test_remove_tree(root);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -126,6 +158,7 @@ main(int argc, char **argv)
 	server_path = g_canonicalize_filename(path, NULL);
 	g_test_init(&argc, &argv, NULL);
 	venture_entity_registry_register_builtins(venture_entity_registry_get_default());
+	g_test_add_func("/hosted-maintenance/admission-before-database", test_admission_before_database);
 	g_test_add_func("/hosted-maintenance/key-and-lease", test_hosted_key_maintenance);
 	result = g_test_run();
 	g_free(server_path);

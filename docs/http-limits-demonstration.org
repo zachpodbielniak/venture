@@ -16,6 +16,7 @@ certificate; certificate verification is never disabled. See
 * Recorded execution
 
 #+begin_example
+Artifact SHA256 => 8c4323bb7093676ab0cbd3b69fd417a32c71a7f82ead2dd7e9c6cccc78212924
 Ordinary generic organization create => 201
 HTTP declared oversized body without payload => 413
 TLS with verified fixture CA declared oversized body without payload => 413
@@ -30,6 +31,9 @@ Raw TCP stalled before TLS ClientHello => closed within configured receive bound
 Verified TLS remains available after stalled handshake => 200
 Rejected generic writes changed organization count => 0
 Invalid size fails before opening the database => Configuration: HTTP limits require max_request_size_mb=1..1024, request_timeout=1..3600, max_connections=1..4096 and max_buffered_request_mb=max_request_size_mb..4096
+Invalid hosted http_requests_per_minute fails before database creation => Configuration: Hosted HTTP rate/burst must be 1..1000000 and concurrency 1..256
+Invalid hosted http_burst fails before database creation => Configuration: Hosted HTTP rate/burst must be 1..1000000 and concurrency 1..256
+Invalid hosted http_concurrency fails before database creation => Configuration: Hosted HTTP rate/burst must be 1..1000000 and concurrency 1..256
 #+end_example
 
 * Reproduction and focused verification
@@ -69,3 +73,13 @@ focused checks. No unresolved defect was identified in this bounded transport
 lane. Standalone and hosted servers share these receive limits; gateway policy,
 HTTP/2 termination, synchronous-handler admission and production load sizing
 remain separate responsibilities.
+
+* Combined startup validation
+
+The combined dispatch/transport artifact above passes 19 HTTP-limit cases,
+15 hosted-tenant cases and both actual-executable maintenance/startup cases.
+The new regression first failed because invalid hosted dispatch settings
+created the database before the listener refused them. Validation now runs
+before database opening as well as before embedded tenant initialization.
+The three invalid hosted dispatch settings in the transcript each leave the
+database absent. These checks do not replace the final combined epic gate.
