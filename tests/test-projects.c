@@ -337,7 +337,9 @@ test_historical_cost_unknown(Fixture *f, gconstpointer data)
 	g_assert_true(venture_database_execute(f->db, "ALTER TABLE project_times DROP COLUMN actual_cost_amount", NULL, &error));
 	g_assert_true(venture_database_execute(f->db, "ALTER TABLE project_times DROP COLUMN actual_cost_currency", NULL, &error));
 	g_assert_true(venture_database_execute(f->db, "ALTER TABLE project_times DROP COLUMN actual_cost_exponent", NULL, &error));
-	g_assert_true(venture_database_execute(f->db, "DELETE FROM schema_migrations WHERE version = 460", NULL, &error));
+	/* Model the entire old ledger prefix. Leaving later migrations recorded
+	 * creates a forbidden history gap once another feature lands after 460. */
+	g_assert_true(venture_database_execute(f->db, "DELETE FROM schema_migrations WHERE version >= 460", NULL, &error));
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
 	json = profitability(f, NULL);
