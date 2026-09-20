@@ -138,6 +138,12 @@ Recovery is an explicit restore to a new empty target with the original image;
 there is no promise that a database migration is reversible. This is a bounded
 maintenance strategy, not a rolling or zero-downtime upgrade mechanism.
 
+The migrator verifies that installed versions and checksums form an exact prefix
+of the candidate history. Unreleased parallel implementation snapshots can lack
+earlier reserved migrations and are not supported upgrade baselines for the final
+epic. Recreate disposable fixtures for that transition; qualify the real upgrade
+from the released baseline. Do not edit migration history to make a mismatch pass.
+
 * Offboarding, holds and evidence
 
 =offboard= stops the workspace, persists suspension and prevents normal start.
