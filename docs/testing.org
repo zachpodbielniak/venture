@@ -906,3 +906,8 @@ changes and opening when the close module is disabled. All 11 close tests
 pass on SQLite and a disposable PostgreSQL schema; neither result is a
 claim of hosted capacity. The authenticated deployment walkthrough also
 uses the built server and independent preparer/reviewer sessions.
+
+The added =/close/action-authority= case passes on both SQLite and
+PostgreSQL: organization editor membership is refused, promotion to finance
+enables opening, an invalid currency is refused, and membership revocation
+removes the authority immediately. This extends the close suite to 12 cases.

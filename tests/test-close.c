@@ -468,12 +468,53 @@ test_generated_actions(Fixture *f, gconstpointer unused)
 	venture_config_set_module_enabled(f->config, "close", TRUE);
 }
 
+/* Editor access alone cannot authorize financial signoff; revoking a
+ * finance membership must also revoke the generated action immediately. */
+static void
+test_action_authority(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) user = g_object_new(VENTURE_TYPE_USER,
+		"username", "close-finance", "role", VENTURE_USER_ROLE_EDITOR, "active", TRUE, NULL);
+	g_autoptr(VentureEntity) member = NULL, result = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	VentureAuthPrincipal principal;
+	VentureActor actor = actor_named("close-finance");
+	(void)unused;
+	save(f, user);
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP,
+		"organization-id", f->org, "user-id", venture_entity_get_id(user),
+		"role", VENTURE_ORGANIZATION_ROLE_EDITOR, "active", TRUE, NULL);
+	save(f, member);
+	principal.user_id = venture_entity_get_id(user);
+	principal.token_id = 0;
+	principal.name = (gchar *)"close-finance";
+	principal.role = VENTURE_USER_ROLE_EDITOR;
+	principal.authenticated = TRUE;
+	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+	result = close_action(f, "fiscal_period", f->period, "open_close", "{}", &actor, principal.role, &error);
+	g_assert_null(result); g_assert_nonnull(error); g_clear_error(&error);
+	g_clear_object(&scope);
+	g_object_set(member, "role", VENTURE_ORGANIZATION_ROLE_FINANCE, NULL); save(f, member);
+	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+	result = close_action(f, "fiscal_period", f->period, "open_close", "{\"currency\":\"not-a-currency\"}", &actor, principal.role, &error);
+	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION); g_clear_error(&error);
+	result = close_action(f, "fiscal_period", f->period, "open_close", "{}", &actor, principal.role, &error);
+	g_assert_no_error(error); g_assert_nonnull(result); g_clear_object(&result);
+	g_clear_object(&scope);
+	g_object_set(member, "active", FALSE, NULL); save(f, member);
+	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+	result = close_action(f, "fiscal_period", f->period, "open_close", "{}", &actor, principal.role, &error);
+	g_assert_null(result); g_assert_nonnull(error); g_clear_error(&error);
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	venture_entity_registry_register_builtins(venture_entity_registry_get_default());
 	g_test_add_func("/close/records", test_records);
+	g_test_add("/close/action-authority", Fixture, NULL, setup, test_action_authority, teardown);
 	g_test_add("/close/generated-actions", Fixture, NULL, setup, test_generated_actions, teardown);
 	g_test_add("/close/open", Fixture, NULL, setup, test_open_and_checklist, teardown);
 	g_test_add("/close/empty-tie-out", Fixture, NULL, setup, test_empty_books_tie_out, teardown);
