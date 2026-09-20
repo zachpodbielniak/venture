@@ -51,6 +51,12 @@ Give it nothing else. The token is the only credential VENTURE holds for that se
 
 ** Add the forge
 
+A forge origin is unique within its organization. Two legal organizations may
+configure the same server independently. Startup reconciles the old global
+constraint from field metadata, retaining forge IDs, credentials and repository
+references; this schema change does not migrate credentials into the vault.
+
+
 =/e/forge= → New. Name it whatever you call the server, choose Forgejo or Gitea, and give the base URL — the origin only, =https://git.example.com=, with no =/api/v1=.
 
 *Clone base* is separate, and usually needs setting. The API and git rarely live on the same host once a reverse proxy is involved: the proxy speaks HTTP, sshd does not. A typical pair looks like

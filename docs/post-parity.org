@@ -239,3 +239,8 @@ passing synthetic scenario.
 | 11 Duplicate merge | Existing candidate/review/merge UI and retained forwarding; epic carries consent/attribution through merges | [[file:dedupe.org][Dedupe]], =test-dedupe= |
 | 12 Migration importers | Existing mapped Salesforce/HubSpot/Zoho CSV manifests with source identities, preview and rollback; no vendor API or attachment import | [[file:crm-import.org][CRM import]], =test-crm-import= |
 | 13 Chat/calls | Epic structured call history and exactly-one optional follow-up; live chat/voice chatbot remains deferred | [[file:activities.org][Activities]], =test-activities= |
+* Additional integration reservation
+
+=000600= is reserved for organization forge account migration. =000610= is
+reserved for commerce accounts if that adapter needs schema changes. These are
+centrally assigned to the forge and commerce lanes; neither reuses a child slot.

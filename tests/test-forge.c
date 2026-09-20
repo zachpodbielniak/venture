@@ -13,6 +13,7 @@
  */
 
 #include <venture.h>
+#include "venture-test-accounting.h"
 
 #include <glib.h>
 #include <libsoup/soup.h>
@@ -220,6 +221,112 @@ test_forge_every_issue_type_round_trips(
 		g_object_get(reloaded, "issue-type", &read_back, NULL);
 		g_assert_cmpint(read_back, ==, klass->values[i].value);
 	}
+}
+
+/* Two organizations may use different accounts on the same remote server.
+ * A workspace-global origin constraint prevents independent configuration. */
+static void
+test_forge_origin_is_organization_scoped(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(VentureOrganization) other = venture_organization_new();
+	g_autoptr(VentureForge) first = venture_forge_new();
+	g_autoptr(VentureForge) second = venture_forge_new();
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	g_object_set(other, "name", "Second organization", "active", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(other), NULL, &error));
+	g_assert_no_error(error);
+	g_object_set(first, "organization-id", (gint64)1, "name", "First account",
+		"base-url", "https://git.example.com", "active", TRUE, NULL);
+	g_object_set(second, "organization-id", venture_entity_get_id(VENTURE_ENTITY(other)),
+		"name", "Second account", "base-url", "https://git.example.com", "active", TRUE, NULL);
+	g_assert_cmpint(venture_entity_get_id(VENTURE_ENTITY(other)), !=, 1);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(first), NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(second), NULL, &error));
+	g_assert_no_error(error);
+}
+
+/* Rebuild the shipped global constraint without changing row identity or
+ * reviving deleted identifiers. The same origin must then work in another
+ * organization while remaining unique within its own organization. */
+static void
+test_forge_origin_upgrade(void)
+{
+	g_autoptr(VentureEntityClass) klass = NULL;
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(VentureForge) first = venture_forge_new();
+	g_autoptr(VentureForge) removed = venture_forge_new();
+	g_autoptr(VentureForge) second = venture_forge_new();
+	g_autoptr(VentureForge) duplicate = venture_forge_new();
+	g_autoptr(VentureForgeRepo) repository = venture_forge_repo_new();
+	g_autoptr(VentureOrganization) other = venture_organization_new();
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *uuid = NULL;
+	g_autofree gchar *token = NULL;
+	VentureColumnFlags flags;
+	gint64 first_id;
+	gint64 removed_id;
+	gint64 version;
+	gint64 reference;
+
+	venture_entity_registry_get_default();
+	klass = g_type_class_ref(VENTURE_TYPE_FORGE);
+	flags = venture_entity_class_get_column_flags(klass, "base-url");
+	venture_entity_class_set_column_flags(klass, "base-url",
+		(flags & ~VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION) | VENTURE_COLUMN_FLAG_UNIQUE);
+	database = venture_test_accounting_database(&error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	venture_entity_class_set_column_flags(klass, "base-url", flags);
+	g_object_set(first, "organization-id", (gint64)1, "name", "Retained account",
+		"base-url", "https://git.example.com", "token", "legacy-import-only", NULL);
+	g_object_set(removed, "organization-id", (gint64)1, "name", "Removed account",
+		"base-url", "https://removed.example.com", NULL);
+	g_assert_true(venture_database_save(database, VENTURE_ENTITY(first), NULL, &error));
+	g_assert_true(venture_database_save(database, VENTURE_ENTITY(removed), NULL, &error));
+	g_assert_no_error(error);
+	first_id = venture_entity_get_id(VENTURE_ENTITY(first));
+	removed_id = venture_entity_get_id(VENTURE_ENTITY(removed));
+	version = venture_entity_get_version(VENTURE_ENTITY(first));
+	uuid = g_strdup(venture_entity_get_uuid(VENTURE_ENTITY(first)));
+	g_object_set(repository, "organization-id", (gint64)1, "forge-id", first_id,
+		"name", "sample/project", NULL);
+	g_assert_true(venture_database_save(database, VENTURE_ENTITY(repository), NULL, &error));
+	g_assert_true(venture_database_purge(database, VENTURE_ENTITY(removed), NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	stored = venture_database_get(database, VENTURE_TYPE_FORGE, first_id, &error);
+	g_assert_no_error(error);
+	g_assert_cmpstr(venture_entity_get_uuid(stored), ==, uuid);
+	g_assert_cmpint(venture_entity_get_version(stored), ==, version);
+	g_object_get(stored, "token", &token, NULL);
+	g_assert_cmpstr(token, ==, "legacy-import-only");
+	g_clear_object(&stored);
+	stored = venture_database_get(database, VENTURE_TYPE_FORGE_REPO,
+		venture_entity_get_id(VENTURE_ENTITY(repository)), &error);
+	g_assert_no_error(error);
+	g_object_get(stored, "forge-id", &reference, NULL);
+	g_assert_cmpint(reference, ==, first_id);
+	g_object_set(other, "name", "Independent business", NULL);
+	g_assert_true(venture_database_save(database, VENTURE_ENTITY(other), NULL, &error));
+	g_assert_no_error(error);
+	g_object_set(second, "organization-id", venture_entity_get_id(VENTURE_ENTITY(other)),
+		"name", "Independent account", "base-url", "https://git.example.com", NULL);
+	g_assert_true(venture_database_save(database, VENTURE_ENTITY(second), NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_entity_get_id(VENTURE_ENTITY(second)), >, removed_id);
+	g_object_set(duplicate, "organization-id", (gint64)1, "name", "Duplicate account",
+		"base-url", "https://git.example.com", NULL);
+	g_assert_false(venture_database_save(database, VENTURE_ENTITY(duplicate), NULL, &error));
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	venture_test_accounting_database_cleanup(database);
 }
 
 /* --- The credential ------------------------------------------------------ */
@@ -1818,6 +1925,10 @@ main(
 	                test_forge_webhook_parses_an_issue_event);
 	g_test_add_func("/forge/webhook-refuses-a-malformed-payload",
 	                test_forge_webhook_refuses_a_malformed_payload);
+
+	ADD("/forge/origin-is-organization-scoped", test_forge_origin_is_organization_scoped);
+
+	g_test_add_func("/forge/origin-upgrade", test_forge_origin_upgrade);
 
 #undef ADD
 

@@ -2367,7 +2367,7 @@ static const VentureFieldDecl venture_forge_fields[] = {
 	 * appends that. */
 	VENTURE_FIELD("base-url", "Base URL", "https://git.example.com",
 	              VENTURE_FIELD_KIND_STRING,
-	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE |
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION |
 	              VENTURE_COLUMN_FLAG_INDEXED),
 	/*
 	 * Where git clones from, when that is not where the API lives.
