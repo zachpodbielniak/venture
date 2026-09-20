@@ -31,7 +31,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =crm=        | core            | company, contact, interaction, deal; =pipeline=                   |                       |
 | =invoicing=  | finance, crm    | invoice, invoice_line                                            |                       |
 | =receivables= | finance, invoicing | payment, payment_allocation, customer_credit, refund, invoice_event; =receivables=, =customer_statement= | |
-| =stripe= | receivables | stripe_price_link, stripe_customer_link, stripe_checkout, stripe_event, processor_payout, processor_payout_item, processor_dispute, processor_exception | =stripe.enabled= (opt-in) |
+| =stripe= | receivables, integrations | stripe_price_link, stripe_customer_link, stripe_checkout, stripe_event, processor_payout, processor_payout_item, processor_dispute, processor_exception | =stripe.enabled= (opt-in) |
 | =outreach=   | sales           | campaign, newsletter, subscriber, post; =campaigns=               |                       |
 | =ideas=      | core            | idea, research_note; =ideas=                                      |                       |
 | =kb=         | core            | knowledge_base, kb_article, kb_chunk, kb_link                     | =kb.enabled=          |
@@ -50,7 +50,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =commerce= | invoicing, receivables | order import through invoice compose | =commerce.enabled= (opt-in) |
 | =orgaccess=  | core            | organization_membership, team, team_membership; record ownership | |
 | =billing= | invoicing, receivables | plan, plan_price, customer_subscription, subscription_event, dunning_step, billing_notice, billing_request, customer_payment_method; =mrr=, =churn=, =subscriptions_due= | |
-| =projects= | invoicing, receivables | client_project, project_rate, project_time, project_cost, project_billing; =project_margin= | |
+| =projects= | invoicing, receivables | client_project, project_rate, project_time, project_cost, project_billing, project_scope, project_deliverable; =project_margin= | |
 | =mail= | core | mail_message, mail_template; durable outbox and SMTP actions | |
 | =mail_sync= | mail, crm, leads (suggests capture) | mail_account, mail_inbound, mail_unmatched_sender; IMAP sync onto contact timelines and the capture inbox | |
 
@@ -208,7 +208,10 @@ The description must outlive the registry. A static does.
 
 All five are checked at registration, and a built-in that breaks one aborts startup, because a registry missing a core module would fail in a hundred quieter ways later.
 
-Stripe is opt-in because startup requires deployment credentials. See [[file:stripe.org][Stripe payments]].
+Stripe is opt-in. Each organization connects its own verified account through
+settings; enabling the module supplies no credentials or ambient fallback.
+The =integrations= module owns =integration_connection= and requires
+=orgaccess=. See [[file:stripe.org][Stripe payments]] and [[file:integrations.org][protected integration settings]].
 
 Disable =leads= too when disabling =crm=. Campaign attribution is optional
 and uses outreach when available. See [[file:leads.org][leads]].
