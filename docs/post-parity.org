@@ -168,3 +168,11 @@ credential refusal and settings health are documented in
 [[file:connectors.org][mailbox/calendar connectors]]. This is provider/import correctness evidence,
 not hosted-tenant isolation or recovery qualification. The full epic remains
 WIP while its other lanes and operational acceptance remain outstanding.
+
+* OIDC integrated verification
+
+Revision =dd64d91= passed the DEBUG build, warning-free GIR generation and all
+114 integrated test binaries with the native real Tesseract executable enabled.
+The prior run caught a missing OIDC documentation index entry; it was corrected
+before this complete green rerun. Organization AI integration follows this
+verified baseline; its combined gate is pending.
