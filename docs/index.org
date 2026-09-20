@@ -155,3 +155,5 @@ screen's ordinary sync-and-import test.
 - [[file:tenant-recovery.org][Tenant recovery]] — encrypted whole-workspace archives, stopped-state restoration and independent neighbor checks.
 
 - [[file:tenant-operations.org][Hosted platform operations]] — isolated provisioning, maintenance, restore and retained offboarding.
+
+- [[file:hosted-controls.org][Hosted control inventory and evidence matrix]] — implemented boundaries, evidence limits and launch gates.

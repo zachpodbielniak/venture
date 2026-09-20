@@ -1,0 +1,100 @@
+#+title: Hosted control and evidence matrix
+#+description: Enforced boundaries, evidence limits and outstanding launch controls
+
+* Status and authority
+
+This matrix accompanies [[file:post-parity.org][issue 125's delivery contract]],
+[[file:tenant-operations.org][the platform lifecycle runbook]] and
+[[file:tenant-recovery.org][the recovery contract]]. It records technical controls;
+it is not a certification, legal retention determination or hosted-launch approval.
+A passing small fixture does not satisfy the capacity or deployment gates.
+Lightsite provisioning is excluded. Its separate capture contract is unaffected.
+
+An implementation lane is not integrated evidence. Record the exact PR revision,
+image digest, configuration, database version and test transcript before marking a
+control qualified. Failed drills remain evidence of the failure until a corrected
+artifact passes; do not silently replace their status with a unit-test result.
+
+* Data and authority inventory
+
+The supported topology is one application process, database/role, state tree and
+provider-key domain per workspace. Legal organizations are subordinate business
+scopes inside that workspace. A customer company is not an isolation boundary.
+The record/resource classification registry supplies the exhaustive machine-readable
+inventory; this table describes handling by class rather than maintaining a second
+list of record types. Registry classification is still subject to integrated review.
+
+| Class | Examples | Access and export | Retention/removal boundary |
+|-------+----------+-------------------+----------------------------|
+| Tenant business | Accounting, CRM, projects, delivery evidence | Local organization/record authority; complete encrypted operator snapshot includes attachments | Posted financial evidence and dependent references cannot be erased by generic soft delete. A separately authorized retention/erasure workflow is required. |
+| Personal within a tenant | Private mail/calendar, conversations, personal notifications | Owner binding in addition to workspace and organization; snapshot is privileged platform data | Disconnect stops new access/import but is not historical erasure. Account disablement does not erase records. |
+| Tenant administration | Memberships, invitations, scoped support grants | Verified administrative routes/actions; ordinary business authority does not imply administration | Revocation invalidates authority immediately. Restore quarantines old authority before reopening access. |
+| Intentionally public/reference | Build health, published shared reference values | Explicitly classified route/resource; health carries no installation activity | Public classification does not authorize exposing business counts, secrets or neighbor identity. |
+| Platform | Database/configuration, host execution, trusted plugins, recovery archives and keys | Local authenticated platform operation; no tenant filesystem/image selection or unrestricted in-process code | Operator access and destructive lifecycle actions require distinct evidence and retention policy. |
+| Unclassified | New plugin types and undeclared hosted routes | Hosted exposure fails closed until explicitly classified | A plugin's installation is not approval to expose its data. |
+
+Snapshots contain all classes in a workspace, including disabled identities and
+historical secrets. They are recovery artifacts, not a sanitized customer-facing
+export. Delivering one to a third party requires an explicit sensitive-export
+authorization and a secure, separately keyed transfer channel.
+
+* Control and evidence matrix
+
+“Lane evidence” means exercised on the named component's revision and must be
+repeated on the final combined artifact. “Deployment gate” requires evidence from
+the actual operating environment, not a source-code claim.
+
+| Control | Enforcement/evidence available | Remaining qualification |
+|---------+--------------------------------+-------------------------|
+| Physical workspace separation | Platform tool creates separate rootless networks, PostgreSQL volumes/roles and private config/state roots; validates labels/full IDs/mounts before mutation | Final combined adversarial A/B deployment, colliding identifiers, callbacks, files and support access; independent isolation review |
+| Provider secrets | Encrypted organization bindings, owner-private connector policy, version/revocation guards; rotation/process-lease lane tests | Integrate all provider lanes; finish remaining ambient provider settings; review external processor inventory |
+| Revoked authority after restore | Offline quarantine suspends and invalidates restored authentication authority; session secret rotates; explicit named recovery | Fresh default-module and retained-optional-table physical drill, ordinary-member reenrollment and final combined credential/MFA tests |
+| Complete encrypted backup | Authenticated GnuPG archive, private files, payload hashes, immutable workspace/image binding and empty-target restore; real PostgreSQL lane drill | Final revision and actual deployment backup credentials, remote transport, access and retention evidence |
+| Neighbor-preserving recovery | Recovery lane restored 214 tables/205 synthetic rows plus attachment/encrypted settings; 189 neighbor probes succeeded and neighbor rows were unchanged | Representative final Accounting/CRM/project tie-outs and production-sized recovery workload |
+| Exclusive maintenance | Shared platform flock; server process-lease lane covers state/SQLite inode and database-scoped PostgreSQL advisory ownership | Integrate both layers and repeat competing-process, crash and upgrade tests on final image |
+| Upgrade and rollback | Tool snapshots under the same lock, migrates candidate offline and refuses old-binary restart after failure | Distinct schema-version upgrade under traffic; measure outage; rehearse restoration to an empty original-image target |
+| Audit | Application privilege/business events; hash-linked private platform operation log with explicit reason | Separately administered append-only sink, delivery failure alert, retention/restore policy and tamper investigation drill |
+| TLS and encrypted storage | Backend pinned to configured HTTPS authority and loopback proxy mapping; provider transports use documented boundaries | Actual certificate/proxy configuration, disk/volume encryption, key custody and restore evidence. Loopback and rootless containers do not encrypt storage. |
+| Residency and processors | Separate local roots and explicit configured integrations make placement enumerable | Record actual primary/replica/attachment/log/backup locations and each authorized processor. No residency claim before inventory and enforcement are verified. |
+| Offboarding and holds | Offboard stops/suspends and retains data; operator hold is recorded; no implicit subscription deletion | Durable retention scheduler, offsite hold propagation, authorized erasure/anonymization and final media/key destruction evidence |
+| Recovery targets | Selected RPO 15 minutes/RTO four hours; daily operational backup retention target 30 days | WAL/PITR capture/restore, offsite schedule, alerting and measured worst-case drill. Daily snapshots alone cannot meet a 15-minute RPO. |
+| Limits and fairness | Per-workspace process/database resource defaults; bounded subsystem work and durable identities where documented | API/storage/job admission limits, heavy-neighbor fairness and restart/overload qualification |
+| Capacity | Explicit 100/1,000/3,000 profiles and latency/error targets in delivery contract | Actual measured hardware, occupancy, active users, storage and rates. No extrapolation from a two-workspace drill. |
+
+* Retention and erasure rules
+
+Until an approved class-specific retention policy and execution mechanism exist,
+offboarding retains the workspace and releasing a hold deletes nothing. This
+fail-safe prevents accidental destruction; it does not satisfy a personal-data
+removal request or justify indefinite retention. Hosted launch remains blocked on
+that missing workflow.
+
+A retention policy must distinguish financial evidence, operational history,
+personal communications, authentication authority, derived indexes, logs and
+recovery archives. Store its organization/workspace scope, applicable hold, expiry
+basis and approving authority. Define how accounting references retain necessary
+evidence while removable personal payloads are anonymized. A successful soft
+delete or disabled user is never reported as erasure.
+
+The 30-day operational backup target does not override a hold or a separate
+financial-evidence policy. A deletion ledger must survive backup restoration so
+later recovery cannot republish previously erased payloads. Credential quarantine
+protects authority; it is not a substitute for replaying that deletion ledger.
+Do not enable automated archive expiry until authenticated catalog identity,
+holds, offsite copies and failure reporting are enforced together.
+
+* Operator evidence packet
+
+Before hosted launch, retain the final source revision/image digests, actual
+workspace inventory and platform ownership, test reports, measured capacity
+profile, independent review and resolved findings, TLS/storage/processor inventory,
+key custody/rotation record, backup/PITR/restore and financial tie-outs, alert tests,
+retention/hold/erasure drill, and an incident-response exercise. Keep sensitive
+artifacts private; publish only redacted synthetic demonstration evidence.
+
+An incident report identifies affected workspace UUIDs from verified platform
+registrations and audit events, preserves original evidence, records containment
+and credential changes, and reconciles delayed jobs/provider events before
+reactivation. A shared provider or platform-host incident can affect multiple
+workspaces even when their business databases are physically separate. Do not
+infer “no neighbor impact” from database separation alone.
