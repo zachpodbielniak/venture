@@ -195,7 +195,7 @@ DEPS_CLI := $(DEPS_CORE) libsoup-3.0
 
 # Needed by the server on top of the CLI set. libxml-2.0 comes in via
 # ai-glib, which parses XML responses from some providers.
-DEPS_SERVER := $(DEPS_CLI) libxml-2.0 openssl
+DEPS_SERVER := $(DEPS_CLI) libxml-2.0 openssl jose jansson
 
 ifeq ($(SQLITE),1)
     DEPS_SERVER += sqlite3
@@ -594,6 +594,14 @@ CFLAGS += $(CFLAGS_MAIL)
 LDFLAGS += $(shell $(PKG_CONFIG) --libs gmime-3.0 gnutls)
 # Keep telemetry after both consumers for ordinary static archive extraction.
 VENDOR_LIBS_SERVER += $(MAIL_GLIB_LIB) $(OTEL_GLIB_LIB)
+OIDC_GLIB_DIR := $(DEPS_DIR)/oidc-glib
+OIDC_GLIB_LIB := $(OIDC_GLIB_DIR)/build/$(BUILD_TYPE)/liboidc-glib-1.0.a
+CFLAGS += -I$(OIDC_GLIB_DIR)/src
+TEST_CFLAGS += -I$(OIDC_GLIB_DIR)/src
+VENDOR_LIBS_SERVER := $(OIDC_GLIB_LIB) $(VENDOR_LIBS_SERVER)
 FEDORA_DEPS += gmime30-devel gnutls-devel
+FEDORA_DEPS += libjose-devel jansson-devel
 DEBIAN_DEPS += libgmime-3.0-dev libgnutls28-dev
+DEBIAN_DEPS += libjose-dev libjansson-dev
 ARCH_DEPS += gmime3 gnutls
+ARCH_DEPS += jose jansson

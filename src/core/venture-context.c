@@ -171,6 +171,7 @@ venture_context_new(
 		G_BINDING_SYNC_CREATE);
 	/* Scheduled backups read their destination and retention defaults here. */
 	venture_backup_schedule_service_set_config(venture_backup_schedule_service_get(self->database), config);
+	venture_oidc_service_set_config(venture_oidc_service_get(self->database), config);
 	g_object_bind_property(config, "server-base-url", venture_sequence_service_get(self->database), "base-url",
 		G_BINDING_SYNC_CREATE);
 	venture_mfa_service_configure(venture_mfa_service_get(self->database), config);

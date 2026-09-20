@@ -1231,6 +1231,14 @@ test_auth_pages_refuse_anonymous_requests(
 		"/organizations/1/settings/stripe"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/organizations/1/settings/stripe", NULL, "operation=disconnect", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/account/oidc"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/oidc", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/oidc/link", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/oidc"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/oidc", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	/* Public callbacks carry their own state and browser proof; an empty
+	 * callback must fail authentication without redirecting into a session. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/auth/oidc/callback"), ==, SOUP_STATUS_UNAUTHORIZED);
 
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/mail"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/mail", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);

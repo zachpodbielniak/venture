@@ -22,3 +22,6 @@
 [submodule "deps/mail-glib"]
 	path = deps/mail-glib
 	url = git@gitlab.com:Creplav/mail-glib.git
+[submodule "deps/oidc-glib"]
+	path = deps/oidc-glib
+	url = https://gitlab.com/Creplav/oidc-glib.git

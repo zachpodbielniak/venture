@@ -886,6 +886,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		venture_mfa_recovery_code_get_type,
 		venture_mfa_policy_get_type,
 		venture_integration_connection_get_type,
+		venture_oidc_identity_get_type,
 		venture_project_scope_get_type,
 		venture_project_deliverable_get_type,
 	};

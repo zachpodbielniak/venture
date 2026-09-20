@@ -86,6 +86,21 @@ venture_auth_principal_free(VentureAuthPrincipal *principal);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureAuthPrincipal, venture_auth_principal_free)
 
 /**
+ * venture_auth_login_identity:
+ * @self: authentication service
+ * @identity_id: identity returned by a verified OIDC finish, never request input
+ * @out_cookie: (out) (transfer full): identity-bound session or MFA challenge
+ * @out_mfa_pending: (out): whether the local second factor remains required
+ * @error: (out) (optional): revoked local identity or authority
+ *
+ * Trusted authentication boundary. Provider claims never replace local roles
+ * or enrolled second factors. Session checks revalidate the linked identity.
+ * Returns: whether authentication advanced to a session or local MFA challenge
+ */
+gboolean venture_auth_login_identity(VentureAuth *self, gint64 identity_id,
+	gchar **out_cookie, gboolean *out_mfa_pending, GError **error);
+
+/**
  * venture_auth_authenticate:
  * @self: a #VentureAuth
  * @request: the incoming request

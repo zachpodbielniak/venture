@@ -1,0 +1,207 @@
+#+TITLE: Organization sign-in with OpenID Connect
+
+* Contract and defaults
+
+OIDC is an optional additional way to authenticate an existing local user.
+It is off by default. Local passwords, local second factors, recovery codes,
+roles and organization memberships remain authoritative. A verified provider
+email never creates, finds or links a user. Provider roles, groups, =acr= and
+=amr= never grant VENTURE permissions or replace its enrolled second factor.
+
+An organization owner or administrator connects its own confidential client.
+Each member signs in locally and explicitly links that provider after entering
+their current local password. A subsequent provider login resolves only that
+verified issuer/subject link in that organization. An unlinked subject receives
+a generic refusal and can use local sign-in. An administrator's existing local
+cross-organization authority remains an explicit local grant.
+
+The implementation uses =oidc-glib= for JWT signature, issuer, audience and time
+validation. VENTURE owns authorization-code flow, state, nonce, PKCE, local
+linking, sessions and recovery. These application responsibilities are not
+added to the resource-server library. The dependency is the canonical GitLab
+submodule; its static-link JSON-GLib/Jansson compatibility fix is upstream in
+[[https://gitlab.com/Creplav/oidc-glib/-/merge_requests/1][oidc-glib MR 1]]. It shares VENTURE's existing OpenTelemetry dependency.
+
+* Configure a provider
+
+First retain a working local administrator account and recovery codes. Configure
+an exact public root URL and secure cookies, then allow the exact issuer:
+
+#+begin_src yaml
+server:
+  base_url: https://books.example.org
+security:
+  require_auth: true
+  cookie_secure: true
+  session_secret_env: VENTURE_SESSION_SECRET
+oidc:
+  enabled: true
+  allowed_issuers:
+    - https://identity.example.org/realms/business
+  allow_loopback: false
+#+end_src
+
+The =oidc= module requires =orgaccess=, =mfa= and =integrations=. Its independent
+=oidc.enabled= gate must also be true. An empty issuer allowlist refuses all
+providers. =allow_loopback= permits HTTP only for literal loopback addresses or
+=localhost= and exists for isolated test deployments; ordinary issuers and
+callbacks use HTTPS. OIDC refuses configuration with local authentication off.
+
+Use the same 32-byte =VENTURE_INTEGRATION_KEY= documented in
+[[file:integrations.org][Organization integrations]]. Credentials are authenticated encrypted settings,
+scoped to the organization and connection. There is no installation-wide OIDC
+client fallback. Never write plaintext provider credentials into entity fields,
+source control or an authorization URL.
+
+1. Register a confidential authorization-code client at the allowed issuer.
+   Require PKCE S256. Register exactly
+   =https://books.example.org/auth/oidc/callback= as its redirect URI.
+2. Open the organization's =Sign-in settings= link, or
+   =/organizations/<id>/settings/oidc= as its owner/administrator.
+3. Submit issuer, client ID and client secret. Credentials are write-only;
+   the form never echoes a saved value. Supply all three when rotating.
+4. Share the displayed organization sign-in link with its members. Each member
+   first opens =/account/oidc= using local sign-in, enters their current password
+   and chooses =Verify and link this provider=.
+5. The provider authenticates that same browser. VENTURE validates the response
+   and links only the already authenticated local account. Future sign-ins use
+   the organization's provider link and then the user's local second factor,
+   when enrolled.
+
+The callback comes exclusively from =server.base_url=. A request Host header,
+query parameter or provider response cannot select its origin. Deployments
+behind proxies should suppress callback query strings in proxy access logs;
+OAuth authorization codes and state travel on the standard callback query.
+VENTURE does not log or persist codes or tokens, and callback responses use
+=no-store= and =Referrer-Policy: no-referrer=.
+
+* Protocol profile and limits
+
+Discovery must return the exact configured issuer and same-origin HTTPS
+=authorization_endpoint=, =token_endpoint= and =jwks_uri=. Redirects, URL
+credentials, fragments and pre-existing query strings are refused. Discovery
+must advertise =code=, =S256= and =client_secret_post=. This strict profile is
+compatible with the tested Keycloak fixture; providers using different endpoint
+origins or requiring another token endpoint authentication method are not claimed
+to be supported. Add such support through the provider/verification boundary
+with explicit origin and credential rules, never by relaxing all URL checks.
+
+Each authorization attempt uses independent cryptographic state, nonce, browser
+binding and PKCE verifier. Its lifetime is five minutes, its state is spent even
+on a refused callback, and a restart discards it. Linking must finish in the same
+local account/browser; a local user-version or provider-version change during
+the flow refuses it. Credentials are decrypted only at the selected connection
+version. No email auto-linking, self-registration, access-token authentication,
+refresh-token storage or provider-role synchronization is implemented.
+
+The library accepts only RS256/ES256 and validates signature, exact issuer,
+audience membership, subject and JWT times. VENTURE additionally verifies nonce
+and the authorized party: a present =azp= must equal the client, and multiple
+audiences require it. This follows [[https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation][OIDC ID token validation]] and
+[[https://www.rfc-editor.org/rfc/rfc7636#section-4][PKCE S256]].
+
+| Boundary | Limit |
+|----------+-------|
+| Pending states | 1,024 per process |
+| Sign-in/link starts, including failures | 10 per actual peer per five minutes |
+| Unlink attempts | 10 per local user per five minutes |
+| Retained rate budgets | 1,024, expired entries removed on use |
+| Discovery/token JSON | 128 KiB per response |
+| Discovery/token request | Five-second total cancellation deadline |
+| JWT/JWKS verification | Five-second total cancellation deadline |
+| Library JWT / JWKS response | 64 KiB / 1 MiB |
+| Cached provider verifiers | 32; library controls JWKS freshness and refresh |
+| Authorization code / client secret | 4,096 bytes each |
+| Client ID / verified subject | 255 bytes each |
+
+A finish may perform a token request followed by verification, each with its own
+five-second deadline. HTTP completion is driven on a private context. The
+library's worker sees only JWT/network data; all VENTURE database access and
+identity writes stay on the calling main thread. Cancellation is drained before
+returning. No background worker touches the repository or its automation loop.
+
+* Revocation and recovery
+
+Every provider session and pending local-MFA challenge is signed with its
+identity and provider revisions. Authentication reloads the local user, active
+identity, active provider connection, live organization and current membership.
+Disabling a provider, changing its connection, unlinking, disabling a user or
+removing their membership refuses subsequent requests. A disconnect/reconnect
+or unlink/relink cannot revive a previously issued provider cookie. Credential
+rotation also ends existing provider sessions and requires a new sign-in.
+
+=Unlink and end existing sessions= requires the user's current local password.
+It atomically disables their link and advances the local user's session cutoff,
+ending both local and provider sessions and pending MFA challenges. Only their
+own link can be unlinked. Recovery through the local password and existing MFA
+recovery codes remains available if the provider is unavailable or disconnected.
+
+Provider MFA claims do not bypass VENTURE MFA. A provider-authenticated challenge
+cannot be used as a session, and successful factor verification retains the
+provider binding. A challenge revoked before completion does not consume a local
+recovery code. Existing four-part local session cookies remain supported;
+provider cookies use a separate signed five-part format and cannot be converted
+into local cookies by removing their identity component.
+
+Local sign-out applies the existing local session cutoff. It does not claim to
+log the browser out of the provider; provider/back-channel logout is not part of
+this flow. The local session lifetime is independent of the short-lived ID token
+used to authenticate its creation.
+
+* Metadata, migration and extension
+
+=oidc_identity= belongs to the =oidc= module. Its user reference carries
+=PERSONAL_OWNER= metadata; subject and uniqueness hash are sensitive fields and
+are excluded from public serialization, forms, AI descriptions and audit values.
+Every database lifecycle writer refuses generic identity creation, modification,
+deletion, restoration and purge. Only verified service linking/unlinking writes
+these records. Generic CRUD and staged changes cannot manufacture a login.
+
+Migration =000530_oidc_identity= checks the metadata-created optional table for
+both SQLite and PostgreSQL. It creates no inferred links and changes no local
+password or membership. Historical installations retain local authentication;
+a disabled module may be enabled through ordinary schema reconciliation.
+
+=VentureOidcService= owns organization configuration, begin/finish, identity
+resolution and unlinking. =VentureAuth= owns the signed session/MFA boundary.
+The private verifier translation unit keeps Jansson separate from JSON-GLib's
+incompatible C declarations. Public service APIs document ownership and trusted
+caller requirements; an arbitrary identity ID is never itself a credential.
+
+* Verification and demonstration
+
+The ordinary DEBUG test suite runs =tests/test-oidc.c= using a disposable HTTP
+provider with real RSA-signed tokens, an HTTP code exchange using synthetic codes and
+verified PKCE. It covers explicit linking and sign-in, unlinked subjects, state
+replay, browser binding, wrong nonce/issuer/audience/authorized party, invalid signatures, expired
+tokens, credential rotation, guarded generic writes, session revocation,
+disconnect/reconnect, local MFA and administrator recovery, revocation during MFA
+completion, session expiry/sign-out, failed-password budgets and total
+HTTP/JWKS cancellation deadlines. Existing authentication route tests include
+all new protected routes and refuse an unproved public callback.
+
+#+begin_src sh
+make DEBUG=1 test-one T=test-oidc
+#+end_src
+
+The real provider test is opt-in. Its harness imports only synthetic users and
+credentials into a disposable Keycloak 26.7.3 container, allocates a random
+loopback port, drives the actual provider login form and authorization-code/PKCE
+exchange for linking and sign-in through both the service and actual Venture HTTP
+routes, and removes only its own container. Keycloak emits Secure cookies
+for browser-trusted HTTP loopback; this fixture normalizes only those disposable
+provider cookies for libsoup's non-browser cookie jar. Production cookies and TLS
+validation are not changed:
+
+#+begin_src sh
+tools/venture-test-oidc-keycloak.sh
+#+end_src
+
+The [[file:evidence/125-oidc-demo.txt][sanitized built-artifact transcript]] records the real Venture/Keycloak browser
+flow, local administrator recovery and session expiry/sign-out checks on SQLite
+and the disposable PostgreSQL fixture. The resulting transcript demonstrates explicit linking
+followed by SSO to the same existing local identity. It is not a production
+provider rollout, penetration test, live user migration or proof that every
+provider implements this strict profile. PostgreSQL runs use only the explicitly
+provisioned disposable URI via =VENTURE_TEST_ACCOUNTING_POSTGRES_URI=; the helper
+creates and removes a unique schema and never resets a shared public schema.

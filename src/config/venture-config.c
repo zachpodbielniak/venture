@@ -221,6 +221,12 @@ static const VentureConfigSetting venture_config_settings[] = {
 
 	VC_BOOL("stripe-enabled", "stripe", "enabled", FALSE,
 	        "Enable hosted Stripe payments; requires deployment credentials"),
+	VC_BOOL("oidc-enabled", "oidc", "enabled", FALSE,
+	        "Enable explicitly linked organization OpenID Connect sign-in"),
+	VC_BOOL("oidc-allow-loopback", "oidc", "allow_loopback", FALSE,
+	        "Permit HTTP loopback issuers only for isolated test deployments"),
+	VC_STRV("oidc-allowed-issuers", "oidc", "allowed_issuers",
+	        "Exact platform-approved issuer URLs; empty refuses all providers"),
 	VC_BOOL("payroll-enabled", "payroll", "enabled", FALSE,
 	        "Enable imported payroll runs; native tax calculation is out of scope"),
 	VC_BOOL("bankfeed-enabled", "bankfeed", "enabled", FALSE,

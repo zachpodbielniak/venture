@@ -394,7 +394,7 @@ clean-all: clean-deps
 clean-deps:
 	$(Q)for d in $(YAML_GLIB_DIR) $(HTMX_GLIB_DIR) $(AI_GLIB_DIR) \
 	             $(CRISPY_DIR) $(PODOMATION_DIR) $(ORM_GLIB_DIR) $(STRIPE_GLIB_DIR) \
-	             $(OTEL_GLIB_DIR) $(MAIL_GLIB_DIR) $(MAIL_GLIB_DIR)/deps/otel-glib; do \
+	             $(OTEL_GLIB_DIR) $(MAIL_GLIB_DIR) $(MAIL_GLIB_DIR)/deps/otel-glib $(OIDC_GLIB_DIR); do \
 		rm -rf $$d/build; \
 	done
 
@@ -630,3 +630,8 @@ $(OUTDIR)/venture-docs-assets.h: $(DOCS_ASSET_FILES) | $(OUTDIR)
 	done
 
 $(OBJDIR)/core/docs/venture-docs-site.o $(OBJDIR)/server/docs/venture-docs-site.o: $(OUTDIR)/venture-docs-assets.h
+
+.PHONY: dep-oidc-glib
+dep-oidc-glib: $(YAML_GLIB_LIB) $(OTEL_GLIB_LIB)
+	$(Q)$(MAKE) --no-print-directory -C $(OIDC_GLIB_DIR) static DEBUG=$(DEBUG) ASAN=$(ASAN) UBSAN=$(UBSAN) YAML_GLIB_DIR=$(YAML_GLIB_DIR) YAML_GLIB_STATIC=$(YAML_GLIB_LIB) OTEL_GLIB_DIR=$(OTEL_GLIB_DIR)
+$(OIDC_GLIB_LIB): dep-oidc-glib

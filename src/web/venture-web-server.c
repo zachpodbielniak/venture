@@ -9328,6 +9328,12 @@ venture_web_ui_detail(
 
 	venture_stripe_web_settings_link(self, content, record, principal);
 	venture_mail_web_settings_link(self, content, record, principal);
+	if (G_OBJECT_TYPE(record) == VENTURE_TYPE_ORGANIZATION && venture_context_module_enabled(self->context, "oidc")) {
+		static const gint oidc_roles[] = { VENTURE_ORGANIZATION_ROLE_OWNER, VENTURE_ORGANIZATION_ROLE_ADMIN };
+		if (venture_access_policy_has_organization_role(venture_database_get_access_policy(venture_context_get_database(self->context)),
+			principal, venture_entity_get_id(record), oidc_roles, G_N_ELEMENTS(oidc_roles)))
+			g_string_append_printf(content, "<p><a class=\"btn\" href=\"/organizations/%" G_GINT64_FORMAT "/settings/oidc\">Sign-in settings</a></p>", venture_entity_get_id(record));
+	}
 	venture_billing_web_buttons(self, content, record, principal);
 	venture_web_append_record_actions(self, content, record, principal);
 	venture_web_append_related(self, content, record);
@@ -10567,6 +10573,8 @@ venture_web_ui_entities(
 
 		if (venture_context_module_enabled(self->context, "stripe"))
 			g_string_append_printf(content, "<a class=\"btn btn-sm\" href=\"/organizations/%" G_GINT64_FORMAT "/settings/stripe\">Stripe settings</a> ", id);
+		if (venture_context_module_enabled(self->context, "oidc"))
+			g_string_append_printf(content, "<a class=\"btn btn-sm\" href=\"/organizations/%" G_GINT64_FORMAT "/settings/oidc\">Sign-in settings</a> ", id);
 
 		/*
 		 * Deleting names its own consequence. When the entity still
@@ -11165,6 +11173,8 @@ venture_web_ui_account(
 				"<p class=\"muted small\">A code from an authenticator app "
 				"after the password.</p>"
 				"<a class=\"btn\" href=\"/account/mfa\">Manage second factor</a>");
+		if (venture_web_module_enabled(self, "oidc"))
+			g_string_append(content, "<h2>Organization sign-in</h2><a class=\"btn\" href=\"/account/oidc\">Manage provider links</a>");
 	}
 
 	g_string_append(content, "</div></div>");
@@ -29626,6 +29636,7 @@ venture_web_api_ticket_draft(
 #include "docs/venture-docs-web.inc"
 #include "report/venture-report-pack-web.inc"
 #include "orgaccess/venture-mfa-web.inc"
+#include "oidc/venture-oidc-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -30169,6 +30180,13 @@ venture_document_web_register(router, self);
 	venture_accountant_web_register(router, self);
 	venture_crm_import_web_register(router, self);
 	venture_mfa_web_register(router, self);
+	htmx_router_get(router, "/auth/oidc/start", venture_oidc_web_start, self);
+	htmx_router_get(router, "/auth/oidc/callback", venture_oidc_web_callback, self);
+	htmx_router_get(router, "/account/oidc", venture_oidc_web_account, self);
+	htmx_router_post(router, "/account/oidc", venture_oidc_web_account, self);
+	htmx_router_post(router, "/account/oidc/link", venture_oidc_web_start, self);
+	htmx_router_get(router, "/organizations/:id/settings/oidc", venture_oidc_web_settings, self);
+	htmx_router_post(router, "/organizations/:id/settings/oidc", venture_oidc_web_settings, self);
 	htmx_router_post(router, "/api/v1/:type/:id/actions/:action", venture_web_api_action, self);
 	htmx_router_post(router, "/api/v1/journals/post", venture_web_api_action, self);
 	venture_money_calendar_web_register(router, self);

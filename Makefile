@@ -182,6 +182,8 @@ CORE_SRCS += src/docs/venture-org-html.c src/docs/venture-docs-site.c
 CORE_SRCS += src/orgaccess/venture-mfa-records.c
 SERVER_ONLY_SRCS := $(filter-out src/orgaccess/venture-mfa-records.c,$(SERVER_ONLY_SRCS))
 
+CORE_SRCS += src/oidc/venture-oidc-records.c
+SERVER_ONLY_SRCS += $(filter-out src/oidc/venture-oidc-records.c,$(wildcard src/oidc/*.c))
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
 CLI_SRCS := $(wildcard src/cli/*.c)
@@ -256,6 +258,7 @@ PUBLIC_HDRS += $(wildcard src/docs/*.h)
 
 # Private implementation fragments are included by their owning C source;
 # they are neither installable headers nor introspection declarations.
+PUBLIC_HDRS += $(wildcard src/oidc/*.h)
 PUBLIC_HDRS := $(filter-out %-private.h,$(PUBLIC_HDRS))
 
 TEST_SRCS := $(wildcard tests/test-*.c)
@@ -610,6 +613,7 @@ ifeq ($(filter clean clean-all clean-deps,$(MAKECMDGOALS)),)
 endif
 
 deps: $(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB)
+deps: $(OIDC_GLIB_LIB)
 
 $(OUTDIR)/tests/test-mail-surfaces: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-lead-routing: | $(OUTDIR)/venturectl

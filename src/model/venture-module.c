@@ -793,6 +793,8 @@ static const gchar *const dedupe_suggests[] = { "leads", "invoicing", "payables"
 static GType (*const dedupe_types[]) (void) = { venture_duplicate_candidate_get_type, NULL };
 
 static GType (*const integration_types[]) (void) = { venture_integration_connection_get_type, NULL };
+static GType (*const oidc_types[]) (void) = { venture_oidc_identity_get_type, NULL };
+static const gchar *const oidc_requires[] = { "orgaccess", "mfa", "integrations", NULL };
 static const gchar *const mfa_requires[] = { "orgaccess", NULL };
 static GType (*const mfa_types[]) (void) = { venture_user_mfa_get_type, venture_mfa_recovery_code_get_type, venture_mfa_policy_get_type, NULL };
 
@@ -1157,6 +1159,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"stripe", "Stripe", "Hosted Checkout and verified payment settlement.",
 		venture_module_requires_stripe, NULL, venture_module_stripe_types,
 		NULL, "stripe-enabled", FALSE
+	},
+	{
+		"oidc", "Organization sign-in", "Explicit OIDC identity links with local roles, MFA and recovery.",
+		oidc_requires, NULL, oidc_types, NULL, "oidc-enabled", FALSE
 	}
 };
 

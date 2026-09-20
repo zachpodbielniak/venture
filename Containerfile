@@ -52,6 +52,8 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         libpq-devel \
         readline-devel \
         openssl-devel \
+        libjose-devel \
+        jansson-devel \
         gobject-introspection-devel \
         poppler-glib-devel \
         libetpan-devel \
@@ -98,7 +100,7 @@ ENV DEBUG=0
 #
 ENV PREFIX=/usr
 
-RUN if [ ! -f deps/yaml-glib/Makefile ]; then \
+RUN if [ ! -f deps/yaml-glib/Makefile ] || [ ! -f deps/oidc-glib/Makefile ]; then \
         echo "deps/ is empty -- run: git submodule update --init --recursive" >&2; \
         exit 1; \
     fi
@@ -196,6 +198,8 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         libetpan \
         libgudev \
         libarchive \
+        libjose \
+        jansson \
         ca-certificates \
         tzdata \
         git \

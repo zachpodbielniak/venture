@@ -97,6 +97,7 @@ test_module_everything_is_on_by_default(void)
 		if (!g_strcmp0(venture_module_get_name(module), "ocr") ||
 		    !g_strcmp0(venture_module_get_name(module), "federation") ||
 		    !g_strcmp0(venture_module_get_name(module), "stripe") ||
+		    !g_strcmp0(venture_module_get_name(module), "oidc") ||
 		    !g_strcmp0(venture_module_get_name(module), "payroll") ||
 		    !g_strcmp0(venture_module_get_name(module), "bankfeed") ||
 		    !g_strcmp0(venture_module_get_name(module), "commerce") ||

@@ -1,0 +1,26 @@
+{
+  "realm": "venture-125-fixture",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "clients": [{
+    "clientId": "venture-client",
+    "secret": "fixture-client-secret",
+    "protocol": "openid-connect",
+    "publicClient": false,
+    "standardFlowEnabled": true,
+    "directAccessGrantsEnabled": false,
+    "serviceAccountsEnabled": false,
+    "redirectUris": ["http://127.0.0.1:8748/auth/oidc/callback"],
+    "attributes": {"pkce.code.challenge.method": "S256"}
+  }],
+  "users": [{
+    "username": "fixture-provider-user",
+    "enabled": true,
+    "emailVerified": true,
+    "firstName": "Fixture",
+    "lastName": "User",
+    "email": "fixture@example.invalid",
+    "credentials": [{"type": "password", "value": "fixture-provider-password", "temporary": false}]
+  }]
+}
