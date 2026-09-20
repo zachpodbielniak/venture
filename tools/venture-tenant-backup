@@ -1,0 +1,277 @@
+#!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Platform maintenance only. No command is reachable from a tenant request.
+set -euo pipefail
+umask 077
+
+usage () {
+	cat <<'HELP'
+Usage: venture-tenant-backup --root DIR --tenant ID --key-file FILE COMMAND ARCHIVE
+
+Commands:
+  create   Encrypt the stopped tenant's database, application config and state.
+  verify   Authenticate an archive and print its non-secret manifest.
+  restore  Restore into the same tenant identity on an empty, stopped target.
+
+The root and tenant must already have trusted registration manifests. A key
+file contains one printable ASCII out-of-band passphrase and must be owned by this user, mode
+600 or 400. Keep it separately from backups. No key is accepted in arguments.
+
+Examples:
+  venture-tenant-backup --root /srv/venture --tenant studio --key-file /secure/key create /backups/studio.gpg
+  venture-tenant-backup --root /srv/recovery --tenant studio --key-file /secure/key restore /backups/studio.gpg
+
+Requires Bash 5+, Podman, PostgreSQL client tools in the database container,
+jq, GnuPG, GNU tar/coreutils and util-linux flock. The application must stay
+stopped under the tenant maintenance lock. Restore never starts it. Runtime
+routing and database transport credentials belong to the destination's
+control directory; archived application configuration cannot replace them.
+
+Stdout: the published archive path or verified manifest. Diagnostics: stderr.
+Exit: 0 success; 2 invalid input/unsafe state; other nonzero operational failure.
+--help and --license perform no filesystem or container operations.
+HELP
+}
+fail () { printf 'venture-tenant-backup: %s\n' "$*" >&2; exit 2; }
+root='' tenant='' key_file='' work='' pending=''
+cleanup () {
+	local result=$?
+	trap - EXIT
+	if [[ -n $pending ]] && ! rm -f -- "$pending"
+	then
+		printf '%s\n' 'venture-tenant-backup: could not remove owned partial archive' >&2
+		if [[ $result == 0 ]]
+		then
+			result=1
+		fi
+	fi
+	if [[ -n $work ]] && ! rm -rf -- "$work"
+	then
+		printf '%s\n' 'venture-tenant-backup: private recovery artifacts need operator cleanup' >&2
+		if [[ $result == 0 ]]
+		then
+			result=1
+		fi
+	fi
+	exit "$result"
+}
+while [[ $# -gt 0 ]]
+do
+	case $1 in
+		-h|--help) usage; exit 0 ;;
+		--license) printf '%s\n' 'SPDX-License-Identifier: AGPL-3.0-or-later'; exit 0 ;;
+		--root|--tenant|--key-file)
+			[[ $# -ge 2 && -n $2 ]] || fail "Missing value for $1"
+			case $1 in --root) root=$2;; --tenant) tenant=$2;; --key-file) key_file=$2;; esac
+			shift 2 ;;
+		--) shift; break ;;
+		-*) fail "Unknown option: $1" ;;
+		*) break ;;
+	esac
+done
+[[ $# -eq 2 ]] || fail 'Choose a command and archive path; see --help'
+operation=$1 archive=$2
+case $operation in create|verify|restore) ;; *) fail 'Unknown recovery command';; esac
+[[ $tenant =~ ^[a-z][a-z0-9-]{0,47}$ ]] || fail 'Tenant ID must be 1–48 lowercase letters, digits or hyphens'
+[[ -n $root && -n $key_file && -n $archive ]] || fail 'Root, tenant, key file and archive are required'
+for dependency in podman jq gpg tar sha256sum stat realpath mktemp flock timeout date find sort cmp awk grep sync dirname
+do
+	command -v "$dependency" >/dev/null || fail "Missing dependency: $dependency"
+done
+private_file () {
+	local path=$1 metadata
+	[[ -f $path && ! -L $path ]] || fail "Expected a private regular file: $path"
+	metadata=$(stat -c '%u:%a' -- "$path")
+	[[ $metadata == "$(id -u):600" || $metadata == "$(id -u):400" ]] || fail "Expected current-user mode 600/400 file: $path"
+}
+private_dir () {
+	local path=$1
+	[[ -d $path && ! -L $path && $(stat -c '%u:%a' -- "$path") == "$(id -u):700" ]] || fail "Expected current-user mode 700 directory: $path"
+}
+private_dir "$root"
+root=$(realpath -e -- "$root")
+private_file "$root/host.json"
+private_file "$key_file"
+[[ $(stat -c %s -- "$key_file") -ge 32 && $(stat -c %s -- "$key_file") -le 4096 ]] || fail 'Recovery passphrase file must contain 32–4096 bytes'
+# GnuPG consumes one line from its passphrase descriptor. Validate that
+# actual line, not merely a file size padded after an early newline.
+LC_ALL=C awk 'NR != 1 || length($0) < 32 || length($0) > 4096 || /[^ -~]/ { exit 1 } END { if (NR != 1) exit 1 }' "$key_file" || fail 'Recovery key must be one printable ASCII line of at least 32 characters' 
+tenant_dir=$root/$tenant
+private_dir "$tenant_dir"
+private_file "$tenant_dir/manifest.json"
+private_dir "$tenant_dir/control"
+# Lock files are created only inside the operator-owned directory. Reject
+# links before opening so the lock cannot select another tenant's inode.
+[[ ! -L $tenant_dir/control/maintenance.lock ]] || fail 'Maintenance lock must not be a symlink'
+if [[ -e $tenant_dir/control/maintenance.lock ]]
+then
+	private_file "$tenant_dir/control/maintenance.lock"
+	[[ $(stat -c %h -- "$tenant_dir/control/maintenance.lock") == 1 ]] || fail 'Maintenance lock must not be hard linked'
+fi
+exec 9>"$tenant_dir/control/maintenance.lock"
+flock -n 9 || fail 'Tenant maintenance is already in progress'
+work=$(mktemp -d "$tenant_dir/control/recovery.XXXXXX")
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+export GNUPGHOME=$work/gnupg
+mkdir -m 700 "$GNUPGHOME"
+host_id=$(jq -er 'select(.schema == 1) | .host_id | select(type == "string" and test("^[a-f0-9-]{36}$"))' "$root/host.json")
+jq -e --arg tenant "$tenant" --arg host "$host_id" '
+ .schema == 1 and .tenant_id == $tenant and .host_id == $host and
+ (.workspace_id | type == "string" and test("^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")) and
+ (.app_container | type == "string" and test("^[a-f0-9]{64}$")) and
+ (.db_container | type == "string" and test("^[a-f0-9]{64}$")) and
+ (.app_image | type == "string" and test("^sha256:[a-f0-9]{64}$")) and
+ (.database | type == "string" and test("^[a-z][a-z0-9_]{0,62}$")) and
+ (.db_role | type == "string" and test("^[a-z][a-z0-9_]{0,62}$")) and
+ (.postgres_major | type == "number" and . >= 15 and . <= 99)
+' "$tenant_dir/manifest.json" >/dev/null || fail 'Invalid tenant registration'
+workspace_id=$(jq -r .workspace_id "$tenant_dir/manifest.json")
+app=$(jq -r .app_container "$tenant_dir/manifest.json")
+db=$(jq -r .db_container "$tenant_dir/manifest.json")
+database=$(jq -r .database "$tenant_dir/manifest.json")
+db_role=$(jq -r .db_role "$tenant_dir/manifest.json")
+app_image=$(jq -r .app_image "$tenant_dir/manifest.json")
+postgres_major=$(jq -r .postgres_major "$tenant_dir/manifest.json")
+check_container () {
+	local id=$1 role=$2 running=$3
+	timeout --signal=TERM --kill-after=10s 30 podman inspect "$id" > "$work/inspect.json"
+	jq -e --arg id "$id" --arg host "$host_id" --arg tenant "$tenant" --arg role "$role" --argjson running "$running" '
+	 length == 1 and .[0].Id == $id and .[0].Config.Labels["io.venture.host"] == $host and
+	 .[0].Config.Labels["io.venture.tenant"] == $tenant and .[0].Config.Labels["io.venture.role"] == $role and
+	 .[0].State.Running == $running
+	' "$work/inspect.json" >/dev/null || fail 'Container ownership or maintenance state does not match registration'
+	if [[ $role == application ]]
+	then
+		jq -e --arg image "$app_image" '(.[0].Image | sub("^sha256:"; "")) == ($image | sub("^sha256:"; ""))' "$work/inspect.json" >/dev/null || fail 'Application image differs from registration'
+		jq -e --arg state "$tenant_dir/state" --arg config "$tenant_dir/config" '
+		 any(.[0].Mounts[]; .Source == $state and .Destination == "/var/lib/venture" and .RW == true) and
+		 any(.[0].Mounts[]; .Source == $config and .Destination == "/etc/venture" and .RW == false)
+		' "$work/inspect.json" >/dev/null || fail 'Application state/config mounts differ from registration' 
+	fi
+}
+pg () {
+	timeout --signal=TERM --kill-after=10s 900 podman exec -i --user postgres "$db" \
+		psql -X -qAt --set ON_ERROR_STOP=1 -U postgres -d "$database"
+}
+check_target () {
+	check_container "$app" application false
+	check_container "$db" database true
+	local actual
+	actual=$(printf 'SHOW server_version_num;\n' | pg)
+	[[ $actual =~ ^[0-9]+$ && $((10#$actual / 10000)) == "$postgres_major" ]] || fail 'PostgreSQL major version differs from registration'
+	actual=$(printf "SELECT count(*) FROM pg_roles WHERE rolname = '%s' AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls;\n" "$db_role" | pg)
+	[[ $actual == 1 ]] || fail 'Application database role must be unprivileged' 
+}
+# Only regular files and directories are portable tenant state. Sockets,
+# symlinks, devices and newline-bearing paths would weaken extraction checks.
+check_tree () {
+	local path=$1 entry
+	private_dir "$path"
+	find "$path" -mindepth 1 -print0 > "$work/tree-members"
+	while IFS= read -r -d '' entry
+	do
+		if [[ -f $entry && $(stat -c %h -- "$entry") != 1 ]]
+		then
+			fail 'Tenant tree contains a hard-linked file'
+		fi
+		[[ $entry != *$'\n'* && $entry != *$'\r'* && ! -L $entry && ( -f $entry || -d $entry ) ]] || fail 'Tenant tree contains an unsupported file or path'
+	done < "$work/tree-members"
+}
+check_tar () {
+	local file=$1 line
+	tar -tf "$file" > "$work/members"
+	while IFS= read -r line
+	do
+		[[ $line != /* && $line != *$'\r'* && ! $line =~ (^|/)\.\.(/|$) ]] || fail 'Unsafe archive member path'
+	done < "$work/members"
+	LC_ALL=C tar -tvf "$file" > "$work/types"
+	while IFS= read -r line
+	do
+		[[ $line == -* || $line == d* ]] || fail 'Archive contains a link or special file'
+	done < "$work/types"
+}
+extract_archive () {
+	[[ -f $archive && ! -L $archive ]] || fail 'Archive must be a regular file'
+	# Never extract a partial decryption: authentication must finish first.
+	timeout --signal=TERM --kill-after=10s 900 gpg --batch --no-tty --pinentry-mode loopback --no-symkey-cache --passphrase-fd 3 --status-fd 4 \
+		--output "$work/archive.tar" --decrypt "$archive" 3<"$key_file" 4>"$work/decrypt.status" 2>"$work/decrypt.log" || fail 'Archive authentication failed'
+	grep -Fxq '[GNUPG:] GOODMDC' "$work/decrypt.status" || fail 'Archive must carry verified integrity protection'
+	check_tar "$work/archive.tar"
+	printf '%s\n' config.tar database.dump manifest.json state.tar | sort > "$work/expected"
+	sort "$work/members" > "$work/actual"
+	cmp -s "$work/expected" "$work/actual" || fail 'Archive must contain exactly the four recovery payloads'
+	mkdir -m 700 "$work/payload"
+	tar -xf "$work/archive.tar" -C "$work/payload" --no-same-owner --no-same-permissions
+	jq -e --arg tenant "$tenant" --arg workspace "$workspace_id" --arg image "$app_image" --argjson major "$postgres_major" '
+	 .schema == 1 and .tenant_id == $tenant and .workspace_id == $workspace and .app_image == $image and .postgres_major == $major and
+	 (.database_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
+	 (.state_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
+	 (.config_sha256 | type == "string" and test("^[a-f0-9]{64}$"))
+	' "$work/payload/manifest.json" >/dev/null || fail 'Archive identity, image or database version does not match target'
+	local part digest expected
+	for part in database state config
+	do
+		if [[ $part == database ]]
+		then
+			digest=$(sha256sum "$work/payload/database.dump")
+		else
+			digest=$(sha256sum "$work/payload/$part.tar")
+		fi
+		expected=$(jq -r ".${part}_sha256" "$work/payload/manifest.json")
+		[[ ${digest%% *} == "$expected" ]] || fail 'Archive payload digest mismatch'
+	done
+	check_tar "$work/payload/state.tar"
+	check_tar "$work/payload/config.tar"
+}
+case $operation in
+	create)
+		[[ ! -e $archive && ! -L $archive ]] || fail 'Archive destination already exists'
+		check_target
+		check_tree "$tenant_dir/state"
+		check_tree "$tenant_dir/config"
+		timeout --signal=TERM --kill-after=10s 900 podman exec --user postgres "$db" \
+			pg_dump -U postgres --format=custom --no-owner --no-privileges "$database" > "$work/database.dump"
+		tar -cf "$work/state.tar" -C "$tenant_dir/state" .
+		tar -cf "$work/config.tar" -C "$tenant_dir/config" .
+		database_hash=$(sha256sum "$work/database.dump"); state_hash=$(sha256sum "$work/state.tar"); config_hash=$(sha256sum "$work/config.tar")
+		jq -n --arg tenant "$tenant" --arg workspace "$workspace_id" --arg image "$app_image" --argjson major "$postgres_major" --arg created "$(date -u +%FT%TZ)" \
+			--arg database "${database_hash%% *}" --arg state "${state_hash%% *}" --arg config "${config_hash%% *}" \
+			'{schema:1,tenant_id:$tenant,workspace_id:$workspace,app_image:$image,postgres_major:$major,created_at:$created,database_sha256:$database,state_sha256:$state,config_sha256:$config}' > "$work/manifest.json"
+		pending=$(mktemp -- "${archive}.partial.XXXXXX")
+		tar -cf - -C "$work" manifest.json database.dump state.tar config.tar | \
+			timeout --signal=TERM --kill-after=10s 900 gpg --batch --yes --no-tty --pinentry-mode loopback --no-symkey-cache --passphrase-fd 3 \
+			--symmetric --force-mdc --cipher-algo AES256 --compress-algo none --output "$pending" 3<"$key_file" 2>"$work/encrypt.log"
+		# A no-clobber hard link publishes only a complete encrypted inode,
+		# refusing a concurrent creator instead of overwriting their backup.
+		sync -- "$pending"
+		ln -- "$pending" "$archive"
+		rm -- "$pending"; pending=''
+		sync -- "$(dirname -- "$archive")"
+		printf '%s\n' "$archive"
+		;;
+	verify)
+		extract_archive
+		cat "$work/payload/manifest.json"
+		;;
+	restore)
+		check_target
+		check_tree "$tenant_dir/state"; check_tree "$tenant_dir/config"
+		[[ -z $(find "$tenant_dir/state" "$tenant_dir/config" -mindepth 1 -print -quit) ]] || fail 'Restore needs empty state and application config directories'
+		tables=$(printf "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%%' AND c.relkind IN ('r','p','v','m','S','f');\n" | pg)
+		[[ $tables == 0 ]] || fail 'Restore needs an empty destination database'
+		extract_archive
+		mkdir -m 700 "$work/restored-state" "$work/restored-config"
+		tar -xf "$work/payload/state.tar" -C "$work/restored-state" --no-same-owner --no-same-permissions
+		tar -xf "$work/payload/config.tar" -C "$work/restored-config" --no-same-owner --no-same-permissions
+		check_tree "$work/restored-state"; check_tree "$work/restored-config"
+		timeout --signal=TERM --kill-after=10s 900 podman exec -i --user postgres "$db" \
+			pg_restore -U postgres --exit-on-error --single-transaction --no-owner --no-privileges --role "$db_role" --dbname "$database" < "$work/payload/database.dump"
+		rmdir -- "$tenant_dir/state" "$tenant_dir/config"
+		mv -- "$work/restored-state" "$tenant_dir/state"
+		mv -- "$work/restored-config" "$tenant_dir/config"
+		mv -- "$work/payload/manifest.json" "$tenant_dir/control/last-restore.json"
+		printf '%s\n' 'Restored; application remains stopped. Verify financial and operational reconciliation before activation.'
+		;;
+esac

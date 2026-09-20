@@ -1,0 +1,134 @@
+#+title: Tenant recovery contract
+
+* Scope
+
+The hosted tenant boundary is one application process, PostgreSQL database
+and database role, with private configuration and attachment/state roots.
+An organization inside that workspace is not another tenant. Recovery is a
+platform operation; no tenant administrator receives container or filesystem
+capabilities. Lightsite provisioning is excluded.
+
+The recovery utility operates on an explicitly registered local tenant.
+Creation and restoration verify container ownership labels, state/config
+mounts, the pinned image, the database version and unprivileged application
+role, and stopped application state before reading business data. Read-only
+archive verification checks registration and archive identity without
+contacting containers. Its per-tenant maintenance lock is shared
+with lifecycle operations. Operators must not bypass that lock with manual
+container starts during maintenance. A neighboring tenant stays online.
+
+* Archive contract
+
+An archive contains a PostgreSQL custom-format dump, the tenant's complete
+state and configuration, the pinned application image and PostgreSQL major
+version, creation time, source tenant identity, and SHA-256 integrity evidence.
+A separately held encryption key protects the complete archive; the key is
+never included inside it, in command arguments, or diagnostic output.
+Configuration includes encrypted-provider master keys and session identity,
+so a database-only export is insufficient.
+
+Creation requires the tenant application to be stopped, rather than assuming
+that database snapshot isolation also snapshots filesystem attachments.
+A failed dump or encryption must leave no published archive. Temporary plaintext is private and
+removed by an owned cleanup path. A backup's successful encryption is not a
+restore qualification.
+
+Restoration targets a stopped, newly provisioned empty tenant with matching
+application image and PostgreSQL major version. It verifies authenticated
+decryption and the entire archive before touching the destination. Existing
+rows, files, symlinks and mismatched identities are refused. A failure leaves
+the target unavailable for recovery inspection; it is never labelled ready.
+The old tenant's live process is not restarted by restoring its snapshot.
+
+* Executed qualification and remaining limits
+
+The real DEBUG server at =97637d2= and PostgreSQL 18.4 passed the physical
+restore drill recorded in [[file:evidence/125-tenant-recovery.txt][the synthetic recovery transcript]]. It reconciled
+all 205 rows across 214 tables, a balanced USD 123.45 journal, a document
+uploaded through the application and its capture reference, complete state,
+and encrypted provider configuration plus its key. A second application's
+business rows remained byte-for-byte equal; all 189 health probes succeeded.
+The measured snapshot took 5.140 seconds and restore 10.494 seconds for the
+1,157,695-byte archive. These are small-fixture measurements, not production
+capacity or recovery service levels. No live business provider was contacted.
+
+Run the same fixture against a prebuilt DEBUG image using:
+
+#+begin_src sh
+tools/venture-tenant-recovery-drill.py --image localhost/venture-debug:verified \
+  --application-revision THE_BUILT_COMMIT
+#+end_src
+
+It requires Python 3, rootless Podman, this utility's dependencies and a
+PostgreSQL 18 image. Use =--venture-binary= if the image installs the server
+outside =/usr/bin/venture=. It creates only synthetic, uniquely named
+containers/networks/volumes, removes those resources on exit and retains a
+private evidence directory. It never accepts an existing tenant root.
+
+Final combined-revision qualification, point-in-time recovery, off-site
+retention, tenant capacity and independent hosted isolation review remain
+separate requirements. A completed local restore does not establish the
+15-minute recovery-point or four-hour recovery-time service targets. The
+acceptance ledger in [[file:post-parity.org][post-parity delivery]] remains authoritative.
+
+* Operator interface
+
+=tools/venture-tenant-backup= provides =create=, =verify= and =restore=.
+Use =--help= for complete syntax. It takes an existing =--root=, =--tenant=
+and out-of-band =--key-file=. Use a random single printable ASCII line of
+at least 32 characters (for example, =openssl rand -hex 32= written to a
+private file); a long file padded after a short first line is refused. It never provisions Lightsite or contacts a
+business provider. Fedora dependencies are =bash=, =podman=, =jq=, =gnupg2=,
+=tar=, =coreutils=, =gawk=, =findutils= and =util-linux=; =ShellCheck= validates the
+scripts. PostgreSQL client programs execute inside the selected DB container.
+
+The operator-owned root and tenant directories must be mode 700, with
+=host.json= and =manifest.json= mode 600 or 400. The host registration is:
+
+#+begin_src json
+{"schema":1,"host_id":"11111111-1111-4111-8111-111111111111"}
+#+end_src
+
+The tenant registration declares =schema= 1, matching =host_id= and
+=tenant_id= (the local slug), immutable =workspace_id= UUID, full =app_container= and =db_container= IDs, =app_image= as a
+=sha256:= image ID, =database=, =db_role= and integer =postgres_major=.
+Both containers must carry =io.venture.host= and =io.venture.tenant= labels;
+=io.venture.role= is =application= or =database=. The application mounts the
+tenant's =state/= read-write at =/var/lib/venture= and =config/= read-only at
+=/etc/venture=. =control/= contains platform runtime transport credentials
+and the shared =maintenance.lock=; it is never restored from an archive.
+The workspace UUID matches =hosted.workspace_id= and must survive a restore;
+a reused local slug alone cannot authorize another workspace’s archive.
+The destination operator must supply its own database endpoint/password and
+routing while preserving the restored application identity/configuration.
+
+An archive holds exactly four regular payloads: =manifest.json=,
+=database.dump=, =state.tar= and =config.tar=. GnuPG AES-256 encryption
+protects the complete archive; verification requires GnuPG’s explicit
+=GOODMDC= integrity result, not merely successful decryption. Cryptographic
+operations have a fifteen-minute deadline. Authenticated decryption completes into a
+private temporary file before extraction. The manifest binds tenant, image
+and PostgreSQL major version and hashes each payload with SHA-256. Extraction
+refuses traversal paths, links and special files. New archive publication
+uses a no-clobber hard link after syncing the encrypted file, then syncs
+its parent directory. Failure cannot overwrite a previous backup. A failed
+final directory sync can leave a complete but unqualified file: success
+requires the command’s zero exit status, not merely a file’s existence.
+
+Restoration requires empty database/state/config, uses one PostgreSQL restore
+transaction, and publishes state/config only after that transaction succeeds.
+An operational failure after database restoration may leave a partially
+populated target; it remains stopped and must be inspected/reprovisioned.
+=control/last-restore.json= is written only after all restoration stages
+succeed. It is evidence of completed restoration, not permission to activate.
+
+* Tests
+
+=test-tenant-recovery= invokes the real shell tool. Its fixture replaces only
+Podman; GnuPG, archives, file permissions, locking and publication remain real.
+It verifies ownership/mount refusal, running-process refusal, failed dump
+publication, wrong-key/tampered/cross-tenant and reused-slug archive refusal, held locks,
+privileged database roles, hard links, authenticated traversal/symlink payloads,
+existing target data, failed restore isolation, content recovery and cleanup.
+Removing the tenant-label guard makes this regression fail. These cases do
+not establish physical PostgreSQL durability or a live restore by themselves.

@@ -59,6 +59,10 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         libetpan-devel \
         libgudev-devel \
         libarchive-devel \
+        gmime30-devel \
+        gnutls-devel \
+        jq \
+        gnupg2 \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
@@ -115,6 +119,7 @@ COPY modules/ modules/
 COPY tests/ tests/
 COPY venture.pc.in ./
 COPY docs/ docs/
+COPY migrations/ migrations/
 COPY README.org ./
 
 RUN if [ "${BUILD_TYPE}" = "debug" ]; then export DEBUG=1; fi; \
@@ -200,6 +205,8 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         libarchive \
         libjose \
         jansson \
+        gmime30 \
+        gnutls \
         ca-certificates \
         tzdata \
         git \

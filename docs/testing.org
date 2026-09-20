@@ -750,3 +750,14 @@ and crash recovery. =test-integrations= verifies master-key rotation, full rollb
 read-only key checking and private retained history across page boundaries. Both
 accept =VENTURE_TEST_ACCOUNTING_POSTGRES_URI= for an isolated PostgreSQL fixture.
 See [[file:integration-key-maintenance.org][the maintenance contract]].
+* Tenant recovery tooling
+
+=test-tenant-recovery= is part of the ordinary DEBUG suite. It invokes the
+real backup tool with a deterministic Podman transport fixture; encryption,
+archive parsing, private permissions, maintenance locking and filesystem
+publication use real local tools. Install =jq=, =gnupg2=, =tar=, =coreutils=,
+=gawk=, =findutils= and =util-linux= before running it. Container builds include
+these test dependencies. The test refuses wrong ownership/workspace/image,
+live processes, unsafe archive entries, bad credentials and nonempty targets,
+and verifies successful content restoration and failure cleanup. It does
+not substitute for a physical PostgreSQL recovery drill.

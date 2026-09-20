@@ -605,3 +605,8 @@ DEBIAN_DEPS += libgmime-3.0-dev libgnutls28-dev
 DEBIAN_DEPS += libjose-dev libjansson-dev
 ARCH_DEPS += gmime3 gnutls
 ARCH_DEPS += jose jansson
+
+# The recovery GTest uses real authenticated archives, not a fake encryptor.
+FEDORA_DEPS += jq gnupg2
+DEBIAN_DEPS += jq gnupg
+ARCH_DEPS += jq gnupg
