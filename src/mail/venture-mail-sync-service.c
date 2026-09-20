@@ -596,7 +596,7 @@ static VentureEntity *file_document(SyncRun *run, const gchar *title, const gcha
 	checksum = g_compute_checksum_for_bytes(G_CHECKSUM_SHA256, data);
 	document = g_object_new(VENTURE_TYPE_DOCUMENT, "organization-id", run->org, "title", title, "kind", kind, "path", path,
 		"mime-type", mime, "size-bytes", (gint64)length, "hash", checksum, "extracted-text", extracted, NULL);
-	if (!venture_database_save(run->db, document, run->actor, error)) return NULL;
+	if (!venture_document_service_save_attachment(venture_document_service_get(run->db), document, self->attachment_root, run->actor, error)) return NULL;
 	return g_steal_pointer(&document);
 }
 static void discard_written(SyncRun *run)

@@ -246,6 +246,7 @@ venture_database_init(VentureDatabase *self)
 	venture_headline_install_validators(self);
 	venture_mail_sync_install_validators(self);
 	venture_stripe_install_validators(self);
+	venture_document_install_validators(self);
 }
 
 VentureQuoteService *
@@ -2625,6 +2626,7 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_crm_import_actions_register(self);
 		venture_dedupe_actions_register(self);
 		venture_mfa_actions_register(self);
+		venture_ocr_actions_register(self);
 		venture_projects_actions_register(self);
 		venture_activity_actions_register(self);
 	}

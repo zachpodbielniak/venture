@@ -222,6 +222,13 @@ ifeq ($(POPPLER_AVAILABLE),1)
     CFLAGS_BASE += -DVENTURE_HAVE_POPPLER=1
 endif
 
+# Optional bounded image decoding for local OCR. Ordinary capture needs neither.
+OCR_RASTER_AVAILABLE := $(shell $(PKG_CONFIG) --exists gdk-pixbuf-2.0 2>/dev/null && echo 1 || echo 0)
+ifeq ($(OCR_RASTER_AVAILABLE),1)
+    DEPS_SERVER += gdk-pixbuf-2.0
+    CFLAGS_BASE += -DVENTURE_HAVE_OCR_RASTER=1
+endif
+
 # Archive reading and writing, for knowledge-base import and export.
 # Optional the same way poppler is: without it the server builds and runs,
 # a .zip import reports that archives are unavailable, and an export offers

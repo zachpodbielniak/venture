@@ -19,7 +19,7 @@ venture_web_append_record_actions(VentureWebServer *self, GString *html,
 		VentureUserRole role;
 		gboolean type_level;
 		g_object_get(action, "type-level", &type_level, NULL);
-		if (type_level) continue;
+		if (type_level != (venture_entity_get_id(entity) == 0)) continue;
 		g_object_get(action, "name", &name, "label", &label, "parameters", &parameters, "roles", &role, NULL);
 		if (!venture_web_require_for_type(self, principal, G_OBJECT_TYPE(entity), role, NULL) ||
 			!venture_action_registry_allowed(registry, action, entity, &actor, principal->role, NULL)) continue;
@@ -28,19 +28,26 @@ venture_web_append_record_actions(VentureWebServer *self, GString *html,
 		for (j = 0; j < parameters->len; j++)
 		{
 			VentureFieldSpec *spec = g_ptr_array_index(parameters, j);
-			const gchar *kind = "text";
-			if (VENTURE_FIELD_KIND_DATE == spec->kind) kind = "date";
-			if (VENTURE_FIELD_KIND_INTEGER == spec->kind || VENTURE_FIELD_KIND_REFERENCE == spec->kind) kind = "number";
-			g_string_append(html, "<label class=\"field\"><span class=\"field-label\">");
-			venture_html_escape_append(html, venture_field_spec_get_label(spec));
-			g_string_append(html, "</span>");
-			if (VENTURE_FIELD_KIND_BOOLEAN == spec->kind)
+			g_autoptr(VentureFieldSpec) field = venture_field_spec_copy(spec);
+			if (VENTURE_FIELD_KIND_BOOLEAN == field->kind)
 			{
-				g_string_append_printf(html, "<select name=\"%s\"><option value=\"false\">No</option><option value=\"true\">Yes</option></select>", spec->name);
+				/* A select has one submitted value; duplicate hidden/checkbox
+				 * names are collapsed by the generic form parser. */
+				g_string_append(html, "<label class=\"field\"><span class=\"field-label\">");
+				venture_html_escape_append(html, field->label);
+				g_string_append_printf(html, "</span><select name=\"%s\"><option value=\"false\">No</option><option value=\"true\">Yes</option></select></label>", field->name);
 			}
 			else
-				g_string_append_printf(html, "<input name=\"%s\" type=\"%s\"%s>", spec->name, kind, spec->required ? " required" : "");
-			g_string_append(html, "</label>");
+			{
+				if (type_level && g_str_equal(field->name, "organization_id") && venture_entity_get_organization_id(entity) > 0)
+				{
+					g_free(field->default_text);
+					field->default_text = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_organization_id(entity));
+				}
+				/* Action timestamps retain their explicit ISO time and zone. */
+				if (field->kind == VENTURE_FIELD_KIND_DATETIME) field->kind = VENTURE_FIELD_KIND_STRING;
+				venture_web_append_form_field_scoped(self, html, field, NULL, venture_entity_get_organization_id(entity));
+			}
 		}
 		g_string_append(html, "<button class=\"btn\" type=\"submit\">");
 		venture_html_escape_append(html, label);

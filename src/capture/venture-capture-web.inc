@@ -96,6 +96,12 @@ capture_ui(HtmxRequest *request, GHashTable *params, gpointer data)
 	gate = venture_web_require_module_ui(self, request, "capture");
 	if (gate != NULL)
 		return gate;
+	{
+		g_autoptr(VentureAuthPrincipal) principal = venture_auth_authenticate(self->auth, request);
+		g_autoptr(VentureEntity) subject = VENTURE_ENTITY(venture_capture_item_new());
+		venture_entity_set_organization_id(subject, venture_web_active_organization(self, request));
+		venture_web_append_record_actions(self, content, subject, principal);
+	}
 	query = venture_query_new(VENTURE_TYPE_CAPTURE_ITEM);
 	venture_query_set_organization(query, venture_web_active_organization(self, request));
 	venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ, "inbox", NULL);

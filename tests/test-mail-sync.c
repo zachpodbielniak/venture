@@ -3,6 +3,7 @@
 #include <string.h>
 #include <glib/gstdio.h>
 #include "venture-test-util.h"
+#include "venture-test-accounting.h"
 
 typedef struct {
 	VentureDatabase *db;
@@ -45,7 +46,7 @@ static void setup(Fixture *f, gconstpointer data)
 {
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureEntity) company = NULL, contact = NULL;
-	f->db = venture_database_new("sqlite://:memory:", &error);
+	f->db = venture_test_accounting_database(&error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
@@ -73,7 +74,7 @@ static void teardown(Fixture *f, gconstpointer data)
 	g_autofree gchar *real = realpath(f->root, NULL);
 	g_clear_object(&f->service);
 	g_clear_object(&f->imap);
-	g_clear_object(&f->db);
+	venture_test_accounting_database_cleanup(f->db); g_clear_object(&f->db);
 	if (real) venture_test_remove_within(f->root, real);
 	g_free(f->root);
 }
@@ -1759,7 +1760,11 @@ static void test_migration(Fixture *f, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(checks); i++) {
-		g_autoptr(OrmResult) result = venture_database_query_raw(f->db, checks[i], NULL, &error);
+		const gchar *sql = checks[i];
+		g_autoptr(OrmResult) result = NULL;
+		if (i == 0 && venture_database_get_backend(f->db) == VENTURE_DATABASE_BACKEND_POSTGRES)
+			sql = "SELECT CAST(COUNT(*) AS BIGINT) FROM pg_indexes WHERE schemaname=current_schema() AND indexname IN ('uq_mail_inbounds_organization_uid_key', 'idx_mail_inbounds_from_address', 'uq_mail_unmatched_senders_organization_address')";
+		result = venture_database_query_raw(f->db, sql, NULL, &error);
 		g_assert_no_error(error);
 		g_assert_true(orm_result_next(result));
 		g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, expected[i]);

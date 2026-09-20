@@ -61,6 +61,9 @@ typedef struct
 	{ name, section, key, G_TYPE_BOXED, NULL, NULL, 0, FALSE, blurb }
 
 static const VentureConfigSetting venture_config_settings[] = {
+	VC_BOOL("ocr-enabled", "ocr", "enabled", FALSE, "Enable bounded local OCR explicitly"),
+	VC_STR("ocr-executable", "ocr", "executable", "tesseract", "Local OCR executable, chosen by the operator"),
+	VC_STR("ocr-language", "ocr", "language", "eng", "Installed OCR languages joined with +"),
 	VC_BOOL("federation-enabled", "federation", "enabled", FALSE,
 	        "Opt in to federation; records remain private without grants"),
 	VC_INT("federation-sync-interval", "federation", "sync_interval", 60,
@@ -1389,6 +1392,14 @@ venture_config_validate(
 			            "modules: %s", local_error->message);
 			return FALSE;
 		}
+#ifdef VENTURE_SERVER_BUILD
+		if (venture_module_registry_is_enabled(modules, "ocr")) {
+			g_autofree gchar *executable = NULL;
+			g_object_get(self, "ocr-executable", &executable, NULL);
+			if (!venture_ocr_local_check(executable, error)) return FALSE;
+		}
+#endif
+
 	}
 
 	return TRUE;

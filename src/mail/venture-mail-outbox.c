@@ -31,7 +31,7 @@ static gboolean enabled(VentureMailOutbox *self, gint64 org, GError **error)
 
 static gboolean snapshot_attachments(VentureMailOutbox *self, VentureEntity *entity, GError **error)
 {
-	g_autofree gchar *refs = NULL, *root = NULL, *prefix = NULL, *serialized = NULL;
+	g_autofree gchar *refs = NULL, *root = NULL, *serialized = NULL;
 	g_autoptr(JsonNode) parsed = NULL, snapshot = NULL;
 	g_autoptr(JsonBuilder) builder = json_builder_new();
 	JsonArray *array;
@@ -46,13 +46,14 @@ static gboolean snapshot_attachments(VentureMailOutbox *self, VentureEntity *ent
 	array = json_node_get_array(parsed);
 	if (!json_array_get_length(array)) return TRUE;
 	root = self->attachment_root ? realpath(self->attachment_root, NULL) : NULL;
-	prefix = root ? g_strconcat(root, G_DIR_SEPARATOR_S, NULL) : NULL;
 	json_builder_begin_array(builder);
 	for (i = 0; i < json_array_get_length(array); i++) {
 		JsonNode *element = json_array_get_element(array, i);
 		JsonObject *ref;
 		g_autoptr(VentureEntity) document = NULL;
-		g_autofree gchar *path = NULL, *canonical = NULL, *title = NULL, *mime = NULL, *bytes = NULL, *encoded = NULL;
+		g_autofree gchar *title = NULL, *mime = NULL, *encoded = NULL;
+		g_autoptr(GBytes) attachment = NULL;
+		gconstpointer bytes;
 		gsize length;
 		if (!JSON_NODE_HOLDS_OBJECT(element)) return refuse(error, "Invalid attachment reference");
 		ref = json_node_get_object(element);
@@ -81,14 +82,10 @@ static gboolean snapshot_attachments(VentureMailOutbox *self, VentureEntity *ent
 		document = venture_database_get(self->database, VENTURE_TYPE_DOCUMENT, venture_json_object_get_int(ref, "id", 0), error);
 		if (!document || venture_entity_is_deleted(document)) { if (!error || !*error) refuse(error, "Attachment document not found"); return FALSE; }
 		if (venture_entity_get_organization_id(document) != venture_entity_get_organization_id(entity)) return refuse(error, "Attachment belongs to another organization");
-		g_object_get(document, "path", &path, "title", &title, "mime-type", &mime, NULL);
-		canonical = path ? realpath(path, NULL) : NULL;
-		if (!canonical || !g_str_has_prefix(canonical, prefix) || !g_file_test(canonical, G_FILE_TEST_IS_REGULAR)) return refuse(error, "Attachment must be a file in configured attachment storage");
-		{
-			GStatBuf info;
-			if (g_stat(canonical, &info) || info.st_size < 0 || info.st_size > 20 * 1024 * 1024) return refuse(error, "Attachment exceeds 20 MiB");
-		}
-		if (!g_file_get_contents(canonical, &bytes, &length, error)) return FALSE;
+		g_object_get(document, "title", &title, "mime-type", &mime, NULL);
+		attachment = venture_document_service_read_attachment(venture_document_service_get(self->database), document, root, 20 * 1024 * 1024, error);
+		if (attachment == NULL) return FALSE;
+		bytes = g_bytes_get_data(attachment, &length);
 		total += length;
 		if (total > 20 * 1024 * 1024) return refuse(error, "Combined attachments exceed 20 MiB");
 		encoded = g_base64_encode((guchar *)bytes, length);

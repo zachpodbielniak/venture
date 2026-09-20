@@ -174,6 +174,7 @@ venture_context_new(
 	g_object_bind_property(config, "server-base-url", venture_sequence_service_get(self->database), "base-url",
 		G_BINDING_SYNC_CREATE);
 	venture_mfa_service_configure(venture_mfa_service_get(self->database), config);
+	venture_ocr_service_configure(venture_ocr_service_get(self->database), config);
 
 	/*
 	 * Modules, resolved against this configuration and applied to the

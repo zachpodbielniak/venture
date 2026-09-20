@@ -84,5 +84,41 @@ gchar *venture_document_extract_text(const gchar *content_type, const gchar *fil
  * Returns: (transfer full): valid UTF-8 text, possibly empty
  */
 gchar *venture_document_html_to_text(const gchar *html, gssize length);
+/**
+ * venture_document_install_validators:
+ * @database: owning repository
+ * Installs path ownership guards on every document writer.
+ */
+void venture_document_install_validators(VentureDatabase *database);
+/**
+ * venture_document_service_save_attachment:
+ * @self: service
+ * @document: new document describing a newly filed local attachment
+ * @attachment_root: operator-configured attachment directory
+ * @actor: (nullable): attribution
+ * @error: (out) (optional): invalid path, duplicate ownership or save failure
+ *
+ * Only trusted byte-filing callers use this operation. Generic document
+ * writers cannot assign/reassign filesystem paths or transfer their owner.
+ * Returns: whether the new document was saved
+ */
+gboolean venture_document_service_save_attachment(VentureDocumentService *self,
+	VentureEntity *document, const gchar *attachment_root, const VentureActor *actor, GError **error);
+/**
+ * venture_document_service_read_attachment:
+ * @self: service
+ * @document: saved document already authorized for the caller
+ * @attachment_root: configured attachment directory
+ * @max_bytes: maximum original file size
+ * @error: (out) (optional): scope, ownership, path or size refusal
+ *
+ * Refuses symbolic links and conflicting legacy ownership, including soft
+ * deleted aliases. Reads only a regular filed attachment through a bounded
+ * file descriptor; never follows a record-selected path outside storage.
+ * Returns: (transfer full) (nullable): immutable original bytes
+ */
+GBytes *venture_document_service_read_attachment(VentureDocumentService *self,
+	VentureEntity *document, const gchar *attachment_root, gsize max_bytes, GError **error);
+
 G_END_DECLS
 #endif

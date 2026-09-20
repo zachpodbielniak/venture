@@ -1,0 +1,160 @@
+#+title: Local OCR and capture review
+#+description: Bounded local extraction, resumable jobs and reviewed text
+
+* Scope
+
+The optional =ocr= module extends =capture=. It is off by default. Ordinary
+capture, native document extraction and the existing vision path continue
+when it is off. Turning it on requires Tesseract and a server built with
+Poppler and GdkPixbuf; missing dependencies are configuration errors, never
+a claim that vision was OCR. OCR has no accounting authority: conversion,
+approval and posting remain in the capture and accounting services.
+
+Tesseract runs locally with an argument vector. Poppler reads PDF text
+layers and renders only pages without text; text and OCR are not appended
+for the same page. GdkPixbuf validates image dimensions before decoding.
+Original attachments stay unchanged. Engine results and errors are stored
+under the document's organization, with source hash, language, engine
+version and extraction time.
+
+* Durable work
+
+An =ocr_job= records each document's pending, running, succeeded, failed or
+cancelled state, completed page cursor and extracted text. A step completes
+one page on the calling thread and commits its progress. A restart can
+resume from the last committed page, so a page interrupted before its
+commit is retried without duplicating retained text. No database-writing
+worker thread is introduced. Cancel takes effect between page steps; a
+service caller can also cancel the bounded active engine operation.
+
+Extraction protects reviewed text: a changed document text is never
+silently replaced. The job keeps its new output for explicit review and
+application, and the ordinary document form remains the correction editor.
+For unchanged sources, extraction reuses successful work unless forced.
+Forcing extraction does not authorize overwriting somebody's corrections.
+
+* Limits and operation
+
+| Resource | Bound |
+|----------+-------|
+| Original attachment | 20 MiB, regular file in the installation's attachments directory |
+| PDF | 50 pages |
+| Raster | 4096 pixels per dimension, approximately 150 DPI for ordinary PDF pages |
+| Text | 1 MiB per page and per completed document |
+| Tesseract process | 30 seconds, including bounded pipe reads |
+| Inbox batch | At most 25 frozen capture rows |
+| Step | One document page |
+
+PNG, JPEG and WebP are supported images. PDF support uses Poppler; pages
+with a nonempty text layer use that text alone. The engine does not guess
+which parts of a partially text-layered page need OCR: it never combines
+native and OCR text for a single page. This avoids duplicate text; an
+incomplete text layer may require operator correction. A scanned page with
+no text layer is rasterized and sent to Tesseract.
+
+Native PDF parsing and image decoding happen on the calling thread within
+the file/page/raster bounds. The process deadline applies to Tesseract,
+not a hard real-time deadline for those library calls. Use modest batches
+on a busy server. There is no automatic background worker: continue a job
+or batch explicitly, or invoke its ordinary action from automation.
+
+The dependency chain is =poppler-glib-devel=, =gdk-pixbuf2-devel=,
+=tesseract= and the chosen =tesseract-langpack-*= packages on Fedora.
+Changing =ocr.executable= refreshes the local provider on the next extraction.
+Retained jobs can still be cancelled or reviewed when the binary is unavailable.
+Configure =ocr.executable= (default =tesseract=) and =ocr.language= (default
+=eng=). Language names can be combined, for example =eng+fra=. A missing
+language pack makes the job fail with a useful retryable error. Configure
+=ocr.enabled=true=, =modules.capture.enabled=true= and
+=modules.ocr.enabled=true= explicitly.
+Disabling OCR hides jobs, batches and their actions, preserving stored
+history and ordinary capture behavior.
+
+#+begin_src sh
+venturectl act document 1 ocr_extract language=eng
+venturectl act ocr_job 1 step
+venturectl act document 1 ocr_review job_id=1 'text=Reviewed receipt text'
+venturectl act capture_item 0 ocr_extract_all organization_id=1 limit=25 after_id=0
+venturectl act ocr_batch 1 step
+venturectl act ocr_batch 1 cancel
+venturectl act ocr_batch 1 step
+venturectl act ocr_job 2 retry
+#+end_src
+
+Extraction queues a job; =step= advances one page. =ocr_extract_all= freezes
+up to 25 inbox row identities in ascending order. Continue a batch until
+its state is =succeeded=, then use its last capture identity as =after_id=
+for the next page of the inbox. Failed documents increase =failed= and
+retain their job/error while the batch advances. A cancelled batch resumes
+with =step=. A failed or cancelled individual job requires =retry= before
+=step=. Changed bytes require a new extraction job. Cancelling neither
+removes the original nor deletes completed page output.
+
+The same metadata-derived actions appear on documents, capture rows, job
+and batch detail pages, the capture inbox and the generic capture list.
+All run through the ordinary editor authorization and staged-action path.
+Applying reviewed text targets the document itself, so a document edit
+between proposal and approval makes that approval stale. Review/correction
+never creates an expense, bill, journal or payment.
+
+* Provenance and upgrades
+
+Each job keeps its source SHA256, engine version, language, attempted page
+count, completed cursor and extraction time. Unchanged successful work is
+reused; =force=true= creates new output while preserving corrections.
+Generated text only replaces an empty document or exactly the previous
+unreviewed output. Otherwise the new job's text waits for explicit review.
+Original attachments, earlier job output and reviewed text remain intact.
+
+Migration =000440_local_ocr= verifies additive metadata-owned tables for
+SQLite and PostgreSQL, including when modules are disabled. It never
+backfills invented extraction evidence or changes existing document text.
+
+* Attachment ownership
+
+Upload and inbound-mail filing use one document service to bind newly
+written files to document identities. Generic document creation cannot set
+=path=; generic edits cannot reassign it or transfer the attachment's
+organization. Original documents with unchanged legacy paths retain their
+metadata and remain readable when ownership is unambiguous.
+
+OCR, outgoing-mail attachment snapshots and chat image reads use the same
+bounded reader. It checks repository access, canonical file ownership
+across organizations, the configured attachment root, and every directory
+component without following symbolic links. A historical alias across
+organizations fails closed, including aliases on soft-deleted rows. Re-file
+the original under a new document to resolve such a conflict; upgrades do
+not delete, reassign or guess the owner of historical records.
+
+* Verification
+
+=test-ocr= covers durable page progress across a real repository restart,
+unchanged-input reuse, explicit correction protection, stale review
+approval, batch failure isolation, file/page/raster/output limits, deadline and
+active cancellation cleanup, mixed PDF pages and generic action controls.
+The fake executable inspects actual argv. The optional real-engine case
+reads a synthetic receipt image and the scanned page of a mixed PDF using
+Tesseract; set =VENTURE_TEST_OCR_TESSERACT= to the explicitly provisioned
+executable. It is skipped when that variable is absent. Engine-dependent
+cases require Poppler and GdkPixbuf build dependencies; the disabled/missing
+engine contract remains testable without those dependencies.
+
+=test-document-attachments= always exercises the shared path assignment,
+organization transfer, conflicting legacy alias, nested historical paths,
+FIFO refusal and bounded no-follow read
+contracts, independently of optional OCR libraries.
+
+#+begin_src sh
+make DEBUG=1
+make DEBUG=1 test-one T=test-ocr
+make DEBUG=1 test-one T=test-document-attachments
+make DEBUG=1 test-one T=test-capture
+make DEBUG=1 test-one T=test-mail
+make DEBUG=1 test-one T=test-mail-sync
+#+end_src
+
+The OCR, attachment, capture and mail fixtures accept
+=VENTURE_TEST_ACCOUNTING_POSTGRES_URI= for an explicitly provisioned
+disposable PostgreSQL database. Each fixture creates and drops its own
+unique schema; no public-schema reset is used. The PDF restart case uses a
+separate SQLite file to verify a real close/reopen boundary.

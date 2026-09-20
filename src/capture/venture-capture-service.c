@@ -128,6 +128,13 @@ venture_capture_service_ingest_for_organization(VentureCaptureService *self, gin
 		"vendor", vendor, "amount", amount, "occurred-at", occurred_at, "notes", notes, NULL);
 	if (!save_internal(self, db, item, actor, error))
 		return finish_op(self, db, FALSE, error), NULL;
+	if (document_id > 0 && venture_ocr_service_enabled(venture_ocr_service_get(db)))
+	{
+		g_autoptr(VentureEntity) document = venture_database_get(db, VENTURE_TYPE_DOCUMENT, document_id, error);
+		g_autoptr(VentureEntity) extraction = document != NULL ? venture_ocr_service_queue(
+			venture_ocr_service_get(db), document, NULL, FALSE, actor, error) : NULL;
+		if (extraction == NULL) return finish_op(self, db, FALSE, error), NULL;
+	}
 	if (!finish_op(self, db, TRUE, error))
 		return NULL;
 	return g_steal_pointer(&item);

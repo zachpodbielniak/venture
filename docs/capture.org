@@ -32,3 +32,21 @@ invitations and =winmail.dat= do not. A message without attachments is its
 own receipt, filed as HTML when that is all it has. Text is extracted with
 =venture_document_extract_text()=, the extractor an upload uses. See
 [[file:mail.org][mail]], section Inbound, Capture.
+
+* Optional local OCR
+
+With =modules.ocr.enabled=true=, ingesting a filed document also queues a
+local extraction job. OCR is off by default; ordinary capture and vision
+continue when it is disabled. The capture inbox offers the metadata-derived
+bulk extraction action. Jobs and frozen batches advance one page at a time,
+retain failures and can be retried, cancelled or resumed. Review the job's
+text on its document before using it with the existing AI or conversion
+workflow; OCR itself never posts accounting entries.
+
+See [[file:ocr.org][Local OCR and capture review]] for image/PDF support,
+language packages, process and batch limits, provenance and correction
+protection. =document.path= is assigned by the trusted upload/mail filing
+service; generic forms, imports and API writes cannot select a filesystem
+path or transfer an existing attachment to another organization. Existing
+valid originals remain usable. Re-upload an attachment when its historical
+path is ambiguous across organizations; no migration rewrites that history.

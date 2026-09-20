@@ -670,6 +670,8 @@ static const gchar *const venture_module_suggests_close[] = {
 	"banking", "receivables", "payables", "assets", NULL
 };
 static const gchar *const venture_module_reports_close[] = { "close_workspace", NULL };
+static GType (*const venture_module_ocr_types[]) (void) = { venture_ocr_job_get_type, venture_ocr_batch_get_type, NULL };
+static const gchar *const venture_module_requires_ocr[] = { "capture", NULL };
 static GType (*const venture_module_capture_types[]) (void) = {
 	venture_capture_item_get_type, NULL
 };
@@ -1038,6 +1040,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"capture", "Document capture", "Receipt and supplier-invoice inbox that becomes expenses or bills.",
 		venture_module_requires_capture, venture_module_suggests_capture,
 		venture_module_capture_types, NULL, NULL, FALSE
+	},
+	{
+		"ocr", "Local OCR", "Bounded local extraction and durable capture review jobs.",
+		venture_module_requires_ocr, NULL, venture_module_ocr_types, NULL, "ocr-enabled", FALSE
 	},
 	{
 		"claims", "Expense claims", "Employee reimbursements, mileage and receipt-backed expense claims.",

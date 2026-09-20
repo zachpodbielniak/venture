@@ -2661,6 +2661,9 @@ venture_web_api_delete(
 	return venture_web_json_response(node, 200);
 }
 
+static void venture_web_append_form_field_scoped(VentureWebServer *self, GString *content,
+	VentureFieldSpec *spec, VentureEntity *record, gint64 organization);
+
 #include "venture-web-actions-private.h"
 
 static HtmxResponse *
@@ -5623,6 +5626,9 @@ venture_web_ui_list(
 		"<a class=\"btn btn-primary\" href=\"/e/%s/new\">New</a>", type_name);
 	g_string_append(content, "</div></div>");
 
+	venture_entity_set_organization_id(prototype, venture_web_active_organization(self, request));
+	venture_web_append_record_actions(self, content, prototype, principal);
+
 	/* Bulk edits, for an editor. The bar stays hidden until a row is
 	 * ticked; the tick column is only rendered when the bar is. */
 	{
@@ -6406,11 +6412,12 @@ venture_web_organization_exists(
  * without anybody writing HTML for it.
  */
 static void
-venture_web_append_form_field(
+venture_web_append_form_field_scoped(
 	VentureWebServer	*self,
 	GString			*content,
 	VentureFieldSpec	*spec,
-	VentureEntity		*record
+	VentureEntity		*record,
+	gint64 organization
 ){
 	g_auto(GValue) value = G_VALUE_INIT;
 	g_autofree gchar *current = NULL;
@@ -6483,6 +6490,8 @@ venture_web_append_form_field(
 		if (attribute != NULL && attribute[0] != '\0')
 			current = g_strdup(attribute);
 	}
+
+	if (current == NULL && spec->default_text != NULL) current = g_strdup(spec->default_text);
 
 	/*
 	 * The label text and the required marker are wrapped together so they
@@ -6566,6 +6575,7 @@ venture_web_append_form_field(
 			{
 				query = venture_query_new(target);
 				venture_query_set_limit(query, 0);
+				if (organization > 0) venture_query_set_organization(query, organization);
 
 				options = venture_database_find(
 					venture_context_get_database(self->context), query, NULL);
@@ -6666,6 +6676,13 @@ venture_web_append_form_field(
 	}
 
 	g_string_append(content, "</div>");
+}
+
+static void
+venture_web_append_form_field(VentureWebServer *self, GString *content,
+	VentureFieldSpec *spec, VentureEntity *record)
+{
+	venture_web_append_form_field_scoped(self, content, spec, record, 0);
 }
 
 /*
@@ -15662,9 +15679,9 @@ venture_web_ui_chat_upload(
 
 		venture_auth_to_actor(principal, &actor);
 
-		if (!venture_database_save(
-			venture_context_get_database(self->context),
-			VENTURE_ENTITY(document), &actor, &error))
+		if (!venture_document_service_save_attachment(
+			venture_document_service_get(venture_context_get_database(self->context)),
+			VENTURE_ENTITY(document), directory, &actor, &error))
 			return venture_web_error_response(error);
 
 		builder = json_builder_new();
@@ -15730,7 +15747,6 @@ venture_web_chat_attach(
 		g_autofree gchar *title = NULL;
 		g_autofree gchar *text = NULL;
 		g_autofree gchar *mime_type = NULL;
-		g_autofree gchar *path = NULL;
 		gint64 id;
 
 		id = g_ascii_strtoll(g_strstrip(ids[i]), NULL, 10);
@@ -15747,8 +15763,7 @@ venture_web_chat_attach(
 
 		g_object_get(record, "title", &title,
 		             "extracted-text", &text,
-		             "mime-type", &mime_type,
-		             "path", &path, NULL);
+		             "mime-type", &mime_type, NULL);
 
 		g_string_append_printf(stored_text,
 			"\n[Attached: %s (document #%" G_GINT64_FORMAT ")]",
@@ -15764,35 +15779,23 @@ venture_web_chat_attach(
 		    (NULL != venture_web_image_mime_type(mime_type, title)))
 		{
 			g_autoptr(GBytes) bytes = NULL;
-			g_autofree gchar *contents = NULL;
-			gsize length = 0;
+			g_autofree gchar *root = g_build_filename(venture_config_get_state_dir(venture_context_get_config(self->context)), "attachments", NULL);
+			bytes = venture_document_service_read_attachment(
+				venture_document_service_get(venture_context_get_database(self->context)), record, root, 20 * 1024 * 1024, error);
+			if (bytes == NULL) return FALSE;
+			g_ptr_array_add(images, g_bytes_ref(bytes));
+			g_ptr_array_add(image_types, g_strdup(
+				venture_web_image_mime_type(mime_type,
+				                            title)));
 
-			if ((NULL != path) &&
-			    g_file_get_contents(path, &contents, &length, NULL))
-			{
-				bytes = g_bytes_new_take(g_steal_pointer(&contents),
-				                         length);
-				g_ptr_array_add(images, g_bytes_ref(bytes));
-				g_ptr_array_add(image_types, g_strdup(
-					venture_web_image_mime_type(mime_type,
-					                            title)));
-
-				g_string_append_printf(model_text,
-					"\n\n[Image %u: %s (document #%"
-					G_GINT64_FORMAT ")]",
-					images->len,
-					(NULL != title) ? title : "screenshot",
-					id);
-				continue;
-			}
-
-			/* The record exists but the file is gone: say so
-			 * rather than answering about an image nobody sent. */
 			g_string_append_printf(model_text,
-				"\n\n[Image %s (document #%" G_GINT64_FORMAT
-				") could not be read from disk.]",
-				(NULL != title) ? title : "attachment", id);
+				"\n\n[Image %u: %s (document #%"
+				G_GINT64_FORMAT ")]",
+				images->len,
+				(NULL != title) ? title : "screenshot",
+				id);
 			continue;
+
 		}
 
 		g_string_append_printf(model_text,

@@ -2,6 +2,11 @@
 #include "venture.h"
 #include <string.h>
 #include <math.h>
+#include <glib/gstdio.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <errno.h>
 #ifdef VENTURE_HAVE_POPPLER
 #include <poppler.h>
 #endif
@@ -10,6 +15,7 @@ struct _VentureDocumentService
 {
 	GObject parent_instance;
 	VentureDatabase *database;
+	VentureEntity *filing;
 };
 G_DEFINE_FINAL_TYPE(VentureDocumentService, venture_document_service, G_TYPE_OBJECT)
 
@@ -82,6 +88,120 @@ venture_document_service_get(VentureDatabase *database)
 		g_object_set_data_full(G_OBJECT(database), "venture-document-service", self, g_object_unref);
 	}
 	return self;
+}
+
+/* Path ownership is checked below the web layer, including staged/imported
+ * writes. Historical paths remain editable as metadata, but never reassignable. */
+static gboolean attachment_owner(VentureDocumentService *self, VentureEntity *document, const gchar *path,
+	gboolean new_claim, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_DOCUMENT);
+	g_autoptr(GPtrArray) rows = NULL;
+	guint i;
+	venture_query_set_limit(query, 0); venture_query_set_include_deleted(query, TRUE);
+	{
+		/* Compare identities across organizations without exposing any of
+		 * their metadata or granting that scope to the actual file reader. */
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(self->database), NULL);
+		rows = venture_database_find(self->database, query, error);
+	}
+	if (rows == NULL) return FALSE;
+	for (i = 0; i < rows->len; i++) {
+		VentureEntity *other = g_ptr_array_index(rows, i);
+		g_autofree gchar *stored = NULL, *canonical = NULL;
+		if (venture_entity_get_id(other) == venture_entity_get_id(document)) continue;
+		g_object_get(other, "path", &stored, NULL);
+		if (venture_string_is_empty(stored)) continue;
+		canonical = g_canonicalize_filename(stored, NULL);
+		if (g_str_equal(canonical, path) && (new_claim || venture_entity_get_organization_id(other) != venture_entity_get_organization_id(document)))
+			return refuse(error, "Attachment path already belongs to another document; file a new original");
+	}
+	return TRUE;
+}
+static gboolean document_path_validate(VentureDatabase *database, VentureEntity *row, VentureEntity *previous,
+	gpointer data, GError **error)
+{
+	VentureDocumentService *self = venture_document_service_get(database);
+	g_autofree gchar *path = NULL, *old = NULL;
+	(void)data;
+	g_object_get(row, "path", &path, NULL);
+	if (previous != NULL) g_object_get(previous, "path", &old, NULL);
+	if (g_strcmp0(path, old) == 0 && (venture_string_is_empty(path) || previous == NULL ||
+		venture_entity_get_organization_id(row) == venture_entity_get_organization_id(previous))) return TRUE;
+	if (self->filing != row || previous != NULL)
+		return refuse(error, "Attachment paths and their owning organization are assigned only by the filing service");
+	return attachment_owner(self, row, path, TRUE, error);
+}
+void venture_document_install_validators(VentureDatabase *database)
+{
+	venture_database_add_save_validator(database, VENTURE_TYPE_DOCUMENT, document_path_validate, NULL, NULL);
+}
+static gchar *attachment_path(VentureEntity *document, const gchar *attachment_root, gchar **root, GError **error)
+{
+	g_autofree gchar *path = NULL, *canonical = NULL, *prefix = NULL;
+	g_object_get(document, "path", &path, NULL);
+	if (venture_string_is_empty(path) || venture_string_is_empty(attachment_root)) {
+		refuse(error, "Document has no configured local attachment"); return NULL;
+	}
+	*root = g_canonicalize_filename(attachment_root, NULL);
+	canonical = g_canonicalize_filename(path, NULL); prefix = g_strconcat(*root, G_DIR_SEPARATOR_S, NULL);
+	if (!g_str_has_prefix(canonical, prefix)) { refuse(error, "Attachment must be filed in configured attachment storage"); return NULL; }
+	return g_steal_pointer(&canonical);
+}
+gboolean venture_document_service_save_attachment(VentureDocumentService *self, VentureEntity *document,
+	const gchar *attachment_root, const VentureActor *actor, GError **error)
+{
+	g_autofree gchar *path = NULL, *root = NULL;
+	gboolean ok;
+	g_return_val_if_fail(VENTURE_IS_DOCUMENT_SERVICE(self) && VENTURE_IS_DOCUMENT(document), FALSE);
+	if (self->database == NULL || self->filing != NULL || venture_entity_get_id(document) != 0)
+		return refuse(error, "File attachments as new documents");
+	path = attachment_path(document, attachment_root, &root, error); if (path == NULL) return FALSE;
+	g_object_set(document, "path", path, NULL);
+	self->filing = document; ok = venture_database_save(self->database, document, actor, error); self->filing = NULL;
+	return ok;
+}
+GBytes *venture_document_service_read_attachment(VentureDocumentService *self, VentureEntity *document,
+	const gchar *attachment_root, gsize max_bytes, GError **error)
+{
+	g_autoptr(VentureEntity) live = NULL;
+	g_autofree gchar *path = NULL, *root = NULL, *buffer = NULL;
+	g_auto(GStrv) parts = NULL;
+	guint part;
+	struct stat info;
+	gsize offset = 0;
+	gint directory, fd;
+	g_return_val_if_fail(VENTURE_IS_DOCUMENT_SERVICE(self) && VENTURE_IS_DOCUMENT(document), NULL);
+	if (self->database == NULL) { refuse(error, "The document database has been closed"); return NULL; }
+	live = venture_database_get(self->database, VENTURE_TYPE_DOCUMENT, venture_entity_get_id(document), error);
+	if (live == NULL) return NULL;
+	if (venture_entity_is_deleted(live) || venture_entity_get_organization_id(live) != venture_entity_get_organization_id(document)) {
+		refuse(error, "Attachment document is unavailable in this organization"); return NULL;
+	}
+	path = attachment_path(live, attachment_root, &root, error); if (path == NULL) return NULL;
+	if (!attachment_owner(self, live, path, FALSE, error)) return NULL;
+	parts = g_strsplit(path + strlen(root) + 1, G_DIR_SEPARATOR_S, -1);
+	directory = g_open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC, 0);
+	if (directory < 0) { refuse(error, "Attachment directory is unavailable"); return NULL; }
+	for (part = 0; parts[part + 1] != NULL; part++) {
+		gint next = openat(directory, parts[part], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+		close(directory); directory = next;
+		if (directory < 0) { refuse(error, "Attachment directory is missing or is a symbolic link"); return NULL; }
+	}
+	/* Nonblocking open lets fstat reject a FIFO without waiting for a writer. */
+	fd = openat(directory, parts[part], O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK); close(directory);
+	if (fd < 0) { refuse(error, "Attachment is missing or is a symbolic link"); return NULL; }
+	if (fstat(fd, &info) != 0 || !S_ISREG(info.st_mode) || info.st_size < 0 || (guint64)info.st_size > max_bytes) {
+		close(fd); refuse(error, "Attachment is not a regular file within the allowed size"); return NULL;
+	}
+	buffer = g_malloc((gsize)info.st_size);
+	while (offset < (gsize)info.st_size) {
+		ssize_t got = read(fd, buffer + offset, (gsize)info.st_size - offset);
+		if (got < 0 && errno == EINTR) continue;
+		if (got <= 0) { close(fd); refuse(error, "Attachment changed or could not be read"); return NULL; }
+		offset += (gsize)got;
+	}
+	close(fd); return g_bytes_new_take(g_steal_pointer(&buffer), offset);
 }
 
 static gchar *
