@@ -331,3 +331,18 @@ venture_time_equal(
 
 	return (0 == g_date_time_compare(a, b));
 }
+
+gboolean
+venture_time_is_calendar_date(
+	GDateTime	*date
+){
+	g_autoptr(GDateTime) utc = NULL;
+
+	g_return_val_if_fail(NULL != date, FALSE);
+
+	utc = g_date_time_to_utc(date);
+
+	return (0 == g_date_time_get_hour(utc)) &&
+	       (0 == g_date_time_get_minute(utc)) &&
+	       (0.0 == g_date_time_get_seconds(utc));
+}

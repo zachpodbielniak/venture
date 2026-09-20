@@ -731,7 +731,35 @@ test_omitted_date_future_instant(Fixture *f, gconstpointer unused)
 	g_assert_nonnull(zone);
 	now = g_date_time_new_now(zone);
 	later = g_date_time_add_hours(now, 1);
+	/* Stay on today's business day so the day gate alone could never have
+	 * excused the old code: in the last hour, use the day's final second. */
+	if (g_date_time_get_day_of_month(later) != g_date_time_get_day_of_month(now))
+	{
+		g_date_time_unref(later);
+		later = g_date_time_new(zone, g_date_time_get_year(now), g_date_time_get_month(now),
+			g_date_time_get_day_of_month(now), 23, 59, 59.0);
+	}
 	schedule = instant_schedule(f, later);
+	g_assert_cmpint(venture_recurring_service_run(venture_recurring_service_get(f->db),
+		f->org, NULL, FALSE, NULL, &error), ==, 0);
+	g_assert_no_error(error);
+	g_assert_cmpint(count(f, "invoice"), ==, 0);
+	g_assert_cmpint(count(f, "recurring_occurrence"), ==, 0);
+}
+
+/* A date-picker occurrence for tomorrow's business date on a New York
+ * schedule reads as today in the schedule's own zone (its midnight UTC is
+ * 20:00 New York). Settlement refuses a calendar date after the business
+ * date, so the sweep must hold it, not generate and fail. */
+static void
+test_omitted_date_picker_tomorrow(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GDateTime) today = venture_settlement_service_today(venture_settlement_service_get(f->db));
+	g_autoptr(GDateTime) tomorrow = g_date_time_add_days(today, 1);
+	g_autoptr(VentureEntity) schedule = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)unused;
+	schedule = instant_schedule(f, tomorrow);
 	g_assert_cmpint(venture_recurring_service_run(venture_recurring_service_get(f->db),
 		f->org, NULL, FALSE, NULL, &error), ==, 0);
 	g_assert_no_error(error);
@@ -786,6 +814,7 @@ main(int argc, char **argv)
 	g_test_add("/batch/cli", Fixture, NULL, setup, test_batch_cli, teardown);
 	g_test_add("/recurring/omitted-date-approval", Fixture, NULL, setup, test_omitted_date_approval, teardown);
 	g_test_add("/recurring/omitted-date-future-instant", Fixture, NULL, setup, test_omitted_date_future_instant, teardown);
+	g_test_add("/recurring/omitted-date-picker-tomorrow", Fixture, NULL, setup, test_omitted_date_picker_tomorrow, teardown);
 	g_test_add("/recurring/omitted-date-past-instant", Fixture, NULL, setup, test_omitted_date_past_instant, teardown);
 	return g_test_run();
 }

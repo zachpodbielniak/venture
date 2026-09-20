@@ -155,6 +155,21 @@ venture_time_equal(
 	GDateTime	*b
 );
 
+/**
+ * venture_time_is_calendar_date:
+ * @date: an instant
+ *
+ * A date picker submits a calendar date as midnight UTC; a precise instant
+ * almost never lands there. Settlement's date rules and the recurring sweep
+ * both need the distinction, so it lives in one place.
+ *
+ * Returns: %TRUE if @date is exactly midnight UTC
+ */
+gboolean
+venture_time_is_calendar_date(
+	GDateTime	*date
+);
+
 G_END_DECLS
 
 #endif /* VENTURE_TIME_UTIL_H */

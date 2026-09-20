@@ -374,14 +374,6 @@ check_customer(VentureSettlementService *self, VentureEntity *record, GError **e
 	return customer != NULL && same_owner(record, customer, error);
 }
 
-/* A date picker submits midnight UTC; a precise instant almost never is. */
-static gboolean
-calendar_date(GDateTime *date)
-{
-	g_autoptr(GDateTime) utc = g_date_time_to_utc(date);
-	return g_date_time_get_hour(utc) == 0 && g_date_time_get_minute(utc) == 0 && g_date_time_get_seconds(utc) == 0.0;
-}
-
 static gboolean
 check_date(VentureSettlementService *self, GDateTime *date, GDateTime *earliest, GError **error)
 {
@@ -399,7 +391,7 @@ check_date(VentureSettlementService *self, GDateTime *date, GDateTime *earliest,
 	today = venture_settlement_service_today(self);
 	if (venture_time_equal(date, today))
 		return TRUE;
-	if (g_date_time_compare(date, now) > 0 || (calendar_date(date) && g_date_time_compare(date, today) > 0))
+	if (g_date_time_compare(date, now) > 0 || (venture_time_is_calendar_date(date) && g_date_time_compare(date, today) > 0))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "A financial event cannot be dated in the future");
 	return TRUE;
 }

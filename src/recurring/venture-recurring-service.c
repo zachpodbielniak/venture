@@ -130,14 +130,6 @@ day_compare(GDateTime *a, GDateTime *b)
 	return g_strcmp0(left, right);
 }
 
-/* A date picker submits midnight UTC; a precise instant almost never is. */
-static gboolean
-calendar_date(GDateTime *date)
-{
-	g_autoptr(GDateTime) utc = g_date_time_to_utc(date);
-	return g_date_time_get_hour(utc) == 0 && g_date_time_get_minute(utc) == 0 && g_date_time_get_seconds(utc) == 0.0;
-}
-
 static GDateTime *
 schedule_start(VentureEntity *schedule)
 {
@@ -559,6 +551,23 @@ sweep_zone(VentureRecurringService *self)
 	return venture_time_get_timezone(name);
 }
 
+/* Whether an implicit sweep may generate an occurrence dated @at: exactly
+ * the dates settlement's check_date() accepts, judged against the business
+ * date, so a sweep never posts what settlement would refuse and roll back.
+ * Today's business date as a date picker encodes it is always due, even
+ * where its midnight UTC is still ahead; any other future instant waits;
+ * a calendar date after the business date waits even once its midnight UTC
+ * has passed. */
+static gboolean
+implicit_due(GDateTime *at, GDateTime *as_of, GDateTime *today)
+{
+	if (venture_time_equal(at, today))
+		return TRUE;
+	if (g_date_time_compare(at, as_of) > 0)
+		return FALSE;
+	return !(venture_time_is_calendar_date(at) && g_date_time_compare(at, today) > 0);
+}
+
 static gint
 run_schedule(VentureRecurringService *self, VentureEntity *schedule, GDateTime *as_of,
 	GTimeZone *zone, gboolean dry_run, const VentureActor *actor, GError **error)
@@ -566,12 +575,15 @@ run_schedule(VentureRecurringService *self, VentureEntity *schedule, GDateTime *
 	g_autoptr(GDateTime) start = NULL;
 	g_autoptr(GDateTime) end = NULL;
 	g_autoptr(GDateTime) local_as_of = NULL;
+	g_autoptr(GDateTime) today = NULL;
 	gint64 index;
 	gint created = 0;
 	gint frequency;
 	guint n;
 	if (flag(schedule, "paused"))
 		return 0;
+	if (zone != NULL)
+		today = venture_settlement_service_today(venture_settlement_service_get(self->database));
 	g_object_get(schedule, "end-at", &end, "cycle-index", &index, NULL);
 	start = schedule_start(schedule);
 	frequency = choice(schedule, "frequency");
@@ -590,13 +602,11 @@ run_schedule(VentureRecurringService *self, VentureEntity *schedule, GDateTime *
 		g_autofree gchar *stamp = NULL;
 		g_autofree gchar *key = NULL;
 		g_autoptr(VentureEntity) existing = NULL;
-		if (at == NULL || day_compare(at, local_as_of) > 0)
+		if (at == NULL)
 			break;
-		/* An implicit sweep is judged on the business-zone day, so an occurrence
-		 * dated a precise instant still in the future waits for a later sweep;
-		 * settlement refuses a future instant and would fail the whole sweep.
-		 * A date picker's midnight UTC on today's date stays accepted. */
-		if (zone != NULL && !calendar_date(at) && g_date_time_compare(at, as_of) > 0)
+		/* An implicit sweep is judged the way settlement will judge the
+		 * generated date; an explicit as_of keeps the schedule's own day. */
+		if (zone != NULL ? !implicit_due(at, as_of, today) : day_compare(at, local_as_of) > 0)
 			break;
 		if (end != NULL && day_compare(at, end) > 0)
 			break;
