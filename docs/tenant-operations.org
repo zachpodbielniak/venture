@@ -172,8 +172,9 @@ of both unrestored targets. The synthetic containers/volumes/networks were remov
 after the check. The built hosted snapshot also passed administrator bootstrap/status, suspension/
 reactivation, healthy start/stop and encrypted export, followed by independent
 restore, container replacement through a synthetic no-schema-change upgrade, and
-retained offboarding. Restore-quarantine hardening was added after that walkthrough
-and requires its own new artifact demonstration. Full combined-revision and
+retained offboarding. A later [[file:evidence/125-tenant-lifecycle.txt][physical quarantine drill]] passed all five lifecycle stages
+with the qualified application snapshot identified in that transcript. It also
+caught and verified repair of the fresh-install absent-OIDC-table failure. Full combined-revision and
 neighbor availability qualification remain pending. Do not read
 these implementation tests as hosted-launch approval.
 

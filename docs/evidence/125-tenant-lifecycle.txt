@@ -1,0 +1,42 @@
+Physical hosted lifecycle drill — 2026-09-20
+
+Operator source: d866aa4 (lifecycle implementation 7f9c07b).
+Application: qualified hosted worktree snapshot, not final epic revision.
+Binary SHA256: 2ea3f33e3b1034e68ec11da7630332e0e22579702902b2fe1a218dfa506a4f63
+Application image: sha256:4b1ebcf2bcf4bd58b928df679656effb5a2261bd1c735016eb1cd6b361ef4ce1
+Candidate image: sha256:f6aaa475139137ddd9dbf462001ed77af566aca7b20cbed240fbe9ed86edf333
+PostgreSQL 18.4 image: sha256:a1892662ab56773f96746107054fcfec3d7cd32d39a34fabec4a57f66bd15524
+
+The candidate differs only by an image label. This proves bounded upgrade
+orchestration, not a new schema-version migration or zero-downtime upgrade.
+Both newly provisioned roots use separate physical database volumes/networks.
+Only these fixtures' label-verified resources were removed afterward. Private
+credentials/archives/logs remain in the operator's private evidence directory.
+
+Command (from this worktree; local image tags resolve to the digests above):
+python3 tools/venture-tenant-lifecycle-drill.py \
+  --image localhost/venture-125-hosted:quarantine \
+  --upgrade-image localhost/venture-125-hosted:quarantine-upgrade \
+  --application-revision 'hosted-working-snapshot-binary-sha256:2ea3f33e3b1034e68ec11da7630332e0e22579702902b2fe1a218dfa506a4f63;operator:d866aa4' \
+  --binary /usr/local/bin/venture
+
+Verbatim assertion transcript (private evidence-directory line omitted):
+
+PASS: provision, bootstrap, healthy startup and encrypted stopped-workspace export
+PASS: physical restore preserves workspace/encryption identity, rotates session secret and requires recovery before activation
+PASS: fresh administrator recovery leaves suspension intact; suspended server starts; explicit reactivation clears review phase
+PASS: pinned candidate upgrade takes locked snapshot, migrates offline and starts healthy
+PASS: held offboarding retains data and archives and refuses restart
+
+Exit status: 0.
+
+A prior snapshot failed restore quarantine because its fresh default-module
+install had no optional OIDC identity table. The operation refused safely;
+no launch qualification was claimed. The repaired snapshot above probes the
+actual schema and still clears retained OIDC rows when the module is disabled.
+Its separate eleven-case hosted service suite passed SQLite and PostgreSQL.
+
+This operator fixture verifies state/key/phase behavior and healthy HTTP startup.
+Password/session/token revocation, MFA and member reenrollment use separate
+application tests and demonstration. This small drill does not establish financial
+replacement readiness, TLS, heavy-neighbor latency, capacity, or final-head safety.
