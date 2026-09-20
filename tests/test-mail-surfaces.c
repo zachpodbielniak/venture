@@ -190,7 +190,7 @@ static void test_inbound_actions(Fixture *f, gconstpointer unused)
 	g_autoptr(VentureEntity) keep = g_object_new(VENTURE_TYPE_MAIL_UNMATCHED_SENDER, "organization-id", org, "address", "keep@else.test", "name", "Keep", "seen", (gint64)1, NULL);
 	g_autoptr(VentureEntity) quiet = g_object_new(VENTURE_TYPE_MAIL_UNMATCHED_SENDER, "organization-id", org, "address", "quiet@else.test", "seen", (gint64)1, NULL);
 	g_autoptr(VentureEntity) account = g_object_new(VENTURE_TYPE_MAIL_ACCOUNT, "organization-id", org, "address", "ops@example.test",
-		"imap-host", "imap.example.test", "secret-env", "VENTURE_IMAP_SURFACES_MISSING", "active", TRUE, NULL);
+		"imap-host", "imap.example.test", "username", "ops", "imap-port", (gint64)993, "imap-tls", "tls", "secret-env", "VENTURE_IMAP_SURFACES_MISSING", "active", TRUE, NULL);
 	g_autoptr(VentureEntity) reread = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *keep_id = NULL, *quiet_id = NULL, *account_arg = NULL, *dismissed = NULL, *contact = NULL, *synced = NULL;
@@ -199,7 +199,6 @@ static void test_inbound_actions(Fixture *f, gconstpointer unused)
 	const gchar *convert[] = { "mail", "contact", NULL, NULL };
 	const gchar *sync_one[] = { "mail", "sync", NULL, NULL };
 	gboolean is_dismissed = FALSE;
-	g_unsetenv("VENTURE_IMAP_SURFACES_MISSING");
 	g_assert_true(venture_database_save(f->db, keep, NULL, &error));
 	g_assert_true(venture_database_save(f->db, quiet, NULL, &error));
 	g_assert_true(venture_database_save(f->db, account, NULL, &error));
@@ -234,10 +233,12 @@ static void test_inbound_actions(Fixture *f, gconstpointer unused)
 	g_clear_object(&reread);
 	reread = venture_database_get(f->db, VENTURE_TYPE_MAIL_UNMATCHED_SENDER, venture_entity_get_id(keep), &error);
 	g_assert_true(venture_entity_is_deleted(reread));
-	/* One account now: the missing secret is reported, not a failure of the command. */
+	/* An account outside the operator allowlist is reported without resolving
+	 * its obsolete environment label or contacting the provider. */
 	sync_one[2] = account_arg;
 	synced = cli(f, sync_one);
-	g_assert_nonnull(strstr(synced, "VENTURE_IMAP_SURFACES_MISSING"));
+	g_assert_nonnull(strstr(synced, "operator allowlist"));
+	g_assert_null(strstr(synced, "VENTURE_IMAP_SURFACES_MISSING"));
 	g_assert_nonnull(strstr(synced, "\"accounts\""));
 }
 

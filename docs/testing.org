@@ -697,3 +697,23 @@ a live Teller enrollment or production mutual TLS. Production/development
 configuration requires a valid certificate/private-key pair; sandbox is an
 explicit selection. The ordinary DEBUG build and generated GIR also cover
 the owned settings-schema and immutable-client extension points.
+
+* Private mailbox and calendar connectors
+
+=test-connectors= covers the shared IMAP/CalDAV credential lifecycle,
+private-owner read/audit/vault boundaries, membership revocation, changed
+selections and populated additive upgrades. Its database fixtures support
+=VENTURE_TEST_ACCOUNTING_POSTGRES_URI=. =test-mail-sync= and =test-calendar=
+exercise private import suppression, real stored snapshots and revocation
+between transport completion and persistence using the fake clients'
+synchronous =response-ready= signal. Restoring a removed private calendar
+UID preserves its retained record identity.
+
+The generic routes remain covered by =test-auth=, with assigned-owner
+settings, blank saved secrets, stale forms and another member's 404 refusal.
+The mail/calendar surface suites verify that CLI sync reports the explicit
+operator allowlist refusal instead of resolving old environment labels.
+=test-webhook= checks that a shared event selects only its organization's
+hooks and a private event selects none. These provider fixtures make no live
+mailbox or calendar service claim; the separate browser recording is in
+[[file:evidence/125-connectors-demo.org][the connector demonstration]].

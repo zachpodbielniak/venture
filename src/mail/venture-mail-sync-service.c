@@ -22,6 +22,7 @@ struct _VentureMailSyncService {
 	VentureDatabase *database;
 	VentureImapClient *client;
 	VentureContext *context;
+	VentureConfig *config;
 	gchar *attachment_root;
 	guint message_budget;
 	guint time_budget;
@@ -48,6 +49,7 @@ static void finalize(GObject *object)
 	if (self->database) g_object_remove_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
 	if (self->context) g_object_remove_weak_pointer(G_OBJECT(self->context), (gpointer *)&self->context);
 	g_clear_object(&self->client);
+	g_clear_object(&self->config);
 	g_free(self->attachment_root);
 	G_OBJECT_CLASS(venture_mail_sync_service_parent_class)->finalize(object);
 }
@@ -68,6 +70,7 @@ static void set_property(GObject *object, guint id, const GValue *value, GParamS
 		self->context = g_value_get_object(value);
 		if (self->context) g_object_add_weak_pointer(G_OBJECT(self->context), (gpointer *)&self->context);
 		break;
+	case 7: g_set_object(&self->config, g_value_get_object(value)); break;
 	default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, pspec);
 	}
 }
@@ -81,6 +84,7 @@ static void get_property(GObject *object, guint id, GValue *value, GParamSpec *p
 	case 4: g_value_set_uint(value, self->message_budget); break;
 	case 5: g_value_set_uint(value, self->time_budget); break;
 	case 6: g_value_set_object(value, self->context); break;
+	case 7: g_value_set_object(value, self->config); break;
 	default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, pspec);
 	}
 }
@@ -96,9 +100,10 @@ static void venture_mail_sync_service_class_init(VentureMailSyncServiceClass *kl
 	g_object_class_install_property(object, 4, g_param_spec_uint("message-budget", "Message budget", "Messages one sync or sweep call reads; the cursor resumes on the next call", 1, 100000, VENTURE_MAIL_SYNC_DEFAULT_BUDGET, G_PARAM_READWRITE | G_PARAM_CONSTRUCT | G_PARAM_STATIC_STRINGS));
 	g_object_class_install_property(object, 5, g_param_spec_uint("time-budget", "Time budget", "Seconds one sync or sweep call may hold the main loop", 1, 3600, VENTURE_MAIL_SYNC_DEFAULT_SECONDS, G_PARAM_READWRITE | G_PARAM_CONSTRUCT | G_PARAM_STATIC_STRINGS));
 	g_object_class_install_property(object, 6, g_param_spec_object("context", "Context", "Weak; notifies admins when an account is switched off", VENTURE_TYPE_CONTEXT, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+	g_object_class_install_property(object, 7, g_param_spec_object("config", "Config", "Operator connector endpoint policy", VENTURE_TYPE_CONFIG, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 	g_mime_init();
 }
-static void venture_mail_sync_service_init(VentureMailSyncService *self) { }
+static void venture_mail_sync_service_init(VentureMailSyncService *self) { self->config = venture_config_new(); }
 VentureMailSyncService *venture_mail_sync_service_new(VentureDatabase *database, VentureImapClient *client)
 {
 	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
@@ -116,7 +121,7 @@ VentureMailSyncService *venture_mail_sync_service_new_for_context(VentureContext
 	client = venture_socket_imap_client_new();
 	root = g_build_filename(venture_config_get_state_dir(venture_context_get_config(context)), "attachments", NULL);
 	service = venture_mail_sync_service_new(venture_context_get_database(context), VENTURE_IMAP_CLIENT(client));
-	g_object_set(service, "attachment-root", root, "context", context, NULL);
+	g_object_set(service, "attachment-root", root, "context", context, "config", venture_context_get_config(context), NULL);
 	return service;
 }
 
@@ -417,12 +422,14 @@ typedef struct { guint32 uid; guint32 uidvalidity; guint32 failed_uid; guint att
 typedef struct {
 	VentureMailSyncService *self;
 	VentureDatabase *db;
+	VentureConnectorSession *connector;
 	VentureEntity *account; /* re-read under the lease; the caller's copy is updated at the end */
 	const VentureActor *actor;
 	SyncBudget *budget;
 	JsonObject *cursors;
 	gint64 org;
 	gint64 account_id;
+	gint64 private_owner;
 	gchar *host; gchar *security; gchar *username; const gchar *secret; gint64 port;
 	gchar *own_normal;
 	gchar *capture_address;
@@ -440,6 +447,7 @@ typedef struct {
 static void sync_run_clear(SyncRun *run)
 {
 	g_clear_object(&run->account);
+	g_clear_object(&run->connector);
 	g_clear_pointer(&run->cursors, json_object_unref);
 	g_free(run->host); g_free(run->security); g_free(run->username);
 	g_free(run->own_normal); g_free(run->capture_address); g_free(run->capture_folder);
@@ -595,7 +603,7 @@ static VentureEntity *file_document(SyncRun *run, const gchar *title, const gcha
 	g_ptr_array_add(run->written, g_strdup(path));
 	checksum = g_compute_checksum_for_bytes(G_CHECKSUM_SHA256, data);
 	document = g_object_new(VENTURE_TYPE_DOCUMENT, "organization-id", run->org, "title", title, "kind", kind, "path", path,
-		"mime-type", mime, "size-bytes", (gint64)length, "hash", checksum, "extracted-text", extracted, NULL);
+		"private-owner-id", run->private_owner, "mime-type", mime, "size-bytes", (gint64)length, "hash", checksum, "extracted-text", extracted, NULL);
 	if (!venture_document_service_save_attachment(venture_document_service_get(run->db), document, self->attachment_root, run->actor, error)) return NULL;
 	return g_steal_pointer(&document);
 }
@@ -730,7 +738,7 @@ static gint64 open_deal(VentureDatabase *db, gint64 org, gint64 contact, GError 
 	}
 	return open == 1 ? found : 0;
 }
-static gchar *resolve_thread(VentureDatabase *db, gint64 org, Parsed *p, GError **error)
+static gchar *resolve_thread(VentureDatabase *db, gint64 org, gint64 private_owner, Parsed *p, GError **error)
 {
 	g_autoptr(GPtrArray) candidates = g_ptr_array_new();
 	guint i;
@@ -738,12 +746,20 @@ static gchar *resolve_thread(VentureDatabase *db, gint64 org, Parsed *p, GError 
 	for (i = 0; i < p->references->len; i++) g_ptr_array_add(candidates, g_ptr_array_index(p->references, i));
 	for (i = 0; i < candidates->len; i++) {
 		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_INBOUND);
-		g_autoptr(VentureEntity) earlier = NULL;
+		g_autoptr(GPtrArray) earlier = NULL;
+		guint j;
 		venture_query_set_organization(query, org);
 		venture_query_add_filter_string(query, "message-id", VENTURE_FILTER_OP_EQ, g_ptr_array_index(candidates, i), NULL);
-		earlier = venture_database_find_one(db, query, error);
-		if (error && *error) return NULL;
-		if (earlier) { gchar *thread = NULL; g_object_get(earlier, "thread-id", &thread, NULL); if (thread && *thread) return thread; g_free(thread); }
+		earlier = venture_database_find(db, query, error);
+		if (!earlier) return NULL;
+		for (j = 0; j < earlier->len; j++) {
+			VentureEntity *row = g_ptr_array_index(earlier, j);
+			gchar *thread = NULL;
+			if (venture_access_policy_get_personal_owner(venture_database_get_access_policy(db), row) != private_owner) continue;
+			g_object_get(row, "thread-id", &thread, NULL);
+			if (thread && *thread) return thread;
+			g_free(thread);
+		}
 	}
 	/* No known ancestor: the oldest reference is the root, else this message. */
 	if (p->references->len) return g_strdup(g_ptr_array_index(p->references, 0));
@@ -753,7 +769,7 @@ static gchar *resolve_thread(VentureDatabase *db, gint64 org, Parsed *p, GError 
 /* The earliest row already filed with this Message-ID, from any folder or
  * account: a Gmail label, a watched Sent folder, the outbox. A stub filed
  * after repeated failures carries no content and is not a match. */
-static VentureEntity *find_existing(VentureDatabase *db, gint64 org, const gchar *message_id, GError **error)
+static VentureEntity *find_existing(VentureDatabase *db, gint64 org, gint64 private_owner, const gchar *message_id, GError **error)
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_INBOUND);
 	g_autoptr(GPtrArray) rows = NULL;
@@ -767,6 +783,7 @@ static VentureEntity *find_existing(VentureDatabase *db, gint64 org, const gchar
 		VentureEntity *row = g_ptr_array_index(rows, i);
 		g_autofree gchar *reason = NULL;
 		gint64 document = 0;
+		if (venture_access_policy_get_personal_owner(venture_database_get_access_policy(db), row) != private_owner) continue;
 		g_object_get(row, "skip-reason", &reason, "document-id", &document, NULL);
 		if (!venture_string_is_empty(reason) && !document) continue;
 		return g_object_ref(row);
@@ -930,10 +947,10 @@ static gboolean file_parsed(SyncRun *run, const gchar *folder, guint32 uidvalidi
 	g_autoptr(VentureEntity) inbound = NULL, raw_document = NULL, existing = NULL;
 	gboolean outbound = run->own_normal && *run->own_normal && p->from && !g_strcmp0(run->own_normal, p->from);
 	gboolean capture = p->to_capture || (run->capture_folder && *run->capture_folder && !g_strcmp0(run->capture_folder, folder));
-	existing = find_existing(run->db, run->org, p->message_id, error);
+	existing = find_existing(run->db, run->org, run->private_owner, p->message_id, error);
 	if (error && *error) return FALSE;
 	if (existing) g_object_get(existing, "thread-id", &thread, NULL);
-	else if (!(thread = resolve_thread(run->db, run->org, p, error))) return FALSE;
+	else if (!(thread = resolve_thread(run->db, run->org, run->private_owner, p, error))) return FALSE;
 	inbound = g_object_new(VENTURE_TYPE_MAIL_INBOUND, "organization-id", run->org, "account-id", run->account_id, "folder", folder,
 		"uid", (gint64)uid, "uid-validity", (gint64)uidvalidity, "uid-key", key, "message-id", p->message_id, "thread-id", thread,
 		"from-address", p->from, "subject", p->subject && *p->subject ? p->subject : "(no subject)", "received-at", p->date,
@@ -961,6 +978,9 @@ static gboolean file_parsed(SyncRun *run, const gchar *folder, guint32 uidvalidi
 	raw_document = file_document(run, raw_title, "email", "message/rfc822", raw, p->text, error);
 	if (!raw_document) return FALSE;
 	g_object_set(inbound, "document-id", venture_entity_get_id(raw_document), NULL);
+	/* Private mail remains an inbox record and an owned raw document. Its
+	 * participants and receipt attachments are not organization CRM input. */
+	if (run->private_owner > 0) return venture_database_save(run->db, inbound, run->actor, error);
 	body = timeline_body(p->from, p->message_id, thread, p->text, skip_reason);
 	/* A truncated capture message has lost its attachments; filing its
 	 * remains as a receipt would invent one, so it stays a row whose skip
@@ -990,6 +1010,7 @@ static gboolean file_message(SyncRun *run, const gchar *folder, guint32 uidvalid
 	gboolean ok;
 	if (!parse_message(raw, run->capture_address, &p, error)) { parsed_clear(&p); return FALSE; }
 	if (!venture_database_begin(run->db, error)) { parsed_clear(&p); return FALSE; }
+	if (!venture_connector_session_validate(run->connector, error)) { venture_database_rollback(run->db); parsed_clear(&p); return FALSE; }
 	ok = file_parsed(run, folder, uidvalidity, uid, raw, skip_reason, &p, error);
 	if (ok) {
 		cursor->uid = uid; cursor->failed_uid = 0; cursor->attempts = 0;
@@ -1019,7 +1040,7 @@ static gboolean file_stub(SyncRun *run, const gchar *folder, guint32 uidvalidity
 		"thread-id", parsed ? p.message_id : NULL, "from-address", parsed ? p.from : NULL, "received-at", parsed ? p.date : now, NULL);
 	parsed_clear(&p);
 	if (!venture_database_begin(run->db, error)) return FALSE;
-	ok = venture_database_save(run->db, inbound, run->actor, error);
+	ok = venture_connector_session_validate(run->connector, error) && venture_database_save(run->db, inbound, run->actor, error);
 	if (ok) {
 		cursor->uid = uid; cursor->failed_uid = 0; cursor->attempts = 0;
 		cursor_set(run->cursors, folder, cursor);
@@ -1086,6 +1107,7 @@ static SyncOutcome sync_message(SyncRun *run, const gchar *folder, const Venture
 	g_autoptr(GBytes) raw = NULL;
 	g_autofree gchar *skip_reason = NULL;
 	gint filed;
+	if (!venture_connector_session_validate(run->connector, error)) return OUTCOME_ACCOUNT_STOPPED;
 	run->budget->messages_left--;
 	/* Checked before the fetch: a rerun over filed mail costs a query per
 	 * message, not a download. */
@@ -1111,6 +1133,7 @@ static SyncOutcome sync_message(SyncRun *run, const gchar *folder, const Venture
 			entry->size, VENTURE_MAIL_SYNC_TRUNCATED_TEXT / 1024);
 		raw = venture_imap_client_fetch_truncated(run->self->client, entry->uid, VENTURE_MAIL_SYNC_TRUNCATED_TEXT, NULL, &local);
 	} else raw = venture_imap_client_fetch(run->self->client, entry->uid, NULL, &local);
+	if (!venture_connector_session_validate(run->connector, error)) return OUTCOME_ACCOUNT_STOPPED;
 	if (!raw) {
 		if (error_is_transient(local)) { g_propagate_error(error, g_steal_pointer(&local)); return OUTCOME_ACCOUNT_STOPPED; }
 		return message_failed(run, folder, info->uidvalidity, cursor, entry->uid, NULL, local, error);
@@ -1128,6 +1151,7 @@ static SyncOutcome sync_folder(SyncRun *run, const gchar *folder, GError **error
 	g_autoptr(GError) local = NULL;
 	VentureImapFolderInfo info;
 	FolderCursor cursor;
+	if (!venture_connector_session_validate(run->connector, error)) return OUTCOME_ACCOUNT_STOPPED;
 	if (!venture_imap_client_select(client, folder, &info, NULL, &local)) {
 		if (error_is_session(local)) { g_propagate_error(error, g_steal_pointer(&local)); return OUTCOME_ACCOUNT_STOPPED; }
 		/* One missing or renamed folder must not stop the ones after it. */
@@ -1185,6 +1209,7 @@ static gboolean take_lease(SyncRun *run, GError **error)
 	gint64 seconds = MAX((gint64)0, (run->budget->deadline - g_get_monotonic_time()) / G_USEC_PER_SEC);
 	run->account = venture_database_get(run->db, VENTURE_TYPE_MAIL_ACCOUNT, run->account_id, NULL);
 	if (!run->account || venture_entity_is_deleted(run->account)) return refuse(error, VENTURE_ERROR_NOT_FOUND, "The mail account no longer exists");
+	run->org = venture_entity_get_organization_id(run->account);
 	g_object_get(run->account, "sync-lease-until", &lease, "cursors", &cursor_text, NULL);
 	/* Overlapping callers (a second process, or a request served from a
 	 * nested main loop) would fetch and file the same UIDs twice. */
@@ -1197,12 +1222,16 @@ static gboolean take_lease(SyncRun *run, GError **error)
 }
 static gboolean prepare(SyncRun *run, GError **error)
 {
-	g_autofree gchar *secret_env = NULL, *folders = NULL, *address = NULL, *ignore = NULL, *internal = NULL;
+	g_autofree gchar *folders = NULL, *address = NULL, *ignore = NULL, *internal = NULL;
 	g_autoptr(GPtrArray) patterns = NULL;
-	const gchar *p;
 	guint i;
+	run->connector = venture_connector_open(run->db, run->self->config, run->account, error);
+	if (!run->connector) return FALSE;
+	run->org = venture_entity_get_organization_id(venture_connector_session_get_account(run->connector));
+	run->private_owner = venture_access_policy_get_personal_owner(venture_database_get_access_policy(run->db), venture_connector_session_get_account(run->connector));
+	run->secret = venture_connector_session_get_password(run->connector);
 	g_object_get(run->account, "imap-host", &run->host, "imap-port", &run->port, "imap-tls", &run->security, "username", &run->username,
-		"secret-env", &secret_env, "folders", &folders, "address", &address, "capture-address", &run->capture_address,
+		"folders", &folders, "address", &address, "capture-address", &run->capture_address,
 		"capture-folder", &run->capture_folder, "ignore-patterns", &ignore, "internal-domains", &internal, "sync-since", &run->since, NULL);
 	run->folders = g_ptr_array_new_with_free_func(g_free);
 	run->ignore = g_ptr_array_new_with_free_func((GDestroyNotify)g_pattern_spec_free);
@@ -1210,16 +1239,6 @@ static gboolean prepare(SyncRun *run, GError **error)
 	patterns = split_list(ignore, ",\n");
 	for (i = 0; i < patterns->len; i++) g_ptr_array_add(run->ignore, g_pattern_spec_new(g_ptr_array_index(patterns, i)));
 	run->own_normal = venture_lead_normalize_email(address);
-	if (venture_string_is_empty(secret_env)) return refuse(error, VENTURE_ERROR_CONFIG, "The account names no secret_env variable");
-	if (!g_str_has_prefix(secret_env, "VENTURE_IMAP_") || !secret_env[strlen("VENTURE_IMAP_")])
-		return refuse(error, VENTURE_ERROR_CONFIG, "secret_env must name a VENTURE_IMAP_* variable");
-	for (p = secret_env + strlen("VENTURE_IMAP_"); *p; p++)
-		if (!g_ascii_isalnum(*p) && *p != '_') return refuse(error, VENTURE_ERROR_CONFIG, "secret_env must name a VENTURE_IMAP_* variable");
-	run->secret = g_getenv(secret_env);
-	if (!run->secret || !*run->secret) {
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "VentureMailSyncService: environment variable %s is not set; it must hold the IMAP password or app token", secret_env);
-		return FALSE;
-	}
 	if (venture_string_is_empty(run->host)) return refuse(error, VENTURE_ERROR_CONFIG, "The account has no IMAP host");
 	if (run->port <= 0 || run->port > 65535) run->port = !g_strcmp0(run->security, "starttls") ? 143 : 993;
 	if (venture_string_is_empty(run->security)) { g_free(run->security); run->security = g_strdup("tls"); }

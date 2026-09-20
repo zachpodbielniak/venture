@@ -1177,6 +1177,9 @@ venture_automation_emit_entity_event(
 	 * would make every automation that writes trigger itself. */
 	if (VENTURE_IS_AUDIT_ENTRY(entity))
 		return;
+	if (venture_access_policy_record_is_personal(venture_database_get_access_policy(
+		venture_context_get_database(self->context)), entity)) return;
+
 
 	/*
 	 * An automation's own writes do not trigger automations. Without

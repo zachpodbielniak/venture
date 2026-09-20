@@ -146,6 +146,7 @@ G_DEFINE_FINAL_TYPE(VentureWebServer, venture_web_server, G_TYPE_OBJECT)
 
 static void venture_web_append_lead_actions(GString *html, VentureEntity *record);
 static void venture_web_mail_append_actions(VentureWebServer *self, GString *html, VentureEntity *record);
+static void venture_web_connector_append_actions(VentureWebServer *self, GString *html, VentureEntity *record);
 
 /*
  * The server is reachable from route callbacks through the user_data pointer
@@ -665,20 +666,8 @@ venture_web_require_for_type(
 	if (VENTURE_TYPE_FORGE == entity_type)
 		needed = VENTURE_USER_ROLE_OWNER;
 
-	/*
-	 * A mail_account names the IMAP host and which environment variable
-	 * holds the password. An editor who could change imap-host could
-	 * point the next sweep at a server they control and collect that
-	 * secret; an editor who could change secret-env could name any
-	 * variable in the process environment. Same reasoning as a forge.
-	 */
-	if (VENTURE_TYPE_MAIL_ACCOUNT == entity_type)
-		needed = VENTURE_USER_ROLE_OWNER;
-
-	/* A calendar_account names the CalDAV host and which environment
-	 * variable holds the app password; the same reasoning applies. */
-	if (VENTURE_TYPE_CALENDAR_ACCOUNT == entity_type)
-		needed = VENTURE_USER_ROLE_OWNER;
+	/* Connector creation is organization-admin delegation; saved identity is
+	 * immutable after configuration. Private reads are enforced by the policy. */
 
 	/*
 	 * A webhook holds a signing secret and names the host this install's
@@ -9381,6 +9370,7 @@ venture_web_ui_detail(
 
 	if (VENTURE_IS_LEAD(record)) venture_web_append_lead_actions(content, record);
 	venture_web_mail_append_actions(self, content, record);
+	venture_web_connector_append_actions(self, content, record);
 
 	/* The factory's pages: what a release shipped and the actions on it,
 	 * a milestone's progress, what an environment is running. */
@@ -29628,6 +29618,7 @@ venture_web_api_ticket_draft(
 #include "orgaccess/venture-accountant-web.inc"
 #include "report/venture-customer-health-web.inc"
 #include "calendar/venture-calendar-web.inc"
+#include "core/venture-connector-web.inc"
 #include "money-calendar/venture-money-calendar-web.inc"
 #include "crm-import/venture-crm-import-web.inc"
 #include "dedupe/venture-dedupe-web.inc"
@@ -30151,6 +30142,8 @@ venture_web_server_new(
 	htmx_router_get(router, "/api/v1/headline", venture_web_api_headline, self);
 	htmx_router_post(router, "/api/v1/customers/health/sweep", venture_web_api_customer_health_sweep, self);
 	htmx_router_post(router, "/api/v1/calendar/sync", venture_web_calendar_sync, self);
+	htmx_router_get(router, "/connectors/:type/:id/settings", venture_web_connector_settings, self);
+	htmx_router_post(router, "/connectors/:type/:id/settings", venture_web_connector_settings, self);
 	htmx_router_get(router, "/book/:slug", venture_web_booking_page, self);
 	htmx_router_post(router, "/book/:slug", venture_web_booking_page, self);
 	htmx_router_post(router, "/api/v1/deals/:id/quote", venture_web_deal_quote, self);

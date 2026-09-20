@@ -308,6 +308,9 @@ static const VentureConfigSetting venture_config_settings[] = {
 
 	/* Not part of the YAML document: set from --state-dir or derived. */
 	VC_STR ("state-dir", NULL, NULL, "", "Directory holding runtime state"),
+	VC_STR("imap-allowed-endpoints", "imap", "allowed_endpoints", "", "Operator-allowed IMAP host:port pairs, comma-separated; empty denies all"),
+	VC_STR("calendar-allowed-origins", "calendar", "allowed_origins", "", "Operator-allowed CalDAV HTTPS origins, comma-separated; empty denies all"),
+	VC_BOOL("connectors-allow-plaintext-loopback", "connectors", "allow_plaintext_loopback", FALSE, "Allow explicitly configured loopback IMAP fixtures without TLS; never permits remote plaintext"),
 	VC_STR("mail-allowed-endpoints", "mail", "allowed_endpoints", "", "Operator-allowed organization SMTP host:port pairs, comma-separated; empty denies all"),
 	VC_STR("mail-tls-ca-file", "mail", "tls_ca_file", "", "Operator-owned SMTP CA bundle; empty uses system trust"),
 	VC_STR("mail-host", "mail", "host", "", "SMTP relay host"),

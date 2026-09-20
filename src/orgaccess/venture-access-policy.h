@@ -236,5 +236,32 @@ gboolean venture_orgaccess_confirmation_visible(VentureDatabase *database, Ventu
  * Returns: whether its minting user remains active
  */
 gboolean venture_orgaccess_limit_token(VentureAuth *auth, VentureDatabase *database, VentureAuthPrincipal *principal);
+/**
+ * venture_access_policy_get_personal_owner:
+ * @self: repository policy
+ * @entity: record whose ownership is declared by field metadata
+ *
+ * Returns: positive user ID for private data, zero for shared data, or -1
+ *   for an invalid ownership chain; -1 must never be treated as shared
+ */
+gint64 venture_access_policy_get_personal_owner(VentureAccessPolicy *self, VentureEntity *entity);
+/**
+ * venture_access_policy_record_is_personal:
+ * @self: repository policy
+ * @entity: record to classify from field metadata
+ *
+ * Includes invalid ownership chains, which must fail closed. Optional zero
+ * references are shared; unconditional personal references remain private.
+ * Returns: whether organization-wide publication must exclude this record
+ */
+gboolean venture_access_policy_record_is_personal(VentureAccessPolicy *self, VentureEntity *entity);
+/**
+ * venture_access_policy_install_privacy:
+ * @database: repository receiving its one metadata-driven privacy validator
+ *
+ * Installs immutable optional ownership and new-owner membership checks for
+ * all record types, including types registered by plugins later.
+ */
+void venture_access_policy_install_privacy(VentureDatabase *database);
 G_END_DECLS
 #endif

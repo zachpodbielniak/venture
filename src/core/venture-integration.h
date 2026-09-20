@@ -46,6 +46,27 @@ VentureIntegrationConnection *venture_integration_service_configure(VentureInteg
 	gint64 organization_id, const gchar *provider, const gchar *account_id, const gchar *environment,
 	JsonNode *settings, gint64 expected_version, const VentureActor *actor, GError **error);
 /**
+ * venture_integration_service_configure_for_owner:
+ * @self: service
+ * @organization_id: verified organization
+ * @provider: stable provider namespace
+ * @account_id: immutable provider account identity
+ * @environment: test or live
+ * @settings: write-only settings to encrypt
+ * @expected_version: displayed binding version, or zero for a new binding
+ * @private_owner: active member whose private binding this is, or zero for shared
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): refusal
+ *
+ * Requires organization integration administration like configure(). A
+ * provider adapter may delegate its own selected account after checking the
+ * caller and entering a trusted write scope. Ownership cannot change on rotation.
+ * Returns: (transfer full) (nullable): retained binding
+ */
+VentureIntegrationConnection *venture_integration_service_configure_for_owner(VentureIntegrationService *self,
+	gint64 organization_id, const gchar *provider, const gchar *account_id, const gchar *environment,
+	JsonNode *settings, gint64 expected_version, gint64 private_owner, const VentureActor *actor, GError **error);
+/**
  * venture_integration_service_find:
  * @self: service
  * @organization_id: verified organization

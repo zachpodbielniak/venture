@@ -245,3 +245,12 @@ it does not implicitly connect a provider or borrow installation credentials.
 default through =ocr.enabled=false=. Enabling it requires the local engine
 and build dependencies documented in [[file:ocr.org][OCR]]. Its shared actions
 appear on document/capture pages and the capture list; it never posts books.
+
+* Mailbox and calendar credentials
+
+=mail_sync= and =calendar= retain their existing record ownership and history.
+Connecting or syncing an account additionally needs =integrations= enabled;
+turning the credential module off does not hide imported history or remove
+booking records. The settings routes check both modules. Generic record
+metadata supplies optional private ownership; it is not a separate module or
+a second visibility registry. See [[file:connectors.org][mailbox and calendar connectors]].

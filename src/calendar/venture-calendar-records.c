@@ -3,13 +3,14 @@
 #define STR(n, l, h) VENTURE_FIELD(n, l, h, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 #define INT(n, l, h) VENTURE_FIELD(n, l, h, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
 #define DATE(n, l) VENTURE_FIELD(n, l, NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED)
-/* A calendar account never holds a password: secret-env names the variable
- * whose value is read at sync time, the same shape as a mail_account. */
+/* Account identity is public metadata; an explicit encrypted binding supplies
+ * the credential. Historical environment labels are never resolved. */
 static const VentureFieldDecl account_fields[] = {
+	VENTURE_FIELD_REF("private-owner-id", "Private owner", "User whose private connector this is; zero explicitly shares business data with the organization", "user", VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER),
 	VENTURE_FIELD_NAME("url", "CalDAV URL", "The server's CalDAV base, for example https://dav.example.net/"),
 	VENTURE_FIELD("owner", "Owner", "Username whose activities this calendar mirrors", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME),
 	STR("username", "Username", NULL),
-	STR("secret-env", "Secret variable", "NAME of a VENTURE_CALDAV_* environment variable holding the password or app token; never the value"),
+	STR("secret-env", "Legacy secret variable", "Unused historical metadata; configure an explicit encrypted connector binding"),
 	STR("calendar-path", "Calendar path", "The collection under the URL, for example /calendars/ben/default/"),
 	STR("sync-token", "Sync token", "The collection's ctag or sync token after the last sweep, maintained by the sync service"),
 	VENTURE_FIELD("active", "Active", "Included in the sweep", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
@@ -21,7 +22,13 @@ VENTURE_DEFINE_ENTITY(VentureCalendarAccount, venture_calendar_account, account_
  * lives on the server and what both sides looked like after the last sweep.
  * The UID key is what makes a rerun a no-op. */
 static const VentureFieldDecl event_fields[] = {
-	VENTURE_FIELD_REF("account-id", "Account", NULL, "calendar_account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_NAME("subject", "Subject", "Imported calendar event title"),
+	DATE("starts-at", "Starts"),
+	DATE("ends-at", "Ends"),
+	VENTURE_FIELD_ENUM("status", "Status", "Imported calendar event state", venture_activity_status_get_type, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("body", "Description", "Imported event description; ownership follows its account"),
+	DATE("due-at", "Due"),
+	VENTURE_FIELD_REF("account-id", "Account", NULL, "calendar_account", VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER),
 	VENTURE_FIELD_REF("activity-id", "Activity", NULL, "activity", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("uid", "UID", "The VEVENT UID", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("uid-key", "UID key", "account:uid", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),

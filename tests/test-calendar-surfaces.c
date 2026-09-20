@@ -131,12 +131,12 @@ static void test_cli_sync(Fixture *f, gconstpointer unused)
 	(void)unused;
 	g_assert_nonnull(node);
 	g_assert_cmpint(venture_json_object_get_int(json_node_get_object(node), "accounts", -1), ==, 0);
-	g_unsetenv("VENTURE_CALDAV_SURFACE_MISSING");
 	account = g_object_new(VENTURE_TYPE_CALENDAR_ACCOUNT, "organization-id", f->org, "url", "https://dav.venture.test/", "owner", "ben",
 		"username", "ben", "secret-env", "VENTURE_CALDAV_SURFACE_MISSING", "calendar-path", "/calendars/ben/", "active", TRUE, NULL);
 	save(f, account);
 	broken = cli(f, sync, TRUE);
-	g_assert_nonnull(strstr(broken, "VENTURE_CALDAV_SURFACE_MISSING"));
+	g_assert_nonnull(strstr(broken, "operator allowlist"));
+	g_assert_null(strstr(broken, "VENTURE_CALDAV_SURFACE_MISSING"));
 	g_assert_nonnull(strstr(broken, "\"accounts\""));
 	refused = cli(f, staged, FALSE);
 	g_assert_nonnull(strstr(refused, "--stage"));

@@ -959,6 +959,9 @@ typedef enum
  *   an organization, including soft-deleted records
  * @VENTURE_COLUMN_FLAG_PERSONAL_OWNER: reference to the account or personal
  *   parent that owns this whole record
+ * @VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER: optional user or parent
+ *   reference; zero is shared, positive inherits private ownership; invalid
+ *   parent chains fail closed and saved ownership is immutable
  * @VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME: string naming the assigned account;
  *   grants ownership within that account's organization role
  *
@@ -979,7 +982,8 @@ typedef enum
 	VENTURE_COLUMN_FLAG_TRANSIENT   = 1 << 7,
 	VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION = 1 << 8,
 	VENTURE_COLUMN_FLAG_PERSONAL_OWNER = 1 << 9,
-	VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME = 1 << 10
+	VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME = 1 << 10,
+	VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER = 1 << 11
 } VentureColumnFlags;
 
 /* --- GType registration -------------------------------------------------- */

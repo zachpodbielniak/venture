@@ -2,6 +2,7 @@
 #include "venture.h"
 
 static const VentureFieldDecl fields[] = {
+	VENTURE_FIELD_REF("private-owner-id", "Private owner", "Private credential owner; zero is an organization binding", "user", VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER),
 	VENTURE_FIELD("provider", "Provider", "Stable integration identifier", VENTURE_FIELD_KIND_STRING,
 		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_SEARCHABLE | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
 	VENTURE_FIELD("account-id", "Account", "Safe provider account identity", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL),

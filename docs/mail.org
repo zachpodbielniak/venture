@@ -220,25 +220,28 @@ SMTP tests enforce organization write authority and policy-plugin vetoes before 
 
 The =mail_sync= module requires =mail=, =crm= and =leads= and suggests
 =capture=. It owns =mail_account=, =mail_inbound= and
-=mail_unmatched_sender=. =mail_account= is owner-only: the row names the
-IMAP host and which environment variable holds the password, so an editor
-who could change either could point the next sweep at a host they control
-or name a different secret in the process environment. =mail_inbound= is
-written by the sweep and refuses generic writes, like a webhook delivery.
-=mail_unmatched_sender= stays ordinary CRM data.
+=mail_unmatched_sender=. Accounts are assigned by organization administrators.
+Credentials are encrypted, scoped to the saved account and organization, and
+managed through [[file:connectors.org][connector settings]]. =mail_inbound= is written by the
+sweep and refuses generic writes. =mail_unmatched_sender= stays ordinary CRM data.
 
 ** Accounts
 
-An account names a mailbox address, IMAP host, port and security (=tls= or
-=starttls=), username, the folders to watch, an optional capture address and
-capture folder, and =secret_env=: the NAME of a =VENTURE_IMAP_*= environment
-variable holding the password or app token. The row never holds the secret.
-A name that is not =VENTURE_IMAP_= followed by letters, digits or underscores
-is refused before any connection, so a row cannot exfiltrate
-=VENTURE_SMTP_PASSWORD= or the session secret. A sync whose variable is unset
-fails with a =VENTURE_ERROR_CONFIG= error naming that variable and never
-opens a connection. Security =none= is refused: the client always
-authenticates, and would put the credential on the wire.
+An account names its mailbox address, explicit IMAP host and port, TLS or
+STARTTLS security, login username, watched folders, optional capture address
+and capture folder. =secret_env= is retained only as unused historical metadata;
+no process environment password is resolved. Configure an explicit binding
+before syncing. The operator must allow the exact host and port in
+=imap.allowed_endpoints=. Production plaintext authentication is refused.
+
+=private_owner_id= selects privacy at creation. Zero explicitly shares the
+business mailbox with the organization. A positive active member ID creates
+a private mailbox: its messages and raw documents belong to that member,
+produce no CRM interactions, unmatched senders or capture items, and are
+not published to organization notifications, automation, webhooks or knowledge
+cross-references. Message-ID deduplication and threading are partitioned by
+that ownership. Private ownership cannot later be changed or removed.
+
 
 | Field                  | Meaning                                                                                      |
 |------------------------+----------------------------------------------------------------------------------------------|
@@ -511,14 +514,12 @@ injectable connect and fetch errors, sizes, internal dates and UIDVALIDITY.
 GMime, already a server dependency through mail-glib, parses the fetched
 bytes.
 
-OAuth (XOAUTH2 for Google and Microsoft) would attach in
-=socket_authenticate()= as one more mechanism, selected by a =secret_kind= on
-the account rather than by what the server advertises, since it needs a
-refreshed token where PLAIN and LOGIN take the stored secret; the token
-refresh would live in a separate service that writes the access token to the
-same secret source, and nothing in the sync service would change. Calendar
-synchronisation would be a sibling =VentureCalendarClient= interface feeding
-the activities module the way this one feeds interactions.
+OAuth (XOAUTH2 for Google and Microsoft) is not implemented. A future
+provider must refresh tokens through the same account-bound encrypted
+credential service and preserve completion-time revocation checks; it must
+not reintroduce environment credentials. The current IMAP transport uses
+passwords or provider app tokens. CalDAV uses its separate typed client and
+the shared credential lifecycle documented in [[file:connectors.org][mailbox and calendar connectors]].
 
 ** Upgrades and tests
 
@@ -529,7 +530,7 @@ module off the tables are absent and it passes. No row is rewritten: old
 cursors and keys stay readable as described above.
 
 =test-mail-sync= covers the field tables and module, the missing-secret
-refusal, the =VENTURE_IMAP_*= prefix, the high-water mark, idempotent rerun
+refusal without environment fallback, encrypted credential rotation, private import isolation, the high-water mark, idempotent rerun
 and the key check before fetch, legacy cursors and keys, contact and company
 matching, threading, unmatched senders (deleted, restored, dismissed,
 converted with backfill), capture with attachments, exact and +tag capture

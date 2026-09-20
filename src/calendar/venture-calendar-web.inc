@@ -6,7 +6,9 @@
 static VentureCalendarSyncService *venture_web_calendar_sync_service(VentureWebServer *self)
 {
 	g_autoptr(VentureSoupCalDavClient) client = venture_soup_caldav_client_new();
-	return venture_calendar_sync_service_new(venture_context_get_database(self->context), VENTURE_CALDAV_CLIENT(client));
+	VentureCalendarSyncService *service = venture_calendar_sync_service_new(venture_context_get_database(self->context), VENTURE_CALDAV_CLIENT(client));
+	g_object_set(service, "config", venture_context_get_config(self->context), NULL);
+	return service;
 }
 static gint64 venture_web_calendar_organization(VentureWebServer *self, HtmxRequest *request, JsonObject *body)
 {

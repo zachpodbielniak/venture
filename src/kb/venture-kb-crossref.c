@@ -273,6 +273,13 @@ venture_kb_crossref_record(
 
 	if (NULL == record)
 		return -1;
+	if (venture_access_policy_record_is_personal(venture_database_get_access_policy(database), record))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+			"Private connector data is not published into organization knowledge");
+		return -1;
+	}
+
 
 	text = venture_kb_crossref_text_of(record);
 
@@ -438,6 +445,7 @@ venture_kb_crossref_sweep(
 
 		for (j = 0; j < records->len; j++)
 		{
+			if (venture_access_policy_record_is_personal(venture_database_get_access_policy(venture_context_get_database(context)), g_ptr_array_index(records, j))) continue;
 			if ((limit > 0) && ((guint)processed >= limit))
 				return processed;
 
@@ -495,6 +503,13 @@ venture_kb_article_from_record(
 
 	if (NULL == record)
 		return -1;
+	if (venture_access_policy_record_is_personal(venture_database_get_access_policy(database), record))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+			"Private connector data is not published into organization knowledge");
+		return -1;
+	}
+
 
 	text = venture_kb_crossref_text_of(record);
 

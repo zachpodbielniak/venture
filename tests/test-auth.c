@@ -1235,6 +1235,10 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/mail"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/mail", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/bankfeed/1/settings"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/connectors/mail_account/1/settings"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/connectors/calendar_account/1/settings"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/connectors/mail_account/1/settings", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/connectors/calendar_account/1/settings", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/bankfeed/1/settings", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
 
 	/* Payment actions authenticate before exposing module configuration. */
@@ -2731,12 +2735,11 @@ test_auth_forge_records_are_owner_only(
 }
 
 /*
- * A mail_account names the IMAP host and which environment variable holds
- * the password. An editor who could write one could point the next sweep
- * at a host they control, or name VENTURE_SMTP_PASSWORD as secret_env.
+ * Shared connector metadata is readable, but assigning a connector remains
+ * organization administration. Legacy environment names grant no credentials.
  */
 static void
-test_auth_mail_account_is_owner_only(
+test_auth_mail_account_delegation(
 	ServerFixture	*fixture,
 	gconstpointer	 user_data
 ){
@@ -2753,7 +2756,7 @@ test_auth_mail_account_is_owner_only(
 	g_assert_cmpuint(server_fixture_request(fixture, "GET",
 	                                        "/api/v1/mail_account", editor,
 	                                        NULL, NULL, NULL),
-	                 ==, SOUP_STATUS_FORBIDDEN);
+	                 ==, SOUP_STATUS_OK);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/mail_account", editor,
 		"{\"address\":\"ops@example.test\",\"imap_host\":\"attacker.example\",\"secret_env\":\"VENTURE_SMTP_PASSWORD\"}",
@@ -2782,11 +2785,10 @@ test_auth_mail_account_is_owner_only(
 	                                        editor, NULL, NULL, NULL),
 	                 ==, SOUP_STATUS_OK);
 
-	/* Syncing one account by id acts on the owner-only row, so an editor
-	 * who may run the organization's sweep still may not name an account. */
+	/* Missing accounts stay indistinguishable from inaccessible accounts. */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/mail_accounts/1/sync", editor, "{}", NULL, NULL),
-		==, SOUP_STATUS_FORBIDDEN);
+		==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/mail_accounts/999999/sync", owner, "{}", NULL, NULL),
 		==, SOUP_STATUS_NOT_FOUND);
@@ -4528,12 +4530,11 @@ test_auth_health_sweep_is_judged_in_its_organization(
 }
 
 /*
- * A calendar_account names the CalDAV host and which environment variable
- * holds the app password: owner-only, for the reasons a mail_account is.
+ * Calendar accounts follow the same explicit delegation as mail accounts.
  * A calendar_event link is the sync's memory of both sides; nobody edits it.
  */
 static void
-test_auth_calendar_account_is_owner_only(
+test_auth_calendar_account_delegation(
 	ServerFixture	*fixture,
 	gconstpointer	 user_data
 ){
@@ -4550,7 +4551,7 @@ test_auth_calendar_account_is_owner_only(
 	g_assert_cmpuint(server_fixture_request(fixture, "GET",
 	                                        "/api/v1/calendar_account", editor,
 	                                        NULL, NULL, NULL),
-	                 ==, SOUP_STATUS_FORBIDDEN);
+	                 ==, SOUP_STATUS_OK);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/calendar_account", editor,
 		"{\"url\":\"https://attacker.example/\",\"owner\":\"ben\",\"secret_env\":\"VENTURE_SMTP_PASSWORD\"}",
@@ -4721,6 +4722,49 @@ static void test_auth_bankfeed_settings(ServerFixture *fixture, gconstpointer un
 		"operation=configure&binding_id=0&version=0&environment=sandbox&access_token=stale-secret", &page, NULL), ==, SOUP_STATUS_BAD_REQUEST);
 	g_assert_null(strstr(page, "stale-secret"));
 }
+static void test_auth_connector_settings(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(VentureEntity) user = NULL, account = NULL;
+	g_autofree gchar *path = NULL, *alice = NULL, *bob = NULL, *page = NULL;
+	g_object_set(fixture->config, "imap-allowed-endpoints", "imap.ui.test:993", NULL);
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(fixture->database), key, &error));
+	server_fixture_create_member(fixture, "connector-alice", "alice-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	server_fixture_create_member(fixture, "connector-bob", "bob-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_USER);
+		venture_query_add_filter_string(query, "username", VENTURE_FILTER_OP_EQ, "connector-alice", NULL);
+		user = venture_database_find_one(fixture->database, query, &error);
+	}
+	g_assert_no_error(error); g_assert_nonnull(user);
+	account = g_object_new(VENTURE_TYPE_MAIL_ACCOUNT, "organization-id", (gint64)1,
+		"private-owner-id", venture_entity_get_id(user), "address", "private@ui.test", "imap-host", "imap.ui.test",
+		"imap-port", (gint64)993, "imap-tls", "tls", "username", "private", "folders", "INBOX", NULL);
+	g_assert_true(venture_database_save(fixture->database, account, NULL, &error));
+	g_assert_no_error(error);
+	path = g_strdup_printf("/connectors/mail_account/%" G_GINT64_FORMAT "/settings", venture_entity_get_id(account));
+	alice = server_fixture_login(fixture, "connector-alice", "alice-long-password");
+	bob = server_fixture_login(fixture, "connector-bob", "bob-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, bob, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, alice, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "Private account"));
+	g_assert_nonnull(strstr(page, "Last sync attempt: Never"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, alice,
+		"operation=configure&binding_id=0&version=0&password=PRIVATE_UI_PASSWORD", &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "Settings saved")); g_assert_null(strstr(page, "PRIVATE_UI_PASSWORD"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, alice, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "Configured")); g_assert_null(strstr(page, "PRIVATE_UI_PASSWORD"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, alice,
+		"operation=configure&binding_id=0&version=0&password=STALE_UI_PASSWORD", &page, NULL), ==, SOUP_STATUS_BAD_REQUEST);
+	g_assert_null(strstr(page, "STALE_UI_PASSWORD"));
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, bob,
+		"operation=configure&binding_id=0&version=0&password=OTHER_UI_PASSWORD", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+}
+
 int
 main(
 	int	  argc,
@@ -4830,8 +4874,8 @@ main(
 	           server_fixture_set_up, test_auth_forge_records_are_owner_only,
 
 	           server_fixture_tear_down);
-	g_test_add("/auth/mail-account-is-owner-only", ServerFixture, NULL,
-	           server_fixture_set_up, test_auth_mail_account_is_owner_only,
+	g_test_add("/auth/mail-account-delegation", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_mail_account_delegation,
 	           server_fixture_tear_down);
 	g_test_add("/auth/ticket-board-filters-compose", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_ticket_board_filters_compose,
@@ -4935,11 +4979,12 @@ main(
 	g_test_add("/auth/health-sweep-is-judged-in-its-organization", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_health_sweep_is_judged_in_its_organization,
 	           server_fixture_tear_down);
-	g_test_add("/auth/calendar-account-is-owner-only", ServerFixture, NULL,
-	           server_fixture_set_up, test_auth_calendar_account_is_owner_only,
+	g_test_add("/auth/calendar-account-delegation", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_calendar_account_delegation,
 	           server_fixture_tear_down);
 	g_test_add("/auth/sidebar-asks-the-five-questions", ServerFixture, NULL, server_fixture_set_up, test_auth_sidebar_asks_the_five_questions, server_fixture_tear_down);
 	g_test_add("/auth/mail-settings-administration", ServerFixture, NULL, server_fixture_set_up, test_auth_mail_settings_administration, server_fixture_tear_down);
+	g_test_add("/auth/connector-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_connector_settings, server_fixture_tear_down);
 	g_test_add("/auth/bankfeed-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_bankfeed_settings, server_fixture_tear_down);
 	return g_test_run();
 }

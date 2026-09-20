@@ -231,48 +231,64 @@ reference(VentureEntity *entity, const gchar *name)
 		g_object_get(entity, name, &value, NULL);
 	return value;
 }
-/* Personal records declare their owner reference in the same field table
- * as the rest of their schema. Parent chains are bounded and fail closed. */
-static gboolean
-personal_owner(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, VentureEntity *entity, guint depth)
+/* Zero is explicitly shared only for optional ownership. An unresolved
+ * positive reference is private and inaccessible, never a shared fallback. */
+static gint64 personal_owner_id(VentureAccessPolicy *self, VentureEntity *entity, guint depth)
 {
 	g_autoptr(GPtrArray) fields = venture_entity_get_field_specs(entity);
 	guint i;
-	if (depth > 8)
-		return FALSE;
+	if (depth > 8 || !self->database) return -1;
 	for (i = 0; i < fields->len; i++)
 	{
 		VentureFieldSpec *field = g_ptr_array_index(fields, i);
+		VentureColumnFlags flags = venture_field_spec_get_flags(field);
 		g_autoptr(VentureEntity) parent = NULL;
 		g_autoptr(VentureAccessScope) internal = NULL;
 		GType type;
-		gint64 id;
-		if (!(venture_field_spec_get_flags(field) & VENTURE_COLUMN_FLAG_PERSONAL_OWNER))
-			continue;
+		gint64 id, owner;
+		gboolean strict = (flags & VENTURE_COLUMN_FLAG_PERSONAL_OWNER) != 0;
+		if (!(flags & (VENTURE_COLUMN_FLAG_PERSONAL_OWNER | VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER))) continue;
 		id = reference(entity, venture_field_spec_get_name(field));
-		type = venture_entity_registry_lookup(venture_entity_registry_get_default(), venture_field_spec_get_reference_type(field));
-		if (type == VENTURE_TYPE_USER)
-			return id > 0 && id == actor->user_id;
-		if (type == G_TYPE_INVALID || id <= 0)
-			return FALSE;
+		if (id <= 0) return !strict && id == 0 ? 0 : -1;
+		type = venture_entity_registry_lookup_any(venture_entity_registry_get_default(), venture_field_spec_get_reference_type(field));
+		if (type == VENTURE_TYPE_USER) return id;
+		if (type == G_TYPE_INVALID) return -1;
 		internal = venture_access_policy_enter(self, NULL);
 		parent = venture_database_get(self->database, type, id, NULL);
-		return NULL != parent && !venture_entity_is_deleted(parent) && personal_owner(self, actor, parent, depth + 1);
+		if (!parent || venture_entity_is_deleted(parent) || venture_entity_get_organization_id(parent) != venture_entity_get_organization_id(entity)) return -1;
+		owner = personal_owner_id(self, parent, depth + 1);
+		return strict && owner == 0 ? -1 : owner;
 	}
-	return FALSE;
+	return 0;
 }
-
-/* Personal ownership is a boundary, not an additional way to grant access.
- * Falling through to organization membership exposes a colleague's thread. */
-static gboolean
-personal_record(VentureEntity *entity)
+static gboolean personal_owner(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, VentureEntity *entity, guint depth)
+{
+	gint64 owner = personal_owner_id(self, entity, depth);
+	return owner > 0 && owner == actor->user_id;
+}
+gint64 venture_access_policy_get_personal_owner(VentureAccessPolicy *self, VentureEntity *entity)
+{
+	g_return_val_if_fail(VENTURE_IS_ACCESS_POLICY(self), -1);
+	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), -1);
+	return personal_owner_id(self, entity, 0);
+}
+gboolean venture_access_policy_record_is_personal(VentureAccessPolicy *self, VentureEntity *entity)
+{
+	g_return_val_if_fail(VENTURE_IS_ACCESS_POLICY(self), TRUE);
+	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), TRUE);
+	return personal_owner_id(self, entity, 0) != 0;
+}
+static gboolean legacy_personal_spine(VentureEntity *entity)
 {
 	g_autoptr(GPtrArray) fields = venture_entity_get_field_specs(entity);
 	guint i;
 	for (i = 0; i < fields->len; i++)
-		if (venture_field_spec_get_flags(g_ptr_array_index(fields, i)) & VENTURE_COLUMN_FLAG_PERSONAL_OWNER)
-			return TRUE;
+		if (venture_field_spec_get_flags(g_ptr_array_index(fields, i)) & VENTURE_COLUMN_FLAG_PERSONAL_OWNER) return TRUE;
 	return FALSE;
+}
+static gboolean personal_record(VentureAccessPolicy *self, VentureEntity *entity)
+{
+	return venture_access_policy_record_is_personal(self, entity);
 }
 
 static gboolean
@@ -415,9 +431,38 @@ venture_access_policy_can(VentureAccessPolicy *self, const VentureAuthPrincipal 
 		 * The generic web type gate still requires the global owner role. */
 		if (VENTURE_IS_USER(entity) && venture_entity_get_id(entity) == actor->user_id && read)
 			goto allowed;
-		if (personal_record(entity))
+		/* Audit excerpts inherit the target's privacy, including after soft
+		 * deletion. A missing target is retained for platform review only. */
+		if (VENTURE_IS_AUDIT_ENTRY(entity))
 		{
-			if (venture_access_policy_has_membership(self, actor) && personal_owner(self, actor, entity, 0))
+			g_autofree gchar *target_type = NULL;
+			g_autoptr(VentureEntity) target = NULL;
+			gint64 target_id = reference(entity, "target-id");
+			GType type;
+			g_object_get(entity, "target-type", &target_type, NULL);
+			type = venture_entity_registry_lookup_any(venture_entity_registry_get_default(), target_type);
+			if (type == G_TYPE_INVALID || type == VENTURE_TYPE_AUDIT_ENTRY || target_id <= 0) return refuse(error, read);
+			{
+				g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(self, NULL);
+				target = venture_database_get(self->database, type, target_id, NULL);
+			}
+			if (!target || (personal_record(self, target) && !venture_access_policy_can(self, actor, "read", target, NULL))) return refuse(error, read);
+		}
+		if (personal_record(self, entity))
+		{
+			/* Assigning a new private connector is an organization admin's
+			 * delegation. Later reads and writes belong to its private owner. */
+			if (!venture_entity_is_persisted(entity) && !g_strcmp0(action, "write") &&
+				(VENTURE_IS_MAIL_ACCOUNT(entity) || VENTURE_IS_CALENDAR_ACCOUNT(entity))) {
+				static const gint roles[] = { VENTURE_ORGANIZATION_ROLE_OWNER, VENTURE_ORGANIZATION_ROLE_ADMIN };
+				if (venture_access_policy_has_organization_role(self, actor, venture_entity_get_organization_id(entity), roles, G_N_ELEMENTS(roles))) goto allowed;
+			}
+			/* Older chat and MFA rows predate organization placement. Their
+			 * strict user ownership remains usable; optional private imports
+			 * always require membership in their explicit organization. */
+			member = venture_entity_get_organization_id(entity) > 0 ? membership(self, actor, venture_entity_get_organization_id(entity)) :
+				(legacy_personal_spine(entity) ? membership(self, actor, 0) : NULL);
+			if (member != NULL && personal_owner(self, actor, entity, 0))
 			{
 				/* Inbox rows retain labels and excerpts: ownership alone must
 				 * not expose a business record after its access is revoked. */
@@ -435,7 +480,7 @@ venture_access_policy_can(VentureAccessPolicy *self, const VentureAuthPrincipal 
 							target = venture_database_get(self->database, type, target_id, NULL);
 						/* Personal targets are not published by the notifier;
 						 * refusing them also bounds malicious reference cycles. */
-						if (target == NULL || personal_record(target) ||
+						if (target == NULL || personal_record(self, target) ||
 							!venture_access_policy_can(self, actor, "read", target, NULL))
 							return refuse(error, read);
 					}
@@ -843,4 +888,55 @@ venture_orgaccess_limit_token(VentureAuth *auth, VentureDatabase *database, Vent
 	if (!venture_auth_require(auth, &current, principal->role, NULL))
 		principal->role = current.role;
 	return TRUE;
+}
+
+/* This validator runs under the repository lock for every writer. A generic
+ * update cannot turn a private record into a shared one by moving its parent. */
+static gboolean validate_optional_privacy(VentureDatabase *database, VentureEntity *entity,
+	VentureEntity *previous, gpointer data, GError **error)
+{
+	g_autoptr(GPtrArray) fields = venture_entity_get_field_specs(entity);
+	VentureAccessPolicy *policy = venture_database_get_access_policy(database);
+	guint i;
+	gboolean found = FALSE;
+	(void)data;
+	for (i = 0; i < fields->len; i++)
+	{
+		VentureFieldSpec *field = g_ptr_array_index(fields, i);
+		if (!(venture_field_spec_get_flags(field) & VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER)) continue;
+		found = TRUE;
+		if (previous && (reference(entity, field->name) != reference(previous, field->name) ||
+			(personal_record(policy, previous) && venture_entity_get_organization_id(entity) != venture_entity_get_organization_id(previous))))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Saved private ownership cannot be reassigned or made public");
+			return FALSE;
+		}
+	}
+	if (!found || previous) return TRUE;
+	{
+		gint64 owner = personal_owner_id(policy, entity, 0);
+		g_autoptr(VentureEntity) user = NULL, member = NULL;
+		g_autoptr(VentureAccessScope) internal = NULL;
+		VentureAuthPrincipal principal;
+		gboolean active = FALSE;
+		if (owner == 0) return TRUE;
+		if (owner < 0) goto invalid;
+		internal = venture_access_policy_enter(policy, NULL);
+		user = venture_database_get(database, VENTURE_TYPE_USER, owner, NULL);
+		if (!user || venture_entity_is_deleted(user)) goto invalid;
+		g_object_get(user, "active", &active, NULL);
+		if (!active) goto invalid;
+		principal.user_id = owner; principal.token_id = 0; principal.role = VENTURE_USER_ROLE_EDITOR;
+		principal.name = NULL; principal.authenticated = TRUE;
+		member = membership(policy, &principal, venture_entity_get_organization_id(entity));
+		if (member) return TRUE;
+	}
+invalid:
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "A private owner must be an active member of this organization");
+	return FALSE;
+}
+void venture_access_policy_install_privacy(VentureDatabase *database)
+{
+	g_return_if_fail(VENTURE_IS_DATABASE(database));
+	venture_database_add_save_validator(database, VENTURE_TYPE_ENTITY, validate_optional_privacy, NULL, NULL);
 }

@@ -2,9 +2,11 @@
 #include <venture.h>
 #include <string.h>
 #include "venture-test-util.h"
+#include "venture-test-accounting.h"
 
 typedef struct {
 	VentureDatabase *db;
+	VentureConfig *config;
 	VentureFakeCalDavClient *caldav;
 	VentureCalendarSyncService *service;
 	VentureBookingService *booking;
@@ -29,7 +31,9 @@ static void setup(Fixture *f, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureEntity) contact = NULL;
 	(void)data;
-	f->db = venture_database_new("sqlite://:memory:", &error);
+	f->config = venture_config_new();
+	g_object_set(f->config, "calendar-allowed-origins", "https://dav.venture.test", NULL);
+	f->db = venture_test_accounting_database(&error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
@@ -43,22 +47,36 @@ static void setup(Fixture *f, gconstpointer data)
 	f->contact = venture_entity_get_id(contact);
 	f->caldav = venture_fake_caldav_client_new();
 	f->service = venture_calendar_sync_service_new(f->db, VENTURE_CALDAV_CLIENT(f->caldav));
+	g_object_set(f->service, "config", f->config, NULL);
 	f->booking = venture_booking_service_new(f->db);
-	g_setenv("VENTURE_CALDAV_SECRET", "app-password", TRUE);
+
 }
 static void teardown(Fixture *f, gconstpointer data)
 {
 	(void)data;
 	g_clear_object(&f->booking);
 	g_clear_object(&f->service);
+	g_clear_object(&f->config);
 	g_clear_object(&f->caldav);
+	venture_test_accounting_database_cleanup(f->db);
 	g_clear_object(&f->db);
 }
 static VentureEntity *account(Fixture *f, const gchar *secret_env)
 {
 	VentureEntity *a = g_object_new(VENTURE_TYPE_CALENDAR_ACCOUNT, "organization-id", f->org, "url", "https://dav.venture.test/",
 		"owner", "ben", "username", "ben@venture.test", "secret-env", secret_env, "calendar-path", "/calendars/ben/default/", "active", TRUE, NULL);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(JsonObject) values = json_object_new();
+	g_autoptr(VentureIntegrationConnection) binding = NULL;
 	save(f, a);
+	if (!g_strcmp0(secret_env, "VENTURE_CALDAV_SECRET")) {
+		g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->db), key, &error));
+		json_object_set_string_member(values, "password", "app-password");
+		binding = venture_connector_configure(f->db, f->config, a, values, 0, 0, NULL, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(binding);
+	}
 	return a;
 }
 static VentureEntity *meeting(Fixture *f, const gchar *owner, const gchar *subject, const gchar *starts, const gchar *ends)
@@ -121,10 +139,9 @@ static void test_missing_secret(Fixture *f, gconstpointer data)
 	g_autoptr(VentureEntity) a = account(f, "VENTURE_CALDAV_MISSING");
 	g_autoptr(GError) error = NULL;
 	(void)data;
-	g_unsetenv("VENTURE_CALDAV_MISSING");
 	g_assert_cmpint(venture_calendar_sync_service_sync(f->service, a, NULL, &error), ==, -1);
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
-	g_assert_nonnull(strstr(error->message, "VENTURE_CALDAV_MISSING"));
+	g_assert_nonnull(strstr(error->message, "unconfigured"));
 	g_assert_cmpint(venture_fake_caldav_client_get_connects(f->caldav), ==, 0);
 	{
 		g_autofree gchar *last_error = NULL;
@@ -138,13 +155,11 @@ static void test_secret_env_prefix(Fixture *f, gconstpointer data)
 	g_autoptr(VentureEntity) a = account(f, "VENTURE_SMTP_PASSWORD");
 	g_autoptr(GError) error = NULL;
 	(void)data;
-	g_setenv("VENTURE_SMTP_PASSWORD", "not-for-caldav", TRUE);
 	g_assert_cmpint(venture_calendar_sync_service_sync(f->service, a, NULL, &error), ==, -1);
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
-	g_assert_nonnull(strstr(error->message, "VENTURE_CALDAV_"));
+	g_assert_nonnull(strstr(error->message, "unconfigured"));
 	g_assert_null(strstr(error->message, "not-for-caldav"));
 	g_assert_cmpint(venture_fake_caldav_client_get_connects(f->caldav), ==, 0);
-	g_unsetenv("VENTURE_SMTP_PASSWORD");
 }
 
 /* Rule 2a: dated calls and meetings of the owner are pushed with a stable UID; a rerun is a no-op. */
@@ -567,7 +582,6 @@ static void test_sweep(Fixture *f, gconstpointer data)
 	g_autoptr(JsonNode) report = NULL;
 	JsonArray *errors;
 	(void)data;
-	g_unsetenv("VENTURE_CALDAV_MISSING");
 	g_object_set(off, "active", FALSE, NULL);
 	save(f, off);
 	report = venture_calendar_sync_service_sweep(f->service, f->org, 100, NULL, &error);
@@ -577,7 +591,7 @@ static void test_sweep(Fixture *f, gconstpointer data)
 	g_assert_cmpint(venture_json_object_get_int(json_node_get_object(report), "changes", 0), ==, 1);
 	errors = json_object_get_array_member(json_node_get_object(report), "errors");
 	g_assert_cmpuint(json_array_get_length(errors), ==, 1);
-	g_assert_nonnull(strstr(venture_json_object_get_string(json_array_get_object_element(errors, 0), "error", ""), "VENTURE_CALDAV_MISSING"));
+	g_assert_nonnull(strstr(venture_json_object_get_string(json_array_get_object_element(errors, 0), "error", ""), "unconfigured"));
 	{
 		g_autoptr(VentureEntity) noted = venture_database_get(f->db, VENTURE_TYPE_CALENDAR_ACCOUNT, venture_entity_get_id(broken), NULL);
 		g_autofree gchar *last_error = NULL;
@@ -606,8 +620,8 @@ static void test_migration(Fixture *f, gconstpointer data)
 	g_autofree gchar *guard = NULL;
 	(void)data;
 	g_assert_cmpint(scalar(f, "SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations WHERE version = 380"), ==, 1);
-	g_assert_cmpint(scalar(f, "SELECT CAST(COUNT(*) AS BIGINT) FROM sqlite_master WHERE type = 'table' AND name IN ('calendar_accounts', 'calendar_events', 'booking_pages')"), ==, 3);
-	g_assert_cmpint(scalar(f, "SELECT CAST(COUNT(*) AS BIGINT) FROM sqlite_master WHERE type = 'index' AND name IN ('uq_calendar_events_organization_uid_key', 'uq_booking_pages_organization_slug')"), ==, 2);
+	g_assert_cmpint(scalar(f, venture_database_get_backend(f->db) == VENTURE_DATABASE_BACKEND_POSTGRES ? "SELECT CAST(COUNT(*) AS BIGINT) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name IN ('calendar_accounts', 'calendar_events', 'booking_pages')" : "SELECT CAST(COUNT(*) AS BIGINT) FROM sqlite_master WHERE type = 'table' AND name IN ('calendar_accounts', 'calendar_events', 'booking_pages')"), ==, 3);
+	g_assert_cmpint(scalar(f, venture_database_get_backend(f->db) == VENTURE_DATABASE_BACKEND_POSTGRES ? "SELECT CAST(COUNT(*) AS BIGINT) FROM pg_indexes WHERE schemaname=current_schema() AND indexname IN ('uq_calendar_events_organization_uid_key', 'uq_booking_pages_organization_slug')" : "SELECT CAST(COUNT(*) AS BIGINT) FROM sqlite_master WHERE type = 'index' AND name IN ('uq_calendar_events_organization_uid_key', 'uq_booking_pages_organization_slug')"), ==, 2);
 	g_assert_true(g_file_get_contents("migrations/sqlite/000380_calendar.sql", &guard, NULL, &error));
 	g_assert_no_error(error);
 	partial = venture_database_new("sqlite://:memory:", &error);
@@ -652,9 +666,106 @@ static void test_migrate_disabled(void)
 	venture_module_registry_apply(registry, venture_entity_registry_get_default());
 }
 
+/* A private calendar neither publishes its events as CRM activities nor
+ * exports the user's shared activities back into that personal collection. */
+static void test_private_import(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) user = g_object_new(VENTURE_TYPE_USER, "organization-id", f->org,
+		"username", "private-calendar-owner", "active", TRUE, NULL);
+	g_autoptr(VentureEntity) member = NULL, private = NULL, shared = NULL, event = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_CALENDAR_EVENT);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(JsonObject) values = json_object_new();
+	g_autoptr(VentureIntegrationConnection) binding = NULL;
+	g_autofree gchar *ics = remote_ics("personal@phone", "Private appointment", "20260922T130000Z", "20260922T140000Z", "20260917T090000Z", NULL);
+	g_autofree gchar *snapshot = NULL;
+	gint64 owner, activity_id = -1;
+	(void)data;
+	save(f, user); owner = venture_entity_get_id(user);
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "organization-id", f->org,
+		"user-id", owner, "role", VENTURE_ORGANIZATION_ROLE_EDITOR, "active", TRUE, NULL);
+	save(f, member);
+	private = g_object_new(VENTURE_TYPE_CALENDAR_ACCOUNT, "organization-id", f->org, "private-owner-id", owner,
+		"url", "https://dav.venture.test/", "owner", "private-calendar-owner", "username", "private",
+		"calendar-path", "/calendars/private/default/", NULL);
+	save(f, private);
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->db), key, &error));
+	json_object_set_string_member(values, "password", "synthetic-private-password");
+	binding = venture_connector_configure(f->db, f->config, private, values, 0, 0, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(binding);
+	shared = meeting(f, "private-calendar-owner", "Shared sales meeting", "2026-09-22T10:00:00Z", "2026-09-22T11:00:00Z");
+	venture_fake_caldav_client_set_remote(f->caldav, "/calendars/private/default/personal.ics", ics);
+	g_assert_cmpint(run_sync(f, private), ==, 1);
+	g_assert_cmpint(count_type(f, "activity"), ==, 1);
+	g_assert_cmpint(venture_fake_caldav_client_get_puts(f->caldav), ==, 0);
+	venture_query_set_organization(query, f->org);
+	venture_query_add_filter_int(query, "account-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(private), NULL);
+	event = venture_database_find_one(f->db, query, &error);
+	g_assert_no_error(error); g_assert_nonnull(event);
+	g_object_get(event, "activity-id", &activity_id, "subject", &snapshot, NULL);
+	g_assert_cmpint(activity_id, ==, 0);
+	g_assert_cmpstr(snapshot, ==, "Private appointment");
+	g_assert_cmpint(venture_access_policy_get_personal_owner(venture_database_get_access_policy(f->db), event), ==, owner);
+	g_assert_cmpint(run_sync(f, private), ==, 0);
+	venture_fake_caldav_client_remove_remote(f->caldav, "/calendars/private/default/personal.ics");
+	g_assert_cmpint(run_sync(f, private), ==, 1);
+	g_assert_cmpint(count_type(f, "calendar_event"), ==, 0);
+	g_assert_cmpint(count_type(f, "activity"), ==, 1);
+	/* A provider can restore the same UID. Preserve the private event's
+	 * identity rather than conflicting with its retained tombstone. */
+	venture_fake_caldav_client_set_remote(f->caldav, "/calendars/private/default/personal.ics", ics);
+	g_assert_cmpint(run_sync(f, private), ==, 1);
+	{
+		g_autoptr(VentureEntity) restored = venture_database_find_one(f->db, query, &error);
+		g_assert_no_error(error); g_assert_nonnull(restored);
+		g_assert_cmpint(venture_entity_get_id(restored), ==, venture_entity_get_id(event));
+	}
+
+	g_assert_cmpint(venture_fake_caldav_client_get_puts(f->caldav), ==, 0);
+}
+
+typedef struct { Fixture *fixture; VentureEntity *account; } PendingRevoke;
+static void revoke_pending_connector(GObject *client, gpointer data)
+{
+	PendingRevoke *pending = data;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *key = venture_connector_binding_key(pending->account);
+	g_autoptr(VentureIntegrationConnection) binding = venture_integration_service_find(
+		venture_integration_service_get(pending->fixture->db), pending->fixture->org, key, &error);
+	(void)client;
+	g_assert_no_error(error); g_assert_nonnull(binding);
+	g_assert_true(venture_connector_disconnect(pending->fixture->db, pending->account,
+		venture_entity_get_id(VENTURE_ENTITY(binding)), venture_entity_get_version(VENTURE_ENTITY(binding)), NULL, &error));
+	g_assert_no_error(error);
+}
+/* A provider response arriving after disconnect must not produce imported
+ * content, even though the request began with valid credentials. */
+static void test_inflight_revocation(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = account(f, "VENTURE_CALDAV_SECRET");
+	g_autoptr(GError) error = NULL;
+	PendingRevoke pending;
+	gulong handler;
+	g_autofree gchar *ics = remote_ics("pending@phone", "Pending response", "20260922T130000Z", "20260922T140000Z", "20260917T090000Z", NULL);
+	venture_fake_caldav_client_set_remote(f->caldav, "/calendars/ben/default/pending.ics", ics);
+	(void)data;
+	pending.fixture = f; pending.account = a;
+	handler = g_signal_connect(f->caldav, "response-ready", G_CALLBACK(revoke_pending_connector), &pending);
+	g_assert_cmpint(venture_calendar_sync_service_sync(f->service, a, NULL, &error), ==, -1);
+	g_assert_nonnull(error);
+	g_assert_cmpint(venture_fake_caldav_client_get_fetches(f->caldav), ==, 1);
+	g_assert_cmpint(count_type(f, "calendar_event"), ==, 0);
+	g_assert_cmpint(count_type(f, "activity"), ==, 0);
+	g_signal_handler_disconnect(f->caldav, handler);
+}
+
 int main(int argc, char **argv)
 {
+	g_setenv("VENTURE_SMTP_PASSWORD", "not-for-caldav", TRUE);
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/calendar/inflight-revocation", Fixture, NULL, setup, test_inflight_revocation, teardown);
+	g_test_add("/calendar/private-import", Fixture, NULL, setup, test_private_import, teardown);
 	g_test_add_func("/calendar/records", test_records);
 	g_test_add_func("/calendar/icalendar", test_icalendar);
 	g_test_add("/calendar/missing-secret", Fixture, NULL, setup, test_missing_secret, teardown);

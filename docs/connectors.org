@@ -1,0 +1,132 @@
+#+title: Organization and private IMAP/CalDAV connectors
+
+* Set up an account
+
+An organization administrator creates a =mail_account= or =calendar_account=
+through the ordinary record form. Select its organization, remote identity,
+login and folders or calendar collection. Choose privacy once:
+
+- =private_owner_id= zero explicitly shares business data with the organization.
+- A positive user ID delegates a private account to an active member of that
+  same organization. Other members, including organization administrators,
+  cannot read its content or credential binding. Platform administrators retain
+  maintenance access; this is application privacy, not encryption against the
+  platform operator.
+
+Open *Connector settings* on the account page. Enter the password or app token
+and save. Saved secrets never populate the form. *Sync and test* performs a
+real, ordinary import from the selected source; it is not a dry run. Review
+its result before enabling the account for periodic sweeps. The page retains
+the last sync attempt and redacted error across reloads. Rotation uses
+*Save settings* again. *Disconnect* stops future credential resolution and
+retains imported records, audit evidence and their ownership.
+
+The assigned private owner may manage their credential. Shared account
+settings require organization owner/admin authority. Account creation is
+administrator delegation, not permission for an editor to select arbitrary
+remote endpoints. Stale binding IDs or versions refuse a form submission;
+reload rather than overwriting another administrator's rotation.
+
+* Operator configuration
+
+The =integrations= module and its encryption key are required; see
+[[file:integrations.org][organization integrations]]. There is no implicit credential migration.
+=secret_env= remains historical metadata and is never read as a password.
+An upgraded account is unconfigured until an explicit encrypted binding is
+saved. Historical shared content is not silently relabelled as private.
+
+Allow exact remote endpoints in operator configuration before saving settings:
+
+#+begin_src yaml
+imap:
+  allowed_endpoints: imap.example.test:993
+calendar:
+  allowed_origins: https://dav.example.test
+#+end_src
+
+Both lists default empty. IMAP needs an explicit port and =tls= or =starttls=.
+CalDAV needs HTTPS, an origin without URI credentials/query/fragment, and an
+absolute collection path. The password is supplied only to that selected
+transport. Changing an allowlist stops existing sessions before subsequent
+work is applied. =connectors.allow_plaintext_loopback= defaults false; it is
+only for explicit loopback socket fixtures and never permits a remote
+plaintext login.
+
+After an account has ever had a credential binding, its organization,
+remote identity and private ownership cannot be changed. Create a fresh
+account for another mailbox or collection. This prevents old message cursors,
+UID keys and calendar links from being applied to a different source.
+Folder/capture selections may change without rotating credentials; an
+in-flight session refuses to continue under an old selection.
+
+* Imported data and privacy
+
+Shared business mail follows the [[file:mail.org][normal matching and capture rules]]. Private
+mail instead retains an owned inbox record and raw MIME document, without
+creating CRM interactions, unmatched senders or capture items. Message-ID
+deduplication and ancestor lookup are partitioned by private owner as well as
+organization. A shared copy cannot reuse a private document or suppress a
+business interaction merely because its Message-ID matches.
+
+Shared calendars use [[file:calendar.org][two-way activity synchronization]]. Private calendars
+import snapshots on their own =calendar_event= records, never create shared
+activities and never export shared meetings. Removed private events are
+soft-deleted; if the provider restores the same UID, its existing private
+record is restored with the same identity. Private appointments do not currently contribute to public
+booking availability; do not use a booking page as a complete view of a
+private calendar's availability.
+
+Private records and their audit excerpts remain subject to the same owner
+and organization-membership checks through generic reads and exports. They
+do not feed organization-wide notification excerpts, outgoing webhooks,
+automation events or knowledge cross-reference publication. Inactive owners
+or revoked memberships stop a sync even if its request began earlier.
+Platform maintenance can retain or export the underlying evidence.
+
+* Extension and lifecycle contract
+
+=VentureConnectorSession= owns one credential snapshot, account snapshot and
+configuration policy; its database reference is weak. Only its owning thread
+may validate it. Every downloaded result is rechecked under the database
+transaction before being saved. Credential rotation/disconnection, ownership
+revocation and identity/selection changes invalidate earlier snapshots.
+
+The connector kind table selects account identity fields and a vault
+namespace. Transport behavior remains behind =VentureImapClient= and
+=VentureCalDavClient=, including their fake implementations. No second
+protocol stack or background database writer is introduced. A new transport
+must provide equivalent endpoint validation, credential lifecycle and
+in-flight revocation tests before it can participate.
+
+=VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER= declares an optional user or
+parent reference. Zero means explicitly shared; a positive reference inherits
+that parent's private owner. Missing, deleted, cross-organization or cyclic
+parents are inaccessible, never a shared fallback. A save validator prevents
+ownership reassignment and verifies a new private owner's active membership.
+Encrypted bindings use the same metadata, and their authenticated envelope
+includes positive private ownership. Existing shared envelopes keep their
+original authentication identity.
+
+Migration =000570_private_connectors= verifies the additive fields on both
+backends, tolerating modules whose tables are absent. It neither imports
+process secrets nor guesses ownership for historical rows.
+
+* Validation
+
+=test-connectors= checks explicit IMAP/CalDAV credentials, rotation,
+disconnection, changed selections, immutable remote identity, inherited
+record/audit privacy, private vault resolution and revoked owner membership.
+=test-mail-sync= and =test-calendar= exercise private imports alongside their
+existing shared workflows. The private-import tests fail without their fixes:
+mail creates an interaction, and the calendar both imports and exports shared
+activities. =test-auth= covers anonymous refusal, assigned-owner settings,
+write-only forms, stale revisions and another member's refusal.
+
+The populated-upgrade fixture removes the new ownership columns from a
+shared account and encrypted binding, then runs metadata migration and
+decrypts the retained credential. It proves IDs and shared envelope identity
+survive the additive upgrade on SQLite and PostgreSQL.
+
+See [[file:evidence/125-connectors-demo.org][the built-artifact demonstration]] for the
+settings recording and the boundary between browser evidence and synthetic
+provider tests.

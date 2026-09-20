@@ -512,14 +512,15 @@ submits due rows. `mail list state=uncertain` lists uncertain acceptance;
 active `mail_account` in the organization that is not backing off; the
 report's `skipped` counts accounts in backoff or mid-sync elsewhere and
 `deferred: true` means a message or time budget ran out, so run it again to
-continue. `mail sync account_id=N` syncs one account now, ignoring its backoff
-(owner only). Pass `organization_id=N` to scope another organization. Never
+continue. `mail sync account_id=N` syncs one readable account now, ignoring its backoff. Pass `organization_id=N` to scope another organization. Never
 automatically retry uncertain rows. Actions reject `--stage`; propose an
 enqueue with the generic `--stage create mail_message` command when approval
 is required.
 
-`mail_account` is owner-only: it names the IMAP host and a `VENTURE_IMAP_*`
-environment variable holding the password, never the password itself. Its
+`mail_account` is assigned by organization administrators and uses an explicit
+encrypted binding in connector settings; `secret_env` is unused historical
+metadata. A positive `private_owner_id` imports private messages and attachments
+without CRM capture. Zero is explicitly shared business mail. Its
 `consecutive_failures`, `next_attempt_at`, `last_error`, `cursors` and
 `sync_lease_until` are maintained by the sync; do not write them. Five failed
 syncs ending in a refused login set `active=false`: fix the credentials, then
@@ -539,8 +540,10 @@ sweep over every active `calendar_account`: dated calls and meetings go up as
 VEVENTs, events made on the calendar come back as planned meetings, removals
 cancel rather than delete, and a change on both sides is settled by
 last-modified with the loser noted on the activity timeline. It refuses
-`--stage`. `calendar_account` is owner-only and names a `VENTURE_CALDAV_*`
-variable, never a password; generic writes to `calendar_event` are refused.
+`--stage`. `calendar_account` uses an explicit encrypted connector binding;
+`secret_env` is unused. A positive `private_owner_id` selects private, read-only
+imports without shared activity mirroring or export. Ownership is immutable.
+Generic writes to `calendar_event` are refused.
 `booking_page` (slug, owner, duration, buffer, IANA timezone, availability
 JSON of weekday to `HH:MM-HH:MM` windows) is ordinary editor data and serves
 the public `/book/<slug>` page, which books a contact and a meeting.

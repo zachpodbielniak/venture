@@ -887,12 +887,55 @@ test_triage_applies_only_what_it_understands(
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
 }
 
+/* An organization hook is not a platform subscription, and private imports
+ * must not escape through its labels, payloads or retained delivery rows. */
+static void test_webhook_organization_and_privacy(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) first_hook = create_webhook(f, "document.*", "first-secret");
+	g_autoptr(VentureEntity) organization = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Second organization", NULL);
+	g_autoptr(VentureEntity) second_hook = NULL, user = NULL, member = NULL, private = NULL, shared = NULL, delivery = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_WEBHOOK_DELIVERY);
+	gint64 org;
+	(void)data;
+	g_assert_true(venture_database_save(f->database, organization, NULL, &error));
+	org = venture_entity_get_id(organization);
+	second_hook = g_object_new(VENTURE_TYPE_WEBHOOK, "organization-id", org, "name", "Second hook",
+		"url", f->endpoint_url, "events", "document.*", "secret", "second-secret", "active", TRUE, NULL);
+	g_assert_true(venture_database_save(f->database, second_hook, NULL, &error));
+	user = g_object_new(VENTURE_TYPE_USER, "organization-id", org, "username", "private-hook-owner", "active", TRUE, NULL);
+	g_assert_true(venture_database_save(f->database, user, NULL, &error));
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "organization-id", org,
+		"user-id", venture_entity_get_id(user), "role", VENTURE_ORGANIZATION_ROLE_EDITOR, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(f->database, member, NULL, &error));
+	private = g_object_new(VENTURE_TYPE_DOCUMENT, "organization-id", org, "private-owner-id", venture_entity_get_id(user),
+		"title", "PRIVATE_WEBHOOK_MARKER", NULL);
+	g_assert_true(venture_database_save(f->database, private, NULL, &error));
+	shared = g_object_new(VENTURE_TYPE_DOCUMENT, "organization-id", org, "title", "Second organization business", NULL);
+	g_assert_true(venture_database_save(f->database, shared, NULL, &error));
+	g_assert_no_error(error);
+	settle(f, 1);
+	g_assert_cmpuint(f->received, ==, 1);
+	g_assert_null(strstr(f->last_body, "PRIVATE_WEBHOOK_MARKER"));
+	venture_query_set_organization(query, org);
+	delivery = venture_database_find_one(f->database, query, &error);
+	g_assert_no_error(error); g_assert_nonnull(delivery);
+	g_assert_cmpint(venture_entity_get_organization_id(delivery), ==, org);
+	{
+		gint64 hook = 0, target = 0;
+		g_object_get(delivery, "webhook-id", &hook, "target-id", &target, NULL);
+		g_assert_cmpint(hook, ==, venture_entity_get_id(second_hook));
+		g_assert_cmpint(target, ==, venture_entity_get_id(shared));
+	}
+}
+
 int
 main(
 	int	 argc,
 	char	*argv[]
 ){
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/webhook/organization-and-privacy", Fixture, NULL, fixture_set_up, test_webhook_organization_and_privacy, fixture_tear_down);
 
 	g_test_add_func("/webhook/events-are-named-and-matched",
 	                test_webhook_events_are_named_and_matched);

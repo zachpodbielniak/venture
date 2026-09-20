@@ -217,6 +217,7 @@
 
 #include "core/venture-context.h"
 #include "core/venture-integration.h"
+#include "core/venture-connector.h"
 #include "mail/venture-mail-consumers.h"
 #include "core/venture-federation.h"
 #include "ledger/venture-posting-rule.h"

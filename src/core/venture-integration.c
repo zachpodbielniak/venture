@@ -144,12 +144,17 @@ identifier(const gchar *text)
 static gchar *
 authenticated_identity(VentureEntity *entity)
 {
-	g_autofree gchar *provider = NULL, *account = NULL, *environment = NULL, *uuid = NULL;
+	g_autofree gchar *provider = NULL, *account = NULL, *environment = NULL, *uuid = NULL, *identity = NULL;
+	gint64 private_owner = 0;
 	g_object_get(entity, "provider", &provider, "account-id", &account,
-		"environment", &environment, NULL);
+		"environment", &environment, "private-owner-id", &private_owner, NULL);
 	uuid = g_strdup(venture_entity_get_uuid(entity));
-	return g_strdup_printf("venture.integration.v1\n%" G_GINT64_FORMAT "\n%s\n%s\n%s\n%s",
+	identity = g_strdup_printf("venture.integration.v1\n%" G_GINT64_FORMAT "\n%s\n%s\n%s\n%s",
 		venture_entity_get_organization_id(entity), uuid, provider, account, environment);
+	/* Preserve authentication of existing shared envelopes while binding new
+	 * private envelopes to their immutable owner. */
+	if (private_owner != 0) return g_strdup_printf("%s\nowner:%" G_GINT64_FORMAT, identity, private_owner);
+	return g_steal_pointer(&identity);
 }
 
 static gchar *
@@ -278,6 +283,15 @@ venture_integration_service_configure(VentureIntegrationService *self, gint64 or
 	const gchar *provider, const gchar *account_id, const gchar *environment, JsonNode *settings,
 	gint64 expected_version, const VentureActor *actor, GError **error)
 {
+	return venture_integration_service_configure_for_owner(self, organization_id, provider, account_id,
+		environment, settings, expected_version, 0, actor, error);
+}
+
+VentureIntegrationConnection *
+venture_integration_service_configure_for_owner(VentureIntegrationService *self, gint64 organization_id,
+	const gchar *provider, const gchar *account_id, const gchar *environment, JsonNode *settings,
+	gint64 expected_version, gint64 private_owner, const VentureActor *actor, GError **error)
+{
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(VentureIntegrationConnection) connection = NULL;
 	g_autofree gchar *sealed = NULL;
@@ -285,7 +299,7 @@ venture_integration_service_configure(VentureIntegrationService *self, gint64 or
 	g_return_val_if_fail(VENTURE_IS_INTEGRATION_SERVICE(self), NULL);
 	if (!self->database) { refuse(error, VENTURE_ERROR_FAILED, "Integration repository is no longer available"); return NULL; }
 	if (!manage(self, organization_id, error)) return NULL;
-	if (!identifier(provider) || !identifier(account_id) ||
+	if (private_owner < 0 || !identifier(provider) || !identifier(account_id) ||
 		(g_strcmp0(environment, "test") && g_strcmp0(environment, "live")))
 	{ refuse(error, VENTURE_ERROR_VALIDATION, "Provider/account identifiers and test/live environment are required"); return NULL; }
 	if (!venture_database_begin(self->database, error)) return NULL;
@@ -295,10 +309,11 @@ venture_integration_service_configure(VentureIntegrationService *self, gint64 or
 	if (rows->len)
 	{
 		g_autofree gchar *old_account = NULL, *old_environment = NULL;
+		gint64 old_owner = 0;
 		connection = g_object_ref(g_ptr_array_index(rows, 0));
 		g_object_get(connection, "account-id", &old_account, "environment", &old_environment,
-			"credential-revision", &revision, NULL);
-		if (g_strcmp0(account_id, old_account) || g_strcmp0(environment, old_environment))
+			"credential-revision", &revision, "private-owner-id", &old_owner, NULL);
+		if (old_owner != private_owner || g_strcmp0(account_id, old_account) || g_strcmp0(environment, old_environment))
 		{ refuse(error, VENTURE_ERROR_CONFLICT, "Disconnect the existing account before replacing its identity or environment"); goto fail; }
 		if (venture_entity_get_version(VENTURE_ENTITY(connection)) != expected_version)
 		{ refuse(error, VENTURE_ERROR_CONFLICT, "Integration configuration changed; reload settings"); goto fail; }
@@ -308,7 +323,7 @@ venture_integration_service_configure(VentureIntegrationService *self, gint64 or
 		if (expected_version != 0) { refuse(error, VENTURE_ERROR_CONFLICT, "Integration configuration changed; reload settings"); goto fail; }
 		connection = venture_integration_connection_new();
 		venture_entity_set_organization_id(VENTURE_ENTITY(connection), organization_id);
-		g_object_set(connection, "provider", provider, "account-id", account_id, "environment", environment, NULL);
+		g_object_set(connection, "provider", provider, "account-id", account_id, "environment", environment, "private-owner-id", private_owner, NULL);
 	}
 	if (revision == G_MAXINT64) { refuse(error, VENTURE_ERROR_CONFLICT, "Integration revision limit reached"); goto fail; }
 	sealed = seal(self, VENTURE_ENTITY(connection), settings, error);

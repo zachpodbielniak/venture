@@ -6,6 +6,7 @@ struct _VentureCalendarSyncService {
 	GObject parent_instance;
 	VentureDatabase *database;
 	VentureCalDavClient *client;
+	VentureConfig *config;
 	gboolean busy;
 };
 G_DEFINE_FINAL_TYPE(VentureCalendarSyncService, venture_calendar_sync_service, G_TYPE_OBJECT)
@@ -24,6 +25,7 @@ static void finalize(GObject *object)
 	VentureCalendarSyncService *self = VENTURE_CALENDAR_SYNC_SERVICE(object);
 	if (self->database) g_object_remove_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
 	g_clear_object(&self->client);
+	g_clear_object(&self->config);
 	G_OBJECT_CLASS(venture_calendar_sync_service_parent_class)->finalize(object);
 }
 static void set_property(GObject *object, guint id, const GValue *value, GParamSpec *pspec)
@@ -35,6 +37,7 @@ static void set_property(GObject *object, guint id, const GValue *value, GParamS
 		if (self->database) g_object_add_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
 		break;
 	case 2: g_set_object(&self->client, g_value_get_object(value)); break;
+	case 3: g_set_object(&self->config, g_value_get_object(value)); break;
 	default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, pspec);
 	}
 }
@@ -44,6 +47,7 @@ static void get_property(GObject *object, guint id, GValue *value, GParamSpec *p
 	switch (id) {
 	case 1: g_value_set_object(value, self->database); break;
 	case 2: g_value_set_object(value, self->client); break;
+	case 3: g_value_set_object(value, self->config); break;
 	default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, pspec);
 	}
 }
@@ -55,8 +59,9 @@ static void venture_calendar_sync_service_class_init(VentureCalendarSyncServiceC
 	object->get_property = get_property;
 	g_object_class_install_property(object, 1, g_param_spec_object("database", "Database", "Weak owning database", VENTURE_TYPE_DATABASE, G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_STRINGS));
 	g_object_class_install_property(object, 2, g_param_spec_object("client", "Client", "CalDAV transport", VENTURE_TYPE_CALDAV_CLIENT, G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_STRINGS));
+	g_object_class_install_property(object, 3, g_param_spec_object("config", "Config", "Operator connector endpoint policy", VENTURE_TYPE_CONFIG, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 }
-static void venture_calendar_sync_service_init(VentureCalendarSyncService *self) { (void)self; }
+static void venture_calendar_sync_service_init(VentureCalendarSyncService *self) { self->config = venture_config_new(); }
 VentureCalendarSyncService *venture_calendar_sync_service_new(VentureDatabase *database, VentureCalDavClient *client)
 {
 	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
@@ -155,9 +160,11 @@ static gboolean note_on_timeline(VentureDatabase *db, VentureEntity *activity, c
 /* --- Links ---------------------------------------------------------------- */
 typedef struct {
 	VentureCalendarSyncService *self;
+	VentureConnectorSession *connector;
 	VentureEntity *account;
 	const VentureActor *actor;
 	gint64 org;
+	gint64 private_owner;
 	gchar *owner;
 	gchar *path;
 	GPtrArray *links;
@@ -195,11 +202,22 @@ static VentureEntity *new_link(Pass *pass, VentureEntity *activity, const gchar 
 {
 	g_autofree gchar *key = g_strdup_printf("%" G_GINT64_FORMAT ":%s", venture_entity_get_id(pass->account), uid);
 	return g_object_new(VENTURE_TYPE_CALENDAR_EVENT, "organization-id", pass->org, "account-id", venture_entity_get_id(pass->account),
-		"activity-id", venture_entity_get_id(activity), "uid", uid, "uid-key", key, "href", href, NULL);
+		"activity-id", activity ? venture_entity_get_id(activity) : (gint64)0, "uid", uid, "uid-key", key, "href", href, NULL);
 }
 static void stamp_link(VentureEntity *link, VentureEntity *activity, const gchar *etag, GDateTime *remote_modified)
 {
+	static const gchar *fields[] = { "subject", "body", "starts-at", "ends-at", "due-at", "status" };
 	g_autoptr(GDateTime) now = venture_time_now();
+	guint i;
+	/* The generic record views render these declared fields for both private
+	 * and shared calendars; no protocol JSON is exposed as the operator UI. */
+	for (i = 0; i < G_N_ELEMENTS(fields); i++) {
+		GParamSpec *field = g_object_class_find_property(G_OBJECT_GET_CLASS(activity), fields[i]);
+		g_auto(GValue) value = G_VALUE_INIT;
+		g_value_init(&value, G_PARAM_SPEC_VALUE_TYPE(field));
+		g_object_get_property(G_OBJECT(activity), fields[i], &value);
+		g_object_set_property(G_OBJECT(link), fields[i], &value);
+	}
 	g_object_set(link, "etag", etag, "local-version", venture_entity_get_version(activity), "remote-modified-at", remote_modified, "synced-at", now, NULL);
 }
 
@@ -213,14 +231,42 @@ static gboolean push_activity(Pass *pass, VentureEntity *activity, VentureEntity
 	g_autoptr(VentureEntity) created = NULL;
 	if (link) g_object_get(link, "etag", &have, "href", &href, NULL);
 	else href = href_for(pass, event->uid);
+	if (!venture_connector_session_validate(pass->connector, error)) return FALSE;
 	etag = venture_caldav_client_put(pass->self->client, href, ics, link && have && *have ? have : NULL, NULL, error);
 	if (!etag) return FALSE;
 	if (!venture_database_begin(db, error)) return FALSE;
+	if (!venture_connector_session_validate(pass->connector, error)) goto fail;
 	if (!link) { created = new_link(pass, activity, event->uid, href); link = created; }
 	stamp_link(link, activity, etag, event->last_modified);
 	if (!venture_database_save(db, link, pass->actor, error)) goto fail;
 	if (lost_remote && !note_on_timeline(db, activity, "Calendar copy was older and was overwritten by this activity; its values are kept here", lost_remote, error)) goto fail;
 	if (!venture_database_commit(db, error)) return FALSE;
+	if (created) g_ptr_array_add(pass->links, g_steal_pointer(&created));
+	pass->changes++;
+	return TRUE;
+fail:
+	venture_database_rollback(db);
+	return FALSE;
+}
+
+/* Private calendars retain their own snapshot. A shared Activity would
+ * expose its title through CRM reports, search and organization automation. */
+static gboolean pull_private(Pass *pass, VentureEntity *link, const VentureICalEvent *event,
+	const gchar *href, const gchar *etag, GError **error)
+{
+	VentureDatabase *db = pass->self->database;
+	g_autoptr(VentureEntity) created = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	if (!venture_database_begin(db, error)) return FALSE;
+	if (!venture_connector_session_validate(pass->connector, error)) goto fail;
+	if (!link) { created = new_link(pass, NULL, event->uid, href); link = created; }
+	else if (venture_entity_is_deleted(link) && !venture_database_restore(db, link, pass->actor, error)) goto fail;
+	apply_event(link, event);
+	g_object_set(link, "href", href, "etag", etag,
+		"remote-modified-at", event->last_modified, "synced-at", now, NULL);
+	if (!venture_database_save(db, link, pass->actor, error)) goto fail;
+	if (!venture_database_commit(db, error)) return FALSE;
+	g_hash_table_add(pass->seen, GINT_TO_POINTER((gint)venture_entity_get_id(link)));
 	if (created) g_ptr_array_add(pass->links, g_steal_pointer(&created));
 	pass->changes++;
 	return TRUE;
@@ -245,10 +291,11 @@ static gboolean pull_event(Pass *pass, const VentureCalDavItem *item, GError **e
 	{
 		g_autofree gchar *have = NULL;
 		if (link) g_object_get(link, "etag", &have, NULL);
-		if (link && !g_strcmp0(have, item->etag)) return TRUE; /* unchanged since the last pass */
+		if (link && !venture_entity_is_deleted(link) && !g_strcmp0(have, item->etag)) return TRUE; /* unchanged since the last pass */
 	}
+	if (!venture_connector_session_validate(pass->connector, error)) return FALSE;
 	ics = venture_caldav_client_fetch(pass->self->client, item->href, &etag, NULL, error);
-	if (!ics) return FALSE;
+	if (!ics || !venture_connector_session_validate(pass->connector, error)) return FALSE;
 	event = venture_ical_event_parse(ics, &parse_error);
 	if (!event) {
 		/* A VTODO or a journal entry is not ours to mirror; a malformed event is not either. */
@@ -261,6 +308,7 @@ static gboolean pull_event(Pass *pass, const VentureCalDavItem *item, GError **e
 		link = link_by(pass, "uid", event->uid);
 		if (link) g_object_set(link, "href", item->href, NULL);
 	}
+	if (pass->private_owner > 0) return pull_private(pass, link, event, item->href, etag, error);
 	if (link) {
 		g_hash_table_add(pass->seen, GINT_TO_POINTER((gint)venture_entity_get_id(link)));
 		g_object_get(link, "activity-id", &activity_id, "local-version", &local_version, NULL);
@@ -296,6 +344,7 @@ static gboolean pull_event(Pass *pass, const VentureCalDavItem *item, GError **e
 		previous = snapshot_activity(activity);
 	}
 	if (!venture_database_begin(db, error)) return FALSE;
+	if (!venture_connector_session_validate(pass->connector, error)) goto fail;
 	if (!activity) {
 		activity = g_object_new(VENTURE_TYPE_ACTIVITY, "organization-id", pass->org, "kind", VENTURE_ACTIVITY_KIND_MEETING, "owner", pass->owner, NULL);
 		apply_event(activity, event);
@@ -329,10 +378,18 @@ static gboolean cancel_missing(Pass *pass, VentureEntity *link, GError **error)
 	g_autoptr(VentureEntity) activity = NULL;
 	gint64 activity_id = 0;
 	gint status;
+	if (pass->private_owner > 0) {
+		if (!venture_database_begin(db, error)) return FALSE;
+		if (!venture_connector_session_validate(pass->connector, error) || !venture_database_delete(db, link, pass->actor, error)) goto fail;
+		if (!venture_database_commit(db, error)) return FALSE;
+		pass->changes++;
+		return TRUE;
+	}
 	g_object_get(link, "activity-id", &activity_id, NULL);
 	activity = venture_database_get(db, VENTURE_TYPE_ACTIVITY, activity_id, error);
 	if (!activity) return FALSE;
 	if (!venture_database_begin(db, error)) return FALSE;
+	if (!venture_connector_session_validate(pass->connector, error)) goto fail;
 	g_object_get(activity, "status", &status, NULL);
 	if (!venture_entity_is_deleted(activity) && status == VENTURE_ACTIVITY_STATUS_PLANNED) {
 		g_autoptr(JsonObject) previous = snapshot_activity(activity);
@@ -356,10 +413,11 @@ static gboolean run_pass(Pass *pass, gchar **token_out, GError **error)
 	g_autoptr(GPtrArray) items = NULL, activities = NULL;
 	g_autofree gchar *token = NULL;
 	guint i;
+	if (!venture_connector_session_validate(pass->connector, error)) return FALSE;
 	token = venture_caldav_client_get_token(pass->self->client, pass->path, NULL, error);
-	if (!token) return FALSE;
+	if (!token || !venture_connector_session_validate(pass->connector, error)) return FALSE;
 	items = venture_caldav_client_list(pass->self->client, pass->path, NULL, error);
-	if (!items) return FALSE;
+	if (!items || !venture_connector_session_validate(pass->connector, error)) return FALSE;
 	for (i = 0; i < items->len; i++)
 		if (!pull_event(pass, g_ptr_array_index(items, i), error)) return FALSE;
 	/* Links whose event is gone from the server. Iterate a copy: cancelling removes nothing from the array, but be explicit. */
@@ -368,6 +426,7 @@ static gboolean run_pass(Pass *pass, gchar **token_out, GError **error)
 		if (venture_entity_is_deleted(link) || g_hash_table_contains(pass->seen, GINT_TO_POINTER((gint)venture_entity_get_id(link)))) continue;
 		if (!cancel_missing(pass, link, error)) return FALSE;
 	}
+	if (pass->private_owner > 0) { *token_out = g_steal_pointer(&token); return TRUE; }
 	/* Push: the owner's dated calls and meetings, and any linked activity that changed or was deleted here. */
 	{
 		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACTIVITY);
@@ -409,7 +468,9 @@ static gboolean run_pass(Pass *pass, gchar **token_out, GError **error)
 
 gint venture_calendar_sync_service_sync(VentureCalendarSyncService *self, VentureEntity *account, const VentureActor *actor, GError **error)
 {
-	g_autofree gchar *url = NULL, *username = NULL, *secret_env = NULL, *owner = NULL, *path = NULL, *token = NULL;
+	g_autofree gchar *url = NULL, *username = NULL, *owner = NULL, *path = NULL, *token = NULL;
+	g_autoptr(VentureConnectorSession) connector = NULL;
+	VentureEntity *requested = account;
 	g_autoptr(GError) local = NULL;
 	g_autoptr(GDateTime) now = NULL;
 	g_autoptr(GPtrArray) links = NULL;
@@ -423,23 +484,11 @@ gint venture_calendar_sync_service_sync(VentureCalendarSyncService *self, Ventur
 	if (self->busy) return refuse(error, VENTURE_ERROR_CONFLICT, "A sync is already in progress"), -1;
 	if (venture_database_has_transaction(self->database)) return refuse(error, VENTURE_ERROR_CONFLICT, "Sync requires a committed database"), -1;
 	if (!venture_entity_get_id(account)) return refuse(error, VENTURE_ERROR_VALIDATION, "Sync requires a saved account"), -1;
-	g_object_get(account, "url", &url, "username", &username, "secret-env", &secret_env, "owner", &owner, "calendar-path", &path, NULL);
-	if (venture_string_is_empty(secret_env)) return refuse(error, VENTURE_ERROR_CONFIG, "The account names no secret_env variable"), -1;
-	{
-		/* Same rule as mail_account: a row may only name its own family of
-		 * variables, never VENTURE_SMTP_PASSWORD or the session secret. */
-		const gchar *p;
-		if (!g_str_has_prefix(secret_env, "VENTURE_CALDAV_") || !secret_env[strlen("VENTURE_CALDAV_")])
-			return refuse(error, VENTURE_ERROR_CONFIG, "secret_env must name a VENTURE_CALDAV_* variable"), -1;
-		for (p = secret_env + strlen("VENTURE_CALDAV_"); *p; p++)
-			if (!g_ascii_isalnum(*p) && *p != '_')
-				return refuse(error, VENTURE_ERROR_CONFIG, "secret_env must name a VENTURE_CALDAV_* variable"), -1;
-	}
-	secret = g_getenv(secret_env);
-	if (!secret || !*secret) {
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "VentureCalendarSyncService: environment variable %s is not set; it must hold the CalDAV password or app token", secret_env);
-		return -1;
-	}
+	connector = venture_connector_open(self->database, self->config, account, error);
+	if (!connector) return -1;
+	account = venture_connector_session_get_account(connector);
+	secret = venture_connector_session_get_password(connector);
+	g_object_get(account, "url", &url, "username", &username, "owner", &owner, "calendar-path", &path, NULL);
 	if (venture_string_is_empty(url)) return refuse(error, VENTURE_ERROR_CONFIG, "The account has no CalDAV URL"), -1;
 	if (venture_string_is_empty(owner)) return refuse(error, VENTURE_ERROR_CONFIG, "The account has no owner"), -1;
 	if (venture_string_is_empty(path)) return refuse(error, VENTURE_ERROR_CONFIG, "The account has no calendar path"), -1;
@@ -447,14 +496,16 @@ gint venture_calendar_sync_service_sync(VentureCalendarSyncService *self, Ventur
 		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_CALENDAR_EVENT);
 		venture_query_set_organization(query, venture_entity_get_organization_id(account));
 		venture_query_add_filter_int(query, "account-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(account), NULL);
+		venture_query_set_include_deleted(query, venture_access_policy_record_is_personal(venture_database_get_access_policy(self->database), account));
 		venture_query_set_limit(query, 0);
 		links = venture_database_find(self->database, query, error);
 		if (!links) return -1;
 	}
 	seen = g_hash_table_new(g_direct_hash, g_direct_equal);
 	memset(&pass, 0, sizeof pass);
-	pass.self = self; pass.account = account; pass.actor = actor;
+	pass.self = self; pass.connector = connector; pass.account = account; pass.actor = actor;
 	pass.org = venture_entity_get_organization_id(account);
+	pass.private_owner = venture_access_policy_get_personal_owner(venture_database_get_access_policy(self->database), account);
 	pass.owner = owner; pass.path = path; pass.links = links; pass.seen = seen;
 	self->busy = TRUE;
 	if (venture_caldav_client_connect(self->client, url, username, secret, NULL, &local)) {
@@ -470,6 +521,7 @@ gint venture_calendar_sync_service_sync(VentureCalendarSyncService *self, Ventur
 		if (token) g_object_set(account, "sync-token", token, NULL);
 		if (!venture_database_save(self->database, account, actor, &note_error) && !local) { g_propagate_error(error, g_steal_pointer(&note_error)); return -1; }
 	}
+	if (requested != account) venture_entity_copy_properties_from(requested, account, FALSE);
 	if (local) { g_propagate_error(error, g_steal_pointer(&local)); return -1; }
 	return pass.changes;
 }

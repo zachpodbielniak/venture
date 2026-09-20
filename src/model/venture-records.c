@@ -2726,6 +2726,7 @@ VENTURE_DEFINE_ENTITY(VentureAgentBudget, venture_agent_budget,
                       venture_agent_budget_fields)
 
 static const VentureFieldDecl venture_document_fields[] = {
+	VENTURE_FIELD_REF("private-owner-id", "Private owner", "Private attachment owner; zero is a shared business document", "user", VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER),
 	VENTURE_FIELD_NAME("title", "Title", NULL),
 	VENTURE_FIELD("kind", "Kind",
 	              "Receipt, contract, licence, artwork, manuscript",

@@ -143,3 +143,5 @@ Two binaries, both statically linked against every vendored dependency: =venture
 [[file:bankfeed.org][Bank feeds]] documents encrypted per-account setup, explicit Teller
 sandbox/mutual-TLS configuration, rotation and revocation, and the settings
 screen's ordinary sync-and-import test.
+
+- [[file:connectors.org][Organization and private IMAP/CalDAV connectors]] — explicit encrypted settings, delegation and import privacy.
