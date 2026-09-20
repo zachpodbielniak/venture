@@ -185,3 +185,10 @@ identified two reconciliation fixtures without a migrated organization schema;
 the repair provisions that schema without relaxing provider ownership checks.
 Automatic collection is integrated next; its clean dependency build and combined
 suite are separate gates and are not covered by this checkpoint.
+
+* Automatic collection integrated verification
+
+Revision =e477111= passed all 115 DEBUG test binaries after a clean dependency
+build, including real native OCR, and warning-free GIR generation. The pinned
+Stripe client is =fbc66e52ddaa8e6294aaa5c48d36bf206c286105=.
+Hosted workspace integration follows this checkpoint and has a separate gate.

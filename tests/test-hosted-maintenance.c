@@ -48,6 +48,7 @@ test_hosted_key_maintenance(void)
 	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
 	g_autoptr(VentureDatabase) database = NULL;
 	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureOrganization) organization = venture_organization_new();
 	g_autoptr(VentureProcessLease) lease = NULL;
 	g_autoptr(VentureIntegrationConnection) binding = NULL;
 	g_autoptr(JsonNode) settings = json_node_new(JSON_NODE_OBJECT);
@@ -73,11 +74,14 @@ test_hosted_key_maintenance(void)
 	g_assert_no_error(error);
 	database = venture_database_new(uri, &error); g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_object_set(organization, "name", "Maintenance fixture", NULL);
+	g_assert_true(venture_database_save(database, VENTURE_ENTITY(organization), NULL, &error));
+	g_assert_no_error(error);
 	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(database), key, &error));
 	json_node_take_object(settings, json_object_new());
 	json_object_set_string_member(json_node_get_object(settings), "token", "retained-private-fixture");
 	binding = venture_integration_service_configure(venture_integration_service_get(database),
-		1, "maintenance-fixture", "account", "test", settings, 0, NULL, &error);
+		venture_entity_get_id(VENTURE_ENTITY(organization)), "maintenance-fixture", "account", "test", settings, 0, NULL, &error);
 	g_assert_no_error(error); g_assert_nonnull(binding);
 	tenant = venture_tenant_service_get(database);
 	g_assert_true(venture_tenant_service_configure(tenant, config, &error));
@@ -88,6 +92,9 @@ test_hosted_key_maintenance(void)
 	g_assert_false(run_server(config_path, old_key, suspend, "Workspace:"));
 	g_assert_false(run_server(config_path, old_key, check, "Workspace:"));
 	g_clear_object(&lease);
+	/* Offline maintenance follows shutdown, including the old connection. */
+	g_clear_object(&binding);
+	g_clear_object(&database);
 	g_assert_false(run_server(config_path, old_key, mixed, "separate offline maintenance"));
 	g_assert_false(run_server(config_path, old_key, no_reason, "Key maintenance:"));
 	g_assert_true(run_server(config_path, old_key, suspend, "suspended"));
@@ -98,6 +105,12 @@ test_hosted_key_maintenance(void)
 	g_assert_false(run_server(config_path, old_key, check, "Key rotation:"));
 	g_assert_true(run_server(config_path, new_key, check, "All retained integration credentials authenticated"));
 	/* Rotation must not resume the workspace or silently change its authority. */
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	tenant = venture_tenant_service_get(database);
+	g_assert_true(venture_tenant_service_configure(tenant, config, &error));
+	g_assert_true(venture_tenant_service_verify_existing(tenant, &error));
+	g_assert_no_error(error);
 	g_assert_false(venture_tenant_service_check_operation(tenant, FALSE, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED); g_clear_error(&error);
 	g_clear_object(&binding); g_clear_object(&database);
@@ -112,6 +125,7 @@ main(int argc, char **argv)
 	gint result;
 	server_path = g_canonicalize_filename(path, NULL);
 	g_test_init(&argc, &argv, NULL);
+	venture_entity_registry_register_builtins(venture_entity_registry_get_default());
 	g_test_add_func("/hosted-maintenance/key-and-lease", test_hosted_key_maintenance);
 	result = g_test_run();
 	g_free(server_path);
