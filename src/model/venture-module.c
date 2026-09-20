@@ -1188,6 +1188,8 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"attribution", "Attribution", "Consent-bound first-party analytics and verified form capture.",
 		attribution_requires, NULL, attribution_types, attribution_reports, NULL, FALSE
+	},
+	{
 		"commerce", "Commerce connectors", "Import orders as invoices through document compose.",
 		commerce_requires, NULL, commerce_types, NULL, "commerce-enabled", FALSE
 	},
